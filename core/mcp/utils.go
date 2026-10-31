@@ -118,24 +118,33 @@ var ToolCallRetryConfig = RetryConfig{
 	IsRetryable:    isTransientToolCallError,
 }
 
-// GetClientForTool safely finds a client that has the specified tool.
-// Returns a copy of the client state to avoid data races. Callers should be aware
-// that fields like Conn and ToolMap are still shared references and may be modified
-// by other goroutines, but the struct itself is safe from concurrent modification.
-func (m *MCPManager) GetClientForTool(toolName string) *schemas.MCPClientState {
+// GetClientForTool safely finds the client that serves the specified tool to
+// the caller on ctx (a ctx-aware discovery store may serve different callers
+// different discoveries; the built-in store serves everyone the same one).
+// Returns a copy of the client state together with the discovery the tool
+// was resolved from — the pair is atomic, so the name mapping a caller
+// executes with always belongs to the same discovery the tool was found in.
+// Callers should be aware that fields like Conn are still shared references
+// and may be modified by other goroutines, but the struct itself is safe
+// from concurrent modification.
+func (m *MCPManager) GetClientForTool(ctx context.Context, toolName string) (*schemas.MCPClientState, *schemas.MCPDiscovery) {
+	// Resolve through the store first, outside m.mu: a store may read
+	// through to slower backing on a miss, and that must not run under the
+	// manager lock.
+	clientID, discovery := m.discoveryStore.GetClientForTool(ctx, toolName)
+	if clientID == "" {
+		return nil, nil
+	}
+
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-
-	for _, client := range m.clientMap {
-		// All tools (both internal and external) are now stored with prefix "clientName-toolName"
-		// This ensures consistent behavior across all MCP clients
-		if _, exists := client.ToolMap[toolName]; exists {
-			// Return a copy to prevent TOCTOU race conditions
-			clientCopy := *client
-			return &clientCopy
-		}
+	client, exists := m.clientMap[clientID]
+	if !exists {
+		return nil, nil
 	}
-	return nil
+	// Return a copy to prevent TOCTOU race conditions
+	clientCopy := *client
+	return &clientCopy, discovery
 }
 
 // GetToolPerClient returns all tools from connected MCP clients.
@@ -147,9 +156,6 @@ func (m *MCPManager) GetClientForTool(toolName string) *schemas.MCPClientState {
 // Returns:
 //   - map[string][]schemas.ChatTool: Map of client name to its available tools
 func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
 	var includeClients []string
 
 	// Extract client filtering from request context
@@ -157,6 +163,10 @@ func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.
 		includeClients = existingIncludeClients
 	}
 
+	// Snapshot the clients under the lock, then resolve discoveries outside
+	// it: a ctx-aware discovery store may read through to slower backing, which
+	// must not run under m.mu.
+	m.mu.RLock()
 	m.logger.Debug("%s GetToolPerClient: Total clients in manager: %d, Filter: %v", MCPLogPrefix, len(m.clientMap), includeClients)
 
 	// Collect and sort client names for deterministic tool ordering
@@ -165,8 +175,10 @@ func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.
 	for _, client := range m.clientMap {
 		name := client.ExecutionConfig.Name
 		clientNames = append(clientNames, name)
-		clientsByName[name] = client
+		snapshot := *client
+		clientsByName[name] = &snapshot
 	}
+	m.mu.RUnlock()
 	slices.Sort(clientNames)
 
 	tools := make(map[string][]schemas.ChatTool)
@@ -188,9 +200,13 @@ func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.
 			continue
 		}
 
+		// The caller's discovery for this client, resolved through the
+		// store (outside m.mu — see the snapshot comment above).
+		toolMap := m.discoveryStore.GetDiscovery(ctx, clientID).GetTools()
+
 		// Collect and sort tool names for deterministic ordering
-		toolNames := make([]string, 0, len(client.ToolMap))
-		for toolName := range client.ToolMap {
+		toolNames := make([]string, 0, len(toolMap))
+		for toolName := range toolMap {
 			toolNames = append(toolNames, toolName)
 		}
 		slices.Sort(toolNames)
@@ -200,7 +216,7 @@ func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.
 		// 2. Request context (MCPContextKeyIncludeTools) - Can only further narrow, not expand
 		// Context filtering CANNOT override client configuration - it can only be more restrictive.
 		for _, toolName := range toolNames {
-			tool := client.ToolMap[toolName]
+			tool := toolMap[toolName]
 			// First check: Client configuration is the global allow-list
 			// If client config blocks a tool, it CANNOT be overridden by context
 			if shouldSkipToolForConfig(toolName, client.ExecutionConfig) {
@@ -222,7 +238,9 @@ func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.
 	return tools
 }
 
-// GetClientByName returns a client by name.
+// GetClientByName returns a client by name. The snapshot carries connection
+// state only; tools and instructions live in the manager's discovery store
+// (DiscoveryStore()).
 //
 // Parameters:
 //   - clientName: Name of the client to get
@@ -248,30 +266,41 @@ func (m *MCPManager) GetClientByName(clientName string) *schemas.MCPClientState 
 }
 
 // GetInjectedTool resolves a provider-injected tool by client name and unprefixed tool
-// name, returning a copy whose function name carries the "<client>-" prefix.
+// name, returning a copy whose function name carries the "<client>-" prefix. The tool
+// is read from the caller's discovery on ctx, the same one execution later resolves
+// the call through (see GetClientForTool).
 //
 // It deliberately skips tools_to_execute and the request include lists that
 // GetToolPerClient applies: the provider config is the authorization. Only a client
 // that is missing or disabled, or a tool the client does not expose, is refused.
-func (m *MCPManager) GetInjectedTool(clientName, toolName string) (schemas.ChatTool, error) {
+func (m *MCPManager) GetInjectedTool(ctx context.Context, clientName, toolName string) (schemas.ChatTool, error) {
+	// Find the client under the lock, then read its tools outside it: a ctx-aware
+	// discovery store may read through to slower backing, which must not run under m.mu.
+	var clientID string
+	var disabled bool
 	m.mu.RLock()
-	defer m.mu.RUnlock()
 	for _, client := range m.clientMap {
 		if client.ExecutionConfig == nil || client.ExecutionConfig.Name != clientName {
 			continue
 		}
-		if client.State == schemas.MCPConnectionStateDisabled {
-			return schemas.ChatTool{}, fmt.Errorf("mcp client %q is disabled", clientName)
-		}
-		tool, ok := client.ToolMap[clientName+"-"+toolName]
-		if !ok {
-			return schemas.ChatTool{}, fmt.Errorf("mcp client %q does not expose tool %q", clientName, toolName)
-		}
-		// A deep copy: the caller owns the returned schema, and an edit to it must never
-		// reach the stored definition every later request is built from.
-		return schemas.DeepCopyChatTool(tool), nil
+		clientID = client.ExecutionConfig.ID
+		disabled = client.State == schemas.MCPConnectionStateDisabled
+		break
 	}
-	return schemas.ChatTool{}, fmt.Errorf("mcp client %q not found", clientName)
+	m.mu.RUnlock()
+	if clientID == "" {
+		return schemas.ChatTool{}, fmt.Errorf("mcp client %q not found", clientName)
+	}
+	if disabled {
+		return schemas.ChatTool{}, fmt.Errorf("mcp client %q is disabled", clientName)
+	}
+	tool, ok := m.discoveryStore.GetDiscovery(ctx, clientID).GetTools()[clientName+"-"+toolName]
+	if !ok {
+		return schemas.ChatTool{}, fmt.Errorf("mcp client %q does not expose tool %q", clientName, toolName)
+	}
+	// A deep copy: the caller owns the returned schema, and an edit to it must never
+	// reach the stored definition every later request is built from.
+	return schemas.DeepCopyChatTool(tool), nil
 }
 
 // GetMaxAgentDepth returns the configured cap on model turns in a tool loop
@@ -281,6 +310,36 @@ func (m *MCPManager) GetMaxAgentDepth() int {
 		return schemas.DefaultMaxAgentDepth
 	}
 	return int(m.toolsManager.maxAgentDepth.Load())
+}
+
+// DiscoveryStore returns the manager's discovery store — the single owner of
+// every client's discovery (tools, name mapping, instructions). Client state
+// snapshots carry connection state only; whoever needs a client's discovery
+// fetches it from here (keyed by client ID), passing the caller's ctx so a
+// ctx-aware store can serve the caller its own.
+func (m *MCPManager) DiscoveryStore() schemas.MCPDiscoveryStore {
+	return m.discoveryStore
+}
+
+// GetToolsForClient returns the tools the caller on ctx should see for one
+// client, or nil when it has none recorded. Callers that also need the name
+// mapping or discovery time read the store directly (DiscoveryStore).
+func (m *MCPManager) GetToolsForClient(ctx context.Context, clientID string) map[string]schemas.ChatTool {
+	return m.discoveryStore.GetDiscovery(ctx, clientID).GetTools()
+}
+
+// GetClientDiscovery returns the discovery the caller on ctx sees for one
+// client, or nil when it has none recorded. The value is shared; callers must
+// not mutate it.
+func (m *MCPManager) GetClientDiscovery(ctx context.Context, clientID string) *schemas.MCPDiscovery {
+	return m.discoveryStore.GetDiscovery(ctx, clientID)
+}
+
+// GetInstructionsForClient returns the upstream instructions the caller on ctx
+// should see for one client, from the same discovery its tools come from; ""
+// when it has none.
+func (m *MCPManager) GetInstructionsForClient(ctx context.Context, clientID string) string {
+	return m.discoveryStore.GetDiscovery(ctx, clientID).GetInstructions()
 }
 
 // isTransientError determines if an error is transient and should be retried.

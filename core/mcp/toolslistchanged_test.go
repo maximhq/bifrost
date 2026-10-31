@@ -182,7 +182,7 @@ func TestUpstreamToolsListChanged_WatcherEndsWithItsConnection(t *testing.T) {
 		ID: "watcher-bound", Name: "matrix", ConnectionType: schemas.MCPConnectionTypeHTTP,
 		ConnectionString: schemas.NewSecretVar(ts.URL), NeedsSessionStickiness: schemas.Ptr(true), ToolsToExecute: []string{"*"},
 	}
-	connect := func() (schemas.MCPClientState, bool) {
+	connect := func() (clientSnapshot, bool) {
 		t.Helper()
 		require.NoError(t, m.connectToMCPClient(context.Background(), config))
 		return snapshotClientState(m, config.ID)

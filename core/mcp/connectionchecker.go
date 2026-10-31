@@ -418,7 +418,7 @@ func (c *ClientConnectionChecker) checkLiveConnection(conn *client.Client, clien
 
 	discovery := &schemas.MCPDiscovery{Tools: newTools, ToolNameMapping: newMapping}
 	caps := conn.GetServerCapabilities()
-	listErr = c.manager.listResourcesAndPrompts(c.markAsCheck(context.Background()), c.timeout, conn, clientName, caps, discovery, c.manager.installedDiscoveryByID(c.clientID))
+	listErr = c.manager.listResourcesAndPrompts(c.markAsCheck(context.Background()), c.timeout, conn, clientName, caps, discovery, c.manager.installedDiscovery(c.clientID))
 	// Without tools, list_tools above never reached the server; its resources and prompts lists did.
 	if listErr != nil && caps.Tools == nil {
 		c.recordFailure(clientName, schemas.MCPConnectionFailureStageListTools, listErr, connGeneration)

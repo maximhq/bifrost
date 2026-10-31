@@ -85,19 +85,21 @@ func (m *MCPManager) executeToolWithHooks(
 	resp, bErr := m.RunWithPluginPipeline(ctx, request, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
 		// Resolve and acquire after PreMCPHook so policy plugins can reject denied
 		// MCP clients before any auth or transport work.
-		state, conn, release, prepErr := m.prepareToolExecution(ctx, preReq)
+		state, discovery, conn, release, prepErr := m.prepareToolExecution(ctx, preReq)
 		if prepErr != nil {
 			return nil, prepErr
 		}
 		defer release()
 
 		// state == nil signals a code-mode tool: pass nil conn/config/mapping and
-		// ToolsManager.ExecuteTool routes directly to CodeMode.
+		// ToolsManager.ExecuteTool routes directly to CodeMode. The mapping
+		// comes from the discovery the tool was resolved from, so name resolution
+		// and execution always agree even if the store refreshes in between.
 		var executionConfig *schemas.MCPClientConfig
 		var toolNameMapping map[string]string
 		if state != nil {
 			executionConfig = state.ExecutionConfig
-			toolNameMapping = state.ToolNameMapping
+			toolNameMapping = discovery.GetToolNameMapping()
 		}
 
 		result, opErr := m.toolsManager.ExecuteTool(ctx, preReq, conn, executionConfig, toolNameMapping)
@@ -118,20 +120,21 @@ func (m *MCPManager) executeToolWithHooks(
 }
 
 // prepareToolExecution resolves the tool to its owning MCP client and
-// acquires a connection. Returns (state, conn, release, err):
-//   - For regular MCP tools: state non-nil, conn is the live transport, release
-//     must be called by the caller (defer).
-//   - For code-mode tools: state nil, conn nil, release is a no-op. The caller
-//     forwards nil conn/config/mapping to ToolsManager.ExecuteTool which
-//     dispatches via the CodeMode implementation.
+// acquires a connection. Returns (state, discovery, conn, release, err):
+//   - For regular MCP tools: state non-nil, discovery is the one the tool was
+//     resolved from (its ToolNameMapping is the one to execute with), conn is
+//     the live transport, release must be called by the caller (defer).
+//   - For code-mode tools: state nil, discovery nil, conn nil, release is a
+//     no-op. The caller forwards nil conn/config/mapping to
+//     ToolsManager.ExecuteTool which dispatches via the CodeMode implementation.
 //
 // Errors here mean the call should NOT run — neither the envelope plugin
 // gate nor the wire op. Typed errors (e.g. *MCPUserOAuthRequiredError)
 // propagate so the caller can stamp BifrostError.ExtraFields.
-func (m *MCPManager) prepareToolExecution(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.MCPClientState, *client.Client, func(), error) {
+func (m *MCPManager) prepareToolExecution(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.MCPClientState, *schemas.MCPDiscovery, *client.Client, func(), error) {
 	toolName := request.GetToolName()
 	if toolName == "" {
-		return nil, nil, nil, fmt.Errorf("tool call missing function name")
+		return nil, nil, nil, nil, fmt.Errorf("tool call missing function name")
 	}
 
 	// Code-mode tools have no upstream client — skip client lookup. A narrowed request is refused
@@ -139,18 +142,18 @@ func (m *MCPManager) prepareToolExecution(ctx *schemas.BifrostContext, request *
 	codeMode := m.toolsManager.GetCodeMode()
 	if codeMode != nil && codeMode.IsCodeModeTool(toolName) {
 		if requestNarrowed(ctx) && !m.codeModeClientReachable(ctx) {
-			return nil, nil, nil, fmt.Errorf("tool '%s' is not permitted (no code mode client available to this request)", toolName)
+			return nil, nil, nil, nil, fmt.Errorf("tool '%s' is not permitted (no code mode client available to this request)", toolName)
 		}
-		return nil, nil, func() {}, nil
+		return nil, nil, nil, func() {}, nil
 	}
 
-	state := m.GetClientForTool(toolName)
+	state, discovery := m.GetClientForTool(ctx, toolName)
 	if state == nil {
-		return nil, nil, nil, fmt.Errorf("tool '%s' is not available or not permitted", toolName)
+		return nil, nil, nil, nil, fmt.Errorf("tool '%s' is not available or not permitted", toolName)
 	}
 	clientName := state.ExecutionConfig.Name
 	if err := checkToolExecutionPermitted(ctx, state, toolName, m.logger); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	// NeedsReauth is the one hard gate left besides Disabled: the credential
 	// is confirmed permanently dead (see connectToMCPClient's typed
@@ -173,13 +176,13 @@ func (m *MCPManager) prepareToolExecution(ctx *schemas.BifrostContext, request *
 	// (see failConnectAttempt) and still gets tool calls attempted normally;
 	// it self-heals to Healthy on the checker's next successful pass.
 	if state.State == schemas.MCPConnectionStateNeedsReauth {
-		return nil, nil, nil, fmt.Errorf("tool '%s' is unavailable: client %s needs re-authorization (its admin credential expired or was revoked)", toolName, clientName)
+		return nil, nil, nil, nil, fmt.Errorf("tool '%s' is unavailable: client %s needs re-authorization (its admin credential expired or was revoked)", toolName, clientName)
 	}
 	conn, release, err := m.AcquireClientConn(ctx, state)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
-	return state, conn, release, nil
+	return state, discovery, conn, release, nil
 }
 
 // requestNarrowed reports whether the request carries an include list (virtual key, slug or

@@ -265,7 +265,7 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 	var client *schemas.MCPClientState
 	for _, tool := range tools {
 		if tool.Function != nil && tool.Function.Name != "" {
-			client = s.clientManager.GetClientForTool(tool.Function.Name)
+			client, _ = s.clientManager.GetClientForTool(ctx, tool.Function.Name)
 			if client != nil {
 				break
 			}

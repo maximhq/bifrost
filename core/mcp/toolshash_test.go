@@ -53,7 +53,7 @@ func TestSetClientDiscovery_UnchangedTools_DoesNotFireCallback(t *testing.T) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{ID: "client-1", Name: "client-one"}
 	m.mu.Lock()
-	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, ToolMap: map[string]schemas.ChatTool{}}
+	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config}
 	m.mu.Unlock()
 
 	tools := map[string]schemas.ChatTool{"echo": {Type: "function"}}
@@ -82,10 +82,11 @@ func TestSetClientDiscovery_UnchangedTools_DoesNotFireCallback(t *testing.T) {
 // one most likely to rediscover identical tools tick after tick.
 func TestWriteBackTools_UnchangedTools_DoesNotFireCallback(t *testing.T) {
 	manager := &MCPManager{
-		logger:    &MockLogger{},
-		clientMap: map[string]*schemas.MCPClientState{},
+		discoveryStore: NewDiscoveryStore(),
+		logger:         &MockLogger{},
+		clientMap:      map[string]*schemas.MCPClientState{},
 	}
-	state, config := newSyncTestClientState("client-checker", "checker-client", schemas.MCPAuthTypeHeaders, map[string]schemas.ChatTool{})
+	state, config := newSyncTestClientState("client-checker", "checker-client", schemas.MCPAuthTypeHeaders)
 	manager.clientMap[config.ID] = state
 
 	callCount := 0

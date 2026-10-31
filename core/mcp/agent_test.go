@@ -68,12 +68,20 @@ func (m *MockLogger) LogHTTPRequest(level schemas.LogLevel, msg string) schemas.
 // MockClientManager implements ClientManager for testing
 type MockClientManager struct{}
 
-func (m *MockClientManager) GetClientForTool(toolName string) *schemas.MCPClientState {
-	return nil // Return nil to simulate no client found
+func (m *MockClientManager) GetClientForTool(_ context.Context, toolName string) (*schemas.MCPClientState, *schemas.MCPDiscovery) {
+	return nil, nil // Return nil to simulate no client found
 }
 
 func (m *MockClientManager) GetClientByName(clientName string) *schemas.MCPClientState {
 	return nil
+}
+
+func (m *MockClientManager) GetToolsForClient(_ context.Context, clientID string) map[string]schemas.ChatTool {
+	return nil
+}
+
+func (m *MockClientManager) GetInstructionsForClient(_ context.Context, clientID string) string {
+	return ""
 }
 
 func (m *MockClientManager) GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool {
@@ -564,7 +572,7 @@ func TestExecuteAgentForResponsesRequest_WithNonAutoExecutableTools(t *testing.T
 // MockAutoClientManager returns a client state that marks all tools as auto-executable.
 type MockAutoClientManager struct{}
 
-func (m *MockAutoClientManager) GetClientForTool(toolName string) *schemas.MCPClientState {
+func (m *MockAutoClientManager) GetClientForTool(_ context.Context, toolName string) (*schemas.MCPClientState, *schemas.MCPDiscovery) {
 	return &schemas.MCPClientState{
 		Name: "test-client",
 		ExecutionConfig: &schemas.MCPClientConfig{
@@ -572,11 +580,19 @@ func (m *MockAutoClientManager) GetClientForTool(toolName string) *schemas.MCPCl
 			ToolsToExecute:     []string{"*"},
 			ToolsToAutoExecute: []string{"*"},
 		},
-	}
+	}, &schemas.MCPDiscovery{}
 }
 
 func (m *MockAutoClientManager) GetClientByName(clientName string) *schemas.MCPClientState {
 	return nil
+}
+
+func (m *MockAutoClientManager) GetToolsForClient(_ context.Context, clientID string) map[string]schemas.ChatTool {
+	return nil
+}
+
+func (m *MockAutoClientManager) GetInstructionsForClient(_ context.Context, clientID string) string {
+	return ""
 }
 
 func (m *MockAutoClientManager) GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool {

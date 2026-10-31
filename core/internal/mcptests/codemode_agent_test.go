@@ -1025,11 +1025,13 @@ func TestCodeModeAgent_ServerInstructionsReachTheModel(t *testing.T) {
 	manager := setupMCPManager(t, codeModeClient)
 	ctx := createTestContext()
 
-	// Client state, not GetServerInstructions: that aggregate excludes code mode clients, so
-	// sourcing from it would make this test skip itself. Skips on a fixture advertising nothing.
+	// The client's own instructions, not GetServerInstructions: that aggregate excludes code
+	// mode clients, so sourcing from it would make this test skip itself. Skips on a fixture
+	// advertising nothing.
 	state := manager.GetClientByName(codeModeClient.Name)
 	require.NotNil(t, state, "code mode client did not register")
-	if state.ServerInstructions == "" {
+	instructions := manager.GetInstructionsForClient(ctx, state.ExecutionConfig.ID)
+	if instructions == "" {
 		t.Skip("upstream advertises no instructions; nothing to forward on this fixture")
 	}
 
@@ -1076,7 +1078,7 @@ func TestCodeModeAgent_ServerInstructionsReachTheModel(t *testing.T) {
 
 	// The rendered block, not a slice of the raw text: every line is commented, so multi-line
 	// instructions never appear verbatim. Rendering is pinned in core/mcp's instructions_test.go.
-	rendered := mcp.InstructionsCommentBlock(state.ServerInstructions, state.ExecutionConfig.MaxInstructionsLength)
+	rendered := mcp.InstructionsCommentBlock(instructions, state.ExecutionConfig.MaxInstructionsLength)
 	require.NotEmpty(t, rendered, "an advertising upstream rendered no block")
 	assert.Contains(t, stub, rendered,
 		"the block reached the model without the upstream's own text:\n%s", stub)

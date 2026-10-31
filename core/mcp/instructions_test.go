@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -27,11 +28,13 @@ func newManagerWithInstructions(t *testing.T) *MCPManager {
 		{"beta-id", "beta", "beta-echo", "Beta rule: update the doc on relevant changes."},
 	} {
 		m.clientMap[c.id] = &schemas.MCPClientState{
-			Name:               c.name,
-			ExecutionConfig:    &schemas.MCPClientConfig{ID: c.id, Name: c.name, ToolsToExecute: []string{"*"}},
-			ToolMap:            map[string]schemas.ChatTool{c.tool: {Type: "function", Function: &schemas.ChatToolFunction{Name: c.tool}}},
-			ServerInstructions: c.instructions,
+			Name:            c.name,
+			ExecutionConfig: &schemas.MCPClientConfig{ID: c.id, Name: c.name, ToolsToExecute: []string{"*"}},
 		}
+		m.discoveryStore.SetDiscovery(context.Background(), c.id, &schemas.MCPDiscovery{
+			Tools:        map[string]schemas.ChatTool{c.tool: {Type: "function", Function: &schemas.ChatToolFunction{Name: c.tool}}},
+			Instructions: c.instructions,
+		})
 	}
 	return m
 }
@@ -76,9 +79,8 @@ func TestGetServerInstructionsSkipsClientsWithNoVisibleTools(t *testing.T) {
 
 func TestGetServerInstructionsSkipsClientsThatAdvertiseNone(t *testing.T) {
 	m := newManagerWithInstructions(t)
-	m.mu.Lock()
-	m.clientMap["alpha-id"].ServerInstructions = ""
-	m.mu.Unlock()
+	alpha := m.discoveryStore.GetDiscovery(context.Background(), "alpha-id")
+	m.discoveryStore.SetDiscovery(context.Background(), "alpha-id", &schemas.MCPDiscovery{Tools: alpha.Tools})
 
 	got := m.GetServerInstructions(context.Background())
 
@@ -301,11 +303,11 @@ func TestWriteBackInstructionsReplacesAndFiresCallback(t *testing.T) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{ID: "c", Name: "c", ToolsToExecute: []string{"*"}}
 	m.mu.Lock()
-	m.clientMap[config.ID] = &schemas.MCPClientState{
-		Name: config.Name, ExecutionConfig: config,
-		ToolMap:            map[string]schemas.ChatTool{"c-echo": {Type: "function"}},
-		ServerInstructions: "v1",
-	}
+	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config}
+	m.discoveryStore.SetDiscovery(context.Background(), config.ID, &schemas.MCPDiscovery{
+		Tools:        map[string]schemas.ChatTool{"c-echo": {Type: "function"}},
+		Instructions: "v1",
+	})
 	m.mu.Unlock()
 
 	var seen []string
@@ -316,10 +318,7 @@ func TestWriteBackInstructionsReplacesAndFiresCallback(t *testing.T) {
 
 	m.writeBackInstructions(config.ID, 0, "v2")
 
-	m.mu.RLock()
-	got := m.clientMap[config.ID].ServerInstructions
-	m.mu.RUnlock()
-	assert.Equal(t, "v2", got)
+	assert.Equal(t, "v2", m.discoveryStore.GetDiscovery(context.Background(), config.ID).GetInstructions())
 	assert.Equal(t, []string{"v2"}, seen, "a changed text must reach the persist seam")
 }
 
@@ -328,10 +327,8 @@ func TestWriteBackInstructionsNoOpWhenUnchanged(t *testing.T) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{ID: "c", Name: "c"}
 	m.mu.Lock()
-	m.clientMap[config.ID] = &schemas.MCPClientState{
-		Name: config.Name, ExecutionConfig: config,
-		ToolMap: map[string]schemas.ChatTool{}, ServerInstructions: "same",
-	}
+	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config}
+	m.discoveryStore.SetDiscovery(context.Background(), config.ID, &schemas.MCPDiscovery{Instructions: "same"})
 	m.mu.Unlock()
 
 	fired := false
@@ -347,17 +344,83 @@ func TestWriteBackInstructionsDropsStaleGeneration(t *testing.T) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{ID: "c", Name: "c"}
 	m.mu.Lock()
-	m.clientMap[config.ID] = &schemas.MCPClientState{
-		Name: config.Name, ExecutionConfig: config,
-		ToolMap: map[string]schemas.ChatTool{}, ServerInstructions: "installed", ConnGeneration: 7,
-	}
+	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, ConnGeneration: 7}
+	m.discoveryStore.SetDiscovery(context.Background(), config.ID, &schemas.MCPDiscovery{Instructions: "installed"})
 	m.mu.Unlock()
 
 	m.writeBackInstructions(config.ID, 3, "from-a-replaced-connection")
 
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	assert.Equal(t, "installed", m.clientMap[config.ID].ServerInstructions)
+	assert.Equal(t, "installed", m.discoveryStore.GetDiscovery(context.Background(), config.ID).GetInstructions())
+}
+
+// A refresh re-reads instructions only, so the discovery it replaces keeps the tools, name
+// mapping and discovery time it was written with.
+func TestWriteBackInstructionsKeepsTheToolsItWasDiscoveredWith(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	config := &schemas.MCPClientConfig{ID: "c", Name: "c", ToolsToExecute: []string{"*"}}
+	discoveredAt := time.Now().Add(-time.Hour)
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config}
+	m.discoveryStore.SetDiscovery(context.Background(), config.ID, &schemas.MCPDiscovery{
+		Tools:           map[string]schemas.ChatTool{"c-echo": {Type: "function"}},
+		ToolNameMapping: map[string]string{"c-echo": "echo"},
+		Instructions:    "v1",
+		DiscoveredAt:    discoveredAt,
+	})
+	m.mu.Unlock()
+
+	m.writeBackInstructions(config.ID, 0, "v2")
+
+	got := m.discoveryStore.GetDiscovery(context.Background(), config.ID)
+	require.NotNil(t, got)
+	assert.Equal(t, "v2", got.Instructions)
+	assert.Contains(t, got.Tools, "c-echo", "an instructions refresh must not drop the tools")
+	assert.Equal(t, map[string]string{"c-echo": "echo"}, got.ToolNameMapping)
+	assert.True(t, got.DiscoveredAt.Equal(discoveredAt), "tools/list was not re-run, so the discovery time must not move")
+}
+
+// callerKey names the caller on a test context for callerDiscoveryStore.
+type callerKey struct{}
+
+// callerDiscoveryStore answers the way a per-identity store does: a caller named on ctx is
+// served its own discovery for a client when it has one, everyone else the shared one.
+type callerDiscoveryStore struct {
+	schemas.MCPDiscoveryStore
+	perCaller map[string]map[string]*schemas.MCPDiscovery // caller -> client ID -> discovery
+}
+
+func (s *callerDiscoveryStore) GetDiscovery(ctx context.Context, clientID string) *schemas.MCPDiscovery {
+	if caller, ok := ctx.Value(callerKey{}).(string); ok {
+		if d, ok := s.perCaller[caller][clientID]; ok {
+			return d
+		}
+	}
+	return s.MCPDiscoveryStore.GetDiscovery(ctx, clientID)
+}
+
+// Instructions ride the caller's own discovery: a store serving a caller its own tools serves
+// it the instructions that came with them, while every other caller keeps the shared text.
+func TestGetServerInstructionsComesFromTheCallersDiscovery(t *testing.T) {
+	store := &callerDiscoveryStore{MCPDiscoveryStore: NewDiscoveryStore()}
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{DiscoveryStore: store}, nil, &MockLogger{}, nil)
+	config := &schemas.MCPClientConfig{ID: "alpha-id", Name: "alpha", ToolsToExecute: []string{"*"}}
+	echo := schemas.ChatTool{Type: "function", Function: &schemas.ChatToolFunction{Name: "alpha-echo"}}
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config}
+	m.mu.Unlock()
+	store.SetDiscovery(context.Background(), config.ID, &schemas.MCPDiscovery{
+		Tools:        map[string]schemas.ChatTool{"alpha-echo": echo},
+		Instructions: "Shared rule.",
+	})
+	store.perCaller = map[string]map[string]*schemas.MCPDiscovery{
+		"alice": {config.ID: {Tools: map[string]schemas.ChatTool{"alpha-echo": echo}, Instructions: "Alice's rule."}},
+	}
+
+	alice := context.WithValue(context.Background(), callerKey{}, "alice")
+	assert.Equal(t, []schemas.MCPServerInstructions{{ClientName: "alpha", Instructions: "Alice's rule."}},
+		m.GetServerInstructions(alice))
+	assert.Equal(t, []schemas.MCPServerInstructions{{ClientName: "alpha", Instructions: "Shared rule."}},
+		m.GetServerInstructions(context.Background()))
 }
 
 // A second STDIO subprocess would read the current config, not the running one's.
@@ -452,9 +515,11 @@ func addCodeModeClient(t *testing.T, m *MCPManager, name string) {
 		ExecutionConfig: &schemas.MCPClientConfig{
 			ID: name + "-id", Name: name, ToolsToExecute: []string{"*"}, IsCodeModeClient: true,
 		},
-		ToolMap:            map[string]schemas.ChatTool{tool: {Type: "function", Function: &schemas.ChatToolFunction{Name: tool}}},
-		ServerInstructions: name + " rule: read the stub first.",
 	}
+	m.discoveryStore.SetDiscovery(context.Background(), name+"-id", &schemas.MCPDiscovery{
+		Tools:        map[string]schemas.ChatTool{tool: {Type: "function", Function: &schemas.ChatToolFunction{Name: tool}}},
+		Instructions: name + " rule: read the stub first.",
+	})
 }
 
 func TestGetServerInstructionsExcludesCodeModeClients(t *testing.T) {
@@ -503,11 +568,13 @@ func BenchmarkGetServerInstructions(b *testing.B) {
 			instructions = "Check permissions first."
 		}
 		m.clientMap[name] = &schemas.MCPClientState{
-			Name:               name,
-			ExecutionConfig:    &schemas.MCPClientConfig{ID: name, Name: name, ToolsToExecute: []string{"*"}},
-			ToolMap:            map[string]schemas.ChatTool{tool: {Type: "function", Function: &schemas.ChatToolFunction{Name: tool}}},
-			ServerInstructions: instructions,
+			Name:            name,
+			ExecutionConfig: &schemas.MCPClientConfig{ID: name, Name: name, ToolsToExecute: []string{"*"}},
 		}
+		m.discoveryStore.SetDiscovery(context.Background(), name, &schemas.MCPDiscovery{
+			Tools:        map[string]schemas.ChatTool{tool: {Type: "function", Function: &schemas.ChatToolFunction{Name: tool}}},
+			Instructions: instructions,
+		})
 	}
 	ctx := context.Background()
 	b.ReportAllocs()

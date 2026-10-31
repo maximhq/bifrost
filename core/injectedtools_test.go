@@ -15,7 +15,7 @@ type fakeInjectedToolSource struct {
 	maxDepth int
 }
 
-func (f fakeInjectedToolSource) GetInjectedTool(clientName, toolName string) (schemas.ChatTool, error) {
+func (f fakeInjectedToolSource) GetInjectedTool(_ context.Context, clientName, toolName string) (schemas.ChatTool, error) {
 	tool, ok := f.tools[clientName+"-"+toolName]
 	if !ok {
 		return schemas.ChatTool{}, errors.New("not found")
@@ -45,7 +45,7 @@ func webSearchConfig() *schemas.ProviderConfig {
 func testInjectedSet(t *testing.T) *injectedToolSet {
 	t.Helper()
 	src := fakeInjectedToolSource{tools: map[string]schemas.ChatTool{"tavily-search": tavilySearchTool()}, maxDepth: 4}
-	set := resolveInjectedTools(src, webSearchConfig(), schemas.ChatCompletionRequest, nil)
+	set := resolveInjectedTools(context.Background(), src, webSearchConfig(), schemas.ChatCompletionRequest, nil)
 	require.NotNil(t, set)
 	return set
 }
@@ -54,24 +54,24 @@ func TestResolveInjectedTools(t *testing.T) {
 	src := fakeInjectedToolSource{tools: map[string]schemas.ChatTool{"tavily-search": tavilySearchTool()}, maxDepth: 4}
 
 	for _, rt := range []schemas.RequestType{schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest, schemas.ResponsesRequest, schemas.ResponsesStreamRequest} {
-		set := resolveInjectedTools(src, webSearchConfig(), rt, nil)
+		set := resolveInjectedTools(context.Background(), src, webSearchConfig(), rt, nil)
 		require.NotNil(t, set, "%s requests get the injected tool", rt)
 		assert.True(t, set.isInjected("web_search"), "calls are classified by the configured name")
 		assert.False(t, set.isInjected("tavily-search"), "the prefixed MCP name is never shown to the model")
 		assert.Equal(t, 4, set.maxDepth)
 	}
 
-	assert.Nil(t, resolveInjectedTools(src, webSearchConfig(), schemas.EmbeddingRequest, nil), "only chat and responses carry tools")
-	assert.Nil(t, resolveInjectedTools(src, &schemas.ProviderConfig{}, schemas.ChatCompletionRequest, nil))
-	assert.Nil(t, resolveInjectedTools(src, nil, schemas.ChatCompletionRequest, nil))
-	assert.Nil(t, resolveInjectedTools(nil, webSearchConfig(), schemas.ChatCompletionRequest, nil), "no MCP manager, nothing to inject")
+	assert.Nil(t, resolveInjectedTools(context.Background(), src, webSearchConfig(), schemas.EmbeddingRequest, nil), "only chat and responses carry tools")
+	assert.Nil(t, resolveInjectedTools(context.Background(), src, &schemas.ProviderConfig{}, schemas.ChatCompletionRequest, nil))
+	assert.Nil(t, resolveInjectedTools(context.Background(), src, nil, schemas.ChatCompletionRequest, nil))
+	assert.Nil(t, resolveInjectedTools(context.Background(), nil, webSearchConfig(), schemas.ChatCompletionRequest, nil), "no MCP manager, nothing to inject")
 
 	missing := webSearchConfig()
 	missing.InjectedTools[0].ToolName = "crawl"
-	assert.Nil(t, resolveInjectedTools(src, missing, schemas.ChatCompletionRequest, nil), "an unresolvable tool fails open")
+	assert.Nil(t, resolveInjectedTools(context.Background(), src, missing, schemas.ChatCompletionRequest, nil), "an unresolvable tool fails open")
 
 	noDepth := fakeInjectedToolSource{tools: src.tools}
-	assert.Equal(t, schemas.DefaultMaxAgentDepth, resolveInjectedTools(noDepth, webSearchConfig(), schemas.ChatCompletionRequest, nil).maxDepth)
+	assert.Equal(t, schemas.DefaultMaxAgentDepth, resolveInjectedTools(context.Background(), noDepth, webSearchConfig(), schemas.ChatCompletionRequest, nil).maxDepth)
 }
 
 func TestApplyInjectedToolsChat_ReplacesNativeWebSearch(t *testing.T) {
@@ -190,7 +190,7 @@ func TestApplyInjectedTools_ClientToolWithInjectedNameIsReplaced(t *testing.T) {
 // its server tools, and a request cannot declare two tools with one name.
 func TestApplyInjectedToolsChat_NativeToolWithInjectedNameIsReplaced(t *testing.T) {
 	src := fakeInjectedToolSource{tools: map[string]schemas.ChatTool{"tavily-search": tavilySearchTool()}, maxDepth: 4}
-	set := resolveInjectedTools(src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
+	set := resolveInjectedTools(context.Background(), src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
 		{Name: "code_execution", MCPClientName: "tavily", ToolName: "search"},
 	}}, schemas.ChatCompletionRequest, nil)
 	require.NotNil(t, set)
@@ -205,7 +205,7 @@ func TestApplyInjectedToolsChat_NativeToolWithInjectedNameIsReplaced(t *testing.
 // is added next to whatever the caller sent, native web search and its choice included.
 func TestApplyInjectedTools_OtherNamesLeaveNativeWebSearch(t *testing.T) {
 	src := fakeInjectedToolSource{tools: map[string]schemas.ChatTool{"tavily-search": tavilySearchTool()}, maxDepth: 4}
-	set := resolveInjectedTools(src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
+	set := resolveInjectedTools(context.Background(), src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
 		{Name: "lookup", MCPClientName: "tavily", ToolName: "search"},
 	}}, schemas.ChatCompletionRequest, nil)
 	require.NotNil(t, set)
@@ -239,7 +239,7 @@ func TestApplyInjectedTools_OtherNamesLeaveNativeWebSearch(t *testing.T) {
 // naming it must follow to the alias, or the provider gets a choice for an undeclared tool.
 func TestApplyInjectedTools_ChoicePinningPrefixedMCPNameFollowsAlias(t *testing.T) {
 	src := fakeInjectedToolSource{tools: map[string]schemas.ChatTool{"tavily-search": tavilySearchTool()}, maxDepth: 4}
-	set := resolveInjectedTools(src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
+	set := resolveInjectedTools(context.Background(), src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
 		{Name: "lookup", MCPClientName: "tavily", ToolName: "search"},
 	}}, schemas.ChatCompletionRequest, nil)
 	require.NotNil(t, set)
@@ -270,7 +270,7 @@ func TestApplyInjectedTools_ChoicePinningPrefixedMCPNameFollowsAlias(t *testing.
 func TestApplyInjectedTools_ChoiceNamingAnAliasIsKept(t *testing.T) {
 	fetch := schemas.ChatTool{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "fetcher-fetch"}}
 	src := fakeInjectedToolSource{tools: map[string]schemas.ChatTool{"tavily-search": tavilySearchTool(), "fetcher-fetch": fetch}, maxDepth: 4}
-	set := resolveInjectedTools(src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
+	set := resolveInjectedTools(context.Background(), src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
 		{Name: "lookup", MCPClientName: "tavily", ToolName: "search"},
 		{Name: "tavily-search", MCPClientName: "fetcher", ToolName: "fetch"},
 	}}, schemas.ChatCompletionRequest, nil)
@@ -295,7 +295,7 @@ func TestApplyInjectedTools_ChoiceNamingAnAliasIsKept(t *testing.T) {
 // for that name must become a function choice for the injected tool.
 func TestApplyInjectedTools_CustomChoiceForReplacedToolPinsInjectedFunction(t *testing.T) {
 	src := fakeInjectedToolSource{tools: map[string]schemas.ChatTool{"tavily-search": tavilySearchTool()}, maxDepth: 4}
-	set := resolveInjectedTools(src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
+	set := resolveInjectedTools(context.Background(), src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
 		{Name: "apply_patch", MCPClientName: "tavily", ToolName: "search"},
 	}}, schemas.ChatCompletionRequest, nil)
 	require.NotNil(t, set)
@@ -331,7 +331,7 @@ func TestApplyInjectedTools_CustomChoiceForReplacedToolPinsInjectedFunction(t *t
 // that was never declared. The caller's choice is never written.
 func TestApplyInjectedToolsChat_AllowedToolsEntriesFollowInjectedTools(t *testing.T) {
 	src := fakeInjectedToolSource{tools: map[string]schemas.ChatTool{"tavily-search": tavilySearchTool()}, maxDepth: 4}
-	set := resolveInjectedTools(src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
+	set := resolveInjectedTools(context.Background(), src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
 		{Name: "lookup", MCPClientName: "tavily", ToolName: "search"},
 	}}, schemas.ChatCompletionRequest, nil)
 	require.NotNil(t, set)
@@ -363,7 +363,7 @@ func TestApplyInjectedToolsChat_AllowedToolsEntriesFollowInjectedTools(t *testin
 func TestApplyInjectedToolsResponses_AllowedToolsEntriesFollowInjectedTools(t *testing.T) {
 	fetch := schemas.ChatTool{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "fetcher-fetch"}}
 	src := fakeInjectedToolSource{tools: map[string]schemas.ChatTool{"tavily-search": tavilySearchTool(), "fetcher-fetch": fetch}, maxDepth: 4}
-	set := resolveInjectedTools(src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
+	set := resolveInjectedTools(context.Background(), src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
 		{Name: "lookup", MCPClientName: "tavily", ToolName: "search"},
 		{Name: "web_search", MCPClientName: "fetcher", ToolName: "fetch"},
 	}}, schemas.ResponsesRequest, nil)
@@ -410,7 +410,7 @@ func TestApplyInjectedToolsResponses_AllowedToolsEntriesFollowInjectedTools(t *t
 func TestResolveInjectedTools_MultipleRows(t *testing.T) {
 	fetch := schemas.ChatTool{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "fetcher-fetch"}}
 	src := fakeInjectedToolSource{tools: map[string]schemas.ChatTool{"tavily-search": tavilySearchTool(), "fetcher-fetch": fetch}, maxDepth: 4}
-	set := resolveInjectedTools(src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
+	set := resolveInjectedTools(context.Background(), src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
 		{Name: "web_search", MCPClientName: "tavily", ToolName: "search"},
 		{Name: "gone", MCPClientName: "tavily", ToolName: "crawl"},
 		{Name: "fetch_page", MCPClientName: "fetcher", ToolName: "fetch"},
@@ -425,14 +425,14 @@ func TestResolveInjectedTools_MultipleRows(t *testing.T) {
 	assert.False(t, set.isInjected("gone"))
 	assert.Equal(t, "fetcher-fetch", fetch.Function.Name, "renaming never reaches the source schema")
 
-	onlyBroken := resolveInjectedTools(src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
+	onlyBroken := resolveInjectedTools(context.Background(), src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
 		{Name: "web_search", MCPClientName: "tavily", ToolName: "crawl"},
 	}}, schemas.ChatCompletionRequest, nil)
 	assert.Nil(t, onlyBroken, "with nothing resolved the request goes out as sent")
 
 	// The first row with a name wins even when it cannot be resolved: a later row with the
 	// same name must not swap in another backend, and native web search stays as sent.
-	brokenFirst := resolveInjectedTools(src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
+	brokenFirst := resolveInjectedTools(context.Background(), src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
 		{Name: "web_search", MCPClientName: "tavily", ToolName: "crawl"},
 		{Name: "web_search", MCPClientName: "fetcher", ToolName: "fetch"},
 		{Name: "lookup", MCPClientName: "tavily", ToolName: "search"},
@@ -444,7 +444,7 @@ func TestResolveInjectedTools_MultipleRows(t *testing.T) {
 
 	// Two rows for the same MCP tool: the first row owns it, and the later row is not
 	// injected at all, as the management API would have rejected it.
-	sameTool := resolveInjectedTools(src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
+	sameTool := resolveInjectedTools(context.Background(), src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
 		{Name: "web_search", MCPClientName: "tavily", ToolName: "search"},
 		{Name: "lookup", MCPClientName: "tavily", ToolName: "search"},
 	}}, schemas.ChatCompletionRequest, nil)

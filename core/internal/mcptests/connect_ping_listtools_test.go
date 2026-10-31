@@ -213,7 +213,7 @@ func TestConnectHook_PreHookShortCircuitResponse_RegistersWithEmptyTools(t *test
 		}
 	}
 	require.NotNil(t, found, "client should be registered even with synthetic connect")
-	assert.Empty(t, found.ToolMap, "synthetic-connect client has no tools (list_tools is never called)")
+	assert.Empty(t, clientTools(manager, found.ExecutionConfig.ID), "synthetic-connect client has no tools (list_tools is never called)")
 }
 
 func TestConnectHook_AuthorizationHidden_HeadersAuth(t *testing.T) {
@@ -345,9 +345,10 @@ func TestListToolsHook_PostHookFilterAppliedToClientState(t *testing.T) {
 		}
 	}
 	require.NotNil(t, target)
-	assert.Len(t, target.ToolMap, 1, "PostHook filter should have removed 'add' tool")
-	_, hasEcho := target.ToolMap["list_filter-echo"]
-	_, hasAdd := target.ToolMap["list_filter-add"]
+	targetTools := clientTools(manager, target.ExecutionConfig.ID)
+	assert.Len(t, targetTools, 1, "PostHook filter should have removed 'add' tool")
+	_, hasEcho := targetTools["list_filter-echo"]
+	_, hasAdd := targetTools["list_filter-add"]
 	assert.True(t, hasEcho, "filtered ToolMap should keep echo")
 	assert.False(t, hasAdd, "filtered ToolMap should drop add")
 }
@@ -383,8 +384,9 @@ func TestListToolsHook_PreHookShortCircuitWithSyntheticTools(t *testing.T) {
 	}
 	require.NotNil(t, target)
 	// The synthetic tool list should have replaced the real server's tools.
-	_, hasSynthetic := target.ToolMap["synthetic-tool"]
-	_, hasEcho := target.ToolMap["list_synth-echo"]
+	synthTools := clientTools(manager, target.ExecutionConfig.ID)
+	_, hasSynthetic := synthTools["synthetic-tool"]
+	_, hasEcho := synthTools["list_synth-echo"]
 	assert.True(t, hasSynthetic, "synthetic tool should be in ToolMap from short-circuit")
 	assert.False(t, hasEcho, "real server tools should not appear when PreHook short-circuited")
 }
@@ -649,7 +651,7 @@ func TestMCPGate_NoPluginsConfigured_OpStillRuns(t *testing.T) {
 	for _, c := range clients {
 		if c.Name == "no_plugins" {
 			found = true
-			assert.NotEmpty(t, c.ToolMap, "tools should have been discovered through the gate even without plugins")
+			assert.NotEmpty(t, clientTools(manager, c.ExecutionConfig.ID), "tools should have been discovered through the gate even without plugins")
 			break
 		}
 	}
