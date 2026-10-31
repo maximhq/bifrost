@@ -1,68 +1,101 @@
 ---
 title: "Relays"
 sidebarTitle: "Overview"
-description: "Put non-LLM APIs such as Tavily, AWS Textract or Azure Speech behind Bifrost: one credential, per-route pricing, virtual-key access and Relay Logs."
+description: "Send calls to non-LLM APIs (search, OCR, speech, translation) through Bifrost, with one stored credential, per-call pricing, virtual-key access and logs."
 icon: "circle-info"
 ---
 
-Your application searches the web with Tavily, extracts a document with AWS Textract and synthesises speech with Azure. None of these is an LLM, so none of them goes through Bifrost's provider routing, yet each one spends money, needs a credential and should land on the same budgets as the model calls next to it.
+Your application probably calls more than LLMs. It may search the web, read text out of a PDF, turn text into speech or translate a message. Each of those APIs needs its own secret, costs money per call and usually sits outside the budgets you already set up for model usage.
 
-A **Relay** puts Bifrost on that path. You register the upstream API once with its credential, list the operations callers may use and the price of each, and callers send their requests to `/relay/{name}/{path}` with a virtual key instead of the upstream's secret.
+A **relay** puts one of those APIs behind Bifrost. You register the API once with its base URL and secret. Your application then calls `/relay/<name>/...` on Bifrost with a virtual key, and Bifrost forwards the call to the API, signs it in with the stored secret, prices it and records it.
+
+<Frame>
+  <img src="/media/relays/ui-relays-page.png" alt="The Relays page with a web-search relay selected and its list of routes" />
+</Frame>
+
+---
+
+## How it works
 
 ```mermaid
 flowchart LR
-    App["Your application<br/>x-bf-vk"] -->|"POST /relay/tavily/search"| Bifrost["Bifrost Relay<br/>route match · governance · pricing"]
-    Bifrost -->|"POST https://api.tavily.com/search<br/>Authorization: Bearer (relay credential)"| Upstream["Tavily"]
-    Bifrost -.-> Logs["Relay Logs · budgets · rate limits"]
+    App["Your application<br/>sends x-bf-vk"] -->|"POST /relay/web-search/search"| Bifrost["Bifrost"]
+    Bifrost -->|"POST https://api.example.com/search<br/>with the stored API key"| API["Upstream API"]
+    Bifrost -.-> Log["Relay Logs, budgets<br/>and rate limits"]
 ```
 
-## What a relay does on every call
+On every call, Bifrost does five things:
 
-| Step | What Bifrost does |
-| --- | --- |
-| **Pin the host** | The request is sent to the relay's `base_url` plus the caller's path. A caller can never reach another origin. |
-| **Swap credentials** | The caller's `Authorization`, `x-api-key` and similar headers are dropped; the relay's own credential is injected as a bearer token, header, query parameter, basic auth or AWS SigV4 signature. |
-| **Match a route** | The method, path and optional request headers select one of the relay's routes. With no match the call is refused with `404` unless **Relay Any Path** is on. |
-| **Govern** | The caller's virtual key must hold a grant for the relay; its budgets and rate limits are evaluated before the upstream is contacted. |
-| **Relay** | Buffered calls are read in full; event streams are forwarded as they arrive. |
-| **Price** | A counted call costs `cost_per_request + billed units × cost_per_unit + reported cost`, read from the request or response with the relay's usage mapping. |
-| **Record** | A Relay Logs row keeps the route, status, latency split, cost breakdown, attribution and (subject to content logging) the bodies. |
+1. **Sends it to one fixed address.** The call goes to the relay's base URL plus the path the caller asked for. A caller cannot point it at any other host.
+2. **Signs in for you.** Credential headers the caller sends (`Authorization`, `x-api-key` and similar) are removed, and the relay's stored credential is added instead. Your application never holds the API's key.
+3. **Allows only the operations you listed.** Each operation you expose is a **route**, such as `POST /search`. A call that matches no route is refused, unless **Relay Any Path** is on.
+4. **Checks access and limits.** The caller's virtual key must be allowed to use the relay, and its budgets and rate limits must have room left. This requires a credential: with `client.enforce_auth_on_inference` off, a call with no credential at all is forwarded without this check.
+5. **Prices and records the call.** Bifrost works out the cost from the pricing you set, charges it to the caller's budgets and writes a row to **Relay Logs**.
 
-A relay is not a provider. There is no key selection, no routing rule, no model catalog and no per-model budget on this path. The cost is charged to the caller's overall budgets: virtual key, team, customer and, in Enterprise, business unit and project.
+Calls to non-LLM APIs then follow the same rules as your model traffic: one place to manage secrets, one set of budgets, one set of logs.
 
-## Where relays fit
+### What a relay is not
+
+A relay forwards plain HTTP requests. It does not translate formats, pick between keys or fall back to another API. Use the feature that matches the job:
 
 | You want to | Use |
 | --- | --- |
-| Call an LLM through one API with fallbacks and model budgets | [Providers](/providers/supported-providers/overview) and the inference endpoints |
+| Call an LLM through one API, with fallbacks and model budgets | [Providers](/providers/supported-providers/overview) |
 | Let a model call tools | [MCP Gateway](/mcp/overview) |
 | Put an A2A agent behind Bifrost | [Agent Gateway](/features/agent-gateway/overview) |
-| Relay a plain HTTP API, price its calls and govern who may use it | **Relays** (this section) |
+| Put any other HTTP API behind Bifrost, priced and governed | **Relays** |
 
-## Start with one relay
+---
 
-1. [Create a relay](./configuration) with its base URL and credential.
-2. [Add routes](./routes) for the operations callers may use, or import them from an OpenAPI document.
-3. [Set the pricing](./pricing) and check it with **Test Pricing**.
-4. [Grant a virtual key](./access) access to the relay.
-5. Send a request to `/relay/{name}/{path}` and [read Relay Logs](./logs).
+## Quick start
 
-```bash
-curl -X POST "http://localhost:8080/relay/tavily/search" \
-  -H "Content-Type: application/json" \
-  -H "x-bf-vk: sk-bf-your-virtual-key" \
-  -d '{"query": "Bifrost AI gateway"}'
-```
+<Steps>
+  <Step title="Create the relay">
+    Give it a name, the API's base URL and its secret. See [Create a relay](./configuration).
+  </Step>
+  <Step title="Add routes">
+    List the operations callers may use, such as `POST /search`, or import them from an OpenAPI file. See [Routes](./routes).
+  </Step>
+  <Step title="Set the price">
+    Set a fee per call, a price per unit, or both, and check it with **Test Pricing**. See [Pricing](./pricing).
+  </Step>
+  <Step title="Give a virtual key access">
+    Add the relay under **Relay access** on the virtual key. See [Virtual keys: relay access](/features/governance/virtual-keys#relay-access).
+  </Step>
+  <Step title="Send a request">
+    Call `/relay/<name>/<path>` with the virtual key in `x-bf-vk`. The reply is the upstream API's reply, unchanged. See [Relay a POST request](/api-reference/relays/relay-a-post-request) in the API reference.
+  </Step>
+</Steps>
+
+---
+
+## See every call
+
+Every relayed call is listed under **Observability → Relay Logs**, a log page of its own next to LLM Logs and MCP Logs.
+
+<Frame>
+  <img src="/media/relays/ui-relay-logs.png" alt="Relay Logs with totals, a request volume chart and one row per relayed call" />
+</Frame>
+
+Each row shows the relay, the method and path, the route that matched, the status, how long the call took, the units billed and the cost. Use the filters on the left to narrow by relay, status, method, billable or not, cost, virtual key, team or customer. **Export CSV** downloads the current view. Bodies and headers are left out of the export.
+
+Select a row to open its details, including how the cost was worked out. Request and response bodies, including streamed replies, are kept in full, unless [content logging](/features/observability/content-logging) is turned off for that request; a binary body (audio, images) is not kept. To query the same data over the API, see the [API reference](/api-reference/relays/get-relay-logs).
+
+---
+
+## Next steps
 
 <CardGroup cols={2}>
-  <Card title="Create a relay" icon="plus" href="./configuration">Name, base URL, credential, extra headers, network and proxy settings.</Card>
-  <Card title="Routes and header matchers" icon="route" href="./routes">Which operations are relayed, counted, streamed or refused.</Card>
-  <Card title="Usage mapping and pricing" icon="calculator" href="./pricing">The cost formula, every mapping field and worked examples.</Card>
-  <Card title="Virtual key access" icon="key" href="./access">Grants, budgets and rate limits on the relay path.</Card>
-  <Card title="Streaming" icon="wave-square" href="./streaming">When a reply is streamed and how a stream is priced.</Card>
-  <Card title="Relay Logs" icon="magnifying-glass" href="./logs">Find a call, read its cost breakdown and latency split.</Card>
+  <Card title="Create a relay" icon="plus" href="./configuration">
+    Base URL, credential, extra headers, timeouts and proxy.
+  </Card>
+  <Card title="Routes" icon="route" href="./routes">
+    Which operations callers may use, which are charged, and which stream.
+  </Card>
+  <Card title="Pricing" icon="calculator" href="./pricing">
+    How each call is priced, with examples and a way to test.
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="./troubleshooting">
+    What each error means and how to fix it.
+  </Card>
 </CardGroup>
-
-<Note>
-Relays are managed through the config store. When the config store is disabled, no relay is served, the `/api/relays` management API is not registered (it answers `404`), and relays declared in `config.json` are not loaded.
-</Note>
