@@ -424,3 +424,47 @@ func TestListModelsRequestDoesNotServeLastKnownModels(t *testing.T) {
 		t.Fatalf("expected the poll error from a single-provider list call; got %v", modelIDs(resp))
 	}
 }
+
+// A provider with a custom ListModelsTimeoutInSeconds in its NetworkConfig
+// respects its configured timeout rather than the default listAllModelsProviderTimeout.
+func TestListAllModelsRespectsProviderListModelsTimeout(t *testing.T) {
+	hang := make(chan struct{})
+	hangingSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-hang
+	}))
+	t.Cleanup(func() {
+		close(hang)
+		hangingSrv.Close()
+	})
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.Groq, 1, 10, hangingSrv.URL)
+	account.SetKeysForProvider(schemas.Groq, wildcardKey(schemas.Groq))
+	tuneProviderForTest(t, account, schemas.Groq)
+
+	// Configure a short custom timeout on the provider's NetworkConfig (1 second).
+	cfg := account.configs[schemas.Groq]
+	cfg.NetworkConfig.ListModelsTimeoutInSeconds = 1
+
+	// Ensure the default timeout is distinctly higher (5 seconds) so we can assert
+	// the provider poll ended around the 1s custom deadline.
+	oldTimeout := listAllModelsProviderTimeout
+	listAllModelsProviderTimeout = 5 * time.Second
+	t.Cleanup(func() { listAllModelsProviderTimeout = oldTimeout })
+
+	client := newListModelsTestClient(t, account, nil)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+
+	start := time.Now()
+	_, _ = client.ListAllModels(ctx, &schemas.BifrostListModelsRequest{})
+	elapsed := time.Since(start)
+
+	if elapsed >= 3*time.Second {
+		t.Fatalf("ListAllModels waited %v; expected custom timeout around 1s, well under default 5s", elapsed)
+	}
+	if elapsed < 800*time.Millisecond {
+		t.Fatalf("ListAllModels returned too fast (%v); expected to wait ~1s for custom timeout", elapsed)
+	}
+}

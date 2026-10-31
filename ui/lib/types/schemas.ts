@@ -869,6 +869,12 @@ export const networkConfigSchema = z
 			.min(5, msg("validation.streamIdleTimeoutMustBeAtLeast5Seconds"))
 			.max(3600, msg("validation.streamIdleTimeoutMustBeAtMost3600SecondsI"))
 			.optional(),
+		list_models_timeout_in_seconds: z
+			.number()
+			.int("List models timeout must be a whole number of seconds")
+			.min(1, "List models timeout must be at least 1 second")
+			.max(3600, "List models timeout must be at most 3600 seconds i.e. 60 minutes")
+			.optional(),
 		keep_alive_timeout_in_seconds: z
 			.number()
 			.int(msg("validation.keepAliveTimeoutMustBeAWholeNumberOfSeconds"))
@@ -933,6 +939,12 @@ export const networkFormConfigSchema = z
 			.int(msg("validation.streamIdleTimeoutMustBeAWholeNumberOfSeconds"))
 			.min(5, msg("validation.streamIdleTimeoutMustBeAtLeast5Seconds"))
 			.max(3600, msg("validation.streamIdleTimeoutMustBeAtMost3600SecondsI"))
+			.optional(),
+		list_models_timeout_in_seconds: z.coerce
+			.number("List models timeout must be a number")
+			.int("List models timeout must be a whole number of seconds")
+			.min(1, "List models timeout must be at least 1 second")
+			.max(3600, "List models timeout must be at most 3600 seconds i.e. 60 minutes")
 			.optional(),
 		keep_alive_timeout_in_seconds: z.coerce
 			.number(msg("validation.keepAliveTimeoutMustBeANumber"))
