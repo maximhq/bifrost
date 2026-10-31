@@ -1,0 +1,218 @@
+---
+title: "Datasheet Editor"
+description: "Edit model limits, capabilities and base prices from the synced datasheet, or add models it does not list. Your edits survive every datasheet sync."
+icon: "table"
+---
+
+## Overview
+
+Bifrost keeps a model **datasheet**: context windows, token limits, deprecation flags, capability flags (tool calling, structured output, reasoning, ...) and base prices for every model it knows. The datasheet is synced from a remote source every 24 hours (see [Custom Pricing](/providers/custom-pricing#pricing-data-source) for the URLs and interval).
+
+A sync overwrites every synced value. The **Datasheet Editor** lets you keep your own values anyway:
+
+- **Edit any datasheet value**: context length, max input and output tokens, deprecation, base prices, capability flags and any other model parameter.
+- **Add custom models** the datasheet does not list, such as a fine-tuned or self-hosted model, so they are priced and described correctly.
+- **Edits survive updates.** Bifrost stores your edits separately and re-applies them after every sync. The synced (upstream) value stays visible next to yours.
+- **Drift detection.** When upstream changes a value you edited, the entry is flagged **Upstream changed** and shows the value it had when you saved.
+
+<Note>
+Base prices you set here replace the datasheet price for every request. [Pricing overrides](/providers/custom-pricing) still apply on top, so a virtual-key or provider-key override keeps working against your edited base price.
+</Note>
+
+---
+
+## How edits are applied
+
+Each edit is a **datasheet override** for one `(provider, model, mode)` entry. It holds two [JSON merge patches](https://www.rfc-editor.org/rfc/rfc7386):
+
+| Patch | Applies to | Examples |
+|-------|-----------|----------|
+| `pricing_patch` | The pricing entry | `context_length`, `max_input_tokens`, `max_output_tokens`, `is_deprecated`, `input_cost_per_token`, `output_cost_per_token`, any other cost field |
+| `params_patch` | The model-parameters entry | `supports_function_calling`, `supports_response_schema`, `reasoning_effort_levels`, `max_output_tokens`, `supported_endpoints` |
+
+In a patch, a key sets the value, `null` clears it, and an omitted key keeps following the datasheet. Removing a key from the patch resets that field to the datasheet value, and removing the whole override restores the entry.
+
+The datasheet sync keeps writing upstream values to the database untouched; the overrides are merged in memory whenever the datasheet is loaded. Nothing is merged on the request path, so edits add no per-request cost.
+
+<Tip>
+Set `max_output_tokens` in both patches. The pricing entry and the model-parameters entry each carry one, and providers read the latter when they fill in a default `max_tokens`. The Web UI does this for you.
+</Tip>
+
+---
+
+## Editing an entry
+
+<Tabs group="config-method">
+<Tab title="Web UI">
+
+1. Navigate to **Models → Datasheet Editor** in the sidebar
+2. Search for the model, or narrow the list by provider. Turn on **Edited only** to see the entries you have changed
+3. Click the edit icon on the row
+4. Change any field. Empty fields and **Follow datasheet** choices keep following upstream; the datasheet value is shown under each field
+5. Click **Save**
+
+To undo a single field, clear it (or use the reset icon next to a limit) and save. **Reset to datasheet** removes every edit for the entry.
+
+You can also open the editor from **Model Catalog → Models**: the model sheet links to its datasheet entry.
+
+</Tab>
+<Tab title="API">
+
+**Save an override** (creates it, or replaces the one saved for the same target):
+
+```bash
+curl -X PUT http://localhost:8080/api/models/datasheet/overrides \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider": "openai",
+    "model": "gpt-4o",
+    "mode": "chat",
+    "pricing_patch": {
+      "context_length": 64000,
+      "input_cost_per_token": 0.000002
+    },
+    "params_patch": {
+      "supports_response_schema": true
+    }
+  }'
+```
+
+Saving re-records the upstream baseline, which also clears drift for that entry. A save with no patches removes the target's override.
+
+**List entries** with upstream and effective values:
+
+```bash
+curl "http://localhost:8080/api/models/datasheet?query=gpt-4o&overridden_only=true"
+```
+
+**Read one entry**, including the model-parameters entry before and after your edits:
+
+```bash
+curl "http://localhost:8080/api/models/datasheet/entry?provider=openai&model=gpt-4o&mode=chat"
+```
+
+**Delete an override**:
+
+```bash
+curl -X DELETE http://localhost:8080/api/models/datasheet/overrides/{id}
+```
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "datasheet_overrides": [
+    {
+      "provider": "openai",
+      "model": "gpt-4o",
+      "mode": "chat",
+      "pricing_patch": { "context_length": 64000 },
+      "params_patch": { "supports_response_schema": true }
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-4o-mini",
+      "pricing_patch": { "is_deprecated": true }
+    }
+  ]
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `provider` | string | Yes | Provider of the entry, e.g. `openai` |
+| `model` | string | Yes | Model name as it appears in the datasheet |
+| `mode` | string | No | Datasheet mode (`chat`, `responses`, `embedding`, ...). Omit to apply `pricing_patch` to every mode of the model. Required when `is_custom` is `true` |
+| `is_custom` | boolean | No | Adds an entry the datasheet does not list |
+| `pricing_patch` | object | No | Merge patch over the pricing entry |
+| `params_patch` | object | No | Merge patch over the model-parameters entry. `provider` cannot be patched |
+
+An entry from `config.json` is written only when it changes, so an edit you make to the same entry in the Web UI stands until the `config.json` entry itself changes. With `"source_of_truth": "config.json"`, overrides that are no longer listed in the file are removed at startup.
+
+</Tab>
+</Tabs>
+
+---
+
+## Adding a custom model
+
+A custom entry describes a model the datasheet does not list. Bifrost prices requests to it from your values and reports its limits and capabilities like any other model. If the datasheet later starts listing the same model, your values still win, and the upstream values show up next to them.
+
+<Tabs group="config-method">
+<Tab title="Web UI">
+
+1. Navigate to **Models → Datasheet Editor**
+2. Click **Add custom model**
+3. Pick the provider, enter the model name and choose the mode
+4. Fill in the limits, prices and capabilities you need
+5. Click **Save**
+
+</Tab>
+<Tab title="API">
+
+```bash
+curl -X PUT http://localhost:8080/api/models/datasheet/overrides \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider": "openai",
+    "model": "ft:gpt-4o-mini:acme:support",
+    "mode": "chat",
+    "is_custom": true,
+    "pricing_patch": {
+      "context_length": 128000,
+      "max_output_tokens": 16384,
+      "input_cost_per_token": 0.0000003,
+      "output_cost_per_token": 0.0000012
+    },
+    "params_patch": {
+      "max_output_tokens": 16384,
+      "supports_function_calling": true
+    }
+  }'
+```
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "datasheet_overrides": [
+    {
+      "provider": "openai",
+      "model": "ft:gpt-4o-mini:acme:support",
+      "mode": "chat",
+      "is_custom": true,
+      "pricing_patch": {
+        "input_cost_per_token": 0.0000003,
+        "output_cost_per_token": 0.0000012
+      }
+    }
+  ]
+}
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Upstream drift
+
+When an override is saved, Bifrost records the upstream value of every field it patches. After each sync it compares those with the current upstream values:
+
+- In the Web UI the entry gets an **Upstream changed** badge, and the field shows the value it had when you saved.
+- In the API, `drifted_fields` lists the affected fields as `pricing.<field>` or `params.<field>`.
+
+Your value keeps applying either way. Save the entry again to accept the new baseline, or reset the field to switch to the upstream value.
+
+---
+
+## Permissions
+
+| Action | Permission |
+|--------|------------|
+| View the datasheet | `ModelProvider:View` |
+| Save, reset or delete overrides | `ModelProvider:Update` |
+
+In a cluster, a change made on one node is picked up by the others through the same reload that follows a datasheet sync.

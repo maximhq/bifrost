@@ -35,6 +35,7 @@ This page is a concise reference for every top-level key in `config.json`. Click
 | `vector_store` | object | Vector database for semantic cache - Weaviate, Redis, Qdrant, Pinecone, Valkey | [Storage](/deployment-guides/config-json/storage#vector_store) |
 | `plugins` | array | Opt-in plugins: `semantic_cache`, `otel`, `maxim`, `datadog`, custom | [Plugins](/deployment-guides/config-json/plugins) |
 | `framework` | object | Model pricing catalog URL and sync interval | [Framework](#framework) |
+| `datasheet_overrides` | array | Edits to the synced model datasheet (limits, capabilities, base prices) and custom models, re-applied after every sync | [Datasheet Editor](/providers/datasheet-editor) |
 | `mcp` | object | MCP server and tool configuration | [MCP](#mcp) |
 | `websocket` | object | WebSocket / Realtime API connection pool tuning | [WebSocket](#websocket) |
 | `proxy_config` | object | Global outbound proxy and which components use it (SCIM directory sync, inference, API) | [Client](/deployment-guides/config-json/client#global-proxy) |
