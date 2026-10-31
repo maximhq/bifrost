@@ -19396,6 +19396,45 @@
                   ]
                 }
               }
+            },
+            {
+              "name": "Bedrock InvokeModel: direct Anthropic shape with document block",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Bedrock InvokeModel keeps the Anthropic document block', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); var j = pm.response.json(); var text = (j.content || []).map(function (b) { return b.text || ''; }).join(' '); pm.expect(text.toUpperCase(), 'document block was dropped before reaching Bedrock: ' + pm.response.text()).to.include('PINEAPPLE'); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"anthropic_version\":\"bedrock-2023-05-31\",\"max_tokens\":64,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"document\",\"title\":\"notes\",\"source\":{\"type\":\"text\",\"media_type\":\"text/plain\",\"data\":\"The secret word is PINEAPPLE.\"}},{\"type\":\"text\",\"text\":\"What is the secret word in the attached document? Answer with that one word.\"}]}]}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/invoke",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "bedrock",
+                    "model",
+                    "{{bedrockModel}}",
+                    "invoke"
+                  ]
+                }
+              }
             }
           ]
         },

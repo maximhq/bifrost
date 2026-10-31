@@ -1,0 +1,1 @@
+- fix: Bedrock InvokeModel ingress keeps Anthropic-native document blocks (base64 and text sources) instead of silently dropping them
