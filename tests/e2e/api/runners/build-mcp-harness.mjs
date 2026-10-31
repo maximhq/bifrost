@@ -1772,25 +1772,26 @@ const ADM61 = folder("ADM-61 Recreating a client_id does not restore old VK acce
   vkDelete("ADM-61", "teardown: delete vk1", "adm61_vk1"),
 ]);
 
-const ADM55 = folder("ADM-55 vk_configs validation", "Setup: alpha (echo_tool, add_tool); a client on alpha; virtual key vk1.", [
+const ADM55 = folder("ADM-55 vk_configs validation", "Setup: alpha (echo_tool, add_tool); a client on alpha; virtual key vk1. Each invalid vk_configs is sent with a rename to adm55_renamed, which must not be applied.", [
   ...freshServer("ADM-55", "alpha", ["echo_tool", "add_tool"]),
   createClient("ADM-55", httpClient("adm55-c", "adm55_c", "alpha"), "setup: create the client"),
   vkCreate("ADM-55", "setup: create vk1", { name: "ADM-55 vk1" }, "adm55_vk1"),
   request("ADM-55", "a duplicate virtual_key_id", "PUT", "/api/mcp/client/adm55-c", {
-    body: { vk_configs: [{ virtual_key_id: "{{adm55_vk1_id}}", tools_to_execute: ["*"] }, { virtual_key_id: "{{adm55_vk1_id}}", tools_to_execute: ["*"] }] },
+    body: { name: "adm55_renamed", vk_configs: [{ virtual_key_id: "{{adm55_vk1_id}}", tools_to_execute: ["*"] }, { virtual_key_id: "{{adm55_vk1_id}}", tools_to_execute: ["*"] }] },
     asserts: [A.status(400), A.custom("error message is \"duplicate virtual_key_id in vk_configs: <vk1 id>\"", [
       "var b = pm.response.json();",
       "pm.expect(b.error && b.error.message, 'body: ' + pm.response.text()).to.equal('duplicate virtual_key_id in vk_configs: ' + pm.collectionVariables.get('adm55_vk1_id'));",
     ])],
   }),
-  request("ADM-55", "an empty virtual_key_id", "PUT", "/api/mcp/client/adm55-c", { body: { vk_configs: [{ virtual_key_id: "", tools_to_execute: ["*"] }] }, asserts: [A.status(400), A.msgEquals("virtual_key_id must not be empty")] }),
+  request("ADM-55", "an empty virtual_key_id", "PUT", "/api/mcp/client/adm55-c", { body: { name: "adm55_renamed", vk_configs: [{ virtual_key_id: "", tools_to_execute: ["*"] }] }, asserts: [A.status(400), A.msgEquals("virtual_key_id must not be empty")] }),
   request("ADM-55", "tools_to_execute [\"*\",\"x\"]", "PUT", "/api/mcp/client/adm55-c", {
-    body: { vk_configs: [{ virtual_key_id: "{{adm55_vk1_id}}", tools_to_execute: ["*", "x"] }] },
+    body: { name: "adm55_renamed", vk_configs: [{ virtual_key_id: "{{adm55_vk1_id}}", tools_to_execute: ["*", "x"] }] },
     asserts: [A.status(400), A.custom("error message contains \"invalid tools_to_execute for virtual key <vk1 id>\"", [
       "var b = pm.response.json();",
       "pm.expect(b.error && b.error.message, 'body: ' + pm.response.text()).to.include('invalid tools_to_execute for virtual key ' + pm.collectionVariables.get('adm55_vk1_id'));",
     ])],
   }),
+  getClient("ADM-55", "adm55-c", "the client is still named adm55_c", [A.custom("name is \"adm55_c\"", ["pm.expect(pm.response.json().clients[0].config.name, 'body: ' + pm.response.text()).to.equal('adm55_c');"])]),
   deleteClient("ADM-55", "adm55-c"),
   vkDelete("ADM-55", "teardown: delete vk1", "adm55_vk1"),
 ]);
