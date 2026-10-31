@@ -804,6 +804,139 @@ test.describe("Providers", () => {
       expect(after?.value?.value).not.toBe("sk-e2e-static-key");
     });
 
+    test("should add a workload identity key to a custom Anthropic-compatible provider and restore it on edit", async ({
+      providersPage,
+      page,
+      request,
+    }) => {
+      const providerData = createCustomProviderData({
+        name: `test-anthropic-wif-${Date.now()}`,
+        baseProviderType: "anthropic",
+        baseUrl: "https://api.anthropic.com",
+      });
+      createdProviders.push(providerData.name);
+
+      await providersPage.createProvider(providerData);
+      await expect(providersPage.getProviderItem(providerData.name)).toBeVisible({ timeout: 15000 });
+      await providersPage.selectProvider(providerData.name);
+
+      const keyName = `anthropic-wif-key-${Date.now()}`;
+      const federationRuleId = "fdrl_e2e01";
+      const organizationId = "00000000-0000-4000-8000-0000000000e2";
+      const serviceAccountId = "svac_e2e01";
+      const identityTokenFile = "/var/run/secrets/anthropic/token";
+      await providersPage.addAnthropicWorkloadIdentityKey({
+        name: keyName,
+        federationRuleId,
+        organizationId,
+        serviceAccountId,
+        identityTokenFile,
+      });
+      await expect(providersPage.getKeyRow(keyName)).toBeVisible();
+
+      // The API stores the federation block with only the token-file source and no static value.
+      const response = await request.get(`/api/providers/${encodeURIComponent(providerData.name)}/keys`);
+      expect(response.ok(), await response.text()).toBe(true);
+      const body = (await response.json()) as {
+        keys: {
+          name: string;
+          value?: { value?: string; ref?: string };
+          anthropic_key_config?: {
+            workload_identity?: {
+              federation_rule_id?: { value?: string };
+              organization_id?: { value?: string };
+              service_account_id?: { value?: string };
+              workspace_id?: { value?: string } | null;
+              identity_source?: { type?: string; path?: { value?: string }; token?: { value?: string } | null };
+            };
+          };
+        }[];
+      };
+      const saved = body.keys.find((k) => k.name === keyName);
+      expect(saved, "saved key must be listed").toBeTruthy();
+      expect(saved?.value?.value ?? "").toBe("");
+      expect(saved?.value?.ref ?? "").toBe("");
+      const wif = saved?.anthropic_key_config?.workload_identity;
+      expect(wif?.federation_rule_id?.value).toBe(federationRuleId);
+      expect(wif?.organization_id?.value).toBe(organizationId);
+      expect(wif?.service_account_id?.value).toBe(serviceAccountId);
+      expect(wif?.identity_source?.type).toBe("file");
+      expect(wif?.identity_source?.path?.value).toBe(identityTokenFile);
+      expect(wif?.identity_source?.token ?? null).toBeNull();
+      expect(wif?.workspace_id ?? null).toBeNull();
+      // The UI-only discriminator never reaches the API.
+      expect(JSON.stringify(saved)).not.toContain("_auth_type");
+
+      // Reopen: the editor re-detects workload identity and the token-file source from the stored block.
+      await providersPage.openKeyEditor(keyName);
+      await expect(page.getByTestId("apikey-anthropic-workload-identity-tab")).toHaveAttribute("data-state", "active");
+      await expect(page.getByTestId("key-input-anthropic-api-key")).toHaveCount(0);
+      await expect(page.getByTestId("key-select-anthropic-wif-token-source")).toContainText("Token File");
+      await expect(page.getByTestId("key-input-anthropic-wif-federation-rule-id")).toHaveValue(federationRuleId);
+      await expect(page.getByTestId("key-input-anthropic-wif-organization-id")).toHaveValue(organizationId);
+      await expect(page.getByTestId("key-input-anthropic-wif-service-account-id")).toHaveValue(serviceAccountId);
+      await expect(page.getByTestId("key-input-anthropic-wif-identity-token-file")).toHaveValue(identityTokenFile);
+      await expect(page.getByTestId("key-input-anthropic-wif-identity-token")).toHaveCount(0);
+      await providersPage.keyCancelBtn.click();
+      await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
+    });
+
+    // A key can carry both a static value and a workload identity block when it comes from the API or
+    // config.json, and the server keeps using the value. Editing it without switching the auth method
+    // must not delete that value and silently move the key onto federation.
+    test("should keep the static key of an Anthropic key that also carries workload identity on edit", async ({
+      providersPage,
+      page,
+    }) => {
+      const providerData = createCustomProviderData({
+        name: `test-anthropic-wif-both-${Date.now()}`,
+        baseProviderType: "anthropic",
+        baseUrl: "https://api.anthropic.com",
+      });
+      createdProviders.push(providerData.name);
+
+      await providersPage.createProvider(providerData);
+      await expect(providersPage.getProviderItem(providerData.name)).toBeVisible({ timeout: 15000 });
+
+      const keyName = `anthropic-wif-both-key-${Date.now()}`;
+      const keysPath = `/api/providers/${encodeURIComponent(providerData.name)}/keys`;
+      const created = await page.request.post(keysPath, {
+        data: {
+          name: keyName,
+          value: "sk-ant-e2e-static-key",
+          models: ["*"],
+          weight: 1,
+          anthropic_key_config: {
+            workload_identity: {
+              federation_rule_id: "fdrl_e2e01",
+              organization_id: "00000000-0000-4000-8000-0000000000e2",
+              service_account_id: "svac_e2e01",
+              identity_source: { type: "file", path: "/var/run/secrets/anthropic/token" },
+            },
+          },
+        },
+      });
+      expect(created.ok(), await created.text()).toBe(true);
+      await page.reload();
+      await providersPage.selectProvider(providerData.name);
+      await expect(providersPage.getKeyRow(keyName)).toBeVisible();
+
+      // Change only the weight, then save without touching the auth method.
+      await providersPage.openKeyEditor(keyName);
+      await page.getByLabel("Weight").fill("2");
+      await providersPage.keySaveBtn.click();
+      await providersPage.waitForSuccessToast();
+      await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
+
+      const response = await page.request.get(keysPath);
+      expect(response.ok(), await response.text()).toBe(true);
+      const body = (await response.json()) as { keys: { name: string; weight?: number; value?: { value?: string; ref?: string } }[] };
+      const saved = body.keys.find((k) => k.name === keyName);
+      expect(saved, "saved key must be listed").toBeTruthy();
+      expect(saved?.weight).toBe(2);
+      expect(saved?.value?.value ?? "", "the static key the server uses must survive the edit").not.toBe("");
+    });
+
     test("should cancel custom provider creation", async ({
       providersPage,
     }) => {

@@ -298482,6 +298482,735 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "297. Anthropic workload identity federation keys exchange an OIDC token before the upstream call (anthropic workload identity)",
+      "description": "Pins the Anthropic Workload Identity Federation wire contract. A key on the anthropic provider (or on a custom provider whose base_provider_type is anthropic) may carry no value and instead an anthropic_key_config.workload_identity block: federation_rule_id, organization_id, service_account_id, an optional workspace_id, and an identity_source naming where the identity token comes from (type file with a path, or type inline with a token). AnthropicProvider resolves it at method entry (core/providers/anthropic/workloadidentity.go): the identity token is exchanged at POST {base_url}/v1/oauth/token (RFC 7523 jwt-bearer grant, JSON body, anthropic-beta oauth-2025-04-20,oidc-federation-2026-04-01) for a short-lived sk-ant-oat01 token, cached per credential and sent as Authorization: Bearer with the oauth-2025-04-20 beta instead of x-api-key.\n\nEach case stands up a run-scoped custom provider through the management API and deletes it afterwards, sweeping leftovers older than ten minutes. The federation identifiers are well-formed tagged IDs that name nothing and the identity token is an unsigned JWT, so the live exchange against api.anthropic.com is answered with Anthropic's opaque 401 authentication_error. That is the pin: a body Anthropic cannot parse gets a 400 invalid_request_error, and the static-key path would reach /v1/messages and fail there on x-api-key. The exchange costs nothing, and no inference request is ever sent.\n\nRed before the change: POST /keys without a value is refused (Key value must not be empty), so the federated key never exists and the inference cases have nothing to exchange from. Green after: the key saves, round-trips with its identifiers readable and its identity token masked, and every route (/v1/chat/completions, /v1/responses streaming, /anthropic/v1/messages) fails at the exchange with 401. The refusal cases pin that the block is refused on a non-anthropic provider and when it names no identity token source, and that a key with neither a value nor the block is still refused. Exchange rows carry [EXPECT-401] and refusal rows [EXPECT-400].\n\nRun with FEATURE=\"anthropic workload identity\".",
+      "item": [
+        {
+          "name": "anthropic workload identity key is accepted, served redacted and exchanges before the upstream call on /v1/chat/completions claude-haiku-4-5 [EXPECT-401]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var PREFIX = 'harness-anthropic-wif-';",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "function sweepStale(done) {",
+                  "  mgmt('GET', '/api/providers', null, function (err, res) {",
+                  "    var stale = (!err && res && res.code === 200) ? ((res.json() || {}).providers || []).filter(function (p) { return isStale(p.name); }) : [];",
+                  "    var i = 0; (function next() { if (i >= stale.length) { return done(); } mgmt('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); })();",
+                  "  });",
+                  "}",
+                  "function createProvider(name, cb) {",
+                  "  mgmt('POST', '/api/providers', '{\"provider\":' + JSON.stringify(name) + ',\"custom_provider_config\":{\"base_provider_type\":\"anthropic\",\"is_key_less\":false},\"network_config\":{\"base_url\":\"https://api.anthropic.com\"}}', function (err, res) {",
+                  "    pm.test('setup: created the run-scoped anthropic-based custom provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    cb(!err && res.code === 200);",
+                  "  });",
+                  "}",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }",
+                  "var provider = PREFIX + 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.variables.set('anthropicWifProvider', provider);",
+                  "sweepStale(function () {",
+                  "  createProvider(provider, function (ok) {",
+                  "    if (!ok) { return; }",
+                  "    mgmt('POST', '/api/providers/' + encodeURIComponent(provider) + '/keys', '{\"name\":' + JSON.stringify(provider + '-wif') + ',\"models\":[\"*\"],\"weight\":1,\"value\":{\"value\":\"\"},\"anthropic_key_config\":{\"workload_identity\":{\"federation_rule_id\":\"fdrl_01HarnessFakeRu1eXXXXXXX\",\"organization_id\":\"00000000-0000-0000-0000-000000000000\",\"service_account_id\":\"svac_01HarnessFakeAccountXXXX\",\"workspace_id\":\"wrkspc_01HarnessFakeWorkspaceXX\",\"identity_source\":{\"type\":\"inline\",\"token\":\"eyJhbGciOiJSUzI1NiIsImtpZCI6Imhhcm5lc3MifQ.eyJpc3MiOiJodHRwczovL2hhcm5lc3MuZXhhbXBsZSIsInN1YiI6Imhhcm5lc3MifQ.aGFybmVzcy1zaWduYXR1cmU\"}}}}', function (err, res) {",
+                  "      pm.test('a key with anthropic_key_config.workload_identity and no value is accepted', function () {",
+                  "        pm.expect(err).to.equal(null);",
+                  "        pm.expect(res.code, res.text()).to.equal(200);",
+                  "      });",
+                  "      if (err || res.code !== 200) { return; }",
+                  "      mgmt('GET', '/api/providers/' + encodeURIComponent(provider) + '/keys', null, function (err2, res2) {",
+                  "        pm.test('the stored key round-trips with the identifiers readable and the identity token masked', function () {",
+                  "          pm.expect(err2).to.equal(null);",
+                  "          pm.expect(res2.code, res2.text()).to.equal(200);",
+                  "          var keys = (res2.json() || {}).keys || [];",
+                  "          pm.expect(keys, res2.text()).to.have.lengthOf(1);",
+                  "          var wif = ((keys[0].anthropic_key_config || {}).workload_identity) || null;",
+                  "          pm.expect(wif, res2.text()).to.be.an('object');",
+                  "          pm.expect(wif.federation_rule_id.value).to.equal('fdrl_01HarnessFakeRu1eXXXXXXX');",
+                  "          pm.expect(wif.organization_id.value).to.equal('00000000-0000-0000-0000-000000000000');",
+                  "          pm.expect(wif.service_account_id.value).to.equal('svac_01HarnessFakeAccountXXXX');",
+                  "          pm.expect(wif.workspace_id.value).to.equal('wrkspc_01HarnessFakeWorkspaceXX');",
+                  "          pm.expect(wif.identity_source.type, res2.text()).to.equal('inline');",
+                  "          pm.expect(wif.identity_source.token, res2.text()).to.be.an('object');",
+                  "          pm.expect(res2.text(), 'the identity token is a credential and must never be echoed').to.not.include('eyJhbGciOiJSUzI1NiIsImtpZCI6Imhhcm5lc3MifQ.eyJpc3MiOiJodHRwczovL2hhcm5lc3MuZXhhbXBsZSIsInN1YiI6Imhhcm5lc3MifQ.aGFybmVzcy1zaWduYXR1cmU');",
+                  "        });",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var provider = pm.variables.get('anthropicWifProvider');",
+                  "if (provider) {",
+                  "  mgmt('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (err, res) {",
+                  "    pm.test('cleanup: deleted the run-scoped provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.be.below(300);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.test('/v1/chat/completions: the request fails at the Anthropic token exchange, not at the upstream', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'status: ' + body).to.equal(401);",
+                  "  pm.expect(body, 'the error must come from the exchange: a body Anthropic could not parse would be a 400 invalid_request_error, and the static-key path would be an upstream x-api-key 401').to.include('anthropic workload identity token exchange failed (401)');",
+                  "  pm.expect(body).to.include('Authentication failed');",
+                  "  pm.expect(body, 'the identity token must never be echoed').to.not.include('eyJhbGciOiJSUzI1NiIsImtpZCI6Imhhcm5lc3MifQ.eyJpc3MiOiJodHRwczovL2hhcm5lc3MuZXhhbXBsZSIsInN1YiI6Imhhcm5lc3MifQ.aGFybmVzcy1zaWduYXR1cmU');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{anthropicWifProvider}}/claude-haiku-4-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "anthropic workload identity key exchanges before the upstream call on /v1/responses stream claude-haiku-4-5 [EXPECT-401]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var PREFIX = 'harness-anthropic-wif-';",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "function sweepStale(done) {",
+                  "  mgmt('GET', '/api/providers', null, function (err, res) {",
+                  "    var stale = (!err && res && res.code === 200) ? ((res.json() || {}).providers || []).filter(function (p) { return isStale(p.name); }) : [];",
+                  "    var i = 0; (function next() { if (i >= stale.length) { return done(); } mgmt('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); })();",
+                  "  });",
+                  "}",
+                  "function createProvider(name, cb) {",
+                  "  mgmt('POST', '/api/providers', '{\"provider\":' + JSON.stringify(name) + ',\"custom_provider_config\":{\"base_provider_type\":\"anthropic\",\"is_key_less\":false},\"network_config\":{\"base_url\":\"https://api.anthropic.com\"}}', function (err, res) {",
+                  "    pm.test('setup: created the run-scoped anthropic-based custom provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    cb(!err && res.code === 200);",
+                  "  });",
+                  "}",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }",
+                  "var provider = PREFIX + 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.variables.set('anthropicWifProvider', provider);",
+                  "sweepStale(function () {",
+                  "  createProvider(provider, function (ok) {",
+                  "    if (!ok) { return; }",
+                  "    mgmt('POST', '/api/providers/' + encodeURIComponent(provider) + '/keys', '{\"name\":' + JSON.stringify(provider + '-wif') + ',\"models\":[\"*\"],\"weight\":1,\"value\":{\"value\":\"\"},\"anthropic_key_config\":{\"workload_identity\":{\"federation_rule_id\":\"fdrl_01HarnessFakeRu1eXXXXXXX\",\"organization_id\":\"00000000-0000-0000-0000-000000000000\",\"service_account_id\":\"svac_01HarnessFakeAccountXXXX\",\"workspace_id\":\"wrkspc_01HarnessFakeWorkspaceXX\",\"identity_source\":{\"type\":\"inline\",\"token\":\"eyJhbGciOiJSUzI1NiIsImtpZCI6Imhhcm5lc3MifQ.eyJpc3MiOiJodHRwczovL2hhcm5lc3MuZXhhbXBsZSIsInN1YiI6Imhhcm5lc3MifQ.aGFybmVzcy1zaWduYXR1cmU\"}}}}', function (err, res) {",
+                  "      pm.test('a key with anthropic_key_config.workload_identity and no value is accepted', function () {",
+                  "        pm.expect(err).to.equal(null);",
+                  "        pm.expect(res.code, res.text()).to.equal(200);",
+                  "      });",
+                  "      if (err || res.code !== 200) { return; }",
+                  "      mgmt('GET', '/api/providers/' + encodeURIComponent(provider) + '/keys', null, function (err2, res2) {",
+                  "        pm.test('the stored key round-trips with the identifiers readable and the identity token masked', function () {",
+                  "          pm.expect(err2).to.equal(null);",
+                  "          pm.expect(res2.code, res2.text()).to.equal(200);",
+                  "          var keys = (res2.json() || {}).keys || [];",
+                  "          pm.expect(keys, res2.text()).to.have.lengthOf(1);",
+                  "          var wif = ((keys[0].anthropic_key_config || {}).workload_identity) || null;",
+                  "          pm.expect(wif, res2.text()).to.be.an('object');",
+                  "          pm.expect(wif.federation_rule_id.value).to.equal('fdrl_01HarnessFakeRu1eXXXXXXX');",
+                  "          pm.expect(wif.organization_id.value).to.equal('00000000-0000-0000-0000-000000000000');",
+                  "          pm.expect(wif.service_account_id.value).to.equal('svac_01HarnessFakeAccountXXXX');",
+                  "          pm.expect(wif.workspace_id.value).to.equal('wrkspc_01HarnessFakeWorkspaceXX');",
+                  "          pm.expect(wif.identity_source.type, res2.text()).to.equal('inline');",
+                  "          pm.expect(wif.identity_source.token, res2.text()).to.be.an('object');",
+                  "          pm.expect(res2.text(), 'the identity token is a credential and must never be echoed').to.not.include('eyJhbGciOiJSUzI1NiIsImtpZCI6Imhhcm5lc3MifQ.eyJpc3MiOiJodHRwczovL2hhcm5lc3MuZXhhbXBsZSIsInN1YiI6Imhhcm5lc3MifQ.aGFybmVzcy1zaWduYXR1cmU');",
+                  "        });",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var provider = pm.variables.get('anthropicWifProvider');",
+                  "if (provider) {",
+                  "  mgmt('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (err, res) {",
+                  "    pm.test('cleanup: deleted the run-scoped provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.be.below(300);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.test('/v1/responses stream: the request fails at the Anthropic token exchange, not at the upstream', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'status: ' + body).to.equal(401);",
+                  "  pm.expect(body, 'the error must come from the exchange: a body Anthropic could not parse would be a 400 invalid_request_error, and the static-key path would be an upstream x-api-key 401').to.include('anthropic workload identity token exchange failed (401)');",
+                  "  pm.expect(body).to.include('Authentication failed');",
+                  "  pm.expect(body, 'the identity token must never be echoed').to.not.include('eyJhbGciOiJSUzI1NiIsImtpZCI6Imhhcm5lc3MifQ.eyJpc3MiOiJodHRwczovL2hhcm5lc3MuZXhhbXBsZSIsInN1YiI6Imhhcm5lc3MifQ.aGFybmVzcy1zaWduYXR1cmU');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{anthropicWifProvider}}/claude-haiku-4-5\",\n  \"input\": \"Reply OK.\",\n  \"max_output_tokens\": 16,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "anthropic workload identity key exchanges before the upstream call on /anthropic/v1/messages claude-haiku-4-5 [EXPECT-401]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var PREFIX = 'harness-anthropic-wif-';",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "function sweepStale(done) {",
+                  "  mgmt('GET', '/api/providers', null, function (err, res) {",
+                  "    var stale = (!err && res && res.code === 200) ? ((res.json() || {}).providers || []).filter(function (p) { return isStale(p.name); }) : [];",
+                  "    var i = 0; (function next() { if (i >= stale.length) { return done(); } mgmt('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); })();",
+                  "  });",
+                  "}",
+                  "function createProvider(name, cb) {",
+                  "  mgmt('POST', '/api/providers', '{\"provider\":' + JSON.stringify(name) + ',\"custom_provider_config\":{\"base_provider_type\":\"anthropic\",\"is_key_less\":false},\"network_config\":{\"base_url\":\"https://api.anthropic.com\"}}', function (err, res) {",
+                  "    pm.test('setup: created the run-scoped anthropic-based custom provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    cb(!err && res.code === 200);",
+                  "  });",
+                  "}",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }",
+                  "var provider = PREFIX + 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.variables.set('anthropicWifProvider', provider);",
+                  "sweepStale(function () {",
+                  "  createProvider(provider, function (ok) {",
+                  "    if (!ok) { return; }",
+                  "    mgmt('POST', '/api/providers/' + encodeURIComponent(provider) + '/keys', '{\"name\":' + JSON.stringify(provider + '-wif') + ',\"models\":[\"*\"],\"weight\":1,\"value\":{\"value\":\"\"},\"anthropic_key_config\":{\"workload_identity\":{\"federation_rule_id\":\"fdrl_01HarnessFakeRu1eXXXXXXX\",\"organization_id\":\"00000000-0000-0000-0000-000000000000\",\"service_account_id\":\"svac_01HarnessFakeAccountXXXX\",\"workspace_id\":\"wrkspc_01HarnessFakeWorkspaceXX\",\"identity_source\":{\"type\":\"inline\",\"token\":\"eyJhbGciOiJSUzI1NiIsImtpZCI6Imhhcm5lc3MifQ.eyJpc3MiOiJodHRwczovL2hhcm5lc3MuZXhhbXBsZSIsInN1YiI6Imhhcm5lc3MifQ.aGFybmVzcy1zaWduYXR1cmU\"}}}}', function (err, res) {",
+                  "      pm.test('a key with anthropic_key_config.workload_identity and no value is accepted', function () {",
+                  "        pm.expect(err).to.equal(null);",
+                  "        pm.expect(res.code, res.text()).to.equal(200);",
+                  "      });",
+                  "      if (err || res.code !== 200) { return; }",
+                  "      mgmt('GET', '/api/providers/' + encodeURIComponent(provider) + '/keys', null, function (err2, res2) {",
+                  "        pm.test('the stored key round-trips with the identifiers readable and the identity token masked', function () {",
+                  "          pm.expect(err2).to.equal(null);",
+                  "          pm.expect(res2.code, res2.text()).to.equal(200);",
+                  "          var keys = (res2.json() || {}).keys || [];",
+                  "          pm.expect(keys, res2.text()).to.have.lengthOf(1);",
+                  "          var wif = ((keys[0].anthropic_key_config || {}).workload_identity) || null;",
+                  "          pm.expect(wif, res2.text()).to.be.an('object');",
+                  "          pm.expect(wif.federation_rule_id.value).to.equal('fdrl_01HarnessFakeRu1eXXXXXXX');",
+                  "          pm.expect(wif.organization_id.value).to.equal('00000000-0000-0000-0000-000000000000');",
+                  "          pm.expect(wif.service_account_id.value).to.equal('svac_01HarnessFakeAccountXXXX');",
+                  "          pm.expect(wif.workspace_id.value).to.equal('wrkspc_01HarnessFakeWorkspaceXX');",
+                  "          pm.expect(wif.identity_source.type, res2.text()).to.equal('inline');",
+                  "          pm.expect(wif.identity_source.token, res2.text()).to.be.an('object');",
+                  "          pm.expect(res2.text(), 'the identity token is a credential and must never be echoed').to.not.include('eyJhbGciOiJSUzI1NiIsImtpZCI6Imhhcm5lc3MifQ.eyJpc3MiOiJodHRwczovL2hhcm5lc3MuZXhhbXBsZSIsInN1YiI6Imhhcm5lc3MifQ.aGFybmVzcy1zaWduYXR1cmU');",
+                  "        });",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var provider = pm.variables.get('anthropicWifProvider');",
+                  "if (provider) {",
+                  "  mgmt('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (err, res) {",
+                  "    pm.test('cleanup: deleted the run-scoped provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.be.below(300);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.test('/anthropic/v1/messages: the request fails at the Anthropic token exchange, not at the upstream', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'status: ' + body).to.equal(401);",
+                  "  pm.expect(body, 'the error must come from the exchange: a body Anthropic could not parse would be a 400 invalid_request_error, and the static-key path would be an upstream x-api-key 401').to.include('anthropic workload identity token exchange failed (401)');",
+                  "  pm.expect(body).to.include('Authentication failed');",
+                  "  pm.expect(body, 'the identity token must never be echoed').to.not.include('eyJhbGciOiJSUzI1NiIsImtpZCI6Imhhcm5lc3MifQ.eyJpc3MiOiJodHRwczovL2hhcm5lc3MuZXhhbXBsZSIsInN1YiI6Imhhcm5lc3MifQ.aGFybmVzcy1zaWduYXR1cmU');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{anthropicWifProvider}}/claude-haiku-4-5\",\n  \"max_tokens\": 8,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "anthropic workload identity with no identity token source is refused at save [EXPECT-400]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var PREFIX = 'harness-anthropic-wif-';",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "function sweepStale(done) {",
+                  "  mgmt('GET', '/api/providers', null, function (err, res) {",
+                  "    var stale = (!err && res && res.code === 200) ? ((res.json() || {}).providers || []).filter(function (p) { return isStale(p.name); }) : [];",
+                  "    var i = 0; (function next() { if (i >= stale.length) { return done(); } mgmt('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); })();",
+                  "  });",
+                  "}",
+                  "function createProvider(name, cb) {",
+                  "  mgmt('POST', '/api/providers', '{\"provider\":' + JSON.stringify(name) + ',\"custom_provider_config\":{\"base_provider_type\":\"anthropic\",\"is_key_less\":false},\"network_config\":{\"base_url\":\"https://api.anthropic.com\"}}', function (err, res) {",
+                  "    pm.test('setup: created the run-scoped anthropic-based custom provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    cb(!err && res.code === 200);",
+                  "  });",
+                  "}",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }",
+                  "var provider = PREFIX + 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.variables.set('anthropicWifProvider', provider);",
+                  "sweepStale(function () { createProvider(provider, function () {}); });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var provider = pm.variables.get('anthropicWifProvider');",
+                  "if (provider) {",
+                  "  mgmt('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (err, res) {",
+                  "    pm.test('cleanup: deleted the run-scoped provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.be.below(300);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.test('a workload identity block naming no identity token source is refused with 400', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('identity_source is required');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"wif-no-source\",\n  \"models\": [\n    \"*\"\n  ],\n  \"weight\": 1,\n  \"value\": {\n    \"value\": \"\"\n  },\n  \"anthropic_key_config\": {\n    \"workload_identity\": {\n      \"federation_rule_id\": \"fdrl_01HarnessFakeRu1eXXXXXXX\",\n      \"organization_id\": \"00000000-0000-0000-0000-000000000000\",\n      \"service_account_id\": \"svac_01HarnessFakeAccountXXXX\",\n      \"workspace_id\": \"wrkspc_01HarnessFakeWorkspaceXX\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/{{anthropicWifProvider}}/keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "{{anthropicWifProvider}}",
+                "keys"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "anthropic workload identity custom provider key with neither value nor workload_identity is still refused [EXPECT-400]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var PREFIX = 'harness-anthropic-wif-';",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "function sweepStale(done) {",
+                  "  mgmt('GET', '/api/providers', null, function (err, res) {",
+                  "    var stale = (!err && res && res.code === 200) ? ((res.json() || {}).providers || []).filter(function (p) { return isStale(p.name); }) : [];",
+                  "    var i = 0; (function next() { if (i >= stale.length) { return done(); } mgmt('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); })();",
+                  "  });",
+                  "}",
+                  "function createProvider(name, cb) {",
+                  "  mgmt('POST', '/api/providers', '{\"provider\":' + JSON.stringify(name) + ',\"custom_provider_config\":{\"base_provider_type\":\"anthropic\",\"is_key_less\":false},\"network_config\":{\"base_url\":\"https://api.anthropic.com\"}}', function (err, res) {",
+                  "    pm.test('setup: created the run-scoped anthropic-based custom provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    cb(!err && res.code === 200);",
+                  "  });",
+                  "}",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }",
+                  "var provider = PREFIX + 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.variables.set('anthropicWifProvider', provider);",
+                  "sweepStale(function () { createProvider(provider, function () {}); });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var provider = pm.variables.get('anthropicWifProvider');",
+                  "if (provider) {",
+                  "  mgmt('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (err, res) {",
+                  "    pm.test('cleanup: deleted the run-scoped provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.be.below(300);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.test('a key with neither a value nor a workload identity block is refused with 400', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('Key value must not be empty');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"wif-no-credential\",\n  \"models\": [\n    \"*\"\n  ],\n  \"weight\": 1,\n  \"value\": {\n    \"value\": \"\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/{{anthropicWifProvider}}/keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "{{anthropicWifProvider}}",
+                "keys"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "anthropic workload identity on an openai custom provider key is refused at save [EXPECT-400]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var PREFIX = 'harness-anthropic-wif-';",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "function sweepStale(done) {",
+                  "  mgmt('GET', '/api/providers', null, function (err, res) {",
+                  "    var stale = (!err && res && res.code === 200) ? ((res.json() || {}).providers || []).filter(function (p) { return isStale(p.name); }) : [];",
+                  "    var i = 0; (function next() { if (i >= stale.length) { return done(); } mgmt('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); })();",
+                  "  });",
+                  "}",
+                  "function createProvider(name, cb) {",
+                  "  mgmt('POST', '/api/providers', '{\"provider\":' + JSON.stringify(name) + ',\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false},\"network_config\":{\"base_url\":\"https://api.openai.com\"}}', function (err, res) {",
+                  "    pm.test('setup: created the run-scoped openai-based custom provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    cb(!err && res.code === 200);",
+                  "  });",
+                  "}",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }",
+                  "var provider = PREFIX + 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.variables.set('anthropicWifProvider', provider);",
+                  "sweepStale(function () { createProvider(provider, function () {}); });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var provider = pm.variables.get('anthropicWifProvider');",
+                  "if (provider) {",
+                  "  mgmt('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (err, res) {",
+                  "    pm.test('cleanup: deleted the run-scoped provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.be.below(300);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.test('a workload identity block on an openai-based provider is refused with 400', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('only supported on anthropic');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"wif-on-openai\",\n  \"models\": [\n    \"*\"\n  ],\n  \"weight\": 1,\n  \"value\": {\n    \"value\": \"\"\n  },\n  \"anthropic_key_config\": {\n    \"workload_identity\": {\n      \"federation_rule_id\": \"fdrl_01HarnessFakeRu1eXXXXXXX\",\n      \"organization_id\": \"00000000-0000-0000-0000-000000000000\",\n      \"service_account_id\": \"svac_01HarnessFakeAccountXXXX\",\n      \"workspace_id\": \"wrkspc_01HarnessFakeWorkspaceXX\",\n      \"identity_source\": {\n        \"type\": \"inline\",\n        \"token\": \"eyJhbGciOiJSUzI1NiIsImtpZCI6Imhhcm5lc3MifQ.eyJpc3MiOiJodHRwczovL2hhcm5lc3MuZXhhbXBsZSIsInN1YiI6Imhhcm5lc3MifQ.aGFybmVzcy1zaWduYXR1cmU\"\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/{{anthropicWifProvider}}/keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "{{anthropicWifProvider}}",
+                "keys"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

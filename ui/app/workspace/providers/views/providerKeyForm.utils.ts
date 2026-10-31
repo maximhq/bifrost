@@ -1,10 +1,22 @@
-import { databricksKeyConfigSchema, oauthKeyConfigComplete, oauthKeyConfigSchema } from "@/lib/types/schemas";
+import {
+	anthropicKeyConfigSchema,
+	anthropicWorkloadIdentityComplete,
+	databricksKeyConfigSchema,
+	identitySourceType,
+	oauthKeyConfigComplete,
+	oauthKeyConfigSchema,
+} from "@/lib/types/schemas";
 import { z } from "zod";
 
 type DatabricksKeyConfigForm = z.input<typeof databricksKeyConfigSchema>;
 type OAuthKeyConfigForm = z.input<typeof oauthKeyConfigSchema>;
 type OAuthKeyConfigPayload = Omit<OAuthKeyConfigForm, "_auth_type">;
 type DatabricksKeyConfigPayload = Omit<DatabricksKeyConfigForm, "_auth_type">;
+type AnthropicKeyConfigForm = z.input<typeof anthropicKeyConfigSchema>;
+type AnthropicWorkloadIdentityPayload = NonNullable<AnthropicKeyConfigForm["workload_identity"]>;
+type AnthropicKeyConfigPayload = Omit<AnthropicKeyConfigForm, "_auth_type" | "workload_identity"> & {
+	workload_identity?: AnthropicWorkloadIdentityPayload;
+};
 
 const isSet = (v: { value?: string; ref?: string } | undefined) => Boolean(v?.value || v?.ref);
 
@@ -55,8 +67,35 @@ export const stripOAuthAuthDiscriminator = (config: OAuthKeyConfigForm | undefin
 	return rest;
 };
 
+// stripAnthropicAuthDiscriminator removes the UI-only discriminators and keeps workload_identity
+// only on the workload identity method, carrying just the chosen source's field and dropping a blank
+// workspace ID. A whole block with no discriminator is a stored federation key whose discriminator
+// was never re-seeded, and is kept. Returns undefined when nothing is left to send.
+export const stripAnthropicAuthDiscriminator = (config: AnthropicKeyConfigForm | undefined): AnthropicKeyConfigPayload | undefined => {
+	if (!config) return undefined;
+	const { _auth_type, workload_identity, ...rest } = config;
+	const out: AnthropicKeyConfigPayload = rest;
+	const federates =
+		_auth_type === "workload_identity" || (_auth_type !== "api_key" && anthropicWorkloadIdentityComplete(workload_identity));
+	if (federates && workload_identity) {
+		const wif: AnthropicWorkloadIdentityPayload = { ...workload_identity };
+		const src = wif.identity_source;
+		if (src) {
+			const type = identitySourceType(src);
+			wif.identity_source = type === "file" ? { type, path: src.path } : { type, token: src.token };
+		}
+		if (!isSet(wif.workspace_id)) delete wif.workspace_id;
+		out.workload_identity = wif;
+	}
+	return Object.keys(out).length > 0 ? out : undefined;
+};
+
 type AuthBlock = { _auth_type?: string } & Record<string, unknown>;
-type KeyPayload = Record<string, unknown> & { value?: { value?: string; ref?: string }; oauth_key_config?: OAuthKeyConfigForm };
+type KeyPayload = Record<string, unknown> & {
+	value?: { value?: string; ref?: string };
+	oauth_key_config?: OAuthKeyConfigForm;
+	anthropic_key_config?: AnthropicKeyConfigForm;
+};
 
 // The auth tab of each provider block whose method is the static key value. Every other tab of
 // that block authenticates some other way, so a key saved from it must not keep a stored value.
@@ -74,8 +113,10 @@ const staticKeyMethodBySection: Record<string, string> = {
 // switch has to say what it clears: a tab that does not use the static key sends an explicit
 // empty value (otherwise the stored key survives and, since the server prefers a value, keeps
 // being used until it expires), and the OAuth block is sent whole or, when editing, as an
-// explicit null (a create simply omits it). A block with no discriminator was never switched by
-// the user, so its value is left alone.
+// explicit null (a create simply omits it). The Anthropic block follows the OAuth rule. A block
+// with no discriminator was never switched by the user, so its value is left alone, and so is a
+// value still in the form: switching to a non-static tab clears it, so one that remains belongs to
+// a stored key that carries both, where the server keeps using the value.
 export const applyAuthMethod = (key: KeyPayload, isEditing: boolean): Record<string, unknown> => {
 	const out: Record<string, unknown> = { ...key };
 	let usesStaticKey = true;
@@ -94,6 +135,16 @@ export const applyAuthMethod = (key: KeyPayload, isEditing: boolean): Record<str
 			usesStaticKey = false;
 		} else if (isEditing) {
 			out.oauth_key_config = null;
+		}
+	}
+	if ("anthropic_key_config" in key) {
+		const stripped = stripAnthropicAuthDiscriminator(key.anthropic_key_config);
+		delete out.anthropic_key_config;
+		if (stripped) {
+			out.anthropic_key_config = stripped;
+			if (stripped.workload_identity) usesStaticKey = false;
+		} else if (isEditing) {
+			out.anthropic_key_config = null;
 		}
 	}
 	if (!usesStaticKey && !isSet(key.value)) {
