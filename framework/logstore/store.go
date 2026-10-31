@@ -268,6 +268,9 @@ func NewLogStore(ctx context.Context, config *Config, logger schemas.Logger) (Lo
 	if err := config.ValidateRoutes(); err != nil {
 		return nil, fmt.Errorf("logstore: %w", err)
 	}
+	if len(config.ObjectStorageRoutes) > 0 && config.ObjectStorage == nil {
+		return nil, fmt.Errorf("logstore: object_storage_routes require object_storage")
+	}
 
 	var inner LogStore
 	var err error
@@ -313,6 +316,12 @@ func NewLogStore(ctx context.Context, config *Config, logger schemas.Logger) (Lo
 		hybrid := newHybridLogStore(inner, objStore, config.ObjectStorage.GetPrefix(), logger, config.ObjectStorageExcludeFields, config.ObjectStorageExcludeRequestTypes)
 		hybrid.setObjectFormat(config.ObjectStorage.ResolvedFormat(), config.ObjectStorage.ResolvedCompression())
 		hybrid.singleFormat = config.ObjectStorage.Type == objectstore.StoreTypeGCS // gcs rejects parquet, so no object is ever in the other format
+		routes, routeErr := openMirrorRoutes(ctx, config.ObjectStorageRoutes, logger)
+		if routeErr != nil {
+			_ = hybrid.Close(ctx)
+			return nil, fmt.Errorf("logstore: %w", routeErr)
+		}
+		hybrid.mirror = newObjectMirror(routes, logger)
 		return hybrid, nil
 	}
 	return inner, nil

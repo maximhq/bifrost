@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"context"
+	"fmt"
 	"hash/fnv"
 	"sync"
 	"sync/atomic"
@@ -231,4 +232,30 @@ func (m *objectMirror) close(ctx context.Context) {
 			m.logger.Warn("objectstore mirror: error closing store for route %s: %v", route.name, err)
 		}
 	}
+}
+
+// openMirrorRoutes opens and pings each route's store. A route whose bucket
+// cannot be reached fails startup, as the primary object store does, and
+// closes the stores already opened.
+func openMirrorRoutes(ctx context.Context, routes []ObjectStorageRoute, logger schemas.Logger) ([]*mirrorRoute, error) {
+	opened := make([]*mirrorRoute, 0, len(routes))
+	closeOpened := func() {
+		for _, route := range opened {
+			_ = route.store.Close()
+		}
+	}
+	for _, cfg := range routes {
+		store, err := objectstore.NewObjectStore(ctx, cfg.ObjectStorage, logger)
+		if err != nil {
+			closeOpened()
+			return nil, fmt.Errorf("object storage route %q: %w", cfg.Name, err)
+		}
+		if err := store.Ping(ctx); err != nil {
+			_ = store.Close()
+			closeOpened()
+			return nil, fmt.Errorf("object storage route %q: ping: %w", cfg.Name, err)
+		}
+		opened = append(opened, newMirrorRoute(cfg.Name, cfg.Match, store, cfg.ObjectStorage))
+	}
+	return opened, nil
 }

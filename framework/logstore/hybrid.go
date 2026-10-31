@@ -42,14 +42,16 @@ const (
 
 // uploadWork represents an async S3 upload job.
 type uploadWork struct {
-	logID     string
-	timestamp time.Time
-	key       string
-	kind      uploadKind
-	status    string
-	payload   []byte // JSON-encoded payload
-	tags      map[string]string
-	staleKey  string // object in the other format this upload replaces; deleted once the Put succeeds
+	logID      string
+	timestamp  time.Time
+	key        string
+	kind       uploadKind
+	status     string
+	payload    []byte // JSON-encoded payload
+	tags       map[string]string
+	staleKey   string // object in the other format this upload replaces; deleted once the Put succeeds
+	routeRow   *Log   // the log's DB row, for object storage routes (see HybridLogStore.routeRow)
+	mirrorOnly bool   // only copy the merged object to routes; the primary object is left as is
 }
 
 // HybridLogStore wraps an existing LogStore and offloads large payload
@@ -76,9 +78,10 @@ type HybridLogStore struct {
 	excludedRequestTypes map[string]struct{}
 	// offloadErrorRawBodies: error_details is DB-resident only through databaseResidentPayloadFields, so its raw bodies are offloaded.
 	offloadErrorRawBodies bool
-	objectExt             string // suffix of new object keys; selects json or parquet encoding
-	parquetCompression    string // parquet page codec, used when objectExt is parquetObjectExt
-	singleFormat          bool   // the backend can only hold json objects, so the other format is never probed or deleted
+	objectExt             string        // suffix of new object keys; selects json or parquet encoding
+	parquetCompression    string        // parquet page codec, used when objectExt is parquetObjectExt
+	singleFormat          bool          // the backend can only hold json objects, so the other format is never probed or deleted
+	mirror                *objectMirror // copies logs matching an object storage route; nil without routes
 }
 
 type scopedDBLogStore interface {
@@ -232,6 +235,10 @@ func (h *HybridLogStore) processUpload(work *uploadWork) {
 		}
 		work.payload = merged
 	}
+	if work.mirrorOnly {
+		h.mirrorUpload(work)
+		return
+	}
 
 	if err := h.putPayload(ctx, work.key, work.payload, work.tags); err != nil {
 		h.logger.Warn("objectstore: failed to upload log %s: %v", work.logID, err)
@@ -255,6 +262,7 @@ func (h *HybridLogStore) processUpload(work *uploadWork) {
 			h.logger.Warn("objectstore: failed to delete replaced object %s for log %s: %v", work.staleKey, work.logID, err)
 		}
 	}
+	h.mirrorUpload(work)
 
 	// Mark the DB row as having an object. Use a fresh context so that a slow
 	// Put doesn't starve the DB update of its deadline. Retry up to 3 times
@@ -291,6 +299,126 @@ func (h *HybridLogStore) processUpload(work *uploadWork) {
 	}
 	h.logger.Error("objectstore: failed to set has_object for log %s after 3 attempts; payload orphaned in object store", work.logID)
 	h.droppedUploads.Add(1)
+}
+
+// routeMatchedFields are the payload fields route matching reads. They are
+// DB-resident, so the row holds their current value; only a content-hidden
+// row lacks them, and then they are read from the uploaded object instead.
+var routeMatchedFields = []string{"guardrail_debug", "error_details"}
+
+// mirrorUpload hands a successfully uploaded LLM log to the object storage
+// routes it matches. The uploaded object holds the offloaded fields and the
+// DB row the rest, so the copy is the two combined: every field the log has,
+// whatever the exclusion lists keep in the DB. A merge upload carries the
+// whole merged object, so a log that only matches after its completion
+// arrives still gets a complete copy, which replaces any earlier one.
+//
+// The row's guardrail_debug and error_details win over the object's: a merged
+// object can still hold an error an update has since replaced in the DB. The
+// object's error_details is kept only when it is the row's error with the raw
+// bodies the row was stripped of.
+func (h *HybridLogStore) mirrorUpload(work *uploadWork) {
+	if h.mirror == nil || work.routeRow == nil {
+		return
+	}
+	candidate := *work.routeRow
+	rowErrorDetails := candidate.ErrorDetails
+	for _, field := range routeMatchedFields {
+		value := gjson.GetBytes(work.payload, field)
+		if !value.Exists() || value.String() == "" {
+			continue
+		}
+		switch field {
+		case "guardrail_debug":
+			if candidate.GuardrailDebug == "" && candidate.GuardrailDebugParsed == nil {
+				candidate.GuardrailDebug = value.String()
+			}
+		case "error_details":
+			if candidate.ErrorDetails == "" && candidate.ErrorDetailsParsed == nil {
+				candidate.ErrorDetails = value.String()
+			} else if rowErrorDetails != "" && withoutErrorRawBodies(value.String()) == withoutErrorRawBodies(rowErrorDetails) {
+				candidate.ErrorDetails, candidate.ErrorDetailsParsed = value.String(), nil
+			}
+		}
+	}
+	routes := h.mirror.matching(&candidate)
+	if len(routes) == 0 {
+		return
+	}
+	var object map[string]string
+	if err := sonic.Unmarshal(work.payload, &object); err != nil {
+		h.logger.Warn("objectstore mirror: failed to decode payload for log %s: %v", work.logID, err)
+		for _, route := range routes {
+			route.dropped.Add(1)
+		}
+		return
+	}
+	full := ExtractPayload(&candidate)
+	matched := make(map[string]string, len(routeMatchedFields))
+	for _, field := range routeMatchedFields {
+		matched[field] = full[field]
+	}
+	for k, v := range object {
+		if v != "" {
+			full[k] = v
+		}
+	}
+	for field, v := range matched {
+		if v != "" {
+			full[field] = v
+		}
+	}
+	delete(full, realtimeInputCorrectionField)
+	h.mirror.enqueue(routes, &candidate, full)
+}
+
+// mirrorDBRow hands a row whose DB write is the complete log, because nothing
+// in it was offloaded, to the routes it matches. The row alone is the copy.
+func (h *HybridLogStore) mirrorDBRow(row *Log) {
+	routes := h.mirror.matching(row)
+	if len(routes) == 0 {
+		return
+	}
+	full := *row
+	if err := full.SerializeFields(); err != nil {
+		h.logger.Warn("objectstore mirror: failed to serialize log %s: %v", row.ID, err)
+		for _, route := range routes {
+			route.dropped.Add(1)
+		}
+		return
+	}
+	h.mirror.enqueue(routes, &full, ExtractPayload(&full))
+}
+
+// existingRouteMatches returns the ids among entries that match a route and
+// already have a row. An IfNotExists insert ignores those entries, so they
+// must not be copied: the stale incoming log would replace the copy of the
+// saved one. It queries the DB only when routes are configured and some entry
+// matches one. A row inserted between this check and the insert is still
+// copied; on a failed check every entry is copied, as before the check.
+func (h *HybridLogStore) existingRouteMatches(ctx context.Context, entries []*Log) map[string]struct{} {
+	if h.mirror == nil {
+		return nil
+	}
+	var ids []string
+	for _, entry := range entries {
+		if entry != nil && len(h.mirror.matching(entry)) > 0 {
+			ids = append(ids, entry.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	rows, err := h.inner.FindAll(ctx, map[string]any{"id": ids}, "id")
+	if err != nil {
+		h.logger.Warn("objectstore mirror: failed to check for existing logs before insert: %v", err)
+		return nil
+	}
+	existing := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		existing[row.ID] = struct{}{}
+	}
+	return existing
 }
 
 // isPayloadEmpty returns true when the payload carries no offloadable content.
@@ -476,9 +604,18 @@ func putEncodedPayload(ctx context.Context, store objectstore.ObjectStore, key s
 }
 
 // enqueueUpload pushes an upload job onto the queue. If the queue is full,
-// the job is dropped to prevent S3 slowness from cascading.
-func (h *HybridLogStore) enqueueUpload(logID string, timestamp time.Time, payload map[string]string, tags map[string]string) {
-	if h.closed.Load() || isPayloadEmpty(payload) {
+// the job is dropped to prevent S3 slowness from cascading. dbEntry is the row
+// as written to the DB, which routes match against once the upload succeeds,
+// and entry the complete log; with nothing to offload, entry is copied to
+// the routes it matches directly. A nil dbEntry copies the log to no route.
+func (h *HybridLogStore) enqueueUpload(logID string, timestamp time.Time, payload map[string]string, tags map[string]string, dbEntry, entry *Log) {
+	if h.closed.Load() {
+		return
+	}
+	if isPayloadEmpty(payload) {
+		if h.mirror != nil && dbEntry != nil {
+			h.mirrorDBRow(entry)
+		}
 		return
 	}
 	// Recover from send-on-closed-channel panic: Close() may interleave
@@ -495,7 +632,17 @@ func (h *HybridLogStore) enqueueUpload(logID string, timestamp time.Time, payloa
 		h.droppedUploads.Add(1)
 		return
 	}
-	h.enqueueRawUpload(logID, timestamp, h.logKey(timestamp, logID), uploadKindLog, "", data, tags)
+	h.submitUpload(&uploadWork{logID: logID, timestamp: timestamp, key: h.logKey(timestamp, logID), kind: uploadKindLog, payload: data, tags: tags, routeRow: h.routeRow(dbEntry)})
+}
+
+// routeRow returns row when routes are configured, so uploads only hold a
+// reference to the row when a route may need it. Its DB-resident columns
+// complete the uploaded payload into the copy a matching route receives.
+func (h *HybridLogStore) routeRow(row *Log) *Log {
+	if h.mirror == nil {
+		return nil
+	}
+	return row
 }
 
 // enqueueRawUpload submits a pre-serialized payload to the upload queue.
@@ -511,6 +658,23 @@ func (h *HybridLogStore) enqueueRawUpload(logID string, timestamp time.Time, key
 // copy was read from staleKey (the other-format key); the worker deletes that
 // copy once the new object is written.
 func (h *HybridLogStore) enqueueReplacingUpload(logID string, timestamp time.Time, key, staleKey string, kind uploadKind, status string, data []byte, tags map[string]string) {
+	h.submitUpload(&uploadWork{
+		logID:     logID,
+		timestamp: timestamp,
+		key:       key,
+		kind:      kind,
+		status:    status,
+		payload:   data,
+		tags:      tags,
+		staleKey:  staleKey,
+	})
+}
+
+// submitUpload queues work on its log's shard, dropping it (and counting the
+// drop) when the store is closed, the payload is empty, the in-flight byte
+// budget would be exceeded or the shard is full.
+func (h *HybridLogStore) submitUpload(work *uploadWork) {
+	logID, data := work.logID, work.payload
 	if h.closed.Load() || len(data) == 0 {
 		return
 	}
@@ -525,16 +689,7 @@ func (h *HybridLogStore) enqueueReplacingUpload(logID string, timestamp time.Tim
 		return
 	}
 	select {
-	case h.uploadShard(logID) <- &uploadWork{
-		logID:     logID,
-		timestamp: timestamp,
-		key:       key,
-		kind:      kind,
-		status:    status,
-		payload:   data,
-		tags:      tags,
-		staleKey:  staleKey,
-	}:
+	case h.uploadShard(logID) <- work:
 		h.pendingBytes.Add(int64(len(data)))
 	default:
 		h.droppedUploads.Add(1)
@@ -637,6 +792,23 @@ func (h *HybridLogStore) extractUploadPayload(entry *Log) map[string]string {
 // present only when content logging and raw storage are both on.
 var errorRawBodyPaths = []string{"extra_fields.raw_request", "extra_fields.raw_response"}
 
+// withoutErrorRawBodies returns errorDetails without its provider raw bodies,
+// or unchanged when they cannot be removed.
+func withoutErrorRawBodies(errorDetails string) string {
+	stripped := errorDetails
+	for _, path := range errorRawBodyPaths {
+		if !gjson.Get(stripped, path).Exists() {
+			continue
+		}
+		next, err := sjson.Delete(stripped, path)
+		if err != nil {
+			return errorDetails
+		}
+		stripped = next
+	}
+	return stripped
+}
+
 // moveErrorRawBodiesToObject keeps error_details in the DB row without the
 // provider raw bodies it carries, and puts the whole value in the upload
 // payload instead, which FindByID merges back over the row's copy. Without it,
@@ -648,17 +820,7 @@ func (h *HybridLogStore) moveErrorRawBodiesToObject(dbEntry *Log, payload map[st
 	if !h.offloadErrorRawBodies || dbEntry.ContentHidden || dbEntry.ErrorDetails == "" {
 		return
 	}
-	stripped := dbEntry.ErrorDetails
-	for _, path := range errorRawBodyPaths {
-		if !gjson.Get(stripped, path).Exists() {
-			continue
-		}
-		next, err := sjson.Delete(stripped, path)
-		if err != nil {
-			return
-		}
-		stripped = next
-	}
+	stripped := withoutErrorRawBodies(dbEntry.ErrorDetails)
 	if stripped == dbEntry.ErrorDetails {
 		return
 	}
@@ -701,7 +863,7 @@ func (h *HybridLogStore) Create(ctx context.Context, entry *Log) error {
 		return err
 	}
 	entry.ContentSummary = dbEntry.ContentSummary
-	h.enqueueUpload(entry.ID, entry.Timestamp, payload, tags)
+	h.enqueueUpload(entry.ID, entry.Timestamp, payload, tags, &dbEntry, entry)
 	return nil
 }
 
@@ -721,11 +883,16 @@ func (h *HybridLogStore) CreateIfNotExists(ctx context.Context, entry *Log) erro
 	dbEntry := *entry
 	prepareDBEntry(&dbEntry, h.excludedPayloadFields)
 	h.moveErrorRawBodiesToObject(&dbEntry, payload)
+	existing := h.existingRouteMatches(ctx, []*Log{entry})
 	if err := h.inner.CreateIfNotExists(ctx, &dbEntry); err != nil {
 		return err
 	}
 	entry.ContentSummary = dbEntry.ContentSummary
-	h.enqueueUpload(entry.ID, entry.Timestamp, payload, tags)
+	routeRow := &dbEntry
+	if _, ignored := existing[entry.ID]; ignored {
+		routeRow = nil
+	}
+	h.enqueueUpload(entry.ID, entry.Timestamp, payload, tags, routeRow, entry)
 	return nil
 }
 
@@ -741,6 +908,8 @@ func (h *HybridLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*
 		timestamp time.Time
 		payload   map[string]string
 		tags      map[string]string
+		dbEntry   *Log
+		entry     *Log
 	}
 	var uploads []pendingUpload
 
@@ -771,12 +940,15 @@ func (h *HybridLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*
 			timestamp: entry.Timestamp,
 			payload:   payload,
 			tags:      tags,
+			dbEntry:   &dbEntry,
+			entry:     entry,
 		})
 	}
 
 	if len(dbEntries) == 0 {
 		return nil
 	}
+	existing := h.existingRouteMatches(ctx, origEntries)
 	if err := h.inner.BatchCreateIfNotExists(ctx, dbEntries); err != nil {
 		return err
 	}
@@ -786,7 +958,10 @@ func (h *HybridLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*
 	}
 
 	for _, u := range uploads {
-		h.enqueueUpload(u.logID, u.timestamp, u.payload, u.tags)
+		if _, ignored := existing[u.logID]; ignored {
+			u.dbEntry = nil
+		}
+		h.enqueueUpload(u.logID, u.timestamp, u.payload, u.tags, u.dbEntry, u.entry)
 	}
 	return nil
 }
@@ -969,6 +1144,8 @@ func (h *HybridLogStore) Close(ctx context.Context) error {
 		// Still wait for workers to finish so we don't close dependencies mid-flight.
 		<-done
 	}
+	// The upload workers hand copies to the mirror, so it drains after them.
+	h.mirror.close(ctx)
 	if err := h.objects.Close(); err != nil {
 		h.logger.Warn("objectstore: error closing object store: %v", err)
 	}
@@ -1501,8 +1678,14 @@ func (h *HybridLogStore) BatchUpdate(ctx context.Context, entries []*Log) error 
 	}
 	for _, id := range uploadOrder {
 		u := uploadsByID[id]
+		// Nothing new to offload, but the update can still make the log match a
+		// route: copy the stored object merged with the row, without a Put.
+		mirrorOnly := false
 		if isPayloadEmpty(u.payload) {
-			continue
+			if h.mirror == nil || (!u.tagRow.ContentHidden && len(h.mirror.matching(u.tagRow)) == 0) {
+				continue
+			}
+			mirrorOnly = true
 		}
 		data, err := sonic.Marshal(u.payload)
 		if err != nil {
@@ -1510,7 +1693,16 @@ func (h *HybridLogStore) BatchUpdate(ctx context.Context, entries []*Log) error 
 			h.droppedUploads.Add(1)
 			continue
 		}
-		h.enqueueRawUpload(u.logID, u.timestamp, h.logKey(u.timestamp, u.logID), uploadKindLogMerge, "", data, BuildTags(u.tagRow))
+		h.submitUpload(&uploadWork{
+			logID:      u.logID,
+			timestamp:  u.timestamp,
+			key:        h.logKey(u.timestamp, u.logID),
+			kind:       uploadKindLogMerge,
+			payload:    data,
+			tags:       BuildTags(u.tagRow),
+			routeRow:   h.routeRow(u.tagRow),
+			mirrorOnly: mirrorOnly,
+		})
 	}
 	return nil
 }
