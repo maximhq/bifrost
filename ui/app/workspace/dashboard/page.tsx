@@ -3,7 +3,7 @@ import { DateTimePickerWithRange } from "@/components/ui/datePickerWithRange";
 import { ScrollArea } from "@/components/ui/scrollArea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useTimezonePreference } from "@/lib/hooks/useTimezonePreference";
-import { parseAsSafeArrayOf } from "@/lib/queryParamsParser";
+import { parseAsSafeArrayOf, parseAsSafeString } from "@/lib/queryParamsParser";
 import { useGetMCPAvailableFilterDataQuery } from "@/lib/store";
 import type { LogFilters, MCPToolLogFilters } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
@@ -57,6 +57,7 @@ export default function DashboardPage() {
 			routing_rule_ids: parseAsSafeArrayOf.withDefault([]),
 			routing_engine_used: parseAsSafeArrayOf.withDefault([]),
 			stop_reasons: parseAsSafeArrayOf.withDefault([]),
+			tool_call_names: parseAsSafeArrayOf.withDefault([]),
 			cache_hit_types: parseAsSafeArrayOf.withDefault([]),
 			missing_cost_only: parseAsBoolean.withDefault(false),
 			metadata_filters: parseAsString.withDefault(""),
@@ -65,6 +66,7 @@ export default function DashboardPage() {
 			cost_chart: parseAsString.withDefault("bar"),
 			model_chart: parseAsString.withDefault("bar"),
 			latency_chart: parseAsString.withDefault("bar"),
+			overhead_chart: parseAsString.withDefault("bar"),
 			throughput_chart: parseAsString.withDefault("bar"),
 			cost_model: parseAsString.withDefault("all"),
 			usage_model: parseAsString.withDefault("all"),
@@ -81,10 +83,14 @@ export default function DashboardPage() {
 			mcp_tool_names: parseAsString.withDefault(""),
 			mcp_server_labels: parseAsString.withDefault(""),
 			parent_request_id: parseAsString.withDefault(""),
+			agent_names: parseAsSafeArrayOf.withDefault([]),
+			session_id: parseAsSafeString.withDefault(""),
+			agent_correlation_id: parseAsSafeString.withDefault(""),
 			user_ids: parseAsSafeArrayOf.withDefault([]),
 			team_ids: parseAsSafeArrayOf.withDefault([]),
 			customer_ids: parseAsSafeArrayOf.withDefault([]),
 			business_unit_ids: parseAsSafeArrayOf.withDefault([]),
+			project_ids: parseAsSafeArrayOf.withDefault([]),
 			aliases: parseAsSafeArrayOf.withDefault([]),
 			apps: parseAsSafeArrayOf.withDefault([]),
 		},
@@ -133,6 +139,7 @@ export default function DashboardPage() {
 				routing_engine_used: urlState.routing_engine_used,
 			}),
 			...(urlState.stop_reasons.length > 0 && { stop_reasons: urlState.stop_reasons }),
+			...(urlState.tool_call_names.length > 0 && { tool_call_names: urlState.tool_call_names }),
 			...(urlState.cache_hit_types.length > 0 && { cache_hit_types: urlState.cache_hit_types }),
 			...(urlState.missing_cost_only && { missing_cost_only: true }),
 			...(metadataFilters &&
@@ -140,10 +147,14 @@ export default function DashboardPage() {
 					metadata_filters: metadataFilters,
 				}),
 			...(urlState.parent_request_id && { parent_request_id: urlState.parent_request_id }),
+			...(urlState.agent_names.length > 0 && { agent_names: urlState.agent_names }),
+			...(urlState.session_id && { session_id: urlState.session_id }),
+			...(urlState.agent_correlation_id && { agent_correlation_id: urlState.agent_correlation_id }),
 			...(urlState.user_ids.length > 0 && { user_ids: urlState.user_ids }),
 			...(urlState.team_ids.length > 0 && { team_ids: urlState.team_ids }),
 			...(urlState.customer_ids.length > 0 && { customer_ids: urlState.customer_ids }),
 			...(urlState.business_unit_ids.length > 0 && { business_unit_ids: urlState.business_unit_ids }),
+			...(urlState.project_ids.length > 0 && { project_ids: urlState.project_ids }),
 			...(urlState.aliases.length > 0 && { aliases: urlState.aliases }),
 			...(urlState.apps.length > 0 && { apps: urlState.apps }),
 		}),
@@ -152,6 +163,9 @@ export default function DashboardPage() {
 			urlState.start_time,
 			urlState.end_time,
 			urlState.parent_request_id,
+			urlState.agent_names,
+			urlState.session_id,
+			urlState.agent_correlation_id,
 			urlState.providers,
 			urlState.models,
 			urlState.selected_key_ids,
@@ -161,6 +175,7 @@ export default function DashboardPage() {
 			urlState.routing_rule_ids,
 			urlState.routing_engine_used,
 			urlState.stop_reasons,
+			urlState.tool_call_names,
 			urlState.cache_hit_types,
 			urlState.missing_cost_only,
 			metadataFilters,
@@ -168,6 +183,7 @@ export default function DashboardPage() {
 			urlState.team_ids,
 			urlState.customer_ids,
 			urlState.business_unit_ids,
+			urlState.project_ids,
 			urlState.aliases,
 			urlState.apps,
 		],
@@ -187,6 +203,8 @@ export default function DashboardPage() {
 			...(selectedMcpServerLabels.length > 0 && {
 				server_labels: selectedMcpServerLabels,
 			}),
+			...(urlState.agent_names.length > 0 && { agent_names: urlState.agent_names }),
+			...(urlState.agent_correlation_id && { agent_correlation_id: urlState.agent_correlation_id }),
 			...(urlState.status.length > 0 && { status: urlState.status }),
 			...(urlState.virtual_key_ids.length > 0 && {
 				virtual_key_ids: urlState.virtual_key_ids,
@@ -198,6 +216,8 @@ export default function DashboardPage() {
 			urlState.end_time,
 			selectedMcpToolNames,
 			selectedMcpServerLabels,
+			urlState.agent_names,
+			urlState.agent_correlation_id,
 			urlState.status,
 			urlState.virtual_key_ids,
 		],
@@ -211,6 +231,7 @@ export default function DashboardPage() {
 	const teamRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
 	const customerRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
 	const buRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
+	const projectRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
 	const userRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
 	const virtualKeyRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
 	const appRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
@@ -223,6 +244,7 @@ export default function DashboardPage() {
 		teamRankingsRef,
 		customerRankingsRef,
 		buRankingsRef,
+		projectRankingsRef,
 		userRankingsRef,
 		virtualKeyRankingsRef,
 		appRankingsRef,
@@ -246,6 +268,7 @@ export default function DashboardPage() {
 			teamRankingsData: null,
 			customerRankingsData: null,
 			buRankingsData: null,
+			projectRankingsData: null,
 			userRankingsData: null,
 			virtualKeyRankingsData: null,
 			appRankingsData: null,
@@ -280,6 +303,7 @@ export default function DashboardPage() {
 			"team-rankings": teamRankingsRef,
 			"customer-rankings": customerRankingsRef,
 			"bu-rankings": buRankingsRef,
+			"project-rankings": projectRankingsRef,
 			"user-rankings": userRankingsRef,
 			"virtual-key-rankings": virtualKeyRankingsRef,
 			"app-rankings": appRankingsRef,
@@ -307,6 +331,7 @@ export default function DashboardPage() {
 	const handleCostChartToggle = useCallback((type: ChartType) => setUrlState({ cost_chart: type }), [setUrlState]);
 	const handleModelChartToggle = useCallback((type: ChartType) => setUrlState({ model_chart: type }), [setUrlState]);
 	const handleLatencyChartToggle = useCallback((type: ChartType) => setUrlState({ latency_chart: type }), [setUrlState]);
+	const handleOverheadChartToggle = useCallback((type: ChartType) => setUrlState({ overhead_chart: type }), [setUrlState]);
 	const handleThroughputChartToggle = useCallback((type: ChartType) => setUrlState({ throughput_chart: type }), [setUrlState]);
 	const handleProviderCostChartToggle = useCallback((type: ChartType) => setUrlState({ provider_cost_chart: type }), [setUrlState]);
 	const handleProviderTokenChartToggle = useCallback((type: ChartType) => setUrlState({ provider_token_chart: type }), [setUrlState]);
@@ -359,6 +384,7 @@ export default function DashboardPage() {
 				routing_rule_ids: newFilters.routing_rule_ids || [],
 				routing_engine_used: newFilters.routing_engine_used || [],
 				stop_reasons: newFilters.stop_reasons || [],
+				tool_call_names: newFilters.tool_call_names || [],
 				cache_hit_types: newFilters.cache_hit_types || [],
 				missing_cost_only: newFilters.missing_cost_only ?? false,
 				metadata_filters:
@@ -366,10 +392,14 @@ export default function DashboardPage() {
 						? JSON.stringify(newFilters.metadata_filters)
 						: "",
 				parent_request_id: newFilters.parent_request_id || "",
+				agent_names: newFilters.agent_names || [],
+				session_id: newFilters.session_id || "",
+				agent_correlation_id: newFilters.agent_correlation_id || "",
 				user_ids: newFilters.user_ids || [],
 				team_ids: newFilters.team_ids || [],
 				customer_ids: newFilters.customer_ids || [],
 				business_unit_ids: newFilters.business_unit_ids || [],
+				project_ids: newFilters.project_ids || [],
 				aliases: newFilters.aliases || [],
 				apps: newFilters.apps || [],
 			});
@@ -467,110 +497,116 @@ export default function DashboardPage() {
 	const activeTab = (urlState.tab || "overview") as DashboardTab;
 
 	return (
-		<div id="dashboard-root" className="no-padding-parent no-border-parent bg-background flex h-[calc(100vh_-_16px)] w-full gap-3">
+		<div
+			id="dashboard-root"
+			className="no-padding-parent no-border-parent bg-background flex h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))] w-full gap-3"
+		>
 			{/* Sidebar Filters */}
 			<LogsFilterSidebar filters={filters} onFiltersChange={setFilters} />
 
 			{/* Main Content */}
-			<ScrollArea className="bg-card flex min-w-0 flex-1 flex-col gap-4 rounded-l-md" viewportClassName="no-table">
-				{/* Header */}
-				<div className="flex items-center justify-between p-4">
-					<div className="flex items-center gap-2">
-						<h1 className="text-lg font-semibold">Dashboard</h1>
-					</div>
-					<div className="flex items-center gap-2">
-						<ExportPopover
-							getData={getDashboardData}
-							activeTab={activeTab}
-							onPreloadData={handlePreloadData}
-							onPdfExport={handlePdfExport}
-							onExportDone={handleExportDone}
-						/>
-						{activeTab === "mcp" && mcpFilterData && (
-							<div className="flex items-center gap-1">
-								{(mcpFilterData.tool_names?.length ?? 0) > 0 && (
-									<ModelFilterSelect
-										models={mcpFilterData.tool_names ?? []}
-										selectedModel={selectedMcpToolNames.length === 1 ? selectedMcpToolNames[0] : "all"}
-										onModelChange={(value) => {
-											if (value === "all") {
-												setUrlState({ mcp_tool_names: "" });
-											} else {
-												setUrlState({ mcp_tool_names: value });
-											}
-										}}
-										placeholder="All Tools"
-										data-testid="dashboard-mcp-tool-filter"
-									/>
-								)}
-								{(mcpFilterData.server_labels?.length ?? 0) > 0 && (
-									<ModelFilterSelect
-										models={mcpFilterData.server_labels ?? []}
-										selectedModel={selectedMcpServerLabels.length === 1 ? selectedMcpServerLabels[0] : "all"}
-										onModelChange={(value) => {
-											if (value === "all") {
-												setUrlState({ mcp_server_labels: "" });
-											} else {
-												setUrlState({ mcp_server_labels: value });
-											}
-										}}
-										placeholder="All Servers"
-										data-testid="dashboard-mcp-server-filter"
-									/>
-								)}
-							</div>
-						)}
-						<DateTimePickerWithRange
-							dateTime={dateRange}
-							onDateTimeUpdate={handleDateRangeChange}
-							preDefinedPeriods={TIME_PERIODS}
-							predefinedPeriod={urlState.period || undefined}
-							onPredefinedPeriodChange={handlePeriodChange}
-							triggerTestId="dashboard-filter-daterange"
-							popupAlignment="end"
-							showTimezone
-							timezone={timezone}
-							onTimezoneChange={setTimezone}
-						/>
-					</div>
-				</div>
-
+			<ScrollArea className="bg-card flex min-w-0 flex-1 flex-col gap-4 rounded-md border" viewportClassName="no-table">
 				<div className="p-4">
 					{/* Tabs */}
 					<Tabs value={activeTab} onValueChange={handleTabChange}>
-						<div className="mb-2 max-w-full overflow-x-auto">
-							<TabsList className="w-max min-w-max">
-								<TabsTrigger className="shrink-0" value="overview" data-testid="dashboard-tab-overview">
-									Overview
-								</TabsTrigger>
-								<TabsTrigger className="shrink-0" value="provider-usage" data-testid="dashboard-tab-provider-usage">
-									Provider Usage
-								</TabsTrigger>
-								<TabsTrigger className="shrink-0" value="rankings" data-testid="dashboard-tab-rankings">
-									Model Rankings
-								</TabsTrigger>
-								<TabsTrigger className="shrink-0" value="mcp" data-testid="dashboard-tab-mcp">
-									MCP usage
-								</TabsTrigger>
-								<TabsTrigger className="shrink-0" value="team-rankings" data-testid="dashboard-tab-team-rankings">
-									Team Rankings
-								</TabsTrigger>
-								<TabsTrigger className="shrink-0" value="user-rankings" data-testid="dashboard-tab-user-rankings">
-									User Rankings
-								</TabsTrigger>
-								<TabsTrigger className="shrink-0" value="virtual-key-rankings" data-testid="dashboard-tab-virtual-key-rankings">
-									Virtual Key Rankings
-								</TabsTrigger>
-								<TabsTrigger className="shrink-0" value="customer-rankings" data-testid="dashboard-tab-customer-rankings">
-									Customer Rankings
-								</TabsTrigger>
-								<TabsTrigger className="shrink-0" value="bu-rankings" data-testid="dashboard-tab-bu-rankings">
-									BU Rankings
-								</TabsTrigger>
-								<TabsTrigger value="app-rankings" data-testid="dashboard-tab-app-rankings">
-									App Rankings
-								</TabsTrigger>
-							</TabsList>
+						<div className="mb-2 flex flex-col gap-2 lg:flex-row lg:items-center">
+							{/* min-w-0 keeps the tab strip from pushing the filters off the row —
+							    there are eleven tabs. TabsList collapses whatever does not fit
+							    into its own dropdown, so no horizontal scrolling is needed. */}
+							<div className="max-w-full min-w-0 flex-1">
+								{/* Stays w-max: TabsTrigger is flex-1, so a full-width list would
+								    stretch every tab across the row. */}
+								<TabsList className="w-max min-w-max">
+									<TabsTrigger className="shrink-0" value="overview" data-testid="dashboard-tab-overview">
+										Overview
+									</TabsTrigger>
+									<TabsTrigger className="shrink-0" value="provider-usage" data-testid="dashboard-tab-provider-usage">
+										Provider Usage
+									</TabsTrigger>
+									<TabsTrigger className="shrink-0" value="rankings" data-testid="dashboard-tab-rankings">
+										Model Rankings
+									</TabsTrigger>
+									<TabsTrigger className="shrink-0" value="mcp" data-testid="dashboard-tab-mcp">
+										MCP usage
+									</TabsTrigger>
+									<TabsTrigger className="shrink-0" value="team-rankings" data-testid="dashboard-tab-team-rankings">
+										Team Rankings
+									</TabsTrigger>
+									<TabsTrigger className="shrink-0" value="user-rankings" data-testid="dashboard-tab-user-rankings">
+										User Rankings
+									</TabsTrigger>
+									<TabsTrigger className="shrink-0" value="virtual-key-rankings" data-testid="dashboard-tab-virtual-key-rankings">
+										Virtual Key Rankings
+									</TabsTrigger>
+									<TabsTrigger className="shrink-0" value="customer-rankings" data-testid="dashboard-tab-customer-rankings">
+										Customer Rankings
+									</TabsTrigger>
+									<TabsTrigger className="shrink-0" value="bu-rankings" data-testid="dashboard-tab-bu-rankings">
+										BU Rankings
+									</TabsTrigger>
+									<TabsTrigger className="shrink-0" value="project-rankings" data-testid="dashboard-tab-project-rankings">
+										Project Rankings
+									</TabsTrigger>
+									<TabsTrigger value="app-rankings" data-testid="dashboard-tab-app-rankings">
+										App Rankings
+									</TabsTrigger>
+								</TabsList>
+							</div>
+							<div className="flex shrink-0 flex-wrap items-center gap-2 lg:ml-auto">
+								<ExportPopover
+									getData={getDashboardData}
+									activeTab={activeTab}
+									onPreloadData={handlePreloadData}
+									onPdfExport={handlePdfExport}
+									onExportDone={handleExportDone}
+								/>
+								{activeTab === "mcp" && mcpFilterData && (
+									<div className="flex w-full flex-wrap items-center gap-1 sm:w-auto">
+										{(mcpFilterData.tool_names?.length ?? 0) > 0 && (
+											<ModelFilterSelect
+												models={mcpFilterData.tool_names ?? []}
+												selectedModel={selectedMcpToolNames.length === 1 ? selectedMcpToolNames[0] : "all"}
+												onModelChange={(value) => {
+													if (value === "all") {
+														setUrlState({ mcp_tool_names: "" });
+													} else {
+														setUrlState({ mcp_tool_names: value });
+													}
+												}}
+												placeholder="All Tools"
+												data-testid="dashboard-mcp-tool-filter"
+											/>
+										)}
+										{(mcpFilterData.server_labels?.length ?? 0) > 0 && (
+											<ModelFilterSelect
+												models={mcpFilterData.server_labels ?? []}
+												selectedModel={selectedMcpServerLabels.length === 1 ? selectedMcpServerLabels[0] : "all"}
+												onModelChange={(value) => {
+													if (value === "all") {
+														setUrlState({ mcp_server_labels: "" });
+													} else {
+														setUrlState({ mcp_server_labels: value });
+													}
+												}}
+												placeholder="All Servers"
+												data-testid="dashboard-mcp-server-filter"
+											/>
+										)}
+									</div>
+								)}
+								<DateTimePickerWithRange
+									dateTime={dateRange}
+									onDateTimeUpdate={handleDateRangeChange}
+									preDefinedPeriods={TIME_PERIODS}
+									predefinedPeriod={urlState.period || undefined}
+									onPredefinedPeriodChange={handlePeriodChange}
+									triggerTestId="dashboard-filter-daterange"
+									popupAlignment="end"
+									showTimezone
+									timezone={timezone}
+									onTimezoneChange={setTimezone}
+								/>
+							</div>
 						</div>
 						{/* Overview Tab */}
 						<TabsContent value="overview" {...(exportingAll && { forceMount: true })}>
@@ -586,6 +622,7 @@ export default function DashboardPage() {
 									costChartType={toChartType(urlState.cost_chart)}
 									modelChartType={toChartType(urlState.model_chart)}
 									latencyChartType={toChartType(urlState.latency_chart)}
+									overheadChartType={toChartType(urlState.overhead_chart)}
 									throughputChartType={toChartType(urlState.throughput_chart)}
 									costModel={urlState.cost_model}
 									usageModel={urlState.usage_model}
@@ -594,6 +631,7 @@ export default function DashboardPage() {
 									onCostChartToggle={handleCostChartToggle}
 									onModelChartToggle={handleModelChartToggle}
 									onLatencyChartToggle={handleLatencyChartToggle}
+									onOverheadChartToggle={handleOverheadChartToggle}
 									onThroughputChartToggle={handleThroughputChartToggle}
 									onCostModelChange={handleCostModelChange}
 									onUsageModelChange={handleUsageModelChange}
@@ -705,6 +743,22 @@ export default function DashboardPage() {
 									testIdPrefix="dashboard-bu-rankings"
 									dataKey="buRankingsData"
 									pdfMode={isExportingTab("bu-rankings")}
+								/>
+							</div>
+						</TabsContent>
+
+						{/* Project Rankings Tab */}
+						<TabsContent value="project-rankings" {...(exportingAll && { forceMount: true })}>
+							<div id="dashboard-section-project-rankings">
+								<DimensionRankingsTabView
+									ref={projectRankingsRef}
+									filters={filters}
+									active={activeTab === "project-rankings" || exportingAll}
+									dimension="project"
+									dimensionLabel="Project"
+									testIdPrefix="dashboard-project-rankings"
+									dataKey="projectRankingsData"
+									pdfMode={isExportingTab("project-rankings")}
 								/>
 							</div>
 						</TabsContent>

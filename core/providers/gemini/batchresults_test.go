@@ -1,12 +1,75 @@
 package gemini
 
 import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestGeminiFileResultToBatchResultItem(t *testing.T) {
+	t.Run("NativeGenerateContentResponse", func(t *testing.T) {
+		var line GeminiBatchFileResultLine
+		require.NoError(t, sonic.Unmarshal([]byte(`{"key":"request-1","response":{"candidates":[{"content":{"parts":[{"text":"hello"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":2,"totalTokenCount":9}}}`), &line))
+
+		item, err := geminiFileResultToBatchResultItem(line, "fallback")
+		require.NoError(t, err)
+		assert.Equal(t, "request-1", item.CustomID)
+		require.NotNil(t, item.Response)
+		assert.Equal(t, 200, item.Response.StatusCode)
+		assert.Equal(t, "hello", item.Response.Body["text"])
+		usage, ok := item.Response.Body["usage"].(map[string]interface{})
+		require.True(t, ok)
+		assert.EqualValues(t, 7, usage["prompt_tokens"])
+		assert.EqualValues(t, 2, usage["completion_tokens"])
+		assert.EqualValues(t, 9, usage["total_tokens"])
+	})
+
+	t.Run("CompatibilityEnvelope", func(t *testing.T) {
+		var line GeminiBatchFileResultLine
+		require.NoError(t, sonic.Unmarshal([]byte(`{"custom_id":"request-2","response":{"status_code":200,"body":{"model":"gemini-test","usage":{"promptTokens":3,"completionTokens":1,"totalTokens":4}}}}`), &line))
+
+		item, err := geminiFileResultToBatchResultItem(line, "fallback")
+		require.NoError(t, err)
+		require.NotNil(t, item.Response)
+		assert.Equal(t, 200, item.Response.StatusCode)
+		usage, ok := item.Response.Body["usage"].(map[string]interface{})
+		require.True(t, ok)
+		assert.EqualValues(t, 3, usage["prompt_tokens"])
+		assert.EqualValues(t, 1, usage["completion_tokens"])
+		assert.EqualValues(t, 4, usage["total_tokens"])
+	})
+
+	t.Run("RejectsMissingResponseAndError", func(t *testing.T) {
+		item, err := geminiFileResultToBatchResultItem(GeminiBatchFileResultLine{Key: "request-3"}, "fallback")
+		require.Error(t, err)
+		assert.Empty(t, item)
+		assert.Contains(t, err.Error(), "neither response nor error")
+
+		var nullResponse GeminiBatchFileResultLine
+		require.NoError(t, sonic.Unmarshal([]byte(`{"key":"request-4","response":null}`), &nullResponse))
+		item, err = geminiFileResultToBatchResultItem(nullResponse, "fallback")
+		require.Error(t, err)
+		assert.Empty(t, item)
+	})
+}
+
+func TestParseGeminiBatchResultsJSONLUsesSourceLineIndex(t *testing.T) {
+	body := []byte("{malformed}\n" +
+		`{"response":{"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":1,"totalTokenCount":3}}}` + "\n")
+
+	results, parseErrors := parseGeminiBatchResultsJSONL(body, nil)
+	require.Len(t, parseErrors, 1)
+	require.Len(t, results, 1)
+	assert.Equal(t, "request-1", results[0].CustomID)
+}
 
 // TestGeminiBatchOutput locks in the fix for issue #3951: the generativelanguage batch
 // REST API reports output under the Operation's `response` field (mirrored in
@@ -192,4 +255,226 @@ func TestGeminiGenerateContentToBatchResultBody(t *testing.T) {
 		_, hasUsage := body["usage"]
 		assert.False(t, hasUsage)
 	})
+}
+
+// TestGeminiBatchResult_ThinkingTokens verifies that thinking tokens (thoughtsTokenCount)
+// are added to completion_tokens and surfaced under completion_tokens_details.reasoning_tokens
+// in both file-based and inline batch result processing.
+func TestGeminiBatchResult_ThinkingTokens(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                 string
+		promptTokens         int32
+		candidatesTokens     int32
+		thoughtsTokens       int32
+		totalTokens          int32
+		cachedTokens         int32
+		wantPromptTokens     int
+		wantCompletionTokens int
+		wantTotalTokens      int
+		wantReasoningTokens  int
+		wantCachedTokens     int
+	}{
+		{
+			name:                 "WithThinkingTokens",
+			promptTokens:         100,
+			candidatesTokens:     50,
+			thoughtsTokens:       400,
+			totalTokens:          550,
+			wantPromptTokens:     100,
+			wantCompletionTokens: 450, // 50 candidates + 400 thoughts
+			wantTotalTokens:      550,
+			wantReasoningTokens:  400,
+		},
+		{
+			name:                 "WithThinkingTokensAndCachedTokens",
+			promptTokens:         120,
+			candidatesTokens:     60,
+			thoughtsTokens:       300,
+			totalTokens:          480,
+			cachedTokens:         40,
+			wantPromptTokens:     120,
+			wantCompletionTokens: 360, // 60 candidates + 300 thoughts
+			wantTotalTokens:      480,
+			wantReasoningTokens:  300,
+			wantCachedTokens:     40,
+		},
+		{
+			name:                 "ZeroThinkingTokensUnchanged",
+			promptTokens:         10,
+			candidatesTokens:     20,
+			thoughtsTokens:       0,
+			totalTokens:          30,
+			wantPromptTokens:     10,
+			wantCompletionTokens: 20,
+			wantTotalTokens:      30,
+			wantReasoningTokens:  0,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			resp := &GenerateContentResponse{
+				Candidates: []*Candidate{{
+					Content:      &Content{Parts: []*Part{{Text: "result"}}},
+					FinishReason: FinishReasonStop,
+				}},
+				UsageMetadata: &GenerateContentResponseUsageMetadata{
+					PromptTokenCount:        tt.promptTokens,
+					CandidatesTokenCount:    tt.candidatesTokens,
+					ThoughtsTokenCount:      tt.thoughtsTokens,
+					TotalTokenCount:         tt.totalTokens,
+					CachedContentTokenCount: tt.cachedTokens,
+				},
+			}
+
+			// Test direct body builder
+			body := geminiGenerateContentToBatchResultBody(resp)
+			usage, ok := body["usage"].(map[string]interface{})
+			require.True(t, ok)
+			assert.EqualValues(t, tt.wantPromptTokens, usage["prompt_tokens"])
+			assert.EqualValues(t, tt.wantCompletionTokens, usage["completion_tokens"])
+			assert.EqualValues(t, tt.wantTotalTokens, usage["total_tokens"])
+
+			if tt.wantReasoningTokens > 0 {
+				details, ok := usage["completion_tokens_details"].(map[string]interface{})
+				require.True(t, ok, "completion_tokens_details should be present")
+				assert.EqualValues(t, tt.wantReasoningTokens, details["reasoning_tokens"])
+			} else {
+				assert.Nil(t, usage["completion_tokens_details"])
+			}
+
+			if tt.wantCachedTokens > 0 {
+				details, ok := usage["prompt_tokens_details"].(map[string]interface{})
+				require.True(t, ok, "prompt_tokens_details should be present")
+				assert.EqualValues(t, tt.wantCachedTokens, details["cached_tokens"])
+			}
+
+			// Test inline batch response path
+			inline := GeminiInlinedResponse{
+				Metadata: &GeminiBatchMetadata{Key: "custom-key"},
+				Response: resp,
+			}
+			inlineItem := geminiInlineResponseToBatchResultItem(inline, "fallback")
+			require.NotNil(t, inlineItem.Response)
+			inlineUsage, ok := inlineItem.Response.Body["usage"].(map[string]interface{})
+			require.True(t, ok)
+			assert.EqualValues(t, tt.wantCompletionTokens, inlineUsage["completion_tokens"])
+		})
+	}
+
+	t.Run("NilUsageMetadata", func(t *testing.T) {
+		resp := &GenerateContentResponse{
+			Candidates: []*Candidate{{FinishReason: FinishReasonStop}},
+		}
+		body := geminiGenerateContentToBatchResultBody(resp)
+		assert.Nil(t, body["usage"])
+	})
+}
+
+// TestGeminiResourcePath verifies URI resource path formatting for Gemini models and batch operations.
+func TestGeminiResourcePath(t *testing.T) {
+	t.Parallel()
+
+	valid := []struct{ id, collection, want string }{
+		{"abc123", "batches", "batches/abc123"},
+		{"batches/abc123", "batches", "batches/abc123"},
+		{"files/abc", "files", "files/abc"},
+		{"cachedContents/abc", "cachedContents", "cachedContents/abc"},
+	}
+	for _, tc := range valid {
+		got, bifrostErr := geminiResourcePath(tc.id, tc.collection, "id")
+		if bifrostErr != nil || got != tc.want {
+			t.Fatalf("geminiResourcePath(%q) = %q, %v; want %q", tc.id, got, bifrostErr, tc.want)
+		}
+	}
+
+	for _, id := range []string{"", "..", "../files/abc", "batches/../files/abc", "abc?x=1", "abc#", "abc%2Fdef", "files/abc"} {
+		if got, bifrostErr := geminiResourcePath(id, "batches", "batch_id"); bifrostErr == nil {
+			t.Fatalf("geminiResourcePath(%q) = %q, want error", id, got)
+		}
+	}
+}
+
+// A 200 that is not a batch object (no metadata) must become an error, not a nil dereference.
+func TestGeminiBatchResponsesWithoutMetadataDoNotPanic(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/batches/no-metadata"):
+			_, _ = w.Write([]byte(`{"files":[{"name":"files/abc"}]}`))
+		case strings.HasSuffix(r.URL.Path, "/batches/no-stats"):
+			_, _ = w.Write([]byte(`{"name":"batches/no-stats","metadata":{"name":"batches/no-stats","state":"BATCH_STATE_PENDING","createTime":"2026-07-01T00:00:00Z"}}`))
+		default:
+			_, _ = w.Write([]byte(`{"operations":[{"name":"batches/a"},{"name":"batches/b","metadata":{"state":"BATCH_STATE_SUCCEEDED","createTime":"2026-07-01T00:00:00Z"}}]}`))
+		}
+	}))
+	defer ts.Close()
+
+	provider := NewGeminiProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: ts.URL + "/v1beta"},
+	}, testNoopLogger{})
+	keys := []schemas.Key{{Value: *schemas.NewSecretVar("dummy-key")}}
+	newCtx := func() *schemas.BifrostContext {
+		return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	}
+
+	_, bifrostErr := provider.BatchRetrieve(newCtx(), keys, &schemas.BifrostBatchRetrieveRequest{Provider: schemas.Gemini, BatchID: "no-metadata"})
+	require.NotNil(t, bifrostErr)
+	assert.Contains(t, bifrostErr.Error.Message, "missing metadata")
+
+	_, bifrostErr = provider.BatchResults(newCtx(), keys, &schemas.BifrostBatchResultsRequest{Provider: schemas.Gemini, BatchID: "no-metadata"})
+	require.NotNil(t, bifrostErr)
+	assert.Contains(t, bifrostErr.Error.Message, "missing metadata")
+
+	retrieved, bifrostErr := provider.BatchRetrieve(newCtx(), keys, &schemas.BifrostBatchRetrieveRequest{Provider: schemas.Gemini, BatchID: "no-stats"})
+	require.Nil(t, bifrostErr)
+	assert.Equal(t, "batches/no-stats", retrieved.ID)
+	assert.Equal(t, 0, retrieved.RequestCounts.Total)
+
+	listed, bifrostErr := provider.BatchList(newCtx(), keys, &schemas.BifrostBatchListRequest{Provider: schemas.Gemini})
+	require.Nil(t, bifrostErr)
+	require.Len(t, listed.Data, 2)
+	assert.Equal(t, "batches/a", listed.Data[0].ID)
+	assert.Equal(t, schemas.BatchStatusCompleted, listed.Data[1].Status)
+}
+
+// A raw GenAI batch carries generationConfig per inline request, and the model only in
+// the URL. Each item's thinkingBudget has to be translated for gemini-4 before the batch
+// is submitted, or Google rejects the whole job.
+func TestGeminiBatchCreateRewritesInlineThinkingBudgetForGemini4(t *testing.T) {
+	t.Parallel()
+
+	var gotBody []byte
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"name":"batches/x","metadata":{"name":"batches/x","state":"BATCH_STATE_PENDING","createTime":"2026-07-01T00:00:00Z"}}`))
+	}))
+	defer ts.Close()
+
+	provider := NewGeminiProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: ts.URL + "/v1beta"},
+	}, testNoopLogger{})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+	raw := `{"batch":{"displayName":"argon","inputConfig":{"requests":{"requests":[` +
+		`{"request":{"contents":[{"parts":[{"text":"a"}]}],"generationConfig":{"thinkingConfig":{"includeThoughts":true,"thinkingBudget":4096}}},"metadata":{"key":"1"}},` +
+		`{"request":{"contents":[{"parts":[{"text":"b"}]}]},"metadata":{"key":"2"}}]}}}}`
+	_, _ = provider.BatchCreate(ctx, schemas.Key{Value: *schemas.NewSecretVar("dummy-key")}, &schemas.BifrostBatchCreateRequest{
+		Provider:       schemas.Gemini,
+		Model:          schemas.Ptr("gemini-4-argon"),
+		RawRequestBody: []byte(raw),
+	})
+
+	want := `{"batch":{"displayName":"argon","inputConfig":{"requests":{"requests":[` +
+		`{"request":{"contents":[{"parts":[{"text":"a"}]}],"generationConfig":{"thinkingConfig":{"includeThoughts":true,"thinkingLevel":"medium"}}},"metadata":{"key":"1"}},` +
+		`{"request":{"contents":[{"parts":[{"text":"b"}]}]},"metadata":{"key":"2"}}]}}}}`
+	assert.Equal(t, want, string(gotBody))
 }

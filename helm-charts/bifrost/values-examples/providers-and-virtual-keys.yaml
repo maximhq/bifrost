@@ -13,8 +13,8 @@
 # mounted on the pod — see values-examples/secrets-from-k8s.yaml for patterns.
 #
 # Field names follow transports/config.schema.json (the Bifrost runtime config
-# contract). VK provider_configs use the helm-native keys:[{name:...}] form,
-# which the helm chart template passes through to config.json.
+# contract). VK provider_configs use key_ids; because these provider keys omit
+# id, the chart defaults each key's id to its name before generating config.json.
 
 # ==========================================================================
 # ENVIRONMENT VARIABLES REFERENCED
@@ -91,7 +91,8 @@ bifrost:
     allowedOrigins:
       - "*"
     enableLogging: true
-    enforceGovernanceHeader: false
+    # Require auth (VK / API key / user token) on inference endpoints. Set true to enforce the virtual keys defined below
+    enforceAuthOnInference: false
     maxRequestBodySizeMb: 100
 
   # ==========================================================================
@@ -314,14 +315,14 @@ bifrost:
           value: "env.AZURE_API_KEY"
           weight: 1
           models: ["gpt-4o", "gpt-4o-mini", "text-embedding-3-small"]
+          # aliases map a model name to its Azure deployment name (replaces the
+          # removed azure_key_config.deployments field). Omit when they match.
+          aliases:
+            gpt-4o: "gpt-4o-prod"
+            gpt-4o-mini: "gpt-4o-mini-prod"
+            text-embedding-3-small: "embeddings-prod"
           azure_key_config:
-            endpoint: "env.AZURE_ENDPOINT" # e.g. https://my-resource.openai.azure.com
-            api_version: "2024-10-21"
-            deployments:
-              # Logical model name -> Azure deployment name
-              gpt-4o: "gpt-4o-prod"
-              gpt-4o-mini: "gpt-4o-mini-prod"
-              text-embedding-3-small: "embeddings-prod"
+            endpoint: "env.AZURE_ENDPOINT" # e.g. https://my-resource.openai.azure.com. Uses the Azure v1 API — no api_version.
         - name: "azure-managed-identity"
           # Pure identity inheritance: empty `value` triggers DefaultAzureCredential.
           # Works out-of-the-box on AKS with workload identity, Azure VMs with
@@ -329,19 +330,23 @@ bifrost:
           value: ""
           weight: 1
           models: ["gpt-4o"]
+          aliases:
+            gpt-4o: "gpt-4o-prod"
           azure_key_config:
             endpoint: "env.AZURE_ENDPOINT"
-            api_version: "2024-10-21"
-            deployments:
-              gpt-4o: "gpt-4o-prod"
 
-    # Google Vertex AI — two auth modes:
+    # Google Vertex AI — three auth modes:
     #   1. vertex-sa-key:       explicit service-account key JSON via env var.
     #   2. vertex-workload-id:  inherits credentials from the environment
     #                           (GKE Workload Identity, GCE metadata server,
     #                           or GOOGLE_APPLICATION_CREDENTIALS path). Omit
     #                           `auth_credentials` and the Google SDK calls
     #                           google.FindDefaultCredentials automatically.
+    #   3. vertex-aws-wif:      running on AWS (EKS IRSA / Pod Identity, ECS,
+    #                           EC2): federate the pod's IAM role into a GCP
+    #                           token via a Workload Identity Pool AWS provider.
+    #                           Pair with serviceAccount.annotations
+    #                           eks.amazonaws.com/role-arn for IRSA.
     vertex:
       keys:
         - name: "vertex-sa-key"
@@ -363,6 +368,21 @@ bifrost:
             project_id: "env.VERTEX_PROJECT_ID"
             region: "us-central1"
             # auth_credentials intentionally omitted -> ADC lookup
+        - name: "vertex-aws-wif"
+          # AWS -> GCP Workload Identity Federation. No GCP key, no AWS key:
+          # the AWS SDK default chain supplies the identity (IRSA / Pod
+          # Identity), Bifrost exchanges it at GCP STS.
+          value: ""
+          weight: 1
+          models: ["*"]
+          vertex_key_config:
+            project_id: "env.VERTEX_PROJECT_ID"
+            region: "us-central1"
+            aws_workload_identity:
+              audience: "env.VERTEX_WIF_AUDIENCE"   # //iam.googleapis.com/projects/N/locations/global/workloadIdentityPools/P/providers/X
+              service_account_email: "env.VERTEX_WIF_SERVICE_ACCOUNT"   # optional; omit for direct access
+              # aws_region: "us-east-1"            # optional; defaults to AWS_REGION, then instance metadata
+              # aws_role_arn: "env.VERTEX_AWS_ROLE_ARN"   # optional AssumeRole hop before the exchange
 
     # AWS Bedrock — three auth modes:
     #   1. bedrock-static:   explicit AWS access/secret keys + S3 batch bucket
@@ -420,18 +440,34 @@ bifrost:
     # Budgets — spending caps per period
     # --------------------------------------------------------------------
     budgets:
-      - id: "budget-dev"
+      - id: "budget-vk-all-providers-dev"
         max_limit: 50 # $50
         reset_duration: "1M" # monthly
-      - id: "budget-production"
+        virtual_key_id: "vk-all-providers-dev"
+      - id: "budget-vk-openai-scoped"
         max_limit: 500 # $500
         reset_duration: "1M"
-      - id: "budget-testing"
+        virtual_key_id: "vk-openai-scoped"
+      - id: "budget-vk-multi-provider"
+        max_limit: 500 # $500
+        reset_duration: "1M"
+        virtual_key_id: "vk-multi-provider"
+      - id: "budget-vk-cloud-providers"
+        max_limit: 2000 # $2000 — larger cloud-provider budget
+        reset_duration: "1M"
+        virtual_key_id: "vk-cloud-providers"
+      - id: "budget-vk-self-hosted"
+        max_limit: 50 # $50
+        reset_duration: "1M"
+        virtual_key_id: "vk-self-hosted"
+      - id: "budget-vk-testing-limited"
         max_limit: 10 # $10
         reset_duration: "1d" # daily
-      - id: "budget-team-platform"
-        max_limit: 2000 # $2000 — larger team/platform budget
+        virtual_key_id: "vk-testing-limited"
+      - id: "budget-vk-batch-api"
+        max_limit: 500 # $500
         reset_duration: "1M"
+        virtual_key_id: "vk-batch-api"
 
     # --------------------------------------------------------------------
     # Rate limits — token + request caps per period
@@ -461,120 +497,113 @@ bifrost:
     # --------------------------------------------------------------------
     # Virtual keys — access tokens scoped to providers/models/keys
     # --------------------------------------------------------------------
-    # provider_configs[].keys scopes the VK to specific provider keys by name.
-    # Omit provider_configs to grant access to every provider.
-    # Omit keys inside a provider_config to allow all keys for that provider.
+    # provider_configs[].key_ids scopes the VK to specific provider key IDs.
+    # This file omits provider key ids, so the chart-generated ids equal their names.
+    # Omit provider_configs to deny every provider unless allow_all_providers is true.
+    # Use key_ids: ["*"] to allow all keys for a provider; empty or omitted denies all keys.
 
     virtualKeys:
       # 1. Dev key — access to every provider, no restrictions.
       - id: "vk-all-providers-dev"
         name: "Dev: all providers"
         is_active: true
-        budget_id: "budget-dev"
         rate_limit_id: "rate-limit-standard"
-        # No provider_configs -> all providers accessible
+        allow_all_providers: true
+        # No provider_configs + allow_all_providers -> all providers accessible
 
       # 2. OpenAI only — restricted to 2 keys and 2 models.
       - id: "vk-openai-scoped"
         name: "OpenAI only (scoped)"
         is_active: true
-        budget_id: "budget-production"
         rate_limit_id: "rate-limit-high"
         provider_configs:
           - provider: "openai"
             weight: 1
             allowed_models: ["gpt-4o", "gpt-4o-mini"]
-            keys:
-              - name: "openai-primary"
-              - name: "openai-secondary"
+            key_ids: ["openai-primary", "openai-secondary"]
 
       # 3. Multi-provider — weighted routing across OpenAI/Anthropic/Groq.
       # OpenAI gets 50% (weight 2), the others 25% each (weight 1).
       - id: "vk-multi-provider"
         name: "Multi-provider weighted"
         is_active: true
-        budget_id: "budget-production"
         rate_limit_id: "rate-limit-high"
         provider_configs:
           - provider: "openai"
             weight: 2
             allowed_models: ["*"]
-            # Omitting keys -> all openai keys allowed
+            key_ids: ["*"]
           - provider: "anthropic"
             weight: 1
             allowed_models: ["*"]
-            keys:
-              - name: "anthropic-primary"
+            key_ids: ["anthropic-primary"]
           - provider: "groq"
             weight: 1
             allowed_models: ["*"]
+            key_ids: ["*"]
 
       # 4. Cloud providers — Azure + Vertex + Bedrock only.
       # Shows that VK scoping is identical regardless of nested key_config.
       - id: "vk-cloud-providers"
         name: "Cloud providers (Azure/Vertex/Bedrock)"
         is_active: true
-        budget_id: "budget-team-platform"
         rate_limit_id: "rate-limit-high"
         provider_configs:
           - provider: "azure"
             weight: 1
-            keys:
-              - name: "azure-apikey"
-              - name: "azure-managed-identity"
+            allowed_models: ["*"]
+            key_ids: ["azure-apikey", "azure-managed-identity"]
           - provider: "vertex"
             weight: 1
-            keys:
-              - name: "vertex-sa-key"
-              - name: "vertex-workload-id"
+            allowed_models: ["*"]
+            key_ids: ["vertex-sa-key", "vertex-workload-id", "vertex-aws-wif"]
           - provider: "bedrock"
             weight: 1
-            keys:
-              - name: "bedrock-static"
-              - name: "bedrock-irsa"
-              - name: "bedrock-assumerole"
+            allowed_models: ["*"]
+            key_ids: ["bedrock-static", "bedrock-irsa", "bedrock-assumerole"]
 
       # 5. Self-hosted — Ollama + vLLM + SGL only.
       # Low budget because self-hosted inference is ~free.
       - id: "vk-self-hosted"
         name: "Self-hosted (Ollama/vLLM/SGL)"
         is_active: true
-        budget_id: "budget-dev"
         rate_limit_id: "rate-limit-high"
         provider_configs:
           - provider: "ollama"
             weight: 1
+            allowed_models: ["*"]
+            key_ids: ["*"]
           - provider: "vllm"
             weight: 1
+            allowed_models: ["*"]
+            key_ids: ["*"]
           - provider: "sgl"
             weight: 1
+            allowed_models: ["*"]
+            key_ids: ["*"]
 
       # 6. Testing — tight budget, tight rate limit, single model, single key.
       - id: "vk-testing-limited"
         name: "Testing (gpt-4o-mini only)"
         is_active: true
-        budget_id: "budget-testing"
         rate_limit_id: "rate-limit-testing"
         provider_configs:
           - provider: "openai"
             weight: 1
             allowed_models: ["gpt-4o-mini"]
-            keys:
-              - name: "openai-secondary"
+            key_ids: ["openai-secondary"]
 
       # 7. Batch API — restricted to keys flagged use_for_batch_api: true.
       # Pairs with the openai-batch key above. Burst rate-limit for batch flushes.
       - id: "vk-batch-api"
         name: "Batch API workloads"
         is_active: true
-        budget_id: "budget-production"
         rate_limit_id: "rate-limit-burst"
         provider_configs:
           - provider: "openai"
             weight: 1
             allowed_models: ["*"]
-            keys:
-              - name: "openai-batch"
+            key_ids: ["openai-batch"]
 
   # Plugins configuration
   plugins:

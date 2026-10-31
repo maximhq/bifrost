@@ -14,7 +14,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/temptoken"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -247,9 +247,15 @@ func (h *MCPPerUserHeadersHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
-	if _, _, verifyErr := h.mcpManager.VerifyHeadersConnection(bifrostCtx, config, filtered); verifyErr != nil {
-		SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("Verification failed: %v", verifyErr))
-		return
+	// Verification dials the client's remote MCP server with these values. An
+	// openapi client has none (its server is synthesized in-process), so the
+	// required-key check above is the whole validation; the upstream API sees
+	// the values on the first tool call.
+	if config.ConnectionType != schemas.MCPConnectionTypeOpenAPI {
+		if _, verifyErr := h.mcpManager.VerifyHeadersConnection(bifrostCtx, config, filtered); verifyErr != nil {
+			SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("Verification failed: %v", verifyErr))
+			return
+		}
 	}
 
 	mode := schemas.MCPAuthMode(flow.FlowMode)
@@ -292,6 +298,11 @@ func (h *MCPPerUserHeadersHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	clientName := flow.MCPClientID
+	if config.Name != "" {
+		clientName = config.Name
+	}
+	lib.RecordAuditChange(ctx, "mcp_header_credential.submitted", "mcp_header_credential", cred.ID, clientName, nil, auditMCPHeaderCredential(cred.MCPClientID, string(cred.AuthMode), cred.UserID, cred.VirtualKeyID, cred.Headers))
 	SendJSON(ctx, map[string]any{
 		"status":        "success",
 		"credential_id": cred.ID,
@@ -356,6 +367,11 @@ func (h *MCPPerUserHeadersHandler) revoke(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to revoke credential: %v", err))
 		return
 	}
+	credClientName := cred.MCPClientID
+	if cred.MCPClient != nil && cred.MCPClient.Name != "" {
+		credClientName = cred.MCPClient.Name
+	}
+	lib.RecordAuditChange(ctx, "mcp_header_credential.revoked", "mcp_header_credential", cred.ID, credClientName, auditMCPHeaderCredential(cred.MCPClientID, cred.AuthMode, cred.UserID, cred.VirtualKeyID, nil), nil)
 	ctx.SetStatusCode(fasthttp.StatusNoContent)
 }
 
@@ -462,4 +478,22 @@ func sortedKeys(m map[string]string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// auditMCPHeaderCredential snapshots a per-user header credential's binding and header names; header values are secrets and never included.
+func auditMCPHeaderCredential(mcpClientID, authMode string, userID, virtualKeyID *string, headers map[string]string) map[string]any {
+	snap := map[string]any{
+		"mcp_client_id": mcpClientID,
+		"auth_mode":     authMode,
+	}
+	if userID != nil {
+		snap["user_id"] = *userID
+	}
+	if virtualKeyID != nil {
+		snap["virtual_key_id"] = *virtualKeyID
+	}
+	if len(headers) > 0 {
+		snap["header_keys"] = sortedKeys(headers)
+	}
+	return snap
 }

@@ -16,7 +16,7 @@ export function ProvidersEmptyState({ addProviderDropdown }: ProvidersEmptyState
 			</div>
 			<div className="flex flex-col gap-1">
 				<h1 className="text-muted-foreground text-xl font-medium">Add a provider to start routing requests</h1>
-				<div className="text-muted-foreground mx-auto mt-2 max-w-[600px] text-sm font-normal">
+				<div className="text-muted-foreground mx-auto mt-2 w-full max-w-[600px] text-sm font-normal">
 					Configure API keys for OpenAI, Anthropic, Bedrock, and other supported providers. Bifrost unifies them behind a single API.
 				</div>
 				<div className="mx-auto mt-6 flex flex-row flex-wrap items-center justify-center gap-2">

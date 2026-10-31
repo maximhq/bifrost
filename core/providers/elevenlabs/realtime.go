@@ -18,11 +18,14 @@ func (provider *ElevenlabsProvider) SupportsRealtimeAPI() bool {
 // RealtimeWebSocketURL returns the WSS URL for the ElevenLabs Conversational AI endpoint.
 // The model parameter is used as the agent_id query parameter.
 // Format: wss://api.elevenlabs.io/v1/convai/conversation?agent_id=<model>
-func (provider *ElevenlabsProvider) RealtimeWebSocketURL(key schemas.Key, model string) string {
+func (provider *ElevenlabsProvider) RealtimeWebSocketURL(_ *schemas.BifrostContext, _ schemas.Key, model, intent string) (string, *schemas.BifrostError) {
+	if intent == "transcription" {
+		return "", providerUtils.NewUnsupportedOperationError(schemas.RealtimeRequest, provider.GetProviderKey())
+	}
 	base := provider.networkConfig.BaseURL
 	base = strings.Replace(base, "https://", "wss://", 1)
 	base = strings.Replace(base, "http://", "ws://", 1)
-	return base + "/v1/convai/conversation?agent_id=" + model
+	return base + "/v1/convai/conversation?agent_id=" + model, nil
 }
 
 // RealtimeHeaders returns the headers required for the ElevenLabs Conversational AI WebSocket.
@@ -34,7 +37,7 @@ func (provider *ElevenlabsProvider) RealtimeHeaders(_ *schemas.BifrostContext, k
 		if strings.EqualFold(k, "xi-api-key") {
 			continue
 		}
-		headers[k] = v
+		headers[k] = v.GetValue()
 	}
 	return headers, nil
 }

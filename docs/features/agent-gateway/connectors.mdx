@@ -1,0 +1,62 @@
+---
+title: "Export agent telemetry"
+description: "Inspect A2A operations in your OpenTelemetry backend and connect them to model and tool activity."
+icon: "chart-line"
+---
+
+Agent Logs is the dashboard view of gateway activity. Observability connectors send completed traces to your monitoring backend. Use the [OpenTelemetry connector](/features/observability/otel) when you want to inspect agent traffic alongside the rest of your service's traces.
+
+## Configure OpenTelemetry
+
+Follow the [OpenTelemetry guide](/features/observability/otel) to connect your collector. For deployment configuration, see the [config.json plugin settings](/deployment-guides/config-json/plugins) or [Helm plugin settings](/deployment-guides/helm/plugins).
+
+## Find an agent operation
+
+A2A operation spans carry attributes that identify the work:
+
+| Attribute | What it identifies |
+| --- | --- |
+| `gen_ai.agent.name` | Registered agent name. |
+| `bifrost.a2a.operation.name` | Gateway operation, including protocol and push operations. |
+| `a2a.method.name` | A2A v1 JSON-RPC method, when applicable. |
+| `a2a.task.id` | Task ID supplied in the request, when available. |
+| `gen_ai.conversation.id` | Context ID supplied in a message request, when available. |
+| `bifrost.a2a.upstream.transport` | Transport Bifrost used to call the agent. |
+| `error.type` | Error classification for a failed operation. |
+
+Look for the operation and IDs relevant to your request. The first message often creates its task and context IDs in the response, so that operation's span can lack both IDs. Subsequent message requests can carry both; task operations such as `GetTask` carry the requested task ID. Discovery and early failures may also lack these IDs.
+
+For example, a successful JSON-RPC message produces an operation span like this. The values below show the fields to look for, with a sample agent name:
+
+```text
+span: a2a.send_message.library-research
+kind: CLIENT
+status: OK
+gen_ai.operation.name: invoke_agent
+gen_ai.agent.name: library-research
+bifrost.a2a.operation.name: SendMessage
+a2a.method.name: SendMessage
+bifrost.a2a.upstream.transport: JSONRPC
+```
+
+The connector also records `a2a.client.operation.duration` in seconds, with operation and available transport, method, error, and governance dimensions. This measures the gateway operation; it is not the model's token-generation metric.
+
+## Connect model and tool activity
+
+Pass the [context and task correlation headers](./integrating-your-agent) when your agent calls Bifrost for LLM or MCP work. Session grouping can place requests sharing a session ID in one trace when no explicit incoming trace context takes precedence.
+
+For a full distributed trace across your application, agent server, and Bifrost, instrument those services and propagate W3C trace context. Matching session IDs help group a conversation, but do not by themselves describe parent-child relationships across every service.
+
+<Accordion title="Why matching IDs do not always produce one trace">
+The A2A context ID and `x-bf-session-id` have separate jobs. The context ID identifies the A2A conversation. The session header tells the connector which requests to group. To group A2A calls with your agent's LLM and MCP calls, send the same session header on those requests and enable `group_traces_by_session`.
+
+When an incoming `traceparent` identifies an existing distributed trace, Bifrost keeps that trace instead of assigning a trace from the session ID. Filter by `session.id` to find the related requests even when they belong to different distributed traces.
+</Accordion>
+
+<Note>
+Dashboard raw capture and connector payload export are separate settings. Enabling Agent Gateway raw capture does not enable every connector's content export. Review the connector's content and attribute controls before exporting conversation data.
+</Note>
+
+Other connectors have different output formats and configuration. See the [Datadog](/features/observability/datadog), [Maxim AI](/features/observability/maxim), or [Kafka](/features/observability/kafka) guide for the connector you use and the signals it supports.
+
+Use [Troubleshooting](./troubleshooting) to diagnose authentication, transport, callback, or correlation failures.

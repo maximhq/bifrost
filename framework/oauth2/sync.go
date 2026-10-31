@@ -195,18 +195,27 @@ func (w *OAuthTokenRefreshWorker) SetLookAheadWindow(window time.Duration) {
 	w.lookAheadWindow = window
 }
 
-// PerUserOAuthSweepWorker periodically purges stale per-user OAuth state:
-//   - expired pending flow rows (oauth_user_sessions where ExpiresAt < now and status='pending')
-//   - orphaned token rows older than OrphanRetention (oauth_user_tokens where status='orphaned')
+// abandonedOauthConfigGrace is how long a never-completed bootstrap
+// oauth_configs row is kept before the flow tick sweeps it. Well past the
+// 15min flow expiry, so a slow consent screen is never cut short.
+const abandonedOauthConfigGrace = 1 * time.Hour
+
+// PerUserOAuthSweepWorker periodically purges stale OAuth state:
+//   - expired pending flow rows (mcp_oauth_flows where ExpiresAt < now and status='pending')
+//   - abandoned bootstrap configs (oauth_configs left 'pending'/'failed' with no
+//     MCP client, live flow, or token referencing them, older than abandonedOauthConfigGrace)
+//   - orphaned token rows older than OrphanRetention (mcp_oauth_tokens where status='orphaned')
 //
 // Pending-flow expiry is short (driven by the row's own ExpiresAt, default
-// 15min) so the flow tick is fast. Orphan retention is operator-tunable
-// (default 30 days) and the orphan tick is slow.
+// 15min) so the flow tick is fast, and abandoned configs ride the same tick.
+// Orphan retention is operator-tunable (default 30 days) and the orphan tick
+// is slow.
 type PerUserOAuthSweepWorker struct {
 	provider         *OAuth2Provider
 	flowSweepEvery   time.Duration
 	orphanSweepEvery time.Duration
 	orphanRetention  time.Duration
+	configGrace      time.Duration
 	stopCh           chan struct{}
 	stopOnce         sync.Once
 	cancel           context.CancelFunc
@@ -228,6 +237,7 @@ func NewPerUserOAuthSweepWorker(provider *OAuth2Provider, orphanRetention time.D
 		flowSweepEvery:   1 * time.Minute,
 		orphanSweepEvery: 24 * time.Hour,
 		orphanRetention:  orphanRetention,
+		configGrace:      abandonedOauthConfigGrace,
 		stopCh:           make(chan struct{}),
 		logger:           logger,
 	}
@@ -288,6 +298,16 @@ func (w *PerUserOAuthSweepWorker) sweepExpiredFlows(ctx context.Context) {
 	}
 	if n > 0 {
 		w.logger.Debug("per-user OAuth flow sweep removed %d expired pending flows", n)
+	}
+	// Runs after the flow delete so a config whose last flow just expired
+	// is eligible on this same tick.
+	n, err = w.provider.configStore.DeleteAbandonedOauthConfigs(ctx, w.configGrace)
+	if err != nil {
+		w.logger.Error("abandoned OAuth config sweep failed: %v", err)
+		return
+	}
+	if n > 0 {
+		w.logger.Debug("abandoned OAuth config sweep removed %d never-completed configs", n)
 	}
 }
 

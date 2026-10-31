@@ -3,7 +3,7 @@ package integrations
 import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 )
 
 // LiteLLMRouter holds route registrations for LiteLLM endpoints.
@@ -15,7 +15,7 @@ type LiteLLMRouter struct {
 }
 
 // NewLiteLLMRouter creates a new LiteLLMRouter with the given bifrost client.
-func NewLiteLLMRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *LiteLLMRouter {
+func NewLiteLLMRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *LiteLLMRouter {
 	routes := []RouteConfig{}
 
 	// Add OpenAI routes to LiteLLM for OpenAI API compatibility
@@ -34,6 +34,6 @@ func NewLiteLLMRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, lo
 	routes = append(routes, CreateCohereRouteConfigs("/litellm")...)
 
 	return &LiteLLMRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, routes, nil, logger),
+		GenericRouter: NewGenericRouter(client, handlerStore, accessResolver, routes, nil, logger),
 	}
 }

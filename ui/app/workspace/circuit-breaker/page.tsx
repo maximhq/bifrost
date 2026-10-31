@@ -2,7 +2,7 @@ import CircuitBreakerView from "@enterprise/components/circuit-breaker/circuitBr
 
 export default function CircuitBreakerPage() {
 	return (
-		<div className="mx-auto w-full max-w-7xl">
+		<div className="no-padding-parent w-full p-4">
 			<CircuitBreakerView />
 		</div>
 	);

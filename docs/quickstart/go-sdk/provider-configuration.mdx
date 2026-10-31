@@ -405,7 +405,7 @@ type BifrostResponseExtraFields struct {
 	Latency        int64              `json:"latency"`     // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
 	ChunkIndex     int                `json:"chunk_index"` // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
 	RawResponse    interface{}        `json:"raw_response,omitempty"`
-	CacheDebug     *BifrostCacheDebug `json:"cache_debug,omitempty"`
+	CacheDebug     *BifrostCacheMetadata `json:"cache_debug,omitempty"`
 }
 ```
 

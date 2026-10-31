@@ -1,3 +1,4 @@
+import { StartTruncatedLabel } from "@/components/ui/truncatedLabel";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type {
 	CostHistogramResponse,
@@ -10,7 +11,7 @@ import type {
 } from "@/lib/types/logs";
 import { COMPACT_NUMBER_FORMAT } from "@/lib/utils/numbers";
 import NumberFlow from "@number-flow/react";
-import { memo, useMemo } from "react";
+import { type ReactNode, memo, useMemo } from "react";
 import {
 	CHART_COLORS,
 	CHART_HEADER_LEGEND_CLASS,
@@ -27,6 +28,7 @@ import { type ChartType, ChartTypeToggle } from "./charts/chartTypeToggle";
 import { CostChart } from "./charts/costChart";
 import ExternalCacheTokenMeterChart from "./charts/externalCacheTokenMeterChart";
 import { LatencyChart } from "./charts/latencyChart";
+import { OverheadChart } from "./charts/overheadChart";
 import { ThroughputChart } from "./charts/throughputChart";
 import LocalCacheTokenMeterChart from "./charts/localCacheTokenMeterChart";
 import { LogVolumeChart } from "./charts/logVolumeChart";
@@ -63,6 +65,7 @@ export interface OverviewTabProps {
 	costChartType: ChartType;
 	modelChartType: ChartType;
 	latencyChartType: ChartType;
+	overheadChartType: ChartType;
 	throughputChartType: ChartType;
 
 	// Model selections
@@ -80,11 +83,15 @@ export interface OverviewTabProps {
 	onCostChartToggle: (type: ChartType) => void;
 	onModelChartToggle: (type: ChartType) => void;
 	onLatencyChartToggle: (type: ChartType) => void;
+	onOverheadChartToggle: (type: ChartType) => void;
 	onThroughputChartToggle: (type: ChartType) => void;
 
 	// Filter callbacks
 	onCostModelChange: (model: string) => void;
 	onUsageModelChange: (model: string) => void;
+
+	// Charts registered by a downstream build, drawn at the end of the chart grid
+	extraCharts?: ReactNode;
 }
 
 function OverviewTabImpl({
@@ -109,6 +116,7 @@ function OverviewTabImpl({
 	costChartType,
 	modelChartType,
 	latencyChartType,
+	overheadChartType,
 	throughputChartType,
 	costModel,
 	usageModel,
@@ -120,9 +128,11 @@ function OverviewTabImpl({
 	onCostChartToggle,
 	onModelChartToggle,
 	onLatencyChartToggle,
+	onOverheadChartToggle,
 	onThroughputChartToggle,
 	onCostModelChange,
 	onUsageModelChange,
+	extraCharts,
 }: OverviewTabProps) {
 	const volumeTotal = useMemo(() => {
 		if (!histogramData?.buckets) return null;
@@ -168,6 +178,20 @@ function OverviewTabImpl({
 		return count > 0 ? weighted / count : null;
 	}, [latencyData]);
 
+	// Request-weighted average Bifrost overhead across buckets, mirroring latencyAvg.
+	const overheadAvg = useMemo(() => {
+		if (!latencyData?.buckets || latencyData.buckets.length === 0) return null;
+		let weighted = 0;
+		let count = 0;
+		for (const b of latencyData.buckets) {
+			const reqs = b.total_requests ?? 0;
+			if (reqs === 0) continue;
+			weighted += (b.avg_overhead ?? 0) * reqs;
+			count += reqs;
+		}
+		return count > 0 ? weighted / count : null;
+	}, [latencyData]);
+
 	// Weighted-average throughput across buckets (weighted by request count) so
 	// the header figure matches how the aggregate rate is computed per bucket.
 	const throughputAvg = useMemo(() => {
@@ -187,6 +211,90 @@ function OverviewTabImpl({
 		<>
 			{/* Charts Grid */}
 			<div className="grid grid-cols-1 gap-2 lg:grid-cols-2 2xl:grid-cols-3">
+				{/* Cost Chart: first so spend is the first thing the page answers. */}
+				<ChartCard
+					title="Cost"
+					loading={loadingCost}
+					testId="chart-cost-total"
+					totalLabel="Total"
+					total={
+						costTotal !== null ? (
+							<NumberFlow value={costTotal} format={{ ...COMPACT_NUMBER_FORMAT, style: "currency", currency: "USD" }} />
+						) : undefined
+					}
+					totalTooltip={
+						costTotal !== null
+							? costTotal.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 6 })
+							: undefined
+					}
+					legend={
+						<div className={CHART_HEADER_LEGEND_CLASS}>
+							{costModel === "all" ? (
+								costModels.length > 0 && (
+									<>
+										<Tooltip>
+											<TooltipTrigger asChild>
+												<span tabIndex={0} data-testid="cost-legend-trigger" className="flex items-center gap-1">
+													<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(0) }} />
+													<StartTruncatedLabel className="text-muted-foreground max-w-[160px]">{costModels[0]}</StartTruncatedLabel>
+												</span>
+											</TooltipTrigger>
+											<TooltipContent>{costModels[0]}</TooltipContent>
+										</Tooltip>
+										{costModels.length > 1 && (
+											<Tooltip>
+												<TooltipTrigger asChild>
+													<span tabIndex={0} data-testid="cost-legend-more-trigger" className="text-muted-foreground cursor-default">
+														+{costModels.length - 1} more
+													</span>
+												</TooltipTrigger>
+												<TooltipContent>
+													<div className="flex flex-col gap-1">
+														{costModels.slice(1).map((model, idx) => (
+															<span key={model} className="flex items-center gap-1">
+																<span
+																	className="h-2 w-2 shrink-0 rounded-full"
+																	style={{
+																		backgroundColor: model === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx + 1),
+																	}}
+																/>
+																{model === OTHER_SERIES_KEY ? OTHER_SERIES_LABEL : model}
+															</span>
+														))}
+													</div>
+												</TooltipContent>
+											</Tooltip>
+										)}
+									</>
+								)
+							) : (
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<span tabIndex={0} data-testid="cost-legend-single-trigger" className="flex items-center gap-1">
+											<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(0) }} />
+											<StartTruncatedLabel className="text-muted-foreground max-w-[160px]">{costModel}</StartTruncatedLabel>
+										</span>
+									</TooltipTrigger>
+									<TooltipContent>{costModel}</TooltipContent>
+								</Tooltip>
+							)}
+						</div>
+					}
+					controls={
+						<>
+							<ModelFilterSelect
+								models={availableModels}
+								selectedModel={costModel}
+								onModelChange={onCostModelChange}
+								data-testid="dashboard-cost-model-filter"
+							/>
+							<ChartTypeToggle chartType={costChartType} onToggle={onCostChartToggle} data-testid="dashboard-cost-chart-toggle" />
+						</>
+					}
+				>
+					<CostChart data={costData} chartType={costChartType} startTime={startTime} endTime={endTime} selectedModel={costModel} />
+				</ChartCard>
+
 				{/* Log Volume Chart */}
 				<ChartCard
 					title="Request Volume"
@@ -257,90 +365,6 @@ function OverviewTabImpl({
 					<LocalCacheTokenMeterChart data={logsStats} />
 				</ChartCard>
 
-				{/* Cost Chart */}
-				<ChartCard
-					title="Cost"
-					loading={loadingCost}
-					testId="chart-cost-total"
-					totalLabel="Total"
-					total={
-						costTotal !== null ? (
-							<NumberFlow value={costTotal} format={{ ...COMPACT_NUMBER_FORMAT, style: "currency", currency: "USD" }} />
-						) : undefined
-					}
-					totalTooltip={
-						costTotal !== null
-							? costTotal.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 6 })
-							: undefined
-					}
-					legend={
-						<div className={CHART_HEADER_LEGEND_CLASS}>
-							{costModel === "all" ? (
-								costModels.length > 0 && (
-									<>
-										<Tooltip>
-											<TooltipTrigger asChild>
-												<span tabIndex={0} data-testid="cost-legend-trigger" className="flex items-center gap-1">
-													<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(0) }} />
-													<span className="text-muted-foreground max-w-[100px] truncate">{costModels[0]}</span>
-												</span>
-											</TooltipTrigger>
-											<TooltipContent>{costModels[0]}</TooltipContent>
-										</Tooltip>
-										{costModels.length > 1 && (
-											<Tooltip>
-												<TooltipTrigger asChild>
-													<span tabIndex={0} data-testid="cost-legend-more-trigger" className="text-muted-foreground cursor-default">
-														+{costModels.length - 1} more
-													</span>
-												</TooltipTrigger>
-												<TooltipContent>
-													<div className="flex flex-col gap-1">
-														{costModels.slice(1).map((model, idx) => (
-															<span key={model} className="flex items-center gap-1">
-																<span
-																	className="h-2 w-2 shrink-0 rounded-full"
-																	style={{
-																		backgroundColor: model === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx + 1),
-																	}}
-																/>
-																{model === OTHER_SERIES_KEY ? OTHER_SERIES_LABEL : model}
-															</span>
-														))}
-													</div>
-												</TooltipContent>
-											</Tooltip>
-										)}
-									</>
-								)
-							) : (
-								<Tooltip>
-									<TooltipTrigger asChild>
-										<span tabIndex={0} data-testid="cost-legend-single-trigger" className="flex items-center gap-1">
-											<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(0) }} />
-											<span className="text-muted-foreground max-w-[100px] truncate">{costModel}</span>
-										</span>
-									</TooltipTrigger>
-									<TooltipContent>{costModel}</TooltipContent>
-								</Tooltip>
-							)}
-						</div>
-					}
-					controls={
-						<>
-							<ModelFilterSelect
-								models={availableModels}
-								selectedModel={costModel}
-								onModelChange={onCostModelChange}
-								data-testid="dashboard-cost-model-filter"
-							/>
-							<ChartTypeToggle chartType={costChartType} onToggle={onCostChartToggle} data-testid="dashboard-cost-chart-toggle" />
-						</>
-					}
-				>
-					<CostChart data={costData} chartType={costChartType} startTime={startTime} endTime={endTime} selectedModel={costModel} />
-				</ChartCard>
-
 				{/* Model Usage Chart */}
 				<ChartCard
 					title="Model Usage"
@@ -358,7 +382,7 @@ function OverviewTabImpl({
 											<TooltipTrigger asChild>
 												<span tabIndex={0} data-testid="usage-legend-trigger" className="flex items-center gap-1">
 													<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(0) }} />
-													<span className="text-muted-foreground max-w-[100px] truncate">{usageModels[0]}</span>
+													<StartTruncatedLabel className="text-muted-foreground max-w-[160px]">{usageModels[0]}</StartTruncatedLabel>
 												</span>
 											</TooltipTrigger>
 											<TooltipContent>{usageModels[0]}</TooltipContent>
@@ -461,6 +485,45 @@ function OverviewTabImpl({
 					<LatencyChart data={latencyData} chartType={latencyChartType} startTime={startTime} endTime={endTime} />
 				</ChartCard>
 
+				{/* Bifrost Overhead Chart */}
+				<ChartCard
+					title="Bifrost Overhead"
+					loading={loadingLatency}
+					testId="chart-overhead"
+					totalLabel="Avg"
+					total={
+						overheadAvg !== null ? (
+							<NumberFlow value={overheadAvg} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="ms" />
+						) : undefined
+					}
+					totalTooltip={overheadAvg !== null ? `${overheadAvg.toLocaleString("en-US", { maximumFractionDigits: 6 })}ms` : undefined}
+					legend={
+						<div className={CHART_HEADER_LEGEND_CLASS}>
+							<span className="flex items-center gap-1">
+								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.avg }} />
+								<span className="text-muted-foreground">Avg</span>
+							</span>
+							<span className="flex items-center gap-1">
+								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.p90 }} />
+								<span className="text-muted-foreground">P90</span>
+							</span>
+							<span className="flex items-center gap-1">
+								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.p95 }} />
+								<span className="text-muted-foreground">P95</span>
+							</span>
+							<span className="flex items-center gap-1">
+								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.p99 }} />
+								<span className="text-muted-foreground">P99</span>
+							</span>
+						</div>
+					}
+					controls={
+						<ChartTypeToggle chartType={overheadChartType} onToggle={onOverheadChartToggle} data-testid="dashboard-overhead-chart-toggle" />
+					}
+				>
+					<OverheadChart data={latencyData} chartType={overheadChartType} startTime={startTime} endTime={endTime} />
+				</ChartCard>
+
 				{/* Throughput (tokens/sec) Chart */}
 				<ChartCard
 					title="Throughput"
@@ -491,6 +554,8 @@ function OverviewTabImpl({
 				>
 					<ThroughputChart data={throughputData} chartType={throughputChartType} startTime={startTime} endTime={endTime} />
 				</ChartCard>
+
+				{extraCharts}
 			</div>
 		</>
 	);

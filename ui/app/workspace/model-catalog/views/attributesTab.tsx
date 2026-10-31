@@ -2,7 +2,7 @@ import FullPageLoader from "@/components/fullPageLoader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ProviderSelector } from "@/components/ui/providerSelector";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useDebouncedValue } from "@/hooks/useDebounce";
@@ -17,6 +17,11 @@ import { useQueryStates } from "nuqs";
 import { useEffect, useMemo, useState } from "react";
 import AttributeSheet from "./attributeSheet";
 import OverriddenPrice from "./overriddenPrice";
+
+// The filter spells "no provider filter" as a sentinel, since the control needs a value to
+// show for it. Module level so its identity is stable across renders.
+const ALL_PROVIDERS_VALUE = "__all__";
+const ALL_PROVIDERS_OPTION = { value: ALL_PROVIDERS_VALUE, label: "All providers" };
 
 const PAGE_SIZE = 25;
 
@@ -96,8 +101,6 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 		setOffset(totalCount === 0 ? 0 : Math.floor((totalCount - 1) / PAGE_SIZE) * PAGE_SIZE);
 	}, [totalCount, offset]);
 
-	const providerOptions = useMemo(() => Array.from(new Set((providersData ?? []).map((p) => p.name))).sort(), [providersData]);
-
 	// Clear the provider filter if the selected provider is no longer in the list
 	useEffect(() => {
 		if (!providerFilter || !providersData) return;
@@ -124,15 +127,15 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 			{editing && <AttributeSheet model={editing} overrides={overridesById} onClose={() => setEditing(null)} />}
 
 			<div className="flex min-h-0 w-full grow flex-col overflow-hidden">
-				<div className="mb-4 flex shrink-0 items-center justify-between">
+				<div className="mb-4 flex shrink-0 flex-wrap items-center justify-between gap-2">
 					<div>
 						<h2 className="text-lg font-semibold">Models</h2>
 						<p className="text-muted-foreground text-sm">Attach descriptions and tags to specific models.</p>
 					</div>
 				</div>
 
-				<div className="mb-4 flex shrink-0 items-center gap-3">
-					<div className="relative max-w-sm flex-1">
+				<div className="mb-4 flex shrink-0 flex-wrap items-center gap-3">
+					<div className="relative w-full max-w-sm flex-1 basis-full sm:basis-auto">
 						<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 						<Input
 							aria-label="Search models"
@@ -143,23 +146,17 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 							data-testid="model-catalog-search-input"
 						/>
 					</div>
-					<Select value={providerFilter || "__all__"} onValueChange={(v) => setUrlState({ provider: v === "__all__" ? null : v })}>
-						<SelectTrigger className="w-[200px]" data-testid="model-catalog-provider-filter">
-							<SelectValue placeholder="All providers" />
-						</SelectTrigger>
-						<SelectContent>
-							<SelectItem value="__all__">All providers</SelectItem>
-							{providerOptions.map((p) => (
-								<SelectItem key={p} value={p}>
-									{ProviderLabels[p as ProviderName] || p}
-								</SelectItem>
-							))}
-						</SelectContent>
-					</Select>
+					<ProviderSelector
+						data-testid="model-catalog-provider-filter"
+						className="w-full sm:w-[200px]"
+						allOption={ALL_PROVIDERS_OPTION}
+						value={providerFilter || ALL_PROVIDERS_VALUE}
+						onChange={(v: string) => setUrlState({ provider: v === ALL_PROVIDERS_VALUE ? null : v })}
+					/>
 				</div>
 
 				<div className="mb-2 min-h-0 grow overflow-hidden rounded-sm border" data-testid="model-catalog-attributes-table">
-					<Table containerClassName="h-full overflow-y-auto overflow-x-hidden" className="table-fixed">
+					<Table containerClassName="h-full overflow-y-auto overflow-x-auto" className="table-fixed">
 						<TableHeader className="bg-muted sticky top-0 z-20">
 							<TableRow className="hover:bg-transparent">
 								<TableHead className="w-[116px] font-medium">Provider</TableHead>

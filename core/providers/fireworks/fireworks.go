@@ -21,6 +21,7 @@ type FireworksProvider struct {
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
 	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+	disableStore        bool                  // Whether to force store=false on outgoing Responses API requests
 }
 
 // NewFireworksProvider creates a new Fireworks AI provider instance.
@@ -58,6 +59,7 @@ func NewFireworksProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 		networkConfig:       config.NetworkConfig,
 		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
+		disableStore:        config.OpenAIConfig != nil && config.OpenAIConfig.DisableStore,
 	}, nil
 }
 
@@ -145,6 +147,7 @@ func (provider *FireworksProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 			request,
 			anthropic.AnthropicRequestBuildConfig{
 				Provider:                  schemas.Fireworks,
+				BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
 				ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 				ShouldSendBackRawResponse: provider.sendBackRawResponse,
 			},
@@ -241,6 +244,8 @@ func (provider *FireworksProvider) Responses(ctx *schemas.BifrostContext, key sc
 			request,
 			anthropic.AnthropicRequestBuildConfig{
 				Provider:                  schemas.Fireworks,
+				ValidateTools:             true,
+				BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
 				ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 				ShouldSendBackRawResponse: provider.sendBackRawResponse,
 			},
@@ -249,6 +254,10 @@ func (provider *FireworksProvider) Responses(ctx *schemas.BifrostContext, key sc
 			nil,
 			provider.logger,
 		)
+	}
+
+	if provider.disableStore {
+		ctx.SetValue(schemas.BifrostContextKeyDisableStore, true)
 	}
 
 	return openai.HandleOpenAIResponsesRequest(
@@ -273,6 +282,7 @@ func (provider *FireworksProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
 		jsonData, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
 			Provider:                  schemas.Fireworks,
+			ValidateTools:             true,
 			IsStreaming:               true,
 			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 			ShouldSendBackRawResponse: provider.sendBackRawResponse,
@@ -299,6 +309,10 @@ func (provider *FireworksProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 			provider.logger,
 			postHookSpanFinalizer,
 		)
+	}
+
+	if provider.disableStore {
+		ctx.SetValue(schemas.BifrostContextKeyDisableStore, true)
 	}
 
 	return openai.HandleOpenAIResponsesStreaming(
@@ -336,6 +350,7 @@ func (provider *FireworksProvider) Embedding(ctx *schemas.BifrostContext, key sc
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		nil,
+		nil,
 		provider.logger,
 	)
 }
@@ -348,6 +363,11 @@ func (provider *FireworksProvider) Speech(ctx *schemas.BifrostContext, key schem
 // Rerank is not supported by the Fireworks AI provider.
 func (provider *FireworksProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
+}
+
+// Decision is not supported by the Fireworks provider.
+func (provider *FireworksProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
 }
 
 // OCR is not supported by the Fireworks provider.
@@ -420,6 +440,11 @@ func (provider *FireworksProvider) VideoList(_ *schemas.BifrostContext, _ schema
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoListRequest, provider.GetProviderKey())
 }
 
+// VideoEdit is not supported by the Fireworks provider.
+func (provider *FireworksProvider) VideoEdit(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoEditRequest) (*schemas.BifrostVideoEditResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoEditRequest, provider.GetProviderKey())
+}
+
 // VideoRemix is not supported by Fireworks AI provider.
 func (provider *FireworksProvider) VideoRemix(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoRemixRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoRemixRequest, provider.GetProviderKey())
@@ -483,6 +508,11 @@ func (provider *FireworksProvider) FileContent(_ *schemas.BifrostContext, _ []sc
 // CountTokens is not supported by the Fireworks AI provider.
 func (provider *FireworksProvider) CountTokens(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.CountTokensRequest, provider.GetProviderKey())
+}
+
+// ModelRetrieve is not supported by the Fireworks AI provider.
+func (provider *FireworksProvider) ModelRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ModelRetrieveRequest, provider.GetProviderKey())
 }
 
 // Compaction is not supported by the Fireworks AI provider.

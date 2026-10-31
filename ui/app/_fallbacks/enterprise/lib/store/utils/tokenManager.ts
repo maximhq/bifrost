@@ -30,6 +30,8 @@ export const REFRESH_TOKEN_ENDPOINT = "";
 
 // User info type definition (matching enterprise version)
 export interface UserInfo {
+	sub?: string;
+	id?: string;
 	name?: string;
 	email?: string;
 	picture?: string;

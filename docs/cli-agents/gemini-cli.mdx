@@ -1,106 +1,126 @@
 ---
 title: "Gemini CLI"
-description: "Use Google's Gemini CLI with Bifrost for advanced reasoning capabilities with any provider."
+description: "Use Gemini CLI with Bifrost's GenAI-compatible endpoint and a Bifrost virtual key."
 icon: "diamond"
 ---
 
-[Gemini CLI](https://github.com/google-gemini/gemini-cli) is Google's powerful coding assistant with advanced reasoning capabilities.
+[Gemini CLI](https://github.com/google-gemini/gemini-cli) is Google's terminal
+coding agent. Bifrost exposes the GenAI-compatible endpoint it uses in API-key
+mode.
 
-
-<Note>
-If your Allowed Headers are already set to `*`, you can skip this note. If not and you face issues integrating Bifrost with Gemini CLI, try switching to `*` or adding the specific headers required by your client. By default, Bifrost whitelists: `Content-Type`, `Authorization`, `X-Requested-With`, `X-Stainless-Timeout`, and `X-Api-Key`.
-</Note>
-
-## To install Gemini CLI
+## Install Gemini CLI
 
 ```bash
 npm install -g @google/gemini-cli
 ```
 
-## Configuring Gemini CLI to work with Bifrost
-
-Gemini CLI supports multiple authentication methods. Choose the one that matches your account type.
-
-### Google account (OAuth)
-
-Log in with your Google account for free-tier access (60 requests/min, 1,000 requests/day).
-
-1. **Set the Bifrost base URL**
-   ```bash
-   export GOOGLE_GEMINI_BASE_URL=http://localhost:8080/genai
-   ```
-
-2. **Run Gemini CLI and sign in**
-   ```bash
-   gemini
-   ```
-   Select **Login with Google** and authenticate via your browser. All traffic automatically routes through Bifrost.
-
-### API key based usage
-
-For users with a Gemini API key (obtain one from [Google AI Studio](https://aistudio.google.com/apikey)):
-
-1. **Configure environment variables**
-   ```bash
-   export GEMINI_API_KEY=your-api-key  # Gemini API key or Bifrost virtual key
-   export GOOGLE_GEMINI_BASE_URL=http://localhost:8080/genai
-   ```
-
-2. **Run Gemini CLI**
-   ```bash
-   gemini
-   ```
-   Select **Use Gemini API Key** in the CLI prompt for authentication.
-
-![Gemini CLI authentication](../media/gemini-cli.png)
-
-### Google Cloud / Vertex AI
-
-For enterprise users with Vertex AI access:
-
-```bash
-export GOOGLE_API_KEY=your-api-key  # Google API key or Bifrost virtual key
-export GOOGLE_GENAI_USE_VERTEXAI=true
-export GOOGLE_GEMINI_BASE_URL=http://localhost:8080/genai
-gemini
-```
-
-<Tip>
-For paid Code Assist License users, set your Google Cloud project: `export GOOGLE_CLOUD_PROJECT="your-project-id"`
-</Tip>
-
-Now all Gemini CLI traffic flows through Bifrost, giving you access to any provider/model configured in your Bifrost setup, plus observability and governance.
-
-## Model Configuration
-
-Use the `-m` flag to start Gemini CLI with a specific model:
-
-```bash
-gemini -m gemini-2.5-flash
-gemini -m gemini-2.5-pro
-```
-
-## Using Non-Google Models with Gemini CLI
-
-Bifrost automatically translates GenAI API requests to other providers, so you can use Gemini CLI with models from OpenAI, Anthropic, Mistral, and more. Use the `provider/model-name` format to specify any Bifrost-configured model.
-
-```bash
-# Start with an OpenAI model
-gemini -m openai/gpt-5
-
-# Start with an Anthropic model
-gemini -m anthropic/claude-sonnet-4-5-20250929
-
-# Start with a Groq model
-gemini -m groq/llama-3.3-70b-versatile
-```
-
-### Supported Providers
-
-Bifrost supports the following providers with the `provider/model-name` format:
-
-`openai`, `azure`, `gemini`, `vertex`, `bedrock`, `mistral`, `groq`, `cerebras`, `deepseek`, `cohere`, `perplexity`, `xai`, `ollama`, `openrouter`, `huggingface`, `nebius`, `parasail`, `replicate`, `vllm`, `sgl`
+## Authentication requirement
 
 <Warning>
-Non-Google models **must support tool use** for Gemini CLI to work properly. Gemini CLI relies on tool calling for file operations, terminal commands, and code editing. Models without tool use support will fail on most operations.
+Gemini CLI currently requires a Bifrost virtual key when gateway inference
+authentication is enabled. An Enterprise browser SSO session by itself is not
+enough for this harness.
 </Warning>
+
+Gemini CLI sends its API-key credential as `x-goog-api-key`. Bifrost Enterprise
+agent sessions use `Authorization: Bearer <agent-token>`. Bifrost CLI therefore
+does not pass an SSO agent token directly to Gemini, because it would travel in
+the wrong credential field.
+
+Google account OAuth, Google Cloud ADC, Vertex service accounts, and Bifrost
+agent tokens are different authentication systems. Logging Gemini CLI into a
+Google account does not authenticate the process to Bifrost.
+
+## Recommended: launch with Bifrost CLI
+
+```bash
+bifrost context add production \
+  --base-url https://gateway.example.com \
+  --use
+
+printf '%s\n' "$BIFROST_VIRTUAL_KEY" |
+  bifrost auth set-virtual-key --stdin
+
+# Confirm the virtual key allows this model before launching
+bifrost models list
+
+bifrost run gemini --model gemini/gemini-2.5-pro
+```
+
+<Note>
+A new virtual key with no `provider_configs` denies all providers by default.
+Make sure `gemini/gemini-2.5-pro` (or the model you choose) appears in
+`bifrost models list` before launching, or the request is rejected.
+</Note>
+
+If you are also signed in through `bifrost auth login`, keep the virtual key
+configured for Gemini. Bifrost CLI uses the virtual key for this harness even
+though Claude Code, Codex, and OpenCode can use the SSO agent token.
+
+## Configure Gemini CLI manually
+
+Select **Use Gemini API Key** in Gemini CLI and set:
+
+```bash
+export GEMINI_API_KEY="your-bifrost-virtual-key"
+export GOOGLE_GEMINI_BASE_URL="http://localhost:8080/genai"
+
+gemini --model gemini/gemini-2.5-pro
+```
+
+For a remote gateway, use its HTTPS URL:
+
+```bash
+export GOOGLE_GEMINI_BASE_URL="https://gateway.example.com/genai"
+```
+
+<Note>
+`GOOGLE_GEMINI_BASE_URL` applies to Gemini API-key authentication. The Google
+OAuth and Vertex AI modes have different transports and credentials and are not
+the supported route for authenticating to Bifrost's `/genai` endpoint.
+</Note>
+
+## Use a non-Google model
+
+Bifrost can translate GenAI requests to another configured provider. Supply the
+full Bifrost model identifier:
+
+```bash
+bifrost run gemini --model openai/gpt-5
+bifrost run gemini --model anthropic/claude-sonnet-4-6
+bifrost run gemini --model groq/llama-3.3-70b-versatile
+```
+
+The selected model must support the function calls and streaming behavior
+Gemini CLI needs for file access, shell commands, and edits. A model being
+listed by `/v1/models` does not guarantee full coding-agent compatibility.
+
+## Troubleshooting
+
+### Bifrost says Gemini cannot use Enterprise SSO directly
+
+Configure a virtual key:
+
+```bash
+printf '%s\n' "$BIFROST_VIRTUAL_KEY" |
+  bifrost auth set-virtual-key --stdin
+```
+
+Then relaunch Gemini.
+
+### Gemini asks for an API key
+
+Confirm that `GEMINI_API_KEY` is present for a manual launch, or that
+`bifrost auth status` reports `has_virtual_key: true` when launching through
+Bifrost CLI.
+
+### Requests go to Google instead of Bifrost
+
+Select **Use Gemini API Key**, not Google account or Vertex authentication, and
+verify `GOOGLE_GEMINI_BASE_URL` ends in `/genai`.
+
+## Next steps
+
+- [Bifrost CLI](/quickstart/cli/getting-started)
+- [Virtual keys](/features/governance/virtual-keys)
+- [Provider configuration](/quickstart/gateway/provider-configuration)

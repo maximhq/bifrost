@@ -196,7 +196,7 @@ export function PromptSidebar() {
 									variant="outline"
 									className="h-8 w-8 shrink-0 bg-transparent"
 									data-testid="sidebar-create-menu"
-									aria-label="Create prompt or folder"
+									aria-label="Add prompt or folder"
 								>
 									<PlusIcon className="h-3.5 w-3.5" />
 								</Button>
@@ -209,7 +209,7 @@ export function PromptSidebar() {
 										onCreatePrompt();
 									}}
 								>
-									New Prompt
+									Add Prompt
 								</DropdownMenuItem>
 								<DropdownMenuItem
 									data-testid="sidebar-create-folder"
@@ -218,7 +218,7 @@ export function PromptSidebar() {
 										onCreateFolder();
 									}}
 								>
-									New Folder
+									Add Folder
 								</DropdownMenuItem>
 							</DropdownMenuContent>
 						</DropdownMenu>
@@ -389,6 +389,7 @@ function DroppableFolder({
 					"hover:bg-muted/50 group relative flex h-[30px] cursor-pointer items-center gap-1 rounded-sm px-2 transition-colors",
 					isDragOver && "bg-primary/10 ring-primary/30 ring-1",
 				)}
+				role="presentation"
 				onClick={onToggle}
 				data-testid={`sidebar-folder-${folder.id}`}
 			>
@@ -429,7 +430,7 @@ function DroppableFolder({
 									}}
 								>
 									<Plus className="mr-2 h-4 w-4" />
-									New Prompt
+									Add Prompt
 								</DropdownMenuItem>
 							)}
 							{canCreate && (canUpdate || canDelete) && <DropdownMenuSeparator />}
@@ -527,10 +528,20 @@ function DraggablePromptItem({ prompt, isSelected, onSelect, onEdit, onDelete, c
 				isSelected ? "bg-primary/10 text-primary" : "hover:bg-muted/50",
 				isDragging && "opacity-50",
 			)}
+			role="button"
+			tabIndex={0}
 			onClick={() => {
 				// Don't navigate if this was a drag
 				if (isDragging) return;
 				onSelect();
+			}}
+			onKeyDown={(e) => {
+				if (e.target !== e.currentTarget) return;
+				if (e.key === "Enter" || e.key === " ") {
+					e.preventDefault();
+					if (isDragging) return;
+					onSelect();
+				}
 			}}
 		>
 			<FileText className="h-4 w-4 shrink-0" />

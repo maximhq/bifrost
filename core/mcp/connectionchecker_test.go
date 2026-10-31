@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -259,13 +261,16 @@ func TestSetState_StaleGeneration_DoesNotOverwriteState(t *testing.T) {
 
 	// A check that captured generation 5 (before the transition) finishing
 	// late must not move the state at all.
-	checker.setState(schemas.MCPConnectionStateUnstable, 5)
+	checker.setState(schemas.MCPConnectionStateUnstable, 5, schemas.MCPConnectionFailureStagePing, errors.New("stale"))
 	require.Equal(t, schemas.MCPConnectionStateHealthy, manager.clientMap[config.ID].State, "a stale-generation state write must be dropped")
+	require.Nil(t, manager.clientMap[config.ID].LastFailure, "a dropped state write must not leave a failure record behind either")
 
 	// A check whose captured generation still matches the client's current
 	// one must apply normally — the guard isn't a blanket no-op.
-	checker.setState(schemas.MCPConnectionStateUnstable, 6)
+	checker.setState(schemas.MCPConnectionStateUnstable, 6, schemas.MCPConnectionFailureStagePing, errors.New("current"))
 	require.Equal(t, schemas.MCPConnectionStateUnstable, manager.clientMap[config.ID].State, "a current-generation state write must still apply")
+	require.NotNil(t, manager.clientMap[config.ID].LastFailure, "an applied failure write records its reason")
+	require.Equal(t, "current", manager.clientMap[config.ID].LastFailure.Message)
 }
 
 // TestSetState_FiresStateChangeCallbackOnGenuineTransition verifies
@@ -299,7 +304,7 @@ func TestSetState_FiresStateChangeCallbackOnGenuineTransition(t *testing.T) {
 
 	// Healthy -> Unstable: a genuine transition, must fire once. Generation 0
 	// matches this client's zero-value ConnGeneration (never bumped here).
-	checker.recordFailure(config.Name, "ping", errors.New("boom"), 0)
+	checker.recordFailure(config.Name, schemas.MCPConnectionFailureStagePing, errors.New("boom"), 0)
 	require.Len(t, calls, 1)
 	assert.Equal(t, config.ID, calls[0].clientID)
 	assert.Equal(t, config.Name, calls[0].name)
@@ -307,7 +312,7 @@ func TestSetState_FiresStateChangeCallbackOnGenuineTransition(t *testing.T) {
 	assert.Equal(t, schemas.MCPConnectionStateUnstable, calls[0].newState)
 
 	// Unstable -> Unstable: a no-op, must not fire again.
-	checker.recordFailure(config.Name, "ping", errors.New("boom again"), 0)
+	checker.recordFailure(config.Name, schemas.MCPConnectionFailureStagePing, errors.New("boom again"), 0)
 	require.Len(t, calls, 1, "a repeat failure that doesn't change state must not re-fire the callback")
 
 	// Unstable -> Healthy: a genuine transition, must fire again.
@@ -315,4 +320,35 @@ func TestSetState_FiresStateChangeCallbackOnGenuineTransition(t *testing.T) {
 	require.Len(t, calls, 2)
 	assert.Equal(t, schemas.MCPConnectionStateUnstable, calls[1].oldState)
 	assert.Equal(t, schemas.MCPConnectionStateHealthy, calls[1].newState)
+}
+
+// Kick runs a check ahead of the timer (10 minutes once healthy), and a burst of kicks costs one
+// check plus at most one follow-up.
+func TestClientConnectionChecker_KickChecksAheadOfTheTimer(t *testing.T) {
+	counter := newWireCounter()
+	ts := httptest.NewServer(counter.wrap(server.NewStreamableHTTPServer(newMatrixUpstream())))
+	t.Cleanup(ts.Close)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+	config := &schemas.MCPClientConfig{
+		ID: "kick", Name: "matrix", ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(ts.URL), NeedsSessionStickiness: schemas.Ptr(true), ToolsToExecute: []string{"*"},
+	}
+	require.NoError(t, m.connectToMCPClient(context.Background(), config))
+	// Settle any re-list the connect itself triggers (the 2026-07-28 listen stream's acknowledgement).
+	time.Sleep(200 * time.Millisecond)
+	before := counter.count("tools/list")
+
+	m.checkerManager.Kick(config.ID)
+	require.Eventually(t, func() bool { return counter.count("tools/list") == before+1 }, 2*time.Second, 10*time.Millisecond, "a kick runs a check now")
+
+	before = counter.count("tools/list")
+	for range 20 {
+		m.checkerManager.Kick(config.ID)
+	}
+	require.Eventually(t, func() bool { return counter.count("tools/list") > before }, 2*time.Second, 10*time.Millisecond)
+	time.Sleep(300 * time.Millisecond)
+	assert.LessOrEqual(t, counter.count("tools/list")-before, 2, "20 kicks collapse into one check and one follow-up")
+
+	m.checkerManager.Kick("no-such-client") // no checker: nothing happens
 }

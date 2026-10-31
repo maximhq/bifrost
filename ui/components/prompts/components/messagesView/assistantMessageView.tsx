@@ -183,6 +183,7 @@ export function AssistantMessageView({
 					/>
 				) : (
 					<div
+						role="presentation"
 						className={!disabled && !isStreaming ? "cursor-text" : undefined}
 						onClick={(e) => {
 							if (disabled || isStreaming || editMode) return;

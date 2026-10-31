@@ -83,7 +83,7 @@ func TestConvertBifrostToolToAnthropicDatedToolSearch(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			tool := responsesToolFromJSON(t, tc.raw)
 
-			got := convertBifrostToolToAnthropic("claude-sonnet-4-5-20250929", &tool, schemas.Anthropic, false)
+			got := convertBifrostToolToAnthropic(schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929"), &tool, schemas.Anthropic, false)
 			require.NotNil(t, got, "tool_search meta-tool must not be dropped")
 
 			require.NotNil(t, got.Type,
@@ -112,7 +112,8 @@ func TestConvertBifrostToolsToAnthropicToolSearchCatalog(t *testing.T) {
 		responsesToolFromJSON(t, `{"type":"function","name":"get_weather","description":"Get the weather","parameters":{"type":"object","properties":{"location":{"type":"string"}}},"defer_loading":true}`),
 	}
 
-	got, mcpServers := convertBifrostToolsToAnthropic("claude-sonnet-4-5-20250929", tools, schemas.Anthropic)
+	got, mcpServers, err := convertBifrostToolsToAnthropic(schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929"), tools, schemas.Anthropic)
+	require.NoError(t, err)
 	require.Empty(t, mcpServers)
 	require.Len(t, got, 2)
 
@@ -134,9 +135,10 @@ func TestConvertBifrostToolsToAnthropicToolSearchCatalog(t *testing.T) {
 
 // TestValidateResponsesToolsForProviderDatedToolSearch verifies the dated type
 // now reaches the per-provider feature gate. Before the fix it matched no case
-// and was kept unconditionally, so a dated tool_search leaked to Bedrock —
-// whose Converse API cannot run it (AWS restricts server-side tool search to
-// InvokeModel / InvokeModelWithResponseStream), arriving as a bogus custom tool.
+// and was kept unconditionally, so it bypassed the gate entirely and arrived
+// at providers as a bogus custom tool. Bedrock keeps it too since #6825, but
+// through the gate (ToolSearch is on because the provider routes such
+// requests to InvokeModel, the API AWS allows it on).
 func TestValidateResponsesToolsForProviderDatedToolSearch(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -158,18 +160,19 @@ func TestValidateResponsesToolsForProviderDatedToolSearch(t *testing.T) {
 			wantKeep: 1,
 		},
 		{
-			name:        "bedrock drops dated regex variant (Converse cannot run it)",
-			provider:    schemas.Bedrock,
-			raw:         `{"type":"tool_search_tool_regex_20251119","name":"tool_search_tool_regex"}`,
-			wantKeep:    0,
-			wantDropped: []string{"tool_search"},
+			// Kept since #6825: the Bedrock provider routes tool_search requests to
+			// InvokeModel, the API AWS allows it on.
+			name:     "bedrock keeps dated regex variant (served via InvokeModel routing)",
+			provider: schemas.Bedrock,
+			raw:      `{"type":"tool_search_tool_regex_20251119","name":"tool_search_tool_regex"}`,
+			wantKeep: 1,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tool := responsesToolFromJSON(t, tc.raw)
-			keep, dropped := ValidateResponsesToolsForProvider([]schemas.ResponsesTool{tool}, tc.provider)
+			keep, dropped := ValidateResponsesToolsForProvider([]schemas.ResponsesTool{tool}, schemas.ResolveModelCaps(tc.provider, "claude-opus-4-5"))
 			assert.Len(t, keep, tc.wantKeep)
 			assert.Equal(t, tc.wantDropped, dropped)
 		})
@@ -197,7 +200,7 @@ func TestConvertAnthropicToolToBifrostToolSearchRoundTrip(t *testing.T) {
 			require.NotNil(t, neutral)
 			assert.Equal(t, schemas.ResponsesToolTypeToolSearch, neutral.Type)
 
-			back := convertBifrostToolToAnthropic("claude-sonnet-4-5-20250929", neutral, schemas.Anthropic, false)
+			back := convertBifrostToolToAnthropic(schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929"), neutral, schemas.Anthropic, false)
 			require.NotNil(t, back)
 			require.NotNil(t, back.Type)
 			assert.Equal(t, tc.wantType, *back.Type, "variant must survive the round trip")

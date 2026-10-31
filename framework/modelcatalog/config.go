@@ -26,6 +26,14 @@ const (
 	// corrupted config and falls back to the default.
 	LiveModelsSyncDisabled = int64(0)
 
+	// MCPLibrarySyncDisabled is the sentinel for "never sync the MCP server
+	// catalog in the background". Mirrors LiveModelsSyncDisabled: 0 is a
+	// deliberate opt-out, a negative value is corrupted config that falls back
+	// to the default. Set this on an air-gapped deployment that does not ship a
+	// local catalog file, so the gateway stops dialing the default endpoint on
+	// every tick. An explicit force-sync from the UI still runs.
+	MCPLibrarySyncDisabled = int64(0)
+
 	ConfigLastPricingSyncKey    = "LastModelPricingSync"
 	ConfigLastParamsSyncKey     = "LastModelParametersSync"
 	ConfigLastMCPLibrarySyncKey = "LastMCPLibrarySync"

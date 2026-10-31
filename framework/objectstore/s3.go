@@ -3,6 +3,7 @@ package objectstore
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -102,7 +103,7 @@ func NewS3ObjectStore(ctx context.Context, cfg *Config, logger schemas.Logger) (
 	return &S3ObjectStore{
 		client:   client,
 		bucket:   bucket,
-		compress: cfg.Compress,
+		compress: cfg.gzipObjects(),
 		logger:   logger,
 	}, nil
 }
@@ -110,34 +111,56 @@ func NewS3ObjectStore(ctx context.Context, cfg *Config, logger schemas.Logger) (
 // Put uploads data with optional S3 object tags. When compression is enabled,
 // data is gzip-compressed before upload.
 func (s *S3ObjectStore) Put(ctx context.Context, key string, data []byte, tags map[string]string) error {
+	return s.PutWithOptions(ctx, key, data, tags, PutOptions{})
+}
+
+// PutWithOptions uploads data with a caller-chosen content type, optionally
+// bypassing the store's gzip (used for parquet bodies, which compress pages
+// internally and must stay readable by parquet tooling).
+func (s *S3ObjectStore) PutWithOptions(ctx context.Context, key string, data []byte, tags map[string]string, opts PutOptions) error {
+	input, err := buildPutObjectInput(s.bucket, key, data, tags, s.gzipBody(opts), opts.ContentType)
+	if err != nil {
+		return err
+	}
+	if _, err := s.client.PutObject(ctx, input); err != nil {
+		return fmt.Errorf("objectstore: put object %s: %w", key, err)
+	}
+	return nil
+}
+
+// gzipBody reports whether a write with opts is gzipped by this store.
+func (s *S3ObjectStore) gzipBody(opts PutOptions) bool {
+	return s.compress && !opts.SkipCompression
+}
+
+// buildPutObjectInput assembles the PutObject request, gzipping the body and
+// setting Content-Encoding when gzipBody is true.
+func buildPutObjectInput(bucket, key string, data []byte, tags map[string]string, gzipBody bool, contentType string) (*s3.PutObjectInput, error) {
+	if contentType == "" {
+		contentType = ContentTypeJSON
+	}
 	body := data
-	if s.compress {
+	if gzipBody {
 		compressed, err := gzipCompress(data)
 		if err != nil {
-			return fmt.Errorf("objectstore: gzip compress: %w", err)
+			return nil, fmt.Errorf("objectstore: gzip compress: %w", err)
 		}
 		body = compressed
 	}
 
 	input := &s3.PutObjectInput{
-		Bucket:      aws.String(s.bucket),
+		Bucket:      aws.String(bucket),
 		Key:         aws.String(key),
 		Body:        bytes.NewReader(body),
-		ContentType: aws.String("application/json"),
+		ContentType: aws.String(contentType),
 	}
-	if s.compress {
+	if gzipBody {
 		input.ContentEncoding = aws.String("gzip")
 	}
-
 	if len(tags) > 0 {
 		input.Tagging = aws.String(encodeTags(tags))
 	}
-
-	_, err := s.client.PutObject(ctx, input)
-	if err != nil {
-		return fmt.Errorf("objectstore: put object %s: %w", key, err)
-	}
-	return nil
+	return input, nil
 }
 
 // Get retrieves and decompresses an object by key.
@@ -147,6 +170,10 @@ func (s *S3ObjectStore) Get(ctx context.Context, key string) ([]byte, error) {
 		Key:    aws.String(key),
 	})
 	if err != nil {
+		var noSuchKey *types.NoSuchKey
+		if errors.As(err, &noSuchKey) {
+			return nil, fmt.Errorf("objectstore: get object %s: %w", key, ErrNotFound)
+		}
 		return nil, fmt.Errorf("objectstore: get object %s: %w", key, err)
 	}
 	defer output.Body.Close()

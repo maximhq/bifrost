@@ -8,21 +8,23 @@ import { getRegistrationLabel, getUserHomePrefix } from "../utils";
 export function CodexHarnessInstall({
 	canGenerateCommand,
 	clientConfig,
+	emptyMessage,
+	headers,
 	platform,
 	selectedServers,
 	serverScope,
-	virtualKey,
 }: HarnessInstallProps) {
 	const [configScope, setConfigScope] = useState<CodexConfigScope>("user");
 
-	const config = useMemo(() => {
-		if (!virtualKey) return "";
-		return buildCodexConfig({
-			clientConfig,
-			selectedServers: serverScope === "selected" ? selectedServers : undefined,
-			virtualKey,
-		});
-	}, [clientConfig, selectedServers, serverScope, virtualKey]);
+	const config = useMemo(
+		() =>
+			buildCodexConfig({
+				clientConfig,
+				headers,
+				selectedServers: serverScope === "selected" ? selectedServers : undefined,
+			}),
+		[clientConfig, headers, selectedServers, serverScope],
+	);
 
 	const configPath = configScope === "project" ? ".codex/config.toml" : `${getUserHomePrefix(platform)}/.codex/config.toml`;
 
@@ -43,7 +45,7 @@ export function CodexHarnessInstall({
 					</Select>
 				}
 				copySuccessMessage="Config copied"
-				emptyMessage={virtualKey ? "Select servers or use Gateway root." : "Select a virtual key to generate the config."}
+				emptyMessage={emptyMessage}
 				harnessName="Codex"
 				label="config.toml"
 				logoSrc="/images/harness/codex.svg"

@@ -14,7 +14,7 @@ permissions:
 jobs:
   test-e2e-ui:
     name: E2E UI (Playwright)
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     timeout-minutes: 45
     permissions:
       contents: read
@@ -32,7 +32,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.5"
+          go-version: "1.27.3"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -46,8 +46,7 @@ jobs:
             echo "Installing Docker Compose plugin..."
             DOCKER_CONFIG=${DOCKER_CONFIG:-$HOME/.docker}
             mkdir -p "$DOCKER_CONFIG/cli-plugins"
-            curl -SL "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o "$DOCKER_CONFIG/cli-plugins/docker-compose"
-            chmod +x "$DOCKER_CONFIG/cli-plugins/docker-compose"
+            ./.github/workflows/scripts/install-docker-compose.sh "$DOCKER_CONFIG/cli-plugins/docker-compose"
             docker compose version
           else
             echo "Docker Compose plugin is available"
@@ -68,6 +67,8 @@ jobs:
         with:
           name: playwright-report
           path: |
+            tests/e2e/reports/
             tests/e2e/test-results/
             tests/e2e/playwright-report/
+            tmp/e2e/workers/*/bifrost.log
           retention-days: 7

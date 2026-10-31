@@ -64,7 +64,7 @@ func makeTestLog(id string) *logstore.Log {
 // recover and persist all of them.
 func TestCleanupDrainsRecoveredBatchNoDrops(t *testing.T) {
 	rec := &recordingStore{LogStore: newTestStore(t)}
-	plugin, err := Init(context.Background(), &Config{}, testLogger{}, rec, nil, nil)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, rec, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -106,7 +106,7 @@ func TestCleanupDrainsCombinedQueueAndBatchNoDrops(t *testing.T) {
 		LogStore: newTestStore(t),
 		delay:    25 * time.Millisecond, // slow store keeps batchWriter busy so the channel buffer fills
 	}
-	plugin, err := Init(context.Background(), &Config{}, testLogger{}, rec, nil, nil)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, rec, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -141,7 +141,7 @@ func TestCleanupDrainsCombinedQueueAndBatchNoDrops(t *testing.T) {
 // subsequent enqueues are dropped at the source and do not panic.
 func TestCleanupRejectsNewSendsAfterClosed(t *testing.T) {
 	rec := &recordingStore{LogStore: newTestStore(t)}
-	plugin, err := Init(context.Background(), &Config{}, testLogger{}, rec, nil, nil)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, rec, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -178,7 +178,7 @@ func TestCleanupRejectsNewSendsAfterClosed(t *testing.T) {
 // call must be a no-op rather than re-cancelling, re-closing channels, or
 // panicking.
 func TestCleanupIsIdempotent(t *testing.T) {
-	plugin, err := Init(context.Background(), &Config{}, testLogger{}, newTestStore(t), nil, nil)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, newTestStore(t), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -191,7 +191,7 @@ func TestCleanupIsIdempotent(t *testing.T) {
 }
 
 func TestWriterConfigDefaultsAndInitOverrides(t *testing.T) {
-	plugin, err := Init(context.Background(), &Config{}, testLogger{}, newTestStore(t), nil, nil)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, newTestStore(t), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -215,7 +215,7 @@ func TestWriterConfigDefaultsAndInitOverrides(t *testing.T) {
 		WriteQueueCapacity:       11,
 		DeferredUsageConcurrency: 2,
 	}
-	plugin, err = Init(context.Background(), &Config{Writer: writer}, testLogger{}, newTestStore(t), nil, nil)
+	plugin, err = Init(context.Background(), &Config{Writer: writer}, testLogger{}, newTestStore(t), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() with writer error = %v", err)
 	}
@@ -230,5 +230,63 @@ func TestWriterConfigDefaultsAndInitOverrides(t *testing.T) {
 	}
 	if err := plugin.Cleanup(); err != nil {
 		t.Fatalf("Cleanup() with writer error = %v", err)
+	}
+}
+
+// flushCountingStore records the processing-row Flush calls the cleanup tick
+// issues and lets a test pretend another node holds the migration lock.
+type flushCountingStore struct {
+	logstore.LogStore
+	mu        sync.Mutex
+	flushes   int
+	migrating bool
+}
+
+func (s *flushCountingStore) setMigrating(v bool) { s.mu.Lock(); s.migrating = v; s.mu.Unlock() }
+
+func (s *flushCountingStore) MigrationInProgress(context.Context) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.migrating
+}
+
+func (s *flushCountingStore) count() int { s.mu.Lock(); defer s.mu.Unlock(); return s.flushes }
+
+func (s *flushCountingStore) Flush(context.Context, time.Time) error {
+	s.mu.Lock()
+	s.flushes++
+	s.mu.Unlock()
+	return nil
+}
+func (s *flushCountingStore) FlushMCPToolLogs(context.Context, time.Time) error {
+	s.mu.Lock()
+	s.flushes++
+	s.mu.Unlock()
+	return nil
+}
+func (s *flushCountingStore) FlushAgentLogs(context.Context, time.Time) error {
+	s.mu.Lock()
+	s.flushes++
+	s.mu.Unlock()
+	return nil
+}
+
+// TestCleanupTickSkipsFlushWhileMigrating pins that the periodic
+// processing-row deletes stay off the logs table while another node migrates,
+// and run as usual (all three tables) once the lock is released.
+func TestCleanupTickSkipsFlushWhileMigrating(t *testing.T) {
+	store := &flushCountingStore{LogStore: newTestStore(t)}
+	plugin := &LoggerPlugin{ctx: context.Background(), store: store, logger: testLogger{}}
+
+	store.setMigrating(true)
+	plugin.cleanupOldProcessingLogs()
+	if got := store.count(); got != 0 {
+		t.Fatalf("expected no Flush calls while the migration lock is held, got %d", got)
+	}
+
+	store.setMigrating(false)
+	plugin.cleanupOldProcessingLogs()
+	if got := store.count(); got != 3 {
+		t.Fatalf("expected the LLM, MCP and A2A flushes once the lock cleared, got %d", got)
 	}
 }

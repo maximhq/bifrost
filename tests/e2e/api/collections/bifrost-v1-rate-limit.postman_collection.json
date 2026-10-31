@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "Bifrost V1 - Rate Limit / Budget",
-    "description": "Rate limit enforcement tests. Creates VK with request_max_limit: 2, expects 429 on 3rd request.",
+    "description": "Rate limit and budget enforcement tests at the wire level. Request limit: VK with request_max_limit 2 allows exactly 2 usage-bearing requests and blocks the 3rd with 429 request_limited (enforcement compares with >=), then recovers after the 1m window. Token limit: token_max_limit 1 blocks the 2nd request with 429 token_limited. Budget: a tiny max_limit blocks with 402 budget_exceeded once cost accrues. Counters are read via GET /api/governance/virtual-keys/{id}?from_memory=true (immediate) - never via /api/governance/budgets, /rate-limits, or /quota, which lag behind the 10s DB dump ticker. Counter-dependent assertions are skip-guarded on priming success so the suite stays green when no provider key is configured. Deeper budget-cycle semantics (calendar alignment, overrides, multi-window) are covered by the Go suite in tests/governance (make test-governance). Model config spelling: a provider-scoped model config budget on chat_model is exhausted by one request, after which the prefixed upper-case spelling and the dated alias of the same model are refused with 402 budget_exceeded while a sibling model is not.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -29,6 +29,100 @@
       "key": "vk_id",
       "value": "",
       "type": "string"
+    },
+    {
+      "key": "tk_vk_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "tk_vk_value",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "bg_vk_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "bg_vk_value",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "rl_priming_ok",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "tk_priming_ok",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "bg_priming_ok",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "bg_usage_ok",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "rl_poll1_retry",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "rl_poll2_retry",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "tk_poll_retry",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "bg_poll_retry",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "rl_setup_epoch",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "rl_window_anchor_epoch",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "chat_model_alias",
+      "value": "gpt-4o-2024-08-06"
+    },
+    {
+      "key": "chat_model_sibling",
+      "value": "gpt-4o-mini"
+    },
+    {
+      "key": "ms_mc_id",
+      "value": ""
+    },
+    {
+      "key": "ms_vk_id",
+      "value": ""
+    },
+    {
+      "key": "ms_vk_value",
+      "value": ""
+    },
+    {
+      "key": "ms_poll_retry",
+      "value": ""
     }
   ],
   "item": [
@@ -41,12 +135,17 @@
             "type": "text/javascript",
             "exec": [
               "var ts = Date.now();",
+              "var provider = pm.variables.get('provider') || 'openai';",
+              "// The rolling 1m window anchors on the VK's creation instant; keep the epoch",
+              "// as a fallback anchor for the window-reset wait.",
+              "pm.collectionVariables.set('rl_setup_epoch', String(ts));",
               "var body = {",
               "  name: 'Rate Limit Test VK ' + ts,",
               "  rate_limit: {",
               "    request_max_limit: 2,",
               "    request_reset_duration: '1m'",
-              "  }",
+              "  },",
+              "  provider_configs: [{provider: provider, weight: 1.0, allowed_models: ['*'], key_ids: ['*']}]",
               "};",
               "pm.request.body.raw = JSON.stringify(body);"
             ]
@@ -95,6 +194,947 @@
       }
     },
     {
+      "name": "Setup - Create VK with token limit",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var ts = Date.now();",
+              "var provider = pm.variables.get('provider') || 'openai';",
+              "var body = {",
+              "  name: 'Token Limit Test VK ' + ts,",
+              "  rate_limit: {",
+              "    token_max_limit: 1,",
+              "    token_reset_duration: '1m'",
+              "  },",
+              "  provider_configs: [{provider: provider, weight: 1.0, allowed_models: ['*'], key_ids: ['*']}]",
+              "};",
+              "pm.request.body.raw = JSON.stringify(body);"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "pm.test('Create token-limit VK returns 2xx', function() { pm.expect(code, 'body: ' + pm.response.text()).to.be.within(200, 299); });",
+              "if (code >= 200 && code <= 299) {",
+              "  var json = pm.response.json();",
+              "  var vk = json.virtual_key || json;",
+              "  if (vk.id) pm.collectionVariables.set('tk_vk_id', vk.id);",
+              "  if (vk.value) pm.collectionVariables.set('tk_vk_value', vk.value);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Setup - Create VK with tiny budget",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var ts = Date.now();",
+              "var provider = pm.variables.get('provider') || 'openai';",
+              "// Any successful completion costs more than a millionth of a dollar, so",
+              "// the first usage-bearing request exhausts this budget (checks are >=).",
+              "var body = {",
+              "  name: 'Budget Test VK ' + ts,",
+              "  budgets: [{max_limit: 0.000001, reset_duration: '1h'}],",
+              "  provider_configs: [{provider: provider, weight: 1.0, allowed_models: ['*'], key_ids: ['*']}]",
+              "};",
+              "pm.request.body.raw = JSON.stringify(body);"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "pm.test('Create budget VK returns 2xx', function() { pm.expect(code, 'body: ' + pm.response.text()).to.be.within(200, 299); });",
+              "if (code >= 200 && code <= 299) {",
+              "  var json = pm.response.json();",
+              "  var vk = json.virtual_key || json;",
+              "  if (vk.id) pm.collectionVariables.set('bg_vk_id', vk.id);",
+              "  if (vk.value) pm.collectionVariables.set('bg_vk_value', vk.value);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Request 1 within the request limit succeeds",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "if (code >= 200 && code < 300) {",
+              "  pm.collectionVariables.set('rl_priming_ok', '1');",
+              "  pm.test('Request 1 is not rate limited', function() {",
+              "    pm.expect(pm.response.text()).to.not.include('request_limited');",
+              "  });",
+              "} else {",
+              "  pm.collectionVariables.set('rl_priming_ok', '');",
+              "  // Counters only move on usage-bearing responses, so without a working",
+              "  // provider the downstream limit assertions are skipped, not failed.",
+              "  pm.test('Skipped: provider unavailable for priming (status ' + code + ')', function() {",
+              "    pm.expect(true).to.be.true;",
+              "  });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-vk",
+            "value": "{{vk_value}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+        },
+        "url": {
+          "raw": "{{base_url}}/v1/chat/completions",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Counter reflects request 1",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var ok = pm.collectionVariables.get('rl_priming_ok');",
+              "if (!ok && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+              "var retry = Number(pm.collectionVariables.get('rl_poll1_retry') || 0);",
+              "if (retry > 0) {",
+              "  // Post-response usage tracking is async (a goroutine bumps the in-memory",
+              "  // counters); give it 500ms between polls. Newman drains pending timers",
+              "  // before sending the request.",
+              "  var until = Date.now() + 500;",
+              "  (function waitBeforeRetry() { if (Date.now() < until) { setTimeout(waitBeforeRetry, 100); } })();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var ok = pm.collectionVariables.get('rl_priming_ok');",
+              "if (!ok) { pm.test('Skipped: provider unavailable', function() { pm.expect(true).to.be.true; }); return; }",
+              "var code = pm.response.code;",
+              "pm.test('Get VK from memory returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+              "if (code !== 200) { return; }",
+              "var jsonData = pm.response.json();",
+              "var vk = (jsonData && (jsonData.virtual_key || jsonData)) || {};",
+              "var usage = Number(vk.rate_limit && vk.rate_limit.request_current_usage) || 0;",
+              "var retry = Number(pm.collectionVariables.get('rl_poll1_retry') || 0);",
+              "if (usage < 1 && retry < 20) {",
+              "  pm.collectionVariables.set('rl_poll1_retry', String(retry + 1));",
+              "  if (typeof pm.execution !== 'undefined' && pm.execution.setNextRequest) { pm.execution.setNextRequest(pm.info.requestName); } else { postman.setNextRequest(pm.info.requestName); }",
+              "  return;",
+              "}",
+              "pm.test('request_current_usage reflects request 1', function() {",
+              "  pm.expect(usage, 'usage after ' + retry + ' polls').to.be.at.least(1);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}?from_memory=true",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{vk_id}}"
+          ],
+          "query": [
+            {
+              "key": "from_memory",
+              "value": "true"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Request 2 passes at the boundary",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var ok = pm.collectionVariables.get('rl_priming_ok');",
+              "if (!ok && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "if (code >= 200 && code < 300) {",
+              "  pm.collectionVariables.set('rl_priming_ok', '1');",
+              "  pm.test('Request 2 is not rate limited', function() {",
+              "    pm.expect(pm.response.text()).to.not.include('request_limited');",
+              "  });",
+              "} else {",
+              "  pm.collectionVariables.set('rl_priming_ok', '');",
+              "  // Counters only move on usage-bearing responses, so without a working",
+              "  // provider the downstream limit assertions are skipped, not failed.",
+              "  pm.test('Skipped: provider unavailable for priming (status ' + code + ')', function() {",
+              "    pm.expect(true).to.be.true;",
+              "  });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-vk",
+            "value": "{{vk_value}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+        },
+        "url": {
+          "raw": "{{base_url}}/v1/chat/completions",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Counter reflects request 2",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var ok = pm.collectionVariables.get('rl_priming_ok');",
+              "if (!ok && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+              "var retry = Number(pm.collectionVariables.get('rl_poll2_retry') || 0);",
+              "if (retry > 0) {",
+              "  // Post-response usage tracking is async (a goroutine bumps the in-memory",
+              "  // counters); give it 500ms between polls. Newman drains pending timers",
+              "  // before sending the request.",
+              "  var until = Date.now() + 500;",
+              "  (function waitBeforeRetry() { if (Date.now() < until) { setTimeout(waitBeforeRetry, 100); } })();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var ok = pm.collectionVariables.get('rl_priming_ok');",
+              "if (!ok) { pm.test('Skipped: provider unavailable', function() { pm.expect(true).to.be.true; }); return; }",
+              "var code = pm.response.code;",
+              "pm.test('Get VK from memory returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+              "if (code !== 200) { return; }",
+              "var jsonData = pm.response.json();",
+              "var vk = (jsonData && (jsonData.virtual_key || jsonData)) || {};",
+              "var usage = Number(vk.rate_limit && vk.rate_limit.request_current_usage) || 0;",
+              "var retry = Number(pm.collectionVariables.get('rl_poll2_retry') || 0);",
+              "if (usage < 2 && retry < 20) {",
+              "  pm.collectionVariables.set('rl_poll2_retry', String(retry + 1));",
+              "  if (typeof pm.execution !== 'undefined' && pm.execution.setNextRequest) { pm.execution.setNextRequest(pm.info.requestName); } else { postman.setNextRequest(pm.info.requestName); }",
+              "  return;",
+              "}",
+              "pm.test('request_current_usage reflects request 2', function() {",
+              "  pm.expect(usage, 'usage after ' + retry + ' polls').to.be.at.least(2);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}?from_memory=true",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{vk_id}}"
+          ],
+          "query": [
+            {
+              "key": "from_memory",
+              "value": "true"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Request 3 is blocked with 429 request_limited",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var ok = pm.collectionVariables.get('rl_priming_ok');",
+              "if (!ok && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var ok = pm.collectionVariables.get('rl_priming_ok');",
+              "if (!ok) { pm.test('Skipped: provider unavailable', function() { pm.expect(true).to.be.true; }); return; }",
+              "// Enforcement compares with >= (2 >= 2) and fires pre-provider.",
+              "pm.test('Request 3 returns 429', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(429); });",
+              "pm.test('Rejection is request_limited', function() { pm.expect(pm.response.text()).to.include('request_limited'); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-vk",
+            "value": "{{vk_value}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+        },
+        "url": {
+          "raw": "{{base_url}}/v1/chat/completions",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Blocked request does not inflate the counter",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var ok = pm.collectionVariables.get('rl_priming_ok');",
+              "if (!ok && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var ok = pm.collectionVariables.get('rl_priming_ok');",
+              "if (!ok) { pm.test('Skipped: provider unavailable', function() { pm.expect(true).to.be.true; }); return; }",
+              "var code = pm.response.code;",
+              "pm.test('Get VK from memory returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+              "if (code !== 200) { return; }",
+              "var jsonData = pm.response.json();",
+              "var vk = (jsonData && (jsonData.virtual_key || jsonData)) || {};",
+              "var usage = Number(vk.rate_limit && vk.rate_limit.request_current_usage) || 0;",
+              "pm.test('429 did not bump request_current_usage', function() { pm.expect(usage).to.equal(2); });",
+              "// Anchor for the window-reset wait: the counter's own last reset instant.",
+              "var lastReset = vk.rate_limit && vk.rate_limit.request_last_reset;",
+              "var epoch = Date.parse(lastReset || '') || Number(pm.collectionVariables.get('rl_setup_epoch') || 0);",
+              "pm.collectionVariables.set('rl_window_anchor_epoch', String(epoch));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}?from_memory=true",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{vk_id}}"
+          ],
+          "query": [
+            {
+              "key": "from_memory",
+              "value": "true"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Window reset restores access",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var ok = pm.collectionVariables.get('rl_priming_ok');",
+              "if (!ok && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+              "// Wait out the rest of the 1m window plus a 2s margin. Request-time lazy",
+              "// reset means enforcement allows immediately after the boundary even if",
+              "// the 10s background sweep has not zeroed the counter yet. Max wait ~62s,",
+              "// under the runner's 120s script timeout.",
+              "var deadline = Number(pm.collectionVariables.get('rl_window_anchor_epoch') || 0) + 62000;",
+              "(function waitForReset() {",
+              "  if (Date.now() < deadline) {",
+              "    setTimeout(waitForReset, 250);",
+              "  }",
+              "})();"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var ok = pm.collectionVariables.get('rl_priming_ok');",
+              "if (!ok) { pm.test('Skipped: provider unavailable', function() { pm.expect(true).to.be.true; }); return; }",
+              "// A 429 here would mean the window never reset; the provider call itself",
+              "// may still fail for unrelated reasons, so only the limiter is asserted.",
+              "pm.test('Post-reset request is not rate limited', function() {",
+              "  pm.expect(pm.response.text()).to.not.include('request_limited');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-vk",
+            "value": "{{vk_value}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+        },
+        "url": {
+          "raw": "{{base_url}}/v1/chat/completions",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Token request 1 within the token limit succeeds",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "if (code >= 200 && code < 300) {",
+              "  pm.collectionVariables.set('tk_priming_ok', '1');",
+              "  pm.test('Token request 1 is not rate limited', function() {",
+              "    pm.expect(pm.response.text()).to.not.include('token_limited');",
+              "  });",
+              "} else {",
+              "  pm.collectionVariables.set('tk_priming_ok', '');",
+              "  // Counters only move on usage-bearing responses, so without a working",
+              "  // provider the downstream limit assertions are skipped, not failed.",
+              "  pm.test('Skipped: provider unavailable for priming (status ' + code + ')', function() {",
+              "    pm.expect(true).to.be.true;",
+              "  });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-vk",
+            "value": "{{tk_vk_value}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+        },
+        "url": {
+          "raw": "{{base_url}}/v1/chat/completions",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Token counter reflects usage",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var ok = pm.collectionVariables.get('tk_priming_ok');",
+              "if (!ok && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+              "var retry = Number(pm.collectionVariables.get('tk_poll_retry') || 0);",
+              "if (retry > 0) {",
+              "  // Post-response usage tracking is async (a goroutine bumps the in-memory",
+              "  // counters); give it 500ms between polls. Newman drains pending timers",
+              "  // before sending the request.",
+              "  var until = Date.now() + 500;",
+              "  (function waitBeforeRetry() { if (Date.now() < until) { setTimeout(waitBeforeRetry, 100); } })();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var ok = pm.collectionVariables.get('tk_priming_ok');",
+              "if (!ok) { pm.test('Skipped: provider unavailable', function() { pm.expect(true).to.be.true; }); return; }",
+              "var code = pm.response.code;",
+              "pm.test('Get VK from memory returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+              "if (code !== 200) { return; }",
+              "var jsonData = pm.response.json();",
+              "var vk = (jsonData && (jsonData.virtual_key || jsonData)) || {};",
+              "var usage = Number(vk.rate_limit && vk.rate_limit.token_current_usage) || 0;",
+              "var retry = Number(pm.collectionVariables.get('tk_poll_retry') || 0);",
+              "if (usage < 1 && retry < 20) {",
+              "  pm.collectionVariables.set('tk_poll_retry', String(retry + 1));",
+              "  if (typeof pm.execution !== 'undefined' && pm.execution.setNextRequest) { pm.execution.setNextRequest(pm.info.requestName); } else { postman.setNextRequest(pm.info.requestName); }",
+              "  return;",
+              "}",
+              "pm.test('token_current_usage reflects the first response', function() {",
+              "  pm.expect(usage, 'usage after ' + retry + ' polls').to.be.at.least(1);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys/{{tk_vk_id}}?from_memory=true",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{tk_vk_id}}"
+          ],
+          "query": [
+            {
+              "key": "from_memory",
+              "value": "true"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Token request 2 is blocked with 429 token_limited",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var ok = pm.collectionVariables.get('tk_priming_ok');",
+              "if (!ok && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var ok = pm.collectionVariables.get('tk_priming_ok');",
+              "if (!ok) { pm.test('Skipped: provider unavailable', function() { pm.expect(true).to.be.true; }); return; }",
+              "pm.test('Token request 2 returns 429', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(429); });",
+              "pm.test('Rejection is token_limited', function() { pm.expect(pm.response.text()).to.include('token_limited'); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-vk",
+            "value": "{{tk_vk_value}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+        },
+        "url": {
+          "raw": "{{base_url}}/v1/chat/completions",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Budget request 1 within the budget succeeds",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "if (code >= 200 && code < 300) {",
+              "  pm.collectionVariables.set('bg_priming_ok', '1');",
+              "  pm.test('Budget request 1 is not rate limited', function() {",
+              "    pm.expect(pm.response.text()).to.not.include('budget_exceeded');",
+              "  });",
+              "} else {",
+              "  pm.collectionVariables.set('bg_priming_ok', '');",
+              "  // Counters only move on usage-bearing responses, so without a working",
+              "  // provider the downstream limit assertions are skipped, not failed.",
+              "  pm.test('Skipped: provider unavailable for priming (status ' + code + ')', function() {",
+              "    pm.expect(true).to.be.true;",
+              "  });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-vk",
+            "value": "{{bg_vk_value}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+        },
+        "url": {
+          "raw": "{{base_url}}/v1/chat/completions",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Budget usage is recorded",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var ok = pm.collectionVariables.get('bg_priming_ok');",
+              "if (!ok && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+              "var retry = Number(pm.collectionVariables.get('bg_poll_retry') || 0);",
+              "if (retry > 0) {",
+              "  // Post-response usage tracking is async (a goroutine bumps the in-memory",
+              "  // counters); give it 500ms between polls. Newman drains pending timers",
+              "  // before sending the request.",
+              "  var until = Date.now() + 500;",
+              "  (function waitBeforeRetry() { if (Date.now() < until) { setTimeout(waitBeforeRetry, 100); } })();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var ok = pm.collectionVariables.get('bg_priming_ok');",
+              "if (!ok) { pm.test('Skipped: provider unavailable', function() { pm.expect(true).to.be.true; }); return; }",
+              "var code = pm.response.code;",
+              "pm.test('Get VK from memory returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+              "if (code !== 200) { return; }",
+              "var jsonData = pm.response.json();",
+              "var vk = (jsonData && (jsonData.virtual_key || jsonData)) || {};",
+              "var budgets = vk.budgets || [];",
+              "var usage = 0;",
+              "for (var i = 0; i < budgets.length; i++) { usage = Math.max(usage, Number(budgets[i].current_usage) || 0); }",
+              "var retry = Number(pm.collectionVariables.get('bg_poll_retry') || 0);",
+              "if (usage <= 0 && retry < 20) {",
+              "  pm.collectionVariables.set('bg_poll_retry', String(retry + 1));",
+              "  if (typeof pm.execution !== 'undefined' && pm.execution.setNextRequest) { pm.execution.setNextRequest(pm.info.requestName); } else { postman.setNextRequest(pm.info.requestName); }",
+              "  return;",
+              "}",
+              "if (usage > 0) {",
+              "  pm.collectionVariables.set('bg_usage_ok', '1');",
+              "  pm.test('Budget current_usage accrued cost', function() { pm.expect(usage).to.be.above(0); });",
+              "} else {",
+              "  pm.collectionVariables.set('bg_usage_ok', '');",
+              "  // Cost stays zero when the environment has no pricing data for the",
+              "  // model; the 402 assertion is skipped rather than failed.",
+              "  pm.test('Skipped: no cost recorded (pricing unavailable)', function() { pm.expect(true).to.be.true; });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys/{{bg_vk_id}}?from_memory=true",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{bg_vk_id}}"
+          ],
+          "query": [
+            {
+              "key": "from_memory",
+              "value": "true"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Budget request 2 is blocked with 402 budget_exceeded",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var ok = pm.collectionVariables.get('bg_usage_ok');",
+              "if (!ok && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var ok = pm.collectionVariables.get('bg_usage_ok');",
+              "if (!ok) { pm.test('Skipped: no cost recorded', function() { pm.expect(true).to.be.true; }); return; }",
+              "// Budget exhaustion is 402 Payment Required, not 429.",
+              "pm.test('Budget request 2 returns 402', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(402); });",
+              "pm.test('Rejection is budget_exceeded', function() {",
+              "  pm.expect(pm.response.text()).to.include('budget_exceeded');",
+              "  pm.expect(pm.response.text().toLowerCase()).to.include('budget exceeded');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-vk",
+            "value": "{{bg_vk_value}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+        },
+        "url": {
+          "raw": "{{base_url}}/v1/chat/completions",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
       "name": "Teardown - Delete VK",
       "event": [
         {
@@ -126,6 +1166,606 @@
           ]
         }
       }
+    },
+    {
+      "name": "Teardown - Delete token VK",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var vkId = pm.collectionVariables.get('tk_vk_id');",
+              "if (!vkId && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var vkId = pm.collectionVariables.get('tk_vk_id');",
+              "if (!vkId) { pm.test('Teardown skipped - no token VK to delete', function() { pm.expect(true).to.be.true; }); return; }",
+              "var code = pm.response.code;",
+              "pm.test('Delete token VK returns 2xx', function() { pm.expect(code).to.be.within(200, 299); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys/{{tk_vk_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{tk_vk_id}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Teardown - Delete budget VK",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var vkId = pm.collectionVariables.get('bg_vk_id');",
+              "if (!vkId && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var vkId = pm.collectionVariables.get('bg_vk_id');",
+              "if (!vkId) { pm.test('Teardown skipped - no budget VK to delete', function() { pm.expect(true).to.be.true; }); return; }",
+              "var code = pm.response.code;",
+              "pm.test('Delete budget VK returns 2xx', function() { pm.expect(code).to.be.within(200, 299); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys/{{bg_vk_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{bg_vk_id}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Model config spelling",
+      "description": "A provider-scoped model config on (chat_model, provider) with a budget that one completion exhausts. Request 1 with the configured spelling succeeds and accrues cost; the same prompt spelled '<provider>/<MODEL>' and as the dated alias is then refused with 402 budget_exceeded, so every spelling of the model is charged to the one budget. A sibling model is not refused by it. The VK's allowlist names the models explicitly (named entries match case-insensitively): a '*' allowlist is matched through the case-sensitive model catalog, so the upper-case spelling would be refused as model_blocked by the VK gate before the budget is consulted. Teardown deletes the model config and the VK whatever the outcome.",
+      "item": [
+        {
+          "name": "Setup - Create VK for model config spelling",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ts = Date.now();",
+                  "var provider = pm.variables.get('provider') || 'openai';",
+                  "pm.collectionVariables.set('ms_vk_id', '');",
+                  "pm.collectionVariables.set('ms_vk_value', '');",
+                  "var model = pm.variables.get('chat_model') || 'gpt-4o';",
+                  "var alias = pm.variables.get('chat_model_alias') || 'gpt-4o-2024-08-06';",
+                  "var sibling = pm.variables.get('chat_model_sibling') || 'gpt-4o-mini';",
+                  "// No budget of its own: the only budget this VK can hit is the model config's.",
+                  "// The allowlist names the models sent below. A '*' allowlist is resolved",
+                  "// through the model catalog, which is case-sensitive, so the upper-case",
+                  "// spelling would be refused as model_blocked (403) by the VK gate before any",
+                  "// budget is consulted. Named entries match case-insensitively (and the",
+                  "// validator rejects case-variant duplicates), so one entry per model keeps",
+                  "// the VK gate open for every spelling and the budget is what decides.",
+                  "var body = {",
+                  "  name: 'Model Config Spelling VK ' + ts,",
+                  "  provider_configs: [{provider: provider, weight: 1.0, allowed_models: [model, alias, sibling], key_ids: ['*']}]",
+                  "};",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Create model config VK returns 2xx', function() { pm.expect(code, 'body: ' + pm.response.text()).to.be.within(200, 299); });",
+                  "if (!(code >= 200 && code <= 299)) { return; }",
+                  "var json = pm.response.json();",
+                  "var vk = json.virtual_key || json;",
+                  "pm.test('VK has an id and a value', function() {",
+                  "  pm.expect(vk.id, 'virtual_key.id').to.be.a('string').and.not.empty;",
+                  "  pm.expect(vk.value, 'virtual_key.value').to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (vk.id) pm.collectionVariables.set('ms_vk_id', vk.id);",
+                  "if (vk.value) pm.collectionVariables.set('ms_vk_value', vk.value);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          }
+        },
+        {
+          "name": "Setup - Create provider model config with tiny budget",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var provider = pm.variables.get('provider') || 'openai';",
+                  "var model = pm.variables.get('chat_model') || 'gpt-4o';",
+                  "pm.collectionVariables.set('ms_mc_id', '');",
+                  "// Same magnitude as the budget VK above: any usage-bearing completion",
+                  "// exhausts it, so request 1 is allowed and everything after it is refused.",
+                  "// Scoped to the VK this folder created, so the config is owned by this run alone: it can",
+                  "// never collide with an operator's global config, and teardown removes exactly what setup made.",
+                  "var body = {",
+                  "  model_name: model,",
+                  "  provider: provider,",
+                  "  scope: 'virtual_key',",
+                  "  scope_id: pm.collectionVariables.get('ms_vk_id'),",
+                  "  budgets: [{max_limit: 0.000001, reset_duration: '1h'}]",
+                  "};",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Create model config returns 2xx', function() { pm.expect(code, 'body: ' + pm.response.text()).to.be.within(200, 299); });",
+                  "if (!(code >= 200 && code <= 299)) { return; }",
+                  "var mc = (pm.response.json() || {}).model_config || {};",
+                  "pm.test('Model config is provider-scoped on the configured model with one budget', function() {",
+                  "  pm.expect(mc.id, 'model_config.id').to.be.a('string').and.not.empty;",
+                  "  pm.expect(mc.model_name).to.equal(pm.variables.get('chat_model') || 'gpt-4o');",
+                  "  pm.expect(mc.provider).to.equal(pm.variables.get('provider') || 'openai');",
+                  "  pm.expect(mc.scope, 'model_config.scope').to.equal('virtual_key');",
+                  "  pm.expect(mc.scope_id, 'model_config.scope_id').to.equal(pm.collectionVariables.get('ms_vk_id'));",
+                  "  pm.expect(mc.budgets, 'model_config.budgets').to.be.an('array').with.lengthOf(1);",
+                  "});",
+                  "if (mc.id) pm.collectionVariables.set('ms_mc_id', mc.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/model-configs",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "model-configs"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          }
+        },
+        {
+          "name": "Model config request 1 with the configured spelling succeeds",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('ms_poll_retry', '0');",
+                  "// Usage is zero, so the model config's budget admits this one request.",
+                  "pm.test('Request 1 returns 200', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('Request 1 is not refused by a budget', function() { pm.expect(pm.response.text()).to.not.include('budget_exceeded'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{ms_vk_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+            }
+          }
+        },
+        {
+          "name": "Model config usage is recorded",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var retry = Number(pm.collectionVariables.get('ms_poll_retry') || 0);",
+                  "if (retry > 0) {",
+                  "  // Post-response usage tracking is async (a goroutine bumps the in-memory",
+                  "  // counters); give it 500ms between polls. Newman drains pending timers",
+                  "  // before sending the request.",
+                  "  var until = Date.now() + 500;",
+                  "  (function waitBeforeRetry() { if (Date.now() < until) { setTimeout(waitBeforeRetry, 100); } })();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('List model configs from memory returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "if (code !== 200) { return; }",
+                  "var mcId = pm.collectionVariables.get('ms_mc_id');",
+                  "var list = (pm.response.json() || {}).model_configs || [];",
+                  "var mc = null;",
+                  "for (var i = 0; i < list.length; i++) { if (list[i] && list[i].id === mcId) { mc = list[i]; break; } }",
+                  "pm.test('Created model config is loaded in memory', function() { pm.expect(mc, 'model config ' + mcId + ' in: ' + pm.response.text()).to.not.be.null; });",
+                  "if (!mc) { return; }",
+                  "var budgets = mc.budgets || [];",
+                  "var usage = 0;",
+                  "for (var j = 0; j < budgets.length; j++) { usage = Math.max(usage, Number(budgets[j].current_usage) || 0); }",
+                  "var retry = Number(pm.collectionVariables.get('ms_poll_retry') || 0);",
+                  "if (usage <= 0 && retry < 20) {",
+                  "  pm.collectionVariables.set('ms_poll_retry', String(retry + 1));",
+                  "  if (typeof pm.execution !== 'undefined' && pm.execution.setNextRequest) { pm.execution.setNextRequest(pm.info.requestName); } else { postman.setNextRequest(pm.info.requestName); }",
+                  "  return;",
+                  "}",
+                  "pm.test('Model config budget current_usage accrued cost', function() { pm.expect(usage, 'after ' + retry + ' polls, budgets: ' + JSON.stringify(budgets)).to.be.above(0); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/model-configs?from_memory=true&provider={{provider}}&scope=virtual_key&scope_id={{ms_vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "model-configs"
+              ],
+              "query": [
+                {
+                  "key": "from_memory",
+                  "value": "true"
+                },
+                {
+                  "key": "provider",
+                  "value": "{{provider}}"
+                },
+                {
+                  "key": "scope",
+                  "value": "virtual_key"
+                },
+                {
+                  "key": "scope_id",
+                  "value": "{{ms_vk_id}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Prefixed upper-case spelling is blocked with 402 budget_exceeded",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var provider = pm.variables.get('provider') || 'openai';",
+                  "var model = pm.variables.get('chat_model') || 'gpt-4o';",
+                  "// Same prompt as request 1, model spelled '<provider>/<MODEL>'.",
+                  "pm.request.body.raw = JSON.stringify({model: provider + '/' + model.toUpperCase(), messages: [{role: 'user', content: 'ok'}], max_tokens: 5});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Request is refused with 402', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(402); });",
+                  "pm.test('Rejection is budget_exceeded', function() {",
+                  "  pm.expect(pm.response.text()).to.include('budget_exceeded');",
+                  "  pm.expect(pm.response.text().toLowerCase()).to.include('budget exceeded');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{ms_vk_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          }
+        },
+        {
+          "name": "Dated alias spelling is blocked with 402 budget_exceeded",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Request is refused with 402', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(402); });",
+                  "pm.test('Rejection is budget_exceeded', function() {",
+                  "  pm.expect(pm.response.text()).to.include('budget_exceeded');",
+                  "  pm.expect(pm.response.text().toLowerCase()).to.include('budget exceeded');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{ms_vk_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"{{chat_model_alias}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+            }
+          }
+        },
+        {
+          "name": "Sibling model is not blocked by the model config budget",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The budget is scoped to the configured model; a sibling model must not",
+                  "// resolve to it. The provider's own answer (200 or a provider-side error)",
+                  "// is not under test here, only that governance did not refuse it.",
+                  "pm.test('Sibling model is not refused with 402', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.not.equal(402); });",
+                  "pm.test('Sibling model is not refused as budget_exceeded', function() { pm.expect(pm.response.text()).to.not.include('budget_exceeded'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{ms_vk_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"{{chat_model_sibling}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+            }
+          }
+        },
+        {
+          "name": "Teardown - Delete model config",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mcId = pm.collectionVariables.get('ms_mc_id');",
+                  "if (!mcId && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mcId = pm.collectionVariables.get('ms_mc_id');",
+                  "if (!mcId) { pm.test('Teardown skipped - no model config to delete', function() { pm.expect(true).to.be.true; }); return; }",
+                  "pm.test('Delete model config returns 2xx', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/model-configs/{{ms_mc_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "model-configs",
+                "{{ms_mc_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Teardown - Delete model config VK",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var vkId = pm.collectionVariables.get('ms_vk_id');",
+                  "if (!vkId && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var vkId = pm.collectionVariables.get('ms_vk_id');",
+                  "if (!vkId) { pm.test('Teardown skipped - no model config VK to delete', function() { pm.expect(true).to.be.true; }); return; }",
+                  "pm.test('Delete model config VK returns 2xx', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{ms_vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{ms_vk_id}}"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

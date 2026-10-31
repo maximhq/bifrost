@@ -1,8 +1,10 @@
 import TeamsTable from "@/app/workspace/governance/views/teamsTable";
 import FullPageLoader from "@/components/fullPageLoader";
+import { LoadErrorView } from "@/components/loadErrorView";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { parseAsSafeString } from "@/lib/queryParamsParser";
 import { getErrorMessage, useGetTeamsQuery } from "@/lib/store";
+import { showLoadError } from "@/lib/utils/loadError";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useEffect, useRef } from "react";
@@ -34,7 +36,7 @@ export function TeamsView() {
 		data: teamsData,
 		error: teamsError,
 		isLoading: teamsLoading,
-		isFetching,
+		refetch: refetchTeams,
 	} = useGetTeamsQuery(
 		{
 			limit: PAGE_SIZE,
@@ -43,7 +45,10 @@ export function TeamsView() {
 		},
 		{
 			skip: !hasTeamsAccess,
-			pollingInterval: POLLING_INTERVAL,
+			// Hold the poll while the team sheet is open so a background refetch
+			// can't reset the form under an in-progress edit.
+			pollingInterval: urlState.selected_team ? 0 : POLLING_INTERVAL,
+			skipPollingIfUnfocused: true,
 		},
 	);
 
@@ -70,6 +75,10 @@ export function TeamsView() {
 		return <FullPageLoader />;
 	}
 
+	if (showLoadError(teamsError, teamsData)) {
+		return <LoadErrorView entity="teams" error={teamsError} onRetry={() => void refetchTeams()} testId="teams-load-error" />;
+	}
+
 	return (
 		<TeamsTable
 			teams={teamsData?.teams || []}
@@ -86,7 +95,6 @@ export function TeamsView() {
 				setUrlState({ selected_team: team?.id ?? null });
 			}}
 			onDialogClose={() => setUrlState({ selected_team: null })}
-			isLoading={isFetching}
 		/>
 	);
 }

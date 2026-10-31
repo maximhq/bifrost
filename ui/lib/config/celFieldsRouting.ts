@@ -12,13 +12,13 @@ export interface CELFieldDefinition {
 	placeholder?: string;
 	inputType?: "text" | "select" | "keyValue" | "number";
 	valueEditorType?:
-	| "text"
-	| "select"
-	| "keyValue"
-	| "number"
-	| "textarea"
-	| "budgetNumber"
-	| ((operator: string) => "text" | "select" | "keyValue" | "number" | "textarea" | "budgetNumber");
+		| "text"
+		| "select"
+		| "keyValue"
+		| "number"
+		| "textarea"
+		| "budgetNumber"
+		| ((operator: string) => "text" | "select" | "keyValue" | "number" | "textarea" | "budgetNumber");
 	operators?: string[];
 	defaultOperator?: string;
 	defaultValue?: any;
@@ -76,6 +76,7 @@ export const baseRoutingFields: CELFieldDefinition[] = [
 			{ name: "transcription_stream", label: "Transcription (Streaming)" },
 			{ name: "count_tokens", label: "Count Tokens" },
 			{ name: "rerank", label: "Rerank" },
+			{ name: "decisions", label: "Decisions" },
 			{ name: "video_generation", label: "Video Generation" },
 		],
 		description:
@@ -151,18 +152,18 @@ export function getRoutingFields(providers: string[] = [], models: string[] = []
 	const providerValues =
 		providers.length > 0
 			? providers.map((provider) => ({
-				name: provider,
-				label: getProviderLabel(provider),
-			}))
+					name: provider,
+					label: getProviderLabel(provider),
+				}))
 			: [{ name: "_no_providers", label: "No providers configured", disabled: true }];
 
 	// Create model field values
 	const modelValues =
 		models.length > 0
 			? models.map((model) => ({
-				name: model,
-				label: model,
-			}))
+					name: model,
+					label: model,
+				}))
 			: [];
 
 	// Create metric options for scope input: providers + models

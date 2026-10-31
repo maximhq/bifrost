@@ -277,9 +277,9 @@ func ToGeminiVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationRe
 		instance.Image = image
 	}
 
-	if bifrostReq.Params != nil && bifrostReq.Params.VideoURI != nil {
+	if bifrostReq.Input != nil && bifrostReq.Input.VideoURI != nil {
 		instance.Video = &VideoGenerationVideoInput{
-			URI: bifrostReq.Params.VideoURI,
+			URI: bifrostReq.Input.VideoURI,
 		}
 	}
 
@@ -586,8 +586,7 @@ func (request *GeminiVideoGenerationRequest) ToBifrostVideoGenerationRequest(ctx
 
 	// Handle video URI
 	if instance.Video != nil && instance.Video.URI != nil {
-		ensureParams()
-		bifrostReq.Params.VideoURI = instance.Video.URI
+		bifrostReq.Input.VideoURI = instance.Video.URI
 	}
 
 	// Handle last frame

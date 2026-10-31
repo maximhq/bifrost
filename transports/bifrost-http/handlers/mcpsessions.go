@@ -10,6 +10,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sort"
 	"strconv"
@@ -19,7 +20,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -102,6 +103,14 @@ type mcpSessionRow struct {
 	LastRefreshedAt *string            `json:"last_refreshed_at,omitempty"` // OAuth token rows only; nil if never refreshed
 	UpdatedAt       *string            `json:"updated_at,omitempty"`        // Headers rows: timestamp of last submission/edit
 	OauthConfigID   string             `json:"oauth_config_id,omitempty"`   // OAuth rows only
+	// Scopes are the scopes the provider reported when it issued the token.
+	// Token rows only; empty when the provider omitted them from its token
+	// response, which many do when granted equals requested.
+	Scopes []string `json:"scopes,omitempty"`
+	// HasRefreshToken reports whether the provider issued a refresh token for
+	// this credential. Token rows only. Without one the access token cannot be
+	// renewed at use time, so the row must be re-authenticated once it expires.
+	HasRefreshToken *bool `json:"has_refresh_token,omitempty"`
 	// CanReauth mirrors the server-side identity gate on POST /reauth: user-mode
 	// rows are only reauthable by the bound user (admin DAC scope is enough to
 	// see the row, but reauthing mints credentials for whoever clicks the URL).
@@ -513,6 +522,7 @@ func (h *MCPSessionsHandler) reauth(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	logger.Debug("[mcp/sessions] reauth initiated: token=%s mcp_client=%s mode=%s flow=%s", rowID, tok.MCPClientID, rowMode, sessionID)
+	lib.RecordAuditChange(ctx, "mcp_session.reauth_started", "mcp_session", rowID, mcpSessionAuditName(tok.MCPClient, tok.MCPClientID), nil, auditMCPSession("oauth_token", tok.MCPClientID, tok.AuthMode, tok.UserID, tok.VirtualKeyID))
 	SendJSON(ctx, map[string]any{
 		"authorize_url": flow.AuthorizeURL,
 		"session_id":    sessionID,
@@ -574,6 +584,7 @@ func (h *MCPSessionsHandler) reauthHeaderCredential(ctx *fasthttp.RequestCtx, bf
 		return
 	}
 	logger.Debug("[mcp/sessions] reauth header initiated: cred=%s mcp_client=%s mode=%s flow=%s", cred.ID, cred.MCPClientID, rowMode, initiation.FlowID)
+	lib.RecordAuditChange(ctx, "mcp_session.reauth_started", "mcp_session", cred.ID, mcpSessionAuditName(cred.MCPClient, cred.MCPClientID), nil, auditMCPSession("header_credential", cred.MCPClientID, cred.AuthMode, cred.UserID, cred.VirtualKeyID))
 	SendJSON(ctx, map[string]any{
 		// submit_url is set so a future header-specific client can branch
 		// cleanly; authorize_url stays compatible with the existing UI which
@@ -646,6 +657,7 @@ func (h *MCPSessionsHandler) revoke(ctx *fasthttp.RequestCtx) {
 		}
 		h.mcpCredentialCacheManager.EvictMCPHeaderCredentialCacheByID(ctx, headerCred.ID)
 		logger.Debug("[mcp/sessions] revoked header credential: id=%s mcp_client=%s mode=%s", rowID, headerCred.MCPClientID, headerCred.AuthMode)
+		lib.RecordAuditChange(ctx, "mcp_session.revoked", "mcp_session", headerCred.ID, mcpSessionAuditName(headerCred.MCPClient, headerCred.MCPClientID), auditMCPSession("header_credential", headerCred.MCPClientID, headerCred.AuthMode, headerCred.UserID, headerCred.VirtualKeyID), nil)
 		ctx.SetStatusCode(fasthttp.StatusNoContent)
 		return
 	}
@@ -662,6 +674,7 @@ func (h *MCPSessionsHandler) revoke(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		logger.Debug("[mcp/sessions] revoked header flow: id=%s mcp_client=%s mode=%s", rowID, headerFlow.MCPClientID, headerFlow.FlowMode)
+		lib.RecordAuditChange(ctx, "mcp_session.revoked", "mcp_session", headerFlow.ID, mcpSessionAuditName(headerFlow.MCPClient, headerFlow.MCPClientID), auditMCPSession("header_flow", headerFlow.MCPClientID, headerFlow.FlowMode, headerFlow.UserID, headerFlow.VirtualKeyID), nil)
 		ctx.SetStatusCode(fasthttp.StatusNoContent)
 		return
 	}
@@ -691,6 +704,7 @@ func (h *MCPSessionsHandler) revoke(ctx *fasthttp.RequestCtx) {
 	}
 	h.mcpCredentialCacheManager.EvictOauthTokenCacheByID(ctx, tok.ID)
 	logger.Debug("[mcp/sessions] revoked: token=%s mcp_client=%s mode=%s", rowID, tok.MCPClientID, tok.AuthMode)
+	lib.RecordAuditChange(ctx, "mcp_session.revoked", "mcp_session", tok.ID, mcpSessionAuditName(tok.MCPClient, tok.MCPClientID), auditMCPSession("oauth_token", tok.MCPClientID, tok.AuthMode, tok.UserID, tok.VirtualKeyID), nil)
 	ctx.SetStatusCode(fasthttp.StatusNoContent)
 }
 
@@ -939,7 +953,37 @@ func tokenRow(t tables.TableMCPOauthToken) mcpSessionRow {
 		s := t.LastRefreshedAt.UTC().Format(rfc3339Nano)
 		row.LastRefreshedAt = &s
 	}
+	row.Scopes = parseOauthScopesJSON(t.Scopes)
+	hasRefreshToken := t.RefreshToken != ""
+	row.HasRefreshToken = &hasRefreshToken
 	return row
+}
+
+// parseOauthScopesJSON decodes the JSON scope list stored on an oauth token
+// row. The column holds a JSON array of strings, but a token issued by a
+// provider that omitted the scope field is stored as "null", and rows created
+// before scopes were captured may hold "". Every such shape, along with
+// malformed content, decodes to nil rather than an error: the scope list is
+// display-only and an unreadable one must not fail a listing.
+func parseOauthScopesJSON(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "null" {
+		return nil
+	}
+	var scopes []string
+	if err := json.Unmarshal([]byte(raw), &scopes); err != nil {
+		return nil
+	}
+	out := scopes[:0]
+	for _, s := range scopes {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // flowRow maps an oauth_user_sessions (pending flow) row to the wire shape.
@@ -1085,3 +1129,27 @@ func bindingKeyFromHeaderFlow(f tables.TableMCPPerUserHeaderFlow) sessionBinding
 }
 
 const rfc3339Nano = "2006-01-02T15:04:05.999999999Z07:00"
+
+// auditMCPSession snapshots an MCP auth session's binding; session ids and credential material are left out.
+func auditMCPSession(kind, mcpClientID, authMode string, userID, virtualKeyID *string) map[string]any {
+	snap := map[string]any{
+		"kind":          kind,
+		"mcp_client_id": mcpClientID,
+		"auth_mode":     authMode,
+	}
+	if userID != nil {
+		snap["user_id"] = *userID
+	}
+	if virtualKeyID != nil {
+		snap["virtual_key_id"] = *virtualKeyID
+	}
+	return snap
+}
+
+// mcpSessionAuditName names an MCP auth session after its MCP client, falling back to the client id.
+func mcpSessionAuditName(client *tables.TableMCPClient, mcpClientID string) string {
+	if client != nil && client.Name != "" {
+		return client.Name
+	}
+	return mcpClientID
+}

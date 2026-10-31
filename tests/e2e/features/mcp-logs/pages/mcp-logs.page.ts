@@ -63,7 +63,7 @@ export class MCPLogsPage extends BasePage {
     )
 
     // Table elements - exclude status message rows
-    this.tableRows = this.logsTable.locator('tbody tr').filter({ hasNot: page.locator('text=Listening for') }).filter({ hasNot: page.locator('text=Live updates paused') }).filter({ hasNot: page.locator('text=Not connected') }).filter({ hasNot: page.locator('text=No results found') })
+    this.tableRows = this.logsTable.locator('tbody tr').filter({ hasNot: page.getByTestId('logs-table-status-row') }).filter({ hasNot: page.getByText(/Waiting for new/) }).filter({ hasNot: page.locator('text=Listening for') }).filter({ hasNot: page.locator('text=Live updates paused') }).filter({ hasNot: page.locator('text=Not connected') }).filter({ hasNot: page.locator('text=No results found') })
     // Scope pagination to the MCP logs view (avoid matching other pages when navigating)
     const paginationContainer = page.getByTestId('pagination').filter({ has: page.locator('[data-testid="next-page"]') }).first()
     this.paginationControls = paginationContainer
@@ -84,9 +84,8 @@ export class MCPLogsPage extends BasePage {
    */
   async goto(): Promise<void> {
     await this.page.goto('/workspace/mcp-logs')
-    await waitForNetworkIdle(this.page)
-    // Wait for table to be visible
-    await this.logsTable.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {})
+    // With no MCP logs the page shows a "Get Started" guide instead of the table.
+    await this.logsTable.or(this.page.getByText(/Get Started/i)).first().waitFor({ state: 'visible', timeout: 10000 })
   }
 
   /**

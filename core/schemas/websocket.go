@@ -6,8 +6,9 @@ import "encoding/json"
 type WebSocketEventType string
 
 const (
-	WSEventResponseCreate WebSocketEventType = "response.create"
-	WSEventError          WebSocketEventType = "error"
+	WSEventResponseCreate    WebSocketEventType = "response.create"
+	WSEventResponseInterrupt WebSocketEventType = "response.interrupt"
+	WSEventError             WebSocketEventType = "error"
 )
 
 // WebSocketResponsesEvent represents a client-sent event over the Responses WebSocket connection.

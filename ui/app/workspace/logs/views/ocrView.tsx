@@ -72,7 +72,7 @@ export default function OCRView({ ocrInput, ocrOutput }: OCRViewProps) {
 
 					<div className="space-y-4 p-6">
 						{ocrOutput.usage_info && (
-							<div className="grid grid-cols-3 gap-3">
+							<div className="grid grid-cols-1 gap-3 md:grid-cols-3">
 								<div className="space-y-1">
 									<div className="text-muted-foreground text-xs font-medium">PAGES PROCESSED</div>
 									<div className="font-mono text-xs">{ocrOutput.usage_info.pages_processed}</div>
@@ -94,7 +94,7 @@ export default function OCRView({ ocrInput, ocrOutput }: OCRViewProps) {
 						{currentPage && (
 							<>
 								{currentPage.dimensions && (
-									<div className="grid grid-cols-3 gap-3">
+									<div className="grid grid-cols-1 gap-3 md:grid-cols-3">
 										<div className="space-y-1">
 											<div className="text-muted-foreground text-xs font-medium">DIMENSIONS</div>
 											<div className="font-mono text-xs">
@@ -138,7 +138,7 @@ export default function OCRView({ ocrInput, ocrOutput }: OCRViewProps) {
 												<img
 													key={img.id}
 													src={getImageSrc(img.image_base64!)}
-													alt={`Image ${img.id}`}
+													alt={`Extracted ${img.id}`}
 													className="max-h-48 max-w-48 rounded border object-contain"
 												/>
 											))}

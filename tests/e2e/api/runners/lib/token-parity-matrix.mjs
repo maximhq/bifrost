@@ -541,10 +541,17 @@ var j = pm.response.json();
 var msg = (j.output && j.output.message) || {};
 var content = msg.content || [];
 var u = j.usage || {};
+// Bedrock reports inputTokens as the non-cached remainder only: "total input tokens =
+// inputTokens + cacheReadInputTokens + cacheWriteInputTokens"
+// (https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html, Converse API
+// section). Which leg reads or writes the implicit cache is a race neither leg controls, so
+// the comparable prompt is the full input, not the remainder.
+var cacheRead = u.cacheReadInputTokens || 0;
+var cacheWrite = u.cacheWriteInputTokens || 0;
 var usage = {
-  prompt: u.inputTokens || 0,
+  prompt: (u.inputTokens || 0) + cacheRead + cacheWrite,
   completion: u.outputTokens || 0,
-  cached: u.cacheReadInputTokens || 0,
+  cached: cacheRead,
   total: u.totalTokens || ((u.inputTokens || 0) + (u.outputTokens || 0)),
 };
 var assistantTurn = { role: "assistant", content: content };
@@ -554,7 +561,7 @@ var toolCall = toolUse ? { id: toolUse.toolUse.toolUseId, name: toolUse.toolUse.
 ${EVENTSTREAM_DECODER}
 var buf = Buffer.isBuffer(pm.response.stream) ? pm.response.stream : Buffer.from(pm.response.stream || []);
 var events = decodeEventStream(buf);
-var inputTokens = 0, outputTokens = 0, cacheRead = 0, totalTokens = 0;
+var inputTokens = 0, outputTokens = 0, cacheRead = 0, cacheWrite = 0, totalTokens = 0;
 var blocks = {};
 for (var i = 0; i < events.length; i++) {
   var evt = events[i];
@@ -585,6 +592,7 @@ for (var i = 0; i < events.length; i++) {
       inputTokens = data.usage.inputTokens || 0;
       outputTokens = data.usage.outputTokens || 0;
       cacheRead = data.usage.cacheReadInputTokens || 0;
+      cacheWrite = data.usage.cacheWriteInputTokens || 0;
       totalTokens = data.usage.totalTokens || (inputTokens + outputTokens);
     }
   }
@@ -596,11 +604,26 @@ var content = Object.keys(blocks).sort().map(function (k) {
   try { input = JSON.parse(b.partial || "{}"); } catch (e) {}
   return { toolUse: { toolUseId: b.id, name: b.name, input: input } };
 });
-var usage = { prompt: inputTokens, completion: outputTokens, cached: cacheRead, total: totalTokens };
+// ConverseStream metadata for the OpenAI family does not follow the documented remainder-only
+// inputTokens: measured on openai.gpt-5.6 the stream reported inputTokens=4995 with
+// cacheWriteInputTokens=4993 (totalTokens=10007, double counted) where the non-streaming call
+// for the same prompt reported inputTokens=2. Reduce to the remainder first so both modalities
+// report the same full input (see extractNonStream for the documented formula).
+if (inputTokensIncludeCache && cacheRead + cacheWrite > 0 && inputTokens >= cacheRead + cacheWrite) inputTokens -= cacheRead + cacheWrite;
+var usage = { prompt: inputTokens + cacheRead + cacheWrite, completion: outputTokens, cached: cacheRead, total: totalTokens };
 var assistantTurn = { role: "assistant", content: content };
 var toolUseBlock = content.filter(function (b) { return b.toolUse; })[0];
 var toolCall = toolUseBlock ? { id: toolUseBlock.toolUse.toolUseId, name: toolUseBlock.toolUse.name } : null;`.trim(),
 };
+
+// The inclusive-input anomaly was observed on GPT-5.6 only. Resolve the actual
+// runtime model rather than applying it to every model in the Bedrock backend.
+function bedrockShapeFor(modelVar) {
+  return {
+    ...bedrockShape,
+    extractStream: `var inputTokensIncludeCache = /(?:^|[./])openai[./]gpt-5[.]6(?:[-.:]|$)/.test(pm.variables.get(${J(modelVar)}) || "");\n${bedrockShape.extractStream}`,
+  };
+}
 
 // ---------------------------------------------------------------------------------------------
 // Generic per-leg item builder: given a shape + connection info, produces the 3 round items.
@@ -958,10 +981,14 @@ function buildGeminiFamilyDirect(backendKey, backendLabel, modality) {
 // same builder covers both the existing Claude-on-Bedrock backend and the "one more model per
 // provider" OpenAI-family (gpt-oss)-on-Bedrock addition below - Bedrock's Converse API is
 // model-family-agnostic, so nothing else about the direct call changes.
+//
+// This leg hits bedrock-runtime, where OpenAI-family models are only reachable through a
+// cross-Region inference profile, so its modelVar is not always the same one the bifrost leg
+// uses. See the BACKENDS entry for bedrock_openai.
 function buildBedrockDirect(backendKey, backendLabel, modelVar, modality) {
   return buildLegItems({
     leg: "direct",
-    shape: bedrockShape,
+    shape: bedrockShapeFor(modelVar),
     backendKey,
     backendLabel,
     modality,
@@ -1111,7 +1138,7 @@ function buildGeminiFamilyBifrost(backendKey, backendLabel, modality) {
 function buildBedrockBifrost(backendKey, backendLabel, modelVar, modality) {
   return buildLegItems({
     leg: "bifrost",
-    shape: bedrockShape,
+    shape: bedrockShapeFor(modelVar),
     backendKey,
     backendLabel,
     modality,
@@ -1176,10 +1203,18 @@ const BACKENDS = [
     bifrost: (m) => buildBedrockBifrost("bedrock", "Bedrock (Claude)", "bedrockModel", m),
   },
   // "One more model per provider": Bedrock and Vertex both host more than one model family.
+  // The two legs take DIFFERENT model ids because they reach different AWS endpoints, and each
+  // endpoint accepts only one of the two forms (model-card-openai-gpt-56-sol.html, "Programmatic
+  // Access"): bedrock-runtime lists in-region as "Not supported" and requires a cross-Region
+  // profile (us./global.), while bedrock-mantle lists Geo and Global as "Not supported" and takes
+  // the bare id. The direct leg calls bedrock-runtime converse, so it needs the profile form. The
+  // bifrost leg goes through Bifrost's `bedrock` provider, which routes every OpenAI-family model
+  // to mantle (isMantleModel in core/providers/bedrock/mantle.go), so it needs the bare form -
+  // a profile-prefixed id 404s there with "The model '...' does not exist".
   {
     key: "bedrock_openai",
     label: "Bedrock (OpenAI/gpt-oss)",
-    direct: (m) => buildBedrockDirect("bedrock_openai", "Bedrock (OpenAI/gpt-oss)", "bedrockOpenaiModel", m),
+    direct: (m) => buildBedrockDirect("bedrock_openai", "Bedrock (OpenAI/gpt-oss)", "bedrockOpenaiDirectModel", m),
     bifrost: (m) => buildBedrockBifrost("bedrock_openai", "Bedrock (OpenAI/gpt-oss)", "bedrockOpenaiModel", m),
   },
   { key: "vertex_claude", label: "Vertex AI (Claude)", direct: buildVertexClaudeDirect, bifrost: buildVertexClaudeBifrost },

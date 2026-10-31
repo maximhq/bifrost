@@ -27,7 +27,7 @@ func TestParasail(t *testing.T) {
 		Provider:       schemas.Parasail,
 		ChatModel:      "parasail-llama-33-70b-fp8",
 		TextModel:      "", // Parasail doesn't support text completion
-		EmbeddingModel: "", // Parasail doesn't support embedding
+		EmbeddingModel: "parasail-bge-m3",
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -42,7 +42,7 @@ func TestParasail(t *testing.T) {
 			ImageBase64:           false, // Not supported yet
 			MultipleImages:        false, // Not supported yet
 			CompleteEnd2End:       true,
-			Embedding:             false, // Not supported yet
+			Embedding:             true,
 			ListModels:            true,
 		},
 	}

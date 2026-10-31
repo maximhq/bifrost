@@ -216,6 +216,10 @@ print(f"File content:\n{content}")
 
 ### Create a Batch
 
+<Note>
+With a virtual key that restricts models on the provider, file-based batches (`input_file_id` or `input_blob`) need a key that allows every model of the provider on OpenAI and Azure, and a supplied, allowed `model` on Gemini, Vertex, and Bedrock; a custom provider follows its base provider. See [Batches defined by an uploaded file](/features/governance/virtual-keys#batches-defined-by-an-uploaded-file). Inline batches are checked per item, and a request naming a file or blob together with inline `requests` is refused with `400`.
+</Note>
+
 <Tabs group="provider">
 <Tab title="OpenAI Provider">
 
@@ -354,6 +358,16 @@ print(f"Status: {batch.status}")
 </Tabs>
 
 ### List Batches
+
+<Note>
+Batches belong to the virtual key that created them. With a virtual key, listing returns that key's batches (and batches with no recorded creating key), and requests to retrieve, cancel, fetch results for, or delete a batch created by another key return `404`. Requests without a virtual key see every batch, as before. If Bifrost cannot look up batch ownership, a list request fails with `500` instead of returning a partial page. When Bifrost runs without a config store, ownership is never recorded. Requests made with a virtual key that address an object by id (batch retrieve, cancel, results, and delete, and the matching file, video, container, container-file, and cached-content requests) are refused with `403`; list requests, batch creates, and requests that only name an object they copy or run on go through unfiltered. Configure a config store to use these objects with virtual keys.
+
+The same rule covers the other objects a virtual key creates through the gateway: uploaded files, video jobs, containers, the files created inside a container, and cached contents. Retrieving, downloading, deleting, editing, or remixing one created by another key returns `404`, a batch cannot be created on another key's input file, and list pages show the key's own objects and objects with no recorded creating key. A batch's output and error files belong to the key that created the batch; its input file keeps whatever owner it had. Every object a request names is checked the same way: the `file_ids` of a container create, the `file_id` a container-file create copies in, the source video of a video edit, the `file_id` of a file or image block in a chat or responses message, the container or `file_ids` of a Responses `code_interpreter` tool, and the cached content a chat, responses, image, or transcription request runs on. A custom provider built on the same upstream as a standard one (for example a custom provider whose base is OpenAI and that uses the same endpoint) addresses the same objects, so ownership recorded under either name holds under both; a custom provider pointed at another service's base URL keeps its own objects. The binding holds for every form of an id the provider accepts: a Gemini batch as `batches/<id>` or `<id>`, a Vertex batch as its full resource name or its job number, and files and cached contents likewise. A Vertex job number names one job per project and region; if the recorded jobs ending in that number were created by more than one key, a request that uses the bare number is refused with `400` and must use the full resource name, and such an item is left out of list pages. Objects created before this binding existed, or outside the gateway, carry no creating key and stay reachable to every key allowed on the provider.
+
+This binding is on by default and is controlled by **Restrict Provider Objects to the Creating Virtual Key** under **Settings > Security**, or `client.enforce_vk_object_ownership` in `config.json`. Turned off, every virtual key reaches every object, list pages are not narrowed, and the checks above are skipped, including the refusals made without a config store; live sessions follow the same switch. Bifrost still records the creating key while it is off, so turning it back on also binds objects created in the meantime. An object whose creating key could not be written (the write is retried once, then logged) carries no creator and stays reachable to every key allowed on the provider. The change takes effect on the next request without a restart.
+
+A Gemini file named by its URI (`https://generativelanguage.googleapis.com/v1beta/files/<id>`) in a file or image block, or in the contents a cached content is created from, is checked as that file. Passthrough routes are checked too: the object a passthrough path addresses (for example `/openai_passthrough/v1/files/<id>/content`), and the files, containers and cached contents its JSON body names. A virtual key cannot list files, batches, containers, container files, videos or cached contents through a passthrough route, since the provider's raw page cannot be narrowed; it is refused with `403`, and the gateway's own list routes show the key's objects. The items of an inline batch are checked the same way as a passthrough body, and a container a Responses `code_interpreter` tool asked the provider to create automatically belongs to the key that asked for it.
+</Note>
 
 ```python
 # List batches (specify provider)

@@ -1,5 +1,6 @@
 "use client";
 
+import PageTitle from "@/components/pageTitle";
 import FullPageLoader from "@/components/fullPageLoader";
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import {
@@ -29,8 +30,9 @@ import {
 } from "@/lib/store/apis/skillsApi";
 import { AllSkillsVersionBump, SkillListItem } from "@/lib/types/skills";
 import { cn } from "@/lib/utils";
-import { getApiBaseUrl, getExampleBaseUrl } from "@/lib/utils/port";
+import { getApiBaseUrl } from "@/lib/utils/port";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { Link } from "@tanstack/react-router";
 import {
 	ArrowDown,
 	ArrowUp,
@@ -60,21 +62,29 @@ const SKILLS_REPOSITORY_DOCS_URL = "https://docs.getbifrost.ai/features/skills-r
 
 // ---------- MarketplacePopover ----------
 
-function MarketplacePopover() {
+function MarketplacePopover({ baseUrl }: { baseUrl: string }) {
 	const [copiedKey, setCopiedKey] = useState<string | null>(null);
 	const [open, setOpen] = useState(false);
-	const marketplaceBaseUrl = `${getExampleBaseUrl()}/api`;
+	const marketplaceBaseUrl = `${baseUrl}/api`;
 
 	const items = [
 		{
+			key: "claude-desktop",
+			label: "Claude Desktop / Cowork",
+			value: `${marketplaceBaseUrl}/skills/serve/claude-code.git`,
+			ariaLabel: "Copy Claude Desktop and Cowork marketplace Git URL",
+		},
+		{
 			key: "claude",
 			label: "Claude Code",
-			command: `claude plugin marketplace add ${marketplaceBaseUrl}/skills/serve/claude-code/.claude-plugin/marketplace.json`,
+			value: `claude plugin marketplace add ${marketplaceBaseUrl}/skills/serve/claude-code/.claude-plugin/marketplace.json`,
+			ariaLabel: "Copy Claude Code command",
 		},
 		{
 			key: "codex",
 			label: "Codex",
-			command: `codex plugin marketplace add ${marketplaceBaseUrl}/skills/serve/codex`,
+			value: `codex plugin marketplace add ${marketplaceBaseUrl}/skills/serve/codex`,
+			ariaLabel: "Copy Codex command",
 		},
 	];
 
@@ -95,14 +105,20 @@ function MarketplacePopover() {
 	return (
 		<Popover open={open} onOpenChange={setOpen}>
 			<PopoverTrigger asChild>
-				<Button variant="outline" size="sm">
+				<Button
+					data-testid="skill-marketplace-register-btn"
+					variant="outline"
+					size="sm"
+					title="Register as Marketplace"
+					aria-label="Register as Marketplace"
+				>
 					<Package className="h-3.5 w-3.5" />
-					Register as Marketplace
+					<span className="hidden md:inline">Register as Marketplace</span>
 				</Button>
 			</PopoverTrigger>
-			<PopoverContent align="end" className="w-auto max-w-md p-0">
+			<PopoverContent align="end" className="w-[calc(100vw-2rem)] max-w-md p-0 md:w-auto">
 				<div className="border-b px-3 py-2">
-					<p className="text-muted-foreground text-xs font-medium">Copy CLI command to register this repository</p>
+					<p className="text-muted-foreground text-xs font-medium">Copy a marketplace URL or CLI command</p>
 				</div>
 				<div className="py-1">
 					{items.map((item) => (
@@ -110,12 +126,12 @@ function MarketplacePopover() {
 							key={item.key}
 							data-testid={`skill-copy-marketplace-${item.key}`}
 							className="hover:bg-muted/50 flex w-full cursor-pointer items-center gap-3 px-3 py-2 text-left transition-colors"
-							aria-label={`Copy ${item.label} command`}
-							onClick={() => handleCopy(item.key, item.command)}
+							aria-label={item.ariaLabel}
+							onClick={() => handleCopy(item.key, item.value)}
 						>
 							<div className="min-w-0 flex-1">
 								<p className="text-xs font-medium">{item.label}</p>
-								<p className="text-muted-foreground mt-0.5 truncate font-mono text-xs">{item.command}</p>
+								<p className="text-muted-foreground mt-0.5 truncate font-mono text-xs">{item.value}</p>
 							</div>
 							{copiedKey === item.key ? (
 								<Check className="h-3.5 w-3.5 shrink-0 text-green-500" />
@@ -294,6 +310,7 @@ export function SkillsListView({
 	const hasDeleteAccess = useRbac(RbacResource.SkillsRepository, RbacOperation.Delete);
 	const { data: bifrostConfig } = useGetCoreConfigQuery({});
 	const isGitAvailable = bifrostConfig?.is_git_available ?? false;
+	const marketplaceBaseUrl = bifrostConfig?.skills_marketplace_base_url ?? "";
 	const [deleteSkill, { isLoading: isDeleting }] = useDeleteSkillMutation();
 	const { data: allSkillsVersionData, refetch: refetchAllSkillsVersion } = useGetAllSkillsVersionQuery();
 	const [bumpAllSkillsVersion, { isLoading: isBumpingAllSkillsVersion }] = useBumpAllSkillsVersionMutation();
@@ -373,7 +390,10 @@ export function SkillsListView({
 	// True empty state: no skills at all (not just filtered to zero)
 	if (total === 0 && !search && !debouncedSearch && !isFetching) {
 		return (
-			<div className="flex h-full w-full flex-col items-center justify-center gap-4 text-center" data-testid="skills-repo-empty-state">
+			<div
+				className="flex h-full w-full flex-col items-center justify-center gap-4 px-2 py-10 text-center md:px-0 md:py-0"
+				data-testid="skills-repo-empty-state"
+			>
 				<div className="text-muted-foreground">
 					<BookOpenText className="h-24 w-24" strokeWidth={1} />
 				</div>
@@ -395,8 +415,9 @@ export function SkillsListView({
 							Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
 						</Button>
 						{hasCreateAccess && (
-							<Button aria-label="Create your first skill" data-testid="skill-create-btn" onClick={onCreateNew}>
-								Create Skill
+							<Button data-testid="skill-create-btn" onClick={onCreateNew}>
+								<Plus className="h-4 w-4" />
+								Add Skill
 							</Button>
 						)}
 					</div>
@@ -406,78 +427,14 @@ export function SkillsListView({
 	}
 
 	return (
-		<div className="flex w-full flex-1 flex-col">
+		<div className="flex w-full min-w-0 flex-1 flex-col">
 			{/* Header */}
-			<div className="mb-4 flex shrink-0 items-center justify-between">
-				<div>
-					<div className="flex items-center gap-2">
-						<h2 className="text-lg font-semibold">Skills Repository</h2>
-						<Badge aria-label="Skills Repository is in beta">Beta</Badge>
-					</div>
-					<p className="text-muted-foreground text-sm">Manage Agent Skills for distribution to AI coding assistants</p>
-				</div>
-				<div className="flex items-center gap-2">
-					{isGitAvailable ? (
-						<MarketplacePopover />
-					) : (
-						<Tooltip>
-							<TooltipTrigger asChild>
-								<span tabIndex={0}>
-									<Button variant="outline" size="sm" disabled>
-										<Package className="h-3.5 w-3.5" />
-										Register as Marketplace
-									</Button>
-								</span>
-							</TooltipTrigger>
-							<TooltipContent side="bottom">
-								<p className="max-w-xs text-xs">
-									Git is not available on the server. Install git and restart Bifrost to enable marketplace registration for Claude Code and
-									Codex.
-								</p>
-							</TooltipContent>
-						</Tooltip>
-					)}
-					<Button
-						variant="outline"
-						size="sm"
-						data-testid="skill-download-all-btn"
-						onClick={async () => {
-							setIsDownloadingAll(true);
-							try {
-								const res = await fetch(`${getApiBaseUrl()}/skills/serve/all/download.zip`);
-								if (!res.ok) throw new Error("Download failed");
-								const blob = await res.blob();
-								const url = URL.createObjectURL(blob);
-								const link = document.createElement("a");
-								link.href = url;
-								link.download = "all-skills.zip";
-								document.body.appendChild(link);
-								link.click();
-								document.body.removeChild(link);
-								URL.revokeObjectURL(url);
-							} catch {
-								toast.error("Failed to download skills");
-							} finally {
-								setIsDownloadingAll(false);
-							}
-						}}
-						disabled={!skills?.length || isDownloadingAll}
-					>
-						{isDownloadingAll ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-						{isDownloadingAll ? "Downloading..." : "Download All Skills"}
-					</Button>
-					{hasCreateAccess && (
-						<Button data-testid="skill-create-btn" onClick={onCreateNew} size="sm">
-							<Plus className="h-4 w-4" />
-							New Skill
-						</Button>
-					)}
-				</div>
-			</div>
-
-			{/* Search + All-skills version */}
-			<div className="mb-4 flex items-center gap-3">
-				<div className="relative max-w-sm flex-1">
+			{/* Search + All-skills version + Actions */}
+			<div className="mb-4 flex shrink-0 flex-col gap-3 md:flex-row md:items-center">
+				<PageTitle title="Skills Repository" beta>
+					Manage Agent Skills for distribution to AI coding assistants
+				</PageTitle>
+				<div className="relative w-full flex-1 md:max-w-sm">
 					<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 					<Input
 						data-testid="skill-search-input"
@@ -491,7 +448,7 @@ export function SkillsListView({
 						className="h-8 pl-9"
 					/>
 				</div>
-				<div className="flex items-center gap-2 text-xs">
+				<div className="flex min-w-0 items-center gap-2 text-xs">
 					<Tooltip>
 						<TooltipTrigger asChild>
 							<Info className="text-muted-foreground h-3.5 w-3.5 cursor-help" />
@@ -541,11 +498,92 @@ export function SkillsListView({
 						</Badge>
 					)}
 				</div>
+				<div className="flex shrink-0 items-center gap-2 md:ml-auto">
+					<div className="grid grid-cols-3 items-center gap-2 md:flex">
+						{isGitAvailable && marketplaceBaseUrl ? (
+							<MarketplacePopover baseUrl={marketplaceBaseUrl} />
+						) : (
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<span tabIndex={0} data-testid="skill-marketplace-disabled-trigger">
+										<Button
+											data-testid="skill-marketplace-register-btn"
+											variant="outline"
+											size="sm"
+											disabled
+											title="Register as Marketplace"
+											aria-label="Register as Marketplace"
+										>
+											<Package className="h-3.5 w-3.5" />
+											<span className="hidden md:inline">Register as Marketplace</span>
+										</Button>
+									</span>
+								</TooltipTrigger>
+								<TooltipContent side="bottom">
+									<p className="max-w-xs text-xs">
+										{isGitAvailable ? (
+											<>
+												Set the External Client URL in{" "}
+												<Link
+													to="/workspace/config/skills"
+													data-testid="skill-marketplace-settings-link"
+													className="underline underline-offset-2"
+												>
+													Skills Settings
+												</Link>{" "}
+												to enable marketplace registration.
+											</>
+										) : (
+											"Git is not available on the server. Install git and restart Bifrost to enable marketplace registration for Claude Code and Codex."
+										)}
+									</p>
+								</TooltipContent>
+							</Tooltip>
+						)}
+						<Button
+							variant="outline"
+							size="sm"
+							data-testid="skill-download-all-btn"
+							onClick={async () => {
+								setIsDownloadingAll(true);
+								try {
+									const res = await fetch(`${getApiBaseUrl()}/skills/serve/all/download.zip`);
+									if (!res.ok) throw new Error("Download failed");
+									const blob = await res.blob();
+									const url = URL.createObjectURL(blob);
+									const link = document.createElement("a");
+									link.href = url;
+									link.download = "all-skills.zip";
+									document.body.appendChild(link);
+									link.click();
+									document.body.removeChild(link);
+									URL.revokeObjectURL(url);
+								} catch {
+									toast.error("Failed to download skills");
+								} finally {
+									setIsDownloadingAll(false);
+								}
+							}}
+							disabled={!skills?.length || isDownloadingAll}
+							title="Download all skills"
+							aria-label="Download all skills"
+						>
+							{isDownloadingAll ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+							<span className="hidden md:inline">{isDownloadingAll ? "Downloading..." : "Download All Skills"}</span>
+						</Button>
+						{hasCreateAccess && (
+							<Button data-testid="skill-create-btn" onClick={onCreateNew} size="sm" title="Add skill" aria-label="Add skill">
+								<Plus className="h-4 w-4" />
+								<span className="hidden md:inline">Add Skill</span>
+							</Button>
+						)}
+					</div>
+				</div>
 			</div>
 
 			{/* Table */}
-			<div className="mb-2 grow overflow-hidden rounded-sm border">
-				<Table containerClassName="h-full overflow-auto" className="w-full table-fixed">
+			<div className="mb-2 min-h-80 grow overflow-hidden rounded-sm border md:min-h-0">
+				<Table containerClassName="h-full overflow-auto" className="min-w-[58rem] table-fixed md:w-full md:min-w-0">
 					<TableHeader className="bg-muted sticky top-0 z-20">
 						<TableRow className="hover:bg-transparent">
 							<TableHead className="w-60">
@@ -640,7 +678,7 @@ export function SkillsListView({
 
 			{/* Pagination */}
 			{total > 0 && (
-				<div className="flex shrink-0 items-center justify-between text-xs">
+				<div className="flex shrink-0 flex-col gap-2 text-xs md:flex-row md:items-center md:justify-between md:gap-0">
 					<div className="text-muted-foreground flex items-center gap-2">
 						{(offset + 1).toLocaleString()}-{Math.min(offset + PAGE_SIZE, total).toLocaleString()} of {total.toLocaleString()} entries
 					</div>

@@ -17,7 +17,7 @@ export const routingRulesApi = baseApi.injectEndpoints({
 		// Get routing rules with pagination
 		getRoutingRules: builder.query<GetRoutingRulesResponse, GetRoutingRulesParams | void>({
 			query: (params) => ({
-				url: "/governance/routing-rules",
+				url: "/routing/rules",
 				params: {
 					...(params?.limit && { limit: params.limit }),
 					...(params?.offset !== undefined && { offset: params.offset }),
@@ -30,7 +30,7 @@ export const routingRulesApi = baseApi.injectEndpoints({
 		// Get a single routing rule
 		getRoutingRule: builder.query<RoutingRule, string>({
 			query: (id) => ({
-				url: `/governance/routing-rules/${id}`,
+				url: `/routing/rules/${id}`,
 				method: "GET",
 			}),
 			transformResponse: (response: { rule: RoutingRule }) => response.rule,
@@ -40,7 +40,7 @@ export const routingRulesApi = baseApi.injectEndpoints({
 		// Create a new routing rule
 		createRoutingRule: builder.mutation<RoutingRule, CreateRoutingRuleRequest>({
 			query: (body) => ({
-				url: `/governance/routing-rules`,
+				url: `/routing/rules`,
 				method: "POST",
 				body,
 			}),
@@ -70,7 +70,7 @@ export const routingRulesApi = baseApi.injectEndpoints({
 		// Update an existing routing rule
 		updateRoutingRule: builder.mutation<RoutingRule, { id: string; data: UpdateRoutingRuleRequest }>({
 			query: ({ id, data }) => ({
-				url: `/governance/routing-rules/${id}`,
+				url: `/routing/rules/${id}`,
 				method: "PUT",
 				body: data,
 			}),
@@ -99,7 +99,7 @@ export const routingRulesApi = baseApi.injectEndpoints({
 		// Delete a routing rule
 		deleteRoutingRule: builder.mutation<void, string>({
 			query: (id) => ({
-				url: `/governance/routing-rules/${id}`,
+				url: `/routing/rules/${id}`,
 				method: "DELETE",
 			}),
 			async onQueryStarted(ruleId, { dispatch, getState, queryFulfilled }) {

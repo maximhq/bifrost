@@ -84,7 +84,7 @@ func TestConvertBifrostMessages_OrphanToolResultBecomesUserText(t *testing.T) {
 	t.Run("orphan_only", func(t *testing.T) {
 		msgs, err := ConvertBifrostMessagesToAnthropicMessages(ctx,
 			[]schemas.ResponsesMessage{functionOutput("toolu_orphan", "Sunny, 72F")},
-			true, provider, model)
+			true, schemas.ResolveModelCaps(provider, model))
 		if err != nil {
 			t.Fatalf("ConvertBifrostMessagesToAnthropicMessages() error = %v", err)
 		}
@@ -114,7 +114,7 @@ func TestConvertBifrostMessages_OrphanToolResultBecomesUserText(t *testing.T) {
 				functionCall("call_match", "get_weather", `{"location":"SF"}`),
 				functionOutput("call_match", "Sunny, 72F"),
 			},
-			true, provider, model)
+			true, schemas.ResolveModelCaps(provider, model))
 		if err != nil {
 			t.Fatalf("ConvertBifrostMessagesToAnthropicMessages() error = %v", err)
 		}
@@ -135,7 +135,7 @@ func TestConvertBifrostMessages_OrphanToolResultBecomesUserText(t *testing.T) {
 				functionOutput("call_match", "Sunny, 72F"),
 				functionOutput("toolu_orphan", "Orphaned result"),
 			},
-			true, provider, model)
+			true, schemas.ResolveModelCaps(provider, model))
 		if err != nil {
 			t.Fatalf("ConvertBifrostMessagesToAnthropicMessages() error = %v", err)
 		}

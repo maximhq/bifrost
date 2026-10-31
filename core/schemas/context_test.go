@@ -2,10 +2,136 @@ package schemas
 
 import (
 	"context"
+	"fmt"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 )
+
+// TestRealtimeTurnValues verifies opt-in snapshots, scoping, inheritance, and write guards.
+func TestRealtimeTurnValues(t *testing.T) {
+	type metadataKey uint8
+	const userKey metadataKey = 0
+	const requestKey metadataKey = 1
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	if values := ctx.GetRealtimeTurnValues(); values != nil {
+		t.Fatalf("unused context allocated a snapshot: %v", values)
+	}
+	name := "test-plugin"
+	scoped := ctx.WithPluginScope(&name)
+	scoped.SetValueForRealtimeTurns(userKey, "alice")
+	scoped.SetValue(requestKey, "request-only")
+	if scoped.Value(userKey) != "alice" || ctx.Value(userKey) != "alice" {
+		t.Fatal("opt-in setter must also set the ordinary context value")
+	}
+	values := scoped.GetRealtimeTurnValues()
+	if len(values) != 1 || values[userKey] != "alice" {
+		t.Fatalf("snapshot = %v", values)
+	}
+	values[userKey] = "tampered"
+	ctx.SetValue(userKey, "updated")
+	if ctx.GetRealtimeTurnValues()[userKey] != "updated" {
+		t.Fatal("snapshot must use current values and own its map")
+	}
+	child := NewBifrostContext(ctx, NoDeadline)
+	if child.GetRealtimeTurnValues()[userKey] != "updated" {
+		t.Fatal("derived context lost opted-in parent metadata")
+	}
+	child.SetValue(userKey, "child")
+	child.ClearValue(userKey)
+	if child.GetRealtimeTurnValues()[userKey] != nil {
+		t.Fatal("child clear must shadow opted-in parent metadata")
+	}
+	ctx.BlockRestrictedWrites()
+	scoped.SetValueForRealtimeTurns(BifrostContextKeyVirtualKey, "forbidden")
+	if ctx.Value(BifrostContextKeyVirtualKey) != nil {
+		t.Fatal("opt-in setter bypassed restricted writes")
+	}
+	if _, exists := ctx.GetRealtimeTurnValues()[BifrostContextKeyVirtualKey]; exists {
+		t.Fatal("rejected key must not be marked")
+	}
+	scoped.ReleasePluginScope()
+	ctx.DrainPluginLogs()
+}
+
+// TestRealtimeTurnValuesWrappedParent preserves opt-in inheritance through standard context wrappers.
+func TestRealtimeTurnValuesWrappedParent(t *testing.T) {
+	type metadataKey uint8
+	const userKey metadataKey = 0
+	parent := NewBifrostContext(context.Background(), NoDeadline)
+	parent.SetValueForRealtimeTurns(userKey, "parent")
+	wrapped, cancel := context.WithCancel(parent)
+	defer cancel()
+	child, childCancel := NewBifrostContextWithCancel(wrapped)
+	defer childCancel()
+	if child.Value(userKey) != "parent" || child.GetRealtimeTurnValues()[userKey] != "parent" {
+		t.Fatal("wrapped parent must provide both ordinary and opted-in values")
+	}
+	child.SetValue(userKey, "child")
+	if child.GetRealtimeTurnValues()[userKey] != "child" {
+		t.Fatal("child write must override the wrapped parent snapshot")
+	}
+	child.ClearValue(userKey)
+	if value, ok := child.GetRealtimeTurnValues()[userKey]; !ok || value != nil {
+		t.Fatal("explicit clear must shadow the wrapped parent snapshot")
+	}
+	if parent.GetRealtimeTurnValues()[userKey] != "parent" {
+		t.Fatal("child must not mutate the parent snapshot")
+	}
+	fresh, freshCancel := NewBifrostContextWithCancel(parent)
+	defer freshCancel()
+	fresh.ClearValue(userKey)
+	if value, ok := fresh.GetRealtimeTurnValues()[userKey]; !ok || value != nil {
+		t.Fatal("a fresh child's clear must shadow the parent value")
+	}
+	withValue, valueCancel := NewBifrostContextWithCancel(context.WithValue(wrapped, userKey, "wrapper"))
+	defer valueCancel()
+	if withValue.GetRealtimeTurnValues()[userKey] != "wrapper" {
+		t.Fatal("wrapper value must override the inherited snapshot")
+	}
+}
+
+// TestRealtimeTurnValuesConcurrent exercises writes and snapshots through plugin scopes.
+func TestRealtimeTurnValuesConcurrent(t *testing.T) {
+	type metadataKey int
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	var workers sync.WaitGroup
+	for i := range 16 {
+		workers.Go(func() {
+			name := "test-plugin"
+			scoped := ctx.WithPluginScope(&name)
+			defer scoped.ReleasePluginScope()
+			for j := range 100 {
+				scoped.SetValueForRealtimeTurns(metadataKey(i), j)
+				_ = scoped.GetRealtimeTurnValues()
+			}
+		})
+	}
+	workers.Wait()
+	if got := len(ctx.GetRealtimeTurnValues()); got != 16 {
+		t.Fatalf("marked keys = %d, want 16", got)
+	}
+	ctx.DrainPluginLogs()
+}
+
+// BenchmarkRealtimeTurnValues measures unused contexts and a one-value setup snapshot.
+func BenchmarkRealtimeTurnValues(b *testing.B) {
+	type metadataKey uint8
+	for _, marked := range []bool{false, true} {
+		b.Run(fmt.Sprint(marked), func(b *testing.B) {
+			ctx := NewBifrostContext(context.Background(), NoDeadline)
+			if marked {
+				ctx.SetValueForRealtimeTurns(metadataKey(0), "alice")
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				_ = ctx.GetRealtimeTurnValues()
+			}
+		})
+	}
+}
 
 type traceAttributeTestTracer struct {
 	NoOpTracer
@@ -184,6 +310,37 @@ func TestNewBifrostContext_GoroutineStartsWithCancellableParent(t *testing.T) {
 
 	if ctx.Err() != context.Canceled {
 		t.Errorf("Context Err() should be context.Canceled, got %v", ctx.Err())
+	}
+}
+
+// Err must report a parent cancellation on the very next call, as context.WithCancel
+// children do, not only once the watcher goroutine has run. A loop that cancels the
+// request and then checks ctx.Err() (the injected-tool turn loop) otherwise opens
+// one more upstream turn after the caller is gone.
+func TestNewBifrostContext_ErrSeesParentCancelSynchronously(t *testing.T) {
+	for i := 0; i < 1000; i++ {
+		parent, parentCancel := context.WithCancel(context.Background())
+		ctx := NewBifrostContext(parent, NoDeadline)
+		parentCancel()
+		if err := ctx.Err(); err != context.Canceled {
+			t.Fatalf("iteration %d: Err() right after the parent cancel = %v, want context.Canceled", i, err)
+		}
+		select {
+		case <-ctx.Done():
+		default:
+			t.Fatalf("iteration %d: Done() still open after Err() reported the cancel", i)
+		}
+	}
+}
+
+func BenchmarkBifrostContextErr(b *testing.B) {
+	parent, parentCancel := context.WithCancel(context.Background())
+	defer parentCancel()
+	ctx := NewBifrostContext(parent, NoDeadline)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = ctx.Err()
 	}
 }
 
@@ -476,4 +633,144 @@ func TestNewBifrostContext_WatchdogRaceWithReleasedScope(t *testing.T) {
 	for _, c := range derivedCtxs {
 		_, _ = c.Deadline()
 	}
+}
+
+// TestReservedKey_SkipProviderCheckIsProtected pins BifrostContextKeySkipProviderCheck
+// as reserved. Governance uses it to bypass virtual-key provider allowlists, so a
+// restricted (plugin) write must not be able to flip it. It regressed out of
+// reservedKeys during the slice->map refactor.
+func TestReservedKey_SkipProviderCheckIsProtected(t *testing.T) {
+	if !isReservedKey(BifrostContextKeySkipProviderCheck) {
+		t.Fatal("BifrostContextKeySkipProviderCheck must be a reserved key")
+	}
+
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	defer ctx.Cancel()
+
+	// Trusted write before the guard is armed.
+	ctx.SetValue(BifrostContextKeySkipProviderCheck, true)
+	ctx.BlockRestrictedWrites()
+
+	// A restricted write must be silently dropped, leaving the flag untouched.
+	ctx.SetValue(BifrostContextKeySkipProviderCheck, false)
+	if v := ctx.Value(BifrostContextKeySkipProviderCheck); v != true {
+		t.Fatalf("reserved key overwritten under BlockRestrictedWrites: got %v, want true", v)
+	}
+}
+
+// TestReservedKey_AuthCredentialIsProtected pins BifrostContextKeyAuthCredential as reserved.
+// Delegated token exchange trusts it to say which credential authenticated the request, so a
+// restricted (plugin) write must not be able to replace it.
+func TestReservedKey_AuthCredentialIsProtected(t *testing.T) {
+	if !isReservedKey(BifrostContextKeyAuthCredential) {
+		t.Fatal("BifrostContextKeyAuthCredential must be a reserved key")
+	}
+
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	defer ctx.Cancel()
+
+	recorded := Credential{Kind: "edge_session", Value: "user-1"}
+	ctx.SetValue(BifrostContextKeyAuthCredential, recorded)
+	ctx.BlockRestrictedWrites()
+
+	ctx.SetValue(BifrostContextKeyAuthCredential, Credential{Kind: "edge_session", Value: "user-2"})
+	if v := ctx.Value(BifrostContextKeyAuthCredential); v != recorded {
+		t.Fatalf("reserved key overwritten under BlockRestrictedWrites: got %v, want %v", v, recorded)
+	}
+}
+
+// TestReservedKey_NonComparableKeyDoesNotPanic guards the reserved-write path against
+// non-comparable keys. isReservedKey indexes reservedKeys, which panics on a slice/map/
+// func key unless the type is asserted first, and ClearValue reaches that guard even
+// when userValues is nil.
+func TestReservedKey_NonComparableKeyDoesNotPanic(t *testing.T) {
+	if isReservedKey([]string{"not", "comparable"}) {
+		t.Fatal("a non-comparable key must never be reported reserved")
+	}
+
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	defer ctx.Cancel()
+	ctx.BlockRestrictedWrites()
+
+	// userValues is still nil here; the guard must not panic before that check.
+	ctx.ClearValue([]string{"slice", "key"})
+}
+
+type trustedTestKey struct{}
+
+// TestTrustedValue_HiddenFromUserValues pins the trusted store: nothing a plugin can
+// enumerate or copy exposes it, yet children and plugin scopes of the context see it.
+func TestTrustedValue_HiddenFromUserValues(t *testing.T) {
+	root := NewBifrostContext(context.Background(), NoDeadline)
+	defer root.Cancel()
+	root.SetTrustedValue(trustedTestKey{}, "secret")
+
+	if v := root.Value(trustedTestKey{}); v != nil {
+		t.Fatalf("Value exposed a trusted value: %v", v)
+	}
+	for k := range root.GetUserValues() {
+		if _, ok := k.(trustedTestKey); ok {
+			t.Fatal("GetUserValues exposed a trusted key")
+		}
+	}
+	if v := root.GetParentCtxWithUserValues().Value(trustedTestKey{}); v != nil {
+		t.Fatalf("GetParentCtxWithUserValues copied a trusted value: %v", v)
+	}
+
+	child := NewBifrostContext(root, NoDeadline)
+	defer child.Cancel()
+	if v := child.TrustedValue(trustedTestKey{}); v != "secret" {
+		t.Fatalf("child context lost the trusted value: %v", v)
+	}
+
+	scoped := root.WithPluginScope(new("plugin"))
+	defer scoped.ReleasePluginScope()
+	if v := scoped.TrustedValue(trustedTestKey{}); v != "secret" {
+		t.Fatalf("plugin scope lost the trusted value: %v", v)
+	}
+	scoped.SetTrustedValue(trustedTestKey{}, "rewritten")
+	if v := root.TrustedValue(trustedTestKey{}); v != "rewritten" {
+		t.Fatalf("scoped write did not reach the root: %v", v)
+	}
+}
+
+// TestBifrostContextFromContext covers the recovery helper used by code that
+// receives a request context through a foreign wrapper (mcp-go's in-process
+// transport wraps every dispatched call in its own WithValue, and the tool
+// manager adds a timeout on top).
+func TestBifrostContextFromContext(t *testing.T) {
+	root := NewBifrostContext(context.Background(), NoDeadline)
+	type foreignKey struct{}
+
+	t.Run("direct", func(t *testing.T) {
+		got, ok := BifrostContextFromContext(root)
+		if !ok || got != root {
+			t.Fatalf("direct *BifrostContext must be returned as-is (ok=%v)", ok)
+		}
+	})
+	t.Run("through foreign wrappers", func(t *testing.T) {
+		timed, cancel := context.WithTimeout(root, time.Minute)
+		defer cancel()
+		wrapped := context.WithValue(timed, foreignKey{}, "x")
+		got, ok := BifrostContextFromContext(wrapped)
+		if !ok || got != root {
+			t.Fatalf("wrapped BifrostContext must be recovered through Value (ok=%v)", ok)
+		}
+	})
+	t.Run("scoped resolves to root", func(t *testing.T) {
+		scoped := root.WithPluginScope(nil)
+		defer scoped.ReleasePluginScope()
+		got, ok := BifrostContextFromContext(context.WithValue(scoped, foreignKey{}, "x"))
+		if !ok || got.Root() != root {
+			t.Fatalf("scoped context must resolve to a context rooted at the original (ok=%v)", ok)
+		}
+	})
+	t.Run("absent", func(t *testing.T) {
+		if _, ok := BifrostContextFromContext(context.Background()); ok {
+			t.Fatal("plain context must not report a BifrostContext")
+		}
+		if _, ok := BifrostContextFromContext(nil); ok {
+			t.Fatal("nil context must not report a BifrostContext")
+		}
+	})
 }

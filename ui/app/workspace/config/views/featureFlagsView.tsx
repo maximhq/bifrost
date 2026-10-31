@@ -1,3 +1,4 @@
+import PageTitle from "@/components/pageTitle";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -27,13 +28,10 @@ export default function FeatureFlagsView() {
 
 	return (
 		<div className="w-full space-y-4">
-			<div>
-				<h2 className="text-lg font-semibold tracking-tight">Feature Flags</h2>
-				<p className="text-muted-foreground text-sm">
-					Toggle in-process feature flags. Flags are declared in code; values can also be set via{" "}
-					<code className="text-xs">config.json</code> or Helm, in which case they appear here as locked.
-				</p>
-			</div>
+			<PageTitle title="Feature Flags">
+				Toggle in-process feature flags. Flags are declared in code; values can also be set via <code className="text-xs">config.json</code>{" "}
+				or Helm, in which case they appear here as locked.
+			</PageTitle>
 
 			{isLoading && <p className="text-muted-foreground text-sm">Loading feature flags...</p>}
 			{isError && <p className="text-sm text-red-500">Failed to load feature flags: {getErrorMessage(error)}</p>}
@@ -79,17 +77,17 @@ function FeatureFlagRow({ flag, canUpdate, onToggle }: FeatureFlagRowProps) {
 
 	return (
 		<TableRow className="group hover:bg-muted/50 transition-colors">
-			<TableCell className="align-top">
-				<div className="flex flex-col gap-1">
+			<TableCell className="align-top whitespace-normal">
+				<div className="flex min-w-0 flex-col gap-1">
 					<div className="flex flex-wrap items-center gap-2">
 						<span className="text-sm font-medium">{primaryLabel}</span>
-						{flag.display_name && <span className="text-muted-foreground font-mono text-xs">{flag.id}</span>}
+						{flag.display_name && <span className="text-muted-foreground font-mono text-xs break-all">{flag.id}</span>}
 						<SourceBadge source={flag.source} />
 						{flag.enterprise_only && <EnterpriseBadge />}
 						{flag.locked && !flag.enterprise_only && <LockedBadge />}
 						{!flag.registered && <UnregisteredBadge />}
 					</div>
-					{flag.description && <p className="text-muted-foreground text-sm">{flag.description}</p>}
+					{flag.description && <p className="text-muted-foreground text-sm break-words">{flag.description}</p>}
 					{!flag.registered && (
 						<p className="text-muted-foreground text-xs">
 							No code currently reads this flag. The override is stored but inert until a Register() call is added.
@@ -99,6 +97,7 @@ function FeatureFlagRow({ flag, canUpdate, onToggle }: FeatureFlagRowProps) {
 			</TableCell>
 			<TableCell className="w-px text-right align-top">
 				<Switch
+					aria-label={`Enable ${primaryLabel}`}
 					data-testid={`feature-flag-toggle-${flag.id}`}
 					size="md"
 					checked={flag.enabled}

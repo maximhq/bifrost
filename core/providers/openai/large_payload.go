@@ -40,7 +40,7 @@ func handleOpenAILargePayloadPassthrough(
 	client *fasthttp.Client,
 	url string,
 	authHeader map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	providerName schemas.ModelProvider,
 	logger schemas.Logger,
 ) (*largePayloadResult, *schemas.BifrostError, bool) {

@@ -12,10 +12,11 @@ import {
 	useGetMCPLogsStatsQuery,
 	useGetUserAgentMappingsQuery,
 } from "@/lib/store";
-import { useLazyGetMCPLogsQuery } from "@/lib/store/apis/mcpLogsApi";
+import { useLazyGetMCPLogByIdQuery, useLazyGetMCPLogsQuery } from "@/lib/store/apis/mcpLogsApi";
 import type { MCPToolLogEntry, MCPToolLogFilters, Pagination } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
 import { COMPACT_NUMBER_FORMAT } from "@/lib/utils/numbers";
+import { getLiveToggleState } from "@/lib/utils/timeRange";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import NumberFlow from "@number-flow/react";
 import { useLocation } from "@tanstack/react-router";
@@ -39,6 +40,9 @@ export default function MCPLogsPage() {
 	const [deleteLogs] = useDeleteMCPLogsMutation();
 	// Lazy query kept only for handleLogNavigate (fetches adjacent pages on demand)
 	const [triggerGetLogs] = useLazyGetMCPLogsQuery();
+	const [triggerGetLogById] = useLazyGetMCPLogByIdQuery();
+	const [fetchedLog, setFetchedLog] = useState<MCPToolLogEntry | null>(null);
+	const activeLogFetchId = useRef<string | null>(null);
 
 	// Track if user has manually modified the time range
 	const userModifiedTimeRange = useRef<boolean>(false);
@@ -52,9 +56,20 @@ export default function MCPLogsPage() {
 	const [urlState, setUrlState] = useQueryStates(
 		{
 			tool_names: parseAsArrayOf(parseAsString).withDefault([]),
+			user_ids: parseAsArrayOf(parseAsString).withDefault([]),
+			team_ids: parseAsArrayOf(parseAsString).withDefault([]),
+			customer_ids: parseAsArrayOf(parseAsString).withDefault([]),
+			business_unit_ids: parseAsArrayOf(parseAsString).withDefault([]),
+			project_ids: parseAsArrayOf(parseAsString).withDefault([]),
+			device_ids: parseAsArrayOf(parseAsString).withDefault([]),
+			apps: parseAsArrayOf(parseAsString).withDefault([]),
+
 			server_labels: parseAsArrayOf(parseAsString).withDefault([]),
 			status: parseAsArrayOf(parseAsString).withDefault([]),
 			virtual_key_ids: parseAsArrayOf(parseAsString).withDefault([]),
+			agent_names: parseAsArrayOf(parseAsString).withDefault([]),
+			session_id: parseAsSafeString.withDefault(""),
+			agent_correlation_id: parseAsSafeString.withDefault(""),
 			content_search: parseAsSafeString.withDefault(""),
 			start_time: parseAsInteger.withDefault(defaultTimeRange.startTime),
 			end_time: parseAsInteger.withDefault(defaultTimeRange.endTime),
@@ -82,9 +97,20 @@ export default function MCPLogsPage() {
 	const filters: MCPToolLogFilters = useMemo(
 		() => ({
 			tool_names: urlState.tool_names,
+			user_ids: urlState.user_ids,
+			team_ids: urlState.team_ids,
+			customer_ids: urlState.customer_ids,
+			business_unit_ids: urlState.business_unit_ids,
+			project_ids: urlState.project_ids,
+			device_ids: urlState.device_ids,
+			apps: urlState.apps,
+
 			server_labels: urlState.server_labels,
 			status: urlState.status,
 			virtual_key_ids: urlState.virtual_key_ids,
+			agent_names: urlState.agent_names,
+			session_id: urlState.session_id,
+			agent_correlation_id: urlState.agent_correlation_id,
 			content_search: urlState.content_search,
 			...(urlState.period
 				? { period: urlState.period }
@@ -95,9 +121,19 @@ export default function MCPLogsPage() {
 		}),
 		[
 			urlState.tool_names,
+			urlState.user_ids,
+			urlState.team_ids,
+			urlState.customer_ids,
+			urlState.business_unit_ids,
+			urlState.project_ids,
+			urlState.device_ids,
+			urlState.apps,
 			urlState.server_labels,
 			urlState.status,
 			urlState.virtual_key_ids,
+			urlState.agent_names,
+			urlState.session_id,
+			urlState.agent_correlation_id,
 			urlState.content_search,
 			urlState.period,
 			urlState.start_time,
@@ -196,7 +232,34 @@ export default function MCPLogsPage() {
 	const logs = logsData?.logs ?? [];
 	const totalItems = logsData?.pagination?.total_count ?? 0;
 
-	const selectedLog = useMemo(() => (selectedLogId ? (logs.find((l) => l.id === selectedLogId) ?? null) : null), [selectedLogId, logs]);
+	const selectedLogFromPage = useMemo(
+		() => (selectedLogId ? (logs.find((l) => l.id === selectedLogId) ?? null) : null),
+		[selectedLogId, logs],
+	);
+
+	// A shared link can name a log outside the current page (older than the
+	// default 1h window, or pushed off the page by newer logs). Fetch it by id
+	// so the sheet still opens.
+	useEffect(() => {
+		if (!selectedLogId || selectedLogFromPage) {
+			setFetchedLog(null);
+			activeLogFetchId.current = null;
+			return;
+		}
+		const fetchId = selectedLogId;
+		activeLogFetchId.current = fetchId;
+		triggerGetLogById(selectedLogId).then((result) => {
+			if (activeLogFetchId.current === fetchId) {
+				if (result.data) {
+					setFetchedLog(result.data);
+				} else if (result.error) {
+					setError(getErrorMessage(result.error));
+				}
+			}
+		});
+	}, [selectedLogId, selectedLogFromPage, triggerGetLogById]);
+
+	const selectedLog = selectedLogFromPage ?? fetchedLog;
 
 	// Set showEmptyState on first response; clear it as soon as logs appear.
 	useEffect(() => {
@@ -218,9 +281,20 @@ export default function MCPLogsPage() {
 			setUrlState({
 				...(timeChanged && { period: "" }),
 				tool_names: newFilters.tool_names || [],
+				user_ids: newFilters.user_ids || [],
+				team_ids: newFilters.team_ids || [],
+				customer_ids: newFilters.customer_ids || [],
+				business_unit_ids: newFilters.business_unit_ids || [],
+				project_ids: newFilters.project_ids || [],
+				device_ids: newFilters.device_ids || [],
+				apps: newFilters.apps || [],
+
 				server_labels: newFilters.server_labels || [],
 				status: newFilters.status || [],
 				virtual_key_ids: newFilters.virtual_key_ids || [],
+				agent_names: newFilters.agent_names || [],
+				session_id: newFilters.session_id || "",
+				agent_correlation_id: newFilters.agent_correlation_id || "",
 				content_search: newFilters.content_search || "",
 				start_time: newFilters.start_time ? dateUtils.toUnixTimestamp(new Date(newFilters.start_time)) : undefined,
 				end_time: newFilters.end_time ? dateUtils.toUnixTimestamp(new Date(newFilters.end_time)) : undefined,
@@ -284,16 +358,18 @@ export default function MCPLogsPage() {
 
 	const handlePollToggle = useCallback(
 		(enabled: boolean) => {
-			setUrlState({ polling: enabled });
-			if (enabled) refreshAllData();
+			const next = getLiveToggleState(enabled, urlState.period);
+			setUrlState(next);
+			// A period change alters the query args, which fetches on its own.
+			if (enabled && !next.period) refreshAllData();
 		},
-		[setUrlState, refreshAllData],
+		[setUrlState, refreshAllData, urlState.period],
 	);
 
 	const statCards = useMemo(
 		() => [
 			{
-				title: "Total Executions",
+				title: "Total Records",
 				value: <NumberFlow value={statsData?.total_executions ?? 0} format={COMPACT_NUMBER_FORMAT} />,
 				icon: <Hash className="size-4" />,
 			},
@@ -340,7 +416,10 @@ export default function MCPLogsPage() {
 		return icons;
 	}, [userAgentMappingsData?.mappings]);
 
-	const columns = useMemo(() => createMCPColumns(handleDelete, hasDeleteAccess, customAppIcons), [customAppIcons, handleDelete, hasDeleteAccess]);
+	const columns = useMemo(
+		() => createMCPColumns(handleDelete, hasDeleteAccess, customAppIcons),
+		[customAppIcons, handleDelete, hasDeleteAccess],
+	);
 
 	const columnIds = useMemo(
 		() => columns.map((col) => ("id" in col && col.id ? col.id : "accessorKey" in col ? String(col.accessorKey) : "")).filter(Boolean),
@@ -360,7 +439,7 @@ export default function MCPLogsPage() {
 		columnIds,
 		paramName: "mcp_cols",
 		storageKey: "bifrost.mcp_logs.cols",
-		defaultHidden: ["virtual_key"],
+		defaultHidden: ["virtual_key", "customer", "business_unit", "project", "device"],
 		fixedColumns: hasDeleteAccess ? { right: ["actions"] } : undefined,
 	});
 
@@ -369,6 +448,13 @@ export default function MCPLogsPage() {
 			timestamp: "Time",
 			tool_name: "Tool Name",
 			server_label: "Server",
+			source: "Source",
+			user: "User",
+			team: "Team",
+			customer: "Customer",
+			business_unit: "Business Unit",
+			project: "Project",
+			device: "Device",
 			latency: "Latency",
 			cost: "Cost",
 			virtual_key: "Virtual Key",
@@ -434,12 +520,12 @@ export default function MCPLogsPage() {
 			) : showEmptyState ? (
 				<MCPEmptyState error={displayError} />
 			) : (
-				<div className="no-padding-parent no-border-parent bg-background flex h-[calc(100vh_-_16px)] w-full gap-3">
+				<div className="no-padding-parent no-border-parent bg-background flex h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))] w-full gap-3">
 					{/* Sidebar Filters */}
 					<MCPFilterSidebar filters={filters} onFiltersChange={setFilters} />
 
 					{/* Main Content */}
-					<div className="bg-card flex min-w-0 flex-1 flex-col gap-2 overflow-hidden rounded-l-md">
+					<div className="bg-card flex min-w-0 flex-1 flex-col gap-2 overflow-hidden rounded-md border">
 						<div className="p-4 pb-0">
 							<McpHeaderView
 								filters={filters}

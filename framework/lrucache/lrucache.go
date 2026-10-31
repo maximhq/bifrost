@@ -40,6 +40,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // Loader produces the value for a cache key on a miss. It returns the value,
@@ -53,6 +54,10 @@ type inflightCall[V any] struct {
 	done   chan struct{}
 	result V
 	err    error
+	// waiters counts followers that joined this call. Tests read it to know
+	// a follower is attached before releasing the leader; nothing else may
+	// depend on it.
+	waiters atomic.Int32
 }
 
 type entry[V any] struct {
@@ -180,6 +185,7 @@ func (c *Cache[V]) Fill(ctx context.Context, key string, load Loader[V]) (V, err
 	c.inflightMu.Lock()
 	if call, ok := c.inflight[key]; ok {
 		c.inflightMu.Unlock()
+		call.waiters.Add(1)
 		select {
 		case <-call.done:
 			return call.result, call.err

@@ -2,6 +2,8 @@ package openai
 
 import (
 	"bytes"
+	"fmt"
+	"strings"
 	"time"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -112,10 +114,13 @@ func (r *OpenAIFileResponse) ToBifrostFileRetrieveResponse(providerName schemas.
 // ConvertRequestsToJSONL converts batch request items to JSONL format.
 func ConvertRequestsToJSONL(requests []schemas.BatchRequestItem) ([]byte, error) {
 	var buf bytes.Buffer
-	for _, req := range requests {
+	for i, req := range requests {
+		if strings.TrimSpace(req.CustomID) == "" {
+			return nil, fmt.Errorf("batch request item %d: custom_id is required", i)
+		}
 		line, err := providerUtils.MarshalSorted(req)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("batch request item %d: %w", i, err)
 		}
 		buf.Write(line)
 		buf.WriteByte('\n')

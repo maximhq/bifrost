@@ -60,10 +60,36 @@ export async function assertToast(
   expectedText: string,
   type: 'success' | 'error' | 'info' = 'success'
 ): Promise<void> {
-  const selector = `[data-sonner-toast][data-type="${type}"]:not([data-removed="true"])`
+  const selector = `[data-sonner-toast][data-type="${type}"]:not([data-removed="true"]):not([data-e2e-dismissed])`
   const toast = page.locator(selector).first()
   await expect(toast).toBeVisible({ timeout: 10000 })
   await expect(toast).toContainText(expectedText)
+  // Consumed: retire it so the next wait cannot match this stale toast.
+  await page
+    .evaluate(() => document.querySelectorAll('[data-sonner-toast]').forEach((t) => t.setAttribute('data-e2e-dismissed', '')))
+    .catch(() => {})
+}
+
+/**
+ * Fail the list request at apiPath with a 500 and reload. The page must show the
+ * load error with the server's message instead of its empty state.
+ */
+export async function expectListLoadError(
+  page: Page,
+  apiPath: string,
+  loadErrorTestId: string,
+  emptyStateTestId: string
+): Promise<void> {
+  await page.route(
+    (url) => url.pathname === apiPath,
+    (route) =>
+      route.request().method() === 'GET'
+        ? route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: { message: 'database is down' } }) })
+        : route.fallback()
+  )
+  await page.reload()
+  await expect(page.getByTestId(loadErrorTestId)).toContainText(/database is down/i)
+  await expect(page.getByTestId(emptyStateTestId)).toHaveCount(0)
 }
 
 /**

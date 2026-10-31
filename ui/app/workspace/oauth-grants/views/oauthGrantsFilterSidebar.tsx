@@ -4,15 +4,17 @@
 // State/behavior mirrors mcpSessionsFilterSidebar.tsx; kept as its own copy
 // since this page filters on unrelated fields.
 
+import { FilterSidebarTrigger } from "@/components/filters/filterSidebarTrigger";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scrollArea";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { getUserSearchQuery } from "@/lib/registries/userPicker";
 import { useGetVirtualKeysQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
-import { ChevronDown, Fingerprint, KeyRound, LoaderCircle, PanelLeftClose, PanelLeftOpen, RotateCcw, Search, UserRound } from "lucide-react";
+import { ChevronDown, Fingerprint, KeyRound, LoaderCircle, PanelLeftClose, RotateCcw, Search, UserRound } from "lucide-react";
 import { type Ref, useCallback, useEffect, useMemo, useRef, useState } from "react";
 // Side-effect import: registers the enterprise user search hook (if this is
 // an enterprise build) before this module's first render. OSS has no user
@@ -64,13 +66,18 @@ interface SidebarProps {
 // ---------------------------------------------------------------------------
 
 export function OAuthGrantsFilterSidebar({ filters, onFiltersChange }: SidebarProps) {
+	const isMobile = useIsMobile();
 	const [collapsed, setCollapsed] = useState(false);
 
 	useEffect(() => {
 		if (typeof window === "undefined") return;
+		if (isMobile) {
+			setCollapsed(true);
+			return;
+		}
 		const stored = window.localStorage.getItem(COLLAPSE_STORAGE_KEY);
-		if (stored === "true") setCollapsed(true);
-	}, []);
+		setCollapsed(stored === "true");
+	}, [isMobile]);
 
 	const toggleCollapsed = useCallback(() => {
 		setCollapsed((prev) => {
@@ -82,10 +89,7 @@ export function OAuthGrantsFilterSidebar({ filters, onFiltersChange }: SidebarPr
 		});
 	}, []);
 
-	const activeFilterCount = useMemo(
-		() => filters.mode.length + filters.virtual_key_id.length + filters.user_id.length,
-		[filters],
-	);
+	const activeFilterCount = useMemo(() => filters.mode.length + filters.virtual_key_id.length + filters.user_id.length, [filters]);
 
 	const handleReset = useCallback(() => {
 		onFiltersChange(EMPTY_FILTERS);
@@ -119,27 +123,12 @@ export function OAuthGrantsFilterSidebar({ filters, onFiltersChange }: SidebarPr
 
 	if (collapsed) {
 		return (
-			<button
-				type="button"
-				onClick={toggleCollapsed}
-				className="bg-card group flex h-full w-10 shrink-0 cursor-pointer flex-col items-center gap-3 rounded-r-md py-4 text-sm font-medium"
-				title="Show filters"
-				aria-label="Show filters"
-				data-testid="oauthGrantsFilterSidebar-toggle-show"
-			>
-				<PanelLeftOpen className="text-muted-foreground group-hover:text-foreground size-4 transition-colors" />
-				<span className="rotate-180 select-none [writing-mode:vertical-rl]">Filters</span>
-				{activeFilterCount > 0 && (
-					<span className="bg-primary/10 text-primary flex size-6 items-center justify-center rounded-full text-xs font-medium">
-						{activeFilterCount}
-					</span>
-				)}
-			</button>
+			<FilterSidebarTrigger activeFilterCount={activeFilterCount} onClick={toggleCollapsed} testId="oauthGrantsFilterSidebar-toggle-show" />
 		);
 	}
 
 	return (
-		<div className="bg-card flex h-full w-64 shrink-0 flex-col rounded-r-md">
+		<div className="bg-card fixed inset-y-2 left-2 z-40 flex h-auto w-[calc(100vw-1rem)] max-w-72 shrink-0 flex-col rounded-md border shadow-xl md:static md:h-full md:w-64 md:max-w-none md:rounded-md md:shadow-none">
 			<div className="flex h-11 items-center justify-between border-b pr-2 pl-5">
 				<span className="text-sm font-semibold">Filters</span>
 				<div className="flex items-center gap-1">

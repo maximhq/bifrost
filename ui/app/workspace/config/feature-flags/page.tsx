@@ -2,7 +2,7 @@ import FeatureFlagsView from "../views/featureFlagsView";
 
 export default function FeatureFlagsPage() {
 	return (
-		<div className="mx-auto flex w-full max-w-7xl">
+		<div className="no-padding-parent flex w-full p-4">
 			<FeatureFlagsView />
 		</div>
 	);

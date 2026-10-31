@@ -223,6 +223,7 @@ func (provider *NebiusProvider) Embedding(ctx *schemas.BifrostContext, key schem
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		nil,
+		nil,
 		provider.logger)
 }
 
@@ -234,6 +235,11 @@ func (provider *NebiusProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 // Rerank is not supported by the Nebius provider.
 func (provider *NebiusProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
+}
+
+// Decision is not supported by the Nebius provider.
+func (provider *NebiusProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
 }
 
 // OCR is not supported by the Nebius provider.
@@ -326,7 +332,16 @@ func (provider *NebiusProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 		return nil, providerUtils.EnrichError(ctx, parseNebiusImageError(resp), jsonData, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse), latency)
 	}
 
+	// Time the body read/decompress as the response-finalize phase.
+	ft, fh := providerUtils.StartPhaseSpan(ctx, "response-finalize")
 	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if ft != nil {
+		if err != nil {
+			ft.EndSpan(fh, schemas.SpanStatusError, err.Error())
+		} else {
+			ft.EndSpan(fh, schemas.SpanStatusOk, "")
+		}
+	}
 	if err != nil {
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
@@ -336,7 +351,8 @@ func (provider *NebiusProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 	sendBackRawRequest, sendBackRawResponse := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
 	// Use enhanced response handler with pre-allocated response
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(
+		ctx,
 		body,
 		response,
 		jsonData,
@@ -408,6 +424,11 @@ func (provider *NebiusProvider) VideoList(_ *schemas.BifrostContext, _ schemas.K
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoListRequest, provider.GetProviderKey())
 }
 
+// VideoEdit is not supported by the Nebius provider.
+func (provider *NebiusProvider) VideoEdit(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoEditRequest) (*schemas.BifrostVideoEditResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoEditRequest, provider.GetProviderKey())
+}
+
 // VideoRemix is not supported by Nebius provider.
 func (provider *NebiusProvider) VideoRemix(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoRemixRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoRemixRequest, provider.GetProviderKey())
@@ -471,6 +492,11 @@ func (provider *NebiusProvider) FileContent(_ *schemas.BifrostContext, _ []schem
 // CountTokens is not supported by Nebius provider.
 func (provider *NebiusProvider) CountTokens(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.CountTokensRequest, provider.GetProviderKey())
+}
+
+// ModelRetrieve is not supported by the Nebius provider.
+func (provider *NebiusProvider) ModelRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ModelRetrieveRequest, provider.GetProviderKey())
 }
 
 // Compaction is not supported by the Nebius provider.

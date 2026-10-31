@@ -44,7 +44,6 @@ invoke:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 invoke-stream:
@@ -90,6 +89,5 @@ invoke-stream:
               $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []

@@ -1,0 +1,219 @@
+# Typesafe Integration - System One Endpoint
+
+systemone:
+  post:
+    operationId: typesafeSystemOne
+    summary: Evaluate state (Typesafe format)
+    description: |
+      Evaluates state against a map of named questions using Typesafe's native
+      System One API. The request body matches Typesafe's native format; question
+      identifiers become result field names. Images are listed in `assets` and placed
+      by reference; send them base64 in JSON, or as file parts of a multipart request
+      whose `request` part holds the JSON. Bifrost adds the
+      `TypeSafe-Danger-Zone-Images` header Typesafe requires for images and box questions.
+    tags:
+    - Typesafe Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+            - state
+            - model
+            - questions
+            properties:
+              state:
+                description: A plain string, or structured data (object or array) to evaluate.
+                oneOf:
+                - type: string
+                - type: object
+                  additionalProperties: true
+                - type: array
+                  items: {}
+              model:
+                type: string
+                description: Typesafe model identifier (e.g. `jev-1.14.0`, `jev-latest`).
+              assets:
+                type: object
+                description: Images keyed by the reference string written wherever each belongs in the state, instructions, or criteria.
+                additionalProperties:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                      enum: [image]
+                    format:
+                      type: string
+                      enum: [png, jpg, jpeg]
+                      description: Required with `data_base64`
+                    data_base64:
+                      type: string
+                      description: The image file, base64-encoded, without a `data:` prefix
+                    part:
+                      type: string
+                      description: In a multipart request, the name of the file part holding the image
+              questions:
+                type: object
+                minProperties: 1
+                description: Map of named questions.
+                additionalProperties:
+                  type: object
+                  required:
+                  - type
+                  - instructions
+                  properties:
+                    type:
+                      type: string
+                      enum: [noul, choice, score, box]
+                      description: Question type. `noul` returns a probability from 0 to 1, `choice` a selection with probabilities, `score` a probability-weighted rubric value, `box` the edges of a box around the instructions' subject in an image (Jev 1.14).
+                    instructions:
+                      description: Question instructions. A string, or structured data.
+                      oneOf:
+                      - type: string
+                      - type: object
+                        additionalProperties: true
+                      - type: array
+                        items: {}
+                    criteria:
+                      description: |
+                        Optional `true`/`false` descriptions for `noul`; a map of option
+                        to description for `choice` (at most 255 options); an ordered
+                        array of 2-10 level descriptions for `score`.
+                      oneOf:
+                      - type: object
+                        additionalProperties:
+                          type: string
+                      - type: array
+                        items:
+                          type: string
+        multipart/form-data:
+          schema:
+            type: object
+            required:
+            - request
+            properties:
+              request:
+                type: string
+                description: The JSON request, as for `application/json`, with each multipart asset's `part` naming a file part of this request.
+            additionalProperties:
+              type: string
+              format: binary
+              description: An image file part, named by exactly one asset's `part`
+    responses:
+      '200':
+        description: Successful response in Typesafe's native shape
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - model
+              - answers
+              properties:
+                model:
+                  type: string
+                  description: Model version that performed the evaluation
+                answers:
+                  type: object
+                  description: Map matching question identifiers to answers
+                  additionalProperties:
+                    type: object
+                    required:
+                    - type
+                    properties:
+                      type:
+                        type: string
+                        enum: [noul, choice, score, box]
+                      noul:
+                        type: number
+                        description: Probability from 0 to 1 (noul answers)
+                      choice:
+                        type: string
+                        description: Selected option (choice answers)
+                      score:
+                        type: number
+                        description: Probability-weighted value (score answers)
+                      box:
+                        type: object
+                        description: Box answers. Edges as fractions from 0 to 1 of the image, from its top-left
+                        required: [top, bottom, left, right]
+                        properties:
+                          top:
+                            type: number
+                          bottom:
+                            type: number
+                          left:
+                            type: number
+                          right:
+                            type: number
+                      probabilities:
+                        type: object
+                        additionalProperties:
+                          type: number
+                      legend:
+                        type: object
+                        additionalProperties:
+                          type: string
+                      confidence:
+                        type: number
+                usage:
+                  type: object
+                  properties:
+                    input_tokens:
+                      type: integer
+                    output_tokens:
+                      type: integer
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+models:
+  get:
+    operationId: typesafeListModels
+    summary: List models (Typesafe format)
+    description: |
+      Lists available Typesafe models in the native shape. Typesafe documents no
+      upstream listing endpoint, so the catalog is served from Bifrost's model
+      datasheet.
+    tags:
+    - Typesafe Integration
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - models
+              properties:
+                models:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                    - name
+                    properties:
+                      name:
+                        type: string
+                        example: jev-latest
+                      description:
+                        type: string
+                      release_date:
+                        type: string
+                        format: date-time
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

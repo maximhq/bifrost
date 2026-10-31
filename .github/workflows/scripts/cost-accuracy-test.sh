@@ -26,6 +26,8 @@ POSTGRES_HOST="${POSTGRES_HOST:-127.0.0.1}"
 POSTGRES_PORT="${POSTGRES_PORT:-5432}"
 MOCKER_PORT="${MOCKER_PORT:-8000}"
 BIFROST_PORT="${BIFROST_PORT:-8080}"
+# OSS locks /api behind this token while dashboard auth is not configured.
+SETUP_TOKEN="${BIFROST_SETUP_TOKEN:-bifrost-e2e-setup-token}"
 RPS="${COST_ACCURACY_RPS:-10}"
 DURATION="${COST_ACCURACY_DURATION:-10s}"
 INPUT_COST_PER_TOKEN="${INPUT_COST_PER_TOKEN:-0.000001}"
@@ -183,6 +185,7 @@ write_config() {
   cat > "${APP_DIR}/config.json" <<EOF
 {
   "\$schema": "https://www.getbifrost.ai/schema",
+  "setup_token": "${SETUP_TOKEN}",
   "client": {
     "enable_logging": true,
     "drop_excess_requests": false,
@@ -261,6 +264,7 @@ create_virtual_key() {
   log "creating virtual key with attached budget"
   curl -fsS -X POST "http://127.0.0.1:${BIFROST_PORT}/api/governance/virtual-keys" \
     -H "Content-Type: application/json" \
+    -H "X-Bifrost-Setup-Token: ${SETUP_TOKEN}" \
     -d "{
       \"name\": \"cost-accuracy-vk\",
       \"description\": \"Cost accuracy CI virtual key\",
@@ -301,6 +305,7 @@ create_pricing_override() {
   log "creating virtual-key scoped pricing override"
   curl -fsS -X POST "http://127.0.0.1:${BIFROST_PORT}/api/governance/pricing-overrides" \
     -H "Content-Type: application/json" \
+    -H "X-Bifrost-Setup-Token: ${SETUP_TOKEN}" \
     -d "{
       \"name\": \"cost accuracy gpt-4o-mini vk\",
       \"scope_kind\": \"virtual_key\",
@@ -330,7 +335,7 @@ run_hitter() {
 
 validate_costs() {
   log "validating logged costs"
-  python3 - "$BIFROST_PORT" "$INPUT_COST_PER_TOKEN" "$OUTPUT_COST_PER_TOKEN" "$RESULTS_FILE" "${WORK_DIR}/hitter.log" "${WORK_DIR}/run-start.txt" "$VIRTUAL_KEY_ID" "$VIRTUAL_KEY_VALUE" <<'PY'
+  python3 - "$BIFROST_PORT" "$INPUT_COST_PER_TOKEN" "$OUTPUT_COST_PER_TOKEN" "$RESULTS_FILE" "${WORK_DIR}/hitter.log" "${WORK_DIR}/run-start.txt" "$VIRTUAL_KEY_ID" "$VIRTUAL_KEY_VALUE" "$SETUP_TOKEN" <<'PY'
 import json
 import math
 import re
@@ -348,6 +353,7 @@ hitter_log = Path(sys.argv[5]).read_text(errors="replace")
 start_time = Path(sys.argv[6]).read_text().strip()
 virtual_key_id = sys.argv[7]
 virtual_key_value = sys.argv[8]
+setup_token = sys.argv[9]
 match = re.search(r"Successful:\s+(\d+)", hitter_log)
 if not match:
     raise SystemExit("could not parse successful request count from hitter log")
@@ -371,7 +377,8 @@ base = f"http://127.0.0.1:{port}"
 
 def get_json(path, params):
     url = base + path + "?" + urllib.parse.urlencode(params)
-    with urllib.request.urlopen(url, timeout=10) as resp:
+    req = urllib.request.Request(url, headers={"X-Bifrost-Setup-Token": setup_token})
+    with urllib.request.urlopen(req, timeout=10) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 params = {
@@ -385,13 +392,25 @@ params = {
     "order": "asc",
 }
 
+def token_counts(item):
+    usage = item.get("token_usage") or {}
+    prompt = usage.get("prompt_tokens")
+    completion = usage.get("completion_tokens")
+    total = usage.get("total_tokens")
+    # Go's omitempty drops zero counts. Only accept an omitted count as zero
+    # when total_tokens confirms it; missing usage must still fail validation.
+    if "prompt_tokens" not in usage and total is not None and total == usage.get("completion_tokens", 0):
+        prompt = 0
+    if "completion_tokens" not in usage and total is not None and total == usage.get("prompt_tokens", 0):
+        completion = 0
+    return prompt, completion
+
 def logs_complete(logs):
     # Log writes are fully async (single batched insert in PostLLMHook), so a
     # row can be visible before its usage/cost are readable. Poll on the
     # predicate we assert (every row has usage and cost), not just row count.
     return all(
-        (item.get("token_usage") or {}).get("prompt_tokens") is not None
-        and (item.get("token_usage") or {}).get("completion_tokens") is not None
+        all(count is not None for count in token_counts(item))
         and item.get("cost") is not None
         for item in logs
     )
@@ -401,7 +420,7 @@ def describe_incomplete(item):
     # reach the API by different routes (cost is a column, token_usage is a JSON blob
     # deserialized after the query), so which one is absent decides where to look.
     # Report the field names and the raw values.
-    usage = item.get("token_usage") or {}
+    prompt, completion = token_counts(item)
     return {
         "id": item.get("id"),
         "timestamp": item.get("timestamp"),
@@ -411,8 +430,8 @@ def describe_incomplete(item):
         "missing": [
             name
             for name, value in (
-                ("token_usage.prompt_tokens", usage.get("prompt_tokens")),
-                ("token_usage.completion_tokens", usage.get("completion_tokens")),
+                ("token_usage.prompt_tokens", prompt),
+                ("token_usage.completion_tokens", completion),
                 ("cost", item.get("cost")),
             )
             if value is None
@@ -458,8 +477,8 @@ if not logs_ready:
     }, indent=2, sort_keys=True))
     raise SystemExit(
         f"logs did not become complete within {LOG_POLL_ATTEMPTS}s: {len(incomplete)} of "
-        f"{len(logs)} rows still missing token_usage or cost. This is a log-write "
-        f"visibility problem, not a pricing mismatch. First 5:\n"
+        f"{len(logs)} rows still missing token_usage or cost. "
+        f"Cannot validate pricing for these rows. First 5:\n"
         + json.dumps(incomplete[:5], indent=2, sort_keys=True)
     )
 
@@ -475,9 +494,7 @@ for item in logs:
             "actual_virtual_key_id": item.get("virtual_key_id"),
         })
         continue
-    usage = item.get("token_usage") or {}
-    prompt = usage.get("prompt_tokens")
-    completion = usage.get("completion_tokens")
+    prompt, completion = token_counts(item)
     actual = item.get("cost")
     if prompt is None or completion is None or actual is None:
         mismatches.append({**describe_incomplete(item), "reason": "missing token_usage or cost"})

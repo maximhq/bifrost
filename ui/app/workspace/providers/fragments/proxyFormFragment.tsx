@@ -84,13 +84,13 @@ export function ProxyFormFragment({ provider }: ProxyFormFragmentProps) {
 
 	return (
 		<Form {...form}>
-			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 px-6">
+			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 px-4 md:px-6">
 				{/* Proxy Configuration */}
 				<Alert>
 					<Info className="h-4 w-4" />
 					<AlertDescription>
-						Applies to HTTP requests and WebSocket-based Realtime/Responses connections. WebRTC-based Realtime
-						sessions use a separate media path not covered by this proxy.
+						Applies to HTTP requests and WebSocket-based Realtime/Responses connections. WebRTC-based Realtime sessions use a separate media
+						path not covered by this proxy.
 					</AlertDescription>
 				</Alert>
 				<div className="space-y-4">
@@ -148,7 +148,7 @@ export function ProxyFormFragment({ provider }: ProxyFormFragmentProps) {
 										</FormItem>
 									)}
 								/>
-								<div className="grid grid-cols-2 gap-4">
+								<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
 									<FormField
 										control={form.control}
 										name="proxy_config.username"

@@ -42,6 +42,37 @@ func (mc *ModelCatalog) GetModelInfo(provider schemas.ModelProvider, model strin
 	return info
 }
 
+// EnrichListModelsResponse backfills every listed model from the catalog through
+// ApplyModelInfo, resolving each entry by its ID and then by its alias. Every
+// models route (native and SDK drop-in) calls this so they report the same
+// limits, pricing and deprecation for the same model.
+func (mc *ModelCatalog) EnrichListModelsResponse(resp *schemas.BifrostListModelsResponse) {
+	if mc == nil || resp == nil {
+		return
+	}
+	for i := range resp.Data {
+		mc.enrichModel(&resp.Data[i])
+	}
+}
+
+// EnrichModelRetrieveResponse applies the same backfill to a single retrieved
+// model, so one model reads the same whether it was listed or retrieved.
+func (mc *ModelCatalog) EnrichModelRetrieveResponse(resp *schemas.BifrostModelRetrieveResponse) {
+	if mc == nil || resp == nil {
+		return
+	}
+	mc.enrichModel(&resp.Model)
+}
+
+func (mc *ModelCatalog) enrichModel(model *schemas.Model) {
+	provider, modelName := schemas.ParseModelString(model.ID, "")
+	entry := mc.GetPricingEntryForModel(modelName, provider)
+	if entry == nil && model.Alias != nil {
+		entry = mc.GetPricingEntryForModel(*model.Alias, provider)
+	}
+	ApplyModelInfo(model, entry)
+}
+
 // ApplyModelInfo merges catalog metadata from entry into model, filling only
 // fields the caller has not already populated. Provider-reported values always
 // win: the catalog is a backfill for what a provider's list-models response
@@ -127,8 +158,8 @@ func ApplyModelInfo(model *schemas.Model, entry *PricingEntry) {
 	if entry.CacheCreationInputTokenCost != nil {
 		pricing.InputCacheWrite = new(formatCost(*entry.CacheCreationInputTokenCost))
 	}
-	if entry.SearchContextCostPerQuery != nil {
-		pricing.WebSearch = new(formatCost(*entry.SearchContextCostPerQuery))
+	if entry.WebSearchCostPerRequest != nil {
+		pricing.WebSearch = new(formatCost(*entry.WebSearchCostPerRequest))
 	}
 	if entry.CostPerRequest != nil {
 		pricing.Request = new(formatCost(*entry.CostPerRequest))
@@ -149,12 +180,34 @@ func (mc *ModelCatalog) CalculateRequestCost(ctx *schemas.BifrostContext, resp *
 	if mc == nil || resp == nil {
 		return 0
 	}
+	return mc.CalculateCost(resp, requestPricingScopes(ctx, resp))
+}
+
+// CalculateRequestCostBreakdown is the per-category sibling of
+// CalculateRequestCost behind ctx.CalculateCostBreakdown: same scope
+// resolution, same datasheet path, so TotalCost matches the scalar exactly.
+//
+// The datasheet may hand back the provider-supplied usage.Cost pointer when a
+// provider priced the request itself, so the result is deep-copied: plugins
+// own what they get and can never mutate the client-facing response through it.
+func (mc *ModelCatalog) CalculateRequestCostBreakdown(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse) *schemas.BifrostCost {
+	if mc == nil || resp == nil {
+		return nil
+	}
+	return mc.CalculateCostBreakdown(resp, requestPricingScopes(ctx, resp)).DeepCopy()
+}
+
+// requestPricingScopes resolves the pricing lookup scopes for a completed
+// response: governance identity from ctx, provider from the response's routing
+// info (falling back to the legacy ExtraFields.Provider). Shared by both
+// plugin-facing cost entry points so their scope resolution cannot drift.
+func requestPricingScopes(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse) *PricingLookupScopes {
 	extraFields := resp.GetExtraFields()
 	provider := extraFields.RoutingInfo.Provider
 	if provider == "" {
 		provider = extraFields.Provider
 	}
-	return mc.CalculateCost(resp, PricingLookupScopesFromContext(ctx, string(provider)))
+	return PricingLookupScopesFromContext(ctx, string(provider))
 }
 
 // formatCost renders a per-unit rate the way the models API reports it. Fixed

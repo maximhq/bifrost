@@ -1,4 +1,6 @@
+import PageTitle from "@/components/pageTitle";
 import FullPageLoader from "@/components/fullPageLoader";
+import { LoadErrorView } from "@/components/loadErrorView";
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import {
 	AlertDialog,
@@ -15,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
 	getErrorMessage,
 	useDeleteWebhookEndpointMutation,
@@ -24,11 +27,13 @@ import {
 	useUpdateWebhookEndpointMutation,
 } from "@/lib/store";
 import { WEBHOOK_EVENTS, WebhookEndpoint, WebhookEndpointRequest, WebhookEvent } from "@/lib/types/webhooks";
+import { showLoadError } from "@/lib/utils/loadError";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { ChevronLeft, ChevronRight, MoreHorizontal, PencilIcon, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { useNavigate } from "@tanstack/react-router";
+import { ChevronLeft, ChevronRight, History, MoreHorizontal, PencilIcon, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { parseAsArrayOf, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { WebhookSecretDialog, WebhookSecretReveal } from "../dialogs/webhookSecretDialog";
 import { WebhookDetailsSheet } from "./webhookDetailsSheet";
@@ -73,6 +78,7 @@ function WebhookActionsMenu({
 	onEdit,
 	onRotate,
 	onDelete,
+	onViewDeliveries,
 }: {
 	endpoint: WebhookEndpoint;
 	hasUpdateAccess: boolean;
@@ -80,6 +86,7 @@ function WebhookActionsMenu({
 	onEdit: (endpoint: WebhookEndpoint) => void;
 	onRotate: (endpoint: WebhookEndpoint) => void;
 	onDelete: (endpoint: WebhookEndpoint) => void;
+	onViewDeliveries: (endpoint: WebhookEndpoint) => void;
 }) {
 	const [isOpen, setIsOpen] = useState(false);
 
@@ -104,6 +111,17 @@ function WebhookActionsMenu({
 					e.preventDefault();
 				}}
 			>
+				<DropdownMenuItem
+					className="cursor-pointer"
+					data-testid={`webhook-deliveries-btn-${endpoint.name}`}
+					onSelect={(e) => {
+						e.preventDefault();
+						setIsOpen(false);
+						onViewDeliveries(endpoint);
+					}}
+				>
+					<History className="h-4 w-4" /> View deliveries
+				</DropdownMenuItem>
 				{hasUpdateAccess && (
 					<DropdownMenuItem
 						className="cursor-pointer"
@@ -153,6 +171,14 @@ export default function WebhooksView() {
 	const hasCreateAccess = useRbac(RbacResource.Governance, RbacOperation.Create);
 	const hasUpdateAccess = useRbac(RbacResource.Governance, RbacOperation.Update);
 	const hasDeleteAccess = useRbac(RbacResource.Governance, RbacOperation.Delete);
+	const navigate = useNavigate();
+
+	const handleViewDeliveries = useCallback(
+		(endpoint: WebhookEndpoint) => {
+			navigate({ to: "/workspace/webhooks/deliveries", search: { webhook_id: [endpoint.id] } as never });
+		},
+		[navigate],
+	);
 
 	const [urlState, setUrlState] = useQueryStates({
 		q: parseAsString.withDefault(""),
@@ -174,7 +200,7 @@ export default function WebhooksView() {
 	// a hand-edited "?offset=-25" never 400s the query and blocks recovery.
 	const offset = Math.max(0, Math.floor(urlState.offset / PAGE_SIZE) * PAGE_SIZE);
 
-	const { data, isLoading, isFetching, isError, error, refetch } = useGetWebhookEndpointsQuery(
+	const { data, isLoading, isFetching, error, refetch } = useGetWebhookEndpointsQuery(
 		{
 			search: debouncedSearch.trim() || undefined,
 			events: selectedEvents.length ? selectedEvents : undefined,
@@ -306,16 +332,8 @@ export default function WebhooksView() {
 	// invites creating an endpoint, so a hidden fetch error could prompt a
 	// duplicate. Only fatal when there is no data to fall back on; a transient
 	// poll failure over cached rows keeps rendering the list.
-	if (isError && !data) {
-		return (
-			<div className="flex flex-col items-center justify-center gap-3 py-16 text-center" data-testid="webhooks-load-error">
-				<p className="text-sm font-medium">Failed to load webhook endpoints.</p>
-				<p className="text-muted-foreground max-w-md text-sm">{getErrorMessage(error)}</p>
-				<Button variant="outline" size="sm" onClick={() => void refetch()}>
-					Retry
-				</Button>
-			</div>
-		);
+	if (showLoadError(error, data)) {
+		return <LoadErrorView entity="webhook endpoints" error={error} onRetry={() => void refetch()} testId="webhooks-load-error" />;
 	}
 
 	return (
@@ -324,19 +342,10 @@ export default function WebhooksView() {
 				<WebhooksEmptyState onAddClick={handleAdd} canCreate={hasCreateAccess} />
 			) : (
 				<>
-					<div className="flex items-center justify-between">
-						<div>
-							<h2 className="text-lg font-semibold tracking-tight">Webhooks</h2>
-							<p className="text-muted-foreground text-sm">
-								Register endpoints to receive signed notifications when async inference jobs complete or fail. Pass the endpoint's name in
-								the <code>x-bf-async-webhook</code> header when submitting a job.
-							</p>
-						</div>
-						<Button onClick={handleAdd} disabled={!hasCreateAccess} data-testid="create-webhook-btn">
-							<Plus className="h-4 w-4" />
-							Add Endpoint
-						</Button>
-					</div>
+					<PageTitle title="Webhooks">
+						Register endpoints to receive signed notifications when async inference jobs complete or fail. Pass the endpoint's name in the{" "}
+						<code>x-bf-async-webhook</code> header when submitting a job.
+					</PageTitle>
 
 					<WebhooksFilterBar
 						search={urlState.q}
@@ -347,6 +356,23 @@ export default function WebhooksView() {
 						onStatusFilterChange={(value) => setUrlState({ status: value.length ? value : null, offset: 0 })}
 						hasActiveFilters={hasActiveFilters}
 						onClearFilters={handleClearFilters}
+						actions={
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<Button
+										onClick={handleAdd}
+										disabled={!hasCreateAccess}
+										aria-label="Add Endpoint"
+										data-testid="create-webhook-btn"
+										className="size-9 px-0 @5xl/webhooks-toolbar:w-auto @5xl/webhooks-toolbar:px-4"
+									>
+										<Plus className="h-4 w-4" />
+										<span className="hidden @5xl/webhooks-toolbar:inline">Add Endpoint</span>
+									</Button>
+								</TooltipTrigger>
+								<TooltipContent>Add Endpoint</TooltipContent>
+							</Tooltip>
+						}
 					/>
 
 					<div className={`overflow-auto rounded-sm border ${isFetching ? "opacity-70" : ""}`}>
@@ -407,6 +433,7 @@ export default function WebhooksView() {
 													onEdit={handleEdit}
 													onRotate={setRotateTarget}
 													onDelete={setDeleteTarget}
+													onViewDeliveries={handleViewDeliveries}
 												/>
 											</TableCell>
 										</TableRow>

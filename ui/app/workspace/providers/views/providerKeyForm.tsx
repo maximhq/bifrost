@@ -15,6 +15,7 @@ import { toast } from "sonner";
 import { v4 as uuid } from "uuid";
 import { z } from "zod";
 import { ApiKeyFormFragment } from "../fragments";
+import { applyAuthMethod } from "./providerKeyForm.utils";
 interface Props {
 	provider: ModelProvider;
 	keyId: string | null;
@@ -82,33 +83,18 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 
 	const onSubmit = (value: any) => {
 		if (isEditing && !currentKey) return;
-		// Strip internal _auth_type fields before sending to API
-		const key = { ...value.key };
-		if (key.azure_key_config) {
-			const { _auth_type, ...rest } = key.azure_key_config;
-			key.azure_key_config = rest;
-		}
-		if (key.vertex_key_config) {
-			const { _auth_type, ...rest } = key.vertex_key_config;
-			key.vertex_key_config = rest;
-		}
-		if (key.bedrock_key_config) {
-			const { _auth_type, ...rest } = key.bedrock_key_config;
-			key.bedrock_key_config = rest;
-		}
-		if (key.bedrock_mantle_key_config) {
-			const { _auth_type, ...rest } = key.bedrock_mantle_key_config;
-			key.bedrock_mantle_key_config = rest;
-		}
+		// The utility strips the UI-only _auth_type discriminators and says what the chosen
+		// method clears, since the update API keeps every field the payload omits.
+		const payload = applyAuthMethod(value.key, isEditing) as typeof value.key;
 		const mutation = isEditing
 			? updateProviderKey({
 					provider: provider.name,
 					keyId: currentKey!.id,
-					key,
+					key: payload,
 				})
 			: createProviderKey({
 					provider: provider.name,
-					key,
+					key: payload,
 				});
 
 		mutation
@@ -130,7 +116,7 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 	return (
 		<Form {...form}>
 			<form onSubmit={form.handleSubmit(onSubmit)} className="flex grow flex-col gap-6 pt-4">
-				<div className="grow px-8">
+				<div className="grow px-4 md:px-8">
 					<ApiKeyFormFragment
 						control={form.control}
 						providerName={provider.name}
@@ -139,7 +125,7 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 					/>
 					{isEditing && currentKey?.config_hash && <ConfigSyncAlert className="mt-4" />}
 				</div>
-				<div className="bg-card sticky bottom-0 border-t px-8 py-4">
+				<div className="bg-card sticky bottom-0 border-t px-4 py-4 md:px-8">
 					<div className="flex justify-end space-x-3">
 						<Button type="button" variant="outline" onClick={onCancel} data-testid="key-cancel-btn">
 							Cancel

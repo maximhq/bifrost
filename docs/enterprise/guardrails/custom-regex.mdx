@@ -39,6 +39,7 @@ Custom Regex currently evaluates text content. It does not inspect image pixels 
 | `action` | No | `detect_only`, `block`, or `redact`. Defaults to `block`. |
 | `redaction_strategy` | No | `replace`, `mask`, or `hash`. Defaults to `replace`. Used when `action` is `redact`. |
 | `redaction_mode` | No | `runtime`, `logs_only`, or `runtime_reversible`. Defaults to `runtime`. Used when `action` is `redact`. |
+| `allowed_values` | No | List of exact values this pattern ignores. A match equal to one of them is neither detected, blocked, nor redacted. See [Allowed Values](#allowed-values). |
 
 The Web UI exposes these flag choices:
 
@@ -71,6 +72,16 @@ The exact template patterns are shown in the `config.json` and Helm examples bel
 The PII Detection template is pattern-based. It is fast and transparent, but it is not semantic PII classification. Expect some false positives and false negatives, especially for international phone numbers and unformatted values. For national IDs outside the US, add your own Custom Regex patterns for the exact country and format you need to enforce.
 </Warning>
 
+## Allowed Values
+
+Use **Allowed values** when a pattern is right in general but should skip specific known-safe strings, such as your company's support email in an email-redaction pattern.
+
+- A match is skipped only when the **entire matched text** equals one of the allowed values, ignoring case. Substrings do not count: an allowed value of `support@acme.com` skips a match of exactly `support@acme.com` or `Support@Acme.com`, but not `nosupport@acme.com`.
+- A pattern that captures surrounding context (for example `email: x@y.com`) is compared as a whole, so the bare value does not exempt it. Write patterns so they match only the value you want to allow.
+- Allowed values apply to every `action`: `detect_only`, `block`, and `redact`. Other matches from the same pattern are still handled normally.
+- In the Web UI, enter one value per line. Values are trimmed, lowercased, and de-duplicated on save. Commas are kept as part of a value.
+- Allowed values belong to a single pattern. Other patterns in the same configuration are unaffected.
+
 ## Redaction
 
 Set a pattern's `action` to `redact` when matching text should be rewritten instead of blocked. Custom Regex supports all Bifrost-managed redaction modes:
@@ -92,13 +103,12 @@ For the full behavior matrix, including reveal permissions and connector export 
 4. Set a descriptive **Name**, for example `pii-detection`.
 5. Click **Add Pattern**.
 6. Choose either **Custom regexp** or **PII Detection**.
-7. Enable the configuration and save it.
-8. Attach the configuration to a guardrail rule under **Guardrails** > **Configuration**.
-
-
-<Frame>
-  <img src="/media/pii-detection-regex.png" alt="PII Detection template selected from the Custom Regex pattern menu" />
-</Frame>
+7. Optionally, under **Allowed values**, list values the pattern should ignore, one per line.
+8. Enable the configuration and save it.
+   <Frame>
+     <img src="/media/guardrails/regex-guardrail-configuration.png" alt="Regex Guardrail Configuration panel with two redact patterns, each with an optional Allowed values field" />
+   </Frame>
+9. Attach the configuration to a guardrail rule under **Guardrails** > **Configuration**.
 
 </Tab>
 <Tab title="API">
@@ -121,7 +131,8 @@ curl -X POST http://localhost:8080/api/guardrails/regex \
           "flags": "i",
           "action": "redact",
           "redaction_strategy": "replace",
-          "redaction_mode": "runtime_reversible"
+          "redaction_mode": "runtime_reversible",
+          "allowed_values": ["support@example.com"]
         },
         {
           "pattern": "\\b(?:\\+?1[-.\\s]?)?(?:\\(?\\d{3}\\)?[-.\\s]?)\\d{3}[-.\\s]?\\d{4}\\b",
@@ -184,7 +195,8 @@ To attach it through the API, fetch the generated ID with `GET /api/guardrails/r
               "flags": "i",
               "action": "redact",
               "redaction_strategy": "replace",
-              "redaction_mode": "runtime_reversible"
+              "redaction_mode": "runtime_reversible",
+              "allowed_values": ["support@example.com"]
             },
             {
               "pattern": "\\b(?:\\+?1[-.\\s]?)?(?:\\(?\\d{3}\\)?[-.\\s]?)\\d{3}[-.\\s]?\\d{4}\\b",

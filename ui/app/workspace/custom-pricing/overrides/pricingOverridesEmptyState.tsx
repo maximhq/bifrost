@@ -4,7 +4,9 @@ import { ArrowUpRight, SlidersHorizontal } from "lucide-react";
 const PRICING_OVERRIDES_DOCS_URL = "https://docs.getbifrost.ai/providers/custom-pricing";
 
 interface PricingOverridesEmptyStateProps {
-	onCreateClick: () => void;
+	// Left out when the viewer may not create overrides, so the empty state
+	// explains the feature without offering an action that would be refused.
+	onCreateClick?: () => void;
 }
 
 export function PricingOverridesEmptyState({ onCreateClick }: PricingOverridesEmptyStateProps) {
@@ -18,7 +20,7 @@ export function PricingOverridesEmptyState({ onCreateClick }: PricingOverridesEm
 			</div>
 			<div className="flex flex-col gap-1">
 				<h1 className="text-muted-foreground text-xl font-medium">Pricing overrides customize cost tracking per scope</h1>
-				<div className="text-muted-foreground mx-auto mt-2 max-w-[600px] text-sm font-normal">
+				<div className="text-muted-foreground mx-auto mt-2 w-full max-w-[600px] text-sm font-normal">
 					Define custom per-token prices for specific providers, keys, or virtual keys to accurately reflect your negotiated rates.
 				</div>
 				<div className="mx-auto mt-6 flex flex-row flex-wrap items-center justify-center gap-2">
@@ -32,9 +34,11 @@ export function PricingOverridesEmptyState({ onCreateClick }: PricingOverridesEm
 					>
 						Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
 					</Button>
-					<Button aria-label="Create your first pricing override" data-testid="pricing-override-create-btn" onClick={onCreateClick}>
-						Create Override
-					</Button>
+					{onCreateClick && (
+						<Button data-testid="pricing-override-create-btn" onClick={onCreateClick}>
+							Create Override
+						</Button>
+					)}
 				</div>
 			</div>
 		</div>

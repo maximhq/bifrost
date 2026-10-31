@@ -181,7 +181,7 @@ func TestProviderBudgetExceeded(t *testing.T) {
 				Method: "POST",
 				Path:   "/v1/chat/completions",
 				Body: ChatCompletionRequest{
-					Model: "anthropic/claude-3-7-sonnet-20250219",
+					Model: "anthropic/claude-sonnet-4-5",
 					Messages: []ChatMessage{
 						{
 							Role:    "user",
@@ -213,7 +213,7 @@ func TestProviderBudgetExceeded(t *testing.T) {
 					if completion, ok := usage["completion_tokens"].(float64); ok {
 						actualInputTokens := int(prompt)
 						actualOutputTokens := int(completion)
-						actualCost, _ := CalculateCost("anthropic/claude-3-7-sonnet-20250219", actualInputTokens, actualOutputTokens)
+						actualCost, _ := CalculateCost("anthropic/claude-sonnet-4-5", actualInputTokens, actualOutputTokens)
 
 						consumedBudget += actualCost
 						lastSuccessfulCost = actualCost

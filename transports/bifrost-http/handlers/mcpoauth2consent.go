@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"net/url"
@@ -14,8 +15,9 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/oauth2"
 	"github.com/maximhq/bifrost/framework/temptoken"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -35,12 +37,6 @@ type OAuth2IdentityResolver interface {
 	// ResolveVKUserUpgrade checks whether a VK is bound to a specific user.
 	// Returns the userID if bound, empty string if unbound.
 	ResolveVKUserUpgrade(ctx context.Context, vkID string) (userID string, err error)
-	// ResolveUserVirtualKey returns the ID of a virtual key that represents the
-	// user's effective MCP grant, or an empty string when the user has none.
-	// Callers use it to scope the /mcp tool listing for user-mode tokens, which
-	// carry no virtual key of their own. When a user maps to several equivalent
-	// virtual keys, any one of them may be returned.
-	ResolveUserVirtualKey(ctx context.Context, userID string) (vkID string, err error)
 	// IsUserActive reports whether the given user identity still exists and is
 	// usable. Returns (false, nil) when the user is gone or deactivated; an
 	// error is reserved for transient lookup failures that should be retried.
@@ -61,8 +57,9 @@ type OAuth2IdentityResolver interface {
 // to how the existing per-user upstream OAuth consent pages work.
 type OAuth2ConsentHandler struct {
 	store            *lib.Config
-	tempTokens       *temptoken.Service     // used to invalidate the token after consent
-	identityResolver OAuth2IdentityResolver // optional; nil = vk + session modes only
+	tempTokens       *temptoken.Service            // used to invalidate the token after consent
+	identityResolver OAuth2IdentityResolver        // optional; nil = vk + session modes only
+	clientMetadata   *oauth2ClientMetadataResolver // resolves CIMD client_ids
 }
 
 // NewOAuth2ConsentHandler creates a new consent handler. identityResolver may
@@ -72,6 +69,7 @@ func NewOAuth2ConsentHandler(store *lib.Config, tempTokens *temptoken.Service, i
 		store:            store,
 		tempTokens:       tempTokens,
 		identityResolver: identityResolver,
+		clientMetadata:   defaultClientMetadataResolver,
 	}
 }
 
@@ -83,7 +81,11 @@ func (h *OAuth2ConsentHandler) RegisterRoutes(r *router.Router, middlewares ...s
 
 // consentFlowDetailResponse is the wire shape for GET /api/oauth2/consent/flows/{id}.
 type consentFlowDetailResponse struct {
+	RedirectURI    string            `json:"redirect_uri"`
+	RedirectHost   string            `json:"redirect_host"`
 	ClientName     string            `json:"client_name"`
+	ClientHost     string            `json:"client_host,omitempty"` // CIMD clients only
+	LocalhostOnly  bool              `json:"localhost_only_redirect,omitempty"`
 	AvailableModes []consentFlowMode `json:"available_modes"`
 	LoggedInUser   *loggedInUser     `json:"logged_in_user,omitempty"` // non-nil when a valid session is present
 	ExpiresAt      string            `json:"expires_at"`
@@ -110,7 +112,11 @@ func (h *OAuth2ConsentHandler) flowDetail(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	client, err := h.store.ConfigStore.GetOAuth2ClientByClientID(ctx, req.ClientID)
+	client, metadataErr, err := lookupOAuth2Client(ctx, h.store, h.clientMetadata, req.ClientID)
+	if metadataErr != nil {
+		SendError(ctx, metadataErr.httpStatus(), metadataErr.description)
+		return
+	}
 	if err != nil || client == nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusInternalServerError, "client registration not found")
@@ -122,9 +128,15 @@ func (h *OAuth2ConsentHandler) flowDetail(ctx *fasthttp.RequestCtx) {
 	}
 
 	resp := consentFlowDetailResponse{
+		RedirectURI:    req.RedirectURI,
+		RedirectHost:   urlHost(req.RedirectURI),
 		ClientName:     client.ClientName,
-		AvailableModes: h.availableModes(),
+		LocalhostOnly:  allLoopbackRedirects(client.RedirectURIs),
+		AvailableModes: h.availableModes(ctx),
 		ExpiresAt:      req.ExpiresAt.UTC().Format(time.RFC3339),
+	}
+	if oauth2.IsClientMetadataURL(client.ClientID) {
+		resp.ClientHost = urlHost(client.ClientID)
 	}
 
 	// If a valid session is present, surface the user so the consent page can
@@ -180,7 +192,17 @@ func (h *OAuth2ConsentHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	allowed := h.availableModes()
+	// The anonymous session identity is granted by whoever submits this request,
+	// so that party must be someone Bifrost has authenticated. The consent temp
+	// token alone is not: the authorize redirect hands it to whichever party
+	// started the flow, which in oauth mode would let that party mint itself a
+	// valid /mcp token without ever presenting an identity.
+	if body.Mode == consentFlowModeSession && !h.consentIdentityPresent(ctx) {
+		SendError(ctx, fasthttp.StatusUnauthorized, "session mode requires an authenticated consenting user: sign in to bifrost first, or authorize with a virtual key")
+		return
+	}
+
+	allowed := h.availableModes(ctx)
 	modeAllowed := slices.Contains(allowed, body.Mode)
 	if !modeAllowed {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("mode %q is not available", body.Mode))
@@ -244,6 +266,12 @@ func (h *OAuth2ConsentHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	consent := map[string]any{"client_id": req.ClientID, "scope": req.Scope, "mode": body.Mode, "bf_mode": req.BfMode}
+	// A session-mode subject is the server-minted session token, so it is never recorded.
+	if bfMode != schemas.MCPAuthModeSession {
+		consent["bf_sub"] = req.BfSub
+	}
+	lib.RecordAuditChange(ctx, "oauth2_consent.granted", "oauth2_consent", flowID, req.ClientID, nil, consent)
 	SendJSON(ctx, consentFlowSubmitResponse{RedirectURL: redirectURL})
 }
 
@@ -268,11 +296,45 @@ func (h *OAuth2ConsentHandler) loadPendingFlow(ctx *fasthttp.RequestCtx, flowID 
 		SendError(ctx, fasthttp.StatusGone, "authorization flow has expired")
 		return nil
 	}
+	if !oauth2RedirectAllowed(h.store, req.RedirectURI) {
+		SendError(ctx, fasthttp.StatusBadRequest, "redirect_uri is no longer approved")
+		return nil
+	}
 	return req
 }
 
-// availableModes derives which identity modes to offer based on server config.
-func (h *OAuth2ConsentHandler) availableModes() []consentFlowMode {
+// consentIdentityPresent reports whether the consent request comes from a
+// principal Bifrost has authenticated, which is what makes it safe to let that
+// principal grant the anonymous session identity. Two sources count: a verified
+// dashboard credential (the auth middleware stamps IsLocalAdminContextKey or a
+// non-empty BifrostContextKeySessionToken only after validating a session,
+// cookie or admin password) and an identity-provider user from the resolver.
+// Two things deliberately do not count: the oauth2_consent temp token, which
+// stamps neither marker and is handed to whoever started the flow, and the
+// auth-disabled bypass, which stamps IsLocalAdminContextKey without checking
+// any credential and flags itself with BifrostContextKeyAuthBypassed.
+func (h *OAuth2ConsentHandler) consentIdentityPresent(ctx *fasthttp.RequestCtx) bool {
+	if bypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool); !bypassed {
+		if localAdmin, _ := ctx.UserValue(schemas.IsLocalAdminContextKey).(bool); localAdmin {
+			return true
+		}
+		if token, _ := ctx.UserValue(schemas.BifrostContextKeySessionToken).(string); token != "" {
+			return true
+		}
+	}
+	if h.identityResolver != nil {
+		if userID, _, err := h.identityResolver.ResolveUserIdentity(ctx); err == nil && userID != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// availableModes derives which identity modes to offer based on server config
+// and on who is asking: session mode is only offered to an authenticated
+// consenter (see consentIdentityPresent), so the consent page never shows an
+// anonymous visitor a path that flowSubmit would refuse.
+func (h *OAuth2ConsentHandler) availableModes(ctx *fasthttp.RequestCtx) []consentFlowMode {
 	h.store.Mu.RLock()
 	enforceAuth := h.store.ClientConfig.EnforceAuthOnInference
 	h.store.Mu.RUnlock()
@@ -292,7 +354,7 @@ func (h *OAuth2ConsentHandler) availableModes() []consentFlowMode {
 	if !disableVK {
 		modes = append(modes, consentFlowModeVK)
 	}
-	if !enforceAuth {
+	if !enforceAuth && h.consentIdentityPresent(ctx) {
 		modes = append(modes, consentFlowModeSession)
 	}
 	if userModeAvailable {
@@ -378,6 +440,12 @@ func (h *OAuth2ConsentHandler) resolveVKIdentity(ctx *fasthttp.RequestCtx, vkVal
 	}
 	if !vk.IsActiveValue() {
 		return "", "", clientConsentError("virtual key is inactive")
+	}
+	// During a rotation cooldown the lookup also resolves the key's previous value, so
+	// direct calls keep working while clients switch over. Consent mints a new grant
+	// that outlives the cooldown, so it needs the key's current value.
+	if subtle.ConstantTimeCompare([]byte(vk.Value.GetValue()), []byte(vkValue)) != 1 {
+		return "", "", clientConsentError("this virtual key value has been rotated; use the key's current value")
 	}
 
 	// Check for a VK→user binding. If the VK is bound to a specific user,

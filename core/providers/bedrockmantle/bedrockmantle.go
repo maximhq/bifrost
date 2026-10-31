@@ -10,7 +10,6 @@ import (
 	"context"
 	"fmt"
 	"maps"
-	"strings"
 	"time"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
@@ -79,13 +78,10 @@ const defaultMantleRegion = "us-east-1"
 // region, model, and API path (e.g. "chat/completions", "responses"). The native-Anthropic
 // path is built separately by mantleAnthropicURL. Pass the canonical (capability-resolved)
 // model for correct path gating; the request body still carries the wire request.Model.
-// Frontier families (closed gpt-5.x, Gemma 4) live under the "openai/v1" base path; gpt-oss
-// uses the bare "v1" path.
+// The base path comes from the datasheet, falling back to family detection — see
+// schemas.ResolveBedrockMantleBasePath.
 func mantleOpenAIURL(endpoints *schemas.BedrockEndpoints, region, model, path string) string {
-	base := "v1"
-	if strings.Contains(model, "gpt-5") || strings.Contains(model, "gemma-4") {
-		base = "openai/v1"
-	}
+	base := schemas.ResolveBedrockMantleBasePath(model)
 	return fmt.Sprintf("https://%s/%s/%s", mantleHost(endpoints, region), base, path)
 }
 
@@ -152,9 +148,9 @@ func (provider *BedrockMantleProvider) listModelsByKey(ctx *schemas.BifrostConte
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
-		merged := make(map[string]string, len(extraHeaders)+len(sigHeaders))
+		merged := make(map[string]schemas.SecretVar, len(extraHeaders)+len(sigHeaders))
 		maps.Copy(merged, extraHeaders)
-		maps.Copy(merged, sigHeaders)
+		maps.Copy(merged, schemas.NewSecretVarMap(sigHeaders))
 		extraHeaders = merged
 	}
 
@@ -213,6 +209,7 @@ func (provider *BedrockMantleProvider) ChatCompletion(ctx *schemas.BifrostContex
 	}
 
 	url := mantleOpenAIURL(mantleEndpoints(key.BedrockMantleKeyConfig), region, schemas.ResolveCanonicalModel(ctx, request.Model), "chat/completions")
+	_, request.Model = parseBedrockRegionAndModel(request.Model)
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.mantleClient,
@@ -274,6 +271,7 @@ func (provider *BedrockMantleProvider) ChatCompletionStream(ctx *schemas.Bifrost
 	}
 
 	url := mantleOpenAIURL(mantleEndpoints(key.BedrockMantleKeyConfig), region, schemas.ResolveCanonicalModel(ctx, request.Model), "chat/completions")
+	_, request.Model = parseBedrockRegionAndModel(request.Model)
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx, provider.mantleStreamingClient, url, request,
 		openai.BearerAuthHeader(key), bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleOpenAIProjectHeader, resolveProjectID(ctx, key)),
@@ -318,7 +316,17 @@ func (provider *BedrockMantleProvider) Responses(ctx *schemas.BifrostContext, ke
 		)
 	}
 
-	url := mantleOpenAIURL(mantleEndpoints(key.BedrockMantleKeyConfig), region, schemas.ResolveCanonicalModel(ctx, request.Model), "responses")
+	canonicalModel := schemas.ResolveCanonicalModel(ctx, request.Model)
+	if !schemas.ResolveModelCaps(provider.GetProviderKey(), canonicalModel).SupportsResponsesEndpoint(true) {
+		chatResponse, bifrostErr := provider.ChatCompletion(ctx, key, request.ToChatRequest())
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+		return chatResponse.ToBifrostResponsesResponse(), nil
+	}
+
+	url := mantleOpenAIURL(mantleEndpoints(key.BedrockMantleKeyConfig), region, canonicalModel, "responses")
+	_, request.Model = parseBedrockRegionAndModel(request.Model)
 	return openai.HandleOpenAIResponsesRequest(
 		ctx,
 		provider.mantleClient,
@@ -379,7 +387,14 @@ func (provider *BedrockMantleProvider) ResponsesStream(ctx *schemas.BifrostConte
 		)
 	}
 
-	url := mantleOpenAIURL(mantleEndpoints(key.BedrockMantleKeyConfig), region, schemas.ResolveCanonicalModel(ctx, request.Model), "responses")
+	canonicalModel := schemas.ResolveCanonicalModel(ctx, request.Model)
+	if !schemas.ResolveModelCaps(provider.GetProviderKey(), canonicalModel).SupportsResponsesEndpoint(true) {
+		ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
+		return provider.ChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request.ToChatRequest())
+	}
+
+	url := mantleOpenAIURL(mantleEndpoints(key.BedrockMantleKeyConfig), region, canonicalModel, "responses")
+	_, request.Model = parseBedrockRegionAndModel(request.Model)
 	return openai.HandleOpenAIResponsesStreaming(
 		ctx, provider.mantleStreamingClient, url, request,
 		openai.BearerAuthHeader(key), bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleOpenAIProjectHeader, resolveProjectID(ctx, key)),
@@ -416,6 +431,11 @@ func (provider *BedrockMantleProvider) Speech(ctx *schemas.BifrostContext, key s
 // Rerank is not supported by the Bedrock Mantle provider.
 func (provider *BedrockMantleProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
+}
+
+// Decision is not supported by the BedrockMantle provider.
+func (provider *BedrockMantleProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
 }
 
 // OCR is not supported by the Bedrock Mantle provider.
@@ -488,6 +508,11 @@ func (provider *BedrockMantleProvider) VideoList(_ *schemas.BifrostContext, _ sc
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoListRequest, provider.GetProviderKey())
 }
 
+// VideoEdit is not supported by the BedrockMantle provider.
+func (provider *BedrockMantleProvider) VideoEdit(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoEditRequest) (*schemas.BifrostVideoEditResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoEditRequest, provider.GetProviderKey())
+}
+
 // VideoRemix is not supported by the Bedrock Mantle provider.
 func (provider *BedrockMantleProvider) VideoRemix(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoRemixRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoRemixRequest, provider.GetProviderKey())
@@ -549,6 +574,11 @@ func (provider *BedrockMantleProvider) BatchResults(_ *schemas.BifrostContext, _
 }
 
 // CountTokens is implemented in counttokens.go (native-Anthropic count_tokens path).
+
+// ModelRetrieve is not supported by the Bedrock Mantle provider.
+func (provider *BedrockMantleProvider) ModelRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ModelRetrieveRequest, provider.GetProviderKey())
+}
 
 // Compaction is not supported by the Bedrock Mantle provider.
 func (provider *BedrockMantleProvider) Compaction(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionResponse, *schemas.BifrostError) {

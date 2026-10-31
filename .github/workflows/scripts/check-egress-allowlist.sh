@@ -39,11 +39,30 @@ python3 - "${FILES[@]}" <<'PY'
 import sys
 import yaml
 
-# Hosts apt-get needs on a GitHub-hosted ubuntu runner. azure.archive.ubuntu.com
-# is the Azure-local mirror the runner images point at (plain HTTP), and
+# Hosts apt-get needs on a GitHub-hosted ubuntu runner once apt-sources-https.sh
+# has moved the sources to HTTPS. The images point at the Azure-local mirror over
+# plain HTTP, which serves no HTTPS, so the script swaps it for archive.ubuntu.com;
 # esm.ubuntu.com serves the Expanded Security Maintenance lists apt refreshes
 # alongside it.
-REQUIRED_APT_HOSTS = ("azure.archive.ubuntu.com:80", "esm.ubuntu.com:443")
+REQUIRED_APT_HOSTS = ("archive.ubuntu.com:443", "esm.ubuntu.com:443")
+# arm64 Ubuntu pulls from the ports mirror (ubuntu-ports), never the archive one;
+# the arm-64-2cpu-8gb image's apt sources point straight at ports.ubuntu.com.
+REQUIRED_ARM64_APT_HOSTS = ("ports.ubuntu.com:443",)
+# install-arm64-runner-deps.sh runs apt-get itself, so a step calling it never
+# shows "apt-get" here; its `docker` component also adds Docker's apt repo.
+ARM64_INSTALLER = "install-arm64-runner-deps.sh"
+# Installers that run apt-get themselves, and switch the sources to HTTPS first.
+APT_INSTALLERS = (ARM64_INSTALLER, "install-cross-compilers.sh")
+APT_SOURCES_HTTPS = "apt-sources-https.sh"
+# Docker's apt repo, plus apt's SRV probe for it, and the sigstore TUF root that
+# the freshly installed dockerd fetches when buildx bootstraps its builder.
+DOCKER_HOSTS = (
+    "download.docker.com:443",
+    "_https._tcp.download.docker.com:443",
+    "tuf-repo-cdn.sigstore.dev:443",
+)
+# The `aws` component pip-installs awscli into a venv.
+PYPI_HOSTS = ("pypi.org:443", "files.pythonhosted.org:443")
 
 failures = []
 checked = 0
@@ -57,13 +76,20 @@ for path in sys.argv[1:]:
             continue
         steps = job.get("steps") or []
 
-        uses_apt = any(
-            "apt-get" in (step.get("run") or "")
-            for step in steps
-            if isinstance(step, dict)
-        )
+        runs = [step.get("run") or "" for step in steps if isinstance(step, dict)]
+        uses_apt = any("apt-get" in run or any(i in run for i in APT_INSTALLERS) for run in runs)
         if not uses_apt:
             continue
+        installs_docker = any(
+            ARM64_INSTALLER in line and "docker" in line.split(ARM64_INSTALLER, 1)[1].split()
+            for run in runs
+            for line in run.splitlines()
+        )
+        installs_aws = any(
+            ARM64_INSTALLER in line and "aws" in line.split(ARM64_INSTALLER, 1)[1].split()
+            for run in runs
+            for line in run.splitlines()
+        )
 
         harden = next(
             (
@@ -83,13 +109,29 @@ for path in sys.argv[1:]:
 
         checked += 1
         allowed = set((with_block.get("allowed-endpoints") or "").split())
-        missing = [host for host in REQUIRED_APT_HOSTS if host not in allowed]
+        # An inline apt-get update must switch the sources to HTTPS first, in the
+        # same step: otherwise apt reaches for the plain-HTTP mirror, which no
+        # allowlist carries any more, and fails as an opaque fetch timeout.
+        for run in runs:
+            update = run.find("apt-get update")
+            if update != -1 and run.find(APT_SOURCES_HTTPS) not in range(0, update):
+                failures.append((path, job_name, [f"{APT_SOURCES_HTTPS} before apt-get update"]))
+        plain = sorted(e for e in allowed if e.endswith("ubuntu.com:80"))
+        if plain:
+            failures.append((path, job_name, [f"no plain-HTTP apt host ({', '.join(plain)})"]))
+        is_arm = "arm" in str(job.get("runs-on") or "").lower()
+        required = REQUIRED_ARM64_APT_HOSTS if is_arm else REQUIRED_APT_HOSTS
+        if installs_docker:
+            required += DOCKER_HOSTS
+        if installs_aws:
+            required += PYPI_HOSTS
+        missing = [host for host in required if host not in allowed]
         if missing:
             failures.append((path, job_name, missing))
 
 for path, job_name, missing in failures:
     print(f"FAIL {path} :: job '{job_name}' runs apt-get under egress-policy: block "
-          f"but omits {', '.join(missing)}", file=sys.stderr)
+          f"but needs {', '.join(missing)}", file=sys.stderr)
 
 if failures:
     print(f"\n{len(failures)} of {checked} apt-using blocked-egress job(s) have an "
@@ -141,7 +183,7 @@ for required_input in (COLLECTION, PROVIDER_CONFIG):
         sys.exit(1)
 
 # Scripts that mean "this job runs the provider harness".
-HARNESS_MARKERS = ("test-core.sh", "test-provider-harness.sh")
+HARNESS_MARKERS = ("test-core.sh", "test-provider-harness.sh", "test-proxy-e2e.sh")
 
 # Hosts that appear in the sources scanned above but that the runner never
 # dials, each with the reason it is exempt. Anything not listed here and not
@@ -293,4 +335,113 @@ else:
         f"OK: all {checked} harness-running blocked-egress job(s) allowlist the "
         f"{len(required)} host(s) the harness dials."
     )
+PY
+
+# ---------------------------------------------------------------------------
+# 3. Provider default hosts for the keys a job is given
+# ---------------------------------------------------------------------------
+#
+# Guard 2 only sees hosts that appear in the harness collection or config. Most
+# providers' hosts appear in neither: they are the default BaseURL in Go. A job
+# that passes RUNWAY_API_KEY under egress-policy: block runs Runway's live tests,
+# and if api.dev.runwayml.com is not allowlisted those tests fail as a
+# connection error that reads like a flaky provider.
+#
+# So: for every blocked-egress job that runs the per-provider live suites (those
+# run every provider whose key is set), each <PROVIDER>_API_KEY / _TOKEN /
+# _CREDENTIALS it sets is matched to core/providers/<provider>/, and every host
+# on a non-comment BaseURL line there must be allowlisted or exempted below.
+# Jobs that hold keys for other reasons (release, plugin, docker-image tests)
+# dial only the providers they use, so they are not held to every default host.
+
+python3 - "${FILES[@]}" <<'PY'
+import os
+import re
+import sys
+import yaml
+
+REPO_ROOT = os.environ["REPO_ROOT"]
+PROVIDERS_DIR = os.path.join(REPO_ROOT, "core", "providers")
+if not os.path.isdir(PROVIDERS_DIR):
+    print(f"::error::egress check input not found: {PROVIDERS_DIR}", file=sys.stderr)
+    sys.exit(1)
+
+# Hosts on a BaseURL line that the test suites never dial, each with the reason.
+NOT_DIALLED_PROVIDER_HOSTS = {
+    "iamcredentials.googleapis.com": "vertex AWS-federation token exchange; CI authenticates with a service-account key",
+}
+
+# Scripts that run core/providers' live suites for every key that is set.
+PROVIDER_SUITE_MARKERS = ("run-tests.sh", "test-core.sh")
+
+KEY_RE = re.compile(r"^([A-Z0-9_]+?)_(?:API_KEY|API_TOKEN|TOKEN|CREDENTIALS)$")
+HOST_RE = re.compile(r"\"https://([A-Za-z0-9.-]+\.[A-Za-z]{2,})")
+
+
+def provider_hosts(provider):
+    hosts = set()
+    pdir = os.path.join(PROVIDERS_DIR, provider)
+    for name in os.listdir(pdir):
+        if not name.endswith(".go") or name.endswith("_test.go"):
+            continue
+        with open(os.path.join(pdir, name), encoding="utf-8", errors="ignore") as fh:
+            for line in fh:
+                if line.lstrip().startswith("//") or "baseurl" not in line.lower():
+                    continue
+                hosts.update(HOST_RE.findall(line))
+    return hosts - set(NOT_DIALLED_PROVIDER_HOSTS)
+
+
+providers = {d for d in os.listdir(PROVIDERS_DIR) if os.path.isdir(os.path.join(PROVIDERS_DIR, d))}
+failures = []
+checked = 0
+
+for path in sys.argv[1:]:
+    with open(path, encoding="utf-8") as fh:
+        doc = yaml.safe_load(fh) or {}
+
+    for job_name, job in (doc.get("jobs") or {}).items():
+        if not isinstance(job, dict):
+            continue
+        steps = [s for s in (job.get("steps") or []) if isinstance(s, dict)]
+        if not any(m in (s.get("run") or "") for s in steps for m in PROVIDER_SUITE_MARKERS):
+            continue
+        harden = next((s for s in steps if "step-security/harden-runner" in (s.get("uses") or "")), None)
+        if harden is None:
+            continue
+        with_block = harden.get("with") or {}
+        if str(with_block.get("egress-policy", "")).strip() != "block":
+            continue
+
+        env_names = set(job.get("env") or {})
+        for s in steps:
+            env_names.update(s.get("env") or {})
+        wanted = {}
+        for name in env_names:
+            m = KEY_RE.match(name)
+            if not m:
+                continue
+            provider = m.group(1).lower().replace("_", "")
+            if provider in providers:
+                wanted[name] = provider_hosts(provider)
+        if not wanted:
+            continue
+
+        checked += 1
+        allowed = {e.rsplit(":", 1)[0] for e in (with_block.get("allowed-endpoints") or "").split()}
+        missing = sorted({f"{h} ({k})" for k, hs in wanted.items() for h in hs if h not in allowed})
+        if missing:
+            failures.append((path, job_name, missing))
+
+for path, job_name, missing in failures:
+    print(f"FAIL {path} :: job '{job_name}' runs the provider suites under egress-policy: block "
+          f"but omits {', '.join(missing)}", file=sys.stderr)
+
+if failures:
+    print("\nEach host above is a provider's default BaseURL in core/providers. Add it to\n"
+          "that job's allowed-endpoints, or to NOT_DIALLED_PROVIDER_HOSTS with the reason.",
+          file=sys.stderr)
+    sys.exit(1)
+
+print(f"OK: all {checked} provider-suite blocked-egress job(s) allowlist their providers' default hosts.")
 PY

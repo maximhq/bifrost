@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maximhq/bifrost/core/network"
 	collectorpb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	"google.golang.org/protobuf/proto"
 )
@@ -25,6 +26,8 @@ type OtelClientHTTP struct {
 // also applied as a per-export context deadline by the caller.
 func NewOtelClientHTTP(endpoint string, headers map[string]string, tlsCACert string, insecureMode bool, timeout time.Duration) (*OtelClientHTTP, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
+	// The global proxy when it is enabled for API traffic, else the environment.
+	transport.Proxy = network.DefaultProxyFunc(network.ClientPurposeAPI)
 	transport.MaxIdleConns = 100
 	transport.MaxIdleConnsPerHost = 10
 	transport.IdleConnTimeout = 120 * time.Second

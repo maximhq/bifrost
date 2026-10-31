@@ -257,13 +257,13 @@ func TestGetHistogramMatViewTrimsBoundaryBuckets(t *testing.T) {
 // insertCacheTestLog inserts a terminal log with an explicit cache_debug
 // payload for the hybrid cache-hit tests. Pass nil for a row with no
 // cache_debug at all.
-func insertCacheTestLog(t *testing.T, db *gorm.DB, ts time.Time, cacheDebug *string) {
+func insertCacheTestLog(t *testing.T, db *gorm.DB, ts time.Time, cacheMetadata *string) {
 	t.Helper()
 	err := db.Exec(`
 		INSERT INTO logs (id, timestamp, object_type, provider, model, status, cache_debug,
 			created_at, latency, cost, prompt_tokens, completion_tokens, total_tokens)
 		VALUES (?, ?, 'chat_completion', 'openai', 'gpt-4', 'success', ?, ?, 100, 0.01, 10, 5, 15)
-	`, uuid.New().String(), ts, cacheDebug, ts).Error
+	`, uuid.New().String(), ts, cacheMetadata, ts).Error
 	require.NoError(t, err, "failed to insert cache test log")
 }
 

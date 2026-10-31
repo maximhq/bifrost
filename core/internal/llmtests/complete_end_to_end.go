@@ -205,7 +205,7 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 				Model:    testConfig.ChatModel,
 				Input:    chatConversationHistory,
 				Params: &schemas.ChatParameters{
-					MaxCompletionTokens: bifrost.Ptr(500),
+					MaxCompletionTokens: bifrost.Ptr(1024),
 				},
 				Fallbacks: testConfig.Fallbacks,
 			}
@@ -219,7 +219,7 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 				Model:    testConfig.ChatModel,
 				Input:    responsesConversationHistory,
 				Params: &schemas.ResponsesParameters{
-					MaxOutputTokens: bifrost.Ptr(400),
+					MaxOutputTokens: bifrost.Ptr(1024),
 				},
 			}
 			return client.ResponsesRequest(bfCtx, responsesReq)

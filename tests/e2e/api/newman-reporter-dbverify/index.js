@@ -635,34 +635,14 @@ function loadDatasheet() {
 
 // Datasheet entry resolver + provider alias normalization live in the shared
 // lib so this reporter and runners/run-stream-cancellation.mjs can't drift.
-const { resolvePricingEntry } = require('../lib/pricing');
+const { resolvePricingEntry, expectedCostFromRow } = require('../lib/pricing');
 
-// Recompute expected base-tier cost, mirroring datasheet/cost.go computeTextCost:
-// nonCachedPrompt×input + cachedRead×cacheRead + cachedWrite×cacheCreation + completion×output.
+// Recompute the expected cost from the datasheet at the rates of the tier the
+// provider actually served (the logs row's service_tier column), mirroring
+// datasheet/cost.go computeTextCost. Shared with runners/run-stream-cancellation.mjs
+// via lib/pricing so the two recomputes cannot drift.
 function expectedCostFromDatasheet(entry, row) {
-  const input = entry.input_cost_per_token || 0;
-  const output = entry.output_cost_per_token || 0;
-  const cacheReadRate = entry.cache_read_input_token_cost || 0;
-  const cacheWriteRate = entry.cache_creation_input_token_cost || 0;
-
-  const prompt = Number(row.prompt_tokens || 0);
-  const completion = Number(row.completion_tokens || 0);
-  let cachedRead = Number(row.cached_read_tokens || 0);
-  let cachedWrite = 0;
-  if (row.token_usage) {
-    try {
-      const d = JSON.parse(row.token_usage)?.prompt_tokens_details;
-      if (d) {
-        if (cachedRead === 0 && d.cached_read_tokens) cachedRead = Number(d.cached_read_tokens);
-        if (d.cached_write_tokens) cachedWrite = Number(d.cached_write_tokens);
-      }
-    } catch (_) { /* ignore malformed usage blob */ }
-  }
-  // Clamp exactly like cost.go.
-  cachedRead = Math.min(cachedRead, prompt);
-  cachedWrite = Math.min(cachedWrite, Math.max(0, prompt - cachedRead));
-  const nonCachedPrompt = Math.max(0, prompt - cachedRead - cachedWrite);
-  return nonCachedPrompt * input + cachedRead * cacheReadRate + cachedWrite * cacheWriteRate + completion * output;
+  return expectedCostFromRow(entry, row);
 }
 
 /**
@@ -674,7 +654,7 @@ function expectedCostFromDatasheet(entry, row) {
  */
 async function verifyCostingRequest(db, reqId, name, results, silent) {
   const delays = [200, 500, 1000, 2000]; // ~3.7s total, covers async write + deferred usage
-  const sql = 'SELECT cost, prompt_tokens, completion_tokens, total_tokens, cached_read_tokens, token_usage, model, provider, status FROM logs WHERE id = $1';
+  const sql = 'SELECT cost, prompt_tokens, completion_tokens, total_tokens, cached_read_tokens, token_usage, model, provider, status, service_tier FROM logs WHERE id = $1';
   let row = null;
   for (let i = 0; i < delays.length; i++) {
     await sleep(delays[i]);
@@ -728,13 +708,14 @@ async function verifyCostingRequest(db, reqId, name, results, silent) {
       note = `INACCURATE (|logged-expected|>${tol})`;
     }
   }
-  const detail = `[Costing] status=${row.status} model=${row.provider}/${row.model} prompt=${row.prompt_tokens} completion=${row.completion_tokens} total=${tokens} logged=$${cost} expected=${expectedStr} — ${note}`;
+  const detail = `[Costing] status=${row.status} model=${row.provider}/${row.model} tier=${row.service_tier || 'default'} prompt=${row.prompt_tokens} completion=${row.completion_tokens} total=${tokens} logged=$${cost} expected=${expectedStr} — ${note}`;
   results.push({ name, result, detail });
   // Surface the actual log entry's cost next to the datasheet-computed expected
   // cost, so the comparison is visible in the run logs.
   if (!silent) {
     console.log(`[dbverify] ── cost check (${result}) ─ ${reqId}`);
     console.log(`[dbverify]     model      : ${row.provider}/${row.model}`);
+    console.log(`[dbverify]     tier       : ${row.service_tier || 'default'}    (logs DB service_tier column)`);
     console.log(`[dbverify]     tokens     : prompt=${row.prompt_tokens} completion=${row.completion_tokens} total=${tokens} cachedRead=${row.cached_read_tokens || 0}`);
     console.log(`[dbverify]     logged $   : ${cost}    (logs DB row)`);
     console.log(`[dbverify]     expected $ : ${expectedStr}    (recomputed from getbifrost.ai/datasheet)`);

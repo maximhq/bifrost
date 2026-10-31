@@ -1,0 +1,67 @@
+# export RUNPOD_API_KEY=...
+
+# vllm | sglang | ollama
+engine = "vllm"
+
+# Inference: gpt-oss-20b | glm-4.7-flash | kimi-linear-48b-a3b | qwen3.8-27b | qwen3.6-35b-a3b
+#            qwen3-coder-30b-a3b | nemotron-3.5-lightning-30b-a3b | gemma-4-31b-it
+# Decision:  clef-flash (all) | clef (sglang, ollama) | d1-3b (vllm) | pplx-decider-v1.1-27b (sglang)
+#            nimble, tev1 (ollama)
+model = "gpt-oss-20b"
+
+# hf_token = "hf_..."          # gated models (gemma)
+# api_key  = "my-key"          # generated when unset
+
+# --- Image ---
+# channel        = "nightly"   # default comes from the preset's engine block
+# vllm_version   = "v0.30.0"
+# sglang_version = "v0.5.21"
+# ollama_version = "0.40.4"
+# cuda_version   = "13.0"      # or "12.9", vLLM only (cu129 images are broken from v0.30.0)
+# image          = "vllm/vllm-openai:nightly-<sha>"   # or lmsysorg/sglang:nightly-dev-<date>-<sha>
+
+# --- Per-model tweaks ---
+# hf_model               = "nm-testing/Kimi-Linear-48B-A3B-Instruct-FP8-DYNAMIC"
+# ollama_model           = "gpt-oss:20b-q8_0"   # Ollama tag override
+# max_model_len          = 32768
+# gpu_memory_utilization = 0.9  # vLLM --gpu-memory-utilization / SGLang --mem-fraction-static
+# reasoning_parser       = ""   # "" disables
+# extra_args             = ["--kv-cache-dtype", "fp8"]
+# extra_env              = { VLLM_LOGGING_LEVEL = "DEBUG" }   # Ollama: { OLLAMA_KV_CACHE_TYPE = "q8_0" }
+
+# --- Pod ---
+# gpu_type_ids    = ["NVIDIA A40", "NVIDIA RTX A6000"]
+# gpu_type_priority = "availability"
+# gpu_count       = 1
+# cloud_type      = "COMMUNITY"
+# data_center_ids = ["US-TX-3", "US-KS-2"]
+# interruptible   = true
+# volume_gb       = 150
+
+# --- Teardown ---
+# teardown_after_minutes = 60           # 0 disables
+# teardown_action        = "terminate"  # or "stop"
+
+# --- Custom model (runs on every engine; parsers per engine, Ollama tag in the ollama block) ---
+# model = "seed-oss-36b"
+# custom_presets = {
+#   "seed-oss-36b" = {
+#     hf_model      = "ByteDance-Seed/Seed-OSS-36B-Instruct"
+#     max_model_len = 32768
+#     gpu_type_ids  = ["NVIDIA H200"]
+#     vllm          = { tool_call_parser = "seed_oss", reasoning_parser = "seed_oss" }
+#     sglang        = { tool_call_parser = "seed_oss", reasoning_parser = "seed_oss" }
+#     ollama        = { model = "hf.co/<user>/Seed-OSS-36B-Instruct-GGUF:Q4_K_M" }
+#   }
+# }
+
+# --- Custom decision model (any generation model with a supported read strategy) ---
+# model = "qwen3.5-35b-a3b-decider"
+# custom_presets = {
+#   "qwen3.5-35b-a3b-decider" = {
+#     kind         = "decision"
+#     hf_model     = "Qwen/Qwen3.5-35B-A3B"
+#     gpu_type_ids = ["NVIDIA H200"]        # SGLang validated it BF16 on 1x H200
+#     vllm         = { channel = "nightly" } # /v1/systemone is nightly-only on vLLM
+#   }
+# }

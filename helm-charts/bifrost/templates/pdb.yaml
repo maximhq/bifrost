@@ -1,0 +1,21 @@
+{{- if and .Values.bifrost.cluster.enabled .Values.podDisruptionBudget.enabled }}
+{{- /* maxUnavailable takes precedence over minAvailable: a PDB accepts only one of the two, and
+       minAvailable has a default, so setting maxUnavailable is how a user switches to it. */}}
+{{- $maxUnavailable := .Values.podDisruptionBudget.maxUnavailable }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "bifrost.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "bifrost.labels" . | nindent 4 }}
+spec:
+  {{- if not (kindIs "invalid" $maxUnavailable) }}
+  maxUnavailable: {{ $maxUnavailable | toJson }}
+  {{- else }}
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable | toJson }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "bifrost.serverSelectorLabels" . | nindent 6 }}
+{{- end }}

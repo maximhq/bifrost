@@ -92,7 +92,7 @@ Enable AI models to discover and execute external tools dynamically via the **Mo
   <Card title="MCP Authentication" icon="shield" href="/mcp/auth/overview">
     Five auth types — None, Headers, OAuth 2.0, Per-User OAuth, Per-User Headers. Lazy auth for per-user.
   </Card>
-  <Card title="Bifrost as an MCP Gateway" icon="server" href="/mcp/gateway">
+  <Card title="Bifrost as an MCP Gateway" icon="server" href="/mcp/overview#bifrost-as-an-mcp-gateway">
     Expose Bifrost itself as an MCP server so Claude Desktop, Cursor, and other MCP clients can use your configured tools.
   </Card>
   <Card title="Tool Hosting" icon="toolbox" href="/mcp/tool-hosting">
@@ -110,8 +110,8 @@ Advanced capabilities for teams running production AI systems at scale. Enterpri
   <Card title="Guardrails" icon="road-barrier" href="/enterprise/guardrails">
     Content safety with AWS Bedrock Guardrails, Azure Content Safety, Google Model Armor, and Patronus AI for real-time protection.
   </Card>
-  <Card title="Adaptive Load Balancing" icon="brain" href="/enterprise/adaptive-load-balancing">
-    Predictive scaling with real-time health monitoring, automatically optimizing traffic across providers.
+  <Card title="Adaptive Routing" icon="brain" href="/enterprise/adaptive-routing/overview">
+    Routes each request to the healthiest provider and key, holds back keys a provider refuses, and shows what it did and why.
   </Card>
   <Card title="Clustering" icon="circle-nodes" href="/enterprise/clustering">
     High-availability with automatic service discovery, gossip-based sync, and zero-downtime deployments.
@@ -202,6 +202,9 @@ Bifrost supports 20+ AI providers through a single unified API. Configure multip
   </Card>
   <Card title="Cerebras" icon="c" href="/providers/supported-providers/cerebras">
     High-speed inference with full streaming support.
+  </Card>
+  <Card title="Databricks" icon="database" href="/providers/supported-providers/databricks">
+    Model Serving and Unity AI Gateway with PAT or OAuth M2M auth.
   </Card>
   <Card title="DeepSeek" icon="d" href="/providers/supported-providers/deepseek">
     OpenAI-compatible chat, reasoning, tools, and FIM completions.

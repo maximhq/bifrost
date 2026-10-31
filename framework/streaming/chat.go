@@ -133,12 +133,37 @@ func deepCopyChatStreamDelta(original *schemas.ChatStreamResponseChoiceDelta) *s
 		}
 	}
 
+	// Deep copy Images slice
+	if original.Images != nil {
+		copy.Images = make([]schemas.ChatAssistantMessageImage, len(original.Images))
+		for i, image := range original.Images {
+			copyImage := image
+			if image.ImageURL.FileID != nil {
+				copyFileID := *image.ImageURL.FileID
+				copyImage.ImageURL.FileID = &copyFileID
+			}
+			if image.ImageURL.Detail != nil {
+				copyDetail := *image.ImageURL.Detail
+				copyImage.ImageURL.Detail = &copyDetail
+			}
+			copy.Images[i] = copyImage
+		}
+	}
+
 	return copy
 }
 
-// buildCompleteMessageFromChunks builds a complete message from accumulated chunks.
-// Uses strings.Builder for O(n) accumulation instead of O(n²) string concatenation.
+// buildCompleteMessageFromChatStreamChunks builds a complete message from accumulated chunks.
 func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStreamChunk) *schemas.ChatMessage {
+	return BuildChatMessageFromChunks(chunks)
+}
+
+// BuildChatMessageFromChunks assembles the complete assistant message from a stream's chat chunks
+// (content, refusal, reasoning, reasoning details, audio, images, annotations and tool calls). It sorts
+// chunks in place by ChunkIndex and holds no state, so callers that rebuild a stream outside the
+// Accumulator (e.g. from a recorded passthrough body) get the same result the live path produces.
+// Uses strings.Builder for O(n) accumulation instead of O(n²) string concatenation.
+func BuildChatMessageFromChunks(chunks []*ChatStreamChunk) *schemas.ChatMessage {
 	completeMessage := &schemas.ChatMessage{
 		Role:    schemas.ChatMessageRoleAssistant,
 		Content: &schemas.ChatMessageContent{},
@@ -155,6 +180,7 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 	var audioTranscriptBuilder strings.Builder
 	hasContent, hasRefusal, hasReasoning := false, false, false
 	var annotations []schemas.ChatAssistantMessageAnnotation
+	var images []schemas.ChatAssistantMessageImage
 
 	// Reasoning details builders keyed by detail index
 	type rdAccum struct {
@@ -232,8 +258,9 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 				acc.id = &idCopy
 			}
 		}
-		// Collect annotations (arrive whole per chunk, not incrementally)
+		// Collect annotations and images (arrive whole per chunk, not incrementally)
 		annotations = append(annotations, chunk.Delta.Annotations...)
+		images = append(images, chunk.Delta.Images...)
 		// Handle audio data
 		if chunk.Delta.Audio != nil {
 			if completeMessage.ChatAssistantMessage == nil {
@@ -354,6 +381,14 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 			completeMessage.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
 		}
 		completeMessage.ChatAssistantMessage.Annotations = annotations
+	}
+
+	// Finalize images
+	if len(images) > 0 {
+		if completeMessage.ChatAssistantMessage == nil {
+			completeMessage.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
+		}
+		completeMessage.ChatAssistantMessage.Images = images
 	}
 
 	// Finalize audio

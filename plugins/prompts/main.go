@@ -177,6 +177,12 @@ func (p *Plugin) GetName() string {
 	return PluginName
 }
 
+// HTTPTransportPreAuthHook is a no-op: this plugin does no credential work, so it has
+// nothing to do before the transport authenticates the request (HTTPTransportPlugin interface).
+func (*Plugin) HTTPTransportPreAuthHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	return nil, nil
+}
+
 // HTTPTransportPreHook copies x-bf-prompt-id and x-bf-prompt-version from the incoming HTTP request
 // into BifrostContext so the default header resolver and PreLLMHook can read them.
 func (p *Plugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
@@ -194,6 +200,11 @@ func (p *Plugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.
 
 // HTTPTransportPostHook is a no-op; this plugin does not modify HTTP response headers.
 func (p *Plugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error {
+	return nil
+}
+
+// HTTPTransportResponseHeadersHook leaves response headers unchanged.
+func (p *Plugin) HTTPTransportResponseHeadersHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, _ *schemas.HTTPResponseMetadata) error {
 	return nil
 }
 

@@ -202,20 +202,20 @@ function GoroutineHealthSection({
 			{/* Summary stats */}
 			<div className="mb-2 grid grid-cols-4 gap-2 rounded bg-zinc-800/50 p-2">
 				<div className="flex flex-col items-center">
-					<span className="text-[10px] text-zinc-500">Total</span>
+					<span className="text-[10px] text-zinc-400">Total</span>
 					<span className="font-semibold text-emerald-400">{total_goroutines}</span>
 				</div>
 				<div className="flex flex-col items-center">
-					<span className="text-[10px] text-zinc-500">Background</span>
+					<span className="text-[10px] text-zinc-400">Background</span>
 					<span className="font-semibold text-blue-400">{summary.background}</span>
 				</div>
 				<div className="flex flex-col items-center">
-					<span className="text-[10px] text-zinc-500">Per-Request</span>
+					<span className="text-[10px] text-zinc-400">Per-Request</span>
 					<span className="font-semibold text-amber-400">{summary.per_request}</span>
 				</div>
 				<div className="flex flex-col items-center">
-					<span className="text-[10px] text-zinc-500">Stuck</span>
-					<span className={`font-semibold ${summary.potentially_stuck > 0 ? "text-red-400" : "text-zinc-500"}`}>
+					<span className="text-[10px] text-zinc-400">Stuck</span>
+					<span className={`font-semibold ${summary.potentially_stuck > 0 ? "text-red-400" : "text-zinc-400"}`}>
 						{summary.potentially_stuck}
 					</span>
 				</div>
@@ -225,7 +225,7 @@ function GoroutineHealthSection({
 			{(problemGoroutines.length > 0 || skippedGoroutines.size > 0) && (
 				<div className="space-y-1">
 					<div className="flex items-center justify-between">
-						<span className="text-[10px] text-zinc-500">Potential Leaks</span>
+						<span className="text-[10px] text-zinc-400">Potential Leaks</span>
 						{skippedGoroutines.size > 0 && (
 							<button
 								onClick={onClearSkipped}
@@ -255,9 +255,9 @@ function GoroutineHealthSection({
 								>
 									<div className="flex w-full items-center gap-2">
 										{expandedGoroutines.has(gid) ? (
-											<ChevronDown className="h-3 w-3 shrink-0 text-zinc-500" />
+											<ChevronDown className="h-3 w-3 shrink-0 text-zinc-400" />
 										) : (
-											<ChevronRight className="h-3 w-3 shrink-0 text-zinc-500" />
+											<ChevronRight className="h-3 w-3 shrink-0 text-zinc-400" />
 										)}
 										<span className="min-w-0 flex-1 break-all text-zinc-300" title={g.top_func}>
 											{truncateFunction(g.top_func)}
@@ -265,7 +265,7 @@ function GoroutineHealthSection({
 									</div>
 									<div className="flex items-center gap-2 pl-5 text-[10px]">
 										<span className={`rounded px-1 py-0.5 ${getCategoryColor(g.category)}`}>{g.category}</span>
-										<span className="text-zinc-500">{g.count}x</span>
+										<span className="text-zinc-400">{g.count}x</span>
 										{g.wait_minutes != null && <span className="text-amber-400">{g.wait_minutes}m waiting</span>}
 									</div>
 								</div>
@@ -275,14 +275,14 @@ function GoroutineHealthSection({
 										const filePath = getStackFilePath(g.stack);
 										if (filePath) onSkipGoroutine(filePath);
 									}}
-									className="absolute top-1.5 right-1 shrink-0 rounded p-1 text-zinc-500 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-zinc-600 hover:text-zinc-300"
+									className="absolute top-1.5 right-1 shrink-0 rounded p-1 text-zinc-400 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-zinc-600 hover:text-zinc-300"
 									title="Hide goroutines from this file"
 								>
 									<EyeOff className="h-3 w-3" />
 								</button>
 								{expandedGoroutines.has(gid) && (
 									<div className="border-t border-zinc-700 bg-zinc-900/50 px-2 py-1.5">
-										<div className="mb-1 text-[10px] text-zinc-500">
+										<div className="mb-1 text-[10px] text-zinc-400">
 											State: <span className="text-zinc-400">{g.state}</span>
 											{g.wait_reason && (
 												<span className="ml-2">
@@ -292,11 +292,11 @@ function GoroutineHealthSection({
 										</div>
 										<div className="max-h-32 overflow-x-hidden overflow-y-auto">
 											{g.stack.slice(0, 10).map((line, j) => (
-												<div key={j} className="text-[9px] break-all text-zinc-500">
+												<div key={j} className="text-[9px] break-all text-zinc-400">
 													{line}
 												</div>
 											))}
-											{g.stack.length > 10 && <div className="text-[9px] text-zinc-600">... {g.stack.length - 10} more frames</div>}
+											{g.stack.length > 10 && <div className="text-[9px] text-zinc-400">... {g.stack.length - 10} more frames</div>}
 										</div>
 									</div>
 								)}
@@ -305,12 +305,12 @@ function GoroutineHealthSection({
 					})}
 
 					{problemGoroutines.length === 0 && skippedGoroutines.size > 0 && (
-						<div className="rounded bg-zinc-800/30 py-2 text-center text-[10px] text-zinc-500">All potential leaks hidden</div>
+						<div className="rounded bg-zinc-800/30 py-2 text-center text-[10px] text-zinc-400">All potential leaks hidden</div>
 					)}
 					{problemGoroutines.length === 0 &&
 						skippedGoroutines.size === 0 &&
 						(summary.long_waiting > 0 || summary.potentially_stuck > 0) && (
-							<div className="rounded bg-zinc-800/30 px-2 py-2 text-center text-[10px] text-zinc-500">
+							<div className="rounded bg-zinc-800/30 px-2 py-2 text-center text-[10px] text-zinc-400">
 								{summary.long_waiting > 0 && summary.potentially_stuck > 0
 									? `${summary.long_waiting} long-waiting and ${summary.potentially_stuck} stuck goroutines (background workers filtered)`
 									: summary.long_waiting > 0
@@ -323,7 +323,7 @@ function GoroutineHealthSection({
 
 			{/* No problems message */}
 			{problemGoroutines.length === 0 && summary.long_waiting === 0 && summary.potentially_stuck === 0 && (
-				<div className="rounded bg-zinc-800/30 py-2 text-center text-[10px] text-zinc-500">No goroutine leaks detected</div>
+				<div className="rounded bg-zinc-800/30 py-2 text-center text-[10px] text-zinc-400">No goroutine leaks detected</div>
 			)}
 		</div>
 	);
@@ -502,27 +502,27 @@ export function DevProfiler(): React.ReactNode {
 					{/* Current Stats */}
 					<div className="grid grid-cols-3 gap-2 border-b border-zinc-700 p-3">
 						<div className="flex flex-col">
-							<span className="text-zinc-500">CPU Usage</span>
+							<span className="text-zinc-400">CPU Usage</span>
 							<span className="font-semibold text-orange-400">{data.cpu.usage_percent.toFixed(1)}%</span>
 						</div>
 						<div className="flex flex-col">
-							<span className="text-zinc-500">Heap Alloc</span>
+							<span className="text-zinc-400">Heap Alloc</span>
 							<span className="font-semibold text-cyan-400">{formatBytes(data.memory.alloc)}</span>
 						</div>
 						<div className="flex flex-col">
-							<span className="text-zinc-500">Heap In-Use</span>
+							<span className="text-zinc-400">Heap In-Use</span>
 							<span className="font-semibold text-blue-400">{formatBytes(data.memory.heap_inuse)}</span>
 						</div>
 						<div className="flex flex-col">
-							<span className="text-zinc-500">System</span>
+							<span className="text-zinc-400">System</span>
 							<span className="font-semibold text-purple-400">{formatBytes(data.memory.sys)}</span>
 						</div>
 						<div className="flex flex-col">
-							<span className="text-zinc-500">Goroutines</span>
+							<span className="text-zinc-400">Goroutines</span>
 							<span className="font-semibold text-emerald-400">{data.runtime.num_goroutine}</span>
 						</div>
 						<div className="flex flex-col">
-							<span className="text-zinc-500">GC Pause</span>
+							<span className="text-zinc-400">GC Pause</span>
 							<span className="font-semibold text-amber-400">{formatNs(data.runtime.gc_pause_ns)}</span>
 						</div>
 					</div>
@@ -534,7 +534,7 @@ export function DevProfiler(): React.ReactNode {
 							<span className="text-zinc-400">CPU Usage (last 5 min)</span>
 						</div>
 						<div className="h-24">
-							<ResponsiveContainer width="100%" height="100%">
+							<ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
 								<AreaChart data={cpuChartData}>
 									<defs>
 										<linearGradient id="cpuGradient" x1="0" y1="0" x2="0" y2="1">
@@ -614,7 +614,7 @@ export function DevProfiler(): React.ReactNode {
 							<span className="text-zinc-400">Memory (last 5 min)</span>
 						</div>
 						<div className="h-24">
-							<ResponsiveContainer width="100%" height="100%">
+							<ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
 								<AreaChart data={memoryChartData}>
 									<defs>
 										<linearGradient id="allocGradient" x1="0" y1="0" x2="0" y2="1">
@@ -681,13 +681,13 @@ export function DevProfiler(): React.ReactNode {
 										<span className="truncate text-zinc-300" title={alloc.function}>
 											{truncateFunction(alloc.function)}
 										</span>
-										<span className="text-[10px] text-zinc-500">
+										<span className="text-[10px] text-zinc-400">
 											{alloc.file}:{alloc.line}
 										</span>
 									</div>
 									<div className="flex flex-col items-end">
 										<span className="text-rose-400">{formatBytes(alloc.bytes)}</span>
-										<span className="text-[10px] text-zinc-500">{alloc.count.toLocaleString()} allocs</span>
+										<span className="text-[10px] text-zinc-400">{alloc.count.toLocaleString()} allocs</span>
 									</div>
 								</div>
 							))}
@@ -708,7 +708,7 @@ export function DevProfiler(): React.ReactNode {
 					/>
 
 					{/* Footer with info */}
-					<div className="border-t border-zinc-700 bg-zinc-800 px-3 py-2 text-[10px] text-zinc-500">
+					<div className="border-t border-zinc-700 bg-zinc-800 px-3 py-2 text-[10px] text-zinc-400">
 						CPUs: {data.runtime.num_cpu} | GOMAXPROCS: {data.runtime.gomaxprocs} | GC: {data.runtime.num_gc} | Objects:{" "}
 						{data.memory.heap_objects.toLocaleString()}
 					</div>

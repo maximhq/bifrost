@@ -181,19 +181,20 @@ export function SessionDetailsSheet({
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="flex w-full flex-col gap-4 overflow-x-hidden p-8 sm:max-w-[60%]">
+			<SheetContent className="flex w-full flex-col gap-4 overflow-x-hidden p-4 sm:max-w-[60%] md:p-8">
 				<div className="flex items-center justify-between gap-4">
 					<div>
 						<div className="text-lg font-medium">Session</div>
 						{sessionId && onFilterByParentRequestId ? (
 							<Tooltip>
 								<TooltipTrigger asChild>
-									<code
-										className="text-primary hover:text-primary/80 cursor-pointer text-sm break-all underline-offset-2 hover:underline"
+									<button
+										type="button"
+										className="text-primary hover:text-primary/80 cursor-pointer text-left font-mono text-sm break-all underline-offset-2 hover:underline"
 										onClick={() => onFilterByParentRequestId(sessionId)}
 									>
 										{sessionId}
-									</code>
+									</button>
 								</TooltipTrigger>
 								<TooltipContent sideOffset={6}>Filter this session</TooltipContent>
 							</Tooltip>

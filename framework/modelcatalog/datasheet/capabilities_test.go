@@ -1,6 +1,7 @@
 package datasheet
 
 import (
+	"encoding/json"
 	"slices"
 	"testing"
 
@@ -237,13 +238,59 @@ func capabilityBoolPtr(v bool) *bool { return &v }
 func TestExtractSupportedParams_StopSpellings(t *testing.T) {
 	for _, id := range []string{"stop", "stop_sequences", "stopSequences"} {
 		t.Run(id, func(t *testing.T) {
-			parsed := &modelParametersParseResult{ModelParameters: []struct {
-				ID string `json:"id"`
-			}{{ID: id}}}
+			parsed := &schemas.ModelCapabilities{
+				ModelParameters: []schemas.ModelParameterDescriptor{{ID: id}},
+			}
 			if got := extractSupportedParams(parsed); !slices.Contains(got, "stop") {
 				t.Errorf("model_parameters id %q must yield supported param \"stop\", got %v", id, got)
 			}
 		})
+	}
+}
+
+// TestExtractSupportedParams_NoModelParameters guards datasheet rows that
+// declare capability flags but no model_parameters list (e.g.
+// apac.anthropic.claude-sonnet-4-6 in the 2026-10-20 datasheet). Such a row
+// must not shrink the allowlist to flags alone: compat's should_drop_params
+// would strip max_tokens/temperature/top_p and the provider would silently
+// substitute its own defaults. An undisclosed list means "unknown", not
+// "unsupported".
+func TestExtractSupportedParams_NoModelParameters(t *testing.T) {
+	got := extractSupportedParams(&schemas.ModelCapabilities{
+		SupportsFunctionCalling: capabilityBoolPtr(true),
+	})
+	for _, want := range []string{"temperature", "top_p", "stop", "max_tokens", "max_completion_tokens", "max_output_tokens", "tools"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("expected supported params to contain %q for a row without model_parameters, got %v", want, got)
+		}
+	}
+
+	// A row that does list model_parameters keeps its declared surface.
+	declared := extractSupportedParams(&schemas.ModelCapabilities{
+		ModelParameters: []schemas.ModelParameterDescriptor{{ID: "temperature"}},
+	})
+	if slices.Contains(declared, "top_p") {
+		t.Errorf("expected top_p to stay undeclared for a row with a model_parameters list, got %v", declared)
+	}
+
+	// An explicit empty list declares an empty surface; only an absent (or
+	// null) list falls back to the defaults.
+	for _, tc := range []struct {
+		row          string
+		wantDefaults bool
+	}{
+		{`{"supports_function_calling": true}`, true},
+		{`{"supports_function_calling": true, "model_parameters": null}`, true},
+		{`{"supports_function_calling": true, "model_parameters": []}`, false},
+	} {
+		var caps schemas.ModelCapabilities
+		if err := json.Unmarshal([]byte(tc.row), &caps); err != nil {
+			t.Fatalf("unmarshal %s: %v", tc.row, err)
+		}
+		got := extractSupportedParams(&caps)
+		if slices.Contains(got, "temperature") != tc.wantDefaults {
+			t.Errorf("row %s: expected default sampling params=%v, got %v", tc.row, tc.wantDefaults, got)
+		}
 	}
 }
 
@@ -252,25 +299,23 @@ func TestExtractSupportedParams_StopSpellings(t *testing.T) {
 // yield both web_search (responses-path tool) and web_search_options (chat-path
 // param), so the compat plugin's drop checks match either way.
 func TestExtractSupportedParams_WebSearch(t *testing.T) {
-	webSearchParam := []struct {
-		ID string `json:"id"`
-	}{{ID: "web_search"}}
+	webSearchParam := []schemas.ModelParameterDescriptor{{ID: "web_search"}}
 
 	cases := []struct {
 		name   string
-		parsed *modelParametersParseResult
+		parsed *schemas.ModelCapabilities
 	}{
 		{
 			name:   "web_search model parameter",
-			parsed: &modelParametersParseResult{ModelParameters: webSearchParam},
+			parsed: &schemas.ModelCapabilities{ModelParameters: webSearchParam},
 		},
 		{
 			name:   "supports_web_search flag",
-			parsed: &modelParametersParseResult{SupportsWebSearch: capabilityBoolPtr(true)},
+			parsed: &schemas.ModelCapabilities{SupportsWebSearch: capabilityBoolPtr(true)},
 		},
 		{
 			name: "both set",
-			parsed: &modelParametersParseResult{
+			parsed: &schemas.ModelCapabilities{
 				ModelParameters:   webSearchParam,
 				SupportsWebSearch: capabilityBoolPtr(true),
 			},
@@ -293,10 +338,49 @@ func TestExtractSupportedParams_WebSearch(t *testing.T) {
 // the datasheet declares no web-search support, so the tool is still stripped
 // for models that genuinely lack it.
 func TestExtractSupportedParams_WebSearchAbsent(t *testing.T) {
-	got := extractSupportedParams(&modelParametersParseResult{SupportsWebSearch: capabilityBoolPtr(false)})
+	got := extractSupportedParams(&schemas.ModelCapabilities{SupportsWebSearch: capabilityBoolPtr(false)})
 	for _, unexpected := range []string{"web_search", "web_search_options"} {
 		if slices.Contains(got, unexpected) {
 			t.Errorf("expected supported params to omit %q, got %v", unexpected, got)
+		}
+	}
+}
+
+// TestExtractSupportedParams_NoneReasoningEffort guards the
+// supports_none_reasoning_effort flag: compat's dropUnsupportedParams uses it
+// to decide whether to force reasoning.effort to "none" (vs. dropping
+// reasoning entirely) for models that reason by default even when
+// reasoning_effort is omitted.
+func TestExtractSupportedParams_NoneReasoningEffort(t *testing.T) {
+	if got := extractSupportedParams(&schemas.ModelCapabilities{SupportsNoneReasoningEffort: capabilityBoolPtr(true)}); !slices.Contains(got, "supports_none_reasoning_effort") {
+		t.Errorf("expected supported params to contain \"supports_none_reasoning_effort\", got %v", got)
+	}
+	if got := extractSupportedParams(&schemas.ModelCapabilities{SupportsNoneReasoningEffort: capabilityBoolPtr(false)}); slices.Contains(got, "supports_none_reasoning_effort") {
+		t.Errorf("expected supported params to omit \"supports_none_reasoning_effort\", got %v", got)
+	}
+	if got := extractSupportedParams(&schemas.ModelCapabilities{}); slices.Contains(got, "supports_none_reasoning_effort") {
+		t.Errorf("expected supported params to omit \"supports_none_reasoning_effort\" when unset, got %v", got)
+	}
+}
+
+// TestExtractSupportedParams_ReasoningSummaryFlags guards the per-value summary flags:
+// each is listed unless the datasheet sets it explicitly false.
+func TestExtractSupportedParams_ReasoningSummaryFlags(t *testing.T) {
+	params := []string{"reasoning_summary_detailed", "reasoning_summary_concise", "reasoning_summary_auto"}
+	got := extractSupportedParams(&schemas.ModelCapabilities{})
+	for _, param := range params {
+		if !slices.Contains(got, param) {
+			t.Errorf("expected %q when unset, got %v", param, got)
+		}
+	}
+	got = extractSupportedParams(&schemas.ModelCapabilities{
+		SupportsReasoningSummaryDetailed: capabilityBoolPtr(false),
+		SupportsReasoningSummaryConcise:  capabilityBoolPtr(false),
+		SupportsReasoningSummaryAuto:     capabilityBoolPtr(false),
+	})
+	for _, param := range params {
+		if slices.Contains(got, param) {
+			t.Errorf("expected %q omitted when false, got %v", param, got)
 		}
 	}
 }

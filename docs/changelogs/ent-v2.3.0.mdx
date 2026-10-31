@@ -1,0 +1,752 @@
+---
+title: "v2.3.0"
+description: "v2.3.0 changelog - 2026-10-13"
+---
+
+<Update label="Bifrost Enterprise" description="v2.3.0">
+
+<Warning>
+  For large deployments, schedule upgrades during low-traffic windows (e.g. weekends). Database migrations run on startup and can cause lock contention on PostgreSQL while they complete. Improved migration handling is rolling out at the application level, starting with v2.3.0.
+</Warning>
+
+<Warning>
+**Pass-through routes and file objects now work differently with virtual keys.** Read this changelog in full before you upgrade. Every one of these changes strengthens Bifrost's security posture. If you have questions, reach out to us.
+</Warning>
+
+## Changelog
+
+v2.3.0 moves the enterprise gateway onto OSS transports v2.3.0. Teams, business units and customers can now hold an access profile that governs every member and key under them. Adaptive routing now holds provider keys that a provider refuses and rechecks them, and it records a routing history with an Incidents page. Alerting adds business unit and user scopes, plus rules that watch every entity of a scope and send one digest per channel. Identity sync adds reconcile with preview, one directory sync job that also deprovisions users, and attribute-to-project rules. The OSS release adds the A2A Agent Gateway, GPT Live sessions, the Cloudflare Workers AI provider, and provider-injected MCP tools.
+
+## ✨ Features
+
+- **Access Profiles on Teams, Business Units and Customers** - A team, business unit or customer can hold an access profile (`GET/POST/DELETE /api/governance/{teams|business-units|customers}/{id}/access-profile`). Members' requests and the keys the entity owns are then governed and charged by that profile. An entity profile adds to a member's own profiles and never removes access. Attaching to an entity that still has its own limits returns 409 `entity_has_legacy_limits` with a migration plan. `POST .../access-profile/migrate` (dry run supported) builds a profile from the old limits, carries spend over on the same reset window and adopts the entity's keys. Assign Existing adopts a key into the entity profile. config.json accepts `access_profile` on `governance.teams`, `governance.customers` and `governance.business_units`. The entity sheets have Attach, Detach and Migrate actions, a migration wizard and a Usage tab. [Docs](https://docs.getbifrost.ai/enterprise/access-profiles)
+- **Business Unit Ownership and Limits** - A virtual key can be owned by a business unit (`business_unit_id`). That key spends the unit's budget and rate limit and those of the customers the unit serves. Business units have their own budget and rate limit (`/api/governance/business-units/{id}/governance`), and like teams they use either their own limits or a profile, never both. Deleting a business unit unassigns its keys in the database, in memory and on peers.
+- **Business Unit and Customer Data Scopes** - Roles can use two new data scopes. `business-unit-data` covers the caller's business units, their members and keys owned by those units. `customer-data` covers every team and business unit under the caller's customers, plus keys owned by those customers. Both scopes can be selected in the role editor and set in config.json.
+- **Agent Access Grants** - Access profiles and projects can grant Agent Gateway agents by name with `agent_grants`. On project update, omitting the field keeps the current grants, and an empty list clears them. Blank, duplicate and unregistered names are rejected. A2A bearer calls resolve the user through the IdP, and the agent log records the user with their team, customer and business unit. New RBAC resources are `AgentGateway` and `AgentLogs`, and agent log reads are DAC-scoped. Agents also appear in the Home, user detail and Activity views.
+- **Home Page** - Each user gets a Home page with:
+  - spend, requests, top model, the budget closest to its limit, and spend rank;
+  - cost and model charts, app usage, and a budget burn chart with a projection;
+  - their keys and access. My Access shows disabled MCP servers and folds long tool lists.
+
+  Endpoints: `GET /api/governance/users/me` and `GET /api/governance/users/me/rank`. A weekly `token_monster` badge goes to the top 10 spenders.
+- **Budget Increase Requests** - Users can request more budget on a virtual key or access-profile budget they own (`/api/governance/users/me/budget-requests`). Approvers with `VirtualKeys:Update` approve or deny requests under `/api/governance/budget-requests`, and a deny needs a note. On approval, `override_strategy` sets how the amount is applied: `add` (default), `replace`, or `add_keep_lifetime`. Approvers are notified, and each budget can have only one pending request. Home splits decided requests into Approved and Denied tabs.
+- **Org Chart** - New Governance page. It shows business units, teams and users, or customers, business units and teams, as a drill-down tree. Each level shows its top five children by spend, tokens, requests, budget or name. Nodes show a budget meter for the current cycle or a strip of the last 3, 6 or 12 cycles, and `/` jumps to any node. Every list is DAC-scoped (`/api/governance/org-chart/*`).
+- **Activity Tab on Entity Sheets** - Every entity detail sheet has an Activity tab. It shows spend against the previous period, tokens, requests, budget left, per-cycle budget history, spend by model, and models and MCP tools tables. Team sheets also rank members by spend.
+- **Provider Key Holds in Adaptive Routing** - When a provider refuses a key for a reason that will repeat (credential, model_access, quota, model_gone, region_blocked, rate_limit), that key is taken out of rotation for the affected route. The whole key is held only for a rejected credential or an org-wide quota refusal. After the wait, exactly one request goes through as a recheck. A clean answer releases the key. A failure moves it up a doubling backoff that starts at 30s, with caps from 5m to 30m by reason. A 429 holds the key for the provider's `Retry-After`, which replaces the TPM circuit breaker. Holds are shared with cluster peers, survive restarts, and are fetched by joining nodes. `GET /api/adaptive-routing/conditions` lists holds, and `POST /api/adaptive-routing/conditions/clear` releases them across the cluster for one key, one provider, or all keys. [Docs](https://docs.getbifrost.ai/enterprise/adaptive-load-balancing)
+- **Adaptive Routing History and Incidents** - Each node records routing frames and events: health changes, weight changes, holds, settings edits, key edits and node boots. Storage is SQLite, Postgres or ClickHouse, with its own `history_retention_days` (1-30, default 7) and a `history_enabled` switch. The Adaptive Routing dashboard is rebuilt on this history:
+  - provider, model, region and node filters, and a Live toggle;
+  - a paged health timeline with a routing score breakdown;
+  - held-keys and state sheets.
+
+  A new Incidents page (`/workspace/adaptive-routing/incidents`) lists issues merged across nodes. Each issue shows its status, the recent config changes around it, nodes whose hold came from a peer, and whether an operator is needed. Read APIs are under `/api/adaptive-routing/history/`. The dashboard needs a Postgres or ClickHouse log store.
+- **Routing Decision Metadata on Logs** - Each attempt writes `bifrost_alb_*` metadata to its log: decision, requested provider and model, reroute target, excluded providers, key decision and skip reasons, failure class and region. An Adaptive Routing card on the log's Routing tab shows these values, and the Logs sidebar has an Adaptive Routing filter group.
+- **Adaptive Routing Settings** - New `reroute_target` (`pool`, the default, or `fallbacks`). With `fallbacks`, a failed pinned request moves to its own first healthy fallback. A direction where only some keys fail is now `Degraded` and stays in rotation. `snapshot_persist_interval_seconds` is configurable, and its default changes from 30s to 5 minutes. A circuit breaker now follows a chain of open circuits to the first healthy target, with loop protection. Config and conditions routes move to `/api/adaptive-routing/`, and `/api/load-balancer-config` stays as a deprecated alias. UI labels are renamed: Reroute is now Redirect, and Prune Failed Fallbacks is now Skip Failing Fallbacks.
+- **Identity Reconcile with Preview** - `POST /api/scim/provision/reconcile` replays stored login claims or SCIM state, so a mapping edit reaches existing users. It accepts an optional `user_ids` subset. The preview reports per-user changes without writing anything: role, teams, business units, projects, access profiles, and keys revoked or created. `.../reconcile/preview/user` shows the plan for one user. After you save a mapping, the provider wizard offers to reconcile. The provisioning dashboard's Re-verify action becomes "Reconcile users".
+- **Unified Directory Sync with Deprovisioning** - The Sync users button, `/api/scim/provision/sync` and the scheduled run now execute one job. It creates or restores listed users and reconciles teams, business units, projects, roles and access profiles. After a complete listing, it deprovisions users the IdP no longer lists, and where the provider supports it, it first confirms the user is inactive. Service accounts and manual users are never touched. `bulkSyncInterval` (1h-30d, default 24h) applies without a restart. With SCIM provisioning on, bulk import and team or business-unit pulls return 403.
+- **Attribute-to-Project Mapping** - New `attributeProjectMappings` rules add users to existing projects from IdP attributes on login, refresh, directory sync and SCIM pushes. A sync removes only the members its rules added, and members a rule adds show a "Synced from IdP" badge.
+- **Identity Mapping Rules** - Several changes to how mapping rules work:
+  - A glob rule value can contain more than one `${*}`.
+  - Role and access-profile rules are stored by entity ID, so renaming a role or profile no longer breaks them. A rule that names a missing entity is reported in `skipped_mappings`.
+  - An interactive login now replaces claim memory, so an attribute the token omits removes what it granted. A login whose token has none of the role-rule attributes is refused with a 403 that names the missing attributes, and the user's existing role is kept.
+  - On a role tie, the rule higher in the list wins.
+  - New SCIM group rules match on displayName.
+- **SSO Provider Options** - Every SSO provider accepts `emailField`, the token claim that holds the email (for example `upn` or a namespaced Auth0 claim). The generic OIDC provider accepts `displayName` for its login button. The `bifrost-cli` PKCE client is accepted, and CLI sessions do not use Edge device seats. Deploy this gateway before the OSS CLI release.
+- **Alerting: Business Unit and User Scopes** - Alert rules accept two new scopes. `business_unit` watches a unit's budget and rate limit. `user` targets one user's budget or, for user scope only, a `rate_limit`. Limits a user holds through access profiles and model configs are checked against their own targets and reset cycles. `GET /api/alerting/users/{id}/targets` lists the targets for a user, and the rule form adds a user picker and a limit picker. Rules are removed when their user or business unit is deleted. [Docs](https://docs.getbifrost.ai/enterprise/alerting/alert-rules)
+- **Alerting: Rules for All Entities with Digests** - Every scope accepts `scope_id: "*"` (UI: Applies To > All). The rule then checks each virtual key, team, customer, business unit or user against its own limits. When several entities match in one pass, each channel gets one digest message, with rich layouts for Slack, Teams and PagerDuty. Cooldown and recovery are tracked per entity. History rows carry `rule_scope_id`, `digest_id` and `digest_size`, and the UI shows "All" and "Digest of N" badges.
+- **Alerting: Access-Profile Budgets** - Budgets held through access profiles now raise alerts.
+- **Alerting: History Sorting and Paging** - `GET /api/alerting/history` accepts `sort_by` (`created_at`, `rule_name`, `channel_name`, `scope_type`, `status`) and `sort_order`. The default is `created_at` descending. The history table sorts on the server and shows absolute and relative times. History defaults to a 7-day window, caps its count at 10,000+ (`total_capped`), and pages by keyset.
+- **Guardrail Updates** - New A10 TrojAI Defend provider (`a10`, with `base_url` and `client_id`). Other changes:
+  - Profiles on a rule run in a set execution order.
+  - The rule builder has a Builder / CEL toggle.
+  - Detect-only matches on Regex, Secrets, Presidio, Azure PII, Lakera and Bedrock are recorded as detections.
+  - Azure PII, Presidio and regex accept `allowed_values`, values that are never blocked or redacted (up to 10,000).
+  - Bedrock assessments include `confidence`.
+
+  [Docs](https://docs.getbifrost.ai/enterprise/guardrails)
+- **Connector Export Updates** - New export options for BigQuery, Datadog, Splunk, Kafka and Pub/Sub:
+  - Per-category cost breakdown on all five. BigQuery adds 19 columns for it.
+  - `excluded_attributes` drops listed attributes before export.
+  - BigQuery `export_raw_payloads` writes provider bodies to `raw_request`/`raw_response`, and a new `app` column records the calling client.
+  - Datadog `metric_dimensions` sends listed `x-bf-dim-*` dimensions as metric tags. Datadog and Splunk metrics carry `user_id` and `user_name`.
+- **Audit Logs Without IP Addresses** - New `audit_logs.omit_ip_addresses` stops storing client IPs. IPs in earlier rows are redacted on every read and export path. IP search and filters are disabled, and signatures stay valid. [Docs](https://docs.getbifrost.ai/enterprise/audit-logs)
+- **Warp in Enterprise** - New `Warp` RBAC resource. Admin has View and Update, Developer and Viewer have View, and the log-index backfill needs Update. Warp follows the caller's data scope, and `describe_user_limits` reports access-profile budgets and rate limits from live counters. [Docs](https://docs.getbifrost.ai/features/warp)
+- **RBAC Updates** - New `BackgroundJobs` resource for `/api/sidekiq/jobs`: View to list, Update to cancel. Add, edit and delete actions across guardrails, prompt deployments, Edge approvals and access profiles are hidden or disabled when the role lacks the permission.
+- **Bounded Audit Log Queries** - Audit log search needs at least 3 characters and defaults to a 30-day window. Counts cap at 10,000+ (`total_capped`), and paging is keyset.
+- **Edge Server Support** - Admins can turn off Edge capture for one app, fleet-wide or per user or team (`PUT /edge/interception` with `app_key`). Edge Devices shows the installed Edge version. New `/mcp/inspect/v2` lets MCP post-inspection run on any node, with no session affinity. Cursor config accepts per-operation models (`linter_model`, `embedding_model`, `speech_model`, `image_model`, `video_model`, `transcription_model` and others). [Docs](https://docs.getbifrost.ai/edge/overview)
+- **MCP in Clusters** - MCP server instructions are saved and sent to peers with discovered tools. Refreshing a client's tools makes every peer re-discover them right away.
+
+## 🌎 Open Source Features
+
+- **Agent Gateway (A2A)** - Bifrost proxies A2A agents. Register an agent by its card URL (`POST /api/agents` or the config.json `agents` array). Clients reach it over JSON-RPC (with SSE streaming), REST, or an optional shared gRPC listener. It supports header, OAuth and TLS upstream auth, and push notifications through a durable, retried outbox. Access is granted per virtual key with `agent_grants`. Every operation is logged in a new Agent Logs workspace.
+- **Warp AI Assistant (alpha)** - In-dashboard assistant that answers questions about logs, spend, latency and governance with read-only tools, inline charts and links to matching log rows. Completed logs can be embedded for semantic search, with a resumable backfill. Warp is off by default in Enterprise (`warp` feature flag). [Docs](https://docs.getbifrost.ai/features/warp)
+- **GPT Live Sessions** - Proxies OpenAI GPT Live over WebSocket and WebRTC at `/v1/live/sessions`, with sideband attach and recording download. Voice is billed in 30-second windows, governance is checked at each window, and `live` is its own allowed request type.
+- **Cloudflare Workers AI Provider** - New `cloudflare` provider for chat (streaming included), Responses, embeddings and model listing. Each key needs `cloudflare_key_config.account_id`. A dialog in the UI migrates an existing custom provider named `cloudflare`. [Docs](https://docs.getbifrost.ai/providers/supported-providers/cloudflare)
+- **Provider-Injected MCP Tools** - A provider's `injected_tools` adds MCP tools to every chat and Responses request for that provider. Bifrost runs them server side and returns only the final answer. An entry named `web_search` replaces native web search. Configure it in the provider's new Tools tab.
+- **OAuth-Minted Keys for OpenAI-Compatible Providers** - `oauth_key_config` mints a bearer token with the `client_credentials` or `jwt_bearer` grant, caches it, and refreshes it before expiry. Databricks and GitHub Copilot use the same token cache.
+- **Decisions API Updates** - `/v1/decisions` takes OpenAI-shaped `input` and `questions`, and new `/openai/v1/decisions` routes accept the OpenAI SDK request. Native decision models are reached on OpenAI, Perplexity, Ollama and OpenRouter. TypeSafe can be a custom provider base, and decisions have their own pricing fields. Emulation on non-decision models is now opt-in through `convert_decision_to_responses`. [Docs](https://docs.getbifrost.ai/quickstart/gateway/decisions)
+- **Complexity Router Decision Classifier** - The complexity router can classify with a decision model (TypeSafe Jev by default), as the primary classifier or as a fallback. Per-tier guidance is editable. [Docs](https://docs.getbifrost.ai/features/complexity-router)
+- **Multimodal Embeddings** - `/v1/embeddings` accepts text, image, audio, video, file and token parts, served by Cohere, Gemini, Vertex and Bedrock (Nova and Titan multimodal). Parasail now serves embeddings.
+- **Responses Tools** - Adds OpenAI `shell` and `apply_patch` tools, maps `allowed_callers` between OpenAI and Anthropic, and maps Gemini code execution to `code_interpreter_call`.
+- **Retrieve a Single Model** - `GET /v1/models/{model}` for OpenAI, Anthropic, Cohere, Gemini, Mistral and Ollama, with `shutdown_date` where the provider announces one.
+- **xAI Realtime** - xAI is a realtime voice provider on the WebSocket gateway, with client-secret minting. [Docs](https://docs.getbifrost.ai/providers/supported-providers/xai)
+- **Bedrock Passthrough** - `/bedrock_passthrough` forwards InvokeAgent, knowledge-base Retrieve and ApplyGuardrail, SigV4-signed with the key's AWS credentials. [Docs](https://docs.getbifrost.ai/providers/supported-providers/bedrock)
+- **Vertex Workload Identity from AWS** - `vertex_key_config.aws_workload_identity` authenticates from EKS IRSA, Pod Identity, ECS task roles or EC2 instance profiles, with no stored key.
+- **Pricing Updates** - Web search is billed per request (`web_search_cost_per_request`), and existing values are migrated. `*_above_100k_tokens` rates apply above 100,000 prompt tokens. A per-provider `ignore_provider_cost` setting prices requests from the catalog instead of the provider's reported cost.
+- **Compat Updates** - `force_reasoning_only_models_to_responses` (default `true`, also turned on for existing deployments) sends tool requests for reasoning-only models to the Responses API. Chat accepts `reasoning.mode` and `reasoning.summary`.
+- **Failure Classification and Key Rotation** - Each failed attempt gets a `failure_class`. Credential and quota failures hold a key out for every model, and permanent per-key failures move to the next key even at `max_retries: 0`. Provider retry hints are exposed as `extra_fields.retry_after_ms`.
+- **Routing Updates** - Routing targets accept `ttft_timeout_ms`, which hands a slow-to-start stream to the next fallback. When a rule or router rewrites the route, the original is returned in `routing_info.requested_provider`/`requested_model` and response headers. Every traced response carries `x-bifrost-request-id`.
+- **Provider Objects Bound to the Creating Virtual Key** - Files, batches, videos, containers and cached contents can be read only through the virtual key that created them. Turn this off with `client.enforce_vk_object_ownership` (default `true`). File-based batches are checked against the key's model allowlist.
+- **Security Hardening** - Several changes to defaults and status codes; review them before upgrading:
+  - Passthrough routes forward only `POST` requests to allowlisted inference paths.
+  - With dashboard auth off, browser requests to `/api/*` from unlisted origins return 403.
+  - Secret references, private webhook targets, plugin endpoints and Vertex `auth_credentials` need real auth.
+  - Re-enabling auth while it is off needs `current_password` or a `setup_token`.
+  - Compressed bodies may expand at most 100 times.
+- **Per-Virtual-Key Content Logging and Auto-Delete** - Virtual keys have a tri-state `disable_content_logging`, and `delete_after_expire` deletes a key once it expires. [Docs](https://docs.getbifrost.ai/features/governance/virtual-keys)
+- **Global Proxy for All Outbound Traffic** - `proxy_config` can be set in config.json and Helm. With `enable_for_api`, MCP, catalog sync, OTel, webhooks and plugin downloads use it. With `enable_for_inference`, providers without their own proxy now actually send inference through it.
+- **MCP Updates** - Tools can be refreshed on demand (`POST /api/mcp/client/{id}/refresh-tools`), and dropped sessions reconnect automatically. An evicted OAuth client can be re-registered. Upstream server `instructions` are forwarded and injected, with size caps. `mcp_oauth_private_allowlist` allows private OAuth servers. Rotating a virtual key revokes its MCP OAuth grants. Code mode runs on an in-process Starlark runtime with `code_mode_limits`. [Docs](https://docs.getbifrost.ai/mcp/code-mode)
+- **Semantic Cache Updates** - Entries are scoped by identity (virtual key plus user), so expect a cold cache after upgrading. Responses with client tool calls are not cached unless `cache_tool_call_responses` is on. Lookups add `x-bifrost-cache-*` response headers. [Docs](https://docs.getbifrost.ai/features/semantic-caching)
+- **Observability Updates** - New trace data and metric changes:
+  - Root spans carry error attributes and an end-to-end TTFT.
+  - OTel profiles can export raw payloads, drop listed attributes, and carry a `bifrost.cost.*` breakdown.
+  - Metrics get an `app` label.
+  - The root span uses the stable OTel HTTP attributes.
+  - Tracing overhead is lower when no connector is attached. [Docs](https://docs.getbifrost.ai/features/observability/otel)
+- **Response Headers Plugin Hook** - New `HTTPTransportResponseHeadersHook` lets plugins set headers on buffered and streaming responses. Custom Go plugins must add it (a no-op is fine).
+- **Logs and Dashboard** - New views and controls:
+  - Grouped logs collapse requests by `session_id`.
+  - A Background jobs panel lists and cancels long jobs.
+  - `object_storage_exclude_request_types` keeps chosen request types in the database instead of object storage.
+  - Provider and model pickers are unified, with server-side search.
+  - Entity pickers scroll infinitely.
+- **Bifrost CLI** - The `bifrost` CLI covers the published API, with resource commands, `chat`, `infer`, `auth` (SSO included), `usage`, reversible `configure` for native agents, and table, JSON or YAML output.
+- **Helm Chart 2.1.44** - Exposes the new config fields, `topologySpreadConstraints` and `extraContainers`.
+
+## ⚙️ Upgrade Notes
+
+These entries change a default, a status code, a response shape or a Go SDK type. The matching entries above describe each change in full.
+
+- **Agent Gateway (A2A)** - optional; set `client.a2a_external_client_url` for push and stable card URLs, and `server.a2a_grpc_base_domain` + `server.a2a_grpc_port` (plus wildcard DNS) for gRPC. Custom `schemas.Tracer` implementations must add `ReleaseTrace`.
+- **Warp AI Assistant (alpha)** - on by default in OSS; set `feature_flags.flags.warp.enabled: false` to keep it hidden.
+- **Cloudflare Workers AI Provider** - the name `cloudflare` is reserved; migrate a custom provider named `cloudflare` with the dashboard dialog or recreate it with `cloudflare_key_config.account_id`.
+- **Decisions API in OpenAI Shape** - map-form `/v1/decisions` bodies are deprecated (still served); update Go SDK code to the new `BifrostDecisionRequest` fields.
+- **Decision Emulation Is Opt-In** - decisions on non-decision models return `unsupported_operation`; set `compat.convert_decision_to_responses: true` or send `x-bf-compat: ["convert_decision_to_responses"]` to keep emulation.
+- **Multimodal Embeddings** - Go SDK `BifrostEmbeddingRequest.Input` is now `[]EmbeddingInputItem`; HTTP bodies are unchanged.
+- **xAI Realtime** - refusal and content-filter stops are logged as `model_refusal` errors; exclude that error type from error-rate alerts if needed.
+- **Web Search Priced per Request** - rename `search_context_cost_per_query` to `web_search_cost_per_request` in config.json overrides; read counts from `usage.tool_usage.web_search.num_requests`.
+- **Compat: Route Reasoning-Only Models to Responses** - turned on for existing deployments; set `compat.force_reasoning_only_models_to_responses: false` to keep the old behavior.
+- **Chat reasoning.mode and reasoning.summary** - the `/openai` chat route strips `reasoning.summary`; send it through `extra_params` there.
+- **Failure Classification and Smarter Key Rotation** - a model missing on every key returns the provider's `404` instead of `502 upstream_credentials_exhausted`; update alerts on that error and on `fail_reason` values.
+- **Gateway Request ID Header** - read the gateway request ID from `x-bifrost-request-id`; upstream `x-bifrost-*` headers are no longer forwarded.
+- **Deprecated Models Hidden from Browsing** - add `include_deprecated=true` to `GET /api/models` to keep deprecated models.
+- **Provider Objects Bound to the Creating Virtual Key** - set `client.enforce_vk_object_ownership: false` if virtual keys share files, batches, containers or cached contents.
+- **File-Based Batches Under Model-Restricted Virtual Keys** - use a `*` model grant for OpenAI/Azure file batches, send an allowed `model` for Gemini/Vertex/Bedrock file batches, and never mix a file with inline `requests`.
+- **Passthrough Route Hardening** - use passthrough only for `POST` inference paths with rooted paths, the route's own provider and one string `model` key.
+- **Management API Refuses Unlisted Browser Origins** - add cross-origin browser apps to `client.allowed_origins` or enable dashboard auth.
+- **Real Auth Required for Secret References and Private Targets** - enable dashboard auth or send `X-Bifrost-Setup-Token` for MCP `env.`/`vault.` references, private webhooks, plugin endpoints, Vertex `auth_credentials` and `DELETE /api/mcp-logs`.
+- **Auth Config Changes Need Proof of Control** - send `auth_config.current_password` or `setup_token` when re-enabling auth or rotating admin credentials while auth is off.
+- **Request Decompression Limits** - bodies expanding over 100x return `413`; send them uncompressed or raise `client.max_request_body_size_mb`.
+- **Access Profiles for Teams, Business Units and Customers** - move config.json limits of governed entities and their keys onto the access profile.
+- **Global Proxy in config.json and for All Outbound Traffic** - set `enable_for_inference: false` to keep inference direct, and list direct hosts in `proxy_config.no_proxy`.
+- **Audit Logs: Omit IP Addresses** - make SIEM rules accept both audit `typeURI` values.
+- **Attribution Context Keys Deprecated** - read attribution in custom plugins from `ctx.Grant()`, nil-checking every accessor. Do not swap a user, team, customer or business unit key for its Grant accessor one-for-one: a request made with a virtual key assigned to a user carries that user only on `BifrostContextKeyUserID`, so fall back to the key where the Grant has no answer.
+- **MCP Client Target Validation at Connect Time** - register private MCP servers as an authenticated admin or in config.json, and use `http`, `sse` or `stdio` as `connection_type`.
+- **MCP OAuth Server Hardening** - list remote OAuth callback URIs in `client.oauth2_server_config.allowed_redirect_uris` before upgrading.
+- **Virtual Key Rotation Revokes MCP OAuth Grants** - re-authorize MCP clients after rotating their virtual key.
+- **MCP Server Instructions** - bound injected instructions with `max_instructions_per_client`, `max_instructions_total` or per-client `max_instructions_length`.
+- **Code Mode Execution Limits** - raise fields under `mcp.tool_manager_config.code_mode_limits` for scripts that exceed the new budgets.
+- **Semantic Cache Scoped by Identity** - expect a cold cache; set `disable_identity_scoping: true` to share entries across identities.
+- **Semantic Cache Skips Tool-Call Responses by Default** - set `cache_tool_call_responses: true` to keep caching them.
+- **App Label on Metrics** - add the new `app` label to recording rules or alerts that match exact label sets.
+- **OTel HTTP Semantic Conventions** - move dashboards to `http.request.method`, `http.response.status_code`, `http.route` and `url.path`; the span name and `http.url` drop the query string.
+- **Response Headers Plugin Hook** - Go types implementing `HTTPTransportPlugin` must add `HTTPTransportResponseHeadersHook` (a no-op is fine).
+- **Exclude Request Types from Object Storage** - only exclude request types whose content you do not need retained in object storage.
+- **Helm Chart 2.1.44** - set `bifrost.client.oauth2ServerConfig.issuerUrl` when `mcpServerAuthMode` is `oauth` or `both`, or `helm template` fails.
+- **Outbound Fetch Redirect Hardening** - test-fire private webhooks with an authenticated caller; point datasheet URLs at their final location or use `file://`.
+- **Provider base_url Shape Checked** - remove userinfo, query strings and fragments from `base_url`.
+- **Direct Keys Stay on Their Provider** - pass `?provider=` or `x-bf-model-provider` on direct-key model listings.
+- **config.json Governance Limits Reconciled Correctly** - read virtual key and provider config limits from the key's model configs after the migration.
+- **Partial Provider Key Updates** - send a field explicitly to clear it.
+- **Weights Must Be Valid Numbers** - use weights of 0 or more for keys and greater than 0 for routing targets.
+- **Duplicate Routing Rule Priority Returns 409** - treat `409` as a request error instead of retrying on `500`.
+- **Dashboard Rankings Under DAC** - treat the ranking row `id: "other"` like `unassigned`.
+- **MCP OAuth and Client Fixes** - expect `404`, not `500`, for an unknown MCP client.
+- **Implicit Prompt Caching for gpt-5.6+ Now Takes Effect** - set `prompt_cache_options.mode: "explicit"` on the request to opt into explicit mode.
+- **Stream Errors Get a Real HTTP Status** - update retry logic and alerts that assumed every stream error was `400`.
+- **Bedrock Incomplete Converse Streams** - truncated Converse streams now end with `502`.
+- **Replicate File List Cursor** - pass the `after` cursor exactly as returned; others get `400 invalid pagination cursor`.
+- **Anthropic Error and Stop Fidelity** - branch on documented Anthropic error types instead of `api_error`.
+- **Error Metrics Report the Real Status** - repoint alerts on `status_code="unknown"` and add `error_type` to OTel queries.
+- **OTLP HTTP Metrics to https Endpoints** - set `tls_ca_cert` or keep `insecure: true` for self-signed collectors.
+- **Connector Export Gaps** - group OTel datapoints by `bifrost_instance_id` instead of `service_instance_id`, and review telemetry `custom_labels` for cardinality.
+- **Postgres Scale Fixes** - plan IO for the background index build; set `statement_timeout` and `idle_in_transaction_session_timeout` to `"0"` to keep server defaults.
+- **ClickHouse Large Team Scopes** - set `logs_store.config.max_query_size` if a ClickHouse settings profile constrains it.
+- **Semantic Cache Vector Store Consistency** - on Weaviate, set `threshold` to `2 * old - 1` to keep the old hit rate.
+
+## 🐞 Fixed
+
+- **DAC Leaks Closed** - Each of these routes now returns 404, 403 or a filtered list:
+  - log and MCP log deletes, and log cost recalculation;
+  - user sub-resources;
+  - budgets and rate limits lists, `from_memory=true` governance reads, and governance introspection;
+  - prompt versions and sessions, and routing rule deletes;
+  - org link removal and nested child lists, team replace, and key owners;
+  - access profile history.
+- **DAC Visibility Rules** - Team member counts, model config lists and org entity creator visibility follow the caller's scope. A member's key is visible only when it is attached to that member. Callers with more than 65,535 members or keys no longer get errors on scoped reads.
+- **One Owner per Virtual Key** - A key attached to a team, business unit or customer can no longer also be attached to a user, and the reverse. Both return 409.
+- **Governed Member Key Ownership** - A governed member's new key stays under their own access profile, whatever entity the request body names.
+- **Entity Profile Fixes** - "All providers" entity profiles resolve unprefixed models. config.json limits detach a conflicting profile. The profile-or-limits guard covers every write path. Entity-governed keys are hidden from other pickers.
+- **Agent Governance for IdP Users** - Callers with an IdP token now record a credential, so deny-by-default Agent checks run for them.
+- **Deleted Users Lose Desktop Sessions** - Deleting or deprovisioning a user deletes their desktop sessions and evicts cached tokens across the cluster.
+- **IdP Secret Rotation to Env or Vault** - Switching an IdP secret to an `env.` or `vault.` reference is now saved.
+- **SCIM Protocol Fixes** - Changes for RFC 7644 and IdP compatibility:
+  - `GET /Users` evaluates RFC 7644 filters and pages.
+  - Core `roles` and `entitlements` are stored, and `PATCH active:true` reactivates a user. Entra's `"True"`/`"False"` strings are accepted.
+  - PATCH identity edits are kept, and a PUT clears omitted attributes.
+  - Extension attribute names match in any case, and multi-valued PATCH follows RFC semantics.
+  - A DELETE clears stored identity data.
+- **SCIM Group Fixes** - A group push updates every team and business unit its rules name. A rename reloads memory and peers. A DELETE keeps memberships a user attribute still grants. Entra object-ID/name pairs are matched, and group pushes take over attribute-created memberships.
+- **Directory Pull Safety** - Background pulls no longer restore deleted users or grant Admin. Users keep group-granted memberships when a group lookup fails. Okta and Entra records carry the same claims a login does. Keycloak subgroups are walked, and Entra users in more than 200 groups are resolved.
+- **Group Naming** - A team or business unit named after a raw group ID is renamed in place instead of forked. Entra business units use the group's display name. Two rules on one group value no longer rename one team back and forth. Retargeted exact rules find or create the new target.
+- **IdP Rate Limits** - Okta admin reads retry until `X-Rate-Limit-Reset`, and Entra group lookups retry on 429 and 5xx and cache resolved names for 10 minutes.
+- **SSO Token Handling** - Fixes:
+  - Entra SSO works without a `cloud` key.
+  - Inline refresh works for Auth0, Generic, Zitadel and SailPoint.
+  - A refresh without an ID token no longer loops.
+  - Logout revokes the access and refresh tokens.
+  - ID-token verifiers are cached.
+  - The inference JIT path uses the configured email claim.
+- **Token Exchange Subject** - A valid IdP JWT sent with a virtual key under `prefer_vk`, or behind an auth proxy, is recorded as the token-exchange subject. This fixes `subject_token_missing`.
+- **Mapping Rules on First Boot** - SCIM mapping reconcile now runs after roles and access profiles load from config.json.
+- **Adaptive Routing Accuracy** - Cancelled, timed-out and caller-fault requests no longer count against a key. Caller `x-bf-direct-key` failures are not held. Caller key pins no longer follow a request to its fallback. Idle failed routes move to Recovering. Deleted keys and providers are purged on every node, and editing a key releases its holds.
+- **Adaptive Routing Cluster State** - Hold timestamps keep nanosecond precision over gossip. Only the global leader writes the hold table. Restored samples keep their original timestamps.
+- **Load Balancer Memory** - The tracker uses a chunked in-memory store and keeps 1h of history (was 24h), and key selection no longer copies route metrics on every request.
+- **Alerting: Rules Match Only Entities with the Named Limits** - A rule no longer fires for entities that do not hold the limits it names. An idle reset no longer sends the notification again, and digest counts no longer repeat entities.
+- **Alerting: Per-Rule Channel Cooldowns** - Cooldowns are tracked per channel and rule, so one rule no longer silences another on a shared channel. Skip history rows are throttled, CEL evaluation errors are recorded, and webhook `Authorization` headers are kept.
+- **Alerting: Channel Delete Guard** - Deleting a rule's last channel returns 409 `alert_channel_in_use` with the blocking rules. A rule needs at least one channel, and a PUT keeps fields the body leaves out.
+- **Alerting: Channel Edit Keeps Headers** - Editing a channel keeps its stored headers unless "Remove existing headers" is on, and delete conflicts are shown in the dialog.
+- **Alerting: User-Scoped Alert History** - Alerts with user scope now write a history row, so they show in the UI.
+- **Connector Fixes** - Datadog metrics no longer depend on trace export, and an unreachable agent no longer blocks startup. Disabled connectors stay disabled after restart. Pub/Sub `excluded_attributes` applies on the live publisher. Splunk keeps zero costs. Kafka, Pub/Sub and Splunk strip all content attributes when content logging is off.
+- **BigQuery Writes** - Flushes are split under 9 MiB, an oversized row is dropped on its own, and latency keeps sub-millisecond precision.
+- **Project Fixes** - Project create rejects unknown or duplicate Virtual MCP IDs with a clear error, and `calendar_aligned` updates per-model budgets.
+- **Business Unit Fixes** - Clearing one rate limit keeps the other. Deleting a unit removes its customer links on SQLite. Budget columns include active overrides.
+- **Late Log Redaction** - Late responses written through batch updates are redacted like new inserts.
+- **Plugin Reload Context** - Plugins reloaded through the API use the server context, not the request context.
+- **Startup Migrations** - Startup runs only enterprise migration steps not yet recorded.
+- **Fallback Billing and Calendar Alignment (OSS)** - Fallback usage is billed after a billed primary. Calendar-aligned team and virtual key budgets keep their alignment after restart.
+- **Outbound Fetch Redirect Hardening (OSS)** - Datasheet, MCP library, OAuth and webhook fetches enforce the private-network policy on every redirect hop.
+- **Encrypted Session and Virtual Key Lookups (OSS)** - The plaintext fallback matches only plaintext rows.
+- **Virtual Key Header Redacted in Traces (OSS)** - `x-bf-vk` is redacted in captured headers.
+- **Direct Keys Stay on Their Provider (OSS)** - `x-bf-direct-key` is no longer sent to every provider on an unscoped model listing.
+- **Provider Proxy on Every Egress Path (OSS)** - Side fetches, credential exchanges and Bedrock runtime calls use the provider's `proxy_config`.
+- **config.json Governance Limits (OSS)** - Inline virtual key and provider config limits are stored on model config tiers and update on reload.
+- **Virtual Key and Provider Key Partial Updates (OSS)** - `PUT` without `key_ids` keeps key associations, and partial key updates keep omitted fields.
+- **Session Affinity Rebinds on Refused Keys (OSS)** - A session bound to a key the provider refuses moves to another eligible key.
+- **Caller Errors Skip Inferred Fallbacks (OSS)** - A 4xx caller error is returned instead of being answered by a catalog-inferred fallback.
+- **Implicit Prompt Caching for gpt-5.6+ (OSS)** - Requests with `cache_control` markers stay in implicit mode instead of rewriting the conversation at the cache-write rate.
+- **Stream Errors Get Real Status Codes (OSS)** - Mid-stream errors return 429, 400, 502 or 529 instead of 400. Truncated Bedrock Converse and Content-Length streams are reported as errors.
+- **Anthropic and Bedrock Fidelity (OSS)** - Anthropic error types and `stop_sequence` are preserved. Bedrock guardrail `guardContent`, document cache points and Converse reasoning replay are kept. Safeguard verdicts reach Claude Code.
+- **Gemini and Vertex Fixes (OSS)** - Function tools without a schema are declared, and parallel tool results are reordered. `n` maps to `candidateCount`. Extra params survive retries.
+- **Postgres Scale Fixes (OSS)** - Chunked log inserts, composite owner indexes, batched retention, and retried batches on connection errors. Logs with binary content or NUL bytes no longer fail a batch.
+- **ClickHouse Fixes (OSS)** - Large team scopes no longer exceed `max_query_size`, and time filters keep millisecond precision.
+- **Model Listing Robustness (OSS)** - One unreachable provider no longer blocks `GET /v1/models`.
+- **Prometheus Fixes (OSS)** - Custom labels no longer collide. Cancelled requests are billed. Errors report the real status code.
+- **Semantic Cache Fixes (OSS)** - Entries are isolated by request family, and the cache write no longer races core cleanup.
+
+## 🐙 Closed OSS Issues
+
+- [#2649](https://github.com/maximhq/bifrost/issues/2649) - [Feature]: OpenAI Responses API `ShellTool` not supported
+- [#3471](https://github.com/maximhq/bifrost/issues/3471) - [Bug]: Bedrock Titan embedding concatenates list inputs instead of fanning out - silent corruption and 400 on large batches
+- [#3632](https://github.com/maximhq/bifrost/issues/3632) - [bug]: bedrock - Titan multimodal embedding model rejected as unsupported
+- [#6143](https://github.com/maximhq/bifrost/issues/6143) - [Bug]: data race - fasthttp requestStream released to pool while SSE reader is still inside Read (stream cancellation)
+- [#6477](https://github.com/maximhq/bifrost/issues/6477) - [Bug]: MCP OAuth reauthorization prematurely closes popup on first poll tick and rejects completion with 409 (stale "authorized" status in oauth_configs)
+- [#6612](https://github.com/maximhq/bifrost/issues/6612) - [Bug]: A single unreachable provider blocks the aggregate GET /v1/models (re-polled live every request; bounded only by the shared request timeout)
+- [#6742](https://github.com/maximhq/bifrost/issues/6742) - [Feature]: Surface DeepSeek's silent model substitution and validate usage completeness on its Anthropic endpoint
+- [#6870](https://github.com/maximhq/bifrost/issues/6870) - [Bug]: Failed live MCP connection checks never trigger the documented reconnect
+- [#6885](https://github.com/maximhq/bifrost/issues/6885) - [Bug]: MCP tool lists never refresh when a server's tool set changes - notifications/tools/list_changed is ignored, and per-call clients have no refresh path at all
+- [#7191](https://github.com/maximhq/bifrost/issues/7191) - [Bug]: MCP OAuth authorization is lost and manual re-login does not recover it
+- [#7233](https://github.com/maximhq/bifrost/issues/7233) - [Bug]: Direct-only cache response serialization races with core cleanup and can panic
+- [#7275](https://github.com/maximhq/bifrost/issues/7275) - [Bug]: gpt-6-astra / Foundry: tools + reasoning on /v1/chat/completions still 400 after #5231
+- [#7341](https://github.com/maximhq/bifrost/issues/7341) - [Bug]: Gemini Responses stream - response.completed.Output is empty when parts and finishReason share one frame
+- [#7342](https://github.com/maximhq/bifrost/issues/7342) - [Bug]: Gemini Responses stream drops a generated image part that carries a thoughtSignature
+- [#7344](https://github.com/maximhq/bifrost/issues/7344) - [Bug]: strict, allowed_tools, parallel_tool_calls and allowed_callers are dropped in provider conversion
+- [#7347](https://github.com/maximhq/bifrost/issues/7347) - [Bug]: `PUT /api/governance/virtual-keys/{id}` silently sets allow_all_keys=false and drops key associations when key_ids is omitted (GET does not return key_ids)
+- [#7388](https://github.com/maximhq/bifrost/issues/7388) - [Bug]: Gemini & Vertex Providers: Missing N Parameter Mapping to CandidateCount in Chat Completions
+- [#7415](https://github.com/maximhq/bifrost/issues/7415) - [Feature]: Support OpenRouter's native Decisions API
+- [#7438](https://github.com/maximhq/bifrost/issues/7438) - [Bug]: otel HTTP telemetry uses deprecated semconv; no http.route or http.server.request.duration
+- [#7446](https://github.com/maximhq/bifrost/issues/7446) - [Bug]: otel HTTP metrics exporter ignores https scheme when insecure is omitted (defaults true)
+- [#7450](https://github.com/maximhq/bifrost/issues/7450) - [Bug]: Semantic cache panics while marshaling /v1/responses
+- [#7560](https://github.com/maximhq/bifrost/issues/7560) - [Bug]: semantic_cache serves a chat.completion entry to a /v1/responses caller because the direct cache key omits the request family
+- [#7572](https://github.com/maximhq/bifrost/issues/7572) - `PUT /api/providers/{provider}/keys/{key_id}`: partial update silently wipes key value and weight (destructive merge default)
+- [#7580](https://github.com/maximhq/bifrost/issues/7580) - [Feature]: Allow OpenAI reasoning.mode ("pro") on Chat Completions and carry it through chat→responses conversion
+- [#7581](https://github.com/maximhq/bifrost/issues/7581) - [Bug]: Complexity Router: fails to find provider config unless provider name is all-lowercase
+- [#7584](https://github.com/maximhq/bifrost/issues/7584) - UI: Recharts warns width(-1)/height(-1) on Dashboard, LLM Logs and MCP Logs
+- [#7599](https://github.com/maximhq/bifrost/issues/7599) - [Bug]: TypeSafe native compatibility rejects SDK-valid inputs and loses payload/response fidelity
+- [#7601](https://github.com/maximhq/bifrost/issues/7601) - [Bug]: /v1/responses for Anthropic and Gemini omits status and does not signal max_output_tokens truncation
+- [#7610](https://github.com/maximhq/bifrost/issues/7610) - Provider harness: group 25 (DeepSeek Anthropic-Compatible Migration) runs on the OpenAI-compatible endpoint - is use_anthropic_endpoints meant to be set?
+- [#7613](https://github.com/maximhq/bifrost/issues/7613) - [Bug]: Bedrock Converse drops cache_control on file/document content blocks
+- [#7634](https://github.com/maximhq/bifrost/issues/7634) - Access profile summary shows "All models" when blocked models are configured
+- [#7649](https://github.com/maximhq/bifrost/issues/7649) - [Bug]: Bedrock provider drops extended-thinking token count (`output_tokens_details.thinking_tokens`) that AWS returns
+- [#7659](https://github.com/maximhq/bifrost/issues/7659) - [Bug]: mirrored reasoning params (reasoning_effort + reasoning.effort, equal values) rejected as 400 Invalid request payload
+- [#7661](https://github.com/maximhq/bifrost/issues/7661) - [Bug]: Reasoning Parameters renders an unlabeled 0 for `reasoning.max_tokens`
+- [#7693](https://github.com/maximhq/bifrost/issues/7693) - [Bug]: streamed chat completions omit delta.role when the request is converted to the Responses API
+- [#7694](https://github.com/maximhq/bifrost/issues/7694) - [Bug]: Gemini rejects tool results that contain `$ref` - JSON-object tool output is forwarded as structured function_response.response
+- [#7696](https://github.com/maximhq/bifrost/issues/7696) - [Bug]: Bedrock guardrail selective evaluation is impossible - guardContent blocks silently stripped in canonical round-trip; guardrailConfig has no tagSuffix
+- [#7720](https://github.com/maximhq/bifrost/issues/7720) - [Bug]: Bifrost ignores "store": false in additionalModelRequestFields on the Bedrock Converse route, so store cannot be disabled for Azure
+- [#7729](https://github.com/maximhq/bifrost/issues/7729) - [Bug]: Bifrost replaces the reasoning item id when a Bedrock Converse request replays redactedContent, so Azure rejects it and Bifrost strips the reasoning
+- [#7760](https://github.com/maximhq/bifrost/issues/7760) - ListAllModels returns duplicate and skipped models when a provider listing changes between pages
+- [#7768](https://github.com/maximhq/bifrost/issues/7768) - [Bug]: bare Claude model ids hoist thinking blocks on the Bedrock path
+- [#7784](https://github.com/maximhq/bifrost/issues/7784) - [MCP Library] Parlel - free people/companies/jobs/agents MCP
+- [#7812](https://github.com/maximhq/bifrost/issues/7812) - [Bug]: Gemini embeddings: `taskType`/`title` applied only to the first input of a batched `/v1/embeddings` request
+- [#7819](https://github.com/maximhq/bifrost/issues/7819) - [Bug]: Transcription cost ignores provider-reported usage.cost and per-second pricing is unreachable when input_tokens > 0
+- [#7826](https://github.com/maximhq/bifrost/issues/7826) - [Bug]: Gemini and Vertex image and transcription requests lose ExtraParams on retry
+- [#7843](https://github.com/maximhq/bifrost/issues/7843) - [Bug]: Postgres log store batch inserts exceed the 65,535 bind-parameter limit, so full batches fall back to row-by-row inserts
+- [#7915](https://github.com/maximhq/bifrost/issues/7915) - [Bug]: Anthropic-compatible /anthropic/v1/messages returns wrong or non-standard error.type
+- [#7920](https://github.com/maximhq/bifrost/issues/7920) - [Bug]: Anthropic /v1/messages never reports stop_reason "stop_sequence" or the matched stop_sequence
+- [#7926](https://github.com/maximhq/bifrost/issues/7926) - [Bug]: Gemini/Vertex drop function tools without input_schema and mis-pair parallel tool results
+- [#7990](https://github.com/maximhq/bifrost/issues/7990) - [Bug]: Responses history gains `logprobs: null`, causing upstream 400
+- [#8004](https://github.com/maximhq/bifrost/issues/8004) - [MCP Library] Add: FXMacroData
+- [#8153](https://github.com/maximhq/bifrost/issues/8153) - [Bug]: Routing Tree silently truncates routing rules at 100
+- [#8171](https://github.com/maximhq/bifrost/issues/8171) - [Bug]: Routing Tree CEL parser splits and rewrites operators inside quoted string literals
+- [#8195](https://github.com/maximhq/bifrost/issues/8195) - [Bug]: Anthropic `tool_result.is_error` no longer reaches OpenAI Responses upstreams - the `status: "incomplete"` set by the Anthropic converter is cleared in `ToOpenAIResponsesRequest`
+- [#8196](https://github.com/maximhq/bifrost/issues/8196) - [Bug]: /v1/responses rejects multi-part assistant messages - output_text is not mapped to text in ToChatMessages
+- [#8205](https://github.com/maximhq/bifrost/issues/8205) - [Bug]: ClickHouse log list returns full input histories
+- [#8207](https://github.com/maximhq/bifrost/issues/8207) - [Bug]: Anthropic tool_addition / tool_removal blocks lose their `tool` object in the Responses conversion
+- [#8212](https://github.com/maximhq/bifrost/issues/8212) - [Bug]: Log retention changes do not update the running cleaner
+- [#8215](https://github.com/maximhq/bifrost/issues/8215) - [Bug]: DeepCopyChatMessage drops cache_control, citations, prompt_cache_breakpoint and cachePoint on chat content blocks
+- [#8246](https://github.com/maximhq/bifrost/issues/8246) - skills_registry: config-driven skill updates always fail - `populateSkillFiles` resolves the serving version via `skill.LatestVersion`, which `configEntryToTableSkill` never sets
+- [#8266](https://github.com/maximhq/bifrost/issues/8266) - [Bug]: calendar-aligned virtual key budgets reset on a rolling window after a restart
+- [#8286](https://github.com/maximhq/bifrost/issues/8286) - [Bug]: Fixed-length streamed responses silently accept premature EOF
+
+## 📀 Base OSS version
+
+`transports/v2.3.0` (pinned as `github.com/maximhq/bifrost/transports v1.6.12-0.20261013033355-a014d2db10df`, the v2.3.0 tag plus its changelog commit), with core `v1.12.0`, framework `v1.9.0`, governance `v1.9.0`, and logging `v1.9.0`.
+
+## 🔌 If you are compiling plugin against this release - use following deps
+
+```go
+module github.com/maximhq/bifrost-enterprise/transports
+
+go 1.27.0
+
+require (
+	github.com/bytedance/sonic v1.15.3-0.20260730064818-2a36d6da63e2
+	github.com/coreos/go-oidc/v3 v3.18.0
+	github.com/fasthttp/router v1.5.4
+	github.com/google/cel-go v0.30.0
+	github.com/google/uuid v1.6.0
+	github.com/maximhq/bifrost-enterprise/core v0.0.0
+	github.com/maximhq/bifrost-enterprise/framework v0.0.0
+	github.com/maximhq/bifrost-enterprise/plugins v0.0.0
+	github.com/maximhq/bifrost/core v1.12.0
+	github.com/maximhq/bifrost/framework v1.9.0
+	github.com/maximhq/bifrost/plugins/governance v1.9.0
+	github.com/maximhq/bifrost/plugins/logging v1.9.0
+	github.com/maximhq/bifrost/plugins/routing v1.2.0
+	github.com/maximhq/bifrost/plugins/semanticcache v1.7.0
+	github.com/maximhq/bifrost/plugins/telemetry v1.9.0
+	github.com/maximhq/bifrost/transports v1.6.12-0.20261013033355-a014d2db10df
+	github.com/stretchr/testify v1.12.1
+	github.com/valyala/fasthttp v1.74.0
+	golang.org/x/sync v0.22.0
+	gorm.io/driver/postgres v1.6.0
+	gorm.io/driver/sqlite v1.6.0
+	gorm.io/gorm v1.31.1
+)
+
+require (
+	cel.dev/expr v0.25.2 // indirect
+	cloud.google.com/go v0.123.0 // indirect
+	cloud.google.com/go/auth v0.20.0 // indirect
+	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
+	cloud.google.com/go/bigquery v1.74.0 // indirect
+	cloud.google.com/go/compute/metadata v0.9.0 // indirect
+	cloud.google.com/go/iam v1.7.0 // indirect
+	cloud.google.com/go/monitoring v1.24.3 // indirect
+	cloud.google.com/go/pubsub/v2 v2.4.0 // indirect
+	cloud.google.com/go/secretmanager v1.16.0 // indirect
+	cloud.google.com/go/storage v1.62.1 // indirect
+	dario.cat/mergo v1.0.2 // indirect
+	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.20.0 // indirect
+	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.13.1 // indirect
+	github.com/Azure/azure-sdk-for-go/sdk/internal v1.11.2 // indirect
+	github.com/AzureAD/microsoft-authentication-library-for-go v1.6.0 // indirect
+	github.com/BobuSumisu/aho-corasick v1.0.3 // indirect
+	github.com/ClickHouse/ch-go v0.65.0 // indirect
+	github.com/ClickHouse/clickhouse-go/v2 v2.32.0 // indirect
+	github.com/DataDog/datadog-agent/comp/core/tagger/origindetection v0.77.0 // indirect
+	github.com/DataDog/datadog-agent/pkg/obfuscate v0.77.0 // indirect
+	github.com/DataDog/datadog-agent/pkg/opentelemetry-mapping-go/otlp/attributes v0.77.0 // indirect
+	github.com/DataDog/datadog-agent/pkg/proto v0.77.0 // indirect
+	github.com/DataDog/datadog-agent/pkg/remoteconfig/state v0.77.0 // indirect
+	github.com/DataDog/datadog-agent/pkg/template v0.77.0 // indirect
+	github.com/DataDog/datadog-agent/pkg/trace v0.77.0 // indirect
+	github.com/DataDog/datadog-agent/pkg/trace/log v0.77.0 // indirect
+	github.com/DataDog/datadog-agent/pkg/trace/otel v0.77.0 // indirect
+	github.com/DataDog/datadog-agent/pkg/trace/stats v0.77.0 // indirect
+	github.com/DataDog/datadog-agent/pkg/trace/traceutil v0.77.0 // indirect
+	github.com/DataDog/datadog-agent/pkg/util/log v0.77.0 // indirect
+	github.com/DataDog/datadog-agent/pkg/util/scrubber v0.77.0 // indirect
+	github.com/DataDog/datadog-agent/pkg/version v0.77.0 // indirect
+	github.com/DataDog/datadog-go/v5 v5.8.3 // indirect
+	github.com/DataDog/dd-trace-go/v2 v2.8.2 // indirect
+	github.com/DataDog/go-libddwaf/v4 v4.9.0 // indirect
+	github.com/DataDog/go-runtime-metrics-internal v0.0.4-0.20260217080614-b0f4edc38a6d // indirect
+	github.com/DataDog/go-sqllexer v0.1.13 // indirect
+	github.com/DataDog/go-tuf v1.1.1-0.5.2 // indirect
+	github.com/DataDog/sketches-go v1.4.8 // indirect
+	github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.33.0 // indirect
+	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric v0.55.0 // indirect
+	github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.55.0 // indirect
+	github.com/Masterminds/goutils v1.1.1 // indirect
+	github.com/Masterminds/semver/v3 v3.4.0 // indirect
+	github.com/Masterminds/sprig/v3 v3.3.0 // indirect
+	github.com/Microsoft/go-winio v0.6.2 // indirect
+	github.com/ProtonMail/go-crypto v1.1.6 // indirect
+	github.com/STARRY-S/zip v0.2.1 // indirect
+	github.com/a2aproject/a2a-go/v2 v2.5.0 // indirect
+	github.com/andybalholm/brotli v1.2.2 // indirect
+	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
+	github.com/apache/arrow/go/v15 v15.0.2 // indirect
+	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
+	github.com/armon/go-metrics v0.4.1 // indirect
+	github.com/aws/aws-sdk-go-v2 v1.42.0 // indirect
+	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.10 // indirect
+	github.com/aws/aws-sdk-go-v2/config v1.32.14 // indirect
+	github.com/aws/aws-sdk-go-v2/credentials v1.19.14 // indirect
+	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.21 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.29 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.29 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/ini v1.8.6 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.22 // indirect
+	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.50.6 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.7 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.9.13 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.21 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.19.21 // indirect
+	github.com/aws/aws-sdk-go-v2/service/s3 v1.99.0 // indirect
+	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.42.3 // indirect
+	github.com/aws/aws-sdk-go-v2/service/signin v1.0.9 // indirect
+	github.com/aws/aws-sdk-go-v2/service/sso v1.30.15 // indirect
+	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.19 // indirect
+	github.com/aws/aws-sdk-go-v2/service/sts v1.41.10 // indirect
+	github.com/aws/smithy-go v1.27.1 // indirect
+	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
+	github.com/bahlo/generic-list-go v0.2.0 // indirect
+	github.com/beorn7/perks v1.0.1 // indirect
+	github.com/blevesearch/go-porterstemmer v1.0.3 // indirect
+	github.com/bodgit/plumbing v1.3.0 // indirect
+	github.com/bodgit/sevenzip v1.6.0 // indirect
+	github.com/bodgit/windows v1.0.1 // indirect
+	github.com/buger/jsonparser v1.2.0 // indirect
+	github.com/bytedance/gopkg v0.1.3 // indirect
+	github.com/bytedance/sonic/loader v0.5.2 // indirect
+	github.com/canonical/starlark v0.0.0-20260428155828-9a81051fac39 // indirect
+	github.com/cenkalti/backoff v2.2.1+incompatible // indirect
+	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
+	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/charmbracelet/colorprofile v0.3.1 // indirect
+	github.com/charmbracelet/lipgloss v1.1.0 // indirect
+	github.com/charmbracelet/x/ansi v0.10.1 // indirect
+	github.com/charmbracelet/x/cellbuf v0.0.13 // indirect
+	github.com/charmbracelet/x/term v0.2.1 // indirect
+	github.com/cihub/seelog v0.0.0-20170130134532-f561c5e57575 // indirect
+	github.com/cloudflare/circl v1.6.3 // indirect
+	github.com/cloudwego/base64x v0.1.6 // indirect
+	github.com/cncf/xds/go v0.0.0-20260202195803-dba9d589def2 // indirect
+	github.com/coreos/go-semver v0.3.1 // indirect
+	github.com/coreos/go-systemd/v22 v22.6.0 // indirect
+	github.com/cyphar/filepath-securejoin v0.6.1 // indirect
+	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
+	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
+	github.com/dsnet/compress v0.0.2-0.20230904184137-39efe44ab707 // indirect
+	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/ebitengine/purego v0.10.0 // indirect
+	github.com/emicklei/go-restful/v3 v3.13.0 // indirect
+	github.com/emirpasic/gods v1.18.1 // indirect
+	github.com/envoyproxy/go-control-plane/envoy v1.37.0 // indirect
+	github.com/envoyproxy/protoc-gen-validate v1.3.3 // indirect
+	github.com/fasthttp/websocket v1.5.12 // indirect
+	github.com/fatih/color v1.18.0 // indirect
+	github.com/fatih/semgroup v1.2.0 // indirect
+	github.com/felixge/httpsnoop v1.0.4 // indirect
+	github.com/fsnotify/fsnotify v1.9.0 // indirect
+	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
+	github.com/gitleaks/go-gitdiff v0.9.1 // indirect
+	github.com/go-faster/city v1.0.1 // indirect
+	github.com/go-faster/errors v0.7.1 // indirect
+	github.com/go-git/gcfg v1.5.1-0.20230307220236-3a3c6141e376 // indirect
+	github.com/go-git/go-billy/v5 v5.9.0 // indirect
+	github.com/go-git/go-git/v5 v5.19.2 // indirect
+	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
+	github.com/go-logr/logr v1.4.4 // indirect
+	github.com/go-logr/stdr v1.2.2 // indirect
+	github.com/go-ole/go-ole v1.3.0 // indirect
+	github.com/go-openapi/analysis v0.24.2 // indirect
+	github.com/go-openapi/errors v0.22.5 // indirect
+	github.com/go-openapi/jsonpointer v0.22.4 // indirect
+	github.com/go-openapi/jsonreference v0.21.4 // indirect
+	github.com/go-openapi/loads v0.23.2 // indirect
+	github.com/go-openapi/runtime v0.29.2 // indirect
+	github.com/go-openapi/spec v0.22.3 // indirect
+	github.com/go-openapi/strfmt v0.25.0 // indirect
+	github.com/go-openapi/swag v0.25.4 // indirect
+	github.com/go-openapi/swag/cmdutils v0.25.4 // indirect
+	github.com/go-openapi/swag/conv v0.25.4 // indirect
+	github.com/go-openapi/swag/fileutils v0.25.4 // indirect
+	github.com/go-openapi/swag/jsonname v0.25.4 // indirect
+	github.com/go-openapi/swag/jsonutils v0.25.4 // indirect
+	github.com/go-openapi/swag/loading v0.25.4 // indirect
+	github.com/go-openapi/swag/mangling v0.25.4 // indirect
+	github.com/go-openapi/swag/netutils v0.25.4 // indirect
+	github.com/go-openapi/swag/stringutils v0.25.4 // indirect
+	github.com/go-openapi/swag/typeutils v0.25.4 // indirect
+	github.com/go-openapi/swag/yamlutils v0.25.4 // indirect
+	github.com/go-openapi/validate v0.25.1 // indirect
+	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
+	github.com/goccy/go-json v0.10.5 // indirect
+	github.com/gogo/protobuf v1.3.2 // indirect
+	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
+	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
+	github.com/golang/protobuf v1.5.4 // indirect
+	github.com/google/btree v1.1.3 // indirect
+	github.com/google/flatbuffers v23.5.26+incompatible // indirect
+	github.com/google/gnostic-models v0.7.0 // indirect
+	github.com/google/pprof v0.0.0-20260802141513-ef3492d7dac3 // indirect
+	github.com/google/s2a-go v0.1.9 // indirect
+	github.com/googleapis/enterprise-certificate-proxy v0.3.16 // indirect
+	github.com/googleapis/gax-go/v2 v2.22.0 // indirect
+	github.com/grandcat/zeroconf v1.0.0 // indirect
+	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
+	github.com/h2non/filetype v1.1.3 // indirect
+	github.com/hashicorp/consul/api v1.34.3 // indirect
+	github.com/hashicorp/errwrap v1.1.0 // indirect
+	github.com/hashicorp/go-cleanhttp v0.5.2 // indirect
+	github.com/hashicorp/go-hclog v1.6.3 // indirect
+	github.com/hashicorp/go-immutable-radix v1.3.1 // indirect
+	github.com/hashicorp/go-metrics v0.5.4 // indirect
+	github.com/hashicorp/go-msgpack/v2 v2.1.5 // indirect
+	github.com/hashicorp/go-multierror v1.1.1 // indirect
+	github.com/hashicorp/go-retryablehttp v0.7.8 // indirect
+	github.com/hashicorp/go-rootcerts v1.0.2 // indirect
+	github.com/hashicorp/go-secure-stdlib/parseutil v0.2.0 // indirect
+	github.com/hashicorp/go-secure-stdlib/strutil v0.1.2 // indirect
+	github.com/hashicorp/go-sockaddr v1.0.7 // indirect
+	github.com/hashicorp/go-version v1.8.0 // indirect
+	github.com/hashicorp/golang-lru v1.0.2 // indirect
+	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
+	github.com/hashicorp/hcl v1.0.1-vault-7 // indirect
+	github.com/hashicorp/memberlist v0.5.4 // indirect
+	github.com/hashicorp/serf v0.10.1 // indirect
+	github.com/hashicorp/vault/api v1.23.0 // indirect
+	github.com/huandu/xstrings v1.5.0 // indirect
+	github.com/invopop/jsonschema v0.13.0 // indirect
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/pgx/v5 v5.9.2 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
+	github.com/jaswdr/faker/v2 v2.8.0 // indirect
+	github.com/jbenet/go-context v0.0.0-20150711004518-d14ea06fba99 // indirect
+	github.com/jinzhu/inflection v1.0.0 // indirect
+	github.com/jinzhu/now v1.1.5 // indirect
+	github.com/json-iterator/go v1.1.12 // indirect
+	github.com/kevinburke/ssh_config v1.2.0 // indirect
+	github.com/klauspost/compress v1.20.0 // indirect
+	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
+	github.com/klauspost/pgzip v1.2.6 // indirect
+	github.com/kylelemons/godebug v1.1.0 // indirect
+	github.com/linkdata/deadlock v0.5.5 // indirect
+	github.com/lucasb-eyer/go-colorful v1.2.0 // indirect
+	github.com/lufia/plan9stats v0.0.0-20260216142805-b3301c5f2a88 // indirect
+	github.com/magiconair/properties v1.8.10 // indirect
+	github.com/mailru/easyjson v0.9.1 // indirect
+	github.com/mark3labs/mcp-go v0.43.2 // indirect
+	github.com/mattn/go-colorable v0.1.14 // indirect
+	github.com/mattn/go-isatty v0.0.24 // indirect
+	github.com/mattn/go-runewidth v0.0.17 // indirect
+	github.com/mattn/go-sqlite3 v1.14.32 // indirect
+	github.com/maximhq/bifrost/plugins/compat v0.4.0 // indirect
+	github.com/maximhq/bifrost/plugins/maxim v1.7.10 // indirect
+	github.com/maximhq/bifrost/plugins/mocker v1.6.10 // indirect
+	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.1.10 // indirect
+	github.com/maximhq/bifrost/plugins/otel v1.6.0 // indirect
+	github.com/maximhq/bifrost/plugins/prompts v1.1.10 // indirect
+	github.com/maximhq/maxim-go v0.2.1 // indirect
+	github.com/mholt/archives v0.1.2 // indirect
+	github.com/miekg/dns v1.1.68 // indirect
+	github.com/minio/minlz v1.0.0 // indirect
+	github.com/minio/simdjson-go v0.4.5 // indirect
+	github.com/mitchellh/copystructure v1.2.0 // indirect
+	github.com/mitchellh/go-homedir v1.1.0 // indirect
+	github.com/mitchellh/mapstructure v1.5.0 // indirect
+	github.com/mitchellh/reflectwalk v1.0.2 // indirect
+	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
+	github.com/modern-go/reflect2 v1.0.3-0.20250322232337-35a7c28c31ee // indirect
+	github.com/molecule-man/go-brrr v1.0.1 // indirect
+	github.com/muesli/termenv v0.16.0 // indirect
+	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
+	github.com/nwaples/rardecode/v2 v2.2.2 // indirect
+	github.com/oapi-codegen/runtime v1.1.1 // indirect
+	github.com/oklog/ulid v1.3.1 // indirect
+	github.com/outcaste-io/ristretto v0.2.3 // indirect
+	github.com/paulmach/orb v0.11.1 // indirect
+	github.com/pelletier/go-toml/v2 v2.2.3 // indirect
+	github.com/petermattis/goid v0.0.0-20260226131333-17d1149c6ac6 // indirect
+	github.com/philhofer/fwd v1.2.0 // indirect
+	github.com/philippgille/chromem-go v0.7.0 // indirect
+	github.com/pierrec/lz4/v4 v4.1.22 // indirect
+	github.com/pinecone-io/go-pinecone/v5 v5.3.0 // indirect
+	github.com/pion/datachannel v1.6.3 // indirect
+	github.com/pion/dtls/v3 v3.1.9 // indirect
+	github.com/pion/ice/v4 v4.4.4 // indirect
+	github.com/pion/interceptor v0.1.49 // indirect
+	github.com/pion/logging v0.2.4 // indirect
+	github.com/pion/mdns/v2 v2.2.1 // indirect
+	github.com/pion/randutil v0.1.0 // indirect
+	github.com/pion/rtcp v1.2.18 // indirect
+	github.com/pion/rtp v1.10.5 // indirect
+	github.com/pion/sctp v1.11.3 // indirect
+	github.com/pion/sdp/v3 v3.0.20 // indirect
+	github.com/pion/srtp/v3 v3.1.0 // indirect
+	github.com/pion/stun/v4 v4.0.1 // indirect
+	github.com/pion/transport/v5 v5.1.1 // indirect
+	github.com/pion/turn/v5 v5.1.2 // indirect
+	github.com/pion/webrtc/v4 v4.2.22 // indirect
+	github.com/pjbgf/sha1cd v0.6.0 // indirect
+	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
+	github.com/pkg/errors v0.9.1 // indirect
+	github.com/planetscale/vtprotobuf v0.6.1-0.20240319094008-0393e58bdf10 // indirect
+	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
+	github.com/prometheus/client_golang v1.23.2 // indirect
+	github.com/prometheus/client_model v0.6.2 // indirect
+	github.com/prometheus/common v0.67.5 // indirect
+	github.com/prometheus/procfs v0.19.2 // indirect
+	github.com/puzpuzpuz/xsync/v3 v3.5.1 // indirect
+	github.com/qdrant/go-client v1.16.2 // indirect
+	github.com/redis/go-redis/v9 v9.17.2 // indirect
+	github.com/rivo/uniseg v0.4.7 // indirect
+	github.com/rs/zerolog v1.34.0 // indirect
+	github.com/ryanuber/go-glob v1.0.0 // indirect
+	github.com/sagikazarmark/locafero v0.7.0 // indirect
+	github.com/sagikazarmark/slog-shim v0.1.0 // indirect
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
+	github.com/savsgio/gotils v0.0.0-20250408102913-196191ec6287 // indirect
+	github.com/sean-/seed v0.0.0-20170313163322-e2103e2c3529 // indirect
+	github.com/secure-systems-lab/go-securesystemslib v0.10.0 // indirect
+	github.com/segmentio/asm v1.2.0 // indirect
+	github.com/segmentio/kafka-go v0.4.51 // indirect
+	github.com/sergi/go-diff v1.4.0 // indirect
+	github.com/shirou/gopsutil/v4 v4.26.3 // indirect
+	github.com/shopspring/decimal v1.4.0 // indirect
+	github.com/skeema/knownhosts v1.3.1 // indirect
+	github.com/sorairolake/lzip-go v0.3.5 // indirect
+	github.com/sourcegraph/conc v0.3.0 // indirect
+	github.com/spf13/afero v1.15.0 // indirect
+	github.com/spf13/cast v1.10.0 // indirect
+	github.com/spf13/pflag v1.0.10 // indirect
+	github.com/spf13/viper v1.19.0 // indirect
+	github.com/spiffe/go-spiffe/v2 v2.7.0 // indirect
+	github.com/stretchr/objx v0.5.3 // indirect
+	github.com/subosito/gotenv v1.6.0 // indirect
+	github.com/tetratelabs/wazero v1.11.0 // indirect
+	github.com/therootcompany/xz v1.0.1 // indirect
+	github.com/tidwall/gjson v1.18.0 // indirect
+	github.com/tidwall/match v1.1.1 // indirect
+	github.com/tidwall/pretty v1.2.1 // indirect
+	github.com/tidwall/sjson v1.2.5 // indirect
+	github.com/tinylib/msgp v1.6.3 // indirect
+	github.com/tklauser/go-sysconf v0.3.16 // indirect
+	github.com/tklauser/numcpus v0.11.0 // indirect
+	github.com/trailofbits/go-mutexasserts v0.0.0-20250514102930-c1f3d2e37561 // indirect
+	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
+	github.com/ulikunitz/xz v0.5.15 // indirect
+	github.com/valyala/bytebufferpool v1.0.0 // indirect
+	github.com/wasilibs/go-re2 v1.9.0 // indirect
+	github.com/wasilibs/wazero-helpers v0.0.0-20240620070341-3dff1577cd52 // indirect
+	github.com/weaviate/weaviate v1.38.0 // indirect
+	github.com/weaviate/weaviate-go-client/v5 v5.7.1 // indirect
+	github.com/wk8/go-ordered-map/v2 v2.1.8 // indirect
+	github.com/wlynxg/anet v0.0.5 // indirect
+	github.com/x448/float16 v0.8.4 // indirect
+	github.com/xanzy/ssh-agent v0.3.3 // indirect
+	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
+	github.com/xdg-go/scram v1.1.2 // indirect
+	github.com/xdg-go/stringprep v1.0.4 // indirect
+	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
+	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
+	github.com/yusufpapurcu/wmi v1.2.4 // indirect
+	github.com/zeebo/xxh3 v1.1.0 // indirect
+	github.com/zricethezav/gitleaks/v8 v8.30.1 // indirect
+	go.etcd.io/etcd/api/v3 v3.6.11 // indirect
+	go.etcd.io/etcd/client/pkg/v3 v3.6.11 // indirect
+	go.etcd.io/etcd/client/v3 v3.6.11 // indirect
+	go.mongodb.org/mongo-driver v1.17.7 // indirect
+	go.opencensus.io v0.24.0 // indirect
+	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
+	go.opentelemetry.io/collector/component v1.51.1-0.20260205185216-81bc641f26c0 // indirect
+	go.opentelemetry.io/collector/featuregate v1.51.1-0.20260205185216-81bc641f26c0 // indirect
+	go.opentelemetry.io/collector/pdata v1.51.1-0.20260205185216-81bc641f26c0 // indirect
+	go.opentelemetry.io/collector/pdata/pprofile v0.145.1-0.20260205185216-81bc641f26c0 // indirect
+	go.opentelemetry.io/contrib/detectors/gcp v1.44.0 // indirect
+	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.67.0 // indirect
+	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.67.0 // indirect
+	go.opentelemetry.io/otel v1.45.0 // indirect
+	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.44.0 // indirect
+	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp v1.44.0 // indirect
+	go.opentelemetry.io/otel/metric v1.45.0 // indirect
+	go.opentelemetry.io/otel/sdk v1.45.0 // indirect
+	go.opentelemetry.io/otel/sdk/metric v1.45.0 // indirect
+	go.opentelemetry.io/otel/trace v1.45.0 // indirect
+	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
+	go.uber.org/atomic v1.11.0 // indirect
+	go.uber.org/multierr v1.11.0 // indirect
+	go.uber.org/zap v1.27.1 // indirect
+	go.yaml.in/yaml/v2 v2.4.3 // indirect
+	go.yaml.in/yaml/v3 v3.0.5 // indirect
+	go4.org v0.0.0-20230225012048-214862532bf5 // indirect
+	golang.org/x/arch v0.23.0 // indirect
+	golang.org/x/crypto v0.55.0 // indirect
+	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
+	golang.org/x/mod v0.38.0 // indirect
+	golang.org/x/net v0.58.0 // indirect
+	golang.org/x/oauth2 v0.36.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/telemetry v0.0.0-20260708182218-49f421fb7959 // indirect
+	golang.org/x/term v0.45.0 // indirect
+	golang.org/x/text v0.41.0 // indirect
+	golang.org/x/time v0.15.0 // indirect
+	golang.org/x/tools v0.48.0 // indirect
+	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
+	google.golang.org/api v0.282.0 // indirect
+	google.golang.org/genproto v0.0.0-20260319201613-d00831a3d3e7 // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
+	google.golang.org/grpc v1.83.2 // indirect
+	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af // indirect
+	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
+	gopkg.in/inf.v0 v0.9.1 // indirect
+	gopkg.in/ini.v1 v1.67.1 // indirect
+	gopkg.in/warnings.v0 v0.1.2 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
+	gorm.io/driver/clickhouse v0.7.0 // indirect
+	k8s.io/api v0.36.1 // indirect
+	k8s.io/apimachinery v0.36.1 // indirect
+	k8s.io/client-go v0.36.1 // indirect
+	k8s.io/klog/v2 v2.140.0 // indirect
+	k8s.io/kube-openapi v0.0.0-20260317180543-43fb72c5454a // indirect
+	k8s.io/utils v0.0.0-20260210185600-b8788abfbbc2 // indirect
+	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
+	sigs.k8s.io/randfill v1.0.0 // indirect
+	sigs.k8s.io/structured-merge-diff/v6 v6.3.2 // indirect
+	sigs.k8s.io/yaml v1.6.0 // indirect
+)
+
+replace github.com/maximhq/bifrost-enterprise/core => ../core
+
+replace github.com/maximhq/bifrost-enterprise/framework => ../framework
+
+replace github.com/maximhq/bifrost-enterprise/plugins => ../plugins
+```
+
+</Update>

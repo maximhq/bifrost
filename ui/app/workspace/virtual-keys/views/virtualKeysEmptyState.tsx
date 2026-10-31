@@ -1,4 +1,6 @@
 import { Button } from "@/components/ui/button";
+import { DisabledReason } from "@/components/ui/disabledReason";
+import { actionDisabledReason } from "@/lib/utils/governance";
 import { KeyRound } from "lucide-react";
 import { ArrowUpRight } from "lucide-react";
 
@@ -20,7 +22,7 @@ export function VirtualKeysEmptyState({ onAddClick, canCreate = true }: VirtualK
 			</div>
 			<div className="flex flex-col gap-1">
 				<h1 className="text-muted-foreground text-xl font-medium">Virtual keys control access, budgets, and rate limits</h1>
-				<div className="text-muted-foreground mx-auto mt-2 max-w-[600px] text-sm font-normal">
+				<div className="text-muted-foreground mx-auto mt-2 w-full max-w-[600px] text-sm font-normal">
 					Create virtual keys to assign permissions, spending limits, and usage quotas to teams, customers, or API clients.
 				</div>
 				<div className="mx-auto mt-6 flex flex-row flex-wrap items-center justify-center gap-2">
@@ -34,9 +36,11 @@ export function VirtualKeysEmptyState({ onAddClick, canCreate = true }: VirtualK
 					>
 						Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
 					</Button>
-					<Button aria-label="Add your first virtual key" onClick={onAddClick} disabled={!canCreate} data-testid="create-vk-btn">
-						Add Virtual Key
-					</Button>
+					<DisabledReason reason={actionDisabledReason(canCreate, "create", "virtual keys")}>
+						<Button onClick={onAddClick} disabled={!canCreate} data-testid="create-vk-btn">
+							Add Virtual Key
+						</Button>
+					</DisabledReason>
 				</div>
 			</div>
 		</div>

@@ -1,0 +1,230 @@
+# News Feeds (RSS) API
+
+rss-feeds:
+  get:
+    operationId: listRSSFeeds
+    summary: List news feeds
+    description: |
+      Returns every configured news feed: the built-in catalog (Bifrost
+      announcements, OpenAI, Anthropic, Gemini, Cursor) and any custom RSS or
+      Atom feeds an administrator added. Only enabled feeds contribute items to
+      the News tab of the dashboard notification tray.
+    tags:
+      - News Feeds
+    responses:
+      '200':
+        description: Configured feeds
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/rssfeeds.yaml#/RSSFeedList'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+  post:
+    operationId: createRSSFeed
+    summary: Add a custom news feed
+    description: |
+      Adds a custom RSS 2.0, RSS 1.0 or Atom feed, or a news listing page that
+      publishes no feed (its article cards are read instead). Before saving, the
+      gateway fetches the URL once through its SSRF-guarded client and rejects it
+      unless it returns a parseable feed or listing, so private, loopback and
+      link-local addresses are refused. Custom feeds are enabled unless
+      `enabled` is false.
+    tags:
+      - News Feeds
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/rssfeeds.yaml#/RSSFeedCreateRequest'
+    responses:
+      '201':
+        description: Feed created
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/rssfeeds.yaml#/RSSFeed'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '409':
+        $ref: '../../openapi.yaml#/components/responses/Conflict'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+
+rss-feed-by-id:
+  put:
+    operationId: updateRSSFeed
+    summary: Update a news feed
+    description: |
+      Enables or disables a feed. Custom feeds can also be renamed or
+      repointed; a new URL is fetched and validated the same way as on create.
+      Built-in feeds only accept `enabled`.
+    tags:
+      - News Feeds
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Feed ID
+        schema:
+          type: integer
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/rssfeeds.yaml#/RSSFeedUpdateRequest'
+    responses:
+      '200':
+        description: Feed updated
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/rssfeeds.yaml#/RSSFeed'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+  delete:
+    operationId: deleteRSSFeed
+    summary: Delete a custom news feed
+    description: Removes a custom feed. Built-in feeds cannot be deleted; disable them instead.
+    tags:
+      - News Feeds
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Feed ID
+        schema:
+          type: integer
+    responses:
+      '200':
+        description: Feed deleted
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/MessageResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+
+rss-items:
+  get:
+    operationId: listRSSItems
+    summary: List news items
+    description: |
+      Fetches every enabled feed server-side, merges the entries and returns
+      them newest first. Each feed is cached for 15 minutes (2 minutes after a
+      failure) and contributes at most 20 entries. A feed that fails to load
+      is reported in `errors` with an opaque message instead of failing the
+      response. The built-in Bifrost announcements feed is the exception: its
+      failures are only logged by the gateway and never appear in `errors`.
+      Entries whose link is not http or https are dropped.
+    tags:
+      - News Feeds
+    parameters:
+      - name: limit
+        in: query
+        required: false
+        description: Maximum number of items. Values above 100 are clamped.
+        schema:
+          type: integer
+          minimum: 1
+          default: 50
+    responses:
+      '200':
+        description: Merged news items
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/rssfeeds.yaml#/RSSItemList'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+
+rss-settings:
+  get:
+    operationId: getRSSSettings
+    summary: Get news settings
+    description: Returns whether news is switched on for the gateway. News is on unless an administrator turned it off.
+    tags:
+      - News Feeds
+    responses:
+      '200':
+        description: News settings
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/rssfeeds.yaml#/RSSSettings'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+  put:
+    operationId: updateRSSSettings
+    summary: Turn news on or off
+    description: |
+      Gateway-wide switch for the News tab. While news is off the gateway
+      fetches no feeds, `GET /api/rss/items` returns `enabled: false` with no
+      items, and the dashboard hides the News tab for every user. Feed
+      configuration is kept, so turning news back on restores the same sources.
+    tags:
+      - News Feeds
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/rssfeeds.yaml#/RSSSettings'
+    responses:
+      '200':
+        description: Updated news settings
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/rssfeeds.yaml#/RSSSettings'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []

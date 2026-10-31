@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -77,6 +78,12 @@ func (m *MockClientManager) GetClientByName(clientName string) *schemas.MCPClien
 
 func (m *MockClientManager) GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool {
 	return make(map[string][]schemas.ChatTool)
+}
+
+func (m *MockClientManager) InstructionCaps() InstructionCaps { return InstructionCaps{} }
+
+func (m *MockClientManager) GetServerInstructions(_ context.Context) []schemas.MCPServerInstructions {
+	return nil
 }
 
 func (m *MockClientManager) GetPluginPipeline() PluginPipeline             { return nil }
@@ -576,6 +583,12 @@ func (m *MockAutoClientManager) GetToolPerClient(ctx context.Context) map[string
 	return make(map[string][]schemas.ChatTool)
 }
 
+func (m *MockAutoClientManager) InstructionCaps() InstructionCaps { return InstructionCaps{} }
+
+func (m *MockAutoClientManager) GetServerInstructions(_ context.Context) []schemas.MCPServerInstructions {
+	return nil
+}
+
 func (m *MockAutoClientManager) GetPluginPipeline() PluginPipeline             { return nil }
 func (m *MockAutoClientManager) ReleasePluginPipeline(pipeline PluginPipeline) {}
 func (m *MockAutoClientManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schemas.MCPClientState) (*client.Client, func(), error) {
@@ -956,5 +969,30 @@ func TestExecuteAgentForResponsesRequest_OutputStructured(t *testing.T) {
 		t.Error("Expected output blocks for structured content")
 	} else if len(responsesMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks) != 2 {
 		t.Errorf("Expected 2 output blocks, got %d", len(responsesMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks))
+	}
+}
+
+// An automatically executed tool's media is named in the summary returned beside a pending tool call.
+func TestExecutedToolSummaryNamesMedia(t *testing.T) {
+	results := []*schemas.ChatMessage{{
+		Role:            schemas.ChatMessageRoleTool,
+		ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")},
+		Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+			{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: "data:image/png;base64,iVBORw0KGgo="}},
+		}},
+	}}
+	executed := []schemas.ChatAssistantMessageToolCall{{ID: schemas.Ptr("call_1"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("plot")}}}
+	pending := []schemas.ChatAssistantMessageToolCall{{ID: schemas.Ptr("call_2"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("deploy")}}}
+
+	chat := createChatResponseWithExecutedToolsAndNonAutoExecutableCalls(&schemas.BifrostChatResponse{}, results, executed, pending)
+	responses := createResponsesResponseWithExecutedToolsAndNonAutoExecutableCalls(&schemas.BifrostResponsesResponse{}, results, executed, pending)
+	for name, response := range map[string]any{"chat": chat, "responses": responses} {
+		data, err := json.Marshal(response)
+		if err != nil {
+			t.Fatalf("%s: marshal: %v", name, err)
+		}
+		if !strings.Contains(string(data), "[image/png") {
+			t.Errorf("%s: expected the image placeholder in the summary; got %s", name, data)
+		}
 	}
 }

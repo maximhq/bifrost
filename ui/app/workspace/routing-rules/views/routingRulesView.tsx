@@ -3,10 +3,13 @@
  * Main orchestrator component for routing rules management
  */
 
+import { LoadErrorView } from "@/components/loadErrorView";
+import PageTitle from "@/components/pageTitle";
 import { Button } from "@/components/ui/button";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { useGetRoutingRulesQuery } from "@/lib/store/apis/routingRulesApi";
 import { RoutingRule } from "@/lib/types/routingRules";
+import { showLoadError } from "@/lib/utils/loadError";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
 import { GitBranch, Plus } from "lucide-react";
@@ -41,7 +44,12 @@ export function RoutingRulesView() {
 	const canUpdate = useRbac(RbacResource.RoutingRules, RbacOperation.Update);
 
 	// API
-	const { data: rulesData, isLoading } = useGetRoutingRulesQuery(
+	const {
+		data: rulesData,
+		isLoading,
+		error,
+		refetch,
+	} = useGetRoutingRulesQuery(
 		{
 			limit: PAGE_SIZE,
 			offset,
@@ -102,6 +110,10 @@ export function RoutingRulesView() {
 
 	const hasActiveFilters = debouncedSearch;
 
+	if (showLoadError(error, rulesData)) {
+		return <LoadErrorView entity="routing rules" error={error} onRetry={() => void refetch()} testId="routing-rules-load-error" />;
+	}
+
 	// True empty state: no rules at all (not just filtered to zero)
 	if (!isLoading && totalCount === 0 && !hasActiveFilters) {
 		return (
@@ -114,27 +126,7 @@ export function RoutingRulesView() {
 
 	return (
 		<div className="flex flex-col overflow-y-auto">
-			{/* Header */}
-			<div className="mb-4 flex items-center justify-between">
-				<div>
-					<h1 className="text-foreground text-lg font-semibold">Routing Rules</h1>
-					<p className="text-muted-foreground text-sm">Manage CEL-based routing rules for intelligent request routing across providers</p>
-				</div>
-				<div className="flex items-center gap-2">
-					<Button variant="outline" size="sm" asChild className="gap-2">
-						<Link to="/workspace/routing-rules/tree">
-							<GitBranch className="h-4 w-4" />
-							<span className="hidden sm:inline">View Tree</span>
-						</Link>
-					</Button>
-					{canCreate && (
-						<Button data-testid="create-routing-rule-btn" onClick={handleCreateNew} disabled={isLoading} className="gap-2">
-							<Plus className="h-4 w-4" />
-							<span className="hidden sm:inline">New Rule</span>
-						</Button>
-					)}
-				</div>
-			</div>
+			<PageTitle>Manage CEL-based routing rules for intelligent request routing across providers</PageTitle>
 
 			<RoutingRulesTable
 				rules={rules}
@@ -149,6 +141,30 @@ export function RoutingRulesView() {
 				offset={offset}
 				limit={PAGE_SIZE}
 				onOffsetChange={setOffset}
+				actions={
+					<>
+						{/* The labels are hidden below sm, leaving an icon with no
+						    accessible name, so the name is carried on the control itself. */}
+						<Button variant="outline" size="sm" asChild className="gap-2">
+							<Link to="/workspace/routing-rules/tree" aria-label="View routing rules tree">
+								<GitBranch className="h-4 w-4" />
+								<span className="hidden sm:inline">View Tree</span>
+							</Link>
+						</Button>
+						{canCreate && (
+							<Button
+								data-testid="create-routing-rule-btn"
+								onClick={handleCreateNew}
+								disabled={isLoading}
+								className="gap-2"
+								aria-label="Add routing rule"
+							>
+								<Plus className="h-4 w-4" />
+								<span className="hidden sm:inline">Add Rule</span>
+							</Button>
+						)}
+					</>
+				}
 			/>
 
 			<RoutingRuleSheet open={dialogOpen} onOpenChange={handleDialogOpenChange} editingRule={editingRule} />

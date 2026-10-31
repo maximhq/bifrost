@@ -14,6 +14,49 @@ import (
 	"github.com/maximhq/vt10x"
 )
 
+func TestRelayTerminalInputForwardsAndStops(t *testing.T) {
+	source, sourceWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	defer sourceWriter.Close()
+	destination, destinationWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer destination.Close()
+	defer destinationWriter.Close()
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go relayTerminalInput(destinationWriter, source, stop, done)
+
+	if _, err := sourceWriter.Write([]byte("hello")); err != nil {
+		t.Fatal(err)
+	}
+	if err := destination.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	received := make([]byte, len("hello"))
+	if _, err := io.ReadFull(destination, received); err != nil {
+		t.Fatal(err)
+	}
+	if string(received) != "hello" {
+		t.Fatalf("relayed input = %q, want hello", received)
+	}
+
+	close(stop)
+	if err := source.SetReadDeadline(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("terminal input relay did not stop")
+	}
+}
+
 func TestAddPendingTabDisablesCommandMode(t *testing.T) {
 	t.Parallel()
 

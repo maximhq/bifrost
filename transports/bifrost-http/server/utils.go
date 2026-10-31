@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -100,6 +101,35 @@ func (s *BifrostHTTPServer) CollectObservabilityPlugins() []schemas.Observabilit
 	}
 
 	return observabilityPlugins
+}
+
+// CollectObservabilityLimits builds the name-keyed schemas.ObservabilityLimits map the
+// tracer uses to size each plugin's concurrency budget and inject timeout, from the
+// generic semaphore_size/inject_timeout fields on each plugin's PluginConfig entry (see
+// schemas.PluginConfig) — not from anything the plugin itself declares. A plugin with an
+// unset or malformed field is simply absent from the map (or has a zero field), so the
+// tracer falls back to its own defaults; config-schema validation (minimum/pattern on
+// plugins[].semaphore_size/inject_timeout) is what actually rejects bad values upstream.
+func (s *BifrostHTTPServer) CollectObservabilityLimits() map[string]schemas.ObservabilityLimits {
+	limits := make(map[string]schemas.ObservabilityLimits, len(s.Config.PluginConfigs))
+	for _, cfg := range s.Config.PluginConfigs {
+		if cfg == nil || (cfg.SemaphoreSize == nil && cfg.InjectTimeout == nil) {
+			continue
+		}
+		var l schemas.ObservabilityLimits
+		if cfg.SemaphoreSize != nil && *cfg.SemaphoreSize > 0 {
+			l.SemaphoreSize = *cfg.SemaphoreSize
+		}
+		if cfg.InjectTimeout != nil && *cfg.InjectTimeout != "" {
+			if d, err := time.ParseDuration(*cfg.InjectTimeout); err == nil && d > 0 {
+				l.InjectTimeout = d
+			} else {
+				logger.Warn("plugin %s has an invalid inject_timeout %q, using the tracer default", cfg.Name, *cfg.InjectTimeout)
+			}
+		}
+		limits[cfg.Name] = l
+	}
+	return limits
 }
 
 // MarshalPluginConfig marshals the plugin configuration

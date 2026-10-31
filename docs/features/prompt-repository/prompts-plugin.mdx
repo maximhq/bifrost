@@ -52,6 +52,10 @@ If the prompt ID is missing, the plugin does nothing and the request passes thro
 
 Invalid or unknown IDs / versions are logged as warnings; the request is **not** failed by the plugin (it proceeds without template injection).
 
+<Note>
+On enterprise, a matching [prompt deployment](/enterprise/prompt-deployments) selects the version server-side and overrides `x-bf-prompt-version`. The header is honoured only when no deployment matches.
+</Note>
+
 ---
 
 ## Example: Chat Completions
@@ -144,5 +148,6 @@ After injection, the plugin sets the following context keys (read by the logging
 ## Related
 
 - [Playground](/features/prompt-repository/playground) - create folders, prompts, sessions, and committed versions.
+- [Prompt Deployments](/enterprise/prompt-deployments) - enterprise server-side version selection with CEL rules and traffic splits.
 - [Writing Go plugins](/plugins/writing-go-plugin) - plugin interfaces and lifecycle.
 - Built-in plugin name in code: `prompts` (`github.com/maximhq/bifrost/plugins/prompts`).

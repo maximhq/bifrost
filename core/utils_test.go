@@ -4,12 +4,20 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/network"
+	"github.com/maximhq/bifrost/core/providers/anthropic"
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestValidateExternalURL(t *testing.T) {
@@ -205,6 +213,28 @@ func TestValidateExternalURL(t *testing.T) {
 	}
 }
 
+// TestPrepareContextForInternalEmbeddingRequestDisablesRawCapture ensures plugin-owned embeddings never inherit provider raw capture.
+func TestPrepareContextForInternalEmbeddingRequestDisablesRawCapture(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	PrepareContextForInternalEmbeddingRequest(ctx)
+
+	applyRawCaptureSignals(ctx, &schemas.ProviderConfig{
+		SendBackRawRequest:      true,
+		SendBackRawResponse:     true,
+		StoreRawRequestResponse: true,
+	})
+
+	for key, name := range map[schemas.BifrostContextKey]string{
+		schemas.BifrostContextKeyCaptureRawRequest:    "capture raw request",
+		schemas.BifrostContextKeyCaptureRawResponse:   "capture raw response",
+		schemas.BifrostContextKeyShouldStoreRawInLogs: "store raw request/response",
+	} {
+		if enabled, _ := ctx.Value(key).(bool); enabled {
+			t.Errorf("%s = true, want false", name)
+		}
+	}
+}
+
 // TestValidateExternalURLBoundsDNSLookup guards against regressing to the package-level
 // net.LookupIP (which has no context/deadline of its own, and previously let a stalled
 // resolver block the caller indefinitely -- see externalURLDNSLookupTimeout's doc). A
@@ -332,9 +362,9 @@ func TestIsPrivateIP(t *testing.T) {
 		// Public IPv6
 		{"2606:4700::1", false},
 		// Unspecified addresses (fail-closed)
-		{"0.0.0.0", true},                   // IPv4 unspecified
-		{"0:0:0:0:0:0:0:0", true},           // IPv6 unspecified long form
-		{"::", true},                         // IPv6 unspecified short form
+		{"0.0.0.0", true},         // IPv4 unspecified
+		{"0:0:0:0:0:0:0:0", true}, // IPv6 unspecified long form
+		{"::", true},              // IPv6 unspecified short form
 	}
 
 	for _, tt := range tests {
@@ -350,3 +380,740 @@ func TestIsPrivateIP(t *testing.T) {
 	}
 }
 
+// Failing over starts a fresh attempt, so the state the previous attempt resolved for itself must not
+// survive into it. What the request may reach is not among it: that is a fact about the caller, not
+// the attempt, and the presented credential and the caller's identity survive with it so the limits
+// of the next attempt can be resolved against the same access.
+func TestClearCtxForFallback(t *testing.T) {
+	cleared := []schemas.BifrostContextKey{
+		schemas.BifrostContextKeyAPIKeyID,
+		schemas.BifrostContextKeyAPIKeyName,
+		schemas.BifrostContextKeyGovernanceIncludeOnlyKeys,
+		schemas.BifrostContextKeyChangeRequestType,
+		schemas.BifrostContextKeyAttemptTrail,
+		schemas.BifrostContextKeyStreamEndIndicator,
+		schemas.BifrostContextKeyConnectionClosed,
+		schemas.BifrostContextKeyStreamBodyExhausted,
+		schemas.BifrostContextKeyStreamParkedAfterFinish,
+		schemas.BifrostContextKeySupportsAssistantPrefill,
+		// Set by a provider configured with disable_store for its own attempt only.
+		schemas.BifrostContextKeyDisableStore,
+		// Set by the Bedrock InvokeModel stream path; a fallback to a plain-SSE
+		// provider must not inherit the AWS event-stream reader (#6825).
+		schemas.BifrostContextKeySSEReaderFactory,
+		// The load balancer's record of the attempt that just failed.
+		schemas.BifrostContextKeyLoadBalancerAttempt,
+	}
+	// The next attempt resolves its own limits, which needs the same credential and caller.
+	preserved := []schemas.BifrostContextKey{
+		schemas.BifrostContextKeyVirtualKey,
+		schemas.BifrostContextKeyUserID,
+		// What the caller sent is the same for every attempt of the request.
+		schemas.BifrostContextKeyRequestedProvider,
+		schemas.BifrostContextKeyRequestedModel,
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for _, key := range append(append([]schemas.BifrostContextKey{}, cleared...), preserved...) {
+		ctx.SetValue(key, "set")
+	}
+
+	clearCtxForFallback(ctx)
+
+	for _, key := range cleared {
+		if ctx.Value(key) != nil {
+			t.Errorf("%v survived into the next attempt", key)
+		}
+	}
+	for _, key := range preserved {
+		if ctx.Value(key) == nil {
+			t.Errorf("%v was cleared, leaving the next attempt unable to resolve its own limits", key)
+		}
+	}
+}
+
+// TestCanProviderKeyValueBeEmptyGithubCopilot pins that a GitHub Copilot key needs a value:
+// every way to authenticate, including Sign in with GitHub, ends with a token in it.
+func TestCanProviderKeyValueBeEmptyGithubCopilot(t *testing.T) {
+	if CanProviderKeyValueBeEmpty(schemas.GithubCopilot) {
+		t.Fatal("GitHub Copilot keys always carry a token; the allowlist must not include the provider")
+	}
+}
+
+// TestStampRequestedRoute pins what core records as the caller's route before any
+// PreRequestHook runs: plugins read it to report the model a routing rule rewrote.
+func TestStampRequestedRoute(t *testing.T) {
+	requested := func(ctx *schemas.BifrostContext) (schemas.ModelProvider, string) {
+		provider, _ := ctx.Value(schemas.BifrostContextKeyRequestedProvider).(schemas.ModelProvider)
+		model, _ := ctx.Value(schemas.BifrostContextKeyRequestedModel).(string)
+		return provider, model
+	}
+
+	t.Run("records the caller's provider and model", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		stampRequestedRoute(ctx, schemas.Route{Provider: schemas.OpenAI, Model: "gpt-4o-mini"})
+		provider, model := requested(ctx)
+		assert.Equal(t, schemas.OpenAI, provider)
+		assert.Equal(t, "gpt-4o-mini", model)
+	})
+
+	// Large-payload requests carry the model only in the metadata, and the routing plugin
+	// rewrites it there in place, so the value must be copied before the hooks run.
+	t.Run("large payload model is copied before routing rewrites it", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		metadata := &schemas.LargePayloadMetadata{Model: "gpt-4o-mini"}
+		ctx.SetValue(schemas.BifrostContextKeyLargePayloadMetadata, metadata)
+		stampRequestedRoute(ctx, schemas.Route{Provider: schemas.OpenAI})
+		metadata.Model = "gpt-4o"
+		_, model := requested(ctx)
+		assert.Equal(t, "gpt-4o-mini", model)
+	})
+
+	// bifrost.ctx is shared by every nil-ctx caller, so an empty provider must overwrite the
+	// previous request's rather than leave it in place.
+	t.Run("reused context does not keep the previous request's route", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		stampRequestedRoute(ctx, schemas.Route{Provider: schemas.OpenAI, Model: "gpt-4o-mini"})
+		stampRequestedRoute(ctx, schemas.Route{Model: "claude-sonnet-4-6"})
+		provider, model := requested(ctx)
+		assert.Empty(t, provider)
+		assert.Equal(t, "claude-sonnet-4-6", model)
+	})
+}
+
+// TestValidateKeyGithubCopilot pins that a GitHub Copilot key without a token is refused at
+// setup rather than at the first inference call.
+func TestValidateKeyGithubCopilot(t *testing.T) {
+	assert.NoError(t, validateKey(schemas.GithubCopilot, &schemas.Key{Value: *schemas.NewSecretVar("github_pat_abc")}))
+	assert.False(t, keyValueMayBeEmpty(schemas.GithubCopilot, &schemas.Key{}), "a key with no token is not a credential")
+}
+
+func TestValidateKeyOAuthKeyConfig(t *testing.T) {
+	cc := func(mutate func(*schemas.OAuthKeyConfig)) *schemas.OAuthKeyConfig {
+		c := &schemas.OAuthKeyConfig{
+			GrantType:    schemas.OAuthGrantClientCredentials,
+			TokenURL:     *schemas.NewSecretVar("https://idp.example/oauth2/token"),
+			ClientID:     schemas.NewSecretVar("id"),
+			ClientSecret: schemas.NewSecretVar("secret"),
+		}
+		if mutate != nil {
+			mutate(c)
+		}
+		return c
+	}
+	jb := func(mutate func(*schemas.OAuthKeyConfig)) *schemas.OAuthKeyConfig {
+		c := &schemas.OAuthKeyConfig{
+			GrantType:  schemas.OAuthGrantJWTBearer,
+			TokenURL:   *schemas.NewSecretVar("https://idp.example/oauth2/token"),
+			PrivateKey: schemas.NewSecretVar("pem"),
+			Issuer:     "client",
+			Audience:   "https://idp.example/oauth2/token",
+		}
+		if mutate != nil {
+			mutate(c)
+		}
+		return c
+	}
+
+	tests := []struct {
+		name      string
+		key       schemas.Key
+		wantError string
+	}{
+		{name: "client_credentials is sufficient", key: schemas.Key{OAuthKeyConfig: cc(nil)}},
+		{name: "jwt_bearer is sufficient", key: schemas.Key{OAuthKeyConfig: jb(nil)}},
+		// Key selection runs this on every request. A static value always wins over the block, so
+		// an incomplete block must not take a usable key out of rotation; the management API
+		// still refuses to save one (handlers.validateProviderKey).
+		{name: "a value alongside an incomplete config keeps the key usable", key: schemas.Key{Value: *schemas.NewSecretVar("sk"), OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.ClientSecret = nil })}},
+		{name: "missing grant", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.GrantType = "" })}, wantError: "grant_type is required"},
+		{name: "unknown grant", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.GrantType = "password" })}, wantError: "must be client_credentials or jwt_bearer"},
+		{name: "missing token url", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar(" ") })}, wantError: "token_url is required"},
+		{name: "relative token url", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("/token") })}, wantError: "must be https"},
+		{name: "plain http on a public host", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("http://idp.example/token") })}, wantError: "must be https"},
+		{name: "token url with userinfo", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) {
+			c.TokenURL = *schemas.NewSecretVar("https://user:pass@idp.example/token")
+		})}, wantError: "must not carry userinfo, a query, or a fragment"},
+		{name: "token url with a query", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) {
+			c.TokenURL = *schemas.NewSecretVar("https://idp.example/token?client_secret=x")
+		})}, wantError: "must not carry userinfo, a query, or a fragment"},
+		{name: "token url with a fragment", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("https://idp.example/token#frag") })}, wantError: "must not carry userinfo, a query, or a fragment"},
+		{name: "plain http on loopback is accepted", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("http://127.0.0.1:9/token") })}},
+		{name: "jwt_bearer negative lifetime names the accepted range", key: schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.AssertionLifetimeSeconds = -1 })}, wantError: "between 0 (default) and 3600"},
+		{name: "missing client id", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.ClientID = schemas.NewSecretVar(" ") })}, wantError: "client_id and oauth_key_config.client_secret are required"},
+		{name: "bad auth style", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.AuthStyle = "query" })}, wantError: "auth_style must be header or body"},
+		{name: "jwt_bearer missing key", key: schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.PrivateKey = nil })}, wantError: "private_key is required"},
+		{name: "jwt_bearer missing issuer", key: schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.Issuer = "" })}, wantError: "issuer is required"},
+		{name: "jwt_bearer missing audience", key: schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.Audience = "" })}, wantError: "audience is required"},
+		{name: "jwt_bearer symmetric algorithm", key: schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.SigningAlgorithm = "HS256" })}, wantError: "signing_algorithm must be one of"},
+		{name: "jwt_bearer lifetime too long", key: schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.AssertionLifetimeSeconds = 7200 })}, wantError: "assertion_lifetime_seconds"},
+		{name: "env-backed references count as present", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) {
+			c.TokenURL = *schemas.NewSecretVar("env.IDP_TOKEN_URL_UNSET_IN_TEST")
+			c.ClientSecret = schemas.NewSecretVar("env.IDP_SECRET_UNSET_IN_TEST")
+		})}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key := tt.key
+			err := validateKey(schemas.OpenAI, &key)
+			if tt.wantError == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantError)
+		})
+	}
+
+	t.Run("a key with oauth_key_config may have no value on an openai-based provider", func(t *testing.T) {
+		assert.True(t, keyValueMayBeEmpty(schemas.OpenAI, &schemas.Key{OAuthKeyConfig: cc(nil)}))
+		assert.False(t, keyValueMayBeEmpty(schemas.OpenAI, &schemas.Key{}))
+		assert.False(t, keyValueMayBeEmpty(schemas.Anthropic, &schemas.Key{OAuthKeyConfig: cc(nil)}))
+		assert.True(t, keyValueMayBeEmpty(schemas.Databricks, &schemas.Key{}))
+	})
+
+	t.Run("oauth_key_config is refused on a provider that does not resolve it", func(t *testing.T) {
+		key := schemas.Key{OAuthKeyConfig: cc(nil)}
+		err := validateKey(schemas.Anthropic, &key)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "only supported on openai")
+	})
+}
+
+// A request cancelled at the same instant its backoff expires must still be
+// reported as cancelled: Go's select picks uniformly among ready cases, so a
+// timer-only check lets roughly half of such requests run one more attempt
+// (maximhq/bifrost#7105 review). With a cancelled ctx and a zero backoff both
+// cases are ready on every call, so 64 calls expose a missing ctx check with
+// probability 1 - 2^-64.
+func TestWaitRetryBackoffReportsCancellationAtTimerExpiry(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for i := 0; i < 64; i++ {
+		if !waitRetryBackoff(ctx, 0) {
+			t.Fatalf("call %d: backoff expired together with the cancel and the wait reported not cancelled", i)
+		}
+	}
+}
+
+// OpenAI-compatible clients take the assistant role from the first chunk of a
+// choice and drop tool calls without it (maximhq/bifrost#7693). Some clients
+// concatenate a repeated role, so it must appear exactly once.
+func TestWrapConvertedStreamPostHookRunnerSendsAssistantRoleOnce(t *testing.T) {
+	reasoning := schemas.ResponsesMessageTypeReasoning
+	functionCall := schemas.ResponsesMessageTypeFunctionCall
+	message := schemas.ResponsesMessageTypeMessage
+
+	tests := []struct {
+		name   string
+		events []*schemas.BifrostResponsesStreamResponse
+	}{
+		{
+			name: "tool call turn without a message item",
+			events: []*schemas.BifrostResponsesStreamResponse{
+				{Type: schemas.ResponsesStreamResponseTypeCreated},
+				{Type: schemas.ResponsesStreamResponseTypeInProgress},
+				{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, Item: &schemas.ResponsesMessage{Type: &reasoning}},
+				{
+					Type:        schemas.ResponsesStreamResponseTypeOutputItemAdded,
+					OutputIndex: schemas.Ptr(1),
+					Item: &schemas.ResponsesMessage{
+						Type: &functionCall,
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID: schemas.Ptr("call_1"),
+							Name:   schemas.Ptr("get_weather"),
+						},
+					},
+				},
+				{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, Delta: schemas.Ptr("{}")},
+				{Type: schemas.ResponsesStreamResponseTypeCompleted},
+			},
+		},
+		{
+			name: "text turn",
+			events: []*schemas.BifrostResponsesStreamResponse{
+				{Type: schemas.ResponsesStreamResponseTypeCreated},
+				{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, Item: &schemas.ResponsesMessage{Type: &message}},
+				{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, Delta: schemas.Ptr("Hello")},
+				{Type: schemas.ResponsesStreamResponseTypeCompleted},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var roles []*string
+			runner := wrapConvertedStreamPostHookRunner(func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				require.NotNil(t, result.ChatResponse)
+				require.NotEmpty(t, result.ChatResponse.Choices)
+				roles = append(roles, result.ChatResponse.Choices[0].Delta.Role)
+				return result, bifrostErr
+			}, schemas.ResponsesRequest)
+
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			for _, event := range tt.events {
+				runner(ctx, &schemas.BifrostResponse{ResponsesStreamResponse: event}, nil)
+			}
+
+			require.Len(t, roles, len(tt.events))
+			require.NotNil(t, roles[0], "first chunk has no role")
+			assert.Equal(t, string(schemas.ChatMessageRoleAssistant), *roles[0])
+			for i, role := range roles[1:] {
+				assert.Nil(t, role, "chunk %d repeats the role", i+1)
+			}
+		})
+	}
+}
+
+// Only the response.created, in_progress and completed events carry the Response
+// object, so the deltas between them convert with no id, model or created. OpenAI
+// SDK stream accumulators drop a chunk whose id differs from the stream's, which
+// left the streamed text empty.
+func TestWrapConvertedStreamPostHookRunnerKeepsStreamIdentityOnEveryChunk(t *testing.T) {
+	message := schemas.ResponsesMessageTypeMessage
+	functionCall := schemas.ResponsesMessageTypeFunctionCall
+	upstream := &schemas.BifrostResponsesResponse{ID: schemas.Ptr("resp_0dd8"), Model: "gpt-6-luna", CreatedAt: 1760000000}
+	tests := []struct {
+		name   string
+		events []*schemas.BifrostResponsesStreamResponse
+	}{
+		{
+			name: "text turn",
+			events: []*schemas.BifrostResponsesStreamResponse{
+				{Type: schemas.ResponsesStreamResponseTypeCreated, Response: upstream},
+				{Type: schemas.ResponsesStreamResponseTypeInProgress, Response: upstream},
+				{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, Item: &schemas.ResponsesMessage{Type: &message}},
+				{Type: schemas.ResponsesStreamResponseTypeContentPartAdded},
+				{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, Delta: schemas.Ptr("ok")},
+				{Type: schemas.ResponsesStreamResponseTypeOutputTextDone},
+				{Type: schemas.ResponsesStreamResponseTypeOutputItemDone},
+				{Type: schemas.ResponsesStreamResponseTypeCompleted, Response: upstream},
+			},
+		},
+		{
+			name: "tool call turn",
+			events: []*schemas.BifrostResponsesStreamResponse{
+				{Type: schemas.ResponsesStreamResponseTypeCreated, Response: upstream},
+				{
+					Type: schemas.ResponsesStreamResponseTypeOutputItemAdded,
+					Item: &schemas.ResponsesMessage{
+						Type:                 &functionCall,
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("call_1"), Name: schemas.Ptr("get_weather")},
+					},
+				},
+				{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, Delta: schemas.Ptr("{}")},
+				{Type: schemas.ResponsesStreamResponseTypeCompleted, Response: upstream},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var chunks []*schemas.BifrostChatResponse
+			runner := wrapConvertedStreamPostHookRunner(func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				require.NotNil(t, result.ChatResponse)
+				chunks = append(chunks, result.ChatResponse)
+				return result, bifrostErr
+			}, schemas.ResponsesRequest)
+
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			for _, event := range tt.events {
+				runner(ctx, &schemas.BifrostResponse{ResponsesStreamResponse: event}, nil)
+			}
+
+			require.Len(t, chunks, len(tt.events))
+			for i, chunk := range chunks {
+				assert.Equal(t, "resp_0dd8", chunk.ID, "chunk %d (%s) id", i, tt.events[i].Type)
+				assert.Equal(t, "gpt-6-luna", chunk.Model, "chunk %d (%s) model", i, tt.events[i].Type)
+				assert.Equal(t, 1760000000, chunk.Created, "chunk %d (%s) created", i, tt.events[i].Type)
+			}
+		})
+	}
+}
+
+// BenchmarkWrapConvertedStreamPostHookRunner measures one converted text turn,
+// created through completed, as a chat stream served through Responses sees it.
+func BenchmarkWrapConvertedStreamPostHookRunner(b *testing.B) {
+	message := schemas.ResponsesMessageTypeMessage
+	upstream := &schemas.BifrostResponsesResponse{ID: schemas.Ptr("resp_0dd8"), Model: "gpt-6-luna", CreatedAt: 1760000000}
+	events := []*schemas.BifrostResponsesStreamResponse{
+		{Type: schemas.ResponsesStreamResponseTypeCreated, Response: upstream},
+		{Type: schemas.ResponsesStreamResponseTypeInProgress, Response: upstream},
+		{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, Item: &schemas.ResponsesMessage{Type: &message}},
+		{Type: schemas.ResponsesStreamResponseTypeContentPartAdded},
+		{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, Delta: schemas.Ptr("ok")},
+		{Type: schemas.ResponsesStreamResponseTypeOutputTextDone},
+		{Type: schemas.ResponsesStreamResponseTypeOutputItemDone},
+		{Type: schemas.ResponsesStreamResponseTypeCompleted, Response: upstream},
+	}
+	noop := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, bifrostErr
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		runner := wrapConvertedStreamPostHookRunner(noop, schemas.ResponsesRequest)
+		for _, event := range events {
+			runner(ctx, &schemas.BifrostResponse{ResponsesStreamResponse: event}, nil)
+		}
+	}
+}
+
+// A converted stream chunk still carries the upstream API's raw bytes, so it must
+// say it was converted: integrations echo RawResponse only for unconverted chunks.
+func TestWrapConvertedStreamPostHookRunnerMarksConvertedChunks(t *testing.T) {
+	tests := []struct {
+		name       string
+		targetType schemas.RequestType
+		result     *schemas.BifrostResponse
+		extra      func(*schemas.BifrostResponse) *schemas.BifrostResponseExtraFields
+	}{
+		{
+			name:       "chat served through responses",
+			targetType: schemas.ResponsesRequest,
+			result: &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type:        schemas.ResponsesStreamResponseTypeCreated,
+				ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.OpenAI, RawResponse: `{"type":"response.created"}`},
+			}},
+			extra: func(r *schemas.BifrostResponse) *schemas.BifrostResponseExtraFields {
+				return &r.ChatResponse.ExtraFields
+			},
+		},
+		{
+			name:       "text served through chat",
+			targetType: schemas.ChatCompletionRequest,
+			result: &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+				ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.OpenAI, RawResponse: `{"object":"chat.completion.chunk"}`},
+			}},
+			extra: func(r *schemas.BifrostResponse) *schemas.BifrostResponseExtraFields {
+				return &r.TextCompletionResponse.ExtraFields
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got *schemas.BifrostResponse
+			runner := wrapConvertedStreamPostHookRunner(func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				got = result
+				return result, bifrostErr
+			}, tt.targetType)
+			runner(schemas.NewBifrostContext(context.Background(), time.Time{}), tt.result, nil)
+			require.NotNil(t, got)
+			assert.Equal(t, tt.targetType, tt.extra(got).ConvertedRequestType)
+		})
+	}
+}
+
+// A plugin-owned sub-request is built on a context DERIVED from the caller's,
+// and BifrostContext.Value reads through to its parent. So every piece of
+// caller-request state that a provider egress consults has to be shed here, or
+// the sub-request is answered with the caller's parameters instead of its own.
+//
+// The Anthropic native-request surface is exactly such a witness: it records an
+// inbound Anthropic Messages caller's own thinking and sampling scalars so the
+// Anthropic egress can rebuild them verbatim. Inherited by a fresh internal
+// Sonnet 5.5 request, it would apply one caller's temperature/top_p/top_k and
+// thinking mode to a request that never had them --- external parameters
+// steering a plugin-owned call. The provider half (a shed witness means the
+// egress restores nothing) is asserted in
+// core/providers/anthropic/requestbuilder_test.go.
+func TestPrepareContextForInternalRequestShedsAnthropicNativeSurface(t *testing.T) {
+	caller := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	caller.SetValue(schemas.BifrostContextKeyAnthropicNativeRequestSurface, "caller-surface")
+
+	internal := schemas.NewBifrostContext(caller, schemas.NoDeadline)
+	require.Equal(t, "caller-surface", internal.Value(schemas.BifrostContextKeyAnthropicNativeRequestSurface),
+		"a derived context reads the caller's witness through to the parent; that is the state under test")
+
+	PrepareContextForInternalRequest(internal)
+
+	assert.Nil(t, internal.Value(schemas.BifrostContextKeyAnthropicNativeRequestSurface),
+		"an internal sub-request must not inherit the caller's native Anthropic request surface")
+	assert.Equal(t, "caller-surface", caller.Value(schemas.BifrostContextKeyAnthropicNativeRequestSurface),
+		"shedding it on the derived context must not disarm the caller's own request")
+}
+
+// ClearContextForInternalRequest is public and documented to shed caller-request
+// state on its own; PrepareContextForInternalRequest is the variant that ALSO
+// skips the plugin pipeline. A plugin that wants its sub-request to run the
+// pipeline is expected to call the clearing helper directly, so that entry point
+// has to shed just as completely.
+//
+// It is the hostile ordering for a shed: ClearValue only shadows a parent's
+// value through the derived context's OWN value map, and NewBifrostContext
+// leaves that map unallocated until something is written to it. Prepare's
+// skip-pipeline write happens to allocate it first; called directly on a fresh
+// child, nothing has. A shed that relies on that incidental write leaves the
+// caller's witness readable on a sub-request that never carried it.
+func TestClearContextForInternalRequestShedsAnthropicNativeSurfaceOnFreshChild(t *testing.T) {
+	caller := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	caller.SetValue(schemas.BifrostContextKeyAnthropicNativeRequestSurface, "caller-surface")
+
+	// No write of any kind on the child before the shed: this is what
+	// NewBifrostContext hands a plugin.
+	internal := schemas.NewBifrostContext(caller, schemas.NoDeadline)
+	require.Equal(t, "caller-surface", internal.Value(schemas.BifrostContextKeyAnthropicNativeRequestSurface),
+		"a derived context reads the caller's witness through to the parent; that is the state under test")
+
+	ClearContextForInternalRequest(internal)
+
+	assert.Nil(t, internal.Value(schemas.BifrostContextKeyAnthropicNativeRequestSurface),
+		"the documented clearing helper must shed the caller's native Anthropic request surface "+
+			"even on a child whose value map no write has allocated yet")
+	assert.Equal(t, "caller-surface", caller.Value(schemas.BifrostContextKeyAnthropicNativeRequestSurface),
+		"shedding it on the derived context must not disarm the caller's own request")
+}
+
+// TestClearContextForInternalRequestShedsEveryKeyOnFreshChild is the general
+// case of the test above. ClearValue shadows a parent's value through this
+// context's OWN value map, and NewBifrostContext leaves that map unallocated
+// until something is written, so until the allocating write was moved to the top
+// of ClearContextForInternalRequest every ClearValue in it was a no-op on a
+// fresh child and the caller's credentials and headers stayed readable through
+// to the parent. These are the keys where that mattered most.
+func TestClearContextForInternalRequestShedsEveryKeyOnFreshChild(t *testing.T) {
+	sensitive := map[schemas.BifrostContextKey]any{
+		schemas.BifrostContextKeyDirectKey:             "caller-direct-key",
+		schemas.BifrostContextKeyAPIKeyID:              "caller-api-key-id",
+		schemas.BifrostContextKeyAPIKeyName:            "caller-api-key-name",
+		schemas.BifrostContextKeyRoutingPinnedAPIKeyID: "caller-pinned-key",
+		schemas.BifrostContextKeyExtraHeaders:          map[string]string{"x-caller": "secret"},
+		schemas.BifrostContextKeyPassthroughHeaders:    map[string]string{"x-caller": "secret"},
+		schemas.BifrostContextKeyURLPath:               "/v1/caller/path",
+	}
+
+	caller := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	for k, v := range sensitive {
+		caller.SetValue(k, v)
+	}
+
+	// No write of any kind on the child before the shed: this is what
+	// NewBifrostContext hands a plugin.
+	internal := schemas.NewBifrostContext(caller, schemas.NoDeadline)
+	for k := range sensitive {
+		require.NotNil(t, internal.Value(k),
+			"a derived context reads the caller's value through to the parent; that is the state under test")
+	}
+
+	ClearContextForInternalRequest(internal)
+
+	for k := range sensitive {
+		assert.Nil(t, internal.Value(k),
+			"ClearContextForInternalRequest must shed %s on a child whose value map no write has allocated yet", k)
+	}
+	for k, v := range sensitive {
+		assert.Equal(t, v, caller.Value(k),
+			"shedding %s on the derived context must not disarm the caller's own request", k)
+	}
+}
+
+// This test lives in the core package, not beside the Anthropic provider, for one
+// reason: ClearContextForInternalRequest is here. The provider's streaming
+// prompt-usage witness is carried on the request context, and
+// BifrostContext.Value reads THROUGH to a parent -- so a context derived to carry
+// a plugin's internal sub-request sees the caller's witness. The sub-request's own
+// chunk numbering restarts at zero, so its sequence numbers collide with the
+// caller's, and a witness bound to a chunk number alone would strip the prompt
+// counters the sub-request's own frame legitimately reported.
+//
+// The witness is therefore bound to the value store that recorded it, and this is
+// the regression for that boundary: it drives the REAL streaming handler to record
+// a real witness, derives a child the way an internal sub-request is derived,
+// passes it through the REAL clearing helper, and asserts the child's own
+// fully-reporting terminal frame keeps every counter -- while the owning request's
+// frame still gets the correction.
+
+const anthropicStreamUsageTurn = "event: message_start\n" +
+	`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5-5","content":[],"stop_reason":null,"usage":{"input_tokens":100,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}` + "\n\n" +
+	"event: content_block_start\n" +
+	`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` + "\n\n" +
+	"event: content_block_delta\n" +
+	`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}` + "\n\n" +
+	"event: content_block_stop\n" +
+	`data: {"type":"content_block_stop","index":0}` + "\n\n" +
+	"event: message_delta\n" +
+	`data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":25}}` + "\n\n" +
+	"event: message_stop\n" +
+	`data: {"type":"message_stop"}` + "\n\n"
+
+// anthropicStreamUsageServer serves one fixed Anthropic SSE turn.
+func anthropicStreamUsageServer(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("test server ResponseWriter is not an http.Flusher")
+			return
+		}
+		flusher.Flush()
+		if _, err := w.Write([]byte(body)); err != nil {
+			t.Errorf("failed writing SSE body: %v", err)
+			return
+		}
+		flusher.Flush()
+	}))
+}
+
+// anthropicStreamUsageCtx is shaped like the context the /v1/messages integration
+// runs with.
+func anthropicStreamUsageCtx() *schemas.BifrostContext {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
+	return ctx
+}
+
+// runAnthropicStreamUsageTurn drives the shipped Anthropic streaming handler on
+// ctx and returns the sequence number of the neutral message_delta chunk it
+// produced -- the chunk whose witness the handler recorded on ctx.
+func runAnthropicStreamUsageTurn(t *testing.T, ctx *schemas.BifrostContext, baseURL string) int {
+	t.Helper()
+	provider := anthropic.NewAnthropicProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: baseURL},
+	}, NewDefaultLogger(schemas.LogLevelError))
+
+	stream, bifrostErr := provider.ResponsesStream(ctx,
+		func(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			return resp, err
+		}, nil,
+		schemas.Key{Value: *schemas.NewSecretVar("test-key")},
+		&schemas.BifrostResponsesRequest{
+			Provider: schemas.Anthropic,
+			Model:    "claude-opus-5-5",
+			Input: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+			}},
+		})
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	sequenceNumber := -1
+	timeout := time.NewTimer(20 * time.Second)
+	defer timeout.Stop()
+	for {
+		select {
+		case chunk, ok := <-stream:
+			if !ok {
+				if sequenceNumber < 0 {
+					t.Fatal("the handler produced no message_delta chunk")
+				}
+				return sequenceNumber
+			}
+			if chunk == nil {
+				continue
+			}
+			if chunk.BifrostError != nil {
+				t.Fatalf("unexpected stream error: %+v", chunk.BifrostError)
+			}
+			if resp := chunk.BifrostResponsesStreamResponse; resp != nil && resp.Type == "message_delta" {
+				sequenceNumber = resp.SequenceNumber
+			}
+		case <-timeout.C:
+			t.Fatal("timed out waiting for the provider stream to close")
+			return sequenceNumber
+		}
+	}
+}
+
+// subRequestTerminalFrame renders a message_delta chunk that reports every prompt
+// counter -- 11 uncached + 2 written + 5 read -- as an internal sub-request's own
+// terminal frame, and returns the client-visible usage bytes.
+func subRequestTerminalFrame(t *testing.T, ctx *schemas.BifrostContext, sequenceNumber int) string {
+	t.Helper()
+	events := anthropic.ToAnthropicResponsesStreamResponse(ctx, &schemas.BifrostResponsesStreamResponse{
+		Type:           "message_delta",
+		SequenceNumber: sequenceNumber,
+		Response: &schemas.BifrostResponsesResponse{
+			Usage: &schemas.ResponsesResponseUsage{
+				InputTokens:  18,
+				OutputTokens: 3,
+				InputTokensDetails: &schemas.ResponsesResponseInputTokens{
+					CachedReadTokens:  5,
+					CachedWriteTokens: 2,
+				},
+			},
+		},
+	})
+	if len(events) != 1 {
+		t.Fatalf("expected exactly 1 client frame, got %d", len(events))
+	}
+	data, err := sonic.Marshal(events[0])
+	if err != nil {
+		t.Fatalf("marshal client frame: %v", err)
+	}
+	return string(data)
+}
+
+func TestClearContextForInternalRequestKeepsTheAnthropicStreamPromptUsageWitnessOwned(t *testing.T) {
+	server := anthropicStreamUsageServer(t, anthropicStreamUsageTurn)
+	defer server.Close()
+
+	caller := anthropicStreamUsageCtx()
+	sequenceNumber := runAnthropicStreamUsageTurn(t, caller, server.URL)
+
+	// Anti-vacuity control: the witness the handler recorded DOES reshape the
+	// owning request's own frame at that sequence number. Without this, every
+	// assertion below would pass on a correction that never fires at all.
+	t.Run("the owning request's frame is still corrected", func(t *testing.T) {
+		frame := subRequestTerminalFrame(t, caller, sequenceNumber)
+		for _, key := range []string{"input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"} {
+			if gjson.Get(frame, "usage."+key).Exists() {
+				t.Errorf("the upstream reported no %s; the owning request's frame must not invent one: %s", key, frame)
+			}
+		}
+		if got := gjson.Get(frame, "usage.output_tokens"); !got.Exists() || got.Int() != 3 {
+			t.Errorf("the terminal frame must still report output_tokens, got %s", frame)
+		}
+	})
+
+	for _, tc := range []struct {
+		name    string
+		prepare func(child *schemas.BifrostContext)
+	}{
+		{name: "a plain derived child", prepare: func(*schemas.BifrostContext) {}},
+		{
+			name:    "a child through the real clearing helper",
+			prepare: func(child *schemas.BifrostContext) { ClearContextForInternalRequest(child) },
+		},
+		{
+			name: "a child through the real clearing helper with an allocated value map",
+			prepare: func(child *schemas.BifrostContext) {
+				// ClearValue only writes a nil shadow into an ALREADY allocated
+				// value map, so the fresh-child and allocated-child shapes are
+				// genuinely different code paths. Both must be isolated.
+				child.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
+				ClearContextForInternalRequest(child)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			child := schemas.NewBifrostContext(caller, schemas.NoDeadline)
+			child.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
+			tc.prepare(child)
+
+			// The sub-request's own terminal frame, at the SAME sequence number the
+			// caller's witness names -- chunk numbering restarts per request.
+			frame := subRequestTerminalFrame(t, child, sequenceNumber)
+			for key, want := range map[string]int64{
+				"input_tokens":                11,
+				"cache_creation_input_tokens": 2,
+				"cache_read_input_tokens":     5,
+				"output_tokens":               3,
+			} {
+				got := gjson.Get(frame, "usage."+key)
+				if !got.Exists() {
+					t.Errorf("the caller's witness crossed the boundary: usage.%s was dropped from the sub-request's own frame: %s", key, frame)
+					continue
+				}
+				if got.Int() != want {
+					t.Errorf("usage.%s is %s, want %d (%s)", key, got.Raw, want, frame)
+				}
+			}
+		})
+	}
+}

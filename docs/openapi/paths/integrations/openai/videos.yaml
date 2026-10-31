@@ -56,7 +56,6 @@ videos:
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
   get:
@@ -97,7 +96,6 @@ videos:
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -130,7 +128,6 @@ videos-by-id:
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
   delete:
@@ -161,7 +158,6 @@ videos-by-id:
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -196,7 +192,6 @@ videos-content:
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -235,6 +230,5 @@ videos-remix:
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []

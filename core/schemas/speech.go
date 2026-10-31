@@ -34,7 +34,10 @@ func (r *BifrostSpeechResponse) BackfillParams(request *BifrostSpeechRequest) {
 	if r.Usage == nil {
 		r.Usage = &SpeechUsage{}
 	}
-	r.Usage.InputChars = utf8.RuneCountInString(request.Input.Input)
+	// A provider that counts billable characters its own way (Azure Speech) keeps its count.
+	if r.Usage.InputChars == 0 {
+		r.Usage.InputChars = utf8.RuneCountInString(request.Input.Input)
+	}
 }
 
 // SpeechAlignment represents character-level timing information for audio-text synchronization
@@ -170,4 +173,6 @@ type SpeechUsage struct {
 	// duration-based audio models (e.g. ElevenLabs sound effects) so per-second
 	// pricing can be applied; zero for token/character-billed TTS.
 	AudioSeconds int `json:"audio_seconds,omitempty"`
+	// Cost is the per-category cost breakdown, populated when pricing is available.
+	Cost *BifrostCost `json:"cost,omitempty"`
 }

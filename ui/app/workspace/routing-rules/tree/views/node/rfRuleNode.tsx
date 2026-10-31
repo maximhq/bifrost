@@ -40,6 +40,7 @@ export function RFRuleNode({ data }: { data: any }) {
 			<div
 				className="dark:bg-card relative z-10 cursor-grab rounded-lg border-2 bg-white shadow-sm active:cursor-grabbing"
 				style={{ borderColor: scopeColor, borderStyle: rule.chain_rule ? "dashed" : "solid" }}
+				data-testid={`routing-tree-rule-node-${rule.id}`}
 			>
 				{/* scope header */}
 				<div className={`flex items-center gap-1.5 rounded-t-[6px] px-3 py-1.5 ${cfg?.headerClass ?? "bg-gray-100 dark:bg-gray-800/30"}`}>

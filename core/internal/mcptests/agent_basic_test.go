@@ -1,6 +1,7 @@
 package mcptests
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -741,4 +742,153 @@ func TestAgent_WithRealLLM_MultiStep(t *testing.T) {
 	// Response should mention both operations
 	// Due to LLM variability, we just log the result
 	t.Logf("Multi-step task completed")
+}
+
+// =============================================================================
+// EARLIER-TURN CONTENT CARRIED INTO THE FINAL RESPONSE
+// =============================================================================
+
+// TestAgent_EarlierTurnTextAndReasoningReachClient_ChatFormat pins that the text and
+// reasoning a model produced on a turn whose tool calls Bifrost auto-executed are part of
+// what the client receives. Turn 1 answers and thinks before calling a tool, turn 2 has
+// nothing left to say: before the fix the client got turn 2's empty message alone, while
+// usage still billed turn 1's reasoning tokens.
+func TestAgent_EarlierTurnTextAndReasoningReachClient_ChatFormat(t *testing.T) {
+	t.Parallel()
+
+	manager := setupMCPManager(t)
+	require.NoError(t, RegisterEchoTool(manager))
+	require.NoError(t, SetInternalClientAutoExecute(manager, []string{"echo"}))
+	ctx := createTestContext()
+
+	turn1 := CreateChatResponseWithToolCalls([]schemas.ChatAssistantMessageToolCall{
+		GetSampleEchoToolCall("call-1", "1706.03762"),
+	})
+	turn1Message := turn1.Choices[0].ChatNonStreamResponseChoice.Message
+	turn1Message.Content = &schemas.ChatMessageContent{ContentStr: schemas.Ptr("1706.03762")}
+	turn1Message.ChatAssistantMessage.Reasoning = schemas.Ptr("The user wants the arXiv id echoed.")
+	turn1Message.ChatAssistantMessage.ReasoningDetails = []schemas.ChatReasoningDetails{{
+		Index:     0,
+		Type:      schemas.BifrostReasoningDetailsTypeText,
+		Text:      schemas.Ptr("The user wants the arXiv id echoed."),
+		Signature: schemas.Ptr("sig-turn-1"),
+	}}
+	turn1.Usage = &schemas.BifrostLLMUsage{
+		PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30,
+		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{ReasoningTokens: 12},
+	}
+
+	turn2 := CreateChatResponseWithText("")
+	turn2.Choices[0].ChatNonStreamResponseChoice.Message.Content = &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{}}
+
+	mockLLM := &MockLLMCaller{chatResponses: []*schemas.BifrostChatResponse{turn1, turn2}, chatCallCount: 1}
+	originalReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-6",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Echo the arXiv id of Attention Is All You Need")},
+		}},
+	}
+
+	result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(ctx, originalReq, turn1, mockLLM.MakeChatRequest)
+	require.Nil(t, bifrostErr)
+	require.NotNil(t, result)
+	require.Equal(t, 2, mockLLM.chatCallCount, "the loop should have made exactly one follow-up call")
+
+	message := result.Choices[0].ChatNonStreamResponseChoice.Message
+	require.NotNil(t, message.Content, "final message has no content")
+	var text strings.Builder
+	if message.Content.ContentStr != nil {
+		text.WriteString(*message.Content.ContentStr)
+	}
+	for _, block := range message.Content.ContentBlocks {
+		if block.Text != nil {
+			text.WriteString(*block.Text)
+		}
+	}
+	assert.Contains(t, text.String(), "1706.03762", "turn 1's answer text was dropped from the final response")
+
+	require.NotNil(t, message.ChatAssistantMessage, "final message has no assistant fields")
+	require.NotNil(t, message.ChatAssistantMessage.Reasoning, "turn 1's reasoning was dropped while its tokens are billed")
+	assert.Contains(t, *message.ChatAssistantMessage.Reasoning, "arXiv id echoed")
+	require.Len(t, message.ChatAssistantMessage.ReasoningDetails, 1)
+	require.NotNil(t, message.ChatAssistantMessage.ReasoningDetails[0].Signature)
+	assert.Equal(t, "sig-turn-1", *message.ChatAssistantMessage.ReasoningDetails[0].Signature, "the thinking signature must survive intact")
+	assert.Empty(t, message.ChatAssistantMessage.ToolCalls, "an auto-executed tool call must not be handed back to the client")
+
+	require.NotNil(t, result.Usage)
+	require.NotNil(t, result.Usage.CompletionTokensDetails)
+	assert.Equal(t, 12, result.Usage.CompletionTokensDetails.ReasoningTokens)
+}
+
+// TestAgent_EarlierTurnTextAndReasoningReachClient_ResponsesFormat is the Responses API
+// parallel: the reasoning item (with its encrypted content) and the message item turn 1
+// produced come first in the final output, in order, and the function_call the gateway
+// executed is not handed back.
+func TestAgent_EarlierTurnTextAndReasoningReachClient_ResponsesFormat(t *testing.T) {
+	t.Parallel()
+
+	manager := setupMCPManager(t)
+	require.NoError(t, RegisterEchoTool(manager))
+	require.NoError(t, SetInternalClientAutoExecute(manager, []string{"echo"}))
+	ctx := createTestContext()
+
+	reasoningType := schemas.ResponsesMessageTypeReasoning
+	messageType := schemas.ResponsesMessageTypeMessage
+	assistant := schemas.ResponsesInputMessageRoleAssistant
+	turn1 := CreateResponsesResponseWithToolCalls([]schemas.ResponsesToolMessage{{
+		CallID:    schemas.Ptr("call-1"),
+		Name:      schemas.Ptr("bifrostInternal-echo"),
+		Arguments: schemas.Ptr(`{"message": "1706.03762"}`),
+	}})
+	turn1.Output = append([]schemas.ResponsesMessage{
+		{
+			ID:   schemas.Ptr("rs_1"),
+			Type: &reasoningType,
+			ResponsesReasoning: &schemas.ResponsesReasoning{
+				Summary:          []schemas.ResponsesReasoningSummary{{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: "The user wants the arXiv id echoed."}},
+				EncryptedContent: schemas.Ptr("enc-turn-1"),
+			},
+		},
+		{
+			ID:   schemas.Ptr("msg_1"),
+			Type: &messageType,
+			Role: &assistant,
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+				Type: schemas.ResponsesOutputMessageContentTypeText,
+				Text: schemas.Ptr("1706.03762"),
+			}}},
+		},
+	}, turn1.Output...)
+	turn2 := &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{}}
+
+	mockLLM := &MockLLMCaller{responsesResponses: []*schemas.BifrostResponsesResponse{turn1, turn2}, responsesCallCount: 1}
+	originalReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-6",
+		Input:    []schemas.ResponsesMessage{GetSampleResponsesUserMessage("Echo the arXiv id of Attention Is All You Need")},
+	}
+
+	result, bifrostErr := manager.CheckAndExecuteAgentForResponsesRequest(ctx, originalReq, turn1, mockLLM.MakeResponsesRequest)
+	require.Nil(t, bifrostErr)
+	require.NotNil(t, result)
+	require.Equal(t, 2, mockLLM.responsesCallCount, "the loop should have made exactly one follow-up call")
+
+	require.Len(t, result.Output, 2, "final output should carry turn 1's reasoning and message items")
+	require.NotNil(t, result.Output[0].Type)
+	assert.Equal(t, schemas.ResponsesMessageTypeReasoning, *result.Output[0].Type, "reasoning must come first")
+	require.NotNil(t, result.Output[0].ResponsesReasoning)
+	require.NotNil(t, result.Output[0].ResponsesReasoning.EncryptedContent)
+	assert.Equal(t, "enc-turn-1", *result.Output[0].ResponsesReasoning.EncryptedContent, "encrypted reasoning must survive intact")
+	require.NotNil(t, result.Output[1].Type)
+	assert.Equal(t, schemas.ResponsesMessageTypeMessage, *result.Output[1].Type)
+	require.NotNil(t, result.Output[1].Content)
+	require.Len(t, result.Output[1].Content.ContentBlocks, 1)
+	assert.Equal(t, "1706.03762", *result.Output[1].Content.ContentBlocks[0].Text)
+	for _, item := range result.Output {
+		if item.Type != nil {
+			assert.NotEqual(t, schemas.ResponsesMessageTypeFunctionCall, *item.Type, "an auto-executed function_call must not be handed back to the client")
+		}
+	}
 }

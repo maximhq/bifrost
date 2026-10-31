@@ -10,8 +10,10 @@ import { getOperatorLabel } from "@/lib/config/celOperatorsRouting";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
 import { useGetCustomerQuery, useGetTeamQuery, useGetVirtualKeyQuery } from "@/lib/store/apis/governanceApi";
-import { RoutingRule } from "@/lib/types/routingRules";
+import { RoutingFallbackWire, RoutingRule } from "@/lib/types/routingRules";
 import { getScopeLabel } from "@/lib/utils/labels";
+import { formatTargetsTTFT, normalizeFallback } from "@/lib/utils/routingRules";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { formatDistanceToNow } from "date-fns";
 import { Check, Copy, GitMerge, Key } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -42,16 +44,20 @@ function formatRuleValue(value: any): string {
 
 // Resolves a rule's scope_id to a display name. Each scope fetches only the one
 // entity it needs — the rule points at a single id, so pulling the full list to
-// find one name is wasted payload.
+// find one name is wasted payload. A caller without View on the scope's entity
+// skips the lookup and gets no name.
 function useScopeName(scope: string, scopeId?: string): string | undefined {
+	const hasTeamsAccess = useRbac(RbacResource.Teams, RbacOperation.View);
+	const hasCustomersAccess = useRbac(RbacResource.Customers, RbacOperation.View);
+	const hasVirtualKeysAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.View);
 	const { data: teamData } = useGetTeamQuery(scopeId as string, {
-		skip: scope !== "team" || !scopeId,
+		skip: scope !== "team" || !scopeId || !hasTeamsAccess,
 	});
 	const { data: customerData } = useGetCustomerQuery(scopeId as string, {
-		skip: scope !== "customer" || !scopeId,
+		skip: scope !== "customer" || !scopeId || !hasCustomersAccess,
 	});
 	const { data: vkData } = useGetVirtualKeyQuery(scopeId as string, {
-		skip: scope !== "virtual_key" || !scopeId,
+		skip: scope !== "virtual_key" || !scopeId || !hasVirtualKeysAccess,
 	});
 
 	return useMemo(() => {
@@ -227,20 +233,25 @@ function TargetCard({ target, total }: { target: RoutingRule["targets"][0]; inde
 
 // ─── fallback chain ───────────────────────────────────────────────────────────
 
-function FallbackChain({ fallbacks }: { fallbacks: string[] }) {
+function FallbackChain({ fallbacks }: { fallbacks: RoutingFallbackWire[] }) {
 	return (
 		<div className="flex flex-wrap items-center gap-y-2">
-			{fallbacks.map((fb, i) => {
-				const parts = fb.split("/");
-				const provider = parts[0] || "Incoming provider";
-				const model = parts.length > 1 ? parts.slice(1).join("/") : "Incoming model";
+			{fallbacks.map((fallback, i) => {
+				const { provider, model, key_id } = normalizeFallback(fallback);
+				const providerLabel = provider || "Incoming provider";
 
 				return (
 					<div key={i} className="flex items-center">
 						{i > 0 && <span className="text-muted-foreground mx-1.5 text-xs">&rarr;</span>}
 						<Badge variant="outline" className="gap-1.5 font-normal">
 							{provider && <RenderProviderIcon provider={provider as ProviderIconType} size="sm" className="h-3.5 w-3.5 shrink-0" />}
-							<span className="font-mono text-xs">{model ? `${provider}/${model}` : fb}</span>
+							<span className="font-mono text-xs">{model ? `${providerLabel}/${model}` : providerLabel}</span>
+							{key_id && (
+								<span className="text-muted-foreground flex items-center gap-1 border-l pl-1.5" title={`Pinned key: ${key_id}`}>
+									<Key className="h-3 w-3 shrink-0" />
+									<span className="max-w-24 truncate font-mono text-xs">{key_id}</span>
+								</span>
+							)}
 						</Badge>
 					</div>
 				);
@@ -269,7 +280,7 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange, onNavigate, has
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="flex w-full flex-col overflow-x-hidden p-8 sm:max-w-2xl" data-testid="routing-rule-info">
+			<SheetContent className="flex w-full flex-col overflow-x-hidden p-4 sm:max-w-2xl md:p-8" data-testid="routing-rule-info">
 				{rule && (
 					<>
 						<SheetHeader className="flex flex-row items-start justify-between gap-1 p-0">
@@ -303,19 +314,19 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange, onNavigate, has
 							/>
 						</SheetHeader>
 
-						<div className="-mx-8 space-y-6 overflow-y-auto px-8 pb-8">
+						<div className="-mx-4 space-y-6 overflow-y-auto px-4 pb-8 md:-mx-8 md:px-8">
 							{/* Overview */}
 							<div className="space-y-3">
 								<h3 className="text-sm font-semibold">Overview</h3>
 								<div className="grid gap-3">
-									<div className="grid grid-cols-3 items-center gap-4">
+									<div className="grid grid-cols-1 items-center gap-4 md:grid-cols-3">
 										<span className="text-muted-foreground text-sm">Scope</span>
 										<div className="col-span-2 flex items-center gap-1.5">
 											<Badge variant="secondary">{getScopeLabel(rule.scope)}</Badge>
 											{scopeName && <span className="text-sm">{scopeName}</span>}
 										</div>
 									</div>
-									<div className="grid grid-cols-3 items-center gap-4">
+									<div className="grid grid-cols-1 items-center gap-4 md:grid-cols-3">
 										<span className="text-muted-foreground text-sm">Priority</span>
 										<div className="col-span-2">
 											<span className="bg-primary text-primary-foreground inline-block rounded px-2.5 py-0.5 text-xs font-medium">
@@ -332,12 +343,12 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange, onNavigate, has
 							<div className="space-y-3">
 								<h3 className="text-sm font-semibold">Conditions</h3>
 								{hasQuery ? (
-										<ConditionGroup group={rule.query!} />
-									) : hasCel ? (
-										<p className="text-muted-foreground text-sm">Defined as a CEL expression below</p>
-									) : (
-										<p className="text-muted-foreground text-sm">Matches all requests</p>
-									)}
+									<ConditionGroup group={rule.query!} />
+								) : hasCel ? (
+									<p className="text-muted-foreground text-sm">Defined as a CEL expression below</p>
+								) : (
+									<p className="text-muted-foreground text-sm">Matches all requests</p>
+								)}
 
 								{/* CEL expression */}
 								<div className="space-y-1.5">
@@ -379,10 +390,18 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange, onNavigate, has
 								)}
 							</div>
 
+							{/* TTFT cutoff */}
+							<div className="grid grid-cols-1 items-center gap-4 md:grid-cols-3">
+								<span className="text-muted-foreground text-sm">Time to first token cutoff</span>
+								<span className="col-span-2 text-sm" data-testid="routing-rule-info-ttft-timeout">
+									{formatTargetsTTFT(rule.targets)}
+								</span>
+							</div>
+
 							<DottedSeparator />
 
 							{/* Timestamps */}
-							<div className="grid grid-cols-2 gap-4">
+							<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
 								<div>
 									<p className="text-muted-foreground mb-1 text-xs font-medium tracking-wider uppercase">Created</p>
 									<span className="text-sm">

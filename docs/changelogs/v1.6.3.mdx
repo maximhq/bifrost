@@ -107,96 +107,96 @@ description: "v1.6.3 changelog - 2026-07-06"
 
 </Update>
 <Update label="Core" description="1.6.3">
-- feat: added DeepSeek as a first-class provider (#4852)
-- feat: added `bedrock_mantle` as a first-class provider with native-Anthropic and OpenAI-compatible routing and SigV4 key config (#4736, #4737)
-- feat: added JWT Bearer authentication path for `/mcp` with session validation, a `virtualKeysByID` secondary index, and cached signing key and VK lookups (#4508, #4783)
-- feat: added per-MCP-server tool execution timeout (#4472, closes #4446) (thanks [@Purvi09](https://github.com/Purvi09)!)
-- feat: added missing OpenAI Responses lifecycle methods (#3125, closes #3121) (thanks [@17jmumford](https://github.com/17jmumford)!)
-- feat: added IPv6 support (#4895)
-- feat: added ClickHouse support for the log store (#4748)
-- feat: extended Bedrock vendor-prefix pricing fallback to OpenAI, Google, and xAI models and folded `bedrock_mantle` onto `bedrock` lookups (#4924)
-- feat: added `is_deprecated` to model pricing and catalog responses and mark deprecated models instead of filtering them (#4779, #4792, #4936)
-- feat: added latency info on errors (#4867, #4876)
-- feat: added multiple teams, customers, and business units to connectors (#4875)
-- feat: virtual key values use `schemas.SecretVar` to support the env store (#4817)
-- feat: `chunking_strategy` passes through as an extra param for OpenAI models (#4741, closes #4720)
-- feat: simplified Responses lifecycle permissions to explicit per-verb flags (#4880)
-- fix: round-trip Anthropic `redacted_thinking` blocks on chat completions so tool-use turns with redacted reasoning can be replayed (#4943, closes #4942) (thanks [@fus3r](https://github.com/fus3r)!)
-- fix: emit `contentBlockStop` events on the Bedrock ConverseStream egress so consumers that assemble messages on block boundaries get complete content (#4923, closes #4262) (thanks [@fus3r](https://github.com/fus3r)!)
-- fix: clear the per-attempt stream close claim so streaming retries and fallbacks are not dead on arrival after an SSE-embedded provider error (#4911, closes #4788) (thanks [@fus3r](https://github.com/fus3r)!)
-- fix: emit reads-only `cached_tokens` in usage per the OpenAI spec so cache writes are not priced as cache reads (#4906, closes #4816) (thanks [@fus3r](https://github.com/fus3r)!)
-- fix: forward file IDs and content type on the Anthropic files integration (#4956)
-- fix: preserve Anthropic file ID document sources (#4832) (thanks [@mmacvicar](https://github.com/mmacvicar)!)
-- fix: preserve Gemini file upload MIME types for GenAI file URI completions (#4833) (thanks [@mmacvicar](https://github.com/mmacvicar)!)
-- fix: propagate `max_tokens` from the OpenAI integration (#4966)
-- fix: error type setting in all integrations for Bedrock (#4958)
-- fix: guard setting tool call config in Gemini (#4959)
-- fix: Gemini 2.5-pro thinking budget value (#4947)
-- fix: Gemini OpenAI-through signature compatibility (#4810)
-- fix: surface Gemini batch inline responses from the response field, not dest (#4904, closes #3951) (thanks [@nnNyx](https://github.com/nnNyx)!)
+- feat: added DeepSeek as a first-class provider
+- feat: added `bedrock_mantle` as a first-class provider with native-Anthropic and OpenAI-compatible routing and SigV4 key config
+- feat: added JWT Bearer authentication path for `/mcp` with session validation, a `virtualKeysByID` secondary index, and cached signing key and VK lookups
+- feat: added per-MCP-server tool execution timeout (closes #4446) (thanks [@Purvi09](https://github.com/Purvi09)!)
+- feat: added missing OpenAI Responses lifecycle methods (closes #3121) (thanks [@17jmumford](https://github.com/17jmumford)!)
+- feat: added IPv6 support
+- feat: added ClickHouse support for the log store
+- feat: extended Bedrock vendor-prefix pricing fallback to OpenAI, Google, and xAI models and folded `bedrock_mantle` onto `bedrock` lookups
+- feat: added `is_deprecated` to model pricing and catalog responses and mark deprecated models instead of filtering them
+- feat: added latency info on errors
+- feat: added multiple teams, customers, and business units to connectors
+- feat: virtual key values use `schemas.SecretVar` to support the env store
+- feat: `chunking_strategy` passes through as an extra param for OpenAI models (closes #4720)
+- feat: simplified Responses lifecycle permissions to explicit per-verb flags
+- fix: round-trip Anthropic `redacted_thinking` blocks on chat completions so tool-use turns with redacted reasoning can be replayed (closes #4942) (thanks [@fus3r](https://github.com/fus3r)!)
+- fix: emit `contentBlockStop` events on the Bedrock ConverseStream egress so consumers that assemble messages on block boundaries get complete content (closes #4262) (thanks [@fus3r](https://github.com/fus3r)!)
+- fix: clear the per-attempt stream close claim so streaming retries and fallbacks are not dead on arrival after an SSE-embedded provider error (closes #4788) (thanks [@fus3r](https://github.com/fus3r)!)
+- fix: emit reads-only `cached_tokens` in usage per the OpenAI spec so cache writes are not priced as cache reads (closes #4816) (thanks [@fus3r](https://github.com/fus3r)!)
+- fix: forward file IDs and content type on the Anthropic files integration
+- fix: preserve Anthropic file ID document sources (thanks [@mmacvicar](https://github.com/mmacvicar)!)
+- fix: preserve Gemini file upload MIME types for GenAI file URI completions (thanks [@mmacvicar](https://github.com/mmacvicar)!)
+- fix: propagate `max_tokens` from the OpenAI integration
+- fix: error type setting in all integrations for Bedrock
+- fix: guard setting tool call config in Gemini
+- fix: Gemini 2.5-pro thinking budget value
+- fix: Gemini OpenAI-through signature compatibility
+- fix: surface Gemini batch inline responses from the response field, not dest (closes #3951) (thanks [@nnNyx](https://github.com/nnNyx)!)
 - fix: Gemini video reference fields map to instances (thanks [@vojthor](https://github.com/vojthor)!)
-- fix: web fetch fixes (#4945)
-- fix: set `SecretTypePlainText` for plain-text JSON and non-prefixed secret values (#4946) and check whether virtual key values are secrets (#4927)
-- fix: idle timeout wiring in the Vertex path and recover from idle-timeout timer-goroutine panic (#4937)
-- fix: set content type header consistently for Responses API requests (#4935)
-- fix: deterministic MCP tool ordering for prompt cache stability (#4932, closes #2347)
-- fix: consistent content_block indices for server tools on Claude Code passthrough streaming (#4890) (thanks [@surki](https://github.com/surki)!)
-- fix: empty tool call result insertion failures (#4925)
-- fix: sanitize error details on the log update path and set the raw-storage log flag on standalone MCP tool executions (#4913)
-- fix: complete deferred LLM span on streaming goroutine exit (#4885)
-- fix: billing on failed Responses stream requests for Anthropic and Bedrock (#4842)
-- fix: cost for image generation and image edit streaming (#4802, closes #4777)
-- fix: Perplexity Responses API compatibility (#4813)
-- fix: signal Bedrock max_output_tokens truncation on the Responses API (#4680, closes #4679) (thanks [@jeremym-tanium](https://github.com/jeremym-tanium)!)
-- fix: preserve codex `tool_search_call` and `tool_search_output` input items and accept object-valued tool-call arguments on the Responses API streaming path (#4121) (thanks [@raghu-nandan-bs](https://github.com/raghu-nandan-bs)!)
-- fix: MCP reconnect failure on startup (#4316, closes #4314) (thanks [@HackToHell](https://github.com/HackToHell)!)
-- fix: pass through `gs://` image URLs on Vertex Gemini (#4568, closes #4402) (thanks [@G-XD](https://github.com/G-XD)!)
-- fix: skip model check for Responses lifecycle APIs (#4920)
-- chore: refactored Anthropic request building into `BuildAnthropicChatRequestBody`, shared `completeRequest` across Anthropic, Azure, and Bedrock, lazy `BodySigner` SigV4 signing, and `BearerAuthHeader` helper (#3309, #4394, #4425, #4735)
+- fix: web fetch fixes
+- fix: set `SecretTypePlainText` for plain-text JSON and non-prefixed secret values and check whether virtual key values are secrets
+- fix: idle timeout wiring in the Vertex path and recover from idle-timeout timer-goroutine panic
+- fix: set content type header consistently for Responses API requests
+- fix: deterministic MCP tool ordering for prompt cache stability (closes #2347)
+- fix: consistent content_block indices for server tools on Claude Code passthrough streaming (thanks [@surki](https://github.com/surki)!)
+- fix: empty tool call result insertion failures
+- fix: sanitize error details on the log update path and set the raw-storage log flag on standalone MCP tool executions
+- fix: complete deferred LLM span on streaming goroutine exit
+- fix: billing on failed Responses stream requests for Anthropic and Bedrock
+- fix: cost for image generation and image edit streaming (closes #4777)
+- fix: Perplexity Responses API compatibility
+- fix: signal Bedrock max_output_tokens truncation on the Responses API (closes #4679) (thanks [@jeremym-tanium](https://github.com/jeremym-tanium)!)
+- fix: preserve codex `tool_search_call` and `tool_search_output` input items and accept object-valued tool-call arguments on the Responses API streaming path (thanks [@raghu-nandan-bs](https://github.com/raghu-nandan-bs)!)
+- fix: MCP reconnect failure on startup (closes #4314) (thanks [@HackToHell](https://github.com/HackToHell)!)
+- fix: pass through `gs://` image URLs on Vertex Gemini (closes #4402) (thanks [@G-XD](https://github.com/G-XD)!)
+- fix: skip model check for Responses lifecycle APIs
+- chore: refactored Anthropic request building into `BuildAnthropicChatRequestBody`, shared `completeRequest` across Anthropic, Azure, and Bedrock, lazy `BodySigner` SigV4 signing, and `BearerAuthHeader` helper
 
 </Update>
 <Update label="Framework" description="1.4.3">
-- feat: added ClickHouse support for the log store with a hybrid store mode (#4748, #4893)
-- feat: added OAuth 2.1 gateway auth: AS discovery endpoints, signing key management, `MCPServerAuthMode` config, issuance endpoints (DCR, authorize, token) with PKCE and refresh token rotation, session listing, revocation, family-revocation, VK liveness checks, and sweep worker (#4505, #4506, #4509)
-- feat: revoke VK-mode OAuth2 grants on VK deletion with user-liveness checks at refresh and request time (#4806)
-- feat: push OAuth2 sessions filtering and pagination to SQL with total count (#4775)
-- feat: added expiry field to virtual keys (#4887)
-- feat: virtual key values use `schemas.SecretVar` to support the env store (#4817)
-- feat: added `BedrockMantleKeyConfig` support to key hashing, schema/table mapping, and sensitive field clearing (#4737, #4886)
-- feat: added per-MCP-server tool execution timeout (#4472, closes #4446) (thanks [@Purvi09](https://github.com/Purvi09)!)
-- feat: added connection_type, auth_type, state, virtual_key, and server/client_id filters with pagination to the MCP clients list (#4839, #4767, #4841)
-- feat: added `user_name`, `team_ids`, `team_names`, `customer_ids`, `customer_names`, `business_unit_ids`, and `business_unit_names` to log list select columns (#4866)
-- feat: added `UpsertModelParametersBatch` for batched model parameter sync (#4800)
-- feat: added `is_deprecated` to pricing and catalog responses and mark deprecated models instead of filtering them (#4779, #4792, #4936)
-- feat: drop reasoning when tools are present but `reasoning_with_tool_calls` is unsupported (#4630)
-- feat: extended vendor-prefix pricing fallback to OpenAI, Google, and xAI models (#4924)
-- feat: lowered `auth_code_ttl` default to 300s and enforce a 900s maximum (#4822)
-- fix: sweep orphaned deferred spans in trace store TTL cleanup (#4869, closes #4868) (thanks [@citrocat](https://github.com/citrocat)!)
-- fix: rebuild token usage from denormalized columns in hybrid log list (#4722, closes #4721) (thanks [@G-XD](https://github.com/G-XD)!)
-- fix: stats for cancelled requests (#4930)
-- fix: tier costs evaluated via input tokens instead of total tokens (#4917)
-- fix: append datasheet models for incomplete list-models calls (#4879)
-- fix: skip background token refresh for disabled or unconfigured MCP clients and guarantee non-nil logger in sync workers (#4848)
-- fix: exclude terminal-status OAuth configs from the expiring token refresh query (#4754)
-- fix: check whether virtual key values are secrets (#4927)
-- fix: web fetch fixes (#4945)
-- fix: Perplexity Responses API compatibility (#4813)
+- feat: added ClickHouse support for the log store with a hybrid store mode
+- feat: added OAuth 2.1 gateway auth: AS discovery endpoints, signing key management, `MCPServerAuthMode` config, issuance endpoints (DCR, authorize, token) with PKCE and refresh token rotation, session listing, revocation, family-revocation, VK liveness checks, and sweep worker
+- feat: revoke VK-mode OAuth2 grants on VK deletion with user-liveness checks at refresh and request time
+- feat: push OAuth2 sessions filtering and pagination to SQL with total count
+- feat: added expiry field to virtual keys
+- feat: virtual key values use `schemas.SecretVar` to support the env store
+- feat: added `BedrockMantleKeyConfig` support to key hashing, schema/table mapping, and sensitive field clearing
+- feat: added per-MCP-server tool execution timeout (closes #4446) (thanks [@Purvi09](https://github.com/Purvi09)!)
+- feat: added connection_type, auth_type, state, virtual_key, and server/client_id filters with pagination to the MCP clients list
+- feat: added `user_name`, `team_ids`, `team_names`, `customer_ids`, `customer_names`, `business_unit_ids`, and `business_unit_names` to log list select columns
+- feat: added `UpsertModelParametersBatch` for batched model parameter sync
+- feat: added `is_deprecated` to pricing and catalog responses and mark deprecated models instead of filtering them
+- feat: drop reasoning when tools are present but `reasoning_with_tool_calls` is unsupported
+- feat: extended vendor-prefix pricing fallback to OpenAI, Google, and xAI models
+- feat: lowered `auth_code_ttl` default to 300s and enforce a 900s maximum
+- fix: sweep orphaned deferred spans in trace store TTL cleanup (closes #4868) (thanks [@citrocat](https://github.com/citrocat)!)
+- fix: rebuild token usage from denormalized columns in hybrid log list (closes #4721) (thanks [@G-XD](https://github.com/G-XD)!)
+- fix: stats for cancelled requests
+- fix: tier costs evaluated via input tokens instead of total tokens
+- fix: append datasheet models for incomplete list-models calls
+- fix: skip background token refresh for disabled or unconfigured MCP clients and guarantee non-nil logger in sync workers
+- fix: exclude terminal-status OAuth configs from the expiring token refresh query
+- fix: check whether virtual key values are secrets
+- fix: web fetch fixes
+- fix: Perplexity Responses API compatibility
 
 </Update>
 <Update label="compat" description="0.1.25">
-- feat: drop reasoning when tools are present but `reasoning_with_tool_calls` is unsupported (#4630)
-- fix: convert thinking to disabled when tool choice is required for DeepSeek (#4861)
+- feat: drop reasoning when tools are present but `reasoning_with_tool_calls` is unsupported
+- fix: convert thinking to disabled when tool choice is required for DeepSeek
 - chore: upgraded core to v1.6.3 and framework to v1.4.3
 
 </Update>
 <Update label="governance" description="1.6.3">
-- feat: added expiry enforcement for virtual keys (#4887)
-- feat: complexity analyzer stemming support alongside exact keyword match and a no-signal fallback (#4708, #4791)
-- feat: added `virtualKeysByID` secondary index with cached signing key and VK lookups on the `/mcp` JWT auth path (#4783)
-- feat: virtual key values use `schemas.SecretVar` to support the env store (#4817)
-- fix: skip O(N) reference refresh on request-time rate-limit and budget reset (#4883, closes #4851)
-- fix: skip model check for Responses lifecycle APIs (#4920)
-- fix: empty tool call result insertion failures (#4925)
+- feat: added expiry enforcement for virtual keys
+- feat: complexity analyzer stemming support alongside exact keyword match and a no-signal fallback
+- feat: added `virtualKeysByID` secondary index with cached signing key and VK lookups on the `/mcp` JWT auth path
+- feat: virtual key values use `schemas.SecretVar` to support the env store
+- fix: skip O(N) reference refresh on request-time rate-limit and budget reset (closes #4851)
+- fix: skip model check for Responses lifecycle APIs
+- fix: empty tool call result insertion failures
 - chore: upgraded core to v1.6.3 and framework to v1.4.3
 
 </Update>
@@ -205,12 +205,12 @@ description: "v1.6.3 changelog - 2026-07-06"
 
 </Update>
 <Update label="logging" description="1.5.26">
-- feat: latency info on errors (#4867)
-- feat: stream cost recalculation progress via SSE with batch processing (#4778)
-- fix: sanitize `ErrorDetailsParsed` so raw payloads honor `disable_content_logging` (#4873, closes #4872) (thanks [@citrocat](https://github.com/citrocat)!)
-- fix: sanitize error details on the log update path and remove redundant immediate error serialization (#4913)
-- fix: cancelled state in logs (#4831, closes #3357)
-- fix: empty tool call result insertion failures (#4925)
+- feat: latency info on errors
+- feat: stream cost recalculation progress via SSE with batch processing
+- fix: sanitize `ErrorDetailsParsed` so raw payloads honor `disable_content_logging` (closes #4872) (thanks [@citrocat](https://github.com/citrocat)!)
+- fix: sanitize error details on the log update path and remove redundant immediate error serialization
+- fix: cancelled state in logs (closes #3357)
+- fix: empty tool call result insertion failures
 - chore: upgraded core to v1.6.3 and framework to v1.4.3
 
 </Update>
@@ -235,8 +235,8 @@ description: "v1.6.3 changelog - 2026-07-06"
 
 </Update>
 <Update label="semanticcache" description="1.5.26">
-- fix: resolve internal embedding keys like external requests (#4903, closes #4756) (thanks [@nnNyx](https://github.com/nnNyx)!)
-- fix: clear body-transport state for internal embedding requests via `ClearContextForInternalRequest` (#4918)
+- fix: resolve internal embedding keys like external requests (closes #4756) (thanks [@nnNyx](https://github.com/nnNyx)!)
+- fix: clear body-transport state for internal embedding requests via `ClearContextForInternalRequest`
 - chore: upgraded core to v1.6.3 and framework to v1.4.3
 
 </Update>

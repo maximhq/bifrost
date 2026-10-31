@@ -4,9 +4,9 @@
 # Usage: source .github/workflows/scripts/go-utils.sh
 
 # Function to perform go get with exponential backoff
-# Usage: go_get_with_backoff <package@version>
+# Usage: go_get_with_backoff <package@version> [package@version ...]
 go_get_with_backoff() {
-  local package="$1"
+  local package="$*"
   local max_attempts=30
   local initial_wait=30
   local max_wait=120  # 2 minutes
@@ -18,7 +18,7 @@ go_get_with_backoff() {
   while [ $attempt -le $max_attempts ]; do
     echo "📦 Attempt $attempt/$max_attempts: go get $package"
     
-    if go get "$package"; then
+    if go get "$@"; then
       echo "✅ Successfully retrieved $package on attempt $attempt"
       return 0
     fi

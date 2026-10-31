@@ -1,0 +1,59 @@
+# Credentials: the usual AWS chain (AWS_PROFILE, SSO, env keys). The identity needs deployer-policy.json.
+region = "us-east-1"
+
+# vllm | sglang | lmi | llamacpp | tei | jumpstart | custom
+engine = "vllm"
+
+# Chat:      qwen2.5-0.5b | qwen3-0.6b | qwen3-4b | gpt-oss-20b | qwen3-coder-30b-a3b | qwen3.6-35b-a3b | glm-4.7-flash
+# Embedding: bge-base-en-v1.5 | qwen3-embedding-0.6b
+model = "qwen3-4b"
+
+# --- Endpoint ---
+# instance_type        = "ml.g6e.2xlarge"
+# inference_components = true    # address the model as /endpoints/<ep>/inference-components/<ic>
+# second_variant       = true    # zero-weight Variant2 for X-Amzn-SageMaker-Target-Variant (bills a second instance)
+# endpoint_name        = "bifrost-qwen3-4b"
+
+# --- Per-model tweaks ---
+# hf_token         = "hf_..."   # gated HF repos
+# max_model_len    = 8192
+# reasoning_parser = ""         # "" disables
+# extra_env        = { SM_VLLM_ENFORCE_EAGER = "true" }   # SM_VLLM_* / SM_SGLANG_* / OPTION_* / SM_LLAMA_CPP_*
+# image_tag        = "0.31.0-gpu-py312-cu130-ubuntu24.04-sagemaker"
+# model_data_url   = "s3://my-bucket/qwen3-4b/"           # prefix = uncompressed, otherwise a model.tar.gz
+
+# --- JumpStart: the preset's jumpstart block, or any model id ---
+# engine                  = "jumpstart"
+# jumpstart_model_id      = "huggingface-textembedding-qwen3-embedding-0-6b"
+# jumpstart_model_version = "1.0.2"          # unset = newest in models_manifest.json
+# jumpstart_config        = "lmi"            # spec's inference config; unset = its top ranking
+# accept_eula             = true             # gated models (Llama); read the EULA first
+# instance_type           = "ml.g6.xlarge"
+
+# --- Custom container (e.g. an echo server for error-shape tests) ---
+# engine        = "custom"
+# image         = "123456789012.dkr.ecr.us-east-1.amazonaws.com/echo:latest"
+# instance_type = "ml.m5.xlarge"
+# api           = "openai"
+
+# --- Bifrost key / IAM ---
+# api                 = "invocations"                  # default: openai for vllm/sglang chat, invocations otherwise
+# execution_role_name = "bifrost-sagemaker-exec"       # admin-created roles (README, "One-time admin setup")
+# teardown_role_name  = "bifrost-sagemaker-teardown"
+
+# --- Readiness & teardown ---
+# wait_for_ready         = false   # skip the probe.py --quick smoke test
+# teardown_after_minutes = 180     # 0 disables; every apply re-arms it to now + N
+
+# --- Custom preset ---
+# model = "qwen3-8b"
+# custom_presets = {
+#   "qwen3-8b" = {
+#     hf_model      = "Qwen/Qwen3-8B"
+#     max_model_len = 32768
+#     instance_type = "ml.g6e.xlarge"
+#     vllm          = { tool_call_parser = "hermes", reasoning_parser = "qwen3" }
+#     sglang        = { tool_call_parser = "qwen25", reasoning_parser = "qwen3" }
+#     jumpstart     = { model_id = "huggingface-reasoning-qwen3-8b" }
+#   }
+# }

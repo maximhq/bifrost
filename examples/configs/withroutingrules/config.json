@@ -18,7 +18,7 @@
         "targets": [
           { "provider": "azure", "weight": 1.0 }
         ],
-        "fallbacks": ["openai"],
+        "fallbacks": ["openai/"],
         "scope": "global",
         "priority": 0
       },
@@ -32,7 +32,7 @@
           { "provider": "anthropic", "weight": 0.5 },
           { "provider": "openai", "weight": 0.5 }
         ],
-        "fallbacks": ["anthropic", "openai"],
+        "fallbacks": ["anthropic/", "openai/"],
         "scope": "global",
         "priority": 10
       },
@@ -58,7 +58,7 @@
         "targets": [
           { "provider": "azure", "weight": 1.0 }
         ],
-        "fallbacks": ["openai", "anthropic"],
+        "fallbacks": ["openai/", "anthropic/"],
         "scope": "virtual_key",
         "scope_id": "premium-tier",
         "priority": 0

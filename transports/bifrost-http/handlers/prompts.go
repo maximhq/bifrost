@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 
 	"github.com/fasthttp/router"
@@ -12,14 +13,13 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
-// PromptCacheReloader is implemented by the prompts plugin to allow the HTTP handler
-// to trigger an in-memory cache refresh after any repository mutation.
+// PromptCacheReloader refreshes the in-memory prompt cache after a repository mutation.
 type PromptCacheReloader interface {
-	Reload(ctx context.Context) error
+	ReloadPromptCache(ctx context.Context) error
 }
 
 // PromptsHandler handles prompt repository endpoints
@@ -43,7 +43,7 @@ func (h *PromptsHandler) reloadCache(ctx context.Context) {
 	if h.reloader == nil {
 		return
 	}
-	if err := h.reloader.Reload(ctx); err != nil {
+	if err := h.reloader.ReloadPromptCache(ctx); err != nil {
 		logger.Error("failed to reload prompt cache: %v", err)
 	}
 }
@@ -137,28 +137,28 @@ type CreateVersionRequest struct {
 	ModelParams   tables.ModelParams     `json:"model_params"`
 	Provider      string                 `json:"provider"`
 	Model         string                 `json:"model"`
-	Variables     tables.PromptVariables  `json:"variables,omitempty"`
+	Variables     tables.PromptVariables `json:"variables,omitempty"`
 }
 
 // CreateSessionRequest represents the request body for creating a session
 type CreateSessionRequest struct {
-	Name        string                  `json:"name"`
-	VersionID   *uint                   `json:"version_id,omitempty"`
-	Messages    []tables.PromptMessage  `json:"messages,omitempty"`
-	ModelParams tables.ModelParams      `json:"model_params"`
-	Provider    string                  `json:"provider"`
-	Model       string                  `json:"model"`
-	Variables   tables.PromptVariables  `json:"variables,omitempty"`
+	Name        string                 `json:"name"`
+	VersionID   *uint                  `json:"version_id,omitempty"`
+	Messages    []tables.PromptMessage `json:"messages,omitempty"`
+	ModelParams tables.ModelParams     `json:"model_params"`
+	Provider    string                 `json:"provider"`
+	Model       string                 `json:"model"`
+	Variables   tables.PromptVariables `json:"variables,omitempty"`
 }
 
 // UpdateSessionRequest represents the request body for updating a session
 type UpdateSessionRequest struct {
-	Name        string                  `json:"name"`
-	Messages    []tables.PromptMessage  `json:"messages"`
-	ModelParams tables.ModelParams      `json:"model_params"`
-	Provider    string                  `json:"provider"`
-	Model       string                  `json:"model"`
-	Variables   tables.PromptVariables  `json:"variables,omitempty"`
+	Name        string                 `json:"name"`
+	Messages    []tables.PromptMessage `json:"messages"`
+	ModelParams tables.ModelParams     `json:"model_params"`
+	Provider    string                 `json:"provider"`
+	Model       string                 `json:"model"`
+	Variables   tables.PromptVariables `json:"variables,omitempty"`
 }
 
 // RenameSessionRequest represents the request body for renaming a session
@@ -244,6 +244,7 @@ func (h *PromptsHandler) createFolder(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	lib.RecordAuditChange(ctx, "prompt_folder.created", "prompt_folder", folder.ID, folder.Name, nil, auditPromptFolder(folder))
 	SendJSON(ctx, map[string]any{
 		"folder": folder,
 	})
@@ -279,6 +280,7 @@ func (h *PromptsHandler) updateFolder(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	before := auditPromptFolder(folder)
 	if req.Name != "" {
 		folder.Name = req.Name
 	}
@@ -292,6 +294,7 @@ func (h *PromptsHandler) updateFolder(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	lib.RecordAuditChange(ctx, "prompt_folder.updated", "prompt_folder", folder.ID, folder.Name, before, auditPromptFolder(folder))
 	SendJSON(ctx, map[string]any{
 		"folder": folder,
 	})
@@ -310,6 +313,7 @@ func (h *PromptsHandler) deleteFolder(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	existing, _ := h.store.GetFolderByID(ctx, id)
 	if err := h.store.DeleteFolder(ctx, id); err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, "folder not found")
@@ -321,6 +325,11 @@ func (h *PromptsHandler) deleteFolder(ctx *fasthttp.RequestCtx) {
 	}
 
 	h.reloadCache(ctx)
+	name := id
+	if existing != nil {
+		name = existing.Name
+	}
+	lib.RecordAuditChange(ctx, "prompt_folder.deleted", "prompt_folder", id, name, auditPromptFolder(existing), nil)
 	SendJSON(ctx, map[string]any{
 		"message": "folder deleted successfully",
 	})
@@ -420,6 +429,7 @@ func (h *PromptsHandler) createPrompt(ctx *fasthttp.RequestCtx) {
 	}
 
 	h.reloadCache(ctx)
+	lib.RecordAuditChange(ctx, "prompt.created", "prompt", prompt.ID, prompt.Name, nil, auditPrompt(prompt))
 	SendJSON(ctx, map[string]any{
 		"prompt": prompt,
 	})
@@ -463,6 +473,7 @@ func (h *PromptsHandler) updatePrompt(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	before := auditPrompt(prompt)
 	if req.Name != "" {
 		prompt.Name = req.Name
 	}
@@ -494,6 +505,7 @@ func (h *PromptsHandler) updatePrompt(ctx *fasthttp.RequestCtx) {
 	}
 
 	h.reloadCache(ctx)
+	lib.RecordAuditChange(ctx, "prompt.updated", "prompt", prompt.ID, prompt.Name, before, auditPrompt(prompt))
 	SendJSON(ctx, map[string]any{
 		"prompt": prompt,
 	})
@@ -512,6 +524,7 @@ func (h *PromptsHandler) deletePrompt(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	existing, _ := h.store.GetPromptByID(ctx, id)
 	if err := h.store.DeletePrompt(ctx, id); err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, "prompt not found")
@@ -523,6 +536,11 @@ func (h *PromptsHandler) deletePrompt(ctx *fasthttp.RequestCtx) {
 	}
 
 	h.reloadCache(ctx)
+	name := id
+	if existing != nil {
+		name = existing.Name
+	}
+	lib.RecordAuditChange(ctx, "prompt.deleted", "prompt", id, name, auditPrompt(existing), nil)
 	SendJSON(ctx, map[string]any{
 		"message": "prompt deleted successfully",
 	})
@@ -615,7 +633,8 @@ func (h *PromptsHandler) createVersion(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Verify prompt exists
-	if _, err := h.store.GetPromptByID(ctx, promptID); err != nil {
+	prompt, err := h.store.GetPromptByID(ctx, promptID)
+	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, "prompt not found")
 			return
@@ -660,6 +679,7 @@ func (h *PromptsHandler) createVersion(ctx *fasthttp.RequestCtx) {
 	}
 
 	h.reloadCache(ctx)
+	lib.RecordAuditChange(ctx, "prompt_version.created", "prompt_version", strconv.FormatUint(uint64(version.ID), 10), promptVersionAuditName(prompt.Name, version), nil, auditPromptVersion(version))
 	SendJSON(ctx, map[string]any{
 		"version": version,
 	})
@@ -683,6 +703,7 @@ func (h *PromptsHandler) deleteVersion(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	existing, _ := h.store.GetPromptVersionByID(ctx, uint(id))
 	if err := h.store.DeletePromptVersion(ctx, uint(id)); err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, "version not found")
@@ -694,6 +715,15 @@ func (h *PromptsHandler) deleteVersion(ctx *fasthttp.RequestCtx) {
 	}
 
 	h.reloadCache(ctx)
+	name := idStr
+	if existing != nil {
+		promptName := existing.PromptID
+		if existing.Prompt != nil {
+			promptName = existing.Prompt.Name
+		}
+		name = promptVersionAuditName(promptName, existing)
+	}
+	lib.RecordAuditChange(ctx, "prompt_version.deleted", "prompt_version", idStr, name, auditPromptVersion(existing), nil)
 	SendJSON(ctx, map[string]any{
 		"message": "version deleted successfully",
 	})
@@ -864,6 +894,9 @@ func (h *PromptsHandler) createSession(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	h.reloadCache(ctx)
+	lib.RecordAuditChange(ctx, "prompt_session.created", "prompt_session", strconv.FormatUint(uint64(session.ID), 10), promptSessionAuditName(session), nil, auditPromptSession(session))
+
 	SendJSON(ctx, map[string]any{
 		"session": session,
 	})
@@ -904,6 +937,7 @@ func (h *PromptsHandler) updateSession(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	before := auditPromptSession(session)
 	if req.Name != "" {
 		session.Name = req.Name
 	}
@@ -930,6 +964,9 @@ func (h *PromptsHandler) updateSession(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	h.reloadCache(ctx)
+	lib.RecordAuditChange(ctx, "prompt_session.updated", "prompt_session", idStr, promptSessionAuditName(session), before, auditPromptSession(session))
+
 	SendJSON(ctx, map[string]any{
 		"session": session,
 	})
@@ -953,6 +990,7 @@ func (h *PromptsHandler) deleteSession(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	existing, _ := h.store.GetPromptSessionByID(ctx, uint(id))
 	if err := h.store.DeletePromptSession(ctx, uint(id)); err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, "session not found")
@@ -963,6 +1001,13 @@ func (h *PromptsHandler) deleteSession(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	h.reloadCache(ctx)
+
+	name := idStr
+	if existing != nil {
+		name = promptSessionAuditName(existing)
+	}
+	lib.RecordAuditChange(ctx, "prompt_session.deleted", "prompt_session", idStr, name, auditPromptSession(existing), nil)
 	SendJSON(ctx, map[string]any{
 		"message": "session deleted successfully",
 	})
@@ -1009,7 +1054,11 @@ func (h *PromptsHandler) renameSession(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	h.reloadCache(ctx)
+
+	before := auditPromptSession(session)
 	session.Name = req.Name
+	lib.RecordAuditChange(ctx, "prompt_session.renamed", "prompt_session", idStr, promptSessionAuditName(session), before, auditPromptSession(session))
 	SendJSON(ctx, map[string]any{
 		"session": session,
 	})
@@ -1115,7 +1164,92 @@ func (h *PromptsHandler) commitSession(ctx *fasthttp.RequestCtx) {
 	}
 
 	h.reloadCache(ctx)
+	lib.RecordAuditChange(ctx, "prompt_session.committed", "prompt_session", idStr, promptSessionAuditName(session), nil, map[string]any{
+		"session_id":     session.ID,
+		"prompt_id":      session.PromptID,
+		"version_id":     version.ID,
+		"version_number": version.VersionNumber,
+		"commit_message": version.CommitMessage,
+		"provider":       version.Provider,
+		"model":          version.Model,
+		"message_count":  len(version.Messages),
+	})
 	SendJSON(ctx, map[string]any{
 		"version": version,
 	})
+}
+
+// auditPromptFolder snapshots a folder without the virtual prompt count.
+func auditPromptFolder(f *tables.TableFolder) any {
+	if f == nil {
+		return nil
+	}
+	return map[string]any{"id": f.ID, "name": f.Name, "description": f.Description}
+}
+
+// auditPrompt snapshots a prompt's identity and folder, never its preloaded versions or sessions.
+func auditPrompt(p *tables.TablePrompt) any {
+	if p == nil {
+		return nil
+	}
+	return map[string]any{"id": p.ID, "name": p.Name, "folder_id": p.FolderID}
+}
+
+// auditPromptVersion snapshots version metadata; message bodies are reduced to a count.
+func auditPromptVersion(v *tables.TablePromptVersion) any {
+	if v == nil {
+		return nil
+	}
+	return map[string]any{
+		"id":             v.ID,
+		"prompt_id":      v.PromptID,
+		"version_number": v.VersionNumber,
+		"commit_message": v.CommitMessage,
+		"provider":       v.Provider,
+		"model":          v.Model,
+		"model_params":   v.ModelParams,
+		"variables":      promptVariableKeys(v.Variables),
+		"message_count":  len(v.Messages),
+	}
+}
+
+// auditPromptSession snapshots session metadata; messages become a count and variables keep only their keys.
+func auditPromptSession(s *tables.TablePromptSession) any {
+	if s == nil {
+		return nil
+	}
+	return map[string]any{
+		"id":            s.ID,
+		"prompt_id":     s.PromptID,
+		"version_id":    s.VersionID,
+		"name":          s.Name,
+		"provider":      s.Provider,
+		"model":         s.Model,
+		"model_params":  s.ModelParams,
+		"variables":     promptVariableKeys(s.Variables),
+		"message_count": len(s.Messages),
+	}
+}
+
+func promptVariableKeys(vars tables.PromptVariables) []string {
+	if len(vars) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(vars))
+	for k := range vars {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func promptVersionAuditName(promptName string, v *tables.TablePromptVersion) string {
+	return fmt.Sprintf("%s v%d", promptName, v.VersionNumber)
+}
+
+func promptSessionAuditName(s *tables.TablePromptSession) string {
+	if s.Name != "" {
+		return s.Name
+	}
+	return strconv.FormatUint(uint64(s.ID), 10)
 }

@@ -5,7 +5,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // sweepRecordingStore counts sweep invocations. It embeds the ConfigStore
@@ -76,4 +79,57 @@ func TestOAuth2SweepWorkerGateReevaluatedPerPass(t *testing.T) {
 	if store.calls != 3 {
 		t.Fatalf("re-gated-off pass made %d store calls, want 3 total", store.calls)
 	}
+}
+
+// staleOAuthRecorder records what dropStaleMCPOAuthState asks the server to drop; release, when set,
+// holds the token-cache drop until it is closed.
+type staleOAuthRecorder struct {
+	evicted, closed []string
+	closeErr        error
+	release         chan struct{}
+}
+
+func (r *staleOAuthRecorder) EvictOauthTokenCacheByMCPClient(_ context.Context, mcpClientID string) {
+	if r.release != nil {
+		<-r.release
+	}
+	r.evicted = append(r.evicted, mcpClientID)
+}
+
+func (r *staleOAuthRecorder) CloseAndMarkNeedsReauth(_ context.Context, id string) error {
+	r.closed = append(r.closed, id)
+	return r.closeErr
+}
+
+// A rotation (a metadata-document move, or a sign-in moving to a new authorization server) drops the
+// client's cached tokens and shared connection before the hook returns, so the sign-in it rotated for
+// cannot reconnect first and have its new connection closed by a late drop.
+func TestDropStaleMCPOAuthState(t *testing.T) {
+	recorder := &staleOAuthRecorder{release: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // a caller that hung up must not cut the drop short
+	done := make(chan struct{})
+	go func() {
+		dropStaleMCPOAuthState(recorder)(ctx, "linear")
+		close(done)
+	}()
+	select {
+	case <-done:
+		t.Fatal("the hook returned before the stale tokens were dropped")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(recorder.release)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("the hook did not return once the drop finished")
+	}
+	assert.Equal(t, []string{"linear"}, recorder.evicted)
+	assert.Equal(t, []string{"linear"}, recorder.closed)
+
+	// A per-user client has no shared connection to close.
+	perUser := &staleOAuthRecorder{closeErr: schemas.ErrMCPReconnectNotApplicable}
+	dropStaleMCPOAuthState(perUser)(context.Background(), "linear")
+	require.Equal(t, []string{"linear"}, perUser.evicted)
+	assert.Equal(t, []string{"linear"}, perUser.closed)
 }

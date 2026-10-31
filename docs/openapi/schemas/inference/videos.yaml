@@ -4,14 +4,33 @@ VideoGenerationRequest:
   type: object
   required:
     - model
-    - prompt
   properties:
     model:
       type: string
       description: Model identifier in format `provider/model`
     prompt:
       type: string
-      description: Text prompt describing the video to generate
+      description: |
+        Text prompt describing the video to generate. Optional for operations driven purely by an
+        input asset, such as image-to-3D.
+    type:
+      type: string
+      enum:
+        - "3d"
+        - "upscale"
+        - "background_removal"
+        - "remove_background"
+        - "remove_bg"
+      description: |
+        Operation selector for providers that run more than one async task type on this endpoint
+        (e.g. `3d` for mesh generation on Runware). Omit for standard video generation.
+    output_format:
+      type: string
+      enum:
+        - "mp4"
+        - "webm"
+        - "mov"
+      description: Output container format
     input_reference:
       type: string
       description: Optional reference image for image-to-video. OpenAI and Gemini require a base64 data URL (e.g., `data:image/png;base64,...`). Runway and Replicate accept both data URLs and plain URLs.
@@ -112,6 +131,127 @@ VideoGenerationResponse:
       $ref: '#/VideoContentFilter'
     extra_fields:
       $ref: './common.yaml#/BifrostResponseExtraFields'
+
+VideoEditRequest:
+  type: object
+  description: |
+    JSON encoding of a video edit. The source is supplied as a nested `video` object holding either
+    an `id` or a `url`. To upload the source as a file, post `multipart/form-data` instead - see
+    `VideoEditMultipartRequest`.
+  required:
+    - model
+    - video
+  properties:
+    model:
+      type: string
+      description: Model identifier in format `provider/model`
+    video:
+      $ref: '#/VideoInput'
+    prompt:
+      type: string
+      description: |
+        Text prompt describing the edit. Required except for operation types driven purely by the
+        source video: `background_removal` and `upscale`.
+    type:
+      type: string
+      enum:
+        - "upscale"
+        - "background_removal"
+        - "remove_background"
+        - "remove_bg"
+      description: |
+        Operation selector. Omit for prompt-driven editing. Support varies by provider; unsupported
+        values fall back to a standard edit.
+    seed:
+      type: integer
+      description: Seed for reproducible editing
+    output_format:
+      type: string
+      enum:
+        - "mp4"
+        - "webm"
+        - "mov"
+      description: Output container format
+    upscale_factor:
+      type: integer
+      description: |
+        Multiply each dimension by this factor. `type: "upscale"` only; mutually exclusive with
+        `target_megapixels`.
+    target_megapixels:
+      type: integer
+      description: |
+        Target output size in megapixels. `type: "upscale"` only; mutually exclusive with
+        `upscale_factor`.
+    fallbacks:
+      type: array
+      items:
+        $ref: './common.yaml#/Fallback'
+      description: Fallback models to try if primary model fails
+
+VideoInput:
+  type: object
+  description: |
+    Source video for an edit. Supply exactly one of `id` or `url`. Output geometry and duration are
+    derived from the source and are not accepted as parameters.
+  properties:
+    id:
+      type: string
+      description: Provider-side video ID, as returned by a previous generation
+    url:
+      type: string
+      description: Public URL or data URI
+
+VideoEditMultipartRequest:
+  type: object
+  description: |
+    Multipart encoding of a video edit, and the only encoding that can upload a source file. This
+    is what the official OpenAI SDKs send unconditionally, flattening the reference form to a
+    `video[id]` field. Supply exactly one of `video`, `video[id]` or `video[url]`.
+  required:
+    - model
+  properties:
+    model:
+      type: string
+      description: Model identifier in format `provider/model`
+    video:
+      type: string
+      format: binary
+      description: Source video file to upload
+    "video[id]":
+      type: string
+      description: Provider-side video ID, as an alternative to uploading a file
+    "video[url]":
+      type: string
+      description: Public URL of the source video, as an alternative to uploading a file
+    prompt:
+      type: string
+      description: |
+        Text prompt describing the edit. Required except for operation types driven purely by the
+        source video: `background_removal` and `upscale`.
+    type:
+      type: string
+      enum:
+        - "upscale"
+        - "background_removal"
+        - "remove_background"
+        - "remove_bg"
+      description: Operation selector. Omit for prompt-driven editing
+    seed:
+      type: integer
+      description: Seed for reproducible editing
+    output_format:
+      type: string
+      enum:
+        - "mp4"
+        - "webm"
+        - "mov"
+      description: Output container format
+    upscale_factor:
+      type: integer
+      description: '`type: "upscale"` only; mutually exclusive with `target_megapixels`'
+    target_megapixels:
+      type: integer
+      description: '`type: "upscale"` only; mutually exclusive with `upscale_factor`'
 
 VideoRemixRequest:
   type: object

@@ -228,6 +228,7 @@ curl -X POST http://localhost:8080/api/guardrails/rules \
         "apply_to": "both",
         "sampling_rate": 100,
         "timeout": 60,
+        "send_all_conversation_turns": false,
         "max_turns_to_send": 8,
         "provider_config_ids": [70]
       }
@@ -263,6 +264,7 @@ bifrost:
         apply_to: "both"
         sampling_rate: 100
         timeout: 60
+        send_all_conversation_turns: false
         max_turns_to_send: 8
         provider_config_ids: [70]
 ```

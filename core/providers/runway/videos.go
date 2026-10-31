@@ -43,6 +43,16 @@ func ToRunwayVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationRe
 		}
 	}
 
+	// Match getRunwayEndpoint, which only routes to video-to-video for a non-empty URI: treating an
+	// empty one as present would both reject supported models and forward an empty videoUri on the
+	// image-to-video endpoint.
+	if bifrostReq.Input != nil && bifrostReq.Input.VideoURI != nil && *bifrostReq.Input.VideoURI != "" {
+		if !supportsVideoToVideo(bifrostReq.Model) {
+			return nil, fmt.Errorf("video_uri is not supported for model %s", bifrostReq.Model)
+		}
+		request.VideoURI = bifrostReq.Input.VideoURI
+	}
+
 	if bifrostReq.Params != nil {
 		if bifrostReq.Params.Seconds != nil {
 			seconds, err := strconv.Atoi(*bifrostReq.Params.Seconds)
@@ -67,13 +77,6 @@ func ToRunwayVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationRe
 			if bifrostReq.Params.Seed != nil {
 				request.Seed = bifrostReq.Params.Seed
 			}
-		}
-
-		if bifrostReq.Params.VideoURI != nil {
-			if !supportsVideoToVideo(bifrostReq.Model) {
-				return nil, fmt.Errorf("video_uri is not supported for model %s", bifrostReq.Model)
-			}
-			request.VideoURI = bifrostReq.Params.VideoURI
 		}
 
 		if bifrostReq.Params.ExtraParams != nil {

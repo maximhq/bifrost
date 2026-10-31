@@ -1,7 +1,12 @@
 import { baseApi } from "./baseApi";
 
 export interface OAuth2ConsentFlowDetail {
+	redirect_uri: string;
+	redirect_host: string;
 	client_name: string;
+	// CIMD clients only.
+	client_host?: string;
+	localhost_only_redirect?: boolean;
 	available_modes: Array<"vk" | "session" | "user">;
 	logged_in_user?: { id: string; name?: string };
 	expires_at: string;
@@ -23,10 +28,7 @@ export const oauth2ConsentApi = baseApi.injectEndpoints({
 				url: `/oauth2/consent/flows/${encodeURIComponent(flowId)}`,
 			}),
 		}),
-		submitOAuth2ConsentFlow: builder.mutation<
-			OAuth2ConsentSubmitResponse,
-			{ flowId: string; body: OAuth2ConsentSubmitRequest }
-		>({
+		submitOAuth2ConsentFlow: builder.mutation<OAuth2ConsentSubmitResponse, { flowId: string; body: OAuth2ConsentSubmitRequest }>({
 			query: ({ flowId, body }) => ({
 				url: `/oauth2/consent/flows/${encodeURIComponent(flowId)}`,
 				method: "PUT",
@@ -36,7 +38,4 @@ export const oauth2ConsentApi = baseApi.injectEndpoints({
 	}),
 });
 
-export const {
-	useGetOAuth2ConsentFlowQuery,
-	useSubmitOAuth2ConsentFlowMutation,
-} = oauth2ConsentApi;
+export const { useGetOAuth2ConsentFlowQuery, useSubmitOAuth2ConsentFlowMutation } = oauth2ConsentApi;

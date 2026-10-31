@@ -11,16 +11,30 @@ BifrostLLMUsage:
         Subtract prompt_tokens_details.cached_read_tokens and
         prompt_tokens_details.cached_write_tokens to get the non-cached portion.
     prompt_tokens_details:
-      $ref: '#/ChatPromptTokensDetails'
+      $ref: "#/ChatPromptTokensDetails"
     completion_tokens:
       type: integer
       description: Number of output/completion tokens generated.
     completion_tokens_details:
-      $ref: '#/ChatCompletionTokensDetails'
+      $ref: "#/ChatCompletionTokensDetails"
     total_tokens:
       type: integer
+    tool_usage:
+      $ref: "#/ToolUsage"
     cost:
-      $ref: '#/BifrostCost'
+      $ref: "#/BifrostCost"
+
+ToolUsage:
+  type: object
+  description: >
+    Counts of provider-hosted (server-side) tool calls billed per call.
+  properties:
+    web_search:
+      type: object
+      properties:
+        num_requests:
+          type: integer
+          description: Number of billable web search calls.
 
 ChatPromptTokensDetails:
   type: object
@@ -59,6 +73,8 @@ ChatCompletionTokensDetails:
       type: integer
     num_search_queries:
       type: integer
+      deprecated: true
+      description: Deprecated, use tool_usage.web_search.num_requests. Will be removed in 3.0.0.
     reasoning_tokens:
       type: integer
     image_tokens:

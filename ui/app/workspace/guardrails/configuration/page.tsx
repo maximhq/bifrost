@@ -2,7 +2,7 @@ import GuardrailsConfigurationView from "@enterprise/components/guardrails/guard
 
 export default function GuardrailsConfigurationPage() {
 	return (
-		<div className="mx-auto w-full max-w-7xl">
+		<div className="no-padding-parent w-full p-4">
 			<GuardrailsConfigurationView />
 		</div>
 	);

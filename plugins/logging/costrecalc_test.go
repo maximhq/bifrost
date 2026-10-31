@@ -21,6 +21,7 @@ type fakeRecalcStore struct {
 	logstore.LogStore
 	logs              []logstore.Log // pre-sorted by (timestamp, id)
 	cost              map[string]float64
+	split             map[string]logstore.CostUpdate // full per-category update per id
 	hasCost           map[string]bool
 	updateCount       map[string]int // successful BulkUpdateCost touches per id
 	searchCalls       int
@@ -28,15 +29,37 @@ type fakeRecalcStore struct {
 	failBulkOnCall    int   // 1-based bulk call number to fail; 0 = never
 	hydrateChunkSizes []int // sizes handed to HydrateBillingChunk, in order
 	backfilled        []int // sizes handed to BulkBackfillBillingPayloads, in order
+	// updates captures single-row Update() writes, which is how a job kind's cost
+	// and its debug blob are persisted together.
+	updates map[string]map[string]any
+	// paginations records every pagination the job asked for, in order.
+	paginations []logstore.PaginationOptions
+	// byIDCalls counts single-row reads by RequestID (payload re-reads).
+	byIDCalls int
 }
 
 func newFakeRecalcStore(logs []logstore.Log) *fakeRecalcStore {
 	return &fakeRecalcStore{
 		logs:        logs,
 		cost:        make(map[string]float64),
+		split:       make(map[string]logstore.CostUpdate),
 		hasCost:     make(map[string]bool),
 		updateCount: make(map[string]int),
+		updates:     make(map[string]map[string]any),
 	}
+}
+
+func (s *fakeRecalcStore) Update(_ context.Context, id string, entry any) error {
+	fields, ok := entry.(map[string]any)
+	if !ok {
+		return fmt.Errorf("fakeRecalcStore.Update: want map[string]any, got %T", entry)
+	}
+	s.updates[id] = fields
+	if c, ok := fields["cost"].(float64); ok {
+		s.cost[id] = c
+		s.hasCost[id] = true
+	}
+	return nil
 }
 
 // SearchLogsForBilling is what the recalc job actually calls. The fake has nothing
@@ -66,8 +89,26 @@ func (s *fakeRecalcStore) SearchLogs(_ context.Context, f logstore.SearchFilters
 	if s.searchCalls > 1000 {
 		return nil, fmt.Errorf("SearchLogs called too many times; likely an infinite loop")
 	}
+	s.paginations = append(s.paginations, p)
+	// An exact primary-key read, like applyFilters' RequestID branch: the time
+	// window and scope filters do not apply.
+	if f.RequestID != "" {
+		s.byIDCalls++
+		for _, l := range s.logs {
+			if l.ID == f.RequestID {
+				return &logstore.SearchResult{Logs: []logstore.Log{l}}, nil
+			}
+		}
+		return &logstore.SearchResult{}, nil
+	}
 	var matched []logstore.Log
 	for _, l := range s.logs {
+		// Keyset cursor: strictly after (AfterTimestamp, AfterID) in ascending order.
+		if p.AfterTimestamp != nil && p.AfterID != "" {
+			if l.Timestamp.Before(*p.AfterTimestamp) || (l.Timestamp.Equal(*p.AfterTimestamp) && l.ID <= p.AfterID) {
+				continue
+			}
+		}
 		if f.StartTime != nil && l.Timestamp.Before(*f.StartTime) {
 			continue
 		}
@@ -89,13 +130,14 @@ func (s *fakeRecalcStore) SearchLogs(_ context.Context, f logstore.SearchFilters
 	return &logstore.SearchResult{Logs: page}, nil
 }
 
-func (s *fakeRecalcStore) BulkUpdateCost(_ context.Context, updates map[string]float64) error {
+func (s *fakeRecalcStore) BulkUpdateCost(_ context.Context, updates map[string]logstore.CostUpdate) error {
 	s.bulkCalls++
 	if s.failBulkOnCall != 0 && s.bulkCalls == s.failBulkOnCall {
 		return fmt.Errorf("simulated bulk update failure")
 	}
 	for id, c := range updates {
-		s.cost[id] = c
+		s.cost[id] = c.Total
+		s.split[id] = c
 		s.hasCost[id] = true
 		s.updateCount[id]++
 	}
@@ -186,6 +228,35 @@ func window(base time.Time) logstore.SearchFilters {
 	return logstore.SearchFilters{StartTime: &start, EndTime: &end}
 }
 
+// TestRunCostRecalcJob_BackfillsCostSplit verifies recompute refreshes the
+// denormalized input/output/additional columns, not just the total, so the split
+// reconciles to the cost column after a reprice.
+func TestRunCostRecalcJob_BackfillsCostSplit(t *testing.T) {
+	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	store := newFakeRecalcStore([]logstore.Log{positiveLog("split-1", base)})
+	p := newRecalcPlugin(t, store)
+
+	if _, _, err := runJob(t, p, CostRecalcJobMeta{Filters: window(base), MissingCostOnly: false, Total: 1}); err != nil {
+		t.Fatalf("RunCostRecalcJob error = %v", err)
+	}
+
+	u, ok := store.split["split-1"]
+	if !ok {
+		t.Fatal("expected a cost update for split-1")
+	}
+	// gpt-4o testdata rates: input 2.5e-6/token, output 1e-5/token (100 prompt, 50 completion).
+	wantIn, wantOut := 100*2.5e-6, 50*1e-5
+	if d := u.Input - wantIn; d < -1e-12 || d > 1e-12 {
+		t.Fatalf("input cost %v != %v", u.Input, wantIn)
+	}
+	if d := u.Output - wantOut; d < -1e-12 || d > 1e-12 {
+		t.Fatalf("output cost %v != %v", u.Output, wantOut)
+	}
+	if d := u.Total - (u.Input + u.Output + u.Additional); d < -1e-12 || d > 1e-12 {
+		t.Fatalf("split does not reconcile to total: total=%v in=%v out=%v add=%v", u.Total, u.Input, u.Output, u.Additional)
+	}
+}
+
 // TestCalculateCostForLog_BedrockMantleChatStreamUsesResponsesPricing pins the
 // recalc entry point on a stored streaming chat row whose only datasheet entry is
 // filed under responses mode: the cost must come back from the responses rates
@@ -202,6 +273,41 @@ func TestCalculateCostForLog_BedrockMantleChatStreamUsesResponsesPricing(t *test
 	want := 955*5.5e-6 + 3138*3.3e-5
 	if diff := cost - want; diff < -1e-9 || diff > 1e-9 {
 		t.Fatalf("cost = %v, want %v (responses-mode rates via the chat→responses fallback)", cost, want)
+	}
+}
+
+// TestCalculateCostForLog_ServedTierSelectsRates pins the reprice entry point on
+// the stored service_tier column: "fast" (OpenAI's renamed Priority tier) and
+// "priority" both bill on the priority columns, and "default" stays on standard.
+func TestCalculateCostForLog_ServedTierSelectsRates(t *testing.T) {
+	p := newRecalcPlugin(t, newFakeRecalcStore(nil))
+	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// gpt-4o testdata rates for 100 prompt / 50 completion tokens.
+	standard := 100*2.5e-6 + 50*1e-5
+	priority := 100*4.25e-6 + 50*1.7e-5
+
+	cases := []struct {
+		tier string
+		want float64
+	}{
+		{"fast", priority},
+		{"priority", priority},
+		{"default", standard},
+	}
+	for _, tc := range cases {
+		t.Run(tc.tier, func(t *testing.T) {
+			entry := positiveLog("tier-"+tc.tier, base)
+			entry.ServiceTier = &tc.tier
+
+			cost, err := p.calculateCostForLog(&entry)
+			if err != nil {
+				t.Fatalf("calculateCostForLog() error = %v", err)
+			}
+			if diff := cost - tc.want; diff < -1e-12 || diff > 1e-12 {
+				t.Fatalf("cost = %v, want %v for service_tier %q", cost, tc.want, tc.tier)
+			}
+		})
 	}
 }
 
@@ -233,9 +339,9 @@ func TestRunCostRecalcJob_BackfillsBedrockMantleStreamRow(t *testing.T) {
 // through more same-timestamp rows than a single batch holds without skipping or
 // re-touching any — the case the old one-nanosecond nudge silently dropped.
 func TestRunCostRecalcJob_FullRecalcTiePagination(t *testing.T) {
-	restore := costRecalcBatchSize
-	costRecalcBatchSize = 3
-	defer func() { costRecalcBatchSize = restore }()
+	restore := costRecalcPageSize
+	costRecalcPageSize = 3
+	defer func() { costRecalcPageSize = restore }()
 
 	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	ts := base // all rows share one instant
@@ -274,9 +380,9 @@ func TestRunCostRecalcJob_FullRecalcTiePagination(t *testing.T) {
 // that stay uncosted, all at one timestamp spanning multiple batches. The carried
 // offset must skip exactly the already-seen rows that remain visible.
 func TestRunCostRecalcJob_MissingCostOnlyTiePagination(t *testing.T) {
-	restore := costRecalcBatchSize
-	costRecalcBatchSize = 3
-	defer func() { costRecalcBatchSize = restore }()
+	restore := costRecalcPageSize
+	costRecalcPageSize = 3
+	defer func() { costRecalcPageSize = restore }()
 
 	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	ts := base
@@ -323,9 +429,9 @@ func TestRunCostRecalcJob_MissingCostOnlyTiePagination(t *testing.T) {
 // folding in the failed batch's skip count, so retrying from that snapshot cannot
 // double-count skips or re-touch already-costed rows.
 func TestRunCostRecalcJob_SkipCountNotInflatedOnRetry(t *testing.T) {
-	restore := costRecalcBatchSize
-	costRecalcBatchSize = 3
-	defer func() { costRecalcBatchSize = restore }()
+	restore := costRecalcPageSize
+	costRecalcPageSize = 3
+	defer func() { costRecalcPageSize = restore }()
 
 	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	// Distinct timestamps, one skip per batch.
@@ -439,5 +545,229 @@ func TestRunCostRecalcJob_HydratesInBoundedChunks(t *testing.T) {
 	}
 	if total != rows {
 		t.Fatalf("chunks covered %d rows, want every one of %d: %v", total, rows, store.hydrateChunkSizes)
+	}
+}
+
+// A job kind reprices an aggregate row to a single scalar total and leaves
+// breakdown nil; the generic path is the other way round. persistRecalcOutcomes
+// reading the nil breakdown for a kind-owned outcome wrote CostUpdate{} — zeros —
+// over a real provider-reported cost, and still counted the row as priced. This
+// exercises the seam end to end rather than what RepriceFromLog returns, which is
+// where that bug hid.
+func TestPersistRecalcOutcomes_KindOwnedCostSurvivesPersistence(t *testing.T) {
+	const id = "runware-settlement"
+	store := newFakeRecalcStore([]logstore.Log{{ID: id}})
+	plugin := newRecalcPlugin(t, store)
+
+	// What VideoSettler.RepriceFromLog returns for a provider-reported cost: a
+	// positive total, and no debug blob to write alongside it.
+	outcomes := []billingOutcome{{cost: 0.42, kindOwned: true}}
+
+	tally, err := plugin.persistRecalcOutcomes(context.Background(), []logstore.Log{{ID: id}}, outcomes)
+	if err != nil {
+		t.Fatalf("persistRecalcOutcomes: %v", err)
+	}
+	if got := store.cost[id]; got != 0.42 {
+		t.Errorf("provider cost did not survive the reprice: got %v, want 0.42", got)
+	}
+	if got := store.split[id].Total; got != 0.42 {
+		t.Errorf("split total = %v, want 0.42", got)
+	}
+	if !tally.priced[0] {
+		t.Error("a repriced row must count as priced")
+	}
+}
+
+// The generic path carries a per-category split. Resolving both paths through one
+// helper must not flatten it into a bare total.
+func TestPersistRecalcOutcomes_GenericBreakdownKeepsItsSplit(t *testing.T) {
+	const id = "chat-row"
+	store := newFakeRecalcStore([]logstore.Log{{ID: id}})
+	plugin := newRecalcPlugin(t, store)
+
+	outcomes := []billingOutcome{{
+		cost:      0.30,
+		breakdown: &schemas.BifrostCost{InputCost: 0.10, OutputCost: 0.20, TotalCost: 0.30},
+	}}
+
+	tally, err := plugin.persistRecalcOutcomes(context.Background(), []logstore.Log{{ID: id}}, outcomes)
+	if err != nil {
+		t.Fatalf("persistRecalcOutcomes: %v", err)
+	}
+	got := store.split[id]
+	if got.Total != 0.30 || got.Input != 0.10 || got.Output != 0.20 {
+		t.Errorf("the split collapsed: got total=%v input=%v output=%v, want 0.30/0.10/0.20",
+			got.Total, got.Input, got.Output)
+	}
+	if !tally.priced[0] {
+		t.Error("a repriced row must count as priced")
+	}
+}
+
+// priced[i] means the row now carries a POSITIVE cost and will drop out of a
+// MissingCostOnly scan; the caller advances its offset only past rows that stay.
+// Marking a settled zero as priced stalls that cursor — the row keeps matching
+// cost <= 0, reappears at the head of the next page, and the page repeats forever.
+func TestPersistRecalcOutcomes_SettledZeroDoesNotStallTheCursor(t *testing.T) {
+	const id = "failed-video"
+	store := newFakeRecalcStore([]logstore.Log{{ID: id}})
+	plugin := newRecalcPlugin(t, store)
+
+	outcomes := []billingOutcome{{cost: 0, kindOwned: true, settledZero: true}}
+
+	tally, err := plugin.persistRecalcOutcomes(context.Background(), []logstore.Log{{ID: id}}, outcomes)
+	if err != nil {
+		t.Fatalf("persistRecalcOutcomes: %v", err)
+	}
+	if tally.priced[0] {
+		t.Error("a settled zero still matches cost <= 0, so it must not be reported as priced")
+	}
+	if !store.hasCost[id] {
+		t.Error("the zero must still be written, not skipped")
+	}
+	if got := store.cost[id]; got != 0 {
+		t.Errorf("cost = %v, want 0", got)
+	}
+}
+
+// A job kind can reprice an aggregate to zero and still have a refreshed debug
+// blob to persist — a batch whose models priced but whose usage was zero. The
+// zero branch used to return early and drop that blob, leaving stale breakdowns.
+func TestPersistRecalcOutcomes_ZeroCostStillWritesDebugBlob(t *testing.T) {
+	const id = "zero-usage-batch"
+	store := newFakeRecalcStore([]logstore.Log{{ID: id}})
+	plugin := newRecalcPlugin(t, store)
+
+	outcomes := []billingOutcome{{
+		cost:        0,
+		kindOwned:   true,
+		settledZero: true,
+		debugUpdate: `{"batch_id":"b1","accounting":{"model_breakdowns":{}}}`,
+		debugColumn: "batch_debug",
+	}}
+
+	tally, err := plugin.persistRecalcOutcomes(context.Background(), []logstore.Log{{ID: id}}, outcomes)
+	if err != nil {
+		t.Fatalf("persistRecalcOutcomes: %v", err)
+	}
+	if tally.updated != 1 {
+		t.Errorf("updated = %d, want 1 — the debug blob must be written even at zero cost", tally.updated)
+	}
+	if got := store.updates[id]["batch_debug"]; got == nil {
+		t.Error("batch_debug was not persisted; the refreshed breakdowns are lost")
+	}
+	if tally.priced[0] {
+		t.Error("zero cost must not be reported as priced")
+	}
+}
+
+// persistRecalcOutcomes is a shipped path that the job-kind refactor restructured,
+// so every outcome shape it can receive is pinned here against the behaviour it
+// had before. The one deliberate difference is noted on its case.
+func TestPersistRecalcOutcomes_ShapeMatrix(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		outcome     billingOutcome
+		wantSkipped int
+		wantUpdated int
+		wantBulk    bool // written via BulkUpdateCost
+		wantDebug   bool // batch_debug/video_debug persisted
+		wantPriced  bool
+	}{
+		{
+			name:        "pricing error is skipped and counted unpriceable",
+			outcome:     billingOutcome{err: errPricingInputsUnavailable},
+			wantSkipped: 1,
+		},
+		{
+			name:        "cache hit resolved to zero writes an explicit zero, stays unpriced",
+			outcome:     billingOutcome{cost: 0, knownZeroCost: true},
+			wantUpdated: 1,
+			wantBulk:    true,
+			wantPriced:  false,
+		},
+		{
+			name:        "unresolved zero is skipped",
+			outcome:     billingOutcome{cost: 0},
+			wantSkipped: 1,
+		},
+		{
+			name:        "generic positive cost goes through the bulk path",
+			outcome:     billingOutcome{cost: 0.3, breakdown: &schemas.BifrostCost{TotalCost: 0.3}},
+			wantUpdated: 1,
+			wantBulk:    true,
+			wantPriced:  true,
+		},
+		{
+			name: "kind aggregate writes cost and debug together",
+			outcome: billingOutcome{
+				cost: 0.42, kindOwned: true,
+				debugUpdate: `{"x":1}`, debugColumn: "batch_debug",
+			},
+			wantUpdated: 1,
+			wantDebug:   true,
+			wantPriced:  true,
+		},
+		{
+			name: "echo row refreshes its display only and never bills",
+			outcome: billingOutcome{
+				cost: 0.42, kindOwned: true, displayOnly: true,
+				debugUpdate: `{"x":1}`, debugColumn: "batch_debug",
+			},
+			wantUpdated: 1,
+			wantDebug:   true,
+			wantPriced:  false,
+		},
+		{
+			// The one deliberate change from the previous behaviour: a zero-cost row
+			// carrying a refreshed blob used to be skipped, dropping the blob and
+			// leaving stale model breakdowns behind.
+			name: "zero cost with a refreshed blob still persists the blob",
+			outcome: billingOutcome{
+				cost: 0, kindOwned: true, settledZero: true,
+				debugUpdate: `{"x":1}`, debugColumn: "batch_debug",
+			},
+			wantUpdated: 1,
+			wantDebug:   true,
+			wantPriced:  false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const id = "row"
+			store := newFakeRecalcStore([]logstore.Log{{ID: id}})
+			plugin := newRecalcPlugin(t, store)
+
+			tally, err := plugin.persistRecalcOutcomes(
+				context.Background(), []logstore.Log{{ID: id}}, []billingOutcome{tc.outcome})
+			if err != nil {
+				t.Fatalf("persistRecalcOutcomes: %v", err)
+			}
+			if tally.skipped != tc.wantSkipped {
+				t.Errorf("skipped = %d, want %d", tally.skipped, tc.wantSkipped)
+			}
+			if tally.updated != tc.wantUpdated {
+				t.Errorf("updated = %d, want %d", tally.updated, tc.wantUpdated)
+			}
+			if got := store.updateCount[id] > 0; got != tc.wantBulk {
+				t.Errorf("bulk-written = %v, want %v", got, tc.wantBulk)
+			}
+			if got := store.updates[id] != nil; got != tc.wantDebug {
+				t.Errorf("debug persisted = %v, want %v", got, tc.wantDebug)
+			}
+			if tally.priced[0] != tc.wantPriced {
+				t.Errorf("priced = %v, want %v", tally.priced[0], tc.wantPriced)
+			}
+		})
+	}
+}
+
+func TestCostRecalcProgress(t *testing.T) {
+	done, total, msg := CostRecalcProgress(`{"total":120,"processed":30,"updated":20,"message":"working"}`)
+	if done != 30 || total != 120 || msg != "working" {
+		t.Fatalf("got done=%d total=%d msg=%q", done, total, msg)
+	}
+	done, total, msg = CostRecalcProgress(`{not json`)
+	if done != 0 || total != 0 || msg != "" {
+		t.Fatalf("malformed metadata should yield zero values, got %d %d %q", done, total, msg)
 	}
 }

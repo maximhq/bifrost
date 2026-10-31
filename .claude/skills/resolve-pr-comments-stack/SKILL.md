@@ -10,7 +10,9 @@ Systematically resolve unresolved review comments (CodeRabbit, Greptile, human r
 across every branch in a Graphite stack, working bottom-up in a single checkout. Each
 branch's fixes are committed into that branch via `gt modify` before moving to the next,
 so the stack stays restacked and consistent throughout — no branch is left dirty, and no
-branch is worked on out of dependency order.
+branch is worked on out of dependency order. Nothing in this pass changes the user's tree
+or branches without their say-so: every code edit and reply is approved per comment, and
+every `gt modify` (or `gt restack`) is approved per branch, before it runs.
 
 This is the stack-wide orchestration layer. The per-PR triage logic (fetch threads,
 classify FIX/REPLY/SKIP, apply) is the same as the single-PR `resolve-pr-comments` skill;
@@ -169,13 +171,37 @@ and the tests above are green:
 go vet ./<affected packages>/...         # go build ./... can report a false success
 go test ./<affected packages>/... -race  # -race for concurrency-sensitive changes
 git status --short                       # must show only the files this branch's fixes touched
+```
+
+**Then stop and ask before amending.** `gt modify` rewrites the branch's tip commit and
+restacks every descendant, which is the user's tree to change, not yours. Show them what is
+about to go in (the `git status --short` output, a one-line summary of each fix, and the
+test result), then ask with `AskUserQuestion`, once per branch, offering:
+
+1. **Run `gt modify -a` now** (Recommended): you amend the tip, preserving its message, and
+   move on to the next branch.
+2. **I'll amend it myself**: do nothing to the tree. Wait for the user to say it is done,
+   then confirm `git status --short` is empty before the next `gt checkout`. If it is not
+   empty, ask again; never checkout over a dirty tree.
+3. **Stop the pass here**: leave the changes uncommitted in the working tree, report what is
+   pending on this branch, and end the pass.
+
+Only after option 1 is chosen:
+
+```bash
 gt modify -a                             # amend the tip, PRESERVING its existing message
 ```
 
 `gt modify` amends the branch's tip with the staged changes and auto-restacks every
-descendant branch — this is the correct persistence mechanism for a stack pass, not a plain
+descendant branch, which is the correct persistence mechanism for a stack pass: not a plain
 `git commit` (which wouldn't restack) and not leaving changes uncommitted (which would carry
-into the next `gt checkout` and corrupt it).
+into the next `gt checkout` and corrupt it). Correct mechanism or not, it never runs without
+that per-branch approval, and approval on one branch does not carry over to the next. That
+approval covers the automatic restack too, when it lands with no conflict: rewriting a
+descendant's tip SHA is a mechanical side effect of the one approved amend, not a second
+action, so there is nothing separate to ask about: the descendant's own file content
+never changes. A conflicted restack is the one case that stops being mechanical, and it is
+gated on its own, separately, below.
 
 **Use `gt modify -a`, not `gt modify -a -m "..."`.** The tip commit is the *author's*, not
 yours; `-m` silently rewrites its message, so a branch whose tip is `cli test improvements`
@@ -217,8 +243,9 @@ gh pr view <number> --json headRefOid --jq .headRefOid   # must equal `git rev-p
 
 If a remote head does not match its local tip, publication was incomplete — commonly because
 `gt submit` reported branches it could not restack. Do not verify only the branches that went
-out. Run `gt restack` (a local operation, so this one is yours), routing any conflict through
-the gated recovery flow below, then tell the user to re-run `gt submit --stack` and redo the
+out. Run `gt restack` (local, but it rewrites branch tips, so ask first exactly as for
+`gt modify`), routing any conflict through the gated recovery flow below, then tell the user
+to re-run `gt submit --stack` and redo the
 verification for every branch, since the restack changed their SHAs.
 
 Only once every remote head matches is it meaningful to re-fetch threads.
@@ -251,13 +278,15 @@ summary, not as an error to retry. Then move to the next branch.
    stash pops conflict. Use `gt modify` to persist per-branch instead of stashing to move
    between branches.
 4. **No worktrees for this pass.** One feature/pass at a time in the main checkout.
-5. **`gt modify`, not ad hoc `git commit`, between branches** — even though the general rule
-   elsewhere is "don't commit without asking," a stack-wide comment pass is the documented
-   exception: leaving many branches simultaneously dirty isn't viable, and `gt modify` is the
-   stack-native persistence step, not a scope-creeping commit. Always `gt modify -a` without
-   `-m`, so the tip's existing message survives. This exception covers `gt modify` in the
-   normal loop **only** — resolving a restack conflict is gated (see *If `gt modify` hits a
-   restack conflict*), and publishing is never yours at all (Hard Rule 8).
+5. **`gt modify`, not ad hoc `git commit`, between branches, and only with approval.**
+   `gt modify` is the stack-native persistence step (a plain `git commit` wouldn't restack,
+   and leaving branches dirty corrupts the next checkout), but it is still a commit on the
+   user's branch, and the general rule "don't commit without asking" applies to it in full.
+   Ask once per branch before every `gt modify` (see *Committing the branch*); if the user
+   would rather amend themselves, wait for them. Always `gt modify -a` without `-m`, so the
+   tip's existing message survives. Resolving a restack conflict is gated separately (see
+   *If `gt modify` hits a restack conflict*), and publishing is never yours at all (Hard
+   Rule 8).
 6. **No FIX lands without a test that was red first**, and no branch is committed without
    running the tests that cover what changed (see *Every FIX is TDD*). "It compiles" and
    "`go vet` is clean" are not test runs. The only exception is code that genuinely cannot
@@ -281,8 +310,8 @@ stops being mechanical: you are about to hand-edit files on a branch whose comme
 never asked to touch, and `gt continue` then rewrites that branch and everything above it.
 Before editing anything, show the user the conflicted branch, the exact files, and how you
 intend to resolve each region, and wait. This is separate from the per-comment gate — that
-one approved a fix, not a rewrite of a descendant branch. `gt modify` in the normal loop
-stays ungated per Hard Rule 5; conflict recovery does not.
+one approved a fix, and the per-branch `gt modify` approval covered amending this branch's
+tip, not hand-resolving files on a descendant.
 
 1. Stay on the conflicted branch with the operation paused — the conflict markers are
    already in the working tree. `gt abort` only cancels the operation entirely.
@@ -323,8 +352,9 @@ stays ungated per Hard Rule 5; conflict recovery does not.
   buys it no shortcut. Present the finding and your proposed action, and wait for an explicit
   FIX/REPLY/SKIP. That applies even when a later branch clearly did fix it: the reply citing
   that later PR number is still a reply, so it is posted only after approval. If the decision
-  is FIX, it runs red-green TDD and persists with `gt modify -a` like everything else, and
-  any restack conflict goes through the gated recovery flow. If the pass is published
+  is FIX, it runs red-green TDD and persists through the same per-branch `gt modify -a`
+  approval as everything else, and any restack conflict goes through the gated recovery
+  flow. If the pass is published
   afterwards, re-verify the affected remote heads.
 
 ## Step 2: Final summary

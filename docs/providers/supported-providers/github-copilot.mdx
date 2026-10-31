@@ -1,0 +1,314 @@
+---
+title: "GitHub Copilot"
+description: "Route requests to GitHub Copilot through Bifrost, billed to a Copilot seat"
+icon: "github"
+---
+
+## Overview
+
+GitHub Copilot serves OpenAI-shaped `/chat/completions`, `/responses` and `/embeddings`
+endpoints, plus an Anthropic-shaped `/v1/messages` endpoint for Claude models. Bifrost picks
+the endpoint per model, the same way it does for Azure. A few more things make Copilot unlike
+other OpenAI-compatible providers, and all of them are handled for you:
+
+- **Seat billing** - a key authenticates as one GitHub user, so usage bills to that user's Copilot seat (a personal plan, or a seat assigned by an organization).
+- **Per-account API host** - the Copilot API host differs by plan tier, so Bifrost looks it up for the account rather than having you configure it.
+- **Editor identity** - Copilot rejects requests that look like generic API clients. Bifrost sends the required headers on every call.
+- **Automatic token refresh** - for sign-in and OAuth tokens, Bifrost exchanges the GitHub token for Copilot tokens (about thirty minutes each) and refreshes them before they expire. A personal access token is sent to Copilot directly.
+
+<Warning>
+The Copilot token exchange endpoint and the editor-identity headers are not part of any
+published GitHub API contract. They are derived from the behaviour of GitHub's own Copilot
+clients and can change without notice. The GitHub token layer underneath is documented and
+stable.
+</Warning>
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+| --------- | ------------- | --------- | -------- |
+| Chat Completions | ✅ | ✅ | `/chat/completions`; `/v1/messages` for Claude models |
+| Responses API | ✅ | ✅ | `/responses`; `/v1/messages` for Claude models; converted through `/chat/completions` for other models |
+| Embeddings | ✅ | - | `/embeddings` |
+| List Models | ✅ | - | `/models` |
+| Text Completions | ❌ | ❌ | - |
+| Image Generation | ❌ | ❌ | - |
+| Speech (TTS) | ❌ | ❌ | - |
+| Transcriptions (STT) | ❌ | ❌ | - |
+| Batch | ❌ | - | - |
+
+<Note>
+Which models you can reach depends on your plan tier and your organization's Copilot
+policy. Two operators with valid credentials can see different catalogs, so check
+`/v1/models` rather than assuming a model is available.
+</Note>
+
+---
+
+## Before you start
+
+You need a GitHub account with an active Copilot plan, or a Copilot seat assigned by an
+organization. A key then authenticates in one of three ways:
+
+| Way | Put in the key | Refreshed by Bifrost |
+| --- | -------------- | -------------------- |
+| [Fine-grained personal access token](#setup--configuration) | `value`: a `github_pat_…` token with the **Copilot Requests** account permission | Nothing to refresh: the PAT is sent as is and lasts as long as you set it to |
+| [Sign in with GitHub](#signing-in-with-github) | `value`: the token the sign-in fills in | The Copilot token, yes. The GitHub token does not expire |
+| [Copilot API token](#using-a-copilot-api-token-instead) | `value`: the token, plus `network_config.base_url` | No. It expires after about thirty minutes |
+
+A GitHub OAuth token (`gho_…` or `ghu_…`) also works in `value`; Bifrost exchanges it for Copilot tokens and refreshes them.
+
+<Warning>
+Only github.com accounts are supported. Personal access tokens, sign-in tokens and OAuth tokens
+from GitHub Enterprise Cloud with data residency (`*.ghe.com`) or GitHub Enterprise Server are
+not accepted, because Bifrost looks up the Copilot plan and exchanges tokens on `api.github.com`.
+</Warning>
+
+---
+
+## Setup & Configuration
+
+Create a fine-grained personal access token under GitHub **Settings** > **Developer settings**
+> **Fine-grained tokens**, with the account permission **Copilot Requests**, from the account
+that holds the Copilot seat. Bifrost sends the PAT to Copilot directly, as the Copilot SDK does,
+and looks up the API host for your plan, so no `base_url` is needed.
+
+<Note>
+Copilot accepts a PAT only when the organization that assigns the seat enables the **Copilot
+CLI** policy (organization **Settings** > **Copilot** > **Policies**). Without it, requests fail
+with a 403 that names the policy.
+</Note>
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**.
+2. Click **Add Provider** and choose **GitHub Copilot**.
+3. On the **Token** tab, paste the token, or an `env.` reference to it.
+4. Click **Save**.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "github-copilot": {
+      "keys": [
+        {
+          "name": "copilot",
+          "value": "env.GITHUB_COPILOT_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+
+See [Create a key for a provider](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.GithubCopilot:
+	return []schemas.Key{
+		{
+			Name:   "copilot",
+			Value:  *schemas.NewSecretVar("env.GITHUB_COPILOT_API_KEY"),
+			Models: []string{"*"},
+			Weight: 1.0,
+		},
+	}, nil
+```
+
+</Tab>
+</Tabs>
+
+### Using a Copilot API token instead
+
+If you already hold a Copilot API token, put it in `value`. Copilot tokens expire after
+roughly thirty minutes and Bifrost cannot refresh one it did not mint, so this suits testing
+rather than a running gateway.
+
+```json
+{
+  "providers": {
+    "github-copilot": {
+      "network_config": { "base_url": "https://api.business.githubcopilot.com" },
+      "keys": [{ "name": "copilot-token", "value": "env.GITHUB_COPILOT_API_KEY", "models": ["*"], "weight": 1.0 }]
+    }
+  }
+}
+```
+
+<Warning>
+`base_url` is required with a Copilot API token, and there is no safe default. The token does
+not carry its own host: paid plans are served from `api.individual`, `api.business` or
+`api.enterprise.githubcopilot.com`, and only GitHub knows which one an account is on. Guessing
+would turn a Business token into a 401 that reads like a bad credential. A personal access
+token or a sign-in token needs no `base_url`, because Bifrost asks GitHub for the account's
+host: a personal access token through the account's Copilot plan lookup, a sign-in or OAuth
+token through the token exchange.
+</Warning>
+
+### Signing in with GitHub
+
+Instead of creating a token yourself, you can sign in as a GitHub user with a Copilot seat
+from the Bifrost UI. Bifrost runs GitHub's device flow and puts the resulting token in the
+key, where it works like any pasted GitHub token. Usage bills to that user's seat.
+
+1. In **Models** > **Model Providers** > **GitHub Copilot**, add a key or open an existing one.
+2. Click **Sign in with GitHub**. Bifrost shows a code; open github.com/login/device, enter it, and approve.
+3. Once the form shows **Signed in as @you**, the token is in the key's token field. Click **Save**.
+
+The token is stored as the key's `value`, encrypted at rest when an encryption key is
+configured. That GitHub token does not expire; Bifrost exchanges it for short-lived Copilot
+tokens and refreshes those automatically, so the key keeps working with no action from you.
+To revoke it, go to GitHub **Settings** > **Applications** > **Authorized GitHub Apps**.
+Signing in again replaces the key's token.
+
+---
+
+# 1. Chat Completions
+
+Identical to [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions),
+including tool calls, streaming and vision.
+
+Claude models (any model whose name contains `claude`, or an alias with
+`model_family: "anthropic"`) are sent to Copilot's `/v1/messages` endpoint and converted with
+Bifrost's Anthropic converters. Everything else goes to `/chat/completions`.
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "github-copilot/gpt-5.5",
+    "messages": [{ "role": "user", "content": "Explain a Go channel in two sentences." }]
+  }'
+```
+
+<Note>
+A long stream started within the last minute of a Copilot token's life can fail partway.
+Bifrost refreshes with a sixty second margin, which covers ordinary traffic; a very long
+agentic stream is the exposed case.
+</Note>
+
+---
+
+# 2. Responses API
+
+Routed per model:
+
+| Model | Copilot endpoint |
+| ----- | ---------------- |
+| Claude models | `/v1/messages`, so thinking, cache control and tool search reach Claude natively |
+| OpenAI models (`gpt-*`, o-series), including responses-only models such as `gpt-5.x-codex` | `/responses` |
+| Everything else (Gemini, Grok, ...) | converted through `/chat/completions` |
+
+A `supported_endpoints` entry for the model in the Bifrost datasheet overrides the OpenAI
+default in both directions.
+
+Bifrost's Anthropic-compatible route (`/anthropic/v1/messages`, used by Claude Code and the
+Anthropic SDKs) reaches Copilot Claude models the same way:
+
+```bash
+curl -X POST http://localhost:8080/anthropic/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "anthropic-version: 2023-06-01" \
+  -d '{
+    "model": "github-copilot/claude-sonnet-4.6",
+    "max_tokens": 256,
+    "messages": [{ "role": "user", "content": "Explain a Go channel in two sentences." }]
+  }'
+```
+
+<Note>
+Copilot documents no Anthropic feature list for `/v1/messages`. Bifrost forwards the
+features GitHub's own VS Code client uses (interleaved thinking, context editing, tool
+search and deferred tool loading) and strips undocumented server tools such as
+`web_search` and `code_execution`. `network_config.beta_header_overrides` can opt a beta
+header back in.
+</Note>
+
+---
+
+# 3. Embeddings
+
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "github-copilot/text-embedding-3-small",
+    "input": "Explain a Go channel in two sentences."
+  }'
+```
+
+---
+
+# 4. List Models
+
+```bash
+curl http://localhost:8080/v1/models?provider=github-copilot
+```
+
+Returns what your plan and organization policy actually allow, which may be narrower than
+GitHub's published catalog.
+
+---
+
+# 5. Cost tracking
+
+<Warning>
+**Bifrost logs \$0 for every Copilot request today.** No `github-copilot` pricing rows exist
+in the Bifrost datasheet, so there is nothing for the cost engine to apply. That is a
+reporting gap, not free usage: GitHub still bills you.
+</Warning>
+
+Copilot bills **GitHub AI Credits** at 1 credit = \$0.01, converted from token counts at
+per-model rates. The rate card is per model and covers input, output and cached-input
+tokens, with some models (the GPT-5.6 family, and Anthropic models) adding a separate
+cache-write cost. Code completions and next edit suggestions are not billed in credits at
+all. Separately, subscribers who stayed on a legacy annual plan are still billed in premium
+requests rather than credits.
+
+Bifrost's cost engine can express that shape: `input_cost_per_token`,
+`output_cost_per_token`, `cache_read_input_token_cost` and `cache_creation_input_token_cost`
+map onto GitHub's four token categories, so no new pricing field is needed. What is missing
+is the data. Until per-model rows are published, or you add
+<u>[custom pricing](/providers/custom-pricing)</u> for the models you use, cost stays \$0.
+
+See <u>[Models and pricing for GitHub Copilot](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing)</u>
+for the current per-model rate card.
+
+---
+
+# 6. Troubleshooting
+
+Every Copilot error from Bifrost is prefixed `github copilot:` and names the field to change.
+
+| Message mentions | Fix |
+| ---------------- | --- |
+| no credentials on this key | The key has neither a token nor a sign-in. Paste a token, or sign in with GitHub. |
+| GitHub rejected the token (401) | The token was revoked or has expired. Paste a new one, or sign in again. A token from a `*.ghe.com` or GitHub Enterprise Server account also fails this way; only github.com accounts are supported. |
+| personal access token has no Copilot access | The PAT's account has no active Copilot plan or seat. |
+| must enable the Copilot CLI policy | The organization that assigns the seat has the **Copilot CLI** policy off. Enable it under organization **Settings** > **Copilot** > **Policies**. |
+| cannot get a Copilot token | The signed-in account has no Copilot seat, or an OAuth token comes from a GitHub App Copilot does not accept. Sign in again from the UI. |
+| needs network_config.base_url | A Copilot API token was pasted without `base_url`. Set it to the host the token was issued for. |
+
+Every Copilot setup fault blocks fallbacks. That covers auth failures from GitHub (a revoked
+credential, a policy excluding a model) and configuration faults Bifrost catches itself
+before any request goes out: missing credentials, a missing `base_url`, an implausible token
+expiry.
+
+All of them mean the same thing, and quietly draining that traffic onto another paid
+provider is the wrong outcome: you would be billed elsewhere for a request you asked Copilot
+to serve, and the setup mistake would never surface.
+
+Rate limits and server errors are transient rather than faults, so those still fall back
+normally.

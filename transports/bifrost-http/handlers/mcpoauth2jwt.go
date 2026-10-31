@@ -1,7 +1,10 @@
 package handlers
 
 import (
+	"bytes"
 	"crypto/rsa"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -10,7 +13,8 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/maximhq/bifrost/core/schemas"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -43,6 +47,40 @@ type jwtMCPClaims struct {
 	Scope  string `json:"scope"`
 }
 
+// public returns the claims an MCPTokenValidator or VerifyBifrostToken caller
+// sees, reading the extra ones from rawToken, which must already be verified.
+// Only those callers pay for them; parsing a token decodes the known claims.
+func (c *jwtMCPClaims) public(rawToken string) MCPTokenClaims {
+	return MCPTokenClaims{Mode: c.BfMode, Subject: c.Subject, Scope: c.Scope, Extra: extraClaims(rawToken)}
+}
+
+// extraClaims returns the claims of a verified token beyond the registered
+// ones and bf_mode/scope, such as an extension grant's own; nil when it has
+// none. Numbers are kept as json.Number, so an integer past 2^53 is exact.
+func extraClaims(rawToken string) map[string]any {
+	parts := strings.Split(rawToken, ".")
+	if len(parts) != 3 {
+		return nil
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil
+	}
+	var all map[string]any
+	dec := json.NewDecoder(bytes.NewReader(payload))
+	dec.UseNumber()
+	if dec.Decode(&all) != nil {
+		return nil
+	}
+	for _, name := range []string{"iss", "sub", "aud", "exp", "nbf", "iat", "jti", "bf_mode", "scope"} {
+		delete(all, name)
+	}
+	if len(all) == 0 {
+		return nil
+	}
+	return all
+}
+
 // extractBearerJWT returns the raw JWT string from an Authorization: Bearer
 // header when the token looks like a JWT (starts with "eyJ"). Returns empty
 // string when the header is absent or the token is a VK (starts with "sk-bf-").
@@ -64,12 +102,18 @@ func extractBearerJWT(ctx *fasthttp.RequestCtx) string {
 	return token
 }
 
-// verifyMCPJWT parses and verifies a Bifrost-issued JWT for the /mcp endpoint.
-// It validates the RS256 signature using the supplied signing key, checks the
-// audience matches the canonical /mcp resource URL (RFC 8707), and returns
-// the verified claims. The caller provides the signing key (typically from a
-// process-lifetime cache) so verification need not read it per request.
+// verifyMCPJWT parses and verifies a Bifrost-issued JWT for the /mcp endpoint:
+// its audience must be the canonical /mcp resource URL (RFC 8707).
 func verifyMCPJWT(ctx *fasthttp.RequestCtx, rawToken string, store *lib.Config, signingKey *configtables.OAuth2SigningKey) (*jwtMCPClaims, error) {
+	return verifyBifrostJWT(ctx, rawToken, store, signingKey, oauth2MCPResourceURL(ctx, store))
+}
+
+// verifyBifrostJWT parses and verifies a Bifrost-issued JWT. It validates the
+// RS256 signature using the supplied signing key, checks the audience includes
+// resource (RFC 8707), and returns the verified claims. The caller provides the
+// signing key (typically from a process-lifetime cache) so verification need
+// not read it per request.
+func verifyBifrostJWT(ctx *fasthttp.RequestCtx, rawToken string, store *lib.Config, signingKey *configtables.OAuth2SigningKey, resource string) (*jwtMCPClaims, error) {
 	if signingKey == nil {
 		return nil, fmt.Errorf("signing key unavailable")
 	}
@@ -112,7 +156,6 @@ func verifyMCPJWT(ctx *fasthttp.RequestCtx, rawToken string, store *lib.Config, 
 	}
 
 	// RFC 8707: the token must have been issued for this specific resource.
-	resource := oauth2MCPResourceURL(ctx, store)
 	aud, err := claims.GetAudience()
 	if err != nil || !slices.Contains(aud, resource) {
 		return nil, fmt.Errorf("token audience does not match this resource")
@@ -125,9 +168,9 @@ func verifyMCPJWT(ctx *fasthttp.RequestCtx, rawToken string, store *lib.Config, 
 // mirroring what header auth sets today so everything downstream (governance,
 // per-user upstream OAuth, tool-group filtering) works unchanged.
 //
-// bf_mode=user    → BifrostContextKeyUserID
-// bf_mode=vk      → BifrostContextKeyVirtualKey (governance derives the VK row ID from it)
-// bf_mode=session → BifrostContextKeyMCPSessionID
+// bf_mode=user    → BifrostContextKeyUserID; the user is recorded on the grant
+// bf_mode=vk      → BifrostContextKeyVirtualKey; the key is recorded on the grant as the credential
+// bf_mode=session → BifrostContextKeyMCPSessionID; nothing is recorded on the grant
 func injectJWTContext(bifrostCtx *schemas.BifrostContext, claims *jwtMCPClaims, vk *configtables.TableVirtualKey) error {
 	sub := claims.Subject
 	if sub == "" {
@@ -135,7 +178,11 @@ func injectJWTContext(bifrostCtx *schemas.BifrostContext, claims *jwtMCPClaims, 
 	}
 	switch schemas.MCPAuthMode(claims.BfMode) {
 	case schemas.MCPAuthModeUser:
+		// The token names the user directly: the request is attributed to the user and goes by
+		// the token that authenticated it.
 		bifrostCtx.SetValue(schemas.BifrostContextKeyUserID, sub)
+		lib.RecordCredential(bifrostCtx, grant.NewCredential(grant.CredentialMCPToken, sub))
+		lib.RecordUser(bifrostCtx, &schemas.UserRef{ID: sub})
 	case schemas.MCPAuthModeVK:
 		if vk == nil {
 			return fmt.Errorf("VK not provided for vk-mode JWT injection")
@@ -145,7 +192,13 @@ func injectJWTContext(bifrostCtx *schemas.BifrostContext, claims *jwtMCPClaims, 
 		// path before the per-user credential resolver needs it — the same way the
 		// x-bf-vk header path does, which never stamps the row ID at ingress either.
 		bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, vk.Value.GetValue())
+		// The token stands for the key it names: the request goes by that key, settled as a key
+		// presented in a header is, which is what governance resolves a key's permit from.
+		lib.RecordCredential(bifrostCtx, grant.NewCredential(grant.CredentialVirtualKey, vk.Value.GetValue()))
 	case schemas.MCPAuthModeSession:
+		// A session token carries no verified identity. Nothing is recorded on the grant, so the
+		// request is admitted as one that presented nothing: anonymous, and refused by
+		// authenticate whenever authentication is enforced.
 		bifrostCtx.SetValue(schemas.BifrostContextKeyMCPSessionID, sub)
 	default:
 		return fmt.Errorf("unknown bf_mode %q in JWT", claims.BfMode)

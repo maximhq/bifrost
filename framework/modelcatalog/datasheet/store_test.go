@@ -1,12 +1,51 @@
 package datasheet
 
 import (
+	"math"
 	"slices"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
+
+func TestPricingLookupsNormalizeRuntimeProvider(t *testing.T) {
+	const model = "deepseek-ai/DeepSeek-V4-Flash-0731"
+	inputCost := 0.00000014
+	provider := schemas.ModelProvider("together")
+	s := NewTestStore(nil)
+	s.pricingData[makeKey(model, "together_ai", "chat")] = configstoreTables.TableModelPricing{
+		Model:             model,
+		Provider:          "together_ai",
+		Mode:              "chat",
+		InputCostPerToken: &inputCost,
+	}
+
+	row := s.Get(model, provider, schemas.ChatCompletionRequest)
+	if row == nil || row.InputCostPerToken == nil || *row.InputCostPerToken != inputCost {
+		t.Fatalf("Get() did not resolve the catalog provider: %#v", row)
+	}
+
+	pricing := s.GetPricingEntryForModel(model, provider)
+	if pricing == nil || pricing.InputCostPerToken == nil || *pricing.InputCostPerToken != inputCost {
+		t.Fatalf("GetPricingEntryForModel() did not resolve the catalog provider: %#v", pricing)
+	}
+
+	capability := s.GetCapabilityEntry(model, provider)
+	if capability == nil || capability.InputCostPerToken == nil || *capability.InputCostPerToken != inputCost {
+		t.Fatalf("GetCapabilityEntry() did not resolve the catalog provider: %#v", capability)
+	}
+
+	s.mu.Lock()
+	s.rebuildDatasheetViewUnsafe()
+	s.mu.Unlock()
+	if got := s.DatasheetModelsForProvider(provider); !slices.Equal(got, []string{model}) {
+		t.Fatalf("DatasheetModelsForProvider() = %v, want [%s]", got, model)
+	}
+	if got := s.DatasheetProviders(); !slices.Equal(got, []schemas.ModelProvider{provider}) {
+		t.Fatalf("DatasheetProviders() = %v, want [%s]", got, provider)
+	}
+}
 
 func TestDeprecatedDatasheetModelsForProviderUsesRebuiltIndex(t *testing.T) {
 	s := NewTestStore(nil)
@@ -59,5 +98,41 @@ func TestDeprecatedDatasheetModelsForProviderUsesRebuiltIndex(t *testing.T) {
 	want = []string{"deprecated-vertex"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("expected deprecated Vertex models %v, got %v", want, got)
+	}
+}
+
+func TestGithubCopilotDatasheetRowsPriceRuntimeProvider(t *testing.T) {
+	inputCost, outputCost := 0.000002, 0.000008
+	s := NewTestStore(nil)
+	entry := Entry{Provider: "github_copilot", Mode: "chat"}
+	entry.InputCostPerToken = &inputCost
+	entry.OutputCostPerToken = &outputCost
+	s.applyPricingData(map[string]Entry{"github_copilot/gpt-4.1": entry})
+
+	if got := s.DatasheetModelsForProvider(schemas.GithubCopilot); !slices.Equal(got, []string{"gpt-4.1"}) {
+		t.Fatalf("DatasheetModelsForProvider() = %v, want [gpt-4.1]", got)
+	}
+
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500}
+	if cost := s.CalculateCost(makeChatResponse(schemas.GithubCopilot, "gpt-4.1", usage), nil); math.Abs(cost-0.006) > 1e-12 {
+		t.Fatalf("CalculateCost() = %v, want 0.006", cost)
+	}
+
+	providerID := string(schemas.GithubCopilot)
+	if err := s.SetOverrides([]configstoreTables.TablePricingOverride{{
+		ID:               "copilot-override",
+		ScopeKind:        string(ScopeKindProvider),
+		ProviderID:       &providerID,
+		MatchType:        string(MatchTypeExact),
+		Pattern:          "gpt-4.1",
+		RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+		PricingPatchJSON: `{"input_cost_per_token":0.000001}`,
+	}}); err != nil {
+		t.Fatalf("SetOverrides() error = %v", err)
+	}
+	cost := s.CalculateCost(makeChatResponse(schemas.GithubCopilot, "gpt-4.1", usage), &LookupScopes{Provider: providerID})
+	// 1000*0.000001 + 500*0.000008
+	if math.Abs(cost-0.005) > 1e-12 {
+		t.Fatalf("CalculateCost() with override = %v, want 0.005", cost)
 	}
 }

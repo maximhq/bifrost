@@ -37,8 +37,15 @@ vectorStore:
 bifrost:
   client:
     enableLogging: true
-  providers: {}
-    # Add your provider keys here
+  # The embedding provider for the semantic cache below. Its API key is injected
+  # from the Kubernetes secret (semanticCache.secretRef) as SEMANTIC_CACHE_API_KEY.
+  providers:
+    openai:
+      keys:
+        - name: "embeddings"
+          value: "env.SEMANTIC_CACHE_API_KEY"
+          weight: 1
+          models: ["text-embedding-3-small"]
 
   # Enable semantic cache plugin to use vector store
   plugins:
@@ -51,7 +58,6 @@ bifrost:
         key: "openai-key"
       config:
         provider: "openai"
-        # keys are injected from the secret via environment variable
         embedding_model: "text-embedding-3-small"
         dimension: 1536
         threshold: 0.8

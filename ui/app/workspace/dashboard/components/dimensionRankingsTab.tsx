@@ -7,6 +7,7 @@ import NumberFlow from "@number-flow/react";
 import { memo, useCallback, useMemo, useState } from "react";
 import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { getModelColor } from "../utils/chartUtils";
+import { rankingBarShape } from "./charts/barShape";
 import { ChartCard } from "./charts/chartCard";
 import { ChartErrorBoundary } from "./charts/chartErrorBoundary";
 import { formatCost, SortableHeader, TrendBadge } from "./rankingsShared";
@@ -80,7 +81,8 @@ function TopDimensionChart({
 			title={`Top ${dimensionLabel}s`}
 			loading={loading}
 			testId={`${testIdPrefix}-top-chart`}
-			className="z-[1] h-full"
+			className="z-[1]"
+			autoHeight
 			totalLabel={attributed && actualTotal === null ? "Total Requests (attributed)" : "Total Requests"}
 			total={
 				actualTotal !== null ? (
@@ -118,7 +120,7 @@ function TopDimensionChart({
 			<div style={{ height: Math.max(200, chartData.length * 40 + 40), marginBottom: 6 }}>
 				{chartData.length > 0 ? (
 					<ChartErrorBoundary resetKey={`${chartData.length}`}>
-						<ResponsiveContainer width="100%" height="100%">
+						<ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
 							<BarChart data={chartData} layout="vertical" margin={{ top: 6, right: 20, left: 0, bottom: 0 }} barCategoryGap={4}>
 								<CartesianGrid strokeDasharray="3 3" horizontal={false} className="stroke-zinc-200 dark:stroke-zinc-700" />
 								<XAxis
@@ -151,7 +153,7 @@ function TopDimensionChart({
 									width={100}
 								/>
 								<Tooltip content={<TopDimensionTooltip />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
-								<Bar dataKey="total_requests" isAnimationActive={false} barSize={24} radius={[0, 4, 4, 0]}>
+								<Bar dataKey="total_requests" isAnimationActive={false} barSize={24} shape={rankingBarShape}>
 									{chartData.map((entry, idx) => (
 										<Cell key={entry.id} fill={getModelColor(idx)} />
 									))}
@@ -165,7 +167,7 @@ function TopDimensionChart({
 			</div>
 			<div className="py-2">
 				{rankedItems.length > 0 && (
-					<div className="mt-3 grid grid-cols-2 gap-x-8 gap-y-1.5 px-2 pb-1">
+					<div className="mt-3 grid grid-cols-1 gap-x-8 gap-y-1.5 px-2 pb-1 sm:grid-cols-2">
 						{rankedItems.map((item, idx) => (
 							<div key={item.id} className="flex items-center gap-2 text-sm">
 								<span className="text-muted-foreground w-4 text-right text-xs">{idx + 1}.</span>
@@ -270,7 +272,7 @@ function DimensionRankingsTabImpl({ data, loading, dimensionLabel, testIdPrefix,
 									<TableCell>
 										<div className="flex flex-col">
 											<span className="font-medium">{entry.name || entry.id}</span>
-											{entry.name && entry.name !== entry.id && entry.id !== "unassigned" && (
+											{entry.name && entry.name !== entry.id && entry.id !== "unassigned" && entry.id !== "other" && (
 												<span className="text-muted-foreground text-xs">{entry.id}</span>
 											)}
 										</div>

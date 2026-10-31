@@ -7,13 +7,12 @@
       "path": "../../examples/configs/withconfigstore/config.db"
     }
   },
-  "auth_config": {
-    "admin_username": "env.BIFROST_ADMIN_USERNAME",
-    "admin_password": "env.BIFROST_ADMIN_PASSWORD",
-    "is_enabled": true,
-    "disable_auth_on_inference": true
-  },
   "governance": {
+    "auth_config": {
+      "admin_username": "env.BIFROST_ADMIN_USERNAME",
+      "admin_password": "env.BIFROST_ADMIN_PASSWORD",
+      "is_enabled": true
+    },
     "virtual_keys": [
       {
         "id": "vk-gpt",

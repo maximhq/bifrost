@@ -381,6 +381,346 @@ response, err := client.TranscriptionRequest(schemas.NewBifrostContext(context.B
 })
 ```
 
+## Multimodal Embeddings
+
+Bifrost supports multimodal embeddings — generating vector representations that capture text, images, audio, video, and documents together. The `Input` field on `BifrostEmbeddingRequest` is a `[]EmbeddingInputItem`; each item's `Content` is an `EmbeddingContent`, a slice of typed parts, and all the parts in one item produce **one** vector.
+
+```go
+type EmbeddingInputItem struct {
+    Content EmbeddingContent     // []EmbeddingContentPart
+    Params  *EmbeddingParameters // optional per-item override
+}
+
+type EmbeddingContentPart struct {
+    Type        EmbeddingContentPartType // text | image | audio | video | file | tokens
+    Text        *string
+    Image       *EmbeddingMediaPart
+    Audio       *EmbeddingMediaPart
+    File        *EmbeddingMediaPart
+    Video       *EmbeddingMediaPart
+    VideoConfig *EmbeddingVideoConfig    // video parts only
+    Tokens      []int
+}
+
+type EmbeddingMediaPart struct {
+    Data     *string // inline base64 data URI (or raw base64 with MIMEType set)
+    URL      *string // provider-resolvable reference; accepted schemes vary per provider
+    MIMEType *string
+    Filename *string
+}
+```
+
+Exactly one modality field must be set per part, and a media part must set exactly one of `Data` or `URL`. `ValidateEmbeddingInput` runs before dispatch, so a malformed part fails before any plugin or provider sees it.
+
+`EmbeddingParameters` carries the request-level defaults: `EncodingFormat`, `Dimensions`, `TaskType`, `Title`, `AutoTruncate`, plus `ExtraParams` for provider-specific fields that are forwarded as-is.
+
+### Response fields
+
+`EmbeddingData` gained three optional fields, set only when the provider needs them:
+
+| Field | Description |
+|-------|-------------|
+| `Modality` | `text`, `image`, `audio`, `video` or `audio_video`. Set when a provider returns separate vectors per modality (Vertex `multimodalembedding@001`, Nova). |
+| `VideoSegment` | `{StartOffsetSec, EndOffsetSec}` on video vectors that cover a slice of the clip. |
+| `EncodingFormat` | Which representation this vector is, when a provider returns several for one input (Cohere `embedding_types`). |
+
+`EncodingFormat: "base64"` works on every provider; where the model has no native base64 output Bifrost encodes the float vector as little-endian float32 base64.
+
+### Provider support
+
+| Provider / model | Text | Image | Audio | Video | File | Batch (multiple items) | Per-item params | Media sources |
+|------------------|------|-------|-------|-------|------|------------------------|-----------------|---------------|
+| Gemini `gemini-embedding-2-preview` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | inline, Files API URI |
+| Gemini `gemini-embedding-001` | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | — |
+| Vertex `gemini-embedding-2-preview` | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | inline, `gs://`, `https://` |
+| Vertex `multimodalembedding@001` | ✅ | ✅ (max 1) | ❌ | ✅ (max 1) | ❌ | ❌ | ❌ | inline, `gs://` |
+| Vertex `text-embedding-005` and other text models | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | — |
+| Cohere `embed-v4.0` | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | inline |
+| Cohere `embed-*-v3.0` | ✅ | ✅ (image-only items) | ❌ | ❌ | ❌ | ✅ | ❌ | inline |
+| Bedrock `amazon.titan-embed-image-v1` | ✅ | ✅ (max 1) | ❌ | ❌ | ❌ | ❌ | ❌ | inline |
+| Bedrock `amazon.titan-embed-text-v1` / `v2:0` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | — |
+| Bedrock `cohere.embed-*` | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | inline |
+| Bedrock `amazon.nova-2-multimodal-embeddings-v1:0` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | inline, `s3://` |
+| OpenAI, Azure, Mistral, Parasail and other OpenAI-compatible | ✅ (+ tokens) | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | — |
+| HuggingFace | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | — |
+
+A part the target model cannot carry returns an `InvalidRequestError` naming the modality. Bifrost never drops a part silently. The per-model rules below are the same as on the HTTP gateway; see the [gateway guide](../gateway/multimodal#multimodal-embeddings) for the wire-level detail.
+
+### Text Embedding (all providers)
+
+```go
+text := "a golden retriever playing fetch"
+resp, err := client.EmbeddingRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostEmbeddingRequest{
+    Provider: schemas.Cohere,
+    Model:    "embed-v4.0",
+    Input: []schemas.EmbeddingInputItem{
+        {Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}},
+    },
+    Params: &schemas.EmbeddingParameters{
+        ExtraParams: map[string]interface{}{"input_type": "search_document"},
+    },
+})
+```
+
+### Gemini
+
+`gemini-embedding-2-preview` accepts text, image, audio, video and file (PDF) parts in any combination in one item. `gemini-embedding-001` is text-only.
+
+- Inline `Data` is sent as `inlineData`.
+- A `URL` is sent as `fileData.fileUri`, which the Gemini API only resolves for [Files API](https://ai.google.dev/gemini-api/docs/files) URIs. Upload large media first, or send it inline. `gs://` is rejected on the Gemini provider; use Vertex for Cloud Storage media.
+- Multiple items go out as one `:batchEmbedContents` call. `TaskType` and `Title` apply to every entry, and this is the only provider that honours per-item `Params`.
+- `documentOcr` and `audioTrackExtraction` go in `ExtraParams["embedContentConfig"]`.
+
+```go
+audioURL := "https://generativelanguage.googleapis.com/v1beta/files/<file-id>" // from the Files API
+text     := "transcript of the audio"
+resp, err := client.EmbeddingRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostEmbeddingRequest{
+    Provider: schemas.Gemini,
+    Model:    "gemini-embedding-2-preview",
+    Input: []schemas.EmbeddingInputItem{
+        {
+            Content: schemas.EmbeddingContent{
+                {Type: schemas.EmbeddingContentPartTypeText,  Text:  &text},
+                {Type: schemas.EmbeddingContentPartTypeAudio, Audio: &schemas.EmbeddingMediaPart{URL: &audioURL}},
+            },
+        },
+    },
+})
+```
+
+For PDFs, use the `file` part type with `MIMEType: "application/pdf"`, and enable OCR through `embedContentConfig`:
+
+```go
+pdfData := "data:application/pdf;base64,<base64-encoded-pdf>"
+pdfMime := "application/pdf"
+resp, err := client.EmbeddingRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostEmbeddingRequest{
+    Provider: schemas.Gemini,
+    Model:    "gemini-embedding-2-preview",
+    Input: []schemas.EmbeddingInputItem{
+        {
+            Content: schemas.EmbeddingContent{
+                {Type: schemas.EmbeddingContentPartTypeFile, File: &schemas.EmbeddingMediaPart{Data: &pdfData, MIMEType: &pdfMime}},
+            },
+        },
+    },
+    Params: &schemas.EmbeddingParameters{
+        ExtraParams: map[string]interface{}{
+            "embedContentConfig": map[string]interface{}{"documentOcr": true},
+        },
+    },
+})
+```
+
+### Vertex AI
+
+Vertex has three embedding APIs, and Bifrost picks the right one from the model name. Project and region come from the Vertex key configuration.
+
+| Model | Vertex endpoint | Input |
+|-------|-----------------|-------|
+| `text-embedding-005`, `text-multilingual-embedding-002` and other text models | `:predict` | Text only. Multiple items become one instance each. `Dimensions` → `outputDimensionality`; `TaskType` and `Title` are set per instance; `AutoTruncate` defaults to `true`. |
+| `gemini-embedding-2-preview` | `:embedContent` | Same parts as Gemini, **one item per request** (a second item is an `InvalidRequestError`). `gs://` URIs are accepted on every media part. |
+| `multimodalembedding@001` | `:predict` (multimodal) | One item with any number of text parts, at most one image and at most one video. Audio and file parts are rejected. |
+
+`multimodalembedding@001` returns a **separate 1408-dimension vector per modality**, all in the same embedding space. Image and video URLs must be `gs://`; inline base64 data URIs are also accepted.
+
+```go
+imageGCS := "gs://my-bucket/photo.jpg"
+text     := "product photo"
+resp, err := client.EmbeddingRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostEmbeddingRequest{
+    Provider: schemas.Vertex,
+    Model:    "multimodalembedding@001",
+    Input: []schemas.EmbeddingInputItem{
+        {
+            Content: schemas.EmbeddingContent{
+                {Type: schemas.EmbeddingContentPartTypeText,  Text:  &text},
+                {Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{URL: &imageGCS}},
+            },
+        },
+    },
+})
+// resp.Data[0].Modality == schemas.EmbeddingModalityText
+// resp.Data[1].Modality == schemas.EmbeddingModalityImage
+// resp.Usage == nil — this model does not report token usage
+```
+
+Video is embedded as a **sequence of segments**. Set `VideoConfig` on the video part (`IntervalSec` minimum is 4 seconds) and each segment comes back as its own `EmbeddingData` with a `VideoSegment`:
+
+```go
+videoGCS := "gs://my-bucket/demo.mp4"
+text     := "product demo"
+resp, err := client.EmbeddingRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostEmbeddingRequest{
+    Provider: schemas.Vertex,
+    Model:    "multimodalembedding@001",
+    Input: []schemas.EmbeddingInputItem{
+        {
+            Content: schemas.EmbeddingContent{
+                {Type: schemas.EmbeddingContentPartTypeText, Text: &text},
+                {
+                    Type:  schemas.EmbeddingContentPartTypeVideo,
+                    Video: &schemas.EmbeddingMediaPart{URL: &videoGCS},
+                    VideoConfig: &schemas.EmbeddingVideoConfig{
+                        StartOffsetSec: schemas.Ptr(0),
+                        EndOffsetSec:   schemas.Ptr(16),
+                        IntervalSec:    schemas.Ptr(8),
+                    },
+                },
+            },
+        },
+    },
+})
+// resp.Data[0]: Modality text
+// resp.Data[1]: Modality video, VideoSegment {0, 8}
+// resp.Data[2]: Modality video, VideoSegment {8, 16}
+```
+
+### Cohere
+
+Cohere's API has three mutually exclusive input fields, and Bifrost picks one from the content: `texts[]` when every item is a single text part, `images[]` when every item is a single image part, and `inputs[]` content blocks (Embed v4 only) for anything else, such as text and image in one item.
+
+Images must be inline: a data URI in `URL` or `Data`, or raw base64 in `Data` with `MIMEType` set. Cohere does not fetch remote URLs. `input_type` defaults to `search_document`. `EncodingFormat` maps to Cohere's `embedding_types`; when Cohere returns several representations for one input, each is a separate `EmbeddingData` labelled with its `EncodingFormat`. Image tokens are reported in `Usage.PromptTokensDetails.ImageTokens`, not `PromptTokens`.
+
+```go
+imageURL := "data:image/jpeg;base64,<base64-encoded-jpeg>"
+caption  := "a golden retriever in a park"
+resp, err := client.EmbeddingRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostEmbeddingRequest{
+    Provider: schemas.Cohere,
+    Model:    "embed-v4.0",
+    Input: []schemas.EmbeddingInputItem{
+        {
+            Content: schemas.EmbeddingContent{
+                {Type: schemas.EmbeddingContentPartTypeText,  Text:  &caption},
+                {Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{URL: &imageURL}},
+            },
+        },
+    },
+    Params: &schemas.EmbeddingParameters{
+        EncodingFormat: schemas.Ptr("int8"),
+        ExtraParams:    map[string]interface{}{"input_type": "search_document"},
+    },
+})
+```
+
+### Bedrock
+
+Bedrock embedding models are routed by family, each with its own wire format and constraints.
+
+**Titan.** `amazon.titan-embed-image-v1` accepts one item with text and at most one image, inline in `Data` only (a `URL` is rejected). `Dimensions` (256, 384 or 1024) maps to `embeddingConfig.outputEmbeddingLength`. The text models `amazon.titan-embed-text-v1` / `v2:0` take one item per request; a batch is an `InvalidRequestError` rather than a collapsed vector.
+
+```go
+imageData := "data:image/png;base64,<base64-encoded-png>"
+text      := "a red square"
+resp, err := client.EmbeddingRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostEmbeddingRequest{
+    Provider: schemas.Bedrock,
+    Model:    "amazon.titan-embed-image-v1",
+    Input: []schemas.EmbeddingInputItem{
+        {
+            Content: schemas.EmbeddingContent{
+                {Type: schemas.EmbeddingContentPartTypeText,  Text:  &text},
+                {Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{Data: &imageData}},
+            },
+        },
+    },
+    Params: &schemas.EmbeddingParameters{Dimensions: schemas.Ptr(384)},
+})
+```
+
+**Cohere on Bedrock.** `cohere.embed-*` models follow the same `texts[]` / `images[]` / `inputs[]` selection as direct Cohere. Image-only requests go out as `images[]` with `input_type` defaulting to `image`, which both Embed v3 and v4 accept; mixed text + image items use `inputs[]` and need Embed v4.
+
+**Amazon Nova.** `amazon.nova-2-multimodal-embeddings-v1:0` embeds text, image, audio or video, **one modality per item and one item per request**. Media comes from inline `Data` or an `s3://bucket/key` URL; any other URL is rejected. Nova needs a declared format per media part, derived from `MIMEType` or the S3 key's extension (`png`, `jpeg`, `webp`, `gif`; `mp3`, `wav`, `ogg`; `mp4`, `mov`, `mkv`, `webm`, `flv`, `mpeg`, `wmv`, `3gp`). `TaskType` maps to `embeddingPurpose` (`GENERIC_INDEX` default, `GENERIC_RETRIEVAL`, `TEXT_RETRIEVAL`, `IMAGE_RETRIEVAL`, `VIDEO_RETRIEVAL`, `AUDIO_RETRIEVAL`, `DOCUMENT_RETRIEVAL`, `CLASSIFICATION`, `CLUSTERING`), `Dimensions` is 256, 384, 1024 or 3072, and Nova's own knobs ride in `ExtraParams`: `truncationMode` (`END`, `START`, `NONE`), `detailLevel` (`STANDARD_IMAGE`, `DOCUMENT_IMAGE`; image parts only) and `embeddingMode` (video only).
+
+Video returns one `audio_video` vector by default. With `embeddingMode: "AUDIO_VIDEO_SEPARATE"` one input returns an `audio` vector and a `video` vector:
+
+```go
+videoS3 := "s3://my-bucket/clips/demo.mp4"
+resp, err := client.EmbeddingRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostEmbeddingRequest{
+    Provider: schemas.Bedrock,
+    Model:    "amazon.nova-2-multimodal-embeddings-v1:0",
+    Input: []schemas.EmbeddingInputItem{
+        {Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeVideo, Video: &schemas.EmbeddingMediaPart{URL: &videoS3}}}},
+    },
+    Params: &schemas.EmbeddingParameters{
+        TaskType:    schemas.Ptr("VIDEO_RETRIEVAL"),
+        ExtraParams: map[string]interface{}{"embeddingMode": "AUDIO_VIDEO_SEPARATE"},
+    },
+})
+// resp.Data[0].Modality == schemas.EmbeddingModalityAudio
+// resp.Data[1].Modality == schemas.EmbeddingModalityVideo
+```
+
+Nova and Cohere-on-Bedrock report token usage only in a response header, which Bifrost reads into `Usage`.
+
+### OpenAI-compatible providers
+
+OpenAI, Azure OpenAI, Mistral, Parasail and every other provider that speaks the OpenAI embeddings dialect accept `text` and `tokens` parts only, and the two cannot be mixed in one request. Only `EncodingFormat` and `Dimensions` are sent on the wire; `TaskType`, `Title` and `AutoTruncate` are not part of the OpenAI format and are not forwarded.
+
+```go
+tokens := []int{15339, 1917}
+resp, err := client.EmbeddingRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostEmbeddingRequest{
+    Provider: schemas.OpenAI,
+    Model:    "text-embedding-3-small",
+    Input: []schemas.EmbeddingInputItem{
+        {Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeTokens, Tokens: tokens}}},
+    },
+    Params: &schemas.EmbeddingParameters{Dimensions: schemas.Ptr(512)},
+})
+```
+
+### Per-Item Parameters
+
+Leave `Params` nil on an item and it inherits the request-level defaults; set it and that item
+alone uses the override — a query embedded with `RETRIEVAL_QUERY` alongside documents embedded
+with `RETRIEVAL_DOCUMENT`, say.
+
+```go
+query := "how do I reset my password?"
+doc   := "Password reset guide"
+
+resp, err := client.EmbeddingRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostEmbeddingRequest{
+    Provider: schemas.Gemini,
+    Model:    "gemini-embedding-001",
+    // Default for every item that does not override it.
+    Params: &schemas.EmbeddingParameters{Dimensions: schemas.Ptr(768)},
+    Input: []schemas.EmbeddingInputItem{
+        {
+            Content: schemas.EmbeddingContent{
+                {Type: schemas.EmbeddingContentPartTypeText, Text: &query},
+            },
+            Params: &schemas.EmbeddingParameters{
+                TaskType:   schemas.Ptr("RETRIEVAL_QUERY"),
+                Dimensions: schemas.Ptr(768),
+            },
+        },
+        {
+            Content: schemas.EmbeddingContent{
+                {Type: schemas.EmbeddingContentPartTypeText, Text: &doc},
+            },
+            Params: &schemas.EmbeddingParameters{
+                TaskType:   schemas.Ptr("RETRIEVAL_DOCUMENT"),
+                Dimensions: schemas.Ptr(256),
+            },
+        },
+    },
+})
+// resp.Data has one entry per input item, in order.
+```
+
+An item that sets `Params` **replaces** the request-level params wholesale — the two are not
+merged field by field, so repeat any request-level value you still want (as `Dimensions` is
+repeated above). `EmbeddingInputItem.EffectiveParams(defaults)` returns the params an item will
+actually be sent with.
+
+<Warning>
+Only providers whose wire format has one parameter block per item can honour this — currently
+Gemini (`:batchEmbedContents`). Everything else returns a 400 naming the offending item index
+rather than silently ignoring the override.
+</Warning>
+
+### Things to know
+
+- **Token usage is uneven across multimodal models.** Vertex `multimodalembedding@001` returns a nil `Usage`, Titan image-only inputs report zero tokens, and Cohere image tokens live under `PromptTokensDetails`. Budgets and cost metered on `PromptTokens` do not see those inputs.
+- **Semantic cache** keys include `TaskType`, `Title` and `AutoTruncate`, so a `RETRIEVAL_QUERY` request is never served a cached `RETRIEVAL_DOCUMENT` vector.
+- **Migrating from the old `EmbeddingInput` struct:** `&schemas.EmbeddingInput{Texts: []string{"hello"}}` becomes `[]schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}}`. The helpers `EmbeddingInput(items).Texts()` and `.TokenIDs()` flatten the new shape back to the old one when you only need the strings or token IDs.
+
 <Info>
 Check the [Supported Providers](/providers/supported-providers/overview) page for more information on multimodal capabilities supported by each provider.
 </Info>

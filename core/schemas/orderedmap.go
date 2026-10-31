@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"unicode/utf8"
 )
 
 // OrderedMap is a map that preserves insertion order of keys.
@@ -177,33 +178,145 @@ func (om OrderedMap) MarshalJSON() ([]byte, error) {
 	if om.values == nil {
 		return []byte("null"), nil
 	}
-
 	var buf bytes.Buffer
-	buf.WriteByte('{')
+	if err := om.appendJSON(&buf); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
 
+// appendJSON writes the OrderedMap as compact JSON directly into dst, in key
+// order. Nested OrderedMap values recurse here rather than routing back through
+// MarshalSorted -> sonic's json.Marshaler path, which re-compacts (and would
+// re-escape) every nesting level. Output is byte-identical to marshaling each
+// value with MarshalSorted, because MarshalJSON already emits compact,
+// HTML-escaped JSON, so the skipped sonic pass would be a no-op.
+func (om OrderedMap) appendJSON(dst *bytes.Buffer) error {
+	if om.values == nil {
+		dst.WriteString("null")
+		return nil
+	}
+	dst.WriteByte('{')
 	for i, k := range om.keys {
 		if i > 0 {
-			buf.WriteByte(',')
+			dst.WriteByte(',')
 		}
-
-		// key
-		keyBytes, err := MarshalSorted(k)
-		if err != nil {
-			return nil, err
+		appendJSONString(dst, k)
+		dst.WriteByte(':')
+		if err := appendValueJSON(dst, om.values[k]); err != nil {
+			return err
 		}
-		buf.Write(keyBytes)
-		buf.WriteByte(':')
-
-		// value — nested *OrderedMap values will use their own MarshalJSON
-		valBytes, err := MarshalSorted(om.values[k])
-		if err != nil {
-			return nil, err
-		}
-		buf.Write(valBytes)
 	}
+	dst.WriteByte('}')
+	return nil
+}
 
-	buf.WriteByte('}')
-	return buf.Bytes(), nil
+const hexDigits = "0123456789abcdef"
+
+// appendJSONString writes s as a JSON string literal into dst, byte-identical to
+// sonic.ConfigStd / encoding/json with HTML escaping on: escapes ", \, control
+// chars, <, >, & (as \u00xx), and U+2028/U+2029; passes valid UTF-8 through and
+// replaces invalid bytes with the "\ufffd" escape. Avoids a full sonic encode per key/string.
+func appendJSONString(dst *bytes.Buffer, s string) {
+	dst.WriteByte('"')
+	start := 0
+	for i := 0; i < len(s); {
+		if b := s[i]; b < utf8.RuneSelf {
+			if jsonSafeSet[b] {
+				i++
+				continue
+			}
+			if start < i {
+				dst.WriteString(s[start:i])
+			}
+			switch b {
+			case '\\', '"':
+				dst.WriteByte('\\')
+				dst.WriteByte(b)
+			case '\n':
+				dst.WriteString(`\n`)
+			case '\r':
+				dst.WriteString(`\r`)
+			case '\t':
+				dst.WriteString(`\t`)
+			default:
+				// control chars and <, >, & -> \u00xx
+				dst.WriteString(`\u00`)
+				dst.WriteByte(hexDigits[b>>4])
+				dst.WriteByte(hexDigits[b&0xF])
+			}
+			i++
+			start = i
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			if start < i {
+				dst.WriteString(s[start:i])
+			}
+			// Match encoding/json and sonic.ConfigStd: invalid UTF-8 becomes its JSON
+			// escape "\ufffd", not the raw replacement-char bytes, so output stays byte-identical.
+			dst.WriteString("\\ufffd")
+			i += size
+			start = i
+			continue
+		}
+		if r == '\u2028' || r == '\u2029' {
+			if start < i {
+				dst.WriteString(s[start:i])
+			}
+			dst.WriteString(`\u202`)
+			dst.WriteByte(hexDigits[r&0xF])
+			i += size
+			start = i
+			continue
+		}
+		i += size
+	}
+	if start < len(s) {
+		dst.WriteString(s[start:])
+	}
+	dst.WriteByte('"')
+}
+
+// jsonSafeSet[b] is true for ASCII bytes that need no escaping under HTML-safe
+// JSON encoding: printable, excluding ", \, <, >, & and control chars.
+var jsonSafeSet = func() [utf8.RuneSelf]bool {
+	var s [utf8.RuneSelf]bool
+	for c := 0x20; c < utf8.RuneSelf; c++ {
+		s[c] = true
+	}
+	s['"'] = false
+	s['\\'] = false
+	s['<'] = false
+	s['>'] = false
+	s['&'] = false
+	return s
+}()
+
+// appendValueJSON encodes a single OrderedMap value into dst. OrderedMap values
+// recurse directly; everything else falls back to MarshalSorted (byte-identical).
+func appendValueJSON(dst *bytes.Buffer, v interface{}) error {
+	switch val := v.(type) {
+	case *OrderedMap:
+		if val == nil {
+			dst.WriteString("null")
+			return nil
+		}
+		return val.appendJSON(dst)
+	case OrderedMap:
+		return val.appendJSON(dst)
+	case string:
+		appendJSONString(dst, val)
+		return nil
+	default:
+		b, err := MarshalSorted(v)
+		if err != nil {
+			return err
+		}
+		dst.Write(b)
+		return nil
+	}
 }
 
 // MarshalSorted serializes the OrderedMap to JSON with keys sorted alphabetically.

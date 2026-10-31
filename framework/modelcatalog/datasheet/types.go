@@ -11,6 +11,8 @@ package datasheet
 
 import (
 	"context"
+	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -26,6 +28,7 @@ const (
 	TokenTierAbove272K = 272000
 	TokenTierAbove200K = 200000
 	TokenTierAbove128K = 128000
+	TokenTierAbove100K = 100000
 )
 
 // retryBackoffMin is the initial wait before the first retry; subsequent
@@ -88,6 +91,10 @@ func (p *Entry) UnmarshalJSON(data []byte) error {
 			p.SearchContextCostPerQuery = q.High
 		}
 	}
+	// Older datasheet rows lack web_search_cost_per_request; fall back to the per-query search rate.
+	if p.WebSearchCostPerRequest == nil {
+		p.WebSearchCostPerRequest = p.SearchContextCostPerQuery
+	}
 	return nil
 }
 
@@ -95,14 +102,20 @@ func (p *Entry) UnmarshalJSON(data []byte) error {
 // as the patch shape for Override.
 type Options struct {
 	// Costs - Text
-	InputCostPerToken          *float64 `json:"input_cost_per_token,omitempty"`
-	OutputCostPerToken         *float64 `json:"output_cost_per_token,omitempty"`
-	InputCostPerTokenBatches   *float64 `json:"input_cost_per_token_batches,omitempty"`
-	OutputCostPerTokenBatches  *float64 `json:"output_cost_per_token_batches,omitempty"`
-	InputCostPerTokenPriority  *float64 `json:"input_cost_per_token_priority,omitempty"`
-	OutputCostPerTokenPriority *float64 `json:"output_cost_per_token_priority,omitempty"`
-	InputCostPerTokenFlex      *float64 `json:"input_cost_per_token_flex,omitempty"`
-	OutputCostPerTokenFlex     *float64 `json:"output_cost_per_token_flex,omitempty"`
+	InputCostPerToken           *float64 `json:"input_cost_per_token,omitempty"`
+	OutputCostPerToken          *float64 `json:"output_cost_per_token,omitempty"`
+	InputCostPerTokenBatches    *float64 `json:"input_cost_per_token_batches,omitempty"`
+	OutputCostPerTokenBatches   *float64 `json:"output_cost_per_token_batches,omitempty"`
+	InputCostPerTokenPriority   *float64 `json:"input_cost_per_token_priority,omitempty"`
+	OutputCostPerTokenPriority  *float64 `json:"output_cost_per_token_priority,omitempty"`
+	InputCostPerTokenUltrafast  *float64 `json:"input_cost_per_token_ultrafast,omitempty"`
+	OutputCostPerTokenUltrafast *float64 `json:"output_cost_per_token_ultrafast,omitempty"`
+	InputCostPerTokenFlex       *float64 `json:"input_cost_per_token_flex,omitempty"`
+	OutputCostPerTokenFlex      *float64 `json:"output_cost_per_token_flex,omitempty"`
+	// Decision requests on a model whose row is another mode (OpenAI's gpt-6-luna
+	// is a chat row served natively on /v1/decisions). See computeDecisionCost.
+	InputCostPerTokenDecisions  *float64 `json:"input_cost_per_token_decisions,omitempty"`
+	OutputCostPerTokenDecisions *float64 `json:"output_cost_per_token_decisions,omitempty"`
 	// Fast mode (Anthropic research preview, speed:"fast" on Opus 4.6/4.7/4.8).
 	// Flat rate across the full context window — no 128k/200k/272k tiering.
 	InputCostPerTokenFast  *float64 `json:"input_cost_per_token_fast,omitempty"`
@@ -114,18 +127,23 @@ type Options struct {
 	InputCostPerVideoPerSecondAbove128kTokens *float64 `json:"input_cost_per_video_per_second_above_128k_tokens,omitempty"`
 	InputCostPerAudioPerSecondAbove128kTokens *float64 `json:"input_cost_per_audio_per_second_above_128k_tokens,omitempty"`
 	OutputCostPerTokenAbove128kTokens         *float64 `json:"output_cost_per_token_above_128k_tokens,omitempty"`
+	// Costs - 100k Tier
+	InputCostPerTokenAbove100kTokens  *float64 `json:"input_cost_per_token_above_100k_tokens,omitempty"`
+	OutputCostPerTokenAbove100kTokens *float64 `json:"output_cost_per_token_above_100k_tokens,omitempty"`
 	// Costs - 200k Tier
 	InputCostPerTokenAbove200kTokens          *float64 `json:"input_cost_per_token_above_200k_tokens,omitempty"`
 	InputCostPerTokenAbove200kTokensPriority  *float64 `json:"input_cost_per_token_above_200k_tokens_priority,omitempty"`
 	OutputCostPerTokenAbove200kTokens         *float64 `json:"output_cost_per_token_above_200k_tokens,omitempty"`
 	OutputCostPerTokenAbove200kTokensPriority *float64 `json:"output_cost_per_token_above_200k_tokens_priority,omitempty"`
 	// Costs - 272k Tier
-	InputCostPerTokenAbove272kTokens          *float64 `json:"input_cost_per_token_above_272k_tokens,omitempty"`
-	InputCostPerTokenAbove272kTokensPriority  *float64 `json:"input_cost_per_token_above_272k_tokens_priority,omitempty"`
-	InputCostPerTokenFlexAbove272kTokens      *float64 `json:"input_cost_per_token_flex_above_272k_tokens,omitempty"`
-	OutputCostPerTokenAbove272kTokens         *float64 `json:"output_cost_per_token_above_272k_tokens,omitempty"`
-	OutputCostPerTokenAbove272kTokensPriority *float64 `json:"output_cost_per_token_above_272k_tokens_priority,omitempty"`
-	OutputCostPerTokenFlexAbove272kTokens     *float64 `json:"output_cost_per_token_flex_above_272k_tokens,omitempty"`
+	InputCostPerTokenAbove272kTokens           *float64 `json:"input_cost_per_token_above_272k_tokens,omitempty"`
+	InputCostPerTokenAbove272kTokensPriority   *float64 `json:"input_cost_per_token_above_272k_tokens_priority,omitempty"`
+	InputCostPerTokenFlexAbove272kTokens       *float64 `json:"input_cost_per_token_flex_above_272k_tokens,omitempty"`
+	OutputCostPerTokenAbove272kTokens          *float64 `json:"output_cost_per_token_above_272k_tokens,omitempty"`
+	OutputCostPerTokenAbove272kTokensPriority  *float64 `json:"output_cost_per_token_above_272k_tokens_priority,omitempty"`
+	OutputCostPerTokenFlexAbove272kTokens      *float64 `json:"output_cost_per_token_flex_above_272k_tokens,omitempty"`
+	InputCostPerTokenAbove272kTokensUltrafast  *float64 `json:"input_cost_per_token_above_272k_tokens_ultrafast,omitempty"`
+	OutputCostPerTokenAbove272kTokensUltrafast *float64 `json:"output_cost_per_token_above_272k_tokens_ultrafast,omitempty"`
 
 	// Costs - Cache
 	CacheCreationInputTokenCost                        *float64 `json:"cache_creation_input_token_cost,omitempty"`
@@ -135,18 +153,26 @@ type Options struct {
 	CacheReadInputTokenCostAbove200kTokensPriority     *float64 `json:"cache_read_input_token_cost_above_200k_tokens_priority,omitempty"`
 	CacheCreationInputTokenCostAbove1hr                *float64 `json:"cache_creation_input_token_cost_above_1hr,omitempty"`
 	CacheCreationInputTokenCostAbove1hrAbove200kTokens *float64 `json:"cache_creation_input_token_cost_above_1hr_above_200k_tokens,omitempty"`
+	CacheCreationInputTokenCostAbove100kTokens         *float64 `json:"cache_creation_input_token_cost_above_100k_tokens,omitempty"`
+	CacheReadInputTokenCostAbove100kTokens             *float64 `json:"cache_read_input_token_cost_above_100k_tokens,omitempty"`
+	CacheCreationInputTokenCostAbove1hrAbove100kTokens *float64 `json:"cache_creation_input_token_cost_above_1hr_above_100k_tokens,omitempty"`
 	CacheCreationInputAudioTokenCost                   *float64 `json:"cache_creation_input_audio_token_cost,omitempty"`
 	CacheReadInputTokenCostPriority                    *float64 `json:"cache_read_input_token_cost_priority,omitempty"`
+	CacheReadInputTokenCostUltrafast                   *float64 `json:"cache_read_input_token_cost_ultrafast,omitempty"`
 	CacheReadInputTokenCostFlex                        *float64 `json:"cache_read_input_token_cost_flex,omitempty"`
 	CacheReadInputImageTokenCost                       *float64 `json:"cache_read_input_image_token_cost,omitempty"`
 	CacheReadInputTokenCostAbove272kTokens             *float64 `json:"cache_read_input_token_cost_above_272k_tokens,omitempty"`
 	CacheReadInputTokenCostAbove272kTokensPriority     *float64 `json:"cache_read_input_token_cost_above_272k_tokens_priority,omitempty"`
 	CacheReadInputTokenCostFlexAbove272kTokens         *float64 `json:"cache_read_input_token_cost_flex_above_272k_tokens,omitempty"`
+	CacheReadInputTokenCostAbove272kTokensUltrafast    *float64 `json:"cache_read_input_token_cost_above_272k_tokens_ultrafast,omitempty"`
 	// OpenAI cache-write (cache-creation) tiered rates, added with gpt-5.6.
-	CacheCreationInputTokenCostAbove272kTokens     *float64 `json:"cache_creation_input_token_cost_above_272k_tokens,omitempty"`
-	CacheCreationInputTokenCostFlex                *float64 `json:"cache_creation_input_token_cost_flex,omitempty"`
-	CacheCreationInputTokenCostFlexAbove272kTokens *float64 `json:"cache_creation_input_token_cost_flex_above_272k_tokens,omitempty"`
-	CacheCreationInputTokenCostPriority            *float64 `json:"cache_creation_input_token_cost_priority,omitempty"`
+	CacheCreationInputTokenCostAbove272kTokens          *float64 `json:"cache_creation_input_token_cost_above_272k_tokens,omitempty"`
+	CacheCreationInputTokenCostFlex                     *float64 `json:"cache_creation_input_token_cost_flex,omitempty"`
+	CacheCreationInputTokenCostFlexAbove272kTokens      *float64 `json:"cache_creation_input_token_cost_flex_above_272k_tokens,omitempty"`
+	CacheCreationInputTokenCostPriority                 *float64 `json:"cache_creation_input_token_cost_priority,omitempty"`
+	CacheCreationInputTokenCostAbove272kTokensPriority  *float64 `json:"cache_creation_input_token_cost_above_272k_tokens_priority,omitempty"`
+	CacheCreationInputTokenCostUltrafast                *float64 `json:"cache_creation_input_token_cost_ultrafast,omitempty"`
+	CacheCreationInputTokenCostAbove272kTokensUltrafast *float64 `json:"cache_creation_input_token_cost_above_272k_tokens_ultrafast,omitempty"`
 	// Fast mode (Anthropic) cache rates — flat across the full context window, no tiering.
 	CacheCreationInputTokenCostFast         *float64 `json:"cache_creation_input_token_cost_fast,omitempty"`
 	CacheCreationInputTokenCostAbove1hrFast *float64 `json:"cache_creation_input_token_cost_above_1hr_fast,omitempty"`
@@ -162,14 +188,37 @@ type Options struct {
 	OutputCostPerImageAbove512x512PixelsPremium   *float64 `json:"output_cost_per_image_above_512_and_512_pixels_and_premium_image,omitempty"`
 	OutputCostPerImageAbove1024x1024Pixels        *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels,omitempty"`
 	OutputCostPerImageAbove1024x1024PixelsPremium *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels_and_premium_image,omitempty"`
+	OutputCostPerImageAbove1024x1536Pixels        *float64 `json:"output_cost_per_image_above_1024_and_1536_pixels,omitempty"`
+	OutputCostPerImageAbove1536x1024Pixels        *float64 `json:"output_cost_per_image_above_1536_and_1024_pixels,omitempty"`
 	OutputCostPerImageAbove2048x2048Pixels        *float64 `json:"output_cost_per_image_above_2048_and_2048_pixels,omitempty"`
 	OutputCostPerImageAbove4096x4096Pixels        *float64 `json:"output_cost_per_image_above_4096_and_4096_pixels,omitempty"`
+	OutputCostPerImageAbove4Megapixels            *float64 `json:"output_cost_per_image_above_4_megapixels,omitempty"`
+	OutputCostPerImageAbove8Megapixels            *float64 `json:"output_cost_per_image_above_8_megapixels,omitempty"`
+	OutputCostPerImageAbove16Megapixels           *float64 `json:"output_cost_per_image_above_16_megapixels,omitempty"`
+	OutputCostPerImageAbove32Megapixels           *float64 `json:"output_cost_per_image_above_32_megapixels,omitempty"`
+	OutputCostPerImageAbove64Megapixels           *float64 `json:"output_cost_per_image_above_64_megapixels,omitempty"`
 	OutputCostPerImageLowQuality                  *float64 `json:"output_cost_per_image_low_quality,omitempty"`
 	OutputCostPerImageMediumQuality               *float64 `json:"output_cost_per_image_medium_quality,omitempty"`
 	OutputCostPerImageHighQuality                 *float64 `json:"output_cost_per_image_high_quality,omitempty"`
 	OutputCostPerImageAutoQuality                 *float64 `json:"output_cost_per_image_auto_quality,omitempty"`
 	InputCostPerImageToken                        *float64 `json:"input_cost_per_image_token,omitempty"`
 	OutputCostPerImageToken                       *float64 `json:"output_cost_per_image_token,omitempty"`
+
+	// Costs - Image, joint size and quality. These are the most specific
+	// per-image rates: they win over the quality-only and size-only rates
+	// above, since upstream prices size and quality together.
+	OutputCostPerImageAbove1024x1024PixelsLowQuality      *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels_low_quality,omitempty"`
+	OutputCostPerImageAbove1024x1536PixelsLowQuality      *float64 `json:"output_cost_per_image_above_1024_and_1536_pixels_low_quality,omitempty"`
+	OutputCostPerImageAbove1536x1024PixelsLowQuality      *float64 `json:"output_cost_per_image_above_1536_and_1024_pixels_low_quality,omitempty"`
+	OutputCostPerImageAbove1024x1024PixelsMediumQuality   *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels_medium_quality,omitempty"`
+	OutputCostPerImageAbove1024x1536PixelsMediumQuality   *float64 `json:"output_cost_per_image_above_1024_and_1536_pixels_medium_quality,omitempty"`
+	OutputCostPerImageAbove1536x1024PixelsMediumQuality   *float64 `json:"output_cost_per_image_above_1536_and_1024_pixels_medium_quality,omitempty"`
+	OutputCostPerImageAbove1024x1024PixelsHighQuality     *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels_high_quality,omitempty"`
+	OutputCostPerImageAbove1024x1536PixelsHighQuality     *float64 `json:"output_cost_per_image_above_1024_and_1536_pixels_high_quality,omitempty"`
+	OutputCostPerImageAbove1536x1024PixelsHighQuality     *float64 `json:"output_cost_per_image_above_1536_and_1024_pixels_high_quality,omitempty"`
+	OutputCostPerImageAbove1024x1024PixelsStandardQuality *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels_standard_quality,omitempty"`
+	OutputCostPerImageAbove1024x1536PixelsStandardQuality *float64 `json:"output_cost_per_image_above_1024_and_1536_pixels_standard_quality,omitempty"`
+	OutputCostPerImageAbove1536x1024PixelsStandardQuality *float64 `json:"output_cost_per_image_above_1536_and_1024_pixels_standard_quality,omitempty"`
 
 	// Costs - Audio/Video
 	InputCostPerAudioToken      *float64 `json:"input_cost_per_audio_token,omitempty"`
@@ -180,13 +229,47 @@ type Options struct {
 	OutputCostPerVideoPerSecond *float64 `json:"output_cost_per_video_per_second,omitempty"`
 	OutputCostPerSecond         *float64 `json:"output_cost_per_second,omitempty"`
 
+	// Azure Voice Live rates, used on Voice Live turns in place of the matching rates above when set. The
+	// speech rates price the audio Azure Speech handled.
+	InputCostPerTokenVoiceLive                     *float64 `json:"input_cost_per_token_voice_live,omitempty"`
+	OutputCostPerTokenVoiceLive                    *float64 `json:"output_cost_per_token_voice_live,omitempty"`
+	CacheReadInputTokenCostVoiceLive               *float64 `json:"cache_read_input_token_cost_voice_live,omitempty"`
+	InputCostPerAudioTokenVoiceLive                *float64 `json:"input_cost_per_audio_token_voice_live,omitempty"`
+	OutputCostPerAudioTokenVoiceLive               *float64 `json:"output_cost_per_audio_token_voice_live,omitempty"`
+	InputCostPerStandardSpeechAudioTokenVoiceLive  *float64 `json:"input_cost_per_standard_speech_audio_token_voice_live,omitempty"`
+	OutputCostPerStandardSpeechAudioTokenVoiceLive *float64 `json:"output_cost_per_standard_speech_audio_token_voice_live,omitempty"`
+	InputCostPerCustomSpeechAudioTokenVoiceLive    *float64 `json:"input_cost_per_custom_speech_audio_token_voice_live,omitempty"`
+	OutputCostPerCustomSpeechAudioTokenVoiceLive   *float64 `json:"output_cost_per_custom_speech_audio_token_voice_live,omitempty"`
+
+	// Resolution-banded video output rates, matched on the short edge of the response's
+	// size. Absent band falls back to OutputCostPerVideoPerSecond, then OutputCostPerSecond.
+	OutputCostPerVideoPerSecond480p  *float64 `json:"output_cost_per_video_per_second_480p,omitempty"`
+	OutputCostPerVideoPerSecond720p  *float64 `json:"output_cost_per_video_per_second_720p,omitempty"`
+	OutputCostPerVideoPerSecond1024p *float64 `json:"output_cost_per_video_per_second_1024p,omitempty"`
+	OutputCostPerVideoPerSecond1080p *float64 `json:"output_cost_per_video_per_second_1080p,omitempty"`
+	OutputCostPerVideoPerSecond4k    *float64 `json:"output_cost_per_video_per_second_4k,omitempty"`
+
+	// Per-token video output rate, for providers that meter video in tokens (BytePlus Seedance).
+	// Takes precedence over OutputCostPerToken for video output tokens.
+	OutputCostPerVideoToken *float64 `json:"output_cost_per_video_token,omitempty"`
+
 	// Costs - Other.
 	//
 	// SearchContextCostPerQuery is stored as a single float64, but the upstream datasheet
 	// represents it as a tiered object. See Entry.UnmarshalJSON.
-	SearchContextCostPerQuery     *float64 `json:"search_context_cost_per_query,omitempty"`
+	SearchContextCostPerQuery *float64 `json:"search_context_cost_per_query,omitempty"`
+	// WebSearchCostPerRequest prices each server-side web search call (usage.tool_usage.web_search.num_requests).
+	WebSearchCostPerRequest       *float64 `json:"web_search_cost_per_request,omitempty"`
 	CodeInterpreterCostPerSession *float64 `json:"code_interpreter_cost_per_session,omitempty"`
-	InferenceGeoUSMultiplier      *float64 `json:"inference_geo_us_multiplier,omitempty"`
+	// InputCostPerQuery is the per-query rate rerank models bill on. Cohere and Bedrock both
+	// define a query (a "search unit") as one query against up to 100 document chunks, so a
+	// request over that many chunks bills as several queries. It is unrelated to
+	// SearchContextCostPerQuery, which prices web-search context on chat models.
+	//
+	// Not applicable to Vertex: its Ranking API bills "ranking units" derived from record count
+	// and title/content size, so a flat per-query rate would misprice every call.
+	InputCostPerQuery        *float64 `json:"input_cost_per_query,omitempty"`
+	InferenceGeoUSMultiplier *float64 `json:"inference_geo_us_multiplier,omitempty"`
 	// CostPerRequest is a flat fee added once per billed request, on top of
 	// whatever usage-based cost the request otherwise computes to.
 	CostPerRequest *float64 `json:"cost_per_request,omitempty"`
@@ -194,7 +277,26 @@ type Options struct {
 	// Costs - OCR
 	OCRCostPerPage        *float64 `json:"ocr_cost_per_page,omitempty"`
 	AnnotationCostPerPage *float64 `json:"annotation_cost_per_page,omitempty"`
+
+	// Costs - Time of day
+	//
+	// OffPeakCostMultiplier scales every usage-based charge when the request
+	// falls outside the PeakHours windows. Every other rate on this struct is
+	// the PEAK price, so the multiplier is expected to be in (0, 1] — 0.5 for
+	// DeepSeek's 50% off-peak discount. Both fields must be present for a
+	// discount to apply; either one alone bills at peak.
+	OffPeakCostMultiplier *float64           `json:"off_peak_cost_multiplier,omitempty"`
+	PeakHours             *PeakHoursSchedule `json:"peak_hours,omitempty"`
 }
+
+// PeakHoursSchedule and PeakHoursWindow are defined in the configstore tables
+// package (TableModelPricing has to reference them and datasheet already
+// imports tables, so the dependency can only run that way). Aliased here so
+// the datasheet JSON shape reads as one self-contained type set.
+type (
+	PeakHoursSchedule = configstoreTables.PeakHoursSchedule
+	PeakHoursWindow   = configstoreTables.PeakHoursWindow
+)
 
 // LookupScopes carries the runtime identifiers used to resolve scoped pricing
 // overrides during cost calculation.
@@ -203,6 +305,14 @@ type LookupScopes struct {
 	VirtualKeyID  string
 	SelectedKeyID string
 	Provider      string
+	// BilledAt is the instant used to decide peak vs off-peak for models that
+	// carry a PeakHours schedule. It is the request's START time, not the
+	// completion time: that keeps pricing deterministic and reproducible, makes
+	// streaming and non-streaming agree, and matches the timestamp users see in
+	// logs. A long stream that crosses a window boundary bills entirely at its
+	// start-time rate. The zero value means "unknown" and falls back to the
+	// wall clock at evaluation time.
+	BilledAt time.Time
 }
 
 // LookupScopesFromContext builds a LookupScopes from a BifrostContext. Reads
@@ -219,15 +329,38 @@ func LookupScopesFromContext(ctx *schemas.BifrostContext, provider string) *Look
 	if ctx == nil {
 		return nil
 	}
-	userID, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string)
+	userID := grantUserID(ctx)
+	if userID == "" {
+		userID, _ = ctx.Value(schemas.BifrostContextKeyUserID).(string)
+	}
 	virtualKeyID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string)
 	selectedKeyID, _ := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string)
+	billedAt, _ := ctx.Value(schemas.BifrostContextKeyRequestStartTime).(time.Time)
 	return &LookupScopes{
 		UserID:        userID,
 		VirtualKeyID:  virtualKeyID,
 		SelectedKeyID: selectedKeyID,
 		Provider:      provider,
+		BilledAt:      billedAt,
 	}
+}
+
+// grantUserID returns the user the request's grant attributes it to, or "" when
+// the context carries no grant, no identity, or no user. Callers fall back to the
+// deprecated BifrostContextKeyUserID for contexts built without a grant.
+func grantUserID(ctx *schemas.BifrostContext) string {
+	g := ctx.Grant()
+	if g == nil {
+		return ""
+	}
+	identity := g.Identity()
+	if identity == nil {
+		return ""
+	}
+	if user := identity.User(); user != nil {
+		return user.ID
+	}
+	return ""
 }
 
 // ScopeKind identifies which governance scope an override applies to.
@@ -276,11 +409,14 @@ type Override struct {
 // serviceTier captures the OpenAI service_tier value from a response.
 // Add new tier flags here as OpenAI introduces them.
 type serviceTier struct {
-	isPriority bool // true when service_tier == "priority"
-	isFlex     bool // true when service_tier == "flex"
-	isFast     bool // true when usage.speed == "fast" (Anthropic fast mode)
+	isPriority  bool // true when service_tier == "priority" or "fast" (OpenAI renamed Priority to Fast on 2026-07-30)
+	isFlex      bool // true when service_tier == "flex"
+	isUltrafast bool // true when service_tier == "ultrafast"
+	isFast      bool // true when usage.speed == "fast" (Anthropic fast mode)
 	// true when usage.inference_geo == "us" (Anthropic data residency 1.1x multiplier)
 	inferenceGeoUS bool
+	// true when ExtraFields.PricingSurface == voice_live; the turn uses the model's _voice_live rates
+	voiceLive bool
 }
 
 // costInput holds the extracted usage data from a BifrostResponse,
@@ -288,14 +424,19 @@ type serviceTier struct {
 type costInput struct {
 	usage               *schemas.BifrostLLMUsage
 	audioTextInputChars int
-	audioSeconds        *int
+	audioSeconds        *float64
 	audioTokenDetails   *schemas.TranscriptionUsageInputTokenDetails
 	imageUsage          *schemas.ImageUsage
 	imageSize           string // e.g. "1024x1024", used for per-pixel pricing
 	imageQuality        string // "low", "medium", "high", "auto" (gpt-image-1.5); empty = use base rate
 	videoSeconds        *int
-	ocrProcessedPages   *int
-	ocrIsAnnotated      *bool
+	videoSize           string // e.g. "1920x1080", used for resolution-banded video pricing
+	videoCount          int    // generated clips on the response; 0 until the job returns them
+	// videoStatus is the job's lifecycle status. A video is billed at settlement,
+	// not at submission, so a non-terminal status prices to nothing.
+	videoStatus       schemas.VideoStatus
+	ocrProcessedPages *int
+	ocrIsAnnotated    *bool
 	// containerIdentifierString, when non-empty, replaces the actual requested/resolved
 	// model names during pricing lookup. Used for request types whose cost is not
 	// tied to a specific model. Currently only used for container creates.
@@ -324,27 +465,6 @@ type customPricingData struct {
 	wildcard []customPricingEntry
 }
 
-// modelParametersParseResult is the parsed result type used by
-// extractSupportedParams (consumed by params.go's applyModelParameters).
-type modelParametersParseResult struct {
-	Mode               *string  `json:"mode,omitempty"`
-	SupportedEndpoints []string `json:"supported_endpoints,omitempty"`
-	ModelParameters    []struct {
-		ID string `json:"id"`
-	} `json:"model_parameters,omitempty"`
-	SupportsAssistantPrefill        *bool `json:"supports_assistant_prefill,omitempty"`
-	SupportsFunctionCalling         *bool `json:"supports_function_calling,omitempty"`
-	SupportsParallelFunctionCalling *bool `json:"supports_parallel_function_calling,omitempty"`
-	SupportsToolChoice              *bool `json:"supports_tool_choice,omitempty"`
-	SupportsReasoning               *bool `json:"supports_reasoning,omitempty"`
-	SupportsResponseSchema          *bool `json:"supports_response_schema,omitempty"`
-	SupportsReasoningWithToolCalls  *bool `json:"supports_reasoning_with_tool_calls,omitempty"`
-	SupportsServiceTier             *bool `json:"supports_service_tier,omitempty"`
-	SupportsPromptCaching           *bool `json:"supports_prompt_caching,omitempty"`
-	SupportsWebSearch               *bool `json:"supports_web_search,omitempty"`
-	VertexMultiRegionOnly           *bool `json:"vertex_multi_region_only,omitempty"`
-}
-
 // --- private helpers (shared across pricing/*.go files) ---
 
 // makeKey is the composite map key used by pricingData: model|provider|mode.
@@ -356,7 +476,7 @@ func makeKey(model, provider, mode string) string {
 // provider name used by the pricing catalog.
 func normalizeProvider(p string) string {
 	switch {
-	case p == "together":
+	case strings.Contains(p, "together"):
 		return "together_ai"
 	case strings.Contains(p, "vertex_ai") || p == "google-vertex":
 		return string(schemas.Vertex)
@@ -368,6 +488,8 @@ func normalizeProvider(p string) string {
 		return string(schemas.Runway)
 	case strings.Contains(p, "fireworks_ai"):
 		return string(schemas.Fireworks)
+	case strings.Contains(p, "github_copilot"):
+		return string(schemas.GithubCopilot)
 	default:
 		return p
 	}
@@ -379,7 +501,7 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 	switch reqType {
 	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
 		return "completion"
-	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
+	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest, schemas.BatchResultsRequest:
 		return "chat"
 	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest, schemas.RealtimeRequest, schemas.CompactionRequest:
 		return "responses"
@@ -387,6 +509,8 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 		return "embedding"
 	case schemas.RerankRequest:
 		return "rerank"
+	case schemas.DecisionRequest:
+		return "decisions"
 	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
 		return "audio_speech"
 	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
@@ -395,12 +519,14 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 		return "image_generation"
 	case schemas.ImageEditRequest, schemas.ImageEditStreamRequest:
 		return "image_edit"
-	case schemas.VideoGenerationRequest, schemas.VideoRemixRequest:
+	case schemas.VideoGenerationRequest, schemas.VideoRemixRequest, schemas.VideoEditRequest:
 		return "video_generation"
 	case schemas.OCRRequest:
 		return "ocr"
 	case schemas.ContainerCreateRequest:
 		return "container_create"
+	case schemas.LiveRequest:
+		return "live"
 	}
 	return "unknown"
 }
@@ -410,6 +536,10 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 // API. Many models carry a datasheet row under only one of the two modes (e.g.
 // bedrock's openai.gpt-5.5 ships as responses-only), so a lookup that misses in
 // its own mode retries under the counterpart rather than pricing at zero.
+// Decision requests retry under chat: a model served natively on a decisions
+// endpoint carries its decision rates on its chat row (see computeDecisionCost), and
+// one answered by emulation is billed as the chat call it is. A model with
+// only a responses row stays unpriced for decisions.
 // Returns false for request types with no such counterpart.
 func chatResponsesFallbackMode(reqType schemas.RequestType) (string, bool) {
 	switch reqType {
@@ -417,6 +547,8 @@ func chatResponsesFallbackMode(reqType schemas.RequestType) (string, bool) {
 		return normalizeRequestType(schemas.ChatCompletionRequest), true
 	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 		return normalizeRequestType(schemas.ResponsesRequest), true
+	case schemas.DecisionRequest:
+		return normalizeRequestType(schemas.ChatCompletionRequest), true
 	}
 	return "", false
 }
@@ -485,12 +617,30 @@ func normalizeModeToOutputType(mode string) string {
 
 // extractSupportedParams builds a list of supported OpenAI-compatible parameter
 // names from model_parameters[].id values and supports_* boolean flags.
-func extractSupportedParams(parsed *modelParametersParseResult) []string {
+func extractSupportedParams(parsed *schemas.ModelCapabilities) []string {
 	var supported []string
 	addParam := func(name string) {
 		if !slices.Contains(supported, name) {
 			supported = append(supported, name)
 		}
+	}
+
+	// A row with no model_parameters list (93 Bedrock rows in the 2026-10-20
+	// datasheet, e.g. apac.anthropic.claude-sonnet-4-6) declares no parameter
+	// surface at all, so the loop below contributes nothing and the allowlist
+	// shrinks to the capability flags. compat's should_drop_params then strips
+	// max_tokens/temperature/top_p and the provider silently substitutes its
+	// own defaults (bedrock fills MaxTokens from the model default). An
+	// undisclosed parameter list means "unknown", not "unsupported": keep the
+	// universally-supported sampling and token-limit params in the allowlist.
+	// An explicit empty list ([]) is a declared empty surface and gets no defaults.
+	if parsed.ModelParameters == nil {
+		addParam("temperature")
+		addParam("top_p")
+		addParam("stop")
+		addParam("max_tokens")
+		addParam("max_completion_tokens")
+		addParam("max_output_tokens")
 	}
 
 	for _, mp := range parsed.ModelParameters {
@@ -514,8 +664,11 @@ func extractSupportedParams(parsed *modelParametersParseResult) []string {
 	}
 
 	if parsed.SupportsAssistantPrefill != nil && *parsed.SupportsAssistantPrefill {
-		// Not an actual request parameter; if present, trailing assistant messages
-		// for anthropic and bedrock's anthropic models will not be trimmed.
+		// Not an actual request parameter; if present, trailing assistant messages are
+		// left in place instead of being trimmed. Read by anthropic and by bedrock's
+		// anthropic models, and by gemini/vertex -- where the default is the opposite
+		// (no model supports prefill, so the trim is on unless a record turns it off),
+		// because Gemini rejects any conversation ending on a role:"model" turn.
 		addParam("assistant_prefill")
 	}
 	if parsed.SupportsFunctionCalling != nil && *parsed.SupportsFunctionCalling {
@@ -532,6 +685,18 @@ func extractSupportedParams(parsed *modelParametersParseResult) []string {
 	}
 	if parsed.SupportsReasoningWithToolCalls == nil || *parsed.SupportsReasoningWithToolCalls {
 		addParam("reasoning_with_tool_calls")
+	}
+	if parsed.SupportsNoneReasoningEffort != nil && *parsed.SupportsNoneReasoningEffort {
+		addParam("supports_none_reasoning_effort")
+	}
+	if parsed.SupportsReasoningSummaryDetailed == nil || *parsed.SupportsReasoningSummaryDetailed {
+		addParam("reasoning_summary_detailed")
+	}
+	if parsed.SupportsReasoningSummaryConcise == nil || *parsed.SupportsReasoningSummaryConcise {
+		addParam("reasoning_summary_concise")
+	}
+	if parsed.SupportsReasoningSummaryAuto == nil || *parsed.SupportsReasoningSummaryAuto {
+		addParam("reasoning_summary_auto")
 	}
 	if parsed.SupportsResponseSchema != nil && *parsed.SupportsResponseSchema {
 		addParam("response_format")
@@ -567,7 +732,7 @@ func withRetries[T any](ctx context.Context, maxRetries int, maxBackoff time.Dur
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		select {
 		case <-ctx.Done():
-			return zero, ctx.Err()
+			return zero, retryAbortErr(ctx, lastErr)
 		default:
 		}
 
@@ -578,7 +743,7 @@ func withRetries[T any](ctx context.Context, maxRetries int, maxBackoff time.Dur
 			}
 			select {
 			case <-ctx.Done():
-				return zero, ctx.Err()
+				return zero, retryAbortErr(ctx, lastErr)
 			case <-time.After(backoff):
 			}
 		}
@@ -589,6 +754,15 @@ func withRetries[T any](ctx context.Context, maxRetries int, maxBackoff time.Dur
 		lastErr = err
 	}
 	return zero, lastErr
+}
+
+// retryAbortErr keeps the last attempt's error when ctx ends mid-retry, since
+// a bare "context deadline exceeded" hides which URL failed and why.
+func retryAbortErr(ctx context.Context, lastErr error) error {
+	if lastErr == nil {
+		return ctx.Err()
+	}
+	return fmt.Errorf("%w (last attempt: %v)", ctx.Err(), lastErr)
 }
 
 // convertEntryToTablePricing converts a parsed Entry from the upstream
@@ -607,54 +781,70 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		Architecture:    entry.Architecture,
 		IsDeprecated:    entry.IsDeprecated,
 
-		InputCostPerToken:                         entry.InputCostPerToken,
-		OutputCostPerToken:                        entry.OutputCostPerToken,
-		InputCostPerTokenBatches:                  entry.InputCostPerTokenBatches,
-		OutputCostPerTokenBatches:                 entry.OutputCostPerTokenBatches,
-		InputCostPerTokenPriority:                 entry.InputCostPerTokenPriority,
-		OutputCostPerTokenPriority:                entry.OutputCostPerTokenPriority,
-		InputCostPerTokenFlex:                     entry.InputCostPerTokenFlex,
-		OutputCostPerTokenFlex:                    entry.OutputCostPerTokenFlex,
-		InputCostPerTokenFast:                     entry.InputCostPerTokenFast,
-		OutputCostPerTokenFast:                    entry.OutputCostPerTokenFast,
-		InputCostPerTokenAbove200kTokens:          entry.InputCostPerTokenAbove200kTokens,
-		InputCostPerTokenAbove200kTokensPriority:  entry.InputCostPerTokenAbove200kTokensPriority,
-		OutputCostPerTokenAbove200kTokens:         entry.OutputCostPerTokenAbove200kTokens,
-		OutputCostPerTokenAbove200kTokensPriority: entry.OutputCostPerTokenAbove200kTokensPriority,
-		InputCostPerTokenAbove272kTokens:          entry.InputCostPerTokenAbove272kTokens,
-		InputCostPerTokenAbove272kTokensPriority:  entry.InputCostPerTokenAbove272kTokensPriority,
-		InputCostPerTokenFlexAbove272kTokens:      entry.InputCostPerTokenFlexAbove272kTokens,
-		OutputCostPerTokenAbove272kTokens:         entry.OutputCostPerTokenAbove272kTokens,
-		OutputCostPerTokenAbove272kTokensPriority: entry.OutputCostPerTokenAbove272kTokensPriority,
-		OutputCostPerTokenFlexAbove272kTokens:     entry.OutputCostPerTokenFlexAbove272kTokens,
-		InputCostPerCharacter:                     entry.InputCostPerCharacter,
-		InputCostPerTokenAbove128kTokens:          entry.InputCostPerTokenAbove128kTokens,
-		InputCostPerImageAbove128kTokens:          entry.InputCostPerImageAbove128kTokens,
-		InputCostPerVideoPerSecondAbove128kTokens: entry.InputCostPerVideoPerSecondAbove128kTokens,
-		InputCostPerAudioPerSecondAbove128kTokens: entry.InputCostPerAudioPerSecondAbove128kTokens,
-		OutputCostPerTokenAbove128kTokens:         entry.OutputCostPerTokenAbove128kTokens,
+		InputCostPerToken:                          entry.InputCostPerToken,
+		OutputCostPerToken:                         entry.OutputCostPerToken,
+		InputCostPerTokenBatches:                   entry.InputCostPerTokenBatches,
+		OutputCostPerTokenBatches:                  entry.OutputCostPerTokenBatches,
+		InputCostPerTokenPriority:                  entry.InputCostPerTokenPriority,
+		OutputCostPerTokenPriority:                 entry.OutputCostPerTokenPriority,
+		InputCostPerTokenUltrafast:                 entry.InputCostPerTokenUltrafast,
+		OutputCostPerTokenUltrafast:                entry.OutputCostPerTokenUltrafast,
+		InputCostPerTokenFlex:                      entry.InputCostPerTokenFlex,
+		OutputCostPerTokenFlex:                     entry.OutputCostPerTokenFlex,
+		InputCostPerTokenDecisions:                 entry.InputCostPerTokenDecisions,
+		OutputCostPerTokenDecisions:                entry.OutputCostPerTokenDecisions,
+		InputCostPerTokenFast:                      entry.InputCostPerTokenFast,
+		OutputCostPerTokenFast:                     entry.OutputCostPerTokenFast,
+		InputCostPerTokenAbove200kTokens:           entry.InputCostPerTokenAbove200kTokens,
+		InputCostPerTokenAbove200kTokensPriority:   entry.InputCostPerTokenAbove200kTokensPriority,
+		OutputCostPerTokenAbove200kTokens:          entry.OutputCostPerTokenAbove200kTokens,
+		OutputCostPerTokenAbove200kTokensPriority:  entry.OutputCostPerTokenAbove200kTokensPriority,
+		InputCostPerTokenAbove272kTokens:           entry.InputCostPerTokenAbove272kTokens,
+		InputCostPerTokenAbove272kTokensPriority:   entry.InputCostPerTokenAbove272kTokensPriority,
+		InputCostPerTokenFlexAbove272kTokens:       entry.InputCostPerTokenFlexAbove272kTokens,
+		OutputCostPerTokenAbove272kTokens:          entry.OutputCostPerTokenAbove272kTokens,
+		OutputCostPerTokenAbove272kTokensPriority:  entry.OutputCostPerTokenAbove272kTokensPriority,
+		OutputCostPerTokenFlexAbove272kTokens:      entry.OutputCostPerTokenFlexAbove272kTokens,
+		InputCostPerTokenAbove272kTokensUltrafast:  entry.InputCostPerTokenAbove272kTokensUltrafast,
+		OutputCostPerTokenAbove272kTokensUltrafast: entry.OutputCostPerTokenAbove272kTokensUltrafast,
+		InputCostPerCharacter:                      entry.InputCostPerCharacter,
+		InputCostPerTokenAbove128kTokens:           entry.InputCostPerTokenAbove128kTokens,
+		InputCostPerImageAbove128kTokens:           entry.InputCostPerImageAbove128kTokens,
+		InputCostPerVideoPerSecondAbove128kTokens:  entry.InputCostPerVideoPerSecondAbove128kTokens,
+		InputCostPerAudioPerSecondAbove128kTokens:  entry.InputCostPerAudioPerSecondAbove128kTokens,
+		OutputCostPerTokenAbove128kTokens:          entry.OutputCostPerTokenAbove128kTokens,
+		InputCostPerTokenAbove100kTokens:           entry.InputCostPerTokenAbove100kTokens,
+		OutputCostPerTokenAbove100kTokens:          entry.OutputCostPerTokenAbove100kTokens,
 
-		CacheCreationInputTokenCost:                        entry.CacheCreationInputTokenCost,
-		CacheReadInputTokenCost:                            entry.CacheReadInputTokenCost,
-		CacheCreationInputTokenCostAbove200kTokens:         entry.CacheCreationInputTokenCostAbove200kTokens,
-		CacheReadInputTokenCostAbove200kTokens:             entry.CacheReadInputTokenCostAbove200kTokens,
-		CacheReadInputTokenCostAbove200kTokensPriority:     entry.CacheReadInputTokenCostAbove200kTokensPriority,
-		CacheCreationInputTokenCostAbove1hr:                entry.CacheCreationInputTokenCostAbove1hr,
-		CacheCreationInputTokenCostAbove1hrAbove200kTokens: entry.CacheCreationInputTokenCostAbove1hrAbove200kTokens,
-		CacheCreationInputAudioTokenCost:                   entry.CacheCreationInputAudioTokenCost,
-		CacheReadInputTokenCostPriority:                    entry.CacheReadInputTokenCostPriority,
-		CacheReadInputTokenCostFlex:                        entry.CacheReadInputTokenCostFlex,
-		CacheReadInputImageTokenCost:                       entry.CacheReadInputImageTokenCost,
-		CacheReadInputTokenCostAbove272kTokens:             entry.CacheReadInputTokenCostAbove272kTokens,
-		CacheReadInputTokenCostAbove272kTokensPriority:     entry.CacheReadInputTokenCostAbove272kTokensPriority,
-		CacheReadInputTokenCostFlexAbove272kTokens:         entry.CacheReadInputTokenCostFlexAbove272kTokens,
-		CacheCreationInputTokenCostAbove272kTokens:         entry.CacheCreationInputTokenCostAbove272kTokens,
-		CacheCreationInputTokenCostFlex:                    entry.CacheCreationInputTokenCostFlex,
-		CacheCreationInputTokenCostFlexAbove272kTokens:     entry.CacheCreationInputTokenCostFlexAbove272kTokens,
-		CacheCreationInputTokenCostPriority:                entry.CacheCreationInputTokenCostPriority,
-		CacheCreationInputTokenCostFast:                    entry.CacheCreationInputTokenCostFast,
-		CacheCreationInputTokenCostAbove1hrFast:            entry.CacheCreationInputTokenCostAbove1hrFast,
-		CacheReadInputTokenCostFast:                        entry.CacheReadInputTokenCostFast,
+		CacheCreationInputTokenCost:                         entry.CacheCreationInputTokenCost,
+		CacheReadInputTokenCost:                             entry.CacheReadInputTokenCost,
+		CacheCreationInputTokenCostAbove200kTokens:          entry.CacheCreationInputTokenCostAbove200kTokens,
+		CacheReadInputTokenCostAbove200kTokens:              entry.CacheReadInputTokenCostAbove200kTokens,
+		CacheReadInputTokenCostAbove200kTokensPriority:      entry.CacheReadInputTokenCostAbove200kTokensPriority,
+		CacheCreationInputTokenCostAbove1hr:                 entry.CacheCreationInputTokenCostAbove1hr,
+		CacheCreationInputTokenCostAbove1hrAbove200kTokens:  entry.CacheCreationInputTokenCostAbove1hrAbove200kTokens,
+		CacheCreationInputTokenCostAbove100kTokens:          entry.CacheCreationInputTokenCostAbove100kTokens,
+		CacheReadInputTokenCostAbove100kTokens:              entry.CacheReadInputTokenCostAbove100kTokens,
+		CacheCreationInputTokenCostAbove1hrAbove100kTokens:  entry.CacheCreationInputTokenCostAbove1hrAbove100kTokens,
+		CacheCreationInputAudioTokenCost:                    entry.CacheCreationInputAudioTokenCost,
+		CacheReadInputTokenCostPriority:                     entry.CacheReadInputTokenCostPriority,
+		CacheReadInputTokenCostUltrafast:                    entry.CacheReadInputTokenCostUltrafast,
+		CacheReadInputTokenCostFlex:                         entry.CacheReadInputTokenCostFlex,
+		CacheReadInputImageTokenCost:                        entry.CacheReadInputImageTokenCost,
+		CacheReadInputTokenCostAbove272kTokens:              entry.CacheReadInputTokenCostAbove272kTokens,
+		CacheReadInputTokenCostAbove272kTokensPriority:      entry.CacheReadInputTokenCostAbove272kTokensPriority,
+		CacheReadInputTokenCostFlexAbove272kTokens:          entry.CacheReadInputTokenCostFlexAbove272kTokens,
+		CacheReadInputTokenCostAbove272kTokensUltrafast:     entry.CacheReadInputTokenCostAbove272kTokensUltrafast,
+		CacheCreationInputTokenCostAbove272kTokens:          entry.CacheCreationInputTokenCostAbove272kTokens,
+		CacheCreationInputTokenCostFlex:                     entry.CacheCreationInputTokenCostFlex,
+		CacheCreationInputTokenCostFlexAbove272kTokens:      entry.CacheCreationInputTokenCostFlexAbove272kTokens,
+		CacheCreationInputTokenCostPriority:                 entry.CacheCreationInputTokenCostPriority,
+		CacheCreationInputTokenCostAbove272kTokensPriority:  entry.CacheCreationInputTokenCostAbove272kTokensPriority,
+		CacheCreationInputTokenCostUltrafast:                entry.CacheCreationInputTokenCostUltrafast,
+		CacheCreationInputTokenCostAbove272kTokensUltrafast: entry.CacheCreationInputTokenCostAbove272kTokensUltrafast,
+		CacheCreationInputTokenCostFast:                     entry.CacheCreationInputTokenCostFast,
+		CacheCreationInputTokenCostAbove1hrFast:             entry.CacheCreationInputTokenCostAbove1hrFast,
+		CacheReadInputTokenCostFast:                         entry.CacheReadInputTokenCostFast,
 
 		InputCostPerImage:                             entry.InputCostPerImage,
 		InputCostPerPixel:                             entry.InputCostPerPixel,
@@ -667,12 +857,32 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		OutputCostPerImageAbove1024x1024PixelsPremium: entry.OutputCostPerImageAbove1024x1024PixelsPremium,
 		OutputCostPerImageAbove2048x2048Pixels:        entry.OutputCostPerImageAbove2048x2048Pixels,
 		OutputCostPerImageAbove4096x4096Pixels:        entry.OutputCostPerImageAbove4096x4096Pixels,
+		OutputCostPerImageAbove4Megapixels:            entry.OutputCostPerImageAbove4Megapixels,
+		OutputCostPerImageAbove8Megapixels:            entry.OutputCostPerImageAbove8Megapixels,
+		OutputCostPerImageAbove16Megapixels:           entry.OutputCostPerImageAbove16Megapixels,
+		OutputCostPerImageAbove32Megapixels:           entry.OutputCostPerImageAbove32Megapixels,
+		OutputCostPerImageAbove64Megapixels:           entry.OutputCostPerImageAbove64Megapixels,
 		OutputCostPerImageLowQuality:                  entry.OutputCostPerImageLowQuality,
 		OutputCostPerImageMediumQuality:               entry.OutputCostPerImageMediumQuality,
 		OutputCostPerImageHighQuality:                 entry.OutputCostPerImageHighQuality,
 		OutputCostPerImageAutoQuality:                 entry.OutputCostPerImageAutoQuality,
 		InputCostPerImageToken:                        entry.InputCostPerImageToken,
 		OutputCostPerImageToken:                       entry.OutputCostPerImageToken,
+
+		OutputCostPerImageAbove1024x1536Pixels:                entry.OutputCostPerImageAbove1024x1536Pixels,
+		OutputCostPerImageAbove1536x1024Pixels:                entry.OutputCostPerImageAbove1536x1024Pixels,
+		OutputCostPerImageAbove1024x1024PixelsLowQuality:      entry.OutputCostPerImageAbove1024x1024PixelsLowQuality,
+		OutputCostPerImageAbove1024x1536PixelsLowQuality:      entry.OutputCostPerImageAbove1024x1536PixelsLowQuality,
+		OutputCostPerImageAbove1536x1024PixelsLowQuality:      entry.OutputCostPerImageAbove1536x1024PixelsLowQuality,
+		OutputCostPerImageAbove1024x1024PixelsMediumQuality:   entry.OutputCostPerImageAbove1024x1024PixelsMediumQuality,
+		OutputCostPerImageAbove1024x1536PixelsMediumQuality:   entry.OutputCostPerImageAbove1024x1536PixelsMediumQuality,
+		OutputCostPerImageAbove1536x1024PixelsMediumQuality:   entry.OutputCostPerImageAbove1536x1024PixelsMediumQuality,
+		OutputCostPerImageAbove1024x1024PixelsHighQuality:     entry.OutputCostPerImageAbove1024x1024PixelsHighQuality,
+		OutputCostPerImageAbove1024x1536PixelsHighQuality:     entry.OutputCostPerImageAbove1024x1536PixelsHighQuality,
+		OutputCostPerImageAbove1536x1024PixelsHighQuality:     entry.OutputCostPerImageAbove1536x1024PixelsHighQuality,
+		OutputCostPerImageAbove1024x1024PixelsStandardQuality: entry.OutputCostPerImageAbove1024x1024PixelsStandardQuality,
+		OutputCostPerImageAbove1024x1536PixelsStandardQuality: entry.OutputCostPerImageAbove1024x1536PixelsStandardQuality,
+		OutputCostPerImageAbove1536x1024PixelsStandardQuality: entry.OutputCostPerImageAbove1536x1024PixelsStandardQuality,
 
 		InputCostPerAudioToken:      entry.InputCostPerAudioToken,
 		InputCostPerAudioPerSecond:  entry.InputCostPerAudioPerSecond,
@@ -682,13 +892,35 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		OutputCostPerVideoPerSecond: entry.OutputCostPerVideoPerSecond,
 		OutputCostPerSecond:         entry.OutputCostPerSecond,
 
+		InputCostPerTokenVoiceLive:                     entry.InputCostPerTokenVoiceLive,
+		OutputCostPerTokenVoiceLive:                    entry.OutputCostPerTokenVoiceLive,
+		CacheReadInputTokenCostVoiceLive:               entry.CacheReadInputTokenCostVoiceLive,
+		InputCostPerAudioTokenVoiceLive:                entry.InputCostPerAudioTokenVoiceLive,
+		OutputCostPerAudioTokenVoiceLive:               entry.OutputCostPerAudioTokenVoiceLive,
+		InputCostPerStandardSpeechAudioTokenVoiceLive:  entry.InputCostPerStandardSpeechAudioTokenVoiceLive,
+		OutputCostPerStandardSpeechAudioTokenVoiceLive: entry.OutputCostPerStandardSpeechAudioTokenVoiceLive,
+		InputCostPerCustomSpeechAudioTokenVoiceLive:    entry.InputCostPerCustomSpeechAudioTokenVoiceLive,
+		OutputCostPerCustomSpeechAudioTokenVoiceLive:   entry.OutputCostPerCustomSpeechAudioTokenVoiceLive,
+
+		OutputCostPerVideoPerSecond480p:  entry.OutputCostPerVideoPerSecond480p,
+		OutputCostPerVideoPerSecond720p:  entry.OutputCostPerVideoPerSecond720p,
+		OutputCostPerVideoPerSecond1024p: entry.OutputCostPerVideoPerSecond1024p,
+		OutputCostPerVideoPerSecond1080p: entry.OutputCostPerVideoPerSecond1080p,
+		OutputCostPerVideoPerSecond4k:    entry.OutputCostPerVideoPerSecond4k,
+		OutputCostPerVideoToken:          entry.OutputCostPerVideoToken,
+
 		SearchContextCostPerQuery:     entry.SearchContextCostPerQuery,
+		WebSearchCostPerRequest:       entry.WebSearchCostPerRequest,
 		CodeInterpreterCostPerSession: entry.CodeInterpreterCostPerSession,
+		InputCostPerQuery:             entry.InputCostPerQuery,
 		InferenceGeoUSMultiplier:      entry.InferenceGeoUSMultiplier,
 		CostPerRequest:                entry.CostPerRequest,
 
 		OCRCostPerPage:        entry.OCRCostPerPage,
 		AnnotationCostPerPage: entry.AnnotationCostPerPage,
+
+		OffPeakCostMultiplier: entry.OffPeakCostMultiplier,
+		PeakHours:             entry.PeakHours,
 	}
 }
 
@@ -696,54 +928,70 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 // into the Entry shape callers consume.
 func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *Entry {
 	options := Options{
-		InputCostPerToken:                         pricing.InputCostPerToken,
-		OutputCostPerToken:                        pricing.OutputCostPerToken,
-		InputCostPerTokenBatches:                  pricing.InputCostPerTokenBatches,
-		OutputCostPerTokenBatches:                 pricing.OutputCostPerTokenBatches,
-		InputCostPerTokenPriority:                 pricing.InputCostPerTokenPriority,
-		OutputCostPerTokenPriority:                pricing.OutputCostPerTokenPriority,
-		InputCostPerTokenFlex:                     pricing.InputCostPerTokenFlex,
-		OutputCostPerTokenFlex:                    pricing.OutputCostPerTokenFlex,
-		InputCostPerTokenFast:                     pricing.InputCostPerTokenFast,
-		OutputCostPerTokenFast:                    pricing.OutputCostPerTokenFast,
-		InputCostPerTokenAbove200kTokens:          pricing.InputCostPerTokenAbove200kTokens,
-		InputCostPerTokenAbove200kTokensPriority:  pricing.InputCostPerTokenAbove200kTokensPriority,
-		OutputCostPerTokenAbove200kTokens:         pricing.OutputCostPerTokenAbove200kTokens,
-		OutputCostPerTokenAbove200kTokensPriority: pricing.OutputCostPerTokenAbove200kTokensPriority,
-		InputCostPerTokenAbove272kTokens:          pricing.InputCostPerTokenAbove272kTokens,
-		InputCostPerTokenAbove272kTokensPriority:  pricing.InputCostPerTokenAbove272kTokensPriority,
-		InputCostPerTokenFlexAbove272kTokens:      pricing.InputCostPerTokenFlexAbove272kTokens,
-		OutputCostPerTokenAbove272kTokens:         pricing.OutputCostPerTokenAbove272kTokens,
-		OutputCostPerTokenAbove272kTokensPriority: pricing.OutputCostPerTokenAbove272kTokensPriority,
-		OutputCostPerTokenFlexAbove272kTokens:     pricing.OutputCostPerTokenFlexAbove272kTokens,
-		InputCostPerCharacter:                     pricing.InputCostPerCharacter,
-		InputCostPerTokenAbove128kTokens:          pricing.InputCostPerTokenAbove128kTokens,
-		InputCostPerImageAbove128kTokens:          pricing.InputCostPerImageAbove128kTokens,
-		InputCostPerVideoPerSecondAbove128kTokens: pricing.InputCostPerVideoPerSecondAbove128kTokens,
-		InputCostPerAudioPerSecondAbove128kTokens: pricing.InputCostPerAudioPerSecondAbove128kTokens,
-		OutputCostPerTokenAbove128kTokens:         pricing.OutputCostPerTokenAbove128kTokens,
+		InputCostPerToken:                          pricing.InputCostPerToken,
+		OutputCostPerToken:                         pricing.OutputCostPerToken,
+		InputCostPerTokenBatches:                   pricing.InputCostPerTokenBatches,
+		OutputCostPerTokenBatches:                  pricing.OutputCostPerTokenBatches,
+		InputCostPerTokenPriority:                  pricing.InputCostPerTokenPriority,
+		OutputCostPerTokenPriority:                 pricing.OutputCostPerTokenPriority,
+		InputCostPerTokenUltrafast:                 pricing.InputCostPerTokenUltrafast,
+		OutputCostPerTokenUltrafast:                pricing.OutputCostPerTokenUltrafast,
+		InputCostPerTokenFlex:                      pricing.InputCostPerTokenFlex,
+		OutputCostPerTokenFlex:                     pricing.OutputCostPerTokenFlex,
+		InputCostPerTokenDecisions:                 pricing.InputCostPerTokenDecisions,
+		OutputCostPerTokenDecisions:                pricing.OutputCostPerTokenDecisions,
+		InputCostPerTokenFast:                      pricing.InputCostPerTokenFast,
+		OutputCostPerTokenFast:                     pricing.OutputCostPerTokenFast,
+		InputCostPerTokenAbove200kTokens:           pricing.InputCostPerTokenAbove200kTokens,
+		InputCostPerTokenAbove200kTokensPriority:   pricing.InputCostPerTokenAbove200kTokensPriority,
+		OutputCostPerTokenAbove200kTokens:          pricing.OutputCostPerTokenAbove200kTokens,
+		OutputCostPerTokenAbove200kTokensPriority:  pricing.OutputCostPerTokenAbove200kTokensPriority,
+		InputCostPerTokenAbove272kTokens:           pricing.InputCostPerTokenAbove272kTokens,
+		InputCostPerTokenAbove272kTokensPriority:   pricing.InputCostPerTokenAbove272kTokensPriority,
+		InputCostPerTokenFlexAbove272kTokens:       pricing.InputCostPerTokenFlexAbove272kTokens,
+		OutputCostPerTokenAbove272kTokens:          pricing.OutputCostPerTokenAbove272kTokens,
+		OutputCostPerTokenAbove272kTokensPriority:  pricing.OutputCostPerTokenAbove272kTokensPriority,
+		OutputCostPerTokenFlexAbove272kTokens:      pricing.OutputCostPerTokenFlexAbove272kTokens,
+		InputCostPerTokenAbove272kTokensUltrafast:  pricing.InputCostPerTokenAbove272kTokensUltrafast,
+		OutputCostPerTokenAbove272kTokensUltrafast: pricing.OutputCostPerTokenAbove272kTokensUltrafast,
+		InputCostPerCharacter:                      pricing.InputCostPerCharacter,
+		InputCostPerTokenAbove128kTokens:           pricing.InputCostPerTokenAbove128kTokens,
+		InputCostPerImageAbove128kTokens:           pricing.InputCostPerImageAbove128kTokens,
+		InputCostPerVideoPerSecondAbove128kTokens:  pricing.InputCostPerVideoPerSecondAbove128kTokens,
+		InputCostPerAudioPerSecondAbove128kTokens:  pricing.InputCostPerAudioPerSecondAbove128kTokens,
+		OutputCostPerTokenAbove128kTokens:          pricing.OutputCostPerTokenAbove128kTokens,
+		InputCostPerTokenAbove100kTokens:           pricing.InputCostPerTokenAbove100kTokens,
+		OutputCostPerTokenAbove100kTokens:          pricing.OutputCostPerTokenAbove100kTokens,
 
-		CacheCreationInputTokenCost:                        pricing.CacheCreationInputTokenCost,
-		CacheReadInputTokenCost:                            pricing.CacheReadInputTokenCost,
-		CacheCreationInputTokenCostAbove200kTokens:         pricing.CacheCreationInputTokenCostAbove200kTokens,
-		CacheReadInputTokenCostAbove200kTokens:             pricing.CacheReadInputTokenCostAbove200kTokens,
-		CacheReadInputTokenCostAbove200kTokensPriority:     pricing.CacheReadInputTokenCostAbove200kTokensPriority,
-		CacheCreationInputTokenCostAbove1hr:                pricing.CacheCreationInputTokenCostAbove1hr,
-		CacheCreationInputTokenCostAbove1hrAbove200kTokens: pricing.CacheCreationInputTokenCostAbove1hrAbove200kTokens,
-		CacheCreationInputAudioTokenCost:                   pricing.CacheCreationInputAudioTokenCost,
-		CacheReadInputTokenCostPriority:                    pricing.CacheReadInputTokenCostPriority,
-		CacheReadInputTokenCostFlex:                        pricing.CacheReadInputTokenCostFlex,
-		CacheReadInputImageTokenCost:                       pricing.CacheReadInputImageTokenCost,
-		CacheReadInputTokenCostAbove272kTokens:             pricing.CacheReadInputTokenCostAbove272kTokens,
-		CacheReadInputTokenCostAbove272kTokensPriority:     pricing.CacheReadInputTokenCostAbove272kTokensPriority,
-		CacheReadInputTokenCostFlexAbove272kTokens:         pricing.CacheReadInputTokenCostFlexAbove272kTokens,
-		CacheCreationInputTokenCostAbove272kTokens:         pricing.CacheCreationInputTokenCostAbove272kTokens,
-		CacheCreationInputTokenCostFlex:                    pricing.CacheCreationInputTokenCostFlex,
-		CacheCreationInputTokenCostFlexAbove272kTokens:     pricing.CacheCreationInputTokenCostFlexAbove272kTokens,
-		CacheCreationInputTokenCostPriority:                pricing.CacheCreationInputTokenCostPriority,
-		CacheCreationInputTokenCostFast:                    pricing.CacheCreationInputTokenCostFast,
-		CacheCreationInputTokenCostAbove1hrFast:            pricing.CacheCreationInputTokenCostAbove1hrFast,
-		CacheReadInputTokenCostFast:                        pricing.CacheReadInputTokenCostFast,
+		CacheCreationInputTokenCost:                         pricing.CacheCreationInputTokenCost,
+		CacheReadInputTokenCost:                             pricing.CacheReadInputTokenCost,
+		CacheCreationInputTokenCostAbove200kTokens:          pricing.CacheCreationInputTokenCostAbove200kTokens,
+		CacheReadInputTokenCostAbove200kTokens:              pricing.CacheReadInputTokenCostAbove200kTokens,
+		CacheReadInputTokenCostAbove200kTokensPriority:      pricing.CacheReadInputTokenCostAbove200kTokensPriority,
+		CacheCreationInputTokenCostAbove1hr:                 pricing.CacheCreationInputTokenCostAbove1hr,
+		CacheCreationInputTokenCostAbove1hrAbove200kTokens:  pricing.CacheCreationInputTokenCostAbove1hrAbove200kTokens,
+		CacheCreationInputTokenCostAbove100kTokens:          pricing.CacheCreationInputTokenCostAbove100kTokens,
+		CacheReadInputTokenCostAbove100kTokens:              pricing.CacheReadInputTokenCostAbove100kTokens,
+		CacheCreationInputTokenCostAbove1hrAbove100kTokens:  pricing.CacheCreationInputTokenCostAbove1hrAbove100kTokens,
+		CacheCreationInputAudioTokenCost:                    pricing.CacheCreationInputAudioTokenCost,
+		CacheReadInputTokenCostPriority:                     pricing.CacheReadInputTokenCostPriority,
+		CacheReadInputTokenCostUltrafast:                    pricing.CacheReadInputTokenCostUltrafast,
+		CacheReadInputTokenCostFlex:                         pricing.CacheReadInputTokenCostFlex,
+		CacheReadInputImageTokenCost:                        pricing.CacheReadInputImageTokenCost,
+		CacheReadInputTokenCostAbove272kTokens:              pricing.CacheReadInputTokenCostAbove272kTokens,
+		CacheReadInputTokenCostAbove272kTokensPriority:      pricing.CacheReadInputTokenCostAbove272kTokensPriority,
+		CacheReadInputTokenCostFlexAbove272kTokens:          pricing.CacheReadInputTokenCostFlexAbove272kTokens,
+		CacheReadInputTokenCostAbove272kTokensUltrafast:     pricing.CacheReadInputTokenCostAbove272kTokensUltrafast,
+		CacheCreationInputTokenCostAbove272kTokens:          pricing.CacheCreationInputTokenCostAbove272kTokens,
+		CacheCreationInputTokenCostFlex:                     pricing.CacheCreationInputTokenCostFlex,
+		CacheCreationInputTokenCostFlexAbove272kTokens:      pricing.CacheCreationInputTokenCostFlexAbove272kTokens,
+		CacheCreationInputTokenCostPriority:                 pricing.CacheCreationInputTokenCostPriority,
+		CacheCreationInputTokenCostAbove272kTokensPriority:  pricing.CacheCreationInputTokenCostAbove272kTokensPriority,
+		CacheCreationInputTokenCostUltrafast:                pricing.CacheCreationInputTokenCostUltrafast,
+		CacheCreationInputTokenCostAbove272kTokensUltrafast: pricing.CacheCreationInputTokenCostAbove272kTokensUltrafast,
+		CacheCreationInputTokenCostFast:                     pricing.CacheCreationInputTokenCostFast,
+		CacheCreationInputTokenCostAbove1hrFast:             pricing.CacheCreationInputTokenCostAbove1hrFast,
+		CacheReadInputTokenCostFast:                         pricing.CacheReadInputTokenCostFast,
 
 		InputCostPerImage:                             pricing.InputCostPerImage,
 		InputCostPerPixel:                             pricing.InputCostPerPixel,
@@ -756,12 +1004,32 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		OutputCostPerImageAbove1024x1024PixelsPremium: pricing.OutputCostPerImageAbove1024x1024PixelsPremium,
 		OutputCostPerImageAbove2048x2048Pixels:        pricing.OutputCostPerImageAbove2048x2048Pixels,
 		OutputCostPerImageAbove4096x4096Pixels:        pricing.OutputCostPerImageAbove4096x4096Pixels,
+		OutputCostPerImageAbove4Megapixels:            pricing.OutputCostPerImageAbove4Megapixels,
+		OutputCostPerImageAbove8Megapixels:            pricing.OutputCostPerImageAbove8Megapixels,
+		OutputCostPerImageAbove16Megapixels:           pricing.OutputCostPerImageAbove16Megapixels,
+		OutputCostPerImageAbove32Megapixels:           pricing.OutputCostPerImageAbove32Megapixels,
+		OutputCostPerImageAbove64Megapixels:           pricing.OutputCostPerImageAbove64Megapixels,
 		OutputCostPerImageLowQuality:                  pricing.OutputCostPerImageLowQuality,
 		OutputCostPerImageMediumQuality:               pricing.OutputCostPerImageMediumQuality,
 		OutputCostPerImageHighQuality:                 pricing.OutputCostPerImageHighQuality,
 		OutputCostPerImageAutoQuality:                 pricing.OutputCostPerImageAutoQuality,
 		InputCostPerImageToken:                        pricing.InputCostPerImageToken,
 		OutputCostPerImageToken:                       pricing.OutputCostPerImageToken,
+
+		OutputCostPerImageAbove1024x1536Pixels:                pricing.OutputCostPerImageAbove1024x1536Pixels,
+		OutputCostPerImageAbove1536x1024Pixels:                pricing.OutputCostPerImageAbove1536x1024Pixels,
+		OutputCostPerImageAbove1024x1024PixelsLowQuality:      pricing.OutputCostPerImageAbove1024x1024PixelsLowQuality,
+		OutputCostPerImageAbove1024x1536PixelsLowQuality:      pricing.OutputCostPerImageAbove1024x1536PixelsLowQuality,
+		OutputCostPerImageAbove1536x1024PixelsLowQuality:      pricing.OutputCostPerImageAbove1536x1024PixelsLowQuality,
+		OutputCostPerImageAbove1024x1024PixelsMediumQuality:   pricing.OutputCostPerImageAbove1024x1024PixelsMediumQuality,
+		OutputCostPerImageAbove1024x1536PixelsMediumQuality:   pricing.OutputCostPerImageAbove1024x1536PixelsMediumQuality,
+		OutputCostPerImageAbove1536x1024PixelsMediumQuality:   pricing.OutputCostPerImageAbove1536x1024PixelsMediumQuality,
+		OutputCostPerImageAbove1024x1024PixelsHighQuality:     pricing.OutputCostPerImageAbove1024x1024PixelsHighQuality,
+		OutputCostPerImageAbove1024x1536PixelsHighQuality:     pricing.OutputCostPerImageAbove1024x1536PixelsHighQuality,
+		OutputCostPerImageAbove1536x1024PixelsHighQuality:     pricing.OutputCostPerImageAbove1536x1024PixelsHighQuality,
+		OutputCostPerImageAbove1024x1024PixelsStandardQuality: pricing.OutputCostPerImageAbove1024x1024PixelsStandardQuality,
+		OutputCostPerImageAbove1024x1536PixelsStandardQuality: pricing.OutputCostPerImageAbove1024x1536PixelsStandardQuality,
+		OutputCostPerImageAbove1536x1024PixelsStandardQuality: pricing.OutputCostPerImageAbove1536x1024PixelsStandardQuality,
 
 		InputCostPerAudioToken:      pricing.InputCostPerAudioToken,
 		InputCostPerAudioPerSecond:  pricing.InputCostPerAudioPerSecond,
@@ -771,15 +1039,37 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		OutputCostPerVideoPerSecond: pricing.OutputCostPerVideoPerSecond,
 		OutputCostPerSecond:         pricing.OutputCostPerSecond,
 
+		InputCostPerTokenVoiceLive:                     pricing.InputCostPerTokenVoiceLive,
+		OutputCostPerTokenVoiceLive:                    pricing.OutputCostPerTokenVoiceLive,
+		CacheReadInputTokenCostVoiceLive:               pricing.CacheReadInputTokenCostVoiceLive,
+		InputCostPerAudioTokenVoiceLive:                pricing.InputCostPerAudioTokenVoiceLive,
+		OutputCostPerAudioTokenVoiceLive:               pricing.OutputCostPerAudioTokenVoiceLive,
+		InputCostPerStandardSpeechAudioTokenVoiceLive:  pricing.InputCostPerStandardSpeechAudioTokenVoiceLive,
+		OutputCostPerStandardSpeechAudioTokenVoiceLive: pricing.OutputCostPerStandardSpeechAudioTokenVoiceLive,
+		InputCostPerCustomSpeechAudioTokenVoiceLive:    pricing.InputCostPerCustomSpeechAudioTokenVoiceLive,
+		OutputCostPerCustomSpeechAudioTokenVoiceLive:   pricing.OutputCostPerCustomSpeechAudioTokenVoiceLive,
+
+		OutputCostPerVideoPerSecond480p:  pricing.OutputCostPerVideoPerSecond480p,
+		OutputCostPerVideoPerSecond720p:  pricing.OutputCostPerVideoPerSecond720p,
+		OutputCostPerVideoPerSecond1024p: pricing.OutputCostPerVideoPerSecond1024p,
+		OutputCostPerVideoPerSecond1080p: pricing.OutputCostPerVideoPerSecond1080p,
+		OutputCostPerVideoPerSecond4k:    pricing.OutputCostPerVideoPerSecond4k,
+		OutputCostPerVideoToken:          pricing.OutputCostPerVideoToken,
+
 		SearchContextCostPerQuery:     pricing.SearchContextCostPerQuery,
+		WebSearchCostPerRequest:       pricing.WebSearchCostPerRequest,
+		InputCostPerQuery:             pricing.InputCostPerQuery,
 		CodeInterpreterCostPerSession: pricing.CodeInterpreterCostPerSession,
 		InferenceGeoUSMultiplier:      pricing.InferenceGeoUSMultiplier,
 		CostPerRequest:                pricing.CostPerRequest,
 
 		OCRCostPerPage:        pricing.OCRCostPerPage,
 		AnnotationCostPerPage: pricing.AnnotationCostPerPage,
+
+		OffPeakCostMultiplier: pricing.OffPeakCostMultiplier,
+		PeakHours:             pricing.PeakHours,
 	}
-	return &Entry{
+	entry := &Entry{
 		BaseModel:            pricing.BaseModel,
 		Provider:             pricing.Provider,
 		Mode:                 pricing.Mode,
@@ -791,6 +1081,16 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		AdditionalAttributes: pricing.AdditionalAttributes,
 		Options:              options,
 	}
+	return entry
+}
+
+// IsEmptyModelCapabilities reports whether no field on the override struct is
+// set. Compared against the zero value so new fields need no maintenance here.
+func IsEmptyModelCapabilities(ov *schemas.ModelCapabilities) bool {
+	if ov == nil {
+		return true
+	}
+	return reflect.DeepEqual(*ov, schemas.ModelCapabilities{})
 }
 
 // convertTableOverride converts a TablePricingOverride to an Override.

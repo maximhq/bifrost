@@ -12,7 +12,7 @@ export const metadata = {
 
 export default function RoutingTreePage() {
 	return (
-		<div className="no-padding-parent no-border-parent h-[calc(100dvh_)] w-full">
+		<div className="no-padding-parent no-border-parent h-[calc(var(--app-content-viewport)_)] w-full">
 			<RoutingTreeView />
 		</div>
 	);

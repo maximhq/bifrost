@@ -40,7 +40,6 @@ chat:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 embed:
@@ -79,7 +78,6 @@ embed:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 tokenize:
@@ -117,6 +115,5 @@ tokenize:
               $ref: '../../../schemas/integrations/cohere/common.yaml#/CohereError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []

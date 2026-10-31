@@ -1,4 +1,4 @@
-import { Database, Landmark, Network, Shuffle, Workflow } from "lucide-react";
+import { Database, Landmark, Link2, Network, Shuffle, Workflow } from "lucide-react";
 import { useTheme } from "next-themes";
 import { cn } from "../utils";
 
@@ -64,7 +64,17 @@ export const ProviderIcons = {
 	},
 
 	azure: ({ className = "" }: IconProps) => {
-		return <img src="/images/azure.webp" alt="azure" width={14} height={14} loading="lazy" decoding="async" className={className} />;
+		return (
+			<img
+				src="/images/azure.webp"
+				alt="azure"
+				width={14}
+				height={14}
+				loading="lazy"
+				decoding="async"
+				className={cn("object-contain", className)}
+			/>
+		);
 	},
 	bedrock: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
@@ -112,6 +122,33 @@ export const ProviderIcons = {
 						<stop stopColor="#6350FB" />
 						<stop offset="0.5" stopColor="#3D8FFF" />
 						<stop offset="1" stopColor="#9AD8F8" />
+					</linearGradient>
+				</defs>
+			</svg>
+		);
+	},
+
+	// AWS SageMaker architecture icon (unique gradient id).
+	sagemaker: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				viewBox="0 0 80 80"
+				fill="none"
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<rect width="80" height="80" fill="url(#paint0_linear_sagemaker)" />
+				<path
+					d="M54.034,26.0335731 C54.034,26.5935654 53.578,27.0495592 53.017,27.0495592 C52.458,27.0495592 52.002,26.5935654 52.002,26.0335731 C52.002,25.4735807 52.458,25.0175869 53.017,25.0175869 C53.578,25.0175869 54.034,25.4735807 54.034,26.0335731 L54.034,26.0335731 Z M48.002,36.000437 C48.002,35.4494445 48.45,35.0004506 49.002,35.0004506 C49.554,35.0004506 50.002,35.4494445 50.002,36.000437 C50.002,36.5514294 49.554,37.0004233 49.002,37.0004233 C48.45,37.0004233 48.002,36.5514294 48.002,36.000437 L48.002,36.000437 Z M48.002,55.0001775 C48.002,54.449185 48.45,54.0001912 49.002,54.0001912 C49.554,54.0001912 50.002,54.449185 50.002,55.0001775 C50.002,55.55117 49.554,56.0001639 49.002,56.0001639 C48.45,56.0001639 48.002,55.55117 48.002,55.0001775 L48.002,55.0001775 Z M58.002,42.000355 C58.002,42.5513475 57.554,43.0003414 57.002,43.0003414 C56.45,43.0003414 56.002,42.5513475 56.002,42.000355 C56.002,41.4493626 56.45,41.0003687 57.002,41.0003687 C57.554,41.0003687 58.002,41.4493626 58.002,42.000355 L58.002,42.000355 Z M65,45.2723104 L59.963,42.3823498 C59.979,42.2563515 60.002,42.1313532 60.002,42.000355 C60.002,40.3463776 58.656,39.000396 57.002,39.000396 C55.347,39.000396 54.002,40.3463776 54.002,42.000355 C54.002,43.6543324 55.347,45.0003141 57.002,45.0003141 C57.801,45.0003141 58.523,44.6813184 59.061,44.1713254 L63.886,46.9392876 L59.555,49.105258 C59.216,49.2752557 59.002,49.621251 59.002,50.0002458 L59.002,58.4411305 L46.983,65.8370295 L41.003,62.4200762 L41.003,56.0001639 L46.186,56.0001639 C46.6,57.161148 47.7,58.0001366 49.002,58.0001366 C50.656,58.0001366 52.002,56.6541549 52.002,55.0001775 C52.002,53.3452001 50.656,52.0002185 49.002,52.0002185 C47.7,52.0002185 46.6,52.838207 46.186,54.0001912 L41.003,54.0001912 L41.003,40.0003823 C41.003,39.6493871 40.818,39.3233916 40.517,39.1423941 L35.516,36.142435 L34.487,37.8574116 L39.003,40.5663746 L39.003,43.5073345 L33.002,48.1232714 L33.002,44.0003277 C33.002,43.6963319 32.864,43.4083358 32.627,43.2193384 L28.002,39.5193889 L28.002,34.535457 L33.556,30.8325075 C33.835,30.6465101 34.002,30.3345143 34.002,30.0005189 L34.002,24.0006008 L32.002,24.0006008 L32.002,29.4655262 L27.013,32.7904808 L22.002,29.4635262 L22.002,21.5746339 L27.002,18.6586738 L27.002,27.0005599 L29.002,27.0005599 L29.002,17.4916897 L33.005,15.1567216 L39.001,18.6156744 L39.002,31.0005052 C39.002,31.3595003 39.194,31.6904958 39.506,31.8684934 L46.042,35.6034424 C46.024,35.7344406 46.002,35.8644388 46.002,36.000437 C46.002,37.6544144 47.347,39.000396 49.002,39.000396 C50.656,39.000396 52.002,37.6544144 52.002,36.000437 C52.002,34.3464595 50.656,33.0004779 49.002,33.0004779 C48.208,33.0004779 47.49,33.3154736 46.953,33.8204667 L41.002,30.4195132 L41.001,18.6176743 L46.964,15.1767213 L58.002,22.5356208 L58.002,25.0005872 L55.851,25.0005872 C55.429,23.844603 54.318,23.0176142 53.017,23.0176142 C51.354,23.0176142 50.002,24.3705958 50.002,26.0335731 C50.002,27.6965504 51.354,29.0495319 53.017,29.0495319 C54.343,29.0495319 55.471,28.1905436 55.875,27.0005599 L58.002,27.0005599 L58.002,30.0005189 C58.002,30.359514 58.194,30.6905095 58.506,30.868507 L65,34.5804564 L65,45.2723104 Z M33.02,65.8370295 L29.867,63.897056 L35.583,59.8141118 L34.421,58.186134 L28.018,62.7590716 L21.002,58.4411305 L21.002,50.5662381 L25.516,47.8572751 L24.487,46.1422985 L19.958,48.8602614 L15.002,46.3822952 L15.001,40.6173739 L20.449,37.8944111 L19.555,36.1054355 L15.001,38.3814044 L15.002,34.5804564 L20.963,31.1745029 L26.002,34.5194572 L26.002,39.4803894 L20.449,43.1673391 L21.555,44.8333163 L26.958,41.2453653 L31.002,44.4803212 L31.002,49.6622504 L26.392,53.207202 L27.611,54.7921804 L39.003,46.0303 L39.003,62.4190762 L33.02,65.8370295 Z M66.496,33.1324761 L60.002,29.4205268 L60.002,22.0006281 C60.002,21.6656327 59.835,21.353637 59.556,21.1686395 L47.556,13.1687487 C47.24,12.9587516 46.832,12.9447518 46.502,13.1347492 L40.004,16.884698 L33.502,13.1347492 C33.19,12.9547517 32.807,12.9547517 32.498,13.1367492 L20.498,20.1366536 C20.19,20.3156511 20.002,20.6446466 20.002,21.0006418 L20.002,29.4205268 L13.506,33.1324761 C13.194,33.3094737 13.002,33.6414692 13.002,34.0004643 L13.002,34.4174586 C13.001,34.4384583 13,34.458458 13,34.4794577 L13,45.3633091 C13,45.3833088 13.001,45.4033086 13.002,45.4223083 L13.002,47.0002868 C13.002,47.3792816 13.216,47.7252769 13.555,47.8942745 L19.002,50.6182374 L19.002,59.0001229 C19.002,59.3471182 19.181,59.6691138 19.477,59.8511113 L32.477,67.851002 C32.638,67.9500007 32.82,68 33.002,68 C33.173,68 33.344,67.9560006 33.498,67.8680018 L40.003,64.1520525 L46.506,67.8680018 C46.821,68.0489993 47.213,68.0419994 47.526,67.851002 L60.526,59.8511113 C60.822,59.6691138 61.002,59.3471182 61.002,59.0001229 L61.002,50.6182374 L66.447,47.8942745 C66.786,47.7252769 67,47.3792816 67,47.0002868 L67,34.0004643 C67,33.6414692 66.807,33.3104737 66.496,33.1324761 L66.496,33.1324761 Z"
+					fill="white"
+				/>
+				<defs>
+					<linearGradient id="paint0_linear_sagemaker" x1="0" y1="80" x2="80" y2="0" gradientUnits="userSpaceOnUse">
+						<stop stopColor="#055F4E" />
+						<stop offset="1" stopColor="#56C0A7" />
 					</linearGradient>
 				</defs>
 			</svg>
@@ -453,7 +490,17 @@ export const ProviderIcons = {
 	},
 
 	sgl: ({ className = "" }: IconProps) => {
-		return <img src="/images/sgl.webp" alt="sgl" width={14} height={14} loading="lazy" decoding="async" className={className} />;
+		return (
+			<img
+				src="/images/sgl.webp"
+				alt="sgl"
+				width={14}
+				height={14}
+				loading="lazy"
+				decoding="async"
+				className={cn("object-contain", className)}
+			/>
+		);
 	},
 	openai: ({ size = "md", className = "", theme }: IconProps) => {
 		const resolvedSize = resolveSize(size);
@@ -464,7 +511,7 @@ export const ProviderIcons = {
 				width={resolvedSize}
 				height={resolvedSize}
 				viewBox="0 0 24 24"
-				role="img"
+				aria-hidden="true"
 				xmlns="http://www.w3.org/2000/svg"
 				className={className}
 			>
@@ -601,16 +648,15 @@ export const ProviderIcons = {
 		return (
 			<svg
 				fill="currentColor"
-				fillRule="evenodd"
 				height={resolvedSize}
 				style={{ flex: "none", lineHeight: "1" }}
-				viewBox="0 0 24 24"
+				viewBox="0 -147 1024 1024"
 				width={resolvedSize}
 				xmlns="http://www.w3.org/2000/svg"
 				className={className}
 			>
 				<title>OpenRouter</title>
-				<path d="M16.804 1.957l7.22 4.105v.087L16.73 10.21l.017-2.117-.821-.03c-1.059-.028-1.611.002-2.268.11-1.064.175-2.038.577-3.147 1.352L8.345 11.03c-.284.195-.495.336-.68.455l-.515.322-.397.234.385.23.53.338c.476.314 1.17.796 2.701 1.866 1.11.775 2.083 1.177 3.147 1.352l.3.045c.694.091 1.375.094 2.825.033l.022-2.159 7.22 4.105v.087L16.589 22l.014-1.862-.635.022c-1.386.042-2.137.002-3.138-.162-1.694-.28-3.26-.926-4.881-2.059l-2.158-1.5a21.997 21.997 0 00-.755-.498l-.467-.28a55.927 55.927 0 00-.76-.43C2.908 14.73.563 14.116 0 14.116V9.888l.14.004c.564-.007 2.91-.622 3.809-1.124l1.016-.58.438-.274c.428-.28 1.072-.726 2.686-1.853 1.621-1.133 3.186-1.78 4.881-2.059 1.152-.19 1.974-.213 3.814-.138l.02-1.907z"></path>
+				<path d="M795.893 0C915.776 0 1012.95 97.9963 1012.95 218.88C1012.95 339.764 915.776 437.76 795.893 437.76L1011.2 654.869C1038.55 682.447 1019.18 729.6 980.504 729.6H361.77C161.97 729.6 0 566.273 0 364.8C0 163.327 161.97 0 361.77 0L795.893 0ZM361.77 145.92C241.89 145.92 144.708 243.916 144.708 364.8C144.708 485.684 241.89 583.68 361.77 583.68C481.649 583.68 578.831 485.684 578.831 364.8C578.831 243.916 481.649 145.92 361.77 145.92Z"></path>
 			</svg>
 		);
 	},
@@ -649,7 +695,59 @@ export const ProviderIcons = {
 		);
 	},
 	nebius: ({ className = "" }: IconProps) => {
-		return <img src="/images/nebius.webp" alt="nebius" width={14} height={14} loading="lazy" decoding="async" className={className} />;
+		return (
+			<img
+				src="/images/nebius.webp"
+				alt="nebius"
+				width={14}
+				height={14}
+				loading="lazy"
+				decoding="async"
+				className={cn("object-contain", className)}
+			/>
+		);
+	},
+	// Laya, Nimble, and Clef (on Cloudflare Workers AI) are decision models reached through
+	// custom providers, so they have no provider name of their own to match. The complexity
+	// router picks these marks by model family.
+	laya: ({ className = "" }: IconProps) => {
+		return (
+			<img
+				src="/images/laya.png"
+				alt="laya"
+				width={16}
+				height={16}
+				loading="lazy"
+				decoding="async"
+				className={cn("object-contain", className)}
+			/>
+		);
+	},
+	nimble: ({ className = "" }: IconProps) => {
+		return (
+			<img
+				src="/images/nimble.png"
+				alt="nimble"
+				width={16}
+				height={16}
+				loading="lazy"
+				decoding="async"
+				className={cn("object-contain", className)}
+			/>
+		);
+	},
+	clef: ({ className = "" }: IconProps) => {
+		return (
+			<img
+				src="/images/clef.png"
+				alt="clef"
+				width={16}
+				height={16}
+				loading="lazy"
+				decoding="async"
+				className={cn("object-contain", className)}
+			/>
+		);
 	},
 	xai: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
@@ -818,6 +916,126 @@ export const ProviderIcons = {
 			</svg>
 		);
 	},
+	minimax: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				viewBox="0 0 24 24"
+				fill="none"
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<title>MiniMax</title>
+				<defs>
+					<linearGradient id="minimax_icon_gradient" x1="0%" x2="100.182%" y1="50.057%" y2="50.057%">
+						<stop offset="0%" stopColor="#E2167E" />
+						<stop offset="100%" stopColor="#FE603C" />
+					</linearGradient>
+				</defs>
+				<path
+					d="M16.278 2c1.156 0 2.093.927 2.093 2.07v12.501a.74.74 0 00.744.709.74.74 0 00.743-.709V9.099a2.06 2.06 0 012.071-2.049A2.06 2.06 0 0124 9.1v6.561a.649.649 0 01-.652.645.649.649 0 01-.653-.645V9.1a.762.762 0 00-.766-.758.762.762 0 00-.766.758v7.472a2.037 2.037 0 01-2.048 2.026 2.037 2.037 0 01-2.048-2.026v-12.5a.785.785 0 00-.788-.753.785.785 0 00-.789.752l-.001 15.904A2.037 2.037 0 0113.441 22a2.037 2.037 0 01-2.048-2.026V18.04c0-.356.292-.645.652-.645.36 0 .652.289.652.645v1.934c0 .263.142.506.372.638.23.131.514.131.744 0a.734.734 0 00.372-.638V4.07c0-1.143.937-2.07 2.093-2.07zm-5.674 0c1.156 0 2.093.927 2.093 2.07v11.523a.648.648 0 01-.652.645.648.648 0 01-.652-.645V4.07a.785.785 0 00-.789-.78.785.785 0 00-.789.78v14.013a2.06 2.06 0 01-2.07 2.048 2.06 2.06 0 01-2.071-2.048V9.1a.762.762 0 00-.766-.758.762.762 0 00-.766.758v3.8a2.06 2.06 0 01-2.071 2.049A2.06 2.06 0 010 12.9v-1.378c0-.357.292-.646.652-.646.36 0 .653.29.653.646V12.9c0 .418.343.757.766.757s.766-.339.766-.757V9.099a2.06 2.06 0 012.07-2.048 2.06 2.06 0 012.071 2.048v8.984c0 .419.343.758.767.758.423 0 .766-.339.766-.758V4.07c0-1.143.937-2.07 2.093-2.07z"
+					fill="url(#minimax_icon_gradient)"
+					fillRule="nonzero"
+				/>
+			</svg>
+		);
+	},
+	byteplus: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				viewBox="0 0 27.9 22.01"
+				fill="none"
+				shapeRendering="geometricPrecision"
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<title>BytePlus</title>
+				<path
+					fill="#0066FC"
+					d="M17.196 9.442a.252.252 0 0 1-.419-.201V.612c0-.217-.263-.34-.418-.201L6.042 9.163a.252.252 0 0 1-.419-.201v-5.98a.31.31 0 0 0-.31-.31H.31a.31.31 0 0 0-.31.31v18.73c0 .216.263.34.418.2L10.72 13.16a.252.252 0 0 1 .418.202v8.644c0 .217.264.34.419.201l10.302-8.753a.252.252 0 0 1 .418.202v5.98c0 .17.14.31.31.31h5.003c.17 0 .31-.14.31-.31V.89c0-.217-.263-.341-.418-.202z"
+				/>
+			</svg>
+		);
+	},
+	databricks: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<img
+				src="/images/databricks.svg"
+				alt="databricks"
+				width={resolvedSize}
+				height={resolvedSize}
+				className={cn("object-contain", className)}
+			/>
+		);
+	},
+	cloudflare: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<svg width={resolvedSize} height={resolvedSize} viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" className={className}>
+				<title>Cloudflare</title>
+				<path
+					d="M16.5088 16.8447c.1475-.5068.0908-.9707-.1553-1.3154-.2246-.3164-.6045-.499-1.0615-.5205l-8.6592-.1123a.1559.1559 0 0 1-.1333-.0713c-.0283-.042-.0351-.0986-.021-.1553.0278-.084.1123-.1484.2036-.1562l8.7359-.1123c1.0351-.0489 2.1601-.8868 2.5537-1.9136l.499-1.3013c.0215-.0561.0293-.1128.0147-.168-.5625-2.5463-2.835-4.4453-5.5499-4.4453-2.5039 0-4.6284 1.6177-5.3876 3.8614-.4927-.3658-1.1187-.5625-1.794-.499-1.2026.119-2.1665 1.083-2.2861 2.2856-.0283.31-.0069.6128.0635.894C1.5683 13.171 0 14.7754 0 16.752c0 .1748.0142.3515.0352.5273.0141.083.0844.1475.1689.1475h15.9814c.0909 0 .1758-.0645.2032-.1553l.12-.4268zm2.7568-5.5634c-.0771 0-.1611 0-.2383.0112-.0566 0-.1054.0415-.127.0976l-.3378 1.1744c-.1475.5068-.0918.9707.1543 1.3164.2256.3164.6055.498 1.0625.5195l1.8437.1133c.0557 0 .1055.0263.1329.0703.0283.043.0351.1074.0214.1562-.0283.084-.1132.1485-.204.1553l-1.921.1123c-1.041.0488-2.1582.8867-2.5527 1.914l-.1406.3585c-.0283.0713.0215.1416.0986.1416h6.5977c.0771 0 .1474-.0489.169-.126.1122-.4082.1757-.837.1757-1.2803 0-2.6025-2.125-4.727-4.7344-4.727"
+					fill="#F38020"
+				/>
+			</svg>
+		);
+	},
+	// GitHub Copilot's goggles mark. The source art is fill="#fff", which disappears on the
+	// light theme, so the fill is bound to currentColor and the icon follows the surrounding
+	// text in both themes without needing a theme branch.
+	//
+	// The viewBox is 256x208, not square. preserveAspectRatio is left at its default
+	// (xMidYMid meet) so equal width and height letterbox the mark rather than stretch it.
+	"github-copilot": ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				viewBox="0 0 256 208"
+				fill="currentColor"
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<title>GitHub Copilot</title>
+				<path d="M205.3 31.4c14 14.8 20 35.2 22.5 63.6 6.6 0 12.8 1.5 17 7.2l7.8 10.6c2.2 3 3.4 6.6 3.4 10.4v28.7a12 12 0 0 1-4.8 9.5C215.9 187.2 172.3 208 128 208c-49 0-98.2-28.3-123.2-46.6a12 12 0 0 1-4.8-9.5v-28.7c0-3.8 1.2-7.4 3.4-10.5l7.8-10.5c4.2-5.7 10.4-7.2 17-7.2 2.5-28.4 8.4-48.8 22.5-63.6C77.3 3.2 112.6 0 127.6 0h.4c14.7 0 50.4 2.9 77.3 31.4ZM128 78.7c-3 0-6.5.2-10.3.6a27.1 27.1 0 0 1-6 12.1 45 45 0 0 1-32 13c-6.8 0-13.9-1.5-19.7-5.2-5.5 1.9-10.8 4.5-11.2 11-.5 12.2-.6 24.5-.6 36.8 0 6.1 0 12.3-.2 18.5 0 3.6 2.2 6.9 5.5 8.4C79.9 185.9 105 192 128 192s48-6 74.5-18.1a9.4 9.4 0 0 0 5.5-8.4c.3-18.4 0-37-.8-55.3-.4-6.6-5.7-9.1-11.2-11-5.8 3.7-13 5.1-19.7 5.1a45 45 0 0 1-32-12.9 27.1 27.1 0 0 1-6-12.1c-3.4-.4-6.9-.5-10.3-.6Zm-27 44c5.8 0 10.5 4.6 10.5 10.4v19.2a10.4 10.4 0 0 1-20.8 0V133c0-5.8 4.6-10.4 10.4-10.4Zm53.4 0c5.8 0 10.4 4.6 10.4 10.4v19.2a10.4 10.4 0 0 1-20.8 0V133c0-5.8 4.7-10.4 10.4-10.4Zm-73-94.4c-11.2 1.1-20.6 4.8-25.4 10-10.4 11.3-8.2 40.1-2.2 46.2A31.2 31.2 0 0 0 75 91.7c6.8 0 19.6-1.5 30.1-12.2 4.7-4.5 7.5-15.7 7.2-27-.3-9.1-2.9-16.7-6.7-19.9-4.2-3.6-13.6-5.2-24.2-4.3Zm69 4.3c-3.8 3.2-6.4 10.8-6.7 19.9-.3 11.3 2.5 22.5 7.2 27a41.7 41.7 0 0 0 30 12.2c8.9 0 17-2.9 21.3-7.2 6-6.1 8.2-34.9-2.2-46.3-4.8-5-14.2-8.8-25.4-9.9-10.6-1-20 .7-24.2 4.3ZM128 56c-2.6 0-5.6.2-9 .5.4 1.7.5 3.7.7 5.7 0 1.5 0 3-.2 4.5 3.2-.3 6-.3 8.5-.3 2.6 0 5.3 0 8.5.3-.2-1.6-.2-3-.2-4.5.2-2 .3-4 .7-5.7-3.4-.3-6.4-.5-9-.5Z" />
+			</svg>
+		);
+	},
+	// TypeSafe's geometric logomark, extracted from their brand wordmark SVG. The
+	// source art uses currentColor, so the icon follows the surrounding text in
+	// both themes without a theme branch. The wordmark's remaining letterforms are
+	// dropped: at icon sizes only the mark stays legible.
+	typesafe: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				viewBox="0 0 15.54 22"
+				fill="currentColor"
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<title>TypeSafe</title>
+				<path
+					fillRule="evenodd"
+					clipRule="evenodd"
+					d="M7.53132 0.0628384C7.67654 -0.0208911 7.85538 -0.0210011 8.00055 0.0628384C8.0035 0.064546 8.0063 0.0665761 8.0092 0.0683403L11.6499 2.16876C11.7951 2.2526 11.8846 2.40765 11.8846 2.57537V6.51657L15.2966 8.48782C15.4417 8.57172 15.5311 8.72659 15.5311 8.89418V17.3029C15.5313 17.3081 15.5316 17.3134 15.5316 17.3186C15.5315 17.4025 15.5089 17.4832 15.4682 17.5534C15.4277 17.6236 15.369 17.6833 15.2963 17.7253C15.2955 17.7257 15.2945 17.7261 15.2937 17.7266L7.99793 21.9371C7.85248 22.021 7.67294 22.021 7.52765 21.9368L3.88513 19.8251C3.87432 19.8189 3.86385 19.812 3.85369 19.805C3.84339 19.7979 3.83345 19.7903 3.82382 19.7824C3.72347 19.7005 3.66076 19.58 3.65221 19.4494L3.65117 19.4183V15.4831L0.234486 13.5066C0.216315 13.4961 0.198969 13.4844 0.182611 13.4718C0.174501 13.4655 0.166671 13.4589 0.159031 13.4521C0.143107 13.4381 0.128788 13.4225 0.115016 13.4065C0.0424231 13.3225 4.67016e-05 13.2146 0 13.1002V4.67579C2.76699e-05 4.50801 0.0896788 4.35301 0.23501 4.26917L7.53132 0.0628384ZM5.05861 19.4198L7.76345 20.9879L14.1223 17.3181L11.4154 15.7545L5.05861 19.4198ZM8.23582 9.16508V13.1008C8.23582 13.1025 8.23556 13.1043 8.23556 13.106L8.23451 13.1372C8.22414 13.2927 8.13698 13.434 8.00081 13.5126C7.98207 13.5235 7.96265 13.5326 7.94291 13.5407L4.59016 15.4828V18.6061L10.9462 14.9408V7.60071L8.23582 9.16508ZM11.8854 14.9413L14.5921 16.5049V9.16508L11.8854 7.60123V14.9413ZM1.40875 13.1013L4.11988 14.6696L6.82288 13.1034L4.19271 11.5836L4.11988 11.5416L1.40875 13.1013ZM0.938991 4.94696V12.2883L3.6509 10.7284V6.78223C3.6509 6.61438 3.74049 6.4592 3.88591 6.37535L7.29605 4.41013V1.2819L0.938991 4.94696ZM4.59016 10.7287L7.29657 12.2881V9.16456L4.59016 7.60123V10.7287ZM5.05913 6.78328L7.76633 8.35158L10.4722 6.78538L7.7658 5.22362L5.05913 6.78328ZM8.2353 4.41013L10.9456 5.97005V2.84654L8.2353 1.28243V4.41013Z"
+				/>
+			</svg>
+		);
+	},
 } as const;
 
 // Routing Engine Icons
@@ -826,17 +1044,45 @@ export const RoutingEngineUsedIcons = {
 	governance: ({ className = "h-5 w-5 text-green-800" }: { className?: string } = {}) => <Landmark className={className} />,
 	loadbalancing: ({ className = "h-5 w-5 text-orange-800" }: { className?: string } = {}) => <Shuffle className={className} />,
 	"model-catalog": ({ className = "h-5 w-5 text-purple-800" }: { className?: string } = {}) => <Database className={className} />,
+	"session-affinity": ({ className = "h-5 w-5 text-teal-800" }: { className?: string } = {}) => <Link2 className={className} />,
 	core: ({ className = "h-5 w-5 text-sky-800" }: { className?: string } = {}) => <Workflow className={className} />,
 } as const;
 
 export type RoutingEngineType = keyof typeof RoutingEngineUsedIcons;
 
-// Helper component to render provider icons
+// Edge-to-edge marks read larger than the padded ones at the same box size; scale them back
+// optically, leaving the layout box alone. Classes are spelled out so Tailwind can see them.
+const OPTICAL_SCALE: Partial<Record<keyof typeof ProviderIcons, string>> = {
+	azure: "scale-[0.82]",
+	sgl: "scale-[0.82]",
+	nebius: "scale-[0.82]",
+	databricks: "scale-[0.86]",
+};
+
 export const RenderProviderIcon = ({ provider, ...props }: IconProps & { provider: keyof typeof ProviderIcons }) => {
 	const { resolvedTheme } = useTheme();
 	const IconComponent = ProviderIcons[provider];
-	return IconComponent ? IconComponent({ ...props, theme: resolvedTheme, className: cn("w-5 h-5 shrink-0", props.className) }) : null;
+	return IconComponent
+		? IconComponent({
+				...props,
+				theme: resolvedTheme,
+				className: cn("w-5 h-5 shrink-0", OPTICAL_SCALE[provider], props.className),
+			})
+		: null;
 };
 
 export type ProviderIconType = keyof typeof ProviderIcons;
+
+// A custom provider has no mark of its own, so it borrows the one for the wire format it
+// speaks. Without the fallback RenderProviderIcon draws nothing at all for it.
+export const resolveProviderIconKey = (name: string, baseProviderType?: string): ProviderIconType | undefined => {
+	// Own-property checks, not `in`: `in` walks the prototype chain, so a provider named
+	// `__proto__` or `toString` would resolve to something off Object.prototype that
+	// RenderProviderIcon then calls as a component.
+	const candidate = (hasIcon(name) ? name : baseProviderType) as ProviderIconType | undefined;
+	return candidate && hasIcon(candidate) ? candidate : undefined;
+};
+
+const hasIcon = (name: string) => Object.prototype.hasOwnProperty.call(ProviderIcons, name);
+
 export default ProviderIcons;

@@ -142,12 +142,29 @@ func (r *SSEStreamReader) SendDone() bool {
 	return r.Send([]byte("data: [DONE]\n\n"))
 }
 
-// sseHeartbeatFrame is an SSE comment line that every compliant client ignores.
-// Deliberately no trailing blank line: that's the event-dispatch signal, and
-// some deployed decoders (e.g. openai-go ssestream < v3.43.0) dispatch an empty
-// event on it and abort the stream (#5874). A bare comment line is still a real
-// socket write, which is all the disconnect probe needs.
-var sseHeartbeatFrame = []byte(": heartbeat\n")
+// SSEHeartbeatFraming controls how a heartbeat comment is terminated on the wire.
+type SSEHeartbeatFraming uint8
+
+const (
+	// SSEHeartbeatBareCommentLine preserves compatibility with decoders such as
+	// openai-go ssestream before v3.43.0, which dispatch an empty event for a
+	// comment block followed by a blank line (#5874).
+	SSEHeartbeatBareCommentLine SSEHeartbeatFraming = iota
+	// SSEHeartbeatDelimitedCommentBlock emits a self-contained comment block for
+	// clients that parse streams as blank-line-delimited blocks.
+	SSEHeartbeatDelimitedCommentBlock
+	// SSEHeartbeatNone writes nothing. Some official decoders reject every SSE line that
+	// is not "data:" or blank - the google-genai Python SDK json.loads a comment line and
+	// raises UnknownApiResponseError - so no comment framing is safe for them. A route on
+	// this framing keeps only reactive (write-failure-based) disconnect detection, like
+	// Bedrock's binary EventStream route.
+	SSEHeartbeatNone
+)
+
+var (
+	sseHeartbeatFrame          = []byte(": heartbeat\n")
+	sseDelimitedHeartbeatFrame = []byte(": heartbeat\n\n")
+)
 
 // SendHeartbeat sends a no-op SSE comment line purely to force an additional
 // downstream write attempt. Client-disconnect detection in this reader is
@@ -180,6 +197,12 @@ var sseHeartbeatFrame = []byte(": heartbeat\n")
 // itself and each Send ends in "\n\n", so the stream is always at a boundary there and
 // heartbeats are never skipped.
 func (r *SSEStreamReader) SendHeartbeat() bool {
+	return r.SendHeartbeatWithFraming(SSEHeartbeatBareCommentLine)
+}
+
+// SendHeartbeatWithFraming sends a no-op SSE heartbeat using the requested wire framing.
+// It preserves SendHeartbeat's line-boundary and disconnect-detection semantics.
+func (r *SSEStreamReader) SendHeartbeatWithFraming(framing SSEHeartbeatFraming) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	// A real disconnect outranks a skip: report it even when mid-line.
@@ -188,10 +211,14 @@ func (r *SSEStreamReader) SendHeartbeat() bool {
 		return false
 	default:
 	}
-	if !r.atLineBoundary {
+	if !r.atLineBoundary || framing == SSEHeartbeatNone {
 		return true
 	}
-	return r.sendLocked(sseHeartbeatFrame)
+	heartbeatFrame := sseHeartbeatFrame
+	if framing == SSEHeartbeatDelimitedCommentBlock {
+		heartbeatFrame = sseDelimitedHeartbeatFrame
+	}
+	return r.sendLocked(heartbeatFrame)
 }
 
 // Done closes the event channel, signaling to Read that the stream is finished.

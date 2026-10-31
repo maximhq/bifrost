@@ -1,18 +1,20 @@
 package modelcatalog
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
 	"testing"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/maximhq/bifrost/framework/modelcatalog/keyconfig"
 	"github.com/maximhq/bifrost/framework/modelcatalog/live"
 )
 
-func modelInfoCatalog(t *testing.T) *ModelCatalog {
+func modelInfoCatalog(t testing.TB) *ModelCatalog {
 	t.Helper()
 	pricingPath := filepath.Join(t.TempDir(), "pricing.json")
 	pricingJSON := []byte(`{
@@ -52,7 +54,9 @@ func modelInfoCatalog(t *testing.T) *ModelCatalog {
 		t.Fatalf("write model-parameters testdata: %v", err)
 	}
 
-	ds := datasheet.New(nil, nil, datasheet.Config{
+	// Pricing resolution logs at debug level, so the store needs a real (no-op)
+	// logger once a test prices a response rather than only reading metadata.
+	ds := datasheet.New(nil, bifrost.NewNoOpLogger(), datasheet.Config{
 		URL:                "file://" + pricingPath,
 		ModelParametersURL: "file://" + paramsPath,
 	})
@@ -62,12 +66,14 @@ func modelInfoCatalog(t *testing.T) *ModelCatalog {
 	if err := ds.LoadModelParamsFromURLIntoMemory(t.Context()); err != nil {
 		t.Fatalf("load model-parameters testdata: %v", err)
 	}
-	return &ModelCatalog{
+	mc := &ModelCatalog{
 		datasheet: ds,
 		live:      live.New(nil),
 		keyconf:   keyconfig.New(nil),
 		done:      make(chan struct{}),
 	}
+	mc.initCaches()
+	return mc
 }
 
 func TestGetModelInfoPopulatesPricingAndLimits(t *testing.T) {
@@ -292,4 +298,201 @@ func TestApplyModelInfoNilSafe(t *testing.T) {
 	if got := nilCatalog.CalculateRequestCost(nil, nil); got != 0 {
 		t.Errorf("CalculateRequestCost on nil catalog = %v, want 0", got)
 	}
+	if got := nilCatalog.CalculateRequestCostBreakdown(nil, nil); got != nil {
+		t.Errorf("CalculateRequestCostBreakdown on nil catalog = %v, want nil", got)
+	}
+	if got := modelInfoCatalog(t).CalculateRequestCostBreakdown(schemas.NewBifrostContext(nil, schemas.NoDeadline), nil); got != nil {
+		t.Errorf("CalculateRequestCostBreakdown with nil response = %v, want nil", got)
+	}
+}
+
+// Every models route enriches through these two methods, so they must resolve by
+// ID, fall back to the alias, keep provider-reported values and be nil-safe.
+func TestEnrichModelsResponsesFromCatalog(t *testing.T) {
+	mc := modelInfoCatalog(t)
+	providerLimit := 1000
+	resp := &schemas.BifrostListModelsResponse{Data: []schemas.Model{
+		{ID: "anthropic/claude-opus-5"},
+		{ID: "anthropic/my-deployment", Alias: schemas.Ptr("claude-opus-5")},
+		{ID: "anthropic/claude-opus-5", MaxInputTokens: &providerLimit},
+		{ID: "anthropic/retired-model"},
+		{ID: "anthropic/unknown-model"},
+	}}
+
+	mc.EnrichListModelsResponse(resp)
+
+	for i, want := range []int{200000, 200000, providerLimit} {
+		got := resp.Data[i].MaxInputTokens
+		if got == nil || *got != want {
+			t.Errorf("Data[%d].MaxInputTokens = %v, want %d", i, got, want)
+		}
+		if out := resp.Data[i].MaxOutputTokens; out == nil || *out != 64000 {
+			t.Errorf("Data[%d].MaxOutputTokens = %v, want 64000", i, out)
+		}
+	}
+	if !resp.Data[3].IsDeprecated {
+		t.Errorf("retired-model should be marked deprecated")
+	}
+	if resp.Data[4].MaxInputTokens != nil || resp.Data[4].Pricing != nil {
+		t.Errorf("unknown model must stay unenriched, got %#v", resp.Data[4])
+	}
+
+	retrieved := &schemas.BifrostModelRetrieveResponse{Model: schemas.Model{ID: "anthropic/claude-opus-5"}}
+	mc.EnrichModelRetrieveResponse(retrieved)
+	if retrieved.MaxInputTokens == nil || *retrieved.MaxInputTokens != 200000 {
+		t.Errorf("retrieve MaxInputTokens = %v, want 200000", retrieved.MaxInputTokens)
+	}
+
+	var nilCatalog *ModelCatalog
+	nilCatalog.EnrichListModelsResponse(resp)
+	nilCatalog.EnrichModelRetrieveResponse(retrieved)
+	mc.EnrichListModelsResponse(nil)
+	mc.EnrichModelRetrieveResponse(nil)
+}
+
+// cachedChatResponse is a chat completion whose prompt was partly served from
+// the prompt cache and partly written to it, so every input-side category the
+// seeded claude-opus-5 entry prices (text, cache read, cache write) is exercised.
+func cachedChatResponse() *schemas.BifrostResponse {
+	return &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Model: "claude-opus-5",
+			Usage: &schemas.BifrostLLMUsage{
+				PromptTokens: 1000,
+				PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+					CachedReadTokens:  200,
+					CachedWriteTokens: 300,
+				},
+				CompletionTokens: 100,
+				TotalTokens:      1100,
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionRequest,
+				RoutingInfo: schemas.RoutingInfo{Provider: schemas.Anthropic, Model: "claude-opus-5"},
+			},
+		},
+	}
+}
+
+func approxEqual(a, b float64) bool {
+	return math.Abs(a-b) < 1e-12
+}
+
+// The plugin-facing breakdown is the same datasheet computation CalculateRequestCost
+// reports as a scalar, so its TotalCost must match exactly and the input side must
+// carry the cache read / cache write lines a plugin cannot recover from the total.
+func TestCalculateRequestCostBreakdownMatchesTotal(t *testing.T) {
+	mc := modelInfoCatalog(t)
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	resp := cachedChatResponse()
+
+	bd := mc.CalculateRequestCostBreakdown(ctx, resp)
+	if bd == nil {
+		t.Fatal("CalculateRequestCostBreakdown = nil, want a breakdown for billable usage")
+	}
+	if bd.InputCostDetails == nil || bd.OutputCostDetails == nil {
+		t.Fatalf("details = input %v / output %v, want both populated", bd.InputCostDetails, bd.OutputCostDetails)
+	}
+
+	// Seeded rates: input 5e-6, output 25e-6, cache read 5e-7, cache write 6.25e-6.
+	// 1000 prompt tokens = 500 uncached text + 200 cache read + 300 cache write.
+	const (
+		wantText      = 500 * 0.000005
+		wantCacheRead = 200 * 0.0000005
+		wantCacheWrit = 300 * 0.00000625
+		wantOutput    = 100 * 0.000025
+	)
+	if !approxEqual(bd.InputCostDetails.TextCost, wantText) {
+		t.Errorf("InputCostDetails.TextCost = %v, want %v", bd.InputCostDetails.TextCost, wantText)
+	}
+	if !approxEqual(bd.InputCostDetails.CachedReadCost, wantCacheRead) {
+		t.Errorf("InputCostDetails.CachedReadCost = %v, want %v", bd.InputCostDetails.CachedReadCost, wantCacheRead)
+	}
+	if !approxEqual(bd.InputCostDetails.CachedWriteCost, wantCacheWrit) {
+		t.Errorf("InputCostDetails.CachedWriteCost = %v, want %v", bd.InputCostDetails.CachedWriteCost, wantCacheWrit)
+	}
+	if !approxEqual(bd.OutputCostDetails.TextCost, wantOutput) {
+		t.Errorf("OutputCostDetails.TextCost = %v, want %v", bd.OutputCostDetails.TextCost, wantOutput)
+	}
+	if !approxEqual(bd.InputCost, wantText+wantCacheRead+wantCacheWrit) {
+		t.Errorf("InputCost = %v, want sum of its details %v", bd.InputCost, wantText+wantCacheRead+wantCacheWrit)
+	}
+	if !approxEqual(bd.InputCost+bd.OutputCost+bd.AdditionalCost, bd.TotalCost) {
+		t.Errorf("input %v + output %v + additional %v != total %v", bd.InputCost, bd.OutputCost, bd.AdditionalCost, bd.TotalCost)
+	}
+	if total := mc.CalculateRequestCost(ctx, resp); total != bd.TotalCost {
+		t.Errorf("CalculateRequestCost = %v, want breakdown TotalCost %v", total, bd.TotalCost)
+	}
+}
+
+// The datasheet short-circuits to the provider-supplied usage.Cost pointer when a
+// provider priced the request itself (Perplexity, xAI). Plugins own what the
+// accessor returns, so that pointer must never leak through.
+func TestCalculateRequestCostBreakdownReturnsCallerOwnedCopy(t *testing.T) {
+	mc := modelInfoCatalog(t)
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	resp := cachedChatResponse()
+	resp.ChatResponse.Usage.Cost = &schemas.BifrostCost{
+		InputCost:        0.01,
+		InputCostDetails: &schemas.InputCostDetails{TextCost: 0.008, CachedReadCost: 0.002},
+		OutputCost:       0.02,
+		TotalCost:        0.03,
+	}
+
+	bd := mc.CalculateRequestCostBreakdown(ctx, resp)
+	if bd == nil {
+		t.Fatal("CalculateRequestCostBreakdown = nil, want the provider-supplied cost")
+	}
+	if bd == resp.ChatResponse.Usage.Cost {
+		t.Fatal("breakdown aliases resp.Usage.Cost, want a caller-owned copy")
+	}
+	if bd.InputCostDetails == resp.ChatResponse.Usage.Cost.InputCostDetails {
+		t.Fatal("breakdown.InputCostDetails aliases the response's details, want a deep copy")
+	}
+	if bd.TotalCost != 0.03 || bd.InputCostDetails.CachedReadCost != 0.002 {
+		t.Fatalf("copy = total %v / cache read %v, want 0.03 / 0.002", bd.TotalCost, bd.InputCostDetails.CachedReadCost)
+	}
+
+	bd.TotalCost = 99
+	bd.InputCostDetails.CachedReadCost = 99
+	if got := resp.ChatResponse.Usage.Cost; got.TotalCost != 0.03 || got.InputCostDetails.CachedReadCost != 0.002 {
+		t.Fatalf("mutating the copy changed the response: total %v / cache read %v", got.TotalCost, got.InputCostDetails.CachedReadCost)
+	}
+}
+
+// BenchmarkEnrichListModelsResponse measures the per-listing cost the drop-in
+// models routes now pay. The "lookup-only" case is what they paid before: the
+// same catalog lookup, keeping only the deprecation flag.
+func BenchmarkEnrichListModelsResponse(b *testing.B) {
+	mc := modelInfoCatalog(b)
+	fresh := func() *schemas.BifrostListModelsResponse {
+		data := make([]schemas.Model, 0, 50)
+		for i := 0; i < 25; i++ {
+			data = append(data, schemas.Model{ID: "anthropic/claude-opus-5"}, schemas.Model{ID: "anthropic/unknown-model"})
+		}
+		return &schemas.BifrostListModelsResponse{Data: data}
+	}
+	b.Run("lookup-only", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			b.StopTimer()
+			resp := fresh()
+			b.StartTimer()
+			for i := range resp.Data {
+				provider, name := schemas.ParseModelString(resp.Data[i].ID, "")
+				if e := mc.GetPricingEntryForModel(name, provider); e != nil && e.IsDeprecated {
+					resp.Data[i].IsDeprecated = true
+				}
+			}
+		}
+	})
+	b.Run("enrich", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			b.StopTimer()
+			resp := fresh()
+			b.StartTimer()
+			mc.EnrichListModelsResponse(resp)
+		}
+	})
 }

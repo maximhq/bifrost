@@ -85,6 +85,29 @@ func (provider *GroqProvider) ListModels(ctx *schemas.BifrostContext, keys []sch
 	)
 }
 
+// ModelRetrieve retrieves a single model's metadata from the Groq API.
+func (provider *GroqProvider) ModelRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	if request == nil || request.Model == "" {
+		return nil, providerUtils.NewBifrostOperationError("model is required", nil)
+	}
+	// Groq namespaces most models ("openai/gpt-oss-120b"), so each segment is escaped separately.
+	escapedModel, idErr := providerUtils.EscapeResourcePath(request.Model, "model")
+	if idErr != nil {
+		return nil, idErr
+	}
+
+	return openai.HandleOpenAIModelRetrieveRequest(
+		ctx,
+		provider.client,
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/models/"+escapedModel),
+		key,
+		provider.networkConfig.ExtraHeaders,
+		schemas.Groq,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+	)
+}
+
 // TextCompletion is not supported by the Groq provider.
 func (provider *GroqProvider) TextCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError("text completion", "groq")
@@ -198,6 +221,11 @@ func (provider *GroqProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Ke
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
 }
 
+// Decision is not supported by the Groq provider.
+func (provider *GroqProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
+}
+
 // OCR is not supported by the Groq provider.
 func (provider *GroqProvider) OCR(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostOCRRequest) (*schemas.BifrostOCRResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.OCRRequest, provider.GetProviderKey())
@@ -280,6 +308,11 @@ func (provider *GroqProvider) VideoDelete(_ *schemas.BifrostContext, _ schemas.K
 // VideoList is not supported by Groq provider.
 func (provider *GroqProvider) VideoList(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoListRequest) (*schemas.BifrostVideoListResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoListRequest, provider.GetProviderKey())
+}
+
+// VideoEdit is not supported by the Groq provider.
+func (provider *GroqProvider) VideoEdit(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoEditRequest) (*schemas.BifrostVideoEditResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoEditRequest, provider.GetProviderKey())
 }
 
 // VideoRemix is not supported by Groq provider.

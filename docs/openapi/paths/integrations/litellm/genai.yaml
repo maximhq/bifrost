@@ -42,7 +42,6 @@ models:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 generate-content:
@@ -88,7 +87,6 @@ generate-content:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 stream-generate-content:
@@ -133,6 +131,5 @@ stream-generate-content:
               $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []

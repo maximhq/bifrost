@@ -12,6 +12,7 @@ import (
 
 	"github.com/fasthttp/router"
 	"github.com/fasthttp/websocket"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
 
@@ -25,6 +26,52 @@ type panicWatchLogger struct {
 	mu       sync.Mutex
 	panics   atomic.Int64
 	messages []string
+}
+
+func TestBroadcastNotificationTargetsMatchingRole(t *testing.T) {
+	h, addr, stop := startWebSocketTestServer(t)
+	defer stop()
+
+	matching := dialWebSocket(t, addr)
+	defer matching.Close()
+	waitForClientCount(t, h, 1)
+	matchingServerClient := snapshotClients(h)[0]
+	matchingServerClient.roleID = 7
+	matchingServerClient.hasRole = true
+
+	nonMatching := dialWebSocket(t, addr)
+	defer nonMatching.Close()
+	waitForClientCount(t, h, 2)
+	for _, client := range snapshotClients(h) {
+		if client != matchingServerClient {
+			client.roleID = 8
+			client.hasRole = true
+		}
+	}
+
+	h.BroadcastNotification(&schemas.Notification{
+		ID: "notification-1", Audience: schemas.NotificationAudienceRoles, RoleIDs: []uint{7}, Severity: schemas.NotificationSeverityInfo,
+		Title: "For role seven", Message: "message", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
+	})
+
+	requireReadDeadline := time.Now().Add(time.Second)
+	if err := matching.SetReadDeadline(requireReadDeadline); err != nil {
+		t.Fatal(err)
+	}
+	_, payload, err := matching.ReadMessage()
+	if err != nil {
+		t.Fatalf("matching role did not receive notification: %v", err)
+	}
+	if !strings.Contains(string(payload), `"type":"notification"`) || !strings.Contains(string(payload), `"id":"notification-1"`) {
+		t.Fatalf("unexpected notification payload: %s", payload)
+	}
+
+	if err := nonMatching.SetReadDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if _, payload, err := nonMatching.ReadMessage(); err == nil {
+		t.Fatalf("non-matching role received notification: %s", payload)
+	}
 }
 
 func (l *panicWatchLogger) Error(format string, args ...any) {

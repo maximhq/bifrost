@@ -243,8 +243,8 @@ Same wildcard support as team mappings.
 
 - Use a specific value (e.g. `platform`) to map that exact claim value to a named Bifrost business unit
 - Use `${*}` to extract a substring as the business unit name - e.g. `Bifrost Playground: ${*} BU` matches `Bifrost Playground: Alpha BU` and creates business unit **Alpha**
-- When a rule matches, the resolved business unit is assigned to all of that user's teams
-- Manually assigned teams are left unchanged
+- When a rule matches, the resolved business unit is assigned to the user. All matching rules apply, so a user can belong to several business units at once
+- A business unit you assign by hand stays until you remove it, unless a mapping later grants the same one, in which case it follows your IdP. One granted from a claim is removed at a later sign-in where the attribute is present and no longer matches; a refreshed token that leaves the attribute out entirely doesn't remove it
 
 <Frame caption="Attribute Mapping - configure role, team, and business unit rules based on the claims Google sends.">
   <img src="/media/user-provisioning/attribute-to-entity-mapping.png" alt="Bifrost Attribute Mapping screen showing role, team, and business unit mapping rules" />
@@ -274,15 +274,15 @@ Review your configuration on the final screen, then click **Enable**.
 
 ## How background sync works
 
-Bifrost uses the Directory API credentials from this setup to sync users in the background every **24 hours**. During that sync, Bifrost reconciles imported users, role mappings, team mappings, and business-unit mappings from Google Workspace.
+Bifrost uses the Directory API credentials from this setup to sync users in the background every **Directory sync interval** (default 24 hours). During that sync, Bifrost reconciles imported users, role mappings, team mappings, and business-unit mappings from Google Workspace. Background sync is turned off while SCIM Provisioning is on, because your IdP pushes changes instead.
 
-Every **15 minutes**, Bifrost also refreshes active OIDC sessions. If a session cannot be refreshed, Bifrost checks with Google whether the user is still active; if Google reports the user as inactive, Bifrost decommissions that user locally.
+Bifrost also refreshes each OIDC session when it expires (sessions last at least 30 minutes). If a session cannot be refreshed, Bifrost checks with Google whether the user is still active; if Google reports the user as inactive, Bifrost decommissions that user locally.
 
 ---
 
 ## Optional next steps
 
-**Real-time user sync** - OIDC provisions users on first login and the Directory API runs a 24-hour background sync. For closer to real-time provisioning via SCIM, see [SCIM with Google Workspace](./scim).
+**Real-time user sync** - OIDC provisions users on first login and the Directory API runs a background sync every **Directory sync interval** (default 24 hours). For closer to real-time provisioning via SCIM, see [SCIM with Google Workspace](./scim).
 
 ---
 

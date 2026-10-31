@@ -1,0 +1,64 @@
+---
+title: "OSS setup"
+description: "Connect Bifrost CLI to an open-source Bifrost gateway, store a virtual key for inference, and sign in for management commands."
+icon: "server"
+---
+
+Use this path for an open-source Bifrost gateway. You need the gateway URL and, if inference authentication is enforced, a virtual key. If you have not installed the CLI yet, see [Install the CLI](/quickstart/cli/getting-started#install-the-cli).
+
+<Steps>
+  <Step title="Add a context for your gateway">
+    ```bash
+    bifrost context add local --base-url http://localhost:8080 --use
+    ```
+
+    Non-loopback URLs must use HTTPS. Plain HTTP is accepted only for `localhost`, `127.0.0.1`, and `::1`.
+  </Step>
+  <Step title="Store a virtual key for inference">
+    Create a virtual key in the dashboard under **Governance → Virtual Keys** and allow the providers and models you need. Then:
+
+    ```bash
+    printf '%s\n' "$BIFROST_VIRTUAL_KEY" | bifrost auth set-virtual-key --stdin
+    ```
+
+    Omit `--stdin` to type the key at a hidden prompt. If the gateway does not enforce inference authentication, this step is optional.
+  </Step>
+  <Step title="Authenticate for management commands">
+    If dashboard authentication is enabled, sign in with the dashboard admin account:
+
+    ```bash
+    printf '%s\n' "$BIFROST_ADMIN_PASSWORD" |
+      bifrost auth login --username admin --password-stdin
+    ```
+
+    If dashboard authentication is disabled, management commands need no credential.
+  </Step>
+  <Step title="Verify">
+    ```bash
+    bifrost doctor
+    bifrost models list
+    bifrost providers list
+    ```
+
+    `bifrost doctor` checks gateway health, management authentication, and model discovery with the current inference credential, and reports `ok` or `failed` for each.
+  </Step>
+</Steps>
+
+{/* SCREENSHOT TODO: bifrost doctor output showing gateway health, management authentication, and model discovery all ok for an OSS gateway */}
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Coding agents" icon="terminal" href="/quickstart/cli/coding-agents">
+    Launch Claude Code, Codex, OpenCode, or Gemini through Bifrost.
+  </Card>
+  <Card title="Contexts and credentials" icon="layer-group" href="/quickstart/cli/contexts">
+    Work across environments and configure CI.
+  </Card>
+  <Card title="Commands" icon="list" href="/quickstart/cli/commands">
+    Inspect, query, and administer the gateway.
+  </Card>
+  <Card title="Virtual Keys" icon="key" href="/features/governance/virtual-keys">
+    Configure inference access, budgets, and rate limits.
+  </Card>
+</CardGroup>

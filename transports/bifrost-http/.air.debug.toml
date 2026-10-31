@@ -21,6 +21,7 @@ exclude_dir = [
     "tests",
     "docs",
     "npx",
+    "examples/mcps",
 ]
 exclude_file = []
 exclude_regex = ["_test.go"]

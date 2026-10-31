@@ -22,9 +22,13 @@ type TableProvider struct {
 	ProxyConfigJSON          string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.ProxyConfig
 	CustomProviderConfigJSON string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.CustomProviderConfig
 	OpenAIConfigJSON         string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.OpenAIConfig
+	PromptCacheJSON          string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.PromptCacheConfig
+	InjectedToolsJSON        string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.InjectedToolsConfig
+	PassthroughJSON          string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.PassthroughPolicy
 	SendBackRawRequest       bool      `json:"send_back_raw_request"`
 	SendBackRawResponse      bool      `json:"send_back_raw_response"`
 	StoreRawRequestResponse  bool      `json:"store_raw_request_response"`
+	IgnoreProviderCost       bool      `gorm:"default:false" json:"ignore_provider_cost"`
 	CreatedAt                time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt                time.Time `gorm:"index;not null" json:"updated_at"`
 
@@ -39,6 +43,9 @@ type TableProvider struct {
 	// Custom provider fields
 	CustomProviderConfig *schemas.CustomProviderConfig `gorm:"-" json:"custom_provider_config,omitempty"`
 	OpenAIConfig         *schemas.OpenAIConfig         `gorm:"-" json:"openai_config,omitempty"`
+	PromptCache          *schemas.PromptCacheConfig    `gorm:"-" json:"prompt_cache,omitempty"`
+	InjectedTools        []schemas.InjectedTool        `gorm:"-" json:"injected_tools,omitempty"`
+	Passthrough          *schemas.PassthroughPolicy    `gorm:"-" json:"passthrough,omitempty"`
 
 	// Foreign keys
 	Models []TableModel `gorm:"foreignKey:ProviderID;constraint:OnDelete:CASCADE" json:"models"`
@@ -99,6 +106,8 @@ func (p *TableProvider) BeforeSave(tx *gorm.DB) error {
 			return err
 		}
 		p.CustomProviderConfigJSON = string(data)
+	} else {
+		p.CustomProviderConfigJSON = ""
 	}
 	if p.OpenAIConfig != nil {
 		data, err := json.Marshal(p.OpenAIConfig)
@@ -108,6 +117,33 @@ func (p *TableProvider) BeforeSave(tx *gorm.DB) error {
 		p.OpenAIConfigJSON = string(data)
 	} else {
 		p.OpenAIConfigJSON = ""
+	}
+	if p.PromptCache != nil {
+		data, err := json.Marshal(p.PromptCache)
+		if err != nil {
+			return err
+		}
+		p.PromptCacheJSON = string(data)
+	} else {
+		p.PromptCacheJSON = ""
+	}
+	if len(p.InjectedTools) > 0 {
+		data, err := json.Marshal(p.InjectedTools)
+		if err != nil {
+			return err
+		}
+		p.InjectedToolsJSON = string(data)
+	} else {
+		p.InjectedToolsJSON = ""
+	}
+	if p.Passthrough != nil {
+		data, err := json.Marshal(p.Passthrough)
+		if err != nil {
+			return err
+		}
+		p.PassthroughJSON = string(data)
+	} else {
+		p.PassthroughJSON = ""
 	}
 	// Validate governance fields
 	if p.BudgetID != nil && strings.TrimSpace(*p.BudgetID) == "" {
@@ -180,6 +216,29 @@ func (p *TableProvider) AfterFind(tx *gorm.DB) error {
 		p.OpenAIConfig = &openaiConfig
 	}
 
+	if p.PromptCacheJSON != "" {
+		var promptCache schemas.PromptCacheConfig
+		if err := json.Unmarshal([]byte(p.PromptCacheJSON), &promptCache); err != nil {
+			return err
+		}
+		p.PromptCache = &promptCache
+	}
+
+	if p.InjectedToolsJSON != "" {
+		var injectedTools []schemas.InjectedTool
+		if err := json.Unmarshal([]byte(p.InjectedToolsJSON), &injectedTools); err != nil {
+			return err
+		}
+		p.InjectedTools = injectedTools
+	}
+
+	if p.PassthroughJSON != "" {
+		var passthrough schemas.PassthroughPolicy
+		if err := json.Unmarshal([]byte(p.PassthroughJSON), &passthrough); err != nil {
+			return err
+		}
+		p.Passthrough = &passthrough
+	}
+
 	return nil
 }
-

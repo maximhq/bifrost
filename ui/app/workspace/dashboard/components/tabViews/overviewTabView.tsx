@@ -14,6 +14,7 @@ import {
 	useLazyGetLogsThroughputHistogramQuery,
 	useLazyGetLogsTokenHistogramQuery,
 } from "@/lib/store";
+import { getOverviewCharts } from "@/lib/registries/dashboard";
 import type { LogFilters } from "@/lib/types/logs";
 import { forwardRef, useCallback, useImperativeHandle, useMemo } from "react";
 import { computeDisplaySeries } from "../../utils/chartUtils";
@@ -42,6 +43,7 @@ interface OverviewTabViewProps {
 	costChartType: ChartType;
 	modelChartType: ChartType;
 	latencyChartType: ChartType;
+	overheadChartType: ChartType;
 	throughputChartType: ChartType;
 	costModel: string;
 	usageModel: string;
@@ -50,6 +52,7 @@ interface OverviewTabViewProps {
 	onCostChartToggle: (type: ChartType) => void;
 	onModelChartToggle: (type: ChartType) => void;
 	onLatencyChartToggle: (type: ChartType) => void;
+	onOverheadChartToggle: (type: ChartType) => void;
 	onThroughputChartToggle: (type: ChartType) => void;
 	onCostModelChange: (model: string) => void;
 	onUsageModelChange: (model: string) => void;
@@ -66,6 +69,7 @@ export const OverviewTabView = forwardRef<OverviewTabViewHandle, OverviewTabView
 		costChartType,
 		modelChartType,
 		latencyChartType,
+		overheadChartType,
 		throughputChartType,
 		costModel,
 		usageModel,
@@ -74,6 +78,7 @@ export const OverviewTabView = forwardRef<OverviewTabViewHandle, OverviewTabView
 		onCostChartToggle,
 		onModelChartToggle,
 		onLatencyChartToggle,
+		onOverheadChartToggle,
 		onThroughputChartToggle,
 		onCostModelChange,
 		onUsageModelChange,
@@ -138,6 +143,14 @@ export const OverviewTabView = forwardRef<OverviewTabViewHandle, OverviewTabView
 		[costData?.models, modelData?.models],
 	);
 
+	const extraCharts = useMemo(() => {
+		const charts = getOverviewCharts();
+		if (charts.length === 0) return undefined;
+		return charts.map(({ id, component: Chart }) => (
+			<Chart key={id} filters={filters} startTime={startTime} endTime={endTime} active={active} />
+		));
+	}, [filters, startTime, endTime, active]);
+
 	return (
 		<OverviewTab
 			histogramData={histogramData ?? null}
@@ -161,6 +174,7 @@ export const OverviewTabView = forwardRef<OverviewTabViewHandle, OverviewTabView
 			costChartType={costChartType}
 			modelChartType={modelChartType}
 			latencyChartType={latencyChartType}
+			overheadChartType={overheadChartType}
 			throughputChartType={throughputChartType}
 			costModel={costModel}
 			usageModel={usageModel}
@@ -172,9 +186,11 @@ export const OverviewTabView = forwardRef<OverviewTabViewHandle, OverviewTabView
 			onCostChartToggle={onCostChartToggle}
 			onModelChartToggle={onModelChartToggle}
 			onLatencyChartToggle={onLatencyChartToggle}
+			onOverheadChartToggle={onOverheadChartToggle}
 			onThroughputChartToggle={onThroughputChartToggle}
 			onCostModelChange={onCostModelChange}
 			onUsageModelChange={onUsageModelChange}
+			extraCharts={extraCharts}
 		/>
 	);
 });

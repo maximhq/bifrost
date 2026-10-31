@@ -102,6 +102,11 @@ func ExtractTraceParentSpanID(header *fasthttp.RequestHeader) string {
 	return ctx.ParentID
 }
 
+// ExtractTraceState returns the inbound W3C tracestate, or "" when absent.
+func ExtractTraceState(header *fasthttp.RequestHeader) string {
+	return string(header.Peek(TraceStateHeader))
+}
+
 // ExtractTraceContext extracts full W3C trace context from headers
 func ExtractTraceContext(header *fasthttp.RequestHeader) *W3CTraceContext {
 	traceparent := string(header.Peek(TraceParentHeader))

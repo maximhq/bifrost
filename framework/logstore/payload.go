@@ -10,7 +10,13 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-const maxMCPToolInputPreviewRunes = 200
+const (
+	maxMCPToolInputPreviewRunes = 200
+	maxA2APayloadPreviewRunes   = 2048
+	a2aObjectSchemaVersion      = 1
+	maxRelayBodyPreviewRunes    = 2048
+	relayObjectSchemaVersion    = 1
+)
 
 // payloadFields lists the DB column names of large TEXT fields that are
 // offloaded to object storage in hybrid mode. These fields are never needed
@@ -21,6 +27,7 @@ var payloadFields = []string{
 	"responses_input_history",
 	"output_message",
 	"responses_output",
+	"embedding_input",
 	"embedding_output",
 	"rerank_output",
 	"ocr_input",
@@ -34,6 +41,7 @@ var payloadFields = []string{
 	"image_edit_input",
 	"image_variation_input",
 	"video_generation_input",
+	"video_edit_input",
 	"speech_output",
 	"transcription_output",
 	"image_generation_output",
@@ -43,8 +51,10 @@ var payloadFields = []string{
 	"video_download_output",
 	"video_list_output",
 	"video_delete_output",
+	"live_session",
 	"cache_debug",
 	"guardrail_debug",
+	"routing_metadata",
 	"token_usage",
 	"error_details",
 	"raw_request",
@@ -52,6 +62,7 @@ var payloadFields = []string{
 	"passthrough_request_body",
 	"passthrough_response_body",
 	"routing_engine_logs",
+	"plugin_logs",
 }
 
 // ExtractPayload reads the serialized TEXT payload fields from a Log into a map.
@@ -62,6 +73,7 @@ func ExtractPayload(l *Log) map[string]string {
 	m["responses_input_history"] = l.ResponsesInputHistory
 	m["output_message"] = l.OutputMessage
 	m["responses_output"] = l.ResponsesOutput
+	m["embedding_input"] = l.EmbeddingInput
 	m["embedding_output"] = l.EmbeddingOutput
 	m["rerank_output"] = l.RerankOutput
 	m["ocr_input"] = l.OCRInput
@@ -75,6 +87,7 @@ func ExtractPayload(l *Log) map[string]string {
 	m["image_edit_input"] = l.ImageEditInput
 	m["image_variation_input"] = l.ImageVariationInput
 	m["video_generation_input"] = l.VideoGenerationInput
+	m["video_edit_input"] = l.VideoEditInput
 	m["speech_output"] = l.SpeechOutput
 	m["transcription_output"] = l.TranscriptionOutput
 	m["image_generation_output"] = l.ImageGenerationOutput
@@ -84,8 +97,10 @@ func ExtractPayload(l *Log) map[string]string {
 	m["video_download_output"] = l.VideoDownloadOutput
 	m["video_list_output"] = l.VideoListOutput
 	m["video_delete_output"] = l.VideoDeleteOutput
+	m["live_session"] = l.LiveSession
 	m["cache_debug"] = l.CacheDebug
 	m["guardrail_debug"] = l.GuardrailDebug
+	m["routing_metadata"] = l.RoutingMetadata
 	m["token_usage"] = l.TokenUsage
 	m["error_details"] = l.ErrorDetails
 	m["raw_request"] = l.RawRequest
@@ -93,6 +108,7 @@ func ExtractPayload(l *Log) map[string]string {
 	m["passthrough_request_body"] = l.PassthroughRequestBody
 	m["passthrough_response_body"] = l.PassthroughResponseBody
 	m["routing_engine_logs"] = l.RoutingEngineLogs
+	m["plugin_logs"] = l.PluginLogs
 	// Metadata is written to the snapshot so consumers reading objects
 	// directly see custom attributes, but it is deliberately NOT part of
 	// payloadFields: it must always stay DB-resident as well (filters,
@@ -124,6 +140,8 @@ func ExtractPayload(l *Log) map[string]string {
 	putIfPresent(m, "business_unit_name", l.BusinessUnitName)
 	putIfPresent(m, "business_unit_ids", l.BusinessUnitIDs)
 	putIfPresent(m, "business_unit_names", l.BusinessUnitNames)
+	putIfPresent(m, "project_id", l.ProjectID)
+	putIfPresent(m, "project_name", l.ProjectName)
 	if l.Cost != nil {
 		m["cost"] = strconv.FormatFloat(*l.Cost, 'f', -1, 64)
 	}
@@ -187,7 +205,7 @@ type BillingPayloadBackfill struct {
 //
 // Safe because pricing is the last thing that reads these: the recalc job keeps only
 // the ID, timestamp and computed cost afterwards, and the rows are never written back
-// (BulkUpdateCost takes an id → cost map).
+// (BulkUpdateCost takes an id → CostUpdate map).
 func ReleaseBillingPayloads(logs []*Log) {
 	for _, l := range logs {
 		if l != nil {
@@ -202,6 +220,7 @@ func ClearPayload(l *Log) {
 	l.ResponsesInputHistory = ""
 	l.OutputMessage = ""
 	l.ResponsesOutput = ""
+	l.EmbeddingInput = ""
 	l.EmbeddingOutput = ""
 	l.RerankOutput = ""
 	l.OCRInput = ""
@@ -215,6 +234,7 @@ func ClearPayload(l *Log) {
 	l.ImageEditInput = ""
 	l.ImageVariationInput = ""
 	l.VideoGenerationInput = ""
+	l.VideoEditInput = ""
 	l.SpeechOutput = ""
 	l.TranscriptionOutput = ""
 	l.ImageGenerationOutput = ""
@@ -224,8 +244,10 @@ func ClearPayload(l *Log) {
 	l.VideoDownloadOutput = ""
 	l.VideoListOutput = ""
 	l.VideoDeleteOutput = ""
+	l.LiveSession = ""
 	l.CacheDebug = ""
 	l.GuardrailDebug = ""
+	l.RoutingMetadata = ""
 	l.TokenUsage = ""
 	l.ErrorDetails = ""
 	l.RawRequest = ""
@@ -233,12 +255,14 @@ func ClearPayload(l *Log) {
 	l.PassthroughRequestBody = ""
 	l.PassthroughResponseBody = ""
 	l.RoutingEngineLogs = ""
+	l.PluginLogs = ""
 
 	// Clear Parsed virtual fields so GORM's SerializeFields won't re-serialize them.
 	l.InputHistoryParsed = nil
 	l.ResponsesInputHistoryParsed = nil
 	l.OutputMessageParsed = nil
 	l.ResponsesOutputParsed = nil
+	l.EmbeddingInputParsed = nil
 	l.EmbeddingOutputParsed = nil
 	l.RerankOutputParsed = nil
 	l.OCRInputParsed = nil
@@ -252,6 +276,7 @@ func ClearPayload(l *Log) {
 	l.ImageEditInputParsed = nil
 	l.ImageVariationInputParsed = nil
 	l.VideoGenerationInputParsed = nil
+	l.VideoEditInputParsed = nil
 	l.SpeechOutputParsed = nil
 	l.TranscriptionOutputParsed = nil
 	l.ImageGenerationOutputParsed = nil
@@ -261,8 +286,10 @@ func ClearPayload(l *Log) {
 	l.VideoDownloadOutputParsed = nil
 	l.VideoListOutputParsed = nil
 	l.VideoDeleteOutputParsed = nil
+	l.LiveSessionParsed = nil
 	l.CacheDebugParsed = nil
 	l.GuardrailDebugParsed = nil
+	l.RoutingMetadataParsed = nil
 	l.TokenUsageParsed = nil
 	l.ErrorDetailsParsed = nil
 }
@@ -286,6 +313,9 @@ func MergePayloadFromJSON(l *Log, data []byte) error {
 	}
 	if v, ok := m["responses_output"]; ok && v != "" {
 		l.ResponsesOutput = v
+	}
+	if v, ok := m["embedding_input"]; ok && v != "" {
+		l.EmbeddingInput = v
 	}
 	if v, ok := m["embedding_output"]; ok && v != "" {
 		l.EmbeddingOutput = v
@@ -326,6 +356,9 @@ func MergePayloadFromJSON(l *Log, data []byte) error {
 	if v, ok := m["video_generation_input"]; ok && v != "" {
 		l.VideoGenerationInput = v
 	}
+	if v, ok := m["video_edit_input"]; ok && v != "" {
+		l.VideoEditInput = v
+	}
 	if v, ok := m["speech_output"]; ok && v != "" {
 		l.SpeechOutput = v
 	}
@@ -353,11 +386,17 @@ func MergePayloadFromJSON(l *Log, data []byte) error {
 	if v, ok := m["video_delete_output"]; ok && v != "" {
 		l.VideoDeleteOutput = v
 	}
+	if v, ok := m["live_session"]; ok && v != "" {
+		l.LiveSession = v
+	}
 	if v, ok := m["cache_debug"]; ok && v != "" {
 		l.CacheDebug = v
 	}
 	if v, ok := m["guardrail_debug"]; ok && v != "" {
 		l.GuardrailDebug = v
+	}
+	if v, ok := m["routing_metadata"]; ok && v != "" {
+		l.RoutingMetadata = v
 	}
 	if v, ok := m["token_usage"]; ok && v != "" {
 		l.TokenUsage = v
@@ -379,6 +418,9 @@ func MergePayloadFromJSON(l *Log, data []byte) error {
 	}
 	if v, ok := m["routing_engine_logs"]; ok && v != "" {
 		l.RoutingEngineLogs = v
+	}
+	if v, ok := m["plugin_logs"]; ok && v != "" {
+		l.PluginLogs = v
 	}
 	// Metadata is intentionally NOT restored from the snapshot: the copy
 	// written there (see ExtractPayload) is for external object consumers
@@ -424,6 +466,114 @@ func ClearPayloadFiltered(l *Log, excluded map[string]struct{}) {
 
 func MarshalPayload(payload map[string]string) ([]byte, error) {
 	return sonic.Marshal(payload)
+}
+
+type a2aPayloadV1 struct {
+	RawRequest    *string `json:"raw_request,omitempty"`
+	RawResponse   *string `json:"raw_response,omitempty"`
+	SchemaVersion int     `json:"schema_version"`
+	RequestBody   *string `json:"request_body,omitempty"`
+	ResponseBody  *string `json:"response_body,omitempty"`
+	EventBody     *string `json:"event_body,omitempty"`
+}
+
+func MarshalAgentLogPayload(l *AgentLog) ([]byte, error) {
+	return sonic.Marshal(a2aPayloadV1{
+		SchemaVersion: a2aObjectSchemaVersion,
+		RawRequest:    l.RawRequest, RawResponse: l.RawResponse,
+		RequestBody:  l.RequestBody,
+		ResponseBody: l.ResponseBody,
+		EventBody:    l.EventBody,
+	})
+}
+
+func MergeAgentLogPayloadFromJSON(l *AgentLog, data []byte) error {
+	var payload a2aPayloadV1
+	if err := sonic.Unmarshal(data, &payload); err != nil {
+		return fmt.Errorf("logstore: unmarshal A2A log payload: %w", err)
+	}
+	if payload.SchemaVersion != a2aObjectSchemaVersion {
+		return fmt.Errorf("logstore: unsupported A2A object schema version %d", payload.SchemaVersion)
+	}
+	l.RawRequest, l.RawResponse = payload.RawRequest, payload.RawResponse
+	l.RequestBody = payload.RequestBody
+	l.ResponseBody = payload.ResponseBody
+	l.EventBody = payload.EventBody
+	return nil
+}
+
+func PrepareAgentLogDBEntry(l *AgentLog, objectKey string) {
+	l.RawRequest, l.RawResponse = nil, nil
+	if l.ContentHidden {
+		l.RequestBody = nil
+		l.ResponseBody = nil
+		l.EventBody = nil
+	} else {
+		l.RequestBody = truncateStringPointer(l.RequestBody, maxA2APayloadPreviewRunes)
+		l.ResponseBody = truncateStringPointer(l.ResponseBody, maxA2APayloadPreviewRunes)
+		l.EventBody = truncateStringPointer(l.EventBody, maxA2APayloadPreviewRunes)
+	}
+	l.PayloadReference = &objectKey
+}
+
+func truncateStringPointer(value *string, maxRunes int) *string {
+	if value == nil {
+		return nil
+	}
+	preview := truncateRunes(*value, maxRunes)
+	return &preview
+}
+
+func AgentLogHasPayload(l *AgentLog) bool {
+	return l != nil && (l.RequestBody != nil || l.ResponseBody != nil || l.EventBody != nil || l.RawRequest != nil || l.RawResponse != nil)
+}
+
+type relayPayloadV1 struct {
+	SchemaVersion int     `json:"schema_version"`
+	RequestBody   *string `json:"request_body,omitempty"`
+	ResponseBody  *string `json:"response_body,omitempty"`
+}
+
+// MarshalRelayLogPayload serializes a Relay Logs row's full bodies for object storage.
+func MarshalRelayLogPayload(l *RelayLog) ([]byte, error) {
+	return sonic.Marshal(relayPayloadV1{
+		SchemaVersion: relayObjectSchemaVersion,
+		RequestBody:   l.RequestBody,
+		ResponseBody:  l.ResponseBody,
+	})
+}
+
+// MergeRelayLogPayloadFromJSON restores the full bodies read back from object storage.
+func MergeRelayLogPayloadFromJSON(l *RelayLog, data []byte) error {
+	var payload relayPayloadV1
+	if err := sonic.Unmarshal(data, &payload); err != nil {
+		return fmt.Errorf("logstore: unmarshal relay log payload: %w", err)
+	}
+	if payload.SchemaVersion != relayObjectSchemaVersion {
+		return fmt.Errorf("logstore: unsupported relay object schema version %d", payload.SchemaVersion)
+	}
+	l.RequestBody = payload.RequestBody
+	l.ResponseBody = payload.ResponseBody
+	return nil
+}
+
+// PrepareRelayLogDBEntry turns a Relay Logs row into its database form in hybrid mode: the
+// bodies shrink to a preview (or nothing, when content is hidden) and the row points at the
+// object holding them in full.
+func PrepareRelayLogDBEntry(l *RelayLog, objectKey string) {
+	if l.ContentHidden {
+		l.RequestBody = nil
+		l.ResponseBody = nil
+	} else {
+		l.RequestBody = truncateStringPointer(l.RequestBody, maxRelayBodyPreviewRunes)
+		l.ResponseBody = truncateStringPointer(l.ResponseBody, maxRelayBodyPreviewRunes)
+	}
+	l.PayloadReference = &objectKey
+}
+
+// RelayLogHasPayload reports whether a Relay Logs row carries a body to offload.
+func RelayLogHasPayload(l *RelayLog) bool {
+	return l != nil && (l.RequestBody != nil || l.ResponseBody != nil)
 }
 
 // MarshalMCPToolLogPayload serializes a full MCP tool log for object storage.
@@ -526,6 +676,11 @@ func (l *Log) BuildInputContentSummary() string {
 	// Video generation input prompt
 	if l.VideoGenerationInputParsed != nil && l.VideoGenerationInputParsed.Prompt != "" {
 		return l.VideoGenerationInputParsed.Prompt
+	}
+
+	// Video edit input prompt
+	if l.VideoEditInputParsed != nil && l.VideoEditInputParsed.Prompt != "" {
+		return l.VideoEditInputParsed.Prompt
 	}
 
 	return ""
@@ -742,24 +897,88 @@ func BuildMCPToolTags(l *MCPToolLog) map[string]string {
 	return tags
 }
 
-// ObjectKey constructs the S3 object key for a log entry.
-func ObjectKey(prefix string, timestamp time.Time, logID string) string {
+func BuildAgentLogTags(l *AgentLog) map[string]string {
+	tags := make(map[string]string, 7)
+	if l.AgentName != "" {
+		tags["agent_name"] = truncateTag(l.AgentName, 256)
+	}
+	if l.Operation != "" {
+		tags["operation"] = truncateTag(l.Operation, 256)
+	}
+	if l.RecordKind != "" {
+		tags["record_kind"] = truncateTag(l.RecordKind, 256)
+	}
+	if l.Status != "" {
+		tags["status"] = truncateTag(l.Status, 256)
+	}
+	if l.VirtualKeyID != nil && *l.VirtualKeyID != "" {
+		tags["virtual_key_id"] = truncateTag(*l.VirtualKeyID, 256)
+	}
+	tags["has_error"] = "false"
+	if l.Status == "error" {
+		tags["has_error"] = "true"
+	}
+	tags["date"] = l.Timestamp.UTC().Format("2006-01-02")
+	return tags
+}
+
+func BuildRelayLogTags(l *RelayLog) map[string]string {
+	tags := make(map[string]string, 6)
+	if l.RelayName != "" {
+		tags["relay_name"] = truncateTag(l.RelayName, 256)
+	}
+	if l.Kind != "" {
+		tags["kind"] = truncateTag(l.Kind, 256)
+	}
+	if l.Status != "" {
+		tags["status"] = truncateTag(l.Status, 256)
+	}
+	if l.VirtualKeyID != nil && *l.VirtualKeyID != "" {
+		tags["virtual_key_id"] = truncateTag(*l.VirtualKeyID, 256)
+	}
+	tags["has_error"] = "false"
+	if l.Status == "error" {
+		tags["has_error"] = "true"
+	}
+	tags["date"] = l.Timestamp.UTC().Format("2006-01-02")
+	return tags
+}
+
+// Object key suffixes. The suffix records how the object is encoded, so a
+// bucket can hold objects written before and after a format change.
+const (
+	jsonObjectExt    = ".json.gz"
+	parquetObjectExt = ".parquet"
+)
+
+// objectKey builds {prefix}/{dir}/YYYY/MM/DD/HH/{id}{ext}.
+func objectKey(prefix, dir string, timestamp time.Time, logID, ext string) string {
 	ts := timestamp.UTC()
-	return fmt.Sprintf("%s/logs/%04d/%02d/%02d/%02d/%s.json.gz",
-		prefix,
+	return fmt.Sprintf("%s/%s/%04d/%02d/%02d/%02d/%s%s",
+		prefix, dir,
 		ts.Year(), ts.Month(), ts.Day(), ts.Hour(),
-		logID,
+		logID, ext,
 	)
 }
 
-// MCPToolObjectKey constructs the S3 object key for an MCP tool log entry.
+// ObjectKey constructs the S3 object key for a JSON log entry.
+func ObjectKey(prefix string, timestamp time.Time, logID string) string {
+	return objectKey(prefix, "logs", timestamp, logID, jsonObjectExt)
+}
+
+// MCPToolObjectKey constructs the S3 object key for a JSON MCP tool log entry.
 func MCPToolObjectKey(prefix string, timestamp time.Time, logID string) string {
-	ts := timestamp.UTC()
-	return fmt.Sprintf("%s/mcp-logs/%04d/%02d/%02d/%02d/%s.json.gz",
-		prefix,
-		ts.Year(), ts.Month(), ts.Day(), ts.Hour(),
-		logID,
-	)
+	return objectKey(prefix, "mcp-logs", timestamp, logID, jsonObjectExt)
+}
+
+// RelayLogObjectKey constructs the S3 object key for a JSON Relay Logs entry.
+func RelayLogObjectKey(prefix string, timestamp time.Time, logID string) string {
+	return objectKey(prefix, "relay-logs", timestamp, logID, jsonObjectExt)
+}
+
+// AgentLogObjectKey constructs the S3 object key for a JSON A2A log entry.
+func AgentLogObjectKey(prefix string, timestamp time.Time, logID string) string {
+	return objectKey(prefix, "agent-logs", timestamp, logID, jsonObjectExt)
 }
 
 // PayloadFieldNames returns the list of DB column names that are payload fields.
@@ -845,6 +1064,9 @@ func clearPayloadField(l *Log, name string) {
 	case "responses_output":
 		l.ResponsesOutput = ""
 		l.ResponsesOutputParsed = nil
+	case "embedding_input":
+		l.EmbeddingInput = ""
+		l.EmbeddingInputParsed = nil
 	case "embedding_output":
 		l.EmbeddingOutput = ""
 		l.EmbeddingOutputParsed = nil
@@ -884,6 +1106,9 @@ func clearPayloadField(l *Log, name string) {
 	case "video_generation_input":
 		l.VideoGenerationInput = ""
 		l.VideoGenerationInputParsed = nil
+	case "video_edit_input":
+		l.VideoEditInput = ""
+		l.VideoEditInputParsed = nil
 	case "speech_output":
 		l.SpeechOutput = ""
 		l.SpeechOutputParsed = nil
@@ -911,12 +1136,18 @@ func clearPayloadField(l *Log, name string) {
 	case "video_delete_output":
 		l.VideoDeleteOutput = ""
 		l.VideoDeleteOutputParsed = nil
+	case "live_session":
+		l.LiveSession = ""
+		l.LiveSessionParsed = nil
 	case "cache_debug":
 		l.CacheDebug = ""
 		l.CacheDebugParsed = nil
 	case "guardrail_debug":
 		l.GuardrailDebug = ""
 		l.GuardrailDebugParsed = nil
+	case "routing_metadata":
+		l.RoutingMetadata = ""
+		l.RoutingMetadataParsed = nil
 	case "token_usage":
 		l.TokenUsage = ""
 		l.TokenUsageParsed = nil
@@ -933,6 +1164,8 @@ func clearPayloadField(l *Log, name string) {
 		l.PassthroughResponseBody = ""
 	case "routing_engine_logs":
 		l.RoutingEngineLogs = ""
+	case "plugin_logs":
+		l.PluginLogs = ""
 	}
 }
 

@@ -4,7 +4,9 @@ package mcp
 
 import (
 	"context"
+	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -19,10 +21,18 @@ type MCPManagerInterface interface {
 	// GetAvailableTools returns all available MCP tools for the given context
 	GetAvailableTools(ctx *schemas.BifrostContext) []schemas.ChatTool
 
+	// GetAggregatedServerInstructions returns the upstream `instructions` of every client
+	// the context may see, aggregated into one labeled, size-bounded block.
+	GetAggregatedServerInstructions(ctx context.Context) string
+
 	// UpdateToolManagerConfig updates the configuration for the tool manager.
 	// DisableAutoToolInject in the config controls auto injection — pass the
 	// current value whenever only other fields change so it is never silently reset.
 	UpdateToolManagerConfig(config *schemas.MCPToolManagerConfig)
+
+	// UpdateToolSyncInterval replaces the global tool sync interval at runtime
+	// and re-times the periodic checkers of clients that follow it.
+	UpdateToolSyncInterval(interval time.Duration)
 
 	// Agent Mode Operations
 	// CheckAndExecuteAgentForChatRequest handles agent mode for Chat Completions API.
@@ -50,6 +60,13 @@ type MCPManagerInterface interface {
 	ExecuteChatTool(ctx *schemas.BifrostContext, toolCall *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError)
 	ExecuteResponsesTool(ctx *schemas.BifrostContext, toolCall *schemas.ResponsesToolMessage) (*schemas.ResponsesMessage, *schemas.BifrostError)
 
+	// GetInjectedTool resolves a provider-injected tool (ProviderConfig.InjectedTools)
+	// by client name and unprefixed tool name, bypassing tool filters.
+	GetInjectedTool(clientName, toolName string) (schemas.ChatTool, error)
+
+	// GetMaxAgentDepth returns the configured cap on model turns in a tool loop.
+	GetMaxAgentDepth() int
+
 	// Client Management
 	// GetClients returns all MCP clients
 	GetClients() []schemas.MCPClientState
@@ -66,12 +83,14 @@ type MCPManagerInterface interface {
 	// NeedsReauth. Pass nil to clear a previously registered callback.
 	SetStateChangeCallback(cb func(clientID, name string, oldState, newState schemas.MCPConnectionState))
 
-	// SetToolsChangeCallback registers cb to be invoked whenever a client's
-	// tool map is freshly (re)discovered — connect/reconnect, per-call
-	// discovery, and the periodic checker's own refresh. core/mcp has no DB
-	// access; this is the seam the transport layer persists through. Pass
-	// nil to clear a previously registered callback.
-	SetToolsChangeCallback(cb func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string))
+	// SetDiscoveryChangeCallback registers cb to run whenever a client's discovery changes; the
+	// transport layer persists through it. nil clears it.
+	SetDiscoveryChangeCallback(cb func(clientID, name string, discovery *schemas.MCPDiscovery))
+
+	// SetInProcessServerFactory replaces the factory that synthesizes
+	// in-process servers for openapi clients (see
+	// schemas.MCPConfig.InProcessServerFactory). Applies on the next connect.
+	SetInProcessServerFactory(factory schemas.InProcessServerFactory)
 
 	// AddClient adds a new MCP client with the given configuration
 	AddClient(ctx context.Context, config *schemas.MCPClientConfig) error
@@ -94,6 +113,12 @@ type MCPManagerInterface interface {
 	// ReconnectClient reconnects an MCP client by ID
 	ReconnectClient(id string) error
 
+	// RefreshClientTools re-discovers a client's tools from its upstream
+	// server now rather than at the connection checker's next tick, and
+	// returns how many tools it is serving afterwards. Unlike
+	// ReconnectClient, it applies to per-call clients too.
+	RefreshClientTools(ctx context.Context, clientID string) (int, error)
+
 	// CloseAndMarkNeedsReauth closes a shared client's live upstream
 	// connection and flips it to needs_reauth, without attempting a new
 	// dial. Used after OAuth credential rotation.
@@ -108,15 +133,15 @@ type MCPManagerInterface interface {
 	// VerifyHeadersConnection creates a temporary MCP connection using a set of
 	// caller-supplied header values to verify connectivity and discover tools.
 	// The connection is closed after verification.
-	VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (map[string]schemas.ChatTool, map[string]string, error)
+	VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (*schemas.MCPDiscovery, error)
 
 	// VerifyPerUserOAuthConnection creates a temporary MCP connection using a
 	// test access token to verify connectivity and discover tools. The connection
 	// is closed after verification.
-	VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (map[string]schemas.ChatTool, map[string]string, error)
+	VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (*schemas.MCPDiscovery, error)
 
-	// SetClientTools updates the tool map and name mapping for an existing client.
-	SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string)
+	// SetClientDiscovery installs discovery on an existing client.
+	SetClientDiscovery(clientID string, discovery *schemas.MCPDiscovery)
 
 	// Tool Registration
 	// RegisterTool registers a local tool with the MCP server
@@ -129,3 +154,16 @@ type MCPManagerInterface interface {
 
 // Ensure MCPManager implements MCPManagerInterface
 var _ MCPManagerInterface = (*MCPManager)(nil)
+
+// ResourcesAndPromptsServer serves upstream resources and prompts. Optional, so MCPManagerInterface
+// implementations stay source compatible.
+type ResourcesAndPromptsServer interface {
+	GetAvailablePrompts(ctx context.Context) []mcp.Prompt
+	GetAvailableResources(ctx context.Context) []mcp.Resource
+	GetAvailableResourceTemplates(ctx context.Context) []mcp.ResourceTemplate
+	GetPrompt(ctx *schemas.BifrostContext, name string, arguments map[string]string) (*mcp.GetPromptResult, *schemas.BifrostError)
+	ReadResource(ctx *schemas.BifrostContext, uri string) (*mcp.ReadResourceResult, *schemas.BifrostError)
+	Complete(ctx *schemas.BifrostContext, params mcp.CompleteParams) (*mcp.CompleteResult, *schemas.BifrostError)
+}
+
+var _ ResourcesAndPromptsServer = (*MCPManager)(nil)

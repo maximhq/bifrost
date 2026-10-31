@@ -1,6 +1,24 @@
 import { getApiBaseUrl } from "@/lib/utils/port";
 import { getWebSocketUrl } from "@/lib/utils/port";
+import { isLoggingOut } from "@/lib/utils/logoutState";
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+	WS_CONNECTING,
+	WS_OPEN,
+	adoptSocket,
+	clearReconnectTimer,
+	getSocket,
+	isReconnectEnabled,
+	resetRetryCount,
+	scheduleReconnect,
+	setActiveConnect,
+	setReconnectEnabled,
+	setSocket,
+	startHeartbeat,
+	stopHeartbeat,
+} from "./useWebSocket.utils";
+
+export { stopWebSocket } from "./useWebSocket.utils";
 
 type MessageHandler = (data: any) => void;
 
@@ -18,16 +36,16 @@ interface WebSocketProviderProps {
 	path?: string;
 }
 
-// Global reference to maintain state across component remounts
-let globalWsRef: WebSocket | null = null;
+// The socket, heartbeat and reconnect bookkeeping all live in
+// useWebSocket.utils so they outlive any single provider mount: a shell
+// re-render must not tear the connection down, and a close event that fires
+// after the provider unmounted consults that shared state instead of a stale
+// closure. Only subscriptions and per-mount React state live here.
 const messageHandlers = new Map<string, Set<MessageHandler>>();
 
 export function WebSocketProvider({ children, path = "/ws" }: WebSocketProviderProps) {
-	const wsRef = useRef<WebSocket | null>(globalWsRef);
-	const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-	const pingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-	const retryCountRef = useRef(0);
-	const [isConnected, setIsConnected] = useState(false);
+	const wsRef = useRef<WebSocket | null>(getSocket());
+	const [isConnected, setIsConnected] = useState(getSocket()?.readyState === WS_OPEN);
 
 	const subscribe = useCallback<(channel: string, handler: MessageHandler) => () => void>((channel, handler) => {
 		if (!messageHandlers.has(channel)) {
@@ -48,7 +66,7 @@ export function WebSocketProvider({ children, path = "/ws" }: WebSocketProviderP
 	}, []);
 
 	const send = (data: any) => {
-		if (wsRef.current?.readyState === WebSocket.OPEN) {
+		if (wsRef.current?.readyState === WS_OPEN) {
 			try {
 				wsRef.current.send(typeof data === "string" ? data : JSON.stringify(data));
 			} catch (error) {
@@ -58,8 +76,30 @@ export function WebSocketProvider({ children, path = "/ws" }: WebSocketProviderP
 	};
 
 	useEffect(() => {
+		let mounted = true;
+		// Set when this mount adopts a socket created by an earlier mount;
+		// removes the open/close listeners that keep this mount's state honest.
+		let detachAdopted: (() => void) | null = null;
+
 		const connect = async () => {
-			if (wsRef.current?.readyState === WebSocket.OPEN) {
+			if (!mounted || !isReconnectEnabled() || isLoggingOut()) {
+				return;
+			}
+			const existing = getSocket();
+			if (existing && (existing.readyState === WS_OPEN || existing.readyState === WS_CONNECTING)) {
+				// Another mount created this socket; its onopen/onclose cannot
+				// update this mount's state, so observe the socket directly.
+				wsRef.current = existing;
+				detachAdopted?.();
+				detachAdopted = adoptSocket(existing, {
+					onOpen: () => {
+						if (mounted) setIsConnected(true);
+					},
+					onClose: () => {
+						if (mounted) setIsConnected(false);
+					},
+				});
+				if (existing.readyState === WS_OPEN) setIsConnected(true);
 				return;
 			}
 
@@ -71,6 +111,14 @@ export function WebSocketProvider({ children, path = "/ws" }: WebSocketProviderP
 					method: "POST",
 					credentials: "include",
 				});
+				if (resp.status === 401 || resp.status === 403) {
+					// The session is gone. Retrying cannot succeed until the user
+					// signs in again, at which point the dashboard shell remounts
+					// this provider and re-enables reconnection.
+					setReconnectEnabled(false);
+					if (mounted) setIsConnected(false);
+					return;
+				}
 				if (resp.ok) {
 					const { ticket } = await resp.json();
 					if (ticket) {
@@ -82,33 +130,23 @@ export function WebSocketProvider({ children, path = "/ws" }: WebSocketProviderP
 			} catch {
 				// If ticket fetch fails, attempt connection without auth param (cookie fallback)
 			}
+			// The ticket fetch is async; the provider may have unmounted or a
+			// logout may have started while it was in flight.
+			if (!mounted || !isReconnectEnabled() || isLoggingOut()) {
+				return;
+			}
 			const ws = new WebSocket(wsUrlWithAuth);
 			wsRef.current = ws;
-			globalWsRef = ws;
+			setSocket(ws);
 
 			ws.onopen = () => {
-				setIsConnected(true);
-				retryCountRef.current = 0; // Reset retry count on successful connection
-
-				// Clear any pending reconnection attempts
-				if (reconnectTimeoutRef.current) {
-					clearTimeout(reconnectTimeoutRef.current);
-					reconnectTimeoutRef.current = null;
-				}
-
-				// Start heartbeat/ping to keep connection alive
-				if (pingTimerRef.current) {
-					clearInterval(pingTimerRef.current);
-				}
-				pingTimerRef.current = setInterval(() => {
-					if (ws.readyState === WebSocket.OPEN) {
-						try {
-							ws.send("ping");
-						} catch (error) {
-							console.error("Error sending ping:", error);
-						}
-					}
-				}, 25000); // Ping every 25 seconds
+				if (getSocket() !== ws) return;
+				if (mounted) setIsConnected(true);
+				resetRetryCount(); // Reset retry count on successful connection
+				clearReconnectTimer();
+				// The heartbeat belongs to the socket, not to this mount: a
+				// later mount that adopts the socket must not find it silent.
+				startHeartbeat(ws);
 			};
 
 			ws.onmessage = (event) => {
@@ -133,40 +171,41 @@ export function WebSocketProvider({ children, path = "/ws" }: WebSocketProviderP
 			};
 
 			ws.onclose = () => {
-				setIsConnected(false);
-
-				// Clear ping timer
-				if (pingTimerRef.current) {
-					clearInterval(pingTimerRef.current);
-					pingTimerRef.current = null;
+				if (mounted) setIsConnected(false);
+				if (getSocket() === ws) {
+					stopHeartbeat();
+					setSocket(null);
 				}
-
-				// Exponential backoff: 0.5s, 1s, 2s, 4s, 8s, 16s, 32s (max)
-				retryCountRef.current = Math.min(retryCountRef.current + 1, 6);
-				const delay = Math.pow(2, retryCountRef.current) * 500;
-
-				reconnectTimeoutRef.current = setTimeout(connect, delay);
+				// Reconnect through the currently mounted provider (if any), not
+				// through this closure, so an unmounted provider never revives
+				// the loop.
+				scheduleReconnect();
 			};
 
-			ws.onerror = (error) => {
-				setIsConnected(false);
+			ws.onerror = () => {
+				if (mounted) setIsConnected(false);
 				ws.close();
 			};
 		};
 
-		connect();
+		// A fresh mount of the dashboard shell means the user is signed in:
+		// re-arm reconnection that a previous logout switched off.
+		setReconnectEnabled(true);
+		setActiveConnect(() => {
+			void connect();
+		});
+		void connect();
 
 		// Cleanup function
 		return () => {
-			// Don't close the WebSocket on unmount since it's global
-			if (reconnectTimeoutRef.current) {
-				clearTimeout(reconnectTimeoutRef.current);
-				reconnectTimeoutRef.current = null;
-			}
-			if (pingTimerRef.current) {
-				clearInterval(pingTimerRef.current);
-				pingTimerRef.current = null;
-			}
+			mounted = false;
+			// Don't close the WebSocket (or its heartbeat) on unmount since it
+			// is global, but make sure nothing reconnects on behalf of this
+			// provider once it is gone.
+			setActiveConnect(null);
+			clearReconnectTimer();
+			detachAdopted?.();
+			detachAdopted = null;
 		};
 	}, [path]);
 

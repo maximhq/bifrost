@@ -3,7 +3,7 @@ name: Release Pipeline
 # Triggers automatically on push to main when any version file changes
 on:
   push:
-    branches: ["main", "v2.0.0"]
+    branches: "main"
   workflow_dispatch:
     inputs:
       skip_tests:
@@ -23,7 +23,7 @@ permissions:
 jobs:
   # Check if pipeline should be skipped based on first line of commit message
   check-skip:
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     outputs:
       should-skip: ${{ steps.check.outputs.should-skip }}
       skip-core-test: ${{ steps.check.outputs.skip-core-test }}
@@ -51,9 +51,10 @@ jobs:
             echo "should-skip=false" >> $GITHUB_OUTPUT
           fi
 
-          # --skip-core-test drops the two jobs that make live calls to every
-          # upstream provider: test-core (the ~90 minute provider harness) and
-          # test-core-integrations (the core module's live provider suite). Every
+          # --skip-core-test drops the three jobs that make live calls to every
+          # upstream provider: test-core (the ~90 minute provider harness),
+          # test-core-integrations (the core module's live provider suite) and
+          # test-proxy-e2e (the harness smoke set through real proxies). Every
           # other test job still runs, including test-core-unit, so the release is
           # still gated on the whole suite minus the jobs that depend on eight
           # third-party APIs being healthy at that moment.
@@ -69,7 +70,7 @@ jobs:
           # passed. Use it when a provider outage is blocking a release that has
           # nothing to do with that provider - not to get a red harness out the door.
           if [[ "$FIRST_LINE" == *"--skip-core-test"* ]]; then
-            echo "::warning::--skip-core-test found in the commit subject: the live provider jobs (test-core, test-core-integrations) will not run for this release. All other test jobs still gate it."
+            echo "::warning::--skip-core-test found in the commit subject: the live provider jobs (test-core, test-core-integrations, test-proxy-e2e) will not run for this release. All other test jobs still gate it."
             echo "skip-core-test=true" >> $GITHUB_OUTPUT
           else
             echo "skip-core-test=false" >> $GITHUB_OUTPUT
@@ -92,12 +93,39 @@ jobs:
             echo "skip-tests=false" >> $GITHUB_OUTPUT
           fi
 
+  # Phone gate. Parks the run on the release-run-approval environment, whose only
+  # protection rule is the bifrost-release-gate GitHub App. The service behind that
+  # App pushes an Approve/Reject prompt to the admin's phone and calls back GitHub
+  # with the answer. Nothing below runs - no provider quota, no runner minutes -
+  # until the tap arrives. Version-bump pushes carry --skip-ci and never reach this
+  # job. The job holds no secrets, checks out nothing and allows no egress: it is a
+  # named point in the graph for the environment rule to hold, nothing more.
+  approve-run:
+    needs: [check-skip]
+    if: needs.check-skip.outputs.should-skip != 'true'
+    runs-on: builder-8-32
+    environment:
+      name: release-run-approval
+      url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    permissions: {}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >+
+
+      - name: Record the approved run
+        run: echo "Run ${GITHUB_RUN_ID} for ${GITHUB_SHA} was approved from the phone gate"
+
   # Detect what needs to be released
   detect-changes:
-    needs: [check-skip]
-    runs-on: ubuntu-latest
-    # Skip if first line of commit message contains --skip-ci
-    if: needs.check-skip.outputs.should-skip != 'true'
+    needs: [check-skip, approve-run]
+    runs-on: builder-8-32
+    # Skip if first line of commit message contains --skip-ci, or if the phone
+    # gate above was rejected. Every other job needs this one, so this edge is
+    # what holds the whole graph behind the gate.
+    if: needs.check-skip.outputs.should-skip != 'true' && needs.approve-run.result == 'success'
     outputs:
       core-needs-release: ${{ steps.detect.outputs.core-needs-release }}
       framework-needs-release: ${{ steps.detect.outputs.framework-needs-release }}
@@ -114,7 +142,7 @@ jobs:
         with:
           egress-policy: block
           allowed-endpoints: >
-            _http._tcp.azure.archive.ubuntu.com:443
+            _https._tcp.archive.ubuntu.com:443
             _https._tcp.esm.ubuntu.com:443
             _https._tcp.motd.ubuntu.com:443
             _https._tcp.packages.microsoft.com:443
@@ -122,7 +150,7 @@ jobs:
             motd.ubuntu.com:443
             dl.google.com:443
             api.github.com:443
-            azure.archive.ubuntu.com:80
+            archive.ubuntu.com:443
             dl.google.com:443
             esm.ubuntu.com:443
             github.com:443
@@ -141,13 +169,14 @@ jobs:
 
       - name: Install jq
         run: |
+          ./.github/workflows/scripts/apt-sources-https.sh
           sudo apt-get update
           sudo apt-get install -y jq
 
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.5"
+          go-version: "1.27.3"
 
       - name: Detect what needs release
         id: detect
@@ -199,7 +228,7 @@ jobs:
         needs.detect-changes.outputs.bifrost-http-needs-release == 'true' ||
         needs.detect-changes.outputs.docker-needs-release == 'true'
       )
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     timeout-minutes: 30
     permissions:
       contents: read
@@ -212,7 +241,7 @@ jobs:
           # toolchain downloads. No provider hosts - nothing is executed here.
           allowed-endpoints: >
             api.github.com:443
-            azure.archive.ubuntu.com:80
+            archive.ubuntu.com:443
             esm.ubuntu.com:443
             fonts.googleapis.com:443
             fonts.gstatic.com:443
@@ -235,7 +264,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.5"
+          go-version: "1.27.3"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -290,7 +319,7 @@ jobs:
       needs.check-skip.outputs.skip-tests != 'true' &&
       needs.check-skip.outputs.skip-core-test != 'true' &&
       needs.detect-changes.outputs.core-needs-release == 'true'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     timeout-minutes: 90
     permissions:
       contents: read
@@ -323,11 +352,18 @@ jobs:
             aiplatform.googleapis.com:443
             api.anthropic.com:443
             api.cerebras.ai:443
+            api.minimax.io:443
+            ark.ap-southeast.bytepluses.com:443
+            api.cloudflare.com:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
             api.fireworks.ai:443
             api.github.com:443
+            api.githubcopilot.com:443
+            api.business.githubcopilot.com:443
+            api.enterprise.githubcopilot.com:443
+            api.individual.githubcopilot.com:443
             api.groq.com:443
             api.mistral.ai:443
             api.openai.com:443
@@ -336,7 +372,7 @@ jobs:
             api.replicate.com:443
             api.tokenfactory.nebius.com:443
             api.x.ai:443
-            azure.archive.ubuntu.com:80
+            archive.ubuntu.com:443
             esm.ubuntu.com:443
             bifrost-gateway-resource.openai.azure.com:443
             bedrock-mantle.us-east-1.api.aws:443
@@ -371,6 +407,9 @@ jobs:
             us-central1-aiplatform.googleapis.com:443
             www.berkshirehathaway.com:443
             www.getbifrost.ai:443
+            api.dev.runwayml.com:443
+            api.sarvam.ai:443
+            api.typesafe.ai:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -381,7 +420,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.5"
+          go-version: "1.27.3"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -390,6 +429,7 @@ jobs:
 
       - name: Install jq
         run: |
+          ./.github/workflows/scripts/apt-sources-https.sh
           sudo apt-get update
           sudo apt-get install -y jq
 
@@ -404,7 +444,7 @@ jobs:
         working-directory: .github/workflows/tools
 
       - name: Set up gcloud CLI
-        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        uses: step-security/setup-gcloud@0d4fd148182bcc22d7b88f0e12ccc0150ab691f4 # v3.0.2
         with:
           version: "575.0.1"
 
@@ -434,8 +474,16 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GITHUB_COPILOT_API_KEY: ${{ secrets.GITHUB_COPILOT_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
@@ -508,12 +556,257 @@ jobs:
             "provider-harness" \
             tmp/provider-harness-report
 
+  # Real provider calls through real proxies, for every way Bifrost can be told to use
+  # one: squid (http://), stunnel in front of squid (https://, TLS to the proxy) and
+  # microsocks (socks5://), all requiring credentials, crossed with the global proxy,
+  # per-provider proxy_config and proxy_config type environment + HTTPS_PROXY. See
+  # tests/e2e/api/runners/proxy/run-proxy-matrix.sh.
+  #
+  # Each cell runs proxy-smoke-manifest.json (one upstream-reaching row per provider)
+  # and then requires every provider host in that cell's proxy log. Strict egress
+  # confines the gateway to loopback with iptables, so a request that skips the proxy
+  # fails rather than quietly going direct - the failure mode a customer behind a
+  # corporate proxy hits as TLS errors or timeouts.
+  #
+  # Gated like test-core, and extended to framework and bifrost-http releases, since
+  # the outbound clients (OAuth, MCP, catalog sync, webhooks) and the global proxy
+  # wiring live there. Every release job below needs it green or skipped.
+  test-proxy-e2e:
+    needs: [check-skip, detect-changes, build-gateway]
+    if: |
+      needs.check-skip.outputs.should-skip != 'true' &&
+      needs.check-skip.outputs.skip-tests != 'true' &&
+      needs.check-skip.outputs.skip-core-test != 'true' &&
+      (
+        needs.detect-changes.outputs.core-needs-release == 'true' ||
+        needs.detect-changes.outputs.framework-needs-release == 'true' ||
+        needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
+      )
+    runs-on: builder-8-32
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: block
+          # test-core's allowlist: the proxies run on this runner, so every provider
+          # host still leaves it. Plus the runware, runway and typesafe upstreams,
+          # which the manifest reaches and test-core's list does not name, and every
+          # other host the harness sources name, which check-egress-allowlist.sh
+          # requires of a harness job (the .invalid and example names never resolve).
+          allowed-endpoints: >
+            127.0.0.1:8080
+            7defe2860d5ee49a1e667e1eeea34b25.r2.cloudflarestorage.com:443
+            accounts.google.com:443
+            aiplatform.googleapis.com:443
+            api.anthropic.com:443
+            api.cerebras.ai:443
+            api.cohere.ai:443
+            api.deepseek.com:443
+            api.elevenlabs.io:443
+            api.fireworks.ai:443
+            api.github.com:443
+            api.githubcopilot.com:443
+            api.business.githubcopilot.com:443
+            api.enterprise.githubcopilot.com:443
+            api.individual.githubcopilot.com:443
+            api.groq.com:443
+            api.mistral.ai:443
+            api.openai.com:443
+            api.parasail.io:443
+            api.perplexity.ai:443
+            api.replicate.com:443
+            api.tokenfactory.nebius.com:443
+            api.x.ai:443
+            archive.ubuntu.com:443
+            esm.ubuntu.com:443
+            bifrost-gateway-resource.openai.azure.com:443
+            bedrock-mantle.us-east-1.api.aws:443
+            bedrock-runtime.us-east-1.amazonaws.com:443
+            bedrock.us-east-1.amazonaws.com:443
+            bifrost-batch-api-file-upload-testing.s3.us-east-1.amazonaws.com:443
+            discoveryengine.googleapis.com:443
+            dl.google.com:443
+            fal.media:443
+            fonts.googleapis.com:443
+            fonts.gstatic.com:443
+            generativelanguage.googleapis.com:443
+            files.pythonhosted.org:443
+            pypi.org:443
+            getbifrost.ai:443
+            github.com:443
+            huggingface.co:443
+            iojs.org:443
+            login.microsoftonline.com:443
+            maxim-o1.openai.azure.com:443
+            nodejs.org:443
+            oauth2.googleapis.com:443
+            objects.githubusercontent.com:443
+            openrouter.ai:443
+            packages.cloud.google.com:443
+            proxy.golang.org:443
+            registry.npmjs.org:443
+            release-assets.githubusercontent.com:443
+            releases.astral.sh:443
+            router.huggingface.co:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+            us-central1-aiplatform.googleapis.com:443
+            www.berkshirehathaway.com:443
+            www.getbifrost.ai:443
+            api.runware.ai:443
+            api.dev.runwayml.com:443
+            api.typesafe.ai:443
+            ai.google.dev:443
+            code.claude.com:443
+            dbx-fixture-workspace.invalid:443
+            does-not-exist-h146.search.windows.net:443
+            does-not-exist-h150.invalid:443
+            does-not-resolve.invalid:443
+            harness-credential-guard.example.invalid:443
+            harness-endpoint-guard.example.invalid:443
+            harness-lib-installed.invalid:443
+            harness-plugin-guard.example.invalid:443
+            iamcredentials.googleapis.com:443
+            idp.example:443
+            learn.microsoft.com:443
+            mcp.deepwiki.com:443
+            petstore3.swagger.io:443
+            other-mcp.invalid:443
+            auth.example.invalid:443
+            inspector.example.com:443
+            mcp.example.invalid:443
+            evil.example:443
+            replace-me.search.windows.net:443
+            sts.googleapis.com:443
+            unlisted.example:443
+            www.ietf.org:443
+            www.w3.org:443
+            www.wikipedia.org:443
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # The harness runs with provider secrets and nothing here uses git afterwards,
+          # so the checkout token is not left behind for those steps.
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.27.3"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "25"
+
+      # The Ubuntu squid and microsocks packages start system services on the
+      # ports the flow uses; stop them so the flow's own configured instances bind.
+      - name: Install proxies and jq
+        run: |
+          ./.github/workflows/scripts/apt-sources-https.sh
+          sudo apt-get update
+          sudo apt-get install -y jq squid stunnel4 microsocks
+          sudo systemctl disable --now squid 2>/dev/null || true
+          sudo systemctl disable --now microsocks 2>/dev/null || true
+
+      - name: Install Newman (hash-pinned via lockfile)
+        run: |
+          npm ci --no-audit --no-fund
+          echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
+        working-directory: .github/workflows/tools
+
+      - name: Download prebuilt bifrost-http binary
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: bifrost-http-binary
+          path: tmp
+
+      - name: Make bifrost-http executable
+        run: chmod +x tmp/bifrost-http
+
+      - name: Run proxy e2e
+        env:
+          SKIP_GATEWAY_BUILD: "1"
+          MAXIM_API_KEY: ${{ secrets.MAXIM_API_KEY }}
+          MAXIM_LOGGER_ID: ${{ secrets.MAXIM_LOG_REPO_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          AWS_ARN: ${{ secrets.AWS_ARN }}
+          BEDROCK_API_KEY: ${{ secrets.BEDROCK_API_KEY }}
+          AZURE_ENDPOINT: ${{ secrets.AZURE_ENDPOINT }}
+          AZURE_API_KEY: ${{ secrets.AZURE_API_KEY }}
+          AZURE_API_VERSION: ${{ secrets.AZURE_API_VERSION }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
+          SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
+          GITHUB_COPILOT_APP_ID: ${{ secrets.GITHUB_COPILOT_APP_ID }}
+          GITHUB_COPILOT_INSTALLATION_ID: ${{ secrets.GITHUB_COPILOT_INSTALLATION_ID }}
+          GITHUB_COPILOT_REPOSITORY_ID: ${{ secrets.GITHUB_COPILOT_REPOSITORY_ID }}
+          GITHUB_COPILOT_PRIVATE_KEY: ${{ secrets.GITHUB_COPILOT_PRIVATE_KEY }}
+          COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+          FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
+          VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
+          VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
+          VERTEX_GCS_BUCKET: ${{ secrets.VERTEX_GCS_BUCKET }}
+          VERTEX_GCS_PREFIX: ${{ secrets.VERTEX_GCS_PREFIX }}
+          HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
+          AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
+          AWS_BEDROCK_ROLE_ARN: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
+          BIFROST_ENCRYPTION_KEY: ${{ secrets.BIFROST_ENCRYPTION_KEY }}
+          # Additional vars the provider harness forwards to newman:
+          # AWS_REGION + GOOGLE_LOCATION drive the direct-provider token-parity
+          # calls, the rest back providers exercised by the criss-cross matrix.
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          GOOGLE_LOCATION: ${{ secrets.GOOGLE_LOCATION }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+          REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
+          BEDROCK_GUARDRAIL_IDENTIFIER: ${{ secrets.BEDROCK_GUARDRAIL_IDENTIFIER }}
+          # Deliberately a variable, not a secret. Guardrail versions are short
+          # integers, and Actions masks a secret's value everywhere in the job
+          # log with no word boundary - a value of "1" redacts every "1" the
+          # harness prints, turning "fail 141" into "fail ***4***". Not
+          # sensitive, so vars.* (never auto-masked) is the right home.
+          BEDROCK_GUARDRAIL_VERSION: ${{ vars.BEDROCK_GUARDRAIL_VERSION }}
+          NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
+          RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          RUNWARE_API_KEY: ${{ secrets.RUNWARE_API_KEY }}
+        run: ./.github/workflows/scripts/test-proxy-e2e.sh
+
+      - name: Upload proxy e2e reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: proxy-e2e-reports
+          path: tmp/proxy-e2e/cells/
+          retention-days: 30
+
   test-core-integrations:
     needs: [check-skip, detect-changes, build-gateway]
     # skip-core-test drops this alongside test-core: both make live calls to the
     # upstream providers, so a provider outage that blocks one blocks both.
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.check-skip.outputs.skip-core-test != 'true' && needs.detect-changes.outputs.core-needs-release == 'true'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     timeout-minutes: 90
     permissions:
       contents: read
@@ -529,11 +822,18 @@ jobs:
             aiplatform.googleapis.com:443
             api.anthropic.com:443
             api.cerebras.ai:443
+            api.minimax.io:443
+            ark.ap-southeast.bytepluses.com:443
+            api.cloudflare.com:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
             api.fireworks.ai:443
             api.github.com:443
+            api.githubcopilot.com:443
+            api.business.githubcopilot.com:443
+            api.enterprise.githubcopilot.com:443
+            api.individual.githubcopilot.com:443
             api.groq.com:443
             api.mistral.ai:443
             api.openai.com:443
@@ -542,7 +842,7 @@ jobs:
             api.replicate.com:443
             api.tokenfactory.nebius.com:443
             api.x.ai:443
-            azure.archive.ubuntu.com:80
+            archive.ubuntu.com:443
             esm.ubuntu.com:443
             bifrost-gateway-resource.openai.azure.com:443
             bedrock-mantle.us-east-1.api.aws:443
@@ -585,7 +885,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.5"
+          go-version: "1.27.3"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -651,8 +951,16 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GITHUB_COPILOT_API_KEY: ${{ secrets.GITHUB_COPILOT_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
@@ -670,7 +978,7 @@ jobs:
   test-core-unit:
     needs: [check-skip, detect-changes]
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.core-needs-release == 'true'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: read
     steps:
@@ -686,7 +994,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.5"
+          go-version: "1.27.3"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -743,7 +1051,7 @@ jobs:
       needs.check-skip.outputs.skip-tests != 'true' &&
       needs.detect-changes.outputs.core-needs-release == 'true' &&
       needs.test-core.result == 'failure'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     environment:
       name: flaky-test-override
       url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -767,6 +1075,101 @@ jobs:
         id: approve
         run: echo "approved=true" >> $GITHUB_OUTPUT
 
+
+  # Memory-regression gate.
+  #
+  # Two production memory bugs shipped in quick succession with opposite
+  # signatures: a raw-JSON rewrite that was 23.6% of all allocation and 0% of
+  # the live heap, and a leaked watcher goroutine that was ~0% of allocation and
+  # ~80% of the live heap. Unit tests passed throughout both.
+  #
+  # These assert allocation SHAPE (grows with input, not with input squared) and
+  # that every loop-bound raw-JSON mutation in core/providers has been
+  # classified, so a new provider cannot add the same bug silently.
+  test-memory:
+    needs: [check-skip, detect-changes]
+    if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && (needs.detect-changes.outputs.core-needs-release == 'true' || needs.detect-changes.outputs.bifrost-http-needs-release == 'true')
+    runs-on: builder-8-32
+    permissions:
+      contents: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: block
+          allowed-endpoints: *test-core-egress
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # This job uploads JUnit reports written by checked-out test code, and
+          # actions/checkout persists its token in git config by default. Dropping it
+          # removes the only path by which that token could reach an artifact.
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.27.3"
+
+      - name: Run memory regression tests
+        run: |
+          # Transport tests need the core/framework/plugins from this checkout.
+          source ./.github/workflows/scripts/setup-go-workspace.sh
+          make test-memory
+
+      - name: Upload memory test report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: memory-regression-report
+          path: test-reports/memory-*.xml
+          retention-days: 30
+
+  # Break-glass for the memory gate.
+  #
+  # Unlike a flaky provider call, these assertions are deterministic: a failure
+  # here is a real regression, not noise. This exists so a release is never
+  # permanently wedged by it, but approving means consciously shipping a known
+  # memory regression. Prefer fixing forward.
+  approve-memory-regression:
+    needs: [check-skip, detect-changes, test-memory]
+    if: |
+      always() &&
+      needs.check-skip.outputs.should-skip != 'true' &&
+      needs.check-skip.outputs.skip-tests != 'true' &&
+      (needs.detect-changes.outputs.core-needs-release == 'true' || needs.detect-changes.outputs.bifrost-http-needs-release == 'true') &&
+      needs.test-memory.result == 'failure'
+    runs-on: builder-8-32
+    environment:
+      name: memory-regression-override
+      url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    outputs:
+      approved: ${{ steps.approve.outputs.approved }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >+
+
+      - name: Display failed test info
+        run: |
+          echo "::warning::test-memory failed. These assertions are deterministic - this is a real regression, not a flake."
+          echo "Download the memory-regression-report artifact to see which assertion failed."
+          echo ""
+          echo "An allocation-scaling failure means a function now allocates with the SQUARE of its input."
+          echo "The usual cause is an sjson Set/Delete inside a loop: each call reserialises the whole"
+          echo "document, so N edits cost N copies of it. Batch the edits into a single write instead."
+          echo ""
+          echo "A coverage failure means a loop-bound raw-JSON mutation was added without being classified."
+          echo "Add it to reviewedSites in core/internal/memtest/coverage_test.go."
+          echo ""
+          echo "Approving ships a known memory regression. Prefer fixing forward."
+      - name: Mark as approved
+        id: approve
+        run: echo "approved=true" >> $GITHUB_OUTPUT
+
   # Resolves the three most recent published versions of each coding CLI, fresh
   # on every run - nothing is pinned in the repo. Its output fans out into
   # test-cli-harness's matrix below.
@@ -784,7 +1187,7 @@ jobs:
       needs.check-skip.outputs.should-skip != 'true' &&
       needs.check-skip.outputs.skip-tests != 'true' &&
       needs.detect-changes.outputs.core-needs-release == 'true'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     timeout-minutes: 10
     permissions:
       contents: read
@@ -797,7 +1200,7 @@ jobs:
           egress-policy: block
           allowed-endpoints: >
             api.github.com:443
-            azure.archive.ubuntu.com:80
+            archive.ubuntu.com:443
             esm.ubuntu.com:443
             github.com:443
             iojs.org:443
@@ -815,6 +1218,7 @@ jobs:
 
       - name: Install jq
         run: |
+          ./.github/workflows/scripts/apt-sources-https.sh
           sudo apt-get update
           sudo apt-get install -y jq
 
@@ -867,7 +1271,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.resolve-cli-versions.outputs.matrix) }}
     name: test-cli-harness (${{ matrix.label }})
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     # The five run_cases invocations in test-cli-harness.sh each pass
     # TIMEOUT=25m, so the Go suites alone can take 125m on top of the CLI
     # installs, the UI build and the gateway build. A job timeout cancels the
@@ -902,6 +1306,8 @@ jobs:
             7defe2860d5ee49a1e667e1eeea34b25.r2.cloudflarestorage.com:443
             api.anthropic.com:443
             api.cerebras.ai:443
+            api.minimax.io:443
+            ark.ap-southeast.bytepluses.com:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -911,7 +1317,7 @@ jobs:
             api.openai.com:443
             api.parasail.io:443
             api.tokenfactory.nebius.com:443
-            azure.archive.ubuntu.com:80
+            archive.ubuntu.com:443
             esm.ubuntu.com:443
             bedrock-runtime.us-east-1.amazonaws.com:443
             bedrock.us-east-1.amazonaws.com:443
@@ -945,7 +1351,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.5"
+          go-version: "1.27.3"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -954,6 +1360,7 @@ jobs:
 
       - name: Install jq
         run: |
+          ./.github/workflows/scripts/apt-sources-https.sh
           sudo apt-get update
           sudo apt-get install -y jq
 
@@ -997,6 +1404,8 @@ jobs:
           AWS_REGION: ${{ secrets.AWS_REGION }}
           BIFROST_ENCRYPTION_KEY: ${{ secrets.BIFROST_ENCRYPTION_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
@@ -1064,10 +1473,66 @@ jobs:
             "cli-harness-${{ matrix.label }}" \
             tests/e2e/clis/reports
 
+  # vLLM provider tests - allocates two vLLM (one stable and one nightly) instances
+  # on runpod (runpodctl):
+  test-vllm:
+    needs: [check-skip, detect-changes]
+    if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.core-needs-release == 'true'
+    runs-on: builder-8-32
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            release-assets.githubusercontent.com:443
+            api.runpod.io:443
+            rest.runpod.io:443
+            *.proxy.runpod.net:443
+            proxy.golang.org:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.27.3"
+
+      - name: Create vLLM pods on RunPod
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          RUNPOD_NETWORK_VOLUME_ID: ${{ secrets.RUNPOD_NETWORK_VOLUME_ID }}
+          RUNPOD_REASONING_NETWORK_VOLUME_ID: ${{ secrets.RUNPOD_REASONING_NETWORK_VOLUME_ID }}
+        run: |
+          chmod +x ./.github/workflows/scripts/setup-vllm-runpod.sh
+          ./.github/workflows/scripts/setup-vllm-runpod.sh
+
+      - name: Run vLLM provider tests
+        run: VLLM_ENABLED=1 make test-core PROVIDER=vllm
+
+      - name: Delete vLLM pods on RunPod
+        if: always()
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: |
+          chmod +x ./.github/workflows/scripts/teardown-vllm-runpod.sh
+          ./.github/workflows/scripts/teardown-vllm-runpod.sh
+
   test-framework:
     needs: [check-skip, detect-changes]
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.framework-needs-release == 'true'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: read
     steps:
@@ -1079,6 +1544,8 @@ jobs:
             _grpc_config.cluster.qdrant.io:443
             _grpc_config.localhost:443
             api.cerebras.ai:443
+            api.minimax.io:443
+            ark.ap-southeast.bytepluses.com:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -1116,15 +1583,14 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.5"
+          go-version: "1.27.3"
 
       - name: Set up Docker Compose
         run: |
           docker --version
           if ! docker compose version >/dev/null 2>&1; then
             echo "Installing Docker Compose..."
-            sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-            sudo chmod +x /usr/local/bin/docker-compose
+            ./.github/workflows/scripts/install-docker-compose.sh /usr/local/bin/docker-compose
             docker-compose --version
           else
             echo "Docker Compose plugin is available"
@@ -1157,7 +1623,14 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
@@ -1179,7 +1652,7 @@ jobs:
   test-plugins:
     needs: [check-skip, detect-changes]
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.plugins-need-release == 'true'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: read
     steps:
@@ -1189,12 +1662,14 @@ jobs:
           egress-policy: block
           allowed-endpoints: >
             _grpc_config.localhost:443
-            _http._tcp.azure.archive.ubuntu.com:443
+            _https._tcp.archive.ubuntu.com:443
             _https._tcp.esm.ubuntu.com:443
             _https._tcp.dl.google.com:443
             _https._tcp.motd.ubuntu.com:443
             _https._tcp.packages.microsoft.com:443
             api.cerebras.ai:443
+            api.minimax.io:443
+            ark.ap-southeast.bytepluses.com:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -1209,7 +1684,7 @@ jobs:
             api.github.com:443
             api.openai.com:443
             auth.docker.io:443
-            azure.archive.ubuntu.com:80
+            archive.ubuntu.com:443
             codecov.io:443
             dl-cdn.alpinelinux.org:443
             esm.ubuntu.com:443
@@ -1235,21 +1710,21 @@ jobs:
 
       - name: Install jq
         run: |
+          ./.github/workflows/scripts/apt-sources-https.sh
           sudo apt-get update
           sudo apt-get install -y jq
 
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.5"
+          go-version: "1.27.3"
 
       - name: Set up Docker Compose
         run: |
           docker --version
           if ! docker compose version >/dev/null 2>&1; then
             echo "Installing Docker Compose..."
-            sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-            sudo chmod +x /usr/local/bin/docker-compose
+            ./.github/workflows/scripts/install-docker-compose.sh /usr/local/bin/docker-compose
             docker-compose --version
           else
             echo "Docker Compose plugin is available"
@@ -1282,7 +1757,14 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
@@ -1302,9 +1784,9 @@ jobs:
         run: ./.github/workflows/scripts/test-all-plugins.sh
 
   test-bifrost-http:
-    needs: [check-skip, detect-changes, build-gateway]
+    needs: [check-skip, detect-changes]
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: read
     steps:
@@ -1312,20 +1794,10 @@ jobs:
         uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
-          # bifrost-http binary runs on the host and connects to Postgres via
-          # the published port mapping (5432:5432) at 127.0.0.1. harden-runner
-          # filters on the post-NAT destination IP, so the published port DNATs
-          # to Postgres's pinned bridge IP 172.38.0.11 - that IP:port (not
-          # 127.0.0.1:5432) is what must be allowed. The 172.38.0.12 entries are
-          # weaviate's pinned bridge IP from
-          # .github/workflows/configs/docker-compose.yml (gossip + published
-          # 9000->8080). Keep all *.0.11/*.0.12 entries in sync with that file.
           allowed-endpoints: >
-            127.0.0.1:5432
-            172.38.0.11:5432
-            172.38.0.12:8080
-            172.38.0.12:8301
             api.cerebras.ai:443
+            api.minimax.io:443
+            ark.ap-southeast.bytepluses.com:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -1336,9 +1808,7 @@ jobs:
             generativelanguage.googleapis.com:443
             iojs.org:443
             api.github.com:443
-            auth.docker.io:443
             codecov.io:443
-            cr.weaviate.io:443
             example.com:443
             file.example.com:443
             fonts.googleapis.com:443
@@ -1347,15 +1817,11 @@ jobs:
             github.com:443
             nodejs.org:443
             openrouter.ai:443
-            production.cloudflare.docker.com:443
-            production.cloudfront.docker.com:443
             proxy.golang.org:443
-            registry-1.docker.io:443
             registry.npmjs.org:443
             release-assets.githubusercontent.com:443
             storage.googleapis.com:443
             sum.golang.org:443
-            telemetry.qdrant.io:443
             uploader.codecov.io:443
             www.getbifrost.ai:443
 
@@ -1368,30 +1834,65 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.5"
+          go-version: "1.27.3"
 
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - name: Run bifrost-http unit tests
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+          BIFROST_ENCRYPTION_KEY: ${{ secrets.BIFROST_ENCRYPTION_KEY }}
+        run: ./.github/workflows/scripts/test-bifrost-http.sh
+
+  # GPT Live e2e suite (tests/live): the prebuilt gateway on the live profile, which points the
+  # OpenAI provider at the suite's fake upstream, so no provider keys are needed. The long
+  # 17-minute sessions run nightly from live-tests.yml instead.
+  test-live:
+    needs: [check-skip, detect-changes, build-gateway]
+    if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
+    runs-on: builder-8-32
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
-          node-version: "25"
+          egress-policy: block
+          # stun.l.google.com is the STUN server the WebRTC live tests use for
+          # ICE candidate gathering.
+          allowed-endpoints: >
+            127.0.0.1:8080
+            127.0.0.1:9411
+            api.github.com:443
+            files.pythonhosted.org:443
+            getbifrost.ai:443
+            github.com:443
+            objects.githubusercontent.com:443
+            proxy.golang.org:443
+            pypi.org:443
+            release-assets.githubusercontent.com:443
+            releases.astral.sh:443
+            storage.googleapis.com:443
+            stun.l.google.com:19302
+            sum.golang.org:443
+            www.getbifrost.ai:443
 
-      - name: Set up Docker Compose
-        run: |
-          docker --version
-          if ! docker compose version >/dev/null 2>&1; then
-            echo "Installing Docker Compose..."
-            sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-            sudo chmod +x /usr/local/bin/docker-compose
-            docker-compose --version
-          else
-            echo "Docker Compose plugin is available"
-            docker compose version
-          fi
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
-      # This job still compiles the transports module itself (`go build ./...`
-      # and `go test --race`) - those are real gates, not duplicated work. The
-      # artifact only replaces the final integration binary, and lets the script
-      # stub the embedded ui/ directory instead of running a full npm build.
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.27.3"
+
+      # The suite's OpenAI Python SDK leg runs through uv; without it those cases skip.
+      - name: Install uv
+        uses: step-security/setup-uv@ccf0a26ce9117d9e99292b0ce953ea5d9ffe778e # v7.3.0
+        with:
+          version: "0.11.0"
+          python-version: "3.12"
+
       - name: Download prebuilt bifrost-http binary
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
@@ -1401,20 +1902,26 @@ jobs:
       - name: Make bifrost-http executable
         run: chmod +x tmp/bifrost-http
 
-      - name: Run bifrost-http tests
+      - name: Run GPT Live e2e tests
         env:
-          SKIP_GATEWAY_BUILD: "1"
-          MAXIM_API_KEY: ${{ secrets.MAXIM_API_KEY }}
-          MAXIM_LOGGER_ID: ${{ secrets.MAXIM_LOG_REPO_ID }}
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
-          BIFROST_ENCRYPTION_KEY: ${{ secrets.BIFROST_ENCRYPTION_KEY }}
-        run: ./.github/workflows/scripts/test-bifrost-http.sh
+          LIVE_PREBUILT: "1"
+        run: ./.github/workflows/scripts/test-live.sh fake
+
+      - name: Upload live test report
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: live-test-report
+          path: |
+            test-reports/live.xml
+            tmp/live-gateway.log
+          if-no-files-found: ignore
 
   # Migration tests - validates database migrations from previous versions
   test-migrations:
     needs: [check-skip, detect-changes, build-gateway]
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: read
     steps:
@@ -1437,6 +1944,8 @@ jobs:
             172.38.0.12:8301
             api.anthropic.com:443
             api.cerebras.ai:443
+            api.minimax.io:443
+            ark.ap-southeast.bytepluses.com:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -1447,12 +1956,15 @@ jobs:
             api.parasail.io:443
             api.tokenfactory.nebius.com:443
             auth.docker.io:443
+            archive.ubuntu.com:443
             downloads.getmaxim.ai:443
+            esm.ubuntu.com:443
             generativelanguage.googleapis.com:443
             getbifrost.ai:443
             github.com:443
             nodejs.org:443
             openrouter.ai:443
+            packages.microsoft.com:443
             production.cloudflare.docker.com:443
             production.cloudfront.docker.com:443
             proxy.golang.org:443
@@ -1471,7 +1983,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.5"
+          go-version: "1.27.3"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -1483,8 +1995,7 @@ jobs:
           docker --version
           if ! docker compose version >/dev/null 2>&1; then
             echo "Installing Docker Compose..."
-            sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-            sudo chmod +x /usr/local/bin/docker-compose
+            ./.github/workflows/scripts/install-docker-compose.sh /usr/local/bin/docker-compose
             docker-compose --version
           else
             echo "Docker Compose plugin is available"
@@ -1502,19 +2013,85 @@ jobs:
       - name: Make bifrost-http executable
         run: chmod +x tmp/bifrost-http
 
-      - name: Run migration tests
+      # The SQLite migration tests seed and read the stores through the sqlite3 CLI
+      - name: Install sqlite3
+        run: |
+          ./.github/workflows/scripts/apt-sources-https.sh
+          sudo apt-get update
+          sudo apt-get install -y sqlite3
+          sqlite3 --version
+
+      - name: Run migration tests (PostgreSQL)
         env:
           SKIP_GATEWAY_BUILD: "1"
         run: |
           chmod +x ./.github/workflows/scripts/run-migration-tests.sh
           ./.github/workflows/scripts/run-migration-tests.sh postgres
 
+      - name: Run migration tests (SQLite)
+        env:
+          SKIP_GATEWAY_BUILD: "1"
+        run: ./.github/workflows/scripts/run-migration-tests.sh sqlite
+
+  # Agent Gateway lifecycle e2e - runs the prebuilt gateway on SQLite with
+  # private push callbacks enabled and exercises tests/agentgateway.
+  test-agentgateway:
+    needs: [check-skip, detect-changes, build-gateway]
+    if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
+    runs-on: builder-8-32
+    permissions:
+      contents: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: block
+          # getbifrost.ai / www.getbifrost.ai serve the pricing datasheet the
+          # gateway must sync at boot; without them startup is fatal.
+          allowed-endpoints: >
+            127.0.0.1
+            getbifrost.ai:443
+            github.com:443
+            proxy.golang.org:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+            www.getbifrost.ai:443
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.27.3"
+
+      - name: Download prebuilt bifrost-http binary
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: bifrost-http-binary
+          path: tmp
+
+      - name: Make bifrost-http executable
+        run: chmod +x tmp/bifrost-http
+
+      - name: Run Agent Gateway e2e
+        env:
+          SKIP_GATEWAY_BUILD: "1"
+        run: |
+          chmod +x ./.github/workflows/scripts/test-agentgateway-e2e.sh
+          ./.github/workflows/scripts/test-agentgateway-e2e.sh
+
   # API integrations tests - compiles bifrost-http, runs against Postgres with
   # tests/config.json, executes the api-management newman collection.
   test-api-integrations:
     needs: [check-skip, detect-changes, build-gateway]
-    if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
-    runs-on: ubuntu-latest
+    # Provider-secret redaction spans core schemas, framework storage, and HTTP responses.
+    if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && (needs.detect-changes.outputs.core-needs-release == 'true' || needs.detect-changes.outputs.framework-needs-release == 'true' || needs.detect-changes.outputs.bifrost-http-needs-release == 'true')
+    runs-on: builder-8-32
     permissions:
       contents: read
     steps:
@@ -1531,21 +2108,31 @@ jobs:
           # script does `docker compose up -d` (ALL services) and waits for them
           # to be healthy, so weaviate's gossip to its own advertise address
           # 172.38.0.12:8301 (and 8080) must also be allowed or weaviate never
-          # becomes healthy. Keep the pinned IPs in sync with
-          # .github/workflows/configs/docker-compose.yml.
+          # becomes healthy. The semantic cache suite also reaches Redis Stack
+          # through its published 6379, which DNATs to 172.38.0.13. Keep the
+          # pinned IPs in sync with .github/workflows/configs/docker-compose.yml.
           allowed-endpoints: >
             127.0.0.1:5432
+            127.0.0.1:6379
             172.38.0.11:5432
             172.38.0.12:8080
             172.38.0.12:8301
+            172.38.0.13:6379
             api.tokenfactory.nebius.com:443
             iojs.org:443
+            aiplatform.googleapis.com:443
             api.anthropic.com:443
             api.cerebras.ai:443
+            api.minimax.io:443
+            ark.ap-southeast.bytepluses.com:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
             api.github.com:443
+            api.githubcopilot.com:443
+            api.business.githubcopilot.com:443
+            api.enterprise.githubcopilot.com:443
+            api.individual.githubcopilot.com:443
             api.groq.com:443
             api.mistral.ai:443
             api.openai.com:443
@@ -1555,6 +2142,7 @@ jobs:
             api.x.ai:443
             auth.docker.io:443
             bedrock-mantle.us-east-1.api.aws:443
+            bedrock-runtime.us-east-1.amazonaws.com:443
             bedrock.us-east-1.amazonaws.com:443
             bifrost-gateway-resource.openai.azure.com:443
             cr.weaviate.io:443
@@ -1591,7 +2179,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.5"
+          go-version: "1.27.3"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -1608,13 +2196,19 @@ jobs:
           echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
         working-directory: .github/workflows/tools
 
+      # The content-logging matrix reads raw log rows from the Postgres logs store through `pg`,
+      # pinned in tests/e2e/api/package-lock.json. --ignore-scripts skips better-sqlite3's native
+      # build: this job's logs store is Postgres, so the SQLite reader is never loaded.
+      - name: Install e2e API test deps (lockfile)
+        run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: tests/e2e/api
+
       - name: Set up Docker Compose
         run: |
           docker --version
           if ! docker compose version >/dev/null 2>&1; then
             echo "Installing Docker Compose..."
-            sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-            sudo chmod +x /usr/local/bin/docker-compose
+            ./.github/workflows/scripts/install-docker-compose.sh /usr/local/bin/docker-compose
             docker-compose --version
           else
             echo "Docker Compose plugin is available"
@@ -1634,6 +2228,13 @@ jobs:
         env:
           CI: "1"
           SKIP_GATEWAY_BUILD: "1"
+          # Warp runs in parallel as test-warp.
+          SKIP_WARP: "1"
+          BIFROST_SETUP_TOKEN: bifrost-e2e-setup-token
+          # Synthetic, non-secret canary for every provider's API redaction tests.
+          BIFROST_SECRET_REDACTION_CANARY: synthetic-secretvar-harness-canary-0123456789
+          # Key server URLs (ollama/sgl/vllm) must resolve to http(s), so they use a URL canary.
+          BIFROST_SECRET_REDACTION_URL_CANARY: http://127.0.0.1/synthetic-secretvar-harness-canary-0123456789
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -1647,8 +2248,16 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GITHUB_COPILOT_API_KEY: ${{ secrets.GITHUB_COPILOT_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
@@ -1677,6 +2286,101 @@ jobs:
           path: tests/e2e/api/newman-reports/
           retention-days: 30
 
+  # Warp's collection is a live, serial LLM evaluation (~150 chat calls, ~25 min),
+  # so it runs beside test-api-integrations rather than after it. Same gate: Warp
+  # lives in framework/warp and is served by bifrost-http.
+  test-warp:
+    needs: [check-skip, detect-changes, build-gateway]
+    if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && (needs.detect-changes.outputs.core-needs-release == 'true' || needs.detect-changes.outputs.framework-needs-release == 'true' || needs.detect-changes.outputs.bifrost-http-needs-release == 'true')
+    runs-on: builder-8-32
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: block
+          # bifrost-http runs on the host and reaches Postgres and Weaviate through
+          # their published ports, which DNAT to the pinned bridge IPs in
+          # .github/workflows/configs/docker-compose.yml (Postgres 172.38.0.11,
+          # Weaviate 172.38.0.12, which also gossips to itself on 8301). Warp's
+          # agent and embeddings call OpenAI.
+          allowed-endpoints: >
+            127.0.0.1:5432
+            172.38.0.11:5432
+            172.38.0.12:8080
+            172.38.0.12:8301
+            api.github.com:443
+            api.openai.com:443
+            auth.docker.io:443
+            cr.weaviate.io:443
+            github.com:443
+            iojs.org:443
+            nodejs.org:443
+            production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
+            proxy.golang.org:443
+            registry-1.docker.io:443
+            registry.npmjs.org:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.27.3"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "25"
+
+      - name: Install Newman (hash-pinned via lockfile)
+        run: |
+          npm ci --no-audit --no-fund
+          echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
+        working-directory: .github/workflows/tools
+
+      - name: Set up Docker Compose
+        run: |
+          docker --version
+          if ! docker compose version >/dev/null 2>&1; then
+            echo "Installing Docker Compose..."
+            ./.github/workflows/scripts/install-docker-compose.sh /usr/local/bin/docker-compose
+            docker-compose --version
+          else
+            echo "Docker Compose plugin is available"
+            docker compose version
+          fi
+
+      - name: Download prebuilt bifrost-http binary
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: bifrost-http-binary
+          path: tmp
+
+      - name: Make bifrost-http executable
+        run: chmod +x tmp/bifrost-http
+
+      - name: Run Warp test
+        env:
+          BIFROST_SETUP_TOKEN: bifrost-e2e-setup-token
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: ./.github/workflows/scripts/test-warp.sh
+
+      - name: Upload Warp reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: newman-reports-warp
+          path: tests/e2e/api/newman-reports/warp/
+          retention-days: 30
+
   # Cost accuracy test - validates logged LLM costs against provider usage
   test-cost-accuracy:
     needs: [check-skip, detect-changes, build-gateway]
@@ -1690,7 +2394,7 @@ jobs:
         needs.detect-changes.outputs.bifrost-http-needs-release == 'true' ||
         needs.detect-changes.outputs.docker-needs-release == 'true'
       )
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: read
     steps:
@@ -1704,6 +2408,8 @@ jobs:
             127.0.0.1:8080
             172.38.0.11:5432
             api.cerebras.ai:443
+            api.minimax.io:443
+            ark.ap-southeast.bytepluses.com:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -1745,7 +2451,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.5"
+          go-version: "1.27.3"
 
       # This job still builds the mocker/hitter binaries from
       # bifrost-benchmarking itself - only bifrost-http comes prebuilt.
@@ -1787,7 +2493,7 @@ jobs:
         needs.detect-changes.outputs.bifrost-http-needs-release == 'true' ||
         needs.detect-changes.outputs.docker-needs-release == 'true'
       )
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     continue-on-error: true
     timeout-minutes: 30
     permissions:
@@ -1801,6 +2507,8 @@ jobs:
             127.0.0.1:8000
             127.0.0.1:8080
             api.cerebras.ai:443
+            api.minimax.io:443
+            ark.ap-southeast.bytepluses.com:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -1840,7 +2548,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.5"
+          go-version: "1.27.3"
 
       # load-test.sh's build_bifrost_http already no-ops when tmp/bifrost-http
       # is present, so this download is all that is needed here.
@@ -1882,7 +2590,7 @@ jobs:
   test-docker-image-amd64:
     needs: [check-skip, detect-changes]
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: read
     steps:
@@ -1903,10 +2611,16 @@ jobs:
             172.28.0.16:5432
             api.anthropic.com:443
             api.cerebras.ai:443
+            api.minimax.io:443
+            ark.ap-southeast.bytepluses.com:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
             api.github.com:443
+            api.githubcopilot.com:443
+            api.business.githubcopilot.com:443
+            api.enterprise.githubcopilot.com:443
+            api.individual.githubcopilot.com:443
             api.groq.com:443
             api.mistral.ai:443
             api.openai.com:443
@@ -1952,7 +2666,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.5"
+          go-version: "1.27.3"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -1988,7 +2702,15 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GITHUB_COPILOT_API_KEY: ${{ secrets.GITHUB_COPILOT_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
@@ -2022,7 +2744,7 @@ jobs:
   test-docker-image-arm64:
     needs: [check-skip, detect-changes]
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true'
-    runs-on: ubuntu-24.04-arm
+    runs-on: arm-64-2cpu-8gb
     permissions:
       contents: read
     steps:
@@ -2043,10 +2765,16 @@ jobs:
             172.28.0.16:5432
             api.anthropic.com:443
             api.cerebras.ai:443
+            api.minimax.io:443
+            ark.ap-southeast.bytepluses.com:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
             api.github.com:443
+            api.githubcopilot.com:443
+            api.business.githubcopilot.com:443
+            api.enterprise.githubcopilot.com:443
+            api.individual.githubcopilot.com:443
             api.groq.com:443
             api.mistral.ai:443
             api.openai.com:443
@@ -2060,6 +2788,8 @@ jobs:
             bedrock.us-east-1.amazonaws.com:443
             bifrost-gateway-resource.openai.azure.com:443
             dl-cdn.alpinelinux.org:443
+            _https._tcp.download.docker.com:443
+            download.docker.com:443
             fonts.googleapis.com:443
             fonts.gstatic.com:443
             generativelanguage.googleapis.com:443
@@ -2072,6 +2802,8 @@ jobs:
             oauth2.googleapis.com:443
             openrouter.ai:443
             pkg-containers.githubusercontent.com:443
+            _https._tcp.ports.ubuntu.com:443
+            ports.ubuntu.com:443
             production.cloudflare.docker.com:443
             production.cloudfront.docker.com:443
             proxy.golang.org:443
@@ -2081,6 +2813,7 @@ jobs:
             storage.googleapis.com:443
             sum.golang.org:443
             telemetry.qdrant.io:443
+            tuf-repo-cdn.sigstore.dev:443
             www.getbifrost.ai:443
 
       - name: Checkout repository
@@ -2089,10 +2822,15 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      # The arm-64-2cpu-8gb image ships without Docker, libatomic (needed by the
+      # linux-arm64 Node binary) or build tools; see the script for details.
+      - name: Install arm64 runner dependencies
+        run: bash ./.github/workflows/scripts/install-arm64-runner-deps.sh node docker jq
+
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.5"
+          go-version: "1.27.3"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -2128,7 +2866,15 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GITHUB_COPILOT_API_KEY: ${{ secrets.GITHUB_COPILOT_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
@@ -2167,19 +2913,26 @@ jobs:
         test-core-integrations,
         test-core-unit,
         approve-flaky-test-core,
+        test-proxy-e2e,
+        test-memory,
+        approve-memory-regression,
         resolve-cli-versions,
         test-cli-harness,
+        test-vllm,
         test-framework,
         test-plugins,
         test-bifrost-http,
+        test-live,
         test-migrations,
+        test-agentgateway,
         test-api-integrations,
+        test-warp,
         test-cost-accuracy,
         test-docker-image-amd64,
         test-docker-image-arm64,
       ]
-    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.core-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-core-integrations.result == 'success' || needs.test-core-integrations.result == 'skipped') && (needs.test-core-unit.result == 'success' || needs.test-core-unit.result == 'skipped') && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped')"
-    runs-on: ubuntu-latest
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.result == 'success' && needs.detect-changes.outputs.core-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-proxy-e2e.result == 'success' || needs.test-proxy-e2e.result == 'skipped') && (needs.test-memory.result == 'success' || needs.test-memory.result == 'skipped' || (needs.test-memory.result == 'failure' && needs.approve-memory-regression.result == 'success')) && (needs.test-core-integrations.result == 'success' || needs.test-core-integrations.result == 'skipped') && (needs.test-core-unit.result == 'success' || needs.test-core-unit.result == 'skipped') && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.test-vllm.result == 'success' || needs.test-vllm.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-live.result == 'success' || needs.test-live.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-agentgateway.result == 'success' || needs.test-agentgateway.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-warp.result == 'success' || needs.test-warp.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped')"
+    runs-on: builder-8-32
     permissions:
       contents: write
     outputs:
@@ -2206,7 +2959,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.5"
+          go-version: "1.27.3"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -2246,7 +2999,14 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
@@ -2272,20 +3032,24 @@ jobs:
         test-core-integrations,
         test-core-unit,
         approve-flaky-test-core,
+        test-proxy-e2e,
         resolve-cli-versions,
         test-cli-harness,
         test-framework,
         test-plugins,
         test-bifrost-http,
+        test-live,
         test-migrations,
+        test-agentgateway,
         test-api-integrations,
+        test-warp,
         test-cost-accuracy,
         test-docker-image-amd64,
         test-docker-image-arm64,
         core-release,
       ]
-    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.framework-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-core-integrations.result == 'success' || needs.test-core-integrations.result == 'skipped') && (needs.test-core-unit.result == 'success' || needs.test-core-unit.result == 'skipped') && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped')"
-    runs-on: ubuntu-latest
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.result == 'success' && needs.detect-changes.outputs.framework-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-proxy-e2e.result == 'success' || needs.test-proxy-e2e.result == 'skipped') && (needs.test-core-integrations.result == 'success' || needs.test-core-integrations.result == 'skipped') && (needs.test-core-unit.result == 'success' || needs.test-core-unit.result == 'skipped') && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-live.result == 'success' || needs.test-live.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-agentgateway.result == 'success' || needs.test-agentgateway.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-warp.result == 'success' || needs.test-warp.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped')"
+    runs-on: builder-8-32
     permissions:
       contents: write
     outputs:
@@ -2314,7 +3078,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.5"
+          go-version: "1.27.3"
 
       - name: Configure Git
         run: |
@@ -2328,8 +3092,7 @@ jobs:
           # Install Docker Compose if not available as plugin
           if ! docker compose version >/dev/null 2>&1; then
             echo "Installing Docker Compose..."
-            sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-            sudo chmod +x /usr/local/bin/docker-compose
+            ./.github/workflows/scripts/install-docker-compose.sh /usr/local/bin/docker-compose
             docker-compose --version
           else
             echo "Docker Compose plugin is available"
@@ -2364,7 +3127,14 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
@@ -2388,21 +3158,25 @@ jobs:
         test-core-integrations,
         test-core-unit,
         approve-flaky-test-core,
+        test-proxy-e2e,
         resolve-cli-versions,
         test-cli-harness,
         test-framework,
         test-plugins,
         test-bifrost-http,
+        test-live,
         test-migrations,
+        test-agentgateway,
         test-api-integrations,
+        test-warp,
         test-cost-accuracy,
         test-docker-image-amd64,
         test-docker-image-arm64,
         core-release,
         framework-release,
       ]
-    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.plugins-need-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-core-integrations.result == 'success' || needs.test-core-integrations.result == 'skipped') && (needs.test-core-unit.result == 'success' || needs.test-core-unit.result == 'skipped') && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped')"
-    runs-on: ubuntu-latest
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.result == 'success' && needs.detect-changes.outputs.plugins-need-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-proxy-e2e.result == 'success' || needs.test-proxy-e2e.result == 'skipped') && (needs.test-core-integrations.result == 'success' || needs.test-core-integrations.result == 'skipped') && (needs.test-core-unit.result == 'success' || needs.test-core-unit.result == 'skipped') && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-live.result == 'success' || needs.test-live.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-agentgateway.result == 'success' || needs.test-agentgateway.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-warp.result == 'success' || needs.test-warp.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped')"
+    runs-on: builder-8-32
     permissions:
       contents: write
     outputs:
@@ -2413,12 +3187,12 @@ jobs:
         with:
           egress-policy: block
           allowed-endpoints: >
-            _http._tcp.azure.archive.ubuntu.com:443
+            _https._tcp.archive.ubuntu.com:443
             _https._tcp.esm.ubuntu.com:443
             _https._tcp.motd.ubuntu.com:443
             _https._tcp.packages.microsoft.com:443
             api.github.com:443
-            azure.archive.ubuntu.com:80
+            archive.ubuntu.com:443
             esm.ubuntu.com:443
             github.com:443
             nodejs.org:443
@@ -2437,13 +3211,14 @@ jobs:
 
       - name: Install jq
         run: |
+          ./.github/workflows/scripts/apt-sources-https.sh
           sudo apt-get update
           sudo apt-get install -y jq
 
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.5"
+          go-version: "1.27.3"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -2462,8 +3237,7 @@ jobs:
           # Install Docker Compose if not available as plugin
           if ! docker compose version >/dev/null 2>&1; then
             echo "Installing Docker Compose..."
-            sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-            sudo chmod +x /usr/local/bin/docker-compose
+            ./.github/workflows/scripts/install-docker-compose.sh /usr/local/bin/docker-compose
             docker-compose --version
           else
             echo "Docker Compose plugin is available"
@@ -2498,7 +3272,14 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
@@ -2523,13 +3304,19 @@ jobs:
         test-core-integrations,
         test-core-unit,
         approve-flaky-test-core,
+        test-proxy-e2e,
+        test-memory,
+        approve-memory-regression,
         resolve-cli-versions,
         test-cli-harness,
         test-framework,
         test-plugins,
         test-bifrost-http,
+        test-live,
         test-migrations,
+        test-agentgateway,
         test-api-integrations,
+        test-warp,
         test-cost-accuracy,
         test-docker-image-amd64,
         test-docker-image-arm64,
@@ -2537,8 +3324,8 @@ jobs:
         framework-release,
         plugins-release,
       ]
-    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-core-integrations.result == 'success' || needs.test-core-integrations.result == 'skipped') && (needs.test-core-unit.result == 'success' || needs.test-core-unit.result == 'skipped') && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped')"
-    runs-on: ubuntu-latest
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.result == 'success' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-proxy-e2e.result == 'success' || needs.test-proxy-e2e.result == 'skipped') && (needs.test-memory.result == 'success' || needs.test-memory.result == 'skipped' || (needs.test-memory.result == 'failure' && needs.approve-memory-regression.result == 'success')) && (needs.test-core-integrations.result == 'success' || needs.test-core-integrations.result == 'skipped') && (needs.test-core-unit.result == 'success' || needs.test-core-unit.result == 'skipped') && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-live.result == 'success' || needs.test-live.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-agentgateway.result == 'success' || needs.test-agentgateway.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-warp.result == 'success' || needs.test-warp.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped')"
+    runs-on: builder-8-32
     permissions:
       contents: write
     outputs:
@@ -2570,7 +3357,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.5"
+          go-version: "1.27.3"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -2592,7 +3379,7 @@ jobs:
   build-binaries-x86:
     needs: [bifrost-http-prep, detect-changes]
     if: "always() && needs.bifrost-http-prep.result == 'success' && needs.bifrost-http-prep.outputs.success == 'true'"
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: read
     steps:
@@ -2602,12 +3389,12 @@ jobs:
           egress-policy: block
           allowed-endpoints: >
             7defe2860d5ee49a1e667e1eeea34b25.r2.cloudflarestorage.com:443
-            _http._tcp.azure.archive.ubuntu.com:443
+            _https._tcp.archive.ubuntu.com:443
             _https._tcp.esm.ubuntu.com:443
             _https._tcp.motd.ubuntu.com:443
             _https._tcp.packages.microsoft.com:443
             api.github.com:443
-            azure.archive.ubuntu.com:80
+            archive.ubuntu.com:443
             esm.ubuntu.com:443
             files.pythonhosted.org:443
             fonts.googleapis.com:443
@@ -2634,7 +3421,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.5"
+          go-version: "1.27.3"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -2668,7 +3455,7 @@ jobs:
   build-binaries-arm64:
     needs: [bifrost-http-prep, detect-changes]
     if: "always() && needs.bifrost-http-prep.result == 'success' && needs.bifrost-http-prep.outputs.success == 'true'"
-    runs-on: ubuntu-24.04-arm
+    runs-on: arm-64-2cpu-8gb
     permissions:
       contents: read
     steps:
@@ -2684,6 +3471,8 @@ jobs:
             fonts.gstatic.com:443
             github.com:443
             nodejs.org:443
+            _https._tcp.ports.ubuntu.com:443
+            ports.ubuntu.com:443
             proxy.golang.org:443
             pypi.org:443
             registry.npmjs.org:443
@@ -2700,10 +3489,15 @@ jobs:
       - name: Pull latest changes
         run: git pull origin ${{ github.ref_name }}
 
+      # The arm-64-2cpu-8gb image ships without Docker, libatomic (needed by the
+      # linux-arm64 Node binary) or build tools; see the script for details.
+      - name: Install arm64 runner dependencies
+        run: bash ./.github/workflows/scripts/install-arm64-runner-deps.sh node build aws
+
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.5"
+          go-version: "1.27.3"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -2734,7 +3528,7 @@ jobs:
   bifrost-http-release:
     needs: [build-binaries-x86, build-binaries-arm64, detect-changes, bifrost-http-prep]
     if: "always() && needs.build-binaries-x86.result == 'success' && needs.build-binaries-arm64.result == 'success'"
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: write
     outputs:
@@ -2787,13 +3581,19 @@ jobs:
         test-core-integrations,
         test-core-unit,
         approve-flaky-test-core,
+        test-proxy-e2e,
+        test-memory,
+        approve-memory-regression,
         resolve-cli-versions,
         test-cli-harness,
         test-framework,
         test-plugins,
         test-bifrost-http,
+        test-live,
         test-migrations,
+        test-agentgateway,
         test-api-integrations,
+        test-warp,
         test-cost-accuracy,
         test-docker-image-amd64,
         test-docker-image-arm64,
@@ -2802,8 +3602,8 @@ jobs:
         plugins-release,
         bifrost-http-release,
       ]
-    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-core-integrations.result == 'success' || needs.test-core-integrations.result == 'skipped') && (needs.test-core-unit.result == 'success' || needs.test-core-unit.result == 'skipped') && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
-    runs-on: ubuntu-latest
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.result == 'success' && needs.detect-changes.outputs.docker-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-proxy-e2e.result == 'success' || needs.test-proxy-e2e.result == 'skipped') && (needs.test-memory.result == 'success' || needs.test-memory.result == 'skipped' || (needs.test-memory.result == 'failure' && needs.approve-memory-regression.result == 'success')) && (needs.test-core-integrations.result == 'success' || needs.test-core-integrations.result == 'skipped') && (needs.test-core-unit.result == 'success' || needs.test-core-unit.result == 'skipped') && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-live.result == 'success' || needs.test-live.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-agentgateway.result == 'success' || needs.test-agentgateway.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-warp.result == 'success' || needs.test-warp.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
+    runs-on: builder-8-32
     permissions:
       contents: write
       packages: write
@@ -2905,13 +3705,19 @@ jobs:
         test-core-integrations,
         test-core-unit,
         approve-flaky-test-core,
+        test-proxy-e2e,
+        test-memory,
+        approve-memory-regression,
         resolve-cli-versions,
         test-cli-harness,
         test-framework,
         test-plugins,
         test-bifrost-http,
+        test-live,
         test-migrations,
+        test-agentgateway,
         test-api-integrations,
+        test-warp,
         test-cost-accuracy,
         test-docker-image-amd64,
         test-docker-image-arm64,
@@ -2920,8 +3726,8 @@ jobs:
         plugins-release,
         bifrost-http-release,
       ]
-    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-core-integrations.result == 'success' || needs.test-core-integrations.result == 'skipped') && (needs.test-core-unit.result == 'success' || needs.test-core-unit.result == 'skipped') && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
-    runs-on: ubuntu-24.04-arm
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.result == 'success' && needs.detect-changes.outputs.docker-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-proxy-e2e.result == 'success' || needs.test-proxy-e2e.result == 'skipped') && (needs.test-memory.result == 'success' || needs.test-memory.result == 'skipped' || (needs.test-memory.result == 'failure' && needs.approve-memory-regression.result == 'success')) && (needs.test-core-integrations.result == 'success' || needs.test-core-integrations.result == 'skipped') && (needs.test-core-unit.result == 'success' || needs.test-core-unit.result == 'skipped') && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-live.result == 'success' || needs.test-live.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-agentgateway.result == 'success' || needs.test-agentgateway.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-warp.result == 'success' || needs.test-warp.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
+    runs-on: arm-64-2cpu-8gb
     permissions:
       contents: write
       packages: write
@@ -2937,23 +3743,33 @@ jobs:
           allowed-endpoints: >
             auth.docker.io:443
             dl-cdn.alpinelinux.org:443
+            _https._tcp.download.docker.com:443
+            download.docker.com:443
             fonts.googleapis.com:443
             fonts.gstatic.com:443
             ghcr.io:443
             github.com:443
             pkg-containers.githubusercontent.com:443
+            _https._tcp.ports.ubuntu.com:443
+            ports.ubuntu.com:443
             production.cloudflare.docker.com:443
             production.cloudfront.docker.com:443
             proxy.golang.org:443
             registry-1.docker.io:443
             registry.npmjs.org:443
             storage.googleapis.com:443
+            tuf-repo-cdn.sigstore.dev:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
           fetch-tags: true
+
+      # The arm-64-2cpu-8gb image ships without Docker, libatomic (needed by the
+      # linux-arm64 Node binary) or build tools; see the script for details.
+      - name: Install arm64 runner dependencies
+        run: bash ./.github/workflows/scripts/install-arm64-runner-deps.sh docker gh
 
       - name: Verify bifrost-http release
         id: verify
@@ -3017,7 +3833,7 @@ jobs:
   docker-manifest:
     needs: [check-skip, detect-changes, docker-build-amd64, docker-build-arm64]
     if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.docker-build-amd64.result == 'success' && needs.docker-build-arm64.result == 'success'"
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: read
       packages: write
@@ -3069,13 +3885,19 @@ jobs:
         test-core-integrations,
         test-core-unit,
         approve-flaky-test-core,
+        test-proxy-e2e,
+        test-memory,
+        approve-memory-regression,
         resolve-cli-versions,
         test-cli-harness,
         test-framework,
         test-plugins,
         test-bifrost-http,
+        test-live,
         test-migrations,
+        test-agentgateway,
         test-api-integrations,
+        test-warp,
         test-cost-accuracy,
         test-docker-image-amd64,
         test-docker-image-arm64,
@@ -3084,8 +3906,8 @@ jobs:
         plugins-release,
         bifrost-http-release,
       ]
-    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-core-integrations.result == 'success' || needs.test-core-integrations.result == 'skipped') && (needs.test-core-unit.result == 'success' || needs.test-core-unit.result == 'skipped') && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
-    runs-on: ubuntu-latest
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.result == 'success' && needs.detect-changes.outputs.docker-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-proxy-e2e.result == 'success' || needs.test-proxy-e2e.result == 'skipped') && (needs.test-memory.result == 'success' || needs.test-memory.result == 'skipped' || (needs.test-memory.result == 'failure' && needs.approve-memory-regression.result == 'success')) && (needs.test-core-integrations.result == 'success' || needs.test-core-integrations.result == 'skipped') && (needs.test-core-unit.result == 'success' || needs.test-core-unit.result == 'skipped') && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-live.result == 'success' || needs.test-live.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-agentgateway.result == 'success' || needs.test-agentgateway.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-warp.result == 'success' || needs.test-warp.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
+    runs-on: builder-8-32
     permissions:
       contents: write
       packages: write
@@ -3191,13 +4013,19 @@ jobs:
         test-core-integrations,
         test-core-unit,
         approve-flaky-test-core,
+        test-proxy-e2e,
+        test-memory,
+        approve-memory-regression,
         resolve-cli-versions,
         test-cli-harness,
         test-framework,
         test-plugins,
         test-bifrost-http,
+        test-live,
         test-migrations,
+        test-agentgateway,
         test-api-integrations,
+        test-warp,
         test-cost-accuracy,
         test-docker-image-amd64,
         test-docker-image-arm64,
@@ -3206,8 +4034,8 @@ jobs:
         plugins-release,
         bifrost-http-release,
       ]
-    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-core-integrations.result == 'success' || needs.test-core-integrations.result == 'skipped') && (needs.test-core-unit.result == 'success' || needs.test-core-unit.result == 'skipped') && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
-    runs-on: ubuntu-24.04-arm
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.result == 'success' && needs.detect-changes.outputs.docker-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-proxy-e2e.result == 'success' || needs.test-proxy-e2e.result == 'skipped') && (needs.test-memory.result == 'success' || needs.test-memory.result == 'skipped' || (needs.test-memory.result == 'failure' && needs.approve-memory-regression.result == 'success')) && (needs.test-core-integrations.result == 'success' || needs.test-core-integrations.result == 'skipped') && (needs.test-core-unit.result == 'success' || needs.test-core-unit.result == 'skipped') && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-live.result == 'success' || needs.test-live.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-agentgateway.result == 'success' || needs.test-agentgateway.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-warp.result == 'success' || needs.test-warp.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
+    runs-on: arm-64-2cpu-8gb
     permissions:
       contents: write
       packages: write
@@ -3223,11 +4051,15 @@ jobs:
           allowed-endpoints: >
             auth.docker.io:443
             dl-cdn.alpinelinux.org:443
+            _https._tcp.download.docker.com:443
+            download.docker.com:443
             fonts.googleapis.com:443
             fonts.gstatic.com:443
             ghcr.io:443
             github.com:443
             pkg-containers.githubusercontent.com:443
+            _https._tcp.ports.ubuntu.com:443
+            ports.ubuntu.com:443
             production.cloudflare.docker.com:443
             production.cloudfront.docker.com:443
             proxy.golang.org:443
@@ -3236,12 +4068,18 @@ jobs:
             *.quay.io:443
             registry.npmjs.org:443
             storage.googleapis.com:443
+            tuf-repo-cdn.sigstore.dev:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
           fetch-tags: true
+
+      # The arm-64-2cpu-8gb image ships without Docker, libatomic (needed by the
+      # linux-arm64 Node binary) or build tools; see the script for details.
+      - name: Install arm64 runner dependencies
+        run: bash ./.github/workflows/scripts/install-arm64-runner-deps.sh docker gh
 
       - name: Verify bifrost-http release
         id: verify
@@ -3307,7 +4145,7 @@ jobs:
   docker-manifest-ubi9:
     needs: [check-skip, detect-changes, docker-build-ubi9-amd64, docker-build-ubi9-arm64]
     if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.docker-build-ubi9-amd64.result == 'success' && needs.docker-build-ubi9-arm64.result == 'success'"
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: read
       packages: write
@@ -3359,13 +4197,17 @@ jobs:
         test-core-integrations,
         test-core-unit,
         approve-flaky-test-core,
+        test-proxy-e2e,
         resolve-cli-versions,
         test-cli-harness,
         test-framework,
         test-plugins,
         test-bifrost-http,
+        test-live,
         test-migrations,
+        test-agentgateway,
         test-api-integrations,
+        test-warp,
         test-cost-accuracy,
         test-docker-image-amd64,
         test-docker-image-arm64,
@@ -3374,8 +4216,8 @@ jobs:
         plugins-release,
         bifrost-http-release,
       ]
-    if: "always() && needs.check-skip.outputs.should-skip != 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-core-integrations.result == 'success' || needs.test-core-integrations.result == 'skipped') && (needs.test-core-unit.result == 'success' || needs.test-core-unit.result == 'skipped') && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
-    runs-on: ubuntu-latest
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.result == 'success' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-proxy-e2e.result == 'success' || needs.test-proxy-e2e.result == 'skipped') && (needs.test-core-integrations.result == 'success' || needs.test-core-integrations.result == 'skipped') && (needs.test-core-unit.result == 'success' || needs.test-core-unit.result == 'skipped') && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-live.result == 'success' || needs.test-live.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-agentgateway.result == 'success' || needs.test-agentgateway.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-warp.result == 'success' || needs.test-warp.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
+    runs-on: builder-8-32
     permissions:
       contents: write
     steps:
@@ -3420,14 +4262,18 @@ jobs:
     needs:
       [
         check-skip,
+        approve-run,
         detect-changes,
         test-core,
+        test-proxy-e2e,
         resolve-cli-versions,
         test-cli-harness,
         test-framework,
         test-plugins,
         test-bifrost-http,
+        test-live,
         test-migrations,
+        test-agentgateway,
         test-cost-accuracy,
         test-docker-image-amd64,
         test-docker-image-arm64,
@@ -3438,29 +4284,41 @@ jobs:
         docker-manifest,
         docker-manifest-ubi9,
       ]
-    if: "always() && needs.check-skip.outputs.should-skip != 'true'"
-    runs-on: ubuntu-latest
+    # A run rejected at the phone gate ran nothing, so there is no release to
+    # report; without this clause Discord would get an all-skipped "complete".
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.approve-run.result == 'success'"
+    runs-on: builder-8-32
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
-            _http._tcp.azure.archive.ubuntu.com:443
+            _https._tcp.archive.ubuntu.com:443
             _https._tcp.dl.google.com:443
             motd.ubuntu.com:443
             _https._tcp.esm.ubuntu.com:443
             _https._tcp.motd.ubuntu.com:443
             _https._tcp.packages.microsoft.com:443
-            azure.archive.ubuntu.com:80
+            archive.ubuntu.com:443
             discord.com:443
             discordapp.com:443
             dl.google.com:443
+            github.com:443
             esm.ubuntu.com:443
             packages.microsoft.com:443
 
+      # apt-sources-https.sh moves apt to HTTPS before Install jq; nothing else
+      # from the repo is needed, so check out only that directory.
+      - name: Checkout CI scripts
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          sparse-checkout: .github/workflows/scripts
+          persist-credentials: false
+
       - name: Install jq
         run: |
+          ./.github/workflows/scripts/apt-sources-https.sh
           sudo apt-get update
           sudo apt-get install -y jq
 

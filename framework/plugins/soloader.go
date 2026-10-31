@@ -21,8 +21,25 @@ type SharedObjectPluginLoader struct {
 // NewSharedObjectPluginLoader constructs a loader whose plugin-download client is
 // additionally permitted to reach the hosts/CIDRs in allow. allow may be nil for the
 // default (all private/loopback/CGNAT/link-local targets blocked).
-func NewSharedObjectPluginLoader(allow *network.Allowlist) *SharedObjectPluginLoader {
-	return &SharedObjectPluginLoader{downloadClient: NewPluginDownloadClient(allow)}
+func NewSharedObjectPluginLoader(allow *network.Allowlist, opts ...LoaderOption) *SharedObjectPluginLoader {
+	var options loaderOptions
+	for _, opt := range opts {
+		opt(&options)
+	}
+	return &SharedObjectPluginLoader{downloadClient: NewProxiedPluginDownloadClient(allow, options.httpClients)}
+}
+
+// LoaderOption customizes a plugin loader at construction.
+type LoaderOption func(*loaderOptions)
+
+type loaderOptions struct {
+	httpClients *network.HTTPClientFactory
+}
+
+// WithHTTPClientFactory sends plugin downloads through the global proxy when it is
+// enabled for API traffic, keeping the SSRF policy and allowlist.
+func WithHTTPClientFactory(factory *network.HTTPClientFactory) LoaderOption {
+	return func(o *loaderOptions) { o.httpClients = factory }
 }
 
 func (l *SharedObjectPluginLoader) openPlugin(dp *DynamicPlugin) (*plugin.Plugin, error) {
@@ -90,6 +107,14 @@ func (l *SharedObjectPluginLoader) LoadPlugin(path string, config any) (schemas.
 		return nil, fmt.Errorf("failed to cast Cleanup to func() error\nSee docs for more information: https://docs.getbifrost.ai/plugins/writing-go-plugin")
 	}
 
+	// Optional: HTTPTransportPreAuthHook — runs before the transport authenticates the
+	// request. Plugins predating the hook simply don't export it and are skipped.
+	if sym, err := pluginObj.Lookup("HTTPTransportPreAuthHook"); err == nil {
+		if dp.httpTransportPreAuthHook, ok = sym.(func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)); !ok {
+			return nil, fmt.Errorf("failed to cast HTTPTransportPreAuthHook to expected signature")
+		}
+	}
+
 	// Optional: HTTPTransportPreHook
 	if sym, err := pluginObj.Lookup("HTTPTransportPreHook"); err == nil {
 		if dp.httpTransportPreHook, ok = sym.(func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)); !ok {
@@ -108,6 +133,13 @@ func (l *SharedObjectPluginLoader) LoadPlugin(path string, config any) (schemas.
 	if sym, err := pluginObj.Lookup("HTTPTransportStreamChunkHook"); err == nil {
 		if dp.httpTransportStreamChunkHook, ok = sym.(func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error)); !ok {
 			return nil, fmt.Errorf("failed to cast HTTPTransportStreamChunkHook to expected signature")
+		}
+	}
+
+	// Optional: HTTPTransportResponseHeadersHook
+	if sym, err := pluginObj.Lookup("HTTPTransportResponseHeadersHook"); err == nil {
+		if dp.httpTransportResponseHeadersHook, ok = sym.(func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponseMetadata) error); !ok {
+			return nil, fmt.Errorf("failed to cast HTTPTransportResponseHeadersHook to expected signature")
 		}
 	}
 
@@ -158,6 +190,21 @@ func (l *SharedObjectPluginLoader) LoadPlugin(path string, config any) (schemas.
 		}
 	}
 
+	// Optional: PreA2AHook (A2APlugin — Agent Gateway traffic). Plugins that
+	// don't export it keep working; DynamicPlugin's default is a no-op passthrough.
+	if sym, err := pluginObj.Lookup("PreA2AHook"); err == nil {
+		if dp.preA2AHook, ok = sym.(func(ctx *schemas.BifrostContext, req *schemas.BifrostA2ARequest) (*schemas.BifrostA2ARequest, *schemas.A2APluginShortCircuit, error)); !ok {
+			return nil, fmt.Errorf("failed to cast PreA2AHook to expected signature")
+		}
+	}
+
+	// Optional: PostA2AHook (A2APlugin — Agent Gateway traffic).
+	if sym, err := pluginObj.Lookup("PostA2AHook"); err == nil {
+		if dp.postA2AHook, ok = sym.(func(ctx *schemas.BifrostContext, resp *schemas.BifrostA2AResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostA2AResponse, *schemas.BifrostError, error)); !ok {
+			return nil, fmt.Errorf("failed to cast PostA2AHook to expected signature")
+		}
+	}
+
 	// Optional: PreMCPConnectionHook (MCPConnectionPlugin — typed Connect hook).
 	// New .so plugins built against MCPConnectionPlugin can export this symbol to
 	// observe Connect events. Legacy plugins that don't export it keep working;
@@ -179,6 +226,18 @@ func (l *SharedObjectPluginLoader) LoadPlugin(path string, config any) (schemas.
 	if sym, err := pluginObj.Lookup("Inject"); err == nil {
 		if dp.inject, ok = sym.(func(ctx context.Context, trace *schemas.Trace) error); !ok {
 			return nil, fmt.Errorf("failed to cast Inject to expected signature")
+		}
+	}
+
+	// Optional: MarshalConfigForStorage / RedactConfig (ConfigMarshallerPlugin) (for Secret Var)
+	if sym, err := pluginObj.Lookup("MarshalConfigForStorage"); err == nil {
+		if dp.marshalConfigForStorage, ok = sym.(func(config map[string]any) (map[string]any, error)); !ok {
+			return nil, fmt.Errorf("failed to cast MarshalConfigForStorage to expected signature")
+		}
+	}
+	if sym, err := pluginObj.Lookup("RedactConfig"); err == nil {
+		if dp.redactConfig, ok = sym.(func(config map[string]any) (map[string]any, error)); !ok {
+			return nil, fmt.Errorf("failed to cast RedactConfig to expected signature")
 		}
 	}
 

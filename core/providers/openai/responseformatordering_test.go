@@ -114,10 +114,12 @@ func TestResponseFormatSchemaBytesReachOpenAIVerbatim(t *testing.T) {
 // TestResponseFormatSurvivesDelegatingProviders covers every provider that has no
 // response_format handling of its own and rides the OpenAI chat conversion. They
 // each get their own parameter filtering, so this pins that none of them strips
-// or rewrites the schema on the way through.
+// or rewrites the schema on the way through. DeepSeek is absent on purpose: its
+// endpoint rejects json_schema, so the schema is moved into the prompt (see
+// TestToOpenAIChatRequest_DeepSeekDowngradesJSONSchema).
 func TestResponseFormatSurvivesDelegatingProviders(t *testing.T) {
 	delegating := []schemas.ModelProvider{
-		schemas.Azure, schemas.Cerebras, schemas.DeepSeek, schemas.Groq,
+		schemas.Azure, schemas.Cerebras, schemas.Groq,
 		schemas.OpenRouter, schemas.SGL, schemas.VLLM, schemas.XAI,
 		schemas.Wafer, schemas.Ollama, schemas.Fireworks, schemas.Parasail,
 	}

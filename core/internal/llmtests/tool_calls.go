@@ -66,7 +66,7 @@ func RunToolCallsTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 				Model:    testConfig.ChatModel,
 				Input:    chatMessages,
 				Params: &schemas.ChatParameters{
-					MaxCompletionTokens: bifrost.Ptr(150),
+					MaxCompletionTokens: bifrost.Ptr(1024),
 					Tools:               []schemas.ChatTool{*chatTool},
 				},
 				Fallbacks: testConfig.Fallbacks,
@@ -161,6 +161,10 @@ func validateLocationInToolCalls(t *testing.T, toolCalls []ToolCallInfo, apiName
 func RunToolCallsWithEmptyPropertiesTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) {
 	if !testConfig.Scenarios.ToolCalls {
 		t.Logf("Tool calls not supported for provider %s", testConfig.Provider)
+		return
+	}
+	if testConfig.SkipEmptyToolSchemas {
+		t.Logf("Empty/nil tool schemas not accepted by provider %s", testConfig.Provider)
 		return
 	}
 
@@ -295,6 +299,10 @@ func RunToolCallsWithEmptyPropertiesTest(t *testing.T, client *bifrost.Bifrost, 
 func RunToolCallsWithNilPropertiesTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) {
 	if !testConfig.Scenarios.ToolCalls {
 		t.Logf("Tool calls not supported for provider %s", testConfig.Provider)
+		return
+	}
+	if testConfig.SkipEmptyToolSchemas {
+		t.Logf("Empty/nil tool schemas not accepted by provider %s", testConfig.Provider)
 		return
 	}
 

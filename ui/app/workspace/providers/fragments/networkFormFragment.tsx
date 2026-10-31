@@ -9,64 +9,37 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { DefaultNetworkConfig } from "@/lib/constants/config";
 import { getErrorMessage, setProviderFormDirtyState, useAppDispatch } from "@/lib/store";
 import { useUpdateProviderMutation } from "@/lib/store/apis/providersApi";
-import { ModelProvider, isKnownProvider } from "@/lib/types/config";
+import { ModelProvider, NetworkConfig, isKnownProvider } from "@/lib/types/config";
 import { networkOnlyFormSchema, type SecretVar, type NetworkOnlyFormSchema } from "@/lib/types/schemas";
-import { toSecretVarFormValue, toOptionalSecretVarPayload } from "@/lib/utils/secretVarForm";
+import {
+	clearUnrestorableMaskedHeaders,
+	headerSecretVarsEqual,
+	toExtraHeadersPayload,
+	toOptionalSecretVarPayload,
+	toSecretVarFormValue,
+	toSecretVarMapFormValue,
+} from "@/lib/utils/secretVarForm";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { useForm, type Resolver } from "react-hook-form";
 import { toast } from "sonner";
+import { secondsToHumanReadable } from "@/lib/utils/strings";
 import { buildProviderUpdatePayload } from "../views/utils";
 
 interface NetworkFormFragmentProps {
 	provider: ModelProvider;
 }
 
-// seconds to human readable time
-const secondsToHumanReadable = (seconds: number) => {
-	// Handle edge cases
-	if (!seconds || seconds < 0 || isNaN(seconds)) {
-		return "0 seconds";
-	}
-	seconds = Math.floor(seconds);
-	if (seconds < 60) {
-		return `${seconds} ${seconds === 1 ? "second" : "seconds"}`;
-	}
-	if (seconds < 3600) {
-		const minutes = Math.floor(seconds / 60);
-		const remainingSeconds = seconds % 60;
-		const parts: string[] = [`${minutes} ${minutes === 1 ? "minute" : "minutes"}`];
-		if (remainingSeconds > 0) parts.push(`${remainingSeconds} ${remainingSeconds === 1 ? "second" : "seconds"}`);
-		return parts.join(" ");
-	}
-	if (seconds < 86400) {
-		const hours = Math.floor(seconds / 3600);
-		const minutes = Math.floor((seconds % 3600) / 60);
-		const remainingSeconds = seconds % 60;
-		const parts: string[] = [`${hours} ${hours === 1 ? "hour" : "hours"}`];
-		if (minutes > 0) parts.push(`${minutes} ${minutes === 1 ? "minute" : "minutes"}`);
-		if (remainingSeconds > 0) parts.push(`${remainingSeconds} ${remainingSeconds === 1 ? "second" : "seconds"}`);
-		return parts.join(" ");
-	}
-	// For >= 1 day, only show non-zero components
-	const days = Math.floor(seconds / 86400);
-	const hours = Math.floor((seconds % 86400) / 3600);
-	const minutes = Math.floor((seconds % 3600) / 60);
-	const remainingSeconds = seconds % 60;
-	const parts: string[] = [];
-	parts.push(`${days} ${days === 1 ? "day" : "days"}`);
-	if (hours > 0) parts.push(`${hours} ${hours === 1 ? "hour" : "hours"}`);
-	if (minutes > 0) parts.push(`${minutes} ${minutes === 1 ? "minute" : "minutes"}`);
-	if (remainingSeconds > 0) parts.push(`${remainingSeconds} ${remainingSeconds === 1 ? "second" : "seconds"}`);
-	return parts.join(" ");
-};
-
 export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 	const dispatch = useAppDispatch();
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	const [updateProvider, { isLoading: isUpdatingProvider }] = useUpdateProviderMutation();
 	const isCustomProvider = !isKnownProvider(provider.name as string);
+	const storedHeaderNames = useMemo(
+		() => new Set(Object.keys(provider.network_config?.extra_headers ?? {})),
+		[provider.network_config?.extra_headers],
+	);
 
 	const form = useForm<NetworkOnlyFormSchema, any, NetworkOnlyFormSchema>({
 		resolver: zodResolver(networkOnlyFormSchema) as Resolver<NetworkOnlyFormSchema, any, NetworkOnlyFormSchema>,
@@ -75,7 +48,9 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 		defaultValues: {
 			network_config: {
 				base_url: provider.network_config?.base_url || undefined,
-				extra_headers: provider.network_config?.extra_headers,
+				extra_headers: toSecretVarMapFormValue(
+					provider.network_config?.extra_headers_secret_vars ?? provider.network_config?.extra_headers,
+				),
 				default_request_timeout_in_seconds:
 					provider.network_config?.default_request_timeout_in_seconds ?? DefaultNetworkConfig.default_request_timeout_in_seconds,
 				max_retries: provider.network_config?.max_retries ?? DefaultNetworkConfig.max_retries,
@@ -89,14 +64,20 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 					provider.network_config?.keep_alive_timeout_in_seconds ?? DefaultNetworkConfig.keep_alive_timeout_in_seconds,
 				max_conns_per_host: provider.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
 				enforce_http2: provider.network_config?.enforce_http2 ?? DefaultNetworkConfig.enforce_http2,
+				http2_ping_interval_in_seconds:
+					provider.network_config?.http2_ping_interval_in_seconds ?? DefaultNetworkConfig.http2_ping_interval_in_seconds,
 				allow_private_network: provider.network_config?.allow_private_network ?? DefaultNetworkConfig.allow_private_network,
 			},
 		},
 	});
 
+	const watchedHeaders = form.watch("network_config.extra_headers");
+	const defaultHeaders = form.formState.defaultValues?.network_config?.extra_headers as Record<string, SecretVar> | undefined;
+	const isDirty = form.formState.isDirty || !headerSecretVarsEqual(watchedHeaders, defaultHeaders);
+
 	useEffect(() => {
-		dispatch(setProviderFormDirtyState(form.formState.isDirty));
-	}, [form.formState.isDirty, dispatch]);
+		dispatch(setProviderFormDirtyState(isDirty));
+	}, [isDirty, dispatch]);
 
 	const onSubmit = (data: NetworkOnlyFormSchema) => {
 		const requiresBaseUrl = isCustomProvider;
@@ -108,12 +89,21 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 			}
 			return;
 		}
+		const extraHeaders = data.network_config?.extra_headers
+			? toExtraHeadersPayload(data.network_config.extra_headers, storedHeaderNames)
+			: undefined;
+		if (extraHeaders && extraHeaders.missingValues.length > 0) {
+			toast.error(`Enter a value for extra header ${extraHeaders.missingValues.join(", ")}`);
+			return;
+		}
+		// extra_headers_secret_vars is response-only, so it is not sent back
+		const { extra_headers_secret_vars: _headerSecretVars, ...storedNetworkConfig }: Partial<NetworkConfig> = provider.network_config ?? {};
 		// Create updated provider configuration
 		const updatedProvider = buildProviderUpdatePayload(provider, {
 			network_config: {
-				...provider.network_config,
+				...storedNetworkConfig,
 				base_url: data.network_config?.base_url || undefined,
-				extra_headers: data.network_config?.extra_headers || undefined,
+				extra_headers: extraHeaders?.headers,
 				default_request_timeout_in_seconds:
 					data.network_config?.default_request_timeout_in_seconds ?? DefaultNetworkConfig.default_request_timeout_in_seconds,
 				max_retries: data.network_config?.max_retries ?? 0,
@@ -127,6 +117,8 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 					data.network_config?.keep_alive_timeout_in_seconds ?? DefaultNetworkConfig.keep_alive_timeout_in_seconds,
 				max_conns_per_host: data.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
 				enforce_http2: data.network_config?.enforce_http2 ?? DefaultNetworkConfig.enforce_http2,
+				http2_ping_interval_in_seconds:
+					data.network_config?.http2_ping_interval_in_seconds ?? DefaultNetworkConfig.http2_ping_interval_in_seconds,
 				allow_private_network: data.network_config?.allow_private_network ?? DefaultNetworkConfig.allow_private_network,
 			},
 		});
@@ -148,7 +140,9 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 		form.reset({
 			network_config: {
 				base_url: provider.network_config?.base_url || undefined,
-				extra_headers: provider.network_config?.extra_headers,
+				extra_headers: toSecretVarMapFormValue(
+					provider.network_config?.extra_headers_secret_vars ?? provider.network_config?.extra_headers,
+				),
 				default_request_timeout_in_seconds:
 					provider.network_config?.default_request_timeout_in_seconds ?? DefaultNetworkConfig.default_request_timeout_in_seconds,
 				max_retries: provider.network_config?.max_retries ?? DefaultNetworkConfig.max_retries,
@@ -162,10 +156,15 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 					provider.network_config?.keep_alive_timeout_in_seconds ?? DefaultNetworkConfig.keep_alive_timeout_in_seconds,
 				max_conns_per_host: provider.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
 				enforce_http2: provider.network_config?.enforce_http2 ?? DefaultNetworkConfig.enforce_http2,
+				http2_ping_interval_in_seconds:
+					provider.network_config?.http2_ping_interval_in_seconds ?? DefaultNetworkConfig.http2_ping_interval_in_seconds,
 				allow_private_network: provider.network_config?.allow_private_network ?? DefaultNetworkConfig.allow_private_network,
 			},
 		});
 	}, [form, provider.name, provider.network_config]);
+
+	// HTTP/2 PING keepalives only apply when HTTP/2 is enforced
+	const enforceHTTP2 = form.watch("network_config.enforce_http2");
 
 	const baseURLRequired = isCustomProvider;
 	const hideBaseURL = provider.name === "vllm" || provider.name === "ollama" || provider.name === "sgl";
@@ -174,7 +173,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 		<Form {...form}>
 			<form onSubmit={form.handleSubmit(onSubmit)}>
 				{/* Network Configuration */}
-				<div className="space-y-4 px-6 pb-6">
+				<div className="space-y-4 px-4 pb-6 md:px-6">
 					<div className="grid grid-cols-1 gap-4">
 						{!hideBaseURL && (
 							<FormField
@@ -453,6 +452,41 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 						/>
 						<FormField
 							control={form.control}
+							name="network_config.http2_ping_interval_in_seconds"
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>HTTP/2 Ping Interval (seconds)</FormLabel>
+									<FormControl>
+										<Input
+											data-testid="network-config-http2-ping-interval-input"
+											placeholder="0"
+											{...field}
+											value={field.value === undefined || Number.isNaN(field.value) ? "" : field.value}
+											disabled={!hasUpdateProviderAccess || !enforceHTTP2}
+											onChange={(e) => {
+												const value = e.target.value;
+												if (value === "") {
+													field.onChange(undefined);
+													return;
+												}
+												const parsed = Number(value);
+												if (!Number.isNaN(parsed)) {
+													field.onChange(parsed);
+												}
+												form.trigger("network_config");
+											}}
+										/>
+									</FormControl>
+									<FormDescription>
+										{field.value ? secondsToHumanReadable(field.value) : ""} Idle seconds before a client-initiated HTTP/2 keepalive PING.
+										Prevents intermediaries from cutting quiet streams and long generations. 0 disables; requires Enforce HTTP/2.
+									</FormDescription>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+						<FormField
+							control={form.control}
 							name="network_config.allow_private_network"
 							render={({ field }) => (
 								<FormItem className="flex flex-row items-center justify-between">
@@ -482,13 +516,18 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 									<FormControl>
 										<HeadersTable
 											value={field.value || {}}
-											onChange={field.onChange}
+											onChange={(headers) => field.onChange(clearUnrestorableMaskedHeaders(headers, storedHeaderNames))}
 											keyPlaceholder="Header name"
 											valuePlaceholder="Header value"
 											label="Extra Headers"
 											disabled={!hasUpdateProviderAccess}
+											useSecretVarInput
 										/>
 									</FormControl>
+									<FormDescription>
+										Values are masked once saved; leave a masked value unchanged to keep it, and re-enter it when renaming a header. Use{" "}
+										<code>env.VAR_NAME</code> or <code>vault.path</code> to reference a secret instead of storing it.
+									</FormDescription>
 									<FormMessage />
 								</FormItem>
 							)}
@@ -559,7 +598,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				</div>
 
 				{/* Form Actions */}
-				<div className="bg-card sticky bottom-0 flex justify-end space-x-2 rounded-b-sm border-t px-6 py-4">
+				<div className="bg-card sticky bottom-0 flex justify-end space-x-2 rounded-b-sm border-t px-4 py-4 md:px-6">
 					{!hideBaseURL && (
 						<Button
 							type="button"
@@ -584,16 +623,16 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 					<TooltipProvider>
 						<Tooltip>
 							<TooltipTrigger asChild>
-								<Button type="submit" disabled={!form.formState.isDirty || !hasUpdateProviderAccess} isLoading={isUpdatingProvider}>
+								<Button type="submit" disabled={!isDirty || !hasUpdateProviderAccess} isLoading={isUpdatingProvider}>
 									Save Network Configuration
 								</Button>
 							</TooltipTrigger>
-							{(!form.formState.isDirty || !form.formState.isValid) && (
+							{(!isDirty || !form.formState.isValid) && (
 								<TooltipContent>
 									<p>
-										{!form.formState.isDirty && !form.formState.isValid
+										{!isDirty && !form.formState.isValid
 											? "No changes made and validation errors present"
-											: !form.formState.isDirty
+											: !isDirty
 												? "No changes made"
 												: "Please fix validation errors"}
 									</p>

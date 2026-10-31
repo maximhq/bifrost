@@ -21,7 +21,7 @@ export const budgetResetDurationOptions = [...resetDurationOptions, { label: "Qu
 // Durations that support calendar-aligned resets (snap to day/week/month/quarter/year boundaries).
 // Must stay in sync with IsCalendarAlignableDuration in framework/configstore/tables/utils.go.
 // Case matters: "M" is a month while "m" is a minute, so "1q" is not a quarter.
-export const supportsCalendarAlignment = (duration: string): boolean => duration.length > 0 && /[dwMQY]$/.test(duration);
+export const supportsCalendarAlignment = (duration: string): boolean => /^(1d|1w|1M|1Q|1Y)$/.test(duration);
 
 // Map of duration values to short labels for display
 export const resetDurationLabels: Record<string, string> = {
@@ -131,3 +131,25 @@ export const quarterStartMonthOptions = MONTH_ABBREVIATIONS.map((_, index) => ({
 	label: new Date(Date.UTC(2026, index, 1)).toLocaleString("en-US", { month: "long", timeZone: "UTC" }),
 	value: String(index + 1),
 }));
+// Multi-unit windows remain rolling even when their owner enables alignment.
+export const isMultiUnitDuration = (duration: string): boolean => /^\d+[smhdwMQY]$/.test(duration) && Number(duration.slice(0, -1)) > 1;
+
+export interface CalendarWindowInput {
+	budgets?: { max_limit?: number; reset_duration?: string }[];
+	rate_limit?: {
+		token_max_limit?: number;
+		token_reset_duration?: string;
+		request_max_limit?: number;
+		request_reset_duration?: string;
+	} | null;
+	model_budgets?: CalendarWindowInput[];
+}
+
+export function calendarWindowDurations(windows: CalendarWindowInput[]): string[] {
+	return windows.flatMap((window) => [
+		...(window.budgets ?? []).filter((b) => b.max_limit !== undefined).map((b) => b.reset_duration ?? ""),
+		...(window.rate_limit?.token_max_limit !== undefined ? [window.rate_limit.token_reset_duration ?? ""] : []),
+		...(window.rate_limit?.request_max_limit !== undefined ? [window.rate_limit.request_reset_duration ?? ""] : []),
+		...calendarWindowDurations(window.model_budgets ?? []),
+	]);
+}

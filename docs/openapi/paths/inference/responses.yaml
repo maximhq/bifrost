@@ -15,6 +15,8 @@ responses:
     responses:
       '200':
         description: Successful response
+        headers:
+          $ref: '../../schemas/inference/responseheaders.yaml#/InferenceSuccessHeaders'
         content:
           application/json:
             schema:
@@ -23,12 +25,11 @@ responses:
             schema:
               $ref: '../../schemas/inference/responses.yaml#/ResponsesStreamResponse'
       '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+        $ref: '../../openapi.yaml#/components/responses/InferenceBadRequest'
       '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+        $ref: '../../openapi.yaml#/components/responses/InferenceInternalError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -75,7 +76,6 @@ responses:
         description: Maximum concurrent WebSocket connections reached
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -139,7 +139,6 @@ responses-by-id:
         $ref: '../../openapi.yaml#/components/responses/InternalError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
   delete:
@@ -176,7 +175,6 @@ responses-by-id:
         $ref: '../../openapi.yaml#/components/responses/InternalError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -216,7 +214,6 @@ responses-cancel:
         $ref: '../../openapi.yaml#/components/responses/InternalError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -279,6 +276,5 @@ responses-input-items:
         $ref: '../../openapi.yaml#/components/responses/InternalError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []

@@ -11,7 +11,8 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	openaiProvider "github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
-	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	bfws "github.com/maximhq/bifrost/transports/v2/bifrost-http/websocket"
 )
 
 func newRealtimeTurnContext(
@@ -41,8 +42,13 @@ func newRealtimeTurnContext(
 			}
 			ctx.SetValue(ctxKey, value)
 		}
+		// A turn is the session's request: it carries the session's grant, not a copy.
+		if g := baseCtx.Grant(); g != nil {
+			ctx.SetGrant(g)
+		}
 	}
 
+	ctx.SetValue(schemas.BifrostContextKeyRealtimeConnectionID, sessionID)
 	ctx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.RealtimeRequest)
 	if requestID == "" {
 		requestID = uuid.NewString()
@@ -79,6 +85,55 @@ func newRealtimeTurnContext(
 		}
 	}
 	return ctx
+}
+
+// recordRealtimeProviderInput introduces items on creation and treats completions as updates only.
+// A transcript without a pending item is handed to persisted lookup, never to the next turn.
+func recordRealtimeProviderInput(config *lib.Config, session *bfws.Session, event *schemas.BifrostRealtimeEvent, raw string) {
+	if session == nil || event == nil || event.Type == schemas.RTEventConversationItemRetrieved {
+		return
+	}
+	if event.Type != schemas.RTEventInputAudioTransCompleted && !schemas.IsRealtimeUserInputEvent(event) && !schemas.IsRealtimeToolOutputEvent(event) {
+		return
+	}
+	itemID := realtimeEventItemID(event)
+	input := bfws.RealtimeTurnInput{ItemID: itemID, Role: string(schemas.ChatMessageRoleUser), Summary: finalizedRealtimeInputSummary(event), Raw: raw}
+	if input.Summary == "" && schemas.IsRealtimeUserInputEvent(event) && realtimeItemHasMissingAudioTranscript(event.Item) {
+		input.Summary = realtimeMissingTranscriptText
+	}
+	if event.Type != schemas.RTEventInputAudioTransCompleted {
+		if schemas.IsRealtimeToolOutputEvent(event) {
+			input.Role = string(schemas.ChatMessageRoleTool)
+			input.Summary = finalizedRealtimeToolOutputSummary(event)
+			// Tool results originate from the client; provider events are acknowledgments.
+			session.UpdateRealtimeTurnInput(input)
+		} else if schemas.IsRealtimeUserInputEvent(event) {
+			if event.Type == schemas.RTEventConversationItemDone {
+				session.UpdateRealtimeTurnInput(input)
+			} else {
+				session.RecordRealtimeInput(itemID, input.Summary, raw)
+			}
+		}
+		return
+	}
+	if itemID == "" {
+		// Providers with transcript-only, unkeyed inputs have no item lifecycle to match.
+		session.RecordRealtimeInput("", input.Summary, raw)
+		return
+	}
+	transcript := extractRealtimeExtraParamString(event, "transcript")
+	input.TranscriptComplete = transcript != ""
+	updated, closed := session.UpdateRealtimeTurnInput(input)
+	if updated || closed || config == nil {
+		return
+	}
+	for _, plugin := range config.GetLoadedLLMPlugins() {
+		if sink, ok := plugin.(interface {
+			EnqueueRealtimeTranscript(string, time.Time, string, string, string)
+		}); ok {
+			sink.EnqueueRealtimeTranscript(session.ID(), session.StartedAt(), itemID, transcript, raw)
+		}
+	}
 }
 
 func applyRealtimeRawStorageContext(ctx *schemas.BifrostContext, storeRaw bool) {
@@ -184,13 +239,15 @@ func updateRealtimeSessionFromEvent(session *bfws.Session, event *schemas.Bifros
 		if event.Session.Tools != nil {
 			session.SetRealtimeSessionTools(event.Session.Tools)
 		}
-		if event.Session.Voice != "" {
-			session.SetRealtimeVoice(event.Session.Voice)
+		if voice := event.Session.Voice.GetName(); voice != "" {
+			session.SetRealtimeVoice(voice)
+			session.SetRealtimeVoiceType(event.Session.Voice.GetType())
 		} else if audioRaw, ok := event.Session.ExtraParams["audio"]; ok {
 			// New API format nests voice under session.audio.output.voice
 			// instead of the legacy top-level session.voice.
 			if voice := openaiProvider.ExtractNestedVoice(audioRaw); voice != "" {
 				session.SetRealtimeVoice(voice)
+				session.SetRealtimeVoiceType(openaiProvider.ExtractNestedVoiceType(audioRaw))
 			}
 		}
 	}
@@ -284,6 +341,7 @@ func buildRealtimeTurnPostResponse(
 	rawResponse []byte,
 	contentOverride string,
 	latency int64,
+	transcriptionSession bool,
 ) *schemas.BifrostResponse {
 	output := buildRealtimeTurnOutputMessages(rtProvider, rawResponse, contentOverride)
 	resp := &schemas.BifrostResponsesResponse{
@@ -296,6 +354,9 @@ func buildRealtimeTurnPostResponse(
 			OriginalModelRequested: model,
 			Latency:                latency,
 		},
+	}
+	if transcriptionSession {
+		resp.ExtraFields.PricingRequestType = schemas.TranscriptionRequest
 	}
 	if usage := extractRealtimeTurnUsage(rtProvider, rawResponse); usage != nil {
 		resp.Usage = buildRealtimeResponsesUsage(usage)
@@ -487,6 +548,7 @@ func buildRealtimeResponsesUsage(usage *schemas.BifrostLLMUsage) *schemas.Respon
 		InputTokens:  usage.PromptTokens,
 		OutputTokens: usage.CompletionTokens,
 		TotalTokens:  usage.TotalTokens,
+		AudioSeconds: usage.AudioSeconds,
 	}
 	if usage.PromptTokensDetails != nil {
 		result.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
@@ -509,6 +571,7 @@ func buildRealtimeResponsesUsage(usage *schemas.BifrostLLMUsage) *schemas.Respon
 			NumSearchQueries:         usage.CompletionTokensDetails.NumSearchQueries,
 		}
 	}
+	result.ToolUsage = usage.ToolUsage.DeepCopy()
 	return result
 }
 
@@ -580,6 +643,9 @@ func mapRealtimeWireErrorFields(bifrostErr *schemas.BifrostError) (string, strin
 			continue
 		case strings.Contains(lower, "invalid_request_error"):
 			return "invalid_request_error", "invalid_request_error", errorMessage, errorParam
+		case strings.Contains(lower, "unsupported_operation"):
+			// A provider configured not to serve the operation refuses the caller, not itself.
+			return "invalid_request_error", "unsupported_operation", errorMessage, errorParam
 		case isBudgetOrBillingError(lower):
 			return "insufficient_quota", "insufficient_quota", errorMessage, errorParam
 		case bifrost.IsRateLimitErrorMessage(lower):
@@ -588,38 +654,6 @@ func mapRealtimeWireErrorFields(bifrostErr *schemas.BifrostError) (string, strin
 	}
 
 	return errorType, errorCode, errorMessage, errorParam
-}
-
-func shouldGracefullyDisconnectRealtime(bifrostErr *schemas.BifrostError) bool {
-	if bifrostErr == nil {
-		return false
-	}
-
-	var values []string
-	if bifrostErr.Type != nil {
-		values = append(values, strings.TrimSpace(*bifrostErr.Type))
-	}
-	if bifrostErr.Error != nil {
-		if bifrostErr.Error.Type != nil {
-			values = append(values, strings.TrimSpace(*bifrostErr.Error.Type))
-		}
-		if bifrostErr.Error.Code != nil {
-			values = append(values, strings.TrimSpace(*bifrostErr.Error.Code))
-		}
-		values = append(values, strings.TrimSpace(bifrostErr.Error.Message))
-	}
-
-	for _, value := range values {
-		lower := strings.ToLower(value)
-		if lower == "" {
-			continue
-		}
-		if isBudgetOrBillingError(lower) || bifrost.IsRateLimitErrorMessage(lower) {
-			return true
-		}
-	}
-
-	return false
 }
 
 func startRealtimeTurnHooks(
@@ -707,6 +741,8 @@ func finalizeRealtimeTurnHooks(
 	key *schemas.Key,
 	rawResponse []byte,
 	contentOverride string,
+	terminalEventType schemas.RealtimeEventType,
+	transcriptionSession bool,
 ) *schemas.BifrostError {
 	if client == nil || session == nil {
 		return nil
@@ -729,8 +765,12 @@ func finalizeRealtimeTurnHooks(
 			rawResponse,
 			contentOverride,
 			time.Since(activeHooks.StartedAt).Milliseconds(),
+			transcriptionSession,
 		)
-		postCtx := newRealtimeTurnContext(baseCtx, activeHooks.RequestID, session.ID(), session.ProviderSessionID(), realtimeTurnSourceLM, rtProvider.RealtimeTurnFinalEvent(), key)
+		if surface, _ := baseCtx.Value(schemas.BifrostContextKeyRealtimePricingSurface).(schemas.PricingSurface); surface == schemas.PricingSurfaceVoiceLive {
+			applyVoiceLivePricing(postResponse, session.RealtimeVoiceType(), model)
+		}
+		postCtx := newRealtimeTurnContext(baseCtx, activeHooks.RequestID, session.ID(), session.ProviderSessionID(), realtimeTurnSourceLM, terminalEventType, key)
 		applyRealtimeTurnContextValues(postCtx, activeHooks.PreHookValues)
 		restoreRealtimeTurnTraceContext(postCtx, activeHooks.TraceID, activeHooks.PreHookValues)
 		applyRealtimeRawStorageContext(postCtx, activeHooks.RawStore)
@@ -765,8 +805,12 @@ func finalizeRealtimeTurnHooks(
 		rawResponse,
 		contentOverride,
 		time.Since(startedAt).Milliseconds(),
+		transcriptionSession,
 	)
-	postCtx := newRealtimeTurnContext(baseCtx, requestID, session.ID(), session.ProviderSessionID(), realtimeTurnSourceLM, rtProvider.RealtimeTurnFinalEvent(), key)
+	if surface, _ := baseCtx.Value(schemas.BifrostContextKeyRealtimePricingSurface).(schemas.PricingSurface); surface == schemas.PricingSurfaceVoiceLive {
+		applyVoiceLivePricing(postResponse, session.RealtimeVoiceType(), model)
+	}
+	postCtx := newRealtimeTurnContext(baseCtx, requestID, session.ID(), session.ProviderSessionID(), realtimeTurnSourceLM, terminalEventType, key)
 	applyRealtimeTurnContextValues(postCtx, preHookValues)
 	restoreRealtimeTurnTraceContext(postCtx, traceID, preHookValues)
 	applyRealtimeRawStorageContext(postCtx, storeRaw)
@@ -788,6 +832,11 @@ func finalizeRealtimeTurnHooksWithError(
 	bifrostErr *schemas.BifrostError,
 ) *schemas.BifrostError {
 	if session == nil || bifrostErr == nil {
+		return nil
+	}
+	// A rejected cancel did not fail a response. In particular, response.create
+	// may already have installed hooks while this earlier command's error arrives.
+	if bifrostErr.Error != nil && bifrostErr.Error.Code != nil && *bifrostErr.Error.Code == "response_cancel_not_active" {
 		return nil
 	}
 
@@ -815,6 +864,11 @@ func finalizeRealtimeTurnHooksWithError(
 		setRealtimeTurnStreamContext(postCtx, activeHooks.StartedAt, true)
 		_, hookErr := activeHooks.PostHookRunner(postCtx, nil, postErr)
 		completeRealtimeTurnTrace(postCtx)
+		// Propagating the supplied provider failure is not a new hook rejection.
+		// A distinct error still preserves the post-hook policy contract.
+		if hookErr == postErr {
+			return nil
+		}
 		return hookErr
 	}
 
@@ -857,6 +911,9 @@ func finalizeRealtimeTurnHooksWithError(
 	setRealtimeTurnStreamContext(postCtx, startedAt, true)
 	_, hookErr := hooks.PostHookRunner(postCtx, nil, postErr)
 	completeRealtimeTurnTrace(postCtx)
+	if hookErr == postErr {
+		return nil
+	}
 	return hookErr
 }
 
@@ -995,4 +1052,31 @@ func finalizeRealtimeTurnHooksOnTransportError(
 		nil,
 		newRealtimeWireBifrostError(status, code, message),
 	)
+}
+
+// applyVoiceLivePricing marks an Azure Voice Live turn for the model's _voice_live rates and records
+// which audio Azure Speech handled. A realtime model hears and speaks audio natively unless the voice
+// is an Azure voice; any other model hears through Azure speech to text and speaks through Azure
+// text to speech. Custom speech input is not detected and is priced as standard speech.
+func applyVoiceLivePricing(resp *schemas.BifrostResponse, voiceType, model string) {
+	if resp == nil || resp.ResponsesResponse == nil {
+		return
+	}
+	r := resp.ResponsesResponse
+	r.ExtraFields.PricingSurface = schemas.PricingSurfaceVoiceLive
+	if r.Usage == nil {
+		return
+	}
+	nativeAudio := strings.Contains(strings.ToLower(model), "realtime")
+	if d := r.Usage.InputTokensDetails; d != nil && !nativeAudio {
+		d.StandardSpeechAudioTokens = d.AudioTokens
+	}
+	if d := r.Usage.OutputTokensDetails; d != nil {
+		switch {
+		case voiceType == "azure-custom" || voiceType == "azure-personal":
+			d.CustomSpeechAudioTokens = d.AudioTokens
+		case voiceType == "azure-standard" || !nativeAudio:
+			d.StandardSpeechAudioTokens = d.AudioTokens
+		}
+	}
 }

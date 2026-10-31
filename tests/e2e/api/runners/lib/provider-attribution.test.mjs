@@ -12,7 +12,7 @@ function test(name, fn) {
 }
 
 // The providers a sequential run tracks.
-const match = makeMatchProvider((p) => ["openai", "anthropic", "bedrock", "gemini", "vertex", "azure"].includes(p));
+const match = makeMatchProvider((p) => ["openai", "anthropic", "bedrock", "gemini", "vertex", "azure", "huggingface"].includes(p));
 
 // A direct Vertex row, exactly as provider-harness.json carries it: the model
 // is a collection variable, and 46 rows look like this.
@@ -68,6 +68,16 @@ test("an unattributable folder falls back to the row's own signals", () => {
     providerOfLogLine("post http://localhost:8080/openai/v1/chat/completions [200 ok, 1kb, 9ms]", folder, match),
     "openai"
   );
+});
+
+test("a Hugging Face folder is attributed to its harness partition", () => {
+  const folder = "61. Hugging Face Baseten model discovery (#6631)";
+  const row = {
+    name: "Hugging Face Baseten models appear in /v1/models - #6631",
+    request: { url: { raw: "{{baseUrl}}/v1/models?provider=huggingface" } },
+  };
+  assert.strictEqual(providerOfItem(row, [folder], match), "huggingface");
+  assert.strictEqual(providerOfLogLine("get http://localhost:8080/v1/models?provider=huggingface [200 ok]", folder, match), "huggingface");
 });
 
 // Ordering still has to keep the more specific provider ahead of the broader

@@ -1,8 +1,18 @@
 skills:
   get:
     operationId: listSkills
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `SkillsRepository:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List skills
-    description: Returns a paginated list of skills from the Skills Repository.
+    description: |
+      Returns a paginated list of skills from the Skills Repository.
     tags:
       - Skills
     parameters:
@@ -47,6 +57,7 @@ skills:
           default: 0
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -59,8 +70,18 @@ skills:
 
   post:
     operationId: createSkill
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `SkillsRepository:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create skill
-    description: Creates a new skill and immediately serves its first immutable version.
+    description: |
+      Creates a new skill and immediately serves its first immutable version.
     tags:
       - Skills
     requestBody:
@@ -71,6 +92,7 @@ skills:
             $ref: '../../schemas/management/skills.yaml#/CreateSkillRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Skill created successfully
@@ -86,8 +108,18 @@ skills:
 skills-by-id:
   get:
     operationId: getSkill
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `SkillsRepository:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get skill
-    description: Returns a skill by ID. Pass `version` to inspect a historical version snapshot.
+    description: |
+      Returns a skill by ID. Pass `version` to inspect a historical version snapshot.
     tags:
       - Skills
     parameters:
@@ -105,6 +137,7 @@ skills-by-id:
           example: 1.0.0
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -121,8 +154,18 @@ skills-by-id:
 
   put:
     operationId: updateSkill
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `SkillsRepository:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update skill
-    description: Creates a new immutable skill version. Set `serve` to false to save the version without switching the served version.
+    description: |
+      Creates a new immutable skill version. Set `serve` to false to save the version without switching the served version.
     tags:
       - Skills
     parameters:
@@ -140,6 +183,7 @@ skills-by-id:
             $ref: '../../schemas/management/skills.yaml#/UpdateSkillRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Skill updated successfully
@@ -156,8 +200,18 @@ skills-by-id:
 
   delete:
     operationId: deleteSkill
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `SkillsRepository:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete skill
-    description: Deletes a skill and all of its versions.
+    description: |
+      Deletes a skill and all of its versions.
     tags:
       - Skills
     parameters:
@@ -169,6 +223,7 @@ skills-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Skill deleted successfully
@@ -184,8 +239,18 @@ skills-by-id:
 skill-versions:
   get:
     operationId: listSkillVersions
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `SkillsRepository:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List skill versions
-    description: Returns immutable version snapshots for a skill.
+    description: |
+      Returns immutable version snapshots for a skill.
     tags:
       - Skills
     parameters:
@@ -235,6 +300,7 @@ skill-versions:
           default: 0
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -250,8 +316,18 @@ skill-versions:
 shift-skill-version:
   post:
     operationId: shiftSkillVersion
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `SkillsRepository:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Shift served skill version
-    description: Changes the served version for a skill without deleting newer versions.
+    description: |
+      Changes the served version for a skill without deleting newer versions.
     tags:
       - Skills
     parameters:
@@ -269,6 +345,7 @@ shift-skill-version:
             $ref: '../../schemas/management/skills.yaml#/ShiftSkillVersionRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Served version shifted successfully
@@ -286,8 +363,18 @@ shift-skill-version:
 skill-file-upload:
   post:
     operationId: uploadSkillFile
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `SkillsRepository:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Upload skill file
-    description: Uploads one file for later attachment to a skill version. The response contains either an object-storage key or a database blob ID.
+    description: |
+      Uploads one file for later attachment to a skill version. The response contains either an object-storage key or a database blob ID.
     tags:
       - Skills
     requestBody:
@@ -298,6 +385,7 @@ skill-file-upload:
             $ref: '../../schemas/management/skills.yaml#/UploadSkillFileRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: File uploaded successfully
@@ -313,6 +401,15 @@ skill-file-upload:
 skill-orphan-files:
   delete:
     operationId: cleanupOrphanSkillFiles
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `SkillsRepository:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Clean up orphan skill files
     description: |
       Deletes uploaded files that are not attached to any skill version. This is mostly a maintenance escape hatch: Bifrost also runs orphan cleanup on server startup. Non-forced cleanup preserves uploads newer than 24 hours so files are not deleted while a skill is still being edited.
@@ -327,6 +424,7 @@ skill-orphan-files:
           default: false
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Cleanup completed
@@ -340,12 +438,23 @@ skill-orphan-files:
 all-skills-version:
   get:
     operationId: getAllSkillsVersion
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `SkillsRepository:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get all-skills version
-    description: Returns the current version of the synthetic `bifrost-all-skills` marketplace plugin.
+    description: |
+      Returns the current version of the synthetic `bifrost-all-skills` marketplace plugin.
     tags:
       - Skills
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -358,8 +467,18 @@ all-skills-version:
 
   put:
     operationId: bumpAllSkillsVersion
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `SkillsRepository:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Bump all-skills version
-    description: Manually bumps the synthetic `bifrost-all-skills` plugin version as an escape hatch for marketplace refreshes.
+    description: |
+      Manually bumps the synthetic `bifrost-all-skills` plugin version as an escape hatch for marketplace refreshes.
     tags:
       - Skills
     requestBody:
@@ -370,6 +489,7 @@ all-skills-version:
             $ref: '../../schemas/management/skills.yaml#/BumpAllSkillsVersionRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Version bumped successfully
@@ -385,8 +505,18 @@ all-skills-version:
 claude-code-skills-marketplace:
   get:
     operationId: getClaudeCodeSkillsMarketplace
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Public endpoint - no authentication required |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get Claude Code skills marketplace
-    description: Public marketplace JSON consumed by Claude Code. Available only when the Bifrost server can access the `git` binary.
+    description: |
+      Public marketplace JSON consumed by Claude Code. Available only when the Bifrost server can access the `git` binary.
     tags:
       - Skills
     # Public: marketplace URLs cannot securely carry dashboard credentials.
@@ -406,8 +536,18 @@ claude-code-skills-marketplace:
 codex-skills-marketplace:
   get:
     operationId: getCodexSkillsMarketplace
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Public endpoint - no authentication required |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get Codex skills marketplace JSON
-    description: Public Codex marketplace JSON for inspecting the skills and plugin sources exposed by Bifrost.
+    description: |
+      Public Codex marketplace JSON for inspecting the skills and plugin sources exposed by Bifrost.
     tags:
       - Skills
     # Public: marketplace URLs cannot securely carry dashboard credentials.
@@ -427,8 +567,18 @@ codex-skills-marketplace:
 all-skills-download:
   get:
     operationId: downloadAllSkills
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Public endpoint - no authentication required |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Download all skills as ZIP
-    description: Public ZIP download containing every currently served skill.
+    description: |
+      Public ZIP download containing every currently served skill.
     tags:
       - Skills
     # Public: skill downloads are intended for external harnesses and tooling.
@@ -447,8 +597,18 @@ all-skills-download:
 skill-download:
   get:
     operationId: downloadSkill
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Public endpoint - no authentication required |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Download skill as ZIP
-    description: Public ZIP download containing a single currently served skill.
+    description: |
+      Public ZIP download containing a single currently served skill.
     tags:
       - Skills
     # Public: skill downloads are intended for external harnesses and tooling.
@@ -476,8 +636,18 @@ skill-download:
 skill-file-download:
   get:
     operationId: downloadSkillFile
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Public endpoint - no authentication required |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Download skill file
-    description: Public raw file download from the currently served version of a skill.
+    description: |
+      Public raw file download from the currently served version of a skill.
     tags:
       - Skills
     # Public: skill downloads are intended for external harnesses and tooling.

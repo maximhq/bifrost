@@ -3,9 +3,11 @@ package utils
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -24,7 +26,14 @@ type PassthroughStreamParams struct {
 	// appears in a framed event — for providers (Gemini/Vertex) that emit it before the HTTP
 	// body closes.
 	UseTerminalDetector bool
-	Logger              schemas.Logger
+	// EndsStream finalizes the stream early on a provider-specific end event, for clients that
+	// hang up on that event before the upstream body closes (Codex on response.completed).
+	EndsStream func(event []byte) bool
+	// SkipFraming forwards the bytes without scanning them for SSE frames, for binary or otherwise
+	// unframed streams (an AWS event stream) where there is no usage to observe and a "\n\n" byte
+	// pair means nothing.
+	SkipFraming bool
+	Logger      schemas.Logger
 	// HasUsage is an optional cheap gjson presence check: it returns true only when an event
 	// carries a usage field worth parsing. When set, Observe is skipped (no full unmarshal) for
 	// events that fail it — the common case on long streams (content deltas, pings). When nil,
@@ -52,6 +61,30 @@ func StreamPassthrough(
 	rawBodyStream io.Reader,
 	params PassthroughStreamParams,
 ) chan *schemas.BifrostStreamChunk {
+	return streamPassthrough(ctx, postHookRunner, postHookSpanFinalizer, func() { ReleaseStreamingResponse(ctx, resp) }, rawBodyStream, params)
+}
+
+// StreamPassthroughHTTP is StreamPassthrough for providers built on net/http (Bedrock): the response
+// body is closed instead of a fasthttp response being released, and everything else - idle timeout,
+// cancellation, byte-exact forwarding, post hooks - is the same loop.
+func StreamPassthroughHTTP(
+	ctx *schemas.BifrostContext,
+	postHookRunner schemas.PostHookRunner,
+	postHookSpanFinalizer func(context.Context),
+	body io.ReadCloser,
+	params PassthroughStreamParams,
+) chan *schemas.BifrostStreamChunk {
+	return streamPassthrough(ctx, postHookRunner, postHookSpanFinalizer, func() { _ = body.Close() }, body, params)
+}
+
+func streamPassthrough(
+	ctx *schemas.BifrostContext,
+	postHookRunner schemas.PostHookRunner,
+	postHookSpanFinalizer func(context.Context),
+	release func(),
+	rawBodyStream io.Reader,
+	params PassthroughStreamParams,
+) chan *schemas.BifrostStreamChunk {
 	// Wrap reader with idle timeout to detect stalled streams.
 	bodyStream, stopIdleTimeout := NewIdleTimeoutReader(rawBodyStream, rawBodyStream, GetStreamIdleTimeout(ctx), ctx)
 	// Cancellation must close the raw stream to unblock reads.
@@ -71,9 +104,9 @@ func StreamPassthrough(
 			} else if ctx.Err() == context.DeadlineExceeded {
 				HandleStreamTimeout(ctx, postHookRunner, ch, params.Logger, postHookSpanFinalizer, params.CancellationBody)
 			}
-			close(ch)
+			CloseStream(ctx, ch)
 		}()
-		defer ReleaseStreamingResponse(ctx, resp)
+		defer release()
 		defer stopIdleTimeout()
 		defer stopCancellation()
 
@@ -92,7 +125,45 @@ func StreamPassthrough(
 					usage = u
 				}
 			}
+			if params.EndsStream != nil && params.EndsStream(payload) {
+				// Upstream may keep the body open after the end event; release must abandon it, not drain it.
+				ctx.SetValue(schemas.BifrostContextKeyStreamParkedAfterFinish, true)
+				return true
+			}
 			return params.UseTerminalDetector && isTerminalSSEPayload(payload)
+		}
+
+		// observeUndelimited handles streams that carry no SSE framing. Vertex
+		// :streamGenerateContent?alt=json sends the whole response as a single JSON array, so no
+		// "\n\n" delimiter ever arrives and drainFrames' loop never fires. Once the buffer holds a
+		// complete JSON value, each array element is observed like an SSE event.
+		observeUndelimited := func(payload []byte) bool {
+			p := bytes.TrimSpace(payload)
+			if len(p) == 0 {
+				return false
+			}
+			// Cheap gate before the full parse: a complete JSON value ends in ] or }.
+			if last := p[len(p)-1]; last != ']' && last != '}' {
+				return false
+			}
+			if p[0] == '[' {
+				var elems []json.RawMessage
+				if sonic.Unmarshal(p, &elems) != nil {
+					return false
+				}
+				terminal := false
+				for _, elem := range elems {
+					if observe(elem) {
+						terminal = true
+					}
+				}
+				return terminal
+			}
+			var obj map[string]any
+			if sonic.Unmarshal(p, &obj) != nil {
+				return false
+			}
+			return observe(p)
 		}
 
 		// drainFrames extracts every complete SSE event currently buffered and observes each.
@@ -109,6 +180,9 @@ func StreamPassthrough(
 				if observe(extractSSEDataPayload(frame)) {
 					return true
 				}
+			}
+			if params.UseTerminalDetector && observeUndelimited(pending.Bytes()) {
+				return true
 			}
 			// Bound the buffer. A single SSE event can be large — e.g. an
 			// image_generation.completed event carries the full base64 image with `usage` at
@@ -156,10 +230,12 @@ func StreamPassthrough(
 					},
 				}, ch, postHookSpanFinalizer)
 
-				pending.Write(chunk)
-				if drainFrames() {
-					finalize()
-					return
+				if !params.SkipFraming {
+					pending.Write(chunk)
+					if drainFrames() {
+						finalize()
+						return
+					}
 				}
 			}
 			if readErr == io.EOF {
@@ -186,11 +262,15 @@ func StreamPassthrough(
 }
 
 // isTerminalSSEPayload reports whether a framed SSE data payload signals stream completion
-// via a finishReason/usage terminal marker. ([DONE] is handled by the SSE readers as EOF.)
+// via [DONE] or a finishReason/usage terminal marker. Passthrough forwards raw bytes and never
+// runs the native SSE readers, so [DONE] must be recognized here.
 func isTerminalSSEPayload(payload []byte) bool {
 	p := bytes.TrimSpace(payload)
 	if len(p) == 0 {
 		return false
+	}
+	if bytes.Equal(p, sseDoneMarker) {
+		return true
 	}
 	return hasFinishReasonMarker(p)
 }

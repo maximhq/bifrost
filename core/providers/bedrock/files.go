@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"html"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/bytedance/sonic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -24,6 +26,18 @@ func escapeS3KeyForURL(key string) string {
 		parts[i] = url.PathEscape(p)
 	}
 	return strings.Join(parts, "/")
+}
+
+// s3BucketRe matches the DNS-compatible bucket names a virtual-hosted S3 URL can carry.
+var s3BucketRe = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
+
+// validateS3Bucket rejects bucket names that would change the request host, since the
+// bucket becomes the leading label of "https://{bucket}.{s3host}/".
+func validateS3Bucket(bucket string) *schemas.BifrostError {
+	if !s3BucketRe.MatchString(bucket) {
+		return providerUtils.NewBifrostBadRequestError(fmt.Sprintf("invalid s3 bucket name: %q", bucket))
+	}
+	return nil
 }
 
 // parseS3URI parses an S3 URI (s3://bucket/key or bucket-name) and returns bucket name and key.
@@ -62,6 +76,24 @@ func bedrockS3LocationFromURL(rawURL string) (*BedrockS3Location, bool) {
 		return nil, false
 	}
 	return &BedrockS3Location{URI: rawURL}, true
+}
+
+// bedrockS3LocationUnsupportedError refuses an s3:// reference bound for a model whose
+// Converse backend cannot read it. See schemas.BedrockModelSupportsS3Location for why the
+// alternative is not "let Bedrock reject it": Bedrock does not reject it, it drops the
+// source member and lets the model fail on the resulting empty source, several layers
+// away from anything the caller wrote.
+//
+// inlineHint names the working alternative for this content kind, because the two differ:
+// a document travels as base64 file_data, an image as a data: URL. Presigning is offered as
+// the other way out for the same reason Vertex's classifyURLSource offers it: Bifrost cannot
+// fetch the object on the caller's behalf here, since AWS credentials live on
+// BedrockKeyConfig and never reach a request converter.
+func bedrockS3LocationUnsupportedError(model, kind, rawURL, inlineHint string) error {
+	return providerUtils.InvalidRequestErrorf(
+		"model %q does not support s3:// references on Bedrock Converse (%s %s): the s3Location source is dropped for this model and the request then fails inside the model itself. Send the %s %s, or presign the object to an https:// URL",
+		model, kind, rawURL, kind, inlineHint,
+	)
 }
 
 // S3ListObjectsResponse represents S3 ListObjectsV2 response.

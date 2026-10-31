@@ -12,6 +12,7 @@ type BedrockRerankRequest struct {
 	Queries                []BedrockRerankQuery          `json:"queries"`
 	Sources                []BedrockRerankSource         `json:"sources"`
 	RerankingConfiguration BedrockRerankingConfiguration `json:"rerankingConfiguration"`
+	NextToken              *string                       `json:"nextToken,omitempty"`
 }
 
 // GetExtraParams implements RequestBodyWithExtraParams.
@@ -23,7 +24,11 @@ const (
 	bedrockRerankQueryTypeText            = "TEXT"
 	bedrockRerankSourceTypeInline         = "INLINE"
 	bedrockRerankInlineDocumentTypeText   = "TEXT"
+	bedrockRerankInlineDocumentTypeJSON   = "JSON"
 	bedrockRerankConfigurationTypeBedrock = "BEDROCK_RERANKING_MODEL"
+
+	// bedrockRerankChunksPerQuery is how many document chunks AWS bills as a single rerank query.
+	bedrockRerankChunksPerQuery = 100
 )
 
 type BedrockRerankQuery struct {
@@ -37,8 +42,9 @@ type BedrockRerankSource struct {
 }
 
 type BedrockRerankInlineSource struct {
-	Type         string                 `json:"type"`
-	TextDocument BedrockRerankTextValue `json:"textDocument"`
+	Type         string                  `json:"type"`
+	TextDocument *BedrockRerankTextValue `json:"textDocument,omitempty"`
+	JSONDocument map[string]interface{}  `json:"jsonDocument,omitempty"`
 }
 
 type BedrockRerankTextRef struct {
@@ -79,6 +85,7 @@ type BedrockRerankResult struct {
 type BedrockRerankResponseDocument struct {
 	Type         string                  `json:"type,omitempty"`
 	TextDocument *BedrockRerankTextValue `json:"textDocument,omitempty"`
+	JSONDocument map[string]interface{}  `json:"jsonDocument,omitempty"`
 }
 
 func (response *BedrockListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, aliases schemas.KeyAliases, unfiltered bool) *schemas.BifrostListModelsResponse {

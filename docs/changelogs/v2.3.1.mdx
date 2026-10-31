@@ -1,0 +1,253 @@
+---
+title: "v2.3.1"
+description: "v2.3.1 changelog - 2026-10-19"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v2.3.1
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v2.3.1
+    docker run -p 8080:8080 maximhq/bifrost:v2.3.1
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="2.3.1">
+## ✨ Features
+
+- **OpenAPI MCP Servers** - New `openapi` MCP connection type. Bifrost turns an OpenAPI or Swagger document (inline `spec`, config.json-only `spec_file`, or `spec_url`, capped at 5 MiB) into an in-process MCP server where each operation is a tool that calls the upstream API, with `security_credentials` per security scheme, an optional `base_url`, `include_deprecated` and `max_response_bytes`. Configure it in config.json, the MCP management API, or the new OpenAPI option in the New MCP Server sheet, which can also replace the document later. Go SDK users opt in with `MCPConfig.InProcessServerFactory`
+- **Gateway Tool Search** - Requests that defer tools with `defer_loading` on a model with no tool search of its own (Gemini, older GPT, Bedrock non-Claude) no longer get every tool loaded up front or a rejection. The deferred tools sit behind a `bifrost_tool_search` function that Bifrost resolves in the gateway (`select:` or BM25, at most 3 model calls per request), on both non-streaming and streaming Responses requests
+- **Passthrough Logs as Conversations** - With content logging on, passthrough calls (`/openai_passthrough`, `/anthropic_passthrough`, `/genai_passthrough`, ...) are parsed into the same fields as typed requests: chat, Responses, Anthropic messages, Gemini, embeddings, speech, transcription and images. Streamed responses are rebuilt from the recorded SSE, and multipart uploads are logged as a form summary. Rows are stored under their inferred request type with an `is_passthrough` flag, count in per-type filters, render as a conversation in the log sheet, and keep the raw bodies alongside
+- **Extra Fields as Response Headers** - New `client.extra_fields_placement` setting: `body` (default, unchanged behaviour) or `headers`. With `headers`, inference responses drop the `extra_fields` object from the body and send it as `x-bifrost-*` response headers on native and integration routes, unary and streaming. Set it in Client Settings, the config API or config.json
+- **Virtual Key Metadata** - Virtual keys carry string key/value `metadata` (for example `cost_center`, `owner`; keys use letters, digits, `.`, `_` and `-`, values up to 512 characters, up to 50 entries) set from config.json, Helm (`bifrost.governance.virtualKeys[].metadata`), the API (omit to keep, `{}` to clear) or the virtual key sheet. The list API filters by `metadata_<key>=<value>` and `search` matches metadata. Each log carries a snapshot of its key's metadata, so logs and spend filter by it, and the key's values override `x-bf-lh-*`, logging headers and `x-bf-dim-*` dimensions so callers cannot spoof attribution (thanks [@jimseiwert](https://github.com/jimseiwert)!)
+- **News Feeds** - The notification tray has a News tab with product and provider announcements from RSS and Atom feeds (Bifrost, OpenAI, Anthropic, Gemini and Cursor built in). Admins toggle built-in feeds and add custom ones with their own logo; the gateway fetches, caches and merges them server-side through `/api/rss/feeds` and `/api/rss/items`
+- **Code Mode Scripting** - The Starlark sandbox adds the `json` and `math` modules. A failed nested tool call reaches the script as an error value (`hasattr(r, "error")`, `r.error`) instead of a plain string, the `executeToolCode` reply carries only what the script prints and returns, runtime errors include a Python-style traceback, and error hints match the messages the interpreter actually emits
+- **Native Decisions on Azure and Databricks** - `/v1/decisions` reaches Microsoft's `Microsoft-Decision-1` on Azure (Foundry `/providers/microsoft/v1/systemone`, with API key, Entra ID or managed identity auth) and Databricks `ai_decide`. Typesafe accepts images by reference and answers `box` questions
+- **Vertex Session Routing** - Vertex keys accept `use_session_routing: true`, which sends the request's prompt cache key as `sessionId` on Gemini `generateContent` calls so requests sharing a prefix reach the same replica's implicit cache. Off by default, since Google enables it per project
+- **Secret References in Extra Headers** - `network_config.extra_headers` values accept `env.` and `vault.` references. Values are masked in API responses and restored on save, and the network form and the Databricks and Cloudflare migration planners treat masked values as unreadable
+- **Prompt Caching on Tool Calls** - `cache_control` on an assistant message's `tool_calls` entry on `/v1/chat/completions` now reaches the Anthropic and Bedrock `tool_use` block instead of being dropped
+- **Mistral Thinking Blocks** - Mistral streams that carry `thinking` blocks in `delta.content` arrays map them to reasoning instead of failing, and assistant reasoning is dropped before a request is sent, so replayed multi-turn conversations no longer hit Mistral's 422 `extra_forbidden`
+- **Observability Attributes** - Spans and Prometheus metrics carry the stored prompt a request ran (`bifrost.prompt.id`, `name`, `version`), MCP spans carry the client name and `bifrost.mcp.tool.is_error` when a tool reports failure, and the inbound W3C `tracestate` is captured for connectors. A2A operations export bodies, stream updates and the `a2a.client.operation.duration` metric to OTel, Maxim and telemetry, and gRPC ingress keeps caller request and trace IDs
+- **Calendar Date Presets** - The date filter adds Today, This week and This month. The server resolves them in the caller's time zone
+- **MCP OAuth Redirect URI Wildcard** - `oauth2_server_config.allowed_redirect_uris` syncs from config.json and accepts a bare `"*"` to approve any remote callback (shape checks still apply; partial patterns return 400). A startup warning and a dashboard alert flag the wildcard, and the MCP settings page has an Allowed redirect URIs input
+- **Antigravity Client Detection** - Requests from Antigravity CLI and Antigravity Desktop are logged as their own apps instead of Other or Gemini CLI, including behind the edge proxy
+
+## 🐞 Fixed
+
+- **Go Module Path** - The transports module is now published as `github.com/maximhq/bifrost/transports/v2`, so `go get` resolves the `v2.x` tags
+  <Note>
+  Go code that imports `github.com/maximhq/bifrost/transports/bifrost-http/...` must switch to `github.com/maximhq/bifrost/transports/v2/bifrost-http/...`.
+  </Note>
+- **Explicit Public URLs for Agent Gateway and Skills** - Bifrost no longer builds agent-card endpoints or skills marketplace clone URLs from the incoming `Host` header, which a caller controls. These URLs come only from the configured public URL; an existing `mcp_external_client_url` is copied to the new `skills_external_client_url` on upgrade when it is a public URL. The MCP settings page also requires an Issuer URL in OAuth and Both modes
+  <Warning>
+  If your Agent Gateway or skills marketplace relied on the request host, set the public URL explicitly before upgrading, or clients receive no usable agent-card endpoint.
+  </Warning>
+- **Agent Gateway Destination Permissions** - Card discovery, OAuth and JSON-RPC, REST and gRPC runtime connections (including through a proxy) only reach approved destinations and only forward credentials to permitted origins, per agent `credential_origins` and `require_public_target`. The unused `tenant` and `extension_uris` registration options are removed
+- **A2A Idle Goroutine Leak** - The A2A push relay no longer leaks one goroutine every 3 seconds (about 1,200 per hour on v2.3.0, until OOM), and ClickHouse no longer issues a heavyweight `agent_logs` mutation every minute when no rows match
+- **Calendar-Aligned Reset Windows** - Calendar-aligned budgets and rate limits honour the duration multiplier, so a `7d` budget no longer resets daily and a `2w` limit no longer resets weekly
+- **Agent OAuth Cache and ClickHouse Contention** - The Agent Gateway OAuth token and fingerprint caches are bounded at 5,000 entries (about 12 MB) with expired entries evicted first, and a failed token fetch drops its stale entry. ClickHouse agent-log correlation no longer loads large payload columns or rewrites complete rows, so large A2A responses no longer back up the logging queue
+- **Request Body Memory Retention** - Pooled keep-alive connections no longer keep their largest-ever request-body buffer, which made per-pod memory ratchet up with large LLM payloads. Buffers above `server.body_buffer_pool_limit_bytes` (default 4 MiB) are released after each request; larger bodies are still accepted up to `max_request_body_size_mb`. Set a negative value to restore the previous behaviour. Async jobs (`x-bf-async`) that forward the raw body now copy it instead of reading a buffer the next request can overwrite
+- **Oversized Request Bodies** - A body above `client_config.max_request_body_size_mb` returns `413` with `request_too_large` and the configured limit, and logs a warning, instead of a generic `400 Error when parsing request`
+- **Rolling Upgrade Migrations** - Postgres migrations wait for a live `CREATE INDEX CONCURRENTLY` from a killed pod instead of dropping it, logstore upgrade migrations no longer stall behind long queries on old replicas, and the Helm chart adds a configurable `startupProbe`
+- **OpenAI-Compatible xhigh Reasoning Effort** - `reasoning_effort: "xhigh"` is forwarded to vLLM, Ollama, SGL and custom OpenAI-compatible providers instead of being rewritten to `high` (thanks [@pranavthakur0-0](https://github.com/pranavthakur0-0)!)
+- **Tool Search Round-Trips** - Deferred tools on OpenAI gpt-5.4+ (and Azure and Bedrock gpt) get the `tool_search` OpenAI requires instead of a 400. OpenAI `tool_search_call` and `tool_search_output` items render for `/anthropic` clients. Claude's server tool search `server_tool_use` and `tool_search_tool_result` blocks replay unchanged, and `tool_reference` blocks in a client `tool_result` survive on the Anthropic and Vertex routes (thanks [@CMWR421](https://github.com/CMWR421)!)
+- **Client web_search and web_fetch Tools** - On the Anthropic endpoint, a client `tool_use` named `web_search` or `web_fetch` stays a function call instead of becoming a server tool call, so its `tool_result` is no longer orphaned and Bedrock stops rejecting the replay (thanks [@17jmumford](https://github.com/17jmumford)!)
+- **Bedrock Prompt Caching** - Anthropic automatic caching (top-level `cache_control`) now creates a Bedrock cache point after the last cacheable block instead of being dropped, and `cache_control` on a tool message emits one standalone `cachePoint` after the `toolResult`
+- **OpenRouter Claude Cache Markers** - `cache_control` markers to Claude models on OpenRouter are clamped to four, so Claude no longer rejects the request
+- **Parallel Tool Calls on Claude** - `parallel_tool_calls: false` and `tool_choice.disable_parallel_tool_use` reach Claude on every path (Anthropic Responses, Bedrock, Vertex), not only `/v1/chat/completions` to Anthropic direct
+- **Responses Instructions with System Messages** - Top-level `instructions` are no longer dropped when the input also has a system or developer message; they lead the system prompt as OpenAI does
+- **Chat Tool Results on Responses Models** - Tool messages with array content use Responses input block types, and an empty tool result keeps `output: ""`, so OpenAI and Azure no longer reject the converted request
+- **Responses Streaming Wire Format** - Lifecycle events no longer send `output: null` and no longer carry an invalid item object, which crashed or aborted strict clients
+- **Responses Input Items** - `configuration_update` items reach OpenAI with their reasoning effort (and are dropped on routes that cannot accept them), and replayed assistant messages with an `id` keep their `status`
+- **Converted Chat Stream Identity** - Chat streams served through the Responses conversion carry the upstream `id`, `model` and `created` on every chunk, so clients no longer see empty text
+- **Gemini Prompt Blocks** - A prompt Gemini or Vertex refuses outright (`promptFeedback.blockReason`) returns an error instead of a completed response with empty output
+- **Reasoning Token Usage** - Gemini and Vertex batch results include thinking tokens in `completion_tokens` and report `reasoning_tokens`, and SGLang's top-level `usage.reasoning_tokens` maps to `completion_tokens_details` (thanks [@Shashank2985](https://github.com/Shashank2985)!)
+- **Bedrock Converse Round-Trip** - Converse responses keep `stopReason` and `additionalModelResponseFields` verbatim
+- **Prompt Cache Mode on Bedrock Converse** - `prompt_cache_options` in `additionalModelRequestFields` on `/bedrock` Converse and ConverseStream now reaches OpenAI, Azure and Bedrock Mantle gpt-5.6 models. Send `{"mode": "explicit"}` with a `cachePoint` after the system prompt to cache only the system prompt, or without a `cachePoint` to turn caching off
+- **Azure Deployments Route** - Unknown chat fields are forwarded on the `/openai/deployments/...` route instead of being dropped
+- **Decisions** - Custom OpenAI-base providers are gated on `/v1/decisions` by their allowed requests alone, so models outside OpenAI's own list are no longer rejected with `unsupported_operation`, and answer objects a model JSON-encodes as strings are recovered
+- **Zero-Key Custom Providers in Routing** - A custom provider with no keys no longer claims every model during provider inference, and `no_key_supports_model` no longer stops the fallback chain
+- **Keyless Provider Discovery** - A custom provider switched from keyed to keyless runs model discovery despite leftover disabled keys, and those keys can be deleted
+- **Provider Key enabled in config.json** - `enabled` on a provider key in config.json or Helm now persists across restarts, without re-syncing keys that UI edits had turned back on
+- **MCP Endpoint Slugs** - A config.json MCP client without an `endpoint_slug` keeps its derived slug across re-syncs, so `/mcp/<slug>` no longer returns 403 after a reboot
+- **MCP Library Installed Badge** - "Installed" is computed server-side over every MCP client, not only the first 100 matched by URL or name
+- **Code Mode Tool Results** - Tools restored from the config store keep their parameters in Starlark stubs, and nested results arrive as structured values: multiple JSON blocks, `structuredContent` and JSON-in-a-string are decoded
+- **OAuth Refresh Failures** - Token endpoint rejections are classified by OAuth error code, so Slack and Atlassian refresh failures prompt re-auth
+- **Throughput Metric** - Dashboard tokens/sec counts only inference requests, so `list_models` and similar calls no longer skew it
+- **Passthrough Logs** - Passthrough log keys no longer show "(deleted)", and passthrough streams with no upstream `Content-Type` are no longer labelled `text/plain`
+- **SQLite Log Writes** - SQLite `SQLITE_BUSY` and `SQLITE_LOCKED` are treated as transient, and a failed batch is retried whole instead of row by row
+- **Model Catalog Prices** - Per-1M token prices show up to 4 decimals, so `$0.075` no longer displays as `$0.08` (thanks [@Shashank2985](https://github.com/Shashank2985)!)
+
+## 🗄️ Database Migrations
+
+<Warning>
+This release includes logstore migrations on the `logs` table (`logs_add_matview_refresh_state_table`, `logs_add_is_passthrough_column`). Adding a column to `logs` needs a short exclusive lock, which has to wait for in-flight log writes and long-running queries. Deploy during a low-traffic window.
+</Warning>
+
+- **add_mcp_client_openapi_spec_column** - Adds `openapi_spec` to `config_mcp_clients`. Non-reversible: dropping it would delete the only stored copy of every OpenAPI client's document. Additive; older binaries ignore it.
+- **add_mcp_client_openapi_config_json_column** - Adds `openapi_config_json` to `config_mcp_clients`. Non-reversible: dropping it would delete every OpenAPI client's base URL and stored credentials. Additive.
+- **add_client_config_extra_fields_placement_column** - Adds `extra_fields_placement` (`NOT NULL DEFAULT 'body'`) to `config_client`. Reversible: rollback drops the column.
+- **add_skills_external_client_url_column** - Adds `skills_external_client_url` to `config_client`. Non-reversible: dropping it would discard marketplace configuration. Additive.
+- **backfill_skills_external_client_url** - Copies `mcp_external_client_url` into `skills_external_client_url` where it is empty and the value is a public URL. Non-reversible: migrated marketplace configuration is preserved.
+- **add_virtual_key_metadata_column** - Adds the nullable `metadata` column to `governance_virtual_keys`. Non-reversible: dropping it would delete every key's metadata. Additive.
+- **add_a2a_private_allowlist_column** - Adds `a2a_private_allowlist_json` to `config_client`. Reversible: rollback drops the column.
+- **add_agent_destination_policy_columns** - Adds `credential_origins` and `require_public_target` to `config_agent_registrations`. Non-reversible: removing them would discard security policy. Additive.
+- **drop_agent_registration_options** - Drops `tenant` and `extension_uris` from `config_agent_registrations`. Non-reversible: the removed values cannot be recovered.
+  <Warning>
+  This migration drops columns. An older binary running alongside it during a rolling upgrade loses access to those values, and rolling back does not restore them.
+  </Warning>
+- **add_vertex_use_session_routing_column** - Adds `vertex_use_session_routing` to the provider keys table. Reversible: rollback drops the column.
+- **add_rss_feeds_table** - Creates `rss_feeds` and seeds the built-in feeds. Non-reversible: dropping it would delete custom feeds, their logos and every built-in enabled choice. Additive.
+- **add_rss_feeds_icon_url_column** - Adds `icon_url` to `rss_feeds` tables created before it existed. Non-reversible: dropping it would delete every custom feed logo. Additive.
+- **logs_add_matview_refresh_state_table** - Creates `matview_refresh_state` to record when each materialized view last refreshed across the cluster. Reversible: rollback drops the table.
+- **logs_add_is_passthrough_column** - Adds `is_passthrough` to `logs`. Rollback is a no-op and leaves the column in place. Additive.
+
+## 🐙 Closed GitHub Issues
+
+- [#3440](https://github.com/maximhq/bifrost/issues/3440) - [Feature]: Add nodeSelector support for all workloads managed by Helm Chart
+- [#6193](https://github.com/maximhq/bifrost/issues/6193) - [Bug]: Cannot pass `xhigh` reasoning effort to vLLM provider
+- [#6499](https://github.com/maximhq/bifrost/issues/6499) - [Feature]: Add "today" "this week" "this month" to date filter
+- [#7763](https://github.com/maximhq/bifrost/issues/7763) - All `/mcp/<slug>` endpoints return 403 access_denied on v2.1.1-enterprise (silent optional-interface assertion failure)
+- [#7933](https://github.com/maximhq/bifrost/issues/7933) - [Feature]: Custom metadata on virtual keys (API, UI, and spend filtering)
+- [#8078](https://github.com/maximhq/bifrost/issues/8078) - [Bug]: Anthropic endpoint converts a client tool_use named web_search/web_fetch into a server tool call, orphaning its tool_result (Bedrock 400)
+- [#8324](https://github.com/maximhq/bifrost/issues/8324) - [bug]: Model catalog rounds per-1M token prices to 2 decimals, so $0.075 shows as $0.08 and $0.0004 as $0.00
+- [#8359](https://github.com/maximhq/bifrost/issues/8359) - [Bug]: ClickHouse store still issues a heavyweight mutation on agent_logs every minute
+- [#8361](https://github.com/maximhq/bifrost/issues/8361) - [Bug]: /anthropic/v1/messages to OpenAI gpt-5.4+ fails with 400 when tools have defer_loading but no tool_search tool
+- [#8383](https://github.com/maximhq/bifrost/issues/8383) - [Bug]: calendar_aligned budgets and rate limits silently ignore the numeric part of reset_duration (7d resets daily)
+- [#8500](https://github.com/maximhq/bifrost/issues/8500) - [Bug]: Keyless provider with residual disabled keys never discovers models - key CRUD blocked, deadlock
+- [#8541](https://github.com/maximhq/bifrost/issues/8541) - [Bug]: Bedrock: top-level cache_control is silently dropped, automatic caching never creates a cache point
+- [#8548](https://github.com/maximhq/bifrost/issues/8548) - [Bug]: MCP Library "Installed" badge only checks the first 100 clients and only matches by URL or name
+- [#8554](https://github.com/maximhq/bifrost/issues/8554) - [Bug]: Bedrock Converse cache points no longer limit gpt-5.6 caching to the system prompt in v2.3.0, and prompt_cache_options cannot be sent on this route
+- [#8568](https://github.com/maximhq/bifrost/issues/8568) - [Bug]: Empty tool message breaks requests to Responses API models
+- [#8590](https://github.com/maximhq/bifrost/issues/8590) - [Bug]: goroutine count climbs ~1,200/hour on v2.3.0 until OOM, even at low traffic
+- [#8616](https://github.com/maximhq/bifrost/issues/8616) - [Bug]: Responses API configuration_update input items drop the reasoning field
+- [#8684](https://github.com/maximhq/bifrost/issues/8684) - [Bug]: Gemini and Vertex batch results ignore thinking tokens (thoughtsTokenCount), so batch cost, budgets and totals are understated
+- [#8709](https://github.com/maximhq/bifrost/issues/8709) - A2A push relay leaks one goroutine every 3s: `gateContext` result is never cancelled (v2.3.0)
+
+</Update>
+<Update label="Core" description="1.13.0">
+- feat: openapi MCP connection type, backed by an in-process server built through the new MCPConfig.InProcessServerFactory hook
+- feat: cache_control on chat assistant tool_calls reaches the Anthropic and Bedrock tool_use block
+- feat: native decisions on Azure (Microsoft-Decision-1) and Databricks (ai_decide), and Typesafe image assets by reference plus box questions
+- feat: Vertex keys accept use_session_routing to send the prompt cache key as sessionId
+- feat: NetworkConfig.ExtraHeaders values accept env. and vault. references and are fully redacted in API responses
+- feat: Mistral streamed thinking blocks map to reasoning, and assistant reasoning is dropped before sending to avoid 422 extra_forbidden
+- feat: code mode adds the json and math Starlark modules, returns failed tool calls as error values, trims replies to what the script prints and returns, and adds tracebacks and accurate error hints
+- feat: spans carry the stored prompt (bifrost.prompt.id/name/version), MCP client name and bifrost.mcp.tool.is_error, and the inbound W3C tracestate; A2A operations export complete observability data
+- feat: Antigravity CLI and Antigravity Desktop user agent detection
+- fix: Anthropic tool_reference blocks in a client tool_result survive for custom tool search (thanks [@CMWR421](https://github.com/CMWR421)!)
+- fix: Claude server tool search blocks replay unchanged
+- fix: Bedrock creates a cache point for Anthropic automatic caching and emits a standalone cachePoint after toolResult
+- fix: Bedrock Converse prompt_cache_options in additionalModelRequestFields reaches Params.PromptCacheOptions, so gpt-5.6 targets run in the caller's cache mode
+- fix: OpenRouter clamps cache_control markers to four for Claude models
+- fix: parallel_tool_calls false reaches Claude on every path
+- fix: Responses instructions are merged ahead of system and developer messages instead of dropped
+- fix: chat tool results convert to Responses input block types and keep an empty output
+- fix: Responses lifecycle events no longer send output null or an invalid item object
+- fix: configuration_update items are forwarded with their reasoning effort, and assistant messages with an id keep their status
+- fix: converted chat streams keep id, model and created on every chunk
+- fix: Gemini promptFeedback.blockReason returns an error instead of an empty completed response
+- fix: SGLang top-level usage.reasoning_tokens maps to completion_tokens_details
+- fix: Bedrock Converse responses keep stopReason and additionalModelResponseFields verbatim
+- fix: Azure deployments route forwards unknown chat fields
+- fix: custom OpenAI-base providers are gated on decisions by allowed requests alone, and stringified decision answer objects are recovered
+- fix: no_key_supports_model no longer stops the inferred fallback chain
+- fix: Agent Gateway OAuth caches bounded at 5,000 entries, A2A relay goroutine leak, destination permissions and credential boundaries
+- fix: code mode stubs render restored tool schemas, and nested tool results arrive as structured values
+- chore: Go 1.27.2
+- [fix]: Gemini and Vertex batch results include thinking tokens (thoughtsTokenCount) in completion_tokens and report reasoning_tokens [@Shashank2985](https://github.com/Shashank2985)
+- [fix]: Anthropic-compatible requests keep a client tool_use named web_search or web_fetch as a function call. Only server_tool_use blocks become web_search_call / web_fetch_call, so the tool_result is no longer orphaned and Bedrock stops rejecting the replay with "toolResult blocks ... exceeds the number of toolUse blocks" [@jacob-pattern](https://github.com/jacob-pattern)
+- fix: OpenAI tool_search_call / tool_search_output items reach /anthropic clients - a client-executed search becomes a tool_use for the client's own search function, a hosted search becomes server_tool_use plus tool_search_tool_result
+- fix: deferred tools on OpenAI gpt-5.4+ (and Azure / Bedrock gpt) get the tool_search OpenAI requires instead of a 400 - a client search function (Claude Code's ToolSearch) becomes a client-executed tool_search with its history replayed as tool_search_call / tool_search_output, otherwise the hosted tool_search is added
+- feat: gateway-run tool search for deferred tools on models with no tool search of their own (Gemini, older GPT, Bedrock non-Claude, ...) - the deferred tools are held back behind a bifrost_tool_search function that Bifrost resolves in the gateway (select: or BM25), at most 3 model calls per request (non-streaming)
+- feat: the gateway-run tool search also serves streaming Responses requests, splicing the search turns into one client stream
+- fix: preserve xhigh reasoning effort for OpenAI-compatible destinations (vLLM, Ollama, SGL, and custom providers) instead of rewriting it to high using OpenAI model-name rules [@pranavthakur0-0](https://github.com/pranavthakur0-0)
+
+</Update>
+<Update label="Framework" description="1.10.0">
+- feat: openapimcp package synthesizes an MCP server from an OpenAPI document, and the config store persists openapi_config
+- feat: passthroughparse package parses passthrough bodies into typed requests, rebuilds streamed responses, summarizes multipart uploads and infers the request type; streaming exports its chat and Responses message builders
+- feat: rssfeed package and rss_feeds config store table
+- feat: extra_fields_placement client setting
+- feat: Vertex use_session_routing key column
+- feat: W3C tracestate extraction and A2A observability exports
+- fix: oauth2_server_config.allowed_redirect_uris syncs from config.json and accepts a bare *
+- fix: Agent Gateway and skills marketplaces require explicit public URLs, and agent registrations carry destination policy
+- fix: config.json MCP clients keep their derived endpoint_slug on re-sync
+- fix: provider key enabled from config.json persists without re-syncing UI-edited keys
+- fix: migrations wait for a live concurrent index build, and logstore upgrade migrations no longer stall behind old replicas
+- fix: OAuth token endpoint rejections are classified by error code
+- fix: throughput counts only inference requests
+- fix: ClickHouse A2A cleanup and correlation no longer issue needless mutations or load payload columns
+- fix: SQLite busy and locked log batches are retried whole
+- fix: custom providers with no keys no longer claim every model in the model catalog
+- chore: upgraded core to v1.13.0 and Go to 1.27.2
+[feat]: virtual key list filters by metadata key/value pairs and search matches metadata [@jimseiwert](https://github.com/jimseiwert)
+[feat]: virtual keys carry custom key/value metadata (validated, migrated, included in the config hash only when set) [@jimseiwert](https://github.com/jimseiwert)
+
+</Update>
+<Update label="compat" description="0.5.0">
+- feat: decision emulation defers to native Azure and Databricks decision support
+- chore: upgraded core to v1.13.0 and framework to v1.10.0
+
+</Update>
+<Update label="governance" description="1.10.0">
+- fix: Agent Gateway requests honor destination permissions and credential boundaries
+- chore: upgraded core to v1.13.0 and framework to v1.10.0
+- [feat]: stamp the resolved virtual key's metadata on the request context for logging [@jimseiwert](https://github.com/jimseiwert)
+
+</Update>
+<Update label="jsonparser" description="1.6.11">
+- chore: upgraded core to v1.13.0 and framework to v1.10.0
+
+</Update>
+<Update label="logging" description="1.10.0">
+- feat: passthrough calls are stored as parsed conversations under their inferred request type, including non-text routes and multipart uploads
+- fix: SQLite busy and locked batches are retried whole instead of row by row
+- chore: upgraded core to v1.13.0 and framework to v1.10.0
+- [feat]: snapshot virtual key metadata onto log metadata; the key's values override request-supplied entries [@jimseiwert](https://github.com/jimseiwert)
+
+</Update>
+<Update label="maxim" description="1.7.11">
+- feat: completed-trace adapter for A2A operations
+- chore: upgraded core to v1.13.0 and framework to v1.10.0
+
+</Update>
+<Update label="mocker" description="1.6.11">
+- chore: upgraded core to v1.13.0 and framework to v1.10.0
+
+</Update>
+<Update label="modelcatalogresolver" description="1.1.11">
+- chore: upgraded core to v1.13.0 and framework to v1.10.0
+
+</Update>
+<Update label="otel" description="1.6.1">
+- feat: A2A spans export request and response bodies and stream updates
+- chore: upgraded core to v1.13.0 and framework to v1.10.0
+
+</Update>
+<Update label="prompts" description="1.1.11">
+- chore: upgraded core to v1.13.0 and framework to v1.10.0
+
+</Update>
+<Update label="routing" description="1.2.1">
+- chore: upgraded core to v1.13.0 and framework to v1.10.0
+
+</Update>
+<Update label="semanticcache" description="1.7.1">
+- chore: upgraded core to v1.13.0 and framework to v1.10.0
+
+</Update>
+<Update label="telemetry" description="1.9.1">
+- feat: A2A operation metrics export
+- chore: upgraded core to v1.13.0 and framework to v1.10.0
+
+## 🐞 Fixed
+
+- **Active Requests Gauge** - `bifrost_active_requests` no longer drifts upward when clients cancel streaming requests before the stream starts (for example HTTP 499 while waiting for upstream headers), or when a plugin rejects a streaming request. Each request now holds at most one slot and releases it exactly once, so dashboards and alerts built on the inflated value will see lower, correct numbers
+
+</Update>

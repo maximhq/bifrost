@@ -53,7 +53,7 @@ func (pricingOverrideTestGovernanceManager) ReloadModelConfig(context.Context, s
 func (pricingOverrideTestGovernanceManager) RemoveModelConfig(context.Context, string) error {
 	return nil
 }
-func (pricingOverrideTestGovernanceManager) ReloadProvider(context.Context, schemas.ModelProvider) (*configstoreTables.TableProvider, error) {
+func (pricingOverrideTestGovernanceManager) ReloadProvider(context.Context, schemas.ModelProvider, bool) (*configstoreTables.TableProvider, error) {
 	return nil, nil
 }
 func (pricingOverrideTestGovernanceManager) RemoveProvider(context.Context, schemas.ModelProvider) error {
@@ -152,4 +152,8 @@ func TestUpdatePricingOverride_ReplacesFullBody(t *testing.T) {
 	// Omitted field must be cleared — patch is always fully replaced, not merged.
 	assert.Nil(t, patch.OutputCostPerToken)
 	assert.Empty(t, stored.ConfigHash)
+}
+
+func (pricingOverrideTestGovernanceManager) ModelConfigIndexKey(model string, provider *string) string {
+	return governance.CanonicalModelConfigName(model, provider)
 }

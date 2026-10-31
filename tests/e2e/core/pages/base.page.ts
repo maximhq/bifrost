@@ -24,8 +24,8 @@ export class BasePage {
    */
   getToast(type?: 'success' | 'error' | 'loading' | 'default'): Locator {
     const selector = type
-      ? `[data-sonner-toast][data-type="${type}"]:not([data-removed="true"])`
-      : '[data-sonner-toast]:not([data-removed="true"])'
+      ? `[data-sonner-toast][data-type="${type}"]:not([data-removed="true"]):not([data-e2e-dismissed])`
+      : '[data-sonner-toast]:not([data-removed="true"]):not([data-e2e-dismissed])'
     return this.page.locator(selector).first()
   }
 
@@ -38,6 +38,8 @@ export class BasePage {
     if (message) {
       await expect(toast).toContainText(message)
     }
+    // Consumed: retire it so the next wait cannot match this stale toast.
+    await this.waitForToastsToDisappear()
   }
 
   /**
@@ -49,27 +51,18 @@ export class BasePage {
     if (message) {
       await expect(toast).toContainText(message)
     }
+    // Consumed: retire it so the next wait cannot match this stale toast.
+    await this.waitForToastsToDisappear()
   }
 
   /**
-   * Wait for all toasts to disappear
+   * Retire every toast currently on screen: marks them so toast locators skip them
+   * and the fixture's CSS hides them. Instant, unlike waiting ~5s for auto-dismiss.
    */
-  async waitForToastsToDisappear(timeout = 5000): Promise<void> {
-    const toasts = this.page.locator('[data-sonner-toast]:not([data-removed="true"])')
-    try {
-      // Wait for all toasts to be detached from DOM
-      await toasts.first().waitFor({ state: 'detached', timeout }).catch(() => {
-        // If no toasts exist, that's fine
-      })
-      // Also check if count is 0
-      const count = await toasts.count()
-      if (count > 0) {
-        // Wait for toasts to be hidden
-        await expect(toasts.first()).not.toBeVisible({ timeout: 3000 }).catch(() => {})
-      }
-    } catch {
-      // No toasts present, which is fine
-    }
+  async waitForToastsToDisappear(_timeout?: number): Promise<void> {
+    await this.page
+      .evaluate(() => document.querySelectorAll('[data-sonner-toast]').forEach((t) => t.setAttribute('data-e2e-dismissed', '')))
+      .catch(() => {})
   }
 
   /**
@@ -124,11 +117,7 @@ export class BasePage {
    * Force dismiss all toasts by clicking away and waiting
    */
   async forceCloseToasts(): Promise<void> {
-    // Click somewhere neutral to potentially dismiss toasts
-    await this.page.locator('body').click({ position: { x: 10, y: 10 }, force: true }).catch(() => {})
-    
-    // Wait for toasts to auto-dismiss (they typically auto-dismiss after 4-5 seconds)
-    await this.waitForToastsToDisappear(8000)
+    await this.waitForToastsToDisappear()
   }
 
   /**

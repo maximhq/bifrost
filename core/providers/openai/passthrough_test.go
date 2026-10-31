@@ -17,10 +17,26 @@ func TestBuildPassthroughURLWithUpstreamOverride(t *testing.T) {
 		UpstreamURL: "https://chatgpt.com",
 	}
 
-	got := provider.buildPassthroughURL(req)
+	got, err := provider.buildPassthroughURL(req)
+	if err != nil {
+		t.Fatalf("buildPassthroughURL unexpected error: %v", err)
+	}
 	want := "https://chatgpt.com/backend-api/codex/responses?conversation=abc"
 	if got != want {
 		t.Fatalf("buildPassthroughURL = %q, want %q", got, want)
+	}
+}
+
+// TestBuildPassthroughURLRejectsForeignAuthority verifies a remainder that would move the
+// resolved authority off the configured upstream is refused instead of being dialed. Only
+// the upstream-override branch forwards the path verbatim; the default branch always
+// prepends /v1, which anchors the path on the OpenAI host.
+func TestBuildPassthroughURLRejectsForeignAuthority(t *testing.T) {
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{}, passthroughTestLogger{})
+
+	req := &schemas.BifrostPassthroughRequest{Path: "//evil.example/x", UpstreamURL: "https://chatgpt.com"}
+	if got, err := provider.buildPassthroughURL(req); err == nil {
+		t.Fatalf("buildPassthroughURL(%q) = %q, want error", req.Path, got)
 	}
 }
 
@@ -34,7 +50,10 @@ func TestBuildPassthroughURLDefaultsToOpenAIV1(t *testing.T) {
 		RawQuery: "stream=true",
 	}
 
-	got := provider.buildPassthroughURL(req)
+	got, err := provider.buildPassthroughURL(req)
+	if err != nil {
+		t.Fatalf("buildPassthroughURL unexpected error: %v", err)
+	}
 	want := "https://api.openai.com/v1/responses?stream=true"
 	if got != want {
 		t.Fatalf("buildPassthroughURL = %q, want %q", got, want)

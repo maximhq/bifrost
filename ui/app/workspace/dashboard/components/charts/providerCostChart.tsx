@@ -1,3 +1,4 @@
+import { StartTruncatedLabel } from "@/components/ui/truncatedLabel";
 import type { ProviderCostHistogramResponse } from "@/lib/types/logs";
 import { formatCurrencyNumber } from "@/lib/utils/numbers";
 import { memo, useMemo } from "react";
@@ -12,6 +13,7 @@ import {
 	OTHER_SERIES_KEY,
 	OTHER_SERIES_LABEL,
 } from "../../utils/chartUtils";
+import { CappedBarStack } from "./barShape";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 
@@ -43,9 +45,9 @@ function CustomTooltip({ active, payload, selectedProvider, displayProviders }: 
 								<div key={provider} className="flex items-center justify-between gap-4">
 									<span className="flex items-center gap-1.5">
 										<span className="h-2 w-2 rounded-full" style={{ backgroundColor: isOther ? OTHER_SERIES_COLOR : getModelColor(idx) }} />
-										<span className="max-w-[120px] truncate text-zinc-600 dark:text-zinc-400">
+										<StartTruncatedLabel className="max-w-[220px] text-zinc-600 dark:text-zinc-400">
 											{isOther ? OTHER_SERIES_LABEL : provider}
-										</span>
+										</StartTruncatedLabel>
 									</span>
 									<span className="font-medium">{formatCost(cost)}</span>
 								</div>
@@ -119,7 +121,7 @@ function ProviderCostChartImpl({ data, chartType, startTime, endTime, selectedPr
 
 	return (
 		<ChartErrorBoundary resetKey={`${startTime}-${endTime}-${chartData.length}-${selectedProvider}`}>
-			<ResponsiveContainer width="100%" height="100%">
+			<ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
 				{chartType === "bar" ? (
 					<BarChart {...commonProps} barCategoryGap={1}>
 						<CartesianGrid strokeDasharray="3 3" vertical={false} className="stroke-zinc-200 dark:stroke-zinc-700" />
@@ -146,18 +148,18 @@ function ProviderCostChartImpl({ data, chartType, startTime, endTime, selectedPr
 							content={<CustomTooltip selectedProvider={selectedProvider} displayProviders={displayProviders} />}
 							cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }}
 						/>
-						{displayProviders.map((provider, idx) => (
-							<Bar
-								isAnimationActive={false}
-								key={provider}
-								dataKey={`provider_${idx}`}
-								stackId="cost"
-								fill={provider === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx)}
-								fillOpacity={0.9}
-								barSize={30}
-								radius={idx === displayProviders.length - 1 ? [2, 2, 0, 0] : [0, 0, 0, 0]}
-							/>
-						))}
+						<CappedBarStack buckets={chartData.length}>
+							{displayProviders.map((provider, idx) => (
+								<Bar
+									isAnimationActive={false}
+									key={provider}
+									dataKey={`provider_${idx}`}
+									fill={provider === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx)}
+									fillOpacity={0.9}
+									barSize={30}
+								/>
+							))}
+						</CappedBarStack>
 					</BarChart>
 				) : (
 					<AreaChart {...commonProps}>

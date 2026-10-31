@@ -1,8 +1,8 @@
+import { ComboboxSelect } from "@/components/ui/combobox";
+import { cn } from "@/lib/utils";
+import FieldLabel from "./fieldLabel";
 import ParameterFieldView from "./paramFieldView";
 import { Parameter } from "./types";
-import { cn } from "@/lib/utils";
-import { ComboboxSelect } from "@/components/ui/combobox";
-import FieldLabel from "./fieldLabel";
 
 interface Props {
 	field: Parameter;
@@ -57,7 +57,7 @@ export default function SelectFieldView(props: Props) {
 					onValueChange={(vals) => props.onChange(field.accesorKey ? { [field.accesorKey]: vals } : vals)}
 					disabled={props.disabled}
 					placeholder={`Add ${field.label}`}
-					className="h-8"
+					className="h-9"
 				/>
 			) : (
 				<ComboboxSelect
@@ -67,7 +67,7 @@ export default function SelectFieldView(props: Props) {
 					disabled={props.disabled}
 					placeholder="Select"
 					disableSearch
-					className="h-8"
+					className="h-9"
 				/>
 			)}
 

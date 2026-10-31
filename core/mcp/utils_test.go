@@ -1,10 +1,14 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/maximhq/bifrost/core/internal/injectedauth"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -209,4 +213,420 @@ func TestConvertMCPToolToBifrostSchema_PreservesDefs(t *testing.T) {
 	assert.Contains(t, s, `"$defs"`, "marshalled schema must carry $defs")
 	assert.Contains(t, s, "Preferences", "definition name must be present")
 	assert.Contains(t, s, `"$ref"`, "the property $ref must still be present (resolution happens per-provider)")
+}
+
+// TestCanAutoExecuteTool covers the allow-list check that is now the sole enforcement
+// point for whether Code Mode may run a tool without human approval (see the call site
+// in codemode/starlark/executecode.go's callMCPTool). A tool must be on BOTH
+// ToolsToExecute (executable at all) AND ToolsToAutoExecute (exempt from approval) -
+// missing from either denies auto-execute.
+func TestCanAutoExecuteTool(t *testing.T) {
+	cfg := func(toolsToExecute, toolsToAutoExecute schemas.WhiteList) *schemas.MCPClientConfig {
+		return &schemas.MCPClientConfig{
+			Name:               "video",
+			ToolsToExecute:     toolsToExecute,
+			ToolsToAutoExecute: toolsToAutoExecute,
+		}
+	}
+
+	tests := []struct {
+		name   string
+		tool   string
+		config *schemas.MCPClientConfig
+		want   bool
+	}{
+		{
+			name:   "tool on both allow-lists auto-executes",
+			tool:   "video-echo_message",
+			config: cfg(schemas.WhiteList{"echo_message", "delete_video"}, schemas.WhiteList{"echo_message"}),
+			want:   true,
+		},
+		{
+			name:   "tool executable but not on the auto-execute allow-list is denied - the delete_video case",
+			tool:   "video-delete_video",
+			config: cfg(schemas.WhiteList{"echo_message", "delete_video"}, schemas.WhiteList{"echo_message"}),
+			want:   false,
+		},
+		{
+			name:   "tool not executable at all is denied regardless of auto-execute list",
+			tool:   "video-delete_video",
+			config: cfg(schemas.WhiteList{"echo_message"}, schemas.WhiteList{"echo_message", "delete_video"}),
+			want:   false,
+		},
+		{
+			name:   "nil ToolsToAutoExecute denies everything",
+			tool:   "video-echo_message",
+			config: cfg(schemas.WhiteList{"*"}, nil),
+			want:   false,
+		},
+		{
+			name:   "empty ToolsToAutoExecute denies everything",
+			tool:   "video-echo_message",
+			config: cfg(schemas.WhiteList{"*"}, schemas.WhiteList{}),
+			want:   false,
+		},
+		{
+			name:   "wildcard ToolsToAutoExecute allows any executable tool",
+			tool:   "video-delete_video",
+			config: cfg(schemas.WhiteList{"*"}, schemas.WhiteList{"*"}),
+			want:   true,
+		},
+		{
+			name:   "nil config denies everything",
+			tool:   "video-echo_message",
+			config: nil,
+			want:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, CanAutoExecuteTool(tt.tool, tt.config))
+		})
+	}
+}
+
+// TestAuthorizeCodeModeToolCall covers the invocation-time check callMCPTool runs for
+// every tool Code Mode calls. tools_to_execute always applies; tools_to_auto_execute
+// applies only when the agent loop marked the call unattended. An approved (or
+// application-driven) run must not be denied by the auto-execute list.
+func TestAuthorizeCodeModeToolCall(t *testing.T) {
+	cfg := &schemas.MCPClientConfig{
+		Name:               "video",
+		ToolsToExecute:     schemas.WhiteList{"echo_message", "delete_video"},
+		ToolsToAutoExecute: schemas.WhiteList{"echo_message"},
+	}
+
+	tests := []struct {
+		name       string
+		tool       string
+		unattended bool
+		wantErr    string
+	}{
+		{name: "unattended auto-executable tool runs", tool: "video-echo_message", unattended: true},
+		{name: "unattended tool needing approval is refused", tool: "video-delete_video", unattended: true, wantErr: "requires approval"},
+		{name: "approved tool needing approval runs", tool: "video-delete_video", unattended: false},
+		{name: "unattended non-executable tool is refused", tool: "video-drop_all", unattended: true, wantErr: "not in tools_to_execute"},
+		{name: "approved non-executable tool is refused", tool: "video-drop_all", unattended: false, wantErr: "not in tools_to_execute"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if tt.unattended {
+				ctx.SetValue(schemas.BifrostContextKeyMCPUnattendedExecution, true)
+			}
+			err := AuthorizeCodeModeToolCall(ctx, tt.tool, cfg)
+			if tt.wantErr == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func injectedToolTestManager(state schemas.MCPConnectionState) *MCPManager {
+	return &MCPManager{
+		logger: &MockLogger{},
+		clientMap: map[string]*schemas.MCPClientState{
+			"id-tavily": {
+				State: state,
+				ExecutionConfig: &schemas.MCPClientConfig{
+					ID:   "id-tavily",
+					Name: "tavily",
+					// The operator exposes nothing from this client to callers. The
+					// provider's injected web search must still resolve and run.
+					ToolsToExecute: schemas.WhiteList{},
+				},
+				ToolMap: map[string]schemas.ChatTool{
+					"tavily-search": {
+						Type: schemas.ChatToolTypeFunction,
+						Function: &schemas.ChatToolFunction{
+							Name:        "tavily-search",
+							Description: schemas.Ptr("Search the web"),
+							Parameters:  &schemas.ToolFunctionParameters{Type: "object", Required: []string{"query"}},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func TestGetInjectedTool(t *testing.T) {
+	m := injectedToolTestManager(schemas.MCPConnectionStateHealthy)
+
+	tool, err := m.GetInjectedTool("tavily", "search")
+	require.NoError(t, err, "injected tools ignore tools_to_execute: the provider config is the authorization")
+	require.NotNil(t, tool.Function)
+	assert.Equal(t, "tavily-search", tool.Function.Name)
+
+	tool.Function.Name = "mutated"
+	tool.Function.Parameters.Required[0] = "mutated"
+	tool.Function.Parameters.Type = "mutated"
+	again, err := m.GetInjectedTool("tavily", "search")
+	require.NoError(t, err)
+	assert.Equal(t, "tavily-search", again.Function.Name, "the returned tool must be a copy, never the client's ToolMap entry")
+	assert.Equal(t, "object", again.Function.Parameters.Type, "the parameter schema is copied too")
+	assert.Equal(t, []string{"query"}, again.Function.Parameters.Required, "nested schema slices are copied too")
+
+	_, err = m.GetInjectedTool("exa", "search")
+	assert.ErrorContains(t, err, "not found")
+	_, err = m.GetInjectedTool("tavily", "crawl")
+	assert.ErrorContains(t, err, "does not expose")
+
+	_, err = injectedToolTestManager(schemas.MCPConnectionStateDisabled).GetInjectedTool("tavily", "search")
+	assert.ErrorContains(t, err, "disabled")
+}
+
+// fakeCodeMode serves one code-mode tool, executeToolCode.
+type fakeCodeMode struct{ CodeMode }
+
+func (fakeCodeMode) IsCodeModeTool(toolName string) bool { return toolName == "executeToolCode" }
+
+// A code-mode tool is listed only when the request can reach a code-mode client, so calling it
+// by name must be refused under the same rule.
+func TestPrepareToolExecution_CodeModeToolNeedsAReachableCodeModeClient(t *testing.T) {
+	m := newManagerWithInstructions(t)
+	addCodeModeClient(t, m, "codey")
+	m.toolsManager.SetCodeMode(fakeCodeMode{})
+	name := "executeToolCode"
+	request := &schemas.BifrostMCPRequest{
+		RequestType:                  schemas.MCPRequestTypeChatToolCall,
+		ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{Function: schemas.ChatAssistantMessageToolCallFunction{Name: &name}},
+	}
+	for _, tc := range []struct {
+		name    string
+		include []string
+		wantErr bool
+	}{
+		{"not narrowed", nil, false},
+		{"narrowed to the code-mode client", []string{"codey"}, false},
+		{"narrowed away from the code-mode client", []string{"alpha"}, true},
+		{"no code-mode client at all, not narrowed", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if tc.include != nil {
+				ctx.SetValue(schemas.MCPContextKeyIncludeClients, tc.include)
+			}
+			if tc.name == "no code-mode client at all, not narrowed" {
+				m.mu.Lock()
+				delete(m.clientMap, "codey-id")
+				m.mu.Unlock()
+			}
+			_, _, release, err := m.prepareToolExecution(ctx, request)
+			if tc.wantErr {
+				assert.ErrorContains(t, err, "not permitted")
+				return
+			}
+			require.NoError(t, err)
+			release()
+		})
+	}
+}
+
+func TestCheckToolExecutionPermitted_InjectedToolBypassesFilters(t *testing.T) {
+	m := injectedToolTestManager(schemas.MCPConnectionStateHealthy)
+	state := m.clientMap["id-tavily"]
+
+	plain := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	assert.ErrorContains(t, checkToolExecutionPermitted(plain, state, "tavily-search", m.logger), "ToolsToExecute",
+		"without the injected marker the client's allow-list still applies")
+
+	injected := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	injectedauth.Set(injected, "tavily", "tavily-search")
+	injected.SetValue(schemas.MCPContextKeyIncludeClients, []string{"other"})
+	injected.SetValue(schemas.MCPContextKeyIncludeTools, []string{"other-tool"})
+	assert.NoError(t, checkToolExecutionPermitted(injected, state, "tavily-search", m.logger),
+		"the injected tool runs whatever the caller's include lists say")
+
+	other := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	injectedauth.Set(other, "tavily", "tavily-crawl")
+	assert.Error(t, checkToolExecutionPermitted(other, state, "tavily-search", m.logger),
+		"the marker authorizes exactly one tool, never its siblings")
+
+	wrongClient := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	injectedauth.Set(wrongClient, "exa", "tavily-search")
+	assert.Error(t, checkToolExecutionPermitted(wrongClient, state, "tavily-search", m.logger),
+		"the marker authorizes one client's tool; the executing client must be that client")
+
+	disabled := *state
+	disabled.State = schemas.MCPConnectionStateDisabled
+	assert.ErrorContains(t, checkToolExecutionPermitted(injected, &disabled, "tavily-search", m.logger), "disabled",
+		"a disabled client stays off even for injected tools")
+}
+
+// A plugin holds the request context and can lift BlockRestrictedWrites, so a marker
+// reachable through public SetValue is not a trusted boundary. Only core may plant it.
+func TestCheckToolExecutionPermitted_PluginCannotForgeInjectedMarker(t *testing.T) {
+	m := injectedToolTestManager(schemas.MCPConnectionStateHealthy)
+	state := m.clientMap["id-tavily"]
+
+	forged := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	forged.BlockRestrictedWrites()
+	forged.Root().UnblockRestrictedWrites()
+	forged.SetValue(schemas.BifrostContextKey("bifrost-injected-tool-execution"), struct{ ClientName, ToolName string }{ClientName: "tavily", ToolName: "tavily-search"})
+	assert.ErrorContains(t, checkToolExecutionPermitted(forged, state, "tavily-search", m.logger), "ToolsToExecute",
+		"a marker written through public SetValue must not bypass the client's allow-list")
+}
+
+// A plugin running inside a genuine injected execution finds no marker among the user
+// values, so writing a look-alike under any of them never retargets it to another tool.
+func TestCheckToolExecutionPermitted_PluginCannotRetargetInjectedMarker(t *testing.T) {
+	m := injectedToolTestManager(schemas.MCPConnectionStateHealthy)
+	state := m.clientMap["id-tavily"]
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	injectedauth.Set(ctx, "tavily", "tavily-crawl")
+	for key := range ctx.GetUserValues() {
+		if _, isBifrostKey := key.(schemas.BifrostContextKey); !isBifrostKey {
+			ctx.SetValue(key, struct{ clientName, toolName string }{"tavily", "tavily-search"})
+		}
+	}
+	assert.ErrorContains(t, checkToolExecutionPermitted(ctx, state, "tavily-search", m.logger), "ToolsToExecute",
+		"a look-alike value under the real key must not authorize another tool")
+}
+
+// A plugin handling a genuine injected call can copy every user value into another
+// context. The copy must not carry the approval to that context's tool call.
+func TestCheckToolExecutionPermitted_PluginCannotCopyInjectedMarker(t *testing.T) {
+	m := injectedToolTestManager(schemas.MCPConnectionStateHealthy)
+	state := m.clientMap["id-tavily"]
+
+	genuine := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	injectedauth.Set(genuine, "tavily", "tavily-search")
+	other := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for key, value := range genuine.GetUserValues() {
+		other.SetValue(key, value)
+	}
+	assert.ErrorContains(t, checkToolExecutionPermitted(other, state, "tavily-search", m.logger), "ToolsToExecute",
+		"values copied out of an injected execution must not authorize another context")
+}
+
+// TestValidateMCPClientConfig_OpenAPI pins the config rules for the openapi
+// connection type: a spec source is mandatory, connection_string is not the way
+// to name the upstream, base_url must be absolute http(s), and the auth types
+// that drive an MCP handshake against a remote server are refused because the
+// synthesized server has no such remote.
+func TestValidateMCPClientConfig_OpenAPI(t *testing.T) {
+	str := func(s string) *string { return &s }
+	base := func(mutate func(c *schemas.MCPClientConfig)) *schemas.MCPClientConfig {
+		c := &schemas.MCPClientConfig{
+			ID:             "openapi-1",
+			Name:           "petstore",
+			ConnectionType: schemas.MCPConnectionTypeOpenAPI,
+			AuthType:       schemas.MCPAuthTypeNone,
+			OpenAPIConfig:  &schemas.MCPOpenAPIConfig{Spec: `{"openapi":"3.0.3","info":{"title":"p","version":"1"},"paths":{}}`},
+		}
+		if mutate != nil {
+			mutate(c)
+		}
+		return c
+	}
+	for _, tc := range []struct {
+		name    string
+		cfg     *schemas.MCPClientConfig
+		wantErr string
+	}{
+		{name: "inline spec, no auth", cfg: base(nil)},
+		{name: "spec_url only", cfg: base(func(c *schemas.MCPClientConfig) {
+			c.OpenAPIConfig = &schemas.MCPOpenAPIConfig{SpecURL: str("https://api.example.com/openapi.json")}
+		})},
+		{name: "spec_file only", cfg: base(func(c *schemas.MCPClientConfig) {
+			c.OpenAPIConfig = &schemas.MCPOpenAPIConfig{SpecFile: str("specs/petstore.yaml")}
+		})},
+		{name: "headers auth", cfg: base(func(c *schemas.MCPClientConfig) { c.AuthType = schemas.MCPAuthTypeHeaders })},
+		{name: "empty auth type", cfg: base(func(c *schemas.MCPClientConfig) { c.AuthType = "" })},
+		{name: "per-user headers", cfg: base(func(c *schemas.MCPClientConfig) {
+			c.AuthType = schemas.MCPAuthTypePerUserHeaders
+			c.PerUserHeaderKeys = []string{"X-User-Token"}
+		})},
+		{name: "absolute base url", cfg: base(func(c *schemas.MCPClientConfig) { c.OpenAPIConfig.BaseURL = str("https://api.example.com/v1") })},
+		{name: "missing openapi_config", cfg: base(func(c *schemas.MCPClientConfig) { c.OpenAPIConfig = nil }), wantErr: "openapi_config is required"},
+		{name: "no spec source", cfg: base(func(c *schemas.MCPClientConfig) { c.OpenAPIConfig = &schemas.MCPOpenAPIConfig{} }), wantErr: "one of spec, spec_file or spec_url"},
+		{name: "connection_string set", cfg: base(func(c *schemas.MCPClientConfig) { c.ConnectionString = schemas.NewSecretVar("https://api.example.com") }), wantErr: "connection_string must not be set"},
+		{name: "relative base url", cfg: base(func(c *schemas.MCPClientConfig) { c.OpenAPIConfig.BaseURL = str("/v1") }), wantErr: "base_url must be an absolute http(s) URL"},
+		{name: "non-http base url", cfg: base(func(c *schemas.MCPClientConfig) { c.OpenAPIConfig.BaseURL = str("ftp://api.example.com") }), wantErr: "base_url must be an absolute http(s) URL"},
+		{name: "negative response cap", cfg: base(func(c *schemas.MCPClientConfig) { c.OpenAPIConfig.MaxResponseBytes = -1 }), wantErr: "max_response_bytes must not be negative"},
+		{name: "oauth refused", cfg: base(func(c *schemas.MCPClientConfig) { c.AuthType = schemas.MCPAuthTypeOauth }), wantErr: `auth_type "oauth" is not supported for openapi`},
+		{name: "per-user oauth refused", cfg: base(func(c *schemas.MCPClientConfig) { c.AuthType = schemas.MCPAuthTypePerUserOauth }), wantErr: "not supported for openapi"},
+		{name: "token exchange refused", cfg: base(func(c *schemas.MCPClientConfig) {
+			c.AuthType = schemas.MCPAuthTypeTokenExchange
+			c.TokenExchange = &schemas.MCPTokenExchangeConfig{Audience: "aud", UseIdPCredentials: true}
+		}), wantErr: "not supported for openapi"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateMCPClientConfig(tc.cfg)
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tc.wantErr)
+		})
+	}
+}
+
+// TestValidateMCPClientConfig_TokenExchangeIDJAG checks the id_jag profile needs
+// Bifrost's client at the upstream authorization server, at config load too,
+// and no exchange client of its own: it always exchanges as the SSO app, so the
+// form sends neither use_idp_credentials nor client_id.
+func TestValidateMCPClientConfig_TokenExchangeIDJAG(t *testing.T) {
+	cfg := &schemas.MCPClientConfig{
+		ID:               "client-xaa",
+		Name:             "linear",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://mcp.linear.app/mcp"),
+		AuthType:         schemas.MCPAuthTypeTokenExchange,
+		TokenExchange: &schemas.MCPTokenExchangeConfig{
+			Audience: "https://linear.app", UseIdPCredentials: true, Profile: schemas.TokenExchangeProfileIDJAG,
+		},
+	}
+	require.ErrorContains(t, validateMCPClientConfig(cfg), "resource_client_id")
+	cfg.TokenExchange.ResourceClientID = schemas.NewSecretVar("bifrost-at-linear")
+	require.NoError(t, validateMCPClientConfig(cfg))
+
+	cfg.TokenExchange.UseIdPCredentials = false
+	require.NoError(t, validateMCPClientConfig(cfg), "an id_jag client needs no use_idp_credentials or client_id")
+}
+
+// mcp-go's error for an input request it had no handler for.
+func unfulfilledInputError(kind string) error {
+	return fmt.Errorf("multi round-trip: %w", fmt.Errorf("fulfilling input request %q: %w", "req-1", errors.New("no "+kind+" handler configured")))
+}
+
+// Only mcp-go's own failure to fulfil an input request is explained; an upstream error that merely
+// mentions "multi round-trip:" keeps its own reason.
+func TestDescribeUnservableInput_OnlyMcpGoInputFailures(t *testing.T) {
+	for kind, want := range map[string]string{"elicitation": "input from the user (elicitation)", "sampling": "an LLM completion (sampling)", "roots": "the client's filesystem roots (roots)"} {
+		explained, ok := DescribeUnservableInput(unfulfilledInputError(kind), "docs")
+		require.True(t, ok, kind)
+		assert.Equal(t, fmt.Sprintf("MCP server %q asked for %s, which Bifrost cannot provide", "docs", want), explained)
+	}
+	explained, ok := DescribeUnservableInput(unfulfilledInputError("future"), "docs")
+	require.True(t, ok, "an unknown kind of input request is still one Bifrost cannot provide")
+	assert.Contains(t, explained, "asked for input Bifrost cannot provide")
+
+	for _, upstream := range []string{"multi round-trip: rate limited, retry later", "transport error: multi round-trip: connection reset"} {
+		_, ok := DescribeUnservableInput(errors.New(upstream), "docs")
+		assert.False(t, ok, "an upstream error keeps its own reason: %s", upstream)
+	}
+}
+
+// DescribeUnservableInput runs only after a tool call failed; successful calls never reach it.
+func BenchmarkDescribeUnservableInput(b *testing.B) {
+	for name, err := range map[string]error{
+		"url elicitation": mcp.URLElicitationRequiredError{Elicitations: []mcp.ElicitationParams{{Message: "Sign in", URL: "https://example.com/auth"}}},
+		"input request":   unfulfilledInputError("elicitation"),
+		"ordinary error":  errors.New("upstream returned 500: internal error"),
+	} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_, _ = DescribeUnservableInput(err, "docs")
+			}
+		})
+	}
 }

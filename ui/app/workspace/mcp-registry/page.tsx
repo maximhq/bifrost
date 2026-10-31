@@ -1,7 +1,9 @@
 import FullPageLoader from "@/components/fullPageLoader";
+import { LoadErrorView } from "@/components/loadErrorView";
 import { useToast } from "@/hooks/use-toast";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { getErrorMessage, useGetMCPClientsQuery } from "@/lib/store";
+import { showLoadError } from "@/lib/utils/loadError";
 import { parseAsArrayOf, parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo } from "react";
 import { MCPClientsFilterSidebar, type MCPClientFilters } from "./views/mcpClientsFilterSidebar";
@@ -17,6 +19,12 @@ function resolveBooleanFacet(selected: string[]): boolean | undefined {
 	return selected[0] === "true";
 }
 
+// An instance without MCP answers the list with this error. The page treats it
+// as an empty registry, not as a failed load.
+function isMCPNotConfigured(error: unknown): boolean {
+	return getErrorMessage(error).toLowerCase().includes("mcp is not configured in this bifrost instance");
+}
+
 export default function MCPServersPage() {
 	const [urlState, setUrlState] = useQueryStates(
 		{
@@ -27,7 +35,7 @@ export default function MCPServersPage() {
 			states: parseAsArrayOf(parseAsString).withDefault([]),
 			code_mode: parseAsArrayOf(parseAsString).withDefault([]),
 			status: parseAsArrayOf(parseAsString).withDefault([]),
-			only_all_vks: parseAsBoolean.withDefault(false),
+			only_allowed_by_default: parseAsBoolean.withDefault(false),
 			virtual_keys: parseAsArrayOf(parseAsString).withDefault([]),
 			offset: parseAsInteger.withDefault(0),
 		},
@@ -42,7 +50,7 @@ export default function MCPServersPage() {
 			states: urlState.states,
 			code_mode: urlState.code_mode,
 			status: urlState.status,
-			only_all_vks: urlState.only_all_vks,
+			only_allowed_by_default: urlState.only_allowed_by_default,
 			virtual_keys: urlState.virtual_keys,
 		}),
 		[
@@ -51,7 +59,7 @@ export default function MCPServersPage() {
 			urlState.states,
 			urlState.code_mode,
 			urlState.status,
-			urlState.only_all_vks,
+			urlState.only_allowed_by_default,
 			urlState.virtual_keys,
 		],
 	);
@@ -64,7 +72,7 @@ export default function MCPServersPage() {
 				states: newFilters.states,
 				code_mode: newFilters.code_mode,
 				status: newFilters.status,
-				only_all_vks: newFilters.only_all_vks,
+				only_allowed_by_default: newFilters.only_allowed_by_default,
 				virtual_keys: newFilters.virtual_keys,
 				offset: 0,
 			});
@@ -78,7 +86,7 @@ export default function MCPServersPage() {
 		filters.states.length > 0 ||
 		filters.code_mode.length > 0 ||
 		filters.status.length > 0 ||
-		filters.only_all_vks ||
+		filters.only_allowed_by_default ||
 		filters.virtual_keys.length > 0;
 
 	const {
@@ -96,7 +104,7 @@ export default function MCPServersPage() {
 			auth_type: filters.auth_types.length > 0 ? filters.auth_types.join(",") : undefined,
 			state: filters.states.length > 0 ? filters.states.join(",") : undefined,
 			virtual_keys: filters.virtual_keys.length > 0 ? filters.virtual_keys.join(",") : undefined,
-			all_virtual_keys: filters.only_all_vks || undefined,
+			allowed_by_default: filters.only_allowed_by_default || undefined,
 			code_mode: resolveBooleanFacet(filters.code_mode),
 			disabled: resolveBooleanFacet(filters.status),
 		},
@@ -118,11 +126,10 @@ export default function MCPServersPage() {
 
 	useEffect(() => {
 		if (error) {
-			const message = getErrorMessage(error);
-			if (message.toLowerCase().includes("mcp is not configured in this bifrost instance")) return;
+			if (isMCPNotConfigured(error)) return;
 			toast({
 				title: "Error",
-				description: message,
+				description: getErrorMessage(error),
 				variant: "destructive",
 			});
 		}
@@ -130,6 +137,10 @@ export default function MCPServersPage() {
 
 	if (isLoading) {
 		return <FullPageLoader />;
+	}
+
+	if (showLoadError(isMCPNotConfigured(error) ? undefined : error, mcpClientsData)) {
+		return <LoadErrorView entity="MCP servers" error={error} onRetry={() => void refetch()} testId="mcp-servers-load-error" />;
 	}
 
 	const handleSearchChange = (value: string) => void setUrlState({ search: value, offset: 0 });
@@ -156,14 +167,14 @@ export default function MCPServersPage() {
 	// Onboarding empty state: no servers at all and no active filters/search.
 	// Render full-width without the filter sidebar (the table renders the CTA).
 	if (totalCount === 0 && !filtersActive && !debouncedSearch && !urlState.server) {
-		return <div className="mx-auto flex h-[calc(100dvh-50px)] w-full max-w-7xl flex-col">{table}</div>;
+		return <div className="mx-auto flex h-[calc(var(--app-content-viewport)_-_50px)] w-full max-w-7xl flex-col">{table}</div>;
 	}
 
 	return (
-		<div className="dark:bg-card no-padding-parent no-border-parent h-[calc(100dvh_-_16px)]">
+		<div className="dark:bg-card no-padding-parent no-border-parent h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))]">
 			<div className="bg-background flex h-full w-full grow gap-3">
 				<MCPClientsFilterSidebar filters={filters} onFiltersChange={setFilters} />
-				<div className="bg-card h-full w-full overflow-hidden rounded-l-md">
+				<div className="bg-card h-full w-full overflow-hidden rounded-md border">
 					<div className="flex h-full flex-col p-4">{table}</div>
 				</div>
 			</div>

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -47,9 +48,9 @@ func checkForErrorStatus(prediction *ReplicatePredictionResponse) *schemas.Bifro
 // parsePreferHeader parses the Prefer header to extract wait duration
 // Examples: "wait", "wait=30", "wait=60"
 // Returns the header value to use and whether sync mode should be enabled
-func parsePreferHeader(extraHeaders map[string]string) bool {
+func parsePreferHeader(extraHeaders map[string]schemas.SecretVar) bool {
 	if preferValue, exists := extraHeaders["Prefer"]; exists {
-		if strings.HasPrefix(preferValue, "wait") {
+		if strings.HasPrefix(preferValue.GetValue(), "wait") {
 			return true
 		}
 		return false
@@ -59,7 +60,7 @@ func parsePreferHeader(extraHeaders map[string]string) bool {
 
 // Streaming requests should always be async and not wait for completion,
 // so the Prefer header (which enables sync mode) must be excluded.
-func stripPreferHeader(extraHeaders map[string]string) map[string]string {
+func stripPreferHeader(extraHeaders map[string]schemas.SecretVar) map[string]schemas.SecretVar {
 	if extraHeaders == nil {
 		return nil
 	}
@@ -71,7 +72,7 @@ func stripPreferHeader(extraHeaders map[string]string) map[string]string {
 	}
 
 	// Create new map without Prefer header
-	filtered := make(map[string]string, len(extraHeaders)-1)
+	filtered := make(map[string]schemas.SecretVar, len(extraHeaders)-1)
 	for key, value := range extraHeaders {
 		if key != "Prefer" {
 			filtered[key] = value
@@ -138,7 +139,7 @@ func listenToReplicateStreamURL(
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
-		return nil, nil, providerUtils.SetErrorLatency(parseReplicateError(resp.Body(), resp.StatusCode()), latency)
+		return nil, nil, providerUtils.SetErrorLatency(parseReplicateError(resp), latency)
 	}
 
 	return resp.BodyStream(), resp, nil
@@ -289,4 +290,63 @@ func parseTokenUsageFromLogs(logs *string, requestType schemas.RequestType) (inp
 	}
 
 	return inputTokens, outputTokens, totalTokens, foundAny
+}
+
+// invalidPaginationCursorError answers a file-list cursor Bifrost cannot use with a 400. The
+// underlying reason names the configured endpoint and the link's shape, so it goes to the log
+// only: it is never attached to the error, which would serialize it to the client as error.error.
+func invalidPaginationCursorError(logger schemas.Logger, err error) *schemas.BifrostError {
+	if logger != nil && err != nil {
+		logger.Warn("replicate file list: refusing pagination cursor: %v", err)
+	}
+	return providerUtils.NewBifrostBadRequestError("invalid pagination cursor")
+}
+
+// replicateNextPageCursor extracts Replicate's cursor value from the "next" link of a list
+// response. Only that value is stored in Bifrost's pagination cursor, so a later page
+// request is always rebuilt on the configured base URL instead of following the link.
+// An empty link means the list is exhausted. A link Bifrost cannot take a cursor from is an
+// error, never the end of the list: ending pagination there would hand the caller a silently
+// truncated list.
+func replicateNextPageCursor(next string) (string, error) {
+	if next == "" {
+		return "", nil
+	}
+	link, err := url.Parse(next)
+	if err != nil {
+		return "", fmt.Errorf("next link is not a URL: %w", err)
+	}
+	cursor := link.Query().Get("cursor")
+	if cursor == "" {
+		return "", errors.New("next link carries no cursor value")
+	}
+	return cursor, nil
+}
+
+// replicateFileListPageCursor resolves a stored file-list cursor to the value sent as
+// Replicate's cursor query parameter. Cursors issued before Bifrost stored the bare value
+// carried the full next link; such a link is still accepted when it points at the
+// configured base URL and the file-list path, and refused otherwise so the request can
+// never leave that endpoint.
+func replicateFileListPageCursor(baseURL, stored string) (string, error) {
+	if !strings.Contains(stored, "://") {
+		return stored, nil
+	}
+	link, err := url.Parse(stored)
+	if err != nil {
+		return "", fmt.Errorf("cursor link is not a valid URL: %w", err)
+	}
+	base, err := url.Parse(baseURL)
+	if err != nil {
+		return "", fmt.Errorf("configured base URL is not a valid URL: %w", err)
+	}
+	wantPath := strings.TrimRight(base.Path, "/") + "/v1/files"
+	if link.User != nil || !strings.EqualFold(link.Scheme, base.Scheme) || !strings.EqualFold(link.Host, base.Host) || strings.TrimRight(link.Path, "/") != wantPath {
+		return "", errors.New("cursor link does not point at the configured file endpoint")
+	}
+	cursor := link.Query().Get("cursor")
+	if cursor == "" {
+		return "", errors.New("cursor link carries no cursor value")
+	}
+	return cursor, nil
 }

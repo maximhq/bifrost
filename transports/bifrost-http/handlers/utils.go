@@ -3,6 +3,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -12,18 +13,109 @@ import (
 	"sync"
 	"time"
 
-	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
-// ResolvePeriod converts a relative period string ("1h","6h","24h","7d","30d") to concrete
-// start/end time pointers computed from the current server time. Returns nil, nil for
-// unrecognised values. When used in filter parsing, period takes precedence over any explicit
-// start_time/end_time query parameters so every poll always covers the intended window.
-func ResolvePeriod(period string) (start, end *time.Time) {
-	now := time.Now().UTC()
+// startTransportSpan opens a nil-safe "transport" internal span for edge
+// (de)serialization: parsing the client request body in, marshalling the response
+// out. The tracer is placed on the request context by TracingMiddleware and the
+// span nests under the root http.request span. Both returns are nil when no trace
+// is active; EndSpan is nil-safe, so callers guard only on the tracer. The name marks
+// the transport phase ("request-unmarshal" for inbound parse, "response-marshal" for
+// outbound serialization); spans sharing a name aggregate into a single bucket.
+func startTransportSpan(ctx *fasthttp.RequestCtx, name string) (schemas.Tracer, schemas.SpanHandle) {
+	t, ok := ctx.UserValue(schemas.BifrostContextKeyTracer).(schemas.Tracer)
+	if !ok || t == nil {
+		return nil, nil
+	}
+	_, h := t.StartSpanID(ctx, name, schemas.SpanKindInternal)
+	return t, h
+}
+
+// transportPluginSpanName is the span name for an HTTP transport hook. The
+// plugin.<name>.<phase> shape lets the overhead breakdown collapse it into the same
+// plugin.<name> bucket as that plugin's core LLM hooks.
+func transportPluginSpanName(pluginName, phase string) string {
+	return "plugin." + pluginName + "." + phase
+}
+
+// startTransportPluginSpan opens a nil-safe SpanKindPlugin span for an HTTP transport
+// hook, reading the tracer off the request context. Used on the synchronous paths
+// (pre-hook, inline post-hook) where the fasthttp ctx is still live. Returns a nil
+// handle when no trace is active; EndSpan is nil-safe.
+func startTransportPluginSpan(ctx *fasthttp.RequestCtx, pluginName, phase string) (schemas.Tracer, schemas.SpanHandle) {
+	t, ok := ctx.UserValue(schemas.BifrostContextKeyTracer).(schemas.Tracer)
+	if !ok || t == nil {
+		return nil, nil
+	}
+	_, h := t.StartSpanID(ctx, transportPluginSpanName(pluginName, phase), schemas.SpanKindPlugin)
+	return t, h
+}
+
+// endTransportPluginSpan closes a transport-hook span, recording the hook's error.
+func endTransportPluginSpan(t schemas.Tracer, h schemas.SpanHandle, err error) {
+	if t == nil {
+		return
+	}
+	if err != nil {
+		t.EndSpan(h, schemas.SpanStatusError, err.Error())
+	} else {
+		t.EndSpan(h, schemas.SpanStatusOk, "")
+	}
+}
+
+// TimedMiddleware wraps an inference auth/routing middleware so its own work — the
+// time it spends before handing off — is recorded as a middleware.<name> overhead
+// span instead of hiding in the "core" bucket. The span ends the instant the wrapped
+// middleware invokes next (so the whole downstream request is excluded), or when it
+// short-circuits without calling next. Named middleware.<name> so the breakdown groups
+// these into a single "Middleware" category with a per-middleware drill-down. Applied
+// at the middleware-composition site; the wrapped middleware's body is untouched.
+func TimedMiddleware(name string, mw schemas.BifrostHTTPMiddleware) schemas.BifrostHTTPMiddleware {
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			t, ok := ctx.UserValue(schemas.BifrostContextKeyTracer).(schemas.Tracer)
+			if !ok || t == nil {
+				// No trace on this request: run the middleware untimed.
+				mw(next)(ctx)
+				return
+			}
+			_, h := t.StartSpanID(ctx, "middleware."+name, schemas.SpanKindInternal)
+			ended := false
+			endOnce := func() {
+				if !ended {
+					ended = true
+					t.EndSpan(h, schemas.SpanStatusOk, "")
+				}
+			}
+			// End the span the moment the middleware hands off, so downstream time is
+			// excluded; endOnce below covers the short-circuit (no-next) path.
+			timedNext := func(c *fasthttp.RequestCtx) {
+				endOnce()
+				next(c)
+			}
+			mw(timedNext)(ctx)
+			endOnce()
+		}
+	}
+}
+
+// ResolvePeriod converts a period string to concrete start/end time pointers computed from the
+// current server time. Sliding periods ("1h","6h","24h","7d","30d") end now and are
+// timezone-independent. Calendar periods ("today","this_week","this_month") start at midnight
+// of the current day, week (Monday) or month in timezone, an IANA name; an empty or unknown
+// timezone falls back to UTC. Returns nil, nil for unrecognised periods. When used in filter
+// parsing, period takes precedence over any explicit start_time/end_time query parameters so
+// every poll always covers the intended window.
+func ResolvePeriod(period, timezone string) (start, end *time.Time) {
+	return resolvePeriodAt(period, timezone, time.Now())
+}
+
+func resolvePeriodAt(period, timezone string, now time.Time) (start, end *time.Time) {
+	now = now.UTC()
 	var from time.Time
 	switch period {
 	case "1h":
@@ -36,10 +128,72 @@ func ResolvePeriod(period string) (start, end *time.Time) {
 		from = now.AddDate(0, 0, -7)
 	case "30d":
 		from = now.AddDate(0, 0, -30)
+	case "today", "this_week", "this_month":
+		local := now.In(periodLocation(timezone))
+		year, month, day := local.Date()
+		switch period {
+		case "this_week":
+			day -= (int(local.Weekday()) + 6) % 7 // days since Monday
+		case "this_month":
+			day = 1
+		}
+		from = startOfLocalDay(year, month, day, local.Location()).UTC()
 	default:
 		return nil, nil
 	}
 	return &from, &now
+}
+
+// startOfLocalDay returns the first instant of the given calendar date in loc. Where
+// DST starts at midnight (America/Havana, America/Santiago) the day has no 00:00,
+// and time.Date normalizes it back to 23:00 on the previous day. In that case the
+// day starts at the zone transition that skipped midnight, which ZoneBounds reports
+// as the end of the offset in effect at that 23:00. Where DST ends just after
+// midnight (Asia/Amman), 00:00 happens twice and time.Date may return the second
+// one; the day starts at the first, the same wall clock in the offset in effect
+// before the transition. day may be out of range (this week's Monday can be in the
+// previous month); it is normalized like time.Date.
+func startOfLocalDay(year int, month time.Month, day int, loc *time.Location) time.Time {
+	start := time.Date(year, month, day, 0, 0, 0, 0, loc)
+	wantYear, wantMonth, wantDay := time.Date(year, month, day, 0, 0, 0, 0, time.UTC).Date()
+	if gotYear, gotMonth, gotDay := start.Date(); gotYear != wantYear || gotMonth != wantMonth || gotDay != wantDay {
+		if _, transition := start.ZoneBounds(); !transition.IsZero() {
+			return transition
+		}
+		return start
+	}
+	if zoneStart, _ := start.ZoneBounds(); !zoneStart.IsZero() {
+		_, offset := start.Zone()
+		_, prevOffset := zoneStart.Add(-time.Nanosecond).Zone()
+		if earlier := start.Add(-time.Duration(prevOffset-offset) * time.Second); earlier.Before(zoneStart) {
+			return earlier
+		}
+	}
+	return start
+}
+
+// periodLocations caches resolved IANA locations for calendar periods, since
+// time.LoadLocation reads and parses zone data on every call. Only successful
+// lookups are stored, so the map is bounded by the IANA zone list no matter
+// what callers send.
+var periodLocations sync.Map // string -> *time.Location
+
+// periodLocation resolves the timezone a calendar period is measured in.
+// Empty and unknown names resolve to UTC, and so does "Local", which
+// time.LoadLocation would otherwise map to the server's own timezone.
+func periodLocation(name string) *time.Location {
+	if name == "" || name == "UTC" || name == "Local" {
+		return time.UTC
+	}
+	if cached, ok := periodLocations.Load(name); ok {
+		return cached.(*time.Location)
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return time.UTC
+	}
+	periodLocations.Store(name, loc)
+	return loc
 }
 
 // pluginDisabledKey is a dedicated context key type for marking a plugin as disabled
@@ -82,23 +236,31 @@ func IsUniqueConstraintError(err error, identifiers ...string) bool {
 	return false
 }
 
-// SendJSON sends a JSON response with 200 OK status
+// SendJSON sends a JSON response with 200 OK status.
 func SendJSON(ctx *fasthttp.RequestCtx, data interface{}) {
 	ctx.SetContentType("application/json")
-	if err := json.NewEncoder(ctx).Encode(data); err != nil {
+	body, err := sonic.ConfigStd.Marshal(data)
+	if err != nil {
 		logger.Warn(fmt.Sprintf("Failed to encode JSON response: %v", err))
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to encode response: %v", err))
+		return
 	}
+	body = lib.StripExtraFieldsIfInHeaders(ctx, body)
+	ctx.SetBody(append(body, '\n'))
 }
 
-// SendJSONWithStatus sends a JSON response with a custom status code
+// SendJSONWithStatus sends a JSON response with a custom status code.
 func SendJSONWithStatus(ctx *fasthttp.RequestCtx, data interface{}, statusCode int) {
 	ctx.SetContentType("application/json")
 	ctx.SetStatusCode(statusCode)
-	if err := json.NewEncoder(ctx).Encode(data); err != nil {
+	body, err := sonic.ConfigStd.Marshal(data)
+	if err != nil {
 		logger.Warn(fmt.Sprintf("Failed to encode JSON response: %v", err))
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to encode response: %v", err))
+		return
 	}
+	body = lib.StripExtraFieldsIfInHeaders(ctx, body)
+	ctx.SetBody(append(body, '\n'))
 }
 
 // SendError sends a BifrostError response
@@ -115,25 +277,15 @@ func SendError(ctx *fasthttp.RequestCtx, statusCode int, message string) {
 
 // SendBifrostError sends a BifrostError response
 func SendBifrostError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError) {
+	// Before sanitizing: the span keeps the unredacted detail core already stamps.
+	stampRootSpanError(ctx, bifrostErr)
 	bifrostErr = lib.SanitizeBifrostErrorForClient(bifrostErr)
 	if bifrostErr == nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, lib.ClientSafeInternalErrorMessage)
 		return
 	}
 
-	if bifrostErr.StatusCode != nil {
-		ctx.SetStatusCode(*bifrostErr.StatusCode)
-	} else if !bifrostErr.IsBifrostError {
-		ctx.SetStatusCode(fasthttp.StatusBadRequest)
-	} else {
-		if bifrostErr.Error != nil &&
-			(bifrostErr.Error.Message == bifrost.ProviderAutoResolveErrorMessage ||
-				bifrostErr.Error.Message == bifrost.ModelAutoResolveErrorMessage) {
-			ctx.SetStatusCode(fasthttp.StatusBadRequest)
-		} else {
-			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-		}
-	}
+	ctx.SetStatusCode(bifrostErr.EffectiveHTTPStatus())
 
 	// Routed-identity headers from the error itself (provider/model/request-type +
 	// routing_info incl. is-fallback). Callers forward provider headers before this,
@@ -143,10 +295,54 @@ func SendBifrostError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError
 	lib.ApplyBifrostErrorResponseHeaders(ctx, nil, bifrostErr.ExtraFields)
 
 	ctx.SetContentType("application/json")
+	if lib.ExtraFieldsInHeaders(ctx) {
+		body, encodeErr := json.Marshal(bifrostErr)
+		if encodeErr != nil {
+			logger.Warn(fmt.Sprintf("Failed to encode error response: %v", encodeErr))
+			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+			ctx.SetBodyString(fmt.Sprintf("Failed to encode error response: %v", encodeErr))
+			return
+		}
+		ctx.SetBody(append(lib.StripExtraFields(body), '\n'))
+		return
+	}
 	if encodeErr := json.NewEncoder(ctx).Encode(bifrostErr); encodeErr != nil {
 		logger.Warn(fmt.Sprintf("Failed to encode error response: %v", encodeErr))
 		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 		ctx.SetBodyString(fmt.Sprintf("Failed to encode error response: %v", encodeErr))
+	}
+}
+
+// stampRootSpanError records the failure identity on the root span. A request
+// rejected before dispatch has no llm.call span to carry it.
+func stampRootSpanError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError) {
+	if bifrostErr == nil {
+		return
+	}
+	tracer, ok := ctx.UserValue(schemas.BifrostContextKeyTracer).(schemas.Tracer)
+	if !ok || tracer == nil {
+		return
+	}
+	traceID, _ := ctx.UserValue(schemas.BifrostContextKeyTraceID).(string)
+	if traceID == "" {
+		return
+	}
+	// A nil span ID resolves to the root span.
+	span := tracer.SpanFromHandle(tracer.GetSpanHandleByID(traceID, nil))
+	if span == nil {
+		return
+	}
+	span.SetAttributes(schemas.RootSpanErrorAttributes(bifrostErr,
+		schemas.ClassifyErrorType(bifrostErr, bifrostErr.ExtraFields.RequestType)))
+
+	// A request that reached a provider already propagated its resolved identity up.
+	ef := bifrostErr.ExtraFields
+	if _, exists := span.GetAttribute(schemas.AttrRequestModel); !exists && ef.OriginalModelRequested != "" {
+		span.SetAttribute(schemas.AttrRequestModel, ef.OriginalModelRequested)
+	}
+	if _, exists := span.GetAttribute(schemas.AttrProviderName); !exists && ef.Provider != "" {
+		span.SetAttribute(schemas.AttrProviderName, schemas.OTelProviderName(ef.Provider))
+		span.SetAttribute(schemas.AttrBifrostProviderName, string(ef.Provider))
 	}
 }
 
@@ -312,4 +508,41 @@ func fuzzyMatch(text, query string) bool {
 	}
 
 	return queryIndex == len(queryRunes)
+}
+
+// isAuthBypassed reports whether ctx was let through the auth middleware's fail-open branch
+// (dashboard auth disabled/unconfigured) rather than a genuine credential check. Handlers
+// gating a capability that's fine for a real admin but dangerous for anyone on the network
+// (e.g. pointing a dial destination somewhere new) should check this, not
+// IsLocalAdminContextKey, which is also true for genuinely authenticated sessions.
+func isAuthBypassed(ctx *fasthttp.RequestCtx) bool {
+	bypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool)
+	return bypassed
+}
+
+// isSetupTokenAuthenticated reports whether the OSS setup-lock gate let ctx through because
+// it carried the operator's setup token (see AuthMiddleware.SetupLockMiddleware). That is
+// the same proof the body's auth_config.setup_token gives, so first-admin creation accepts
+// either.
+func isSetupTokenAuthenticated(ctx *fasthttp.RequestCtx) bool {
+	authed, _ := ctx.UserValue(schemas.BifrostContextKeySetupTokenAuthenticated).(bool)
+	return authed
+}
+
+// RequestWorkTimeout bounds store, object-store and outbound HTTP work started while
+// serving an HTTP request.
+const RequestWorkTimeout = 30 * time.Second
+
+// RequestWorkContext returns the context to hand to stores and outbound clients for work
+// started while serving an HTTP request.
+//
+// Never derive a cancellable context from the *fasthttp.RequestCtx itself. Its Done() is
+// the server-wide fasthttp.Server.done, and ShutdownWithContext resets that field once
+// connections drain, so Err() returns to nil while Done() stays closed. The watcher
+// goroutine context.WithCancel/WithTimeout starts for such a parent then panics with
+// "context: internal error: missing cancel error" and races the pooled RequestCtx as
+// fasthttp recycles it. WithoutCancel drops Done()/Err() so no watcher is started, while
+// request values stay readable for the handler's lifetime.
+func RequestWorkContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), timeout)
 }

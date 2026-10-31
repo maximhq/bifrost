@@ -24,12 +24,16 @@ func TestOpenRouter(t *testing.T) {
 	defer client.Shutdown()
 
 	testConfig := llmtests.ComprehensiveTestConfig{
-		Provider:       schemas.OpenRouter,
-		ChatModel:      "openai/gpt-4.1",
-		VisionModel:    "openai/gpt-4o",
-		TextModel:      "google/gemini-2.5-flash",
-		EmbeddingModel: "qwen/qwen3-embedding-4b",
-		ReasoningModel: "openai/gpt-oss-120b",
+		Provider:             schemas.OpenRouter,
+		ChatModel:            "openai/gpt-4.1",
+		VisionModel:          "openai/gpt-4o",
+		TextModel:            "google/gemini-2.5-flash",
+		EmbeddingModel:       "qwen/qwen3-embedding-4b",
+		ReasoningModel:       "openai/gpt-oss-120b",
+		PromptCachingModel:   "anthropic/claude-sonnet-4.6", // Claude is the only OpenRouter model with explicit caching; its Responses half was broken until #6290
+		TranscriptionModel:   "openai/gpt-4o-mini-transcribe",
+		SpeechSynthesisModel: "minimax/speech-2.8-turbo",
+		DecisionModel:        "typesafe/jev-1.13",
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:             true,
 			SimpleChat:                 true,
@@ -44,13 +48,19 @@ func TestOpenRouter(t *testing.T) {
 			ImageURL:                   false, // OpenRouter's responses API is in Beta
 			ImageBase64:                false, // OpenRouter's responses API is in Beta
 			MultipleImages:             false, // OpenRouter's responses API is in Beta
-			FileBase64:                 true,
-			FileURL:                    true,
+			FileBase64:                 false, // Responses API times out (300s+) with file input
+			FileURL:                    false, // Responses API times out (300s+) with file input
 			CompleteEnd2End:            false, // OpenRouter's responses API is in Beta
 			Reasoning:                  true,
+			PromptCaching:              true, // Gates the three tool-block scenarios; two of them issue Responses requests, which is what #6290 broke
 			ListModels:                 true,
 			StructuredOutputs:          true, // Structured outputs with nullable enum support
 			Embedding:                  true,
+			SpeechSynthesis:            true,  // Supported via OpenAI-compatible /v1/audio/speech
+			SpeechSynthesisStream:      false, // Streaming not offered by upstream OpenRouter API
+			Transcription:              true,  // Supported via OpenAI-compatible /v1/audio/transcriptions
+			TranscriptionStream:        false, // Streaming not offered by upstream OpenRouter API
+			Decision:                   true,  // Native via /api/alpha/decisions for TypeSafe System One models
 		},
 	}
 

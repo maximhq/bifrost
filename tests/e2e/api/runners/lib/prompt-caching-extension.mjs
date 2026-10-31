@@ -47,7 +47,16 @@ const CACHING_BACKENDS = [
   { key: "openai", label: "OpenAI", model: "openai/gpt-4o-mini", explicitCache: false, cacheReadGuaranteed: true },
   { key: "anthropic", label: "Anthropic", model: "anthropic/claude-haiku-4-5", explicitCache: true, cacheReadGuaranteed: true },
   { key: "gemini", label: "Gemini", model: "gemini/gemini-2.5-flash", explicitCache: false, cacheReadGuaranteed: false },
-  { key: "vertex", label: "Vertex (Claude)", model: "vertex/claude-sonnet-4-6", explicitCache: true, cacheReadGuaranteed: true },
+  // Not read-guaranteed, unlike the other two explicit-cache backends, and the difference is the
+  // deployment rather than the model. This key is configured at location=global, which routes each
+  // request to whichever region has capacity, and an Anthropic cache entry lives in the region that
+  // wrote it - so a repeat is only a hit when it happens to land on a region already holding the
+  // prefix. Measured on a guaranteed-cold prefix: round 3 missed 4 times out of 5, and raising the
+  // settle from 1.2s to 5s changed nothing (so it is not write propagation). Sending one cold prefix
+  // 12 times in a row gave MMMHHMHMHHHH - 1 hit in the first 4, 6 in the last 8, the hit rate
+  // climbing as more regions warm. Three requests cannot reliably read back a cold prefix here, so
+  // the row asserts what Bifrost actually controls (below) and reports the hit.
+  { key: "vertex", label: "Vertex (Claude)", model: "vertex/claude-sonnet-4-6", explicitCache: true, cacheReadGuaranteed: false },
   { key: "bedrock", label: "Bedrock (Claude)", model: "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0", explicitCache: true, cacheReadGuaranteed: true },
 ];
 
@@ -91,7 +100,47 @@ const extractScript = `
 var j = pm.response.json();
 var u = j.usage || {};
 var cached = (u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens) || 0;
+var written = (u.prompt_tokens_details && (u.prompt_tokens_details.cached_write_tokens || u.prompt_tokens_details.cache_write_tokens)) || 0;
 var prompt = u.prompt_tokens || 0;`.trim();
+
+// These three rounds are one stateful chain - round 1 writes the prefix, rounds 2 and 3 read it
+// back - but nothing in the harness inferred that, because the link lived only in the rounds'
+// shared prompt text. sliceByCost (lib/shard-cost.mjs) bin-packs rows individually and promises
+// only original order WITHIN a slice, and --rerun-failed selects exactly the rows that failed, so
+// either one can hand round 3 to a newman process that never ran round 1. Round 3 then meets a
+// cold prefix; its ephemeral breakpoint writes the prefix instead of reading it and reports
+// cached_tokens 0, which fails the assertion for a reason that has nothing to do with caching.
+// Worse, it is self-perpetuating: the row failed, so the next --rerun-failed pass selects it
+// alone again, and it can never go green.
+//
+// So the link is now declared the way this harness already declares request ordering - as a
+// chained collection variable (lib/chained-vars.mjs). Each round publishes one on success and the
+// next round consumes it, which buys both halves of the fix from machinery that already exists:
+// filter-collection.mjs pulls a consumer's producers into any sliced or rerun selection, and
+// augment-provider-harness.mjs guards a consumer whose producer still did not run, so a partial
+// selection reports "prerequisite did not set its chained variable" once instead of a misleading
+// cache miss.
+//
+// The variable rides the URL as a query parameter rather than the request body on purpose. This
+// is a prompt-caching test: the cached prefix and the payload around it have to stay
+// byte-identical from round to round, and a variable interpolated into the body would change the
+// bytes every run. Bifrost ignores the parameter, and the "cross-cut" route-shape matcher in
+// filter-collection.mjs already anchors on /v1/chat/completions(\\?|$), so classification is
+// unaffected.
+const chainVar = (backendKey, round) => `cacheChain_${backendKey}_r${round}`;
+
+// Published on any non-error response, because what the next round requires is simply that the
+// prefix reached the provider - not that this round's own cache assertion passed. A round that
+// 4xx'd publishes nothing, and the guard downstream then names it as the unmet prerequisite.
+const publishChain = (backendKey, round) =>
+  `if (pm.response.code < 400) { pm.collectionVariables.set(${J(chainVar(backendKey, round))}, "sent-" + prompt); }`;
+
+const urlFor = (backendKey, round) => {
+  const base = { raw: "{{baseUrl}}/v1/chat/completions", host: ["{{baseUrl}}"], path: ["v1", "chat", "completions"] };
+  if (round === 1) return base;
+  const consumed = `{{${chainVar(backendKey, round - 1)}}}`;
+  return { ...base, raw: `${base.raw}?_chain=${consumed}`, query: [{ key: "_chain", value: consumed }] };
+};
 
 export function buildPromptCachingHitVerificationItems() {
   const items = [];
@@ -128,18 +177,31 @@ if (pm.response.code < 400) {
         // counter must be a real number and can never exceed the prompt it came from - so a
         // nonsense value is still caught. The hit/miss is logged so a permanent regression to
         // 0% stays visible in the run output instead of disappearing entirely.
-        `pm.test(${J(`Prompt caching hit-verification: ${backend.key} round ${round} - cached_tokens coherent (best-effort cache, hit not guaranteed)`)}, function () {
+        //
+        // An explicit-breakpoint backend gets one more assertion than an implicit one, because
+        // more of its behaviour is Bifrost's to get right. Whether a repeat LANDS on the region
+        // holding the entry is the deployment's business, but whether cache_control survived the
+        // conversion and reached the provider at all is not: an honoured breakpoint always books
+        // the prefix as either a write or a read, so a dropped one is the case where both counters
+        // are zero. That keeps a real regression - Bifrost silently losing the breakpoint - failing
+        // the run, which a bare hit/miss report would have let through.
+        `${backend.explicitCache ? `pm.test(${J(`Prompt caching hit-verification: ${backend.key} round ${round} - cache breakpoint honoured (write or read recorded)`)}, function () {
+    pm.expect(cached + written, "cached=" + cached + " written=" + written + " (usage=" + JSON.stringify(u) + ") - neither counter moved, so cache_control never reached the provider").to.be.above(0);
+  });
+  ` : ""}pm.test(${J(`Prompt caching hit-verification: ${backend.key} round ${round} - cached_tokens coherent (best-effort cache, hit not guaranteed)`)}, function () {
     pm.expect(cached, "cached=" + cached + " (usage=" + JSON.stringify(u) + ")").to.be.a("number").that.is.at.least(0);
     pm.expect(cached, "cached=" + cached + " exceeds prompt=" + prompt + " (usage=" + JSON.stringify(u) + ")").to.be.at.most(prompt);
   });
   console.log("IMPLICIT_CACHE_OBSERVATION", JSON.stringify({ backend: ${J(backend.key)}, model: ${J(backend.model)}, round: ${round}, prompt: prompt, cached: cached, hit: cached > 0 }));`
   }
-}`.trim()
+}
+${round < 3 ? publishChain(backend.key, round) : ""}`.trim()
         : `
 ${extractScript}
 pm.test(${J(`Prompt caching hit-verification: ${backend.key} round 1 (write) succeeds`)}, function () {
   pm.expect(pm.response.code, "request failed: " + pm.response.text()).to.be.below(400);
-});`.trim();
+});
+${publishChain(backend.key, round)}`.trim();
 
       items.push({
         name: `Prompt caching hit-verification: ${backend.key}/${backend.model.split("/")[1]} round ${round}${isReadRound ? " (read)" : " (write)"}`,
@@ -153,11 +215,7 @@ pm.test(${J(`Prompt caching hit-verification: ${backend.key} round 1 (write) suc
           method: "POST",
           header: [{ key: "Content-Type", value: "application/json" }],
           body: { mode: "raw", raw: JSON.stringify(body, null, 2) },
-          url: {
-            raw: "{{baseUrl}}/v1/chat/completions",
-            host: ["{{baseUrl}}"],
-            path: ["v1", "chat", "completions"],
-          },
+          url: urlFor(backend.key, round),
         },
       });
     }

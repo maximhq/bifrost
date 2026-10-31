@@ -8,21 +8,23 @@ import { getRegistrationLabel } from "../utils";
 export function ClaudeCodeHarnessInstall({
 	canGenerateCommand,
 	clientConfig,
+	emptyMessage,
+	headers,
 	selectedServers,
 	serverScope,
-	virtualKey,
 }: HarnessInstallProps) {
 	const [scope, setScope] = useState<ClaudeScope>("local");
 
-	const command = useMemo(() => {
-		if (!virtualKey) return "";
-		return buildClaudeCodeCommand({
-			clientConfig,
-			scope,
-			selectedServers: serverScope === "selected" ? selectedServers : undefined,
-			virtualKey,
-		});
-	}, [clientConfig, scope, selectedServers, serverScope, virtualKey]);
+	const command = useMemo(
+		() =>
+			buildClaudeCodeCommand({
+				clientConfig,
+				headers,
+				scope,
+				selectedServers: serverScope === "selected" ? selectedServers : undefined,
+			}),
+		[clientConfig, headers, scope, selectedServers, serverScope],
+	);
 
 	return (
 		<HarnessCommandSection
@@ -40,7 +42,7 @@ export function ClaudeCodeHarnessInstall({
 					</SelectContent>
 				</Select>
 			}
-			emptyMessage={virtualKey ? "Select servers or use Gateway root." : "Select a virtual key to generate the command."}
+			emptyMessage={emptyMessage}
 			harnessName="Claude Code"
 			logoSrc="/images/harness/claudecode.svg"
 			registrationLabel={getRegistrationLabel(serverScope, selectedServers)}

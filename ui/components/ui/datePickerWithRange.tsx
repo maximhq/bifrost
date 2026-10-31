@@ -1,5 +1,7 @@
-import { cn } from "@/lib/utils";
 import { getSupportedTimezones } from "@/lib/timezones";
+import { cn } from "@/lib/utils";
+import { isCalendarPeriod } from "@/lib/utils/timeRange";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { TZDate, tz, tzName } from "@date-fns/tz";
 import { format } from "date-fns";
 import { Calendar as CalendarIcon, Globe } from "lucide-react";
@@ -65,9 +67,12 @@ interface DateTimePickerWithRangeProps extends DatePickerWithRangeProps {
 	timezone?: string;
 	/** Fired when the user picks a new timezone from the dropdown. */
 	onTimezoneChange?: (timezone: string) => void;
+	/** Disables the trigger, so the range can be shown but not changed. */
+	disabled?: boolean;
 }
 
 export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
+	const isMobile = useIsMobile();
 	const { className, buttonClassName, triggerLabel, onTrigger, dateTime } = props;
 	const activeTimezone = props.showTimezone ? props.timezone : undefined;
 
@@ -175,6 +180,7 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 					<Button
 						id="date"
 						variant="outline"
+						disabled={props.disabled}
 						data-testid={props.triggerTestId}
 						className={cn(
 							"justify-start text-left font-normal",
@@ -185,9 +191,13 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 					>
 						<CalendarIcon className="h-4 w-4" strokeWidth={1.5} />
 						{predefinedPeriod ? (
-							// Relative periods are durations (last hour, last 7 days) and are
-							// timezone-independent, so we intentionally omit the timezone badge here.
-							<span>{props.preDefinedPeriods?.find((p) => p.value === predefinedPeriod)?.label}</span>
+							// Sliding periods (last hour, last 7 days) are durations and timezone-independent,
+							// so they carry no badge. Calendar periods (today, this week) start at local
+							// midnight, so the badge says whose midnight.
+							<span>
+								{props.preDefinedPeriods?.find((p) => p.value === predefinedPeriod)?.label}
+								{props.showTimezone && tzAbbreviation && isCalendarPeriod(predefinedPeriod) ? ` · ${tzAbbreviation}` : ""}
+							</span>
 						) : (
 							<>
 								{dateTime?.from ? (
@@ -207,12 +217,16 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 						)}
 					</Button>
 				</PopoverTrigger>
-				<PopoverContent className="w-auto p-0" align={props.popupAlignment ? props.popupAlignment : "start"}>
-					<div className="flex flex-row gap-2">
+				<PopoverContent
+					className="max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] overflow-auto p-0 sm:w-auto"
+					align={props.popupAlignment ? props.popupAlignment : "start"}
+				>
+					<div className="flex flex-col gap-2 md:flex-row">
 						<div>
 							<Calendar
 								autoFocus
 								mode="range"
+								timeZone={activeTimezone}
 								disabled={disabledDateRange}
 								defaultMonth={date?.from}
 								selected={date}
@@ -238,7 +252,7 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 											});
 									}
 								}}
-								numberOfMonths={2}
+								numberOfMonths={isMobile ? 1 : 2}
 							/>
 							<div className="-mt-1 flex flex-row items-center px-2 pb-1">
 								<div className="m-1 flex flex-1 flex-col gap-1">
@@ -285,7 +299,7 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 							</div>
 						</div>
 						{props.preDefinedPeriods && (
-							<div className="flex w-[150px] flex-col gap-1 border-l py-2 pr-3 pl-2">
+							<div className="flex w-full flex-row gap-1 overflow-x-auto border-t p-2 md:w-[150px] md:flex-col md:border-t-0 md:border-l md:py-2 md:pr-3 md:pl-2">
 								{props.preDefinedPeriods.map((period) => (
 									<Button
 										className={cn("w-full text-start text-sm", predefinedPeriod === period.value && "bg-primary text-primary-foreground")}
@@ -305,10 +319,10 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 						)}
 					</div>
 					{props.showTimezone && (
-						<div className="flex items-center gap-2 border-t px-3 py-2">
+						<div className="flex flex-wrap items-center gap-2 border-t px-3 py-2">
 							<Globe className="text-muted-foreground size-4 shrink-0" />
 							<Label className="text-muted-foreground shrink-0 text-xs">Timezone</Label>
-							<div className="ml-auto w-[260px]">
+							<div className="w-full sm:ml-auto sm:w-[260px]">
 								<ComboboxSelect
 									options={timezoneOptions}
 									value={activeTimezone ?? null}

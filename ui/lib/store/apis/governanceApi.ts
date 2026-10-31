@@ -1,3 +1,4 @@
+import { virtualKeyMetadataQueryParams } from "@/lib/utils/virtualKeyMetadata";
 import {
 	Budget,
 	BudgetOverrideRequest,
@@ -41,7 +42,7 @@ import {
 	UpdateVirtualKeyRequest,
 	VirtualKey,
 } from "@/lib/types/governance";
-import { AnalyzerConfig } from "@/lib/types/complexityRouter";
+import { AnalyzerConfig, SemanticStatusInfo } from "@/lib/types/complexityRouter";
 import { baseApi } from "./baseApi";
 
 type PricingOverrideQueryArgs = {
@@ -67,6 +68,7 @@ export const governanceApi = baseApi.injectEndpoints({
 					...(params?.search && { search: params.search }),
 					...(params?.customer_id && { customer_id: params.customer_id }),
 					...(params?.team_id && { team_id: params.team_id }),
+					...(params?.business_unit_id && { business_unit_id: params.business_unit_id }),
 					...(params?.user_id && { user_id: params.user_id }),
 					...(params?.exclude_access_profile_managed_virtual === true && {
 						exclude_access_profile_managed_virtual: "true",
@@ -80,12 +82,13 @@ export const governanceApi = baseApi.injectEndpoints({
 					...(params?.sort_by && { sort_by: params.sort_by }),
 					...(params?.order && { order: params.order }),
 					...(params?.export && { export: "true" }),
+					...virtualKeyMetadataQueryParams(params?.metadata),
 				},
 			}),
 			providesTags: ["VirtualKeys"],
 		}),
 
-		getVirtualKey: builder.query<{ virtual_key: VirtualKey }, string>({
+		getVirtualKey: builder.query<{ virtual_key: VirtualKey; virtual_mcp_ids: number[] }, string>({
 			query: (vkId) => `/governance/virtual-keys/${vkId}`,
 			providesTags: (result, error, vkId) => [{ type: "VirtualKeys", id: vkId }],
 		}),
@@ -856,7 +859,7 @@ export const governanceApi = baseApi.injectEndpoints({
 		// Complexity Analyzer Config
 		getComplexityAnalyzerConfig: builder.query<AnalyzerConfig, void>({
 			query: () => ({
-				url: "/governance/complexity-analyzer-config",
+				url: "/routing/complexity-analyzer-config",
 				method: "GET",
 			}),
 			providesTags: ["ComplexityAnalyzerConfig"],
@@ -864,16 +867,33 @@ export const governanceApi = baseApi.injectEndpoints({
 
 		updateComplexityAnalyzerConfig: builder.mutation<AnalyzerConfig, AnalyzerConfig>({
 			query: (data) => ({
-				url: "/governance/complexity-analyzer-config",
+				url: "/routing/complexity-analyzer-config",
 				method: "PUT",
 				body: data,
 			}),
 			invalidatesTags: ["ComplexityAnalyzerConfig"],
 		}),
 
+		getComplexitySemanticStatus: builder.query<SemanticStatusInfo, void>({
+			query: () => ({
+				url: "/routing/complexity-analyzer-status",
+				method: "GET",
+			}),
+			// Readiness is derived from the saved configuration — a save or a reset
+			// restarts warmup — so it has to be invalidated by the same tag, or the
+			// page keeps showing the state the classifier was in before the edit.
+			providesTags: ["ComplexityAnalyzerConfig"],
+		}),
+		retryComplexitySemanticWarmup: builder.mutation<SemanticStatusInfo, void>({
+			query: () => ({
+				url: "/routing/complexity-analyzer-status/retry",
+				method: "POST",
+			}),
+			invalidatesTags: ["ComplexityAnalyzerConfig"],
+		}),
 		resetComplexityAnalyzerConfig: builder.mutation<AnalyzerConfig, void>({
 			query: () => ({
-				url: "/governance/complexity-analyzer-config/reset",
+				url: "/routing/complexity-analyzer-config/reset",
 				method: "POST",
 			}),
 			invalidatesTags: ["ComplexityAnalyzerConfig"],
@@ -947,6 +967,8 @@ export const {
 	useGetComplexityAnalyzerConfigQuery,
 	useUpdateComplexityAnalyzerConfigMutation,
 	useResetComplexityAnalyzerConfigMutation,
+	useGetComplexitySemanticStatusQuery,
+	useRetryComplexitySemanticWarmupMutation,
 
 	// Lazy queries
 	useLazyGetVirtualKeysQuery,

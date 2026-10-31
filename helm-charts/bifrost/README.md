@@ -4,9 +4,145 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.36
+**Latest Version:** 2.1.46
 
 ## Changelog
+
+### 2.1.46
+
+- Removed GitHub App authentication from GitHub Copilot provider keys: Bifrost now ignores `github_copilot_key_config` (`app_id`, `installation_id`, `repository_id`, `private_key`, `github_domain`). **Migrate before upgrading:** put a fine-grained personal access token (`github_pat_…`, with the **Copilot Requests** account permission, from an account with an active Copilot plan or assigned Copilot seat) or a GitHub OAuth token (`ghu_…` / `gho_…`) in the key's `value`; a key that relied on the App fields no longer authenticates.
+- Added `bifrost.mcp.maxProtocolVersion` (`mcp.max_protocol_version`), one of `auto`, `2026-07-28`, `2025-11-25` or `2025-06-18`: the newest MCP protocol version offered to MCP servers. `bifrost.mcp.clientConfigs[].maxProtocolVersion` (`mcp.client_configs[].max_protocol_version`) overrides it for one server. Upgrading a deployment that already has MCP servers caps them at `2025-06-18`, the version they used before; set `auto` to offer the newest version.
+- `bifrost.mcp.clientConfigs[].tokenExchange` (`mcp.client_configs[].token_exchange`) without `clientId` is now refused unless `useIdpCredentials: true` or `profile: id_jag`. Such a config never worked: Bifrost's own config validation rejected what the chart rendered.
+- Added `profile: id_jag` to `bifrost.mcp.clientConfigs[].tokenExchange` (`mcp.client_configs[].token_exchange.profile`) for Cross App Access to MCP servers (Enterprise): Bifrost gets an ID-JAG for the user from the identity provider and redeems it at the MCP server's authorization server. Set `audience` to that authorization server's issuer and `resourceClientId` (`resource_client_id`) to Bifrost's client there. `resourceTokenEndpoint` is discovered from the issuer when left empty. Add `resourceClientSecret` or `resourcePrivateKey` unless Bifrost is a public client.
+- Added `bifrost.mcp.clientConfigs[].promptsToExpose` and `.resourcesToExpose` (`mcp.client_configs[].prompts_to_expose` / `resources_to_expose`): which of an MCP server's prompts and resources the MCP gateway serves, `["*"]` for all and `[]` for none. A new server serves everything when the field is omitted; on an existing server, omitting it keeps the stored list.
+- Added `openapi` as a `bifrost.mcp.clientConfigs[].connectionType`, configured by `openapiConfig.spec`, `.specFile`, `.specUrl`, `.baseUrl`, `.securityCredentials`, `.includeDeprecated` and `.maxResponseBytes`. Renders into `mcp.client_configs[].openapi_config.spec` / `spec_file` / `spec_url` / `base_url` / `security_credentials` / `include_deprecated` / `max_response_bytes`. Bifrost builds an MCP server from an OpenAPI or Swagger document, with each API operation as a tool; operations the document marks deprecated are skipped unless `includeDeprecated: true`. `specFile` is read relative to `bifrost.appDir`, so mount it with `volumes`/`volumeMounts`. `authType` can only be `none`, `headers` or `per_user_headers`. The connection type existed in Bifrost but had no Helm path, so it could only be added from the dashboard.
+- Added `storage.logsStore.objectStorage.format` and `.compression` (`logs_store.object_storage.format` / `compression`) to write offloaded log payloads as Parquet instead of JSON. `format` is `json` or `parquet`; `compression` is `none` or `gzip` for JSON, and `none`, `gzip`, `snappy` or `zstd` for Parquet. Parquet works on S3 and Azure; GCS stays JSON-only.
+- Added `azure` as a `type` for `storage.logsStore.objectStorage` and `bifrost.auditLogs.objectStorage` (`logs_store.object_storage` / `audit_logs.object_storage`): `bucket` is the Azure Blob container, with either `endpoint` (Azure identity) or `connectionString`. For logs, `existingSecret` with `connectionStringKey` reads the connection string from a Kubernetes Secret.
+- Added `storage.logsStore.matviewRefreshTempFileLimit` (`logs_store.config.matview_refresh_temp_file_limit`), for example `"10GB"`: Postgres `temp_file_limit` for materialized-view refreshes. The cap applies to each Postgres process, and parallel workers each get it, so keep cap × (workers + 1) well under free disk. It needs superuser or `GRANT SET ON PARAMETER temp_file_limit`.
+- Added `postgresql.primary.extraArgs` (server settings such as `["-c", "max_connections=200"]`; changing them restarts the PostgreSQL pod), `postgresql.primary.persistence.annotations` and `postgresql.primary.persistence.volumeAttributesClassName` to the bundled PostgreSQL. Pod-spec only, no config.json change.
+- Added `bifrost.relays` (top-level `relays`): raw HTTP relays to non-LLM APIs such as Tavily, Exa or AWS Textract, served at `/relay/{name}/...`. Bifrost adds the relay's credential, prices each counted call and charges it to the caller's budgets. Entries render as written. With `sourceOfTruth: config.json`, an explicit list (including `[]`) removes stored relays it doesn't name, and their grants with them; leave the key out to keep stored relays. A repeated name fails the render. Grants are checked for identified callers only: with `bifrost.client.enforceAuthOnInference: false`, a request that carries no credential is relayed without any grant check.
+- Added `relay_grants: [{relay_name: ...}]` to `bifrost.governance.virtualKeys[]`, `bifrost.governance.projects[]` and `bifrost.accessProfiles[]` (`relay_grants`), the relays a caller can reach. Like the rest of the entry, the list in your values is the whole list whenever that key, project or profile syncs from config.json: when its entry changes, or on every start with `sourceOfTruth: config.json`. Leaving `relay_grants` out then means no grants, so list any grant made in the dashboard that should stay. A grant naming a relay that doesn't exist is skipped with a warning on a virtual key; a project or access profile naming one is skipped as a whole. A virtual key whose team, customer or user is governed by an access profile (Enterprise) takes its relays from that profile, and its own `relay_grants` are not applied; grant the relay on the profile.
+- Added `podDisruptionBudget` (top-level value): `enabled: true` keeps at least `minAvailable` (default `1`) Bifrost pods running through node drains and cluster upgrades. Setting `maxUnavailable` replaces `minAvailable`, so `maxUnavailable: "100%"` lets every replica be evicted. Rendered only in cluster mode, and needs at least 2 replicas. No config.json change.
+- Added `bifrost.scim.config.crossAppAccess` (`scim_config.config.crossAppAccess`, every identity provider; Enterprise): lets AI clients your identity provider admits sign in to Bifrost as the user, by exchanging the provider's ID-JAG for a Bifrost token. Takes `enabled`, `accessTokenTtl` (60-86400 seconds, default one day) and `provisionUsers`. It needs `bifrost.client.oauth2ServerConfig.issuerUrl`, the governance plugin, and an identity provider that issues ID-JAGs (such as Okta). Previously both the values schema and config.schema.json rejected it, so it could only be set from the dashboard.
+- Added `bifrost.scim.config.tokenExchangeHosts` (`scim_config.config.tokenExchangeHosts`, Enterprise): the hosts, besides the identity provider's own, that an MCP server's token exchange may be sent to. Previously both the values schema and config.schema.json rejected it, so it could only be set from the dashboard.
+- Added `bifrost.scim.config.accessProfileResolutionStrategy` (`scim_config.config.accessProfileResolutionStrategy`, Enterprise): `order` grants only the profiles of the first attribute rule a user matches; the default, `all`, grants every match. Previously both the values schema and config.schema.json rejected it, so it could only be set from the dashboard.
+- Added `bifrost.scim.config.syncAllUsers` (`scim_config.config.syncAllUsers`, Okta, default `true`): which users Okta directory sync keeps. `true` keeps every user assigned to the Okta app except suspended and deactivated ones; `false` keeps active users only. Directory sync runs only when `apiToken` is set. Previously the values schema rejected it, so it could only be set from the dashboard.
+- Added `bifrost.client.skipAccessProfileUserVirtualKeyCreation` and `.skipAccessProfileUserVirtualKeyDeletion` (`client.skip_access_profile_user_virtual_key_creation` / `skip_access_profile_user_virtual_key_deletion`, Enterprise): `true` stops giving users a virtual key with their first access profile, and keeps their virtual keys when their last profile is removed.
+- Added `disable_content_logging` to `bifrost.governance.projects[]` (`governance.projects[].disable_content_logging`): turns request and response content logging on or off for a project's traffic, overriding the virtual key. Omit it to inherit.
+- Added the `sagemaker` provider (Amazon SageMaker real-time endpoints) to `bifrost.providers` (`providers.sagemaker`). Set `sagemaker_key_config.region`; leave out `access_key` and `secret_key` to use the default AWS credentials (for example IRSA). Models are endpoint names.
+- Added `use_speech_endpoints` and `use_voice_live_endpoints` to `azure_key_config` (`providers.azure.keys[].azure_key_config`): `true` sends speech and transcription to Azure AI Speech, and realtime sessions to Azure Voice Live. An alias can override either.
+- Added `bifrost.providers.<name>.passthrough.allowed_routes` (`providers.<name>.passthrough.allowed_routes`): limits which HTTP passthrough routes reach a provider, by `path` (`*` and `/**` globs) and optional `methods`. An empty list forwards nothing.
+- Added `bifrost.warp` (top-level `warp`): configures the dashboard's Warp assistant (model and provider, limits, embeddings, log search and topics). Warp also needs `bifrost.featureFlags.warp.enabled: true` and a vector store.
+- Added `bifrost.disableOnboarding` (`disable_onboarding`): `true` hides the dashboard's setup checklist for every user. It is read from config.json on every start, so it holds on stateless deployments.
+
+### 2.1.45
+
+- Added `bifrost.plugins.datadog.config.llmobs_gateway_mode` (`llmobs_gateway_mode`), default `false`. Follows Datadog's proxy-service pattern for LLM Observability: a `bifrost.request` workflow span per request with the LLM span nested under it, so filtering on that name lists gateway requests rather than raw model calls, plus MCP tool spans so an agentic request shows the tools it ran. Changes the exported LLM Observability span shape, so it is opt-in.
+- Added `bifrost.plugins.datadog.config.otel_llmobs_conversion` (`otel_llmobs_conversion`), one of `disabled` (default), `inherit` or `enabled`. Controls whether Datadog builds its own LLM Observability spans from Bifrost's APM trace. Datadog resolves this across the whole trace, so the default opt-out also suppresses conversion for upstream services sharing the trace; `inherit` leaves the decision to them. With `inherit` or `enabled` and LLM Observability still on, Bifrost leaves `gen_ai.*` off its own APM spans so nothing is counted twice. **Migrate before upgrading:** a config that still sets `dd_llmobs_enabled` through `custom_tags` is now refused, and the Datadog plugin will not load until that tag is replaced by this setting.
+- Added `bifrost.governance.virtualKeys[].metadata` (`metadata`), custom key/value metadata copied onto every log entry the key produces, so logs and spend can be filtered by it. Up to 50 entries; keys may use letters, digits, `.`, `_` and `-`. The field existed in Bifrost but had no Helm path, so it could not be set from a declarative install.
+- Removed `bifrost.agents[].tenant` and `bifrost.agents[].extension_uris` from registration configuration; Agent Gateway discovers supported extensions from the upstream agent card.
+- Added `bifrost.client.a2aPrivateAllowlist` (`client.a2a_private_allowlist`) for private hosts, IPs, or CIDRs used by Agent Gateway card discovery, OAuth, and runtime connections. Link-local and cloud metadata destinations remain blocked. Per-agent `bifrost.agents[].credential_origins` permits additional HTTP(S) origins for all runtime requests and their credentials; the card origin is permitted automatically.
+- Added `bifrost.client.skillsExternalClientUrl` (`client.skills_external_client_url`) for the public skills marketplace URL, including environment and vault references. When unset, marketplace serving is disabled; skill management and downloads remain available.
+- Updated `bifrost.client.a2aExternalClientUrl` (`client.a2a_external_client_url`) to accept secret-reference objects and document that an unset URL disables all Agent Gateway protocol endpoints while management remains available.
+- Added `nodeSelector`, `tolerations` and `affinity` to the chart-managed Redis (`vectorStore.redis.master.*`), Qdrant (`vectorStore.qdrant.*`) and Weaviate (`vectorStore.weaviate.*`) deployments, matching `postgresql.primary.*`. Lets these stateful pods be pinned to dedicated or non-spot nodes. Defaults are empty and render nothing. Pod-spec only, no config.json change. Closes #3440.
+- Added `azure-key-vault` as a `storage.configStore.vaultStore.type` option (`storage.configStore.vaultStore.azure`: `vaultUrl`, `tenantId`, `clientId`, `clientSecret`). Renders into `config_store.vault_store.azure`. Omit `clientId`/`clientSecret` to use `DefaultAzureCredential` (workload identity, managed identity, or `AZURE_*` env vars) instead of a service principal.
+- Added Kubernetes auth for the `hashicorp-vault` vault store backend: `storage.configStore.vaultStore.hashicorp.kubernetesRole`, `.kubernetesMountPath` (default `kubernetes`), `.kubernetesTokenPath` (default `/var/run/secrets/kubernetes.io/serviceaccount/token`). Renders into `config_store.vault_store.hashicorp.kubernetes_role` / `kubernetes_mount_path` / `kubernetes_token_path`, letting a pod authenticate with its own service account token instead of a static token or AppRole. Tokens issued via AppRole or Kubernetes auth are now renewed in the background.
+- Added `auto_rotation_interval` and `next_rotation_at` to `bifrost.accessProfiles[]` (and to `access_profiles` in config.schema.json). Renders into `access_profiles[].auto_rotation_interval` / `next_rotation_at`, scheduling automatic rotation of a profile's managed virtual keys (`"30d"`, `"12h"`; 1h-365d). Previously the schema rejected the field, so it could only be set from the dashboard or API. Setting `next_rotation_at` requires an enabled (non-zero) `auto_rotation_interval`.
+- Added `bifrost.loadBalancer.rerouteTarget`, `historyEnabled`, `historyRetentionDays` and `snapshotPersistIntervalSeconds`. They render into `load_balancer_config.reroute_target`, `history_enabled`, `history_retention_days` and `snapshot_persist_interval_seconds`; previously these settings had no Helm path.
+- Removed `bifrost.loadBalancer.trackerConfig` and `bootstrap`, and the `enabled: true` the chart rendered into `load_balancer_config`. Bifrost ignores all three. `bifrost.loadBalancer.enabled` still decides whether `load_balancer_config` is rendered.
+- `circuitBreakerConfig` policies: `default_cooldown` accepts any Go duration (e.g. `1m30s`) or integer nanoseconds, `condition.operator` is case-insensitive, setting both `header_value` and `header_contains` on a signal is rejected, and name, provider and model fields must be non-empty.
+- Routing rules: targets and object fallbacks accept `key_id`, setting it together with `provider_key_name` is rejected as config load rejects it, a target key selector requires `provider`, rules accept `chain_rule`, and the example in `values.yaml` no longer uses invalid values (`model: ""`, bare `fallbacks: ["openai"]`).
+- A provider key's `weight` is now optional, as documented; the chart already defaults it to 1.
+- Documented `enabled` on provider keys (`bifrost.providers.<name>.keys[].enabled`, renders into `providers.<name>.keys[].enabled`; also added to config.schema.json). Set `false` to keep a key configured but skip it in key selection, the same as the UI's Enabled toggle. New keys default to `true`; omitting it on an existing key keeps the stored value. Bifrost now saves the value from config.json on restart, so a key whose field was previously unset can be disabled from values; previously the stored value won.
+- Added `output_mode` to `bifrost.guardrails.rules[]`, rendered as `guardrails_config.guardrail_rules[].output_mode` (`enforce` default, or `monitor`). A monitor rule delivers the response untouched, evaluates it in the background, and records matches on the request's log without enforcing them; it requires `apply_to` `output` or `both`.
+- Configurable request-body buffer pool limit via `bifrost.server.bodyBufferPoolLimitBytes`. Maps to `server.body_buffer_pool_limit_bytes` in config.json. Keep-alive connections free request-body buffers larger than this after each request instead of holding the largest body they ever read (default 4 MiB when unset; `0` means unlimited, the old behaviour).
+
+### 2.1.44
+
+- Added `bifrost.auditLogs.omitIpAddresses` (default `false`) to stop recording client IP addresses in audit logs while keeping the rest of the audit trail. IPs stored before the flag was turned on are hidden from the API, filter data, search and exports, and archive copies written after the change omit them, but they stay in the database and in archive objects already written. Renders into `audit_logs.omit_ip_addresses`.
+- Added `excluded_attributes` to the OTEL, Datadog, Kafka, Pub/Sub, Splunk and BigQuery plugin configs (`bifrost.plugins.<connector>.config.excluded_attributes`, and `profiles[*].excluded_attributes` for OTEL). Names span attributes to leave out of exported traces, matched exactly (e.g. `gen_ai.request.tools`), for dropping large attributes that are not needed downstream. Unmatched names are ignored. On BigQuery these are **column names** (`tools`) rather than attribute names, because BigQuery writes typed columns; the column stays in the table schema and is left empty, and `trace_id` / `timestamp` are rejected. Renders into `excluded_attributes`.
+- Added `bifrost.plugins.bigquery.config.export_raw_payloads` and `bifrost.plugins.otel.config.export_raw_payloads` (also `profiles[*].export_raw_payloads`), default `false`. Stores the raw provider request and response bodies. Requires the provider's `store_raw_request_response` and is suppressed by `disable_content_logging`. Previously the field existed in Bifrost but had no Helm path, so it could not be enabled from a declarative install. Renders into `export_raw_payloads`.
+- Added `bifrost.agents[]` — declarative A2A agent registrations rendered into the config.json `agents` section. Each entry takes `name`, `agent_card_url`, and optionally `tenant`, `enabled`, `allow_by_default`, `forward_accepted_credential`, `forward_accepted_credential_overrides_auth`, `discovery_auth`, `runtime_auth`, `extension_uris`, and `virtual_key_ids`. Reconciled by name on startup: created if absent, updated when the declaration changes, and left alone otherwise (merge mode). When `bifrost.sourceOfTruth` is `config.json` and `agents` is present, stored registrations absent from the rendered list are removed; set `agents: []` to remove all stored registrations.
+- Added `bifrost.client.a2aExternalClientUrl` (`a2a_external_client_url`) — Bifrost's public base URL for served agent cards and A2A push-notification callback URLs. Push notifications stay disabled while unset. Supports `env.` syntax.
+- Added `bifrost.server.a2aGrpcBaseDomain` (`a2a_grpc_base_domain`) and `bifrost.server.a2aGrpcPort` (`a2a_grpc_port`) — enable the shared A2A gRPC listener; per-agent hostnames are advertised as `<agent-name>.<base-domain>:<port>`. gRPC stays disabled while either is unset.
+- Added `bifrost.server.a2aAllowPrivatePushCallbacks` (`a2a_allow_private_push_callbacks`) — lets A2A push delivery reach loopback and private network callback targets. Off by default; intended only for controlled development and test environments.
+- Added `storage.logsStore.clickhouse.maxQuerySize` (renders into `logs_store.config.max_query_size`), the ClickHouse `max_query_size` setting in bytes. Defaults to 16 MiB so team-scoped log reads with thousands of member and virtual key ids no longer fail against the 256 KiB server default.
+- Added `bifrost.governance.complexityAnalyzerConfig.decision` (renders into `complexity_analyzer_config.decision`): a decision-model classifier for the complexity router. `provider` and `model` select the decision model (default `typesafe`/`jev-latest`). Supported providers are Typesafe (Jev), OpenAI (`gpt-6-luna`, also on a custom provider with `base_provider_type: openai`), OpenRouter (the decision models it serves, such as `~typesafe/jev-latest`), Cloudflare (Clef: `@cf/cloudflare/clef`, `@cf/cloudflare/clef-flash`), Perplexity (`pplx-decider-*`), and Ollama (locally pulled System One models: `nimble`, `tev1`, `clef`, `clef-flash`, `laya`). Laya and Nimble (by Bespoke) can also be served by a custom provider with `base_provider_type: typesafe`. Requests go through Bifrost's `/v1/decisions` to the selected provider's native decisions endpoint, using that provider's own credentials. `criteria` holds per-tier overrides of the shipped `definition`, `signals`, and `examples`, keyed by `SIMPLE`, `MEDIUM`, or `COMPLEX` (exact case). Any tier or field left out sends the shipped default; a definition is at most 500 characters, and each list at most 12 items of 300 characters.
+- Added the `cloudflare` provider (Cloudflare Workers AI) to `bifrost.providers`. Every key needs `cloudflare_key_config.account_id` (supports `env.`); the base URL defaults to `https://api.cloudflare.com/client/v4`. It serves chat completions, Responses, embeddings, model listing, and Clef decisions (`@cf/cloudflare/clef`, `@cf/cloudflare/clef-flash`). 
+- Added `bifrost.mcp.toolManagerConfig.maxInstructionsPerClient` and `.maxInstructionsTotal` (`max_instructions_per_client` / `max_instructions_total`) to bound forwarded MCP server instructions in bytes; 0 keeps the built-in defaults.
+- Added `access_profile` to `bifrost.governance.customers[]`, `.teams[]`, and `.businessUnits[]` (renders into `governance.{customers,teams,business_units}[].access_profile`), the enterprise access profile the entity holds in place of its own budgets and rate limit.
+- `bifrost.governance.roles[].dac` and `.entity_dac` now accept `business-unit-data` and `customer-data` (`governance.roles[].dac` / `entity_dac`).
+- Documented `ttft_timeout_ms` on `bifrost.governance.routingRules[].targets[]` (`governance.routing_rules[].targets[].ttft_timeout_ms`) in the values schema.
+- Added `bifrost.proxyConfig` (renders into the top-level `proxy_config`): the global outbound proxy from the dashboard's proxy settings page, including `enableForScim` (`enable_for_scim`), `enableForInference` and `enableForApi`; reconciled with the same config hash as the other sections.
+- Added `bifrost.scim.config.attributeProjectMappings` (`{ attribute, value, project }`, every SSO provider) — renders into `scim_config.config.attributeProjectMappings`. Every matching rule adds the user to that project by name (projects are never auto-created); memberships a rule added are removed when it stops matching, while members added from the dashboard are kept.
+- Added `bifrost.scim.config.bulkSyncInterval` (default `24h`, every SSO provider) — renders into `scim_config.config.bulkSyncInterval`. How often the directory reconcile deprovisions users the IdP no longer returns: whole days or h/m/s pairs (`12h`, `1h30m`, `7d`), between 1h and 30d. Inert when SCIM is enabled or the provider has no directory API access.
+- Added `bifrost.mcp.toolManagerConfig.codeModeLimits` (`maxSourceBytes`, `maxSteps`, `maxMemoryBytes`, `maxLogBytes`, `maxToolCalls`, `maxValueBytes`, `maxNestingDepth`) to tune the limits on each code mode execution; an omitted or 0 field keeps the built-in default. Renders into `mcp.tool_manager_config.code_mode_limits`. Code mode no longer limits concurrent executions.
+- Added a template-time guard: the chart now fails to render when `bifrost.client.mcpServerAuthMode` is `oauth` or `both` and `bifrost.client.oauth2ServerConfig.issuerUrl` (`client.oauth2_server_config.issuer_url`) is empty or unset, instead of letting the pod crash-loop on Bifrost's startup check. `env.VAR_NAME` references pass.
+- Added `storage.logsStore.objectStorageExcludeRequestTypes` (renders into `logs_store.object_storage_exclude_request_types`): request types (e.g. `list_models`) whose logs stay in the logs database in full instead of being offloaded to object storage. Hidden logs are still offloaded.
+- Added `ignore_provider_cost` to `bifrost.providers.<name>` and `bifrost.governance.providers[]` (`providers.<name>.ignore_provider_cost` / `governance.providers[].ignore_provider_cost`): ignore the provider-reported `usage.cost` and price the request from Bifrost's model pricing and pricing overrides.
+- Added `storage.configStore.statementTimeout` / `.idleInTransactionSessionTimeout` and the same pair on `storage.logsStore` (`config_store.config.statement_timeout`, `idle_in_transaction_session_timeout`, and the `logs_store.config` equivalents). Server-side Postgres timeouts on every runtime pool connection, default `120s`; `"0"` keeps the server default.
+- Added `bifrost.client.compat.forceReasoningOnlyModelsToResponses` (`client.compat.force_reasoning_only_models_to_responses`, default `true`): routes chat requests to the Responses API for models that cannot reason with tool calls, so reasoning is kept.
+- Added `bifrost.client.deleteExpiredVirtualKeys` (`client.delete_expired_virtual_keys`, default `false`) and per-key `delete_after_expire` on `bifrost.governance.virtualKeys[]`: a daily job deletes virtual keys past `expires_at`; the per-key value overrides the client setting.
+- Added `disable_content_logging` and `business_unit_id` to `bifrost.governance.virtualKeys[]` (`governance.virtual_keys[]`): a per-key content-logging override and the owning business unit (mutually exclusive with `team_id` / `customer_id`). Grant agents to a key from the agent side with `bifrost.agents[].virtual_key_ids`.
+- Added `bifrost.client.oauth2ServerConfig.allowedRedirectUris` (`client.oauth2_server_config.allowed_redirect_uris`): exact remote OAuth client callback URIs to allow. Loopback and Cursor callbacks need no entry; other remote callbacks are denied by default.
+- Added `bifrost.mcp.clientConfigs[].requirePublicTarget` (`mcp.client_configs[].require_public_target`): every connection to the MCP server must resolve to a public address. Once stored as true it is never cleared.
+- Added `cache_tool_call_responses` to `bifrost.plugins.semanticCache.config` (`semantic_cache` plugin config): cache responses that carry tool calls. Off by default, since a replayed tool call runs in another caller's agent loop.
+- `bifrost.governance.routingRules[].fallbacks` entries now accept an object `{ provider, model, provider_key_name }` that pins a provider key, alongside the `provider/model` string form (`governance.routing_rules[].fallbacks`).
+- Added `displayName` to the generic OIDC `bifrost.scim.config` (`scim_config.config.displayName`): the login button label (`Sign in with <displayName>`), default `SSO`.
+- Added `topologySpreadConstraints` (top-level value): pod topology spread constraints rendered into the Bifrost Deployment or StatefulSet pod spec, to spread replicas across nodes and zones. A constraint without a `labelSelector` defaults to the release's server pod labels, so only Bifrost's own replicas are counted.
+- Added `extraContainers` (top-level value): regular sidecar containers appended to the Bifrost pod after the Bifrost container. Native sidecars (Kubernetes 1.29+) follow the Kubernetes convention, an `initContainers` entry with `restartPolicy: Always`, and the chart now refuses to render one on clusters older than 1.29 instead of leaving the pod blocked on an init container that never exits.
+
+### 2.1.43
+- Added `bifrost.plugins.telemetry.config.user_labels_enabled` (default `false`) — adds `user_id` and `user_name` labels to every `bifrost_*` metric. Off by default because these are unbounded: they multiply metric series by end-user count, on top of a `virtual_key_id` label that already reaches tens of thousands of values in large deployments, and Prometheus cannot drop a label after the fact. Datadog and Splunk emit these dimensions unconditionally, since a costly tag can be dropped server-side there.
+
+### 2.1.42
+
+- Added `bifrost.governance.roles[].access_profiles` for granting multiple access profiles to a role. The plural list takes precedence over the deprecated singular `access_profile`; an explicit empty list removes all profile grants.
+- Added `bifrost.scim.trustedNetworks` — the private IP/CIDR allowlist the SSRF guard consults before the generic provider's outbound OIDC discovery calls (**Discover endpoints** / **Discover claims**), so a self-hosted IdP on `10.x`, `172.16-31.x`, or `192.168.x` is reachable from a declarative install instead of only from the dashboard. Each entry is `{ cidr, description }`: a bare IP is treated as a single host (`/32`, or `/128` for IPv6) and hostnames are rejected. Declaring the key makes Helm own the whole list - it replaces whatever is stored, and an explicit `trustedNetworks: []` clears dashboard-added ranges - while omitting it leaves them untouched. 
+- Added `mcp.clientConfigs[].perUserHeaderKeys` — the header names each caller must individually supply under `authType: per_user_headers` (e.g. `["Authorization"]`).
+- Added `bifrost.plugins.otel.config.overhead_breakdown_enabled` (default `false`) and `bifrost.plugins.telemetry.config.overhead_breakdown_enabled` - exports the per-component overhead histogram `bifrost_overhead_component_microseconds`, overhead latency split by the `overhead_component` label. 
+- Fixed `bifrost.plugins.otel.config.export_overhead_spans` not rendering into `config.json`.
+- Added `bifrost.accessProfiles[].virtual_mcps` and `bifrost.accessProfiles[].mcp_configs` (`{ mcp_client_id, tools_to_execute }`) — the current spelling of a profile's MCP grants. The values schema previously declared only the retired `mcp_tool_groups` / `mcp_servers` / `mcp_tool_overrides` keys under `additionalProperties: false`, so a chart using the keys Bifrost actually reads failed schema validation and MCP grants could not be managed declaratively at all. `tools_to_execute` is `["*"]` for every tool including future ones, `[]` for none, or a named list.
+- Virtual MCPs are now assigned **by name**: `bifrost.accessProfiles[].virtual_mcps[]` and `bifrost.governance.projects[].virtual_mcps[]` take `{ virtual_mcp_name }`, matching how `mcp_configs` names its MCP client. Resolved on startup; a name matching no Virtual MCP is refused. `virtual_mcp_id` is still accepted as an alternative and wins when both are set.
+- Deprecated `bifrost.accessProfiles[].mcp_tool_groups`, `.mcp_servers`, and `.mcp_tool_overrides`. They still render and Bifrost now folds them into `virtual_mcps` / `mcp_configs` at load time with a warning in the startup logs, instead of dropping them silently. `mcp_tool_groups` is ignored when `virtual_mcps` is present; `mcp_servers` becomes a `["*"]` allowlist except for clients `mcp_configs` already names.
+
+### 2.1.41
+
+- This version has been missed. Please refer to v2.1.42
+
+### 2.1.40
+
+- Added `bifrost.governance.roles[].entity_dac` — per-entity Data Access Control overrides keyed by resource name, each set to `own-data`, `team-data`, or `all-data`. Resources accepting an override today: `Logs`, `MCPLogs`, `AuditLogs`, `VirtualKeys`, `Users`, `Teams`, `Customers`, `BusinessUnits`, `RBAC`, `APIKeys`, `AccessProfiles`, `PromptRepository`, `RoutingRules`, `GuardrailsConfig`, `MCPGateway`, `VirtualMCPs`, `Projects` 
+
+### 2.1.39
+
+- Fixed disabling SCIM/SSO via Helm having no effect. `bifrost.scim.enabled: false` skipped the `scim_config` block entirely, so the section was absent from the rendered `config.json`, the runtime never reconciled it, and SCIM stayed enabled from the previous state. `bifrost.scim` no longer has a chart default (the block is commented out in `values.yaml`), and `scim_config` is now rendered whenever `bifrost.scim` is declared at all — so `enabled: false` emits `"scim_config": {"enabled": false}` and the disable propagates. Installs that never declare `bifrost.scim` emit nothing, leaving dashboard-configured SCIM untouched.
+- Added `bifrost.client.compat.azureDeepseek` (default `false`) — converts Azure DeepSeek responses requests to chat completions so reasoning is preserved for coding harnesses. Renders into `client.compat.azure_deepseek`.
+- Updated `bifrost.governance.complexityAnalyzerConfig` for semantic Complexity Router configuration: set an embedding provider and model, add reference phrases for Simple, Medium, and Complex, and choose `embedded` or `vector_store` phrase storage. Bifrost detects the embedding dimension during warmup. Legacy four-tier lists remain valid: Simple stays Simple, Code and Technical merge into Medium, and Reasoning merges into Complex. Legacy `tier_boundaries` remain accepted during upgrades but are optional and ignored by semantic routing. Renders into `governance.complexity_analyzer_config`.
+- Added `vectorStore.type: chromem` plus a `vectorStore.chromem` block (`path`, `compress`) for the embedded in-process vector store used by semantic complexity routing. Renders into `vector_store.config`.
+- Added `bifrost.governance.complexityAnalyzerConfig.session.enabled` for session-aware Complexity Router behavior. Identified sessions retain their highest observed tier across normally sequential turns for 24 hours of inactivity; overlapping requests for the same session are best-effort and resolve by last writer wins. Renders into `governance.complexity_analyzer_config.session.enabled`.
+- Fixed `postgresql.external.passwordCommand` and `storage.logsStore.postgres.passwordCommand` being unusable: the mutual-exclusion rules in `values.schema.json` tested only for key *presence*, and `values.yaml` ships `password: ""` / `existingSecret: ""` as defaults, so any chart install that set `passwordCommand` failed validation with `'not' failed`. They now check the *value* instead — `password` and `existingSecret` must be empty when `passwordCommand` is set — so RDS IAM auth renders `password_command` into `config_store.config` / `logs_store.config` without needing `password: null` overrides.
+- Added `bifrost.scim.config.attributeAccessProfileMappings` to every SCIM/SSO provider — attribute → access-profile grants (`attribute`/`value`/`accessProfile`, `*` and glob values supported). Every matching rule applies: the user holds the union of the matched profiles on top of whatever a role or the dashboard assigned, and Bifrost enforces the tightest limit across them. Renders into the provider's `attributeAccessProfileMappings`.
+- Added `bifrost.scim.config.enableBulkSync` for the `entra` and `google` providers. Normally set by the SCIM verify step (turned off when the app registration lacks the Graph permissions / the service account lacks the Directory API scopes); declare it `false` to opt out of bulk user/group sync while keeping login-time claim sync.
+- Added `bifrost.governance.projects` — projects declared in `config.json`: `access_rule`, `membership_mode`, `accounting_mode`, `split_policy`, `calendar_aligned`, plus `budgets`, `rate_limit`, `provider_configs` (with `model_budgets`), `mcp_configs`, and `virtual_mcps`. Members are still added from the dashboard or the API.
+- Added `bifrost.mcp.clientConfigs[].allowByDefault` — when true the MCP server is available to every caller not explicitly assigned it, with all tools allowed; an explicit assignment still wins for that caller. Supersedes `allowOnAllVirtualKeys`, now deprecated and read only when `allowByDefault` is absent. The chart emits whichever key you declare, so the existing key keeps working untranslated.
+- Added `bifrost.mcp.clientConfigs[].endpointSlug` — URL-safe, immutable slug serving the client at `/mcp/<slug>`. Derived from the client name when omitted; must be unique across MCP clients and Virtual MCPs.
+- Added `bifrost.client.vkRotationCooldown` (default `0`) — grace period after a virtual key rotation during which the previous key value still authenticates. Go duration string (e.g. `"5m"`), max 30 days; `0` disables
+- Added `databricks_key_config` (`workspace_url`, `api_format`, `client_id`/`client_secret` for OAuth M2M, `forward_gateway_tags`) to provider keys, with `bifrost.providers.databricks` examples in `values.yaml`.
+- Added `allow_all_providers` to `bifrost.governance.projects[]` and `bifrost.accessProfiles[]` (default `false`) — grant access to every provider, including ones without a `provider_configs` entry and providers added later; listed providers keep their own model, key, budget, and rate-limit rules. Renders into each entry's `allow_all_providers`.
+
+### 2.1.38
+
+- Fixed `postgresql.external.passwordCommand` being unusable: the values schema excluded `password` / `existingSecret` by key *presence*, and `values.yaml` ships both with empty-string defaults, so any chart that set `passwordCommand` failed schema validation. The exclusion is now value-based — `password` and `existingSecret` must be empty (or omitted) when `passwordCommand` is set.
+
+
+### 2.1.37
+
+- Added `bifrost.guardrails.rules[].send_all_conversation_turns`. Set it to `false` to make `max_turns_to_send` select the current input plus that many preceding turns; `0` then sends only the current input. Omit the switch to retain legacy `0 = all history` behavior.
+- Added `bifrost.plugins.splunk` — the Splunk HTTP Event Collector (HEC) observability connector (Enterprise): one flattened event per request to `events_index` plus the derived metric set to `metrics_index`, with TLS (`ca_cert` / `insecure_skip_verify`), a content toggle (`disable_content_logging`), request-header capture, and indexer acknowledgement (`indexer_ack`, `ack_poll_interval_ms`, `ack_timeout_ms`, `max_ack_attempts`). Renders into the `splunk` plugin config.
+- Added `bifrost.plugins.otel.config.semaphore_size` and `inject_timeout` (plugin-level, both legacy and `profiles` wrapper shapes, default `10000` / `5`) — cap on concurrent in-flight trace injects and the timeout for a single inject call, so a hung collector can't hold its concurrency slot indefinitely. Renders into `semaphore_size` / `inject_timeout`. `bifrost.plugins.logging.config` accepts the same two keys (`inject_timeout` as a duration string, e.g. `"5s"`), passed through as-is.
+- Added `postgresql.primary.nodeSelector`, `postgresql.primary.tolerations`, and `postgresql.primary.affinity` to the hosted PostgreSQL deployment. Previously only the Bifrost pod itself could be steered (top-level `nodeSelector`/`tolerations`/`affinity`), so on clusters that mix long-lived services with ephemeral autoscaled workloads the hosted database could not be kept off nodes that scale in — and draining the single-replica Postgres takes the gateway down with it. All three default to empty, so rendering is unchanged unless set.
+- Added `storage.logsStore.postgres` to point the logs store at a **separate external PostgreSQL** (different host and/or database) than the config store, instead of forcing both onto the shared top-level `postgresql` connection. Only applies when the logs store resolves to postgres; `enabled: false` (default) preserves existing behavior. Fields mirror `postgresql.external` (`host`, `port`, `user`, `password`, `passwordCommand`, `database`, `sslMode`, `connMaxLifetime`, `existingSecret`, `passwordKey`); with `existingSecret` the password is injected as `BIFROST_LOGS_POSTGRES_PASSWORD`. Renders into `logs_store.config`.
 
 ### 2.1.36
 
@@ -26,7 +162,6 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Documented `endpoints` on the `bedrock` and `bedrock_mantle` key examples (AWS PrivateLink interface VPC endpoint hosts: `runtime`, `control_plane`, `mantle`, `agent_runtime`, `s3`). Passes through into `bedrock_key_config.endpoints` / `bedrock_mantle_key_config.endpoints`.
 - Extended `bifrost.governance.budgets[]` with quarterly resets (`reset_duration: "1Q"`) and `reset_config.quarter_start_month` (1–12, sets the fiscal Q1 month). Passes through into `budgets[].reset_config`.
 - Added `target` (`llm` default, or `mcp`) to `bifrost.governance` guardrail rules to select the rule's execution target. Passes through into the rule's `target`.
-
 
 ### 2.1.34
 
@@ -96,6 +231,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Added `bifrost.alerting` for declarative alert channels and rules. Supports `history_retention_days`, `webhook_network` (`allow_http`, `allow_private_network`), `channels[]` (slack, microsoft_teams, pagerduty, webhook), and `rules[]` (CEL-expression-based, governance-scope-aware). Renders into `alerting`.
 - `postgresql.external.port` now accepts a string in addition to an integer, enabling env-variable substitution via `env.VAR_NAME` references when mounting port from a Kubernetes secret. Renders into `postgres_config.port`.
 - `bifrost.mcp.toolGroups[*].id` — optional integer DB ID for an existing MCP tool group. When set, the reconciler updates the group by ID instead of matching by name. Renders into `mcp.tool_groups[*].id`.
+- Added `bifrost.mcp.virtualMcps` for declarative Virtual MCPs: named bundles of tools from one or more MCP clients, served at `/mcp/<endpointSlug>` and attachable to virtual keys. Supports `id`, `name`, `endpointSlug`, `description`, `enabled`, `tools[]` (`mcpClientId`/`mcpClientName`, `toolNames`), and `virtualKeyIds`. Renders into `mcp.virtual_mcps`. This is the canonical key; `bifrost.mcp.toolGroups` (rendering `mcp.tool_groups`) is deprecated and kept for backward compatibility.
 
 ### 2.1.26
 
@@ -666,7 +802,55 @@ Bifrost supports two storage backends (SQLite and PostgreSQL) that can be config
 | `storage.configStore.type`                     | Config store backend: `sqlite`, `postgres`, or `""`                     | `""` (uses `storage.mode`) |
 | `storage.logsStore.enabled`                    | Enable logs store                                                       | `true`                     |
 | `storage.logsStore.type`                       | Logs store backend: `sqlite`, `postgres`, or `""`                       | `""` (uses `storage.mode`) |
+| `storage.logsStore.postgres.enabled`           | Point the logs store at a separate external PostgreSQL than the config store (only applies when the logs store is postgres). When `false`, a postgres logs store shares the top-level `postgresql` connection. | `false` |
 | `storage.logsStore.objectStorageExcludeFields` | Payload DB fields to keep in DB instead of offloading to object storage | `[]`                       |
+| `storage.logsStore.objectStorageExcludeRequestTypes` | Request types whose logs stay in the DB and are not offloaded (e.g. `list_models`). Hidden logs are still offloaded | `[]` |
+| `storage.logsStore.objectStorage.type` | Payload object storage backend: `s3`, `gcs`, or `azure` | Unset |
+| `storage.logsStore.objectStorage.bucket` | Bucket name, or Azure Blob container name | Unset |
+| `storage.logsStore.objectStorage.endpoint` | S3-compatible endpoint, or Azure Blob service URL for DefaultAzureCredential | Unset |
+| `storage.logsStore.objectStorage.connectionString` | Azure Storage connection string or `env.VAR_NAME` reference; mutually exclusive with `endpoint` and `existingSecret` | Unset |
+| `storage.logsStore.objectStorage.existingSecret` | Existing Kubernetes Secret containing object storage credentials | Unset |
+| `storage.logsStore.objectStorage.connectionStringKey` | Azure connection-string key in `existingSecret` | `connection-string` |
+| `storage.logsStore.objectStorage.format` | Payload encoding: `json` or `parquet` (S3/Azure only) | `json` |
+| `storage.logsStore.objectStorage.compression` | JSON: `none`/`gzip`; Parquet: `none`/`gzip`/`snappy`/`zstd`; overrides legacy `compress` | JSON: `none` (`gzip` when `compress: true`); Parquet: `snappy` |
+
+#### Azure Blob payload storage
+
+Use `bucket` for the existing container and choose exactly one authentication mode. For workload identity or another DefaultAzureCredential source, set the Blob service URL:
+
+```yaml
+storage:
+  logsStore:
+    objectStorage:
+      enabled: true
+      type: azure
+      bucket: bifrost-logs
+      endpoint: https://mystorageaccount.blob.core.windows.net
+```
+
+Configure the pod's identity separately (for example, Azure workload identity through service-account annotations and pod labels). Object storage does not reuse Azure inference-provider credentials.
+
+Alternatively, omit `endpoint` and supply `connectionString`, an `env.VAR_NAME` reference, or a Kubernetes Secret:
+
+```yaml
+storage:
+  logsStore:
+    objectStorage:
+      enabled: true
+      type: azure
+      bucket: bifrost-logs
+      existingSecret: bifrost-azure-storage
+      connectionStringKey: connection-string
+      format: parquet
+      compression: snappy
+```
+
+The secret's `connection-string` key is injected as `BIFROST_OBJECT_STORAGE_CONNECTION_STRING` in both Deployment and StatefulSet workloads. Azure `bucket`, `endpoint`, and `connectionString` also accept structured SecretVar objects, such as `{ref: env.AZURE_BLOB_ENDPOINT, type: env}`.
+
+For enterprise audit configuration, `bifrost.auditLogs.objectStorage` uses the same `type`, `bucket`, `endpoint`, and `connectionString` mapping into `audit_logs.object_storage`. Supply audit secret environment variables through `bifrost.providerSecrets` (with `existingSecret`, `key`, and `envVar`) and reference them as `connectionString: env.AZURE_AUDIT_STORAGE_CONNECTION_STRING`. Audit archival retains its JSONL and legacy `compress` configuration; log payload `format` and `compression` do not apply there.
+
+**Credential storage:** Literal `connectionString` values, including structured objects containing a plaintext `value`, are copied into the generated ConfigMap for both logs and audit storage. Anyone able to read that ConfigMap can read the credential. Prefer Azure identity, `existingSecret` for logs, or environment/vault references; use `bifrost.providerSecrets` for audit environment references as shown above.
+
 
 #### Mixed Backend Example
 
@@ -687,6 +871,47 @@ postgresql:
   # ... PostgreSQL configuration for logs store
 ```
 
+#### Separate PostgreSQL for Logs
+
+When both stores use PostgreSQL, they share the single top-level `postgresql`
+connection by default. To send high-volume logs to a **different** external
+PostgreSQL (a separate host and/or database) while the config store keeps using
+the shared `postgresql` block, set `storage.logsStore.postgres`. Its fields mirror
+`postgresql.external`; when `existingSecret` is set the password is injected as
+`BIFROST_LOGS_POSTGRES_PASSWORD`.
+
+```yaml
+storage:
+  mode: postgres
+  configStore:
+    enabled: true
+    type: postgres # Config -> shared postgresql block below
+  logsStore:
+    enabled: true
+    type: postgres # Logs -> separate postgres below
+    postgres:
+      enabled: true
+      host: logs-db.example.com
+      port: 5432
+      user: bifrost
+      database: bifrost_logs
+      sslMode: require
+      existingSecret: bifrost-logs-postgres # key: password
+      # passwordKey: password
+
+postgresql:
+  external:
+    enabled: true # Config store's database
+    host: config-db.example.com
+    port: 5432
+    user: bifrost
+    database: bifrost
+    sslMode: require
+    existingSecret: bifrost-config-postgres
+```
+
+See `values-examples/separate-logs-postgres.yaml` for a complete example.
+
 ### PostgreSQL Configuration
 
 | Parameter                            | Description                                                                                                                                                                                                                                      | Default            |
@@ -701,6 +926,38 @@ postgresql:
 | `postgresql.external.host`           | External PostgreSQL host                                                                                                                                                                                                                         | `""`               |
 | `postgresql.external.existingSecret` | Name of an existing Kubernetes secret containing the password for the external instance                                                                                                                                                          | `""`               |
 | `postgresql.external.passwordKey`    | Key inside the external `existingSecret` that holds the password                                                                                                                                                                                 | `password`         |
+
+#### Tuning Bundled PostgreSQL
+
+Pass PostgreSQL server settings through `postgresql.primary.extraArgs`. These
+arguments go to the image entrypoint; with the default PostgreSQL image, `-c`
+sets a server parameter. Choose limits for your database resources and the total
+connection pools across all gateway replicas, including rolling-update surge.
+Changing these arguments restarts the single bundled PostgreSQL pod, which uses
+`Recreate` and temporarily interrupts database availability.
+
+```yaml
+storage:
+  mode: postgres
+postgresql:
+  enabled: true
+  primary:
+    extraArgs:
+      - "-c"
+      - "max_connections=200"
+      - "-c"
+      - "shared_buffers=256MB"
+```
+
+Optional `postgresql.primary.persistence.annotations` (a map of string values)
+and `postgresql.primary.persistence.volumeAttributesClassName` (a class name)
+configure storage-controller integrations on the existing PVC. They do not
+change its name or the workload's claim reference. The defaults `{}` and `""`
+omit these fields. A VolumeAttributesClass must already exist, and both the
+cluster and CSI driver must support volume modification. Consult your driver's
+requirements before choosing a class or performance annotations; changing PVC
+metadata alone does not guarantee a backend volume modification succeeded.
+These options apply only to bundled PostgreSQL with persistence enabled.
 
 #### Using an Existing Secret for Hosted PostgreSQL
 
@@ -742,7 +999,7 @@ Bifrost supports multiple vector stores for semantic caching:
 | Parameter             | Description                                              | Default |
 | --------------------- | -------------------------------------------------------- | ------- |
 | `vectorStore.enabled` | Enable vector store                                      | `false` |
-| `vectorStore.type`    | Vector store type: `none`, `weaviate`, `redis`, `qdrant` | `none`  |
+| `vectorStore.type`    | Vector store type: `none`, `weaviate`, `redis`, `qdrant`, `pinecone`, or `chromem` | `none`  |
 
 #### Weaviate
 
@@ -801,6 +1058,8 @@ vectorStore:
 Configure AI provider API keys:
 
 > **Note:** `keys[].weight` is optional in Helm values. If omitted, the chart renders it as `1`.
+>
+> **Note:** `keys[].enabled` is optional. New keys default to `true`, and omitting it on an existing key keeps its stored value (for example a UI toggle). Set it to `false` to keep a key configured but skip it during key selection (the **Enabled** toggle in the UI).
 
 ```yaml
 bifrost:
@@ -865,7 +1124,10 @@ bifrost:
 | `bifrost.mcp.toolManagerConfig.maxAgentDepth`              | Maximum agent depth                                                                                                                                                                                            | `10`     |
 | `bifrost.mcp.toolManagerConfig.codeModeBindingLevel`       | Code mode binding level (`server` or `tool`)                                                                                                                                                                   | `server` |
 | `bifrost.mcp.toolManagerConfig.disableAutoToolInject`      | Disable automatic MCP tool injection                                                                                                                                                                           | `false`  |
+| `bifrost.mcp.toolManagerConfig.oauthPrivateAllowlist`      | **[Upcoming]** Hosts, IPs, or CIDRs the MCP OAuth chain may reach on loopback or private addresses, for MCP servers added by an authenticated admin or declared in config. Link-local and metadata are always refused. | `[]`     |
 | `bifrost.mcp.toolSyncInterval`                             | Global MCP tool sync interval. Prefer a Go duration string (for example, `10m`); legacy numeric nanoseconds are still supported for backward compatibility, but string format is recommended.                  | `10m`    |
+| `bifrost.mcp.maxProtocolVersion`                           | **[Upcoming]** Newest MCP protocol version Bifrost offers MCP servers: `auto` (newest supported), `2026-07-28`, `2025-11-25`, or `2025-06-18`. Unset keeps the stored value. Renders into `mcp.max_protocol_version`. | unset    |
+| `bifrost.mcp.clientConfigs[].maxProtocolVersion`           | **[Upcoming]** Per-server override of `bifrost.mcp.maxProtocolVersion` (same values). Omit to use the global setting. Renders into `max_protocol_version`.                                                       | unset    |
 | `bifrost.mcp.clientConfigs[].tlsConfig.insecureSkipVerify` | **[Upcoming]** Disable TLS certificate verification for HTTP/SSE MCP connections. Takes priority over `caCertPem`. For development/testing only — not recommended for production.                              | `false`  |
 | `bifrost.mcp.clientConfigs[].tlsConfig.caCertPem`          | **[Upcoming]** PEM-encoded CA certificate to trust for HTTP/SSE MCP server connections. Accepts a literal PEM string or an `env.VAR_NAME` reference. Use when the MCP server uses a self-signed or private CA. | `""`     |
 
@@ -959,6 +1221,7 @@ The chart includes pre-configured examples in `values-examples/`:
 | `sqlite-only.yaml`       | Simple setup with SQLite (local development)            |
 | `postgres-only.yaml`     | PostgreSQL for config and logs                          |
 | `mixed-backend.yaml`     | SQLite for config + PostgreSQL for logs (mixed backend) |
+| `separate-logs-postgres.yaml` | Config and logs on separate PostgreSQL databases   |
 | `postgres-weaviate.yaml` | PostgreSQL + Weaviate for semantic caching              |
 | `postgres-redis.yaml`    | PostgreSQL + Redis for semantic caching                 |
 | `postgres-qdrant.yaml`   | PostgreSQL + Qdrant for semantic caching                |

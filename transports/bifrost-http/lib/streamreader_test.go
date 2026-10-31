@@ -1145,6 +1145,36 @@ func TestSSEStreamReaderSendHeartbeat(t *testing.T) {
 	}
 }
 
+func TestSSEStreamReaderSendHeartbeatWithFraming(t *testing.T) {
+	tests := []struct {
+		name    string
+		framing SSEHeartbeatFraming
+		want    string
+	}{
+		{"bare comment line", SSEHeartbeatBareCommentLine, ": heartbeat\n"},
+		{"delimited comment block", SSEHeartbeatDelimitedCommentBlock, ": heartbeat\n\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewSSEStreamReader()
+			go func() {
+				r.SendHeartbeatWithFraming(tt.framing)
+				r.Done()
+			}()
+
+			buf := make([]byte, 4096)
+			n, err := r.Read(buf)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got := string(buf[:n]); got != tt.want {
+				t.Errorf("heartbeat frame = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestSSEStreamReaderSendHeartbeatAfterClose verifies the same disconnect
 // contract as the other Send* wrappers: false once the reader is closed.
 func TestSSEStreamReaderSendHeartbeatAfterClose(t *testing.T) {
@@ -1313,5 +1343,34 @@ func TestStartSSEHeartbeatCallsOnDisconnectAfterClose(t *testing.T) {
 
 	if got := onDisconnectCalls.Load(); got != 1 {
 		t.Errorf("onDisconnect calls = %d, want exactly 1", got)
+	}
+}
+
+// TestSSEStreamReaderSendHeartbeatNone verifies the SSEHeartbeatNone framing writes nothing
+// to the wire while keeping StartSSEHeartbeat's return-value contract: true while the reader
+// is open, false once the client has gone. Routes whose official decoder rejects any SSE
+// comment line (google-genai Python) select it to opt out of the heartbeat entirely.
+func TestSSEStreamReaderSendHeartbeatNone(t *testing.T) {
+	r := NewSSEStreamReader()
+	go func() {
+		if !r.SendHeartbeatWithFraming(SSEHeartbeatNone) {
+			t.Error("SendHeartbeatWithFraming(SSEHeartbeatNone) on an open reader = false, want true")
+		}
+		r.SendEvent("", []byte(`{"ok":true}`))
+		r.Done()
+	}()
+
+	got, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "data: {\"ok\":true}\n\n"; string(got) != want {
+		t.Errorf("stream = %q, want only the event %q (no heartbeat bytes)", got, want)
+	}
+
+	closed := NewSSEStreamReader()
+	closed.Close()
+	if closed.SendHeartbeatWithFraming(SSEHeartbeatNone) {
+		t.Error("SendHeartbeatWithFraming(SSEHeartbeatNone) after Close = true, want false (disconnect must still be reported)")
 	}
 }

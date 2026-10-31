@@ -7,11 +7,13 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 // TestThroughputHistogramMath verifies the aggregate tokens/sec computation:
 // SUM(completion_tokens) / (SUM(latency_ms)/1000), including the per-provider
-// breakdown, and that rows without a latency are excluded from the rate.
+// breakdown, and that rows without a latency or from non-inference request types
+// are excluded from the rate.
 func TestThroughputHistogramMath(t *testing.T) {
 	ctx := context.Background()
 	sq, err := newSqliteLogStore(ctx, &SQLiteConfig{
@@ -25,7 +27,7 @@ func TestThroughputHistogramMath(t *testing.T) {
 		l := &Log{
 			ID:               id,
 			Timestamp:        base,
-			Object:           "chat.completion",
+			Object:           "chat_completion",
 			Provider:         provider,
 			Model:            "gpt-4o",
 			Status:           status,
@@ -57,6 +59,11 @@ func TestThroughputHistogramMath(t *testing.T) {
 	// deflate the rate. Each spends 10s here — enough to skew the result if counted.
 	require.NoError(t, sq.Create(ctx, mk("t5", "openai", "error", 10000, 0, true)))
 	require.NoError(t, sq.Create(ctx, mk("t6", "anthropic", "cancelled", 10000, 5, true)))
+	// list_models polls succeed with real latency and zero tokens; only inference
+	// request types count, so this 10s row must not touch the rate.
+	poll := mk("t8", "openai", "success", 10000, 0, true)
+	poll.Object = "list_models"
+	require.NoError(t, sq.Create(ctx, poll))
 
 	window := SearchFilters{
 		StartTime: timePtrP(base.Add(-time.Hour)),
@@ -76,7 +83,7 @@ func TestThroughputHistogramMath(t *testing.T) {
 	require.NotNil(t, got, "expected a non-empty bucket")
 	require.InDelta(t, 180.0, got.TokensPerSecond, 1e-6)
 	require.Equal(t, int64(450), got.TotalCompletionTokens)
-	require.Equal(t, int64(3), got.TotalRequests, "latency-less, error, and cancelled rows must be excluded")
+	require.Equal(t, int64(3), got.TotalRequests, "latency-less, error, cancelled, and list_models rows must be excluded")
 
 	// Per-provider breakdown.
 	byProv, err := sq.GetProviderThroughputHistogram(ctx, window, 3600)
@@ -107,4 +114,151 @@ func TestThroughputHistogramMath(t *testing.T) {
 	}
 	require.InDelta(t, 200.0, tpByProvider["openai"], 1e-6)
 	require.InDelta(t, 100.0, tpByProvider["anthropic"], 1e-6)
+}
+
+// TestLatencyOverheadHistogramMath verifies GetLatencyHistogram returns overhead
+// avg/percentiles alongside latency, and that a row with a latency but no measured
+// overhead (an untraced or pre-migration row) still counts toward latency and
+// TotalRequests while being excluded from the overhead aggregation.
+func TestLatencyOverheadHistogramMath(t *testing.T) {
+	ctx := context.Background()
+	sq, err := newSqliteLogStore(ctx, &SQLiteConfig{
+		Path: filepath.Join(t.TempDir(), "latency_overhead.db"),
+	}, testLogger{})
+	require.NoError(t, err)
+
+	base := time.Now().UTC().Truncate(time.Second)
+	// All rows land in the same 1h bucket.
+	mk := func(id string, latencyMs float64, overheadMs *float64) *Log {
+		l := &Log{
+			ID:            id,
+			Timestamp:     base,
+			Object:        "chat.completion",
+			Provider:      "openai",
+			Model:         "gpt-4o",
+			Status:        "success",
+			SelectedKeyID: "sk1",
+			Latency:       f64PtrP(latencyMs),
+			CreatedAt:     base,
+		}
+		l.OverheadLatency = overheadMs
+		return l
+	}
+
+	// Five rows carry both latency and overhead; one carries latency only (overhead
+	// unmeasured). Latency aggregates over all six; overhead over the five measured.
+	require.NoError(t, sq.Create(ctx, mk("l1", 100, f64PtrP(10))))
+	require.NoError(t, sq.Create(ctx, mk("l2", 200, f64PtrP(20))))
+	require.NoError(t, sq.Create(ctx, mk("l3", 300, f64PtrP(30))))
+	require.NoError(t, sq.Create(ctx, mk("l4", 400, f64PtrP(40))))
+	require.NoError(t, sq.Create(ctx, mk("l5", 500, f64PtrP(50))))
+	require.NoError(t, sq.Create(ctx, mk("l6", 600, nil)))
+
+	window := SearchFilters{
+		StartTime: timePtrP(base.Add(-time.Hour)),
+		EndTime:   timePtrP(base.Add(time.Hour)),
+	}
+
+	res, err := sq.GetLatencyHistogram(ctx, window, 3600)
+	require.NoError(t, err)
+	var got *LatencyHistogramBucket
+	for i := range res.Buckets {
+		if res.Buckets[i].TotalRequests > 0 {
+			got = &res.Buckets[i]
+			break
+		}
+	}
+	require.NotNil(t, got, "expected a non-empty bucket")
+	require.Equal(t, int64(6), got.TotalRequests, "the overhead-less row still counts")
+
+	// Latency over [100,200,300,400,500,600] (n=6): computePercentile uses linear
+	// interpolation at rank p*(n-1).
+	require.InDelta(t, 350.0, got.AvgLatency, 1e-6)
+	require.InDelta(t, 550.0, got.P90Latency, 1e-6) // rank 4.5 -> 500*0.5 + 600*0.5
+	require.InDelta(t, 575.0, got.P95Latency, 1e-6) // rank 4.75 -> 500*0.25 + 600*0.75
+	require.InDelta(t, 595.0, got.P99Latency, 1e-6) // rank 4.95 -> 500*0.05 + 600*0.95
+
+	// Overhead over [10,20,30,40,50] (n=5) only: the nil-overhead row is skipped.
+	require.InDelta(t, 30.0, got.AvgOverhead, 1e-6)
+	require.InDelta(t, 46.0, got.P90Overhead, 1e-6) // rank 3.6 -> 40*0.4 + 50*0.6
+	require.InDelta(t, 48.0, got.P95Overhead, 1e-6) // rank 3.8 -> 40*0.2 + 50*0.8
+	require.InDelta(t, 49.6, got.P99Overhead, 1e-6) // rank 3.96 -> 40*0.04 + 50*0.96
+}
+
+// seedThroughputObjectTypeLogs inserts two chat rows (300 tok / 2s = 150 tok/s)
+// and two zero-token polls that spend 20s between them. Returns the query window.
+func seedThroughputObjectTypeLogs(t *testing.T, db *gorm.DB) SearchFilters {
+	t.Helper()
+	now := time.Now().UTC().Truncate(time.Hour).Add(30 * time.Minute)
+	insert := func(id, objectType string, latencyMs, completion int) {
+		require.NoError(t, db.Exec(`
+			INSERT INTO logs (id, timestamp, object_type, provider, model, status, latency, completion_tokens, total_tokens, created_at)
+			VALUES (?, ?, ?, 'openai', 'gpt-4o', 'success', ?, ?, ?, ?)
+		`, id, now, objectType, latencyMs, completion, completion, now).Error)
+	}
+	insert("tp-chat-1", "chat_completion", 1000, 100)
+	insert("tp-chat-2", "chat_completion_stream", 1000, 200)
+	insert("tp-poll-1", "list_models", 10000, 0)
+	insert("tp-poll-2", "embedding", 10000, 0)
+
+	start := now.Add(-2 * time.Hour)
+	end := now.Add(time.Hour)
+	return SearchFilters{StartTime: &start, EndTime: &end}
+}
+
+func requireInferenceOnlyThroughput(t *testing.T, hist *ThroughputHistogramResult, byProv *ProviderThroughputHistogramResult, rankings *ModelRankingResult) {
+	t.Helper()
+	var got *ThroughputHistogramBucket
+	for i := range hist.Buckets {
+		if hist.Buckets[i].TotalRequests > 0 {
+			got = &hist.Buckets[i]
+		}
+	}
+	require.NotNil(t, got)
+	require.InDelta(t, 150.0, got.TokensPerSecond, 1e-6)
+	require.Equal(t, int64(2), got.TotalRequests)
+
+	var stats map[string]ProviderThroughputStats
+	for i := range byProv.Buckets {
+		if len(byProv.Buckets[i].ByProvider) > 0 {
+			stats = byProv.Buckets[i].ByProvider
+		}
+	}
+	require.NotNil(t, stats)
+	require.InDelta(t, 150.0, stats["openai"].TokensPerSecond, 1e-6)
+
+	require.Len(t, rankings.Rankings, 1)
+	require.InDelta(t, 150.0, rankings.Rankings[0].Throughput, 1e-6)
+	require.Equal(t, int64(4), rankings.Rankings[0].TotalRequests, "polls still count as requests, just not toward throughput")
+}
+
+// TestThroughputInferenceOnly_Postgres covers the raw and mv_logs_hourly paths:
+// both must ignore non-inference rows that carry latency but no tokens.
+func TestThroughputInferenceOnly_Postgres(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("raw", func(t *testing.T) {
+		store, db := setupPerfTestDB(t)
+		filters := seedThroughputObjectTypeLogs(t, db)
+		hist, err := store.GetThroughputHistogram(ctx, filters, 3600)
+		require.NoError(t, err)
+		byProv, err := store.GetProviderThroughputHistogram(ctx, filters, 3600)
+		require.NoError(t, err)
+		rankings, err := store.GetModelRankings(ctx, filters)
+		require.NoError(t, err)
+		requireInferenceOnlyThroughput(t, hist, byProv, rankings)
+	})
+
+	t.Run("matview", func(t *testing.T) {
+		store, db := setupPerfTestDB(t)
+		filters := seedThroughputObjectTypeLogs(t, db)
+		refreshTestMatViews(t, db)
+		hist, err := store.getThroughputHistogramFromMatView(ctx, filters, 3600)
+		require.NoError(t, err)
+		byProv, err := store.getProviderThroughputHistogramFromMatView(ctx, filters, 3600)
+		require.NoError(t, err)
+		rankings, err := store.getModelRankingsFromMatView(ctx, filters)
+		require.NoError(t, err)
+		requireInferenceOnlyThroughput(t, hist, byProv, rankings)
+	})
 }

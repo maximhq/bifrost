@@ -1,0 +1,67 @@
+# Schemas for infrastructure endpoints, including the messages the dashboard
+# WebSocket pushes to connected clients.
+
+StoreUpdateMessage:
+  type: object
+  description: >-
+    Names the resources that changed, so a client holding a cached list knows
+    to refetch it. Project creates, edits, deletes and member changes all send
+    `tags: ["Projects"]`.
+  properties:
+    type:
+      type: string
+      const: store_update
+    tags:
+      type: array
+      items:
+        type: string
+      description: >-
+        Resource names, matching the dashboard's cache tags, for example
+        `Projects`, `VirtualKeys`, `Providers`, `MCPClients`.
+      example:
+        - Projects
+
+RedivisionProgress:
+  type: object
+  description: >-
+    Progress of one equal-split project recalculating every member's share of
+    every cap it holds.
+  properties:
+    operation_id:
+      type: string
+      description: >-
+        The job this reports on, matching the `redivision_job_id` returned by
+        the project and member routes, or one of the `redivision_job_ids`
+        returned by a user deletion.
+    project_id:
+      type: string
+    phase:
+      type: string
+      enum:
+        - redividing
+        - completed
+        - error
+    total:
+      type: integer
+      description: Members in the roster when the job started.
+    processed:
+      type: integer
+    succeeded:
+      type: integer
+    failed:
+      type: integer
+    message:
+      type: string
+      description: >-
+        A closing summary on `completed`, or the failure text on `error`. A
+        project deleted between queueing and running completes without work.
+
+RedivisionProgressMessage:
+  type: object
+  description: Envelope carrying a redivision progress update.
+  properties:
+    type:
+      type: string
+      const: redivision_progress
+    data:
+      $ref: '#/RedivisionProgress'

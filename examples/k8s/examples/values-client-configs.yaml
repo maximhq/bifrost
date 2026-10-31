@@ -5,7 +5,6 @@ bifrost:
   # The chart renders these into config.json auth_config.admin_username/admin_password.
   authConfig:
     isEnabled: true
-    disableAuthOnInference: false
     adminUsername: "env.BIFROST_ADMIN_USERNAME"
     adminPassword: "env.BIFROST_ADMIN_PASSWORD"
 
@@ -19,8 +18,8 @@ bifrost:
     enableLogging: true
     disableContentLogging: false
     logRetentionDays: 365
-    # Deprecated in transport schema; prefer enforceAuthOnInference.
-    enforceSCIMAuth: false
+    # Require auth (VK / API key / user token) on inference endpoints.
+    enforceAuthOnInference: false
     maxRequestBodySizeMb: 101
     compat:
       convertTextToChat: true

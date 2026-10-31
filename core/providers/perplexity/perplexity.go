@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/providers/openai"
+	"github.com/maximhq/bifrost/core/providers/typesafe"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -108,7 +109,16 @@ func (provider *PerplexityProvider) completeRequest(ctx *schemas.BifrostContext,
 		return nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(openai.ParseOpenAIError(resp), latency)
 	}
 
+	// Time the body read/decompress as the response-finalize phase.
+	ft, fh := providerUtils.StartPhaseSpan(ctx, "response-finalize")
 	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if ft != nil {
+		if err != nil {
+			ft.EndSpan(fh, schemas.SpanStatusError, err.Error())
+		} else {
+			ft.EndSpan(fh, schemas.SpanStatusOk, "")
+		}
+	}
 	if err != nil {
 		return nil, latency, providerResponseHeaders, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
 	}
@@ -167,12 +177,16 @@ func (provider *PerplexityProvider) ChatCompletion(ctx *schemas.BifrostContext, 
 	}
 
 	var response PerplexityChatResponse
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &response, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, responseBody, &response, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
+	ct, ch := providerUtils.StartResponseConvertorSpan(ctx)
 	bifrostResponse := response.ToBifrostChatResponse(request.Model)
+	if ct != nil {
+		ct.EndSpan(ch, schemas.SpanStatusOk, "")
+	}
 
 	// Set ExtraFields
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
@@ -305,6 +319,35 @@ func (provider *PerplexityProvider) Rerank(ctx *schemas.BifrostContext, key sche
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
 }
 
+// Decision runs a decision on Perplexity's decider models (pplx-decider-*). The model is
+// sent as is; Perplexity rejects one it does not serve, and that error is passed through.
+// The body carries no id, so it is taken from the x-request-id header.
+func (provider *PerplexityProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	var authHeaders map[string]string
+	if key.Value.GetValue() != "" {
+		authHeaders = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
+	}
+	bifrostResponse, bifrostErr := typesafe.HandleTypesafeDecisionRequest(
+		ctx,
+		provider.client,
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, perplexityDecisionPath),
+		request,
+		ToPerplexityDecisionRequest,
+		authHeaders,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		openai.ParseOpenAIError,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		false,
+	)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	bifrostResponse.ID = decisionRequestID(bifrostResponse.ExtraFields.ProviderResponseHeaders)
+	return bifrostResponse, nil
+}
+
 // OCR is not supported by the Perplexity provider.
 func (provider *PerplexityProvider) OCR(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostOCRRequest) (*schemas.BifrostOCRResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.OCRRequest, provider.GetProviderKey())
@@ -375,6 +418,11 @@ func (provider *PerplexityProvider) VideoList(_ *schemas.BifrostContext, _ schem
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoListRequest, provider.GetProviderKey())
 }
 
+// VideoEdit is not supported by the Perplexity provider.
+func (provider *PerplexityProvider) VideoEdit(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoEditRequest) (*schemas.BifrostVideoEditResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoEditRequest, provider.GetProviderKey())
+}
+
 // VideoRemix is not supported by Perplexity provider.
 func (provider *PerplexityProvider) VideoRemix(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoRemixRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoRemixRequest, provider.GetProviderKey())
@@ -438,6 +486,11 @@ func (provider *PerplexityProvider) FileContent(_ *schemas.BifrostContext, _ []s
 // CountTokens is not supported by the Perplexity provider.
 func (provider *PerplexityProvider) CountTokens(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.CountTokensRequest, provider.GetProviderKey())
+}
+
+// ModelRetrieve is not supported by the Perplexity provider.
+func (provider *PerplexityProvider) ModelRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ModelRetrieveRequest, provider.GetProviderKey())
 }
 
 // Compaction is not supported by the Perplexity provider.

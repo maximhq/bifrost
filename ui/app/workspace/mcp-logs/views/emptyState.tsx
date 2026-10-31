@@ -46,7 +46,7 @@ function CodeBlock({ code, language, onLanguageChange, showLanguageSelect = fals
 			<div className="absolute top-4 right-4 z-10 flex items-center gap-2">
 				{showLanguageSelect && onLanguageChange && (
 					<Select value={language} onValueChange={onLanguageChange}>
-						<SelectTrigger className="h-8 w-fit text-xs">
+						<SelectTrigger className="h-8 w-fit text-xs" aria-label="Code language">
 							<SelectValue />
 						</SelectTrigger>
 						<SelectContent>
@@ -264,7 +264,7 @@ if (response.choices[0].message.tool_calls) {
 				</div>
 
 				<Tabs defaultValue="manual" className="w-full rounded-lg border">
-					<TabsList className="grid h-10 w-full grid-cols-2 rounded-t-lg rounded-b-none">
+					<TabsList className="flex h-10 w-full justify-start rounded-t-lg rounded-b-none">
 						<TabsTrigger value="manual">Manual Tool Execution</TabsTrigger>
 						<TabsTrigger value="agent">Agent Mode (Auto-Execute)</TabsTrigger>
 					</TabsList>

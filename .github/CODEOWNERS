@@ -9,3 +9,9 @@ helm-charts/ @maximhq/bifrost-admin
 terraform/ @maximhq/bifrost-admin
 ui/package.json @maximhq/bifrost-admin
 tests/e2e/package.json @maximhq/bifrost-admin
+# Version sources the release workflows read. A one-line edit here ships a release
+# with the publish credentials, so it needs the same review as the workflows.
+cli/version @maximhq/bifrost-admin
+scripts/bifrost-migration-cli/version @maximhq/bifrost-admin
+npx/bifrost/package.json @maximhq/bifrost-admin
+npx/bifrost-cli/package.json @maximhq/bifrost-admin
