@@ -23,6 +23,10 @@ type StarlarkCodeMode struct {
 	toolExecutionTimeout atomic.Value // time.Duration
 	limits               atomic.Pointer[schemas.MCPCodeModeLimits]
 
+	// Gateway media is owned here only while its execution is active.
+	mediaCollectors sync.Map // mediaRunKey -> *mediaCollector
+	mediaRunOrdinal atomic.Uint64
+
 	// Dependencies
 	clientManager         mcp.ClientManager
 	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string
