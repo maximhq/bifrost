@@ -2328,6 +2328,11 @@ func chatMessageHasAudioURL(msg schemas.ChatMessage) bool {
 	if msg.Content == nil {
 		return false
 	}
+	// The converter flattens tool result media to text, so that audio is never
+	// sent and a dead URL must not fail the request.
+	if msg.Role == schemas.ChatMessageRoleTool && msg.ChatToolMessage != nil {
+		return false
+	}
 	for i := range msg.Content.ContentBlocks {
 		if audio := msg.Content.ContentBlocks[i].InputAudio; audio != nil && audio.Data == "" && audio.URL != "" {
 			return true

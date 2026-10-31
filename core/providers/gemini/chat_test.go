@@ -637,6 +637,28 @@ func TestToGeminiChatCompletionRequestDoesNotDownloadAudio(t *testing.T) {
 	require.Zero(t, hits.Load(), "converters must make no HTTP calls")
 }
 
+func TestResolveChatAudioURLsSkipsToolResultAudio(t *testing.T) {
+	restore := providerUtils.AllowPrivateAudioURLsForTest()
+	defer restore()
+
+	var downloads atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		downloads.Add(1)
+		w.WriteHeader(http.StatusGone)
+	}))
+	defer server.Close()
+
+	request := chatAudioURLRequest(server.URL)
+	request.Input[0].Role = schemas.ChatMessageRoleTool
+	request.Input[0].ChatToolMessage = &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resolved, err := gemini.ResolveChatAudioURLs(ctx, request)
+	require.NoError(t, err, "tool result audio is flattened to text, so its URL must not be fetched")
+	require.Same(t, request, resolved)
+	require.Zero(t, downloads.Load())
+}
+
 func TestResolveChatAudioURLsPropagatesDownloadErrors(t *testing.T) {
 	// Guard active: an http URL to a non-loopback host must error.
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)

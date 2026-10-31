@@ -4821,17 +4821,22 @@ func convertResponsesToolChoiceToGemini(toolChoice *schemas.ResponsesToolChoice)
 // data, in message content and in function tool output. It does network I/O, so
 // provider methods call it before ToGeminiResponsesRequest and the converter stays
 // pure. A request with no URL-only audio comes back unchanged, with no allocation.
-func ResolveResponsesAudioURLs(ctx context.Context, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesRequest, error) {
+// Tool output audio is left alone for a model that cannot take media there: the
+// converter sends a text placeholder, so a dead URL must not fail the request.
+func ResolveResponsesAudioURLs(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesRequest, error) {
 	if request == nil || !slices.ContainsFunc(request.Input, responsesMessageHasAudioURL) {
 		return request, nil
 	}
-	input, err := resolveResponsesAudioURLs(ctx, request.Input)
+	// The converter normalizes Model in place and callers read it back for the
+	// upstream URL, so it has to change on their request and not only on the copy.
+	request.Model = NormalizeModelName(request.Model)
+	// The same model the converter gates tool output media on.
+	capModel := NormalizeModelName(schemas.ResolveCanonicalModel(ctx, request.Model))
+	toolOutputMedia := schemas.ResolveModelCaps(request.Provider, capModel).SupportsMultimodalToolOutput(isGemini3Plus(capModel))
+	input, err := resolveResponsesAudioURLs(ctx, request.Input, toolOutputMedia)
 	if err != nil {
 		return nil, err
 	}
-	// The converter normalizes Model in place and callers read it back for the
-	// upstream URL, so it has to change on their request and not only on this copy.
-	request.Model = NormalizeModelName(request.Model)
 	resolved := *request
 	resolved.Input = input
 	return &resolved, nil
@@ -4863,7 +4868,8 @@ func responsesMessageHasAudioURL(msg schemas.ResponsesMessage) bool {
 // resolveResponsesAudioURLs returns a copy of messages with URL-only audio
 // downloaded into Data. Only the messages that change are copied, and nested
 // content is copied before it changes, so a retry still sees the original request.
-func resolveResponsesAudioURLs(ctx context.Context, messages []schemas.ResponsesMessage) ([]schemas.ResponsesMessage, error) {
+// Tool output blocks are only resolved when toolOutputMedia is true.
+func resolveResponsesAudioURLs(ctx context.Context, messages []schemas.ResponsesMessage, toolOutputMedia bool) ([]schemas.ResponsesMessage, error) {
 	resolved := slices.Clone(messages)
 	for msgIndex := range resolved {
 		msg := &resolved[msgIndex]
@@ -4876,7 +4882,7 @@ func resolveResponsesAudioURLs(ctx context.Context, messages []schemas.Responses
 			content.ContentBlocks = blocks
 			msg.Content = &content
 		}
-		if outputBlocks := responsesToolOutputBlocks(msg); responsesBlocksHaveAudioURL(outputBlocks) {
+		if outputBlocks := responsesToolOutputBlocks(msg); toolOutputMedia && responsesBlocksHaveAudioURL(outputBlocks) {
 			blocks, err := resolveResponsesAudioBlocks(ctx, outputBlocks)
 			if err != nil {
 				return nil, err

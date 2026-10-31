@@ -2435,6 +2435,75 @@ func TestResolveResponsesAudioURLsResolvesToolOutputBlocks(t *testing.T) {
 	require.Empty(t, original.Audio.Data, "the original request must survive for a retry")
 }
 
+func TestResolveResponsesAudioURLsSkipsToolOutputForModelsWithoutToolMedia(t *testing.T) {
+	restore := providerUtils.AllowPrivateAudioURLsForTest()
+	defer restore()
+
+	var downloads atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		downloads.Add(1)
+		w.WriteHeader(http.StatusGone)
+	}))
+	defer server.Close()
+
+	callID := "call_1"
+	functionName := "fetch_audio"
+	callType := schemas.ResponsesMessageTypeFunctionCall
+	outputType := schemas.ResponsesMessageTypeFunctionCallOutput
+	role := schemas.ResponsesInputMessageRoleUser
+	prompt := "transcribe it"
+	block := responsesAudioBlock(server.URL)
+	request := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Gemini,
+		Model:    "gemini-2.5-flash",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role:    &role,
+				Content: &schemas.ResponsesMessageContent{ContentStr: &prompt},
+			},
+			{
+				Type: &callType,
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: &callID,
+					Name:   &functionName,
+				},
+			},
+			{
+				Type: &outputType,
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: &callID,
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{block},
+					},
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resolved, err := ResolveResponsesAudioURLs(ctx, request)
+	require.NoError(t, err, "an unreachable tool output URL must not fail a model that never uses it")
+	require.Zero(t, downloads.Load())
+
+	result, err := ToGeminiResponsesRequest(ctx, resolved)
+	require.NoError(t, err)
+	payload, err := sonic.Marshal(result)
+	require.NoError(t, err)
+	require.Contains(t, string(payload), "audio")
+	require.NotContains(t, string(payload), server.URL)
+	require.NotContains(t, string(payload), `"inlineData"`)
+	require.NotContains(t, string(payload), `"inline_data"`)
+}
+
+func TestResolveResponsesAudioURLsStillFailsOnMessageAudioWithoutToolMedia(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	request := responsesAudioURLRequest("http://169.254.169.254/audio.mp3")
+	request.Provider = schemas.Gemini
+	request.Model = "gemini-2.5-flash"
+	_, err := ResolveResponsesAudioURLs(ctx, request)
+	require.Error(t, err)
+}
+
 func TestResolveResponsesAudioURLsLeavesTextRequestUntouched(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	text := "hello"
