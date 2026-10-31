@@ -1450,6 +1450,39 @@ const OAS28 = folder("OAS-28 Rotated refresh token replay", `Setup: ${GRANT_TEXT
   ...fleetGrantTeardown("OAS-28"),
 ]);
 
+// vkGrantWith runs a whole grant as vkGrant does, consenting with the key held in <vkVar> instead of
+// the full-access VK.
+const vkGrantWith = (id, clientVar, flow, label, vkVar) => [
+  authorize(id, clientVar, flow, `setup: authorize ${label}`),
+  consent(id, flow, `setup: consent ${label}`, "temp", { mode: "vk", value: `{{${vkVar}}}` }, [A.status(200), codeIssued()], { extraTests: saveCode(flow) }),
+  tokenReq(id, `setup: exchange ${label}'s code`, codeParams(flow, clientVar), [A.status(200), tokensIssued()], { extraTests: saveTokens(flow) }),
+];
+const OAS29 = folder("OAS-29 Refresh after the VK changes", `Setup: ${GRANT_TEXT}; ${BOTH}, temp-token auth on. Three more keys with the full-access VK's grants hold one grant each: one is then deactivated, one deleted, and one, set after its control refresh to expire 2s later, stays active past its expiry.`, [
+  ...fleetGrantSetup("OAS-29"), oauthConfig("OAS-29", "both"),
+  register("OAS-29", "oas29_client", LOOPBACK_CB, undefined, REFRESHABLE),
+  vkCreate("OAS-29", "setup: create the key to deactivate", { name: "OAS-29 deactivated key", mcp_configs: VKS.full.configs }, "oas29_off"),
+  ...vkGrantWith("OAS-29", "oas29_client", "oas29_off_f", "the deactivated key's grant", "oas29_off"),
+  request("OAS-29", "setup: deactivate the key", "PUT", "/api/governance/virtual-keys/{{oas29_off_id}}", { body: { is_active: false }, asserts: [A.status(200)] }),
+  tokenReq("OAS-29", "refresh after the key is deactivated", refreshParams("oas29_off_f_rt", "oas29_client"), [A.status(400), O.descEquals("virtual key is no longer active")]),
+  vkCreate("OAS-29", "setup: create the key to delete", { name: "OAS-29 deleted key", mcp_configs: VKS.full.configs }, "oas29_gone"),
+  ...vkGrantWith("OAS-29", "oas29_client", "oas29_gone_f", "the deleted key's grant", "oas29_gone"),
+  vkDelete("OAS-29", "setup: delete the key", "oas29_gone"),
+  tokenReq("OAS-29", "refresh after the key is deleted (its grants go with it)", refreshParams("oas29_gone_f_rt", "oas29_client"), [A.status(400), O.error("invalid_grant")]),
+  vkCreate("OAS-29", "setup: create the key that will expire", { name: "OAS-29 expiring key", mcp_configs: VKS.full.configs }, "oas29_exp"),
+  ...vkGrantWith("OAS-29", "oas29_client", "oas29_exp_f", "the expiring key's grant", "oas29_exp"),
+  tokenReq("OAS-29", "control: refresh before the key expires", refreshParams("oas29_exp_f_rt", "oas29_client"), [A.status(200), tokensIssued()], { extraTests: saveTokens("oas29_exp_r") }),
+  request("OAS-29", "setup: set the key to expire 2s from now", "PUT", "/api/governance/virtual-keys/{{oas29_exp_id}}", {
+    raw: "{{oas29_exp_body}}", asserts: [A.status(200)],
+    pre: ["pm.variables.set('oas29_exp_body', JSON.stringify({ expires_at: new Date(Date.now() + 2000).toISOString() }));"],
+  }),
+  tokenReq("OAS-29", "refresh after the key expires, 3s later", refreshParams("oas29_exp_r_rt", "oas29_client"), [A.status(400), O.descEquals("virtual key has expired")], { pre: ["setTimeout(function () {}, 3000);"] }),
+  authorize("OAS-29", "oas29_client", "oas29_exp_c", "setup: authorize a new grant for the expired key"),
+  consent("OAS-29", "oas29_exp_c", "consent with the expired key", "temp", { mode: "vk", value: "{{oas29_exp}}" }, [A.status(400), A.msgEquals("virtual key has expired")]),
+  vkDelete("OAS-29", "teardown: delete the deactivated key", "oas29_off"),
+  vkDelete("OAS-29", "teardown: delete the expired key", "oas29_exp"),
+  ...fleetGrantTeardown("OAS-29"),
+]);
+
 const OAS30 = folder("OAS-30 List OAuth sessions", `Setup: ${GRANT_TEXT}; ${BOTH}, temp-token auth on; two clients, "OAS-30 client one" and "OAS-30 client two", one grant each; a second key "Second session key" with one grant for "Second key client".`, [
   ...fleetGrantSetup("OAS-30"), oauthConfig("OAS-30", "both"),
   register("OAS-30", "oas30_c1", LOOPBACK_CB, "OAS-30 client one", REFRESHABLE),
@@ -7564,7 +7597,7 @@ const collection = {
     section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH48, AUTH49, AUTH50]),
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN20, CONN22, CONN23, CONN24, CONN25, CONN27]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54]),
-    section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS30, OAS31, OAS32, OAS33, OAS34, OAS36, OAS38, OAS42]),
+    section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS36, OAS38, OAS42]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET21, SET22]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV37, GOV38]),
     section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),

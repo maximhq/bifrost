@@ -670,6 +670,63 @@ func TestHandleToken_RefreshVKIdentityDisabled(t *testing.T) {
 	})
 }
 
+// TestHandleToken_RefreshVKLiveness pins that a VK-mode refresh is refused once its key has expired,
+// though the key is still active. Only the active flag was checked, so an expired key's grant kept
+// refreshing access tokens after every other request with that key was refused.
+func TestHandleToken_RefreshVKLiveness(t *testing.T) {
+	seed := func(t *testing.T, store configstore.ConfigStore, expiresAt *time.Time) {
+		t.Helper()
+		require.NoError(t, store.CreateVirtualKey(context.Background(), &configtables.TableVirtualKey{
+			ID: "vk-1", Name: "vk-1", Value: *schemas.NewSecretVar("sk-bf-vk-1"), IsActive: new(true), ExpiresAt: expiresAt,
+		}))
+		seedConsentedRequest(t, store, "fam-vk", "client-1", "auth-code-vk", pkceChallenge("v"), "vk", "vk-1", time.Now().Add(time.Minute))
+		rt := &configtables.TableOAuth2RefreshToken{
+			ID: "rt-vk", TokenHash: hashSHA256Hex("refresh-vk-1"), FamilyID: "fam-vk", ClientID: "client-1",
+			BfMode: "vk", BfSub: "vk-1", Scope: "mcp", Resource: testMCPResource, CreatedAt: time.Now(),
+		}
+		require.NoError(t, store.ConsumeOAuth2AuthorizeRequest(context.Background(), "fam-vk", rt))
+	}
+	refresh := func(h *OAuth2IssuanceHandler) *fasthttp.RequestCtx {
+		ctx := formPostCtx(url.Values{
+			"grant_type": {"refresh_token"}, "refresh_token": {"refresh-vk-1"}, "client_id": {"client-1"},
+		}.Encode())
+		h.handleToken(ctx)
+		return ctx
+	}
+
+	t.Run("an expired, active key is refused", func(t *testing.T) {
+		store := newRealOAuth2Store(t)
+		h := NewOAuth2IssuanceHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false), nil, nil)
+		seedClient(t, store, []string{"http://127.0.0.1/cb"})
+		past := time.Now().UTC().Add(-time.Second)
+		seed(t, store, &past)
+
+		ctx := refresh(h)
+		assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+		body := string(ctx.Response.Body())
+		assert.Contains(t, body, "invalid_grant")
+		assert.Contains(t, body, "virtual key has expired")
+	})
+
+	t.Run("control: a key that has not expired passes the check", func(t *testing.T) {
+		store := newRealOAuth2Store(t)
+		h := NewOAuth2IssuanceHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false), nil, nil)
+		seedClient(t, store, []string{"http://127.0.0.1/cb"})
+		future := time.Now().UTC().Add(time.Hour)
+		seed(t, store, &future)
+
+		ctx := refresh(h)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		var tokens struct {
+			AccessToken  string `json:"access_token"`
+			RefreshToken string `json:"refresh_token"`
+		}
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &tokens))
+		assert.NotEmpty(t, tokens.AccessToken)
+		assert.NotEmpty(t, tokens.RefreshToken)
+	})
+}
+
 func TestHandleToken_RefreshUserLiveness(t *testing.T) {
 	seedUserRefresh := func(t *testing.T, store configstore.ConfigStore, plain string) {
 		t.Helper()
