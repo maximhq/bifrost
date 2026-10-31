@@ -1,0 +1,7 @@
+{
+  "name": "Isolated builtin plugin ordering",
+  "values": [
+    { "key": "builtinPluginOrderingFixture", "value": "1", "enabled": true },
+    { "key": "setupToken", "value": "builtin-plugin-ordering-local-only", "enabled": true }
+  ]
+}

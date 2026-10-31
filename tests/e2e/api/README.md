@@ -383,6 +383,41 @@ The cases are skipped unless `bedrockEndpointFixture=1`.
 
 Stop the fixture and isolated gateway with Ctrl+C after testing.
 
+## Builtin plugin ordering
+
+Folder 297 reloads telemetry, sends an invalid virtual key (expected 401), and checks
+`/metrics` to prove telemetry still runs before governance. It disables fixture
+telemetry last; the plugin API does not accept `builtin` placement, so startup
+metadata cannot be restored through that endpoint. Stop this disposable gateway
+afterwards and use a fresh app directory for every run. It does not test
+database/API metadata normalization or call a paid provider.
+The folder is skipped unless `builtinPluginOrderingFixture=1`; never enable it on a
+shared gateway. The fixture marker and loopback check must pass before any mutation.
+
+Run from the repository root **inside your Go 1.27.3/Node development container**.
+Use a fresh app directory, not the shared integration profile; ensure port 8799 is free:
+
+```bash
+lsof -nP -iTCP:8799 -sTCP:LISTEN
+ordering_fixture_dir=$(mktemp -d /tmp/bifrost-plugin-ordering.XXXXXX)
+cp tests/e2e/api/provider_config/builtin-plugin-ordering/config.json "$ordering_fixture_dir/config.json"
+BIFROST_SETUP_TOKEN=builtin-plugin-ordering-local-only make dev HOST=127.0.0.1 PORT=8799 APP_DIR="$ordering_fixture_dir"
+```
+
+In another terminal in the same container, wait for `/health`, then run all five
+requests in order (do not add `--bail`, so cleanup runs after a failed assertion).
+Pass the setup token to the runner too: its config preflight runs before Newman
+loads `environment.json`.
+
+```bash
+curl -fsS http://127.0.0.1:8799/health
+BIFROST_SETUP_TOKEN=builtin-plugin-ordering-local-only make run-provider-harness-test PROVIDER=openai FEATURE="builtin plugin ordering" BASE_URL=http://127.0.0.1:8799 PARALLEL=0 ENV_FILE=tests/e2e/api/provider_config/builtin-plugin-ordering/environment.json
+```
+
+Stop this gateway with Ctrl+C afterwards. Its disposable directory retains the
+SQLite store for inspection; on interruption, stop it and use a new directory for
+the next run. No shared gateway configuration is deleted or overwritten.
+
 ## Contents
 
 ### V1 Endpoint Tests
