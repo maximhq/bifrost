@@ -73147,6 +73147,63 @@
                       ]
                     },
                     {
+                      "name": "47.6.3.E /anthropic/v1/messages -> bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 output_config.format stream text block lifecycle (#8158)",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with a Greeting object whose `text` field is 'hi'.\"\n    }\n  ],\n  \"output_config\": {\n    \"format\": {\n      \"type\": \"json_schema\",\n      \"schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"text\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"text\"\n        ],\n        \"additionalProperties\": false\n      }\n    }\n  },\n  \"stream\": true\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/anthropic/v1/messages",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "anthropic",
+                            "v1",
+                            "messages"
+                          ]
+                        }
+                      },
+                      "event": [
+                        {
+                          "listen": "test",
+                          "script": {
+                            "type": "text/javascript",
+                            "exec": [
+                              "// #8158: structured output deltas from bedrock must arrive as one regular text block:",
+                              "// one content_block_start, every text_delta on that index, one content_block_stop.",
+                              "var t = pm.response.text() || '';",
+                              "var evs = t.split('\\n').filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { try { return JSON.parse(l.slice(5).trim()); } catch (e) { return null; } }).filter(Boolean);",
+                              "pm.test('request succeeded', function () { pm.expect(pm.response.code, t.slice(0, 500)).to.equal(200); });",
+                              "var starts = evs.filter(function (e) { return e.type === 'content_block_start' && e.content_block && e.content_block.type === 'text'; });",
+                              "var deltas = evs.filter(function (e) { return e.type === 'content_block_delta' && e.delta && e.delta.type === 'text_delta'; });",
+                              "pm.test('exactly one text content_block_start', function () { pm.expect(starts.length, t.slice(0, 800)).to.equal(1); });",
+                              "var idx = starts.length ? starts[0].index : -1;",
+                              "pm.test('all text deltas share the started block index', function () {",
+                              "  pm.expect(deltas.length, 'no text deltas: ' + t.slice(0, 800)).to.be.above(0);",
+                              "  deltas.forEach(function (d) { pm.expect(d.index, 'delta on a different index').to.equal(idx); });",
+                              "});",
+                              "pm.test('exactly one content_block_stop for the text block', function () {",
+                              "  pm.expect(evs.filter(function (e) { return e.type === 'content_block_stop' && e.index === idx; }).length).to.equal(1);",
+                              "});",
+                              "pm.test('concatenated text is the structured json', function () {",
+                              "  var s = deltas.map(function (d) { return d.delta.text; }).join('');",
+                              "  pm.expect(JSON.parse(s), s).to.have.property('text');",
+                              "});"
+                            ]
+                          }
+                        }
+                      ]
+                    },
+                    {
                       "name": "47.6.3.E /anthropic/v1/messages -> bedrock_mantle/anthropic.claude-opus-4-8",
                       "request": {
                         "method": "POST",

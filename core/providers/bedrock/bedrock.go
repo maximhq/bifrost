@@ -2026,6 +2026,9 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 		if toolName, ok := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string); ok {
 			structuredOutputToolName = toolName
 		}
+		// content block index the structured-output text is emitted on; see
+		// structuredOutputTextDeltaEvent.
+		var structuredOutputBlockIndex int
 		var isAccumulatingStructuredOutput bool
 
 		// Process AWS Event Stream format using proper decoder
@@ -2140,44 +2143,29 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 							// This is the structured output tool - start accumulating, don't forward
 							isAccumulatingStructuredOutput = true
 							streamState.UsedStructuredOutputTool = true
+							structuredOutputBlockIndex = structuredOutputContentBlockIndex(&streamEvent, streamState)
 							continue
 						}
 					}
 
-					// Check for tool use delta event
 					if streamEvent.Delta != nil && streamEvent.Delta.ToolUse != nil && isAccumulatingStructuredOutput {
-						// Convert tool use delta to text delta
-						content := streamEvent.Delta.ToolUse.Input
-						response := &schemas.BifrostResponsesStreamResponse{
-							Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
-							SequenceNumber: chunkIndex,
-							Delta:          &content,
-							ExtraFields: schemas.BifrostResponseExtraFields{
-								ChunkIndex: chunkIndex,
-								Latency:    time.Since(lastChunkTime).Milliseconds(),
-							},
+						// Rewrite the tool input delta as a text delta on the same
+						// content block and let the regular converter handle it, so
+						// the client gets output_item.added / content_part.added and
+						// deltas that carry item, output and content indices.
+						streamEvent = structuredOutputTextDeltaEvent(&streamEvent, structuredOutputBlockIndex)
+					} else {
+						// Suppress non-tool content events that would leak into the
+						// assembled structured output. Bedrock Claude can emit prose
+						// alongside the forced tool call (markdown, preambles, reasoning
+						// blocks); forwarding those as text deltas corrupts the JSON
+						// the client assembles from the structured-output stream.
+						if streamEvent.Delta != nil && (streamEvent.Delta.Text != nil || streamEvent.Delta.ReasoningContent != nil) {
+							continue
 						}
-						chunkIndex++
-						lastChunkTime = time.Now()
-
-						if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-							response.ExtraFields.RawResponse = string(message.Payload)
+						if streamEvent.Start != nil && streamEvent.Start.ToolUse == nil {
+							continue // non-tool content-block start (text block) — drop
 						}
-
-						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan, postHookSpanFinalizer)
-						continue
-					}
-
-					// Suppress non-tool content events that would leak into the
-					// assembled structured output. Bedrock Claude can emit prose
-					// alongside the forced tool call (markdown, preambles, reasoning
-					// blocks); forwarding those as text deltas corrupts the JSON
-					// the client assembles from the structured-output stream.
-					if streamEvent.Delta != nil && (streamEvent.Delta.Text != nil || streamEvent.Delta.ReasoningContent != nil) {
-						continue
-					}
-					if streamEvent.Start != nil && streamEvent.Start.ToolUse == nil {
-						continue // non-tool content-block start (text block) — drop
 					}
 				}
 
@@ -4815,5 +4803,28 @@ func (r *invokeEventStreamReader) ReadEvent() (string, []byte, error) {
 		// chunk.Bytes is a fresh base64-decoded slice, so it does not alias
 		// payloadBuf and is safe to hand to the caller before the next Decode.
 		return gjson.GetBytes(chunk.Bytes, "type").String(), chunk.Bytes, nil
+	}
+}
+
+// structuredOutputContentBlockIndex picks the content block index the
+// structured-output text is emitted on. Blocks the structured-output filter
+// suppressed (a preamble or reasoning before the tool call) never reach the
+// converter, so when nothing has claimed index 0 the text goes there and its
+// single content part has content_index 0 even if the tool was block 1 or
+// later upstream. If index 0 is already taken, the upstream index is kept.
+func structuredOutputContentBlockIndex(start *BedrockStreamEvent, state *BedrockResponsesStreamState) int {
+	if _, taken := state.ContentIndexToOutputIndex[0]; !taken || start.ContentBlockIndex == nil {
+		return 0
+	}
+	return *start.ContentBlockIndex
+}
+
+// structuredOutputTextDeltaEvent turns a toolUse input delta for the synthetic
+// structured-output tool into a plain text delta on contentBlockIndex.
+func structuredOutputTextDeltaEvent(event *BedrockStreamEvent, contentBlockIndex int) BedrockStreamEvent {
+	text := event.Delta.ToolUse.Input
+	return BedrockStreamEvent{
+		ContentBlockIndex: &contentBlockIndex,
+		Delta:             &BedrockContentBlockDelta{Text: &text},
 	}
 }
