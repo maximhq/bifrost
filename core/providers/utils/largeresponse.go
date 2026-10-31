@@ -2,6 +2,7 @@ package utils
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"math"
@@ -109,24 +110,44 @@ func PrepareResponseStreaming(ctx *schemas.BifrostContext, client *fasthttp.Clie
 	return BuildLargeResponseClient(client, responseThreshold)
 }
 
-// MaterializeStreamErrorBody reads a streamed error body into resp so that resp.Body()
-// returns the error payload for parsing. No-op when response streaming is not active.
-func MaterializeStreamErrorBody(ctx *schemas.BifrostContext, resp *fasthttp.Response) {
-	responseThreshold, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseThreshold).(int64)
-	if responseThreshold <= 0 {
-		return
+// MaterializeStreamErrorBody buffers a streamed error response up to 512KB.
+// It returns I/O and decompression failures and detaches the failed stream so
+// even a caller that ignores the error cannot read the same body again.
+// Buffered responses are unchanged, regardless of the large-response threshold.
+func MaterializeStreamErrorBody(ctx *schemas.BifrostContext, resp *fasthttp.Response) *schemas.BifrostError {
+	bodyStream := resp.BodyStream()
+	if bodyStream == nil {
+		return nil
 	}
-	if bodyStream := resp.BodyStream(); bodyStream != nil {
-		gz, reader, wasGzip := decompressBodyStreamIfGzip(resp, bodyStream)
-		if wasGzip {
-			defer ReleaseGzipReader(gz)
-		}
-		bodyBytes, readErr := io.ReadAll(io.LimitReader(reader, 512*1024)) // 512KB cap for error bodies
-		if readErr != nil {
-			return
-		}
-		resp.SetBody(bodyBytes)
+	gz, reader, wasGzip, err := decompressBodyStreamIfGzip(resp, bodyStream)
+	if wasGzip {
+		defer ReleaseGzipReader(gz)
 	}
+	if err != nil {
+		_ = resp.CloseBodyStream()
+		return streamErrorBodyReadError(resp, err)
+	}
+	bodyBytes, readErr := io.ReadAll(io.LimitReader(reader, 512*1024))
+	if readErr != nil {
+		_ = resp.CloseBodyStream()
+		return streamErrorBodyReadError(resp, readErr)
+	}
+	resp.SetBody(bodyBytes)
+	return nil
+}
+
+// streamErrorBodyReadError retains the upstream rejection and retry hint when
+// its error body cannot be decoded. Interruptions keep their existing classification.
+func streamErrorBodyReadError(resp *fasthttp.Response, readErr error) *schemas.BifrostError {
+	bifrostErr := largeResponseReadError(readErr)
+	if errors.Is(readErr, context.Canceled) || errors.Is(readErr, context.DeadlineExceeded) ||
+		errors.Is(readErr, ErrStreamIdleTimeout) || errors.Is(readErr, ErrStreamFirstTokenTimeout) {
+		return bifrostErr
+	}
+	bifrostErr.IsBifrostError = false
+	bifrostErr.StatusCode = schemas.Ptr(resp.StatusCode())
+	ApplyRetryAfter(bifrostErr, &resp.Header)
+	return bifrostErr
 }
 
 // FinalizeResponseWithLargeDetection processes the response body with optional large response
@@ -191,7 +212,10 @@ func FinalizeResponseWithLargeDetection(
 	// pin neither the provider worker during the prefetch nor the transport writer
 	// draining the LargeResponseReader afterwards. Decompression is set up once so
 	// the prefetched bytes and the streamed remainder share one gzip reader.
-	gz, reader, wasGzip := decompressBodyStreamIfGzip(resp, bodyStream)
+	gz, reader, wasGzip, decompressErr := decompressBodyStreamIfGzip(resp, bodyStream)
+	if decompressErr != nil {
+		return nil, false, largeResponseReadError(decompressErr)
+	}
 	if wasGzip {
 		// Content-Length describes the compressed body. Classify by decompressed
 		// size through the bounded unknown-length path below, so a payload that is
@@ -290,8 +314,14 @@ func FinalizeResponseWithLargeDetection(
 // stall caught by the idle timeout is a 504 like any other upstream timeout;
 // everything else is the decode error this path always returned.
 func largeResponseReadError(readErr error) *schemas.BifrostError {
-	if errors.Is(readErr, ErrStreamIdleTimeout) {
+	if errors.Is(readErr, ErrStreamIdleTimeout) || errors.Is(readErr, context.DeadlineExceeded) {
 		return NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, readErr)
+	}
+	if errors.Is(readErr, context.Canceled) {
+		return &schemas.BifrostError{
+			StatusCode: schemas.Ptr(499),
+			Error:      &schemas.ErrorField{Message: schemas.ErrRequestCancelled, Type: schemas.Ptr(schemas.RequestCancelled), Error: readErr},
+		}
 	}
 	return NewBifrostOperationError(schemas.ErrProviderResponseDecode, readErr)
 }

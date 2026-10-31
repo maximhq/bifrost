@@ -2,6 +2,7 @@
 // `node provider-error-fixture.test.mjs`.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -78,4 +79,95 @@ test("filtered Live create checks accounting events and unchanged command permis
   const complete = await create(required);
   assert.equal(complete.status, 201);
   assert.equal((await complete.json()).transport.sdp, "invalid SDP answer");
+});
+
+// These are genuine failed reads with usable HTTP headers, not complete JSON errors.
+test("lifecycle rejection models send auth/rate-limit statuses before a body decoding failure", async (t) => {
+  const post = await startFixture(t);
+  for (const [model, status, header, hint] of [
+    ["body-lifecycle-reject-401", 401, null, null],
+    ["body-lifecycle-reject-403-gzip", 403, null, null],
+    ["body-lifecycle-reject-429", 429, "retry-after", "7"],
+    ["body-lifecycle-reject-503-gzip", 503, "retry-after-ms", "2500"],
+  ]) {
+    const response = await post({ model, stream: true, messages: [{ role: "user", content: "hi" }] });
+    assert.equal(response.status, status, model);
+    if (header) assert.equal(response.headers.get(header), hint, model);
+    await assert.rejects(response.text(), undefined, `${model} must fail body decoding`);
+  }
+});
+
+// Execute the actual collection scripts: JSON syntax validation alone cannot catch
+// exceptions that bypass fixture cleanup. Postman records pm.test failures and continues.
+test("lifecycle harness scripts remove their provider even when the response is invalid", async (t) => {
+  const collection = JSON.parse(readFileSync(new URL("../../collections/provider-harness.json", import.meta.url), "utf8"));
+  const folder = collection.item.find((item) => item.name === "Stream body lifecycle (stream-body-lifecycle)");
+  assert.equal(folder.item.length, 7);
+  for (const item of folder.item) {
+    const status = Number(item.name.match(/\[EXPECT-(\d+)\]/)[1]);
+    const body = item.name.includes("body-lifecycle-reject-")
+      ? JSON.stringify({
+        is_bifrost_error: false,
+        error: { message: "failed to decode response body", error: "unexpected EOF" },
+        extra_fields: { retry_after_ms: status === 429 ? 7000 : status === 503 ? 2500 : 0 },
+      })
+      : status === 504 ? "request timed out" : status === 500 ? "stream idle timeout" : "hello fixture cleanup error";
+    const script = (phase) => [...(folder.event || []), ...(item.event || [])]
+      .filter((event) => event.listen === phase).map((event) => event.script.exec.join("\n")).join("\n");
+    for (const scenario of [
+      { name: "expected response", body, status, deleteStatus: 200, passes: true },
+      { name: "plain-text gateway failure", body: "Bad Gateway", status: 502, deleteStatus: 200 },
+      { name: "truncated JSON", body: '{"error":', status, deleteStatus: 200 },
+      { name: "JSON null", body: "null", status, deleteStatus: 200 },
+      { name: "unexpected JSON shape", body: "{}", status, deleteStatus: 200 },
+      { name: "wrong status with expected body", body, status: 502, deleteStatus: 200 },
+      { name: "cleanup failure", body, status, deleteStatus: 503 },
+    ]) {
+      await t.test(`${item.name}: ${scenario.name}`, () => {
+        const failures = [];
+        const requests = [];
+        const assertions = [];
+        const variables = new Map([["baseUrl", "http://gateway.test"]]);
+        const pm = {
+          response: {
+            code: scenario.status,
+            responseTime: 100,
+            text: () => scenario.body,
+            json: () => JSON.parse(scenario.body),
+          },
+          variables,
+          test: (name, fn) => {
+            assertions.push(name);
+            try { fn(); } catch (error) { failures.push({ name, error }); }
+          },
+          expect: (actual, message) => ({ to: {
+            eql: (expected) => assert.deepEqual(actual, expected, message),
+            include: (expected) => assert.ok(actual.includes(expected), message),
+            not: { include: (expected) => assert.ok(!actual.includes(expected), message) },
+            be: { below: (expected) => assert.ok(actual < expected, message) },
+          } }),
+          sendRequest: (request, callback) => {
+            requests.push(request);
+            callback(null, { code: request.method === "POST" ? 200 : scenario.deleteStatus, text: () => "fixture response" });
+          },
+        };
+        new Function("pm", script("prerequest"))(pm);
+        assert.equal(requests.length, 1, "create one fixture provider per request");
+        const provider = JSON.parse(requests[0].body.raw).provider;
+        const request = JSON.parse(item.request.body.raw.replace(/\{\{(\w+)\}\}/g, (_, key) => variables.get(key)));
+        assert.equal(request.model, provider + "/" + item.name.split(" ")[0].slice("openai/".length));
+        let scriptError;
+        try { new Function("pm", script("test"))(pm); } catch (error) { scriptError = error; }
+        assert.equal(requests.length, 2, "cleanup must run exactly once even when parsing or assertions fail");
+        assert.equal(requests[1].method, "DELETE");
+        assert.equal(requests[1].url, "http://gateway.test/api/providers/" + encodeURIComponent(provider));
+        assert.equal(scriptError, undefined, "response errors must be reported as failed assertions");
+        assert.ok(assertions.includes("fixture provider removed"));
+        assert.ok(assertions.includes("original upstream HTTP rejection") || assertions.includes("exact gateway status"));
+        if (scenario.passes) assert.deepEqual(failures, []);
+        else assert.ok(failures.length > 0, "an invalid response or failed cleanup must fail the case");
+        if (scenario.deleteStatus !== 200) assert.ok(failures.some(({ name }) => name === "fixture provider removed"));
+      });
+    }
+  }
 });
