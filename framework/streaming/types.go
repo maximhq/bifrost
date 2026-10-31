@@ -47,6 +47,7 @@ type AccumulatedData struct {
 	FinishReason          *string
 	LogProbs              *schemas.BifrostLogProbs
 	RawResponse           *string
+	RawResponseFormat     schemas.RawResponseFormat // Declared format of RawResponse's frames; empty when no chunk declared one
 }
 
 // AudioStreamChunk represents a single streaming chunk
@@ -89,6 +90,7 @@ type ChatStreamChunk struct {
 	ErrorDetails       *schemas.BifrostError                  // Error if any
 	ChunkIndex         int                                    // Index of the chunk in the stream
 	RawResponse        *string                                // Raw response if available
+	RawResponseFormat  schemas.RawResponseFormat              // Declared format of RawResponse, if any
 }
 
 // ResponsesStreamChunk represents a single responses streaming chunk
@@ -104,6 +106,7 @@ type ResponsesStreamChunk struct {
 	ErrorDetails       *schemas.BifrostError                   // Error if any
 	ChunkIndex         int                                     // Index of the chunk in the stream
 	RawResponse        *string
+	RawResponseFormat  schemas.RawResponseFormat // Declared format of RawResponse, if any
 }
 
 // ImageStreamChunk represents a single image streaming chunk

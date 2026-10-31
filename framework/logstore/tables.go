@@ -444,6 +444,7 @@ type Log struct {
 	RealtimeInputCorrection *RealtimeInputCorrection         `gorm:"-" json:"-"` // Transient: merge one late transcript into the latest offloaded payload
 
 	RedactionData            *schemas.RedactionData        `gorm:"-" json:"-"`                           // Transient guardrail redaction data consumed by enterprise logstore wrappers
+	RawResponseFormat        schemas.RawResponseFormat     `gorm:"-" json:"-"`                           // Transient: declared format of a streamed RawResponse's frames, so redaction can match text split across them
 	PassthroughParseFormat   schemas.ModelProvider         `gorm:"-" json:"-"`                           // Transient: base provider whose wire format the log writer parses passthrough bodies with; empty skips parsing
 	PassthroughParseMaxBytes int64                         `gorm:"-" json:"-"`                           // Transient: large-payload request threshold applied to media parsed from passthrough bodies; 0 keeps everything
 	RedactionMapping         string                        `gorm:"type:text" json:"-"`                   // Reversible redaction mapping (encrypted when an encryption key is set), written by enterprise logstore wrappers; deleted with the row

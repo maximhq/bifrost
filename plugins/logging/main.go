@@ -2494,6 +2494,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				if entry.RawResponse == "" {
 					if streamResponse != nil && streamResponse.Data != nil && streamResponse.Data.RawResponse != nil {
 						entry.RawResponse = *streamResponse.Data.RawResponse
+						entry.RawResponseFormat = streamResponse.Data.RawResponseFormat
 					} else if bifrostErr.ExtraFields.RawResponse != nil {
 						if rawRespBytes, err := sonic.Marshal(bifrostErr.ExtraFields.RawResponse); err == nil {
 							entry.RawResponse = string(rawRespBytes)
