@@ -554,6 +554,8 @@ Supports text and multimodal embeddings (text, image, audio, video, and PDF via 
 - Inline responses: Array in `dest.inlinedResponses`
 - File-based responses: JSONL file in `dest.fileName`
 
+**Embeddings batches**: A batch created with endpoint `/v1/embeddings`, or with an embedding model, is sent to `models/{model}:asyncBatchEmbedContent` instead of `batchGenerateContent`. A `model` is required. Each line or inline request embeds one text (`input`/`dimensions`, or native `content`/`outputDimensionality`), and each result is returned as an OpenAI-style embeddings body (`data[].embedding`).
+
 **Note**: RFC3339 timestamps converted to Unix timestamps
 
 ---

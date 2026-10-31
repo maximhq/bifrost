@@ -110,3 +110,45 @@ func TestToGeminiBatchGenerateContentRequest(t *testing.T) {
 		assert.Equal(t, "research", req.Labels["team"])
 	})
 }
+
+func TestToGeminiBatchEmbeddingRequest(t *testing.T) {
+	t.Parallel()
+
+	t.Run("NativeContentPassesThrough", func(t *testing.T) {
+		req, err := gemini.ToGeminiBatchEmbeddingRequest(map[string]interface{}{
+			"content":              map[string]interface{}{"parts": []interface{}{map[string]interface{}{"text": "hi"}}},
+			"outputDimensionality": float64(256),
+			"taskType":             "RETRIEVAL_DOCUMENT",
+		})
+		require.NoError(t, err)
+		require.NotNil(t, req.Content)
+		assert.Equal(t, "hi", req.Content.Parts[0].Text)
+		require.NotNil(t, req.OutputDimensionality)
+		assert.Equal(t, 256, *req.OutputDimensionality)
+		require.NotNil(t, req.TaskType)
+		assert.Equal(t, "RETRIEVAL_DOCUMENT", *req.TaskType)
+	})
+
+	t.Run("GoTypedInputAndDimensions", func(t *testing.T) {
+		req, err := gemini.ToGeminiBatchEmbeddingRequest(map[string]interface{}{
+			"input":      []string{"hello"},
+			"dimensions": 768,
+		})
+		require.NoError(t, err)
+		require.NotNil(t, req.Content)
+		assert.Equal(t, "hello", req.Content.Parts[0].Text)
+		require.NotNil(t, req.OutputDimensionality)
+		assert.Equal(t, 768, *req.OutputDimensionality)
+	})
+
+	t.Run("RejectsMultipleInputsPerLine", func(t *testing.T) {
+		_, err := gemini.ToGeminiBatchEmbeddingRequest(map[string]interface{}{"input": []interface{}{"a", "b"}})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "exactly one input")
+	})
+
+	t.Run("RejectsMissingInput", func(t *testing.T) {
+		_, err := gemini.ToGeminiBatchEmbeddingRequest(map[string]interface{}{"dimensions": float64(8)})
+		require.Error(t, err)
+	})
+}
