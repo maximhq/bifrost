@@ -777,8 +777,9 @@ Systematically address unresolved PR review comments. Uses GraphQL to get unreso
 1. Find workspace page: `ui/app/workspace/<feature>/`
 2. Check existing `data-testid` attributes — E2E tests depend on them
 3. Add `data-testid` to new interactive elements
-4. Run `make run-e2e FLOW=<feature>` to verify
-5. If E2E tests break, use `/e2e-test sync` to update them
+4. Put every user-visible string through i18n (see [UI i18n](#ui-i18n)) and run `cd ui && npm run i18n:check`
+5. Run `make run-e2e FLOW=<feature>` to verify
+6. If E2E tests break, use `/e2e-test sync` to update them
 
 ---
 
@@ -1086,6 +1087,36 @@ We use:
 
 ---
 
+## UI i18n
+
+Every user-visible string in `ui/` goes through i18next. That covers JSX text, text props (`label`, `placeholder`, `title`, `description`, `tooltip`, `aria-label`, `alt`), toasts, zod validation messages, and `label`/`title`/`description` fields in option, tab and column arrays.
+
+- In components: `const { t } = useTranslation("<ns>")`. Outside React: `i18n.t("key", { ns: "<ns>" })` from `@/lib/i18n`. Never write `"ns:key"`; `nsSeparator` is off.
+- Keys are typed against `ui/locales/en`, so an unknown key fails `npm run typecheck`. Do not cast `t` to get around it.
+- Namespaces: `common` (shared verbs, entity names, `validation.*`, `apiErrors.*`), `shell` (nav and layout), `login`, `observability` (logs, metrics, traces), `models` (providers, routing, pricing), `mcp`, `governance` (virtual keys, budgets, teams), `config` (settings). Reuse an existing `common` key before adding a new one.
+- Adding a key: add it to `locales/en/<ns>.json` and to every other locale directory (de, es, fr, it, ja, ko, pt, ru, zh-CN, zh-TW) with a real translation, not the English text. Keep the same `{{placeholders}}`, the same `<Trans>` tags (`<b0>`, `<code1>`) and the same array lengths. Edit catalogs surgically; never re-serialize a whole file by hand.
+- One whole sentence per key. Interpolate values (`t("deleted", { name })`); never concatenate translated fragments or build sentences with `+`.
+- Plurals: `key` plus `key_other` in English, and pass `count`. Russian also needs `_few` and `_many`.
+- Inline markup goes through `<Trans>` with indexed components rather than splitting a sentence into several keys.
+- Static config arrays store a `labelKey` and translate at render time. Template keys (`` t(`x.${v}`) ``) are fine only when `v` is a typed union.
+- Zod messages must stay lazy so they follow a language switch: `.min(1, msg("validation.nameIsRequired"))` with `msg` from `@/lib/i18n/validationMessage`, and `message: i18n.t("validation.…")` inside `superRefine`/`addIssue`. A string literal is resolved once, in English.
+- Dates and numbers follow the UI language: pass `getLocale()` to `toLocaleString`, `toLocaleDateString`, `toLocaleTimeString` and `Intl.*`, and `dateFnsLocale(getLocale())` to date-fns calls that print words or AM/PM. Never hardcode `"en-US"`.
+- Do not translate provider or model names, API field names, code samples, log payloads, or the dev-only pages (`app/pprof`, `components/devProfiler.tsx`). Mark an intentional literal with `// i18n-ignore` (or `{/* i18n-ignore */}`) on the same line or the line above, with a short reason.
+- New namespace: create the JSON file in every locale directory, then import the English file and add the name to `NAMESPACES` in `ui/lib/i18n/resources.ts`. Other languages load lazily through `import.meta.glob`, so they need no registration.
+- New language: add the folder under `ui/locales/` (and `enterprise-ui/app/locales/` in the enterprise repo), an entry in `SUPPORTED_LOCALES` in `ui/lib/i18n/index.ts`, and a date-fns locale in `ui/lib/i18n/dateLocale.ts`.
+
+Before finishing UI work, run from `ui/`:
+
+```bash
+npm run i18n:check                 # hardcoded strings, validation messages, catalog parity; CI runs this
+npm run i18n:check -- app/workspace/logs   # limit the literal scan to the paths you touched
+npm run i18n:check -- --unused     # optional: English keys nothing references
+```
+
+It must exit 0. The `ui-i18n` workflow fails a pull request otherwise.
+
+---
+
 ## TypeScript Guidelines
 
 - Avoid using `any` unless absolutely unavoidable
@@ -1096,19 +1127,23 @@ We use:
 
 ## Code Quality & Formatting
 
-After writing code:
+After writing code, format only the files you changed:
 
 ```bash
-cd ui && npm run format
-````
+cd ui && npm run format:changed          # oxfmt on files changed against HEAD, plus untracked ones
+cd ui && npm run format:changed:check    # same set, check only
+```
 
-Then verify build:
+Do not run `npm run format` or `npm run format:check` across the tree. The committed files were not all formatted with the same oxfmt version, so a repo-wide run rewrites unrelated files that then have to be reverted. If a formatter run touched files outside your change, restore them with `git checkout -- <file>` before committing.
+
+Then verify the build and the i18n check:
 
 ```bash
 cd ui && npm run build
+cd ui && npm run i18n:check
 ```
 
-* Code must pass formatting and build checks
+* Code must pass formatting, build and i18n checks
 * Follow consistent naming and structure conventions
 
 ---

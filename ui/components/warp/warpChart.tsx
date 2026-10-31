@@ -1,5 +1,6 @@
 import { getModelColor } from "@/app/workspace/dashboard/utils/chartUtils";
 import type { ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { formatWarpChartValue, formatWarpChartX, type WarpChartSpec } from "./warpStream.utils";
 
@@ -11,6 +12,7 @@ export default function WarpChart({
 	spec: WarpChartSpec;
 	renderLink: (href: string, children: ReactNode) => ReactNode;
 }) {
+	const { t } = useTranslation("shell");
 	const data = spec.points.map((point) => ({ name: formatWarpChartX(spec, point), value: point.y }));
 	const color = getModelColor(0);
 	const formatValue = (value: number) => formatWarpChartValue(spec.unit, value);
@@ -21,11 +23,11 @@ export default function WarpChart({
 				<span className="text-foreground font-medium" data-testid="warp-chart-title">
 					{spec.title}
 				</span>
-				{spec.link ? <span className="shrink-0">{renderLink(spec.link, "Open in Logs")}</span> : null}
+				{spec.link ? <span className="shrink-0">{renderLink(spec.link, t("warp.chart.openInLogs"))}</span> : null}
 			</figcaption>
 			{data.length === 0 ? (
 				<div className="text-muted-foreground py-6 text-center text-xs" data-testid="warp-chart-empty">
-					No data in this window.
+					{t("warp.chart.empty")}
 				</div>
 			) : (
 				<div className="h-[200px] w-full">

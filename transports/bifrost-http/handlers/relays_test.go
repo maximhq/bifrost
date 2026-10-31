@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -217,6 +218,121 @@ func TestRelaysHandlerDelegatesMutationsAndReloads(t *testing.T) {
 	assert.ErrorIs(t, peerHandler.ReloadRelay(context.Background(), "docs"), configstore.ErrNotFound, "a reload of a deleted relay reports the missing row")
 	peerHandler.RemoveRelay("docs")
 	assert.NotContains(t, peer.Names(), "docs", "a deleted relay stops being served on the peer")
+}
+
+// TestRelaysHandlerRequiresGenuineAuthForDialChanges: a caller let through the fail-open bypass
+// (dashboard auth disabled or unconfigured) cannot choose where a relay sends its credential or
+// which gateway secret it sends, the relay counterpart of the provider, provider-key, plugin and
+// webhook gates. Repointing base_url while sending back the redacted credential would hand the
+// stored secret to the new host; an env. reference would send the gateway's own environment.
+// Edits that keep every such setting still pass, and an authenticated admin is never refused.
+func TestRelaysHandlerRequiresGenuineAuthForDialChanges(t *testing.T) {
+	t.Setenv("RELAY_GATE_TEST_SECRET", "gateway-env-secret")
+	h, store, manager := newRelaysTestHandler(t)
+	tlsServer := httptest.NewTLSServer(http.NotFoundHandler())
+	t.Cleanup(tlsServer.Close)
+	caPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: tlsServer.Certificate().Raw}))
+	const createBody = `{"name":"tavily","base_url":"https://search.example.com","auth":{"type":"bearer"},"credential":{"value":"tvly-secret-123456789"},"extra_headers":{"X-Tenant":"acme"}}`
+	created := pteRequest(fasthttp.MethodPost, createBody, "")
+	h.create(created)
+	require.Equal(t, fasthttp.StatusCreated, created.Response.StatusCode(), string(created.Response.Body()))
+
+	// The body the UI would send back: what GET returned, credential redacted.
+	readView := func(t *testing.T) map[string]any {
+		t.Helper()
+		get := pteRequest(fasthttp.MethodGet, "", "tavily")
+		h.get(get)
+		require.Equal(t, fasthttp.StatusOK, get.Response.StatusCode(), string(get.Response.Body()))
+		var view map[string]any
+		require.NoError(t, json.Unmarshal(get.Response.Body(), &view))
+		return view
+	}
+	bypassed := func(method string, body any, name string) *fasthttp.RequestCtx {
+		raw, ok := body.(string)
+		if !ok {
+			data, err := json.Marshal(body)
+			require.NoError(t, err)
+			raw = string(data)
+		}
+		ctx := pteRequest(method, raw, name)
+		ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+		return ctx
+	}
+	assertUnchanged := func(t *testing.T) {
+		t.Helper()
+		stored, err := store.GetRelay(context.Background(), "tavily")
+		require.NoError(t, err)
+		assert.Equal(t, "https://search.example.com", stored.BaseURL)
+		assert.Equal(t, "tvly-secret-123456789", stored.Credential.Value.GetValue())
+		assert.Nil(t, stored.ProxyConfig)
+		assert.Nil(t, stored.Network)
+		tenant := stored.ExtraHeaders["X-Tenant"]
+		assert.Equal(t, "acme", tenant.GetValue())
+	}
+
+	t.Run("create is refused", func(t *testing.T) {
+		ctx := bypassed(fasthttp.MethodPost, `{"name":"exfil","base_url":"https://attacker.example.com","auth":{"type":"bearer"},"credential":{"value":"env.RELAY_GATE_TEST_SECRET"}}`, "")
+		h.create(ctx)
+		assert.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		assert.Contains(t, string(ctx.Response.Body()), "base_url")
+		assert.Contains(t, string(ctx.Response.Body()), "credential.value")
+		assert.Equal(t, []string{"tavily"}, manager.Names(), "the refused relay is not served")
+	})
+
+	refused := map[string]func(view map[string]any){
+		"base_url": func(view map[string]any) { view["base_url"] = "https://attacker.example.com" },
+		"credential.value": func(view map[string]any) {
+			view["credential"] = map[string]any{"value": "env.RELAY_GATE_TEST_SECRET"}
+		},
+		"extra_headers.X-Tenant": func(view map[string]any) {
+			view["extra_headers"] = map[string]any{"X-Tenant": "env.RELAY_GATE_TEST_SECRET"}
+		},
+		"network.insecure_skip_verify": func(view map[string]any) {
+			view["network"] = map[string]any{"insecure_skip_verify": true}
+		},
+		"network.ca_cert_pem": func(view map[string]any) {
+			view["network"] = map[string]any{"ca_cert_pem": caPEM}
+		},
+		"proxy_config.url": func(view map[string]any) {
+			view["proxy_config"] = map[string]any{"type": "http", "url": "http://attacker.example.com:3128"}
+		},
+	}
+	for path, mutate := range refused {
+		t.Run("update of "+path+" is refused", func(t *testing.T) {
+			view := readView(t)
+			mutate(view)
+			ctx := bypassed(fasthttp.MethodPut, view, "tavily")
+			h.update(ctx)
+			assert.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			assert.Contains(t, string(ctx.Response.Body()), path)
+			assertUnchanged(t)
+		})
+	}
+
+	t.Run("update that keeps every dial setting passes", func(t *testing.T) {
+		view := readView(t)
+		view["description"] = "edited while auth is off"
+		ctx := bypassed(fasthttp.MethodPut, view, "tavily")
+		h.update(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		stored, err := store.GetRelay(context.Background(), "tavily")
+		require.NoError(t, err)
+		assert.Equal(t, "edited while auth is off", stored.Description)
+		assertUnchanged(t)
+	})
+
+	t.Run("authenticated admin may repoint the relay", func(t *testing.T) {
+		view := readView(t)
+		view["base_url"] = "https://search-eu.example.com"
+		data, err := json.Marshal(view)
+		require.NoError(t, err)
+		ctx := pteRequest(fasthttp.MethodPut, string(data), "tavily")
+		h.update(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		stored, err := store.GetRelay(context.Background(), "tavily")
+		require.NoError(t, err)
+		assert.Equal(t, "https://search-eu.example.com", stored.BaseURL)
+	})
 }
 
 // TestRelaysHandlerFetchOpenAPISpec: the route import's URL source returns the document text as

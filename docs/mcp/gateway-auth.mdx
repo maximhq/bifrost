@@ -47,19 +47,27 @@ In `oauth` mode, `/mcp` accepts Bifrost-issued JWTs only, so callers cannot send
 
 ## How the OAuth Connect Flow Works
 
-When `mcp_server_auth_mode` is `both` or `oauth`, Bifrost is a full OAuth 2.1 authorization server for the `/mcp` resource. A client that doesn't yet have a token discovers the server, registers itself, and walks the user through a browser consent step.
+When `mcp_server_auth_mode` is `both` or `oauth`, Bifrost is a full OAuth 2.1 authorization server for the `/mcp` resource. A client that doesn't yet have a token discovers the server, identifies itself with a [client metadata document](#client-id-metadata-documents) or by registering, and walks the user through a browser consent step.
 
 ```mermaid
 sequenceDiagram
     participant C as MCP Client
     participant U as User (Browser)
     participant B as Bifrost
+    participant D as Document host
 
     C->>B: GET /mcp (no token)
     B-->>C: 401 + WWW-Authenticate (resource metadata URL)
     C->>B: GET /.well-known/oauth-protected-resource + authorization-server
-    C->>B: POST /oauth2/register (Dynamic Client Registration)
+    opt Client has no metadata document
+        C->>B: POST /oauth2/register (Dynamic Client Registration)
+    end
     C->>U: Open /oauth2/authorize (PKCE) in browser
+    U->>B: Authorization request
+    opt Client has a metadata document
+        B->>D: Fetch the document (cached afterwards)
+        D-->>B: Client name and redirect URIs
+    end
     U->>B: Consent page — choose identity
     B-->>U: Redirect with authorization code
     U-->>C: Code delivered to client redirect URI
@@ -72,9 +80,28 @@ sequenceDiagram
 The flow follows current OAuth standards so off-the-shelf MCP clients work without custom code:
 
 - **Protected resource metadata** (RFC 9728) — the `401` response points clients at the discovery documents.
+- **Client ID Metadata Documents** — a client identifies itself with the address of a document it publishes; nothing is registered with Bifrost.
 - **Dynamic Client Registration** (RFC 7591) — clients self-register; no manual client setup.
 - **PKCE** (S256) — public clients authenticate without a shared secret.
 - **Resource indicators** (RFC 8707) — tokens are bound to the `/mcp` resource via the `aud` claim.
+
+---
+
+## Client ID Metadata Documents
+
+An MCP client can use the HTTPS address of a metadata document it publishes as its client ID, instead of registering with Bifrost. Bifrost reads the document during sign-in and advertises support in its discovery metadata, so clients that support documents use them automatically. There is nothing to configure.
+
+Bifrost accepts a document when:
+
+- its address uses HTTPS, has a path, and resolves to a public address. Private and loopback addresses are refused;
+- it is served directly from that address, without a redirect, and is no larger than 64 KB;
+- its `client_id` is exactly that address, and it lists a client name and at least one redirect URI;
+- the client is public, with no client secret;
+- its redirect URIs pass the same checks as a registered client's. Remote callbacks must be listed in [`allowed_redirect_uris`](#callback-destinations).
+
+Bifrost caches a document for as long as its HTTP cache headers allow, between 1 minute and 24 hours, and for 1 hour when they say nothing. A document that could not be used is retried after 1 minute.
+
+Clients that registered before this support keep their registration and existing grants.
 
 ---
 
@@ -83,6 +110,14 @@ The flow follows current OAuth standards so off-the-shelf MCP clients work witho
 During the consent step, Bifrost shows the user how they can identify themselves. The page header names the connecting client — for example **"Claude Code wants to connect"** — and offers the modes available for your deployment:
 
 ![MCP OAuth consent page with identity options](/media/ui-oauth-consent.png)
+
+Check the application before you continue. The page also shows:
+
+- **Where the sign-in returns to:** the host and full address of the client's callback.
+- **Who published the client:** for a client using a metadata document, **Published by** names the host of its document. The name in the page header comes from that document.
+- **A local-only warning:** when a client's callback is only on your own computer, the page warns that its name cannot be verified, since any app running locally could use it.
+
+![MCP OAuth consent page showing the document host and callback](/media/ui-oauth-consent-cimd.png)
 
 | Mode | Binds the grant to | Availability |
 |---|---|---|
@@ -233,6 +268,25 @@ Client registration bounds its free-text fields: `client_name` up to 2048 bytes,
 
 ---
 
+## Browser Clients
+
+Browser-based MCP clients send an `Origin` header, and Bifrost checks it on every request to the MCP gateway. This stops a web page you happen to visit from reaching a gateway on your network or machine. Clients that send no `Origin`, such as CLI, desktop and server-side clients, are not affected.
+
+| Inference auth | Allowed origins |
+|---|---|
+| Off (`enforce_auth_on_inference: false`) | Localhost origins, and origins listed in `allowed_origins` by name or pattern. The `"*"` entry does not count. |
+| On | `allowed_origins` as configured, including `"*"`. Localhost origins are always allowed. |
+
+```json
+{
+  "client": {
+    "allowed_origins": ["https://inspector.example.com", "https://*.example.com"]
+  }
+}
+```
+
+---
+
 ## Troubleshooting
 
 ### Discovery returns 404
@@ -252,7 +306,7 @@ Client registration bounds its free-text fields: `client_name` up to 2048 bytes,
 
 ### Browser app refused with 403 on /mcp
 **Symptom:** A browser-based MCP client on another origin gets `403` saying the origin is refused, while the same server works from a CLI or desktop client.
-**Cause:** Browser requests to the MCP gateway must come from an allowed origin. While inference auth is off (`enforce_auth_on_inference: false`), only localhost origins and origins listed in `allowed_origins` by name or pattern are allowed; the `"*"` entry does not count. With inference auth on, `allowed_origins` applies as configured.
+**Cause:** Browser requests to the MCP gateway must come from an [allowed origin](#browser-clients). While inference auth is off (`enforce_auth_on_inference: false`), only localhost origins and origins listed in `allowed_origins` by name or pattern are allowed; the `"*"` entry does not count. With inference auth on, `allowed_origins` applies as configured.
 **Fix:** List the app's origin in `allowed_origins` (for example `https://inspector.example.com` or `https://*.example.com`). If `allowed_origins` already contains `"*"`, turning on inference auth also works. Clients that send no `Origin` header are never affected.
 
 ### Conflicting credentials on /mcp

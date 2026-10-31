@@ -50,6 +50,7 @@ type ModelCapabilities struct {
 	SupportsSamplingParams          *bool `json:"supports_sampling_params,omitempty"` // false ⇒ temperature/top_p/top_k rejected (adaptive-only models)
 	SupportsRedactThinking          *bool `json:"supports_redact_thinking,omitempty"`
 	SupportsTaskBudgets             *bool `json:"supports_task_budgets,omitempty"`
+	SupportsReasoningBudget         *bool `json:"supports_reasoning_budget,omitempty"` // false ⇒ token thinking budget rejected, effort level only (Gemini 4)
 	SupportsEagerInputStreaming     *bool `json:"supports_eager_input_streaming,omitempty"`
 	SupportsAdvancedToolUse         *bool `json:"supports_advanced_tool_use,omitempty"`
 	SupportsInputExamples           *bool `json:"supports_input_examples,omitempty"`

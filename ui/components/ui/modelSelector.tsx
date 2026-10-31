@@ -16,13 +16,17 @@ import { useGetBaseModelsQuery, useGetModelsQuery } from "@/lib/store/apis/provi
 import { cn } from "@/lib/utils";
 import { isSentinelValue } from "@/lib/utils/strings";
 import { ChevronDownIcon, Loader2Icon, PlusIcon, SearchIcon, XIcon } from "lucide-react";
+import type { ParseKeys } from "i18next";
 import type React from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 
 /** One row in the dropdown, after the consumer has had a say in it. */
 export interface ModelSelectorOption {
 	value: string;
 	label: string;
+	/** When set, rendered translated in place of `label` (for module-level constants that cannot call `t`). */
+	labelKey?: ParseKeys<"common">;
 	provider?: string;
 	isDeprecated?: boolean;
 	/** Non-selectable. The row still renders, greyed, with `disabledReason` beside it. */
@@ -113,7 +117,7 @@ export type ModelSelectorProps = ModelSelectorSingleProps | ModelSelectorMultiPr
  * The wildcard row, for the surfaces whose list accepts "*" as "every model". Ready to hand
  * to `extraOptions`; module level so its identity is stable across renders.
  */
-export const ALL_MODELS_OPTION: ModelSelectorOption[] = [{ value: "*", label: "All Models" }];
+export const ALL_MODELS_OPTION: ModelSelectorOption[] = [{ value: "*", label: "All Models", labelKey: "modelAccess.allModels" }]; // i18n-ignore: translated via labelKey
 
 /** A catalog row. Base models carry only a name, so everything past it is optional. */
 interface ListedModel {
@@ -132,6 +136,7 @@ function clientFilter(value: string, search: string): number {
 }
 
 export function ModelSelector(props: ModelSelectorProps) {
+	const { t } = useTranslation("common");
 	const {
 		provider,
 		keys,
@@ -140,8 +145,8 @@ export function ModelSelector(props: ModelSelectorProps) {
 		decisions = false,
 		serverSearch = true,
 		pageSize = DEFAULT_PAGE_SIZE,
-		placeholder = "Select model",
-		searchPlaceholder = "Search models...",
+		placeholder: placeholderProp,
+		searchPlaceholder: searchPlaceholderProp,
 		disabled = false,
 		className,
 		contentClassName,
@@ -151,7 +156,7 @@ export function ModelSelector(props: ModelSelectorProps) {
 		disableDeprecated = true,
 		getOptionState,
 		emptyMessage,
-		extraOptions,
+		extraOptions: extraOptionsProp,
 		renderValueLabel,
 		hideSearchIcon = false,
 		openWithEmptySearch = false,
@@ -160,6 +165,12 @@ export function ModelSelector(props: ModelSelectorProps) {
 		ariaDescribedBy,
 		ariaInvalid,
 	} = props;
+	const extraOptions = useMemo(
+		() => extraOptionsProp?.map((o) => (o.labelKey ? { ...o, label: t(o.labelKey) } : o)),
+		[extraOptionsProp, t],
+	);
+	const placeholder = placeholderProp ?? t("modelAccess.selectModel");
+	const searchPlaceholder = searchPlaceholderProp ?? t("modelAccess.searchModels");
 
 	const isMulti = props.multiple === true;
 	const onChange = props.onChange;
@@ -228,7 +239,7 @@ export function ModelSelector(props: ModelSelectorProps) {
 			};
 			if (disableDeprecated && model.is_deprecated) {
 				base.disabled = true;
-				base.disabledReason = "Deprecated";
+				base.disabledReason = t("modelAccess.deprecated");
 			}
 			const override = getOptionState?.(base);
 			return override ? { ...base, ...override } : base;
@@ -237,7 +248,7 @@ export function ModelSelector(props: ModelSelectorProps) {
 		// disabled by the consumer, and the two have to end up in one order. A row nobody
 		// can pick never sits above one they can.
 		return mapped.sort((a, b) => Number(Boolean(a.disabled)) - Number(Boolean(b.disabled)));
-	}, [rows, disableDeprecated, getOptionState]);
+	}, [rows, disableDeprecated, getOptionState, t]);
 
 	const extraValues = useMemo(() => new Set((extraOptions ?? []).map((o) => o.value)), [extraOptions]);
 
@@ -449,7 +460,7 @@ export function ModelSelector(props: ModelSelectorProps) {
 									<span
 										role="button"
 										tabIndex={-1}
-										aria-label={`Remove ${labelFor(value)}`}
+										aria-label={t("combobox.removeAria", { label: labelFor(value) })}
 										className="text-muted-foreground hover:text-foreground flex shrink-0 cursor-pointer items-center"
 										onClick={(e) => {
 											e.preventDefault();
@@ -510,7 +521,7 @@ export function ModelSelector(props: ModelSelectorProps) {
 
 					{pinned.length > 0 && (
 						<ComboboxGroup>
-							<ComboboxLabel>Selected</ComboboxLabel>
+							<ComboboxLabel>{t("entityAssociation.selected")}</ComboboxLabel>
 							{pinned.map(renderOption)}
 						</ComboboxGroup>
 					)}
@@ -522,7 +533,12 @@ export function ModelSelector(props: ModelSelectorProps) {
 						<ComboboxItem value={`${CUSTOM_VALUE_PREFIX}${trimmedSearch}`} onSelect={() => toggle(trimmedSearch)}>
 							<PlusIcon className="size-3.5 shrink-0 opacity-60" />
 							<span className="min-w-0 grow truncate">
-								Use <span className="font-medium">{trimmedSearch}</span>
+								<Trans
+									t={t}
+									i18nKey="modelAccess.useModel"
+									values={{ name: trimmedSearch }}
+									components={{ name: <span className="font-medium" /> }}
+								/>
 							</span>
 						</ComboboxItem>
 					)}
@@ -530,21 +546,23 @@ export function ModelSelector(props: ModelSelectorProps) {
 					{/* cmdk decides when this shows, which also covers client-side filtering to zero. */}
 					{!isSearching && (
 						<ComboboxEmpty className="text-muted-foreground">
-							{isError ? "Couldn't load models." : (emptyMessage ?? (search ? "No matching models." : "No models available."))}
+							{isError
+								? t("modelAccess.couldntLoad")
+								: (emptyMessage ?? (search ? t("modelAccess.noMatching") : t("modelAccess.noneAvailable")))}
 						</ComboboxEmpty>
 					)}
 
 					{isSearching && loadedCount === 0 && (
 						<div className="text-muted-foreground flex items-center justify-center gap-2 py-6 text-sm">
 							<Loader2Icon className="size-3.5 animate-spin" />
-							Searching…
+							{t("modelAccess.searching")}
 						</div>
 					)}
 
 					{hasMore && isFetching && (
 						<div className="text-muted-foreground flex items-center justify-center gap-2 py-2 text-xs">
 							<Loader2Icon className="size-3 animate-spin" />
-							Loading more…
+							{t("modelAccess.loadingMore")}
 						</div>
 					)}
 				</ComboboxList>

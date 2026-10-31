@@ -131,6 +131,24 @@ func TraceDimensions(attrs map[string]any) map[string]string {
 	return nil
 }
 
+// MergeDimensions adds dims to the trace's dimensions, overwriting a name already there. It stores
+// a new map, so an exporter holding the previous one never sees it change.
+func (t *Trace) MergeDimensions(dims map[string]string) {
+	if t == nil || len(dims) == 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	existing := TraceDimensions(t.Attributes)
+	merged := make(map[string]string, len(existing)+len(dims))
+	maps.Copy(merged, existing)
+	maps.Copy(merged, dims)
+	if t.Attributes == nil {
+		t.Attributes = make(map[string]any)
+	}
+	t.Attributes[TraceAttrDimensions] = merged
+}
+
 // AddSpan adds a span to the trace in a thread-safe manner
 func (t *Trace) AddSpan(span *Span) {
 	if t == nil || span == nil {

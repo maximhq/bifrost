@@ -507,18 +507,22 @@ export class MCPRegistryPage extends BasePage {
     await tab.click()
   }
 
-  /** Type a document into the Paste editor (Monaco), replacing its content */
-  async pasteOpenAPISpec(text: string): Promise<void> {
-    const editor = this.sheet.getByTestId('openapi-spec-paste-editor')
+  /** Set the Paste editor's (Monaco) document under `root`, replacing its content */
+  async pasteOpenAPISpec(text: string, root: Locator = this.sheet): Promise<void> {
+    const editor = root.getByTestId('openapi-spec-paste-editor')
     await expect(editor).toBeVisible({ timeout: 10000 })
-    const textarea = editor.locator('textarea.inputarea')
-    await textarea.waitFor({ state: 'attached', timeout: 10000 })
-    await editor.locator('.monaco-editor').first().click()
-    await this.page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A')
-    await this.page.keyboard.press('Backspace')
-    // insertText bypasses Monaco's auto-closing brackets/quotes, which would
-    // otherwise corrupt a typed JSON document.
-    await this.page.keyboard.insertText(text)
+    await editor.locator('textarea.inputarea').waitFor({ state: 'attached', timeout: 10000 })
+    // The replace panel keeps the editor read-only while it loads the stored document.
+    await expect(root.getByTestId('openapi-replace-spec-loading')).toHaveCount(0, { timeout: 10000 })
+    // Keystrokes and insertText go through Monaco's typing path, where auto-indent and
+    // auto-closing brackets rewrite a JSON document, so the model is set directly.
+    await editor.evaluate(async (el, value) => {
+      // Two frames let React register the editor's change listener, which runs in an effect after mount.
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+      const monaco = (window as any).monaco
+      const target = monaco.editor.getEditors().find((e: any) => el.contains(e.getContainerDomNode()))
+      target.setValue(value)
+    }, text)
   }
 
   async fillOpenAPISpecUrl(url: string): Promise<void> {
@@ -1072,6 +1076,8 @@ export class MCPRegistryPage extends BasePage {
    * Cancel client creation
    */
   async cancelCreation(): Promise<void> {
+    // A toast from the last action can sit over the Cancel button.
+    await this.dismissToasts()
     await this.cancelBtn.click()
     await expect(this.sheet).not.toBeVisible({ timeout: 5000 })
   }

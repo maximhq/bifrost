@@ -20,7 +20,7 @@
     "node-forge": "$node-forge",
     "flatted": "3.4.4",
     "underscore": "1.13.8",
-    "qs": "6.16.0",
+    "qs": "6.16.1",
     "jose": "4.15.9",
     "uuid": "11.1.1",
     "@faker-js/faker": "file:./faker-compat",

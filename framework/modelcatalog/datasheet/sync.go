@@ -30,6 +30,16 @@ var (
 	paramsFetchTimeout  = DefaultModelParametersTimeout
 )
 
+// NewHTTPClient builds the client for every catalog feed download (pricing,
+// model parameters, MCP library). It is a var, not a direct call to
+// network.NewPrivateNetworkHTTPClient, only so tests can wrap the transport:
+// the guarded client builds its own *http.Transport, so swapping
+// http.DefaultTransport no longer intercepts these fetches. Without this hook
+// every LoadConfig in transports/bifrost-http/lib tests downloads the full
+// public datasheets (~29MB), which took that package from minutes to ~35 min
+// under -race in CI. Production code must not reassign it.
+var NewHTTPClient = network.NewPrivateNetworkHTTPClient
+
 // SyncFromURL fetches the upstream pricing datasheet, persists it to the DB
 // (when configStore != nil), and refreshes the in-memory cache + derived
 // datasheet view. On URL failure it falls back to existing DB records when
@@ -299,7 +309,7 @@ func (s *Store) loadPricingFromURL(ctx context.Context) (map[string]Entry, error
 		}
 		// ValidateExternalURL screens the configured host once; the guarded
 		// client holds every connection and redirect hop to the same policy.
-		client := network.NewPrivateNetworkHTTPClient(DefaultPricingTimeout)
+		client := NewHTTPClient(DefaultPricingTimeout)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.URL(), nil)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create HTTP request: %w", err)

@@ -30,7 +30,7 @@ func TestOpenRouter(t *testing.T) {
 		TextModel:            "google/gemini-2.5-flash",
 		EmbeddingModel:       "qwen/qwen3-embedding-4b",
 		ReasoningModel:       "openai/gpt-oss-120b",
-		PromptCachingModel:   "anthropic/claude-sonnet-4", // Claude is the only OpenRouter model with explicit caching; its Responses half was broken until #6290
+		PromptCachingModel:   "anthropic/claude-sonnet-4.6", // Claude is the only OpenRouter model with explicit caching; its Responses half was broken until #6290
 		TranscriptionModel:   "openai/gpt-4o-mini-transcribe",
 		SpeechSynthesisModel: "minimax/speech-2.8-turbo",
 		DecisionModel:        "typesafe/jev-1.13",

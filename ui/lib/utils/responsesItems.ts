@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n";
 import type { ResponsesMessage } from "@/lib/types/logs";
 import { applyRedactionMapping } from "@/lib/utils/redaction";
 
@@ -42,7 +43,9 @@ function summarizeQueries(value: unknown, mapping?: Record<string, string>): str
 	const queries = value.filter((query): query is string => typeof query === "string" && query.trim().length > 0);
 	if (queries.length === 0) return undefined;
 	const first = truncateSummary(queries[0], mapping);
-	return queries.length > 1 ? `${first} +${queries.length - 1} more` : first;
+	return queries.length > 1
+		? i18n.t("responsesItems.queriesMore", { ns: "common", first, count: queries.length - 1, defaultValue: "{{first}} +{{count}} more" })
+		: first;
 }
 
 // firstDetail returns the first usable string among candidate fields, truncated for display.

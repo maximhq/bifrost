@@ -219,6 +219,16 @@ func (c ModelCaps) ReasoningBudgetRange(defaultMax int, fallback *BudgetControl)
 	return DefaultReasoningBudgetMin, defaultMax, false
 }
 
+// SupportsReasoningBudget reports whether the model accepts a token thinking
+// budget. Models that answer false take only an effort level, so a budget has to
+// be translated to the nearest level before it reaches the wire.
+func (c ModelCaps) SupportsReasoningBudget(fallback bool) bool {
+	if c.record != nil && c.record.SupportsReasoningBudget != nil {
+		return *c.record.SupportsReasoningBudget
+	}
+	return fallback
+}
+
 // CanDisableReasoning reports whether the model accepts an explicit "off".
 // Models that reject it need the thinking config omitted entirely.
 func (c ModelCaps) CanDisableReasoning(fallback bool) bool {

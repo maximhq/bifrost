@@ -555,6 +555,23 @@ func TestTracer_SetAttribute(t *testing.T) {
 
 // A span opened once its work has finished is backdated to when the work began, so it
 // exports with the work's real duration; its end time is left as EndSpan sets it.
+func TestTracer_MergeTraceDimensions(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	traceID := tracer.CreateTrace("")
+	tracer.SetTraceAttribute(traceID, schemas.TraceAttrDimensions, map[string]string{"team": "header"})
+	tracer.MergeTraceDimensions(traceID, map[string]string{"team": "vk", "cost_center": "cc-42"})
+	tracer.MergeTraceDimensions("missing-trace", map[string]string{"team": "vk"})
+
+	got := schemas.TraceDimensions(store.GetTrace(traceID).Attributes)
+	if got["team"] != "vk" || got["cost_center"] != "cc-42" || len(got) != 2 {
+		t.Errorf("dimensions = %v, want team=vk cost_center=cc-42", got)
+	}
+}
+
 func TestTracer_SetSpanStartTime(t *testing.T) {
 	store := NewTraceStore(5*time.Minute, nil)
 	defer store.Stop()

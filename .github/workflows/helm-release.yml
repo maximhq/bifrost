@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: write
       packages: write

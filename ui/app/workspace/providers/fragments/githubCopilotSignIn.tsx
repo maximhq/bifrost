@@ -4,6 +4,7 @@ import { getErrorMessage, usePollGithubCopilotSignInMutation, useStartGithubCopi
 import type { GithubCopilotDeviceCode } from "@/lib/types/config";
 import { Check, Copy, ExternalLink, Github, Loader2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 
 interface Props {
 	provider: string;
@@ -15,6 +16,8 @@ interface Props {
 // device flow (the browser cannot: GitHub sends no CORS headers); this shows the code to enter
 // on github.com, polls until the operator approves, and hands the token to the form.
 export function GithubCopilotSignIn({ provider, onToken }: Props) {
+	const { t } = useTranslation("models");
+	const { t: tc } = useTranslation("common");
 	const [startSignIn, { isLoading: isStarting }] = useStartGithubCopilotSignInMutation();
 	const [pollSignIn] = usePollGithubCopilotSignInMutation();
 	const [code, setCode] = useState<GithubCopilotDeviceCode | null>(null);
@@ -46,7 +49,7 @@ export function GithubCopilotSignIn({ provider, onToken }: Props) {
 					onToken(result.token);
 					setLogin(result.login || "");
 				} else {
-					setError(result.status === "expired" ? "The code expired. Start again." : "The sign-in was denied on GitHub.");
+					setError(result.status === "expired" ? t("providers.githubCopilot.codeExpired") : t("providers.githubCopilot.signInDenied"));
 				}
 			} catch (err) {
 				if (gen !== generation.current) return;
@@ -84,21 +87,28 @@ export function GithubCopilotSignIn({ provider, onToken }: Props) {
 					<li className="flex items-center gap-2">
 						<StepNumber n={1} />
 						<span>
-							Open{" "}
-							<a
-								href={code.verification_uri}
-								target="_blank"
-								rel="noopener noreferrer"
-								className="text-primary inline-flex items-center gap-1 hover:underline"
-								data-testid="copilot-sign-in-verification-link"
-							>
-								{code.verification_uri} <ExternalLink className="h-3 w-3" />
-							</a>
+							<Trans
+								t={t}
+								i18nKey="providers.githubCopilot.openLink"
+								components={{
+									link: (
+										<a
+											href={code.verification_uri}
+											target="_blank"
+											rel="noopener noreferrer"
+											className="text-primary inline-flex items-center gap-1 hover:underline"
+											data-testid="copilot-sign-in-verification-link"
+										>
+											{code.verification_uri} <ExternalLink className="h-3 w-3" />
+										</a>
+									),
+								}}
+							/>
 						</span>
 					</li>
 					<li className="flex items-center gap-2">
 						<StepNumber n={2} />
-						<span>Enter</span>
+						<span>{t("providers.githubCopilot.enter")}</span>
 						<code data-testid="copilot-sign-in-user-code" className="bg-muted rounded-sm px-2 py-0.5 font-mono text-base">
 							{code.user_code}
 						</code>
@@ -107,20 +117,20 @@ export function GithubCopilotSignIn({ provider, onToken }: Props) {
 							variant="ghost"
 							size="sm"
 							onClick={() => copy(code.user_code)}
-							aria-label="Copy code"
+							aria-label={t("providers.githubCopilot.copyCode")}
 							data-testid="copilot-sign-in-copy-code"
 						>
 							{copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
 						</Button>
-						<span>and approve access.</span>
+						<span>{t("providers.githubCopilot.approveAccess")}</span>
 					</li>
 					<li className="flex items-center gap-2">
 						<StepNumber n={3} />
 						<span className="text-muted-foreground inline-flex items-center gap-1">
-							<Loader2 className="h-3 w-3 animate-spin" /> Waiting for approval
+							<Loader2 className="h-3 w-3 animate-spin" /> {t("providers.githubCopilot.waitingForApproval")}
 						</span>
 						<Button type="button" variant="ghost" size="sm" onClick={cancel} data-testid="copilot-sign-in-cancel">
-							Cancel
+							{tc("cancel")}
 						</Button>
 					</li>
 				</ol>
@@ -132,11 +142,11 @@ export function GithubCopilotSignIn({ provider, onToken }: Props) {
 		<div className="space-y-2">
 			<Button type="button" variant="outline" onClick={start} disabled={isStarting} data-testid="copilot-sign-in-button">
 				{isStarting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Github className="h-4 w-4" />}
-				Sign in with GitHub
+				{t("providers.githubCopilot.signIn")}
 			</Button>
 			{login !== null && (
 				<p className="text-sm" data-testid="copilot-sign-in-status">
-					Signed in{login ? ` as @${login}` : ""}. Save the key to use the token.
+					{login ? t("providers.githubCopilot.signedInAs", { login }) : t("providers.githubCopilot.signedIn")}
 				</p>
 			)}
 			{error && (

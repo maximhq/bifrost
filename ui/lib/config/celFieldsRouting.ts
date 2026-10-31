@@ -4,7 +4,9 @@
  */
 
 import { getProviderLabel } from "@/lib/constants/logs";
+import i18n from "@/lib/i18n";
 import { COMPLEXITY_TIER_VALUES } from "@/lib/types/complexityRouter";
+import type { ParseKeys } from "i18next";
 
 export interface CELFieldDefinition {
 	name: string;
@@ -27,119 +29,181 @@ export interface CELFieldDefinition {
 	description?: string; // Helpful note for the user
 }
 
+type ModelsKey = ParseKeys<"models">;
+
+const COMPLEXITY_TIER_LABEL_KEYS: Record<(typeof COMPLEXITY_TIER_VALUES)[number], ModelsKey> = {
+	SIMPLE: "routing.complexityUi.tierSimple",
+	MEDIUM: "routing.complexityUi.tierMedium",
+	COMPLEX: "routing.complexityUi.tierComplex",
+};
+
+// Labels resolve through i18n when read (getters), so the shared field list follows the
+// active locale without every consumer having to thread a translator through.
+const tm = (key: ModelsKey, options?: Record<string, string>): string => i18n.t(key, { ns: "models", ...options });
+
+function opt(name: string, labelKey: ModelsKey): { name: string; label: string } {
+	return {
+		name,
+		get label(): string {
+			return tm(labelKey);
+		},
+	};
+}
+
+interface FieldTextKeys {
+	label: ModelsKey;
+	placeholder?: ModelsKey;
+	description?: ModelsKey;
+}
+
+function field(definition: Omit<CELFieldDefinition, "label" | "placeholder" | "description">, keys: FieldTextKeys): CELFieldDefinition {
+	return {
+		...definition,
+		get label(): string {
+			return tm(keys.label);
+		},
+		get placeholder(): string | undefined {
+			return keys.placeholder ? tm(keys.placeholder) : undefined;
+		},
+		get description(): string | undefined {
+			return keys.description ? tm(keys.description) : undefined;
+		},
+	};
+}
+
 export const baseRoutingFields: CELFieldDefinition[] = [
-	{
-		name: "model",
-		label: "Model",
-		placeholder: "e.g., gpt-4, claude-3-sonnet",
-		inputType: "text",
-		valueEditorType: (operator: string) =>
-			operator === "=" || operator === "!=" ? "select" : operator === "in" || operator === "notIn" ? "select" : "text",
-		operators: ["=", "!=", "in", "notIn", "contains", "beginsWith", "endsWith", "matches"],
-		defaultOperator: "=",
-	},
-	{
-		name: "provider",
-		label: "Provider",
-		placeholder: "Select provider",
-		inputType: "select",
-		valueEditorType: (operator: string) =>
-			operator === "matches" ? "text" : operator === "in" || operator === "notIn" ? "select" : "select",
-		operators: ["=", "!=", "in", "notIn", "matches", "null", "notNull"],
-		defaultOperator: "=",
-	},
-	{
-		name: "request_type",
-		label: "Request Type",
-		placeholder: "Select request type",
-		inputType: "select",
-		valueEditorType: (operator: string) =>
-			operator === "matches" ? "text" : operator === "in" || operator === "notIn" ? "select" : "select",
-		operators: ["=", "!=", "in", "notIn", "matches"],
-		defaultOperator: "=",
-		values: [
-			{ name: "text_completion", label: "Text Completion" },
-			{ name: "text_completion_stream", label: "Text Completion (Streaming)" },
-			{ name: "chat_completion", label: "Chat Completion" },
-			{ name: "chat_completion_stream", label: "Chat Completion (Streaming)" },
-			{ name: "responses", label: "Responses" },
-			{ name: "responses_stream", label: "Responses (Streaming)" },
-			{ name: "embedding", label: "Embeddings" },
-			{ name: "image_generation", label: "Image Generation" },
-			{ name: "image_generation_stream", label: "Image Generation (Streaming)" },
-			{ name: "image_edit", label: "Image Edit" },
-			{ name: "image_edit_stream", label: "Image Edit (Streaming)" },
-			{ name: "image_variation", label: "Image Variation" },
-			{ name: "speech", label: "Speech" },
-			{ name: "speech_stream", label: "Speech (Streaming)" },
-			{ name: "transcription", label: "Transcription" },
-			{ name: "transcription_stream", label: "Transcription (Streaming)" },
-			{ name: "count_tokens", label: "Count Tokens" },
-			{ name: "rerank", label: "Rerank" },
-			{ name: "decisions", label: "Decisions" },
-			{ name: "video_generation", label: "Video Generation" },
-		],
-		description:
-			"Filter rules by the type of API request (chat, text, embeddings, images, audio, etc.). Streaming and non-streaming requests are distinct types: select both to cover all requests of a kind.",
-	},
-	{
-		name: "headers",
-		label: "Header",
-		placeholder: "e.g., authorization, x-custom-header (use lowercase)",
-		inputType: "keyValue",
-		valueEditorType: "keyValue",
-		operators: ["=", "!=", "contains", "beginsWith", "endsWith", "matches", "null", "notNull"],
-		defaultOperator: "=",
-	},
-	{
-		name: "tokens_used",
-		label: "Tokens Used (%)",
-		placeholder: "e.g., 80",
-		inputType: "text",
-		valueEditorType: "number",
-		operators: ["=", "!=", ">", "<", ">=", "<="],
-		defaultOperator: ">=",
-		description: "Check token usage as percentage. Checked against max of model and provider configs.",
-	},
-	{
-		name: "request",
-		label: "Request (%)",
-		placeholder: "e.g., 80",
-		inputType: "text",
-		valueEditorType: "number",
-		operators: ["=", "!=", ">", "<", ">=", "<="],
-		defaultOperator: ">=",
-		description: "Check request usage as percentage. Checked against max of model and provider configs.",
-	},
-	{
-		name: "budget_used",
-		label: "Budget Used (%)",
-		placeholder: "e.g., 50",
-		inputType: "text",
-		valueEditorType: "number",
-		operators: ["=", "!=", ">", "<", ">=", "<="],
-		defaultOperator: ">=",
-		description: "Check budget usage as percentage. Checked against max of model and provider configs.",
-	},
-	{
-		name: "complexity_tier",
-		label: "Complexity Tier",
-		placeholder: "Select complexity tier",
-		inputType: "select",
-		valueEditorType: "select",
-		operators: ["=", "!=", "in", "notIn"],
-		defaultOperator: "=",
-		values: COMPLEXITY_TIER_VALUES.map((tier) => ({ name: tier, label: tier.charAt(0) + tier.slice(1).toLowerCase() })),
-	},
-	{
-		name: "params",
-		label: "Query Parameter",
-		placeholder: "e.g., api_key, user_id",
-		inputType: "keyValue",
-		valueEditorType: "keyValue",
-		operators: ["=", "!=", "contains", "beginsWith", "endsWith", "matches", "null", "notNull"],
-		defaultOperator: "=",
-	},
+	field(
+		{
+			name: "model",
+			inputType: "text",
+			valueEditorType: (operator: string) =>
+				operator === "=" || operator === "!=" ? "select" : operator === "in" || operator === "notIn" ? "select" : "text",
+			operators: ["=", "!=", "in", "notIn", "contains", "beginsWith", "endsWith", "matches"],
+			defaultOperator: "=",
+		},
+		{ label: "routing.cel.fields.model", placeholder: "routing.cel.placeholders.model" },
+	),
+	field(
+		{
+			name: "provider",
+			inputType: "select",
+			valueEditorType: (operator: string) =>
+				operator === "matches" ? "text" : operator === "in" || operator === "notIn" ? "select" : "select",
+			operators: ["=", "!=", "in", "notIn", "matches", "null", "notNull"],
+			defaultOperator: "=",
+		},
+		{ label: "routing.cel.fields.provider", placeholder: "routing.complexityUi.selectProvider" },
+	),
+	field(
+		{
+			name: "request_type",
+			inputType: "select",
+			valueEditorType: (operator: string) =>
+				operator === "matches" ? "text" : operator === "in" || operator === "notIn" ? "select" : "select",
+			operators: ["=", "!=", "in", "notIn", "matches"],
+			defaultOperator: "=",
+			values: [
+				opt("text_completion", "routing.cel.requestTypes.text_completion"),
+				opt("text_completion_stream", "routing.cel.requestTypes.text_completion_stream"),
+				opt("chat_completion", "routing.cel.requestTypes.chat_completion"),
+				opt("chat_completion_stream", "routing.cel.requestTypes.chat_completion_stream"),
+				opt("responses", "routing.cel.requestTypes.responses"),
+				opt("responses_stream", "routing.cel.requestTypes.responses_stream"),
+				opt("embedding", "routing.cel.requestTypes.embedding"),
+				opt("image_generation", "routing.cel.requestTypes.image_generation"),
+				opt("image_generation_stream", "routing.cel.requestTypes.image_generation_stream"),
+				opt("image_edit", "routing.cel.requestTypes.image_edit"),
+				opt("image_edit_stream", "routing.cel.requestTypes.image_edit_stream"),
+				opt("image_variation", "routing.cel.requestTypes.image_variation"),
+				opt("speech", "routing.cel.requestTypes.speech"),
+				opt("speech_stream", "routing.cel.requestTypes.speech_stream"),
+				opt("transcription", "routing.cel.requestTypes.transcription"),
+				opt("transcription_stream", "routing.cel.requestTypes.transcription_stream"),
+				opt("count_tokens", "routing.cel.requestTypes.count_tokens"),
+				opt("rerank", "routing.cel.requestTypes.rerank"),
+				opt("decisions", "routing.cel.requestTypes.decisions"),
+				opt("video_generation", "routing.cel.requestTypes.video_generation"),
+			],
+		},
+		{
+			label: "routing.cel.fields.requestType",
+			placeholder: "routing.cel.placeholders.requestType",
+			description: "routing.cel.descriptions.requestType",
+		},
+	),
+	field(
+		{
+			name: "headers",
+			inputType: "keyValue",
+			valueEditorType: "keyValue",
+			operators: ["=", "!=", "contains", "beginsWith", "endsWith", "matches", "null", "notNull"],
+			defaultOperator: "=",
+		},
+		{ label: "routing.cel.fields.header", placeholder: "routing.cel.placeholders.header" },
+	),
+	field(
+		{
+			name: "tokens_used",
+			inputType: "text",
+			valueEditorType: "number",
+			operators: ["=", "!=", ">", "<", ">=", "<="],
+			defaultOperator: ">=",
+		},
+		{
+			label: "routing.cel.fields.tokensUsed",
+			placeholder: "routing.cel.placeholders.percentExample80",
+			description: "routing.cel.descriptions.tokensUsed",
+		},
+	),
+	field(
+		{
+			name: "request",
+			inputType: "text",
+			valueEditorType: "number",
+			operators: ["=", "!=", ">", "<", ">=", "<="],
+			defaultOperator: ">=",
+		},
+		{
+			label: "routing.cel.fields.request",
+			placeholder: "routing.cel.placeholders.percentExample80",
+			description: "routing.cel.descriptions.request",
+		},
+	),
+	field(
+		{
+			name: "budget_used",
+			inputType: "text",
+			valueEditorType: "number",
+			operators: ["=", "!=", ">", "<", ">=", "<="],
+			defaultOperator: ">=",
+		},
+		{
+			label: "routing.cel.fields.budgetUsed",
+			placeholder: "routing.cel.placeholders.percentExample50",
+			description: "routing.cel.descriptions.budgetUsed",
+		},
+	),
+	field(
+		{
+			name: "complexity_tier",
+			inputType: "select",
+			valueEditorType: "select",
+			operators: ["=", "!=", "in", "notIn"],
+			defaultOperator: "=",
+			values: COMPLEXITY_TIER_VALUES.map((tier) => opt(tier, COMPLEXITY_TIER_LABEL_KEYS[tier])),
+		},
+		{ label: "routing.cel.fields.complexityTier", placeholder: "routing.cel.placeholders.complexityTier" },
+	),
+	field(
+		{
+			name: "params",
+			inputType: "keyValue",
+			valueEditorType: "keyValue",
+			operators: ["=", "!=", "contains", "beginsWith", "endsWith", "matches", "null", "notNull"],
+			defaultOperator: "=",
+		},
+		{ label: "routing.cel.fields.queryParameter", placeholder: "routing.cel.placeholders.queryParameter" },
+	),
 ];
 
 /**
@@ -155,7 +219,7 @@ export function getRoutingFields(providers: string[] = [], models: string[] = []
 					name: provider,
 					label: getProviderLabel(provider),
 				}))
-			: [{ name: "_no_providers", label: "No providers configured", disabled: true }];
+			: [{ name: "_no_providers", label: tm("routing.cel.noProvidersConfigured"), disabled: true }];
 
 	// Create model field values
 	const modelValues =
@@ -168,14 +232,14 @@ export function getRoutingFields(providers: string[] = [], models: string[] = []
 
 	// Create metric options for scope input: providers + models
 	const scopeOptions = [
-		{ name: "", label: "(provider-level)" }, // Empty scope for provider-level
+		{ name: "", label: tm("routing.cel.providerLevel") }, // Empty scope for provider-level
 		...providers.map((provider) => ({
 			name: provider,
-			label: `${provider} (provider)`,
+			label: tm("routing.cel.scopeProvider", { provider }),
 		})),
 		...models.map((model) => ({
 			name: model,
-			label: `${model} (model)`,
+			label: tm("routing.cel.scopeModel", { model }),
 		})),
 	];
 

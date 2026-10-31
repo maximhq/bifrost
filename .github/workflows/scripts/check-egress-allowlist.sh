@@ -39,11 +39,30 @@ python3 - "${FILES[@]}" <<'PY'
 import sys
 import yaml
 
-# Hosts apt-get needs on a GitHub-hosted ubuntu runner. azure.archive.ubuntu.com
-# is the Azure-local mirror the runner images point at (plain HTTP), and
+# Hosts apt-get needs on a GitHub-hosted ubuntu runner once apt-sources-https.sh
+# has moved the sources to HTTPS. The images point at the Azure-local mirror over
+# plain HTTP, which serves no HTTPS, so the script swaps it for archive.ubuntu.com;
 # esm.ubuntu.com serves the Expanded Security Maintenance lists apt refreshes
 # alongside it.
-REQUIRED_APT_HOSTS = ("azure.archive.ubuntu.com:80", "esm.ubuntu.com:443")
+REQUIRED_APT_HOSTS = ("archive.ubuntu.com:443", "esm.ubuntu.com:443")
+# arm64 Ubuntu pulls from the ports mirror (ubuntu-ports), never the archive one;
+# the arm-64-2cpu-8gb image's apt sources point straight at ports.ubuntu.com.
+REQUIRED_ARM64_APT_HOSTS = ("ports.ubuntu.com:443",)
+# install-arm64-runner-deps.sh runs apt-get itself, so a step calling it never
+# shows "apt-get" here; its `docker` component also adds Docker's apt repo.
+ARM64_INSTALLER = "install-arm64-runner-deps.sh"
+# Installers that run apt-get themselves, and switch the sources to HTTPS first.
+APT_INSTALLERS = (ARM64_INSTALLER, "install-cross-compilers.sh")
+APT_SOURCES_HTTPS = "apt-sources-https.sh"
+# Docker's apt repo, plus apt's SRV probe for it, and the sigstore TUF root that
+# the freshly installed dockerd fetches when buildx bootstraps its builder.
+DOCKER_HOSTS = (
+    "download.docker.com:443",
+    "_https._tcp.download.docker.com:443",
+    "tuf-repo-cdn.sigstore.dev:443",
+)
+# The `aws` component pip-installs awscli into a venv.
+PYPI_HOSTS = ("pypi.org:443", "files.pythonhosted.org:443")
 
 failures = []
 checked = 0
@@ -57,13 +76,20 @@ for path in sys.argv[1:]:
             continue
         steps = job.get("steps") or []
 
-        uses_apt = any(
-            "apt-get" in (step.get("run") or "")
-            for step in steps
-            if isinstance(step, dict)
-        )
+        runs = [step.get("run") or "" for step in steps if isinstance(step, dict)]
+        uses_apt = any("apt-get" in run or any(i in run for i in APT_INSTALLERS) for run in runs)
         if not uses_apt:
             continue
+        installs_docker = any(
+            ARM64_INSTALLER in line and "docker" in line.split(ARM64_INSTALLER, 1)[1].split()
+            for run in runs
+            for line in run.splitlines()
+        )
+        installs_aws = any(
+            ARM64_INSTALLER in line and "aws" in line.split(ARM64_INSTALLER, 1)[1].split()
+            for run in runs
+            for line in run.splitlines()
+        )
 
         harden = next(
             (
@@ -83,13 +109,29 @@ for path in sys.argv[1:]:
 
         checked += 1
         allowed = set((with_block.get("allowed-endpoints") or "").split())
-        missing = [host for host in REQUIRED_APT_HOSTS if host not in allowed]
+        # An inline apt-get update must switch the sources to HTTPS first, in the
+        # same step: otherwise apt reaches for the plain-HTTP mirror, which no
+        # allowlist carries any more, and fails as an opaque fetch timeout.
+        for run in runs:
+            update = run.find("apt-get update")
+            if update != -1 and run.find(APT_SOURCES_HTTPS) not in range(0, update):
+                failures.append((path, job_name, [f"{APT_SOURCES_HTTPS} before apt-get update"]))
+        plain = sorted(e for e in allowed if e.endswith("ubuntu.com:80"))
+        if plain:
+            failures.append((path, job_name, [f"no plain-HTTP apt host ({', '.join(plain)})"]))
+        is_arm = "arm" in str(job.get("runs-on") or "").lower()
+        required = REQUIRED_ARM64_APT_HOSTS if is_arm else REQUIRED_APT_HOSTS
+        if installs_docker:
+            required += DOCKER_HOSTS
+        if installs_aws:
+            required += PYPI_HOSTS
+        missing = [host for host in required if host not in allowed]
         if missing:
             failures.append((path, job_name, missing))
 
 for path, job_name, missing in failures:
     print(f"FAIL {path} :: job '{job_name}' runs apt-get under egress-policy: block "
-          f"but omits {', '.join(missing)}", file=sys.stderr)
+          f"but needs {', '.join(missing)}", file=sys.stderr)
 
 if failures:
     print(f"\n{len(failures)} of {checked} apt-using blocked-egress job(s) have an "

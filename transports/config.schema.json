@@ -6072,10 +6072,11 @@
         "type": {
           "type": "string",
           "enum": [
-            "http"
+            "http",
+            "socks5"
           ],
           "default": "http",
-          "description": "Proxy type. Only http is supported."
+          "description": "Proxy type: http (an http:// or https:// proxy URL) or socks5 (a socks5:// or socks5h:// proxy URL). A bare host:port takes its scheme from the type."
         },
         "url": {
           "type": "string",

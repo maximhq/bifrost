@@ -2099,6 +2099,249 @@ func TestComputeImageCost_TokenBasedWithDetails(t *testing.T) {
 	assert.InDelta(t, 0.025, cost, 1e-12)
 }
 
+func TestComputeImageCost_UnattributedOutputTokensBillAsText(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		OutputCostPerToken:      bifrost.Ptr(0.000003),
+		OutputCostPerImageToken: bifrost.Ptr(0.00006),
+	}
+	// Gemini reports thinking tokens in candidatesTokenCount but not in the per-modality details
+	usage := &schemas.ImageUsage{
+		OutputTokens:        1257,
+		TotalTokens:         1265,
+		OutputTokensDetails: &schemas.ImageTokenDetails{ImageTokens: 1120},
+	}
+	cost := computeImageCostTotal(&p, usage, "", "", serviceTier{})
+	// 1120*0.00006 + 137*0.000003
+	assert.InDelta(t, 0.067611, cost, 1e-12)
+}
+
+func TestComputeImageCost_ReasoningTokensBillWhenOutputBelowImageDetail(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		OutputCostPerToken:      bifrost.Ptr(0.000003),
+		OutputCostPerImageToken: bifrost.Ptr(0.00006),
+	}
+	// Live gemini-3.1-flash-image usage: 318 candidates + 372 thoughts, yet 1120 IMAGE tokens in the details
+	usage := &schemas.ImageUsage{
+		OutputTokens:        690,
+		TotalTokens:         698,
+		OutputTokensDetails: &schemas.ImageTokenDetails{ImageTokens: 1120, ReasoningTokens: 372},
+	}
+	cost := computeImageCostTotal(&p, usage, "", "", serviceTier{})
+	// 1120*0.00006 + 372*0.000003
+	assert.InDelta(t, 0.068316, cost, 1e-12)
+}
+
+func TestComputeImageCost_TextDetailAndReasoningBothBillAsText(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		OutputCostPerToken:      bifrost.Ptr(0.000003),
+		OutputCostPerImageToken: bifrost.Ptr(0.00006),
+	}
+	// 418 candidates (100 TEXT, rest below the 1120 IMAGE detail) + 372 thoughts
+	usage := &schemas.ImageUsage{
+		OutputTokens:        790,
+		OutputTokensDetails: &schemas.ImageTokenDetails{ImageTokens: 1120, TextTokens: 100, ReasoningTokens: 372},
+	}
+	cost := computeImageCostTotal(&p, usage, "", "", serviceTier{})
+	// 1120*0.00006 + (100+372)*0.000003
+	assert.InDelta(t, 0.068616, cost, 1e-12)
+}
+
+func TestComputeImageCost_ReasoningOnlyDetailsKeepTokenPricing(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		OutputCostPerToken:      bifrost.Ptr(0.000003),
+		OutputCostPerImageToken: bifrost.Ptr(0.00006),
+		OutputCostPerImage:      bifrost.Ptr(0.045),
+	}
+	// Gemini usage with thoughtsTokenCount but no candidatesTokensDetails: 1120 candidates + 300 thoughts
+	usage := &schemas.ImageUsage{
+		OutputTokens:        1420,
+		OutputTokensDetails: &schemas.ImageTokenDetails{ReasoningTokens: 300},
+	}
+	cost := computeImageCostTotal(&p, usage, "", "", serviceTier{})
+	// 1120*0.00006 + 300*0.000003, not the 0.045 per-image fallback
+	assert.InDelta(t, 0.0681, cost, 1e-12)
+}
+
+func TestComputeImageCost_ReasoningWithoutImageTokenRateKeepsPerImageCharge(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		OutputCostPerToken: bifrost.Ptr(0.000003),
+		OutputCostPerImage: bifrost.Ptr(0.045),
+	}
+	// Two images, 1120 candidates, 300 thoughts, and a row with no image-token rate
+	usage := &schemas.ImageUsage{
+		OutputTokens:        1420,
+		OutputTokensDetails: &schemas.ImageTokenDetails{NImages: 2, ReasoningTokens: 300},
+	}
+	cost := computeImageCostTotal(&p, usage, "", "", serviceTier{})
+	// 2*0.045 + 300*0.000003
+	assert.InDelta(t, 0.0909, cost, 1e-12)
+}
+
+func TestComputeImageCost_ImageCountOnlyDetailsKeepPerImagePricing(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		OutputCostPerImageToken: bifrost.Ptr(0.00006),
+		OutputCostPerImage:      bifrost.Ptr(0.045),
+	}
+	usage := &schemas.ImageUsage{
+		OutputTokens:        1120,
+		OutputTokensDetails: &schemas.ImageTokenDetails{NImages: 2},
+	}
+	assert.InDelta(t, 0.09, computeImageCostTotal(&p, usage, "", "", serviceTier{}), 1e-12)
+}
+
+func TestComputeImageCost_ReasoningTokensNotDoubleCounted(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		OutputCostPerToken:      bifrost.Ptr(0.000003),
+		OutputCostPerImageToken: bifrost.Ptr(0.00006),
+	}
+	// Typed path: OutputTokens already holds candidates (1120 image + 135) plus 283 thoughts
+	usage := &schemas.ImageUsage{
+		OutputTokens:        1538,
+		OutputTokensDetails: &schemas.ImageTokenDetails{ImageTokens: 1120, ReasoningTokens: 283},
+	}
+	cost := computeImageCostTotal(&p, usage, "", "", serviceTier{})
+	// 1120*0.00006 + 418*0.000003
+	assert.InDelta(t, 0.068454, cost, 1e-12)
+}
+
+// geminiFlashImageStore holds only the image_generation row, as the datasheet ships gemini-3.1-flash-image.
+func geminiFlashImageStore() *Store {
+	return testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gemini-3.1-flash-image", "gemini", "image_generation"): {
+			Model: "gemini-3.1-flash-image", Provider: "gemini", Mode: "image_generation",
+			InputCostPerToken:       bifrost.Ptr(0.0000005),
+			OutputCostPerToken:      bifrost.Ptr(0.000003),
+			OutputCostPerImageToken: bifrost.Ptr(0.00006),
+			OutputCostPerImage:      bifrost.Ptr(0.045),
+		},
+	})
+}
+
+func TestCalculateCost_ImageModelOverResponsesUsesImageRow(t *testing.T) {
+	imageTokens := 1120
+	resp := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+		Usage: &schemas.ResponsesResponseUsage{
+			InputTokens:         8,
+			OutputTokens:        1403,
+			TotalTokens:         1411,
+			OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{ImageTokens: &imageTokens},
+		},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ResponsesRequest,
+			RoutingInfo: routingInfoFor(schemas.Gemini, "gemini-3.1-flash-image"),
+		},
+	}}
+	// 8*0.0000005 + 283*0.000003 + 1120*0.00006
+	assert.InDelta(t, 0.068053, geminiFlashImageStore().CalculateCost(resp, nil), 1e-12)
+}
+
+func TestCalculateCost_ImageModelOverChatUsesImageRow(t *testing.T) {
+	imageTokens := 1120
+	resp := makeChatResponse(schemas.Gemini, "gemini-3.1-flash-image", &schemas.BifrostLLMUsage{
+		PromptTokens:            8,
+		CompletionTokens:        1120,
+		TotalTokens:             1128,
+		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{ImageTokens: &imageTokens},
+	})
+	assert.InDelta(t, 0.067204, geminiFlashImageStore().CalculateCost(resp, nil), 1e-12)
+}
+
+func TestComputeTextCost_OutputImageTokensUseImageRate(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		InputCostPerToken:       bifrost.Ptr(0.0000005),
+		OutputCostPerToken:      bifrost.Ptr(0.000003),
+		OutputCostPerImageToken: bifrost.Ptr(0.00006),
+	}
+	imageTokens := 1120
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:            8,
+		CompletionTokens:        1403,
+		TotalTokens:             1411,
+		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{ImageTokens: &imageTokens},
+	}
+	cost := computeTextCost(&p, usage, serviceTier{})
+	require.NotNil(t, cost.OutputCostDetails)
+	assert.InDelta(t, 0.0672, cost.OutputCostDetails.ImageCost, 1e-12)
+	assert.InDelta(t, 0.000849, cost.OutputCostDetails.TextCost, 1e-12)
+	assert.InDelta(t, 0.068053, cost.TotalCost, 1e-12)
+}
+
+func TestComputeTextCost_OutputImageTokensWithoutImageRateStayText(t *testing.T) {
+	p := chatPricing(0.0000005, 0.000003)
+	imageTokens := 1120
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:            8,
+		CompletionTokens:        1403,
+		TotalTokens:             1411,
+		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{ImageTokens: &imageTokens},
+	}
+	cost := computeTextCost(&p, usage, serviceTier{})
+	assert.InDelta(t, 8*0.0000005+1403*0.000003, cost.TotalCost, 1e-12)
+	assert.Zero(t, cost.OutputCostDetails.ImageCost)
+}
+
+func TestCalculateCost_VertexPrefixedImageModelOverChatUsesImageRow(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gemini-3.1-flash-image", "vertex", "image_generation"): {
+			Model: "gemini-3.1-flash-image", Provider: "vertex", Mode: "image_generation",
+			InputCostPerToken:       bifrost.Ptr(0.0000005),
+			OutputCostPerToken:      bifrost.Ptr(0.000003),
+			OutputCostPerImageToken: bifrost.Ptr(0.00006),
+		},
+	})
+	imageTokens := 1120
+	resp := makeChatResponse(schemas.Vertex, "google/gemini-3.1-flash-image", &schemas.BifrostLLMUsage{
+		PromptTokens:            8,
+		CompletionTokens:        1120,
+		TotalTokens:             1128,
+		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{ImageTokens: &imageTokens},
+	})
+	assert.InDelta(t, 0.067204, s.CalculateCost(resp, nil), 1e-12)
+}
+
+func TestCalculateBatchCostDetails_ImageRowFallbackStaysUnpriced(t *testing.T) {
+	// Batch settlement has no image-token batch rate, so the chat/responses image fallback must not price the row as text
+	s := geminiFlashImageStore()
+	imageTokens := 1120
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:            8,
+		CompletionTokens:        1120,
+		TotalTokens:             1128,
+		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{ImageTokens: &imageTokens},
+	}
+	for _, rt := range []schemas.RequestType{schemas.ChatCompletionRequest, schemas.ResponsesRequest} {
+		details := s.CalculateBatchCostDetailsForUsage(usage, schemas.Gemini, "gemini-3.1-flash-image", rt, nil)
+		assert.False(t, details.Priced, "request type %s", rt)
+		assert.Zero(t, details.Cost, "request type %s", rt)
+	}
+}
+
+func TestCalculateBatchCostDetails_ImageRowFallbackKeepsOverrideOnlyPricing(t *testing.T) {
+	// Before the image fallback, a chat override for an image-only model priced batch rows on its own
+	s := geminiFlashImageStore()
+	providerID := "gemini"
+	require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{{
+		ID:               "flash-image-chat-batch",
+		ScopeKind:        string(ScopeKindProvider),
+		ProviderID:       &providerID,
+		MatchType:        string(MatchTypeExact),
+		Pattern:          "gemini-3.1-flash-image",
+		RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+		PricingPatchJSON: `{"input_cost_per_token_batches":0.000001,"output_cost_per_token_batches":0.00002}`,
+	}}))
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 100, CompletionTokens: 1000, TotalTokens: 1100}
+	details := s.CalculateBatchCostDetailsForUsage(usage, schemas.Gemini, "gemini-3.1-flash-image", schemas.ChatCompletionRequest, nil)
+	require.True(t, details.Priced)
+	// Override rates only, not the catalog image row: 100*0.000001 + 1000*0.00002
+	assert.InDelta(t, 0.0201, details.Cost, 1e-12)
+}
+
+func TestCalculateCost_TextModelMissStaysUnpriced(t *testing.T) {
+	// The image_generation fallback must not invent a price for a model with no row at all
+	resp := makeChatResponse(schemas.Gemini, "gemini-unknown", &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 10, TotalTokens: 20})
+	assert.Zero(t, geminiFlashImageStore().CalculateCost(resp, nil))
+}
+
 func TestComputeImageCost_NilUsage(t *testing.T) {
 	p := configstoreTables.TableModelPricing{OutputCostPerImage: new(0.05)}
 	assert.Equal(t, 0.0, computeImageCostTotal(&p, nil, "", "", serviceTier{}))
@@ -7411,4 +7654,56 @@ func BenchmarkComputeTextCost_VoiceLiveAudio(b *testing.B) {
 	for b.Loop() {
 		_ = computeTextCost(&p, usage, serviceTier{voiceLive: true})
 	}
+}
+
+func BenchmarkComputeTextCost_OutputImageTokens(b *testing.B) {
+	p := chatPricing(0.0000005, 0.000003)
+	p.OutputCostPerImageToken = bifrost.Ptr(0.00006)
+	imageTokens := 1120
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:            8,
+		CompletionTokens:        1403,
+		TotalTokens:             1411,
+		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{ImageTokens: &imageTokens},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = computeTextCost(&p, usage, serviceTier{})
+	}
+}
+
+// BenchmarkCalculateCost_ImageModelFallback covers the ordinary text lookup (own chat row) next to an
+// image-only model priced over Responses, which walks every text lookup before the image_generation row.
+func BenchmarkCalculateCost_ImageModelFallback(b *testing.B) {
+	store := geminiFlashImageStore()
+	store.pricingData[makeKey("gemini-2.5-flash", "gemini", "chat")] = configstoreTables.TableModelPricing{
+		Model: "gemini-2.5-flash", Provider: "gemini", Mode: "chat",
+		InputCostPerToken: bifrost.Ptr(0.0000003), OutputCostPerToken: bifrost.Ptr(0.0000025),
+	}
+	textResp := makeChatResponse(schemas.Gemini, "gemini-2.5-flash", &schemas.BifrostLLMUsage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150})
+	imageTokens := 1120
+	imageResp := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+		Usage: &schemas.ResponsesResponseUsage{
+			InputTokens:         8,
+			OutputTokens:        1403,
+			TotalTokens:         1411,
+			OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{ImageTokens: &imageTokens},
+		},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ResponsesRequest,
+			RoutingInfo: routingInfoFor(schemas.Gemini, "gemini-3.1-flash-image"),
+		},
+	}}
+	b.Run("text_model", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = store.CalculateCost(textResp, nil)
+		}
+	})
+	b.Run("image_model_over_responses", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = store.CalculateCost(imageResp, nil)
+		}
+	})
 }
