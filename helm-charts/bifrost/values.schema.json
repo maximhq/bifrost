@@ -9067,6 +9067,15 @@
                 "type": "string"
               },
               "description": "OAuth scopes to request."
+            },
+            "resource": {
+              "type": "string",
+              "description": "OAuth resource indicator, RFC 8707 (optional — discovered from the MCP server's protected resource metadata when omitted). Renders into resource."
+            },
+            "useClientMetadataDocument": {
+              "type": "boolean",
+              "default": false,
+              "description": "Register with Bifrost's Client ID Metadata Document even if the authorization server does not advertise support. Requires Bifrost on a public HTTPS address; cannot be combined with clientId. When off, the document is still used automatically wherever the server advertises support. Renders into use_client_metadata_document."
             }
           },
           "additionalProperties": false
