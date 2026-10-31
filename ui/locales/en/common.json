@@ -140,6 +140,10 @@
 	},
 	"failedToLoadMoreEntities": "Failed to load more {{entity}}",
 	"validation": {
+		"modeIsRequired": "Mode is required",
+		"valueMustBeAPositiveWholeNumber": "Must be a positive whole number",
+		"mustBeAJsonObject": "Must be a JSON object",
+		"providerCannotBePatched": "provider cannot be patched; it identifies the entry",
 		"customProviderNameIsRequired": "Custom provider name is required",
 		"endpointIsRequired": "Endpoint is required",
 		"clientIdClientSecretAndTenantIdAreAllRequired": "Client ID, Client Secret, and Tenant ID are all required for Entra ID authentication",

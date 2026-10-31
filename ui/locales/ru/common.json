@@ -362,6 +362,10 @@
 		"removeAria": "Удалить {{label}}"
 	},
 	"validation": {
+		"modeIsRequired": "Режим обязателен",
+		"valueMustBeAPositiveWholeNumber": "Должно быть целым положительным числом",
+		"mustBeAJsonObject": "Должен быть объект JSON",
+		"providerCannotBePatched": "provider нельзя изменить: он определяет запись",
 		"customProviderNameIsRequired": "Укажите название пользовательского провайдера",
 		"endpointIsRequired": "Укажите конечную точку",
 		"clientIdClientSecretAndTenantIdAreAllRequired": "Для аутентификации Entra ID необходимо указать Client ID, Client Secret и Tenant ID",

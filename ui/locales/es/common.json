@@ -344,6 +344,10 @@
 		"removeAria": "Quitar {{label}}"
 	},
 	"validation": {
+		"modeIsRequired": "El modo es obligatorio",
+		"valueMustBeAPositiveWholeNumber": "Debe ser un número entero positivo",
+		"mustBeAJsonObject": "Debe ser un objeto JSON",
+		"providerCannotBePatched": "provider no se puede modificar; identifica la entrada",
 		"customProviderNameIsRequired": "El nombre del proveedor personalizado es obligatorio",
 		"endpointIsRequired": "El punto final es obligatorio",
 		"clientIdClientSecretAndTenantIdAreAllRequired": "El ID de cliente, el secreto de cliente y el ID de inquilino son obligatorios para la autenticación con Entra ID",

@@ -344,6 +344,10 @@
 		"removeAria": "Rimuovi {{label}}"
 	},
 	"validation": {
+		"modeIsRequired": "La modalità è obbligatoria",
+		"valueMustBeAPositiveWholeNumber": "Deve essere un numero intero positivo",
+		"mustBeAJsonObject": "Deve essere un oggetto JSON",
+		"providerCannotBePatched": "provider non può essere modificato; identifica la voce",
 		"customProviderNameIsRequired": "Il nome del provider personalizzato è obbligatorio",
 		"endpointIsRequired": "L'endpoint è obbligatorio",
 		"clientIdClientSecretAndTenantIdAreAllRequired": "Per l'autenticazione Entra ID sono obbligatori Client ID, Client Secret e Tenant ID",

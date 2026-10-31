@@ -14,6 +14,7 @@ import {
 	Construction,
 	Database,
 	DatabaseZap,
+	FileSpreadsheet,
 	Flag,
 	FolderGit,
 	Gavel,
@@ -50,8 +51,8 @@ import {
 	Users,
 	Wallet,
 	WalletCards,
-	Webhook,
 	Waypoints,
+	Webhook,
 } from "lucide-react";
 
 import { WarpIcon } from "@/components/ui/icons";
@@ -312,6 +313,14 @@ export function useNavItems(): NavItem[] {
 						url: "/workspace/custom-pricing/overrides",
 						icon: SlidersHorizontal,
 						hasAccess: hasSettingsAccess,
+					},
+					{
+						id: "models.datasheet",
+						testId: "datasheet",
+						title: t("nav.datasheet"),
+						url: "/workspace/datasheet-editor",
+						icon: FileSpreadsheet,
+						hasAccess: hasModelProvidersAccess,
 					},
 					{
 						id: "models.settings",

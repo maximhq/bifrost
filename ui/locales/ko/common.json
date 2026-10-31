@@ -344,6 +344,10 @@
 		"removeAria": "{{label}} 제거"
 	},
 	"validation": {
+		"modeIsRequired": "모드는 필수입니다",
+		"valueMustBeAPositiveWholeNumber": "양의 정수여야 합니다",
+		"mustBeAJsonObject": "JSON 객체여야 합니다",
+		"providerCannotBePatched": "provider는 항목을 식별하므로 패치할 수 없습니다",
 		"customProviderNameIsRequired": "커스텀 프로바이더 이름은 필수예요",
 		"endpointIsRequired": "엔드포인트는 필수예요",
 		"clientIdClientSecretAndTenantIdAreAllRequired": "Entra ID 인증에는 클라이언트 ID, 클라이언트 시크릿, 테넌트 ID가 모두 필요해요",
