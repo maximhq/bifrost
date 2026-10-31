@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -24,6 +25,8 @@ import (
 )
 
 var defaultGeminiImageURLSchemes = []string{"http", "https"}
+
+var errUnresolvedAudioURL = errors.New("audio URL must be resolved before conversion")
 
 // isGemini3Plus returns true if the model is Gemini 3.0 or higher.
 // Uses simple string operations for hot path performance.
@@ -2301,6 +2304,80 @@ func addSpeechConfigToGenerationConfig(config *GenerationConfig, voiceConfig *sc
 	config.SpeechConfig = &speechConfig
 }
 
+// ResolveChatAudioURLs returns request with URL-only input audio replaced by inline
+// data. It does network I/O, so provider methods call it before
+// ToGeminiChatCompletionRequest and the converter stays pure. A request with no
+// URL-only audio comes back unchanged, with no allocation.
+func ResolveChatAudioURLs(ctx context.Context, request *schemas.BifrostChatRequest) (*schemas.BifrostChatRequest, error) {
+	if request == nil || !slices.ContainsFunc(request.Input, chatMessageHasAudioURL) {
+		return request, nil
+	}
+	input, err := resolveAudioURLs(ctx, request.Input)
+	if err != nil {
+		return nil, err
+	}
+	// The converter normalizes Model in place and callers read it back for the
+	// upstream URL, so it has to change on their request and not only on this copy.
+	request.Model = NormalizeModelName(request.Model)
+	resolved := *request
+	resolved.Input = input
+	return &resolved, nil
+}
+
+func chatMessageHasAudioURL(msg schemas.ChatMessage) bool {
+	if msg.Content == nil {
+		return false
+	}
+	// The converter flattens tool result media to text, so that audio is never
+	// sent and a dead URL must not fail the request.
+	if msg.Role == schemas.ChatMessageRoleTool && msg.ChatToolMessage != nil {
+		return false
+	}
+	for i := range msg.Content.ContentBlocks {
+		if audio := msg.Content.ContentBlocks[i].InputAudio; audio != nil && audio.Data == "" && audio.URL != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveAudioURLs returns messages with URL-only input audio downloaded into Data.
+// It returns messages itself when nothing needs downloading, and otherwise copies
+// only the messages that change, so a retry still sees the original request.
+func resolveAudioURLs(ctx context.Context, messages []schemas.ChatMessage) ([]schemas.ChatMessage, error) {
+	if !slices.ContainsFunc(messages, chatMessageHasAudioURL) {
+		return messages, nil
+	}
+
+	resolved := slices.Clone(messages)
+	for msgIndex := range resolved {
+		if !chatMessageHasAudioURL(resolved[msgIndex]) {
+			continue
+		}
+
+		content := *resolved[msgIndex].Content
+		content.ContentBlocks = slices.Clone(content.ContentBlocks)
+		resolved[msgIndex].Content = &content
+
+		for blockIndex := range content.ContentBlocks {
+			block := &content.ContentBlocks[blockIndex]
+			if block.InputAudio == nil || block.InputAudio.Data != "" || block.InputAudio.URL == "" {
+				continue
+			}
+
+			audio := *block.InputAudio
+			audioData, err := providerUtils.DownloadURLToBase64(ctx, audio.URL)
+			if err != nil {
+				return nil, fmt.Errorf("failed to download audio from URL: %w", err)
+			}
+			audio.Data = audioData
+			block.InputAudio = &audio
+		}
+	}
+
+	return resolved, nil
+}
+
 // inlineGeminiChatSystemReminder is the Chat Completions twin of inlineGeminiSystemReminder: a
 // mid-conversation role:"system" chat message rendered as a user turn, each text wrapped in the
 // <system-reminder> envelope, kept at its original position. Text-only, like the systemInstruction
@@ -2589,6 +2666,9 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImage
 							})
 						}
 					} else if block.InputAudio != nil {
+						if block.InputAudio.Data == "" && block.InputAudio.URL != "" {
+							return nil, nil, errUnresolvedAudioURL
+						}
 						// Decode the audio data (handles both standard and URL-safe base64)
 						decodedData, err := decodeBase64StringToBytes(block.InputAudio.Data)
 						if err != nil || len(decodedData) == 0 {

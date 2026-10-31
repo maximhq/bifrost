@@ -243,7 +243,7 @@ func vertexConvertRequestsToJSONL(ctx *schemas.BifrostContext, requests []schema
 		// Gemini/Vertex bodies pass through verbatim so caller-supplied fields (tools, toolConfig,
 		// labels, cachedContent, ...) are not dropped by the lossy struct conversion.
 		if _, isOpenAI := body["messages"]; isOpenAI {
-			geminiReq, err := gemini.ToGeminiBatchGenerateContentRequest(body)
+			geminiReq, err := gemini.ToGeminiBatchGenerateContentRequestWithContext(ctx, body)
 			if err != nil {
 				return nil, fmt.Errorf("failed to convert batch request item %d (custom_id %q): %w", i, item.CustomID, err)
 			}

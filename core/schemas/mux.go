@@ -244,6 +244,7 @@ func (cm *ChatMessage) ToResponsesToolMessage() *ResponsesMessage {
 					}
 					respBlocks[i].Audio = &ResponsesInputMessageContentBlockAudio{
 						Data:   block.InputAudio.Data,
+						URL:    block.InputAudio.URL,
 						Format: format,
 					}
 				}
@@ -681,6 +682,7 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 					}
 					rb.Audio = &ResponsesInputMessageContentBlockAudio{
 						Data:   block.InputAudio.Data,
+						URL:    block.InputAudio.URL,
 						Format: format,
 					}
 				}
@@ -752,6 +754,7 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 						}
 						respBlocks[i].Audio = &ResponsesInputMessageContentBlockAudio{
 							Data:   block.InputAudio.Data,
+							URL:    block.InputAudio.URL,
 							Format: format,
 						}
 					}
@@ -1053,6 +1056,7 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 					if block.Audio != nil {
 						chatBlocks[i].InputAudio = &ChatInputAudio{
 							Data: block.Audio.Data,
+							URL:  block.Audio.URL,
 						}
 						if block.Audio.Format != "" {
 							chatBlocks[i].InputAudio.Format = &block.Audio.Format

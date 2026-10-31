@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -42,6 +43,9 @@ func ToGeminiBatchGenerateContentRequest(body map[string]interface{}) (GeminiBat
 		}
 		contents, systemInstruction, err := convertBifrostMessagesToGemini(chatMessages)
 		if err != nil {
+			if errors.Is(err, errUnresolvedAudioURL) {
+				return geminiReq, fmt.Errorf("failed to resolve audio URLs: %w", err)
+			}
 			return geminiReq, fmt.Errorf("failed to convert messages: %w", err)
 		}
 		geminiReq.Contents = contents
@@ -49,6 +53,42 @@ func ToGeminiBatchGenerateContentRequest(body map[string]interface{}) (GeminiBat
 	}
 
 	return geminiReq, nil
+}
+
+// ToGeminiBatchGenerateContentRequestWithContext converts a previously resolved
+// body without I/O, retaining the context parameter for compatibility.
+func ToGeminiBatchGenerateContentRequestWithContext(ctx context.Context, body map[string]interface{}) (GeminiBatchGenerateContentRequest, error) {
+	return ToGeminiBatchGenerateContentRequest(body)
+}
+
+// ResolveBatchAudioURLs fetches any URL-backed audio in an OpenAI-style batch body
+// and returns a copy whose messages carry inline data. This is the network-bound
+// half of batch conversion, kept separate so the conversion itself stays pure.
+func ResolveBatchAudioURLs(ctx context.Context, body map[string]interface{}) (map[string]interface{}, error) {
+	rawMessages, ok := body["messages"]
+	if !ok {
+		return body, nil
+	}
+
+	messagesBytes, err := providerUtils.MarshalSorted(rawMessages)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal messages: %w", err)
+	}
+	var chatMessages []schemas.ChatMessage
+	if err := sonic.Unmarshal(messagesBytes, &chatMessages); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal messages: %w", err)
+	}
+	resolvedMessages, err := resolveAudioURLs(ctx, chatMessages)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve audio URLs: %w", err)
+	}
+
+	resolvedBody := make(map[string]interface{}, len(body))
+	for key, value := range body {
+		resolvedBody[key] = value
+	}
+	resolvedBody["messages"] = resolvedMessages
+	return resolvedBody, nil
 }
 
 // ToBifrostBatchStatus converts Gemini batch job state to Bifrost status.
