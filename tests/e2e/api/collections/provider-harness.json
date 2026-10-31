@@ -19398,7 +19398,7 @@
               }
             },
             {
-              "name": "Bedrock InvokeModel: direct Anthropic shape with document block",
+              "name": "Bedrock InvokeModel: direct Anthropic shape with document block (Claude Opus 4.7) - #9308",
               "event": [
                 {
                   "listen": "test",
