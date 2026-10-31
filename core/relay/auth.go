@@ -31,6 +31,104 @@ func (e *endpoint) authHeader() string {
 	return ""
 }
 
+func hasPrefixFold(s, prefix string) bool {
+	return len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix)
+}
+
+func unescapeQueryPart(s string) (string, error) {
+	if !strings.ContainsAny(s, "%+") {
+		return s, nil
+	}
+	return url.QueryUnescape(s)
+}
+
+// extractCallerCredential reads the credential a caller presented in the endpoint's configured
+// auth slot (bearer token, custom header with an optional value prefix, query parameter, or HTTP
+// Basic auth), or "" when none was presented. Callers pointing an existing SDK at a relay send
+// their Bifrost virtual key in the slot the upstream API expects; the transport promotes a
+// virtual-key-shaped value to the caller's identity before stripping it.
+func (e *endpoint) extractCallerCredential(peekHeader func(string) string, rawQuery string) string {
+	switch e.cfg.Auth.Type {
+	case schemas.RelayAuthBearer:
+		if peekHeader == nil {
+			return ""
+		}
+		val := strings.TrimSpace(peekHeader("Authorization"))
+		if !hasPrefixFold(val, "bearer ") {
+			return ""
+		}
+		return strings.TrimSpace(val[len("bearer "):])
+	case schemas.RelayAuthHeader:
+		if e.cfg.Auth.HeaderName == "" || peekHeader == nil {
+			return ""
+		}
+		val := strings.TrimSpace(peekHeader(e.cfg.Auth.HeaderName))
+		if val == "" {
+			return ""
+		}
+		if prefix := e.cfg.Auth.ValuePrefix; prefix != "" {
+			if !hasPrefixFold(val, prefix) {
+				return ""
+			}
+			val = strings.TrimSpace(val[len(prefix):])
+		}
+		return val
+	case schemas.RelayAuthQuery:
+		param := e.authQuery()
+		if param == "" || rawQuery == "" || strings.Contains(rawQuery, ";") ||
+			(!strings.Contains(rawQuery, param) && !strings.Contains(rawQuery, "%")) {
+			return ""
+		}
+		for rest := rawQuery; rest != ""; {
+			var segment string
+			segment, rest, _ = strings.Cut(rest, "&")
+			name, val, hasVal := strings.Cut(segment, "=")
+			if !hasVal {
+				continue
+			}
+			decodedName, err := unescapeQueryPart(name)
+			if err != nil || decodedName != param {
+				continue
+			}
+			decodedVal, err := unescapeQueryPart(val)
+			if err != nil {
+				return ""
+			}
+			if trimmed := strings.TrimSpace(decodedVal); trimmed != "" {
+				return trimmed
+			}
+		}
+		return ""
+	case schemas.RelayAuthBasic:
+		if peekHeader == nil {
+			return ""
+		}
+		auth := strings.TrimSpace(peekHeader("Authorization"))
+		if !hasPrefixFold(auth, "basic ") {
+			return ""
+		}
+		raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(auth[len("basic "):]))
+		if err != nil {
+			return ""
+		}
+		decoded := string(raw)
+		user, pass, hasColon := strings.Cut(decoded, ":")
+		if !hasColon {
+			return strings.TrimSpace(decoded)
+		}
+		u := strings.TrimSpace(user)
+		if hasPrefixFold(u, "sk-bf-") {
+			return u
+		}
+		p := strings.TrimSpace(pass)
+		if hasPrefixFold(p, "sk-bf-") {
+			return p
+		}
+		return ""
+	}
+	return ""
+}
+
 // stripCallerQueryCredential removes the auth query parameter a caller may have sent, so the
 // configured credential is the only one upstream. Every other segment is forwarded byte for byte,
 // in its original order and encoding: APIs that sign or compare the query string must see exactly

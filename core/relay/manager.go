@@ -331,6 +331,29 @@ func (m *Manager) get(name string) *endpoint {
 	return (*m.endpoints.Load())[name]
 }
 
+// AuthHeader returns the lower-cased header the named endpoint sends its credential in, or ""
+// when the endpoint does not exist or uses non-header auth.
+func (m *Manager) AuthHeader(name string) string {
+	e := m.get(name)
+	if e == nil {
+		return ""
+	}
+	if e.authHeaderLower != "" {
+		return e.authHeaderLower
+	}
+	return strings.ToLower(e.authHeader())
+}
+
+// ExtractCallerCredential returns the credential a caller presented in the named endpoint's
+// configured auth slot (custom header, query parameter, or basic auth), or "" when none is present.
+func (m *Manager) ExtractCallerCredential(name string, peekHeader func(string) string, rawQuery string) string {
+	e := m.get(name)
+	if e == nil {
+		return ""
+	}
+	return e.extractCallerCredential(peekHeader, rawQuery)
+}
+
 // Request is one caller request to /relay/{Endpoint}{Path}. Headers are lower-cased with the
 // caller's credentials and gateway headers already stripped.
 type Request struct {
@@ -369,6 +392,17 @@ func (m *Manager) Serve(ctx *schemas.BifrostContext, in Request) (*Result, *sche
 	if name, dup := ambiguousHeader(in.Headers); dup {
 		return nil, statusError(http.StatusBadRequest, fmt.Sprintf("header %s is set under two spellings; send it once", name))
 	}
+	rawQuery, err := e.stripCallerQueryCredential(in.RawQuery)
+	if err != nil {
+		return nil, statusError(http.StatusBadRequest, err.Error())
+	}
+	if authHdr := e.authHeaderLower; authHdr != "" && len(in.Headers) > 0 {
+		for k := range in.Headers {
+			if strings.EqualFold(k, authHdr) {
+				delete(in.Headers, k)
+			}
+		}
+	}
 	// The model is read under the content type the upstream receives: an operator's Content-Type
 	// replaces the caller's on the wire.
 	contentType := in.Headers["content-type"]
@@ -382,7 +416,7 @@ func (m *Manager) Serve(ctx *schemas.BifrostContext, in Request) (*Result, *sche
 		}
 		return nil, statusError(http.StatusNotFound, fmt.Sprintf("no route for %s %s on relay %q", in.Method, in.Path, in.Endpoint))
 	}
-	model, err := ReadRequestModel(p.usage.modelSource, in.Body, contentType, in.RawQuery, p.usage.effectiveModelPath())
+	model, err := ReadRequestModel(p.usage.modelSource, in.Body, contentType, rawQuery, p.usage.effectiveModelPath())
 	if err != nil {
 		return nil, statusError(http.StatusBadRequest, err.Error())
 	}
@@ -395,7 +429,7 @@ func (m *Manager) Serve(ctx *schemas.BifrostContext, in Request) (*Result, *sche
 		RelayName:  e.cfg.Name,
 		Method:     strings.ToUpper(in.Method),
 		Path:       in.Path,
-		RawQuery:   in.RawQuery,
+		RawQuery:   rawQuery,
 		Headers:    in.Headers,
 		Body:       in.Body,
 		Model:      model,

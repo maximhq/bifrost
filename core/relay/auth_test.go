@@ -92,3 +92,72 @@ func TestAuthHeaderName(t *testing.T) {
 	assert.Equal(t, "", authProvider(schemas.RelayAuthConfig{Type: schemas.RelayAuthQuery, QueryParam: "k"}).authHeader())
 	assert.Equal(t, "", authProvider(schemas.RelayAuthConfig{Type: schemas.RelayAuthNone}).authHeader())
 }
+
+func TestExtractCallerCredential(t *testing.T) {
+	m := NewManager(nil, nil)
+	require.NoError(t, m.Upsert(&schemas.RelayConfig{
+		Name:       "brave",
+		BaseURL:    "https://api.search.brave.com",
+		Auth:       schemas.RelayAuthConfig{Type: schemas.RelayAuthHeader, HeaderName: "X-Subscription-Token"},
+		Credential: &schemas.RelayCredential{Value: schemas.NewSecretVar("BSA-upstream")},
+	}))
+	require.NoError(t, m.Upsert(&schemas.RelayConfig{
+		Name:       "deepgram",
+		BaseURL:    "https://api.deepgram.com",
+		Auth:       schemas.RelayAuthConfig{Type: schemas.RelayAuthHeader, HeaderName: "Authorization", ValuePrefix: "Token "},
+		Credential: &schemas.RelayCredential{Value: schemas.NewSecretVar("dg-upstream")},
+	}))
+	require.NoError(t, m.Upsert(&schemas.RelayConfig{
+		Name:       "maps",
+		BaseURL:    "https://maps.example.com",
+		Auth:       schemas.RelayAuthConfig{Type: schemas.RelayAuthQuery, QueryParam: "api_key"},
+		Credential: &schemas.RelayCredential{Value: schemas.NewSecretVar("maps-upstream")},
+	}))
+	require.NoError(t, m.Upsert(&schemas.RelayConfig{
+		Name:       "basic-svc",
+		BaseURL:    "https://basic.example.com",
+		Auth:       schemas.RelayAuthConfig{Type: schemas.RelayAuthBasic},
+		Credential: &schemas.RelayCredential{Value: schemas.NewSecretVar("user:pass")},
+	}))
+
+	assert.Equal(t, "x-subscription-token", m.AuthHeader("brave"))
+	assert.Equal(t, "", m.AuthHeader("maps"))
+	assert.Equal(t, "", m.AuthHeader("unknown"))
+
+	assert.Equal(t, "sk-bf-brave-vk", m.ExtractCallerCredential("brave", func(h string) string {
+		if h == "X-Subscription-Token" {
+			return "sk-bf-brave-vk"
+		}
+		return ""
+	}, ""))
+
+	assert.Equal(t, "sk-bf-dg-vk", m.ExtractCallerCredential("deepgram", func(h string) string {
+		if h == "Authorization" {
+			return "token sk-bf-dg-vk"
+		}
+		return ""
+	}, ""), "value_prefix is stripped case-insensitively")
+
+	assert.Equal(t, "", m.ExtractCallerCredential("deepgram", func(h string) string {
+		return "Bearer sk-bf-dg-vk"
+	}, ""), "mismatched prefix is ignored")
+
+	assert.Equal(t, "sk-bf-maps-vk", m.ExtractCallerCredential("maps", nil, "q=coffee&api_key=sk-bf-maps-vk"))
+	assert.Equal(t, "", m.ExtractCallerCredential("maps", nil, "q=coffee;api_key=sk-bf-maps-vk"), "semicolon-separated query is rejected")
+
+	// Basic auth with "sk-bf-basic-vk:" (base64 "c2stYmYtYmFzaWMtdms6")
+	assert.Equal(t, "sk-bf-basic-vk", m.ExtractCallerCredential("basic-svc", func(h string) string {
+		if h == "Authorization" {
+			return "Basic c2stYmYtYmFzaWMtdms6"
+		}
+		return ""
+	}, ""))
+
+	// Basic auth with "user:sk-bf-basic-vk" (base64 "dXNlcjpzay1iZi1iYXNpYy12aw==")
+	assert.Equal(t, "sk-bf-basic-vk", m.ExtractCallerCredential("basic-svc", func(h string) string {
+		if h == "Authorization" {
+			return "Basic dXNlcjpzay1iZi1iYXNpYy12aw=="
+		}
+		return ""
+	}, ""))
+}
