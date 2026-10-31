@@ -2037,6 +2037,24 @@ func (r *BifrostMCPResponse) PopulateExtraFields(mcpRequestType MCPRequestType, 
 	}
 }
 
+// PopulateMCPExtraFields backfills ExtraFields.{MCPRequestType, MCPClientName, MCPToolName}
+// when they aren't already set: the error counterpart of BifrostMCPResponse.PopulateExtraFields,
+// used by the MCP gate so a PostMCPHook can tell which call failed.
+func (e *BifrostError) PopulateMCPExtraFields(mcpRequestType MCPRequestType, clientName, toolName string) {
+	if e == nil {
+		return
+	}
+	if e.ExtraFields.MCPRequestType == "" {
+		e.ExtraFields.MCPRequestType = mcpRequestType
+	}
+	if e.ExtraFields.MCPClientName == "" {
+		e.ExtraFields.MCPClientName = clientName
+	}
+	if e.ExtraFields.MCPToolName == "" {
+		e.ExtraFields.MCPToolName = toolName
+	}
+}
+
 // PricingSurface names the product surface whose price list applies to a request.
 type PricingSurface string
 
@@ -2469,6 +2487,11 @@ type BifrostErrorExtraFields struct {
 	ResolvedModelUsed string         `json:"resolved_model_used,omitempty"`
 	RequestType       RequestType    `json:"request_type,omitempty"`
 	MCPRequestType    MCPRequestType `json:"mcp_request_type,omitempty"`
+	// MCPClientName and MCPToolName are stamped by the MCP plugin gate on every
+	// error it hands PostMCPHook, as the request named them (the tool with its
+	// client prefix), so a hook can tell which call failed. In-process only.
+	MCPClientName string `json:"-"`
+	MCPToolName   string `json:"-"`
 	// A2ARequestType and A2AAgentName are stamped by the Agent Gateway plugin gate
 	// on every wrapped error so PostA2AHook can discriminate the operation and its
 	// authorization resource from the failure path too, exactly as MCPRequestType does.

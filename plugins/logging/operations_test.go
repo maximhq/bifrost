@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	coremcp "github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	cstables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -1947,6 +1948,286 @@ func TestPostMCPHookDropsArgumentsWhenContentIsDisabledLate(t *testing.T) {
 	if logEntry.ArgumentsParsed != nil {
 		t.Fatalf("expected the arguments captured before the key was stamped to be dropped, got %#v", logEntry.ArgumentsParsed)
 	}
+}
+
+// TestPostMCPHookSkipsSignInPrompts: a tool call that stops because the caller
+// still has to sign in is a prompt, not a failed call, so it leaves no MCP log
+// row, and the sign-in link it carries stays out of the store. Arguments
+// PreMCPHook held aside for a governance decision still pending are dropped
+// with the pending entry.
+func TestPostMCPHookSkipsSignInPrompts(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		decisionPending bool
+	}{
+		{name: "governance decision made"},
+		{name: "governance decision pending", decisionPending: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestStore(t)
+			plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+			if err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-mcp-sign-in")
+			ctx.SetValue(schemas.BifrostContextKeyMCPLogID, "mcp-sign-in")
+			if tc.decisionPending {
+				// A project the request names that governance has not admitted yet.
+				ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{schemas.HeaderGovernanceProjectID: "project-1"})
+			}
+
+			toolName := "github-create_issue"
+			_, _, err = plugin.PreMCPHook(ctx, &schemas.BifrostMCPRequest{
+				RequestType: schemas.MCPRequestTypeChatToolCall,
+				ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{
+					Function: schemas.ChatAssistantMessageToolCallFunction{
+						Name:      &toolName,
+						Arguments: `{"title":"crash on start"}`,
+					},
+				},
+			})
+			if err != nil {
+				t.Fatalf("PreMCPHook() error = %v", err)
+			}
+			if _, held := plugin.provisionalMCPArguments.Load("mcp-sign-in"); held != tc.decisionPending {
+				t.Fatalf("arguments held before PostMCPHook = %v, want %v", held, tc.decisionPending)
+			}
+
+			authURL := "https://bifrost.example.com/workspace/mcp-auth/flow-1#t=temp-token"
+			authErr := &schemas.MCPAuthRequiredError{
+				Kind:          schemas.MCPAuthRequiredKindOAuth,
+				MCPClientName: "github",
+				AuthorizeURL:  authURL,
+				Message:       "Authentication required for github. Visit " + authURL + " to connect your account.",
+			}
+			_, _, err = plugin.PostMCPHook(ctx, nil, &schemas.BifrostError{
+				Error: &schemas.ErrorField{Message: authErr.Message, Error: authErr},
+				ExtraFields: schemas.BifrostErrorExtraFields{
+					MCPRequestType:  schemas.MCPRequestTypeChatToolCall,
+					MCPAuthRequired: authErr,
+				},
+			})
+			if err != nil {
+				t.Fatalf("PostMCPHook() error = %v", err)
+			}
+			if err := plugin.Cleanup(); err != nil {
+				t.Fatalf("Cleanup() error = %v", err)
+			}
+
+			if logEntry, err := store.FindMCPToolLog(context.Background(), "mcp-sign-in"); !errors.Is(err, logstore.ErrNotFound) {
+				t.Fatalf("a sign-in prompt must not be logged as a tool call, got entry %#v (err %v)", logEntry, err)
+			}
+			if _, ok := plugin.pendingMCPLogsToInject.Load("mcp-sign-in"); ok {
+				t.Fatal("the pending entry must be dropped, not left for the stale sweeper to write")
+			}
+			if _, ok := plugin.provisionalMCPArguments.Load("mcp-sign-in"); ok {
+				t.Fatal("the held arguments must be dropped with the pending entry")
+			}
+		})
+	}
+}
+
+const connectSignInLink = "https://idp.example/authorize?state=flow-1"
+
+// signInCredStore asks every caller of a per-user client to sign in.
+type signInCredStore struct{}
+
+func (signInCredStore) ConnectionHeaders(_ *schemas.BifrostContext, config *schemas.MCPClientConfig) (http.Header, error) {
+	return nil, &schemas.MCPAuthRequiredError{
+		Kind:          schemas.MCPAuthRequiredKindOAuth,
+		MCPClientID:   config.ID,
+		MCPClientName: config.Name,
+		AuthorizeURL:  connectSignInLink,
+		Message:       "Authentication required for " + config.Name + ". Visit " + connectSignInLink + " to connect your account.",
+	}
+}
+
+func (signInCredStore) RequestHeaders(*schemas.BifrostContext, *schemas.MCPClientConfig) (http.Header, error) {
+	return http.Header{}, nil
+}
+
+func (signInCredStore) RequiresPerCallConnection(*schemas.MCPClientConfig) bool { return true }
+
+func (signInCredStore) ForceRefresh(*schemas.BifrostContext, *schemas.MCPClientConfig) error {
+	return nil
+}
+
+func (signInCredStore) AdminConnectionHeaders(context.Context, *schemas.MCPClientConfig) (http.Header, error) {
+	return http.Header{}, nil
+}
+
+// noCallerDiscoveries keeps no caller's discovery, so every caller is offered the connect tool.
+type noCallerDiscoveries struct{}
+
+func (noCallerDiscoveries) GetDiscovery(context.Context, *schemas.MCPClientConfig) *schemas.MCPDiscovery {
+	return nil
+}
+
+func (noCallerDiscoveries) SetDiscovery(context.Context, *schemas.MCPClientConfig, *schemas.MCPDiscovery) error {
+	return nil
+}
+
+func (noCallerDiscoveries) DeleteDiscovery(context.Context, *schemas.MCPClientConfig) error {
+	return nil
+}
+
+// loggingPipeline runs the logging plugin's MCP hooks as core's plugin pipeline does. With user set,
+// a policy plugin registered after logging (governance) names that caller once logging's pre-hook
+// has run.
+type loggingPipeline struct {
+	plugin *LoggerPlugin
+	user   string
+}
+
+func (p loggingPipeline) RunMCPPreHooks(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, int) {
+	req, shortCircuit, _ := p.plugin.PreMCPHook(ctx, req)
+	if p.user != "" {
+		ctx.SetValue(schemas.BifrostContextKeyUserID, p.user)
+	}
+	return req, shortCircuit, 1
+}
+
+func (p loggingPipeline) RunMCPPostHooks(ctx *schemas.BifrostContext, resp *schemas.BifrostMCPResponse, bifrostErr *schemas.BifrostError, _ int) (*schemas.BifrostMCPResponse, *schemas.BifrostError) {
+	resp, bifrostErr, _ = p.plugin.PostMCPHook(ctx, resp, bifrostErr)
+	return resp, bifrostErr
+}
+
+func (loggingPipeline) RunMCPPreConnectionHooks(_ *schemas.BifrostContext, req *schemas.BifrostMCPConnectRequest) (*schemas.BifrostMCPConnectRequest, *schemas.MCPConnectionShortCircuit, int) {
+	return req, nil, 0
+}
+
+func (loggingPipeline) RunMCPPostConnectionHooks(_ *schemas.BifrostContext, resp *schemas.BifrostMCPConnectResponse, bifrostErr *schemas.BifrostError, _ int) (*schemas.BifrostMCPConnectResponse, *schemas.BifrostError) {
+	return resp, bifrostErr
+}
+
+// TestMCPConnectCallsAreNotLogged: a client's connect tool only signs the caller in and discovers
+// their tools, and its result can carry the sign-in link, so a connect call core runs is never
+// logged, whether it answers or fails. Only core can mark one: a call to an upstream tool named
+// "connect" is logged as usual.
+func TestMCPConnectCallsAreNotLogged(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	require.NoError(t, err)
+	manager := coremcp.NewMCPManager(context.Background(), schemas.MCPConfig{
+		PerUserDiscoveryStore:  noCallerDiscoveries{},
+		PluginPipelineProvider: func() interface{} { return loggingPipeline{plugin: plugin} },
+		ReleasePluginPipeline:  func(interface{}) {},
+	}, signInCredStore{}, testLogger{}, nil)
+	t.Cleanup(func() { _ = manager.Cleanup() })
+	require.NoError(t, manager.AddClient(context.Background(), &schemas.MCPClientConfig{
+		ID: "notes-id", Name: "notes", AuthType: schemas.MCPAuthTypePerUserOauth, ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://notes.example/mcp"), ToolsToExecute: []string{"*"}, PerUserDiscovery: schemas.Ptr(true),
+	}))
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyUserID, "alice")
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-connect")
+	ctx.SetValue(schemas.BifrostContextKeyMCPLogID, "mcp-connect")
+	name := "notes-connect"
+	result, bErr := manager.ExecuteChatTool(ctx, &schemas.ChatAssistantMessageToolCall{
+		ID:       schemas.Ptr("call-1"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{Name: &name, Arguments: "{}"},
+	})
+	require.Nil(t, bErr)
+	require.NotNil(t, result.Content.ContentStr)
+	require.Contains(t, *result.Content.ContentStr, connectSignInLink, "the connect call answered with the sign-in link")
+
+	// A connect call that fails, here for a request with no user or virtual key to connect.
+	anonymous := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	anonymous.SetValue(schemas.BifrostContextKeyRequestID, "req-connect-failed")
+	anonymous.SetValue(schemas.BifrostContextKeyMCPLogID, "mcp-connect-failed")
+	_, bErr = manager.ExecuteChatTool(anonymous, &schemas.ChatAssistantMessageToolCall{
+		ID:       schemas.Ptr("call-2"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{Name: &name, Arguments: "{}"},
+	})
+	require.NotNil(t, bErr, "a connect call needs a caller to connect")
+
+	// An upstream tool that happens to be named connect, as its MCP hooks see it without core's mark.
+	upstreamCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	upstreamCtx.SetValue(schemas.BifrostContextKeyRequestID, "req-upstream")
+	upstreamCtx.SetValue(schemas.BifrostContextKeyMCPLogID, "mcp-upstream")
+	upstreamName := "wiki-connect"
+	_, _, err = plugin.PreMCPHook(upstreamCtx, &schemas.BifrostMCPRequest{
+		RequestType:                  schemas.MCPRequestTypeChatToolCall,
+		ClientName:                   "wiki",
+		ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{Function: schemas.ChatAssistantMessageToolCallFunction{Name: &upstreamName, Arguments: "{}"}},
+	})
+	require.NoError(t, err)
+	_, _, err = plugin.PostMCPHook(upstreamCtx, &schemas.BifrostMCPResponse{
+		ExtraFields: schemas.BifrostMCPResponseExtraFields{MCPRequestType: schemas.MCPRequestTypeChatToolCall, ClientName: "wiki", ToolName: "connect"},
+	}, nil)
+	require.NoError(t, err)
+	require.NoError(t, plugin.Cleanup())
+
+	for _, id := range []string{"mcp-connect", "mcp-connect-failed"} {
+		_, err = store.FindMCPToolLog(context.Background(), id)
+		require.ErrorIs(t, err, logstore.ErrNotFound, "a connect call must not be logged: %s", id)
+		_, pending := plugin.pendingMCPLogsToInject.Load(id)
+		require.False(t, pending, "nor left for the stale sweeper to write: %s", id)
+	}
+	_, err = store.FindMCPToolLog(context.Background(), "mcp-upstream")
+	require.NoError(t, err, "an upstream tool named connect is logged like any other")
+}
+
+// bearerCredStore connects every caller with a bearer token.
+type bearerCredStore struct{ signInCredStore }
+
+func (bearerCredStore) ConnectionHeaders(*schemas.BifrostContext, *schemas.MCPClientConfig) (http.Header, error) {
+	return http.Header{"Authorization": []string{"Bearer token"}}, nil
+}
+
+// aliceDiscoversConnect gives alice a discovery holding an upstream tool named connect.
+type aliceDiscoversConnect struct{ noCallerDiscoveries }
+
+func (aliceDiscoversConnect) GetDiscovery(ctx context.Context, client *schemas.MCPClientConfig) *schemas.MCPDiscovery {
+	if user, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string); user != "alice" {
+		return nil
+	}
+	name := client.Name + "-connect"
+	return &schemas.MCPDiscovery{
+		Tools:           map[string]schemas.ChatTool{name: {Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: name}}},
+		ToolNameMapping: map[string]string{"connect": "connect"},
+	}
+}
+
+// TestMCPUpstreamConnectNamedByALaterPluginIsLogged: a request whose caller is named only by a
+// policy plugin that runs after logging (governance resolving a virtual key) cannot tell in
+// logging's pre-hook whether a call named <client>-connect is Bifrost's connect tool or an upstream
+// tool of that name. The pre-hook records it either way; once the caller's discovery shows an
+// upstream tool, its row carries the tool and server like any other.
+func TestMCPUpstreamConnectNamedByALaterPluginIsLogged(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	require.NoError(t, err)
+	manager := coremcp.NewMCPManager(context.Background(), schemas.MCPConfig{
+		PerUserDiscoveryStore:  aliceDiscoversConnect{},
+		PluginPipelineProvider: func() interface{} { return loggingPipeline{plugin: plugin, user: "alice"} },
+		ReleasePluginPipeline:  func(interface{}) {},
+	}, bearerCredStore{}, testLogger{}, nil)
+	t.Cleanup(func() { _ = manager.Cleanup() })
+	require.NoError(t, manager.AddClient(context.Background(), &schemas.MCPClientConfig{
+		ID: "notes-id", Name: "notes", AuthType: schemas.MCPAuthTypePerUserOauth, ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("http://127.0.0.1:1/mcp"), ToolsToExecute: []string{"*"}, PerUserDiscovery: schemas.Ptr(true),
+	}))
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-upstream-late")
+	ctx.SetValue(schemas.BifrostContextKeyMCPLogID, "mcp-upstream-late")
+	name := "notes-connect"
+	_, bErr := manager.ExecuteChatTool(ctx, &schemas.ChatAssistantMessageToolCall{
+		ID:       schemas.Ptr("call-1"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{Name: &name, Arguments: `{"q":"x"}`},
+	})
+	require.NotNil(t, bErr, "the upstream is unreachable")
+	require.Nil(t, bErr.ExtraFields.MCPAuthRequired, "it ran as the upstream tool, not Bifrost's connect")
+	require.NoError(t, plugin.Cleanup())
+
+	entry, err := store.FindMCPToolLog(context.Background(), "mcp-upstream-late")
+	require.NoError(t, err, "an upstream tool named connect is logged")
+	require.Equal(t, "connect", entry.ToolName)
+	require.Equal(t, "notes", entry.ServerLabel)
 }
 
 // TestPostLLMHookDropsCapturedInputWhenContentIsDisabledLate pins the passthrough ordering hole:
