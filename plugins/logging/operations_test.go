@@ -6076,10 +6076,14 @@ func BenchmarkRelayLogHooks(b *testing.B) {
 	<-done
 }
 
+// TestRelayLogQueryRedaction verifies that credential-named parameters, virtual-key values, and
+// malformed percent-encoded values that cannot be safely inspected are redacted before logging.
 func TestRelayLogQueryRedaction(t *testing.T) {
-	got := redactQuery("q=private-search&api_key=sk-123&access_token=tok&page=2&Signature=abc&flag")
+	got := redactQuery("q=private-search&api_key=sk-123&access_token=tok&appid=sk-bf-vk123&note=sk%2Dbf-secret%ZZ&page=2&Signature=abc&flag")
 	require.NotContains(t, got, "sk-123")
 	require.NotContains(t, got, "tok&")
+	require.NotContains(t, got, "sk-bf-vk123")
+	require.NotContains(t, got, "secret")
 	require.NotContains(t, got, "abc")
 	require.Contains(t, got, "q=private-search", "ordinary parameters are kept")
 	require.Contains(t, got, "page=2")

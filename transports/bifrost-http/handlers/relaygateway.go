@@ -10,6 +10,8 @@ import (
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/relay"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -87,6 +89,7 @@ func endpointRequestPath(full string) (string, string, bool) {
 	return name, "/" + path, true
 }
 
+// handle authenticates and proxies one incoming /relay/{endpoint}/{path} data-plane request.
 func (r *RelayGatewayHandler) handle(ctx *fasthttp.RequestCtx) {
 	name, path, ok := endpointRequestPath(string(ctx.Path()))
 	if !ok {
@@ -98,6 +101,7 @@ func (r *RelayGatewayHandler) handle(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	endpointAuthHeader := r.manager.AuthHeader(name)
 	headers := make(map[string]string)
 	connectionTokens := map[string]struct{}{}
 	for _, token := range strings.Split(string(ctx.Request.Header.Peek("Connection")), ",") {
@@ -110,6 +114,9 @@ func (r *RelayGatewayHandler) handle(ctx *fasthttp.RequestCtx) {
 		if _, drop := relayDroppedHeaders[name]; drop {
 			return true
 		}
+		if endpointAuthHeader != "" && name == endpointAuthHeader {
+			return true
+		}
 		if _, drop := connectionTokens[name]; drop {
 			return true
 		}
@@ -120,12 +127,31 @@ func (r *RelayGatewayHandler) handle(ctx *fasthttp.RequestCtx) {
 		return true
 	})
 
+	rawQuery := string(ctx.URI().QueryString())
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, r.handlerStore)
+	if endpointAuthHeader != "" {
+		if reqHeaders, ok := bifrostCtx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string); ok {
+			delete(reqHeaders, endpointAuthHeader)
+		}
+		if extraHeaders, ok := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
+			delete(extraHeaders, endpointAuthHeader)
+		}
+	}
+	if vk, _ := bifrostCtx.Value(schemas.BifrostContextKeyVirtualKey).(string); vk == "" {
+		candidate := r.manager.ExtractCallerCredential(name, func(header string) string {
+			return string(ctx.Request.Header.Peek(header))
+		}, rawQuery)
+		if len(candidate) >= len(governance.VirtualKeyPrefix) &&
+			strings.EqualFold(candidate[:len(governance.VirtualKeyPrefix)], governance.VirtualKeyPrefix) {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, candidate)
+			lib.RecordCredential(bifrostCtx, grant.NewCredential(grant.CredentialVirtualKey, candidate))
+		}
+	}
 	result, bifrostErr := r.manager.Serve(bifrostCtx, relay.Request{
 		Endpoint: name,
 		Method:   string(ctx.Method()),
 		Path:     path,
-		RawQuery: string(ctx.URI().QueryString()),
+		RawQuery: rawQuery,
 		Headers:  headers,
 		Body:     ctx.Request.Body(),
 	})

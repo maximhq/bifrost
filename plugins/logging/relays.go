@@ -377,7 +377,7 @@ var sensitiveQueryKeys = map[string]struct{}{"key": {}, "token": {}, "apikey": {
 func redactQuery(raw string) string {
 	parts := strings.Split(raw, "&")
 	for i, part := range parts {
-		name, _, hasValue := strings.Cut(part, "=")
+		name, val, hasValue := strings.Cut(part, "=")
 		if !hasValue {
 			continue
 		}
@@ -385,8 +385,19 @@ func redactQuery(raw string) string {
 		if err != nil {
 			key = name
 		}
+		decodedVal, err := url.QueryUnescape(val)
+		if err != nil {
+			parts[i] = name + "=" + url.QueryEscape(schemas.RedactedAttrValue)
+			continue
+		}
+		trimmedVal := strings.TrimSpace(decodedVal)
+		isVK := len(trimmedVal) >= 6 && strings.EqualFold(trimmedVal[:6], "sk-bf-")
 		normalized := strings.ToLower(strings.ReplaceAll(key, "_", "-"))
-		if _, ok := sensitiveQueryKeys[strings.ReplaceAll(normalized, "-", "")]; ok || schemas.IsSensitiveHeader(normalized) {
+		if isVK || schemas.IsSensitiveHeader(normalized) {
+			parts[i] = name + "=" + url.QueryEscape(schemas.RedactedAttrValue)
+			continue
+		}
+		if _, ok := sensitiveQueryKeys[strings.ReplaceAll(normalized, "-", "")]; ok {
 			parts[i] = name + "=" + url.QueryEscape(schemas.RedactedAttrValue)
 		}
 	}
