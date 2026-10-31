@@ -89,7 +89,7 @@ const { t: tShell } = useTranslation("shell");
 
 Run `npm run i18n:check` before opening a pull request. It flags hardcoded user-facing strings and zod messages, and compares every catalog with English (missing keys, placeholders, `<Trans>` tags, plural forms, empty values, duplicate keys). The `ui-i18n` workflow runs it on every pull request that touches `ui/`. See the "UI i18n" section of the repo `AGENTS.md` for the full conventions.
 
-For a read-only baseline and translation-call inventory, run `npm run i18n:inventory`. This is a report, not the CI gate implemented by `i18n:check`. Append `-- --paths ui/app/workspace/<area> --report tmp/i18n-inventory.json` to limit the scan and save the JSON report, or `-- --baseline <ref>` to compare with another baseline. The normal review mode of `scripts/check-i18n.mjs` additionally requires an explicit `--review <file>` containing dynamic-family, removed-call, and untranslated evidence.
+For a read-only baseline and translation-call inventory, run `npm run i18n:inventory`. This is a report, not the CI gate implemented by `i18n:check`. Append `-- --paths ui/app/workspace/providers/dialogs/providerConfigSheet.tsx,ui/app/workspace/dashboard/components/dimensionRankingsTab.tsx --report tmp/i18n-inventory.json` to limit the scan to comma-separated source files and save the JSON report, or `-- --baseline <ref>` to compare with another baseline. The normal review mode of `scripts/check-i18n.mjs` additionally requires an explicit `--review <file>` containing dynamic-family, removed-call, and untranslated evidence.
 
 Default namespace is `common`. `I18nextProvider` is mounted in `app/clientLayout.tsx`, so any Router child can use `useTranslation`.
 
