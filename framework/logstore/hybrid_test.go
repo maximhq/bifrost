@@ -2907,3 +2907,112 @@ func TestNewLogStoreRoutesRequireObjectStorage(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "require object_storage")
 }
+
+// TestHybridRoutes_ExcludedRequestTypeIsMirrored checks that a request type
+// kept whole in the DB is still copied to a matching route, both when it is
+// created matching and when an update makes it match.
+func TestHybridRoutes_ExcludedRequestTypeIsMirrored(t *testing.T) {
+	hybrid, inner, primary, stores := newTestHybridWithRoutes(t, nil, map[string]ObjectStorageRouteMatch{
+		"flagged": {GuardrailOutcomes: []string{GuardrailOutcomeBlocked, GuardrailOutcomeDetected}},
+	})
+	hybrid.excludedRequestTypes = map[string]struct{}{"chat.completion": {}}
+	ctx := context.Background()
+	at := time.Now().UTC()
+
+	require.NoError(t, hybrid.Create(ctx, inputBlock(chatEntry("excluded-blocked", at, "error", "blocked question"))))
+	copied := routeCopy(t, stores["flagged"], "flagged", at, "excluded-blocked", func(map[string]string) bool { return true })
+	assert.Contains(t, copied["input_history"], "blocked question")
+	assert.Contains(t, copied["guardrail_debug"], "bedrock")
+
+	require.NoError(t, hybrid.BatchCreateIfNotExists(ctx, []*Log{chatEntry("excluded-late", at, "processing", "late question")}))
+	output := "flagged answer"
+	require.NoError(t, hybrid.BatchUpdate(ctx, []*Log{{
+		ID: "excluded-late", Status: "success",
+		OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &output}},
+		GuardrailDebugParsed: &schemas.BifrostGuardrailMetadata{Detections: []schemas.BifrostGuardrailDetection{
+			{Phase: "output", RuleName: "toxicity", GuardrailProvider: "azure", Action: schemas.GuardrailDetectionActionDetect},
+		}},
+	}}))
+	copied = routeCopy(t, stores["flagged"], "flagged", at, "excluded-late", func(map[string]string) bool { return true })
+	assert.Contains(t, copied["input_history"], "late question", "the stored row's input is in the copy")
+	assert.Contains(t, copied["output_message"], output)
+	assert.Equal(t, "success", copied["status"])
+
+	row, err := inner.FindByID(ctx, "excluded-late")
+	require.NoError(t, err)
+	assert.Contains(t, row.OutputMessage, output, "the excluded row stays whole in the DB")
+	hybrid.Close(ctx)
+	assert.Zero(t, primary.Len(), "excluded rows are still never offloaded")
+}
+
+// TestHybridRoutes_ExcludedIgnoredCreateKeepsCopy checks that a retried insert
+// of an excluded request type, which the store ignores because the log
+// already exists, does not replace the copy of the saved log.
+func TestHybridRoutes_ExcludedIgnoredCreateKeepsCopy(t *testing.T) {
+	for name, create := range map[string]func(*HybridLogStore, *Log) error{
+		"single": func(h *HybridLogStore, l *Log) error { return h.CreateIfNotExists(context.Background(), l) },
+		"batch": func(h *HybridLogStore, l *Log) error {
+			return h.BatchCreateIfNotExists(context.Background(), []*Log{l})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			hybrid, _, _, stores := newTestHybridWithRoutes(t, nil, map[string]ObjectStorageRouteMatch{
+				"chat": {RequestTypes: []string{"chat.completion"}},
+			})
+			hybrid.excludedRequestTypes = map[string]struct{}{"chat.completion": {}}
+			ctx := context.Background()
+			at := time.Now().UTC()
+
+			require.NoError(t, create(hybrid, chatEntry("excluded-dup", at, "processing", "q")))
+			output := "the answer"
+			require.NoError(t, hybrid.BatchUpdate(ctx, []*Log{{
+				ID: "excluded-dup", Status: "success",
+				OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &output}},
+			}}))
+			routeCopy(t, stores["chat"], "chat", at, "excluded-dup", func(p map[string]string) bool { return p["status"] == "success" })
+
+			require.NoError(t, create(hybrid, chatEntry("excluded-dup", at, "processing", "q")))
+			hybrid.Close(ctx)
+
+			copied := routeCopy(t, stores["chat"], "chat", at, "excluded-dup", func(map[string]string) bool { return true })
+			assert.Equal(t, "success", copied["status"], "the ignored retry did not replace the copy")
+			assert.Contains(t, copied["output_message"], "the answer")
+		})
+	}
+}
+
+// TestHybridRoutes_ExcludedSerializedUpdateIsMirrored checks that an update
+// of an excluded row given only serialized columns is what routes match and
+// copy, not the parsed values the saved row was read with.
+func TestHybridRoutes_ExcludedSerializedUpdateIsMirrored(t *testing.T) {
+	hybrid, inner, _, stores := newTestHybridWithRoutes(t, nil, map[string]ObjectStorageRouteMatch{
+		"chat":     {RequestTypes: []string{"chat.completion"}},
+		"new-rule": {GuardrailRules: []string{"new-rule"}},
+	})
+	hybrid.excludedRequestTypes = map[string]struct{}{"chat.completion": {}}
+	ctx := context.Background()
+	at := time.Now().UTC()
+
+	first := chatEntry("serialized", at, "success", "q")
+	old := "old answer"
+	first.OutputMessageParsed = &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &old}}
+	first.GuardrailDebugParsed = &schemas.BifrostGuardrailMetadata{Detections: []schemas.BifrostGuardrailDetection{
+		{Phase: "output", RuleName: "old-rule", GuardrailProvider: "azure", Action: schemas.GuardrailDetectionActionDetect},
+	}}
+	require.NoError(t, hybrid.Create(ctx, first))
+
+	require.NoError(t, hybrid.BatchUpdate(ctx, []*Log{{
+		ID: "serialized", Status: "success",
+		OutputMessage:  `{"role":"assistant","content":"new answer"}`,
+		GuardrailDebug: `{"detections":[{"phase":"output","rule_name":"new-rule","guardrail_provider":"azure","action":"detect"}]}`,
+	}}))
+	row, err := inner.FindByID(ctx, "serialized")
+	require.NoError(t, err)
+	require.Contains(t, row.OutputMessage, "new answer", "the DB saves the serialized update")
+	hybrid.Close(ctx)
+
+	copied := routeCopy(t, stores["chat"], "chat", at, "serialized", func(map[string]string) bool { return true })
+	assert.Contains(t, copied["output_message"], "new answer", "the copy holds the saved answer")
+	assert.Contains(t, copied["guardrail_debug"], "new-rule")
+	assert.Equal(t, 1, stores["new-rule"].Len(), "routes match the saved guardrail entry")
+}
