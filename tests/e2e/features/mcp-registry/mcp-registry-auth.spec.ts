@@ -247,8 +247,70 @@ test.describe("MCP Registry - Authentication", () => {
       expect(actions).not.toContain("Refresh admin credential");
       expect(actions).not.toContain("Refresh tools");
 
+      // A callers request that fails says so, with a retry, instead of reading as nobody having connected.
+      const sessionsRoute = "**/api/mcp/sessions**";
+      await mcpRegistryPage.page.route(sessionsRoute, (route) =>
+        route.fulfill({ status: 500, contentType: "application/json", body: '{"error":{"message":"sessions unavailable"}}' }),
+      );
+
+      // The view says what the server keeps: no admin credential, and only the tool names callers' discoveries return.
       await mcpRegistryPage.viewClientDetails(clientData.name);
-      const sheet = mcpRegistryPage.detailSheet;
+      const view = mcpRegistryPage.viewSheet;
+      await expect(view.getByTestId("mcpclient-view-summary")).toContainText("Per-Caller Discovery");
+      await expect(view.getByTestId("mcpclient-view-row-per_user_discovery")).toHaveText("On");
+      await expect(view.getByTestId("mcpclient-view-row-tool_sync_interval")).toHaveText("Not used");
+      await expect(view.getByTestId("mcpclient-credential-section")).toHaveCount(0);
+      await expect(view.getByTestId("mcpclient-view-tab-callers")).toBeVisible();
+      await expect(view.getByTestId("mcpclient-view-stat-callers")).toContainText("couldn't load callers");
+      await view.getByTestId("mcpclient-view-tab-callers").click();
+      await expect(view.getByTestId("mcpclient-view-callers-error")).toBeVisible();
+      await mcpRegistryPage.page.unroute(sessionsRoute);
+
+      // Switching the filter never shows the previous filter's rows under the new one: while the
+      // Pending rows load the tab reads as loading, then it shows that page.
+      const activeRow = {
+        id: "e2e-active-row",
+        kind: "token",
+        auth_kind: "oauth",
+        auth_mode: "vk",
+        virtual_key: { id: "vk-e2e", name: "e2e-active-key" },
+        status: "active",
+        created_at: new Date().toISOString(),
+        can_reauth: true,
+      };
+      let releasePending = () => {};
+      const pendingHeld = new Promise<void>((resolve) => {
+        releasePending = resolve;
+      });
+      await mcpRegistryPage.page.route(sessionsRoute, async (route) => {
+        const params = new URL(route.request().url()).searchParams;
+        const status = params.get("status");
+        // Hold only the Pending rows page; the one-row count pages answer at once.
+        if (status === "pending" && params.get("limit") !== "1") await pendingHeld;
+        const sessions = status === null || status === "active" ? [activeRow] : [];
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ sessions, count: sessions.length, total_count: sessions.length, limit: 5, offset: 0 }),
+        });
+      });
+      await view.getByTestId("mcpclient-view-callers-retry").click();
+      await expect(view.getByTestId("mcpclient-view-callers-error")).toHaveCount(0);
+      await expect(view.getByTestId("mcpclient-view-callers-filter-active")).toBeVisible();
+      await expect(view.getByTestId("mcpclient-view-caller-e2e-active-row")).toBeVisible();
+      await view.getByTestId("mcpclient-view-callers-filter-pending").click();
+      await expect(view.getByTestId("mcpclient-view-caller-e2e-active-row")).toHaveCount(0);
+      await expect(view.getByText("Loading callers…")).toBeVisible();
+      releasePending();
+      await expect(view.getByTestId("mcpclient-view-callers-filter-pending")).toHaveAttribute("aria-pressed", "true");
+      await expect(view.getByRole("tabpanel").getByText("No sessions yet.")).toBeVisible();
+      await mcpRegistryPage.page.unroute(sessionsRoute);
+      await view.getByTestId("mcpclient-view-tab-tools").click();
+      await expect(view.getByRole("tabpanel").getByText("No caller has connected yet")).toBeVisible();
+      await mcpRegistryPage.closeDetailSheet();
+
+      await mcpRegistryPage.openClientEditor(clientData.name);
+      const sheet = mcpRegistryPage.editSheet;
       const discoverySwitch = sheet.getByTestId("mcpclient-per-user-discovery-switch");
       await expect(discoverySwitch).toHaveAttribute("data-state", "checked");
       await expect(sheet.getByTestId("mcpclient-tool-sync-interval-input")).toBeDisabled();

@@ -39,6 +39,42 @@ export function exchangeVerifyCopy(
 	};
 }
 
+/** connectionTypeLabel is how the servers table and the server view name a connection type. */
+export function connectionTypeLabel(type: string): string {
+	switch (type) {
+		case "http":
+			return "HTTP";
+		case "sse":
+			return "SSE";
+		case "stdio":
+			return "STDIO";
+		case "openapi":
+			return "OpenAPI";
+		default:
+			return type.toUpperCase();
+	}
+}
+
+/** authTypeLabel names an auth type without its scope, which is shown on its own. */
+export function authTypeLabel(type: string | undefined): string {
+	switch (type) {
+		case "none":
+		case undefined:
+		case "":
+			return i18n.t("registry.filter.none", { ns: "mcp" });
+		case "headers":
+		case "per_user_headers":
+			return i18n.t("registry.filter.headers", { ns: "mcp" });
+		case "oauth":
+		case "per_user_oauth":
+			return "OAuth";
+		case "token_exchange":
+			return i18n.t("registry.filter.tokenExchange", { ns: "mcp" });
+		default:
+			return type;
+	}
+}
+
 /**
  * canReconnectMCPClient reports whether the "Reconnect" action applies to
  * this client at all — mirrors core/mcp/credstore's RequiresPerCallConnection

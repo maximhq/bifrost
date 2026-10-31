@@ -72,6 +72,10 @@ export class MCPRegistryPage extends BasePage {
   readonly createBtn: Locator
   readonly sheet: Locator
   readonly detailSheet: Locator
+  /** Read-only sheet a row click opens */
+  readonly viewSheet: Locator
+  /** Settings sheet the row menu's Edit opens */
+  readonly editSheet: Locator
   readonly nameInput: Locator
   readonly saveBtn: Locator
   readonly cancelBtn: Locator
@@ -102,6 +106,8 @@ export class MCPRegistryPage extends BasePage {
     )
     this.sheet = page.locator('[role="dialog"]')
     this.detailSheet = page.locator('[role="dialog"]')
+    this.viewSheet = page.getByTestId('mcpclient-view-sheet')
+    this.editSheet = page.getByTestId('mcpclient-edit-sheet')
     this.nameInput = page.locator('[data-testid="client-name-input"]').or(
       this.sheet.getByLabel(/Name/i).first()
     )
@@ -332,10 +338,15 @@ export class MCPRegistryPage extends BasePage {
     return JSON.parse(frame ?? text)
   }
 
-  /** Opens the named client's Prompts & Resources tab. */
-  async openPromptsAndResources(name: string): Promise<void> {
-    await this.viewClientDetails(name)
-    await this.detailSheet.getByTestId('mcpclient-tab-resources').click()
+  /** Opens the named client's edit sheet on its Prompts or Resources tab. */
+  async openExposeList(name: string, kind: 'prompts' | 'resources'): Promise<void> {
+    await this.openClientEditor(name)
+    await this.showEditorTab(kind)
+  }
+
+  /** Switches the open edit sheet to one of its tabs; unsaved changes on the others are kept. */
+  async showEditorTab(tab: 'general' | 'authentication' | 'tools' | 'prompts' | 'resources' | 'access'): Promise<void> {
+    await this.editSheet.getByTestId(`mcpclient-tab-${tab}`).click()
   }
 
   /** The serve switch of one prompt (by the server's own name) or resource (by URI or URI template). */
@@ -647,7 +658,7 @@ export class MCPRegistryPage extends BasePage {
     await input.fill(url)
   }
 
-  /** Summary line of the stored document on the edit sheet's General tab */
+  /** Summary line of the stored document: the Spec row on the view sheet, or the General tab of the edit sheet */
   async getOpenAPISummaryText(): Promise<string> {
     const summary = this.detailSheet.getByTestId('mcp-client-sheet-openapi-summary')
     await expect(summary).toBeVisible({ timeout: 10000 })
@@ -828,14 +839,40 @@ export class MCPRegistryPage extends BasePage {
   }
 
   /**
-   * View client details from the actions menu
+   * Open the read-only view sheet by clicking the client's row (its name
+   * cell, clear of the row's own controls)
    */
   async viewClientDetails(name: string): Promise<void> {
+    const row = this.getClientRow(name)
+    await expect(row).toBeVisible({ timeout: 10000 })
+    await row.locator('td').first().click()
+    await expect(this.viewSheet).toBeVisible({ timeout: 5000 })
+  }
+
+  /**
+   * Open the read-only view sheet from the client's actions menu, with the
+   * keyboard only
+   */
+  async viewClientDetailsFromKeyboard(name: string): Promise<void> {
+    const row = this.getClientRow(name)
+    await expect(row).toBeVisible({ timeout: 10000 })
+    await row.getByRole('button', { name: /MCP server actions/i }).focus()
+    await this.page.keyboard.press('Enter')
+    const viewItem = this.page.getByRole('menuitem', { name: 'View details', exact: true })
+    await expect(viewItem).toBeFocused({ timeout: 5000 })
+    await this.page.keyboard.press('Enter')
+    await expect(this.viewSheet).toBeVisible({ timeout: 5000 })
+  }
+
+  /**
+   * Open the edit sheet from the client's actions menu
+   */
+  async openClientEditor(name: string): Promise<void> {
     await this.openClientActions(name)
-    const editItem = this.page.getByRole('menuitem', { name: /Edit/i })
+    const editItem = this.page.getByRole('menuitem', { name: 'Edit', exact: true })
     await expect(editItem).toBeVisible({ timeout: 5000 })
     await editItem.click()
-    await expect(this.detailSheet).toBeVisible({ timeout: 5000 })
+    await expect(this.editSheet).toBeVisible({ timeout: 5000 })
   }
 
   /**
@@ -904,7 +941,7 @@ export class MCPRegistryPage extends BasePage {
    * Edit an existing client
    */
   async editClient(name: string, updates: Partial<MCPClientConfig>): Promise<void> {
-    await this.viewClientDetails(name)
+    await this.openClientEditor(name)
 
     // Update name if provided
     if (updates.name) {
@@ -958,10 +995,10 @@ export class MCPRegistryPage extends BasePage {
   }
 
   /**
-   * Toggle tool enabled state in the detail sheet
+   * Toggle tool enabled state in the edit sheet
    */
   async toggleToolEnabled(clientName: string, toolName: string): Promise<void> {
-    await this.viewClientDetails(clientName)
+    await this.openClientEditor(clientName)
 
     // Find the tool row and toggle its enabled switch
     const toolRow = this.detailSheet.locator('tr').filter({ hasText: toolName })
@@ -976,10 +1013,10 @@ export class MCPRegistryPage extends BasePage {
   }
 
   /**
-   * Toggle auto-execute for a tool in the detail sheet
+   * Toggle auto-execute for a tool in the edit sheet
    */
   async toggleAutoExecute(clientName: string, toolName: string): Promise<void> {
-    await this.viewClientDetails(clientName)
+    await this.openClientEditor(clientName)
 
     // Find the tool row and toggle its auto-execute switch (second switch)
     const toolRow = this.detailSheet.locator('tr').filter({ hasText: toolName })
@@ -997,7 +1034,7 @@ export class MCPRegistryPage extends BasePage {
    * Toggle code mode for a client
    */
   async toggleCodeMode(clientName: string): Promise<void> {
-    await this.viewClientDetails(clientName)
+    await this.openClientEditor(clientName)
 
     // Find and toggle the code mode switch
     const codeModeSwitch = this.detailSheet
@@ -1068,13 +1105,13 @@ export class MCPRegistryPage extends BasePage {
   }
 
   /**
-   * Get tools count from the client details sheet
-   * Assumes the detail sheet is already open
+   * Get tools count from the client's view sheet
+   * Assumes the view sheet is already open
    */
   async getToolsCount(): Promise<number> {
-    // Tools live in a table on the detail sheet's Tools tab.
-    await this.detailSheet.getByTestId('mcpclient-tab-tools').click()
-    const toolRows = this.detailSheet.locator('table tbody tr')
+    // Tools live in a table on the view sheet's Tools tab.
+    await this.viewSheet.getByTestId('mcpclient-view-tab-tools').click()
+    const toolRows = this.viewSheet.locator('table tbody tr')
     await toolRows.first().waitFor({ timeout: 10000 }).catch(() => {})
     return await toolRows.count()
   }

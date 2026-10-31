@@ -1,15 +1,13 @@
 // Read-only view of the credential an MCP server holds on its own behalf,
-// rendered in the sheet's Authentication tab, plus the row that links to the
-// per-user sessions stored for it. Everything comes from MCPClient.credential
-// and the client config: nothing here is editable, and no secret material is
-// ever present (the refresh token as presence only, header values by name).
+// rendered on the server view sheet's Overview tab. Everything comes from
+// MCPClient.credential and the client config: nothing here is editable, and
+// no secret material is ever present (the refresh token as presence only,
+// header values by name).
 
 import { RefreshTokenStatus } from "@/components/refreshTokenStatus";
 import { ScopeChips } from "@/components/scopeChips";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { MCP_CREDENTIAL_STATUS_COLORS } from "@/lib/constants/config";
-import { useGetMCPSessionsQuery } from "@/lib/store";
 import { MCPClient, MCPClientCredential } from "@/lib/types/mcp";
 import {
 	formatAbsoluteDate,
@@ -19,10 +17,7 @@ import {
 	missingHeaderKeys,
 	shouldSuggestReplacementClient,
 } from "@/lib/utils/mcpCredential";
-import { perUserDiscoveryOn } from "@/lib/utils/mcpPerUserDiscovery";
 import { titleCaseFromSnakeCase } from "@/lib/utils/strings";
-import { Link } from "@tanstack/react-router";
-import { ArrowUpRight } from "lucide-react";
 import { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import i18n from "@/lib/i18n";
@@ -37,13 +32,9 @@ interface Props {
  * auth type: the shared token (oauth), the retained admin token
  * (per_user_oauth, token_exchange), or the retained admin header values
  * (per_user_headers). Renders nothing for auth types without a self-held
- * credential, and a note instead for a server with per_user_discovery on,
- * which keeps none.
+ * credential.
  */
 export function MCPClientCredentialSection({ mcpClient }: Props) {
-	if (perUserDiscoveryOn(mcpClient.config)) {
-		return <PerUserDiscoveryCredentialNote />;
-	}
 	switch (mcpClient.config.auth_type) {
 		case "oauth":
 		case "per_user_oauth":
@@ -54,32 +45,6 @@ export function MCPClientCredentialSection({ mcpClient }: Props) {
 		default:
 			return null;
 	}
-}
-
-/**
- * MCPClientSessionsSection is the "User Sessions" / "User Submissions" row:
- * how many per-user credentials are stored for this server and a link to
- * the MCP sessions page pre-filtered to it. Only per-user auth types store
- * such rows, so it renders nothing for the others.
- */
-export function MCPClientSessionsSection({ mcpClient }: Props) {
-	const authType = mcpClient.config.auth_type;
-	if (authType !== "per_user_oauth" && authType !== "per_user_headers") return null;
-	return <SessionsRow clientId={mcpClient.config.client_id} kind={authType === "per_user_oauth" ? "token" : "header"} />;
-}
-
-function PerUserDiscoveryCredentialNote() {
-	const { t } = useTranslation("mcp");
-	return (
-		<div className="space-y-4" data-testid="mcpclient-credential-section">
-			<SectionHeader
-				title={t("registry.credential.adminTitle")}
-				description={t("registry.credential.perUserDiscoveryDesc")}
-				testId="mcpclient-credential-heading"
-			/>
-			<EmptyCredential>{t("registry.credential.perUserDiscoveryNote")}</EmptyCredential>
-		</div>
-	);
 }
 
 function OAuthCredentialBlock({ mcpClient }: Props) {
@@ -94,7 +59,7 @@ function OAuthCredentialBlock({ mcpClient }: Props) {
 				<EmptyCredential>{copy.empty}</EmptyCredential>
 			) : (
 				<DefinitionList>
-					<Row label={t("common.status")}>
+					<DefinitionRow label={t("common.status")}>
 						<CredentialStatusBadge status={credential.status} />
 						{credential.status === "needs_reauth" && <Hint>{copy.needsReauth}</Hint>}
 						{credential.status === "needs_reauth" &&
@@ -109,8 +74,8 @@ function OAuthCredentialBlock({ mcpClient }: Props) {
 								{credential.status_reason}
 							</div>
 						)}
-					</Row>
-					<Row label={t("registry.credential.accessTokenExpires")}>
+					</DefinitionRow>
+					<DefinitionRow label={t("registry.credential.accessTokenExpires")}>
 						{credential.expires_at ? (
 							<>
 								{formatTokenExpiry(credential.expires_at, credential.status, credential.has_refresh_token)}
@@ -128,18 +93,18 @@ function OAuthCredentialBlock({ mcpClient }: Props) {
 								)}
 							</>
 						)}
-					</Row>
-					<Row label={t("sessions.refreshToken")}>
+					</DefinitionRow>
+					<DefinitionRow label={t("sessions.refreshToken")}>
 						<RefreshTokenValue credential={credential} notIssuedHint={copy.notIssued} />
-					</Row>
-					<Row label={t("registry.credential.grantedScopes")}>
+					</DefinitionRow>
+					<DefinitionRow label={t("registry.credential.grantedScopes")}>
 						{credential.scopes?.length ? (
 							<ScopeChips scopes={credential.scopes} max={credential.scopes.length} />
 						) : (
 							<span className="text-muted-foreground">{t("registry.credential.notReported")}</span>
 						)}
-					</Row>
-					<Row label={t("registry.credential.authorized")}>{formatAbsoluteDate(credential.created_at)}</Row>
+					</DefinitionRow>
+					<DefinitionRow label={t("registry.credential.authorized")}>{formatAbsoluteDate(credential.created_at)}</DefinitionRow>
 				</DefinitionList>
 			)}
 		</div>
@@ -215,11 +180,11 @@ function HeaderCredentialBlock({ mcpClient }: Props) {
 				<EmptyCredential>{t("registry.credential.adminValuesEmpty")}</EmptyCredential>
 			) : (
 				<DefinitionList>
-					<Row label={t("common.status")}>
+					<DefinitionRow label={t("common.status")}>
 						<CredentialStatusBadge status={credential.status} />
 						{credential.status === "needs_update" && <Hint>{t("registry.credential.needsUpdateHint")}</Hint>}
-					</Row>
-					<Row label={t("registry.credential.coversHeaders")}>
+					</DefinitionRow>
+					<DefinitionRow label={t("registry.credential.coversHeaders")}>
 						{covered.length === 0 && missing.length === 0 ? (
 							<span className="text-muted-foreground">-</span>
 						) : (
@@ -245,49 +210,11 @@ function HeaderCredentialBlock({ mcpClient }: Props) {
 								)}
 							</div>
 						)}
-					</Row>
-					<Row label={t("registry.credential.submitted")}>{formatAbsoluteDate(credential.created_at)}</Row>
-					<Row label={t("registry.credential.lastUpdated")}>{formatRelativePast(credential.updated_at)}</Row>
+					</DefinitionRow>
+					<DefinitionRow label={t("registry.credential.submitted")}>{formatAbsoluteDate(credential.created_at)}</DefinitionRow>
+					<DefinitionRow label={t("registry.credential.lastUpdated")}>{formatRelativePast(credential.updated_at)}</DefinitionRow>
 				</DefinitionList>
 			)}
-		</div>
-	);
-}
-
-function SessionsRow({ clientId, kind }: { clientId: string; kind: "token" | "header" }) {
-	const { t } = useTranslation("mcp");
-	// One-row page: only total_count is used. Shares the MCPSessions cache tag,
-	// so a revoke on the sessions page refreshes this count too.
-	const { data } = useGetMCPSessionsQuery({ mcp_client_id: [clientId], kind: [kind], limit: 1 });
-	const total = data?.total_count;
-	const oauth = kind === "token";
-
-	return (
-		<div className="space-y-4" data-testid="mcpclient-sessions-section">
-			<SectionHeader
-				title={oauth ? t("registry.credential.userSessions") : t("registry.credential.userSubmissions")}
-				description={oauth ? t("registry.credential.userSessionsDesc") : t("registry.credential.userSubmissionsDesc")}
-				testId="mcpclient-sessions-heading"
-				action={
-					<div className="flex shrink-0 items-center gap-3">
-						{typeof total === "number" && (
-							<span className="text-muted-foreground text-sm" data-testid="mcpclient-sessions-count">
-								{t(oauth ? "registry.credential.session" : "registry.credential.submission", { count: total })}
-							</span>
-						)}
-						<Button variant="outline" size="sm" asChild>
-							<Link
-								to="/workspace/mcp-sessions"
-								search={{ mcp_client_id: [clientId], kind: [kind] }}
-								data-testid="mcpclient-view-sessions-link"
-							>
-								{oauth ? t("registry.credential.viewSessions") : t("registry.credential.viewSubmissions")}
-								<ArrowUpRight className="size-3.5" />
-							</Link>
-						</Button>
-					</div>
-				}
-			/>
 		</div>
 	);
 }
@@ -310,11 +237,12 @@ function CredentialStatusBadge({ status }: { status: MCPClientCredential["status
 	);
 }
 
-function DefinitionList({ children }: { children: ReactNode }) {
+// DefinitionList and DefinitionRow lay out label/value rows; the view sheet's other sections use them too.
+export function DefinitionList({ children }: { children: ReactNode }) {
 	return <dl className="grid grid-cols-1 gap-x-4 gap-y-3.5 rounded-md border p-4 text-sm sm:grid-cols-[168px_1fr]">{children}</dl>;
 }
 
-function Row({ label, children }: { label: string; children: ReactNode }) {
+export function DefinitionRow({ label, children }: { label: string; children: ReactNode }) {
 	return (
 		<>
 			<dt className="text-muted-foreground pt-0.5">{label}</dt>

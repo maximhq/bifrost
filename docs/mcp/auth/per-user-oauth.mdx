@@ -221,14 +221,14 @@ The admin's one-time bootstrap token is not thrown away after verification: Bifr
 
 - **Tool-list refresh only.** The periodic tool syncer uses it for a one-shot connect, `tools/list`, disconnect cycle on the client's [tool sync interval](#periodic-tool-sync). It is **never** used for end-user tool calls; those always run under the caller's own token.
 - **Proactively refreshed.** The background token refresh worker keeps it alive alongside shared-client tokens, so tool discovery keeps working without anyone logging in again.
-- **Invisible on the sessions page.** Admin credentials are excluded from [MCP Sessions](../sessions); they are managed from the client sheet instead.
+- **Invisible on the sessions page.** Admin credentials are excluded from [MCP Sessions](../sessions); they are managed from the server's view sheet and actions menu instead.
 
-If the admin credential permanently dies (refresh rejected, provider-side revocation, or a credential rotation), the client list projects a **`needs_reauth`** badge next to the client's **View sessions** link. This is a display-level state: end-user credentials and tool calls keep working, only tool-list refresh pauses until an admin repairs it. Clients verified before Bifrost retained admin credentials have no admin row and simply stay healthy.
+If the admin credential permanently dies (refresh rejected, provider-side revocation, or a credential rotation), the server's state shows as **`needs_reauth`** in the servers table and on its view sheet. This is a display-level state: end-user credentials and tool calls keep working, only tool-list refresh pauses until an admin repairs it. Clients verified before Bifrost retained admin credentials have no admin row and simply stay healthy.
 
-To repair it, open the client sheet and click **Repair OAuth**: Bifrost redoes the admin consent flow, verifies the fresh token upstream, re-discovers tools, and installs the token as the new admin credential. If verification fails, the fresh token is revoked and the previous credential and tool set are left untouched, so the repair is safely retryable.
+To repair it, click **Refresh admin credential** in the server's actions menu, or in the alert at the top of its view sheet: Bifrost redoes the admin consent flow, verifies the fresh token upstream, re-discovers tools, and installs the token as the new admin credential. If verification fails, the fresh token is revoked and the previous credential and tool set are left untouched, so the repair is safely retryable.
 
 <Frame>
-  <img src="/media/ui-mcp-per-user-oauth-admin-repair.png" alt="Per-user OAuth client sheet showing the needs_reauth badge next to View sessions and the Repair OAuth button" />
+  <img src="/media/ui-mcp-per-user-oauth-admin-repair.png" alt="Per-user OAuth server view sheet with the Needs Reauth badge and an alert offering Refresh admin credential" />
 </Frame>
 
 The same repair is scriptable via `POST /api/mcp/client/{id}/reauthorize` (`{id}` = MCP client ID). For `per_user_oauth` clients the endpoint is strictly a repair surface: it returns **409** ("does not need repair or does not exist") unless the admin credential actually sits in `needs_reauth`, so it can never churn a healthy credential. The response is the standard `pending_oauth` payload (`authorize_url`, `status_url`, `complete_url`); complete it the same way as the [scriptable verification flow](#setup).
