@@ -50,6 +50,7 @@ import {
 import { VirtualMCP } from "@/lib/types/virtualMcps";
 import { parseArrayFromText } from "@/lib/utils/array";
 import { failureStageLabel, formatDurationSince, hasStateReason, stateReasonTitle } from "@/lib/utils/mcpConnectionFailure";
+import { perUserDiscoveryOn, supportsPerUserDiscovery, toolSubtitle } from "@/lib/utils/mcpPerUserDiscovery";
 import { titleCaseFromSnakeCase } from "@/lib/utils/strings";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetSCIMProvidersQuery } from "@enterprise/lib/store/apis/scimApi";
@@ -110,6 +111,10 @@ interface MCPClientSheetProps {
 // recorded reason so the explanation sits next to the instruction.
 function stateDescription(mcpClient: MCPClient, isPerUserAuth: boolean): string {
 	const failure = mcpClient.last_failure;
+	if (perUserDiscoveryOn(mcpClient.config)) {
+		const perUserDescription = perUserDiscoveryStateDescription(mcpClient);
+		if (perUserDescription) return perUserDescription;
+	}
 	switch (mcpClient.state) {
 		case "pending_verification":
 			return mcpClient.config.auth_type === "token_exchange"
@@ -147,6 +152,28 @@ function stateDescription(mcpClient: MCPClient, isPerUserAuth: boolean): string 
 			return i18n.t("registry.sheet.stateDegraded", { ns: "mcp" });
 		default:
 			return i18n.t("registry.sheet.stateDefault", { ns: "mcp" });
+	}
+}
+
+// perUserDiscoveryStateDescription is the sentence for a server with
+// per_user_discovery on while it is pending or healthy: its admin step only
+// verifies the server, and each caller discovers tools with their own
+// credential. Other states keep their general wording.
+function perUserDiscoveryStateDescription(mcpClient: MCPClient): string | undefined {
+	switch (mcpClient.state) {
+		case "pending_verification":
+			switch (mcpClient.config.auth_type) {
+				case "token_exchange":
+					return "This server needs a one-time verification: Bifrost exchanges your signed-in identity token and tests the connection. Nothing from it is kept: each caller's tools, prompts and resources are discovered with their own identity token.";
+				case "per_user_oauth":
+					return "An admin sign-in is needed once to verify the OAuth setup. Nothing from it is kept: each caller's tools, prompts and resources are discovered when they sign in.";
+				default:
+					return "Verify this server once with sample header values to test the connection. Nothing from it is kept: each caller's tools, prompts and resources are discovered with their own headers.";
+			}
+		case "healthy":
+			return "Each caller's tools, prompts and resources are discovered with their own credential when they connect. This server keeps no admin credential.";
+		default:
+			return undefined;
 	}
 }
 
@@ -551,6 +578,7 @@ export default function MCPClientSheet({
 			is_code_mode_client: mcpClient.config.is_code_mode_client || false,
 			is_ping_available: mcpClient.config.is_ping_available === true || mcpClient.config.is_ping_available === undefined,
 			needs_session_stickiness: mcpClient.config.needs_session_stickiness === true,
+			per_user_discovery: mcpClient.config.per_user_discovery === true,
 			allow_by_default: mcpClient.config.allow_by_default || false,
 			disabled: mcpClient.config.disabled || false,
 			headers: mcpClient.config.headers,
@@ -621,6 +649,8 @@ export default function MCPClientSheet({
 	};
 	const isDisabled = form.watch("disabled");
 	const needsSessionStickiness = form.watch("needs_session_stickiness");
+	const perUserDiscovery = form.watch("per_user_discovery") === true;
+	const canUsePerUserDiscovery = supportsPerUserDiscovery(mcpClient.config.auth_type, mcpClient.config.connection_type);
 
 	// Reset form when mcpClient changes
 	useEffect(() => {
@@ -629,6 +659,7 @@ export default function MCPClientSheet({
 			is_code_mode_client: mcpClient.config.is_code_mode_client || false,
 			is_ping_available: mcpClient.config.is_ping_available === true || mcpClient.config.is_ping_available === undefined,
 			needs_session_stickiness: mcpClient.config.needs_session_stickiness === true,
+			per_user_discovery: mcpClient.config.per_user_discovery === true,
 			allow_by_default: mcpClient.config.allow_by_default || false,
 			disabled: mcpClient.config.disabled || false,
 			headers: mcpClient.config.headers,
@@ -732,6 +763,9 @@ export default function MCPClientSheet({
 	// backend applies a stickiness change live (opens or closes the shared
 	// connection) as part of the same update, not on some later reconnect.
 	const needsSessionStickinessDirty = !!form.formState.dirtyFields.needs_session_stickiness;
+	// Gates the warning below its toggle: turning per_user_discovery on or off
+	// deletes what the server keeps as part of the same update.
+	const perUserDiscoveryDirty = !!form.formState.dirtyFields.per_user_discovery;
 
 	const handleNavigate = useCallback(
 		(direction: "prev" | "next") => {
@@ -894,6 +928,9 @@ export default function MCPClientSheet({
 					// explicit false is rejected for sse/stdio, which always keep
 					// a persistent connection regardless of this field.
 					needs_session_stickiness: mcpClient.config.connection_type === "http" ? data.needs_session_stickiness : undefined,
+					// Sent only when changed: turning it on or off deletes what the
+					// server keeps, so it is never echoed back on an unrelated edit.
+					per_user_discovery: canUsePerUserDiscovery && perUserDiscoveryDirty ? data.per_user_discovery : undefined,
 					allow_by_default: data.allow_by_default,
 					disabled: data.disabled,
 					headers: data.headers ?? {},
@@ -1425,6 +1462,36 @@ export default function MCPClientSheet({
 															/>
 														</>
 													)}
+												{canUsePerUserDiscovery && (
+													<FormField
+														control={form.control}
+														name="per_user_discovery"
+														render={({ field }) => (
+															<FormItem className="flex flex-row items-center justify-between gap-4 px-4 py-3">
+																<div className="flex items-center gap-2">
+																	<FormLabel>{t("registry.form.perUserDiscovery")}</FormLabel>
+																	<TooltipProvider>
+																		<Tooltip>
+																			<TooltipTrigger asChild>
+																				<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+																			</TooltipTrigger>
+																			<TooltipContent className="max-w-xs">
+																				<p>{t("registry.form.perUserDiscoveryHelp")}</p>
+																			</TooltipContent>
+																		</Tooltip>
+																	</TooltipProvider>
+																</div>
+																<FormControl>
+																	<Switch
+																		checked={field.value === true}
+																		onCheckedChange={field.onChange}
+																		data-testid="mcpclient-per-user-discovery-switch"
+																	/>
+																</FormControl>
+															</FormItem>
+														)}
+													/>
+												)}
 											</div>
 											{/* Sits outside the bordered row group: it's a consequence of the
 											    toggle above, not another setting row. */}
@@ -1435,6 +1502,23 @@ export default function MCPClientSheet({
 														{t("registry.sheet.stickinessImmediate", {
 															effect: needsSessionStickiness ? t("registry.sheet.stickinessOpen") : t("registry.sheet.stickinessClose"),
 														})}
+													</p>
+												</div>
+											)}
+											{perUserDiscoveryDirty && (
+												<div
+													className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800"
+													data-testid="mcpclient-per-user-discovery-warning"
+												>
+													<Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+													<p>
+														{perUserDiscovery
+															? t("registry.sheet.perUserDiscoveryOnWarning")
+															: mcpClient.config.auth_type === "per_user_oauth"
+																? t("registry.sheet.perUserDiscoveryOffWarningSignIn", {
+																		action: t("registry.actions.refreshAdminCredential"),
+																	})
+																: t("registry.sheet.perUserDiscoveryOffWarningPending")}
 													</p>
 												</div>
 											)}
@@ -1469,7 +1553,11 @@ export default function MCPClientSheet({
 																		</TooltipProvider>
 																	</div>
 																	<div>
-																		{isUsingGlobal && <p className="text-muted-foreground text-xs">{t("registry.sheet.usingGlobal")}</p>}
+																		{perUserDiscovery ? (
+																			<p className="text-muted-foreground text-xs">{t("registry.sheet.syncIntervalNotUsed")}</p>
+																		) : (
+																			isUsingGlobal && <p className="text-muted-foreground text-xs">{t("registry.sheet.usingGlobal")}</p>
+																		)}
 																	</div>
 																</div>
 																<FormControl>
@@ -1477,6 +1565,8 @@ export default function MCPClientSheet({
 																		type="number"
 																		className={`w-24 ${isUsingGlobal ? "text-muted-foreground" : ""}`}
 																		placeholder={String(globalToolSyncInterval)}
+																		disabled={perUserDiscovery}
+																		data-testid="mcpclient-tool-sync-interval-input"
 																		value={field.value === 0 || field.value === undefined ? "" : String(field.value)}
 																		onChange={(e) => {
 																			const val = e.target.value === "" ? undefined : parseInt(e.target.value);
@@ -1950,8 +2040,16 @@ export default function MCPClientSheet({
 										<div className="space-y-4">
 											<div className="flex items-start justify-between gap-4">
 												<SectionHeader
-													title={t("registry.sheet.availableTools", { count: mcpClient.tools?.length || 0 })}
-													description={t("registry.sheet.availableToolsDesc")}
+													title={
+														perUserDiscoveryOn(mcpClient.config)
+															? t("registry.sheet.toolsSeen", { count: mcpClient.tools?.length || 0 })
+															: t("registry.sheet.availableTools", { count: mcpClient.tools?.length || 0 })
+													}
+													description={
+														perUserDiscoveryOn(mcpClient.config)
+															? t("registry.sheet.toolsSeenDesc")
+															: t("registry.sheet.availableToolsDesc")
+													}
 												/>
 												{mcpClient.tools && mcpClient.tools.length > 0 && (
 													<div className="flex items-center gap-4">
@@ -2131,8 +2229,8 @@ export default function MCPClientSheet({
 																							(tool.title || tool.annotations?.title) !== tool.name && (
 																								<div className="text-muted-foreground truncate font-mono text-xs">{tool.name}</div>
 																							)}
-																						{tool.description && (
-																							<p className="text-muted-foreground mt-0.5 truncate text-xs">{tool.description}</p>
+																						{toolSubtitle(mcpClient, tool) && (
+																							<p className="text-muted-foreground mt-0.5 truncate text-xs">{toolSubtitle(mcpClient, tool)}</p>
 																						)}
 																					</div>
 																				</div>
@@ -2225,7 +2323,9 @@ export default function MCPClientSheet({
 																						<div className="text-muted-foreground mb-2 text-xs font-medium">
 																							{t("registry.sheet.parametersSchema")}
 																						</div>
-																						{tool.parameters ? (
+																						{perUserDiscoveryOn(mcpClient.config) ? (
+																							<div className="text-muted-foreground text-sm">{t("registry.sheet.schemasDiffer")}</div>
+																						) : tool.parameters ? (
 																							<CodeEditor
 																								className="z-0 w-full rounded-sm border"
 																								shouldAdjustInitialHeight={true}
@@ -2278,7 +2378,9 @@ export default function MCPClientSheet({
 												</div>
 											) : (
 												<div className="text-muted-foreground rounded-sm border p-6 text-center">
-													<p className="text-sm">{t("registry.sheet.noTools")}</p>
+													<p className="text-sm">
+														{perUserDiscoveryOn(mcpClient.config) ? t("registry.sheet.noToolsSeen") : t("registry.sheet.noTools")}
+													</p>
 												</div>
 											)}
 										</div>
