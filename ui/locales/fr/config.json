@@ -491,7 +491,7 @@
 		"proxyConfiguration": "Configuration du proxy",
 		"proxyType": "Type de proxy",
 		"httpHttps": "HTTP / HTTPS",
-		"proxyTypeHelp": "Sélectionnez le type de protocole de proxy. Seul le proxy HTTP est actuellement pris en charge.",
+		"proxyTypeHelp": "HTTP / HTTPS accepte une URL de proxy http:// ou https:// (https:// chiffre la connexion vers le proxy). SOCKS5 accepte une URL socks5://.",
 		"selectType": "Sélectionner le type",
 		"proxyUrl": "URL du proxy",
 		"proxyUrlHelp": "URL complète du serveur proxy, y compris le protocole et le port.",
@@ -512,16 +512,16 @@
 		"scimHelp": "Utiliser le proxy pour les requêtes de synchronisation d’annuaire SCIM.",
 		"scimEnterpriseOnly": "La prise en charge du proxy SCIM est disponible dans Bifrost Enterprise.",
 		"inference": "Inférence",
-		"inferenceHelp": "Utiliser le proxy pour les requêtes d’inférence LLM vers les fournisseurs de modèles.",
+		"inferenceHelp": "Utiliser le proxy pour les requêtes d’inférence LLM vers les fournisseurs de modèles. Un fournisseur ayant ses propres paramètres de proxy les conserve.",
 		"comingSoon": "Bientôt disponible",
 		"api": "API",
-		"apiHelp": "Utiliser le proxy pour les appels d’API externes et les webhooks.",
+		"apiHelp": "Utiliser le proxy pour les appels API sortants : serveurs MCP, OAuth, webhooks, téléchargements de plugins, synchronisation du catalogue de modèles et export OpenTelemetry.",
 		"noPermission": "Vous n’avez pas la permission de mettre à jour les paramètres",
 		"toastSaved": "Configuration du proxy mise à jour avec succès.",
 		"connectionTimeoutHelp": "Délai pour établir les connexions proxy. 0 signifie aucun délai. La valeur par défaut est 60 secondes.",
 		"caCertificateHelp": "Certificat CA encodé en PEM à faire confiance pour les connexions TLS via des proxies d’interception SSL.",
 		"skipTlsHelp": "Désactiver la vérification des certificats TLS pour les proxies HTTPS. Non recommandé en production.",
-		"unsupportedType": "Le proxy {{type}} n’est pas encore pris en charge. Veuillez utiliser un proxy HTTP."
+		"unsupportedType": "Le proxy {{type}} n’est pas encore pris en charge. Veuillez utiliser un proxy HTTP ou SOCKS5."
 	},
 	"userAgent": {
 		"title": "Correspondances User-Agent",

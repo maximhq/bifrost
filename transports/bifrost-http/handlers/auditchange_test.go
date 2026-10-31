@@ -498,3 +498,31 @@ func TestAuditMCPClientMasksStdioCommandLine(t *testing.T) {
 		t.Fatalf("masking mutated the live config: %+v", cfg.StdioConfig)
 	}
 }
+
+// TestAuditChange_ProxyURLPasswordMaskedWhenURLDoesNotParse pins that the audit snapshot
+// masks a proxy URL's password even when the URL does not parse. A disabled update is not
+// validated, so the restored password can be saved inside a malformed URL.
+func TestAuditChange_ProxyURLPasswordMaskedWhenURLDoesNotParse(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	if err := store.UpdateProxyConfig(context.Background(), &configstoreTables.GlobalProxyConfig{
+		Enabled: true, Type: "http", URL: "http://alice:secret@proxy.example:8080",
+	}); err != nil {
+		t.Fatalf("seed proxy config: %v", err)
+	}
+	h := &ConfigHandler{store: &lib.Config{ConfigStore: store}, configManager: &proxyReloadRecorder{}}
+
+	ctx := newTestRequestCtx(`{"enabled":false,"type":"http","url":"http://alice:<redacted>@proxy.example:bad"}`)
+	h.updateProxyConfig(ctx)
+
+	if code := ctx.Response.StatusCode(); code != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", code, ctx.Response.Body())
+	}
+	change := requireSingleAuditChange(t, ctx, "proxy_config.updated")
+	if strings.Contains(string(change.Before), "secret") || strings.Contains(string(change.After), "secret") {
+		t.Fatalf("audit snapshot carries the proxy password: before %s, after %s", change.Before, change.After)
+	}
+	if !strings.Contains(string(change.After), "proxy.example:bad") {
+		t.Fatalf("after snapshot missing the saved URL: %s", change.After)
+	}
+}

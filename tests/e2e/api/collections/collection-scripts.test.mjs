@@ -307,11 +307,28 @@ test("proxy teardown runs in the authenticated pass and disables the proxy for e
   }
   const proxyFolder = collection.item.find((f) => f.name === "Proxy");
   const teardown = proxyFolder.item.find((i) => i.name === "Teardown - Disable Proxy Config");
-  assert.strictEqual(proxyFolder.item.at(-1), teardown, "teardown must be the folder's last request");
+  const writes = proxyFolder.item.filter((i) => i.request.method === "PUT");
+  assert.strictEqual(writes.at(-1).name, "Update Proxy Config (restore original)", "the restore must be the folder's last write");
   const body = JSON.parse(teardown.request.body.raw);
   assert.strictEqual(body.enabled, false);
   assert.strictEqual(body.enable_for_inference, false);
   assert.strictEqual(body.enable_for_api, false);
+});
+
+// GET answers "<redacted>" for a stored password, and PUT takes that marker as "keep the
+// stored password" while an absent one stores an empty password. The restore can only put
+// back the password if no earlier write in the folder replaced it.
+test("every proxy write in the authenticated pass keeps the stored password", () => {
+  const proxyFolder = collection.item.find((f) => f.name === "Proxy");
+  const snapshot = JSON.stringify({ enabled: true, type: "http", url: "http://corp:3128", username: "u", password: "<redacted>", timeout: 30, enable_for_scim: false, enable_for_inference: true, enable_for_api: true });
+  for (const item of proxyFolder.item.filter((i) => i.request.method === "PUT")) {
+    const ctx = sandbox({ variables: { admin_auth_header: "Bearer x", proxy_original_config: snapshot } });
+    ctx.pm.request.body.raw = item.request.body.raw;
+    const prerequest = (item.event || []).find((e) => e.listen === "prerequest");
+    if (prerequest) new Function("pm", prerequest.script.exec.join("\n"))(ctx.pm);
+    const body = JSON.parse(ctx.pm.request.body.raw.replace(/\{\{[^}]+\}\}/g, "x"));
+    assert.strictEqual(body.password, "<redacted>", `${item.name} does not keep the stored password: ${ctx.pm.request.body.raw}`);
+  }
 });
 
 // ── Governance - VK Allow All Providers / per-provider catalog counts ─────────
