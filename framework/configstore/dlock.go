@@ -159,11 +159,22 @@ func (m *DistributedLockManager) NewLockWithTTL(lockKey string, ttl time.Duratio
 // a request cancelled mid-write must still give the lock back, not leave every
 // other instance waiting out the TTL.
 func (m *DistributedLockManager) Acquire(ctx context.Context, key string) (context.Context, func(), error) {
+	return m.acquire(ctx, key, func(lock *DistributedLock) error { return lock.Lock(ctx) })
+}
+
+// AcquireWithRetry waits using LockWithRetry, then manages the renewable lease
+// with the same lifecycle as Acquire.
+func (m *DistributedLockManager) AcquireWithRetry(ctx context.Context, key string, maxRetries int) (context.Context, func(), error) {
+	return m.acquire(ctx, key, func(lock *DistributedLock) error { return lock.LockWithRetry(ctx, maxRetries) })
+}
+
+// acquire shares renewable-lease management between the supported acquisition policies.
+func (m *DistributedLockManager) acquire(ctx context.Context, key string, take func(*DistributedLock) error) (context.Context, func(), error) {
 	lock, err := m.NewLock(key)
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := lock.Lock(ctx); err != nil {
+	if err := take(lock); err != nil {
 		return nil, nil, err
 	}
 	detached := context.WithoutCancel(ctx)

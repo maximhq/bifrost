@@ -3,13 +3,18 @@ package datasheet
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/stretchr/testify/require"
 )
 
 func TestModelParameterCandidates(t *testing.T) {
@@ -221,5 +226,159 @@ func TestLoadModelCapabilities_CarriesServerSideModel(t *testing.T) {
 	}
 	if caps == nil || caps.ServerSideModel == nil || *caps.ServerSideModel != "deepseek-flash" {
 		t.Fatalf("ServerSideModel = %+v, want deepseek-flash", caps)
+	}
+}
+
+// A URL sync must retain provider-qualified rows that exist only in the DB.
+func TestSyncModelParamsFromURL_PreservesDBOnlyRows(t *testing.T) {
+	ctx := t.Context()
+	cs, err := configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config:  &configstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "config.db")},
+	}, bifrost.NewNoOpLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cs.Close(context.Background()) })
+
+	const model = "custom-params-model"
+	const customKey = "custom-anthropic/" + model
+	const customData = `{"provider":"custom-anthropic","max_output_tokens":32000}`
+	const emptyKey = "custom-anthropic/empty-feed-model"
+	const dbOnlyKey = "custom-anthropic/db-only-model"
+	if err := cs.UpsertModelParametersBatch(ctx, []configstoreTables.TableModelParameters{
+		{Model: customKey, Data: customData},
+		{Model: emptyKey, Data: customData},
+		{Model: dbOnlyKey, Data: customData},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	feedPath := filepath.Join(t.TempDir(), "params.json")
+	if err := os.WriteFile(feedPath, []byte(`{
+		"custom-params-model":{"provider":"anthropic","max_output_tokens":16000},
+		"custom-anthropic/custom-params-model":{"max_output_tokens":"invalid"},
+		"custom-anthropic/empty-feed-model":{"supported_endpoints":[]}
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := New(cs, nil, Config{ModelParametersURL: "file://" + feedPath})
+	if _, err := s.LoadModelParamsFromDB(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SyncModelParamsFromURL(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{model, "empty-feed-model", "db-only-model"} {
+		caps, err := s.LoadModelCapabilities(ctx, "custom-anthropic", name)
+		if err != nil || caps == nil || caps.MaxOutputTokens == nil || *caps.MaxOutputTokens != 32000 {
+			t.Fatalf("stored capabilities for %s after sync = %+v, err = %v; want max_output_tokens 32000", name, caps, err)
+		}
+	}
+	row, err := cs.GetModelParametersByModel(ctx, customKey)
+	if err != nil || row == nil || row.Data != customData {
+		t.Fatalf("DB-only row after sync = %+v, err = %v", row, err)
+	}
+	emptyRow, err := cs.GetModelParametersByModel(ctx, emptyKey)
+	if err != nil || emptyRow == nil || emptyRow.Data != customData {
+		t.Fatalf("row shadowed by empty feed data = %+v, err = %v", emptyRow, err)
+	}
+}
+
+// TestSyncModelParamsFromURL_ProviderCollisions checks both persistence and lookup
+// after sync and reload, including legitimate updates beside rejected records.
+func TestSyncModelParamsFromURL_ProviderCollisions(t *testing.T) {
+	ctx := t.Context()
+	cs, err := configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true, Type: configstore.ConfigStoreTypeSQLite,
+		Config: &configstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "config.db")},
+	}, bifrost.NewNoOpLogger())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cs.Close(context.Background()) })
+
+	const stored = `{"provider":"custom-anthropic","max_output_tokens":32000,"supported_endpoints":["/v1/chat/completions"]}`
+	const providerless = `{"max_output_tokens":16000,"supported_endpoints":["/v1/responses"]}`
+	const explicitValues = `{"provider":"custom-anthropic","max_output_tokens":0,"supports_reasoning":false,"synthetic_structured_output_tool_prefix":"","supported_endpoints":["/v1/responses"]}`
+	const replacement = `{"provider":"other-provider","max_output_tokens":16000,"supported_endpoints":["/v1/responses"]}`
+	for i, tc := range []struct {
+		name, existing, incoming, want string
+	}{
+		{"missing provider", stored, providerless, stored},
+		{"missing provider with explicit zero", stored, `{"max_output_tokens":0}`, stored},
+		{"empty provider", stored, `{"provider":"","max_output_tokens":0}`, stored},
+		{"null provider", stored, `{"provider":null,"max_output_tokens":0}`, stored},
+		{"blank provider", stored, `{"provider":" \t","max_output_tokens":0}`, stored},
+		{"numeric provider", stored, `{"provider":123,"max_output_tokens":0}`, stored},
+		{"boolean provider", stored, `{"provider":false,"max_output_tokens":0}`, stored},
+		{"array provider", stored, `{"provider":["custom-anthropic"],"max_output_tokens":0}`, stored},
+		{"object provider", stored, `{"provider":{"name":"custom-anthropic"},"max_output_tokens":0}`, stored},
+		{"null record", stored, `null`, stored},
+		{"malformed capability", stored, `{"provider":"custom-anthropic","max_output_tokens":"bad"}`, stored},
+		{"empty nested capabilities", stored, `{"provider":"custom-anthropic","reasoning_budget":{},"model_parameters":[{}]}`, stored},
+		{"explicit values with provider", stored, explicitValues, explicitValues},
+		{"explicit provider change", stored, replacement, replacement},
+		{"new providerless record", "", providerless, providerless},
+		{"providerless update", `{"max_output_tokens":32000}`, providerless, providerless},
+		{"provider added", providerless, stored, stored},
+		{"new provider record", "", stored, stored},
+		{"empty stored provider", `{"provider":"","max_output_tokens":32000}`, providerless, providerless},
+		{"null stored provider", `{"provider":null,"max_output_tokens":32000}`, providerless, providerless},
+		{"blank stored provider", `{"provider":" ","max_output_tokens":32000}`, providerless, providerless},
+		{"malformed stored provider", `{"provider":123,"max_output_tokens":32000}`, providerless, providerless},
+	} {
+		for _, mixed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/mixed=%t", tc.name, mixed), func(t *testing.T) {
+				model := fmt.Sprintf("collision-model-%d-%t", i, mixed)
+				key := "custom-anthropic/" + model
+				if tc.existing != "" {
+					require.NoError(t, cs.UpsertModelParametersBatch(ctx, []configstoreTables.TableModelParameters{{Model: key, Data: tc.existing}}))
+				}
+				path := filepath.Join(t.TempDir(), "params.json")
+				// A healthy sibling must still be applied when the colliding row is rejected.
+				siblingKey := "healthy-" + model
+				feed := fmt.Sprintf(`{%q:%s}`, key, tc.incoming)
+				if mixed {
+					feed = fmt.Sprintf(`{%q:%s,%q:%s}`, key, tc.incoming, siblingKey, providerless)
+				}
+				require.NoError(t, os.WriteFile(path, []byte(feed), 0o600))
+				s := New(cs, nil, Config{ModelParametersURL: "file://" + path})
+				_, err := s.LoadModelParamsFromDB(ctx)
+				require.NoError(t, err)
+				require.NoError(t, s.SyncModelParamsFromURL(ctx))
+				row, err := cs.GetModelParametersByModel(ctx, key)
+				require.NoError(t, err)
+				require.JSONEq(t, tc.want, row.Data)
+				if mixed {
+					sibling, err := cs.GetModelParametersByModel(ctx, siblingKey)
+					require.NoError(t, err)
+					require.JSONEq(t, providerless, sibling.Data)
+				}
+
+				var want struct {
+					Provider string
+					schemas.ModelCapabilities
+				}
+				require.NoError(t, json.Unmarshal([]byte(tc.want), &want))
+				for _, reload := range []bool{false, true} {
+					if reload {
+						s = New(cs, nil, Config{})
+						_, err := s.LoadModelParamsFromDB(ctx)
+						require.NoError(t, err)
+					}
+					caps, err := s.LoadModelCapabilities(ctx, schemas.ModelProvider(want.Provider), model)
+					require.NoError(t, err)
+					if want.Provider == "" {
+						require.Nil(t, caps)
+					} else {
+						require.Equal(t, &want.ModelCapabilities, caps)
+					}
+					require.Equal(t, slices.Contains(want.SupportedEndpoints, "/v1/chat/completions"), s.IsRequestTypeSupported(key, schemas.ChatCompletionRequest))
+					require.Equal(t, slices.Contains(want.SupportedEndpoints, "/v1/responses"), s.IsRequestTypeSupported(key, schemas.ResponsesRequest))
+					require.Contains(t, s.GetSupportedParameters(key), "max_tokens")
+				}
+			})
+		}
 	}
 }
