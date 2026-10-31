@@ -1126,6 +1126,13 @@ describe("checker CLI review contract", () => {
 		expect(runCli(["--repo-root", repoRoot, "--baseline", baseline, "--inventory-only"])).toBe(0);
 	});
 
+	it("fails inventory when the baseline cannot be loaded", () => {
+		const repoRoot = makeGitRepo();
+		writeMinimalResources(repoRoot);
+		commitAll(repoRoot, "baseline");
+		expect(runCli(["--repo-root", repoRoot, "--baseline", "missing-ref", "--inventory-only"])).toBe(1);
+	});
+
 	it("rejects a review file without the required evidence arrays", () => {
 		const repoRoot = makeGitRepo();
 		writeMinimalResources(repoRoot);

@@ -1452,7 +1452,8 @@ export function runCli(argv = process.argv.slice(2)) {
 		writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
 	}
 	console.log(JSON.stringify(report, null, 2));
-	return !options.inventoryOnly && gateFindings.length > 0 ? 1 : 0;
+	const baselineFailed = gateFindings.some((finding) => finding.type.startsWith("baseline-"));
+	return gateFindings.length > 0 && (!options.inventoryOnly || baselineFailed) ? 1 : 0;
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
