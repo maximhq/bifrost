@@ -1041,6 +1041,42 @@ func TestValidateConfigSchema_MCPClientConfig_Valid_Http(t *testing.T) {
 	}
 }
 
+// TestValidateConfigSchema_MCPClientConfig_PerUserDiscovery: per_user_discovery
+// discovers each caller's tools with their own credential, so the schema accepts
+// it only on a per-user auth type, and not on an openapi client.
+func TestValidateConfigSchema_MCPClientConfig_PerUserDiscovery(t *testing.T) {
+	schema := loadLocalSchema(t)
+	for _, tc := range []struct {
+		name   string
+		client string
+		valid  bool
+	}{
+		{"per_user_headers", `"connection_type": "http", "connection_string": "http://localhost:3001/mcp", "auth_type": "per_user_headers", "per_user_header_keys": ["x-api-key"]`, true},
+		{"per_user_oauth", `"connection_type": "http", "connection_string": "http://localhost:3001/mcp", "auth_type": "per_user_oauth"`, true},
+		{"token_exchange", `"connection_type": "http", "connection_string": "http://localhost:3001/mcp", "auth_type": "token_exchange", "token_exchange": {"audience": "api://notes", "client_id": "exchange-app"}`, true},
+		{"headers", `"connection_type": "http", "connection_string": "http://localhost:3001/mcp", "auth_type": "headers"`, false},
+		{"oauth", `"connection_type": "http", "connection_string": "http://localhost:3001/mcp", "auth_type": "oauth"`, false},
+		{"no auth_type", `"connection_type": "http", "connection_string": "http://localhost:3001/mcp"`, false},
+		{"openapi per_user_headers", `"connection_type": "openapi", "auth_type": "per_user_headers", "per_user_header_keys": ["x-api-key"], "openapi_config": {"spec_url": "https://example.com/openapi.json"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := `{"mcp": {"client_configs": [{"name": "notes", ` + tc.client + `, "per_user_discovery": true}]}}`
+			err := ValidateConfigSchema([]byte(config), schema)
+			if tc.valid && err != nil {
+				t.Errorf("expected per_user_discovery to be accepted, got: %v", err)
+			}
+			if !tc.valid && err == nil {
+				t.Error("expected per_user_discovery to be rejected")
+			}
+		})
+	}
+
+	off := `{"mcp": {"client_configs": [{"name": "notes", "connection_type": "http", "connection_string": "http://localhost:3001/mcp", "auth_type": "headers", "per_user_discovery": false}]}}`
+	if err := ValidateConfigSchema([]byte(off), schema); err != nil {
+		t.Errorf("expected per_user_discovery false to be accepted on any auth type, got: %v", err)
+	}
+}
+
 func TestValidateConfigSchema_MCPClientConfig_MissingName(t *testing.T) {
 	// Missing required field: name
 	invalidConfig := `{
