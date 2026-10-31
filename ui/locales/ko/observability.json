@@ -137,6 +137,7 @@
 			"successRate": "성공률",
 			"avgLatency": "평균 지연 시간",
 			"noData": "이 기간 동안 사용할 수 있는 {{dimension}} 사용 데이터가 없어요.",
+			"actualTooltip": "실제로 전송된 요청 수입니다.",
 			"attributedTooltipShort": "기여됨 - 요청은 자신이 속한 각 {{dimension}}에 포함되므로 실제 요청 수를 초과할 수 있어요.",
 			"attributedTooltipLong": "요청은 자신이 속한 각 {{dimension}}에 포함되므로 총 요청 수를 초과할 수 있어요.",
 			"newBadge": "신규",

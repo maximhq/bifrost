@@ -138,6 +138,7 @@
 			"successRate": "Success Rate",
 			"avgLatency": "Avg Latency",
 			"noData": "No {{dimension}} usage data available for this time period.",
+			"actualTooltip": "Actual number of requests sent.",
 			"attributedTooltipShort": "Attributed - a request counts toward each {{dimension}} it belongs to, so this can exceed the actual request count.",
 			"attributedTooltipLong": "A request counts toward each {{dimension}} it belongs to, so this can exceed the total request count.",
 			"newBadge": "new",

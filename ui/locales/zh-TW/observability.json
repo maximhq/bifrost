@@ -137,6 +137,7 @@
 			"successRate": "成功率",
 			"avgLatency": "平均延遲",
 			"noData": "該時間段內暫無{{dimension}}用量資料。",
+			"actualTooltip": "實際傳送的請求數。",
 			"attributedTooltipShort": "歸因：一條請求會計入其所屬的每個{{dimension}}，因此可能超過實際請求數。",
 			"attributedTooltipLong": "一條請求會計入其所屬的每個{{dimension}}，因此可能超過總請求數。",
 			"newBadge": "新增",

@@ -138,6 +138,7 @@
 			"successRate": "Taxa de Sucesso",
 			"avgLatency": "Latência média",
 			"noData": "Sem dados de utilização de {{dimension}} disponíveis para este período.",
+			"actualTooltip": "Número real de pedidos enviados.",
 			"attributedTooltipShort": "Atribuído — um pedido conta para cada {{dimension}} a que pertence, pelo que isto pode exceder a contagem real de pedidos.",
 			"attributedTooltipLong": "Um pedido conta para cada {{dimension}} a que pertence, pelo que isto pode exceder a contagem total de pedidos.",
 			"newBadge": "novo",

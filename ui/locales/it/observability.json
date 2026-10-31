@@ -138,6 +138,7 @@
 			"successRate": "Tasso di successo",
 			"avgLatency": "Latenza media",
 			"noData": "Nessun dato di utilizzo di {{dimension}} disponibile per questo periodo.",
+			"actualTooltip": "Numero effettivo di richieste inviate.",
 			"attributedTooltipShort": "Attribuite - una richiesta viene conteggiata per ogni {{dimension}} a cui appartiene, quindi questo valore può superare il conteggio effettivo delle richieste.",
 			"attributedTooltipLong": "Una richiesta viene conteggiata per ogni {{dimension}} a cui appartiene, quindi questo valore può superare il conteggio totale delle richieste.",
 			"newBadge": "nuovo",

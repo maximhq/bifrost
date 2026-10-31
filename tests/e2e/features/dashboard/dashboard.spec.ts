@@ -357,6 +357,55 @@ test.describe('Dashboard', () => {
     })
   })
 
+  test.describe('Ranking Request Totals', () => {
+    test('should explain actual and attributed request totals in separate tooltips', async ({ dashboardPage }) => {
+      await dashboardPage.page.route('**/api/logs/rankings/by-dimension**', (route) => {
+        const url = new URL(route.request().url())
+        if (url.searchParams.get('dimension') !== 'team') return route.continue()
+        return route.fulfill({
+          json: {
+            dimension: 'team',
+            rankings: [
+              {
+                id: 'team-a',
+                name: 'Team A',
+                total_requests: 2,
+                total_tokens: 20,
+                total_cost: 0.1,
+                trend: { has_previous_period: false, requests_trend: 0, tokens_trend: null, cost_trend: null },
+              },
+            ],
+            total_actual_requests: 1,
+            total_attributed_requests: 2,
+          },
+        })
+      })
+      await dashboardPage.page.goto('/workspace/dashboard?tab=team-rankings')
+      await waitForNetworkIdle(dashboardPage.page)
+
+      const actualTrigger = dashboardPage.page.getByTestId('dashboard-team-rankings-top-chart-total-trigger')
+      const actualTooltip = dashboardPage.page.getByTestId('dashboard-team-rankings-top-chart-total-tooltip')
+      await expect(actualTrigger).toContainText('Total Requests')
+      await expect(actualTrigger).toContainText('1')
+      await actualTrigger.hover()
+      await expect(actualTooltip).toBeVisible()
+      await expect(actualTooltip).toContainText('Actual number of requests sent.')
+
+      await dashboardPage.page.keyboard.press('Escape')
+      await expect(actualTooltip).not.toBeVisible()
+
+      const attributedTrigger = dashboardPage.page.getByTestId('dashboard-team-rankings-top-chart-secondary-total-trigger')
+      const attributedTooltip = dashboardPage.page.getByTestId('dashboard-team-rankings-top-chart-secondary-total-tooltip')
+      await expect(attributedTrigger).toContainText('Attributed Requests')
+      await expect(attributedTrigger).toContainText('2')
+      await attributedTrigger.hover()
+      await expect(attributedTooltip).toBeVisible()
+      await expect(attributedTooltip).toContainText(
+        'A request counts toward each Team it belongs to, so this can exceed the total request count.'
+      )
+    })
+  })
+
   test.describe('Error States', () => {
     test('should handle empty data gracefully', async ({ dashboardPage }) => {
       // Navigate with very short time range that may have no data
