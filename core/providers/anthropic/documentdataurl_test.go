@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/internal/memtest"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
@@ -35,6 +36,28 @@ func TestInlineDocumentPreservesLegacyData(t *testing.T) {
 		block := ConvertToAnthropicDocumentBlock(schemas.ChatContentBlock{File: &schemas.ChatInputFile{FileData: &tc.data, FileType: &tc.media}})
 		if s := block.Source.SourceObj; s.Type != tc.kind || s.Data == nil || *s.Data != tc.data {
 			t.Fatalf("legacy source changed: %+v", s)
+		}
+	}
+}
+
+// TestEmptyTextDocumentKeepsTextSource pins an empty plain-text document to a text source in
+// both converters. It used to fall through every branch and leave with source.type "", which
+// Anthropic rejects as an unknown input tag (issue #8849).
+func TestEmptyTextDocumentKeepsTextSource(t *testing.T) {
+	for _, fileType := range []string{"text/plain", "txt"} {
+		empty := ""
+		chat := ConvertToAnthropicDocumentBlock(schemas.ChatContentBlock{File: &schemas.ChatInputFile{FileData: &empty, FileType: &fileType}})
+		responses := ConvertResponsesFileBlockToAnthropic(&schemas.ResponsesInputMessageContentBlockFile{FileData: &empty, FileType: &fileType}, nil, nil, nil)
+		for name, block := range map[string]AnthropicContentBlock{"chat": chat, "responses": responses} {
+			body, err := sonic.Marshal(block)
+			if err != nil {
+				t.Fatal(err)
+			}
+			source := gjson.GetBytes(body, "source")
+			if source.Get("type").String() != "text" || source.Get("media_type").String() != "text/plain" ||
+				!source.Get("data").Exists() || source.Get("data").String() != "" {
+				t.Fatalf("%s %s: empty text document lost its source: %s", name, fileType, source.Raw)
+			}
 		}
 	}
 }

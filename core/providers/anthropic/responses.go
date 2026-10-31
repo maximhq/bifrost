@@ -6683,10 +6683,46 @@ func convertSingleAnthropicMessageToBifrostMessages(ctx *schemas.BifrostContext,
 	// Handle content blocks
 	if msg.Content.ContentBlocks != nil {
 		roleVal := schemas.ResponsesMessageRoleType(msg.Role)
-		return attachPerMessageEffort(msg, convertAnthropicContentBlocksToResponsesMessagesOrdered(ctx, msg.Content.ContentBlocks, &roleVal, isOutput, structuredOutputToolName, preserveThinkingOrder))
+		converted := convertAnthropicContentBlocksToResponsesMessagesOrdered(ctx, msg.Content.ContentBlocks, &roleVal, isOutput, structuredOutputToolName, preserveThinkingOrder)
+		if !isOutput {
+			converted = mergeAdjacentUserInputMessages(converted)
+		}
+		return attachPerMessageEffort(msg, converted)
 	}
 
 	return attachPerMessageEffort(msg, nil)
+}
+
+// mergeAdjacentUserInputMessages folds consecutive input message items converted from one
+// Anthropic user turn back into a single item. The block converters emit one item per text,
+// image or document block, and egress maps items to messages one to one, so without this a
+// three-block user turn went upstream as three user messages: the provider indexed its errors
+// against messages the client never sent, and OpenAI-shaped egresses saw the same split.
+// Only items from the same turn are merged; tool results, compaction and fallback items
+// (which carry a type other than message, or an ID) stay where they are, so block order holds.
+func mergeAdjacentUserInputMessages(msgs []schemas.ResponsesMessage) []schemas.ResponsesMessage {
+	if len(msgs) < 2 {
+		return msgs
+	}
+	merged := msgs[:1]
+	for i := 1; i < len(msgs); i++ {
+		last := &merged[len(merged)-1]
+		if isMergeableUserInputMessage(last) && isMergeableUserInputMessage(&msgs[i]) {
+			last.Content.ContentBlocks = append(last.Content.ContentBlocks, msgs[i].Content.ContentBlocks...)
+			continue
+		}
+		merged = append(merged, msgs[i])
+	}
+	return merged
+}
+
+// isMergeableUserInputMessage reports whether an item is a plain user message holding content
+// blocks, the only shape mergeAdjacentUserInputMessages folds together.
+func isMergeableUserInputMessage(msg *schemas.ResponsesMessage) bool {
+	return msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeMessage &&
+		msg.Role != nil && *msg.Role == schemas.ResponsesInputMessageRoleUser &&
+		msg.ID == nil && msg.Status == nil && msg.OutputConfig == nil &&
+		msg.Content != nil && msg.Content.ContentStr == nil && len(msg.Content.ContentBlocks) > 0
 }
 
 // attachPerMessageEffort carries an Anthropic per-message output_config (beta
@@ -6737,7 +6773,11 @@ func convertSingleAnthropicMessageToBifrostMessagesGrouped(msg *AnthropicMessage
 	// Handle content blocks with grouping for text and tool calls
 	if msg.Content.ContentBlocks != nil {
 		roleVal := schemas.ResponsesMessageRoleType(msg.Role)
-		return attachPerMessageEffort(msg, convertAnthropicContentBlocksToResponsesMessagesGrouped(msg.Content.ContentBlocks, &roleVal, isOutput))
+		converted := convertAnthropicContentBlocksToResponsesMessagesGrouped(msg.Content.ContentBlocks, &roleVal, isOutput)
+		if !isOutput {
+			converted = mergeAdjacentUserInputMessages(converted)
+		}
+		return attachPerMessageEffort(msg, converted)
 	}
 
 	return attachPerMessageEffort(msg, nil)
@@ -10694,47 +10734,10 @@ func (block AnthropicContentBlock) toBifrostResponsesDocumentBlock() schemas.Res
 		}
 	}
 
-	// Anthropic's document block has an optional `title`; OpenAI's Responses
-	// API rejects an input_file that carries inline file_data without a
-	// filename. Synthesize one so a title-less document (the common case when
-	// a tool returns a PDF) still converts into an acceptable request.
-	file := resultBlock.ResponsesInputMessageContentBlockFile
-	if file.FileData != nil && (file.Filename == nil || *file.Filename == "") {
-		file.Filename = schemas.Ptr(defaultDocumentFilename(src))
-	}
-
+	// A title-less document stays title-less here: a synthesized filename would
+	// come back to Anthropic as a title the client never sent. Egresses that
+	// require a filename beside inline file_data (OpenAI) default it themselves.
 	return resultBlock
-}
-
-// defaultDocumentFilename builds a filename for a document block that has no
-// title, picking the extension from the source's media type. Anthropic
-// defaults document blocks to PDF, so that's the fallback.
-func defaultDocumentFilename(src *AnthropicSource) string {
-	mediaType := ""
-	if src != nil && src.MediaType != nil {
-		mediaType = *src.MediaType
-	}
-	if src != nil && src.Type == "text" {
-		mediaType = "text/plain"
-	}
-
-	ext := ".pdf"
-	switch mediaType {
-	case "", "application/pdf":
-		ext = ".pdf"
-	case "text/plain":
-		ext = ".txt"
-	default:
-		// "application/json" -> ".json", "text/markdown" -> ".markdown".
-		if _, subtype, found := strings.Cut(mediaType, "/"); found && subtype != "" {
-			// Strip vendor/suffix decorations: "vnd.ms-excel+xml" -> "xml".
-			if _, suffix, hasSuffix := strings.Cut(subtype, "+"); hasSuffix && suffix != "" {
-				subtype = suffix
-			}
-			ext = "." + subtype
-		}
-	}
-	return "document" + ext
 }
 
 // Helper functions for MCP tool/server conversion
