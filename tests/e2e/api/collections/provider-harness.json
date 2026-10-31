@@ -298482,6 +298482,819 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "297. OpenAI zero-token-usage survives completion wire serialization (#8749)",
+      "description": "Local regression for #8749 using a Custom OpenAI-compatible provider. Eight zero-usage cases cover Chat/Text on /v1 and /openai/v1, both unary and SSE. Representative controls pin total-only usage, nonzero counts, absent usage and the existing embedding limitation (a known follow-up). The full missing/null/partial-zero matrix lives in Go tests. Async Chat/Text cases poll the persisted result; reasoning.mode cases cover Chat-to-Responses conversion on native and SDK routes. One folder-level script checks every response; no paid provider calls.\n\nStart the fixture in a fresh directory: node tests/e2e/api/runners/run-zero-token-usage-fixture.mjs /tmp/bifrost-zero-token-usage. In another terminal: make dev PORT=3022 APP_DIR=/tmp/bifrost-zero-token-usage. Verify port 3022 is free beforehand and wait for /health. Log in at POST /api/session/login with username usage-fixture and password fixture-only-password; export its token cookie as BIFROST_E2E_AUTH_HEADER=\"Bearer <token>\" for the management preflight. Run: make run-provider-harness-test PROVIDER=openai FEATURE=\"zero-token-usage\" INCLUDE_PREVIEW=1 PARALLEL=0 COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1 BASE_URL=http://localhost:3022. Stop the gateway and fixture afterward. PREVIEW excludes these fixture cases from paid sweeps.",
+      "item": [
+        {
+          "name": "297.1 [PREVIEW] OpenAI zero-usage-fixture/zero /v1/chat/completions unary zero-token-usage",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zero-usage-fixture/zero\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "297.2 [PREVIEW] OpenAI zero-usage-fixture/zero /v1/chat/completions SSE zero-token-usage",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zero-usage-fixture/zero\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "297.3 [PREVIEW] OpenAI zero-usage-fixture/zero /openai/v1/chat/completions unary zero-token-usage",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zero-usage-fixture/zero\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "297.4 [PREVIEW] OpenAI zero-usage-fixture/zero /openai/v1/chat/completions SSE zero-token-usage",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zero-usage-fixture/zero\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "297.5 [PREVIEW] OpenAI zero-usage-fixture/zero /v1/completions unary zero-token-usage",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zero-usage-fixture/zero\",\n  \"prompt\": \"hello\",\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "297.6 [PREVIEW] OpenAI zero-usage-fixture/zero /v1/completions SSE zero-token-usage",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zero-usage-fixture/zero\",\n  \"prompt\": \"hello\",\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "297.7 [PREVIEW] OpenAI zero-usage-fixture/zero /openai/v1/completions unary zero-token-usage",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zero-usage-fixture/zero\",\n  \"prompt\": \"hello\",\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "297.8 [PREVIEW] OpenAI zero-usage-fixture/zero /openai/v1/completions SSE zero-token-usage",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zero-usage-fixture/zero\",\n  \"prompt\": \"hello\",\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "297.9 [PREVIEW] OpenAI zero-usage-fixture/nonzero /v1/chat/completions unary zero-token-usage",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zero-usage-fixture/nonzero\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "297.10 [PREVIEW] OpenAI zero-usage-fixture/no-usage /v1/chat/completions unary zero-token-usage",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zero-usage-fixture/no-usage\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "297.11 [PREVIEW] OpenAI zero-usage-fixture/zero /v1/embeddings unary zero-token-usage (known limitation)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zero-usage-fixture/zero\",\n  \"input\": \"hello\"\n}"
+            }
+          }
+        },
+        {
+          "name": "297.12 [PREVIEW] OpenAI zero-usage-fixture/total-only /v1/chat/completions unary zero-token-usage",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zero-usage-fixture/total-only\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "297.13 [PREVIEW] OpenAI zero-usage-fixture/total-only /v1/chat/completions SSE zero-token-usage",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zero-usage-fixture/total-only\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "297.14 [PREVIEW] OpenAI zero-usage-fixture/total-only /openai/v1/completions unary zero-token-usage",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zero-usage-fixture/total-only\",\n  \"prompt\": \"hello\",\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "297.15 [PREVIEW] OpenAI zero-usage-fixture/total-only /openai/v1/completions SSE zero-token-usage",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zero-usage-fixture/total-only\",\n  \"prompt\": \"hello\",\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "297.16 [PREVIEW] OpenAI zero-usage-fixture/zero /v1/chat/completions unary reasoning.mode zero-token-usage",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zero-usage-fixture/zero\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": false,\n  \"reasoning\": {\n    \"mode\": \"pro\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "297.17 [PREVIEW] OpenAI zero-usage-fixture/total-only /v1/chat/completions unary reasoning.mode zero-token-usage",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zero-usage-fixture/total-only\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": false,\n  \"reasoning\": {\n    \"mode\": \"pro\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "297.18 [PREVIEW] OpenAI zero-usage-fixture/zero /v1/chat/completions SSE reasoning.mode zero-token-usage",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zero-usage-fixture/zero\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": true,\n  \"reasoning\": {\n    \"mode\": \"pro\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "297.19 [PREVIEW] OpenAI zero-usage-fixture/total-only /v1/chat/completions SSE reasoning.mode zero-token-usage",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zero-usage-fixture/total-only\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": true,\n  \"reasoning\": {\n    \"mode\": \"pro\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "297.20 [PREVIEW] OpenAI zero-usage-fixture/zero /openai/v1/chat/completions unary reasoning.mode zero-token-usage",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zero-usage-fixture/zero\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": false,\n  \"reasoning\": {\n    \"mode\": \"pro\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "297.21 [PREVIEW] OpenAI zero-usage-fixture/total-only /openai/v1/chat/completions unary reasoning.mode zero-token-usage",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zero-usage-fixture/total-only\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": false,\n  \"reasoning\": {\n    \"mode\": \"pro\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "297.22 [PREVIEW] OpenAI zero-usage-fixture/zero /openai/v1/chat/completions SSE reasoning.mode zero-token-usage",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zero-usage-fixture/zero\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": true,\n  \"reasoning\": {\n    \"mode\": \"pro\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "297.23 [PREVIEW] OpenAI zero-usage-fixture/total-only /openai/v1/chat/completions SSE reasoning.mode zero-token-usage",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zero-usage-fixture/total-only\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": true,\n  \"reasoning\": {\n    \"mode\": \"pro\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "297.24 [PREVIEW] [EXPECT-202] OpenAI zero-usage-fixture/zero /v1/async/chat/completions unary zero-token-usage",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/async/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "async",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zero-usage-fixture/zero\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "297.25 [PREVIEW] [EXPECT-202] OpenAI zero-usage-fixture/total-only /v1/async/chat/completions unary zero-token-usage",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/async/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "async",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zero-usage-fixture/total-only\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "297.26 [PREVIEW] [EXPECT-202] OpenAI zero-usage-fixture/zero /v1/async/completions unary zero-token-usage",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/async/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "async",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zero-usage-fixture/zero\",\n  \"stream\": false,\n  \"prompt\": \"hello\"\n}"
+            }
+          }
+        },
+        {
+          "name": "297.27 [PREVIEW] [EXPECT-202] OpenAI zero-usage-fixture/total-only /v1/async/completions unary zero-token-usage",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/async/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "async",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zero-usage-fixture/total-only\",\n  \"stream\": false,\n  \"prompt\": \"hello\"\n}"
+            }
+          }
+        }
+      ],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var text = pm.response.text();",
+              "var request = JSON.parse(pm.request.body.raw);",
+              "var model = request.model.split('/').pop();",
+              "var expected = {",
+              "  'zero': { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },",
+              "  'total-only': { total_tokens: 12 },",
+              "  'nonzero': { prompt_tokens: 204, completion_tokens: 2, total_tokens: 206 },",
+              "  'no-usage': null",
+              "}[model];",
+              "var asyncJob = pm.request.url.toString().indexOf('/v1/async/') !== -1;",
+              "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(asyncJob ? 202 : 200); });",
+              "if (asyncJob) {",
+              "  var job = pm.response.json();",
+              "  pm.test('job has an id', function () { pm.expect(job.id, text).to.be.a('string').and.not.empty; });",
+              "  var pollURL = pm.variables.replaceIn(pm.request.url.toString()) + '/' + job.id;",
+              "  function poll(attempt) {",
+              "    pm.sendRequest({ url: pollURL, method: 'GET', header: pm.request.headers.all().filter(function (h) { return ['authorization', 'x-bf-vk'].indexOf(h.key.toLowerCase()) !== -1; }) }, function (err, response) {",
+              "      pm.test('poll request succeeds', function () { pm.expect(err).to.equal(null); });",
+              "      if (err) return;",
+              "      var raw = response.text();",
+              "      pm.test('poll status is successful', function () { pm.expect(response.code, raw).to.be.oneOf([200, 202]); });",
+              "      if (response.code !== 200 && response.code !== 202) return;",
+              "      var result = response.json();",
+              "      if ((result.status === 'pending' || result.status === 'processing') && attempt < 100) {",
+              "        setTimeout(function () { poll(attempt + 1); }, 100);",
+              "      } else {",
+              "        pm.test('async result preserves content and usage', function () {",
+              "          pm.expect(result.status, raw).to.eql('completed');",
+              "          pm.expect(result.result.usage, raw).to.eql(expected);",
+              "          var choice = result.result.choices[0];",
+              "          pm.expect(choice.text || (choice.message || {}).content, raw).to.eql('fixture response');",
+              "        });",
+              "      }",
+              "    });",
+              "  }",
+              "  poll(0);",
+              "} else {",
+              "var usages;",
+              "if (request.stream) {",
+              "  var frames = text.split(String.fromCharCode(10)).filter(function (line) { return line.indexOf('data: ') === 0; }).map(function (line) { return line.slice(6).trim(); });",
+              "  pm.test('stream completes', function () { pm.expect(frames, text).to.include('[DONE]'); });",
+              "  var chunks = frames.filter(function (frame) { return frame !== '[DONE]'; }).map(function (frame) { return JSON.parse(frame); });",
+              "  pm.test('stream preserves content without errors', function () {",
+              "    chunks.forEach(function (chunk) { pm.expect(chunk.error, text).to.be.undefined; });",
+              "    var content = chunks.map(function (chunk) { return (chunk.choices || []).map(function (choice) { return choice.text || (choice.delta || {}).content || ''; }).join(''); }).join('');",
+              "    pm.expect(content, text).to.eql('fixture response');",
+              "  });",
+              "  usages = chunks.filter(function (chunk) { return chunk.usage != null; }).map(function (chunk) { return chunk.usage; });",
+              "  pm.test('stream includes usage', function () { pm.expect(usages.length, text).to.be.above(0); });",
+              "} else {",
+              "  var body = pm.response.json();",
+              "  if (request.input) {",
+              "    expected = { total_tokens: 0 };",
+              "    pm.test('embedding survives', function () { pm.expect(body.data[0].embedding, text).to.eql([0.25, 0.75]); });",
+              "  } else {",
+              "    pm.test('fixture content survives', function () { pm.expect(body.choices[0].text || (body.choices[0].message || {}).content, text).to.eql('fixture response'); });",
+              "  }",
+              "  usages = [body.usage == null ? null : body.usage];",
+              "}",
+              "pm.test('usage preserves reported counts without adding missing counts', function () {",
+              "  usages.forEach(function (usage) { pm.expect(usage, text).to.eql(expected); });",
+              "});",
+              "}"
+            ]
+          }
+        }
+      ]
     }
   ]
 }
