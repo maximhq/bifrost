@@ -165,9 +165,11 @@ func (b *BedrockContentBlock) UnmarshalJSON(data []byte) error {
 	aux := &struct {
 		Type   *string `json:"type,omitempty"`
 		Source *struct {
+			Type      string `json:"type,omitempty"`
 			MediaType string `json:"media_type,omitempty"`
 			Data      string `json:"data,omitempty"`
 		} `json:"source,omitempty"`
+		Title     *string         `json:"title,omitempty"`
 		ID        *string         `json:"id,omitempty"`
 		Name      *string         `json:"name,omitempty"`
 		Input     json.RawMessage `json:"input,omitempty"`
@@ -208,6 +210,35 @@ func (b *BedrockContentBlock) UnmarshalJSON(data []byte) error {
 		b.Image = &BedrockImageSource{
 			Format: format,
 			Source: BedrockImageSourceData{Bytes: &imgData},
+		}
+	case "document":
+		// Only inline sources (base64 or text) map onto a Converse document.
+		// url / content / file sources have no Converse equivalent here.
+		if aux.Source == nil || aux.Source.Data == "" {
+			return nil
+		}
+		format, _, ok := bedrockDocumentFormat(aux.Source.MediaType)
+		if !ok {
+			return nil
+		}
+		name := ""
+		if aux.Title != nil {
+			name = *aux.Title
+		}
+		docData := aux.Source.Data
+		source := &BedrockDocumentSourceData{}
+		switch aux.Source.Type {
+		case "base64":
+			source.Bytes = &docData
+		case "text":
+			source.Text = &docData
+		default:
+			return nil
+		}
+		b.Document = &BedrockDocumentSource{
+			Format: format,
+			Name:   normalizeBedrockFilename(name),
+			Source: source,
 		}
 	case "tool_use":
 		if aux.ID == nil || aux.Name == nil {

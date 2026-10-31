@@ -3282,3 +3282,112 @@ func TestInvokeIngressCarriesToolStrict(t *testing.T) {
 		})
 	}
 }
+
+// InvokeModel passes Anthropic's native `document` block through; it must be
+// normalized into the Converse-shaped Document field instead of being dropped.
+
+func TestBedrockContentBlock_AnthropicDocumentBase64Normalized(t *testing.T) {
+	raw := `{"type":"document","title":"Q3 report","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0xLjQK"}}`
+
+	var block BedrockContentBlock
+	require.NoError(t, sonic.Unmarshal([]byte(raw), &block))
+
+	require.NotNil(t, block.Document, "Anthropic-native document block must normalize into Converse-shaped Document")
+	assert.Equal(t, "pdf", block.Document.Format)
+	assert.Equal(t, "Q3 report", block.Document.Name)
+	require.NotNil(t, block.Document.Source)
+	require.NotNil(t, block.Document.Source.Bytes)
+	assert.Equal(t, "JVBERi0xLjQK", *block.Document.Source.Bytes)
+}
+
+func TestBedrockContentBlock_AnthropicDocumentTextSourceNormalized(t *testing.T) {
+	raw := `{"type":"document","source":{"type":"text","media_type":"text/plain","data":"hello"}}`
+
+	var block BedrockContentBlock
+	require.NoError(t, sonic.Unmarshal([]byte(raw), &block))
+
+	require.NotNil(t, block.Document)
+	assert.Equal(t, "txt", block.Document.Format)
+	assert.Equal(t, "document", block.Document.Name)
+	require.NotNil(t, block.Document.Source)
+	require.NotNil(t, block.Document.Source.Text)
+	assert.Equal(t, "hello", *block.Document.Source.Text)
+}
+
+func TestBedrockContentBlock_AnthropicDocumentNestedInToolResultNormalized(t *testing.T) {
+	raw := `{"type":"tool_result","tool_use_id":"toolu_1","content":[{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0xLjQK"}}]}`
+
+	var block BedrockContentBlock
+	require.NoError(t, sonic.Unmarshal([]byte(raw), &block))
+
+	require.NotNil(t, block.ToolResult)
+	require.Len(t, block.ToolResult.Content, 1)
+	require.NotNil(t, block.ToolResult.Content[0].Document)
+	assert.Equal(t, "pdf", block.ToolResult.Content[0].Document.Format)
+}
+
+func TestBedrockInvokeRequest_AnthropicDocumentSurvivesDecoding(t *testing.T) {
+	body := `{"anthropic_version":"bedrock-2023-05-31","max_tokens":16,"messages":[{"role":"user","content":[{"type":"text","text":"summarize"},{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0xLjQK"}}]}]}`
+
+	var req BedrockInvokeRequest
+	require.NoError(t, sonic.Unmarshal([]byte(body), &req))
+
+	require.Len(t, req.Messages, 1)
+	require.Len(t, req.Messages[0].Content, 2)
+	require.NotNil(t, req.Messages[0].Content[1].Document)
+}
+
+func BenchmarkBedrockContentBlock_UnmarshalAnthropicDocument(b *testing.B) {
+	raw := []byte(`{"type":"document","title":"Q3 report","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0xLjQK"}}`)
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		var block BedrockContentBlock
+		if err := sonic.Unmarshal(raw, &block); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkBedrockContentBlock_UnmarshalAnthropicImage(b *testing.B) {
+	raw := []byte(`{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + pngBase64Fixture + `"}}`)
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		var block BedrockContentBlock
+		if err := sonic.Unmarshal(raw, &block); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// TestToBedrockResponsesRequest_InvokeDocumentReachesEgress follows an Anthropic-native
+// document block through the whole invoke route: decode -> Converse request -> Bifrost
+// request -> outbound Bedrock request, and checks the document is still there.
+func TestToBedrockResponsesRequest_InvokeDocumentReachesEgress(t *testing.T) {
+	body := `{"anthropic_version":"bedrock-2023-05-31","max_tokens":16,"messages":[{"role":"user","content":[{"type":"text","text":"summarize"},{"type":"document","title":"Q3 report","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0xLjQK"}}]}]}`
+
+	var req BedrockInvokeRequest
+	require.NoError(t, sonic.Unmarshal([]byte(body), &req))
+	req.ModelID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq, err := req.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+
+	out, err := ToBedrockResponsesRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+
+	var doc *BedrockDocumentSource
+	for _, m := range out.Messages {
+		for _, c := range m.Content {
+			if c.Document != nil {
+				doc = c.Document
+			}
+		}
+	}
+	require.NotNil(t, doc, "document block dropped before reaching the Bedrock request")
+	assert.Equal(t, "pdf", doc.Format)
+	require.NotNil(t, doc.Source)
+	require.NotNil(t, doc.Source.Bytes)
+	assert.Equal(t, "JVBERi0xLjQK", *doc.Source.Bytes)
+}
