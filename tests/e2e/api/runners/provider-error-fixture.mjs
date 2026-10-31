@@ -249,7 +249,7 @@ const server = http.createServer((req, res) => {
 				body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
 			} catch {}
 			const r = responsesFor(body, (k) => { hits[k] = (hits[k] || 0) + 1; });
-			if (parsed.stream === true && model.startsWith("upstream-ok~boolean-schema-nodes-")) {
+			if (r.status === 200 && parsed.stream === true && model.startsWith("upstream-ok~boolean-schema-nodes-")) {
 				res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
 				return res.end(responsesStream(JSON.parse(r.body)));
 			}

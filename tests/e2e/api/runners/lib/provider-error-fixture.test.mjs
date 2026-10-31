@@ -112,3 +112,23 @@ test("boolean-schema route fixture supplies chat and Responses in both transfer 
     }
   }
 });
+
+// Encrypted reasoning errors stay JSON even when the boolean-schema route requests SSE. A valid
+// request after each rejection proves malformed input cannot stop the shared fixture.
+test("boolean-schema Responses keeps encrypted-reasoning errors as JSON in both transfer modes", async (t) => {
+  const post = await startFixture(t);
+  const model = "upstream-ok~boolean-schema-nodes-encrypted-reasoning-test";
+  for (const stream of [false, true]) {
+    const res = await post({
+      model,
+      stream,
+      input: [{ type: "reasoning", id: "wrong-id", encrypted_content: "enc-token-fixture" }],
+    }, "/v1/responses");
+    assert.equal(res.status, 400, `stream=${stream}`);
+    assert.match(res.headers.get("content-type"), /application\/json/, `stream=${stream}`);
+    assert.equal((await res.json()).error.code, "invalid_encrypted_content", `stream=${stream}`);
+    const ok = await post({ model, stream: false }, "/v1/responses");
+    assert.equal(ok.status, 200, `a valid request after the rejected stream=${stream} request`);
+    assert.equal((await ok.json()).output.find((item) => item.type === "message").content[0].text, "hello");
+  }
+});
