@@ -25,6 +25,7 @@ import { AlertTriangle, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import { withBasePath } from "@/lib/utils/basePath";
 
 // Go duration string: one or more <number><unit> segments, e.g. "5m", "1h30m".
 const COOLDOWN_PATTERN = /^(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/;
@@ -32,6 +33,7 @@ const COOLDOWN_PATTERN = /^(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/;
 const secretVarEquals = (a?: SecretVar, b?: SecretVar) =>
 	(a?.value ?? "") === (b?.value ?? "") && (a?.ref ?? "") === (b?.ref ?? "") && (a?.type ?? "plain_text") === (b?.type ?? "plain_text");
 
+/** Security settings page: dashboard authentication, admin credentials and related security options. */
 export default function SecurityView() {
 	const { t } = useTranslation("config");
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
@@ -346,7 +348,7 @@ export default function SecurityView() {
 			// session cookie (logout clears it) and sign in with the new admin account.
 			if (showPasswordSection && authConfig.is_enabled && hasUsername && hasPassword && authorizedBySetupToken) {
 				await fetch(`${getApiBaseUrl()}/session/logout`, { method: "POST", credentials: "include" }).catch(() => undefined);
-				window.location.href = "/login";
+				window.location.href = withBasePath("/login");
 			}
 		} catch (error) {
 			const message = getErrorMessage(error);

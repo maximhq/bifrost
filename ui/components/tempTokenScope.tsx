@@ -16,6 +16,7 @@
 
 import { setActiveTempToken, setSuppressGlobal401 } from "@/lib/store/apis/tempToken";
 import { useEffect, useState } from "react";
+import { stripBasePath } from "@/lib/utils/basePath";
 
 interface TempTokenScopeProps {
 	name: string;
@@ -88,7 +89,7 @@ function parseTokenFromFragment(fragment: string): string | null {
 // Namespaced by scope and flow so two flows in one tab never cross tokens.
 function storageKey(name: string): string {
 	const flowId = new URLSearchParams(window.location.search).get("flow");
-	return `${name}_token_${flowId ?? window.location.pathname}`;
+	return `${name}_token_${flowId ?? stripBasePath(window.location.pathname)}`;
 }
 
 function readStoredToken(name: string): string | null {

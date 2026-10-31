@@ -6,7 +6,10 @@
  * - Dynamic port resolution
  * - URL generation for API calls and WebSocket connections
  * - Automatic protocol detection (http/https, ws/wss)
+ * - The server.base_path prefix (see ./basePath)
  */
+
+import { getBasePath } from "./basePath";
 
 interface PortConfig {
 	port: string;
@@ -75,8 +78,8 @@ export function getApiBaseUrl(): string {
 	if (config.isDevelopment) {
 		return `${config.baseUrl}/api`;
 	} else {
-		// Production mode: use relative URL for API calls
-		return "/api";
+		// Production mode: use relative URL for API calls, under the base path
+		return `${getBasePath()}/api`;
 	}
 }
 
@@ -87,14 +90,14 @@ export function getWebSocketUrl(path: string = ""): string {
 	const config = getPortConfig();
 	const cleanPath = path.startsWith("/") ? path : `/${path}`;
 
-	return `${config.wsUrl}${cleanPath}`;
+	return `${config.wsUrl}${getBasePath()}${cleanPath}`;
 }
 
 /**
  * Get the full base URL (for example code snippets)
  */
 export function getExampleBaseUrl(): string {
-	return getPortConfig().baseUrl;
+	return `${getPortConfig().baseUrl}${getBasePath()}`;
 }
 
 /**
@@ -121,7 +124,7 @@ export function getEndpointUrl(endpoint: string): string {
 	if (config.isDevelopment) {
 		return `${config.baseUrl}${cleanEndpoint}`;
 	} else {
-		// Production mode: use relative URLs
-		return cleanEndpoint;
+		// Production mode: use relative URLs, under the base path
+		return `${getBasePath()}${cleanEndpoint}`;
 	}
 }

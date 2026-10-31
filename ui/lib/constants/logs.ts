@@ -1,6 +1,7 @@
 import type { TFunction } from "i18next";
 import i18n from "@/lib/i18n";
 // Known provider names array - centralized definition
+import { withBasePath } from "@/lib/utils/basePath";
 export const KnownProvidersNames = [
 	"anthropic",
 	"azure",
@@ -223,24 +224,30 @@ export interface ClientApp {
 // every release, so never match on an exact string. Identifiers are best-effort
 // and meant to be extended as new clients appear.
 const userAgentAppMatchers: { identifiers: string[]; app: ClientApp }[] = [
-	{ identifiers: ["bifrost-warp"], app: { name: "Warp", icon: "/images/warp.svg" } },
-	{ identifiers: ["chatgpt-web"], app: { name: "ChatGPT Web", icon: "/images/openai.png" } },
-	{ identifiers: ["claude-chat-web", "claude-web"], app: { name: "Claude Chat Web", icon: "/images/claude-desktop.png" } },
-	{ identifiers: ["claude-desktop"], app: { name: "Claude Desktop", icon: "/images/claude-desktop.png" } },
-	{ identifiers: ["claude-cowork"], app: { name: "Claude Cowork", icon: "/images/claude-desktop.png" } },
-	{ identifiers: ["claude-code", "claude-cli", "claude-vscode"], app: { name: "Claude Code", icon: "/images/claude-code.png" } },
-	{ identifiers: ["codex-cli", "codex-tui"], app: { name: "Codex CLI", icon: "/images/codex.png" } },
-	{ identifiers: ["codex-desktop"], app: { name: "Codex Desktop", icon: "/images/codex.png" } },
-	{ identifiers: ["codex"], app: { name: "Codex Desktop", icon: "/images/codex.png" } },
-	{ identifiers: ["cursor"], app: { name: "Cursor", icon: "/images/cursor.png" } },
-	{ identifiers: ["kilo"], app: { name: "Kilo Code", icon: "/images/kilo-code.png" } },
-	{ identifiers: ["roo"], app: { name: "Roo Code", icon: "/images/roo-code.png" } },
-	{ identifiers: ["cline"], app: { name: "Cline", icon: "/images/cline.png" } },
-	{ identifiers: ["opencode"], app: { name: "OpenCode", icon: "/images/opencode.png" } },
-	{ identifiers: ["windsurf"], app: { name: "Windsurf", icon: "/images/windsurf.png" } },
-	{ identifiers: ["antigravity-cli"], app: { name: "Antigravity CLI", icon: "/images/harness/antigravity.svg" } },
-	{ identifiers: ["antigravity-desktop", "antigravity/"], app: { name: "Antigravity Desktop", icon: "/images/harness/antigravity.svg" } },
-	{ identifiers: ["gemini", "geminicli"], app: { name: "Gemini CLI", icon: "/images/gemini-cli.png" } },
+	{ identifiers: ["bifrost-warp"], app: { name: "Warp", icon: withBasePath("/images/warp.svg") } },
+	{ identifiers: ["chatgpt-web"], app: { name: "ChatGPT Web", icon: withBasePath("/images/openai.png") } },
+	{ identifiers: ["claude-chat-web", "claude-web"], app: { name: "Claude Chat Web", icon: withBasePath("/images/claude-desktop.png") } },
+	{ identifiers: ["claude-desktop"], app: { name: "Claude Desktop", icon: withBasePath("/images/claude-desktop.png") } },
+	{ identifiers: ["claude-cowork"], app: { name: "Claude Cowork", icon: withBasePath("/images/claude-desktop.png") } },
+	{
+		identifiers: ["claude-code", "claude-cli", "claude-vscode"],
+		app: { name: "Claude Code", icon: withBasePath("/images/claude-code.png") },
+	},
+	{ identifiers: ["codex-cli", "codex-tui"], app: { name: "Codex CLI", icon: withBasePath("/images/codex.png") } },
+	{ identifiers: ["codex-desktop"], app: { name: "Codex Desktop", icon: withBasePath("/images/codex.png") } },
+	{ identifiers: ["codex"], app: { name: "Codex Desktop", icon: withBasePath("/images/codex.png") } },
+	{ identifiers: ["cursor"], app: { name: "Cursor", icon: withBasePath("/images/cursor.png") } },
+	{ identifiers: ["kilo"], app: { name: "Kilo Code", icon: withBasePath("/images/kilo-code.png") } },
+	{ identifiers: ["roo"], app: { name: "Roo Code", icon: withBasePath("/images/roo-code.png") } },
+	{ identifiers: ["cline"], app: { name: "Cline", icon: withBasePath("/images/cline.png") } },
+	{ identifiers: ["opencode"], app: { name: "OpenCode", icon: withBasePath("/images/opencode.png") } },
+	{ identifiers: ["windsurf"], app: { name: "Windsurf", icon: withBasePath("/images/windsurf.png") } },
+	{ identifiers: ["antigravity-cli"], app: { name: "Antigravity CLI", icon: withBasePath("/images/harness/antigravity.svg") } },
+	{
+		identifiers: ["antigravity-desktop", "antigravity/"],
+		app: { name: "Antigravity Desktop", icon: withBasePath("/images/harness/antigravity.svg") },
+	},
+	{ identifiers: ["gemini", "geminicli"], app: { name: "Gemini CLI", icon: withBasePath("/images/gemini-cli.png") } },
 	{ identifiers: ["qwencode", "qwen"], app: { name: "Qwen Code" } },
 ];
 
