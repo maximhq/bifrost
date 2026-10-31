@@ -1025,7 +1025,7 @@ func TestCodeModeAgent_ServerInstructionsReachTheModel(t *testing.T) {
 	manager := setupMCPManager(t, codeModeClient)
 	ctx := createTestContext()
 
-	// The client's own instructions, not GetServerInstructions: that aggregate excludes code
+	// The client's own instructions, not the caller's discovery's: that aggregate excludes code
 	// mode clients, so sourcing from it would make this test skip itself. Skips on a fixture
 	// advertising nothing.
 	state := manager.GetClientByName(codeModeClient.Name)

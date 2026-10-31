@@ -4,7 +4,6 @@ package mcp
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -128,25 +127,25 @@ func toolNames(tools []schemas.ChatTool) []string {
 	return names
 }
 
-func TestGetConnectTools_StandsInForTheClientUntilTheCallerConnects(t *testing.T) {
+func TestCallerDiscoveryConnectTools_StandsInForTheClientUntilTheCallerConnects(t *testing.T) {
 	m, perUser, notes := newConnectTestManager(t, &connectCredStore{}, "http://upstream.invalid", schemas.MCPConfig{})
 	shared := sharedClient()
 	m.mu.Lock()
 	m.clientMap[shared.ID] = &schemas.MCPClientState{Name: shared.Name, ExecutionConfig: shared, State: schemas.MCPConnectionStateHealthy}
 	m.mu.Unlock()
 
-	connect := m.GetConnectTools(userContext("alice"))
+	connect := m.GetCallerDiscovery(userContext("alice"), false).ConnectTools
 	require.Len(t, connect, 1, "only the per-user discovery client stands in with connect")
 	assert.Equal(t, "notes-connect", connect[0].Function.Name)
 	assert.Contains(t, *connect[0].Function.Description, "notes")
 	assert.NotContains(t, m.GetToolPerClient(userContext("alice")), "notes", "connect never joins the per-client tool lists code mode builds bindings from")
 
 	require.NoError(t, perUser.SetDiscovery(userContext("alice"), notes, discoveryOf("notes", "search")))
-	assert.Empty(t, m.GetConnectTools(userContext("alice")), "a caller with a discovery is offered the client's tools instead")
-	assert.Equal(t, []string{"notes-connect"}, toolNames(m.GetConnectTools(vkContext("vk-1"))), "another caller still has to connect")
+	assert.Empty(t, m.GetCallerDiscovery(userContext("alice"), false).ConnectTools, "a caller with a discovery is offered the client's tools instead")
+	assert.Equal(t, []string{"notes-connect"}, toolNames(m.GetCallerDiscovery(vkContext("vk-1"), false).ConnectTools), "another caller still has to connect")
 }
 
-func TestGetConnectTools_OnlyCallersWhoCanReachTheClientSeeIt(t *testing.T) {
+func TestCallerDiscoveryConnectTools_OnlyCallersWhoCanReachTheClientSeeIt(t *testing.T) {
 	cases := []struct {
 		name    string
 		ctx     func() context.Context
@@ -187,7 +186,7 @@ func TestGetConnectTools_OnlyCallersWhoCanReachTheClientSeeIt(t *testing.T) {
 				tc.edit(m.clientMap[notes.ID])
 				m.mu.Unlock()
 			}
-			got := toolNames(m.GetConnectTools(tc.ctx()))
+			got := toolNames(m.GetCallerDiscovery(tc.ctx(), false).ConnectTools)
 			if tc.offered {
 				assert.Equal(t, []string{"notes-connect"}, got)
 			} else {
@@ -240,7 +239,7 @@ func TestConnect_WithACredentialStoresTheCallersDiscovery(t *testing.T) {
 	}
 
 	assert.Equal(t, []string{"notes-create_page", "notes-search"}, toolNames(m.GetToolPerClient(userContext("alice"))["notes"]))
-	assert.Empty(t, m.GetConnectTools(userContext("alice")))
+	assert.Empty(t, m.GetCallerDiscovery(userContext("alice"), false).ConnectTools)
 }
 
 // A caller who connects gets the server's resources, resource templates and prompts with its
@@ -428,14 +427,14 @@ func TestConnect_WaitsForTheClientsAdminVerification(t *testing.T) {
 	m, perUser, notes := newConnectTestManager(t, creds, upstream.URL, schemas.MCPConfig{})
 	awaitVerification(m, notes, true)
 
-	assert.Empty(t, m.GetConnectTools(userContext("alice")), "connect is not offered")
+	assert.Empty(t, m.GetCallerDiscovery(userContext("alice"), false).ConnectTools, "connect is not offered")
 	_, bErr := m.ExecuteChatTool(userContext("alice"), connectToolCall("notes-connect"))
 	require.NotNil(t, bErr, "nor can it be called")
 	assert.Nil(t, perUser.GetDiscovery(userContext("alice"), notes))
 	assert.Empty(t, rec.headerValues("Authorization"), "nothing is dialed with the caller's credential")
 
 	awaitVerification(m, notes, false)
-	assert.Equal(t, []string{"notes-connect"}, toolNames(m.GetConnectTools(userContext("alice"))), "verified again, connect is back")
+	assert.Equal(t, []string{"notes-connect"}, toolNames(m.GetCallerDiscovery(userContext("alice"), false).ConnectTools), "verified again, connect is back")
 }
 
 func TestPerUserTools_WaitForTheClientsAdminVerification(t *testing.T) {
@@ -618,39 +617,4 @@ func TestAgent_ConnectRunsWithoutApproval(t *testing.T) {
 	assert.Equal(t, 1, turns, "connect ran without approval and the loop went on")
 	assert.Equal(t, "Connected to notes: 1 tools are available from your next turn.", toolResult)
 	assert.NotNil(t, perUser.GetDiscovery(userContext("alice"), notes))
-}
-
-// The connect tools of a request served by a manager with no per-user discovery
-// client: the common case, which must cost a lock and a loop and nothing more.
-func BenchmarkGetConnectTools_NoPerUserClient(b *testing.B) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
-	m.mu.Lock()
-	for i := range 10 {
-		config := &schemas.MCPClientConfig{ID: fmt.Sprintf("client-%d", i), Name: fmt.Sprintf("client%d", i), ToolsToExecute: []string{"*"}}
-		m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, State: schemas.MCPConnectionStateHealthy}
-	}
-	m.mu.Unlock()
-	ctx := userContext("alice")
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = m.GetConnectTools(ctx)
-	}
-}
-
-// The connect tools of a caller who has not connected to the one per-user
-// discovery client.
-func BenchmarkGetConnectTools_UnconnectedCaller(b *testing.B) {
-	perUser := newFakePerUserDiscoveryStore()
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{PerUserDiscoveryStore: perUser}, nil, &MockLogger{}, nil)
-	config := perUserClient()
-	m.mu.Lock()
-	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, State: schemas.MCPConnectionStateHealthy}
-	m.mu.Unlock()
-	ctx := userContext("alice")
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = m.GetConnectTools(ctx)
-	}
 }

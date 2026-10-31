@@ -298,8 +298,9 @@ func (m *authRetryClientManager) GetToolPerClient(_ context.Context) map[string]
 	return nil
 }
 
-func (m *authRetryClientManager) GetConnectTools(context.Context) []schemas.ChatTool {
-	return nil
+// GetCallerDiscovery serves the fake's tools, with no connect tools or instructions.
+func (m *authRetryClientManager) GetCallerDiscovery(ctx context.Context, _ bool) CallerDiscovery {
+	return CallerDiscovery{ToolsPerClient: m.GetToolPerClient(ctx)}
 }
 
 func (m *authRetryClientManager) ConnectToolClient(context.Context, string) *schemas.MCPClientState {
@@ -307,10 +308,6 @@ func (m *authRetryClientManager) ConnectToolClient(context.Context, string) *sch
 }
 
 func (m *authRetryClientManager) InstructionCaps() InstructionCaps { return InstructionCaps{} }
-
-func (m *authRetryClientManager) GetServerInstructions(_ context.Context) []schemas.MCPServerInstructions {
-	return nil
-}
 
 func (m *authRetryClientManager) GetPluginPipeline() PluginPipeline      { return nil }
 func (m *authRetryClientManager) ReleasePluginPipeline(_ PluginPipeline) {}

@@ -170,6 +170,14 @@ func (m *MCPManager) GetClientForTool(ctx context.Context, toolName string) (*sc
 	return clientCopy, discovery
 }
 
+// GetCallerDiscovery returns what the caller on ctx sees of the clients (see
+// CallerDiscovery), collecting the instructions only when withInstructions is set.
+// A request takes its tools, connect tools and instructions from one
+// CallerDiscovery, so each client's discovery is read once per request.
+func (m *MCPManager) GetCallerDiscovery(ctx context.Context, withInstructions bool) CallerDiscovery {
+	return m.resolveCallerDiscovery(ctx, true, withInstructions)
+}
+
 // GetToolPerClient returns all tools from connected MCP clients.
 // Applies client filtering if specified in the context.
 // Returns a map of client name to its available tools.
@@ -179,6 +187,12 @@ func (m *MCPManager) GetClientForTool(ctx context.Context, toolName string) (*sc
 // Returns:
 //   - map[string][]schemas.ChatTool: Map of client name to its available tools
 func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool {
+	return m.resolveCallerDiscovery(ctx, false, false).ToolsPerClient
+}
+
+// resolveCallerDiscovery builds the caller's CallerDiscovery, with its connect
+// tools when withConnect is set and its instructions when withInstructions is set.
+func (m *MCPManager) resolveCallerDiscovery(ctx context.Context, withConnect, withInstructions bool) CallerDiscovery {
 	var includeClients []string
 
 	// Extract client filtering from request context
@@ -204,7 +218,10 @@ func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.
 	m.mu.RUnlock()
 	slices.Sort(clientNames)
 
-	tools := make(map[string][]schemas.ChatTool)
+	// A caller with no user or virtual-key identity is offered no connect tool
+	// (see connectCaller).
+	offerConnect := withConnect && connectCaller(ctx)
+	result := CallerDiscovery{ToolsPerClient: make(map[string][]schemas.ChatTool)}
 	for _, clientName := range clientNames {
 		client := clientsByName[clientName]
 		clientID := client.ExecutionConfig.ID
@@ -223,9 +240,11 @@ func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.
 			continue
 		}
 
-		// The caller's discovery for this client, resolved outside m.mu (see
-		// the snapshot comment above).
-		toolMap := m.discoveryStore.GetDiscovery(ctx, client.ExecutionConfig).GetTools()
+		// The caller's discovery for this client, read once for its tools, its
+		// connect tool and its instructions, outside m.mu (see the snapshot
+		// comment above).
+		discovery := m.discoveryStore.GetDiscovery(ctx, client.ExecutionConfig)
+		toolMap := discovery.GetTools()
 
 		// Collect and sort tool names for deterministic ordering
 		toolNames := make([]string, 0, len(toolMap))
@@ -238,8 +257,10 @@ func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.
 		// 1. Client-level configuration (ToolsToExecute) - Global allow-list, most restrictive
 		// 2. Request context (MCPContextKeyIncludeTools) - Can only further narrow, not expand
 		// Context filtering CANNOT override client configuration - it can only be more restrictive.
+		// The names kept are gathered first, so the tools are copied once into a
+		// slice of exactly their count instead of being grown one by one.
+		kept := toolNames[:0]
 		for _, toolName := range toolNames {
-			tool := toolMap[toolName]
 			// First check: Client configuration is the global allow-list
 			// If client config blocks a tool, it CANNOT be overridden by context
 			if shouldSkipToolForConfig(toolName, client.ExecutionConfig) {
@@ -252,13 +273,38 @@ func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.
 				continue
 			}
 
-			tools[clientName] = append(tools[clientName], tool)
+			kept = append(kept, toolName)
 		}
-		if len(tools[clientName]) > 0 {
-			m.logger.Debug("%s Added %d tools for MCP client %s", MCPLogPrefix, len(tools[clientName]), clientName)
+		if len(kept) > 0 {
+			clientTools := make([]schemas.ChatTool, len(kept))
+			for i, toolName := range kept {
+				clientTools[i] = toolMap[toolName]
+			}
+			result.ToolsPerClient[clientName] = clientTools
+			m.logger.Debug("%s Added %d tools for MCP client %s", MCPLogPrefix, len(clientTools), clientName)
+
+			// A client with a visible tool is one the caller can reach, so its
+			// instructions apply. A code mode client's ride in its stub instead
+			// (see GetAggregatedServerInstructions for the scoping rule).
+			if withInstructions && !client.ExecutionConfig.IsCodeModeClient {
+				if instructions := discovery.GetInstructions(); instructions != "" {
+					if result.Instructions == nil {
+						result.Instructions = make([]schemas.MCPServerInstructions, 0, len(clientNames))
+					}
+					result.Instructions = append(result.Instructions, schemas.MCPServerInstructions{
+						ClientName:   clientName,
+						Instructions: instructions,
+						MaxLength:    client.ExecutionConfig.MaxInstructionsLength,
+					})
+				}
+			}
+		}
+
+		if offerConnect && discovery == nil && perUserDiscoveryOn(client.ExecutionConfig) && connectAccessible(ctx, client, m.logger) {
+			result.ConnectTools = append(result.ConnectTools, connectTool(client.ExecutionConfig))
 		}
 	}
-	return tools
+	return result
 }
 
 // GetClientByName returns a client by name. The snapshot carries connection
