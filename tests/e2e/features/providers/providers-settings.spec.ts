@@ -312,6 +312,67 @@ test.describe("Provider Settings", () => {
       await providerSettingsPage.saveNetworkConfig();
     });
 
+    test("should keep the stream read buffer size after a reload", async ({
+      providersPage,
+      providerSettingsPage,
+    }) => {
+      await providerSettingsPage.selectConfigTab("network");
+
+      // Ensure backoff fields are valid (minimum 100ms) so form validation passes
+      const initialBackoff = providerSettingsPage.page.getByLabel(/Initial Backoff/i);
+      const maxBackoff = providerSettingsPage.page.getByLabel(/Max Backoff/i);
+      const ibVal = await initialBackoff.inputValue();
+      const mbVal = await maxBackoff.inputValue();
+      if (Number(ibVal) < 100) {
+        await providerSettingsPage.fillNumberInput(initialBackoff, "500");
+      }
+      if (Number(mbVal) < 100) {
+        await providerSettingsPage.fillNumberInput(maxBackoff, "10000");
+      }
+
+      const bufferInput = providerSettingsPage.getStreamReadBufferSizeInput();
+      const originalValue = await bufferInput.inputValue();
+      const newValue = originalValue === "128" ? "256" : "128";
+
+      await providerSettingsPage.fillNumberInput(bufferInput, newValue);
+      await providerSettingsPage.saveNetworkConfig();
+
+      await providerSettingsPage.page.reload();
+      await providersPage.selectProvider("openai");
+      await providerSettingsPage.selectConfigTab("network");
+      await expect(bufferInput).toHaveValue(newValue);
+
+      // Restore the original value for the other tests on this provider
+      if (originalValue === "") {
+        await bufferInput.clear();
+      } else {
+        await providerSettingsPage.fillNumberInput(bufferInput, originalValue);
+      }
+      await providerSettingsPage.saveNetworkConfig();
+    });
+
+    test("should enforce the stream read buffer size bounds", async ({ providerSettingsPage }) => {
+      await providerSettingsPage.selectConfigTab("network");
+
+      const bufferInput = providerSettingsPage.getStreamReadBufferSizeInput();
+      const page = providerSettingsPage.page;
+
+      await providerSettingsPage.fillNumberInput(bufferInput, "0");
+      await expect(page.getByText("Stream read buffer size must be at least 1 KB")).toBeVisible();
+
+      await providerSettingsPage.fillNumberInput(bufferInput, "16385");
+      await expect(page.getByText("Stream read buffer size must be at most 16384 KB")).toBeVisible();
+
+      await providerSettingsPage.fillNumberInput(bufferInput, "1");
+      await expect(page.getByText(/Stream read buffer size must be/)).toHaveCount(0);
+
+      await providerSettingsPage.fillNumberInput(bufferInput, "16384");
+      await expect(page.getByText(/Stream read buffer size must be/)).toHaveCount(0);
+
+      // Nothing was saved; drop the edits so the form is clean for the next test
+      await page.reload();
+    });
+
     test("should update max retries value", async ({ providerSettingsPage }) => {
       await providerSettingsPage.selectConfigTab("network");
 

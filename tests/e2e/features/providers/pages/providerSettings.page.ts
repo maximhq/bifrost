@@ -282,6 +282,13 @@ export class ProviderSettingsPage extends BasePage {
     }
   }
 
+  /**
+   * Stream read buffer size input on the Network tab
+   */
+  getStreamReadBufferSizeInput(): Locator {
+    return this.page.getByTestId('network-config-stream-read-buffer-size-input')
+  }
+
   // ============================================
   // Governance Configuration (Budget/Rate Limits)
   // ============================================
