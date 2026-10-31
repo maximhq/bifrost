@@ -2316,6 +2316,9 @@ func ResolveChatAudioURLs(ctx context.Context, request *schemas.BifrostChatReque
 	if err != nil {
 		return nil, err
 	}
+	// The converter normalizes Model in place and callers read it back for the
+	// upstream URL, so it has to change on their request and not only on this copy.
+	request.Model = NormalizeModelName(request.Model)
 	resolved := *request
 	resolved.Input = input
 	return &resolved, nil

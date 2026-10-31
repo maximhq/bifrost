@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/bytedance/sonic"
@@ -2302,6 +2303,95 @@ func TestResolveResponsesAudioURLsDownloadsAudioForConverter(t *testing.T) {
 	require.NotNil(t, result.Contents[0].Parts[0].InlineData)
 	require.Equal(t, "audio/wav", result.Contents[0].Parts[0].InlineData.MIMEType)
 	require.NotEmpty(t, result.Contents[0].Parts[0].InlineData.Data)
+}
+
+// TestAudioURLRequestsNormalizeUpstreamModel drives each provider route with a
+// google/ model name and URL-only audio. The audio resolvers return a copy, so the
+// converter's model normalization must still reach the request the URL is built from.
+func TestAudioURLRequestsNormalizeUpstreamModel(t *testing.T) {
+	restore := providerUtils.AllowPrivateAudioURLsForTest()
+	defer restore()
+
+	var upstreamPath atomic.Value
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte("audio-bytes"))
+			return
+		}
+		upstreamPath.Store(r.URL.Path)
+		body := `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],"modelVersion":"gemini-2.5-flash"}`
+		if strings.Contains(r.URL.Path, ":streamGenerateContent") {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: " + body + "\n\n"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	provider := NewGeminiProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+	}, testNoopLogger{})
+	key := schemas.Key{Value: *schemas.NewSecretVar("dummy-key")}
+	audioURL := server.URL + "/sample.wav"
+	noopPostHook := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, err
+	}
+	finalizer := func(context.Context) {}
+	drain := func(t *testing.T, stream chan *schemas.BifrostStreamChunk, bErr *schemas.BifrostError) {
+		t.Helper()
+		require.Nil(t, bErr)
+		for chunk := range stream {
+			require.Nil(t, chunk.BifrostError)
+		}
+	}
+	chatRequest := func() *schemas.BifrostChatRequest {
+		format := "wav"
+		return &schemas.BifrostChatRequest{
+			Model: "google/gemini-2.5-flash",
+			Input: []schemas.ChatMessage{{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{
+					Type:       schemas.ChatContentBlockTypeInputAudio,
+					InputAudio: &schemas.ChatInputAudio{URL: audioURL, Format: &format},
+				}}},
+			}},
+		}
+	}
+	responsesRequest := func() *schemas.BifrostResponsesRequest {
+		request := responsesAudioURLRequest(audioURL)
+		request.Model = "google/gemini-2.5-flash"
+		return request
+	}
+
+	for _, tc := range []struct {
+		name   string
+		method string
+		call   func(t *testing.T, ctx *schemas.BifrostContext)
+	}{
+		{"chat", ":generateContent", func(t *testing.T, ctx *schemas.BifrostContext) {
+			_, bErr := provider.ChatCompletion(ctx, key, chatRequest())
+			require.Nil(t, bErr)
+		}},
+		{"chat stream", ":streamGenerateContent", func(t *testing.T, ctx *schemas.BifrostContext) {
+			stream, bErr := provider.ChatCompletionStream(ctx, noopPostHook, finalizer, key, chatRequest())
+			drain(t, stream, bErr)
+		}},
+		{"responses", ":generateContent", func(t *testing.T, ctx *schemas.BifrostContext) {
+			_, bErr := provider.Responses(ctx, key, responsesRequest())
+			require.Nil(t, bErr)
+		}},
+		{"responses stream", ":streamGenerateContent", func(t *testing.T, ctx *schemas.BifrostContext) {
+			stream, bErr := provider.ResponsesStream(ctx, noopPostHook, finalizer, key, responsesRequest())
+			drain(t, stream, bErr)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.call(t, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+			require.Equal(t, "/models/gemini-2.5-flash"+tc.method, upstreamPath.Load())
+		})
+	}
 }
 
 func TestToGeminiResponsesRequestRejectsUnresolvedAudioURL(t *testing.T) {
