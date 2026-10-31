@@ -43,13 +43,15 @@ func oauth2RedirectAllowed(store *lib.Config, candidate string) bool {
 // bypassed, which yields relative URLs rather than attacker-chosen absolute
 // ones. The Host-derived fallback remains only for headers mode, where no
 // OAuth issuer identity is served and the value feeds nothing security-relevant.
+// A configured value is returned without trailing slashes, since every endpoint,
+// claim and redirect is built by appending a path that starts with "/".
 func oauth2IssuerURL(ctx *fasthttp.RequestCtx, store *lib.Config) string {
 	store.Mu.RLock()
 	cfg := store.ClientConfig.OAuth2ServerConfig
 	oauthEnabled := store.ClientConfig.IsMCPOAuthDiscoveryEnabled()
 	store.Mu.RUnlock()
 	if cfg != nil && cfg.IssuerURL.IsSet() {
-		return cfg.IssuerURL.GetValue()
+		return strings.TrimRight(cfg.IssuerURL.GetValue(), "/")
 	}
 	if oauthEnabled {
 		return ""
@@ -63,15 +65,13 @@ func oauth2IssuerURL(ctx *fasthttp.RequestCtx, store *lib.Config) string {
 // resource parameter to it, and /mcp token verification checks the audience
 // against it; routing all three through here keeps them from drifting.
 func oauth2MCPResourceURL(ctx *fasthttp.RequestCtx, store *lib.Config) string {
-	// Trim a trailing slash so a slash-suffixed issuer_url can't produce "//mcp"
-	// and drift this canonical resource away from what clients normalize to.
-	return strings.TrimRight(oauth2IssuerURL(ctx, store), "/") + "/mcp"
+	return oauth2IssuerURL(ctx, store) + "/mcp"
 }
 
 // oauth2GatewayAudience identifies Bifrost's inference routes as a resource:
-// the gateway itself, so the issuer URL without a trailing slash.
+// the gateway itself, so the issuer URL.
 func oauth2GatewayAudience(ctx *fasthttp.RequestCtx, store *lib.Config) string {
-	return strings.TrimRight(oauth2IssuerURL(ctx, store), "/")
+	return oauth2IssuerURL(ctx, store)
 }
 
 // oauth2ServerCfg returns the OAuth2 AS-specific config under the read lock,
