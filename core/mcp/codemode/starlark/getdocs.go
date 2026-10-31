@@ -131,13 +131,15 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 	}
 
 	// Generate detailed documentation using generateTypeDefinitions
-	docContent := generateTypeDefinitions(matchedClientName, []schemas.ChatTool{*matchedTool}, true)
+	docContent := generateTypeDefinitions(matchedClientName, []schemas.ChatTool{*matchedTool}, true, s.serverInstructionsComment(matchedClientName), !s.jsonModuleShadowed(availableToolsPerClient))
 
 	return createToolResponseMessage(toolCall, docContent, false), nil
 }
 
 // generateTypeDefinitions generates Python documentation with docstrings from ChatTool schemas.
-func generateTypeDefinitions(clientName string, tools []schemas.ChatTool, isToolLevel bool) string {
+// jsonModuleAvailable says whether the sandbox's json module is reachable, so the docs only point at
+// json.decode when a script can call it.
+func generateTypeDefinitions(clientName string, tools []schemas.ChatTool, isToolLevel bool, instructions string, jsonModuleAvailable bool) string {
 	var sb strings.Builder
 
 	// Write comprehensive header
@@ -159,18 +161,26 @@ func generateTypeDefinitions(clientName string, tools []schemas.ChatTool, isTool
 	sb.WriteString(fmt.Sprintf("# Call tools using: result = %s.tool_name(param=value)\n", clientName))
 	sb.WriteString("# No async/await needed - calls are synchronous.\n")
 	sb.WriteString("#\n")
-	sb.WriteString("# STARLARK DIFFERENCE FROM PYTHON:\n")
-	sb.WriteString("# for/if/while at top level MUST be inside a function.\n")
-	sb.WriteString("# Wrap loops: def main(): for x in items: ... then result = main()\n")
-	sb.WriteString("#\n")
 	sb.WriteString("# CRITICAL - HANDLING RESPONSES:\n")
-	sb.WriteString("# Tool responses are dicts. To avoid runtime errors:\n")
-	sb.WriteString("# 1. Use print(result) to inspect the response structure first\n")
-	sb.WriteString("# 2. Access dict values with brackets: result[\"key\"] NOT result.key\n")
-	sb.WriteString("# 3. Use .get() for safe access: result.get(\"key\", default)\n")
+	sb.WriteString("# A tool returns the decoded JSON when the server sends JSON: a dict or list,\n")
+	sb.WriteString("# or a number, bool or None. Any other text arrives as a str.\n")
+	sb.WriteString("# 1. Check the shape, not the whole value: print(type(r)), and print(sorted(r.keys())) for a dict.\n")
+	sb.WriteString("#    Printing a whole response puts all of it into your context.\n")
+	sb.WriteString("# 2. dict: r[\"key\"] or r.get(\"key\", default), never r.key. list: r[0].\n")
+	if jsonModuleAvailable {
+		sb.WriteString("# 3. str holding JSON, often a field: data = json.decode(r[\"body\"]); plain text raises.\n")
+	}
 	sb.WriteString("#\n")
-	sb.WriteString("# Common error: \"key not found\" or \"has no attribute\"\n")
-	sb.WriteString("# Fix: Use print() to see actual structure, then use result[\"key\"] or .get()\n")
+	sb.WriteString("# FAILED CALLS:\n")
+	sb.WriteString("# A call that fails returns an error value, not a result: hasattr(r, \"error\") is True and\n")
+	sb.WriteString("# r.error holds the message. Call fail(r.error) to stop the run, or skip it and carry on.\n")
+	sb.WriteString("#\n")
+	sb.WriteString("# Common errors: key \"x\" not in dict, dict has no .x field or method, string index\n")
+	sb.WriteString("# Fix: check type(r) first, then index the shape you actually got\n")
+	if instructions != "" {
+		sb.WriteString("#\n")
+		sb.WriteString(instructions)
+	}
 	sb.WriteString("# ============================================================================\n\n")
 
 	// Generate function definitions for each tool
@@ -226,14 +236,15 @@ func generateTypeDefinitions(clientName string, tools []schemas.ChatTool, isTool
 
 				for _, propName := range propNames {
 					prop, _ := props.Get(propName)
-					propMap, ok := prop.(map[string]interface{})
+					propSchema, ok := asJSONSchema(prop)
 					if !ok {
 						continue
 					}
 
-					pyType := jsonSchemaToPython(propMap)
+					pyType := jsonSchemaToPython(propSchema)
 					propDesc := ""
-					if desc, ok := propMap["description"].(string); ok && desc != "" {
+					descVal, _ := propSchema.Get("description")
+					if desc, ok := descVal.(string); ok && desc != "" {
 						propDesc = desc
 					} else {
 						propDesc = fmt.Sprintf("%s parameter", propName)
@@ -254,15 +265,16 @@ func generateTypeDefinitions(clientName string, tools []schemas.ChatTool, isTool
 
 		// Returns section
 		sb.WriteString("    Returns:\n")
-		sb.WriteString("        dict: Response from the tool. Structure varies by tool.\n")
-		sb.WriteString("              Use print(result) to inspect the actual structure.\n")
+		sb.WriteString("        The decoded JSON (usually a dict or list; a number, bool or None for a\n")
+		sb.WriteString("        bare value), or a str when the server's text is not JSON.\n")
+		sb.WriteString("        Check type(result) before indexing it.\n")
 		sb.WriteString("\n")
 
 		// Example section
 		sb.WriteString("    Example:\n")
 		sb.WriteString(fmt.Sprintf("        result = %s.%s(%s)\n", clientName, toolName, getExampleParams(tool.Function.Parameters)))
-		sb.WriteString("        print(result)  # Always inspect response first!\n")
-		sb.WriteString("        value = result.get(\"key\", default)  # Safe access\n")
+		sb.WriteString("        print(type(result))  # check the shape before indexing it\n")
+		sb.WriteString("        value = result.get(\"key\") if type(result) == \"dict\" else result\n")
 		sb.WriteString("    \"\"\"\n")
 		sb.WriteString("    ...\n\n")
 	}

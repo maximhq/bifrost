@@ -1,6 +1,8 @@
 import {
 	AddProviderRequest,
 	CreateProviderKeyRequest,
+	GithubCopilotDeviceCode,
+	GithubCopilotSignInPollResult,
 	ListProviderKeysResponse,
 	ListProvidersResponse,
 	ModelProvider,
@@ -106,7 +108,10 @@ export interface GetModelsRequest {
 	keys?: string[];
 	vks?: string[];
 	limit?: number;
+	offset?: number;
 	unfiltered?: boolean;
+	/** Lists only models that serve decisions natively. */
+	decisions?: boolean;
 }
 
 export interface GetBaseModelsRequest {
@@ -201,6 +206,20 @@ export const providersApi = baseApi.injectEndpoints({
 		getProviderKey: builder.query<ModelProviderKey, { provider: string; keyId: string }>({
 			query: ({ provider, keyId }) => `/providers/${encodeURIComponent(provider)}/keys/${encodeURIComponent(keyId)}`,
 			providesTags: (result, error, { provider }) => [{ type: "ProviderKeys", id: provider }],
+		}),
+
+		// GitHub Copilot "Sign in with GitHub" (device flow). The gateway talks to GitHub; the UI
+		// shows the code and polls, and puts the returned token in the key's value.
+		startGithubCopilotSignIn: builder.mutation<GithubCopilotDeviceCode, { provider: string }>({
+			query: ({ provider }) => ({ url: `/providers/${encodeURIComponent(provider)}/sign-in`, method: "POST" }),
+		}),
+
+		pollGithubCopilotSignIn: builder.mutation<GithubCopilotSignInPollResult, { provider: string; deviceCode: string }>({
+			query: ({ provider, deviceCode }) => ({
+				url: `/providers/${encodeURIComponent(provider)}/sign-in/poll`,
+				method: "POST",
+				body: { device_code: deviceCode },
+			}),
 		}),
 
 		// Create new provider
@@ -441,14 +460,16 @@ export const providersApi = baseApi.injectEndpoints({
 
 		// Get models with optional filtering
 		getModels: builder.query<ListModelsResponse, GetModelsRequest>({
-			query: ({ query, provider, keys, vks, limit, unfiltered }) => {
+			query: ({ query, provider, keys, vks, limit, offset, unfiltered, decisions }) => {
 				const params = new URLSearchParams();
 				if (query) params.append("query", query);
 				if (provider) params.append("provider", provider);
 				if (keys && keys.length > 0) params.append("keys", keys.join(","));
 				if (vks && vks.length > 0) params.append("vks", vks.join(","));
 				if (limit !== undefined) params.append("limit", limit.toString());
+				if (offset !== undefined) params.append("offset", offset.toString());
 				if (unfiltered !== undefined) params.append("unfiltered", unfiltered.toString());
+				if (decisions) params.append("decisions", "true");
 				return `/models?${params.toString()}`;
 			},
 			providesTags: ["Models"],
@@ -546,10 +567,11 @@ export const {
 	useLazyGetProviderKeyQuery,
 	useLazyGetAllKeysQuery,
 	useLazyGetModelsQuery,
-	useLazyGetBaseModelsQuery,
 	useGetModelParametersQuery,
 	useLazyGetModelParametersQuery,
 	useGetModelDetailsQuery,
 	useLazyGetModelDetailsQuery,
 	useUpsertModelCatalogEntriesMutation,
+	useStartGithubCopilotSignInMutation,
+	usePollGithubCopilotSignInMutation,
 } = providersApi;

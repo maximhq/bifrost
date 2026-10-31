@@ -2,6 +2,7 @@ import PageTitle from "@/components/pageTitle";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { getErrorMessage, useGetCoreConfigQuery, useGetDroppedRequestsQuery, useUpdateCoreConfigMutation } from "@/lib/store";
@@ -110,6 +111,7 @@ export default function ClientSettingsView() {
 			localConfig.disable_db_pings_in_health !== config.disable_db_pings_in_health ||
 			localConfig.dump_errors_in_console_logs !== config.dump_errors_in_console_logs ||
 			localConfig.async_job_result_ttl !== config.async_job_result_ttl ||
+			(localConfig.extra_fields_placement ?? "body") !== (config.extra_fields_placement ?? "body") ||
 			!headerFilterConfigEqual(localConfig.header_filter_config, config.header_filter_config)
 		);
 	}, [config, localConfig]);
@@ -355,8 +357,53 @@ export default function ClientSettingsView() {
 						disabled={!hasSettingsUpdateAccess}
 					/>
 				</div>
+				{/* Extra Fields Placement */}
+				<div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
+					<div className="space-y-0.5">
+						<label htmlFor="extra-fields-placement" className="text-sm font-medium">
+							Extra Fields Placement
+						</label>
+						<p className="text-muted-foreground text-sm">
+							Where inference responses carry Bifrost&apos;s <b>extra_fields</b> metadata. <b>Body</b> keeps the extra_fields object in the
+							JSON response. <b>Headers</b> removes it from the body and from every streaming chunk, and sends its scalar fields as{" "}
+							<b>x-bifrost-*</b> response headers.
+						</p>
+						{(localConfig.extra_fields_placement ?? "body") === "headers" && (
+							<p className="text-muted-foreground text-sm" data-testid="client-settings-extra-fields-placement-dropped-note">
+								In Headers mode these fields are dropped and not sent anywhere: raw request, raw response, routing metadata, guardrail
+								debug, parse errors, and on errors key statuses, billed usage and MCP auth details. Streaming responses only carry what is
+								known before the first chunk (routing, fallback, cache lookup), so per-chunk latency, chunk index and final totals are
+								dropped too.
+							</p>
+						)}
+					</div>
+					<Select
+						value={localConfig.extra_fields_placement ?? "body"}
+						onValueChange={(value) =>
+							setLocalConfig((prev) => ({ ...prev, extra_fields_placement: value as CoreConfig["extra_fields_placement"] }))
+						}
+						disabled={!hasSettingsUpdateAccess}
+					>
+						<SelectTrigger
+							id="extra-fields-placement"
+							data-testid="client-settings-extra-fields-placement-select"
+							className="w-full shrink-0 sm:w-[140px]"
+						>
+							<SelectValue />
+						</SelectTrigger>
+						<SelectContent>
+							<SelectItem value="body" data-testid="client-settings-extra-fields-placement-option-body">
+								Body
+							</SelectItem>
+							<SelectItem value="headers" data-testid="client-settings-extra-fields-placement-option-headers">
+								Headers
+							</SelectItem>
+						</SelectContent>
+					</Select>
+				</div>
+
 				{/* Async Job Result TTL */}
-				<div className="flex items-center justify-between space-x-2">
+				<div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
 					<div className="space-y-0.5">
 						<label htmlFor="async-job-result-ttl" className="text-sm font-medium">
 							Async Job Result TTL (seconds)
@@ -369,7 +416,7 @@ export default function ClientSettingsView() {
 						id="async-job-result-ttl"
 						type="number"
 						min={1}
-						className="w-32"
+						className="w-32 shrink-0"
 						value={localConfig.async_job_result_ttl}
 						onChange={(e) => handleConfigChange("async_job_result_ttl", parseInt(e.target.value) || 0)}
 						disabled={!hasSettingsUpdateAccess}
@@ -569,7 +616,7 @@ export default function ClientSettingsView() {
 				controlsDisabled={isLoading || !hasSettingsUpdateAccess}
 			/>
 
-			<div className="flex justify-end pt-2">
+			<div className="bg-card sticky bottom-0 flex justify-end py-2">
 				{hasSecurityHeaderError ? (
 					<Tooltip>
 						<TooltipTrigger asChild>

@@ -190,6 +190,8 @@ interface AsyncMultiSelectProps<T> {
 	onMenuOpen?: () => void;
 	/** called when the menu closes */
 	onMenuClose?: () => void;
+	/** called when the option list is scrolled to the bottom — load the next page */
+	onMenuScrollToBottom?: () => void;
 	onKeyDown?: KeyboardEventHandler;
 
 	/** custom no options message */
@@ -417,6 +419,7 @@ export function AsyncMultiSelect<T>(props: AsyncMultiSelectProps<T>) {
 					menuOpenRef.current = false;
 					props.onMenuClose?.();
 				}}
+				onMenuScrollToBottom={props.onMenuScrollToBottom}
 				menuIsOpen={props.menuIsOpen}
 				noOptionsMessage={
 					props.noOptionsMessage

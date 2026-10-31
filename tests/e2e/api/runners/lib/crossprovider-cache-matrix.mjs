@@ -399,16 +399,30 @@ ${cell.model === "anthropic/claude-opus-5" ? `  var answer = (j.content || []).f
   if (!/cedar/i.test(answer)) throw new Error('expected the updated book-group location (Cedar study room), got: ' + answer);` : ""}
 });
 if (pm.response.code < 400) {
+  pm.collectionVariables.set(${J(`cm_${cellId}_write`)}, JSON.stringify({ read: read, write: write, uncached: uncached }));
   console.log('[cache-matrix] ' + ${J(cellId)} + ' round1(write) ' + detail);
 }`.trim();
 }
 
 // Terminal round for an EXPLICIT-breakpoint cell: deterministic, so assert the floor.
+//
+// Round 1's counters are read back first. The number matters to the message (a miss with a
+// round-1 write the size of the prompt is a perturbed prefix, not a dropped breakpoint), and the
+// read is the only thing that ties this request to round 1: nothing in this body names the write
+// round, so a selection that keeps round 2 without round 1 (--rerun-failed, a cost slice) would
+// run it alone in a process with its own pcNonce and fail on read=0 for a reason unrelated to
+// the cache. filter-collection.mjs follows collectionVariables.get() in scripts to pull producers
+// in, so this line is what keeps the pair in one newman process.
 function round2Script(cell, arm, cellId) {
   const label = `${cell.model} / ${arm.key}`;
   return `
 ${EXTRACT[cell.shape]}
 ${HIT_RATE}
+var r1 = JSON.parse(pm.collectionVariables.get(${J(`cm_${cellId}_write`)}) || 'null');
+pm.test(${J(`Cache matrix [${label}] round 1 (write) ran first in this process`)}, function () {
+  pm.expect(r1, 'round 1 recorded no counters - the write round was filtered out, skipped, or ran in another newman process (each process salts with its own pcNonce), so this read started cold').to.not.equal(null);
+});
+if (r1) { detail = detail + ' (round 1 wrote ' + r1.write + ')'; }
 pm.test(${J(`Cache matrix [${label}] round 2 (read) succeeds`)}, function () {
   if (pm.response.code !== 200) throw new Error('request failed: HTTP ' + pm.response.code + ': ' + pm.response.text());
   if (j.stop_reason === 'refusal') {

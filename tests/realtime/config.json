@@ -1,0 +1,100 @@
+{
+  "$schema": "../../transports/config.schema.json",
+  "setup_token": "bifrost-realtime-setup-token",
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "openai",
+          "value": "env.OPENAI_API_KEY",
+          "aliases": {
+            "rt-alias": {"model_id": "gpt-realtime-mini"}
+          },
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 60
+      }
+    },
+    "bedrock": {
+      "keys": [
+        {
+          "name": "bedrock",
+          "bedrock_key_config": {
+            "access_key": "env.AWS_ACCESS_KEY_ID",
+            "secret_key": "env.AWS_SECRET_ACCESS_KEY",
+            "region": "env.AWS_REGION"
+          },
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 60
+      }
+    },
+    "anthropic": {
+      "keys": [
+        {
+          "name": "anthropic",
+          "value": "env.ANTHROPIC_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 60
+      }
+    },
+    "azure": {
+      "keys": [
+        {
+          "name": "azure",
+          "value": "env.AZURE_API_KEY",
+          "aliases": {
+            "rt-azure-alias": {"model_id": "gpt-realtime"}
+          },
+          "azure_key_config": {
+            "endpoint": "env.AZURE_ENDPOINT"
+          },
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 60
+      }
+    }
+  },
+  "config_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "../../tests/realtime/data/realtime-test-config.db"
+    }
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "../../tests/realtime/data/realtime-test-logs.db"
+    },
+    "writer": {
+      "max_batch_size": 100,
+      "batch_interval": "200ms",
+      "max_batch_bytes": 10485760,
+      "write_queue_capacity": 1000,
+      "deferred_usage_concurrency": 4
+    }
+  },
+  "client": {
+    "drop_excess_requests": false,
+    "initial_pool_size": 100,
+    "allowed_origins": ["*"],
+    "enable_logging": true,
+    "enforce_auth_on_inference": true,
+    "max_request_body_size_mb": 10
+  }
+}

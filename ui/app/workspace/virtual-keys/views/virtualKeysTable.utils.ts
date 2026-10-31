@@ -16,3 +16,53 @@ export function latestGraceDeadline(virtualKeys: { previous_value_expires_at?: s
 	}
 	return latest;
 }
+
+/**
+ * Renders the "Assigned To" label for a virtual key, or null when it is assigned
+ * to nothing. A key is assigned to at most one of a team, a customer, a business
+ * unit, or a user.
+ *
+ * A business unit is named from the business_unit relation the enterprise build
+ * fills in, like a team or customer. Without it (OSS, or an unresolved owner) the
+ * key is named only by its kind, which still beats a blank.
+ *
+ * Shared by the table cell and the CSV export so the two cannot drift: the export
+ * used to omit the user branch entirely, which left the column blank for every
+ * user-assigned key.
+ */
+export function assignedToLabel(vk: {
+	team?: { name: string };
+	customer?: { name: string };
+	business_unit_id?: string;
+	business_unit?: { name: string };
+	assigned_user?: { name: string; email: string } | null;
+}): string | null {
+	if (vk.team) return `Team: ${vk.team.name}`;
+	if (vk.customer) return `Customer: ${vk.customer.name}`;
+	if (vk.business_unit_id) return vk.business_unit?.name ? `Business unit: ${vk.business_unit.name}` : "Business unit";
+	if (vk.assigned_user) return `User: ${vk.assigned_user.name || vk.assigned_user.email}`;
+	return null;
+}
+
+/**
+ * Renders the "Assigned To" cell for the CSV export.
+ *
+ * The table can render an unknown assignee as "-" and let the reader ask; an export
+ * cannot. A blank cell in a spreadsheet reads as a fact - this key is assigned to
+ * nobody - so an assignee the server could not resolve has to say so rather than
+ * borrow the blank that means unassigned. `assigned_user` is absent (not null) exactly
+ * in that case; null is a resolved "no user".
+ */
+export function csvAssignedToCell(vk: {
+	team?: { name: string };
+	customer?: { name: string };
+	business_unit_id?: string;
+	business_unit?: { name: string };
+	assigned_user?: { name: string; email: string } | null;
+}): string {
+	const label = assignedToLabel(vk);
+	if (label) return label;
+	// Team, customer and business unit ride on the row itself, so they are never the unresolved case.
+	if (!vk.team && !vk.customer && !vk.business_unit_id && vk.assigned_user === undefined) return "Unknown (not resolved)";
+	return "";
+}

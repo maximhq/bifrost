@@ -25,6 +25,17 @@ var (
 // into a BifrostError by the gate before being handed to PostMCPHooks.
 type MCPOpFunc func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error)
 
+// mcpToolReportedError reports whether a tool answered with a failure in its own result.
+// That is not a transport error, so the span stays ok and the attribute is what lets a
+// backend show the call as failed.
+func mcpToolReportedError(resp *schemas.BifrostMCPResponse) bool {
+	if resp == nil || resp.ChatMessage == nil || resp.ChatMessage.ChatToolMessage == nil {
+		return false
+	}
+	isErr := resp.ChatMessage.ChatToolMessage.IsError
+	return isErr != nil && *isErr
+}
+
 // RunWithPluginPipeline wraps an MCP wire operation (connect / ping / list_tools / execute_tool)
 // with the plugin pipeline. It is the single source of truth for the MCP plugin gate
 // pattern — handleMCPToolExecution in core/bifrost.go calls into this same function,
@@ -96,6 +107,9 @@ func (m *MCPManager) RunWithPluginPipeline(
 			return
 		}
 		tracer.SetAttribute(handle, schemas.AttrMCPMethodName, r.RequestType.OTelMethodName())
+		if r.ClientName != "" {
+			tracer.SetAttribute(handle, schemas.AttrBifrostMCPClientName, r.ClientName)
+		}
 		if transport := m.connectionTypeForClientName(r.ClientName).OTelNetworkTransport(); transport != "" {
 			tracer.SetAttribute(handle, schemas.AttrNetworkTransport, transport)
 		}
@@ -137,6 +151,9 @@ func (m *MCPManager) RunWithPluginPipeline(
 			if req != nil && req.RequestType.IsExecuteTool() {
 				if data, err := schemas.MarshalString(finalResponse); err == nil {
 					tracer.SetAttribute(opSpanHandle, schemas.AttrToolCallResult, data)
+				}
+				if mcpToolReportedError(finalResponse) {
+					tracer.SetAttribute(opSpanHandle, schemas.AttrBifrostMCPToolIsError, true)
 				}
 			}
 		}

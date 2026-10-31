@@ -3,8 +3,10 @@ package logging
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -203,6 +205,16 @@ func (p *PluginLogManager) GetLog(ctx context.Context, id string) (*logstore.Log
 	return p.plugin.GetLog(ctx, id)
 }
 
+// LogStore returns the store the plugin writes to, for readers that need a
+// surface the manager does not adapt, such as Warp's topic tables. Nil when
+// the plugin has none.
+func (p *PluginLogManager) LogStore() logstore.LogStore {
+	if p == nil || p.plugin == nil {
+		return nil
+	}
+	return p.plugin.store
+}
+
 func (p *PluginLogManager) Search(ctx context.Context, filters *logstore.SearchFilters, pagination *logstore.PaginationOptions) (*logstore.SearchResult, error) {
 	if filters == nil || pagination == nil {
 		return nil, fmt.Errorf("filters and pagination cannot be nil")
@@ -322,6 +334,12 @@ func (p *PluginLogManager) GetDroppedRequests(ctx context.Context) int64 {
 	return p.plugin.droppedRequests.Load()
 }
 
+// GetDroppedDuringMaintenance returns how many of the dropped requests were
+// dropped while the writer was paused for another node's logstore migration.
+func (p *PluginLogManager) GetDroppedDuringMaintenance(ctx context.Context) int64 {
+	return p.plugin.droppedDuringMaintenance.Load()
+}
+
 // GetAvailableModels returns all unique models from logs
 func (p *PluginLogManager) GetAvailableModels(ctx context.Context, limit int, query string) ([]string, error) {
 	return p.plugin.GetAvailableModels(ctx, limit, query)
@@ -421,7 +439,13 @@ func (p *PluginLogManager) DeleteLog(ctx context.Context, id string) error {
 	if p.plugin == nil || p.plugin.store == nil {
 		return fmt.Errorf("log store not initialized")
 	}
-	return p.plugin.store.DeleteLog(ctx, id)
+	// A partial delete removed the log, so subscribers still hear of it.
+	err := p.plugin.store.DeleteLog(ctx, id)
+	if err != nil && !errors.Is(err, logstore.ErrPartialLogDelete) {
+		return err
+	}
+	p.plugin.notifyLogDeleteCallbacks(ctx, []string{id})
+	return err
 }
 
 // DeleteLogs deletes multiple logs from the log store
@@ -429,7 +453,13 @@ func (p *PluginLogManager) DeleteLogs(ctx context.Context, ids []string) error {
 	if p.plugin == nil || p.plugin.store == nil {
 		return fmt.Errorf("log store not initialized")
 	}
-	return p.plugin.store.DeleteLogs(ctx, ids)
+	// A partial delete removed the logs, so subscribers still hear of it.
+	err := p.plugin.store.DeleteLogs(ctx, ids)
+	if err != nil && !errors.Is(err, logstore.ErrPartialLogDelete) {
+		return err
+	}
+	p.plugin.notifyLogDeleteCallbacks(ctx, ids)
+	return err
 }
 
 func (p *PluginLogManager) RecalculateCosts(ctx context.Context, filters *logstore.SearchFilters, limit int) (*RecalculateCostResult, error) {
@@ -629,6 +659,27 @@ func retryOnNotFound(ctx context.Context, operation func() error) error {
 	return lastErr
 }
 
+// textRequestParamsAndTools returns the logged params and tools of a text completion, chat or
+// Responses request: the request's own params, plus its tools in chat shape (Responses tools are
+// converted with ToChatTool). It returns nil for every other request kind. The request for the
+// type must be set with non-nil Params, as every converter guarantees. PreLLMHook and passthrough log
+// parsing both use it, so a parsed passthrough row records the same fields as a typed request.
+func textRequestParamsAndTools(request *schemas.BifrostRequest) (interface{}, []schemas.ChatTool) {
+	switch request.RequestType {
+	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
+		return request.TextCompletionRequest.Params, nil
+	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
+		return request.ChatRequest.Params, request.ChatRequest.Params.Tools
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
+		var tools []schemas.ChatTool
+		for _, tool := range request.ResponsesRequest.Params.Tools {
+			tools = append(tools, *tool.ToChatTool())
+		}
+		return request.ResponsesRequest.Params, tools
+	}
+	return nil, nil
+}
+
 // extractInputHistory extracts input history from request input
 func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) ([]schemas.ChatMessage, []schemas.ResponsesMessage) {
 	if request.ChatRequest != nil {
@@ -663,35 +714,8 @@ func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) ([]s
 			},
 		}, []schemas.ResponsesMessage{}
 	}
-	if request.EmbeddingRequest != nil {
-		// Large payload passthrough can intentionally leave Input nil to avoid
-		// materializing giant request bodies. Logging should degrade gracefully.
-		if request.EmbeddingRequest.Input == nil {
-			return []schemas.ChatMessage{}, []schemas.ResponsesMessage{}
-		}
-		texts := request.EmbeddingRequest.Input.Texts
-
-		if len(texts) == 0 && request.EmbeddingRequest.Input.Text != nil {
-			texts = []string{*request.EmbeddingRequest.Input.Text}
-		}
-
-		contentBlocks := make([]schemas.ChatContentBlock, len(texts))
-		for i, text := range texts {
-			// Create a per-iteration copy to avoid reusing the same memory address
-			t := text
-			contentBlocks[i] = schemas.ChatContentBlock{
-				Type: schemas.ChatContentBlockTypeText,
-				Text: &t,
-			}
-		}
-		return []schemas.ChatMessage{
-			{
-				Role: schemas.ChatMessageRoleUser,
-				Content: &schemas.ChatMessageContent{
-					ContentBlocks: contentBlocks,
-				},
-			},
-		}, []schemas.ResponsesMessage{}
+	if request.DecisionRequest != nil {
+		return decisionInputLog(request.DecisionRequest.Input), []schemas.ResponsesMessage{}
 	}
 	if request.RerankRequest != nil {
 		query := request.RerankRequest.Query
@@ -711,6 +735,159 @@ func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) ([]s
 		return []schemas.ChatMessage{}, request.CompactionRequest.Input
 	}
 	return []schemas.ChatMessage{}, []schemas.ResponsesMessage{}
+}
+
+// extractEmbeddingInput returns the request's input items, preserving all part types
+// (text, image, audio, file, video) and any per-item params. Returns nil when Input is
+// empty (large-payload passthrough).
+func extractEmbeddingInput(request *schemas.BifrostRequest) []schemas.EmbeddingInputItem {
+	if request.EmbeddingRequest == nil || len(request.EmbeddingRequest.Input) == 0 {
+		return nil
+	}
+	return request.EmbeddingRequest.Input
+}
+
+// redactEmbeddingMediaData returns a copy of items with inline Data fields stripped from
+// all media parts. Only called when the total data size exceeds the large-payload
+// threshold. URL-based parts and per-item params are preserved.
+func redactEmbeddingMediaData(items []schemas.EmbeddingInputItem) []schemas.EmbeddingInputItem {
+	stripped := make([]schemas.EmbeddingInputItem, len(items))
+	for i, item := range items {
+		parts := make(schemas.EmbeddingContent, len(item.Content))
+		for j, part := range item.Content {
+			for _, media := range []**schemas.EmbeddingMediaPart{&part.Image, &part.Audio, &part.File, &part.Video} {
+				if *media != nil {
+					cp := **media
+					cp.Data = nil
+					*media = &cp
+				}
+			}
+			parts[j] = part
+		}
+		stripped[i] = schemas.EmbeddingInputItem{Content: parts, Params: item.Params}
+	}
+	return stripped
+}
+
+// decisionInputLog renders a decision input as chat messages for the log.
+// Text and a structured input (as JSON, the way a state was always logged)
+// are one user message; messages are logged the way chat requests are, so the
+// logs UI shows their text and inline images the same way. A tool call or
+// output is logged as its JSON (see decisionToolItemLog). A part of a type the
+// schema does not model is kept as its type name, and a message without a
+// role is the user's.
+func decisionInputLog(input schemas.DecisionInput) []schemas.ChatMessage {
+	if input.Messages == nil {
+		var text string
+		if input.Text != nil {
+			text = *input.Text
+		} else if raw, err := sonic.Marshal(input.Structured); err == nil {
+			text = string(raw)
+		}
+		return []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: &text},
+		}}
+	}
+	messages := make([]schemas.ChatMessage, 0, len(input.Messages))
+	for _, message := range input.Messages {
+		if message.Type != nil && *message.Type != schemas.DecisionInputItemTypeMessage {
+			messages = append(messages, decisionToolItemLog(message))
+			continue
+		}
+		role := schemas.ChatMessageRole(message.Role)
+		if role == "" {
+			role = schemas.ChatMessageRoleUser
+		}
+		if message.Content.Text != nil {
+			messages = append(messages, schemas.ChatMessage{
+				Role:    role,
+				Content: &schemas.ChatMessageContent{ContentStr: message.Content.Text},
+			})
+			continue
+		}
+		blocks := make([]schemas.ChatContentBlock, 0, len(message.Content.Parts))
+		for _, part := range message.Content.Parts {
+			switch {
+			case (part.Type == schemas.DecisionInputPartTypeText || part.Type == schemas.DecisionInputPartTypeOutputText) && part.Text != nil:
+				blocks = append(blocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr(decisionPartText(part.Text))})
+			case part.Type == schemas.DecisionInputPartTypeRefusal && part.Refusal != nil:
+				blocks = append(blocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: part.Refusal})
+			case part.Type == schemas.DecisionInputPartTypeJSON && part.Data.Structured != nil:
+				blocks = append(blocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr(decisionPartText(&schemas.DecisionText{Structured: part.Data.Structured}))})
+			case part.IsAsset() && part.Data.File != nil:
+				// An image sent by reference carries its file, not a URL: log it as an
+				// image the same way. Its ID is already in the text that references it.
+				blocks = append(blocks, schemas.ChatContentBlock{
+					Type:           schemas.ChatContentBlockTypeImage,
+					ImageURLStruct: &schemas.ChatInputImage{URL: decisionAssetDataURL(part.Data.File)},
+				})
+			case part.Type == schemas.DecisionInputPartTypeImage && part.ImageURL != nil:
+				blocks = append(blocks, schemas.ChatContentBlock{
+					Type:           schemas.ChatContentBlockTypeImage,
+					ImageURLStruct: &schemas.ChatInputImage{URL: *part.ImageURL, Detail: part.Detail},
+				})
+			default:
+				blocks = append(blocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("[" + part.Type + "]")})
+			}
+		}
+		messages = append(messages, schemas.ChatMessage{
+			Role:    role,
+			Content: &schemas.ChatMessageContent{ContentBlocks: blocks},
+		})
+	}
+	return messages
+}
+
+// decisionToolItemLog logs a tool call as the assistant's message and a tool
+// output as a tool message answering its call, each with the item's JSON as
+// its text, so the call ID, name, input, and output are all kept.
+func decisionToolItemLog(item schemas.DecisionInputMessage) schemas.ChatMessage {
+	raw, _ := sonic.Marshal(item)
+	text := string(raw)
+	if *item.Type == schemas.DecisionInputItemTypeFunctionCallOutput || *item.Type == schemas.DecisionInputItemTypeCustomToolCallOutput {
+		return schemas.ChatMessage{
+			Role:            schemas.ChatMessageRoleTool,
+			Content:         &schemas.ChatMessageContent{ContentStr: &text},
+			ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: item.CallID},
+		}
+	}
+	return schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &text}}
+}
+
+// decisionAssetDataURL renders an asset's file as a data URL the logs UI shows as
+// an image, with the media type read from the bytes.
+func decisionAssetDataURL(data []byte) string {
+	mediaType, _, _ := strings.Cut(http.DetectContentType(data), ";")
+	return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data)
+}
+
+// decisionPartText renders a text part for the log: its string, or a structured
+// value as JSON, the way a structured input is logged.
+func decisionPartText(text *schemas.DecisionText) string {
+	if text.Text != nil {
+		return *text.Text
+	}
+	raw, err := sonic.Marshal(text.Structured)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+// embeddingMediaDataSize totals the inline media bytes across every item.
+func embeddingMediaDataSize(items []schemas.EmbeddingInputItem) int64 {
+	var total int64
+	for _, item := range items {
+		for _, part := range item.Content {
+			for _, media := range []*schemas.EmbeddingMediaPart{part.Image, part.Audio, part.File, part.Video} {
+				if media != nil && media.Data != nil {
+					total += int64(len(*media.Data))
+				}
+			}
+		}
+	}
+	return total
 }
 
 func extractRealtimeInputHistory(input []schemas.ResponsesMessage) []schemas.ChatMessage {
@@ -737,6 +914,8 @@ func extractRealtimeInputHistory(input []schemas.ResponsesMessage) []schemas.Cha
 		case schemas.ResponsesMessageTypeFunctionCallOutput,
 			schemas.ResponsesMessageTypeCustomToolCallOutput,
 			schemas.ResponsesMessageTypeLocalShellCallOutput,
+			schemas.ResponsesMessageTypeShellCallOutput,
+			schemas.ResponsesMessageTypeApplyPatchCallOutput,
 			schemas.ResponsesMessageTypeComputerCallOutput:
 			content := extractRealtimeToolOutputContent(item.ResponsesToolMessage)
 			if content == "" {
@@ -795,6 +974,8 @@ func extractRealtimeToolOutputContent(toolMessage *schemas.ResponsesToolMessage)
 	switch {
 	case toolMessage.Output.ResponsesToolCallOutputStr != nil:
 		return strings.TrimSpace(*toolMessage.Output.ResponsesToolCallOutputStr)
+	case len(toolMessage.Output.ResponsesShellCallOutput) > 0:
+		return strings.TrimSpace(schemas.ShellCallOutputText(toolMessage.Output.ResponsesShellCallOutput))
 	case len(toolMessage.Output.ResponsesFunctionToolCallOutputBlocks) > 0:
 		content := &schemas.ResponsesMessageContent{ContentBlocks: toolMessage.Output.ResponsesFunctionToolCallOutputBlocks}
 		return extractRealtimeResponsesContent(content)
@@ -901,6 +1082,64 @@ func mergeRealtimeMetadata(metadata map[string]interface{}, ctx *schemas.Bifrost
 			metadata = make(map[string]interface{})
 		}
 		metadata["realtime"] = true
+	}
+	return metadata
+}
+
+// mergeLoadBalancerMetadata folds the enterprise load balancer's per-attempt routing decision into a
+// log row's metadata. Only keys carrying schemas.LoadBalancerMetadataPrefix are taken, so the load
+// balancer cannot write into the caller's namespace. Nor can a caller write into its: captureLoggingHeaders
+// drops every prefixed key a header or dimension produced, so each prefixed key on a row came from the
+// load balancer, including on a row it never stamped. The map is read at PostLLMHook time because key
+// selection, which stamps the key-level decision, runs after PreLLMHook.
+func mergeLoadBalancerMetadata(metadata map[string]interface{}, ctx *schemas.BifrostContext) map[string]interface{} {
+	if ctx == nil {
+		return metadata
+	}
+	attempt, ok := ctx.Value(schemas.BifrostContextKeyLoadBalancerAttempt).(map[string]string)
+	if !ok || len(attempt) == 0 {
+		return metadata
+	}
+	for key, value := range attempt {
+		if !strings.HasPrefix(key, schemas.LoadBalancerMetadataPrefix) {
+			continue
+		}
+		if metadata == nil {
+			metadata = make(map[string]interface{}, len(attempt))
+		}
+		metadata[key] = value
+	}
+	return metadata
+}
+
+// virtualKeyMetadataContextKey is the context key under which the governance plugin publishes the
+// resolved virtual key's metadata (governance.VirtualKeyMetadataContextKey). This module cannot
+// import the governance plugin, and the key is kept out of core so both plugins build against
+// published core; the string must stay identical to governance's.
+const virtualKeyMetadataContextKey schemas.BifrostContextKey = "bifrost-governance-virtual-key-metadata"
+
+// mergeVirtualKeyMetadata snapshots the resolved virtual key's metadata onto a log row's metadata,
+// so spend stays filterable by it (cost center, owner, ...) even after the key's metadata changes.
+// It is applied after every request-supplied source (logging headers, x-bf-lh-* and x-bf-dim-*), so
+// on a key collision the virtual key's value wins: attribution an operator set on the key cannot be
+// spoofed by a caller sending a header of the same name. Keys under schemas.LoadBalancerMetadataPrefix
+// are skipped, as for headers; config validation already refuses them.
+func mergeVirtualKeyMetadata(metadata map[string]interface{}, ctx *schemas.BifrostContext) map[string]interface{} {
+	if ctx == nil {
+		return metadata
+	}
+	vkMetadata, ok := ctx.Value(virtualKeyMetadataContextKey).(map[string]string)
+	if !ok || len(vkMetadata) == 0 {
+		return metadata
+	}
+	for key, value := range vkMetadata {
+		if strings.HasPrefix(key, schemas.LoadBalancerMetadataPrefix) {
+			continue
+		}
+		if metadata == nil {
+			metadata = make(map[string]interface{}, len(vkMetadata))
+		}
+		metadata[key] = value
 	}
 	return metadata
 }

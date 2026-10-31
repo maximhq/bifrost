@@ -14,6 +14,12 @@
 // terminal status. Cost presence is not part of the invariant: once the
 // transport cancels the context on a client socket close (#7106) the upstream
 // call is cut with a 499 and usually has no usage.
+//
+// The same stuck-in-processing signature also covers #7308: after the claim
+// handoff was added for #6972, the worker's claimed send kept a ctx.Done() arm,
+// so it could still discard the value the caller was committed to receiving.
+// The caller then parks forever in tryRequest's inner receive, its terminal
+// hooks never run, and the row never leaves `processing`.
 export const TERMINAL_STATUSES = new Set(["cancelled", "error", "success"]);
 
 export function evaluateNonStreamCancel({ row, racedToCompletion = false, aborted = false }) {

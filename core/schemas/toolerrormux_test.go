@@ -59,7 +59,7 @@ func TestResponsesToChatCarriesToolError(t *testing.T) {
 				Type: Ptr(ResponsesMessageTypeFunctionCallOutput),
 				ResponsesToolMessage: &ResponsesToolMessage{
 					CallID: Ptr("call_1"),
-					Error:  Ptr("ENOENT: no such file or directory"),
+					Error:  &ResponsesToolMessageError{ResponsesToolMessageErrorStr: Ptr("ENOENT: no such file or directory")},
 				},
 			},
 		},
@@ -72,6 +72,18 @@ func TestResponsesToChatCarriesToolError(t *testing.T) {
 					CallID: Ptr("call_1"),
 					Output: &ResponsesToolMessageOutputStruct{
 						ResponsesToolCallOutputStr: Ptr("ENOENT: no such file or directory"),
+					},
+				},
+			},
+		},
+		{
+			name: "empty structured error",
+			msg: ResponsesMessage{
+				Type: Ptr(ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &ResponsesToolMessage{
+					CallID: Ptr("call_1"),
+					Error: &ResponsesToolMessageError{
+						ResponsesToolMessageErrorStruct: &ResponsesToolMessageErrorStruct{},
 					},
 				},
 			},
@@ -99,6 +111,7 @@ func TestResponsesToChatCarriesToolError(t *testing.T) {
 		Status: Ptr("completed"),
 		ResponsesToolMessage: &ResponsesToolMessage{
 			CallID: Ptr("call_2"),
+			Error:  &ResponsesToolMessageError{ResponsesToolMessageErrorStr: Ptr("")},
 			Output: &ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: Ptr("15 degrees")},
 		},
 	}})

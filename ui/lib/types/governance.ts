@@ -72,6 +72,8 @@ export interface Customer {
 	// Number of virtual keys owned by this customer (server-computed; the list
 	// endpoint reports this instead of embedding the virtual keys themselves)
 	virtual_key_count?: number;
+	// Number of teams attached to this customer (server-computed on the list endpoint)
+	team_count?: number;
 	// Populated relationships
 	teams?: Team[];
 	budgets?: Budget[];
@@ -102,6 +104,8 @@ export interface VirtualKey {
 	description?: string;
 	provider_configs?: VirtualKeyProviderConfig[];
 	mcp_configs?: VirtualKeyMCPConfig[];
+	agent_grants?: VirtualKeyAgentGrant[];
+	relay_grants?: { relay_name: string }[];
 	// Virtual MCPs this key is assigned to. Populated by the single-VK GET, not the list.
 	virtual_mcp_ids?: number[];
 	team_id?: string;
@@ -109,22 +113,40 @@ export interface VirtualKey {
 	rate_limit_id?: string;
 	is_active: boolean;
 	expires_at?: string | null; // ISO 8601 UTC timestamp; null or absent means never expires
+	// Tri-state: absent/null inherits client.delete_expired_virtual_keys, true/false override it.
+	delete_after_expire?: boolean | null;
 	previous_value_expires_at?: string | null; // When set, the pre-rotation value still authenticates until this time
 	rotated_at?: string | null; // Timestamp of the last value rotation
 	calendar_aligned?: boolean;
 	// When true, every provider is allowed; provider_configs remain optional per-provider overrides
 	allow_all_providers?: boolean;
+	// Tri-state: absent/null inherits client.disable_content_logging, true forces content off for
+	// this key's traffic, false forces it on for the log store.
+	disable_content_logging?: boolean | null;
+	// Custom key/value attribution (cost center, owner, ...). Snapshotted onto each log row, so logs
+	// can be filtered by it. Absent when the key has none.
+	metadata?: Record<string, string>;
 	created_at: string;
 	updated_at: string;
+	// The third owner a key can have, alongside a team and a customer. Business units are an
+	// enterprise table this model does not preload, so its name arrives on `business_unit` below.
+	business_unit_id?: string;
 	// Populated relationships
 	team?: Team;
 	customer?: Customer;
+	// Owning business unit, named by the enterprise build; absent in OSS and when unresolved.
+	business_unit?: { id: string; name: string };
 	budgets?: Budget[];
 	rate_limit?: RateLimit;
 	// Read-only, server-computed: true when the VK is governed by an access profile.
 	// Lets the UI lock edits and show the managed-key notice without the separately
 	// RBAC-gated access-profile lookup.
 	is_access_profile_managed?: boolean;
+	// Read-only, server-computed: the user this key is assigned to, or null when it
+	// is assigned to a team, a customer, or nothing. Absent (rather than null) when
+	// the response came from a path that does not resolve assignees, so callers can
+	// tell "unassigned" from "unknown". Always null in OSS, which has no users.
+	assigned_user?: { id: string; name: string; email: string } | null;
 	config_hash?: string; // Present when config is synced from config.json
 }
 
@@ -148,6 +170,13 @@ export interface VirtualKeyProviderConfig {
 	keys?: DBKey[]; // Associated database keys for this provider (only used when allow_all_keys is false)
 }
 
+/** A virtual key's grant to call one registered A2A agent. Agents are keyed by name. */
+export interface VirtualKeyAgentGrant {
+	virtual_key_id: string;
+	agent_name: string;
+	created_at: string;
+}
+
 export interface VirtualKeyMCPConfig {
 	id?: number;
 	virtual_key_id?: string;
@@ -158,6 +187,7 @@ export interface VirtualKeyMCPConfig {
 		connection_type: string;
 		connection_string?: string;
 		tools_to_execute: string[];
+		disabled?: boolean;
 		created_at: string;
 		updated_at: string;
 	};
@@ -219,14 +249,21 @@ export interface CreateVirtualKeyRequest {
 	description?: string;
 	provider_configs?: VirtualKeyProviderConfigRequest[];
 	mcp_configs?: VirtualKeyMCPConfigRequest[];
+	agent_grants?: { agent_name: string }[];
+	relay_grants?: { relay_name: string }[];
 	team_id?: string;
 	customer_id?: string;
+	// Third owner, mutually exclusive with team_id and customer_id (enterprise).
+	business_unit_id?: string;
 	budgets?: CreateBudgetRequest[];
 	rate_limit?: CreateRateLimitRequest;
 	is_active?: boolean;
 	calendar_aligned?: boolean;
 	allow_all_providers?: boolean; // When true, all providers are allowed
 	expires_at?: string; // RFC3339 UTC timestamp; omit for a key that never expires
+	disable_content_logging?: boolean; // Omit to inherit the client setting; true forces content off, false forces it on
+	metadata?: Record<string, string>; // Custom key/value attribution; omit for none
+	delete_after_expire?: boolean; // Omit to inherit client.delete_expired_virtual_keys; true/false override it; requires expires_at
 }
 
 export interface UpdateVirtualKeyRequest {
@@ -234,8 +271,12 @@ export interface UpdateVirtualKeyRequest {
 	description?: string;
 	provider_configs?: VirtualKeyProviderConfigUpdateRequest[];
 	mcp_configs?: VirtualKeyMCPConfigRequest[];
+	agent_grants?: { agent_name: string }[];
+	relay_grants?: { relay_name: string }[];
 	team_id?: string | null;
 	customer_id?: string | null;
+	// Third owner, mutually exclusive with team_id and customer_id (enterprise); null clears it.
+	business_unit_id?: string | null;
 	budgets?: CreateBudgetRequest[];
 	rate_limit?: UpdateRateLimitRequest;
 	is_active?: boolean;
@@ -243,6 +284,9 @@ export interface UpdateVirtualKeyRequest {
 	allow_all_providers?: boolean; // When true, all providers are allowed; omit to leave unchanged
 	reset_budget_usage?: boolean;
 	expires_at?: string; // RFC3339 UTC timestamp sets a new expiry, "" clears it, omit to leave unchanged
+	disable_content_logging?: boolean | null; // null clears back to inherit, true/false set it, omit to leave unchanged
+	metadata?: Record<string, string>; // Replaces the metadata as a whole: {} clears it, omit to leave unchanged
+	delete_after_expire?: boolean | null; // null clears back to inherit, true/false set it, omit to leave unchanged; a value requires an expiry
 }
 
 export interface BulkRotateVirtualKeysRequest {
@@ -331,6 +375,8 @@ export interface GetVirtualKeysParams {
 	search?: string;
 	customer_id?: string;
 	team_id?: string;
+	/** Enterprise-only owner kind; a key names at most one owner, so this ORs with the other two. */
+	business_unit_id?: string;
 	/** Enterprise-only: filters to virtual keys assigned to this user. */
 	user_id?: string;
 	exclude_access_profile_managed_virtual?: boolean;
@@ -339,6 +385,8 @@ export interface GetVirtualKeysParams {
 	sort_by?: "name" | "budget_spent" | "created_at" | "status";
 	order?: "asc" | "desc";
 	export?: boolean;
+	/** Exact-match metadata filters, sent as metadata_<key>=<value> and AND-ed server-side. */
+	metadata?: Record<string, string>;
 }
 
 // Response types
@@ -506,6 +554,8 @@ export interface PricingOverridePatch {
 	output_cost_per_token_ultrafast?: number;
 	input_cost_per_token_flex?: number;
 	output_cost_per_token_flex?: number;
+	input_cost_per_token_decisions?: number;
+	output_cost_per_token_decisions?: number;
 	input_cost_per_character?: number;
 	input_cost_per_token_fast?: number;
 	output_cost_per_token_fast?: number;
@@ -515,6 +565,9 @@ export interface PricingOverridePatch {
 	input_cost_per_image_above_128k_tokens?: number;
 	input_cost_per_video_per_second_above_128k_tokens?: number;
 	input_cost_per_audio_per_second_above_128k_tokens?: number;
+	// 100k tier
+	input_cost_per_token_above_100k_tokens?: number;
+	output_cost_per_token_above_100k_tokens?: number;
 	// 200k tier
 	input_cost_per_token_above_200k_tokens?: number;
 	input_cost_per_token_above_200k_tokens_priority?: number;
@@ -527,6 +580,8 @@ export interface PricingOverridePatch {
 	output_cost_per_token_above_272k_tokens?: number;
 	output_cost_per_token_above_272k_tokens_priority?: number;
 	output_cost_per_token_flex_above_272k_tokens?: number;
+	input_cost_per_token_above_272k_tokens_ultrafast?: number;
+	output_cost_per_token_above_272k_tokens_ultrafast?: number;
 	// Cache
 	cache_creation_input_token_cost?: number;
 	cache_read_input_token_cost?: number;
@@ -535,6 +590,9 @@ export interface PricingOverridePatch {
 	cache_read_input_token_cost_above_200k_tokens_priority?: number;
 	cache_creation_input_token_cost_above_1hr?: number;
 	cache_creation_input_token_cost_above_1hr_above_200k_tokens?: number;
+	cache_creation_input_token_cost_above_100k_tokens?: number;
+	cache_read_input_token_cost_above_100k_tokens?: number;
+	cache_creation_input_token_cost_above_1hr_above_100k_tokens?: number;
 	cache_creation_input_audio_token_cost?: number;
 	cache_read_input_token_cost_priority?: number;
 	cache_read_input_token_cost_ultrafast?: number;
@@ -543,10 +601,13 @@ export interface PricingOverridePatch {
 	cache_read_input_token_cost_above_272k_tokens?: number;
 	cache_read_input_token_cost_above_272k_tokens_priority?: number;
 	cache_read_input_token_cost_flex_above_272k_tokens?: number;
+	cache_read_input_token_cost_above_272k_tokens_ultrafast?: number;
 	cache_creation_input_token_cost_above_272k_tokens?: number;
 	cache_creation_input_token_cost_flex?: number;
 	cache_creation_input_token_cost_flex_above_272k_tokens?: number;
+	cache_creation_input_token_cost_above_272k_tokens_ultrafast?: number;
 	cache_creation_input_token_cost_priority?: number;
+	cache_creation_input_token_cost_above_272k_tokens_priority?: number;
 	cache_creation_input_token_cost_ultrafast?: number;
 	cache_creation_input_token_cost_fast?: number;
 	cache_creation_input_token_cost_above_1hr_fast?: number;
@@ -601,8 +662,19 @@ export interface PricingOverridePatch {
 	output_cost_per_video_per_second_1024p?: number;
 	output_cost_per_video_per_second_1080p?: number;
 	output_cost_per_video_per_second_4k?: number;
+	output_cost_per_video_token?: number;
+	// Azure Voice Live
+	input_cost_per_token_voice_live?: number;
+	output_cost_per_token_voice_live?: number;
+	cache_read_input_token_cost_voice_live?: number;
+	input_cost_per_audio_token_voice_live?: number;
+	output_cost_per_audio_token_voice_live?: number;
+	input_cost_per_standard_speech_audio_token_voice_live?: number;
+	output_cost_per_standard_speech_audio_token_voice_live?: number;
+	input_cost_per_custom_speech_audio_token_voice_live?: number;
+	output_cost_per_custom_speech_audio_token_voice_live?: number;
 	// Other
-	search_context_cost_per_query?: number;
+	web_search_cost_per_request?: number;
 	input_cost_per_query?: number;
 	code_interpreter_cost_per_session?: number;
 	inference_geo_us_multiplier?: number;

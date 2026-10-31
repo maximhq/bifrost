@@ -199,7 +199,7 @@ func TestConvertBifrostReasoningToBedrockReasoning(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			blocks := convertBifrostReasoningToBedrockReasoning(tc.msg, schemas.BedrockReasoningShapeText, false)
+			blocks := convertBifrostReasoningToBedrockReasoning(tc.msg, schemas.BedrockReasoningShapeText, false, false)
 
 			require.Len(t, blocks, tc.wantBlocks)
 			reasoningTextInvariant(t, blocks)
@@ -239,7 +239,7 @@ func TestConvertBifrostReasoningToBedrockReasoningEncryptedContent(t *testing.T)
 		},
 	}
 
-	blocks := convertBifrostReasoningToBedrockReasoning(message, schemas.BedrockReasoningShapeText, false)
+	blocks := convertBifrostReasoningToBedrockReasoning(message, schemas.BedrockReasoningShapeText, false, false)
 	require.Len(t, blocks, 1)
 	require.NotNil(t, blocks[0].ReasoningContent)
 	require.NotNil(t, blocks[0].ReasoningContent.ReasoningText)
@@ -261,7 +261,7 @@ func TestConvertBifrostReasoningToBedrockReasoningTextAlwaysSerialized(t *testin
 			Summary:          []schemas.ResponsesReasoningSummary{},
 			EncryptedContent: &signature,
 		},
-	}, schemas.BedrockReasoningShapeText, false)
+	}, schemas.BedrockReasoningShapeText, false, false)
 	require.Len(t, blocks, 1)
 
 	raw, err := sonic.Marshal(blocks[0])
@@ -450,7 +450,7 @@ func TestConvertBifrostReasoningToBedrockReasoningRedactedShape(t *testing.T) {
 				Summary:          []schemas.ResponsesReasoningSummary{},
 				EncryptedContent: &blob,
 			},
-		}, schemas.BedrockReasoningShapeRedacted, false)
+		}, schemas.BedrockReasoningShapeRedacted, false, false)
 
 		require.Len(t, blocks, 1)
 		require.NotNil(t, blocks[0].ReasoningContent)
@@ -478,7 +478,7 @@ func TestConvertBifrostReasoningToBedrockReasoningRedactedShape(t *testing.T) {
 			ResponsesReasoning: &schemas.ResponsesReasoning{
 				Summary: []schemas.ResponsesReasoningSummary{},
 			},
-		}, schemas.BedrockReasoningShapeRedacted, false)
+		}, schemas.BedrockReasoningShapeRedacted, false, false)
 
 		require.Empty(t, blocks, "an unreplayable block must be dropped, not reshaped")
 	})
@@ -489,7 +489,7 @@ func TestConvertBifrostReasoningToBedrockReasoningRedactedShape(t *testing.T) {
 			ResponsesReasoning: &schemas.ResponsesReasoning{
 				Summary: []schemas.ResponsesReasoningSummary{{Text: "step by step"}},
 			},
-		}, schemas.BedrockReasoningShapeRedacted, false)
+		}, schemas.BedrockReasoningShapeRedacted, false, false)
 
 		require.Empty(t, blocks)
 	})

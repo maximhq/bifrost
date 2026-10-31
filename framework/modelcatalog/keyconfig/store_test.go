@@ -62,15 +62,51 @@ func TestEmptyKeysAndStandardProviderRemoves(t *testing.T) {
 
 func TestKeylessNonStandardProviderUnrestricted(t *testing.T) {
 	custom := schemas.ModelProvider("my-custom")
-	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
-		custom: nil,
-	})
-	allowed := s.AllowedFor(custom)
-	if !slices.Equal(allowed, schemas.WhiteList{"*"}) {
-		t.Errorf("keyless custom: AllowedFor = %v, want [*]", allowed)
+	replaced := New(nil)
+	replaced.Replace(map[schemas.ModelProvider][]schemas.Key{custom: nil}, custom)
+	set := New(nil)
+	set.SetKeylessProvider(custom, nil)
+	for name, s := range map[string]*Store{"Replace": replaced, "SetKeylessProvider": set} {
+		allowed := s.AllowedFor(custom)
+		if !slices.Equal(allowed, schemas.WhiteList{"*"}) {
+			t.Errorf("%s: keyless custom: AllowedFor = %v, want [*]", name, allowed)
+		}
+		if !s.IsAllowed(custom, "anything") {
+			t.Errorf("%s: keyless custom: IsAllowed = false for arbitrary model", name)
+		}
 	}
-	if !s.IsAllowed(custom, "anything") {
-		t.Error("keyless custom: IsAllowed = false for arbitrary model")
+}
+
+// TestKeylessFlagDoesNotUnrestrictStandardProvider pins that the keyless flag
+// only applies to custom providers: a standard provider with no keys is still
+// dropped.
+func TestKeylessFlagDoesNotUnrestrictStandardProvider(t *testing.T) {
+	s := New(nil)
+	s.SetKeylessProvider(schemas.OpenAI, nil)
+	if got := s.AllowedFor(schemas.OpenAI); got != nil {
+		t.Errorf("standard provider marked keyless with no keys: AllowedFor = %v, want nil", got)
+	}
+}
+
+// TestZeroKeyCustomProviderNotKeylessAbsent pins that a custom provider that
+// is not keyless and has no keys (e.g. its only key was rejected at save) can
+// serve nothing: it is absent from the store, so the catalog never offers it
+// as a candidate for a bare model name. Both write paths are covered.
+func TestZeroKeyCustomProviderNotKeylessAbsent(t *testing.T) {
+	custom := schemas.ModelProvider("my-custom")
+	replaced, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{custom: nil})
+	set := New(nil)
+	set.SetProvider(custom, []schemas.Key{})
+	for name, s := range map[string]*Store{"Replace": replaced, "SetProvider": set} {
+		if got := s.AllowedFor(custom); got != nil {
+			t.Errorf("%s: zero-key custom provider AllowedFor = %v, want nil", name, got)
+		}
+		if s.IsAllowed(custom, "text-embedding-005") {
+			t.Errorf("%s: zero-key custom provider IsAllowed = true, want false", name)
+		}
+		if got := s.Providers(); slices.Contains(got, custom) {
+			t.Errorf("%s: Providers() = %v, want %q absent", name, got, custom)
+		}
 	}
 }
 
@@ -523,7 +559,8 @@ func TestProviders_StandardWithoutKeys(t *testing.T) {
 // unrestricted via the allModelsAllowed branch.
 func TestProviders_KeylessNonStandardIncluded(t *testing.T) {
 	custom := schemas.ModelProvider("my-custom-bedrock")
-	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{custom: nil})
+	s := New(nil)
+	s.Replace(map[schemas.ModelProvider][]schemas.Key{custom: nil}, custom)
 	got := s.Providers()
 	if !slices.Contains(got, custom) {
 		t.Errorf("Providers() = %v, want to include %q (keyless non-standard provider)", got, custom)

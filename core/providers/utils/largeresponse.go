@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"math"
+	"unicode/utf8"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -246,7 +247,7 @@ func FinalizeResponseWithLargeDetection(
 			ctx.SetValue(schemas.BifrostContextKeyLargeResponseContentType, ct)
 		}
 		previewLen := min(len(bodyBytes), 1048576)
-		ctx.SetValue(schemas.BifrostContextKeyLargePayloadResponsePreview, string(bodyBytes[:previewLen]))
+		ctx.SetValue(schemas.BifrostContextKeyLargePayloadResponsePreview, string(trimIncompleteRune(bodyBytes[:previewLen])))
 		return nil, true, nil
 	}
 
@@ -280,7 +281,7 @@ func FinalizeResponseWithLargeDetection(
 		ctx.SetValue(schemas.BifrostContextKeyLargeResponseContentType, ct)
 	}
 	previewLen := min(n, 1048576)
-	ctx.SetValue(schemas.BifrostContextKeyLargePayloadResponsePreview, string(prefetchBuf[:previewLen]))
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadResponsePreview, string(trimIncompleteRune(prefetchBuf[:previewLen])))
 
 	return nil, true, nil
 }
@@ -335,6 +336,25 @@ func ParseOpenAIUsageFromBytes(data []byte) *schemas.BifrostLLMUsage {
 	return result
 }
 
+// WrapStreamingResponseBody hands a streamed response body to the transport as one reader:
+// decompressed, failing after the stream idle timeout when the provider stalls, closed when the
+// request context ends, and releasing resp on Close. The caller must not release resp itself.
+func WrapStreamingResponseBody(ctx *schemas.BifrostContext, resp *fasthttp.Response) *LargeResponseReader {
+	reader, releaseGzip := DecompressStreamBody(resp)
+	reader, stopIdleTimeout := NewIdleTimeoutReader(reader, resp.BodyStream(), GetStreamIdleTimeout(ctx), ctx)
+	stopCancellation := SetupStreamCancellation(ctx, resp.BodyStream(), nil)
+	return &LargeResponseReader{
+		Reader: reader,
+		Resp:   resp,
+		ctx:    ctx,
+		cleanup: func() {
+			stopCancellation()
+			stopIdleTimeout()
+			releaseGzip()
+		},
+	}
+}
+
 // SetupStreamingPassthrough configures large response passthrough for streaming
 // responses when large payload mode is active. Wraps the response body stream
 // in a LargeResponseReader and sets context keys for the transport layer.
@@ -374,4 +394,19 @@ func SetupStreamingPassthrough(ctx *schemas.BifrostContext, resp *fasthttp.Respo
 		ctx.SetValue(schemas.BifrostContextKeyLargeResponseContentType, ct)
 	}
 	return true
+}
+
+// trimIncompleteRune drops a trailing partial UTF-8 sequence that a cut by byte
+// count left behind, so a preview of text ends on a character boundary. Bytes
+// that were never valid UTF-8 (binary bodies) are left alone.
+func trimIncompleteRune(b []byte) []byte {
+	for i := len(b) - 1; i >= 0 && i >= len(b)-utf8.UTFMax; i-- {
+		if utf8.RuneStart(b[i]) {
+			if !utf8.FullRune(b[i:]) {
+				return b[:i]
+			}
+			return b
+		}
+	}
+	return b
 }

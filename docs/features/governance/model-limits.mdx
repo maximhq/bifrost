@@ -286,7 +286,7 @@ Model limits are declared under `governance.model_configs`. Each entry reference
 
 ### Global provider cap
 
-Prevent OpenAI from exceeding $1,000/month regardless of which virtual key triggered the request:
+Prevent OpenAI from exceeding \$1,000/month regardless of which virtual key triggered the request:
 
 ```bash
 curl -X POST "http://localhost:8080/api/governance/model-configs" \
@@ -326,7 +326,7 @@ curl -X POST "http://localhost:8080/api/governance/model-configs" \
 
 ### Virtual key per-provider budget
 
-Let the staging VK use Anthropic up to $50/month independently of its OpenAI spend:
+Let the staging VK use Anthropic up to \$50/month independently of its OpenAI spend:
 
 ```bash
 curl -X POST "http://localhost:8080/api/governance/model-configs" \

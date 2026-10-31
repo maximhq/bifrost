@@ -12,6 +12,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Fragment } from "react";
 
+import { getExternalBaseUrl } from "@/app/workspace/mcp-registry/views/mcpUsageGuide/utils";
+import { VirtualKeySelector } from "@/components/entitySelectors/virtualKeySelector";
 import { SheetNavigationButtons } from "@/components/sheetNavigationButtons";
 import { CodeEditor } from "@/components/ui/codeEditor";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
@@ -27,19 +29,25 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { TriStateCheckbox } from "@/components/ui/tristateCheckbox";
 import { useToast } from "@/hooks/use-toast";
+import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { useSheetNavigation } from "@/hooks/useSheetNavigation";
 import { IS_ENTERPRISE, MCP_STATUS_COLORS } from "@/lib/constants/config";
-import { VirtualKeySelector } from "@/components/entitySelectors/virtualKeySelector";
 import {
 	getErrorMessage,
 	useGetCoreConfigQuery,
-	useGetVirtualKeysQuery,
 	useGetVirtualMCPsQuery,
-	useUpdateMCPClientMutation,
+	useLazyGetMCPClientOpenAPISpecQuery,
+	usePreviewOpenAPISpecMutation,
+	useUpdateMCPClientMutation
 } from "@/lib/store";
-import { MCPClient, MCPVKConfig } from "@/lib/types/mcp";
+import { MCPClient, MCPOpenAPICredential, MCPOpenAPIPreviewResponse, MCPVKConfig, SecretVar } from "@/lib/types/mcp";
+import {
+	mcpClientUpdateSchema,
+	RESOURCE_CREDENTIAL_RESEND_MESSAGE,
+	resourceCredentialResendRequired,
+	type MCPClientUpdateSchema,
+} from "@/lib/types/schemas";
 import { VirtualMCP } from "@/lib/types/virtualMcps";
-import { mcpClientUpdateSchema, type MCPClientUpdateSchema } from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
 import { failureStageLabel, formatDurationSince, hasStateReason, stateReasonTitle } from "@/lib/utils/mcpConnectionFailure";
 import { titleCaseFromSnakeCase } from "@/lib/utils/strings";
@@ -47,17 +55,43 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetSCIMProvidersQuery } from "@enterprise/lib/store/apis/scimApi";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Check, ChevronDown, ChevronRight, Copy, Info, Plus, Trash2 } from "lucide-react";
-import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
-import { getExternalBaseUrl } from "@/app/workspace/mcp-registry/views/mcpUsageGuide/utils";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
-import { OAuthAdvancedFields } from "./oauthAdvancedFields";
-import { OAuth2Authorizer } from "./oauth2Authorizer";
 import { MCPClientCredentialSection, MCPClientSessionsSection } from "./mcpClientCredentialSection";
+import { MCPToolIconImage } from "./mcpToolIcon";
+import { MCPExposeList, type MCPExposeItem } from "./mcpExposeList";
+import {
+	applyParsedPreview,
+	buildOpenAPIConfigPayload,
+	collapseToolSelection,
+	isMissingStoredSpec,
+	openAPIBaseUrlError,
+	reconcileToolSelection,
+	replacementAutoExecute,
+	replacementIsDirty,
+	replacementPreviousTools,
+	replacementSaveHold,
+	replacementToolPricing,
+	replacePreviewRequest,
+	specFingerprint,
+	summarizeSpecSource,
+	supportedToolNames,
+	type OpenAPICredentialField,
+	type OpenAPISourceMode
+} from "./mcpClientOpenApiUtils";
+import { MaxProtocolVersionSelect } from "./maxProtocolVersionSelect";
 import { ConnectionFailureBlock } from "./mcpConnectionFailure";
+import { OAuthAdvancedFields } from "./oauthAdvancedFields";
+import { OpenAPIPreviewPanel, type OpenAPIBaseUrlChoice } from "./openApiPreviewPanel";
+import { OpenAPISpecSource } from "./openApiSpecSource";
 import { SectionHeader } from "./sectionHeader";
 import { TLSConfigFields } from "./tlsConfigFields";
-import { TokenExchangeFields } from "./tokenExchangeFields";
+import {
+	exchangesAsSSOApplication,
+	TokenExchangeFields,
+	tokenExchangeProfileFormValues,
+	tokenExchangeProfilePayload,
+} from "./tokenExchangeFields";
 
 interface MCPClientSheetProps {
 	mcpClient: MCPClient;
@@ -180,13 +214,35 @@ export default function MCPClientSheet({
 
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const globalToolSyncInterval = bifrostConfig?.client_config?.mcp_tool_sync_interval ?? 10;
+	const globalMaxProtocolVersion = bifrostConfig?.client_config?.mcp_max_protocol_version || "auto";
 	const globalToolExecutionTimeout = bifrostConfig?.client_config?.mcp_tool_execution_timeout ?? 30;
+	const globalMaxInstructionsLength = bifrostConfig?.client_config?.mcp_max_instructions_per_client || 4096;
 	// External base URL + copy for the read-only endpoint the client is served at (/mcp/<slug>).
 	const baseUrl = getExternalBaseUrl(bifrostConfig?.client_config);
 	const { copy: copyEndpoint, copied: endpointCopied } = useCopyToClipboard({ successMessage: "Endpoint copied" });
 	const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
 
 	const allToolNames = useMemo(() => mcpClient.tools?.map((t) => t.name) ?? [], [mcpClient.tools]);
+	// Prompts are listed with the client prefix; the allow-list holds the server's own names.
+	const promptExposeItems = useMemo<MCPExposeItem[]>(() => {
+		const prefix = `${mcpClient.config.name}-`;
+		return (mcpClient.prompts ?? []).map((prompt) => {
+			const name = prompt.name.startsWith(prefix) ? prompt.name.slice(prefix.length) : prompt.name;
+			return { key: name, label: prompt.title || name, detail: prompt.title ? name : undefined, description: prompt.description };
+		});
+	}, [mcpClient.prompts, mcpClient.config.name]);
+	const resourceExposeItems = useMemo<MCPExposeItem[]>(
+		() => [
+			...(mcpClient.resources ?? []).map((r) => ({ key: r.uri, label: r.title || r.name, detail: r.uri, description: r.description })),
+			...(mcpClient.resource_templates ?? []).map((t) => ({
+				key: t.uriTemplate,
+				label: t.title || t.name,
+				detail: t.uriTemplate,
+				description: t.description,
+			})),
+		],
+		[mcpClient.resources, mcpClient.resource_templates],
+	);
 
 	// Initial VK configs come directly from the MCP client response — always complete, no pagination issue.
 	const initialVKConfigs = useMemo<MCPVKConfig[]>(
@@ -261,10 +317,182 @@ export default function MCPClientSheet({
 	);
 	const supportsOAuthCredentialUpdate = mcpClient.config.auth_type === "oauth" || mcpClient.config.auth_type === "per_user_oauth";
 	const supportsTokenExchangeCredentialUpdate = mcpClient.config.auth_type === "token_exchange";
+
+	// OpenAPI-backed servers: the stored document can be replaced from the
+	// General tab. The replacement is parsed through the same preview endpoint
+	// the create sheet uses; the existing tool selection is carried over by
+	// name, and openapi_config is only sent when a replacement was parsed.
+	const isOpenAPIClient = mcpClient.config.connection_type === "openapi";
+	const [replaceSpecOpen, setReplaceSpecOpen] = useState(false);
+	const [replaceSourceMode, setReplaceSourceMode] = useState<OpenAPISourceMode>("paste");
+	const [replaceSpecText, setReplaceSpecText] = useState("");
+	const [replaceLoadedSpecText, setReplaceLoadedSpecText] = useState("");
+	const [replaceSpecUrl, setReplaceSpecUrl] = useState(mcpClient.config.openapi_config?.spec_url ?? "");
+	const [replaceFileName, setReplaceFileName] = useState<string | null>(null);
+	const [replacePreview, setReplacePreview] = useState<MCPOpenAPIPreviewResponse | null>(null);
+	const [replaceFingerprint, setReplaceFingerprint] = useState<string | null>(null);
+	const [replaceParseError, setReplaceParseError] = useState<string | null>(null);
+	const [replaceBaseUrlChoice, setReplaceBaseUrlChoice] = useState<OpenAPIBaseUrlChoice>("custom");
+	const [replaceBaseUrl, setReplaceBaseUrl] = useState(mcpClient.config.openapi_config?.base_url ?? "");
+	const [replaceBaseUrlError, setReplaceBaseUrlError] = useState<string | undefined>(undefined);
+	const [replaceCredentials, setReplaceCredentials] = useState<Record<string, MCPOpenAPICredential>>(
+		mcpClient.config.openapi_config?.security_credentials ?? {},
+	);
+	const [replaceCredentialsDirty, setReplaceCredentialsDirty] = useState(false);
+	const [replaceSelection, setReplaceSelection] = useState<string[]>([]);
+	const [previewOpenAPISpec, { isLoading: isParsingReplaceSpec }] = usePreviewOpenAPISpecMutation();
+	// Its own instance, so the background baseline preview never shows Parse as busy.
+	const [previewStoredOpenAPISpec, { isLoading: isPreviewingStoredSpec }] = usePreviewOpenAPISpecMutation();
+	const [fetchStoredOpenAPISpec, { isFetching: isLoadingStoredSpec }] = useLazyGetMCPClientOpenAPISpecQuery();
+
+	// Bumped whenever the replacement draft is reset or edited, so a stored
+	// document that arrives late cannot overwrite a newer draft, a cancelled
+	// replacement, or another client's editor.
+	const replaceDraftToken = useRef(0);
+	// Preview of the stored document, made once it loads: the first replacement
+	// parse reconciles the selection against its operations.
+	const replaceBaseline = useRef<MCPOpenAPIPreviewResponse | null>(null);
+	// The stored document loaded but its preview failed, and whether the user
+	// was already told what saving without it drops.
+	const replaceBaselineFailed = useRef(false);
+	// Bumped only on reset (cancel, client switch): the baseline describes the
+	// stored document, so edits to the draft must not discard it.
+	const replaceBaselineToken = useRef(0);
+	const replaceBaselineFailureAcknowledged = useRef(false);
+
+	const resetReplaceSpec = useCallback(() => {
+		replaceDraftToken.current++;
+		replaceBaselineToken.current++;
+		replaceBaseline.current = null;
+		replaceBaselineFailed.current = false;
+		replaceBaselineFailureAcknowledged.current = false;
+		setReplaceSpecOpen(false);
+		setReplaceSourceMode("paste");
+		setReplaceSpecText("");
+		setReplaceLoadedSpecText("");
+		setReplaceSpecUrl(mcpClient.config.openapi_config?.spec_url ?? "");
+		setReplaceFileName(null);
+		setReplacePreview(null);
+		setReplaceFingerprint(null);
+		setReplaceParseError(null);
+		setReplaceBaseUrlChoice("custom");
+		setReplaceBaseUrl(mcpClient.config.openapi_config?.base_url ?? "");
+		setReplaceBaseUrlError(undefined);
+		setReplaceCredentials(mcpClient.config.openapi_config?.security_credentials ?? {});
+		setReplaceCredentialsDirty(false);
+		setReplaceSelection([]);
+	}, [mcpClient.config.openapi_config]);
+
+	useEffect(() => {
+		resetReplaceSpec();
+	}, [mcpClient.config.client_id, resetReplaceSpec]);
+
+	const openReplaceSpec = async () => {
+		setReplaceSpecOpen(true);
+		if (replaceSpecText) return;
+		const token = ++replaceDraftToken.current;
+		const baselineToken = replaceBaselineToken.current;
+		try {
+			const stored = await fetchStoredOpenAPISpec(mcpClient.config.client_id).unwrap();
+			if (token === replaceDraftToken.current) {
+				setReplaceSpecText(stored);
+				setReplaceLoadedSpecText(stored);
+				// Best effort: without it the first parse matches by tool name, and
+				// named auto-execute entries and prices cannot be carried over.
+				previewStoredOpenAPISpec(
+					replacePreviewRequest(
+						"paste",
+						stored,
+						"",
+						undefined,
+						mcpClient.config.openapi_config?.include_deprecated,
+						// The stored name: the saved tool names were cut with it.
+						mcpClient.config.name,
+					),
+				)
+					.unwrap()
+					.then((baseline) => {
+						if (baselineToken === replaceBaselineToken.current) replaceBaseline.current = baseline;
+					})
+					.catch(() => {
+						if (baselineToken === replaceBaselineToken.current) replaceBaselineFailed.current = true;
+					});
+			}
+		} catch (error) {
+			// A spec_url-only client stores no document (404) and the editor starts
+			// empty; any other failure is shown rather than passed off as empty,
+			// and counts as a failed baseline so save warns before dropping named
+			// auto-execute settings and prices.
+			if (!isMissingStoredSpec(error) && baselineToken === replaceBaselineToken.current) {
+				replaceBaselineFailed.current = true;
+			}
+			if (token === replaceDraftToken.current && !isMissingStoredSpec(error)) {
+				setReplaceParseError(`Could not load the stored document: ${getErrorMessage(error)}`);
+			}
+		}
+	};
+
+	const handleReplaceParse = async () => {
+		// A response that arrives after a cancel, a client switch or a draft edit
+		// describes a source the editor no longer shows; drop it.
+		const token = replaceDraftToken.current;
+		setReplaceParseError(null);
+		const customBase = replaceBaseUrlChoice === "custom" && replaceBaseUrl.trim() ? replaceBaseUrl.trim() : undefined;
+		const requestedName = replaceClientName;
+		try {
+			const response = await previewOpenAPISpec(
+				replacePreviewRequest(
+					replaceSourceMode,
+					replaceSpecText,
+					replaceSpecUrl,
+					customBase,
+					mcpClient.config.openapi_config?.include_deprecated,
+					requestedName,
+				),
+			).unwrap();
+			if (token !== replaceDraftToken.current) return;
+			const latest = replaceLatest.current;
+			const nextSupported = supportedToolNames(response);
+			const previousAll = latest.preview ? supportedToolNames(latest.preview) : allToolNames;
+			const previousSelection = latest.preview ? latest.selection : (form.getValues("tools_to_execute") ?? []);
+			const previousTools = replacementPreviousTools(latest.preview, replaceBaseline.current);
+			setReplaceSelection(
+				reconcileToolSelection(previousSelection, previousAll, nextSupported, previousTools, previousTools ? response.tools : undefined),
+			);
+			// Same base-URL rules as the create sheet: a typed override or a server
+			// the document still lists is kept, an operation-servers document needs none.
+			// The previous preview tells a server picked from the old document (cleared
+			// when the new one drops it) apart from a URL the user typed.
+			const nextBase = applyParsedPreview(
+				{ selection: [], baseUrl: latest.baseUrl, baseUrlChoice: latest.baseUrlChoice, credentials: {} },
+				latest.preview,
+				response,
+			);
+			setReplaceBaseUrlChoice(nextBase.baseUrlChoice);
+			setReplaceBaseUrl(nextBase.baseUrl);
+			setReplacePreview(response);
+			setReplaceFingerprint(specFingerprint(replaceSourceMode, replaceSpecText, replaceSpecUrl, requestedName));
+		} catch (error) {
+			if (token !== replaceDraftToken.current) return;
+			setReplaceParseError(getErrorMessage(error));
+			// The previous preview no longer describes the source that just failed
+			// to parse (a URL's document may have changed), so Save waits for a
+			// successful parse.
+			setReplaceFingerprint(null);
+		}
+	};
+
+	const handleReplaceCredentialChange = (scheme: string, field: OpenAPICredentialField, value: SecretVar) => {
+		setReplaceCredentials((prev) => ({ ...prev, [scheme]: { ...(prev[scheme] ?? {}), [field]: value } }));
+		setReplaceCredentialsDirty(true);
+	};
 	// Entra's on-behalf-of grant requires use_idp_credentials — see the
 	// Prerequisites warning in docs/mcp/auth/token-exchange.mdx for why a
 	// dedicated exchange app structurally can't work there.
-	const { data: scimProviders } = useGetSCIMProvidersQuery(undefined, { skip: !IS_ENTERPRISE || !supportsTokenExchangeCredentialUpdate });
+	const hasUserProvisioningAccess = useRbac(RbacResource.UserProvisioning, RbacOperation.View);
+	const { data: scimProviders } = useGetSCIMProvidersQuery(undefined, {
+		skip: !IS_ENTERPRISE || !supportsTokenExchangeCredentialUpdate || !hasUserProvisioningAccess,
+	});
 	const enabledScimProvider = scimProviders?.find((p) => (p as { enabled?: boolean }).enabled) as { name?: string } | undefined;
 	// Matches the create form's idpConfigured gate: without an enabled
 	// provider there's nothing for use_idp_credentials to resolve against at
@@ -314,19 +542,23 @@ export default function MCPClientSheet({
 			per_user_header_keys: mcpClient.config.auth_type === "per_user_headers" ? mcpClient.config.per_user_header_keys || [] : undefined,
 			tools_to_execute: mcpClient.config.tools_to_execute || [],
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
+			prompts_to_expose: mcpClient.config.prompts_to_expose ?? ["*"],
+			resources_to_expose: mcpClient.config.resources_to_expose ?? ["*"],
 			tool_pricing: mcpClient.config.tool_pricing || {},
 			tool_sync_interval: toolSyncIntervalToMinutes(mcpClient.config.tool_sync_interval),
+			max_protocol_version: (mcpClient.config.max_protocol_version ?? "") as MCPClientUpdateSchema["max_protocol_version"],
 			tool_execution_timeout: toolExecutionTimeoutToSeconds(mcpClient.config.tool_execution_timeout),
+			max_instructions_length: mcpClient.config.max_instructions_length ?? 0,
 			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
 			oauth_config: supportsOAuthCredentialUpdate
 				? {
-						client_id: mcpClient.config.oauth_client_id,
-						client_secret: mcpClient.config.oauth_client_secret,
-						authorize_url: mcpClient.config.oauth_authorize_url,
-						token_url: mcpClient.config.oauth_token_url,
-						registration_url: mcpClient.config.oauth_registration_url,
-						resource: mcpClient.config.oauth_resource,
-					}
+					client_id: mcpClient.config.oauth_client_id,
+					client_secret: mcpClient.config.oauth_client_secret,
+					authorize_url: mcpClient.config.oauth_authorize_url,
+					token_url: mcpClient.config.oauth_token_url,
+					registration_url: mcpClient.config.oauth_registration_url,
+					resource: mcpClient.config.oauth_resource,
+				}
 				: undefined,
 			// Unlike oauth_config, token_exchange is replaced wholesale server-side
 			// (only client_id/client_secret get redacted-value preservation) — so
@@ -334,21 +566,44 @@ export default function MCPClientSheet({
 			// with its current stored value rather than left blank.
 			token_exchange: supportsTokenExchangeCredentialUpdate
 				? {
-						audience: mcpClient.config.token_exchange?.audience,
-						use_idp_credentials: mcpClient.config.token_exchange?.use_idp_credentials,
-						client_id: mcpClient.config.token_exchange?.client_id,
-						client_secret: mcpClient.config.token_exchange?.client_secret,
-						authorization_server_url: mcpClient.config.token_exchange?.authorization_server_url,
-					}
+					audience: mcpClient.config.token_exchange?.audience,
+					use_idp_credentials: mcpClient.config.token_exchange?.use_idp_credentials,
+					client_id: mcpClient.config.token_exchange?.client_id,
+					client_secret: mcpClient.config.token_exchange?.client_secret,
+					authorization_server_url: mcpClient.config.token_exchange?.authorization_server_url,
+					...tokenExchangeProfileFormValues(mcpClient.config.token_exchange),
+				}
 				: undefined,
 			tls_config: mcpClient.config.tls_config
 				? {
-						insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
-						ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
-					}
+					insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
+					ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
+				}
 				: undefined,
 		},
 	});
+
+	const replaceClientName = form.watch("name") || mcpClient.config.name;
+	const replacePreviewCurrent =
+		!!replacePreview && replaceFingerprint === specFingerprint(replaceSourceMode, replaceSpecText, replaceSpecUrl, replaceClientName);
+	// Once a replacement is parsed, its operation picker owns the tool selection
+	// that gets saved, so the Tools tab is read-only until it is saved or cancelled.
+	const replacementOwnsTools = replaceSpecOpen && !!replacePreview;
+
+	// The latest picker choices, read when a parse response arrives so a choice
+	// made while the request was in flight is not overwritten by the older one.
+	const replaceLatest = useRef({
+		preview: replacePreview,
+		selection: replaceSelection,
+		baseUrl: replaceBaseUrl,
+		baseUrlChoice: replaceBaseUrlChoice,
+	});
+	replaceLatest.current = {
+		preview: replacePreview,
+		selection: replaceSelection,
+		baseUrl: replaceBaseUrl,
+		baseUrlChoice: replaceBaseUrlChoice,
+	};
 	const isDisabled = form.watch("disabled");
 	const needsSessionStickiness = form.watch("needs_session_stickiness");
 
@@ -365,19 +620,23 @@ export default function MCPClientSheet({
 			per_user_header_keys: mcpClient.config.auth_type === "per_user_headers" ? mcpClient.config.per_user_header_keys || [] : undefined,
 			tools_to_execute: mcpClient.config.tools_to_execute || [],
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
+			prompts_to_expose: mcpClient.config.prompts_to_expose ?? ["*"],
+			resources_to_expose: mcpClient.config.resources_to_expose ?? ["*"],
 			tool_pricing: mcpClient.config.tool_pricing || {},
 			tool_sync_interval: toolSyncIntervalToMinutes(mcpClient.config.tool_sync_interval),
+			max_protocol_version: (mcpClient.config.max_protocol_version ?? "") as MCPClientUpdateSchema["max_protocol_version"],
 			tool_execution_timeout: toolExecutionTimeoutToSeconds(mcpClient.config.tool_execution_timeout),
+			max_instructions_length: mcpClient.config.max_instructions_length ?? 0,
 			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
 			oauth_config: supportsOAuthCredentialUpdate
 				? {
-						client_id: mcpClient.config.oauth_client_id,
-						client_secret: mcpClient.config.oauth_client_secret,
-						authorize_url: mcpClient.config.oauth_authorize_url,
-						token_url: mcpClient.config.oauth_token_url,
-						registration_url: mcpClient.config.oauth_registration_url,
-						resource: mcpClient.config.oauth_resource,
-					}
+					client_id: mcpClient.config.oauth_client_id,
+					client_secret: mcpClient.config.oauth_client_secret,
+					authorize_url: mcpClient.config.oauth_authorize_url,
+					token_url: mcpClient.config.oauth_token_url,
+					registration_url: mcpClient.config.oauth_registration_url,
+					resource: mcpClient.config.oauth_resource,
+				}
 				: undefined,
 			// Unlike oauth_config, token_exchange is replaced wholesale server-side
 			// (only client_id/client_secret get redacted-value preservation) — so
@@ -385,18 +644,19 @@ export default function MCPClientSheet({
 			// with its current stored value rather than left blank.
 			token_exchange: supportsTokenExchangeCredentialUpdate
 				? {
-						audience: mcpClient.config.token_exchange?.audience,
-						use_idp_credentials: mcpClient.config.token_exchange?.use_idp_credentials,
-						client_id: mcpClient.config.token_exchange?.client_id,
-						client_secret: mcpClient.config.token_exchange?.client_secret,
-						authorization_server_url: mcpClient.config.token_exchange?.authorization_server_url,
-					}
+					audience: mcpClient.config.token_exchange?.audience,
+					use_idp_credentials: mcpClient.config.token_exchange?.use_idp_credentials,
+					client_id: mcpClient.config.token_exchange?.client_id,
+					client_secret: mcpClient.config.token_exchange?.client_secret,
+					authorization_server_url: mcpClient.config.token_exchange?.authorization_server_url,
+					...tokenExchangeProfileFormValues(mcpClient.config.token_exchange),
+				}
 				: undefined,
 			tls_config: mcpClient.config.tls_config
 				? {
-						insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
-						ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
-					}
+					insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
+					ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
+				}
 				: undefined,
 		});
 	}, [form, mcpClient, supportsOAuthCredentialUpdate, supportsTokenExchangeCredentialUpdate]);
@@ -405,7 +665,18 @@ export default function MCPClientSheet({
 	const oauthScopesDirty = oauthScopesRaw !== initialOauthScopesRaw;
 	const initialTokenExchangeScopesRaw = (mcpClient.config.token_exchange?.scopes || []).join(", ");
 	const tokenExchangeScopesDirty = tokenExchangeScopesRaw !== initialTokenExchangeScopesRaw;
-	const isDirty = form.formState.isDirty || vkConfigsDirty || oauthScopesDirty || tokenExchangeScopesDirty;
+	const isDirty =
+		form.formState.isDirty ||
+		vkConfigsDirty ||
+		oauthScopesDirty ||
+		tokenExchangeScopesDirty ||
+		replacementIsDirty({
+			open: replaceSpecOpen,
+			preview: replacePreview,
+			credentialsDirty: replaceCredentialsDirty,
+			sourceEdited:
+				replaceSpecText !== replaceLoadedSpecText || replaceSpecUrl.trim() !== (mcpClient.config.openapi_config?.spec_url ?? "").trim(),
+		});
 	// dirtyFields tracks deep changes vs. the pre-populated default values —
 	// used both to gate the rotation warning below and, in onSubmit, to only
 	// rotate when the user actually changed a field. Every oauth_config field
@@ -430,6 +701,16 @@ export default function MCPClientSheet({
 		form.formState.dirtyFields.token_exchange?.client_id ||
 		form.formState.dirtyFields.token_exchange?.client_secret ||
 		form.formState.dirtyFields.token_exchange?.authorization_server_url ||
+		form.formState.dirtyFields.token_exchange?.profile ||
+		form.formState.dirtyFields.token_exchange?.resource ||
+		form.formState.dirtyFields.token_exchange?.resource_token_endpoint ||
+		form.formState.dirtyFields.token_exchange?.resource_client_id ||
+		form.formState.dirtyFields.token_exchange?.resource_client_secret ||
+		form.formState.dirtyFields.token_exchange?.resource_client_auth_method ||
+		form.formState.dirtyFields.token_exchange?.resource_private_key ||
+		form.formState.dirtyFields.token_exchange?.resource_key_id ||
+		form.formState.dirtyFields.token_exchange?.resource_signing_algorithm ||
+		form.formState.dirtyFields.token_exchange?.resource_assertion_audience ||
 		tokenExchangeScopesDirty
 	);
 	// Gates the "takes effect immediately" warning below the toggle — the
@@ -465,6 +746,100 @@ export default function MCPClientSheet({
 				});
 				return;
 			}
+			// The server refuses an id_jag edit that moves where the upstream credential
+			// is sent while keeping its saved mask, so ask for it again beside the field.
+			const resendField =
+				data.token_exchange?.profile === "id_jag"
+					? resourceCredentialResendRequired(mcpClient.config.token_exchange, data.token_exchange)
+					: undefined;
+			if (resendField) {
+				form.setError(`token_exchange.${resendField}`, { message: RESOURCE_CREDENTIAL_RESEND_MESSAGE });
+				return;
+			}
+			// A replacement document must have been parsed (and not edited since)
+			// and must keep at least one operation, so the server is never left
+			// with a tool list nobody reviewed.
+			const replacingSpec = isOpenAPIClient && replaceSpecOpen;
+			if (replacingSpec) {
+				if (!replacePreviewCurrent) {
+					toast({
+						title: "The replacement document is not parsed yet",
+						description:
+							replaceSourceMode === "url"
+								? "Fetch the spec URL so its operations can be reviewed before it replaces the current one."
+								: "Wait for the document to parse, or fix its errors, so its operations can be reviewed before it replaces the current one.",
+						variant: "destructive",
+					});
+					return;
+				}
+				const hold = replacementSaveHold({
+					previewingBaseline: isPreviewingStoredSpec,
+					baselineFailed: replaceBaselineFailed.current,
+					acknowledged: replaceBaselineFailureAcknowledged.current,
+				});
+				if (hold === "pending") {
+					toast({
+						title: "Still reading the current document",
+						description: "Try again in a moment, so auto-execute settings and tool prices carry over to the replacement.",
+						variant: "destructive",
+					});
+					return;
+				}
+				if (hold === "baseline-failed") {
+					replaceBaselineFailureAcknowledged.current = true;
+					toast({
+						title: "Auto-execute settings and tool prices will not carry over",
+						description:
+							"The current document could not be read to match them to the new operations. Save again to replace it anyway; set them again on the Tools tab afterwards.",
+						variant: "destructive",
+					});
+					return;
+				}
+				const supported = supportedToolNames(replacePreview);
+				if (!replaceSelection.some((name) => supported.includes(name))) {
+					toast({
+						title: "Select at least one operation",
+						description: "Tick the operations this server should expose as tools.",
+						variant: "destructive",
+					});
+					return;
+				}
+				const baseUrlError = openAPIBaseUrlError(replaceBaseUrlChoice, replacePreview, replaceBaseUrl);
+				setReplaceBaseUrlError(baseUrlError);
+				if (baseUrlError) return;
+			}
+			const replaceSupported = replacingSpec ? supportedToolNames(replacePreview) : null;
+			const resolvedToolsToExecute = replaceSupported ? collapseToolSelection(replaceSelection, replaceSupported) : data.tools_to_execute;
+			const resolvedToolsToAutoExecute = replaceSupported
+				? replacementAutoExecute(
+						data.tools_to_auto_execute,
+						replaceSupported,
+						resolvedToolsToExecute ?? [],
+						replaceBaseline.current?.tools,
+						replacePreview?.tools,
+					)
+				: data.tools_to_auto_execute;
+			// Prices are keyed by tool name, so they follow their operation too.
+			const resolvedToolPricing = replaceSupported
+				? replacementToolPricing(data.tool_pricing, replaceBaseline.current?.tools, replacePreview?.tools)
+				: data.tool_pricing;
+			const openapiReplacePayload = replacingSpec
+				? buildOpenAPIConfigPayload(
+						{
+							spec: replaceSpecText,
+							spec_url: replaceSpecUrl,
+							base_url: replaceBaseUrl,
+							// Untouched credentials are omitted so the server keeps the stored
+							// secrets; edited ones are sent (a redacted value also keeps the stored one).
+							security_credentials: replaceCredentialsDirty ? replaceCredentials : undefined,
+							include_deprecated: mcpClient.config.openapi_config?.include_deprecated,
+							max_response_bytes: mcpClient.config.openapi_config?.max_response_bytes,
+						},
+						replaceSourceMode,
+						replacePreview,
+						replaceBaseUrlChoice,
+					)
+				: undefined;
 			const oauthClientID = data.oauth_config?.client_id;
 			const oauthClientSecret = data.oauth_config?.client_secret;
 			// Omitted (undefined) preserves the stored scopes; an explicit
@@ -475,9 +850,9 @@ export default function MCPClientSheet({
 				? undefined
 				: oauthScopesRaw.trim()
 					? oauthScopesRaw
-							.split(",")
-							.map((s) => s.trim())
-							.filter(Boolean)
+						.split(",")
+						.map((s) => s.trim())
+						.filter(Boolean)
 					: [];
 			// Only rotate when the user actually changed a field, and never
 			// alongside a disable (the backend rejects that combination
@@ -494,9 +869,9 @@ export default function MCPClientSheet({
 			const shouldUpdateTokenExchange = supportsTokenExchangeCredentialUpdate && tokenExchangeCredentialsDirty;
 			const tokenExchangeScopes = tokenExchangeScopesRaw.trim()
 				? tokenExchangeScopesRaw
-						.split(",")
-						.map((s) => s.trim())
-						.filter(Boolean)
+					.split(",")
+					.map((s) => s.trim())
+					.filter(Boolean)
 				: [];
 			await updateMCPClient({
 				id: mcpClient.config.client_id,
@@ -512,49 +887,56 @@ export default function MCPClientSheet({
 					disabled: data.disabled,
 					headers: data.headers ?? {},
 					per_user_header_keys: mcpClient.config.auth_type === "per_user_headers" ? data.per_user_header_keys : undefined,
-					tools_to_execute: data.tools_to_execute,
-					tools_to_auto_execute: data.tools_to_auto_execute,
-					tool_pricing: data.tool_pricing,
+					tools_to_execute: resolvedToolsToExecute,
+					tools_to_auto_execute: resolvedToolsToAutoExecute,
+					prompts_to_expose: form.formState.dirtyFields.prompts_to_expose ? data.prompts_to_expose : undefined,
+					resources_to_expose: form.formState.dirtyFields.resources_to_expose ? data.resources_to_expose : undefined,
+					tool_pricing: resolvedToolPricing,
 					// Sent only when edited: PUT has PATCH semantics, and the
 					// nanoseconds-to-minutes normalization is lossy for a sub-minute
 					// interval set in config.json, so echoing the field back on an
 					// unrelated edit would silently rewrite it.
 					tool_sync_interval: form.formState.dirtyFields.tool_sync_interval ? (data.tool_sync_interval ?? 0) : undefined,
+					max_protocol_version: form.formState.dirtyFields.max_protocol_version ? (data.max_protocol_version ?? "") : undefined,
 					tool_execution_timeout: data.tool_execution_timeout ?? 0,
+					max_instructions_length: data.max_instructions_length ?? 0,
 					allowed_extra_headers: data.allowed_extra_headers,
 					oauth_config: shouldRotateOAuthCredentials
 						? {
-								client_id: oauthClientID,
-								client_secret: oauthClientSecret,
-								authorize_url: data.oauth_config?.authorize_url || undefined,
-								token_url: data.oauth_config?.token_url || undefined,
-								registration_url: data.oauth_config?.registration_url || undefined,
-								scopes: oauthScopes,
-								resource: data.oauth_config?.resource || undefined,
-							}
+							client_id: oauthClientID,
+							client_secret: oauthClientSecret,
+							authorize_url: data.oauth_config?.authorize_url || undefined,
+							token_url: data.oauth_config?.token_url || undefined,
+							registration_url: data.oauth_config?.registration_url || undefined,
+							scopes: oauthScopes,
+							resource: data.oauth_config?.resource || undefined,
+						}
 						: undefined,
 					token_exchange: shouldUpdateTokenExchange
 						? {
-								audience: data.token_exchange?.audience?.trim() || "",
-								use_idp_credentials: data.token_exchange?.use_idp_credentials ?? false,
-								client_id: data.token_exchange?.use_idp_credentials
-									? undefined
-									: (data.token_exchange?.client_id ?? { value: "", ref: "" }),
-								client_secret: data.token_exchange?.use_idp_credentials ? undefined : data.token_exchange?.client_secret,
-								authorization_server_url: data.token_exchange?.authorization_server_url?.trim() || undefined,
-								scopes: tokenExchangeScopes,
-							}
+							audience: data.token_exchange?.audience?.trim() || "",
+							use_idp_credentials: exchangesAsSSOApplication(data.token_exchange),
+							client_id: exchangesAsSSOApplication(data.token_exchange)
+								? undefined
+								: (data.token_exchange?.client_id ?? { value: "", ref: "" }),
+							client_secret: exchangesAsSSOApplication(data.token_exchange) ? undefined : data.token_exchange?.client_secret,
+							authorization_server_url: data.token_exchange?.authorization_server_url?.trim() || undefined,
+							scopes: tokenExchangeScopes,
+							...tokenExchangeProfilePayload(data.token_exchange),
+						}
 						: undefined,
 					tls_config:
 						data.tls_config !== undefined
 							? {
-									insecure_skip_verify: data.tls_config.insecure_skip_verify ?? false,
-									ca_cert_pem: data.tls_config.ca_cert_pem,
-								}
+								insecure_skip_verify: data.tls_config.insecure_skip_verify ?? false,
+								ca_cert_pem: data.tls_config.ca_cert_pem,
+							}
 							: undefined,
 					vk_configs: vkConfigsDirty ? vkConfigs : undefined,
+					openapi_config: openapiReplacePayload,
 				},
 			}).unwrap();
+			if (replacingSpec) resetReplaceSpec();
 
 			toast({
 				title: "Success",
@@ -712,6 +1094,9 @@ export default function MCPClientSheet({
 											<TabsTrigger value="tools" data-testid="mcpclient-tab-tools">
 												Tools
 											</TabsTrigger>
+											<TabsTrigger value="resources" data-testid="mcpclient-tab-resources">
+												Prompts & Resources
+											</TabsTrigger>
 											<TabsTrigger value="access" data-testid="mcpclient-tab-access">
 												Access
 											</TabsTrigger>
@@ -765,26 +1150,134 @@ export default function MCPClientSheet({
 										    can't be changed after create — surface them here for
 										    visibility without exposing edit controls. */}
 											<div className="flex flex-col gap-2">
-												<div className="text-sm font-medium">Connection</div>
-												<div className="bg-muted/40 text-muted-foreground rounded-md border px-3 py-2 text-sm">
-													<span className="text-foreground font-mono text-xs uppercase">
-														{mcpClient.config.connection_type === "stdio"
-															? "STDIO"
-															: mcpClient.config.connection_type === "sse"
-																? "SSE"
-																: "HTTP"}
-													</span>
+												{/* An OpenAPI server is generated, not connected to: its summary
+												    names the source and the API it calls, not a transport. */}
+												<div className="text-sm font-medium">{isOpenAPIClient ? "Server source" : "Connection"}</div>
+												<div className="bg-muted/40 text-muted-foreground rounded-md border px-3 py-2 text-sm" data-testid="mcp-client-sheet-connection-summary">
+													{isOpenAPIClient ? (
+														<span className="text-foreground text-xs">Generated from an OpenAPI spec</span>
+													) : (
+														<span className="text-foreground font-mono text-xs uppercase">
+															{mcpClient.config.connection_type === "stdio"
+																? "STDIO"
+																: mcpClient.config.connection_type === "sse"
+																	? "SSE"
+																	: "HTTP"}
+														</span>
+													)}
 													<span className="mx-2">·</span>
+													{isOpenAPIClient && <span className="mr-1">calls</span>}
 													<span className="font-mono break-all">
 														{mcpClient.config.connection_type === "stdio"
 															? `${mcpClient.config.stdio_config?.command ?? ""} ${(mcpClient.config.stdio_config?.args ?? []).join(" ")}`.trim() ||
-																"-"
-															: mcpClient.config.connection_string?.type === "env" || mcpClient.config.connection_string?.type === "vault"
-																? mcpClient.config.connection_string.ref
-																: mcpClient.config.connection_string?.value || "-"}
+															"-"
+															: mcpClient.config.connection_type === "openapi"
+																? mcpClient.config.openapi_config?.base_url || "base URL from the document's servers"
+																: mcpClient.config.connection_string?.type === "env" || mcpClient.config.connection_string?.type === "vault"
+																	? mcpClient.config.connection_string.ref
+																	: mcpClient.config.connection_string?.value || "-"}
 													</span>
 												</div>
 											</div>
+											{isOpenAPIClient && (
+												<div className="space-y-3" data-testid="mcp-client-sheet-openapi-section">
+													<div className="flex items-start justify-between gap-3">
+														<div className="text-sm font-medium">OpenAPI document</div>
+														{!replaceSpecOpen && (
+															<Button
+																type="button"
+																variant="outline"
+																size="sm"
+																disabled={!hasUpdateMCPClientAccess}
+																onClick={() => void openReplaceSpec()}
+																data-testid="openapi-replace-spec-btn"
+															>
+																Replace spec
+															</Button>
+														)}
+													</div>
+													<div
+														className="bg-muted/40 text-muted-foreground rounded-md border px-3 py-2 text-sm break-words"
+														data-testid="mcp-client-sheet-openapi-summary"
+													>
+														{summarizeSpecSource(mcpClient.config.openapi_config)}
+													</div>
+													{replaceSpecOpen && (
+														<div className="space-y-4 rounded-md border p-3" data-testid="openapi-replace-spec-panel">
+															<p className="text-muted-foreground text-xs">
+																Paste or upload the new document, or fetch it from a URL. Operations that keep their name stay selected; the
+																server is rebuilt from the new document when you save.
+															</p>
+															<OpenAPISpecSource
+																compact
+																mode={replaceSourceMode}
+																onModeChange={(mode) => {
+																	replaceDraftToken.current++;
+																	setReplaceSourceMode(mode);
+																	setReplaceParseError(null);
+																}}
+																specText={replaceSpecText}
+																onSpecTextChange={(text) => {
+																	replaceDraftToken.current++;
+																	setReplaceSpecText(text);
+																}}
+																specUrl={replaceSpecUrl}
+																onSpecUrlChange={(url) => {
+																	replaceDraftToken.current++;
+																	setReplaceSpecUrl(url);
+																}}
+																fileName={replaceFileName}
+																onFileSelected={(file, text) => {
+																	replaceDraftToken.current++;
+																	setReplaceFileName(file.name);
+																	setReplaceSpecText(text);
+																}}
+																onParse={() => void handleReplaceParse()}
+																isParsing={isParsingReplaceSpec}
+																parseError={replaceParseError}
+																isStale={!!replacePreview && !replacePreviewCurrent}
+																isCurrent={replacePreviewCurrent}
+																sourceKey={specFingerprint(replaceSourceMode, replaceSpecText, replaceSpecUrl, replaceClientName)}
+																disabled={!hasUpdateMCPClientAccess || isLoadingStoredSpec}
+															/>
+															{isLoadingStoredSpec && (
+																<p className="text-muted-foreground text-xs" data-testid="openapi-replace-spec-loading">
+																	Loading the stored document…
+																</p>
+															)}
+															{replacePreview && (
+																<OpenAPIPreviewPanel
+																	preview={replacePreview}
+																	baseUrlChoice={replaceBaseUrlChoice}
+																	onBaseUrlChoiceChange={setReplaceBaseUrlChoice}
+																	baseUrl={replaceBaseUrl}
+																	onBaseUrlChange={(value) => {
+																		setReplaceBaseUrl(value);
+																		setReplaceBaseUrlError(undefined);
+																	}}
+																	baseUrlError={replaceBaseUrlError}
+																	credentials={replaceCredentials}
+																	onCredentialChange={handleReplaceCredentialChange}
+																	selectedTools={replaceSelection}
+																	onSelectedToolsChange={setReplaceSelection}
+																	disabled={!hasUpdateMCPClientAccess}
+																/>
+															)}
+															<div className="flex justify-end">
+																<Button
+																	type="button"
+																	variant="ghost"
+																	size="sm"
+																	onClick={resetReplaceSpec}
+																	data-testid="openapi-replace-cancel-btn"
+																>
+																	Cancel replace
+																</Button>
+															</div>
+														</div>
+													)}
+												</div>
+											)}
 											{mcpClient.config.endpoint_slug && (
 												<div className="flex flex-col gap-2">
 													<div className="text-sm font-medium">Endpoint</div>
@@ -814,7 +1307,7 @@ export default function MCPClientSheet({
 																	return [name, valueParts.join("=")];
 																}),
 															)}
-															onChange={() => {}}
+															onChange={() => { }}
 															fixedKeys={mcpClient.config.stdio_config.envs.map((env) => env.split("=")[0])}
 															valuePlaceholder="—"
 															label=""
@@ -951,7 +1444,7 @@ export default function MCPClientSheet({
 										<div className="space-y-4">
 											<SectionHeader
 												title="Sync & Timeouts"
-												description="Override the global tool sync interval and execution timeout for this server."
+												description="Override the global tool sync interval, execution timeout and instruction limit for this server."
 											/>
 											<div className="divide-y rounded-md border">
 												<FormField
@@ -998,6 +1491,38 @@ export default function MCPClientSheet({
 														);
 													}}
 												/>
+												{!isOpenAPIClient && (
+													<FormField
+														control={form.control}
+														name="max_protocol_version"
+														render={({ field }) => (
+															<FormItem className="flex flex-row items-center justify-between gap-4 px-4 py-3">
+																<div className="flex flex-col items-start gap-0.5">
+																	<div className="flex items-start gap-2">
+																		<FormLabel>Max Protocol Version</FormLabel>
+																		<TooltipProvider>
+																			<Tooltip>
+																				<TooltipTrigger asChild>
+																					<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+																				</TooltipTrigger>
+																				<TooltipContent className="max-w-xs">
+																					<p>
+																						Newest MCP protocol version Bifrost offers this server. Changing it reconnects the server at the
+																						new version.
+																					</p>
+																				</TooltipContent>
+																			</Tooltip>
+																		</TooltipProvider>
+																	</div>
+																	{field.value === "" && <p className="text-muted-foreground text-xs">Using global setting</p>}
+																</div>
+																<FormControl>
+																	<MaxProtocolVersionSelect value={field.value ?? ""} onChange={field.onChange} globalValue={globalMaxProtocolVersion} />
+																</FormControl>
+															</FormItem>
+														)}
+													/>
+												)}
 												<FormField
 													control={form.control}
 													name="tool_execution_timeout"
@@ -1044,6 +1569,58 @@ export default function MCPClientSheet({
 																		min="0"
 																		step="1"
 																		data-testid="mcp-tool-execution-timeout"
+																	/>
+																</FormControl>
+															</FormItem>
+														);
+													}}
+												/>
+												<FormField
+													control={form.control}
+													name="max_instructions_length"
+													render={({ field }) => {
+														const isUsingGlobal = field.value === undefined || field.value === null || field.value === 0;
+														return (
+															<FormItem className="flex flex-row items-center justify-between gap-4 px-4 py-3">
+																<div className="flex flex-col items-start gap-0.5">
+																	<div className="flex items-start gap-2">
+																		<div>
+																			<FormLabel>Max Instruction Length (bytes)</FormLabel>
+																		</div>
+																		<TooltipProvider>
+																			<Tooltip>
+																				<TooltipTrigger asChild>
+																					<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+																				</TooltipTrigger>
+																				<TooltipContent className="max-w-xs">
+																					<p>
+																						Cap on the instructions forwarded from this server. Leave empty or set to 0 to use the global
+																						setting. The combined total across all servers is still bounded by the global total.
+																					</p>
+																				</TooltipContent>
+																			</Tooltip>
+																		</TooltipProvider>
+																	</div>
+																	<div>{isUsingGlobal && <p className="text-muted-foreground text-xs">Using global setting</p>}</div>
+																</div>
+																<FormControl>
+																	<Input
+																		type="number"
+																		className={`w-24 ${isUsingGlobal ? "text-muted-foreground" : ""}`}
+																		placeholder={String(globalMaxInstructionsLength)}
+																		value={field.value === 0 || field.value === undefined ? "" : String(field.value)}
+																		onChange={(e) => {
+																			if (e.target.value === "") {
+																				field.onChange(undefined);
+																				return;
+																			}
+																			const n = Number(e.target.value);
+																			if (!Number.isInteger(n)) return;
+																			field.onChange(n);
+																		}}
+																		min="0"
+																		step="1"
+																		data-testid="mcp-max-instructions-length"
 																	/>
 																</FormControl>
 															</FormItem>
@@ -1192,9 +1769,9 @@ export default function MCPClientSheet({
 																onBlur={() => {
 																	const parsed = allowedExtraHeadersRaw.trim()
 																		? allowedExtraHeadersRaw
-																				.split(",")
-																				.map((h) => h.trim())
-																				.filter(Boolean)
+																			.split(",")
+																			.map((h) => h.trim())
+																			.filter(Boolean)
 																		: [];
 																	field.onChange(parsed);
 																	field.onBlur();
@@ -1354,7 +1931,7 @@ export default function MCPClientSheet({
 																		clientSecretMaskNonEnvValue={true}
 																		clientSecretRedactNonEnvValue={false}
 																		authServerUrlLabel="Authorization Server URL"
-																		authServerUrlHelperText="Leave blank to use the deployment's SSO login issuer."
+																		authServerUrlHelperText="Leave blank to use the deployment's SSO login issuer. Enter an issuer, or a full token endpoint ending in /token to use it as is."
 																		authServerUrlTestId="mcpclient-input-token-exchange-authorization-server-url"
 																		scopes={{
 																			variant: "input",
@@ -1377,7 +1954,19 @@ export default function MCPClientSheet({
 										})()}
 									</TabsContent>
 
-									<TabsContent value="tools" className="space-y-6 pb-10">
+									<TabsContent value="tools" className="space-y-6 pb-10" inert={replacementOwnsTools}>
+										{replacementOwnsTools && (
+											<div
+												className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800"
+												data-testid="mcp-client-tools-replacement-note"
+											>
+												<Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600" />
+												<p>
+													A replacement document is open on the General tab, and its operation list decides which tools are saved. Save or
+													cancel the replacement to edit tools here.
+												</p>
+											</div>
+										)}
 										<div className="space-y-4">
 											<div className="flex items-start justify-between gap-4">
 												<SectionHeader
@@ -1547,16 +2136,25 @@ export default function MCPClientSheet({
 																					type="button"
 																					className="hover:bg-muted flex h-8 w-8 items-center justify-center rounded-md transition-colors"
 																					onClick={() => toggleToolExpanded(tool.name)}
+																					data-testid={`mcp-tool-expand-${tool.name}`}
 																				>
 																					{isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
 																				</button>
 																			</TableCell>
 																			<TableCell className="max-w-[300px]">
-																				<div className="min-w-0">
-																					<div className="text-foreground truncate text-sm font-medium">{tool.name}</div>
-																					{tool.description && (
-																						<p className="text-muted-foreground mt-0.5 truncate text-xs">{tool.description}</p>
-																					)}
+																				<div className="flex min-w-0 items-start gap-2">
+																					<MCPToolIconImage tool={tool} />
+																					<div className="min-w-0">
+																						<div className="text-foreground truncate text-sm font-medium" data-testid={`mcp-tool-title-${tool.name}`}>
+																							{tool.title || tool.annotations?.title || tool.name}
+																						</div>
+																						{(tool.title || tool.annotations?.title) && (tool.title || tool.annotations?.title) !== tool.name && (
+																							<div className="text-muted-foreground truncate font-mono text-xs">{tool.name}</div>
+																						)}
+																						{tool.description && (
+																							<p className="text-muted-foreground mt-0.5 truncate text-xs">{tool.description}</p>
+																						)}
+																					</div>
 																				</div>
 																			</TableCell>
 																			<TableCell className="text-center">
@@ -1656,6 +2254,26 @@ export default function MCPClientSheet({
 																						) : (
 																							<div className="text-muted-foreground text-sm">No parameters defined</div>
 																						)}
+																						{tool.output_schema && (
+																							<div data-testid={`mcp-tool-output-schema-${tool.name}`}>
+																								<div className="text-muted-foreground mt-3 mb-2 text-xs font-medium">Output Schema</div>
+																								<CodeEditor
+																									className="z-0 w-full rounded-sm border"
+																									shouldAdjustInitialHeight={true}
+																									maxHeight={300}
+																									wrap={true}
+																									code={JSON.stringify(tool.output_schema, null, 2)}
+																									lang="json"
+																									readonly={true}
+																									options={{
+																										scrollBeyondLastLine: false,
+																										collapsibleBlocks: true,
+																										lineNumbers: "off",
+																										alwaysConsumeMouseWheel: false,
+																									}}
+																								/>
+																							</div>
+																						)}
 																					</div>
 																				</td>
 																			</tr>
@@ -1672,6 +2290,37 @@ export default function MCPClientSheet({
 												</div>
 											)}
 										</div>
+									</TabsContent>
+
+									<TabsContent value="resources" className="space-y-8 pb-10">
+										<FormField
+											control={form.control}
+											name="prompts_to_expose"
+											render={({ field }) => (
+												<MCPExposeList
+													kind="prompts"
+													title="Prompts"
+													description="Prompts this server lists, and which of them MCP clients connected to Bifrost can use."
+													items={promptExposeItems}
+													value={field.value}
+													onChange={(next) => form.setValue("prompts_to_expose", next, { shouldDirty: true })}
+												/>
+											)}
+										/>
+										<FormField
+											control={form.control}
+											name="resources_to_expose"
+											render={({ field }) => (
+												<MCPExposeList
+													kind="resources"
+													title="Resources"
+													description="Resources and resource templates this server lists, and which of them MCP clients connected to Bifrost can read."
+													items={resourceExposeItems}
+													value={field.value}
+													onChange={(next) => form.setValue("resources_to_expose", next, { shouldDirty: true })}
+												/>
+											)}
+										/>
 									</TabsContent>
 
 									<TabsContent value="access" className="space-y-6 pb-10">

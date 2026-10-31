@@ -60,6 +60,9 @@
  * 33. Input tokens - simple text
  * 34. Input tokens - with system message
  * 35. Input tokens - long text
+ *
+ * Decisions API:
+ * 36. Decisions - ordered questions through both SDK base URLs
  */
 
 import OpenAI from 'openai'
@@ -67,6 +70,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   getIntegrationUrl,
+  getModel,
   getProviderModel,
   getVirtualKey
 } from '../src/utils/config-loader'
@@ -2043,5 +2047,55 @@ describe('OpenAI SDK Integration Tests', () => {
         }
       }
     )
+  })
+
+  // ============================================================================
+  // Decisions API Tests
+  // ============================================================================
+
+  describe('Decisions API - SDK Base URLs', () => {
+    // The installed SDK has no decisions resource yet, so the request goes
+    // through the SDK's generic post, which still uses its base URL, auth,
+    // and transport.
+    it('should answer OpenAI decisions bodies through both SDK base URLs', async () => {
+      if (!hasApiKey('openai')) {
+        console.log('Skipping: OPENAI_API_KEY not configured')
+        return
+      }
+
+      type DecisionAnswer = { type: string, name?: string | null, probability?: number, choice?: unknown }
+      const openaiBaseUrl = getIntegrationUrl('openai').replace(/\/+$/, '')
+      for (const baseURL of [openaiBaseUrl, `${openaiBaseUrl}/v1`]) {
+        const client = new OpenAI({ apiKey: getApiKey('openai'), baseURL, maxRetries: 0, timeout: 60000 })
+        const response = await client.post<{ answers: DecisionAnswer[] }>('/decisions', {
+          body: {
+            model: getModel('openai', 'decisions'),
+            input: 'I was charged twice for my order and nobody has replied.',
+            questions: [
+              { type: 'predicate', name: 'is_frustrated', instructions: 'Is the customer frustrated?' },
+              {
+                type: 'choice',
+                name: 'category',
+                instructions: 'Pick the ticket category',
+                choices: [{ value: 'billing' }, { value: 'bug' }, { value: 'other' }],
+              },
+            ],
+          },
+        })
+
+        // Answers follow question order with their names, refusals included.
+        expect(response.answers.map((answer) => answer.name)).toEqual(['is_frustrated', 'category'])
+        if (response.answers[0].type !== 'refusal') {
+          expect(response.answers[0].type).toBe('predicate')
+          expect(response.answers[0].probability).toBeGreaterThanOrEqual(0)
+          expect(response.answers[0].probability).toBeLessThanOrEqual(1)
+        }
+        if (response.answers[1].type !== 'refusal') {
+          expect(response.answers[1].type).toBe('choice')
+          expect(['billing', 'bug', 'other']).toContain(response.answers[1].choice)
+        }
+        console.log(`✅ Decisions passed for baseURL=${baseURL}`)
+      }
+    })
   })
 })

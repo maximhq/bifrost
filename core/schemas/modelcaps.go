@@ -105,11 +105,35 @@ func (c ModelCaps) SupportsFastMode(fallback bool) bool {
 	return fallback
 }
 
+// SupportsSafeguards returns true if the model supports the Claude Code
+// auto-mode server-side classifier (`safeguards` request field /
+// `safeguard_results` response field) on surfaces where the feature is
+// model-gated. Auto mode on Amazon Bedrock, Google Cloud's Agent Platform,
+// Microsoft Foundry, and Claude apps gateway sessions is supported only on
+// Sonnet 5, Opus 4.7 or later, and the Fable models. Anthropic direct uses the
+// same model gate. Payloads are forwarded opaquely after capability filtering.
+//
+// Sources:
+//   - https://code.claude.com/docs/en/auto-mode-classifier-billing
+//   - https://code.claude.com/docs/en/permission-modes#enable-auto-mode-on-bedrock-agent-platform-or-foundry
+//
+// Prefers the datasheet's supports_safeguards boolean when set, falling back to
+// name detection when no record is registered.
+func (c ModelCaps) SupportsSafeguards(fallback bool) bool {
+	if c.record != nil && c.record.SupportsSafeguards != nil {
+		return *c.record.SupportsSafeguards
+	}
+	return fallback
+}
+
 // Wire field names used as UnsupportedFields and ConditionallyUnsupportedFields
 // keys. Call sites pass these rather than string literals so a typo fails to
 // compile instead of silently reading as "supported".
 const (
 	FieldTopP                 = "top_p"
+	FieldTemperature          = "temperature"
+	FieldTopLogprobs          = "top_logprobs"
+	FieldLogprobs             = "logprobs"
 	FieldPresencePenalty      = "presence_penalty"
 	FieldFrequencyPenalty     = "frequency_penalty"
 	FieldStop                 = "stop"
@@ -121,6 +145,7 @@ const (
 	FieldVerbosity            = "verbosity"
 	FieldStore                = "store"
 	FieldWebSearchOptions     = "web_search_options"
+	FieldSearchContentTypes   = "search_content_types"
 )
 
 // Logical field names used as FieldNames keys, where the value is the wire name
@@ -235,6 +260,15 @@ func (c ModelCaps) SupportsSystemMessages(fallback bool) bool {
 	return fallback
 }
 
+// SupportsDeveloperRole reports whether the model accepts role "developer".
+// Models that do not are sent developer messages as system instead.
+func (c ModelCaps) SupportsDeveloperRole(fallback bool) bool {
+	if c.record != nil && c.record.SupportsDeveloperRole != nil {
+		return *c.record.SupportsDeveloperRole
+	}
+	return fallback
+}
+
 // SupportsAssistantPrefill reports whether a trailing assistant message may be
 // sent for the model to continue. Models without it need it trimmed.
 func (c ModelCaps) SupportsAssistantPrefill(fallback bool) bool {
@@ -249,6 +283,33 @@ func (c ModelCaps) SupportsAssistantPrefill(fallback bool) bool {
 func (c ModelCaps) SupportsCachePoint(fallback bool) bool {
 	if c.record != nil && c.record.SupportsCachePoint != nil {
 		return *c.record.SupportsCachePoint
+	}
+	return fallback
+}
+
+// SupportsPromptCacheBreakpoint reports whether the model accepts OpenAI's
+// per-block prompt_cache_breakpoint and request-level prompt_cache_options.
+func (c ModelCaps) SupportsPromptCacheBreakpoint(fallback bool) bool {
+	if c.record != nil && c.record.SupportsPromptCacheBreakpoint != nil {
+		return *c.record.SupportsPromptCacheBreakpoint
+	}
+	return fallback
+}
+
+// SupportsAsyncTools reports whether the model accepts OpenAI's async flag on tool
+// definitions and on replayed function/custom call items.
+func (c ModelCaps) SupportsAsyncTools(fallback bool) bool {
+	if c.record != nil && c.record.SupportsAsyncTools != nil {
+		return *c.record.SupportsAsyncTools
+	}
+	return fallback
+}
+
+// SupportsCustomTools reports whether the model accepts OpenAI custom (freeform)
+// tools. Models that do not are sent each custom tool as a function tool instead.
+func (c ModelCaps) SupportsCustomTools(fallback bool) bool {
+	if c.record != nil && c.record.SupportsCustomTools != nil {
+		return *c.record.SupportsCustomTools
 	}
 	return fallback
 }
@@ -312,6 +373,28 @@ func (c ModelCaps) ToolChoiceAnySupported(fallback bool) bool {
 func (c ModelCaps) SupportsForcedToolChoice(fallback bool) bool {
 	if c.record != nil && c.record.SupportsForcedToolChoice != nil {
 		return *c.record.SupportsForcedToolChoice
+	}
+	return fallback
+}
+
+// SupportsDecisions reports whether the model is served on its provider's
+// native decisions endpoint, such as OpenAI's POST /v1/decisions. A model
+// without it answers decision requests through emulation on its chat API. A
+// datasheet row decides in either direction, so a new decisions model needs
+// only a row; with no row the caller's fallback (DefaultSupportsDecisions)
+// applies.
+func (c ModelCaps) SupportsDecisions(fallback bool) bool {
+	if c.record != nil && c.record.SupportsDecisions != nil {
+		return *c.record.SupportsDecisions
+	}
+	return fallback
+}
+
+// SupportsPromptCacheBreakpoints reports whether the Responses wire accepts
+// prompt_cache_breakpoint on input_text blocks in place of cache_control.
+func (c ModelCaps) SupportsPromptCacheBreakpoints(fallback bool) bool {
+	if c.record != nil && c.record.SupportsPromptCacheBreakpoints != nil {
+		return *c.record.SupportsPromptCacheBreakpoints
 	}
 	return fallback
 }
@@ -404,6 +487,16 @@ func (c ModelCaps) SupportsNativeEffort(fallback bool) bool {
 func (c ModelCaps) SupportsMidConversationSystem(fallback bool) bool {
 	if c.record != nil && c.record.SupportsMidConversationSystem != nil {
 		return *c.record.SupportsMidConversationSystem
+	}
+	return fallback
+}
+
+// SupportsMidConvOutputConfig reports whether the pair accepts output_config.effort
+// on a role:"system" message inside messages (per-message effort). The record is keyed per
+// (provider, model), so it decides for both the provider and the model when set.
+func (c ModelCaps) SupportsMidConvOutputConfig(fallback bool) bool {
+	if c.record != nil && c.record.SupportsMidConvOutputConfig != nil {
+		return *c.record.SupportsMidConvOutputConfig
 	}
 	return fallback
 }
@@ -507,6 +600,43 @@ func (c ModelCaps) ReservedToolNamespaces(fallback []string) []string {
 	return fallback
 }
 
+// SupportsRegexLookaround reports whether the model accepts lookaround assertions in
+// tool-schema patterns. A row decides in either direction; absent returns fallback.
+func (c ModelCaps) SupportsRegexLookaround(fallback bool) bool {
+	if c.record != nil && c.record.SupportsRegexLookaround != nil {
+		return *c.record.SupportsRegexLookaround
+	}
+	return fallback
+}
+
+// SupportsRegexNULEscape reports whether the model accepts the `\0` escape in
+// tool-schema patterns. A row decides in either direction; absent returns fallback.
+func (c ModelCaps) SupportsRegexNULEscape(fallback bool) bool {
+	if c.record != nil && c.record.SupportsRegexNULEscape != nil {
+		return *c.record.SupportsRegexNULEscape
+	}
+	return fallback
+}
+
+// SupportsSchemaPattern reports whether the model accepts the `pattern` keyword in
+// tool schemas at all. A row decides in either direction; absent returns fallback.
+func (c ModelCaps) SupportsSchemaPattern(fallback bool) bool {
+	if c.record != nil && c.record.SupportsSchemaPattern != nil {
+		return *c.record.SupportsSchemaPattern
+	}
+	return fallback
+}
+
+// SupportedSchemaFormats returns the string `format` values the model accepts in tool
+// schemas. A non-empty row replaces fallback; absent or empty returns it. A nil result
+// means every format is accepted.
+func (c ModelCaps) SupportedSchemaFormats(fallback []string) []string {
+	if c.record != nil && len(c.record.SupportedSchemaFormats) > 0 {
+		return c.record.SupportedSchemaFormats
+	}
+	return fallback
+}
+
 // SupportsAdvisorTool reports whether the model accepts advisor_tool_result blocks.
 func (c ModelCaps) SupportsAdvisorTool(fallback bool) bool {
 	if c.record != nil && c.record.SupportsAdvisorTool != nil {
@@ -599,6 +729,17 @@ func (c ModelCaps) SupportsFilesAPI(fallback bool) bool {
 	return fallback
 }
 
+// SupportsComputerToolset reports whether the model accepts the
+// computer_toolset_20260801 client toolset. Distinct from the dated computer_*
+// tools: most models that take the toolset still accept the dated form too, and
+// Opus 5.5 on the Claude API and Google Cloud takes only the toolset.
+func (c ModelCaps) SupportsComputerToolset(fallback bool) bool {
+	if c.record != nil && c.record.SupportsComputerToolset != nil {
+		return *c.record.SupportsComputerToolset
+	}
+	return fallback
+}
+
 // SupportsTextEditorTool reports whether the model accepts the text_editor client tool.
 func (c ModelCaps) SupportsTextEditorTool(fallback bool) bool {
 	if c.record != nil && c.record.SupportsTextEditorTool != nil {
@@ -639,6 +780,16 @@ func (c ModelCaps) BedrockAPIs() []BedrockAPI {
 func (c ModelCaps) MinOutputTokens(fallback int) int {
 	if c.record != nil && c.record.MinOutputTokens != nil {
 		return *c.record.MinOutputTokens
+	}
+	return fallback
+}
+
+// MaxOutputTokens returns the ceiling the model enforces on max_output_tokens.
+// A row with a positive max_output_tokens wins; absent or non-positive returns
+// fallback. Zero means no ceiling, so callers clamp only above zero.
+func (c ModelCaps) MaxOutputTokens(fallback int) int {
+	if c.record != nil && c.record.MaxOutputTokens != nil && *c.record.MaxOutputTokens > 0 {
+		return *c.record.MaxOutputTokens
 	}
 	return fallback
 }

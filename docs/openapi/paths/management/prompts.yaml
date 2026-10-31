@@ -3,8 +3,18 @@
 folders:
   get:
     operationId: listFolders
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List folders
-    description: Returns all prompt folders.
+    description: |
+      Returns all prompt folders.
     tags:
       - Prompt Repository
     security:
@@ -27,8 +37,18 @@ folders:
 
   post:
     operationId: createFolder
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create folder
-    description: Creates a new prompt folder.
+    description: |
+      Creates a new prompt folder.
     tags:
       - Prompt Repository
     requestBody:
@@ -58,8 +78,18 @@ folders:
 folders-by-id:
   get:
     operationId: getFolder
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get folder
-    description: Returns a folder by ID.
+    description: |
+      Returns a folder by ID.
     tags:
       - Prompt Repository
     parameters:
@@ -92,8 +122,18 @@ folders-by-id:
 
   put:
     operationId: updateFolder
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update folder
-    description: Updates a folder's name or description.
+    description: |
+      Updates a folder's name or description.
     tags:
       - Prompt Repository
     parameters:
@@ -134,8 +174,18 @@ folders-by-id:
 
   delete:
     operationId: deleteFolder
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete folder
-    description: Deletes a folder and cascades to contained prompts.
+    description: |
+      Deletes a folder and cascades to contained prompts.
     tags:
       - Prompt Repository
     parameters:
@@ -166,8 +216,18 @@ folders-by-id:
 prompts:
   get:
     operationId: listPrompts
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List prompts
-    description: Returns all prompts, optionally filtered by folder.
+    description: |
+      Returns all prompts, optionally filtered by folder.
     tags:
       - Prompt Repository
     parameters:
@@ -196,8 +256,18 @@ prompts:
 
   post:
     operationId: createPrompt
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create prompt
-    description: Creates a new prompt.
+    description: |
+      Creates a new prompt.
     tags:
       - Prompt Repository
     requestBody:
@@ -227,8 +297,18 @@ prompts:
 prompts-by-id:
   get:
     operationId: getPrompt
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get prompt
-    description: Returns a prompt by ID with its latest version.
+    description: |
+      Returns a prompt by ID with its latest version.
     tags:
       - Prompt Repository
     parameters:
@@ -261,8 +341,18 @@ prompts-by-id:
 
   put:
     operationId: updatePrompt
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update prompt
-    description: Updates a prompt's name or folder.
+    description: |
+      Updates a prompt's name or folder.
     tags:
       - Prompt Repository
     parameters:
@@ -297,8 +387,18 @@ prompts-by-id:
 
   delete:
     operationId: deletePrompt
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete prompt
-    description: Deletes a prompt and all its versions and sessions.
+    description: |
+      Deletes a prompt and all its versions and sessions.
     tags:
       - Prompt Repository
     parameters:
@@ -329,8 +429,18 @@ prompts-by-id:
 prompt-versions:
   get:
     operationId: listPromptVersions
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List prompt versions
-    description: Returns all versions for a prompt.
+    description: |
+      Returns all versions for a prompt.
     tags:
       - Prompt Repository
     parameters:
@@ -360,8 +470,18 @@ prompt-versions:
 
   post:
     operationId: createPromptVersion
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create prompt version
-    description: Creates a new version for a prompt.
+    description: |
+      Creates a new version for a prompt.
     tags:
       - Prompt Repository
     parameters:
@@ -398,8 +518,18 @@ prompt-versions:
 versions-by-id:
   get:
     operationId: getPromptVersion
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get prompt version
-    description: Returns a specific version by ID.
+    description: |
+      Returns a specific version by ID.
     tags:
       - Prompt Repository
     parameters:
@@ -433,8 +563,18 @@ versions-by-id:
 
   delete:
     operationId: deletePromptVersion
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete prompt version
-    description: Deletes a specific version.
+    description: |
+      Deletes a specific version.
     tags:
       - Prompt Repository
     parameters:
@@ -466,8 +606,18 @@ versions-by-id:
 prompt-sessions:
   get:
     operationId: listPromptSessions
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List prompt sessions
-    description: Returns all sessions for a prompt.
+    description: |
+      Returns all sessions for a prompt.
     tags:
       - Prompt Repository
     parameters:
@@ -497,8 +647,18 @@ prompt-sessions:
 
   post:
     operationId: createPromptSession
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create prompt session
-    description: Creates a new playground session for a prompt.
+    description: |
+      Creates a new playground session for a prompt.
     tags:
       - Prompt Repository
     parameters:
@@ -535,8 +695,18 @@ prompt-sessions:
 sessions-by-id:
   get:
     operationId: getPromptSession
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get prompt session
-    description: Returns a specific session by ID.
+    description: |
+      Returns a specific session by ID.
     tags:
       - Prompt Repository
     parameters:
@@ -570,8 +740,18 @@ sessions-by-id:
 
   put:
     operationId: updatePromptSession
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update prompt session
-    description: Updates a session's messages, model params, etc.
+    description: |
+      Updates a session's messages, model params, etc.
     tags:
       - Prompt Repository
     parameters:
@@ -607,8 +787,18 @@ sessions-by-id:
 
   delete:
     operationId: deletePromptSession
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete prompt session
-    description: Deletes a specific session.
+    description: |
+      Deletes a specific session.
     tags:
       - Prompt Repository
     parameters:
@@ -640,8 +830,18 @@ sessions-by-id:
 sessions-rename:
   put:
     operationId: renamePromptSession
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Rename prompt session
-    description: Renames a session.
+    description: |
+      Renames a session.
     tags:
       - Prompt Repository
     parameters:
@@ -678,8 +878,18 @@ sessions-rename:
 sessions-commit:
   post:
     operationId: commitPromptSession
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Commit session as version
-    description: Commits the current session state as a new prompt version.
+    description: |
+      Commits the current session state as a new prompt version.
     tags:
       - Prompt Repository
     parameters:

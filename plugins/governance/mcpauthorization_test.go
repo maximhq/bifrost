@@ -51,3 +51,75 @@ func TestMCPExecutionAuthorizationRequiresHeaders(t *testing.T) {
 	require.NotNil(t, short)
 	require.Equal(t, "missing_required_headers", *short.Error.Type)
 }
+
+// TestMCPExecutionAuthorizationForInjectedTool lets a provider-injected tool past the
+// virtual key's tool permits. The operator chose the tool in the provider config, so
+// the key's MCP grants never listed it; identity and limits still apply.
+func TestMCPExecutionAuthorizationForInjectedTool(t *testing.T) {
+	p := newPluginForMCPStamping(t, buildVKForMCPStamping(nil), false)
+	for _, tc := range []struct {
+		name, injectedClient, injected, tool, key string
+		allowed                                   bool
+	}{
+		{"injected tool", "local", "local-write", "local-write", mcpTestVKValue, true},
+		{"sibling of the injected tool", "local", "local-write", "local-delete", mcpTestVKValue, false},
+		{"another client's tool of the same name", "other", "local-write", "local-write", mcpTestVKValue, false},
+		{"invalid identity", "local", "local-write", "local-write", "invalid", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			restore := isInjectedToolExecution
+			t.Cleanup(func() { isInjectedToolExecution = restore })
+			isInjectedToolExecution = func(_ *schemas.BifrostContext, clientName, toolName string) bool {
+				return clientName == tc.injectedClient && toolName == tc.injected
+			}
+			ctx := presentCtx(tc.key)
+			req := &schemas.BifrostMCPRequest{RequestType: schemas.MCPRequestTypeChatToolCall, ClientName: "local", ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{Function: schemas.ChatAssistantMessageToolCallFunction{Name: &tc.tool, Arguments: "{}"}}}
+			_, short, err := p.PreMCPHook(ctx, req)
+			require.NoError(t, err)
+			if tc.allowed {
+				require.Nil(t, short)
+			} else {
+				require.NotNil(t, short)
+			}
+		})
+	}
+}
+
+// TestMCPExecutionAuthorizationRejectsForgedInjectedMarker keeps the injected-tool
+// permit core-only. A plugin can lift BlockRestrictedWrites and call public SetValue,
+// so a marker planted that way must not stand in for the virtual key's tool grants.
+func TestMCPExecutionAuthorizationRejectsForgedInjectedMarker(t *testing.T) {
+	p := newPluginForMCPStamping(t, buildVKForMCPStamping(nil), false)
+	ctx := presentCtx(mcpTestVKValue)
+	ctx.Root().UnblockRestrictedWrites()
+	ctx.SetValue(schemas.BifrostContextKey("bifrost-injected-tool-execution"), struct{ ClientName, ToolName string }{ClientName: "local", ToolName: "local-write"})
+	tool := "local-write"
+	req := &schemas.BifrostMCPRequest{RequestType: schemas.MCPRequestTypeChatToolCall, ClientName: "local", ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{Function: schemas.ChatAssistantMessageToolCallFunction{Name: &tool, Arguments: "{}"}}}
+	_, short, err := p.PreMCPHook(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, short, "a marker written through public SetValue must not bypass the virtual key's tool permits")
+}
+
+// BenchmarkPreMCPHook measures governing one MCP call: a tool call, the baseline, beside the prompt
+// and resource reads now governed too (identity and limits, no per-tool permit).
+func BenchmarkPreMCPHook(b *testing.B) {
+	p := newAccessTestPlugin(b, buildVKForMCPStamping(nil), nil)
+	tool := "local-read"
+	for _, tc := range []struct {
+		name string
+		req  *schemas.BifrostMCPRequest
+	}{
+		{"tool-call", &schemas.BifrostMCPRequest{RequestType: schemas.MCPRequestTypeChatToolCall, ClientName: "local", ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{Function: schemas.ChatAssistantMessageToolCallFunction{Name: &tool, Arguments: "{}"}}}},
+		{"prompt-get", &schemas.BifrostMCPRequest{RequestType: schemas.MCPRequestTypeGetPrompt, ClientName: "local", BifrostMCPGetPromptRequest: &schemas.BifrostMCPGetPromptRequest{Name: "local-review"}}},
+		{"resource-read", &schemas.BifrostMCPRequest{RequestType: schemas.MCPRequestTypeReadResource, ClientName: "local", BifrostMCPReadResourceRequest: &schemas.BifrostMCPReadResourceRequest{URI: "file:///handbook.md"}}},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, _, err := p.PreMCPHook(presentCtx(mcpTestVKValue), tc.req); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}

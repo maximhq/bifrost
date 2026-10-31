@@ -26,6 +26,15 @@ func TestDetectAppFromUserAgent(t *testing.T) {
 		{name: "codex desktop linux", userAgent: "Mozilla/5.0 (X11; Linux x86_64) Codex/1.0 Electron/41.0", want: "Codex Desktop"},
 		{name: "cursor", userAgent: "Cursor/0.47", want: "Cursor"},
 		{name: "gemini", userAgent: "gemini-cli/1.0", want: "Gemini CLI"},
+		{name: "antigravity desktop synthetic", userAgent: "antigravity/2.23.0", want: "Antigravity Desktop"},
+		{name: "antigravity desktop key", userAgent: "Antigravity-Desktop/2.23.0", want: "Antigravity Desktop"},
+		{name: "antigravity cli synthetic", userAgent: "antigravity-cli/1.0", want: "Antigravity CLI"},
+		{name: "antigravity before gemini", userAgent: "antigravity/2.23.0 gemini/1.0", want: "Antigravity Desktop"},
+		{name: "antigravity cli before generic", userAgent: "antigravity-cli/1.0 antigravity/2.23.0", want: "Antigravity CLI"},
+		{name: "antigravity unrelated", userAgent: "unrelated-antigravity-tool/1.0", want: "Other"},
+		{name: "edge is not antigravity", userAgent: "bifrost-edge/0.1.0", want: "Other"},
+		{name: "edge-stamped antigravity desktop", userAgent: "antigravity-desktop bifrost-edge/0.1.0", want: "Antigravity Desktop"},
+		{name: "edge-stamped antigravity cli over gemini sdk", userAgent: "antigravity-cli google-genai-sdk/1.74.0 gemini-cli/0.1", want: "Antigravity CLI"},
 		{name: "qwen", userAgent: "qwen-code/1.0", want: "Qwen Code"},
 		{name: "opencode", userAgent: "opencode/1.0", want: "OpenCode"},
 		{name: "windsurf", userAgent: "Windsurf/1.0", want: "Windsurf"},
@@ -53,6 +62,8 @@ func TestAppKeyFromName(t *testing.T) {
 		want string
 	}{
 		{name: "claude code", in: "Claude Code", want: "claude-code"},
+		{name: "antigravity desktop", in: "Antigravity Desktop", want: "antigravity-desktop"},
+		{name: "antigravity cli", in: "Antigravity CLI", want: "antigravity-cli"},
 		{name: "custom app", in: " Internal Claude Wrapper ", want: "internal-claude-wrapper"},
 		{name: "collapsed spaces", in: "Gemini   CLI", want: "gemini-cli"},
 		{name: "other ignored", in: UserAgentAppOther, want: ""},
@@ -88,6 +99,41 @@ func TestMatchUserAgent(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := MatchUserAgent(tt.userAgent, tt.pattern, tt.matchType); got != tt.want {
 				t.Fatalf("MatchUserAgent(%q, %q, %q) = %v, want %v", tt.userAgent, tt.pattern, tt.matchType, got, tt.want)
+			}
+		})
+	}
+}
+
+// Warp must be detected as itself, not as a generic API client. It reaches the
+// gateway over fasthttp, so without an earlier matcher the APIClient identifier
+// claims it and its traffic disappears into everyone else's.
+func TestDetectAppFromUserAgentIdentifiesWarp(t *testing.T) {
+	if got := DetectAppFromUserAgent("bifrost-warp/1"); got != "Warp" {
+		t.Errorf("DetectAppFromUserAgent(bifrost-warp/1) = %q, want Warp", got)
+	}
+	if got := AppKeyFromName("Warp"); got != "warp" {
+		t.Errorf("AppKeyFromName(Warp) = %q, want warp", got)
+	}
+}
+
+// The identifier is prefixed rather than a bare "warp" because matching is by
+// substring: an unrelated client whose User-Agent happens to contain the word
+// must not be relabelled.
+func TestWarpIdentifierDoesNotClaimUnrelatedAgents(t *testing.T) {
+	for _, ua := range []string{"melodin/2.0", "warp-unrelated-client/3", "Mozilla/5.0 (warp)"} {
+		if got := DetectAppFromUserAgent(ua); got == "Warp" {
+			t.Errorf("DetectAppFromUserAgent(%q) = Warp, want anything else", ua)
+		}
+	}
+}
+
+// BenchmarkDetectAppFromUserAgent measures classification cost for existing, new, and unmatched synthetic clients.
+func BenchmarkDetectAppFromUserAgent(benchmark *testing.B) {
+	for name, userAgent := range map[string]string{"existing": "claude-cli/2.1.168", "desktop": "antigravity/2.23.0", "cli": "antigravity-cli/1.0", "unmatched": "custom-client/1.0"} {
+		benchmark.Run(name, func(benchmark *testing.B) {
+			benchmark.ReportAllocs()
+			for benchmark.Loop() {
+				DetectAppFromUserAgent(userAgent)
 			}
 		})
 	}

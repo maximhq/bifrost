@@ -25,8 +25,16 @@ func newBifrostClient(baseURL string) *bifrostClient {
 	}
 }
 
+// setupToken returns the OSS setup token the harness gateway is configured with
+// (tests/integrations/python/config.json setup_token), overridable through the environment.
+func setupToken() string {
+	return envDefault("BIFROST_E2E_SETUP_TOKEN", envDefault("BIFROST_SETUP_TOKEN", "bifrost-e2e-setup-token"))
+}
+
 func (c *bifrostClient) Health(ctx context.Context) error {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/providers", nil)
+	// OSS setup lock: /api needs the setup token while dashboard auth is not active.
+	req.Header.Set("X-Bifrost-Setup-Token", setupToken())
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err
@@ -49,6 +57,8 @@ type providerEntry struct {
 // versions, so we accept both an array root and an object with a known field.
 func (c *bifrostClient) ConfiguredProviders(ctx context.Context) (map[string]bool, error) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/providers", nil)
+	// OSS setup lock: /api needs the setup token while dashboard auth is not active.
+	req.Header.Set("X-Bifrost-Setup-Token", setupToken())
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, err

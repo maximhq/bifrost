@@ -32,6 +32,10 @@ type fakeRecalcStore struct {
 	// updates captures single-row Update() writes, which is how a job kind's cost
 	// and its debug blob are persisted together.
 	updates map[string]map[string]any
+	// paginations records every pagination the job asked for, in order.
+	paginations []logstore.PaginationOptions
+	// byIDCalls counts single-row reads by RequestID (payload re-reads).
+	byIDCalls int
 }
 
 func newFakeRecalcStore(logs []logstore.Log) *fakeRecalcStore {
@@ -85,8 +89,26 @@ func (s *fakeRecalcStore) SearchLogs(_ context.Context, f logstore.SearchFilters
 	if s.searchCalls > 1000 {
 		return nil, fmt.Errorf("SearchLogs called too many times; likely an infinite loop")
 	}
+	s.paginations = append(s.paginations, p)
+	// An exact primary-key read, like applyFilters' RequestID branch: the time
+	// window and scope filters do not apply.
+	if f.RequestID != "" {
+		s.byIDCalls++
+		for _, l := range s.logs {
+			if l.ID == f.RequestID {
+				return &logstore.SearchResult{Logs: []logstore.Log{l}}, nil
+			}
+		}
+		return &logstore.SearchResult{}, nil
+	}
 	var matched []logstore.Log
 	for _, l := range s.logs {
+		// Keyset cursor: strictly after (AfterTimestamp, AfterID) in ascending order.
+		if p.AfterTimestamp != nil && p.AfterID != "" {
+			if l.Timestamp.Before(*p.AfterTimestamp) || (l.Timestamp.Equal(*p.AfterTimestamp) && l.ID <= p.AfterID) {
+				continue
+			}
+		}
 		if f.StartTime != nil && l.Timestamp.Before(*f.StartTime) {
 			continue
 		}
@@ -254,6 +276,41 @@ func TestCalculateCostForLog_BedrockMantleChatStreamUsesResponsesPricing(t *test
 	}
 }
 
+// TestCalculateCostForLog_ServedTierSelectsRates pins the reprice entry point on
+// the stored service_tier column: "fast" (OpenAI's renamed Priority tier) and
+// "priority" both bill on the priority columns, and "default" stays on standard.
+func TestCalculateCostForLog_ServedTierSelectsRates(t *testing.T) {
+	p := newRecalcPlugin(t, newFakeRecalcStore(nil))
+	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// gpt-4o testdata rates for 100 prompt / 50 completion tokens.
+	standard := 100*2.5e-6 + 50*1e-5
+	priority := 100*4.25e-6 + 50*1.7e-5
+
+	cases := []struct {
+		tier string
+		want float64
+	}{
+		{"fast", priority},
+		{"priority", priority},
+		{"default", standard},
+	}
+	for _, tc := range cases {
+		t.Run(tc.tier, func(t *testing.T) {
+			entry := positiveLog("tier-"+tc.tier, base)
+			entry.ServiceTier = &tc.tier
+
+			cost, err := p.calculateCostForLog(&entry)
+			if err != nil {
+				t.Fatalf("calculateCostForLog() error = %v", err)
+			}
+			if diff := cost - tc.want; diff < -1e-12 || diff > 1e-12 {
+				t.Fatalf("cost = %v, want %v for service_tier %q", cost, tc.want, tc.tier)
+			}
+		})
+	}
+}
+
 // TestRunCostRecalcJob_BackfillsBedrockMantleStreamRow drives the full
 // missing-cost recalc job over an uncosted bedrock_mantle streaming row and
 // proves it is now backfilled instead of counted as skipped.
@@ -282,9 +339,9 @@ func TestRunCostRecalcJob_BackfillsBedrockMantleStreamRow(t *testing.T) {
 // through more same-timestamp rows than a single batch holds without skipping or
 // re-touching any — the case the old one-nanosecond nudge silently dropped.
 func TestRunCostRecalcJob_FullRecalcTiePagination(t *testing.T) {
-	restore := costRecalcBatchSize
-	costRecalcBatchSize = 3
-	defer func() { costRecalcBatchSize = restore }()
+	restore := costRecalcPageSize
+	costRecalcPageSize = 3
+	defer func() { costRecalcPageSize = restore }()
 
 	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	ts := base // all rows share one instant
@@ -323,9 +380,9 @@ func TestRunCostRecalcJob_FullRecalcTiePagination(t *testing.T) {
 // that stay uncosted, all at one timestamp spanning multiple batches. The carried
 // offset must skip exactly the already-seen rows that remain visible.
 func TestRunCostRecalcJob_MissingCostOnlyTiePagination(t *testing.T) {
-	restore := costRecalcBatchSize
-	costRecalcBatchSize = 3
-	defer func() { costRecalcBatchSize = restore }()
+	restore := costRecalcPageSize
+	costRecalcPageSize = 3
+	defer func() { costRecalcPageSize = restore }()
 
 	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	ts := base
@@ -372,9 +429,9 @@ func TestRunCostRecalcJob_MissingCostOnlyTiePagination(t *testing.T) {
 // folding in the failed batch's skip count, so retrying from that snapshot cannot
 // double-count skips or re-touch already-costed rows.
 func TestRunCostRecalcJob_SkipCountNotInflatedOnRetry(t *testing.T) {
-	restore := costRecalcBatchSize
-	costRecalcBatchSize = 3
-	defer func() { costRecalcBatchSize = restore }()
+	restore := costRecalcPageSize
+	costRecalcPageSize = 3
+	defer func() { costRecalcPageSize = restore }()
 
 	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	// Distinct timestamps, one skip per batch.
@@ -701,5 +758,16 @@ func TestPersistRecalcOutcomes_ShapeMatrix(t *testing.T) {
 				t.Errorf("priced = %v, want %v", tally.priced[0], tc.wantPriced)
 			}
 		})
+	}
+}
+
+func TestCostRecalcProgress(t *testing.T) {
+	done, total, msg := CostRecalcProgress(`{"total":120,"processed":30,"updated":20,"message":"working"}`)
+	if done != 30 || total != 120 || msg != "working" {
+		t.Fatalf("got done=%d total=%d msg=%q", done, total, msg)
+	}
+	done, total, msg = CostRecalcProgress(`{not json`)
+	if done != 0 || total != 0 || msg != "" {
+		t.Fatalf("malformed metadata should yield zero values, got %d %d %q", done, total, msg)
 	}
 }

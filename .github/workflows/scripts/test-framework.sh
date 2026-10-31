@@ -58,9 +58,10 @@ cd framework
 go build ./...
 echo "✅ Framework build validation successful"
 
-# Run framework tests with coverage
+# Run framework tests with coverage. configstore and logstore each run close to
+# Go's default 10m package timeout under -race, so raise it explicitly.
 echo "🧪 Running framework tests with coverage..."
-go test --race -coverprofile=coverage.txt -coverpkg=./... ./...
+go test --race -timeout 30m -coverprofile=coverage.txt -coverpkg=./... ./...
 
 # Upload coverage to Codecov
 if [ -n "${CODECOV_TOKEN:-}" ]; then

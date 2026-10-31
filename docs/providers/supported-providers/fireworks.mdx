@@ -95,6 +95,45 @@ case schemas.Fireworks:
 
 ---
 
+## Disable Store (optional)
+
+Fireworks stores Responses API conversations by default (`store=true`) and keeps them for 30 days, even when your account has zero data retention for other endpoints. Clients on the Anthropic SDK or Chat Completions cannot send `store`, so enable **Disable Store** to have Bifrost force `store=false` on every Fireworks Responses API request, overriding any `store` value the client sends.
+
+<Tabs>
+<Tab title="Web UI">
+
+Open the Fireworks provider, go to the **OpenAI Config** tab, turn on **Disable Store**, and click **Save Configuration**.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "fireworks": {
+      "keys": [
+        {
+          "name": "fireworks-key-1",
+          "value": "env.FIREWORKS_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ],
+      "openai_config": {
+        "disable_store": true
+      }
+    }
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+The setting applies to requests sent to Fireworks' OpenAI-compatible `/v1/responses` endpoint, which is where Bifrost routes `/v1/responses` traffic and Anthropic SDK traffic that is not using `use_anthropic_endpoints`. Chat Completions and the Anthropic-compatible `/v1/messages` endpoint have no `store` parameter and are unaffected.
+
+---
+
 ## Anthropic-Compatible Endpoints (optional)
 
 Fireworks exposes an Anthropic-compatible Messages endpoint (`/v1/messages`) alongside its default OpenAI-compatible APIs. Setting `use_anthropic_endpoints` routes Chat Completions and the Responses API through that endpoint instead. Text Completions and Embeddings are unaffected and always use their OpenAI-compatible endpoints.

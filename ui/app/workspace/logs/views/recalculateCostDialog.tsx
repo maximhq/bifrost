@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useLazyGetLogsStatsQuery } from "@/lib/store/apis/logsApi";
 import type { LogFilters as LogFiltersType } from "@/lib/types/logs";
 import { formatCompactNumber } from "@/lib/utils/numbers";
@@ -36,7 +37,17 @@ export function RecalculateCostDialog({ open, onOpenChange, filters, totalLogs, 
 	};
 
 	const missingCount = data?.total_requests ?? null;
-	const confirmDisabled = mode === "missing" ? isFetching || missingCount === 0 : totalLogs === 0;
+	// Why Recalculate is disabled, surfaced as a tooltip on the button. null means enabled.
+	const disabledReason =
+		mode === "missing"
+			? isFetching
+				? "Checking how many logs are missing a cost…"
+				: missingCount === 0
+					? "All logs in the current window already have a cost."
+					: null
+			: totalLogs === 0
+				? "No logs match the current filters."
+				: null;
 
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
@@ -100,9 +111,16 @@ export function RecalculateCostDialog({ open, onOpenChange, filters, totalLogs, 
 					<Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>
 						Cancel
 					</Button>
-					<Button size="sm" onClick={() => onConfirm(mode)} disabled={confirmDisabled}>
-						Recalculate
-					</Button>
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<span tabIndex={disabledReason ? 0 : undefined}>
+								<Button size="sm" onClick={() => onConfirm(mode)} disabled={disabledReason !== null}>
+									Recalculate
+								</Button>
+							</span>
+						</TooltipTrigger>
+						{disabledReason && <TooltipContent>{disabledReason}</TooltipContent>}
+					</Tooltip>
 				</DialogFooter>
 			</DialogContent>
 		</Dialog>

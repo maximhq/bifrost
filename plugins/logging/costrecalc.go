@@ -12,13 +12,21 @@ import (
 // CostRecalcJobKind is the sidekiq job kind used for background cost recalculation.
 const CostRecalcJobKind = "logs_recalculate_cost"
 
-// costRecalcBatchSize is both the billing-query page size and the number of rows
-// processed between checkpoints. SearchLogsForBilling includes DB-resident modality
-// payloads, so the page itself must be as small as the subsequent hydration chunk;
-// otherwise a page of large image/audio payloads is already resident before chunked
-// object-store hydration begins. It is a var only so tests can exercise multi-batch
-// paths; production never reassigns it.
+// costRecalcBatchSize caps the page of the synchronous RecalculateCostsWithProgress
+// path, which reads SearchLogsForBilling with DB-resident modality payloads, so
+// its page must be as small as the hydration chunk. The background job below
+// pages with costRecalcPageSize instead.
 var costRecalcBatchSize = logstore.BillingHydrationChunkSize
+
+// costRecalcPageSize is the background job's DB page size and the number of rows
+// processed between checkpoints. The page is read with OmitBillingPayloads, so
+// it carries scalar pricing inputs only and 500 rows stay small; rows priced from
+// a payload are re-read one at a time (see priceRecalcPage) and hydration still
+// runs BillingHydrationChunkSize rows at a time. A page of 3 with a full COUNT of
+// the window per page made a 90-day recalculation cost hundreds of millions of
+// queries. It is a var only so tests can exercise multi-page paths; production
+// never reassigns it.
+var costRecalcPageSize = 500
 
 // CostRecalcJobMeta is the durable state of a cost-recalculation job. It is stored
 // verbatim as the sidekiq job's metadata JSON, so the worker can resume from the
@@ -32,15 +40,16 @@ type CostRecalcJobMeta struct {
 	// MissingCostOnly selects the scope: true recalculates only rows without a
 	// cost, false recalculates every row in the window.
 	MissingCostOnly bool `json:"missing_cost_only"`
-	// CursorTime is the inclusive lower time bound for the next batch. Nil means
-	// start from the window start (Filters.StartTime). It advances to the last
-	// processed row's timestamp after each batch so a resume continues from there.
+	// CursorTime and CursorID are the (timestamp, id) of the last processed row.
+	// The next page starts strictly after them in (timestamp ASC, id ASC) order,
+	// so a resume neither repeats nor skips a row, including rows that share a
+	// timestamp. Nil CursorTime means start from the window start.
 	CursorTime *time.Time `json:"cursor_time,omitempty"`
-	// CursorOffset is how many rows at exactly CursorTime have already been processed
-	// and still match the scope (so they reappear at the head of the next page). The
-	// next batch queries timestamp >= CursorTime with this offset, which walks through
-	// any number of rows sharing one timestamp without re-touching or skipping a single
-	// one — the (timestamp ASC, id ASC) ordering keeps the offset stable.
+	CursorID   string     `json:"cursor_id,omitempty"`
+	// CursorOffset is the pre-keyset cursor: how many rows at exactly CursorTime
+	// had been processed and still matched the scope. It is only read to resume a
+	// checkpoint written before CursorID existed (CursorTime set, CursorID empty);
+	// the first page after such a resume switches the job to the keyset cursor.
 	CursorOffset int `json:"cursor_offset,omitempty"`
 	// Total is the number of in-scope rows counted at enqueue, for a determinate
 	// progress bar. Treat it as approximate and never as the length of the walk.
@@ -60,6 +69,20 @@ type CostRecalcJobMeta struct {
 	Unpriceable int `json:"unpriceable,omitempty"`
 	// Message carries a human-readable completion note for the UI.
 	Message string `json:"message,omitempty"`
+}
+
+// CostRecalcProgress extracts done/total/message from a cost-recalculation job's metadata
+// for generic job views. Malformed metadata yields zero values rather than an error.
+func CostRecalcProgress(metadata string) (done, total int64, message string) {
+	var meta struct {
+		Total     int64  `json:"total"`
+		Processed int64  `json:"processed"`
+		Message   string `json:"message"`
+	}
+	if sonic.Unmarshal([]byte(metadata), &meta) != nil {
+		return 0, 0, ""
+	}
+	return meta.Processed, meta.Total, meta.Message
 }
 
 // stoppedEarlyMessage summarizes a run that ended before walking the whole window,
@@ -162,9 +185,15 @@ func (p *LoggerPlugin) RunCostRecalcJob(ctx context.Context, metaJSON string, ch
 	filters.MissingCostOnly = meta.MissingCostOnly
 
 	pagination := logstore.PaginationOptions{
-		Limit:  costRecalcBatchSize,
+		Limit:  costRecalcPageSize,
 		SortBy: "timestamp",
 		Order:  "asc",
+		// The walk never reads a total, and counting the window on every page
+		// was the dominant cost of a recalculation.
+		SkipCount: true,
+		// Scalars only: a 500-row page of image or audio payloads would be
+		// gigabytes. Payload rows are re-read individually in priceRecalcPage.
+		OmitBillingPayloads: true,
 	}
 
 	for {
@@ -184,7 +213,17 @@ func (p *LoggerPlugin) RunCostRecalcJob(ctx context.Context, metaJSON string, ch
 		}
 		filters.StartTime = lower
 		filters.EndTime = windowEnd
-		pagination.Offset = meta.CursorOffset
+		if meta.CursorTime != nil && meta.CursorID != "" {
+			pagination.AfterTimestamp = meta.CursorTime
+			pagination.AfterID = meta.CursorID
+			pagination.Offset = 0
+		} else {
+			// First page, or a checkpoint written before the keyset cursor existed:
+			// fall back to the inclusive lower bound plus the carried offset once.
+			pagination.AfterTimestamp = nil
+			pagination.AfterID = ""
+			pagination.Offset = meta.CursorOffset
+		}
 
 		// Billing reads go through SearchLogsForBilling, not SearchLogs: the list
 		// projection omits the modality output payloads and, on object-storage-backed
@@ -199,9 +238,9 @@ func (p *LoggerPlugin) RunCostRecalcJob(ctx context.Context, metaJSON string, ch
 			break
 		}
 
-		// Hydrates and prices the payload-safe page, releasing its payloads before the
-		// next query.
-		outcomes, err := p.priceLogsInChunks(ctx, batch)
+		// Re-reads payload rows one at a time, then hydrates and prices the page
+		// BillingHydrationChunkSize rows at a time.
+		outcomes, err := p.priceRecalcPage(ctx, batch)
 		if err != nil {
 			return snapshot(), err
 		}
@@ -213,7 +252,6 @@ func (p *LoggerPlugin) RunCostRecalcJob(ctx context.Context, metaJSON string, ch
 		if err != nil {
 			return snapshot(), err
 		}
-		gotPositiveCost := tally.priced
 		// Merge the counts only once the batch is durably committed, so a retry
 		// after a failed write cannot double-count the same rows.
 		meta.Updated += tally.updated
@@ -221,30 +259,14 @@ func (p *LoggerPlugin) RunCostRecalcJob(ctx context.Context, metaJSON string, ch
 		meta.Unpriceable += tally.unpriceable
 		meta.Processed += len(batch)
 
-		// Advance the cursor. The lower bound is inclusive and rows that keep matching
-		// the scope reappear at the head of the next page, so carry an offset counting
-		// already-processed rows at exactly the cursor's timestamp. In full-recalc mode
-		// every row keeps matching; in missing-cost mode only rows still without a
-		// positive cost do (a skip, or a zero-cost resolution, still matches cost <= 0).
-		// Counting those pages through any number of same-timestamp rows without
-		// re-touching or skipping one.
-		lastTs := batch[len(batch)-1].Timestamp
-		stayedAtLastTs := 0
-		for i := len(batch) - 1; i >= 0 && batch[i].Timestamp.Equal(lastTs); i-- {
-			if !meta.MissingCostOnly || !gotPositiveCost[i] {
-				stayedAtLastTs++
-			}
-		}
-
-		if meta.CursorTime != nil && lastTs.Equal(*meta.CursorTime) {
-			// The whole batch sat at the cursor's timestamp; keep the cursor and grow
-			// the offset so the next page continues past the rows just handled.
-			meta.CursorOffset += stayedAtLastTs
-		} else {
-			cursor := lastTs
-			meta.CursorTime = &cursor
-			meta.CursorOffset = stayedAtLastTs
-		}
+		// Advance the keyset cursor past the last row of the page. Rows before it
+		// are never revisited, whether or not they still match the scope, which
+		// visits exactly the rows the old timestamp-plus-offset cursor visited.
+		last := batch[len(batch)-1]
+		cursor := last.Timestamp
+		meta.CursorTime = &cursor
+		meta.CursorID = last.ID
+		meta.CursorOffset = 0
 
 		if err := checkpoint(snapshot()); err != nil {
 			// A cancellation flips the job row out of running, so the checkpoint is
@@ -257,7 +279,7 @@ func (p *LoggerPlugin) RunCostRecalcJob(ctx context.Context, metaJSON string, ch
 			return snapshot(), fmt.Errorf("failed to checkpoint cost recalc progress: %w", err)
 		}
 
-		if len(batch) < costRecalcBatchSize {
+		if len(batch) < costRecalcPageSize {
 			break
 		}
 	}
@@ -267,4 +289,49 @@ func (p *LoggerPlugin) RunCostRecalcJob(ctx context.Context, metaJSON string, ch
 		meta.Message += fmt.Sprintf(" %d of those were left unchanged because their pricing inputs were unavailable.", meta.Unpriceable)
 	}
 	return snapshot(), nil
+}
+
+// priceRecalcPage prices one scalar-only page (read with OmitBillingPayloads),
+// BillingHydrationChunkSize rows at a time. Before each chunk is priced, every
+// row whose object type bills on a modality payload is re-read on its own with
+// the full billing projection, so at most one chunk of payloads is resident at
+// once, the same bound the old 3-row pages gave. A row deleted between the page
+// read and its re-read is skipped rather than priced without its payload.
+// It returns one outcome per page row, in page order.
+func (p *LoggerPlugin) priceRecalcPage(ctx context.Context, page []logstore.Log) ([]billingOutcome, error) {
+	outcomes := make([]billingOutcome, len(page))
+	for start := 0; start < len(page); start += logstore.BillingHydrationChunkSize {
+		end := min(start+logstore.BillingHydrationChunkSize, len(page))
+
+		chunk := make([]logstore.Log, 0, end-start)
+		positions := make([]int, 0, end-start)
+		for i := start; i < end; i++ {
+			row := page[i]
+			if logstore.BillingPayloadRequired(row.Object) {
+				full, err := p.store.SearchLogsForBilling(ctx, logstore.SearchFilters{RequestID: row.ID}, logstore.PaginationOptions{Limit: 1, SkipCount: true})
+				if err != nil {
+					return nil, fmt.Errorf("failed to read pricing payload for log %s: %w", row.ID, err)
+				}
+				if len(full.Logs) == 0 {
+					outcomes[i].err = fmt.Errorf("log %s was deleted before its pricing payload could be read", row.ID)
+					continue
+				}
+				row = full.Logs[0]
+			}
+			chunk = append(chunk, row)
+			positions = append(positions, i)
+		}
+		if len(chunk) == 0 {
+			continue
+		}
+
+		chunkOutcomes, err := p.priceLogsInChunks(ctx, chunk)
+		if err != nil {
+			return nil, err
+		}
+		for j, i := range positions {
+			outcomes[i] = chunkOutcomes[j]
+		}
+	}
+	return outcomes, nil
 }

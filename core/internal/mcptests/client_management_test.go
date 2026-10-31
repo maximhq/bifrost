@@ -460,3 +460,38 @@ func TestConcurrentClientOperations(t *testing.T) {
 	clients := manager.GetClients()
 	assert.GreaterOrEqual(t, len(clients), 3, "should have added multiple clients")
 }
+
+// TestDisableEnablePreservesPendingVerification pins that an admin round-trip through
+// disable/enable does not silently promote a client that has never been verified.
+// A per-user-headers client with a nil tool map is "pending_verification": verification
+// has not run, and only an admin supplying sample headers can move it on. Enabling it
+// must restore that pending state rather than treating it as a healthy client with no
+// tools, which would make an unverified client look ready to serve.
+func TestDisableEnablePreservesPendingVerification(t *testing.T) {
+	t.Parallel()
+
+	config := GetTestConfig(t)
+	if config.HTTPServerURL == "" {
+		t.Skip("MCP_HTTP_URL not set")
+	}
+
+	pending := GetSampleHTTPClientConfig(config.HTTPServerURL)
+	pending.ID = "pending-verification-client"
+	pending.Name = "PendingVerificationClient"
+	pending.AuthType = schemas.MCPAuthTypePerUserHeaders
+	pending.PerUserHeaderKeys = []string{"X-Upstream-Token"}
+	// Nil, not empty: an empty map would mean "verified, server has no tools".
+	pending.DiscoveredTools = nil
+
+	manager := setupMCPManager(t, pending)
+
+	clients := manager.GetClients()
+	require.Len(t, clients, 1, "should have one client")
+	AssertClientState(t, clients, pending.ID, schemas.MCPConnectionStatePendingVerification)
+
+	require.NoError(t, manager.DisableClient(pending.ID), "should disable client")
+	AssertClientState(t, manager.GetClients(), pending.ID, schemas.MCPConnectionStateDisabled)
+
+	require.NoError(t, manager.EnableClient(pending.ID), "should enable client")
+	AssertClientState(t, manager.GetClients(), pending.ID, schemas.MCPConnectionStatePendingVerification)
+}

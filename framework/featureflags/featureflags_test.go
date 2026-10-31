@@ -104,6 +104,52 @@ func TestIsEnabled_UsesDefault(t *testing.T) {
 	}
 }
 
+// A flag can ship with a different default per build. EnterpriseDefault wins
+// in the enterprise store, is ignored in the OSS store, and nil leaves both
+// builds on Default - and Status reports the default the running binary
+// actually uses, so the UI's "default" label and a reset agree with IsEnabled.
+func TestIsEnabled_EnterpriseDefaultIsPerBuild(t *testing.T) {
+	register := func() {
+		_ = Register(FlagDef{ID: "oss-on", Default: true, EnterpriseDefault: new(false)})
+		_ = Register(FlagDef{ID: "ent-on", Default: false, EnterpriseDefault: new(true)})
+		_ = Register(FlagDef{ID: "shared", Default: true})
+	}
+
+	oss := newTestStore(t)
+	register()
+	if !oss.IsEnabled("oss-on") || oss.IsEnabled("ent-on") || !oss.IsEnabled("shared") {
+		t.Errorf("OSS: oss-on=%v ent-on=%v shared=%v, want true false true",
+			oss.IsEnabled("oss-on"), oss.IsEnabled("ent-on"), oss.IsEnabled("shared"))
+	}
+	if st, _ := oss.Status("oss-on"); !st.Default || !st.Enabled || st.Source != SourceDefault {
+		t.Errorf("OSS status = %+v, want default=true enabled=true source=default", st)
+	}
+
+	ent := newEnterpriseTestStore(t)
+	register()
+	if ent.IsEnabled("oss-on") || !ent.IsEnabled("ent-on") || !ent.IsEnabled("shared") {
+		t.Errorf("enterprise: oss-on=%v ent-on=%v shared=%v, want false true true",
+			ent.IsEnabled("oss-on"), ent.IsEnabled("ent-on"), ent.IsEnabled("shared"))
+	}
+	if st, _ := ent.Status("oss-on"); st.Default || st.Enabled || st.Source != SourceDefault {
+		t.Errorf("enterprise status = %+v, want default=false enabled=false source=default", st)
+	}
+
+	// An override still beats either default, in both directions.
+	if _, err := ent.Set(context.Background(), "oss-on", true); err != nil {
+		t.Fatal(err)
+	}
+	if !ent.IsEnabled("oss-on") {
+		t.Error("enterprise: an operator turning oss-on on must win over the build default")
+	}
+	if _, err := oss.Set(context.Background(), "oss-on", false); err != nil {
+		t.Fatal(err)
+	}
+	if oss.IsEnabled("oss-on") {
+		t.Error("OSS: an operator turning oss-on off must win over the build default")
+	}
+}
+
 func TestSet_OverridesDefaultAndFiresDelegate(t *testing.T) {
 	s := newTestStore(t)
 	if err := Register(FlagDef{ID: "feat.a", DisplayName: "Feature A", Default: false}); err != nil {

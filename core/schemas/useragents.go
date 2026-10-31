@@ -21,6 +21,11 @@ var (
 	ClaudeCLI = UserAgentIdentifiers{"claude-cli", "claude-code", "claude-vscode"}
 	// APIClient identifies generic programmatic API clients.
 	APIClient = UserAgentIdentifiers{"fasthttp"}
+	// Warp identifies the dashboard's own data agent talking to this gateway.
+	// Deliberately prefixed rather than a bare "warp": the identifiers are matched
+	// as substrings, and a four-letter word appears inside plenty of unrelated
+	// User-Agent strings.
+	Warp = UserAgentIdentifiers{"bifrost-warp"}
 	// CodexCLI identifies requests from Codex CLI clients.
 	CodexCLI = UserAgentIdentifiers{"codex-cli", "codex-tui"}
 	// CodexDesktop identifies requests from the Codex desktop app.
@@ -37,6 +42,10 @@ var (
 	OpenCode = UserAgentIdentifiers{"opencode"}
 	// Windsurf identifies requests from Windsurf clients.
 	Windsurf = UserAgentIdentifiers{"windsurf"}
+	// AntigravityCLI identifies explicit Antigravity CLI user agents independently of the desktop.
+	AntigravityCLI = UserAgentIdentifiers{"antigravity-cli"}
+	// AntigravityDesktop identifies the desktop backend and explicitly named desktop clients.
+	AntigravityDesktop = UserAgentIdentifiers{"antigravity-desktop", "antigravity/"}
 	// GeminiCLI identifies requests from Gemini CLI clients.
 	GeminiCLI = UserAgentIdentifiers{"gemini-cli", "geminicli", "gemini"}
 	// QwenCodeCLI identifies requests from Qwen Code clients.
@@ -123,6 +132,9 @@ var UserAgentAppMatchers = []UserAgentAppMatcher{
 	{App: "Claude Desktop", Identifiers: ClaudeDesktop},
 	{App: "Claude Cowork", Identifiers: ClaudeCowork},
 	{App: "Claude Code", Identifiers: ClaudeCLI},
+	// Ahead of API: Warp reaches the gateway over fasthttp, so the generic
+	// matcher would otherwise claim it first and label it a plain API client.
+	{App: "Warp", Identifiers: Warp},
 	{App: "API", Identifiers: APIClient},
 	{App: "Codex CLI", Identifiers: CodexCLI},
 	{App: "Codex Desktop", Identifiers: CodexDesktop},
@@ -132,6 +144,8 @@ var UserAgentAppMatchers = []UserAgentAppMatcher{
 	{App: "Cline", Identifiers: Cline},
 	{App: "OpenCode", Identifiers: OpenCode},
 	{App: "Windsurf", Identifiers: Windsurf},
+	{App: "Antigravity CLI", Identifiers: AntigravityCLI},
+	{App: "Antigravity Desktop", Identifiers: AntigravityDesktop},
 	{App: "Gemini CLI", Identifiers: GeminiCLI},
 	{App: "Qwen Code", Identifiers: QwenCodeCLI},
 }

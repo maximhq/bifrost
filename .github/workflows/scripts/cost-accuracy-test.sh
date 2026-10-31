@@ -26,6 +26,8 @@ POSTGRES_HOST="${POSTGRES_HOST:-127.0.0.1}"
 POSTGRES_PORT="${POSTGRES_PORT:-5432}"
 MOCKER_PORT="${MOCKER_PORT:-8000}"
 BIFROST_PORT="${BIFROST_PORT:-8080}"
+# OSS locks /api behind this token while dashboard auth is not configured.
+SETUP_TOKEN="${BIFROST_SETUP_TOKEN:-bifrost-e2e-setup-token}"
 RPS="${COST_ACCURACY_RPS:-10}"
 DURATION="${COST_ACCURACY_DURATION:-10s}"
 INPUT_COST_PER_TOKEN="${INPUT_COST_PER_TOKEN:-0.000001}"
@@ -183,6 +185,7 @@ write_config() {
   cat > "${APP_DIR}/config.json" <<EOF
 {
   "\$schema": "https://www.getbifrost.ai/schema",
+  "setup_token": "${SETUP_TOKEN}",
   "client": {
     "enable_logging": true,
     "drop_excess_requests": false,
@@ -261,6 +264,7 @@ create_virtual_key() {
   log "creating virtual key with attached budget"
   curl -fsS -X POST "http://127.0.0.1:${BIFROST_PORT}/api/governance/virtual-keys" \
     -H "Content-Type: application/json" \
+    -H "X-Bifrost-Setup-Token: ${SETUP_TOKEN}" \
     -d "{
       \"name\": \"cost-accuracy-vk\",
       \"description\": \"Cost accuracy CI virtual key\",
@@ -301,6 +305,7 @@ create_pricing_override() {
   log "creating virtual-key scoped pricing override"
   curl -fsS -X POST "http://127.0.0.1:${BIFROST_PORT}/api/governance/pricing-overrides" \
     -H "Content-Type: application/json" \
+    -H "X-Bifrost-Setup-Token: ${SETUP_TOKEN}" \
     -d "{
       \"name\": \"cost accuracy gpt-4o-mini vk\",
       \"scope_kind\": \"virtual_key\",
@@ -330,7 +335,7 @@ run_hitter() {
 
 validate_costs() {
   log "validating logged costs"
-  python3 - "$BIFROST_PORT" "$INPUT_COST_PER_TOKEN" "$OUTPUT_COST_PER_TOKEN" "$RESULTS_FILE" "${WORK_DIR}/hitter.log" "${WORK_DIR}/run-start.txt" "$VIRTUAL_KEY_ID" "$VIRTUAL_KEY_VALUE" <<'PY'
+  python3 - "$BIFROST_PORT" "$INPUT_COST_PER_TOKEN" "$OUTPUT_COST_PER_TOKEN" "$RESULTS_FILE" "${WORK_DIR}/hitter.log" "${WORK_DIR}/run-start.txt" "$VIRTUAL_KEY_ID" "$VIRTUAL_KEY_VALUE" "$SETUP_TOKEN" <<'PY'
 import json
 import math
 import re
@@ -348,6 +353,7 @@ hitter_log = Path(sys.argv[5]).read_text(errors="replace")
 start_time = Path(sys.argv[6]).read_text().strip()
 virtual_key_id = sys.argv[7]
 virtual_key_value = sys.argv[8]
+setup_token = sys.argv[9]
 match = re.search(r"Successful:\s+(\d+)", hitter_log)
 if not match:
     raise SystemExit("could not parse successful request count from hitter log")
@@ -371,7 +377,8 @@ base = f"http://127.0.0.1:{port}"
 
 def get_json(path, params):
     url = base + path + "?" + urllib.parse.urlencode(params)
-    with urllib.request.urlopen(url, timeout=10) as resp:
+    req = urllib.request.Request(url, headers={"X-Bifrost-Setup-Token": setup_token})
+    with urllib.request.urlopen(req, timeout=10) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 params = {

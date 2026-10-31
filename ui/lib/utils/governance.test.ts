@@ -12,6 +12,7 @@ import {
 	supportsCalendarAlignment,
 } from "@/lib/constants/governance";
 import {
+	actionDisabledReason,
 	budgetSignature,
 	getBudgetOverrideValidUntil,
 	getEffectiveBudgetLimit,
@@ -256,5 +257,29 @@ describe("budgetSignature without ids", () => {
 			reset_config: b.reset_config,
 		}));
 		expect(budgetSignature(stripped)).toBe(budgetSignature(row(4)));
+	});
+});
+
+describe("actionDisabledReason", () => {
+	it("is undefined when the action is allowed", () => {
+		expect(actionDisabledReason(true, "delete", "teams")).toBeUndefined();
+	});
+
+	it("names the action and the entity when permission is missing", () => {
+		expect(actionDisabledReason(false, "delete", "teams")).toBe("You don't have permission to delete teams.");
+		expect(actionDisabledReason(false, "create", "virtual keys")).toBe("You don't have permission to create virtual keys.");
+	});
+
+	it("prefers a non-permission reason, even when the permission is also missing", () => {
+		const managed = "This virtual key is managed by an access profile and can't be deleted here.";
+		expect(actionDisabledReason(false, "delete", "virtual keys", managed)).toBe(managed);
+		expect(actionDisabledReason(true, "delete", "virtual keys", managed)).toBe(managed);
+	});
+});
+// Multi-unit overrides must preview the rolling schedule used by the backend.
+describe("multi-unit override expiry", () => {
+	it.each(["7d", "2w", "3M", "2Q", "2Y"])("uses rolling expiry for %s despite calendar alignment", (duration) => {
+		const budget = { max_limit: 100, last_reset: "2026-03-10T12:30:00Z", reset_duration: duration };
+		expect(getBudgetOverrideValidUntil(budget, 2, true)).toEqual(getBudgetOverrideValidUntil(budget, 2, false));
 	});
 });

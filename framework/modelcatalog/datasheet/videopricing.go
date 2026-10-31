@@ -2,6 +2,7 @@ package datasheet
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -51,6 +52,10 @@ type VideoPricingDimensions struct {
 	// ProviderCost is the provider's own figure for the job, when it reports one
 	// (Runware does). It wins over every rate below.
 	ProviderCost *float64 `json:"provider_cost,omitempty"`
+
+	// OutputTokens is the provider's metered output for the job (Seedance's
+	// completion_tokens). Only the terminal response reports it.
+	OutputTokens int `json:"output_tokens,omitempty"`
 
 	// Extra carries request knobs that are not modeled above yet. It is the
 	// research hatch: capture a provider-specific parameter here as soon as it
@@ -102,6 +107,9 @@ func (d VideoPricingDimensions) MergedWith(observed VideoPricingDimensions) Vide
 	if observed.ProviderCost != nil {
 		out.ProviderCost = observed.ProviderCost
 	}
+	if observed.OutputTokens > 0 {
+		out.OutputTokens = observed.OutputTokens
+	}
 	for key, value := range observed.Extra {
 		if out.Extra == nil {
 			out.Extra = map[string]any{}
@@ -125,9 +133,9 @@ type VideoCostDetails struct {
 //
 // Resolution order is provider-reported cost, then the catalog rate, then nothing.
 // A provider that hands back an exact figure is always right about its own bill, so
-// no estimate is allowed to override it.
+// no estimate is allowed to override it, unless the provider is configured to ignore its reported cost.
 func (s *Store) CalculateVideoCostDetails(dims VideoPricingDimensions, provider schemas.ModelProvider, scopes *LookupScopes) VideoCostDetails {
-	if dims.ProviderCost != nil && *dims.ProviderCost > 0 {
+	if dims.ProviderCost != nil && *dims.ProviderCost > 0 && !s.IsProviderCostIgnored(provider) {
 		return VideoCostDetails{
 			Cost:             *dims.ProviderCost,
 			Priced:           true,
@@ -154,11 +162,26 @@ func (s *Store) CalculateVideoCostDetails(dims VideoPricingDimensions, provider 
 	// bill on factor or megapixels instead, and no rate for those is published to
 	// the catalog yet — so they resolve to unpriced rather than being silently
 	// billed as if they were a per-second generation of the same length.
-	breakdown := computeVideoCost(pricing, nil, dims.Seconds, dims.Size, dims.OutputCount, serviceTier{})
+	var usage *schemas.BifrostLLMUsage
+	if dims.OutputTokens > 0 {
+		usage = &schemas.BifrostLLMUsage{CompletionTokens: dims.OutputTokens}
+	}
+	breakdown := computeVideoCost(pricing, usage, dims.Seconds, dims.Size, dims.OutputCount, serviceTier{})
 	if breakdown == nil || breakdown.TotalCost <= 0 {
 		return VideoCostDetails{}
 	}
 	return VideoCostDetails{Cost: breakdown.TotalCost, Priced: true, Breakdown: breakdown}
+}
+
+// videoClipCount counts the billable clips in outputs, skipping image outputs such as a task's last frame.
+func videoClipCount(outputs []schemas.VideoOutput) int {
+	n := 0
+	for i := range outputs {
+		if !strings.HasPrefix(outputs[i].ContentType, "image/") {
+			n++
+		}
+	}
+	return n
 }
 
 // VideoDimensionsFromResponse reads back everything a terminal video response
@@ -172,16 +195,19 @@ func VideoDimensionsFromResponse(resp *schemas.BifrostVideoGenerationResponse) V
 	dims := VideoPricingDimensions{
 		Model:       resp.Model,
 		Size:        resp.Size,
-		OutputCount: len(resp.Videos),
+		OutputCount: videoClipCount(resp.Videos),
 	}
 	if resp.Seconds != nil {
 		if seconds, err := strconv.Atoi(*resp.Seconds); err == nil {
 			dims.Seconds = &seconds
 		}
 	}
-	if resp.Usage != nil && resp.Usage.Cost != nil && resp.Usage.Cost.TotalCost > 0 {
-		total := resp.Usage.Cost.TotalCost
-		dims.ProviderCost = &total
+	if resp.Usage != nil {
+		if resp.Usage.Cost != nil && resp.Usage.Cost.TotalCost > 0 {
+			total := resp.Usage.Cost.TotalCost
+			dims.ProviderCost = &total
+		}
+		dims.OutputTokens = resp.Usage.OutputTokens
 	}
 	return dims
 }

@@ -1,0 +1,50 @@
+# The area labels a pull request gets from the paths it changes. Each name here
+# has a matching entry in .github/labeler.yml, and .github/workflows/labeler.yml
+# applies them. .github/workflows/labels.yml creates and edits these labels on
+# GitHub whenever this file changes on dev. It never deletes a label, so the
+# hand-applied ones (bug, feature, p0, release labels, ...) are left alone.
+- name: core
+  color: f7e101
+  description: "Area: the Go core engine, excluding providers and MCP (core/)"
+- name: providers
+  color: f7e101
+  description: "Area: provider implementations (core/providers/)"
+- name: mcp
+  color: f7e101
+  description: "Area: MCP gateway, agent loop and code mode (core/mcp/, framework MCP packages)"
+- name: framework
+  color: f7e101
+  description: "Area: persistence, streaming and shared utilities (framework/)"
+- name: transport
+  color: f7e101
+  description: "Area: the HTTP gateway, handlers and config schema (transports/)"
+- name: integrations
+  color: f7e101
+  description: "Area: SDK compatibility layers (transports/bifrost-http/integrations/)"
+- name: plugins
+  color: f7e101
+  description: "Area: first-party plugins (plugins/)"
+- name: ui
+  color: f7e101
+  description: "Area: the web UI (ui/)"
+- name: cli
+  color: f7e101
+  description: "Area: the CLI and npx launcher (cli/, npx/)"
+- name: helm
+  color: f7e101
+  description: "Area: the Helm charts (helm-charts/)"
+- name: terraform
+  color: f7e101
+  description: "Area: infrastructure as code (terraform/)"
+- name: documentation
+  color: f7e101
+  description: "Area: docs site and top-level markdown (docs/, *.md)"
+- name: tests
+  color: f7e101
+  description: "Area: test suites, provider harness and E2E (tests/)"
+- name: ci
+  color: f7e101
+  description: "Area: CI, release, build and dev tooling (.github/, Makefile, nix, scripts)"
+- name: examples
+  color: f7e101
+  description: "Area: examples and recipes (examples/, recipes/)"

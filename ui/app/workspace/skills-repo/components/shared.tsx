@@ -754,6 +754,7 @@ export function ReadOnlyFileTree({
 					};
 
 					return (
+						// oxlint-disable-next-line jsx-a11y/no-static-element-interactions -- role, tabIndex and keys are set together when the row is actionable
 						<div
 							data-selected={isSelected || undefined}
 							className={cn(
@@ -768,7 +769,7 @@ export function ReadOnlyFileTree({
 									handleClick();
 								}
 							}}
-							role={hasChildren || isDownloadable ? "button" : undefined}
+							role={hasChildren || isDownloadable ? "button" : "presentation"}
 							tabIndex={hasChildren || isDownloadable ? 0 : undefined}
 							aria-label={isFolder ? `${isExpanded ? "Collapse" : "Expand"} ${item.name}` : item.name}
 						>
@@ -791,6 +792,7 @@ export function ReadOnlyFileTree({
 									className={cn(
 										"sticky right-1 z-10 ml-auto shrink-0 rounded-sm bg-muted px-0.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100",
 									)}
+									role="presentation"
 									onClick={(e) => e.stopPropagation()}
 									onKeyDown={(e) => e.stopPropagation()}
 								>
@@ -813,6 +815,7 @@ export function ReadOnlyFileTree({
 							{item.type === "root" && (
 								<div
 									className="sticky right-1 z-10 ml-auto rounded-sm px-0.5"
+									role="presentation"
 									onClick={(e) => e.stopPropagation()}
 									onKeyDown={(e) => e.stopPropagation()}
 								>

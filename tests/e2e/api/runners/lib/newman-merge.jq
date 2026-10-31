@@ -1,6 +1,12 @@
-# Merges + slims newman JSON reports. Run with `jq -s -f newman-merge.jq report...`:
+# Merges + slims newman JSON reports. Run with `jq -c -s -f newman-merge.jq report...`:
 # the -s wraps the inputs in an array, so a single report goes through the same path
 # as an N-provider merge.
+#
+# The -c is load-bearing, not cosmetic. jq pretty-prints by default, and a pretty-printed
+# Buffer array spends ~13 bytes per element ("        255,\n") where compact spends 4. The
+# trimstream cap below still leaves ~30M elements across a full sweep, so the same content
+# is 235MB compact and 686MB pretty - the pretty form is past Node's 512MB string limit and
+# every reader dies, which is exactly what this program exists to prevent.
 #
 # Slimming is not cosmetic. A full harness run produced a 574MB merged report, past
 # V8's 0x1fffffe8 (~512MB) max string length, so every reader died in

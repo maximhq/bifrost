@@ -68,6 +68,8 @@ func responsesStreamError(response *schemas.BifrostResponsesStreamResponse) *sch
 		}
 	}
 
+	applyStreamErrorStatus(bifrostErr)
+
 	if bifrostErr.Error.Message == "" {
 		details := eventType
 		if bifrostErr.Error.Type != nil && *bifrostErr.Error.Type != "" && *bifrostErr.Error.Type != eventType {
@@ -80,6 +82,53 @@ func responsesStreamError(response *schemas.BifrostResponsesStreamResponse) *sch
 	}
 
 	return bifrostErr
+}
+
+// applyStreamErrorStatus stamps the status an SSE error event implies, when the event
+// carried none. The event rides a committed HTTP 200 and OpenAI's error body has no
+// status_code field, so without this the error resolves to a caller 400 and
+// ClassifyFailure has nothing to act on — no retry, no rotation.
+func applyStreamErrorStatus(bifrostErr *schemas.BifrostError) {
+	if bifrostErr == nil || bifrostErr.StatusCode != nil {
+		return
+	}
+	bifrostErr.StatusCode = schemas.Ptr(streamErrorStatus(bifrostErr.Error))
+}
+
+// streamErrorStatus infers the status a stream error would have carried over HTTP from
+// the provider's own code or type. A blanket 502 would make every stream failure look
+// transient: a rate limit would be retried on the same key instead of rotating, and a
+// context-length rejection would be retried though it can never succeed.
+func streamErrorStatus(field *schemas.ErrorField) int {
+	var code, errType string
+	if field != nil {
+		if field.Code != nil {
+			code = *field.Code
+		}
+		if field.Type != nil {
+			errType = *field.Type
+		}
+	}
+	switch {
+	case matchesStreamErrorSignal(code, errType, "rate_limit_exceeded", "rate_limit_error", "too_many_requests", "insufficient_quota"):
+		return fasthttp.StatusTooManyRequests
+	case matchesStreamErrorSignal(code, errType, "context_length_exceeded", "invalid_prompt", "invalid_request_error"):
+		return fasthttp.StatusBadRequest
+	}
+	// Unknown: the upstream failed and gave nothing to go on, which is what Bifrost
+	// already reports as 502. Keeps first-chunk failures retryable as transient.
+	return fasthttp.StatusBadGateway
+}
+
+// matchesStreamErrorSignal reports whether the event's code or type is one of want.
+// Providers disagree on which of the two carries the fact, so both are checked.
+func matchesStreamErrorSignal(code, errType string, want ...string) bool {
+	for _, w := range want {
+		if code == w || errType == w {
+			return true
+		}
+	}
+	return false
 }
 
 // ParseOpenAIError parses OpenAI error responses.

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
@@ -97,12 +98,30 @@ type Dispatcher struct {
 }
 
 // NewDispatcher builds a stopped dispatcher; call Start to launch its worker.
+// DispatcherOption customizes a Dispatcher at construction.
+type DispatcherOption func(*dispatcherOptions)
+
+type dispatcherOptions struct {
+	httpClients *network.HTTPClientFactory
+}
+
+// WithHTTPClientFactory sends deliveries through the global proxy when it is enabled
+// for API traffic, keeping each endpoint's SSRF policy (see network.PolicyTransport).
+// Without it, deliveries connect directly.
+func WithHTTPClientFactory(factory *network.HTTPClientFactory) DispatcherOption {
+	return func(o *dispatcherOptions) { o.httpClients = factory }
+}
+
 // The dispatcher's lifetime is bounded by ctx as well as by Stop. runnerID
 // fences queue claims — the node id in a cluster, empty on a single node.
 // historyRetention sets expires_at on delivery history rows and must be
 // positive. Delivery tuning (retries, backoff, timeouts, payload caps,
 // concurrency) is per endpoint.
-func NewDispatcher(ctx context.Context, runnerID string, historyRetention time.Duration, configStore ConfigStore, logStore LogStore, resolver EndpointResolver, logger schemas.Logger) *Dispatcher {
+func NewDispatcher(ctx context.Context, runnerID string, historyRetention time.Duration, configStore ConfigStore, logStore LogStore, resolver EndpointResolver, logger schemas.Logger, opts ...DispatcherOption) *Dispatcher {
+	var options dispatcherOptions
+	for _, opt := range opts {
+		opt(&options)
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	return &Dispatcher{
 		runnerID:         runnerID,
@@ -110,7 +129,7 @@ func NewDispatcher(ctx context.Context, runnerID string, historyRetention time.D
 		configStore:      configStore,
 		logStore:         logStore,
 		resolver:         resolver,
-		client:           newDeliveryClient(),
+		client:           newDeliveryClient(options.httpClients),
 		logger:           logger,
 		signal:           make(chan struct{}, 1),
 		baseCtx:          ctx,

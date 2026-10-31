@@ -7,7 +7,7 @@
 // ui/app/_fallbacks/enterprise/lib/registrations/userPicker.ts for the
 // OSS-build fallback.
 
-import type { ComponentType } from "react";
+import type { ComponentType, ReactNode } from "react";
 
 export interface UserPickerProps {
 	value: string;
@@ -23,6 +23,10 @@ export interface UserPickerProps {
 	className?: string;
 	/** Extra classes for the combobox trigger, e.g. `h-9` to line up with a search input. */
 	triggerClassName?: string;
+	/** Icon shown before the label in the combobox trigger. */
+	triggerIcon?: ReactNode;
+	/** Overrides the popover width, which otherwise matches the trigger. */
+	contentClassName?: string;
 }
 
 let userPicker: ComponentType<UserPickerProps> | undefined;

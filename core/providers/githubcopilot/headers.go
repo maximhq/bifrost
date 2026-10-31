@@ -17,9 +17,12 @@ import (
 // Copilot Chat extension's own request shape.
 const (
 	copilotIntegrationID = "vscode-chat"
-	editorVersion        = "vscode/1.111.0"
-	editorPluginVersion  = "copilot-chat/0.40.0"
-	copilotUserAgent     = "GitHubCopilotChat/0.40.0"
+	// sdkIntegrationID is what the Copilot SDK and CLI send. Copilot accepts a fine-grained
+	// PAT only under it, and only when the seat's organization enables the Copilot CLI policy.
+	sdkIntegrationID    = "copilot-sdk"
+	editorVersion       = "vscode/1.111.0"
+	editorPluginVersion = "copilot-chat/0.40.0"
+	copilotUserAgent    = "GitHubCopilotChat/0.40.0"
 )
 
 const (
@@ -40,7 +43,7 @@ const (
 func buildAuthHeaders(creds *copilotCredentials, hasImageContent bool) map[string]string {
 	headers := map[string]string{
 		"Authorization":          "Bearer " + creds.Token,
-		"Copilot-Integration-Id": copilotIntegrationID,
+		"Copilot-Integration-Id": creds.integrationID(),
 		"Editor-Version":         editorVersion,
 		"Editor-Plugin-Version":  editorPluginVersion,
 		"User-Agent":             copilotUserAgent,
@@ -66,6 +69,25 @@ func chatRequestHasImageContent(request *schemas.BifrostChatRequest) bool {
 		}
 		for _, block := range message.Content.ContentBlocks {
 			if block.Type == schemas.ChatContentBlockTypeImage {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// responsesRequestHasImageContent is the Responses API counterpart of
+// chatRequestHasImageContent.
+func responsesRequestHasImageContent(request *schemas.BifrostResponsesRequest) bool {
+	if request == nil {
+		return false
+	}
+	for _, message := range request.Input {
+		if message.Content == nil {
+			continue
+		}
+		for _, block := range message.Content.ContentBlocks {
+			if block.Type == schemas.ResponsesInputMessageContentBlockTypeImage {
 				return true
 			}
 		}

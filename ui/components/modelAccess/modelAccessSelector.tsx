@@ -1,4 +1,4 @@
-import { ModelMultiselect } from "@/components/ui/modelMultiselect";
+import { ALL_MODELS_OPTION, ModelSelector } from "@/components/ui/modelSelector";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { X } from "lucide-react";
@@ -7,6 +7,7 @@ import { ModelAccessChipLabel } from "./modelAccessChip";
 import { RegexPatternInput } from "./regexPatternInput";
 import {
 	addPattern,
+	MODEL_WILDCARD,
 	type ModelAccessMode,
 	modelAccessPlaceholder,
 	removePattern,
@@ -30,7 +31,6 @@ export interface ModelAccessSelectorProps {
 	allowAllOption?: boolean;
 	/** Bypass governance filtering when loading suggestions (provider key form). */
 	unfiltered?: boolean;
-	loadModelsOnEmptyProvider?: boolean | "base_models";
 	disabled?: boolean;
 	/**
 	 * Optional label row content. When given, the Models | Regex toggle is
@@ -43,8 +43,6 @@ export interface ModelAccessSelectorProps {
 	id?: string;
 	"aria-describedby"?: string;
 	"aria-invalid"?: boolean;
-	menuPosition?: "absolute" | "fixed";
-	menuPortalTarget?: HTMLElement | null;
 	className?: string;
 }
 
@@ -62,12 +60,9 @@ export function ModelAccessSelector({
 	keys,
 	allowAllOption = true,
 	unfiltered,
-	loadModelsOnEmptyProvider,
 	disabled,
 	label,
 	inputId,
-	menuPosition,
-	menuPortalTarget,
 	className,
 	...rest
 }: ModelAccessSelectorProps) {
@@ -119,9 +114,10 @@ export function ModelAccessSelector({
 			</div>
 
 			{tab === "models" ? (
-				<ModelMultiselect
-					allowAllOption={allowAllOption}
-					hideSearchIcon
+				<ModelSelector
+					multiple
+					extraOptions={allowAllOption ? ALL_MODELS_OPTION : undefined}
+					allowCustomModel
 					data-testid={testId}
 					inputId={controlId}
 					ariaDescribedBy={describedBy}
@@ -129,14 +125,12 @@ export function ModelAccessSelector({
 					provider={provider}
 					keys={keys}
 					unfiltered={unfiltered}
-					loadModelsOnEmptyProvider={loadModelsOnEmptyProvider}
-					disabled={disabled}
-					menuPosition={menuPosition}
-					menuPortalTarget={menuPortalTarget}
-					value={hasWildcard ? ["*"] : models}
+					disabled={disabled || !provider}
+					value={hasWildcard ? [MODEL_WILDCARD] : models}
 					onChange={(next: string[]) => onChange(replaceModels(list, next))}
 					placeholder={modelAccessPlaceholder(list, mode)}
-					renderValueLabel={(option) => <ModelAccessChipLabel entry={option.value} />}
+					emptyMessage={provider ? "No models available for this provider." : "Select a provider first."}
+					renderValueLabel={(entry) => <ModelAccessChipLabel entry={entry} />}
 				/>
 			) : (
 				<div className="space-y-1.5">

@@ -230,6 +230,11 @@ func (p *opencodeProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, 
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, p.GetProviderKey())
 }
 
+// Decision is not supported by the opencode provider.
+func (p *opencodeProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, p.GetProviderKey())
+}
+
 // OCR is not supported by Opencode.
 func (p *opencodeProvider) OCR(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostOCRRequest) (*schemas.BifrostOCRResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.OCRRequest, p.GetProviderKey())
@@ -373,6 +378,11 @@ func (p *opencodeProvider) FileContent(_ *schemas.BifrostContext, _ []schemas.Ke
 // CountTokens is not supported by Opencode.
 func (p *opencodeProvider) CountTokens(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.CountTokensRequest, p.GetProviderKey())
+}
+
+// ModelRetrieve is not supported by Opencode.
+func (p *opencodeProvider) ModelRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ModelRetrieveRequest, p.GetProviderKey())
 }
 
 // Compaction is not supported by Opencode.

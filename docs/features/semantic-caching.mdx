@@ -164,7 +164,9 @@ curl -X POST http://localhost:8080/api/plugins \
       "cache_by_model": true,
       "cache_by_provider": true,
       "vector_store_namespace": "BifrostSemanticCachePlugin",
-      "default_cache_key": ""
+      "default_cache_key": "",
+      "cache_tool_call_responses": false,
+      "disable_identity_scoping": false
     }
   }'
 ```
@@ -223,7 +225,9 @@ A vector store must be enabled in `config.json` first — the plugin has nowhere
         "cache_by_provider": true,
 
         "vector_store_namespace": "BifrostSemanticCachePlugin",
-        "default_cache_key": ""
+        "default_cache_key": "",
+        "cache_tool_call_responses": false,
+        "disable_identity_scoping": false
       }
     }
   ]
@@ -269,6 +273,8 @@ bifrost:
         cache_by_provider: true
 
         vector_store_namespace: "BifrostSemanticCachePlugin"
+        cache_tool_call_responses: false
+        disable_identity_scoping: false
 ```
 
 <Note>
@@ -340,7 +346,9 @@ bifrostConfig := schemas.BifrostConfig{
 | `cache_by_model` | boolean | `true` | Include the model name in the cache key (different models won't share entries). |
 | `cache_by_provider` | boolean | `true` | Include the provider name in the cache key (different providers won't share entries). |
 | `vector_store_namespace` | string | `BifrostSemanticCachePlugin` | Bucket/index where entries live. Changing it points the plugin at a different (possibly empty) bucket; old entries aren't deleted, just no longer queried. |
-| `default_cache_key` | string | `""` (empty) | Fallback cache key used when a request doesn't send `x-bf-cache-key`. **Left empty, caching is disabled for any request without the header.** |
+| `default_cache_key` | string | `""` (empty) | Fallback cache key used when a request doesn't send `x-bf-cache-key`. **Left empty, caching is disabled for any request without the header.** Entries are also partitioned by identity on top of this, unless `disable_identity_scoping` is set (see [Triggering the cache](#triggering-the-cache)). |
+| `cache_tool_call_responses` | boolean | `false` | Persist responses that carry tool calls. Off by default, since a replayed tool call runs in a later caller's agent loop with arguments chosen for someone else's prompt. |
+| `disable_identity_scoping` | boolean | `false` | Share entries across identities. Off by default: an entry is only served to the identity that wrote it, meaning the same virtual key and the same user, even when requests share a cache key. Set to `true` to let every identity share entries by cache key. |
 
 ---
 
@@ -425,13 +433,9 @@ bifrost:
 
 In direct-only mode, all requests use hash matching regardless of the `x-bf-cache-type` header — no embeddings are generated and no embedding credentials are needed.
 
-### Recommended vector store for direct-only mode
+### Vector stores in direct-only mode
 
-**Redis/Valkey-compatible stores** are recommended for direct-only mode. They don't require a vector for metadata-only entries, and all cache fields are indexed as TAG fields for fast exact-match lookups.
-
-<Warning>
-**Qdrant, Pinecone, and Weaviate are not suitable for direct-only mode.** They require a vector for every entry; the plugin's zero-vector placeholder codepath needs an initialized embedding client, so storage fails when no provider is configured. Use Redis/Valkey for direct-only.
-</Warning>
+Every vector store works in direct-only mode. **Redis/Valkey-compatible stores** are the lightest choice: they store no vector for metadata-only entries, and all cache fields are indexed as TAG fields for fast exact-match lookups. Weaviate, Qdrant, and Pinecone require a vector for every entry, so the plugin stores a fixed placeholder vector with each one; it needs no embedding provider, and lookups still match on the request hash alone.
 
 ---
 
@@ -443,10 +447,40 @@ In direct-only mode, all requests use hash matching regardless of the `x-bf-cach
 
 The cache key is the **partition** every lookup and write is scoped to — it's part of the cache entry's identity alongside the model and provider. It exists for two reasons:
 
-- **Isolation (no cross-talk).** Entries are only ever matched within the same key. A request under `tenant-A` can never be served a response cached under `tenant-B`, even if the prompts are identical. This prevents one user, tenant, or feature from leaking cached answers to another — the key is how you draw that boundary (per user, per session, per feature, per tenant, etc.).
+- **Isolation (no cross-talk).** Entries are only ever matched within the same key — and, on top of that, within the same identity (see the note below). A request under `tenant-A` can never be served a response cached under `tenant-B`, even if the prompts are identical. The key is how you draw sharing boundaries within an identity (per session, per feature, etc.).
 - **Explicit opt-in.** Caching changes behavior — a response can be replayed instead of freshly generated. Requiring a key makes that a deliberate choice per request (or per deployment via `default_cache_key`), so you never accidentally serve a cached answer where you wanted a live one.
 
 Pick a key granularity that matches how much you want to share: a coarse key (e.g. a feature name) maximizes hit rate across users; a fine key (e.g. a per-user or per-session ID) keeps caches private at the cost of fewer hits.
+
+<Note>
+By default every cache entry is scoped to the identity that wrote it, on top of whatever
+`x-bf-cache-key`/`default_cache_key` you set. The identity is the request's resolved virtual key
+and, where the request is attributed to a user, that user. Two different identities never share
+a cache entry, even with the exact same cache key and prompt. Requests that carry no identity
+share entries only with each other. Set `disable_identity_scoping: true` (or turn off **Scope
+Cache by Identity** in the UI) to let every identity share entries by cache key; entries written
+in one mode are not served in the other.
+
+The identity is folded into the entry's hash and is never stored on the entry, so the stored
+cache key stays the value you sent. Clearing a key with
+`DELETE /api/cache/clear-by-key/{cacheKey}` removes every identity's entries under that key.
+</Note>
+
+<Note>
+Responses that carry tool calls (chat `tool_calls`, or Responses API `function_call`,
+`custom_tool_call`, `computer_call`, `local_shell_call`, `mcp_call`, `mcp_approval_request` items)
+are **not cached by default**: a replayed tool call would run in a later caller's agent loop with arguments the model
+chose for someone else's prompt. Set `cache_tool_call_responses: true` to opt in.
+</Note>
+
+<Note>
+When a request carries a resolved virtual key, the effective cache partition is automatically
+scoped to that virtual key on top of whatever `x-bf-cache-key`/`default_cache_key` you set - two
+different virtual keys can never share a cache entry, even if they're configured with the exact
+same cache key. This applies with zero configuration; there's nothing to opt into. Requests
+without a virtual key (no governance/VK enforcement in use) are partitioned by cache key alone,
+same as before.
+</Note>
 
 <Tabs group="cache-triggering">
 
@@ -491,9 +525,9 @@ Every plugin default can be overridden per request via headers (HTTP) or context
 |--------|------------------|-------|--------|
 | `x-bf-cache-key` | `CacheKey` | string | Scope this request to a cache partition. Required (or `default_cache_key`) for caching to engage. |
 | `x-bf-cache-ttl` | `CacheTTLKey` | duration string or seconds | Override TTL for this request. Invalid values are ignored. |
-| `x-bf-cache-threshold` | `CacheThresholdKey` | float (0–1) | Override the semantic similarity threshold. Clamped to `[0,1]`. |
+| `x-bf-cache-threshold` | `CacheThresholdKey` | float (0–1) | Raise the semantic similarity threshold for this request (stricter matching, fewer hits). Clamped to `[0,1]`; a value below the plugin's configured threshold is floored at the configured value rather than loosening it - callers can only make matching stricter, never looser. |
 | `x-bf-cache-type` | `CacheTypeKey` | `direct` or `semantic` | Limit lookup to a single path. |
-| `x-bf-cache-no-store` | `CacheNoStoreKey` | `true` | Skip writing the response (still serves cached hits). |
+| `x-bf-cache-no-store` | `CacheNoStoreKey` | `true` (any casing) | Skip writing the response (still serves cached hits). Any other value leaves writing on. |
 
 <Tabs group="per-request-overrides">
 
@@ -606,6 +640,34 @@ Every cached or cache-checked response carries debug metadata so you can confirm
 On a streamed response, only the **final** chunk carries the full `cache_debug` payload.
 </Note>
 
+### Response headers
+
+Every inference response the cache looked up also carries the same fields as `x-bifrost-cache-*` response headers, on every route. They are the only way to read them where the response body has no `extra_fields`: the Anthropic, GenAI, Bedrock and Cohere SDK routes (the Anthropic route includes `extra_fields` only when raw capture is on), and streams on those routes. Requests the cache did not look up, and error responses, carry no cache headers.
+
+| Header | `cache_debug` field | Sent when |
+|--------|---------------------|-----------|
+| `x-bifrost-cache-hit` | `cache_hit` | the cache ran a lookup (`true` or `false`) |
+| `x-bifrost-cache-id` | `cache_id` | the cache ran a lookup |
+| `x-bifrost-cache-hit-type` | `hit_type` | on hit |
+| `x-bifrost-cache-hit-latency-ms` | `cache_hit_latency` | on hit |
+| `x-bifrost-cache-requested-provider` | `requested_provider` | on hit |
+| `x-bifrost-cache-requested-model` | `requested_model` | on hit |
+| `x-bifrost-cache-similarity` | `similarity` | on semantic hit |
+| `x-bifrost-cache-threshold` | `threshold` | on semantic hit |
+| `x-bifrost-cache-provider-used` | `provider_used` | when semantic search ran |
+| `x-bifrost-cache-model-used` | `model_used` | when semantic search ran |
+| `x-bifrost-cache-input-tokens` | `input_tokens` | when semantic search ran |
+
+A stream sends its headers before the first chunk, so they report the lookup as it was recorded. They match the final chunk's `cache_debug` except `x-bifrost-cache-hit-latency-ms`, which is measured when the lookup outcome is recorded, before the first chunk.
+
+```bash
+curl -si http://localhost:8080/anthropic/v1/messages \
+  -H "x-bf-cache-key: session-123" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "claude-haiku-4-5", "max_tokens": 64, "messages": [{"role": "user", "content": "Hi"}]}' \
+  | grep -i '^x-bifrost-cache-'
+```
+
 Cache outcomes also surface in **Logs** without inspecting the raw response:
 
 ![Log detail sheet showing the Semantic Cache badge and Caching Details block](../media/ui-semantic-cache-log-details.png)
@@ -619,7 +681,7 @@ Cache outcomes also surface in **Logs** without inspecting the raw response:
 
 ### Invalidation
 
-Use the `cache_id` from `cache_debug` to invalidate entries.
+Use the `cache_id` from `cache_debug` to invalidate a single entry, or clear a whole cache key. Clearing a key removes the entries of every identity that wrote under it; to remove one identity's entry, clear it by its `cache_id`. Clearing a `cache_id` that does not exist, or has already expired, succeeds on every vector store.
 
 <Tabs group="cache-clear">
 
@@ -631,6 +693,9 @@ curl -X DELETE http://localhost:8080/api/cache/clear/550e8500-e29b-41d4-a725-446
 
 # Clear all entries for a cache key
 curl -X DELETE http://localhost:8080/api/cache/clear-by-key/support-session-456
+
+# URL-encode a key that contains spaces, colons or slashes ("tenant a:session/42")
+curl -X DELETE http://localhost:8080/api/cache/clear-by-key/tenant%20a%3Asession%2F42
 ```
 
 </Tab>
@@ -658,7 +723,7 @@ err := plugin.ClearCacheForKey("support-session-456")
 <Warning>
 **Changing `dimension`, `provider`, or `embedding_model`:** a vector store namespace can hold vectors of **one** dimension only, and it is **not** recreated automatically when the dimension changes.
 
-On **Redis** and **Qdrant**, a dimension mismatch is caught at startup: namespace creation fails with `namespace ... already exists with dimension N but config requires M`, and Bifrost does not come up until you resolve it. Qdrant skips the check in two cases — the collection uses named vectors (Bifrost only ever creates unnamed ones, so the collection was not created by Bifrost), or the collection-info lookup fails — and logs that it did. On the other backends, namespace creation is a no-op when the class/collection already exists, so a mismatch surfaces later — subsequent writes fail (size mismatch) and reads silently miss.
+Every vector store catches a dimension mismatch when the plugin loads: namespace creation fails with `namespace ... already exists with dimension N but config requires M`. At startup Bifrost does not come up until you resolve it. Through the plugins API or the UI, the save is refused with a 400, the previous configuration is kept, and the running cache keeps serving. Redis, Qdrant and Pinecone compare against the dimension the index or collection was created with; a Pinecone index has one dimension for all its namespaces, so a config at any other size is refused. Weaviate and the in-process store record no dimension, so they compare against a vector already stored, and an empty namespace accepts any size. Qdrant and Weaviate skip the check, and log that they did, when the lookup itself fails; Qdrant also skips it for collections with named vectors, which Bifrost never creates.
 
 Either way, before saving such a change:
 
@@ -676,8 +741,16 @@ Either way, before saving such a change:
 **Most common cause:** no cache key. Caching only engages when a request sends `x-bf-cache-key` (or you've set a `default_cache_key`). Confirm the header is present, then check `cache_debug` on the response.
 </Accordion>
 
+<Accordion title="Two virtual keys or users never share entries">
+Expected. Entries are scoped to the identity that wrote them, so the same cache key and prompt sent with a different virtual key, or by a different user, is a miss. To share entries across identities, set `disable_identity_scoping: true` or turn off **Scope Cache by Identity** in the UI.
+</Accordion>
+
 <Accordion title="The first request is always a miss">
 Expected. The cache is populated *after* the first response is returned (writes are asynchronous). Send the same request again to see a hit.
+</Accordion>
+
+<Accordion title="Semantic hits stop and logs show &quot;semantic search skipped&quot;">
+The embedding provider failed for those requests: an invalid or missing key, a rate limit, or a provider outage. The request itself still succeeds, and its response is still cached, so an exact repeat is served from cache; only similarity matches are lost until embeddings work again. The plugin records the failure as a warning in the request's plugin logs, visible on the log entry. On stores that require a vector per entry, the entry is stored under a fixed placeholder vector that never matches a similarity search.
 </Accordion>
 
 <Accordion title="Semantic mode never hits">
@@ -696,10 +769,6 @@ No embedding-capable provider is configured. Add one under **Providers** first; 
 
 <Accordion title='The "Enable Caching" toggle is disabled'>
 No vector store is enabled. Configure and enable one in `config.json` (see [Prerequisites](#prerequisites)).
-</Accordion>
-
-<Accordion title="Direct-only mode fails to store entries">
-You're likely using Qdrant, Pinecone, or Weaviate, which require a vector per entry. Switch to Redis/Valkey for direct-only mode.
 </Accordion>
 
 </AccordionGroup>

@@ -176,6 +176,11 @@ echo "  opencode: $(opencode --version 2>&1 | head -n1)"
 
 harness_build_gateway
 harness_seed_app_dir "$APP_DIR"
+# The shared harness config enables a Weaviate vector store for Warp's semantic
+# log search. This job starts no Weaviate and the CLI never uses Warp, and an
+# unreachable vector store is fatal at boot, so drop it from this seed only.
+jq 'del(.vector_store)' "$APP_DIR/config.json" > "$APP_DIR/config.json.tmp"
+mv "$APP_DIR/config.json.tmp" "$APP_DIR/config.json"
 harness_start_gateway "$APP_DIR" "$PORT" "$SERVER_LOG"
 
 # The harness probes /api/providers before running; config.json sets

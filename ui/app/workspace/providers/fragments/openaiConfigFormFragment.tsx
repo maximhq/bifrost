@@ -20,6 +20,7 @@ export function OpenAIConfigFormFragment({ provider }: OpenAIConfigFormFragmentP
 	const dispatch = useAppDispatch();
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	const [updateProvider, { isLoading: isUpdatingProvider }] = useUpdateProviderMutation();
+	const isFireworks = provider.name === "fireworks";
 	const form = useForm<OpenAIConfigFormSchema, any, OpenAIConfigFormSchema>({
 		resolver: zodResolver(openaiConfigFormSchema) as Resolver<OpenAIConfigFormSchema, any, OpenAIConfigFormSchema>,
 		mode: "onChange",
@@ -49,11 +50,11 @@ export function OpenAIConfigFormFragment({ provider }: OpenAIConfigFormFragmentP
 		)
 			.unwrap()
 			.then(() => {
-				toast.success("OpenAI configuration updated successfully");
+				toast.success(isFireworks ? "Configuration updated successfully" : "OpenAI configuration updated successfully");
 				form.reset(data);
 			})
 			.catch((err) => {
-				toast.error("Failed to update OpenAI configuration", {
+				toast.error(isFireworks ? "Failed to update configuration" : "Failed to update OpenAI configuration", {
 					description: getErrorMessage(err),
 				});
 			});
@@ -73,8 +74,10 @@ export function OpenAIConfigFormFragment({ provider }: OpenAIConfigFormFragmentP
 										<FormLabel>Disable Store</FormLabel>
 										<p className="text-muted-foreground text-xs">
 											With the Responses API, store defaults to true, and when it is on, the generated response is stored for later
-											retrieval via API. OpenAI exposes endpoints to retrieve and delete stored responses, so your response IDs become
-											durable server-side objects instead of one-shot IDs.
+											retrieval via API.{" "}
+											{isFireworks
+												? "Turn off store for fireworks."
+												: "OpenAI exposes endpoints to retrieve and delete stored responses, so your response IDs become durable server-side objects instead of one-shot IDs."}
 										</p>
 									</div>
 									<FormControl>
@@ -102,7 +105,7 @@ export function OpenAIConfigFormFragment({ provider }: OpenAIConfigFormFragmentP
 						disabled={!form.formState.isDirty || !form.formState.isValid || !hasUpdateProviderAccess || isUpdatingProvider}
 						isLoading={isUpdatingProvider}
 					>
-						Save OpenAI Configuration
+						{isFireworks ? "Save Configuration" : "Save OpenAI Configuration"}
 					</Button>
 				</div>
 			</form>

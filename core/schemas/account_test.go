@@ -1,11 +1,106 @@
 package schemas
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestVertexEndpointAliasRoundTrip(t *testing.T) {
+	for _, method := range []string{"raw_predict", "chat_completions"} {
+		t.Run(method, func(t *testing.T) {
+			input := `{"vllm":{"model_id":"custom-model-version","vertex_endpoint":{"endpoint_id":"2222222222","format":"openai_chat","method":"` + method + `"}}}`
+			var aliases KeyAliases
+			if err := json.Unmarshal([]byte(input), &aliases); err != nil {
+				t.Fatal(err)
+			}
+			if err := aliases.Validate(Vertex); err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := json.Marshal(aliases)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(encoded), `"vertex_endpoint"`) || !strings.Contains(string(encoded), `"format":"openai_chat"`) {
+				t.Fatalf("custom endpoint configuration lost on round trip: %s", encoded)
+			}
+			if err := aliases.Validate(OpenAI); err == nil {
+				t.Fatal("Vertex endpoint must be rejected on an OpenAI key")
+			}
+		})
+	}
+}
+
+func TestVertexEndpointValidation(t *testing.T) {
+	for _, id := range []string{"", " a", "a ", "../a", "a/b", "a?key=x", "a#x", "a:predict", "a%2fb", "モデル"} {
+		endpoint := &VertexEndpoint{EndpointID: id, Format: VertexEndpointOpenAIChat}
+		if endpoint.Validate() == nil {
+			t.Errorf("accepted endpoint ID %q", id)
+		}
+	}
+	if err := (&VertexEndpoint{EndpointID: "2222", Format: VertexEndpointOpenAIChat}).Validate(); err != nil {
+		t.Fatalf("omitted method must default to raw_predict: %v", err)
+	}
+	if err := (&VertexEndpoint{EndpointID: "2222", Format: VertexEndpointOpenAIChat, Method: "predict"}).Validate(); err == nil {
+		t.Fatal("accepted unsupported method")
+	}
+	for _, format := range []VertexEndpointFormat{"", "openai", "gemini", "predict"} {
+		if (&VertexEndpoint{EndpointID: "2222", Format: format}).Validate() == nil {
+			t.Errorf("accepted format %q; the body shape must be explicit and implemented", format)
+		}
+	}
+}
+
+func TestAliasConfigRedactedPreservesShape(t *testing.T) {
+	for name, original := range map[string]AliasConfig{
+		"empty":  {},
+		"legacy": {ModelID: "model"},
+		"metadata": {
+			ModelID: "model", ModelName: Ptr("canonical"), ModelFamily: Ptr(ModelFamilyAnthropic),
+			Description: "alias description", UseAnthropicEndpoints: Ptr(true), UseOpenAIEndpoints: Ptr(false),
+			AzureAliasCfg:     &AzureAliasCfg{APIVersion: Ptr("api-version"), AnthropicVersion: Ptr("anthropic-version"), UseSpeechEndpoints: Ptr(true)},
+			VertexAliasCfg:    &VertexAliasCfg{ForceSingleRegion: Ptr(true)},
+			BedrockAliasCfg:   &BedrockAliasCfg{},
+			ReplicateAliasCfg: &ReplicateAliasCfg{UseDeploymentsEndpoint: Ptr(true)},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			redacted := original.Redacted()
+			if !reflect.DeepEqual(original, redacted) {
+				t.Fatalf("redaction changed non-secret fields: got %+v, want %+v", redacted, original)
+			}
+			before, err := json.Marshal(original)
+			if err != nil {
+				t.Fatal(err)
+			}
+			after, err := json.Marshal(redacted)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(before) != string(after) {
+				t.Fatalf("redaction changed wire shape: got %s, want %s", after, before)
+			}
+		})
+	}
+}
+
+func TestBedrockEndpointsRedactedPreservesUnsetFields(t *testing.T) {
+	var unset *BedrockEndpoints
+	if unset.Redacted() != nil {
+		t.Fatal("nil endpoints must remain nil")
+	}
+	original := &BedrockEndpoints{Runtime: NewSecretVar("runtime.example.com")}
+	redacted := original.Redacted()
+	if !reflect.DeepEqual(original, redacted) {
+		t.Fatalf("literal endpoints or nil fields changed: got %+v, want %+v", redacted, original)
+	}
+	redacted.Runtime.Val = "changed.example.com"
+	if original.Runtime.GetValue() != "runtime.example.com" {
+		t.Fatal("redacted endpoints share secrets with live config")
+	}
+}
 
 func TestKeyAliasesUnmarshalLegacyStringShape(t *testing.T) {
 	in := []byte(`{"best-model": "gpt-4o-deployment"}`)
@@ -27,7 +122,8 @@ func TestKeyAliasesUnmarshalRichShape(t *testing.T) {
             "model_name": "claude-3-5-sonnet",
             "model_family": "anthropic",
             "description": "prod",
-            "api_version": "2024-08-01-preview"
+            "api_version": "2024-08-01-preview",
+            "use_speech_endpoints": true
         }
     }`)
 	var ka KeyAliases
@@ -49,6 +145,9 @@ func TestKeyAliasesUnmarshalRichShape(t *testing.T) {
 	}
 	if got.AzureAliasCfg == nil || got.APIVersion == nil || *got.APIVersion != "2024-08-01-preview" {
 		t.Fatalf("AzureAliasCfg.APIVersion mismatch: %+v", got.AzureAliasCfg)
+	}
+	if got.UseSpeechEndpoints == nil || !*got.UseSpeechEndpoints {
+		t.Fatalf("AzureAliasCfg.UseSpeechEndpoints mismatch: %+v", got.AzureAliasCfg)
 	}
 }
 
@@ -198,6 +297,7 @@ func TestKeyAliasesMarshalRichShapeWhenAnyExtraFieldSet(t *testing.T) {
 		"with_model_family": {AliasConfig{ModelID: "x", ModelFamily: Ptr(ModelFamilyAnthropic)}, "model_family", "anthropic"},
 		"with_description":  {AliasConfig{ModelID: "x", Description: "prod"}, "description", "prod"},
 		"with_azure_subcfg": {AliasConfig{ModelID: "x", AzureAliasCfg: &AzureAliasCfg{APIVersion: Ptr("2024-08-01-preview")}}, "api_version", "2024-08-01-preview"},
+		"with_azure_speech": {AliasConfig{ModelID: "x", AzureAliasCfg: &AzureAliasCfg{UseSpeechEndpoints: Ptr(true)}}, "use_speech_endpoints", true},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -688,4 +788,63 @@ func TestModelFamilyIsValid(t *testing.T) {
 	if nilMF.IsValid() {
 		t.Fatal("nil ModelFamily should be invalid")
 	}
+}
+
+func TestIsMoonshotModel(t *testing.T) {
+	cases := []struct {
+		model string
+		want  bool
+	}{
+		// Every id Moonshot publishes starts with "kimi-"; Bedrock and Groq wrap it
+		// in a "moonshotai" namespace.
+		{"kimi-k3", true},
+		{"kimi-k2.7-code", true},
+		{"KIMI-K3", true},
+		{"moonshotai.kimi-k3", true},
+		{"global.moonshotai.kimi-k3", true},
+		{"us.moonshotai.kimi-k2.5", true},
+		{"moonshotai/kimi-k2-instruct", true},
+
+		// Near misses that a substring match would wrongly claim. The predicate
+		// gates a lossy tool-schema rewrite, so these must stay false.
+		{"kimina-prover", false},
+		{"mykimi", false},
+		{"kimi", false},
+		{"akimi-k3", false},
+		{"deepseek-chat", false},
+		{"gpt-4o-mini", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			if got := IsMoonshotModel(tc.model); got != tc.want {
+				t.Fatalf("IsMoonshotModel(%q) = %v, want %v", tc.model, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestApplyRequestRouting pins that RoutingInfo picks up the caller's route core stamped on the
+// context, and that a context without one (an SDK caller, or a nil context) leaves it empty.
+func TestApplyRequestRouting(t *testing.T) {
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	ctx.SetValue(BifrostContextKeyRequestedProvider, OpenAI)
+	ctx.SetValue(BifrostContextKeyRequestedModel, "gpt-4o-mini")
+
+	info := BuildRoutingInfo(ctx, OpenAI, "gpt-4o", Key{Name: "openai-key"})
+	if info.RequestedProvider != OpenAI || info.RequestedModel != "gpt-4o-mini" {
+		t.Fatalf("requested route = (%q, %q), want (openai, gpt-4o-mini)", info.RequestedProvider, info.RequestedModel)
+	}
+	if info.Model != "gpt-4o" {
+		t.Fatalf("Model = %q, want the attempt's gpt-4o", info.Model)
+	}
+
+	empty := BuildRoutingInfo(NewBifrostContext(context.Background(), NoDeadline), OpenAI, "gpt-4o", Key{})
+	if empty.RequestedProvider != "" || empty.RequestedModel != "" {
+		t.Fatalf("requested route without a stamp = (%q, %q), want empty", empty.RequestedProvider, empty.RequestedModel)
+	}
+
+	var nilInfo *RoutingInfo
+	nilInfo.ApplyRequestRouting(ctx)
+	(&RoutingInfo{}).ApplyRequestRouting(nil)
 }

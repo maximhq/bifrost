@@ -13,6 +13,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
 
 // vertexBatchCustomIDLabel is the request label used to carry the Bifrost custom_id
@@ -67,18 +68,21 @@ func vertexBatchJobsBaseURL(key schemas.Key) (string, *schemas.BifrostError) {
 // to the job's REST URL.
 func vertexBatchJobURL(key schemas.Key, batchID string) (string, *schemas.BifrostError) {
 	if strings.HasPrefix(batchID, "projects/") {
-		// Full resource name: projects/{p}/locations/{r}/batchPredictionJobs/{id}
-		parts := strings.Split(batchID, "/")
-		if len(parts) >= 6 && parts[2] == "locations" {
-			return getVertexAPIBaseURL(parts[3], "v1") + "/" + batchID, nil
+		parts, bifrostErr := parseVertexResourceName(batchID, "batch_id", "projects", "", "locations", "", "batchPredictionJobs", "")
+		if bifrostErr != nil {
+			return "", bifrostErr
 		}
-		return "", providerUtils.NewBifrostOperationError(fmt.Sprintf("invalid Vertex batch ID %q", batchID), nil)
+		return getVertexAPIBaseURL(parts[3], "v1") + "/" + strings.Join(parts, "/"), nil
 	}
 	base, cfgErr := vertexBatchJobsBaseURL(key)
 	if cfgErr != nil {
 		return "", cfgErr
 	}
-	return base + "/batchPredictionJobs/" + batchID, nil
+	escapedJobID, bifrostErr := providerUtils.EscapeResourceID(batchID, "batch_id")
+	if bifrostErr != nil {
+		return "", bifrostErr
+	}
+	return base + "/batchPredictionJobs/" + escapedJobID, nil
 }
 
 // vertexBatchJobToBifrost maps a BatchPredictionJob resource to the Bifrost retrieve response.
@@ -133,15 +137,19 @@ func vertexBatchJobToBifrost(job *VertexBatchPredictionJob) schemas.BifrostBatch
 	return resp
 }
 
-// parseVertexJobAPIError parses a Vertex AI error response (same envelope as GCS).
-func parseVertexJobAPIError(body []byte, statusCode int, op string) *schemas.BifrostError {
+// parseVertexJobAPIError parses a Vertex AI error response (same envelope as GCS), with the
+// retry hint from the response headers.
+func parseVertexJobAPIError(resp *fasthttp.Response, op string) *schemas.BifrostError {
+	statusCode := resp.StatusCode()
 	var apiErr gcsErrorBody
-	_ = sonic.Unmarshal(body, &apiErr)
+	_ = sonic.Unmarshal(resp.Body(), &apiErr)
 	msg := apiErr.Error.Message
 	if msg == "" {
 		msg = fmt.Sprintf("Vertex %s failed with HTTP %d", op, statusCode)
 	}
-	return providerUtils.NewProviderAPIError(msg, nil, statusCode, nil, nil)
+	bifrostErr := providerUtils.NewProviderAPIError(msg, nil, statusCode, nil, nil)
+	providerUtils.ApplyRetryAfter(bifrostErr, &resp.Header)
+	return bifrostErr
 }
 
 // ToVertexBatchCreateRequest maps a Bifrost batch create request to a Vertex

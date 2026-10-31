@@ -6,9 +6,27 @@
  *   downloadCSV(csv, "my-export");
  */
 
-/** Escape a cell value for CSV (RFC 4180). */
-function escapeCell(value: unknown): string {
-	const str = String(value ?? "");
+const FORMULA_PREFIX_REGEX = /^[=+\-@\t\r]/;
+
+/**
+ * Escape a cell value for CSV (RFC 4180) and sanitize formula injection.
+ *
+ * If a string value begins with formula characters (=, +, -, @, tab, CR)
+ * and is not a legitimate finite number, it is prefixed with a single quote (')
+ * to prevent spreadsheet calculation/execution.
+ */
+export function escapeCell(value: unknown): string {
+	if (value === null || value === undefined) {
+		return '""';
+	}
+	let str = String(value);
+	if (
+		typeof value === "string" &&
+		(FORMULA_PREFIX_REGEX.test(str) || FORMULA_PREFIX_REGEX.test(str.trimStart())) &&
+		!Number.isFinite(Number(str))
+	) {
+		str = `'${str}`;
+	}
 	return `"${str.replace(/"/g, '""')}"`;
 }
 
@@ -28,7 +46,8 @@ export function buildCSV(headers: string[], rows: unknown[][]): string {
  * @param filename Base filename without extension (date suffix is appended automatically)
  */
 export function downloadCSV(content: string, filename: string): void {
-	const blob = new Blob([content], { type: "text/csv;charset=utf-8;" });
+	// Prepend UTF-8 BOM (\uFEFF) so Excel and spreadsheet applications correctly interpret UTF-8 encoding
+	const blob = new Blob(["\uFEFF", content], { type: "text/csv;charset=utf-8;" });
 	const url = URL.createObjectURL(blob);
 	const link = document.createElement("a");
 	link.href = url;

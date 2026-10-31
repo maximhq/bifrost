@@ -158,6 +158,9 @@ func TestAccessToken_ExpiredTokenNoRefresh_ReturnsExpiredError(t *testing.T) {
 			assert.ErrorIs(t, err, schemas.ErrOAuth2TokenExpired)
 			assert.Empty(t, token)
 			assert.False(t, refreshCalled, "no refresh token available must short-circuit locally, never reach the token endpoint")
+			// Nothing can renew it, so the credential is marked for re-authorization like a rejected refresh.
+			assert.Equal(t, "needs_reauth", store.oauthTokens["tok-1"].Status)
+			assert.Equal(t, unrenewableTokenReason, store.oauthTokens["tok-1"].StatusReason)
 		})
 	}
 }

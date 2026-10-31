@@ -1,0 +1,116 @@
+---
+title: "News Feeds"
+description: "Show product announcements and provider news from RSS and Atom feeds in the dashboard notification tray."
+icon: "newspaper"
+---
+
+## Overview
+
+The notification tray in the dashboard topbar has three tabs:
+
+| Tab | Icon | Shows |
+|---|---|---|
+| Notifications | Bell | Notifications published by the gateway |
+| Jobs | Timer | Background jobs such as log cost recalculation |
+| News | Newspaper | Entries from the RSS and Atom feeds enabled for this gateway |
+
+Bifrost fetches the feeds on the server, because most vendor feeds do not send CORS headers. It merges the entries newest first and labels each one with its source's icon. Opening an entry opens the article in a new tab and marks it read. Clear a single entry with its × button, or clear the whole tab with **Clear all**. **Mark all read** sits next to it at the bottom of the tab. Cleared entries stay hidden even after the feeds refresh. Read and cleared state is stored in your browser, the same way it is for notifications, so it does not affect other users or other browsers.
+
+<Note>
+News feeds need a config store. When no config store is configured, the News tab is hidden.
+</Note>
+
+---
+
+## Built-in feeds
+
+| Feed | Default |
+|---|---|
+| Bifrost Announcements | Enabled |
+| OpenAI News | Disabled |
+| Anthropic News | Disabled |
+| Gemini News | Disabled |
+| Cursor Changelog | Disabled |
+
+You can enable or disable a built-in feed, but you cannot edit or delete it. Its URL is maintained by Bifrost and refreshed on every start.
+
+<Note>
+Anthropic does not publish an RSS feed, so the built-in entry reads the [anthropic.com/news](https://www.anthropic.com/news) page directly. See [News pages without a feed](#news-pages-without-a-feed).
+</Note>
+
+---
+
+## Turning news off
+
+An administrator can turn news off for the whole gateway with the **Show news in the notification tray** switch at the top of **News sources**. While news is off:
+
+- the News tab is hidden for every user;
+- Bifrost stops fetching news items, so the News tab makes no outbound feed requests. Adding a custom feed or changing its URL still fetches that URL once to validate it;
+- your built-in and custom sources are kept, so turning news back on restores them unchanged.
+
+To turn news back on, open the notification tray and click the settings icon in its header. Administrators still see that icon while news is off.
+
+---
+
+## Managing sources
+
+1. Open the notification tray. If news is on, switch to the **News** tab.
+2. Click the settings icon in the tray header to open **News sources**. While news is off, the News tab is hidden but administrators still see this icon in the header.
+3. Toggle any built-in feed on or off.
+4. Under **Add a feed**, enter a name and an RSS or Atom URL, then click **Add feed**.
+
+Bifrost fetches a custom feed once before saving it, and rejects the URL if it returns neither a valid RSS or Atom document nor a news listing page. Custom feeds can be disabled or removed at any time.
+
+### Custom logos
+
+Each custom feed can have its own logo. When you add a feed, either enter an image URL or click **Upload** to pick a file. For an existing feed, use the image button on its row to upload a new logo or remove the current one.
+
+- Accepted uploads: PNG, JPEG, GIF, WebP, SVG or ICO, up to 96 KB. Uploads are stored with the feed.
+- Without a logo, the tray shows the favicon of the feed's site.
+- Built-in feeds always use their bundled icons.
+
+Feed settings are gateway-wide: everyone who uses this dashboard sees the same sources. Changing them requires the `Settings:Update` permission.
+
+---
+
+## News pages without a feed
+
+Some sites, such as anthropic.com/news, publish news only as an HTML page. When a feed URL returns HTML instead of RSS or Atom, Bifrost reads the page's article cards. A card is a link that wraps a heading, or a link that wraps a date (`<time>`) and an element whose class names it a title. Bifrost uses the card's title, its `<time>` date, and its first paragraph as the summary.
+
+A page qualifies only if it has at least three such cards. Links to other hosts are ignored. Because this depends on the page's markup, a site redesign can stop a page feed from loading until the site's markup changes back. When a site offers a real RSS or Atom feed, use that instead.
+
+---
+
+## Fetching and limits
+
+| Behaviour | Value |
+|---|---|
+| Cache per feed | 15 minutes (2 minutes after a failed fetch) |
+| Entries per feed | 20 newest |
+| Entries returned | 50 by default, up to 100 |
+| Fetch timeout | 10 seconds |
+| Request deadline | 15 seconds; a feed not loaded by then is listed as failed for that request |
+| Maximum feed size | 2 MB |
+| Summary length | 280 characters of plain text, HTML stripped |
+
+Feeds are fetched through Bifrost's SSRF-guarded HTTP client, so private, loopback, link-local, and cloud metadata addresses are refused. Entries whose link is not an `http` or `https` URL are dropped. When a feed fails to load, the rest of the tab still renders, and the failed feed is named at the bottom of the list. The Bifrost Announcements feed is the exception: its failures are only logged on the gateway.
+
+---
+
+## API
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/rss/feeds` | List configured feeds |
+| `POST` | `/api/rss/feeds` | Add a custom feed |
+| `PUT` | `/api/rss/feeds/{id}` | Enable or disable a feed, or rename or repoint a custom feed |
+| `DELETE` | `/api/rss/feeds/{id}` | Delete a custom feed |
+| `GET` | `/api/rss/items` | Merged entries from every enabled feed |
+| `GET` | `/api/rss/settings` | Whether news is on for the gateway |
+| `PUT` | `/api/rss/settings` | Turn news on or off: `{"enabled": false}` |
+
+```bash
+curl -X POST http://localhost:8080/api/rss/feeds \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Bifrost releases", "url": "https://github.com/maximhq/bifrost/releases.atom"}'
+```

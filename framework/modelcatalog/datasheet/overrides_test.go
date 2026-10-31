@@ -1002,6 +1002,14 @@ func TestPatchPricing_InputCostPerQuery(t *testing.T) {
 	assert.Equal(t, 0.002, *patched.InputCostPerQuery)
 }
 
+func TestPatchPricing_WebSearchCostPerRequest(t *testing.T) {
+	base := configstoreTables.TableModelPricing{Model: "claude-haiku-4-5", Provider: "anthropic", Mode: "chat"}
+
+	patched := patchPricing(base, Options{WebSearchCostPerRequest: bifrost.Ptr(0.01)})
+	require.NotNil(t, patched.WebSearchCostPerRequest)
+	assert.Equal(t, 0.01, *patched.WebSearchCostPerRequest)
+}
+
 func TestPatchPricing_SizeAndQualityImageRates(t *testing.T) {
 	base := configstoreTables.TableModelPricing{
 		Model:    "gpt-image-1",
@@ -1071,6 +1079,20 @@ func TestPatchPricing_VideoResolutionBandRates(t *testing.T) {
 	assert.Equal(t, 0.30, *patched.OutputCostPerVideoPerSecond)
 }
 
+func TestPatchPricing_VideoTokenRate(t *testing.T) {
+	base := configstoreTables.TableModelPricing{
+		Model:                   "dreamina-seedance-2-0-260128",
+		Provider:                "byteplus",
+		Mode:                    "video_generation",
+		OutputCostPerVideoToken: bifrost.Ptr(0.000007),
+	}
+
+	patched := patchPricing(base, Options{OutputCostPerVideoToken: bifrost.Ptr(0.0000077)})
+
+	require.NotNil(t, patched.OutputCostPerVideoToken)
+	assert.Equal(t, 0.0000077, *patched.OutputCostPerVideoToken)
+}
+
 // TestPatchPricing_TimeOfDayFields covers the two peak/off-peak fields. The
 // multiplier rides the *float64 loop; PeakHours is patched separately because
 // it is a struct pointer, so both paths need pinning.
@@ -1131,4 +1153,123 @@ func TestPatchPricing_TimeOfDayFields(t *testing.T) {
 		assert.Equal(t, 0.5, *base.OffPeakCostMultiplier)
 		assert.Same(t, baseSchedule, base.PeakHours)
 	})
+}
+
+func TestPatchPricing_UltrafastAbove272kRates(t *testing.T) {
+	base := configstoreTables.TableModelPricing{Model: "gpt-6-astra", Provider: "openai", Mode: "responses"}
+
+	patched := patchPricing(base, Options{
+		InputCostPerTokenAbove272kTokensUltrafast:           bifrost.Ptr(0.00012),
+		OutputCostPerTokenAbove272kTokensUltrafast:          bifrost.Ptr(0.00045),
+		CacheReadInputTokenCostAbove272kTokensUltrafast:     bifrost.Ptr(0.000012),
+		CacheCreationInputTokenCostAbove272kTokensUltrafast: bifrost.Ptr(0.00015),
+	})
+	require.NotNil(t, patched.InputCostPerTokenAbove272kTokensUltrafast)
+	assert.Equal(t, 0.00012, *patched.InputCostPerTokenAbove272kTokensUltrafast)
+	require.NotNil(t, patched.OutputCostPerTokenAbove272kTokensUltrafast)
+	assert.Equal(t, 0.00045, *patched.OutputCostPerTokenAbove272kTokensUltrafast)
+	require.NotNil(t, patched.CacheReadInputTokenCostAbove272kTokensUltrafast)
+	assert.Equal(t, 0.000012, *patched.CacheReadInputTokenCostAbove272kTokensUltrafast)
+	require.NotNil(t, patched.CacheCreationInputTokenCostAbove272kTokensUltrafast)
+	assert.Equal(t, 0.00015, *patched.CacheCreationInputTokenCostAbove272kTokensUltrafast)
+}
+
+func TestPatchPricing_PriorityAbove272kCacheCreationRate(t *testing.T) {
+	base := configstoreTables.TableModelPricing{Model: "gpt-6-astra", Provider: "openai", Mode: "responses",
+		CacheCreationInputTokenCostPriority: bifrost.Ptr(0.000025)}
+
+	patched := patchPricing(base, Options{
+		CacheCreationInputTokenCostAbove272kTokensPriority: bifrost.Ptr(0.00005),
+	})
+	require.NotNil(t, patched.CacheCreationInputTokenCostAbove272kTokensPriority)
+	assert.Equal(t, 0.00005, *patched.CacheCreationInputTokenCostAbove272kTokensPriority)
+	// Untouched sibling survives the patch.
+	require.NotNil(t, patched.CacheCreationInputTokenCostPriority)
+	assert.Equal(t, 0.000025, *patched.CacheCreationInputTokenCostPriority)
+}
+
+func TestPatchPricing_Above100kRates(t *testing.T) {
+	base := configstoreTables.TableModelPricing{Model: "claude-haiku-5-5", Provider: "anthropic", Mode: "chat",
+		InputCostPerToken: new(1e-07)}
+
+	patched := patchPricing(base, Options{
+		InputCostPerTokenAbove100kTokens:                   new(5e-07),
+		OutputCostPerTokenAbove100kTokens:                  new(2.5e-06),
+		CacheCreationInputTokenCostAbove100kTokens:         new(6.25e-07),
+		CacheReadInputTokenCostAbove100kTokens:             new(5e-08),
+		CacheCreationInputTokenCostAbove1hrAbove100kTokens: new(1e-06),
+	})
+	require.NotNil(t, patched.InputCostPerTokenAbove100kTokens)
+	assert.Equal(t, 5e-07, *patched.InputCostPerTokenAbove100kTokens)
+	require.NotNil(t, patched.OutputCostPerTokenAbove100kTokens)
+	assert.Equal(t, 2.5e-06, *patched.OutputCostPerTokenAbove100kTokens)
+	require.NotNil(t, patched.CacheCreationInputTokenCostAbove100kTokens)
+	assert.Equal(t, 6.25e-07, *patched.CacheCreationInputTokenCostAbove100kTokens)
+	require.NotNil(t, patched.CacheReadInputTokenCostAbove100kTokens)
+	assert.Equal(t, 5e-08, *patched.CacheReadInputTokenCostAbove100kTokens)
+	require.NotNil(t, patched.CacheCreationInputTokenCostAbove1hrAbove100kTokens)
+	assert.Equal(t, 1e-06, *patched.CacheCreationInputTokenCostAbove1hrAbove100kTokens)
+	// Untouched base rate survives the patch.
+	require.NotNil(t, patched.InputCostPerToken)
+	assert.Equal(t, 1e-07, *patched.InputCostPerToken)
+}
+
+// TestPatchPricing_DecisionRatesPassThrough pins that the decision rates in an
+// override patch land on the pricing row, and leave the plain rates alone.
+func TestPatchPricing_DecisionRatesPassThrough(t *testing.T) {
+	base := configstoreTables.TableModelPricing{
+		InputCostPerToken:  bifrost.Ptr(1.0),
+		OutputCostPerToken: bifrost.Ptr(2.0),
+	}
+
+	patched := patchPricing(base, Options{
+		InputCostPerTokenDecisions:  bifrost.Ptr(0.1),
+		OutputCostPerTokenDecisions: bifrost.Ptr(0.2),
+	})
+
+	require.NotNil(t, patched.InputCostPerTokenDecisions)
+	require.NotNil(t, patched.OutputCostPerTokenDecisions)
+	assert.Equal(t, 0.1, *patched.InputCostPerTokenDecisions)
+	assert.Equal(t, 0.2, *patched.OutputCostPerTokenDecisions)
+	assert.Equal(t, 1.0, *patched.InputCostPerToken)
+	assert.Equal(t, 2.0, *patched.OutputCostPerToken)
+}
+
+func TestPatchPricing_VoiceLiveRates(t *testing.T) {
+	base := configstoreTables.TableModelPricing{
+		Model:    "gpt-realtime",
+		Provider: "azure",
+		Mode:     "responses",
+	}
+
+	patched := patchPricing(base, Options{
+		InputCostPerTokenVoiceLive:                     bifrost.Ptr(0.000004),
+		OutputCostPerTokenVoiceLive:                    bifrost.Ptr(0.000016),
+		CacheReadInputTokenCostVoiceLive:               bifrost.Ptr(0.0000004),
+		InputCostPerAudioTokenVoiceLive:                bifrost.Ptr(0.000032),
+		OutputCostPerAudioTokenVoiceLive:               bifrost.Ptr(0.000064),
+		InputCostPerStandardSpeechAudioTokenVoiceLive:  bifrost.Ptr(0.000017),
+		OutputCostPerStandardSpeechAudioTokenVoiceLive: bifrost.Ptr(0.000031),
+		InputCostPerCustomSpeechAudioTokenVoiceLive:    bifrost.Ptr(0.00004),
+		OutputCostPerCustomSpeechAudioTokenVoiceLive:   bifrost.Ptr(0.000055),
+	})
+
+	require.NotNil(t, patched.InputCostPerTokenVoiceLive)
+	require.NotNil(t, patched.OutputCostPerTokenVoiceLive)
+	require.NotNil(t, patched.CacheReadInputTokenCostVoiceLive)
+	require.NotNil(t, patched.InputCostPerAudioTokenVoiceLive)
+	require.NotNil(t, patched.OutputCostPerAudioTokenVoiceLive)
+	require.NotNil(t, patched.InputCostPerStandardSpeechAudioTokenVoiceLive)
+	require.NotNil(t, patched.OutputCostPerStandardSpeechAudioTokenVoiceLive)
+	require.NotNil(t, patched.InputCostPerCustomSpeechAudioTokenVoiceLive)
+	require.NotNil(t, patched.OutputCostPerCustomSpeechAudioTokenVoiceLive)
+	assert.Equal(t, 0.000004, *patched.InputCostPerTokenVoiceLive)
+	assert.Equal(t, 0.000016, *patched.OutputCostPerTokenVoiceLive)
+	assert.Equal(t, 0.0000004, *patched.CacheReadInputTokenCostVoiceLive)
+	assert.Equal(t, 0.000032, *patched.InputCostPerAudioTokenVoiceLive)
+	assert.Equal(t, 0.000064, *patched.OutputCostPerAudioTokenVoiceLive)
+	assert.Equal(t, 0.000017, *patched.InputCostPerStandardSpeechAudioTokenVoiceLive)
+	assert.Equal(t, 0.000031, *patched.OutputCostPerStandardSpeechAudioTokenVoiceLive)
+	assert.Equal(t, 0.00004, *patched.InputCostPerCustomSpeechAudioTokenVoiceLive)
+	assert.Equal(t, 0.000055, *patched.OutputCostPerCustomSpeechAudioTokenVoiceLive)
 }

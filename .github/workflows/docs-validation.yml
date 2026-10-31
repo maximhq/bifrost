@@ -12,7 +12,7 @@ permissions:
 jobs:
   check-broken-links:
     name: Check Broken Links
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
@@ -39,5 +39,6 @@ jobs:
         working-directory: ./docs
         run: |
           echo "Checking for broken links in documentation..."
-          npx --yes mintlify@latest broken-links
+          # Pinned: @latest ran whatever npm served that minute. Bump to a release at least 7 days old.
+          npx --yes mintlify@4.2.1059 broken-links
           echo "✅ No broken links found"

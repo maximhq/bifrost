@@ -1,5 +1,6 @@
 import { getSupportedTimezones } from "@/lib/timezones";
 import { cn } from "@/lib/utils";
+import { isCalendarPeriod } from "@/lib/utils/timeRange";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { TZDate, tz, tzName } from "@date-fns/tz";
 import { format } from "date-fns";
@@ -66,6 +67,8 @@ interface DateTimePickerWithRangeProps extends DatePickerWithRangeProps {
 	timezone?: string;
 	/** Fired when the user picks a new timezone from the dropdown. */
 	onTimezoneChange?: (timezone: string) => void;
+	/** Disables the trigger, so the range can be shown but not changed. */
+	disabled?: boolean;
 }
 
 export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
@@ -177,6 +180,7 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 					<Button
 						id="date"
 						variant="outline"
+						disabled={props.disabled}
 						data-testid={props.triggerTestId}
 						className={cn(
 							"justify-start text-left font-normal",
@@ -187,9 +191,13 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 					>
 						<CalendarIcon className="h-4 w-4" strokeWidth={1.5} />
 						{predefinedPeriod ? (
-							// Relative periods are durations (last hour, last 7 days) and are
-							// timezone-independent, so we intentionally omit the timezone badge here.
-							<span>{props.preDefinedPeriods?.find((p) => p.value === predefinedPeriod)?.label}</span>
+							// Sliding periods (last hour, last 7 days) are durations and timezone-independent,
+							// so they carry no badge. Calendar periods (today, this week) start at local
+							// midnight, so the badge says whose midnight.
+							<span>
+								{props.preDefinedPeriods?.find((p) => p.value === predefinedPeriod)?.label}
+								{props.showTimezone && tzAbbreviation && isCalendarPeriod(predefinedPeriod) ? ` · ${tzAbbreviation}` : ""}
+							</span>
 						) : (
 							<>
 								{dateTime?.from ? (
@@ -218,6 +226,7 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 							<Calendar
 								autoFocus
 								mode="range"
+								timeZone={activeTimezone}
 								disabled={disabledDateRange}
 								defaultMonth={date?.from}
 								selected={date}

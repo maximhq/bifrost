@@ -9,7 +9,7 @@ import (
 func TestRealtimeWebSocketURLRejectsTranscription(t *testing.T) {
 	provider := &ElevenlabsProvider{}
 
-	url, err := provider.RealtimeWebSocketURL(schemas.Key{}, "agent-id", "transcription")
+	url, err := provider.RealtimeWebSocketURL(nil, schemas.Key{}, "agent-id", "transcription")
 	if err == nil {
 		t.Fatal("RealtimeWebSocketURL() error = nil, want unsupported operation")
 	}

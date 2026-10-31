@@ -13,7 +13,7 @@ Bifrost reaches out to `getbifrost.ai` for two things:
 | Pricing and model parameter datasheets | `https://getbifrost.ai/datasheet` | Bifrost cannot start |
 | MCP server library catalog | `https://getbifrost.ai/mcp-library` | Bifrost starts, MCP Library page stays empty |
 
-Every one of these URLs accepts a `file://` value, so you can load the data from the local filesystem instead.
+Every one of these URLs accepts a `file://` value in `config.json`, so you can load the data from the local filesystem instead. `file://` values are only honoured when they come from `config.json`: the Web UI and `PUT /api/config` accept `http://` and `https://` URLs only.
 
 ---
 
@@ -75,7 +75,7 @@ curl -o mcp-library.json https://getbifrost.ai/mcp-library
 }
 ```
 
-The same value can be set from the UI under **MCP Registry → Library → Settings**.
+An `http(s)://` catalog URL can also be set from the UI under **MCP Registry → Library → Settings**; a `file://` value must be set in `config.json`.
 
 The file is a JSON envelope with a `servers` array:
 

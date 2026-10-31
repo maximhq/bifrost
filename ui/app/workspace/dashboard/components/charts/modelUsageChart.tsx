@@ -1,3 +1,4 @@
+import { StartTruncatedLabel } from "@/components/ui/truncatedLabel";
 import type { ModelHistogramResponse } from "@/lib/types/logs";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import { memo, useMemo } from "react";
@@ -49,7 +50,9 @@ function CustomTooltip({ active, payload, selectedModel, displayModels }: any) {
 								<div key={model} className="flex items-center justify-between gap-4">
 									<span className="flex items-center gap-1.5">
 										<span className="h-2 w-2 rounded-full" style={{ backgroundColor: isOther ? OTHER_SERIES_COLOR : getModelColor(idx) }} />
-										<span className="max-w-[120px] truncate text-zinc-600 dark:text-zinc-400">{isOther ? OTHER_SERIES_LABEL : model}</span>
+										<StartTruncatedLabel className="max-w-[220px] text-zinc-600 dark:text-zinc-400">
+											{isOther ? OTHER_SERIES_LABEL : model}
+										</StartTruncatedLabel>
 									</span>
 									<span className="font-medium" style={{ color: isOther ? OTHER_SERIES_COLOR : getModelColor(idx) }}>
 										{total.toLocaleString()}
@@ -152,7 +155,7 @@ function ModelUsageChartImpl({ data, chartType, startTime, endTime, selectedMode
 
 	return (
 		<ChartErrorBoundary resetKey={`${startTime}-${endTime}-${chartData.length}-${selectedModel}`}>
-			<ResponsiveContainer width="100%" height="100%">
+			<ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
 				{chartType === "bar" ? (
 					<BarChart {...commonProps} barCategoryGap={1}>
 						<CartesianGrid strokeDasharray="3 3" vertical={false} className="stroke-zinc-200 dark:stroke-zinc-700" />

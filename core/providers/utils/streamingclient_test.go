@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -933,5 +934,205 @@ func TestContextTransport_PooledConnTruncatedBodyNotRetried(t *testing.T) {
 	}
 	if err == nil {
 		t.Fatal("second request succeeded despite a truncated body")
+	}
+}
+
+// TestDoStreamingRequest_FirstTokenDeadlineClosesSocketDuringHeaderWait: a
+// stream attempt whose upstream never answers is cut off at its first-token
+// deadline. The socket closes and the call returns ErrStreamFirstTokenTimeout,
+// while the request context itself stays live for the fallback that follows.
+func TestDoStreamingRequest_FirstTokenDeadlineClosesSocketDuringHeaderWait(t *testing.T) {
+	upstream := newSilentUpstream(t)
+
+	base := &fasthttp.Client{
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+	}
+	ConfigureDialer(base, true)
+	stream := BuildStreamingClient(base)
+
+	req, resp := newSilentStreamingRequest(upstream.URL())
+
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	abort := NewAttemptAbort(200 * time.Millisecond)
+	ctx := context.WithValue(parent, schemas.BifrostContextKeyStreamAttemptAbort, abort)
+
+	errCh := make(chan error, 1)
+	start := time.Now()
+	go func() { errCh <- DoStreamingRequest(ctx, stream, req, resp) }()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, ErrStreamFirstTokenTimeout) {
+			t.Fatalf("DoStreamingRequest error = %v, want ErrStreamFirstTokenTimeout", err)
+		}
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Fatalf("deadline took %v to unblock the header wait", elapsed)
+		}
+		fasthttp.ReleaseRequest(req)
+		fasthttp.ReleaseResponse(resp)
+	case <-time.After(3 * time.Second):
+		t.Fatal("first-token deadline does not reach the socket: DoStreamingRequest still blocked after 3s")
+	}
+	if parent.Err() != nil {
+		t.Fatal("a TTFT miss must not cancel the request context")
+	}
+
+	select {
+	case <-upstream.hangups:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream never observed the client hanging up: the cut-off attempt's socket is still open")
+	}
+}
+
+// TestDoHTTPRequest_FirstTokenDeadlineEndsHeaderWait covers the net/http path
+// (Bedrock): a missed first-token deadline ends the header wait without
+// cancelling the request context.
+func TestDoHTTPRequest_FirstTokenDeadlineEndsHeaderWait(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	abort := NewAttemptAbort(200 * time.Millisecond)
+	ctx := context.WithValue(parent, schemas.BifrostContextKeyStreamAttemptAbort, abort)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL, nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext: %v", err)
+	}
+
+	start := time.Now()
+	resp, err := DoHTTPRequest(srv.Client(), req)
+	if err == nil {
+		resp.Body.Close()
+		t.Fatal("expected the header wait to end with an error")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("deadline took %v to unblock the header wait", elapsed)
+	}
+	if !abort.Fired() {
+		t.Fatal("abort did not fire")
+	}
+	if parent.Err() != nil {
+		t.Fatal("a TTFT miss must not cancel the request context")
+	}
+}
+
+// TestDoHTTPRequest_DisarmedDeadlineKeepsBody: once the first token arrived
+// (Disarm), the attempt's child context must never cancel the body.
+func TestDoHTTPRequest_DisarmedDeadlineKeepsBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		time.Sleep(300 * time.Millisecond)
+		fmt.Fprint(w, "tail")
+	}))
+	defer srv.Close()
+
+	abort := NewAttemptAbort(100 * time.Millisecond)
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyStreamAttemptAbort, abort)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext: %v", err)
+	}
+	resp, err := DoHTTPRequest(srv.Client(), req)
+	if err != nil {
+		t.Fatalf("DoHTTPRequest: %v", err)
+	}
+	defer resp.Body.Close()
+	if !abort.Disarm() {
+		t.Fatal("disarm lost to a 100ms deadline right after headers")
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil || string(body) != "tail" {
+		t.Fatalf("body = %q err = %v, want the full body after disarm", body, err)
+	}
+}
+
+// euroBodyServer serves a body of repeated 3-byte "€" runes, with a
+// Content-Length when withLength is set and chunked otherwise. Neither the
+// prefetch size nor the large-response threshold used below is a multiple of
+// 3, so a cut by byte count lands inside a rune.
+func euroBodyServer(t *testing.T, size int, withLength bool) *httptest.Server {
+	t.Helper()
+	body := bytes.Repeat([]byte("€"), size/3)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if withLength {
+			w.Header().Set("Content-Length", fmt.Sprint(len(body)))
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write(body) //nolint:errcheck
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestFinalizeResponseWithLargeDetection_PreviewEndsOnRuneBoundary pins that
+// the large-response preview stored for logging never ends inside a multi-byte
+// UTF-8 sequence. A preview cut mid-rune is invalid UTF-8, which Postgres
+// rejects with SQLSTATE 22021 and which fails the log writer's batch INSERT.
+func TestFinalizeResponseWithLargeDetection_PreviewEndsOnRuneBoundary(t *testing.T) {
+	for _, c := range []struct {
+		name       string
+		withLength bool
+	}{
+		{"known_length_prefetch", true}, // 64KB prefetch: 65536 % 3 == 1
+		{"chunked_threshold", false},    // threshold+1 = 1025 bytes: 1025 % 3 == 2
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			srv := euroBodyServer(t, 256*1024, c.withLength)
+			ctx, resp, release := largeResponseRequest(t, srv, 2*time.Second)
+			defer release()
+
+			_, isLarge, bifrostErr := FinalizeResponseWithLargeDetection(ctx, resp, nil)
+			if bifrostErr != nil {
+				t.Fatalf("FinalizeResponseWithLargeDetection: %s", bifrostErr.Error.Message)
+			}
+			if !isLarge {
+				t.Fatal("expected the large-response path")
+			}
+			if reader, ok := ctx.Value(schemas.BifrostContextKeyLargeResponseReader).(io.Closer); ok {
+				defer reader.Close()
+			}
+			preview, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadResponsePreview).(string)
+			if preview == "" {
+				t.Fatal("expected a response preview")
+			}
+			if !utf8.ValidString(preview) {
+				t.Fatalf("preview of %d bytes ends inside a rune: trailing bytes % x", len(preview), preview[max(0, len(preview)-3):])
+			}
+		})
+	}
+}
+
+// TestTrimIncompleteRune pins the helper that backs the preview cut.
+func TestTrimIncompleteRune(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		in   []byte
+		want string
+	}{
+		{"empty", nil, ""},
+		{"ascii", []byte("abc"), "abc"},
+		{"complete_multibyte", []byte("a€"), "a€"},
+		{"cut_after_1_of_3", []byte("a€")[:2], "a"},
+		{"cut_after_2_of_3", []byte("a€")[:3], "a"},
+		{"cut_after_3_of_4", []byte("a😀")[:4], "a"},
+		{"binary_byte_kept", []byte("a\xff"), "a\xff"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := string(trimIncompleteRune(c.in)); got != c.want {
+				t.Fatalf("trimIncompleteRune(% x) = % x, want % x", c.in, got, c.want)
+			}
+		})
 	}
 }

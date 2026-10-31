@@ -26,7 +26,16 @@ Random selection ensures statistical distribution over time
 1. Calculate total weight of all eligible keys
 2. Generate random number between 0 and total weight
 3. Select key based on cumulative weight ranges
-4. If selected key fails, automatic fallback to next available key
+4. A retry after a per-key failure (a rate limit, a rejected credential, an exhausted quota) draws again from the keys not yet tried; a retry after a network error or `5xx` reuses the same key. See [How retries work](/features/retries-and-fallbacks#how-retries-work).
+
+**Weight Rules:**
+- A weight must be a finite number of 0 or more. The API rejects a negative, `NaN` or infinite weight with `400`; such a value in `config.json` counts as `0`.
+- A key with weight `0` is not picked while another eligible key has a positive weight. It still serves when it is the only key left, for example on a retry after the others failed.
+- When every eligible key has weight `0`, keys are picked uniformly at random.
+
+<Note>
+In Bifrost Enterprise, [Adaptive Routing](/enterprise/adaptive-routing/overview) replaces the static weights with measured ones while key selection is on. Either way, it holds a key the provider refused until one request checks it again (sooner when every key is held), and editing a key releases every hold on it, since the provider's answers applied to the key as it was. See [Held keys](/enterprise/adaptive-routing/how-it-works#held-keys).
+</Note>
 
 ## Model Whitelisting and Filtering
 
@@ -123,7 +132,7 @@ ctx := context.Background()
 ctx = context.WithValue(ctx, schemas.BifrostContextKeyAPIKeyName, "openai-key-1")
 ```
 
-Note: Both mechanisms reference a stored key (not the raw secret). The gateway resolves the key against configured provider keys and applies model allowlists, denylists, and deployment mapping. When an explicit key ID or name is supplied, weighted selection is bypassed and the referenced key is used directly.
+Note: Both mechanisms reference a stored key (not the raw secret). The gateway resolves the key against configured provider keys and applies model allowlists, denylists, and deployment mapping. When an explicit key ID or name is supplied, weighted selection is bypassed and the referenced key is used directly. The pin applies only to the first provider of the chain, its retries included, a key pinned by a routing rule takes its place, and a [direct key](#direct-keys) takes precedence over both; see [API key selection](/providers/request-options#api-key-selection).
 
 ```bash
 # Example: request referencing a stored key name that doesn't exist
@@ -162,13 +171,17 @@ Response (example):
 
 Note: This is not a weighted selection, by providing a specific key name you are explicitly telling Bifrost which stored key to use, so weighted distribution is bypassed. The example above demonstrates the error returned when a referenced key name cannot be resolved.
 
-## Direct Key Bypass — Removed in v1.5
+## Direct Keys
 
-<Warning>
-The "Direct Key Bypass" feature has been **removed entirely in v1.5**, on both the HTTP gateway and the Go SDK.
+A caller can send its own provider key instead of using the keys stored in Bifrost. Two things must both be set:
 
-- **HTTP gateway:** the `allow_direct_keys` config flag and the `Authorization` / `x-api-key` / `x-goog-api-key` header pass-through (plus the Bedrock `x-bf-bedrock-*` and Azure `x-bf-azure-endpoint` integration paths) no longer forward keys to upstream providers.
-- **Go SDK:** the `schemas.BifrostContextKeyDirectKey` context value and the `Direct Key (Go SDK Only)` API have been removed.
+- **Allow Direct API Keys** turned on under **Config > Security** in the UI, or `client.allow_direct_keys: true` in `config.json`. It is off by default.
+- The request header `x-bf-direct-key: true`. The key is then read from `Authorization: Bearer`, `x-api-key` or `x-goog-api-key`. A virtual key in those headers is never treated as a direct key.
 
-All requests must use Bifrost-managed provider keys. To pin a specific key per request from the Go SDK, set `schemas.BifrostContextKeyAPIKeyID` or `schemas.BifrostContextKeyAPIKeyName` against a key managed by Bifrost (for example, one created via the providers API or returned by your `Account` implementation). See the [v1.5.0 migration guide](/migration-guides/v1.5.0) for the full rationale and migration recipes.
-</Warning>
+From the Go SDK, set `schemas.BifrostContextKeyDirectKey` on the context; no flag is needed.
+
+A direct key is used as given: it skips key selection, model filtering and any key pin, and is used on the first provider of the chain, its retries included, and on nothing after it. Every fallback, including one on the same provider, runs on the keys stored in Bifrost. When the provider refuses the caller's key, Bifrost returns the provider's own error. See [Direct API key](/providers/request-options#direct-api-key) for the details.
+
+<Note>
+The Bedrock `x-bf-bedrock-*` and Azure `x-bf-azure-endpoint` header paths removed in v1.5 have not come back. Direct keys were reintroduced in v1.5.6 with the `x-bf-direct-key` header.
+</Note>

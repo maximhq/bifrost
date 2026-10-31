@@ -13,9 +13,19 @@ import (
 )
 
 // claudePreLaunch pins the selected model across Claude Code's model tiers.
+// Tool search lets Claude load tool definitions on demand, while gateway model
+// discovery lets it query models exposed by Bifrost's Anthropic-compatible
+// endpoint. Existing user overrides always win.
 func claudePreLaunch(baseURL, apiKey, model string) ([]string, func(), error) {
 	var env []string
+	if _, exists := os.LookupEnv("ENABLE_TOOL_SEARCH"); !exists {
+		env = append(env, "ENABLE_TOOL_SEARCH=true")
+	}
+	if _, exists := os.LookupEnv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"); !exists {
+		env = append(env, "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1")
+	}
 	if model = strings.TrimSpace(model); model != "" {
+		env = append(env, "ANTHROPIC_MODEL="+model)
 		env = append(env, claudeTierModelEnv(model)...)
 	}
 	return env, func() {}, nil
@@ -58,12 +68,21 @@ func claudeWriteNativeConfig(baseURL, apiKey, model string) error {
 	}
 
 	envMap["ANTHROPIC_BASE_URL"] = baseURL
-	envMap["ANTHROPIC_API_KEY"] = apiKey
+	envMap["ANTHROPIC_AUTH_TOKEN"] = apiKey
+	delete(envMap, "ANTHROPIC_API_KEY")
+	if _, exists := envMap["ENABLE_TOOL_SEARCH"]; !exists {
+		envMap["ENABLE_TOOL_SEARCH"] = "true"
+	}
+	if _, exists := envMap["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"]; !exists {
+		envMap["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
+	}
+	delete(settings, "apiKeyHelper")
 	if model = strings.TrimSpace(model); model != "" {
 		for key, value := range claudeTierModelEnvMap(model) {
 			envMap[key] = value
 		}
-		delete(envMap, "ANTHROPIC_MODEL")
+		envMap["ANTHROPIC_MODEL"] = model
+		settings["model"] = model
 	}
 
 	settings["env"] = envMap
@@ -96,19 +115,47 @@ func claudeTierModelEnvMap(model string) map[string]string {
 	}
 }
 
-// codexPreLaunch persists the bifrost endpoint and virtual key into Codex
-// CLI's native config files. Codex resolves its credentials from
-// ~/.codex/auth.json (which takes precedence over OPENAI_API_KEY in the
-// process env) and its endpoint from ~/.codex/config.toml, so a stale
-// auth.json from a prior run will otherwise shadow whatever Bifrost passes
-// via env vars. Returns no extra env (BuildEnv already exports the key) and
-// no cleanup — the writes are intentionally persistent so direct `codex`
-// launches outside Bifrost keep working too.
-func codexPreLaunch(baseURL, apiKey, model string) ([]string, func(), error) {
-	if err := codexWriteNativeConfig(baseURL, apiKey, model); err != nil {
+// codexPreLaunch creates an isolated Codex home with a Bifrost Responses provider.
+// Isolation prevents a launcher session from overwriting the user's persistent
+// Codex authentication, configuration, or session history.
+func codexPreLaunch(baseURL, _ string, model string) ([]string, func(), error) {
+	temporaryHome, err := os.MkdirTemp("", "bifrost-codex-home-*")
+	if err != nil {
+		return nil, nil, fmt.Errorf("create temporary Codex home: %w", err)
+	}
+	cleanup := func() { _ = os.RemoveAll(temporaryHome) }
+	sourceHome, err := codexUserHome()
+	if err != nil {
+		cleanup()
 		return nil, nil, err
 	}
-	return nil, func() {}, nil
+	sourceConfig := filepath.Join(sourceHome, "config.toml")
+	targetConfig := filepath.Join(temporaryHome, "config.toml")
+	if existing, readErr := os.ReadFile(sourceConfig); readErr == nil {
+		if writeErr := config.WriteAtomic(targetConfig, existing, 0o600); writeErr != nil {
+			cleanup()
+			return nil, nil, fmt.Errorf("copy Codex config into temporary home: %w", writeErr)
+		}
+	} else if !errors.Is(readErr, os.ErrNotExist) {
+		cleanup()
+		return nil, nil, fmt.Errorf("read Codex config: %w", readErr)
+	}
+	if err := codexWriteConfigTOML(targetConfig, baseURL, model); err != nil {
+		cleanup()
+		return nil, nil, err
+	}
+	return []string{"CODEX_HOME=" + temporaryHome}, cleanup, nil
+}
+
+func codexUserHome() (string, error) {
+	if configured := strings.TrimSpace(os.Getenv("CODEX_HOME")); configured != "" {
+		return configured, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home dir: %w", err)
+	}
+	return filepath.Join(home, ".codex"), nil
 }
 
 // codexWriteNativeConfig writes the bifrost endpoint, API key, and model
@@ -160,10 +207,9 @@ func codexWriteAuth(path, apiKey string) error {
 	return config.WriteAtomic(path, b, 0o600)
 }
 
-// codexWriteConfigTOML merges Bifrost's endpoint and (optionally) model into
-// the top-level section of Codex's config.toml. Existing top-level keys
-// (e.g. model_reasoning_effort) and tables (e.g. [projects.*], [tui.*]) are
-// preserved verbatim, including comments and ordering.
+// codexWriteConfigTOML declares Bifrost as a custom Responses provider.
+// Current Codex versions ignore OPENAI_BASE_URL and require a custom provider
+// to disable OpenAI OAuth, so the provider table is part of the routing contract.
 func codexWriteConfigTOML(path, baseURL, model string) error {
 	var existing []byte
 	if b, err := os.ReadFile(path); err == nil {
@@ -172,15 +218,87 @@ func codexWriteConfigTOML(path, baseURL, model string) error {
 		return fmt.Errorf("read codex config: %w", err)
 	}
 
-	targets := map[string]string{
-		"openai_base_url": baseURL,
-		"env_key":         "OPENAI_API_KEY",
-	}
+	targets := map[string]string{"model_provider": "bifrost"}
 	if m := strings.TrimSpace(model); m != "" {
 		targets["model"] = m
 	}
+	existing = removeTopLevelTOMLKeys(existing, map[string]struct{}{
+		"openai_base_url": {},
+		"env_key":         {},
+	})
+	configured := setTopLevelTOMLKeys(existing, targets)
+	providerURL := strings.TrimSuffix(strings.TrimSpace(baseURL), "/")
+	if !strings.HasSuffix(providerURL, "/v1") {
+		providerURL += "/v1"
+	}
+	providerBody := []string{
+		`name = "Bifrost"`,
+		"base_url = " + tomlQuote(providerURL),
+		`wire_api = "responses"`,
+		`env_key = "OPENAI_API_KEY"`,
+		`requires_openai_auth = false`,
+		`supports_websockets = false`,
+	}
+	configured = replaceTOMLTable(configured, "model_providers.bifrost", providerBody)
+	return config.WriteAtomic(path, configured, 0o600)
+}
 
-	return config.WriteAtomic(path, setTopLevelTOMLKeys(existing, targets), 0o600)
+// removeTopLevelTOMLKeys drops obsolete assignments before the first table.
+func removeTopLevelTOMLKeys(data []byte, keys map[string]struct{}) []byte {
+	hasTrailingNewline := strings.HasSuffix(string(data), "\n")
+	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	result := make([]string, 0, len(lines))
+	inTopLevel := true
+	for _, line := range lines {
+		if inTopLevel && isTOMLTableHeader(line) {
+			inTopLevel = false
+		}
+		if inTopLevel {
+			head, _, ok := strings.Cut(strings.TrimSpace(line), "=")
+			if ok {
+				if _, remove := keys[strings.TrimSpace(head)]; remove {
+					continue
+				}
+			}
+		}
+		result = append(result, line)
+	}
+	joined := strings.Join(result, "\n")
+	if hasTrailingNewline && joined != "" {
+		joined += "\n"
+	}
+	return []byte(joined)
+}
+
+// replaceTOMLTable replaces one exact table while preserving all unrelated content.
+func replaceTOMLTable(data []byte, name string, body []string) []byte {
+	header := "[" + name + "]"
+	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	result := make([]string, 0, len(lines)+len(body)+2)
+	skipping := false
+	for _, line := range lines {
+		if tomlTableHeaderMatches(line, name) {
+			skipping = true
+			continue
+		}
+		if skipping {
+			if isTOMLTableHeader(line) {
+				skipping = false
+			} else {
+				continue
+			}
+		}
+		result = append(result, line)
+	}
+	for len(result) > 0 && strings.TrimSpace(result[len(result)-1]) == "" {
+		result = result[:len(result)-1]
+	}
+	if len(result) > 0 {
+		result = append(result, "")
+	}
+	result = append(result, header)
+	result = append(result, body...)
+	return []byte(strings.Join(result, "\n") + "\n")
 }
 
 // setTopLevelTOMLKeys returns data with each key in targets set to its
@@ -267,6 +385,58 @@ func setTopLevelTOMLKeys(data []byte, targets map[string]string) []byte {
 	return []byte(result)
 }
 
+// tomlUnquoteKey strips a basic ("...") or literal ('...') TOML string
+// wrapper from a key or dotted-path segment, so a quoted identifier can be
+// compared against its bare equivalent — TOML treats model_provider,
+// "model_provider", and 'model_provider' as the same identifier. Escape
+// sequences inside a basic string are deliberately not decoded: a segment
+// that needs them is left quoted (and so never matches) rather than risk
+// silently mismatching. This is a scoped helper for this file's own
+// hardcoded, escape-free target keys and table paths, not a general TOML
+// parser (it doesn't handle a literal "." inside a quoted segment).
+func tomlUnquoteKey(segment string) string {
+	if len(segment) >= 2 {
+		if segment[0] == '"' && segment[len(segment)-1] == '"' && !strings.ContainsAny(segment[1:len(segment)-1], `"\`) {
+			return segment[1 : len(segment)-1]
+		}
+		if segment[0] == '\'' && segment[len(segment)-1] == '\'' {
+			return segment[1 : len(segment)-1]
+		}
+	}
+	return segment
+}
+
+// tomlTableHeaderMatches reports whether line declares the given dotted
+// table name, tolerating a trailing inline comment (e.g.
+// "[model_providers.bifrost] # custom provider") and a quoted form of any
+// dotted segment (e.g. [model_providers."bifrost"]), which TOML treats as
+// identical to the bare form.
+func tomlTableHeaderMatches(line, name string) bool {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "[") {
+		return false
+	}
+	idx := strings.LastIndex(trimmed, "]")
+	if idx < 0 {
+		return false
+	}
+	rest := strings.TrimSpace(trimmed[idx+1:])
+	if rest != "" && !strings.HasPrefix(rest, "#") {
+		return false
+	}
+	declared := strings.Split(trimmed[1:idx], ".")
+	target := strings.Split(name, ".")
+	if len(declared) != len(target) {
+		return false
+	}
+	for i, segment := range declared {
+		if tomlUnquoteKey(strings.TrimSpace(segment)) != target[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // isTOMLTableHeader reports whether a line is a [table] or [[array]] header,
 // optionally followed by an inline comment.
 func isTOMLTableHeader(line string) bool {
@@ -293,7 +463,7 @@ func matchTopLevelTOMLKey(line string, targets map[string]string) (string, bool)
 	if !ok {
 		return "", false
 	}
-	name := strings.TrimSpace(head)
+	name := tomlUnquoteKey(strings.TrimSpace(head))
 	if _, ok := targets[name]; ok {
 		return name, true
 	}

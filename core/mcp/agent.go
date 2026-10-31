@@ -165,6 +165,14 @@ func (a *AgentModeExecutor) executeAgent(
 		ctx.SetValue(schemas.BifrostMCPAgentOriginalRequestID, originalRequestID)
 	}
 
+	// Every later turn continues the conversation turn 1 started, on the route that served
+	// it: the caller's request was routed once, and re-running routing per turn would
+	// re-stamp the requested route with the already-rewritten model and send turn 2 back to
+	// a primary that turn 1 fell back from. Core reads this to pin continuation turns.
+	servedRoute := adapter.routingInfo(currentResponse)
+	ctx.SetValue(schemas.BifrostContextKeyMCPAgentServedRoute, &servedRoute)
+	defer ctx.ClearValue(schemas.BifrostContextKeyMCPAgentServedRoute)
+
 	for depth < maxAgentDepth {
 		depth++
 		toolCalls := adapter.extractToolCalls(currentResponse)
@@ -264,7 +272,7 @@ func (a *AgentModeExecutor) executeAgent(
 			}
 
 			// Check if tool can be auto-executed
-			if canAutoExecuteTool(toolName, client.ExecutionConfig) {
+			if CanAutoExecuteTool(toolName, client.ExecutionConfig) {
 				autoExecutableTools = append(autoExecutableTools, toolCall)
 				a.logger.Debug("Tool %s can be auto-executed", toolName)
 			} else {
@@ -295,6 +303,9 @@ func (a *AgentModeExecutor) executeAgent(
 					// plugin can create separate log entries for each parallel tool call.
 					toolCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 					toolCtx.SetValue(schemas.BifrostContextKeyMCPLogID, uuid.New().String())
+					// No human approved this call, so Code Mode must hold every nested
+					// tool invocation to tools_to_auto_execute (see AuthorizeCodeModeToolCall).
+					toolCtx.SetValue(schemas.BifrostContextKeyMCPUnattendedExecution, true)
 
 					// Create MCP request for this tool call
 					mcpRequest := &schemas.BifrostMCPRequest{
@@ -367,9 +378,16 @@ func (a *AgentModeExecutor) executeAgent(
 			}
 			// Apply accumulated usage before building the final response
 			adapter.applyUsage(currentResponse, accumulatedUsage)
+			// The synthesized response replaces this turn too, so its text and reasoning are carried.
+			adapter.carryForward(currentResponse, autoExecutableTools)
 			// Create response with all executed tool results from all iterations, and non-auto-executable tool calls
-			return adapter.createResponseWithExecutedTools(currentResponse, allExecutedToolResults, allExecutedToolCalls, nonAutoExecutableTools), nil
+			finalResponse := adapter.createResponseWithExecutedTools(currentResponse, allExecutedToolResults, allExecutedToolCalls, nonAutoExecutableTools)
+			adapter.applyCarriedContent(finalResponse)
+			return finalResponse, nil
 		}
+
+		// This turn is about to be superseded by the next one; keep what it said and thought.
+		adapter.carryForward(currentResponse, autoExecutableTools)
 
 		// Create new request with updated conversation history
 		newReq := adapter.createNewRequest(conversationHistory)
@@ -393,6 +411,9 @@ func (a *AgentModeExecutor) executeAgent(
 	}
 
 	adapter.applyUsage(currentResponse, accumulatedUsage)
+	// Usage covers every turn, so the content must too: earlier turns' text and reasoning
+	// come first, ahead of the last turn's own.
+	adapter.applyCarriedContent(currentResponse)
 	return currentResponse, nil
 }
 

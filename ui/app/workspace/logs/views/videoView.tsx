@@ -32,6 +32,10 @@ function getMethodTypeLabel(requestType?: string): string {
 	return RequestTypeLabels[requestType.toLowerCase() as keyof typeof RequestTypeLabels] || "Video";
 }
 
+function isImageOutput(video: VideoAsset): boolean {
+	return !!video.content_type?.startsWith("image/");
+}
+
 function getVideoSrc(video: VideoAsset): string | null {
 	if (video.url) return video.url;
 	if (video.base64) return `data:${video.content_type || "video/mp4"};base64,${video.base64}`;
@@ -46,7 +50,10 @@ export default function VideoView({ videoInput, videoOutput, videoListOutput, re
 	const downloadOutput = isDownload && videoOutput ? (videoOutput as BifrostVideoDownloadOutput) : null;
 	const deleteOutput = isDelete && videoOutput ? (videoOutput as BifrostVideoDeleteOutput) : null;
 	const generationOutput = !isDownload && !isDelete && videoOutput ? (videoOutput as BifrostVideoGenerationOutput) : null;
-	const videos = generationOutput?.videos?.filter((video) => video.url || video.base64) ?? [];
+	const outputs = generationOutput?.videos?.filter((video) => video.url || video.base64) ?? [];
+	// Image outputs (a Seedance task's last frame) are not playable in a <video> element.
+	const videos = outputs.filter((video) => !isImageOutput(video));
+	const images = outputs.filter(isImageOutput);
 
 	return (
 		<div className="space-y-4">
@@ -182,6 +189,33 @@ export default function VideoView({ videoInput, videoOutput, videoListOutput, re
 													className="text-primary inline-flex items-center gap-1 text-xs underline"
 												>
 													Open video URL
+													<ExternalLink className="h-3 w-3" />
+												</a>
+											)}
+										</div>
+									);
+								})}
+
+								{images.map((image, index) => {
+									const src = getVideoSrc(image);
+									if (!src) return null;
+									return (
+										<div key={`image-${index}`} className="space-y-2">
+											<img
+												className="max-h-96 w-full rounded-sm border object-contain"
+												src={src}
+												alt="Video output frame"
+												data-testid="video-view-output-image"
+											/>
+											{image.url && (
+												<a
+													href={image.url}
+													target="_blank"
+													rel="noopener noreferrer"
+													data-testid="video-view-open-image-url-link"
+													className="text-primary inline-flex items-center gap-1 text-xs underline"
+												>
+													Open image URL
 													<ExternalLink className="h-3 w-3" />
 												</a>
 											)}

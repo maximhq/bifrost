@@ -38,10 +38,12 @@ func TestVLLM(t *testing.T) {
 	embeddingModel := strings.TrimSpace(os.Getenv("VLLM_EMBEDDING_MODEL"))
 	transcriptionModel := strings.TrimSpace(os.Getenv("VLLM_TRANSCRIPTION_MODEL"))
 	rerankModel := strings.TrimSpace(os.Getenv("VLLM_RERANK_MODEL"))
+	decisionModel := strings.TrimSpace(os.Getenv("VLLM_DECISION_MODEL"))
 	enableReasoningTests := reasoningModel != "" && strings.TrimSpace(os.Getenv("VLLM_REASONING_BASE_URL")) != ""
 	enableEmbeddingTests := embeddingModel != "" && strings.TrimSpace(os.Getenv("VLLM_EMBEDDING_BASE_URL")) != ""
 	enableRerankTests := rerankModel != "" && strings.TrimSpace(os.Getenv("VLLM_RERANK_BASE_URL")) != ""
 	enableTranscriptionTests := transcriptionModel != "" && strings.TrimSpace(os.Getenv("VLLM_TRANSCRIPTION_BASE_URL")) != ""
+	enableDecisionTests := decisionModel != "" && strings.TrimSpace(os.Getenv("VLLM_DECISION_BASE_URL")) != ""
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:           schemas.VLLM,
@@ -51,6 +53,7 @@ func TestVLLM(t *testing.T) {
 		EmbeddingModel:     embeddingModel,
 		TranscriptionModel: transcriptionModel,
 		RerankModel:        rerankModel,
+		DecisionModel:      decisionModel,
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:             true,
 			TextCompletionStream:       true,
@@ -69,6 +72,7 @@ func TestVLLM(t *testing.T) {
 			CompleteEnd2End:            true,
 			Embedding:                  enableEmbeddingTests,
 			Rerank:                     enableRerankTests,
+			Decision:                   enableDecisionTests,
 			ListModels:                 true,
 			Reasoning:                  enableReasoningTests,
 			PassThroughExtraParams:     true,

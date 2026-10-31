@@ -1,34 +1,28 @@
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import BudgetUsageResetDialog from "@/components/ui/budgetUsageResetDialog";
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Label } from "@/components/ui/label";
-import { ModelMultiselect } from "@/components/ui/modelMultiselect";
-import NumberAndSelect from "@/components/ui/numberAndSelect";
-import BudgetUsageResetDialog from "@/components/ui/budgetUsageResetDialog";
-import { useBudgetUsageResetPrompt } from "@/hooks/useBudgetUsageResetPrompt";
+import { ALL_MODELS_OPTION, ModelSelector } from "@/components/ui/modelSelector";
 import MultiBudgetLines from "@/components/ui/multibudgets";
+import NumberAndSelect from "@/components/ui/numberAndSelect";
+import { ProviderSelector } from "@/components/ui/providerSelector";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { useBudgetUsageResetPrompt } from "@/hooks/useBudgetUsageResetPrompt";
 import { resetDurationLabels, resetDurationOptions } from "@/lib/constants/governance";
-import { budgetSignature } from "@/lib/utils/governance";
-import { RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { getModelLimitScope, getModelLimitScopes } from "@/lib/registries/modelLimitScopes";
+import { budgetSignature } from "@/lib/utils/governance";
+import { shouldClearModelOnProviderChange } from "./modelLimitSheet.utils";
 // Side-effect import: pulls in downstream scope registrations (e.g. enterprise
 // registers "user" + user picker). The OSS-build fallback is an empty module.
-import "@enterprise/lib/registrations/modelLimitScopes";
-import {
-	getErrorMessage,
-	useCreateModelConfigMutation,
-	useGetProvidersQuery,
-	useLazyGetModelsQuery,
-	useUpdateModelConfigMutation,
-} from "@/lib/store";
-import { KnownProvider } from "@/lib/types/config";
+import { getErrorMessage, useCreateModelConfigMutation, useLazyGetModelsQuery, useUpdateModelConfigMutation } from "@/lib/store";
 import { ModelConfig } from "@/lib/types/governance";
 import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import "@enterprise/lib/registrations/modelLimitScopes";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Lock } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -70,6 +64,11 @@ const formSchema = z
 
 type FormData = z.infer<typeof formSchema>;
 
+// A limit with no provider applies across all of them; the form spells that absence as a
+// sentinel so the control has something to show. Module level so its identity is stable.
+const ALL_PROVIDERS_VALUE = "all";
+const ALL_PROVIDERS_OPTION = { value: ALL_PROVIDERS_VALUE, label: "All Providers" };
+
 export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: ModelLimitSheetProps) {
 	const [isOpen, setIsOpen] = useState(true);
 	const isEditing = !!modelConfig;
@@ -90,7 +89,6 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 		}, 150);
 	};
 
-	const { data: providersData } = useGetProvidersQuery();
 	const [createModelConfig, { isLoading: isCreating }] = useCreateModelConfigMutation();
 	// Defers the save until the operator says whether to clear accumulated spend.
 	const resetPrompt = useBudgetUsageResetPrompt<FormData>();
@@ -98,12 +96,11 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 	const [getModels] = useLazyGetModelsQuery();
 	const isLoading = isCreating || isUpdating;
 
-	const availableProviders = providersData || [];
-
 	// Handle provider change - clear model if it doesn't exist for the new provider
 	const handleProviderChange = async (newProvider: string, currentModel: string, onChange: (value: string) => void) => {
 		onChange(newProvider);
-		if (!currentModel) return;
+		// "*" is provider-agnostic, so it needs no lookup and must survive the switch.
+		if (!currentModel || currentModel === "*") return;
 
 		try {
 			const response = await getModels({
@@ -112,8 +109,12 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 				limit: 50,
 			}).unwrap();
 
-			const modelExists = response.models.some((model) => model.name === currentModel);
-			if (!modelExists) {
+			if (
+				shouldClearModelOnProviderChange(
+					currentModel,
+					response.models.map((model) => model.name),
+				)
+			) {
 				form.setValue("modelName", "", { shouldDirty: true });
 			}
 		} catch {
@@ -237,11 +238,11 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 
 				let rateLimitPayload:
 					| {
-							token_max_limit?: number | null;
-							token_reset_duration?: string | null;
-							request_max_limit?: number | null;
-							request_reset_duration?: string | null;
-					  }
+						token_max_limit?: number | null;
+						token_reset_duration?: string | null;
+						request_max_limit?: number | null;
+						request_reset_duration?: string | null;
+					}
 					| undefined;
 				if (hasRateLimit) {
 					rateLimitPayload = {
@@ -280,15 +281,15 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 					budgets: budgetsPayload.length > 0 ? budgetsPayload : undefined,
 					rate_limit:
 						(data.tokenMaxLimit !== undefined && data.tokenMaxLimit !== null) ||
-						(data.requestMaxLimit !== undefined && data.requestMaxLimit !== null)
+							(data.requestMaxLimit !== undefined && data.requestMaxLimit !== null)
 							? {
-									token_max_limit: data.tokenMaxLimit,
-									token_reset_duration:
-										data.tokenMaxLimit !== undefined && data.tokenMaxLimit !== null ? data.tokenResetDuration || "1h" : undefined,
-									request_max_limit: data.requestMaxLimit,
-									request_reset_duration:
-										data.requestMaxLimit !== undefined && data.requestMaxLimit !== null ? data.requestResetDuration || "1h" : undefined,
-								}
+								token_max_limit: data.tokenMaxLimit,
+								token_reset_duration:
+									data.tokenMaxLimit !== undefined && data.tokenMaxLimit !== null ? data.tokenResetDuration || "1h" : undefined,
+								request_max_limit: data.requestMaxLimit,
+								request_reset_duration:
+									data.requestMaxLimit !== undefined && data.requestMaxLimit !== null ? data.requestResetDuration || "1h" : undefined,
+							}
 							: undefined,
 				}).unwrap();
 				toast.success("Limit created successfully");
@@ -447,36 +448,17 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 								render={({ field }) => (
 									<FormItem>
 										<FormLabel>Provider</FormLabel>
-										<Select
-											value={field.value || "all"}
-											onValueChange={(value) =>
-												handleProviderChange(value === "all" ? "" : value, form.getValues("modelName"), field.onChange)
-											}
-											disabled={isEditing}
-										>
-											<FormControl>
-												<SelectTrigger className="w-full" data-testid="model-limit-provider-select">
-													<SelectValue placeholder="All Providers" />
-												</SelectTrigger>
-											</FormControl>
-											<SelectContent>
-												<SelectItem value="all">All Providers</SelectItem>
-												{availableProviders
-													.filter((p) => p.name)
-													.map((provider) => (
-														<SelectItem key={provider.name} value={provider.name}>
-															<RenderProviderIcon
-																provider={provider.custom_provider_config?.base_provider_type || (provider.name as KnownProvider)}
-																size="sm"
-																className="h-4 w-4"
-															/>
-															{provider.custom_provider_config
-																? provider.name
-																: ProviderLabels[provider.name as ProviderName] || provider.name}
-														</SelectItem>
-													))}
-											</SelectContent>
-										</Select>
+										<FormControl>
+											<ProviderSelector
+												data-testid="model-limit-provider-select"
+												allOption={ALL_PROVIDERS_OPTION}
+												value={field.value || ALL_PROVIDERS_VALUE}
+												onChange={(value: string) =>
+													handleProviderChange(value === ALL_PROVIDERS_VALUE ? "" : value, form.getValues("modelName"), field.onChange)
+												}
+												disabled={isEditing}
+											/>
+										</FormControl>
 										<FormMessage />
 									</FormItem>
 								)}
@@ -501,14 +483,15 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 												</Select>
 											) : (
 												<div data-testid="model-limit-model-select">
-													<ModelMultiselect
+													<ModelSelector
 														provider={form.watch("provider") || undefined}
 														value={field.value}
 														onChange={field.onChange}
 														placeholder="Search for a model..."
-														isSingleSelect
-														loadModelsOnEmptyProvider="base_models"
-														allowAllOption
+														baseModelsWithoutProvider
+														extraOptions={ALL_MODELS_OPTION}
+														allowCustomModel
+														unfiltered
 													/>
 												</div>
 											)}

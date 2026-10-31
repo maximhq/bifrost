@@ -2,6 +2,7 @@ package utils
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -166,6 +167,68 @@ func TestConfigureDialer_ReturnValue(t *testing.T) {
 	result := ConfigureDialer(client, false)
 	if result != client {
 		t.Error("ConfigureDialer should return the same client pointer")
+	}
+}
+
+// TestConfigureDialer_KeepsFactoryClientOnItsProxy verifies that a client handed out
+// by network.HTTPClientFactory still reaches its target through the factory's proxy
+// after ConfigureDialer: replacing its forwarding transport would send every holder
+// of that shared client direct.
+func TestConfigureDialer_KeepsFactoryClientOnItsProxy(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("via proxy"))
+	}))
+	defer backend.Close()
+	// The proxy tunnels every CONNECT to backend, whatever target it names.
+	var proxied atomic.Int32
+	var tunnelTarget atomic.Value
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodConnect {
+			http.Error(w, "CONNECT required", http.StatusMethodNotAllowed)
+			return
+		}
+		proxied.Add(1)
+		tunnelTarget.Store(r.Host)
+		upstream, err := net.Dial("tcp", backend.Listener.Addr().String())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		downstream, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			upstream.Close()
+			return
+		}
+		_, _ = downstream.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+		go func() { _, _ = io.Copy(upstream, downstream); upstream.Close() }()
+		_, _ = io.Copy(downstream, upstream)
+		downstream.Close()
+	}))
+	defer proxy.Close()
+
+	factory := network.NewHTTPClientFactory(&network.GlobalProxyConfig{
+		Enabled:            true,
+		Type:               network.GlobalProxyTypeHTTP,
+		URL:                proxy.URL,
+		EnableForInference: true,
+	}, testLogger{})
+	client := ConfigureDialer(factory.GetFasthttpClient(network.ClientPurposeInference), true)
+
+	req := fasthttp.AcquireRequest()
+	defer fasthttp.ReleaseRequest(req)
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
+	// TEST-NET-3: never answers directly, so only the proxy can respond.
+	req.SetRequestURI("http://203.0.113.10/v1/models")
+	err := client.DoTimeout(req, resp, 2*time.Second)
+	if err != nil {
+		t.Fatalf("request through the factory client failed (sent direct?): %v", err)
+	}
+	if proxied.Load() != 1 || string(resp.Body()) != "via proxy" {
+		t.Fatalf("expected the request to go through the factory proxy, proxy saw %d tunnel(s), body %q", proxied.Load(), resp.Body())
+	}
+	if got := tunnelTarget.Load(); got != "203.0.113.10:80" {
+		t.Fatalf("proxy tunnel target = %v, want 203.0.113.10:80", got)
 	}
 }
 
@@ -353,6 +416,34 @@ func TestConfigureDialer_SSRFProxyBypass(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "proxy handled") {
 		t.Errorf("expected proxy error, got %v", err)
+	}
+}
+
+// TestConfigureDialer_ProxyBypassSkipsDialTimeoutCallback pins that a no_proxy bypass
+// (errBypassProxy from the proxy dialer) connects through the checked direct-dial path,
+// even when the client also has a DialTimeout callback. The callback carries no IP
+// checks, so taking it would let a bypassed target reach private, link-local or
+// unspecified addresses.
+func TestConfigureDialer_ProxyBypassSkipsDialTimeoutCallback(t *testing.T) {
+	for _, addr := range []string{"10.0.0.1:80", "169.254.169.254:80", "0.0.0.0:80"} {
+		t.Run(addr, func(t *testing.T) {
+			var timeoutCalls atomic.Int32
+			client := &fasthttp.Client{ReadTimeout: time.Second}
+			client.Dial = func(string) (net.Conn, error) { return nil, errBypassProxy }
+			client.DialTimeout = func(addr string, _ time.Duration) (net.Conn, error) {
+				timeoutCalls.Add(1)
+				return nil, fmt.Errorf("unchecked dial to %s", addr)
+			}
+			ConfigureDialer(client, false)
+
+			_, err := client.Dial(addr)
+			if err == nil || !strings.Contains(err.Error(), "is not allowed") {
+				t.Fatalf("expected the bypassed target to be refused by the IP checks, got %v", err)
+			}
+			if n := timeoutCalls.Load(); n != 0 {
+				t.Fatalf("the DialTimeout callback was used %d times for a bypassed target", n)
+			}
+		})
 	}
 }
 

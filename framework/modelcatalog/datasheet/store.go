@@ -79,6 +79,10 @@ type Store struct {
 	rawOverrides  []Override
 	customPricing *customPricingData
 
+	// Providers whose self-reported usage.cost is ignored in favour of catalog pricing.
+	ignoreProviderCostMu sync.RWMutex
+	ignoreProviderCost   map[schemas.ModelProvider]struct{}
+
 	// Sync configuration owned here so UpdateSyncConfig is atomic w.r.t. the
 	// URL accessors in sync.go. The composer's ticker reads SyncInterval()
 	// and LastSyncedAt() to schedule.
@@ -102,6 +106,7 @@ func New(configStore configstore.ConfigStore, logger schemas.Logger, cfg Config)
 		supportedParams:        make(map[string][]string),
 		datasheetByProvider:    make(map[schemas.ModelProvider][]string),
 		deprecatedByProvider:   make(map[schemas.ModelProvider][]string),
+		ignoreProviderCost:     make(map[schemas.ModelProvider]struct{}),
 		url:                    cfg.URL,
 		modelParametersURL:     cfg.ModelParametersURL,
 		syncInterval:           cfg.SyncInterval,
@@ -184,6 +189,7 @@ func (s *Store) GetPricingEntryForModel(model string, provider schemas.ModelProv
 		schemas.ResponsesRequest,
 		schemas.EmbeddingRequest,
 		schemas.RerankRequest,
+		schemas.DecisionRequest,
 		schemas.SpeechRequest,
 		schemas.TranscriptionRequest,
 		schemas.ImageGenerationRequest,
@@ -458,6 +464,20 @@ func (s *Store) SetSupportedParamsForTest(params map[string][]string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.supportedParams = params
+}
+
+// SetPricingRowsForTest replaces pricingData with rows and rebuilds the derived
+// indexes. Test-only seam for packages outside datasheet (e.g. the compat
+// plugin) that need capability lookups such as max_output_tokens without
+// running a sync.
+func (s *Store) SetPricingRowsForTest(rows []configstoreTables.TableModelPricing) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pricingData = make(map[string]configstoreTables.TableModelPricing, len(rows))
+	for _, row := range rows {
+		s.pricingData[makeKey(row.Model, row.Provider, row.Mode)] = row
+	}
+	s.rebuildDatasheetViewUnsafe()
 }
 
 // --- Internal: rebuild the datasheet view from current pricingData ---

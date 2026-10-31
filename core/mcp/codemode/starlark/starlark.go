@@ -21,6 +21,7 @@ type StarlarkCodeMode struct {
 	// Configuration (atomic for thread-safe updates)
 	bindingLevel         atomic.Value // schemas.CodeModeBindingLevel
 	toolExecutionTimeout atomic.Value // time.Duration
+	limits               atomic.Pointer[schemas.MCPCodeModeLimits]
 
 	// Dependencies
 	clientManager         mcp.ClientManager
@@ -69,6 +70,7 @@ func NewStarlarkCodeMode(config *mcp.CodeModeConfig, logger schemas.Logger) *Sta
 	// Initialize atomic values
 	s.bindingLevel.Store(config.BindingLevel)
 	s.toolExecutionTimeout.Store(config.ToolExecutionTimeout)
+	s.storeLimits(config.Limits)
 
 	s.logger.Info("%s Starlark code mode initialized with binding level: %s, timeout: %v",
 		mcp.CodeModeLogPrefix, config.BindingLevel, config.ToolExecutionTimeout)
@@ -157,8 +159,38 @@ func (s *StarlarkCodeMode) UpdateConfig(config *mcp.CodeModeConfig) {
 		s.toolExecutionTimeout.Store(config.ToolExecutionTimeout)
 	}
 
+	if config.Limits != nil {
+		s.storeLimits(config.Limits)
+	}
+
 	s.logger.Info("%s Starlark code mode configuration updated: binding level=%s, timeout=%v",
 		mcp.CodeModeLogPrefix, config.BindingLevel, config.ToolExecutionTimeout)
+}
+
+// storeLimits publishes limits with defaults applied; nil means all defaults.
+// Invalid limits are rejected and the current limits (or the defaults) stay.
+func (s *StarlarkCodeMode) storeLimits(limits *schemas.MCPCodeModeLimits) {
+	resolved := schemas.MCPCodeModeLimits{}
+	if limits != nil {
+		if err := limits.Validate(); err != nil {
+			s.logger.Warn("%s ignoring invalid code mode limits: %v", mcp.CodeModeLogPrefix, err)
+			if s.limits.Load() != nil {
+				return
+			}
+		} else {
+			resolved = *limits
+		}
+	}
+	resolved = resolved.WithDefaults()
+	s.limits.Store(&resolved)
+}
+
+// getLimits returns the per-execution limits with defaults applied.
+func (s *StarlarkCodeMode) getLimits() schemas.MCPCodeModeLimits {
+	if limits := s.limits.Load(); limits != nil {
+		return *limits
+	}
+	return schemas.MCPCodeModeLimits{}.WithDefaults()
 }
 
 // getToolExecutionTimeout returns the current tool execution timeout.

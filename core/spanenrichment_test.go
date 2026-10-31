@@ -29,6 +29,9 @@ var contextDimSources = []struct {
 	{schemas.AttrBifrostTeamName, schemas.BifrostContextKeyGovernanceTeamName, "team-name"},
 	{schemas.AttrBifrostProjectID, schemas.BifrostContextKeyGovernanceProjectID, "project-id"},
 	{schemas.AttrBifrostProjectName, schemas.BifrostContextKeyGovernanceProjectName, "project-name"},
+	{schemas.AttrBifrostPromptID, schemas.BifrostContextKeySelectedPromptID, "prompt-id"},
+	{schemas.AttrBifrostPromptName, schemas.BifrostContextKeySelectedPromptName, "prompt-name"},
+	{schemas.AttrBifrostPromptVersion, schemas.BifrostContextKeySelectedPromptVersion, "3"},
 	{schemas.AttrBifrostCustomerID, schemas.BifrostContextKeyGovernanceCustomerID, "cust-id"},
 	{schemas.AttrBifrostCustomerName, schemas.BifrostContextKeyGovernanceCustomerName, "cust-name"},
 	{schemas.AttrBifrostBusinessUnitID, schemas.BifrostContextKeyGovernanceBusinessUnitID, "bu-id"},
@@ -43,6 +46,35 @@ var contextDimSources = []struct {
 	{schemas.AttrBifrostUserName, schemas.BifrostContextKeyUserName, "user-name"},
 	{schemas.AttrBifrostUserEmail, schemas.BifrostContextKeyUserEmail, "user@example.com"},
 	{schemas.AttrBifrostFallbackIndex, schemas.BifrostContextKeyFallbackIndex, 2},
+}
+
+// derivedDimSources are dims applyContextSpanAttributes emits by deriving from a
+// context value rather than copying it, so they cannot use contextDimSources'
+// key-equals-value pairing.
+var derivedDimSources = []struct {
+	spanAttr string
+	ctxKey   schemas.BifrostContextKey
+	ctxValue any
+	want     any
+}{
+	{schemas.AttrBifrostApp, schemas.BifrostContextKeyUserAgent, "claude-code/1.0", "Claude Code"},
+}
+
+// TestDerivedContextSpanAttributesEmit pins the derivation, not just the wiring.
+func TestDerivedContextSpanAttributesEmit(t *testing.T) {
+	for _, d := range derivedDimSources {
+		ctx := context.WithValue(context.Background(), d.ctxKey, d.ctxValue)
+		span := &schemas.Span{}
+		applyContextSpanAttributes(span, ctx)
+		got, ok := span.Attributes[d.spanAttr]
+		if !ok {
+			t.Errorf("span attribute %q was not emitted (context key %q)", d.spanAttr, d.ctxKey)
+			continue
+		}
+		if !reflect.DeepEqual(got, d.want) {
+			t.Errorf("span attribute %q = %v, want %v", d.spanAttr, got, d.want)
+		}
+	}
 }
 
 // dimsEmittedElsewhere are registry dimensions NOT emitted by
@@ -94,8 +126,11 @@ func TestContextSpanAttributesEmit(t *testing.T) {
 // classification: a context source or "elsewhere" entry for a key no longer in
 // the registry.
 func TestEnrichmentRegistryDimsAllEmitted(t *testing.T) {
-	inContext := make(map[string]bool, len(contextDimSources))
+	inContext := make(map[string]bool, len(contextDimSources)+len(derivedDimSources))
 	for _, d := range contextDimSources {
+		inContext[d.spanAttr] = true
+	}
+	for _, d := range derivedDimSources {
 		inContext[d.spanAttr] = true
 	}
 	registry := make(map[string]bool)
@@ -113,9 +148,106 @@ func TestEnrichmentRegistryDimsAllEmitted(t *testing.T) {
 			t.Errorf("contextDimSources references %q which is no longer in EnrichmentDims", d.spanAttr)
 		}
 	}
+	for _, d := range derivedDimSources {
+		if !registry[d.spanAttr] {
+			t.Errorf("derivedDimSources references %q which is no longer in EnrichmentDims", d.spanAttr)
+		}
+	}
 	for attr := range dimsEmittedElsewhere {
 		if !registry[attr] {
 			t.Errorf("dimsEmittedElsewhere references %q which is no longer in EnrichmentDims", attr)
+		}
+	}
+}
+
+// TestContextSpanEnrichmentMatchesAttributes pins the typed dimensions to the
+// attribute keys they are emitted alongside. Both derive from one mapping, so a
+// field added to SpanEnrichment without an attribute (or the reverse) shows up
+// here rather than as a connector silently reading a zero value.
+func TestContextSpanEnrichmentMatchesAttributes(t *testing.T) {
+	ctx := context.Background()
+	for _, src := range contextDimSources {
+		ctx = context.WithValue(ctx, src.ctxKey, src.value)
+	}
+	span := &schemas.Span{Attributes: map[string]any{}}
+	applyContextSpanAttributes(span, ctx)
+	span.SetRetries(3)
+
+	if span.Enrichment == nil {
+		t.Fatal("span.Enrichment is nil, want the dimensions attached")
+	}
+	if span.Enrichment.Retries != 3 {
+		t.Errorf("Retries = %d, want 3", span.Enrichment.Retries)
+	}
+
+	// Every dimension the registry marks as context-sourced must be readable
+	// from the typed struct, not only from the attribute map.
+	typed := map[string]any{
+		schemas.AttrBifrostVirtualKeyID:    span.Enrichment.VirtualKeyID,
+		schemas.AttrBifrostSelectedKeyID:   span.Enrichment.SelectedKeyID,
+		schemas.AttrBifrostRoutingRuleID:   span.Enrichment.RoutingRuleID,
+		schemas.AttrBifrostTeamID:          span.Enrichment.TeamID,
+		schemas.AttrBifrostCustomerID:      span.Enrichment.CustomerID,
+		schemas.AttrBifrostBusinessUnitID:  span.Enrichment.BusinessUnitID,
+		schemas.AttrBifrostProjectID:       span.Enrichment.ProjectID,
+		schemas.AttrBifrostUserID:          span.Enrichment.UserID,
+		schemas.AttrBifrostUserEmail:       span.Enrichment.UserEmail,
+		schemas.AttrBifrostTeamIDs:         span.Enrichment.TeamIDs,
+		schemas.AttrBifrostCustomerIDs:     span.Enrichment.CustomerIDs,
+		schemas.AttrBifrostBusinessUnitIDs: span.Enrichment.BusinessUnitIDs,
+	}
+	for attr, got := range typed {
+		want, ok := span.Attributes[attr]
+		if !ok {
+			t.Errorf("%s: attribute not emitted", attr)
+			continue
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: typed = %#v, attribute = %#v", attr, got, want)
+		}
+	}
+}
+
+// The prompts plugin resolves a stored prompt onto the request, and nothing but the
+// logging plugin could see which one. Registered as enrichment dimensions, so the
+// contextDimSources entries above cover the wiring and this pins the empty-value cases.
+func TestPromptSpanAttributesEmit(t *testing.T) {
+	ctx := context.Background()
+	ctx = context.WithValue(ctx, schemas.BifrostContextKeySelectedPromptID, "prompt-1")
+	ctx = context.WithValue(ctx, schemas.BifrostContextKeySelectedPromptName, "support-triage")
+	ctx = context.WithValue(ctx, schemas.BifrostContextKeySelectedPromptVersion, "3")
+
+	span := &schemas.Span{}
+	applyContextSpanAttributes(span, ctx)
+
+	for attr, want := range map[string]string{
+		schemas.AttrBifrostPromptID:      "prompt-1",
+		schemas.AttrBifrostPromptName:    "support-triage",
+		schemas.AttrBifrostPromptVersion: "3",
+	} {
+		if got := span.Attributes[attr]; got != want {
+			t.Errorf("%s = %v, want %q", attr, got, want)
+		}
+	}
+
+	// The prompts plugin sets the version even for a prompt with no name, so a version
+	// without an id is reachable and must not emit an empty id.
+	versionOnly := &schemas.Span{}
+	applyContextSpanAttributes(versionOnly, context.WithValue(context.Background(),
+		schemas.BifrostContextKeySelectedPromptVersion, "7"))
+	if got := versionOnly.Attributes[schemas.AttrBifrostPromptVersion]; got != "7" {
+		t.Errorf("version-only prompt version = %v, want 7", got)
+	}
+	if _, ok := versionOnly.Attributes[schemas.AttrBifrostPromptID]; ok {
+		t.Error("prompt id emitted with nothing on the context")
+	}
+
+	// No prompt applied, no attributes.
+	none := &schemas.Span{}
+	applyContextSpanAttributes(none, context.Background())
+	for _, attr := range []string{schemas.AttrBifrostPromptID, schemas.AttrBifrostPromptName, schemas.AttrBifrostPromptVersion} {
+		if _, ok := none.Attributes[attr]; ok {
+			t.Errorf("%s emitted for a request with no prompt", attr)
 		}
 	}
 }

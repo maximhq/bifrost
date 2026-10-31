@@ -1,0 +1,114 @@
+---
+title: "Coding agents"
+description: "Launch Claude Code, Codex CLI, OpenCode, and Gemini CLI through Bifrost with a virtual key or Enterprise SSO, persist or remove their configuration, and verify requests reach Bifrost."
+icon: "terminal"
+---
+
+Bifrost CLI starts coding agents with the gateway URL, credential, and model of the current [context](/quickstart/cli/contexts). Set up a context and a credential first with [OSS setup](/quickstart/cli/oss-setup) or [Enterprise setup](/quickstart/cli/enterprise-setup).
+
+## Supported agents
+
+| Harness | Gateway path | Enterprise SSO | Virtual key | `bifrost configure` | Session refresh |
+| --- | --- | --- | --- | --- | --- |
+| Claude Code (`claude`) | `/anthropic` | Yes | Yes | Yes | Automatic, through a temporary token helper |
+| Codex CLI (`codex`) | `/openai/v1` | Yes | Yes | Yes | Restart Codex after the token expires |
+| OpenCode (`opencode`) | `/openai` | Yes | Yes | No | Restart OpenCode after the token expires |
+| Gemini CLI (`gemini`) | `/genai` | No | Yes | No | Not applicable |
+
+If a harness is not installed, the interactive launcher offers to install it and asks for confirmation first.
+
+## Launch a harness
+
+<Tabs>
+  <Tab title="Interactive launcher">
+    ```bash
+    bifrost
+    ```
+
+    Choose the context, harness, and model. On Enterprise, the **Enterprise SSO** row signs you in or out without leaving the launcher. When the harness exits, the launcher returns to the chooser. `bifrost launch --tabs` runs several harnesses in one terminal, with some rendering differences from native mode.
+
+    {/* SCREENSHOT TODO: Bifrost CLI interactive launcher showing context, Enterprise SSO row, harness, and model selection */}
+  </Tab>
+  <Tab title="Direct launch">
+    ```bash
+    bifrost claude --model anthropic/claude-sonnet-4-6
+    bifrost codex --model openai/gpt-5
+    bifrost opencode --model openai/gpt-5
+    bifrost gemini --model gemini/gemini-2.5-pro
+    ```
+
+    `bifrost run <harness>` is equivalent. Other arguments pass through to the harness, for example `bifrost claude --resume` or `bifrost codex exec "summarize this repository"`. Use `--` before harness flags that clash with Bifrost flags.
+  </Tab>
+</Tabs>
+
+Before the harness starts, the CLI prints the endpoint, credential type (`Enterprise SSO` or `virtual key`), and the equivalent harness command. Launches change only the child process environment and temporary files:
+
+- **Claude Code** receives the gateway URL and model. With SSO, it also receives a temporary `--settings` file whose `apiKeyHelper` runs `bifrost auth print-token`; the file is removed when Claude Code exits.
+- **Codex CLI** runs with a temporary `CODEX_HOME` containing a copy of your `config.toml` plus a `bifrost` provider. The temporary home, including that session's history, is removed when Codex exits.
+- **OpenCode** receives an owner-readable temporary provider configuration that is removed when OpenCode exits.
+- Inherited provider credentials such as `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` are removed from the child environment so they cannot override the Bifrost credential.
+
+## Persist configuration for direct use
+
+`bifrost configure` writes the Bifrost endpoint, virtual key, and optional model into the harness's own configuration so it works when you run the harness directly. It supports Claude Code and Codex CLI, and requires a virtual key: short-lived SSO tokens are never written to long-lived files.
+
+```bash
+bifrost configure claude --model anthropic/claude-sonnet-4-6
+bifrost configure codex --model openai/gpt-5
+```
+
+| Harness | Files changed |
+| --- | --- |
+| Claude Code | `~/.claude/settings.json`: `env.ANTHROPIC_BASE_URL`, `env.ANTHROPIC_AUTH_TOKEN`, model settings; removes `apiKeyHelper` |
+| Codex CLI | `~/.codex/auth.json` and `~/.codex/config.toml` (`model_provider = "bifrost"`) |
+
+Before changing anything, the CLI saves a restoration receipt under `~/.bifrost/receipts/`. To undo the change:
+
+```bash
+bifrost unconfigure claude
+bifrost unconfigure codex
+```
+
+`unconfigure` restores the exact files captured before configuration. If you edited a configured file afterwards, `configure` and `unconfigure` refuse to overwrite it; rerun with `--force` to proceed. The receipt contains your original files and the virtual key, so it is written with owner-only permissions.
+
+<Warning>
+  A persistent Claude Code configuration sets `ANTHROPIC_AUTH_TOKEN`, which outranks the SSO token helper used by `bifrost claude`. Run `bifrost unconfigure claude` before launching Claude Code with Enterprise SSO.
+</Warning>
+
+For Claude Code without the launcher and with SSO, configure `apiKeyHelper` yourself; see [Dynamic credentials with apiKeyHelper](/cli-agents/claude-code#use-bifrost-cli-sso-recommended-for-enterprise).
+
+{/* SCREENSHOT TODO: bifrost configure claude output confirming the configuration and the unconfigure command */}
+
+## Verify requests flow through Bifrost
+
+1. Check the launch banner: `endpoint` shows your Bifrost URL and `auth` shows the expected credential type.
+2. Inside the harness, confirm the model: `/status` in Claude Code and Codex, or the model footer in OpenCode.
+3. Send a short prompt.
+4. Confirm the request reached Bifrost:
+   - **Enterprise SSO users:** `bifrost usage` shows updated budget usage and the model under **top models** for your identity.
+   - **Administrators:** `bifrost logs list --limit 5` or the dashboard **Logs** page shows the request with the expected virtual key or user.
+
+{/* SCREENSHOT TODO: Claude Code launched by bifrost claude, showing the Bifrost launch banner and /status with the Bifrost base URL */}
+{/* SCREENSHOT TODO: Bifrost Logs page showing a coding-agent request attributed to the signed-in user */}
+
+## Harness caveats
+
+- **Model permissions.** The launcher lists models from `/v1/models` using the effective credential, so it shows only models your user or virtual key can use. The model must also support the tool calling the harness relies on.
+- **Gemini CLI** sends its credential as `x-goog-api-key`, which cannot carry an SSO session. Store a virtual key before launching Gemini on a gateway that enforces inference authentication.
+- **Codex CLI** builds its `/model` picker from its own catalog. Start Codex with the full Bifrost model ID (`bifrost codex --model provider/model`) and confirm with `/status`. Codex uses the Responses API, so non-OpenAI models must support Responses tool calls through Bifrost.
+- **OpenCode** shows the launched model as `bifrost/<model>`. Relaunch to switch to a model outside that generated provider. If colors differ from a direct launch, set an explicit theme in `~/.config/opencode/tui.json`.
+- **Claude Code** model setup, routing aliases, and MCP are covered in the [Claude Code guide](/cli-agents/claude-code).
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Claude Code" icon="star-of-life" href="/cli-agents/claude-code">
+    Static and dynamic Claude Code credentials, models, and MCP.
+  </Card>
+  <Card title="Troubleshooting" icon="screwdriver-wrench" href="/quickstart/cli/troubleshooting">
+    Fix common authentication, context, and agent errors.
+  </Card>
+  <Card title="CLI Agents" icon="terminal" href="/cli-agents/overview">
+    Per-agent configuration and limitations, including manual setup.
+  </Card>
+</CardGroup>

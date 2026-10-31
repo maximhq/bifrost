@@ -28,14 +28,17 @@ interface TagInputProps extends OmittedInputProps {
 const TAG_CLASSES = "bg-accent dark:bg-card flex max-w-full shrink items-center gap-1 text-left break-words whitespace-normal";
 
 export const TagInput = React.forwardRef<HTMLInputElement, TagInputProps>(
-	({ className, value, onValueChange, listHeight, submitOnComma = true, ...props }, ref) => {
+	({ className, value, onValueChange, listHeight, submitOnComma = true, readOnly, ...props }, ref) => {
 		const [inputValue, setInputValue] = React.useState("");
 
 		const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
 			setInputValue(e.target.value);
 		};
 
+		// readOnly locks the whole value, removals included. disabled only locks
+		// the entry field, so a list at its size limit can still be trimmed.
 		const addCurrentTag = () => {
+			if (readOnly) return;
 			const newTag = inputValue.trim();
 			if (newTag && !value.includes(newTag)) {
 				onValueChange([...value, newTag]);
@@ -47,7 +50,7 @@ export const TagInput = React.forwardRef<HTMLInputElement, TagInputProps>(
 			if (e.key === "Enter" || (submitOnComma && e.key === ",")) {
 				e.preventDefault();
 				addCurrentTag();
-			} else if (e.key === "Backspace" && inputValue === "" && value.length > 0) {
+			} else if (!readOnly && e.key === "Backspace" && inputValue === "" && value.length > 0) {
 				onValueChange(value.slice(0, -1));
 			}
 		};
@@ -63,14 +66,16 @@ export const TagInput = React.forwardRef<HTMLInputElement, TagInputProps>(
 		const tags = value.map((tag) => (
 			<Badge key={tag} variant="secondary" className={TAG_CLASSES}>
 				{tag}
-				<button
-					aria-label={`Remove ${tag}`}
-					type="button"
-					className="ring-offset-background focus:ring-ring shrink-0 cursor-pointer rounded-sm outline-none focus:ring-2 focus:ring-offset-2"
-					onClick={() => removeTag(tag)}
-				>
-					<X className="h-3 w-3" />
-				</button>
+				{!readOnly && (
+					<button
+						aria-label={`Remove ${tag}`}
+						type="button"
+						className="ring-offset-background focus:ring-ring shrink-0 cursor-pointer rounded-sm outline-none focus:ring-2 focus:ring-offset-2"
+						onClick={() => removeTag(tag)}
+					>
+						<X className="h-3 w-3" />
+					</button>
+				)}
 			</Badge>
 		));
 
@@ -86,6 +91,7 @@ export const TagInput = React.forwardRef<HTMLInputElement, TagInputProps>(
 						onKeyDown={handleKeyDown}
 						onBlur={handleBlur}
 						className={cn("dark:bg-accent h-7 min-w-32 flex-1 border-0 py-0 px-2 text-xs shadow-none focus-visible:ring-0")}
+						readOnly={readOnly}
 						{...props}
 					/>
 				</div>
@@ -115,6 +121,7 @@ export const TagInput = React.forwardRef<HTMLInputElement, TagInputProps>(
 						className={cn(
 							"placeholder:text-muted-foreground focus-visible:bg-background h-7 w-full min-w-0 rounded-sm border-0 bg-transparent py-0 px-2 text-xs shadow-none focus-visible:ring-0",
 						)}
+						readOnly={readOnly}
 						{...props}
 					/>
 				</div>

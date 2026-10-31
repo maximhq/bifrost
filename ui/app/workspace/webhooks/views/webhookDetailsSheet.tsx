@@ -298,13 +298,15 @@ export function WebhookDetailsSheet({ endpoint, isTesting, canManage, onTest, on
 													{latest.request_id ? (
 														<Tooltip>
 															<TooltipTrigger asChild>
-																<code
+																<button
+																	type="button"
+																	aria-label={`Copy request ID ${latest.request_id}`}
 																	className="cursor-pointer font-mono text-xs"
 																	onClick={() => copy(latest.request_id ?? "")}
 																	data-testid={`webhook-delivery-request-id-${webhookId}`}
 																>
 																	{latest.request_id.slice(0, 8)}…
-																</code>
+																</button>
 															</TooltipTrigger>
 															<TooltipContent className="font-mono">{latest.request_id}</TooltipContent>
 														</Tooltip>

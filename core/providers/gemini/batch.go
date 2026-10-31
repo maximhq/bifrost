@@ -288,21 +288,18 @@ func (provider *GeminiProvider) downloadBatchResultsFile(ctx context.Context, ke
 	// We need to change it to https://generativelanguage.googleapis.com/download/v1beta
 	baseURL := strings.Replace(provider.networkConfig.BaseURL, "/v1beta", "/download/v1beta", 1)
 
-	// Ensure fileName has proper format
-	fileID := fileName
-	if !strings.HasPrefix(fileID, "files/") {
-		fileID = "files/" + fileID
+	filePath, bifrostErr := geminiResourcePath(fileName, "files", "file_id")
+	if bifrostErr != nil {
+		return nil, nil, bifrostErr
 	}
 
-	url := fmt.Sprintf("%s/%s:download?alt=media", baseURL, fileID)
+	url := fmt.Sprintf("%s/%s:download?alt=media", baseURL, filePath)
 
 	provider.logger.Debug("gemini batch results file download url: " + url)
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(url)
 	req.Header.SetMethod(http.MethodGet)
-	if key.Value.GetValue() != "" {
-		req.Header.Set("x-goog-api-key", key.Value.GetValue())
-	}
+	setGeminiAuthHeader(req, key.Value.GetValue())
 
 	// Make request
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
@@ -444,10 +441,16 @@ func geminiGenerateContentToBatchResultBody(resp *GenerateContentResponse) map[s
 		body["finish_reason"] = string(candidate.FinishReason)
 	}
 	if resp.UsageMetadata != nil {
+		completionTokens := resp.UsageMetadata.CandidatesTokenCount + resp.UsageMetadata.ThoughtsTokenCount
 		usage := map[string]interface{}{
 			"prompt_tokens":     resp.UsageMetadata.PromptTokenCount,
-			"completion_tokens": resp.UsageMetadata.CandidatesTokenCount,
+			"completion_tokens": completionTokens,
 			"total_tokens":      resp.UsageMetadata.TotalTokenCount,
+		}
+		if resp.UsageMetadata.ThoughtsTokenCount > 0 {
+			usage["completion_tokens_details"] = map[string]interface{}{
+				"reasoning_tokens": resp.UsageMetadata.ThoughtsTokenCount,
+			}
 		}
 		// Surface cached input tokens in OpenAI's shape so batch accounting can
 		// apply the cache-read discount. Like OpenAI's prompt_tokens, Gemini's

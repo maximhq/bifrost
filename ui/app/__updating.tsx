@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { getCachedBrandingAssets } from "@/lib/hooks/useBranding";
 import { getEndpointUrl } from "@/lib/utils/port";
 import { consumeAutoReload, startVersionPoll } from "@/lib/utils/versionSkew";
@@ -36,6 +37,23 @@ export function UpdatingBanner() {
 		</div>
 	);
 }
+
+const UPDATING_COPY = IS_ENTERPRISE
+	? {
+			title: "A new version of Bifrost is rolling out",
+			waiting:
+				"Your organization has chosen to roll out a new version of Bifrost. The rollout is progressing one instance at a time. This page will reload automatically once the rollout completes across all instances.",
+			paused:
+				"The rollout is still in progress. Reload to check again in a minute. If this doesn't work, contact the administrator of your Bifrost deployment.",
+			waitingStatus: "Waiting for the rollout to complete…",
+		}
+	: {
+			title: "Bifrost is upgrading",
+			waiting:
+				"A new version of Bifrost is being rolled out. Keep this page open and it will reload automatically when the upgrade is complete.",
+			paused: "Bifrost is still upgrading. If this is taking longer than expected, reach out to your administrator for more information.",
+			waitingStatus: "Waiting for the upgrade to complete",
+		};
 
 export function UpdatingScreen() {
 	// Rendered above <ReduxProvider> (main.tsx) and as the router error component,
@@ -88,12 +106,10 @@ export function UpdatingScreen() {
 						<Sparkles className="size-5" aria-hidden="true" />
 					</div>
 					<h1 id="updating-title" className="text-foreground mt-5 text-2xl font-semibold tracking-tight">
-						Bifrost is upgrading
+						{UPDATING_COPY.title}
 					</h1>
 					<p id="updating-description" className="text-muted-foreground mt-2 max-w-md text-sm leading-6">
-						{autoReloadExhausted
-							? "Bifrost is still upgrading. If this is taking longer than expected, reach out to your administrator for more information."
-							: "A new version of Bifrost is being rolled out. Keep this page open and it will reload automatically when the upgrade is complete."}
+						{autoReloadExhausted ? UPDATING_COPY.paused : UPDATING_COPY.waiting}
 					</p>
 
 					<div className="bg-muted mt-7 h-1.5 overflow-hidden rounded-full" aria-hidden="true">
@@ -111,7 +127,7 @@ export function UpdatingScreen() {
 							) : (
 								<>
 									<Loader2 className="size-3.5 motion-safe:animate-spin" aria-hidden="true" />
-									<span>Waiting for the upgrade to complete</span>
+									<span>{UPDATING_COPY.waitingStatus}</span>
 								</>
 							)}
 						</div>

@@ -14,6 +14,7 @@ type InMemoryObjectStore struct {
 	mu        sync.RWMutex
 	objects   map[string][]byte
 	tags      map[string]map[string]string
+	types     map[string]string
 	createdAt map[string]time.Time
 
 	// PutErr, if set, is returned by Put for simulating failures.
@@ -27,11 +28,18 @@ func NewInMemoryObjectStore() *InMemoryObjectStore {
 	return &InMemoryObjectStore{
 		objects:   make(map[string][]byte),
 		tags:      make(map[string]map[string]string),
+		types:     make(map[string]string),
 		createdAt: make(map[string]time.Time),
 	}
 }
 
-func (m *InMemoryObjectStore) Put(_ context.Context, key string, data []byte, tags map[string]string) error {
+func (m *InMemoryObjectStore) Put(ctx context.Context, key string, data []byte, tags map[string]string) error {
+	return m.PutWithOptions(ctx, key, data, tags, PutOptions{})
+}
+
+// PutWithOptions stores data as is (the in-memory store never compresses) and
+// records the content type for ContentType.
+func (m *InMemoryObjectStore) PutWithOptions(_ context.Context, key string, data []byte, tags map[string]string, opts PutOptions) error {
 	if m.PutErr != nil {
 		return m.PutErr
 	}
@@ -41,6 +49,11 @@ func (m *InMemoryObjectStore) Put(_ context.Context, key string, data []byte, ta
 	cp := make([]byte, len(data))
 	copy(cp, data)
 	m.objects[key] = cp
+	contentType := opts.ContentType
+	if contentType == "" {
+		contentType = ContentTypeJSON
+	}
+	m.types[key] = contentType
 	if _, exists := m.createdAt[key]; !exists {
 		m.createdAt[key] = time.Now()
 	}
@@ -62,7 +75,7 @@ func (m *InMemoryObjectStore) Get(_ context.Context, key string) ([]byte, error)
 	defer m.mu.RUnlock()
 	data, ok := m.objects[key]
 	if !ok {
-		return nil, fmt.Errorf("objectstore: object not found: %s", key)
+		return nil, fmt.Errorf("%w: %s", ErrNotFound, key)
 	}
 	cp := make([]byte, len(data))
 	copy(cp, data)
@@ -86,6 +99,7 @@ func (m *InMemoryObjectStore) Delete(_ context.Context, key string) error {
 	defer m.mu.Unlock()
 	delete(m.objects, key)
 	delete(m.tags, key)
+	delete(m.types, key)
 	delete(m.createdAt, key)
 	return nil
 }
@@ -96,6 +110,7 @@ func (m *InMemoryObjectStore) DeleteBatch(_ context.Context, keys []string) erro
 	for _, key := range keys {
 		delete(m.objects, key)
 		delete(m.tags, key)
+		delete(m.types, key)
 		delete(m.createdAt, key)
 	}
 	return nil
@@ -120,6 +135,13 @@ func (m *InMemoryObjectStore) GetTags(key string) map[string]string {
 	cp := make(map[string]string, len(tags))
 	maps.Copy(cp, tags)
 	return cp
+}
+
+// ContentType returns the content type recorded for key (test helper).
+func (m *InMemoryObjectStore) ContentType(key string) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.types[key]
 }
 
 // Len returns the number of stored objects. For testing assertions.

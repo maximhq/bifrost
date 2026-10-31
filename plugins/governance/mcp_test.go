@@ -2,6 +2,8 @@ package governance
 
 import (
 	"context"
+	"math/rand"
+	"slices"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -220,6 +222,88 @@ func TestVirtualMCPInMemoryCRUD(t *testing.T) {
 	assert.Equal(t, []uint{7}, gs.assignedVirtualMCPIDs("vk-2"), "stale id remains; resolution skips it via the nil lookup")
 }
 
+// TestSetVirtualMCPAssignmentsInMemory pins that a key's assignments can be replaced in one write, the
+// way a key reload converges the index on what the database holds: the new set lands sorted and
+// independent of the caller's slice, an empty set drops the key, and other keys are untouched.
+func TestSetVirtualMCPAssignmentsInMemory(t *testing.T) {
+	gs := &LocalGovernanceStore{logger: NewMockLogger()}
+	gs.AttachVirtualMCPInMemory("vk-1", 1)
+	gs.AttachVirtualMCPInMemory("vk-1", 2)
+	gs.AttachVirtualMCPInMemory("vk-2", 2)
+
+	ids := []uint{9, 3}
+	gs.SetVirtualMCPAssignmentsInMemory("vk-1", ids)
+	ids[0] = 42
+	assert.Equal(t, []uint{3, 9}, gs.assignedVirtualMCPIDs("vk-1"), "replaced, sorted, and copied from the caller")
+	got := gs.VirtualMCPAssignmentsInMemory("vk-1")
+	assert.Equal(t, []uint{3, 9}, got)
+	got[0] = 99
+	assert.Equal(t, []uint{3, 9}, gs.assignedVirtualMCPIDs("vk-1"), "the reader hands out a copy")
+	assert.Equal(t, []uint{2}, gs.assignedVirtualMCPIDs("vk-2"), "other keys are untouched")
+
+	gs.SetVirtualMCPAssignmentsInMemory("vk-1", nil)
+	assert.Nil(t, gs.assignedVirtualMCPIDs("vk-1"), "an empty set drops the key")
+	_, present := gs.virtualMCPIDsByVK.Load("vk-1")
+	assert.False(t, present)
+}
+
+// TestSetVirtualMCPAssignmentsMatchesAttachDetachConvergence pins that replacing a key's set in one
+// write leaves the index exactly where the enterprise key reload used to leave it: walking every
+// Virtual MCP that exists, attaching the ones the database assigns the key and detaching the rest.
+// Randomized over the starting index, the database's assignments and the other keys present.
+func TestSetVirtualMCPAssignmentsMatchesAttachDetachConvergence(t *testing.T) {
+	rng := rand.New(rand.NewSource(1))
+	all := []uint{1, 2, 3, 4, 5, 6, 7, 8}
+	subset := func() []uint {
+		var out []uint
+		for _, id := range all {
+			if rng.Intn(2) == 0 {
+				out = append(out, id)
+			}
+		}
+		rng.Shuffle(len(out), func(i, j int) { out[i], out[j] = out[j], out[i] })
+		return out
+	}
+	keys := []string{"vk-1", "vk-2", "vk-3"}
+	for iter := 0; iter < 2000; iter++ {
+		before := map[string][]uint{}
+		for _, k := range keys {
+			before[k] = subset()
+		}
+		assigned := subset()
+		if rng.Intn(5) == 0 {
+			assigned = nil // the database assigns nothing (or the key is profile-managed)
+		}
+
+		old := &LocalGovernanceStore{logger: NewMockLogger()}
+		replaced := &LocalGovernanceStore{logger: NewMockLogger()}
+		for _, k := range keys {
+			for _, id := range before[k] {
+				old.AttachVirtualMCPInMemory(k, id)
+				replaced.AttachVirtualMCPInMemory(k, id)
+			}
+		}
+
+		// The previous convergence, verbatim.
+		for _, id := range all {
+			if slices.Contains(assigned, id) {
+				old.AttachVirtualMCPInMemory("vk-1", id)
+			} else {
+				old.DetachVirtualMCPInMemory("vk-1", id)
+			}
+		}
+		replaced.SetVirtualMCPAssignmentsInMemory("vk-1", assigned)
+
+		for _, k := range keys {
+			require.Equal(t, old.assignedVirtualMCPIDs(k), replaced.assignedVirtualMCPIDs(k),
+				"iteration %d key %s: before %v, database %v", iter, k, before[k], assigned)
+			_, oldPresent := old.virtualMCPIDsByVK.Load(k)
+			_, newPresent := replaced.virtualMCPIDsByVK.Load(k)
+			require.Equal(t, oldPresent, newPresent, "iteration %d key %s: an emptied key is dropped either way", iter, k)
+		}
+	}
+}
+
 // TestPostMCPHook_RecordsAccountedLimitIDs verifies a tool call leaves behind the
 // budgets and rate limits it was billed against, the way PostLLMHook does for
 // inference. The logging plugin reads these keys when it completes the tool log,
@@ -255,4 +339,35 @@ func TestPostMCPHook_RecordsAccountedLimitIDs(t *testing.T) {
 
 	rateLimitIDs, _ := ctx.Value(schemas.BifrostContextKeyGovernanceRateLimitIDs).([]string)
 	assert.Contains(t, rateLimitIDs, "vk-rl")
+}
+
+// A prompt or resource read is accounted against the caller's limits like a tool call.
+func TestPostMCPHook_AccountsPromptAndResourceReads(t *testing.T) {
+	for _, requestType := range []schemas.MCPRequestType{schemas.MCPRequestTypeGetPrompt, schemas.MCPRequestTypeReadResource} {
+		t.Run(string(requestType), func(t *testing.T) {
+			logger := NewMockLogger()
+			rateLimit := buildRateLimitWithUsage("vk-rl", 10000, 0, 1000, 0)
+			vk := buildVirtualKeyWithRateLimit("vk1", "sk-bf-test", "Test VK", rateLimit)
+			store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+				VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+				RateLimits:  []configstoreTables.TableRateLimit{*rateLimit},
+			}, nil, nil)
+			require.NoError(t, err)
+			plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+			require.NoError(t, err)
+			defer plugin.Cleanup()
+
+			ctx := resolverCtx(store, "sk-bf-test")
+			_, settleErr := resolveLimits(ctx, store, "", "")
+			require.NoError(t, settleErr)
+			_, _, err = plugin.PostMCPHook(ctx, &schemas.BifrostMCPResponse{
+				ExtraFields: schemas.BifrostMCPResponseExtraFields{MCPRequestType: requestType, ClientName: "client"},
+			}, nil)
+			require.NoError(t, err)
+			plugin.wg.Wait()
+
+			rateLimitIDs, _ := ctx.Value(schemas.BifrostContextKeyGovernanceRateLimitIDs).([]string)
+			assert.Contains(t, rateLimitIDs, "vk-rl")
+		})
+	}
 }

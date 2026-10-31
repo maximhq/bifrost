@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"slices"
 	"strings"
 
@@ -144,12 +146,14 @@ type Key struct {
 	VertexKeyConfig        *VertexKeyConfig        `json:"vertex_key_config,omitempty"`         // Vertex-specific key configuration
 	BedrockKeyConfig       *BedrockKeyConfig       `json:"bedrock_key_config,omitempty"`        // AWS Bedrock-specific key configuration
 	BedrockMantleKeyConfig *BedrockMantleKeyConfig `json:"bedrock_mantle_key_config,omitempty"` // Bedrock Mantle-specific key configuration
+	SageMakerKeyConfig     *SageMakerKeyConfig     `json:"sagemaker_key_config,omitempty"`      // AWS SageMaker-specific key configuration
 	VLLMKeyConfig          *VLLMKeyConfig          `json:"vllm_key_config,omitempty"`           // vLLM-specific key configuration
 	ReplicateKeyConfig     *ReplicateKeyConfig     `json:"replicate_key_config,omitempty"`      // Replicate-specific key configuration
 	OllamaKeyConfig        *OllamaKeyConfig        `json:"ollama_key_config,omitempty"`         // Ollama-specific key configuration
 	SGLKeyConfig           *SGLKeyConfig           `json:"sgl_key_config,omitempty"`            // SGLang-specific key configuration
 	DatabricksKeyConfig    *DatabricksKeyConfig    `json:"databricks_key_config,omitempty"`     // Databricks-specific key configuration
-	GithubCopilotKeyConfig *GithubCopilotKeyConfig `json:"github_copilot_key_config,omitempty"` // GitHub Copilot-specific key configuration
+	CloudflareKeyConfig    *CloudflareKeyConfig    `json:"cloudflare_key_config,omitempty"`     // Cloudflare Workers AI-specific key configuration
+	OAuthKeyConfig         *OAuthKeyConfig         `json:"oauth_key_config,omitempty"`          // OAuth-minted bearer for OpenAI-compatible providers; used when Value is empty
 	Enabled                *bool                   `json:"enabled,omitempty"`                   // Whether the key is active (default:true)
 	UseForBatchAPI         *bool                   `json:"use_for_batch_api,omitempty"`         // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
 	UseAnthropicEndpoints  *bool                   `json:"use_anthropic_endpoints,omitempty"`   // Whether to use anthropic endpoints for this key
@@ -196,9 +200,12 @@ func (mf *ModelFamily) IsValid() bool {
 // AzureAliasCfg holds Azure-specific overrides that apply to a single alias.
 // Each field, when non-nil, overrides the corresponding key-level default.
 type AzureAliasCfg struct {
-	APIVersion       *string    `json:"api_version,omitempty"`       // overrides the Azure OpenAI api-version query param for this alias
-	AnthropicVersion *string    `json:"anthropic_version,omitempty"` // overrides the anthropic-version header for Claude-on-Azure deployments
-	Endpoint         *SecretVar `json:"endpoint,omitempty"`          // overrides AzureKeyConfig.Endpoint for this alias — lets one credential span deployments on multiple Azure resources
+	APIVersion         *string    `json:"api_version,omitempty"`          // overrides the Azure OpenAI api-version query param for this alias
+	AnthropicVersion   *string    `json:"anthropic_version,omitempty"`    // overrides the anthropic-version header for Claude-on-Azure deployments
+	Endpoint           *SecretVar `json:"endpoint,omitempty"`             // overrides AzureKeyConfig.Endpoint for this alias — lets one credential span deployments on multiple Azure resources
+	UseSpeechEndpoints *bool      `json:"use_speech_endpoints,omitempty"` // overrides AzureKeyConfig.UseSpeechEndpoints for this alias
+
+	UseVoiceLiveEndpoints *bool `json:"use_voice_live_endpoints,omitempty"` // overrides AzureKeyConfig.UseVoiceLiveEndpoints for this alias
 }
 
 // VertexAliasCfg holds Vertex-specific overrides that apply to a single alias.
@@ -210,9 +217,58 @@ type AzureAliasCfg struct {
 // here only so Go code that constructs VertexAliasCfg directly keeps compiling;
 // the Vertex resolver reads AliasConfig.ProjectID first and falls back to this.
 type VertexAliasCfg struct {
-	ProjectID         *SecretVar `json:"-"` // superseded by AliasConfig.ProjectID; not (de)serialized to avoid colliding with the top-level project_id
-	ProjectNumber     *SecretVar `json:"project_number,omitempty"`
-	ForceSingleRegion *bool      `json:"force_single_region,omitempty"`
+	ProjectID         *SecretVar      `json:"-"` // superseded by AliasConfig.ProjectID; not (de)serialized to avoid colliding with the top-level project_id
+	ProjectNumber     *SecretVar      `json:"project_number,omitempty"`
+	ForceSingleRegion *bool           `json:"force_single_region,omitempty"`
+	VertexEndpoint    *VertexEndpoint `json:"vertex_endpoint,omitempty"`
+}
+
+// VertexEndpoint routes an alias to a custom Vertex endpoint. Format is the body
+// the deployment accepts and Method the Vertex route that carries it, so the wire
+// shape never depends on the model name. AliasConfig.ModelID is the served model
+// name, not the endpoint ID. An omitted Method uses the format's default (raw
+// prediction for openai_chat). Project and region inherit from the key.
+type VertexEndpoint struct {
+	EndpointID string               `json:"endpoint_id"`
+	Format     VertexEndpointFormat `json:"format"`
+	Method     VertexEndpointMethod `json:"method,omitempty"`
+}
+
+type VertexEndpointFormat string
+
+const (
+	VertexEndpointOpenAIChat VertexEndpointFormat = "openai_chat"
+)
+
+type VertexEndpointMethod string
+
+const (
+	VertexEndpointRawPredict      VertexEndpointMethod = "raw_predict"
+	VertexEndpointChatCompletions VertexEndpointMethod = "chat_completions"
+)
+
+// Validate rejects unknown formats, methods the format cannot use, and endpoint
+// IDs that could alter the URL.
+func (e *VertexEndpoint) Validate() error {
+	if e == nil {
+		return nil
+	}
+	if e.EndpointID == "" || strings.IndexFunc(e.EndpointID, func(c rune) bool {
+		return !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-')
+	}) >= 0 {
+		return fmt.Errorf("vertex_endpoint.endpoint_id must contain only letters, digits, underscores or hyphens")
+	}
+	switch e.Format {
+	case VertexEndpointOpenAIChat:
+		switch e.Method {
+		case "", VertexEndpointRawPredict, VertexEndpointChatCompletions:
+			return nil
+		default:
+			return fmt.Errorf("invalid vertex_endpoint.method %q for format %q: expected raw_predict or chat_completions", e.Method, e.Format)
+		}
+	default:
+		return fmt.Errorf("invalid vertex_endpoint.format %q: expected openai_chat", e.Format)
+	}
 }
 
 // BedrockAliasCfg holds Bedrock-specific overrides that apply to a single alias.
@@ -250,6 +306,35 @@ type AliasConfig struct {
 	*VertexAliasCfg
 	*BedrockAliasCfg
 	*ReplicateAliasCfg
+}
+
+// Redacted copies the alias and its secret-bearing sub-configs, masking resolved
+// env/vault values while preserving literal identifiers and secret references.
+func (ac AliasConfig) Redacted() AliasConfig {
+	ac.Region = ac.Region.RedactedIfSecret()
+	ac.ProjectID = ac.ProjectID.RedactedIfSecret()
+	if ac.AzureAliasCfg != nil {
+		azure := *ac.AzureAliasCfg
+		azure.Endpoint = azure.Endpoint.RedactedIfSecret()
+		ac.AzureAliasCfg = &azure
+	}
+	if ac.VertexAliasCfg != nil {
+		vertex := *ac.VertexAliasCfg
+		// MarshalJSON promotes the deprecated ProjectID to the shared field.
+		vertex.ProjectID = vertex.ProjectID.RedactedIfSecret()
+		vertex.ProjectNumber = vertex.ProjectNumber.RedactedIfSecret()
+		if vertex.VertexEndpoint != nil {
+			endpoint := *vertex.VertexEndpoint
+			vertex.VertexEndpoint = &endpoint
+		}
+		ac.VertexAliasCfg = &vertex
+	}
+	if ac.BedrockAliasCfg != nil {
+		bedrock := *ac.BedrockAliasCfg
+		bedrock.InferenceProfileARN = bedrock.InferenceProfileARN.RedactedIfSecret()
+		ac.BedrockAliasCfg = &bedrock
+	}
+	return ac
 }
 
 // isLegacyShape reports whether this AliasConfig carries only ModelID and no
@@ -338,6 +423,11 @@ func (ka KeyAliases) Validate(providerKey ModelProvider) error {
 		if ac.VertexAliasCfg != nil && providerKey != Vertex {
 			return fmt.Errorf("alias %q: vertex sub-config is only valid on Vertex keys (got provider %q)", from, providerKey)
 		}
+		if ac.VertexAliasCfg != nil {
+			if err := ac.VertexEndpoint.Validate(); err != nil {
+				return fmt.Errorf("alias %q: %w", from, err)
+			}
+		}
 		if ac.BedrockAliasCfg != nil && providerKey != Bedrock {
 			return fmt.Errorf("alias %q: bedrock sub-config is only valid on Bedrock keys (got provider %q)", from, providerKey)
 		}
@@ -396,6 +486,15 @@ func GetResolvedAlias(ctx *BifrostContext) *ResolvedAlias {
 	}
 	ra, _ := v.(*ResolvedAlias)
 	return ra
+}
+
+// GetVertexEndpoint returns the explicit serving configuration for this
+// attempt. It describes the wire format independently of the underlying family.
+func GetVertexEndpoint(ctx *BifrostContext) *VertexEndpoint {
+	if ra := GetResolvedAlias(ctx); ra != nil && ra.Config != nil && ra.Config.VertexAliasCfg != nil {
+		return ra.Config.VertexEndpoint
+	}
+	return nil
 }
 
 // ResolveFamily returns the model family for the current attempt, walking
@@ -488,6 +587,14 @@ func ResolveBaseProvider(ctx *BifrostContext, provider ModelProvider) ModelProvi
 		}
 	}
 	return provider
+}
+
+// ChatReasoningModeRequiresResponses reports whether a chat request that sets
+// reasoning.mode is served on base by converting it to the Responses API. OpenAI
+// documents mode as Responses-only (developers.openai.com/api/docs/guides/reasoning#reasoning-mode),
+// and Azure serves the same models; no other wire carries it.
+func ChatReasoningModeRequiresResponses(base ModelProvider) bool {
+	return base == OpenAI || base == Azure
 }
 
 // IsAnthropicModelFamily reports whether the current attempt resolves to the
@@ -586,12 +693,15 @@ func IsVeoModelFamily(ctx *BifrostContext, model string) bool {
 // ResolvedKeyAlias.ModelFamily reflects the family explicitly configured on
 // the alias (nil when the admin didn't set one) — not the substring-resolved
 // family used for routing.
+//
+// RequestedProvider/RequestedModel come from ctx via ApplyRequestRouting.
 func BuildRoutingInfo(ctx *BifrostContext, attemptProvider ModelProvider, attemptModel string, attemptKey Key) RoutingInfo {
 	info := RoutingInfo{
 		Provider: attemptProvider,
 		Model:    attemptModel,
 		Key:      attemptKey.Name,
 	}
+	info.ApplyRequestRouting(ctx)
 	if ra := GetResolvedAlias(ctx); ra != nil && ra.Config != nil {
 		rka := &ResolvedKeyAlias{
 			ModelID: ra.Config.ModelID,
@@ -607,6 +717,21 @@ func BuildRoutingInfo(ctx *BifrostContext, attemptProvider ModelProvider, attemp
 		info.ResolvedKeyAlias = rka
 	}
 	return info
+}
+
+// ApplyRequestRouting copies the provider/model the caller sent, before any
+// PreRequestHook rewrote them, from ctx onto ri. Unlike the per-attempt fields
+// these are the same on every attempt of a request, fallbacks included.
+func (ri *RoutingInfo) ApplyRequestRouting(ctx *BifrostContext) {
+	if ri == nil || ctx == nil {
+		return
+	}
+	if provider, ok := ctx.Value(BifrostContextKeyRequestedProvider).(ModelProvider); ok {
+		ri.RequestedProvider = provider
+	}
+	if model, ok := ctx.Value(BifrostContextKeyRequestedModel).(string); ok {
+		ri.RequestedModel = model
+	}
 }
 
 // ResolveConfig returns the AliasConfig for the given user-facing model name,
@@ -683,10 +808,20 @@ type AzureKeyConfig struct {
 	ClientSecret *SecretVar `json:"client_secret,omitempty"` // Azure client secret for authentication
 	TenantID     *SecretVar `json:"tenant_id,omitempty"`     // Azure tenant ID for authentication
 	Scopes       []string   `json:"scopes,omitempty"`
+
+	UseSpeechEndpoints bool `json:"use_speech_endpoints,omitempty"` // sends speech and transcription requests to Azure AI Speech instead of Azure OpenAI
+
+	UseVoiceLiveEndpoints bool `json:"use_voice_live_endpoints,omitempty"` // sends realtime sessions to Azure Voice Live instead of Azure OpenAI
 }
 
 // VertexKeyConfig represents the Vertex-specific configuration.
 // It contains Vertex-specific settings required for authentication and service access.
+//
+// Three OAuth modes are selected by which fields are set, in this precedence order:
+//  1. AWSWorkloadIdentity set: the workload's AWS identity (EKS IRSA / Pod Identity, instance
+//     profile, static AWS env keys) is federated into a GCP token via Workload Identity Federation.
+//  2. AuthCredentials set: the credentials JSON (service account, external_account, ...) is used as-is.
+//  3. Neither set: Application Default Credentials (GKE Workload Identity, GCE metadata, gcloud ADC).
 type VertexKeyConfig struct {
 	ProjectID       SecretVar `json:"project_id"`
 	ProjectNumber   SecretVar `json:"project_number"`
@@ -695,9 +830,57 @@ type VertexKeyConfig struct {
 	// ForceSingleRegion pins requests to the configured region and disables automatic promotion of
 	// multi-region-only models to a multi-region pool endpoint (e.g. for provisioned throughput).
 	ForceSingleRegion bool `json:"force_single_region,omitempty"`
+	// UseSessionRouting sends prompt_cache_key to Gemini models as session_id, so Vertex reuses one replica's implicit cache.
+	UseSessionRouting bool `json:"use_session_routing,omitempty"`
+	// AWSWorkloadIdentity federates the workload's AWS identity into GCP; see VertexAWSWorkloadIdentityConfig.
+	AWSWorkloadIdentity *VertexAWSWorkloadIdentityConfig `json:"aws_workload_identity,omitempty"`
 }
 
-// NOTE: To use Vertex IAM role authentication, set AuthCredentials to empty string.
+// VertexAWSWorkloadIdentityConfig configures GCP Workload Identity Federation from an AWS identity.
+//
+// Bifrost resolves AWS credentials through the AWS SDK default chain (so EKS IRSA, EKS Pod Identity,
+// ECS task roles, EC2 instance profiles and AWS_* env vars all work), signs an STS GetCallerIdentity
+// request with them, and exchanges that signature at the GCP Security Token Service for a federated
+// token scoped to the Workload Identity Pool provider named by Audience. When ServiceAccountEmail is
+// set, the federated token is then exchanged for a service-account access token via IAM Credentials;
+// otherwise the federated principal must be granted Vertex AI access directly.
+type VertexAWSWorkloadIdentityConfig struct {
+	Audience             SecretVar  `json:"audience"`                         // //iam.googleapis.com/projects/N/locations/global/workloadIdentityPools/P/providers/X
+	ServiceAccountEmail  *SecretVar `json:"service_account_email,omitempty"`  // optional service account to impersonate
+	TokenLifetimeSeconds int        `json:"token_lifetime_seconds,omitempty"` // impersonated token lifetime, default 3600
+	AWSRegion            *SecretVar `json:"aws_region,omitempty"`             // overrides the SDK-resolved region for the STS signature
+	AWSRoleARN           *SecretVar `json:"aws_role_arn,omitempty"`           // optional STS AssumeRole hop before the GCP exchange
+}
+
+// IsSet reports whether the config carries a usable audience, which is the trigger for federation.
+func (c *VertexAWSWorkloadIdentityConfig) IsSet() bool {
+	return c != nil && c.Audience.IsSet()
+}
+
+// Redacted returns a copy safe to send to clients: identifiers stay readable unless they come from
+// a secret reference, while the role ARN is always masked like Bedrock's role_arn.
+func (c *VertexAWSWorkloadIdentityConfig) Redacted() *VertexAWSWorkloadIdentityConfig {
+	if c == nil {
+		return nil
+	}
+	out := &VertexAWSWorkloadIdentityConfig{
+		Audience:             *c.Audience.RedactedIfSecret(),
+		TokenLifetimeSeconds: c.TokenLifetimeSeconds,
+	}
+	if c.ServiceAccountEmail != nil {
+		out.ServiceAccountEmail = c.ServiceAccountEmail.RedactedIfSecret()
+	}
+	if c.AWSRegion != nil {
+		out.AWSRegion = c.AWSRegion.RedactedIfSecret()
+	}
+	if c.AWSRoleARN != nil {
+		out.AWSRoleARN = c.AWSRoleARN.Redacted()
+	}
+	return out
+}
+
+// NOTE: To use Vertex IAM role authentication, set AuthCredentials to empty string and leave
+// AWSWorkloadIdentity nil.
 
 // S3BucketConfig represents a single S3 bucket configuration for batch operations.
 type S3BucketConfig struct {
@@ -731,6 +914,21 @@ type BedrockEndpoints struct {
 	Mantle       *SecretVar `json:"mantle,omitempty"`        // com.amazonaws.{region}.bedrock-mantle — mantle-routed models
 	AgentRuntime *SecretVar `json:"agent_runtime,omitempty"` // com.amazonaws.{region}.bedrock-agent-runtime — rerank
 	S3           *SecretVar `json:"s3,omitempty"`            // com.amazonaws.{region}.s3 — batch file I/O, "bucket."-prefixed
+}
+
+// Redacted copies the endpoints, preserving literal hosts while masking resolved
+// env/vault values. A nil endpoint configuration stays nil.
+func (e *BedrockEndpoints) Redacted() *BedrockEndpoints {
+	if e == nil {
+		return nil
+	}
+	return &BedrockEndpoints{
+		Runtime:      e.Runtime.RedactedIfSecret(),
+		ControlPlane: e.ControlPlane.RedactedIfSecret(),
+		Mantle:       e.Mantle.RedactedIfSecret(),
+		AgentRuntime: e.AgentRuntime.RedactedIfSecret(),
+		S3:           e.S3.RedactedIfSecret(),
+	}
 }
 
 // NormalizeEndpointHost returns a configured endpoint value as a bare host, or "" when unset.
@@ -809,6 +1007,34 @@ type BedrockMantleKeyConfig struct {
 // NOTE: To use Bedrock Mantle IAM role authentication, set both AccessKey and SecretKey to empty
 // strings. To use Bedrock Mantle API Key authentication, set Value in the Key struct instead.
 
+// SageMakerKeyConfig holds the AWS credentials and routing options for SageMaker real-time
+// endpoints. Empty AccessKey and SecretKey use the default AWS credential chain.
+type SageMakerKeyConfig struct {
+	AccessKey       SecretVar  `json:"access_key,omitempty"`    // AWS access key used to mint bearer tokens
+	SecretKey       SecretVar  `json:"secret_key,omitempty"`    // AWS secret access key
+	SessionToken    *SecretVar `json:"session_token,omitempty"` // AWS session token for temporary credentials
+	Region          *SecretVar `json:"region,omitempty"`        // Endpoint region (required); a model id region prefix overrides it per request
+	RoleARN         *SecretVar `json:"role_arn,omitempty"`      // IAM role for STS AssumeRole
+	ExternalID      *SecretVar `json:"external_id,omitempty"`
+	RoleSessionName *SecretVar `json:"session_name,omitempty"`
+
+	Endpoints *SageMakerEndpoints `json:"endpoints,omitempty"` // Runtime host override (VPC endpoint, FIPS, dual-stack)
+}
+
+// SageMakerEndpoints overrides the SageMaker runtime host.
+type SageMakerEndpoints struct {
+	Runtime *SecretVar `json:"runtime,omitempty"` // e.g. vpce-....runtime.sagemaker.{region}.vpce.amazonaws.com
+}
+
+// Redacted copies the endpoints, preserving a literal host while masking a resolved env/vault
+// value. A nil endpoint configuration stays nil.
+func (e *SageMakerEndpoints) Redacted() *SageMakerEndpoints {
+	if e == nil {
+		return nil
+	}
+	return &SageMakerEndpoints{Runtime: e.Runtime.RedactedIfSecret()}
+}
+
 // VLLMKeyConfig represents the vLLM-specific key configuration.
 // It allows each key to target a different vLLM server URL and model name,
 // enabling per-key routing and round-robin load balancing across multiple vLLM instances.
@@ -835,6 +1061,12 @@ type OllamaKeyConfig struct {
 // enabling per-key routing and round-robin load balancing across multiple SGLang instances.
 type SGLKeyConfig struct {
 	URL SecretVar `json:"url"` // SGLang server base URL (required, supports env. prefix)
+}
+
+// CloudflareKeyConfig represents the Cloudflare Workers AI-specific key configuration.
+// It allows each key to target a different Cloudflare account.
+type CloudflareKeyConfig struct {
+	AccountID SecretVar `json:"account_id"` // Cloudflare account ID (required, supports env. prefix)
 }
 
 // DatabricksAPIFormat selects which Databricks inference surface a key targets. Both surfaces
@@ -871,23 +1103,187 @@ type DatabricksKeyConfig struct {
 	ForwardGatewayTags bool                `json:"forward_gateway_tags,omitempty"` // Whether to forward Bifrost governance labels as Databricks-Ai-Gateway-Request-Tags
 }
 
-// GithubCopilotKeyConfig holds GitHub App credentials for server-to-server Copilot access.
+const (
+	// DatabricksOAuthTokenPath is the workspace-level OAuth token endpoint for M2M service principals.
+	DatabricksOAuthTokenPath = "/oidc/v1/token"
+	// DatabricksOAuthScope is the scope Databricks requires for M2M client-credentials grants.
+	DatabricksOAuthScope = "all-apis"
+)
+
+// databricksOAuthScopes is the shared, read-only scope list every derived config points at,
+// so the per-request derivation does not allocate a slice.
+var databricksOAuthScopes = []string{DatabricksOAuthScope}
+
+// OAuthConfig maps the service-principal pair onto the common OAuth key config, filling in the
+// token endpoint and scope that Databricks fixes for every workspace. The wire shape of
+// databricks_key_config is unchanged; this is how the provider hands its credentials to the
+// shared token cache, so Databricks and custom OpenAI-compatible providers mint through one
+// code path. host is the bare workspace host. It returns false when either half of the pair
+// is missing, so a caller can report the half-configured case in its own words. The value is
+// returned rather than a pointer so the per-request derivation stays on the stack.
+func (c *DatabricksKeyConfig) OAuthConfig(host string) (OAuthKeyConfig, bool) {
+	if c == nil || c.ClientID == nil || c.ClientSecret == nil {
+		return OAuthKeyConfig{}, false
+	}
+	if c.ClientID.GetValue() == "" || c.ClientSecret.GetValue() == "" {
+		return OAuthKeyConfig{}, false
+	}
+	return OAuthKeyConfig{
+		GrantType:    OAuthGrantClientCredentials,
+		TokenURL:     *NewSecretVar("https://" + host + DatabricksOAuthTokenPath),
+		ClientID:     c.ClientID,
+		ClientSecret: c.ClientSecret,
+		Scopes:       databricksOAuthScopes,
+		AuthStyle:    OAuthAuthStyleHeader,
+	}, true
+}
+
+// OAuthGrantType selects how an OAuthKeyConfig obtains an access token.
+type OAuthGrantType string
+
+const (
+	// OAuthGrantClientCredentials is the OAuth 2.0 client_credentials grant (RFC 6749 §4.4).
+	OAuthGrantClientCredentials OAuthGrantType = "client_credentials"
+	// OAuthGrantJWTBearer is the JWT bearer assertion grant (RFC 7523): Bifrost signs an
+	// assertion with the configured private key and exchanges it for an access token.
+	OAuthGrantJWTBearer OAuthGrantType = "jwt_bearer"
+)
+
+// OAuthAuthStyle selects where the client_credentials grant sends the client ID and secret.
+type OAuthAuthStyle string
+
+const (
+	// OAuthAuthStyleHeader sends the credentials as HTTP Basic auth (the RFC 6749 default).
+	OAuthAuthStyleHeader OAuthAuthStyle = "header"
+	// OAuthAuthStyleBody sends client_id and client_secret as form fields in the request body.
+	OAuthAuthStyleBody OAuthAuthStyle = "body"
+)
+
+// OAuthKeyConfig is the common shape every OAuth-minted key credential reduces to. A custom
+// OpenAI-compatible provider carries it directly on the key as oauth_key_config; providers
+// with their own key config (Databricks) derive one from their fields. The shared token
+// cache in core/providers/utils/tokencache mints, caches and refreshes from this struct, so
+// the grant handling, cache keying and error mapping exist once.
 //
-// A GitHub App carrying the "Copilot Requests" permission mints short-lived installation
-// tokens, and Copilot usage is billed to the account that owns the installation. No
-// individual Copilot seat is involved, which is what makes this the correct auth mode for
-// a shared gateway.
-//
-// The organization must also have the "Allow use of Copilot CLI billed to the
-// organization" policy enabled, and the installation needs All repositories access.
-//
-// See https://docs.github.com/en/copilot/how-tos/copilot-sdk/auth/server-to-server-tokens
-type GithubCopilotKeyConfig struct {
-	AppID          SecretVar `json:"app_id"`                  // GitHub App ID or Client ID; the App JWT issuer (required)
-	InstallationID SecretVar `json:"installation_id"`         // Installation to mint tokens for; digits only (required)
-	RepositoryID   SecretVar `json:"repository_id"`           // Repository the installation token is scoped to; digits only (required)
-	PrivateKey     SecretVar `json:"private_key"`             // GitHub App private key, PKCS#1 or PKCS#8 PEM (required)
-	GithubDomain   SecretVar `json:"github_domain,omitempty"` // GitHub Enterprise domain, e.g. "acme.ghe.com". Empty means github.com.
+// Leave Key.Value empty to mint from this config; a non-empty Value always wins and is sent
+// verbatim as the bearer token.
+type OAuthKeyConfig struct {
+	GrantType                OAuthGrantType    `json:"grant_type"`                           // client_credentials or jwt_bearer (required)
+	TokenURL                 SecretVar         `json:"token_url"`                            // Token endpoint, absolute https URL (required, supports env. prefix)
+	ClientID                 *SecretVar        `json:"client_id,omitempty"`                  // client_credentials: client ID (required for that grant)
+	ClientSecret             *SecretVar        `json:"client_secret,omitempty"`              // client_credentials: client secret (required for that grant)
+	PrivateKey               *SecretVar        `json:"private_key,omitempty"`                // jwt_bearer: RSA or EC private key, PEM (required for that grant)
+	Scopes                   []string          `json:"scopes,omitempty"`                     // Scopes requested, sent space-joined
+	Audience                 string            `json:"audience,omitempty"`                   // jwt_bearer: aud claim (required for that grant); client_credentials: optional audience form param
+	Issuer                   string            `json:"issuer,omitempty"`                     // jwt_bearer: iss claim (required for that grant)
+	Subject                  string            `json:"subject,omitempty"`                    // jwt_bearer: sub claim (defaults to issuer)
+	KeyID                    string            `json:"key_id,omitempty"`                     // jwt_bearer: kid header
+	SigningAlgorithm         string            `json:"signing_algorithm,omitempty"`          // jwt_bearer: RS256 (default), RS384, RS512, PS256, PS384, PS512, ES256, ES384, ES512
+	AuthStyle                OAuthAuthStyle    `json:"auth_style,omitempty"`                 // client_credentials: header (default) or body
+	ExtraParams              map[string]string `json:"extra_params,omitempty"`               // Extra form parameters sent on the token request
+	AssertionLifetimeSeconds int               `json:"assertion_lifetime_seconds,omitempty"` // jwt_bearer: assertion exp - iat (default 300)
+}
+
+// Redacted returns a copy safe to return from a configuration read: the token URL stays
+// readable unless it is secret-backed, the credential fields are masked, and every
+// extra_params value is masked too, since that free-form map may carry a credential such as
+// a client_assertion. The masks are recognised by IsMaskedPlaceholder, so an update that
+// sends them back resolves to the stored values.
+func (c *OAuthKeyConfig) Redacted() *OAuthKeyConfig {
+	if c == nil {
+		return nil
+	}
+	cfg := *c
+	cfg.TokenURL = *cfg.TokenURL.RedactedIfSecret()
+	cfg.ClientID = cfg.ClientID.Redacted()
+	cfg.ClientSecret = cfg.ClientSecret.Redacted()
+	cfg.PrivateKey = cfg.PrivateKey.Redacted()
+	// extra_params values are sent to the token endpoint as the literal strings they are, so
+	// they are masked as strings: parsing them as secret references would resolve an
+	// "env."-looking value (a vault lookup on a GET) and mask an unset one to "", which an
+	// update then saves, overwriting the stored parameter.
+	if len(c.ExtraParams) > 0 {
+		cfg.ExtraParams = make(map[string]string, len(c.ExtraParams))
+		for k, v := range c.ExtraParams {
+			cfg.ExtraParams[k] = (&SecretVar{Val: v}).Redacted().GetValue()
+		}
+	}
+	return &cfg
+}
+
+// isLoopbackHost reports whether a URL hostname can only reach this machine.
+func isLoopbackHost(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(strings.TrimPrefix(host, "["), "]"))
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// OAuthSigningAlgorithms lists the JWT algorithms a jwt_bearer config may name.
+var OAuthSigningAlgorithms = []string{"RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512"}
+
+// Validate checks the config at setup time, before it is stored or a request can use it, so
+// a half-configured key is refused where the operator can act on it rather than failing at
+// the first inference call. The request path repeats only the cheap checks.
+func (c *OAuthKeyConfig) Validate() error {
+	if c == nil {
+		return nil
+	}
+	// An env. or vault reference counts as present; a literal must be non-blank. The URL
+	// shape is only checked for a literal, since a reference resolves elsewhere.
+	has := func(v *SecretVar) bool {
+		return v != nil && (v.IsFromSecret() || strings.TrimSpace(v.GetValue()) != "")
+	}
+	if !has(&c.TokenURL) {
+		return fmt.Errorf("oauth_key_config.token_url is required")
+	}
+	if !c.TokenURL.IsFromSecret() {
+		// The client secret or signed assertion travels on this request, so plain http is
+		// accepted only towards a loopback host, where it never leaves the machine.
+		u, err := url.Parse(strings.TrimSpace(c.TokenURL.GetValue()))
+		if err != nil || !u.IsAbs() || u.Host == "" || !(u.Scheme == "https" || (u.Scheme == "http" && isLoopbackHost(u.Hostname()))) {
+			return fmt.Errorf("oauth_key_config.token_url must be https (http is allowed for loopback hosts only)")
+		}
+		// The URL is shown in plain text wherever the key is read back, so it may not be a
+		// place to hide a credential. A token endpoint needs neither; parameters go in extra_params.
+		if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			return fmt.Errorf("oauth_key_config.token_url must not carry userinfo, a query, or a fragment; send extra parameters through extra_params")
+		}
+	}
+	switch c.GrantType {
+	case OAuthGrantClientCredentials:
+		if !has(c.ClientID) || !has(c.ClientSecret) {
+			return fmt.Errorf("oauth_key_config.client_id and oauth_key_config.client_secret are required for the client_credentials grant")
+		}
+		switch c.AuthStyle {
+		case "", OAuthAuthStyleHeader, OAuthAuthStyleBody:
+		default:
+			return fmt.Errorf("oauth_key_config.auth_style must be header or body")
+		}
+	case OAuthGrantJWTBearer:
+		if !has(c.PrivateKey) {
+			return fmt.Errorf("oauth_key_config.private_key is required for the jwt_bearer grant")
+		}
+		if strings.TrimSpace(c.Issuer) == "" {
+			return fmt.Errorf("oauth_key_config.issuer is required for the jwt_bearer grant")
+		}
+		if strings.TrimSpace(c.Audience) == "" {
+			return fmt.Errorf("oauth_key_config.audience is required for the jwt_bearer grant")
+		}
+		if c.SigningAlgorithm != "" && !slices.Contains(OAuthSigningAlgorithms, c.SigningAlgorithm) {
+			return fmt.Errorf("oauth_key_config.signing_algorithm must be one of %s", strings.Join(OAuthSigningAlgorithms, ", "))
+		}
+		if c.AssertionLifetimeSeconds < 0 || c.AssertionLifetimeSeconds > 3600 {
+			return fmt.Errorf("oauth_key_config.assertion_lifetime_seconds must be between 0 (default) and 3600")
+		}
+	case "":
+		return fmt.Errorf("oauth_key_config.grant_type is required")
+	default:
+		return fmt.Errorf("oauth_key_config.grant_type must be client_credentials or jwt_bearer")
+	}
+	return nil
 }
 
 // Account defines the interface for managing provider accounts and their configurations.

@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/providers/utils"
@@ -115,7 +116,7 @@ func ToGeminiTranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionReques
 
 	// Convert parameters to generation config
 	if bifrostReq.Params != nil {
-		geminiReq.ExtraParams = bifrostReq.Params.ExtraParams
+		geminiReq.ExtraParams = maps.Clone(bifrostReq.Params.ExtraParams)
 		// Handle extra parameters
 		if bifrostReq.Params.ExtraParams != nil {
 			// Safety settings
@@ -196,12 +197,12 @@ func (response *GenerateContentResponse) ToBifrostTranscriptionResponse() *schem
 			if textContent != "" {
 				bifrostResp.Text = textContent
 				bifrostResp.Task = schemas.Ptr("transcribe")
-
-				// Set usage information with modality details
-				bifrostResp.Usage = convertGeminiUsageMetadataToTranscriptionUsage(response.UsageMetadata)
 			}
 		}
 	}
+
+	// Usage is billed even when the transcript is empty.
+	bifrostResp.Usage = convertGeminiUsageMetadataToTranscriptionUsage(response.UsageMetadata)
 
 	return bifrostResp
 }

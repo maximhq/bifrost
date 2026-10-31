@@ -232,7 +232,7 @@ gh api repos/OWNER/REPO/pulls/PR_NUMBER/comments/COMMENT_ID/replies -X POST -f b
 
 After the local edits for a comment (or for the batch), run the tests yourself and report the result. Do **not** run the provider harness - that run is the user's to trigger.
 
-Use the Makefile recipes, never raw `go test`. For a non-exempt wire-visible change under `core/` or a provider package, `make test-core` is required rather than optional: it is the canonical provider-test harness, and AGENTS.md names it and the unit tests together as the agent's finish line.
+Use the Makefile recipes, never raw `go test`. A non-exempt wire-visible change on any layer of the request path (`core/`, `framework/`, `transports/bifrost-http/`, `plugins/`) requires the regression tests from AGENTS.md "Testing" rather than treating them as optional - unit tests plus a provider-harness case. When `core/` or a provider package is touched, `make test-core` is the canonical provider-test harness, and AGENTS.md names it and the unit tests together as the agent's finish line.
 
 ```bash
 # scoped to the tests you touched (preferred; PATTERN is a regex)

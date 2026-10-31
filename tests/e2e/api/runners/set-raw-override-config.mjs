@@ -8,6 +8,9 @@
 const baseURL = (process.env.BIFROST_E2E_BASE_URL || process.env.BIFROST_BASE_URL || "http://localhost:8080").replace(/\/+$/, "");
 const mode = process.argv[2];
 const authHeader = process.env.BIFROST_E2E_AUTH_HEADER || "";
+// OSS setup lock: while dashboard auth is not active, /api needs the setup token. Must
+// match the server's setup_token; the server ignores it once auth is enabled.
+const setupToken = (process.env.BIFROST_E2E_SETUP_TOKEN || process.env.BIFROST_SETUP_TOKEN || "bifrost-e2e-setup-token").trim();
 
 if (mode !== "enable" && mode !== "disable") {
   console.error("Usage: set-raw-override-config.mjs <enable|disable>");
@@ -18,6 +21,9 @@ async function request(method, path, body) {
   const headers = { "content-type": "application/json" };
   if (authHeader) {
     headers.Authorization = authHeader;
+  }
+  if (setupToken) {
+    headers["X-Bifrost-Setup-Token"] = setupToken;
   }
   const res = await fetch(`${baseURL}${path}`, {
     method,

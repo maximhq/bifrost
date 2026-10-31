@@ -11,10 +11,8 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// errNotAccessibleByIntegration is the marker GitHub returns when a request carried a
-// credential the endpoint does not accept. On the inference path it means the wrong layer
-// of token reached the wire.
-const errNotAccessibleByIntegration = "resource not accessible by integration"
+// errFeatureNotAuthorized is Copilot's 403 for a PAT when the Copilot CLI policy is off.
+const errFeatureNotAuthorized = "not authorized to use this copilot feature"
 
 // copilotErrorBody is the OpenAI-shaped envelope Copilot returns for inference errors.
 // Some auth failures come back as a bare GitHub {"message": "..."} instead, so both
@@ -31,15 +29,18 @@ type copilotErrorBody struct {
 // parseCopilotError converts a Copilot inference error into a BifrostError.
 //
 // Copilot's auth failures are almost always configuration faults rather than transient
-// ones: a revoked token, a Copilot policy that excludes the model, or an installation
-// without the right permission. Retrying those against a fallback provider silently
+// ones: a revoked token or a Copilot policy that excludes the model. Retrying those against a fallback provider silently
 // moves paid traffic somewhere the operator did not choose, so 401 and 403 block
 // fallbacks. Rate limits and server errors are left alone.
 func parseCopilotError(resp *fasthttp.Response) *schemas.BifrostError {
-	var bifrostErr schemas.BifrostError
+	var errorResp schemas.BifrostError
 
-	// Let the generic handler set status and base fields first.
-	_ = providerUtils.HandleProviderAPIError(resp, &bifrostErr)
+	// Let the generic handler set status, the raw response and the retry hint first. Only
+	// what Copilot itself sent feeds the message, since the handler's wording for an empty
+	// or non-JSON body is not upstream detail.
+	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
+	bifrostErr.EventID = errorResp.EventID
+	bifrostErr.Error = errorResp.Error
 
 	if bifrostErr.Error == nil {
 		bifrostErr.Error = &schemas.ErrorField{}
@@ -57,26 +58,14 @@ func parseCopilotError(resp *fasthttp.Response) *schemas.BifrostError {
 			if parsed.Error.Type != "" {
 				bifrostErr.Error.Type = &parsed.Error.Type
 			}
+		} else {
+			// Copilot sends some rejections as plain text ("Bad Request", or "unauthorized: not
+			// authorized to use this Copilot feature" for a PAT); keep them as the detail.
+			bifrostErr.Error.Message = truncateDetail(strings.TrimSpace(string(body)))
 		}
 	}
 
-	switch resp.StatusCode() {
-	case fasthttp.StatusUnauthorized:
-		bifrostErr.AllowFallbacks = schemas.Ptr(false)
-		bifrostErr.Error.Message = "github copilot: the Copilot API token was rejected (401). " +
-			"It expired or was revoked. Upstream said: " + upstreamDetail(bifrostErr.Error.Message)
-	case fasthttp.StatusForbidden:
-		bifrostErr.AllowFallbacks = schemas.Ptr(false)
-		if strings.Contains(strings.ToLower(bifrostErr.Error.Message), errNotAccessibleByIntegration) {
-			bifrostErr.Error.Message = "github copilot: the request carried the wrong credential (403). " +
-				"A GitHub installation token belongs on the Copilot token exchange only; the " +
-				"Copilot API token belongs on inference requests."
-			break
-		}
-		bifrostErr.Error.Message = "github copilot: Copilot refused the request (403). " +
-			"The account may lack Copilot access, or an organization policy may exclude this " +
-			"model. Upstream said: " + upstreamDetail(bifrostErr.Error.Message)
-	}
+	classifyAuthError(bifrostErr, resp.StatusCode())
 
 	if strings.TrimSpace(bifrostErr.Error.Message) == "" {
 		if bifrostErr.StatusCode != nil {
@@ -86,7 +75,43 @@ func parseCopilotError(resp *fasthttp.Response) *schemas.BifrostError {
 		}
 	}
 
-	return &bifrostErr
+	return bifrostErr
+}
+
+// classifyAuthError blocks fallbacks on 401 and 403 and rewrites the message to name the
+// likely cause. Shared by the Copilot-shaped and Anthropic-shaped (/v1/messages) error paths.
+func classifyAuthError(bifrostErr *schemas.BifrostError, status int) {
+	switch status {
+	case fasthttp.StatusUnauthorized:
+		bifrostErr.AllowFallbacks = schemas.Ptr(false)
+		bifrostErr.Error.Message = "github copilot: the Copilot API token was rejected (401). " +
+			"It expired or was revoked. Upstream said: " + upstreamDetail(bifrostErr.Error.Message)
+	case fasthttp.StatusForbidden:
+		bifrostErr.AllowFallbacks = schemas.Ptr(false)
+		// A PAT on a seat whose organization has not enabled the Copilot CLI policy.
+		if strings.Contains(strings.ToLower(bifrostErr.Error.Message), errFeatureNotAuthorized) {
+			bifrostErr.Error.Message = "github copilot: Copilot refused the personal access token (403). The " +
+				"organization that assigns this Copilot seat must enable the Copilot CLI policy (Settings > " +
+				"Copilot > Policies). Upstream said: " + bifrostErr.Error.Message
+			return
+		}
+		bifrostErr.Error.Message = "github copilot: Copilot refused the request (403). " +
+			"The account may lack Copilot access, or an organization policy may exclude this " +
+			"model. Upstream said: " + upstreamDetail(bifrostErr.Error.Message)
+	}
+}
+
+// blockAuthFallbacks applies classifyAuthError to an error from the shared Anthropic
+// handlers, which parse errors themselves and take no custom converter.
+func blockAuthFallbacks(bifrostErr *schemas.BifrostError) *schemas.BifrostError {
+	if bifrostErr == nil || bifrostErr.StatusCode == nil {
+		return bifrostErr
+	}
+	if bifrostErr.Error == nil {
+		bifrostErr.Error = &schemas.ErrorField{}
+	}
+	classifyAuthError(bifrostErr, *bifrostErr.StatusCode)
+	return bifrostErr
 }
 
 // upstreamDetail keeps the operator-facing message readable when Copilot returns an empty
@@ -103,10 +128,18 @@ func upstreamDetail(message string) string {
 // providerUtils.NewConfigurationError leaves AllowFallbacks nil, and nil means allowed, so
 // a bare configuration error would let a misconfigured Copilot key silently route prompts
 // to whatever fallback is configured, on someone else's bill, while the operator sees a
-// success. Nothing about a missing credential or a malformed private key improves by being
-// retried somewhere else.
+// success. Nothing about a missing credential improves by being retried somewhere else.
 func configurationError(message string) *schemas.BifrostError {
 	bErr := providerUtils.NewConfigurationError(message)
 	bErr.AllowFallbacks = schemas.Ptr(false)
 	return bErr
+}
+
+// truncateDetail bounds a plain-text upstream body before it becomes an error message.
+func truncateDetail(detail string) string {
+	const maxDetail = 512
+	if len(detail) > maxDetail {
+		return detail[:maxDetail] + "..."
+	}
+	return detail
 }

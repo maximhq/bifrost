@@ -1,3 +1,4 @@
+import { virtualKeyMetadataQueryParams } from "@/lib/utils/virtualKeyMetadata";
 import {
 	Budget,
 	BudgetOverrideRequest,
@@ -67,6 +68,7 @@ export const governanceApi = baseApi.injectEndpoints({
 					...(params?.search && { search: params.search }),
 					...(params?.customer_id && { customer_id: params.customer_id }),
 					...(params?.team_id && { team_id: params.team_id }),
+					...(params?.business_unit_id && { business_unit_id: params.business_unit_id }),
 					...(params?.user_id && { user_id: params.user_id }),
 					...(params?.exclude_access_profile_managed_virtual === true && {
 						exclude_access_profile_managed_virtual: "true",
@@ -80,6 +82,7 @@ export const governanceApi = baseApi.injectEndpoints({
 					...(params?.sort_by && { sort_by: params.sort_by }),
 					...(params?.order && { order: params.order }),
 					...(params?.export && { export: "true" }),
+					...virtualKeyMetadataQueryParams(params?.metadata),
 				},
 			}),
 			providesTags: ["VirtualKeys"],

@@ -1,12 +1,48 @@
 package openai
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
+
+func TestRealtimeWebRTCUpstreamErrorPreservesProviderResponse(t *testing.T) {
+	t.Parallel()
+
+	provider := &OpenAIProvider{}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	var resp fasthttp.Response
+	resp.SetStatusCode(fasthttp.StatusUnauthorized)
+	resp.SetBodyString(`{"error":{"message":"Invalid realtime token","type":"invalid_request_error","code":"invalid_realtime_token","param":"token"}}`)
+
+	bifrostErr := provider.realtimeWebRTCUpstreamError(ctx, &resp)
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != fasthttp.StatusUnauthorized {
+		t.Fatalf("status = %v, want %d", bifrostErr.StatusCode, fasthttp.StatusUnauthorized)
+	}
+	if bifrostErr.Error == nil || bifrostErr.Error.Message != "Invalid realtime token" {
+		t.Fatalf("error = %#v", bifrostErr.Error)
+	}
+	if bifrostErr.Error.Type == nil || *bifrostErr.Error.Type != "invalid_request_error" {
+		t.Fatalf("error type = %v", bifrostErr.Error.Type)
+	}
+	if bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != "invalid_realtime_token" {
+		t.Fatalf("error code = %v", bifrostErr.Error.Code)
+	}
+	if bifrostErr.ExtraFields.RoutingInfo.Provider != schemas.OpenAI || bifrostErr.ExtraFields.RequestType != schemas.RealtimeRequest {
+		t.Fatalf("extra fields = %#v", bifrostErr.ExtraFields)
+	}
+	if bifrostErr.ExtraFields.Provider != schemas.OpenAI { //nolint:staticcheck // deprecated field must stay in sync for backward compatibility
+		t.Fatalf("deprecated provider = %v, want %v", bifrostErr.ExtraFields.Provider, schemas.OpenAI)
+	}
+	if bifrostErr.ExtraFields.RawResponse != nil {
+		t.Fatalf("raw response = %#v, want nil", bifrostErr.ExtraFields.RawResponse)
+	}
+}
 
 func TestExtractRealtimeTurnUsageSupportsTranscriptionCompletion(t *testing.T) {
 	t.Parallel()
@@ -54,10 +90,10 @@ func TestRealtimeWebSocketURL(t *testing.T) {
 	t.Parallel()
 
 	provider := &OpenAIProvider{networkConfig: schemas.NetworkConfig{BaseURL: "https://api.openai.com"}}
-	if got, err := provider.RealtimeWebSocketURL(schemas.Key{}, "gpt-4o transcribe", ""); err != nil || got != "wss://api.openai.com/v1/realtime?model=gpt-4o+transcribe" {
+	if got, err := provider.RealtimeWebSocketURL(nil, schemas.Key{}, "gpt-4o transcribe", ""); err != nil || got != "wss://api.openai.com/v1/realtime?model=gpt-4o+transcribe" {
 		t.Fatalf("RealtimeWebSocketURL() = %q, %v", got, err)
 	}
-	if got, err := provider.RealtimeWebSocketURL(schemas.Key{}, "gpt-4o transcribe", "transcription"); err != nil || got != "wss://api.openai.com/v1/realtime?intent=transcription" {
+	if got, err := provider.RealtimeWebSocketURL(nil, schemas.Key{}, "gpt-4o transcribe", "transcription"); err != nil || got != "wss://api.openai.com/v1/realtime?intent=transcription" {
 		t.Fatalf("RealtimeWebSocketURL() = %q, %v", got, err)
 	}
 }
@@ -429,8 +465,13 @@ func TestShouldStartRealtimeTurn(t *testing.T) {
 			want:  true,
 		},
 		{
-			name:  "audio buffer committed starts turn",
+			name:  "audio buffer committed only acknowledges input",
 			event: &schemas.BifrostRealtimeEvent{Type: schemas.RTEventInputAudioBufferCommitted},
+			want:  false,
+		},
+		{
+			name:  "provider response created starts automatic turn",
+			event: &schemas.BifrostRealtimeEvent{Type: schemas.RTEventResponseCreated},
 			want:  true,
 		},
 		{
@@ -801,5 +842,62 @@ func TestInputAudioBufferAppendRoundtrip(t *testing.T) {
 	}
 	if audioStr != b64Audio {
 		t.Fatalf("audio = %q, want %q", audioStr, b64Audio)
+	}
+}
+
+func TestRealtimeWebRTCUpstreamErrorCarriesRetryHint(t *testing.T) {
+	t.Parallel()
+
+	var resp fasthttp.Response
+	resp.SetStatusCode(fasthttp.StatusTooManyRequests)
+	resp.Header.Set("Retry-After", "7")
+	resp.SetBodyString(`{"error":{"message":"slow down"}}`)
+
+	provider := &OpenAIProvider{}
+	bifrostErr := provider.realtimeWebRTCUpstreamError(schemas.NewBifrostContext(nil, schemas.NoDeadline), &resp)
+	// The upstream status is carried through as ParseOpenAIError read it, so the retry
+	// hint sits beside the 429 that gave it meaning rather than a synthetic 502.
+	if bifrostErr.StatusCode == nil {
+		t.Fatalf("StatusCode = nil, want 429")
+	}
+	if *bifrostErr.StatusCode != fasthttp.StatusTooManyRequests {
+		t.Fatalf("StatusCode = %d, want 429", *bifrostErr.StatusCode)
+	}
+	if bifrostErr.Error == nil || bifrostErr.Error.Message != "slow down" {
+		t.Fatalf("Message = %+v, want upstream message", bifrostErr.Error)
+	}
+	if bifrostErr.ExtraFields.RetryAfter != 7000 {
+		t.Fatalf("RetryAfter = %d, want 7000", bifrostErr.ExtraFields.RetryAfter)
+	}
+}
+
+// TestRealtimeSessionVoiceKeepsItsForm pins that a voice name goes upstream as a string, as before
+// the union type, and a custom voice object as an object.
+func TestRealtimeSessionVoiceKeepsItsForm(t *testing.T) {
+	t.Parallel()
+
+	provider := &OpenAIProvider{}
+	for raw, want := range map[string]string{
+		`{"type":"session.update","session":{"voice":"alloy"}}`:            `"voice":"alloy"`,
+		`{"type":"session.update","session":{"voice":{"id":"voice_123"}}}`: `"voice":{"id":"voice_123"}`,
+	} {
+		event, err := schemas.ParseRealtimeEvent([]byte(raw))
+		if err != nil {
+			t.Fatalf("ParseRealtimeEvent(%s) error = %v", raw, err)
+		}
+		out, err := provider.ToProviderRealtimeEvent(event)
+		if err != nil {
+			t.Fatalf("ToProviderRealtimeEvent(%s) error = %v", raw, err)
+		}
+		if !strings.Contains(string(out), want) {
+			t.Fatalf("upstream event = %s, want %s", out, want)
+		}
+	}
+
+	if got := ExtractNestedVoice(json.RawMessage(`{"output":{"voice":"marin"}}`)); got != "marin" {
+		t.Fatalf("ExtractNestedVoice(name) = %q, want marin", got)
+	}
+	if got := ExtractNestedVoice(json.RawMessage(`{"output":{"voice":{"id":"voice_123"}}}`)); got != "voice_123" {
+		t.Fatalf("ExtractNestedVoice(custom) = %q, want voice_123", got)
 	}
 }

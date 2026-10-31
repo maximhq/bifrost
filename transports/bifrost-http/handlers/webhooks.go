@@ -7,6 +7,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -22,7 +23,7 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/webhooks"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -127,6 +128,41 @@ func redactedWebhookEndpoint(endpoint *configstoreTables.TableWebhookEndpoint) *
 }
 
 // storeAvailable guards every route against a disabled config store.
+// requireGenuineAuthForPrivateNetworkEndpoint rejects a create/update that
+// makes Bifrost deliver to a loopback or private-network receiver when the
+// caller was only let through by the fail-open bypass (dashboard auth
+// disabled/unconfigured), not by a real credential. allow_private_network is
+// a legitimate setting for a real admin; the problem is that anyone on the
+// network could otherwise choose an internal destination for the gateway's
+// outbound POSTs - the same rule requireGenuineAuthForEndpointChange applies
+// to provider keys. existing is the stored endpoint on update and nil on
+// create; an update that keeps the stored private URL passes, so bypassed
+// callers can still edit events, headers and retry settings. On rejection
+// this sends the response and returns true.
+func requireGenuineAuthForPrivateNetworkEndpoint(ctx *fasthttp.RequestCtx, existing, next *configstoreTables.TableWebhookEndpoint) bool {
+	if !isAuthBypassed(ctx) || !next.AllowPrivateNetwork {
+		return false
+	}
+	if existing != nil && existing.AllowPrivateNetwork && existing.URL == next.URL {
+		return false
+	}
+	SendError(ctx, fasthttp.StatusForbidden, "Registering a webhook endpoint that allows private-network delivery requires an authenticated admin session; dashboard auth is currently disabled or unconfigured. Enable dashboard authentication first.")
+	return true
+}
+
+// requireGenuineAuthForPrivateNetworkDelivery is the per-request twin of
+// requireGenuineAuthForPrivateNetworkEndpoint for caller-triggered deliveries
+// (test fire, redeliver) to an endpoint that allows private-network delivery.
+// Scheduled deliveries are unaffected. On rejection this sends the response
+// and returns true.
+func requireGenuineAuthForPrivateNetworkDelivery(ctx *fasthttp.RequestCtx, endpoint *configstoreTables.TableWebhookEndpoint, action string) bool {
+	if !endpoint.AllowPrivateNetwork || !isAuthBypassed(ctx) {
+		return false
+	}
+	SendError(ctx, fasthttp.StatusForbidden, fmt.Sprintf("unauthenticated callers cannot %s webhook endpoints that allow private-network delivery; set an admin password to allow this", action))
+	return true
+}
+
 func (h *WebhookHandler) storeAvailable(ctx *fasthttp.RequestCtx) bool {
 	if h.store == nil || h.store.ConfigStore == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "Config store is not available")
@@ -236,6 +272,9 @@ func (h *WebhookHandler) createWebhookEndpoint(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
+	if requireGenuineAuthForPrivateNetworkEndpoint(ctx, nil, endpoint) {
+		return
+	}
 	if err := h.store.ConfigStore.CreateWebhookEndpoint(ctx, endpoint); err != nil {
 		if errors.Is(err, configstore.ErrAlreadyExists) {
 			SendError(ctx, fasthttp.StatusConflict, "A webhook endpoint with this name already exists")
@@ -246,9 +285,12 @@ func (h *WebhookHandler) createWebhookEndpoint(ctx *fasthttp.RequestCtx) {
 	}
 	// Refresh memory so the delivery worker can serve this endpoint.
 	if err := h.manager.ReloadWebhookEndpoint(ctx, endpoint.ID); err != nil {
+		// The row is committed, so record the change even though the in-memory refresh failed.
+		lib.RecordAuditChange(ctx, "webhook.created", "webhook", endpoint.ID, endpoint.Name, nil, auditWebhookEndpoint(endpoint))
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to reload webhook endpoint in memory: %v, please restart bifrost to sync with the database", err))
 		return
 	}
+	lib.RecordAuditChange(ctx, "webhook.created", "webhook", endpoint.ID, endpoint.Name, nil, auditWebhookEndpoint(endpoint))
 	// The store left the plaintext secret on the struct after commit, so this
 	// response can show it exactly once.
 	SendJSONWithStatus(ctx, map[string]any{
@@ -277,13 +319,16 @@ func (h *WebhookHandler) updateWebhookEndpoint(ctx *fasthttp.RequestCtx) {
 	// Masked header values round-tripped from a read are placeholders, not
 	// real values — restore the stored value so an edit that touches other
 	// fields cannot corrupt the headers.
-	if len(req.Headers) > 0 {
-		if existing, ok := h.store.WebhookEndpointByID(id); ok {
-			for name, value := range req.Headers {
-				if value.IsMaskedPlaceholder() {
-					if stored, found := existing.Headers[name]; found {
-						req.Headers[name] = stored
-					}
+	existing, hasExisting := h.store.WebhookEndpointByID(id)
+	var before json.RawMessage
+	if hasExisting {
+		before = auditWebhookEndpoint(existing)
+	}
+	if len(req.Headers) > 0 && hasExisting {
+		for name, value := range req.Headers {
+			if value.IsMaskedPlaceholder() {
+				if stored, found := existing.Headers[name]; found {
+					req.Headers[name] = stored
 				}
 			}
 		}
@@ -291,6 +336,12 @@ func (h *WebhookHandler) updateWebhookEndpoint(ctx *fasthttp.RequestCtx) {
 	endpoint := req.toTable(id)
 	if err := endpoint.Validate(); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	if !hasExisting {
+		existing = nil
+	}
+	if requireGenuineAuthForPrivateNetworkEndpoint(ctx, existing, endpoint) {
 		return
 	}
 	if err := h.store.ConfigStore.UpdateWebhookEndpoint(ctx, endpoint); err != nil {
@@ -309,6 +360,8 @@ func (h *WebhookHandler) updateWebhookEndpoint(ctx *fasthttp.RequestCtx) {
 	// serve the response from that in-memory row — so a successful update never
 	// leaves workers on stale config behind a second read that could fail.
 	if err := h.manager.ReloadWebhookEndpoint(ctx, id); err != nil {
+		// The row is committed, so record the change even though the in-memory refresh failed.
+		lib.RecordAuditChange(ctx, "webhook.updated", "webhook", endpoint.ID, endpoint.Name, before, auditWebhookEndpoint(endpoint))
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to reload webhook endpoint in memory: %v, please restart bifrost to sync with the database", err))
 		return
 	}
@@ -317,6 +370,7 @@ func (h *WebhookHandler) updateWebhookEndpoint(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Webhook endpoint missing from memory after reload, please restart bifrost to sync with the database")
 		return
 	}
+	lib.RecordAuditChange(ctx, "webhook.updated", "webhook", updated.ID, updated.Name, before, auditWebhookEndpoint(updated))
 	SendJSON(ctx, redactedWebhookEndpoint(updated))
 }
 
@@ -331,6 +385,12 @@ func (h *WebhookHandler) deleteWebhookEndpoint(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
+	targetName := id
+	var before json.RawMessage
+	if existing, ok := h.store.WebhookEndpointByID(id); ok {
+		targetName = existing.Name
+		before = auditWebhookEndpoint(existing)
+	}
 	if err := h.store.ConfigStore.DeleteWebhookEndpoint(ctx, id); err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, "Webhook endpoint not found")
@@ -343,6 +403,7 @@ func (h *WebhookHandler) deleteWebhookEndpoint(ctx *fasthttp.RequestCtx) {
 	if err := h.manager.RemoveWebhookEndpoint(ctx, id); err != nil {
 		logger.Error("failed to remove webhook endpoint from memory: %v", err)
 	}
+	lib.RecordAuditChange(ctx, "webhook.deleted", "webhook", id, targetName, before, nil)
 	SendJSON(ctx, map[string]any{"status": "success"})
 }
 
@@ -368,9 +429,12 @@ func (h *WebhookHandler) rotateWebhookEndpointSecret(ctx *fasthttp.RequestCtx) {
 	}
 	// Memory must sign with the new secret from this moment on.
 	if err := h.manager.ReloadWebhookEndpoint(ctx, id); err != nil {
+		// The row is committed, so record the change even though the in-memory refresh failed.
+		lib.RecordAuditChange(ctx, "webhook.secret_rotated", "webhook", rotated.ID, rotated.Name, nil, map[string]any{"webhook_id": rotated.ID, "secret_rotated": true})
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to reload webhook endpoint in memory: %v, please restart bifrost to sync with the database", err))
 		return
 	}
+	lib.RecordAuditChange(ctx, "webhook.secret_rotated", "webhook", rotated.ID, rotated.Name, nil, map[string]any{"webhook_id": rotated.ID, "secret_rotated": true})
 	SendJSON(ctx, map[string]any{
 		"endpoint": redactedWebhookEndpoint(rotated),
 		"secret":   rotated.Secret.GetValue(),
@@ -400,6 +464,16 @@ func (h *WebhookHandler) testWebhookEndpoint(ctx *fasthttp.RequestCtx) {
 	}
 	if endpoint.Disabled {
 		SendError(ctx, fasthttp.StatusBadRequest, "Webhook endpoint is disabled")
+		return
+	}
+	// An endpoint registered with allow_private_network may point at a
+	// loopback or private-network receiver, and this response reports that
+	// receiver's status. For a caller let through only because dashboard auth
+	// is unconfigured (BifrostContextKeyAuthBypassed) that is a probe of the
+	// gateway's own network, so the test fire requires a real credential - the
+	// same scoping rejectPrivateMCPTargetIfAuthBypassed applies to MCP
+	// clients. Public endpoints and scheduled deliveries are unaffected.
+	if requireGenuineAuthForPrivateNetworkDelivery(ctx, endpoint, "test") {
 		return
 	}
 	// The event to sample is optional; it defaults to the endpoint's first
@@ -522,7 +596,7 @@ func parseWebhookDeliveryFilters(ctx *fasthttp.RequestCtx) (*logstore.WebhookDel
 		}
 	}
 	if period := string(ctx.QueryArgs().Peek("period")); period != "" {
-		if start, end := ResolvePeriod(period); start != nil {
+		if start, end := ResolvePeriod(period, string(ctx.QueryArgs().Peek("timezone"))); start != nil {
 			filters.StartTime = start
 			filters.EndTime = end
 			startTimeErr = nil
@@ -609,6 +683,11 @@ func (h *WebhookHandler) redeliverWebhook(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "The endpoint this delivery belongs to is disabled")
 		return
 	}
+	// A replay is a caller-triggered delivery, so it carries the same
+	// private-network scoping as the test fire.
+	if requireGenuineAuthForPrivateNetworkDelivery(ctx, endpoint, "redeliver to") {
+		return
+	}
 	// Same id as the original delivery: the webhook-id header stays stable,
 	// so receiver-side deduplication of the replay remains intentional.
 	job := &configstoreTables.TableWebhookJob{
@@ -628,6 +707,11 @@ func (h *WebhookHandler) redeliverWebhook(ctx *fasthttp.RequestCtx) {
 	if h.dispatcher != nil {
 		h.dispatcher.Wake()
 	}
+	lib.RecordAuditChange(ctx, "webhook.redelivered", "webhook", endpoint.ID, endpoint.Name, nil, map[string]any{
+		"delivery_id": id,
+		"webhook_id":  delivery.WebhookID,
+		"event":       delivery.Event,
+	})
 	SendJSONWithStatus(ctx, map[string]any{
 		"status":     "queued",
 		"webhook_id": delivery.WebhookID,

@@ -30,6 +30,10 @@ type TraceStore struct {
 	spanPool      sync.Pool // Reuse Span objects to reduce allocations
 	logger        schemas.Logger
 
+	// onExpire exports a trace the sweep is about to discard. Set by the Tracer, which
+	// owns the connector fan-out; nil falls back to releasing without exporting.
+	onExpire func(*schemas.Trace)
+
 	ttl           time.Duration
 	cleanupTicker *time.Ticker
 	stopCleanup   chan struct{}
@@ -195,22 +199,30 @@ func (s *TraceStore) ClearDeferredSpan(traceID string) {
 // accumulation for plugins (logging, maxim). This eliminates storing 1M+ BifrostResponse
 // objects in the old accumulator at high concurrency.
 func (s *TraceStore) AppendStreamingChunk(traceID string, chunk *schemas.BifrostResponse) {
+	s.appendStreamingChunk(traceID, chunk)
+}
+
+// Reports the first-chunk timestamp on the first chunk only, zero after, so the
+// caller derives end-to-end TTFT from the same instant time_to_first_chunk uses.
+func (s *TraceStore) appendStreamingChunk(traceID string, chunk *schemas.BifrostResponse) time.Time {
 	if chunk == nil {
-		return
+		return time.Time{}
 	}
 	info := s.GetDeferredSpan(traceID)
 	if info == nil {
-		return
+		return time.Time{}
 	}
 	info.mu.Lock()
 	defer info.mu.Unlock()
 
+	info.ChunkCount++
+
 	// Track first chunk time for TTFT calculation
 	if info.FirstChunkTime.IsZero() {
 		info.FirstChunkTime = time.Now()
+		return info.FirstChunkTime
 	}
-
-	info.ChunkCount++
+	return time.Time{}
 }
 
 // GetAccumulatedData returns TTFT and chunk count for a deferred span.
@@ -440,7 +452,12 @@ func (s *TraceStore) cleanupOldTraces() {
 		trace := value.(*schemas.Trace)
 		if trace.StartTime.Before(cutoff) {
 			if deleted, ok := s.traces.LoadAndDelete(key); ok {
-				s.ReleaseTrace(deleted.(*schemas.Trace))
+				trace := deleted.(*schemas.Trace)
+				if s.onExpire != nil {
+					s.onExpire(trace)
+				} else {
+					s.ReleaseTrace(trace)
+				}
 				count++
 			}
 		}
@@ -464,7 +481,8 @@ func (s *TraceStore) cleanupOldTraces() {
 	})
 
 	if (count > 0 || deferredCount > 0) && s.logger != nil {
-		s.logger.Debug("tracing: cleaned up %d orphaned traces and %d orphaned deferred spans", count, deferredCount)
+		// Not Debug: a trace only expires when its completion never arrived.
+		s.logger.Warn("tracing: swept %d traces and %d deferred spans past the %s TTL; their completion never arrived", count, deferredCount, s.ttl)
 	}
 }
 

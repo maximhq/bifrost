@@ -119,3 +119,56 @@ func TestToGeminiResponsesRequest_SafetySettingsAndCachedContentSurviveRetries(t
 	assert.Contains(t, bifrostReq.Params.ExtraParams, "cached_content")
 	assert.Len(t, bifrostReq.Params.ExtraParams, 3)
 }
+
+// The GenAI inbound path maps candidateCount and responseLogprobs into ExtraParams and
+// logprobs into TopLogProbs. The outbound Responses converter used to read none of them,
+// so a bare-model /genai call silently lost all three. They must land back on
+// generationConfig unclamped (an out-of-range logprobs is Google's to reject), and the
+// snake_case keys must not leak onto the wire as unknown top-level fields.
+func TestGenAICandidateCountAndLogprobs_ReachGenerationConfig(t *testing.T) {
+	geminiReq := &gemini.GeminiGenerationRequest{
+		Model: "gemini-2.5-flash",
+		GenerationConfig: gemini.GenerationConfig{
+			CandidateCount:   2,
+			ResponseLogprobs: true,
+			Logprobs:         schemas.Ptr(int32(99)),
+			Seed:             schemas.Ptr(int32(7)),
+		},
+	}
+
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq := geminiReq.ToBifrostResponsesRequest(bifrostCtx)
+	require.NotNil(t, bifrostReq.Params)
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		out, err := gemini.ToGeminiResponsesRequest(nil, bifrostReq)
+		require.NoError(t, err, "attempt %d", attempt)
+
+		config := out.GenerationConfig
+		assert.Equal(t, int32(2), config.CandidateCount, "attempt %d", attempt)
+		assert.True(t, config.ResponseLogprobs, "attempt %d", attempt)
+		require.NotNil(t, config.Logprobs, "attempt %d", attempt)
+		assert.Equal(t, int32(99), *config.Logprobs, "logprobs must not be clamped (attempt %d)", attempt)
+		require.NotNil(t, config.Seed, "attempt %d", attempt)
+		assert.Equal(t, int32(7), *config.Seed, "attempt %d", attempt)
+
+		wire := out.GetExtraParams()
+		assert.NotContains(t, wire, "candidate_count", "attempt %d", attempt)
+		assert.NotContains(t, wire, "response_logprobs", "attempt %d", attempt)
+		assert.NotContains(t, wire, "seed", "attempt %d", attempt)
+	}
+}
+
+// A /v1/responses top_logprobs request reaches Gemini as logprobs plus the
+// responseLogprobs switch Gemini requires alongside it.
+func TestToGeminiResponsesRequest_TopLogProbsMapsToLogprobs(t *testing.T) {
+	out, err := gemini.ToGeminiResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+		Provider: schemas.Gemini,
+		Model:    "gemini-2.5-flash",
+		Params:   &schemas.ResponsesParameters{TopLogProbs: schemas.Ptr(5)},
+	})
+	require.NoError(t, err)
+	assert.True(t, out.GenerationConfig.ResponseLogprobs)
+	require.NotNil(t, out.GenerationConfig.Logprobs)
+	assert.Equal(t, int32(5), *out.GenerationConfig.Logprobs)
+}

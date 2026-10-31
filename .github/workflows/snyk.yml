@@ -12,7 +12,7 @@ permissions:
 jobs:
   snyk-open-source:
     name: Snyk Open Source (deps)
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
@@ -59,7 +59,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.0"
+          go-version: "1.27.3"
 
       - name: Setup Go workspace
         run: make setup-workspace
@@ -85,7 +85,7 @@ jobs:
 
   snyk-code:
     name: Snyk Code (SAST)
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
@@ -108,6 +108,7 @@ jobs:
             registry.npmjs.org:443
             release-assets.githubusercontent.com:443
             releases.astral.sh:443
+            static.snyk.io:443
             storage.googleapis.com:443
             sum.golang.org:443
 
@@ -132,7 +133,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.0"
+          go-version: "1.27.3"
 
       - name: Setup Go workspace
         run: make setup-workspace

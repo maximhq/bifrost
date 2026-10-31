@@ -27,6 +27,7 @@ import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { getActiveTempToken } from "@/lib/store/apis/tempToken";
 import {
+	getErrorCode,
 	getErrorMessage,
 	useGetMCPFlowDetailQuery,
 	useGetMCPPerUserHeadersFlowQuery,
@@ -40,7 +41,10 @@ import { Link } from "@tanstack/react-router";
 import { CheckCircle2, ExternalLink, Fingerprint, KeyRound, Loader2, LogIn, ShieldCheck, TriangleAlert, UserRound } from "lucide-react";
 import { useQueryState } from "nuqs";
 import React from "react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+
+// Mirrors handlers.TempTokenRejectedCode: a presented token was refused.
+const TEMP_TOKEN_REJECTED_CODE = "temp_token_rejected";
 
 export default function MCPSessionsAuthPage() {
 	const [flowId] = useQueryState("flow");
@@ -73,7 +77,8 @@ function OAuthAuthView() {
 		return "/workspace/mcp-sessions/auth";
 	}, [flowId]);
 	const loginHref = useMemo(() => `/login?goto=${encodeURIComponent(loginGoto)}`, [loginGoto]);
-	const showLoginOption = usingTempToken && authState?.is_auth_enabled === true && authState.has_valid_token === false;
+	const signedOut = authState?.is_auth_enabled === true && authState.has_valid_token === false;
+	const showLoginOption = usingTempToken && signedOut;
 	const showTempTokenSSOWarning = showLoginOption && authState.auth_type === "sso";
 
 	if (!flowId) {
@@ -98,6 +103,11 @@ function OAuthAuthView() {
 	if (isError || !flow) {
 		const status = (error as { status?: number } | undefined)?.status;
 		if (status === 401) {
+			// A rejected token is the only 401 that means the link is finished.
+			// Anything else is fixed by having a session — go get one.
+			if (getErrorCode(error) !== TEMP_TOKEN_REJECTED_CODE && signedOut) {
+				return <RedirectToSignIn loginHref={loginHref} />;
+			}
 			return <InvalidLinkView />;
 		}
 		if (status === 403) {
@@ -213,6 +223,7 @@ function OAuthAuthView() {
 // row, deletes the flow row + temp token, and we show a success card.
 function HeadersAuthView({ flowId }: { flowId: string }) {
 	const { toast } = useToast();
+	const { data: authState } = useIsAuthEnabledQuery();
 	const [submitted, setSubmitted] = useQueryState("submitted");
 	// Skip the GET once the submit has completed — the backend deletes the
 	// flow row on success, so any refetch returns 404 and we'd render the
@@ -244,6 +255,12 @@ function HeadersAuthView({ flowId }: { flowId: string }) {
 	if (isError || !detail) {
 		const status = (error as { status?: number } | undefined)?.status;
 		if (status === 401) {
+			// Same reasoning as the OAuth branch above.
+			const signedOut = authState?.is_auth_enabled === true && authState.has_valid_token === false;
+			if (getErrorCode(error) !== TEMP_TOKEN_REJECTED_CODE && signedOut) {
+				const returnPath = `/workspace/mcp-sessions/auth?flow=${encodeURIComponent(flowId)}&kind=headers`;
+				return <RedirectToSignIn loginHref={`/login?goto=${encodeURIComponent(returnPath)}`} />;
+			}
 			return <InvalidLinkView />;
 		}
 		// Enterprise RBAC middleware short-circuits flow endpoints with 403
@@ -495,12 +512,37 @@ function SessionsTabLink({ variant = "outline" }: { variant?: "outline" | "ghost
 	);
 }
 
-// InvalidLinkView renders when the per-user-flow API returns 401, which now
-// means the caller arrived without either a valid dashboard session or a
-// valid mcp_auth temp token. Most often this is an expired or hand-edited
-// link — the temp token embedded in the URL fragment has aged out or the
-// fragment was dropped along the way. Trigger the original action again to
-// get a fresh URL.
+// Bounces a signed-out visitor through /login and back via ?goto= (SSO stashes
+// it across the IdP hop). The card covers a blocked redirect.
+function RedirectToSignIn({ loginHref }: { loginHref: string }) {
+	useEffect(() => {
+		// replace(), so Back from /login doesn't re-enter the redirect.
+		window.location.replace(loginHref);
+	}, [loginHref]);
+
+	return (
+		<CenteredCard>
+			<div className="bg-primary/10 mb-5 flex size-12 items-center justify-center rounded-full">
+				<LogIn className="text-primary size-6" />
+			</div>
+			<h1 className="text-xl font-semibold tracking-tight">Sign in to continue</h1>
+			<p className="text-muted-foreground mt-2 text-sm">
+				Completing this authentication needs a signed-in Bifrost account. Taking you to sign in — you'll come straight back here to finish.
+			</p>
+			<div className="mt-6">
+				<Button asChild data-testid="mcp-auth-signin-required-link">
+					<a href={loginHref}>
+						<LogIn className="size-4" />
+						Sign in to Bifrost
+					</a>
+				</Button>
+			</div>
+		</CenteredCard>
+	);
+}
+
+// A 401 the visitor's own session can't explain: the mcp_auth temp token itself
+// was refused. Signed-out visitors are sent to sign in instead.
 function InvalidLinkView() {
 	return (
 		<CenteredCard>

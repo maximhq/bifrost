@@ -1,8 +1,11 @@
 package schemas
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -874,4 +877,326 @@ func TestSecretVar_RedactedIfSecret(t *testing.T) {
 			t.Errorf("original Val mutated to %q", e.Val)
 		}
 	})
+}
+
+// TestSecretVar_VertexAWSWorkloadIdentityRoundTrip pins the nested aws_workload_identity block:
+// env.-prefixed references resolve on unmarshal, plain identifiers stay literal, and marshaling
+// back keeps the field names the config schema and UI rely on.
+func TestSecretVar_VertexAWSWorkloadIdentityRoundTrip(t *testing.T) {
+	os.Setenv("TEST_WIF_ROLE_ARN", "arn:aws:iam::123456789012:role/VertexHop")
+	defer os.Unsetenv("TEST_WIF_ROLE_ARN")
+
+	jsonInput := `{
+		"project_id": "my-project",
+		"region": "us-central1",
+		"aws_workload_identity": {
+			"audience": "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/aws",
+			"service_account_email": "caller@my-project.iam.gserviceaccount.com",
+			"token_lifetime_seconds": 1800,
+			"aws_region": "us-east-1",
+			"aws_role_arn": "env.TEST_WIF_ROLE_ARN"
+		}
+	}`
+
+	var config VertexKeyConfig
+	if err := json.Unmarshal([]byte(jsonInput), &config); err != nil {
+		t.Fatalf("Failed to unmarshal: %v", err)
+	}
+	wi := config.AWSWorkloadIdentity
+	if !wi.IsSet() {
+		t.Fatal("expected aws_workload_identity to be set")
+	}
+	if got := wi.Audience.GetValue(); got != "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/aws" {
+		t.Errorf("unexpected audience %q", got)
+	}
+	if got := wi.ServiceAccountEmail.GetValue(); got != "caller@my-project.iam.gserviceaccount.com" {
+		t.Errorf("unexpected service_account_email %q", got)
+	}
+	if wi.TokenLifetimeSeconds != 1800 {
+		t.Errorf("unexpected token_lifetime_seconds %d", wi.TokenLifetimeSeconds)
+	}
+	if got := wi.AWSRegion.GetValue(); got != "us-east-1" {
+		t.Errorf("unexpected aws_region %q", got)
+	}
+	if got := wi.AWSRoleARN.GetValue(); got != "arn:aws:iam::123456789012:role/VertexHop" {
+		t.Errorf("expected aws_role_arn to resolve from env, got %q", got)
+	}
+	if !wi.AWSRoleARN.IsFromEnv() {
+		t.Error("expected aws_role_arn.IsFromEnv()=true")
+	}
+
+	out, err := json.Marshal(config)
+	if err != nil {
+		t.Fatalf("Failed to marshal: %v", err)
+	}
+	for _, want := range []string{`"aws_workload_identity":{`, `"audience":`, `"service_account_email":`, `"token_lifetime_seconds":1800`, `"aws_region":`, `"aws_role_arn":`} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("marshaled config missing %s: %s", want, out)
+		}
+	}
+
+	// A key without the block must not emit it, so existing configs serialize byte-for-byte as before.
+	plain, err := json.Marshal(VertexKeyConfig{ProjectID: *NewSecretVar("p"), Region: *NewSecretVar("r")})
+	if err != nil {
+		t.Fatalf("Failed to marshal: %v", err)
+	}
+	if strings.Contains(string(plain), "aws_workload_identity") {
+		t.Errorf("aws_workload_identity must be omitted when unset: %s", plain)
+	}
+}
+
+// stubVaultResolveHook makes vault.* references resolve from secrets for the test's duration.
+func stubVaultResolveHook(t *testing.T, secrets map[string]string) {
+	t.Helper()
+	prev := VaultResolveHook
+	VaultResolveHook = func(_ context.Context, value *string) error {
+		secret, ok := secrets[strings.TrimPrefix(*value, "vault.")]
+		if !ok {
+			return fmt.Errorf("no vault secret at %s", *value)
+		}
+		*value = secret
+		return nil
+	}
+	t.Cleanup(func() { VaultResolveHook = prev })
+}
+
+// TestNetworkConfigExtraHeaders_ResolvesAndResavesReferences checks that env.* and
+// vault.* header values resolve on decode, that encode (API response, DB row,
+// config hash) emits the reference and not the resolved secret, and that decoding
+// that output again (a UI resave) resolves the same references.
+func TestNetworkConfigExtraHeaders_ResolvesAndResavesReferences(t *testing.T) {
+	t.Setenv("BF_TEST_HEADER_TOKEN", "token-from-env")
+	stubVaultResolveHook(t, map[string]string{"bifrost/headers/secret": "token-from-vault"})
+
+	var nc NetworkConfig
+	raw := `{"extra_headers":{"X-Plain":"literal","X-Env":"env.BF_TEST_HEADER_TOKEN","X-Vault":"vault.bifrost/headers/secret"}}`
+	if err := json.Unmarshal([]byte(raw), &nc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	wantValues := map[string]string{"X-Plain": "literal", "X-Env": "token-from-env", "X-Vault": "token-from-vault"}
+	for name, want := range wantValues {
+		if got := nc.ExtraHeaders[name]; got.GetValue() != want {
+			t.Errorf("%s: resolved %q, want %q", name, got.GetValue(), want)
+		}
+	}
+	if envHeader, vaultHeader := nc.ExtraHeaders["X-Env"], nc.ExtraHeaders["X-Vault"]; !envHeader.IsFromEnv() || !vaultHeader.IsFromVault() {
+		t.Fatalf("references lost their type: %+v", nc.ExtraHeaders)
+	}
+
+	encoded, err := json.Marshal(nc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var wire struct {
+		ExtraHeaders map[string]string `json:"extra_headers"`
+	}
+	if err := json.Unmarshal(encoded, &wire); err != nil {
+		t.Fatalf("unmarshal wire: %v", err)
+	}
+	wantWire := map[string]string{"X-Plain": "literal", "X-Env": "env.BF_TEST_HEADER_TOKEN", "X-Vault": "vault.bifrost/headers/secret"}
+	for name, want := range wantWire {
+		if got := wire.ExtraHeaders[name]; got != want {
+			t.Errorf("%s: wire %q, want %q", name, got, want)
+		}
+	}
+	for _, leaked := range []string{"token-from-env", "token-from-vault"} {
+		if strings.Contains(string(encoded), leaked) {
+			t.Errorf("encoded config leaks %q: %s", leaked, encoded)
+		}
+	}
+
+	// Resave: what the API returned comes back unchanged and must resolve identically.
+	var resaved NetworkConfig
+	if err := json.Unmarshal(encoded, &resaved); err != nil {
+		t.Fatalf("unmarshal resave: %v", err)
+	}
+	for name, want := range wantValues {
+		if got := resaved.ExtraHeaders[name]; got.GetValue() != want {
+			t.Errorf("resave %s: resolved %q, want %q", name, got.GetValue(), want)
+		}
+	}
+	if envHeader, vaultHeader := resaved.ExtraHeaders["X-Env"], resaved.ExtraHeaders["X-Vault"]; envHeader.GetRawRef() != "env.BF_TEST_HEADER_TOKEN" || vaultHeader.GetRawRef() != "vault.bifrost/headers/secret" {
+		t.Fatalf("resave lost references: %+v", resaved.ExtraHeaders)
+	}
+}
+
+// TestNetworkConfigExtraHeaders_AcceptsSecretVarObjects checks the object form a
+// SecretVar-aware client sends decodes the same as the string form.
+func TestNetworkConfigExtraHeaders_AcceptsSecretVarObjects(t *testing.T) {
+	t.Setenv("BF_TEST_HEADER_TOKEN", "token-from-env")
+	var nc NetworkConfig
+	raw := `{"extra_headers":{"X-Env":{"value":"","ref":"env.BF_TEST_HEADER_TOKEN","type":"env"},"X-Plain":{"value":"literal"}}}`
+	if err := json.Unmarshal([]byte(raw), &nc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := nc.ExtraHeaders["X-Env"]; got.GetValue() != "token-from-env" || !got.IsFromEnv() {
+		t.Errorf("X-Env: %+v", got)
+	}
+	if got := nc.ExtraHeaders["X-Plain"]; got.GetValue() != "literal" || got.IsFromSecret() {
+		t.Errorf("X-Plain: %+v", got)
+	}
+}
+
+// TestNetworkConfigRedacted_ExtraHeaders checks that a redacted copy fully masks every
+// literal header value (a nine-byte credential must not leak its prefix or suffix),
+// keeps env references visible as references, leaks no resolved secret, and never
+// aliases or mutates the live map.
+func TestNetworkConfigRedacted_ExtraHeaders(t *testing.T) {
+	t.Setenv("BF_TEST_HEADER_TOKEN", "token-from-env-value")
+	const secret = "oauth-client-secret-value"
+	nc := &NetworkConfig{ExtraHeaders: map[string]SecretVar{
+		"X-Client-Secret": *NewSecretVar(secret),
+		"X-Nine-Byte":     *NewSecretVar("abc123xyz"),
+		"X-Short":         *NewSecretVar("abc"),
+		"X-Env":           *NewSecretVar("env.BF_TEST_HEADER_TOKEN"),
+	}}
+	redacted := nc.Redacted()
+	data, err := json.Marshal(redacted)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var out struct {
+		ExtraHeaders map[string]string `json:"extra_headers"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, name := range []string{"X-Client-Secret", "X-Nine-Byte", "X-Short"} {
+		if got := out.ExtraHeaders[name]; got != "<REDACTED>" {
+			t.Errorf("%s: got %q, want <REDACTED>", name, got)
+		}
+	}
+	if got := out.ExtraHeaders["X-Env"]; got != "env.BF_TEST_HEADER_TOKEN" {
+		t.Errorf("env header should show its reference, got %q", got)
+	}
+	for _, leaked := range []string{secret, "abc1", "3xyz", "token-from-env-value"} {
+		if strings.Contains(string(data), leaked) {
+			t.Errorf("redacted JSON leaks %q: %s", leaked, data)
+		}
+	}
+	if live := nc.ExtraHeaders["X-Client-Secret"]; live.GetValue() != secret {
+		t.Fatal("live config mutated by Redacted")
+	}
+	redacted.ExtraHeaders["X-New"] = *NewSecretVar("x")
+	if _, aliased := nc.ExtraHeaders["X-New"]; aliased {
+		t.Fatal("redacted copy aliases the live map")
+	}
+}
+
+// echoRedacted replays what the UI sends back: the redacted config as JSON, decoded again.
+func echoRedacted(t *testing.T, stored map[string]SecretVar) map[string]SecretVar {
+	t.Helper()
+	sent, err := json.Marshal((&NetworkConfig{ExtraHeaders: stored}).Redacted())
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var echoed NetworkConfig
+	if err := json.Unmarshal(sent, &echoed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	return echoed.ExtraHeaders
+}
+
+// TestRestoreRedactedExtraHeaders replays the UI save flow: the redacted config goes out
+// as JSON and comes back unchanged or edited. Untouched headers restore to their stored
+// values, edits and references are kept, and a mask with no stored header of the same
+// name is rejected.
+func TestRestoreRedactedExtraHeaders(t *testing.T) {
+	t.Setenv("BF_TEST_HEADER_TOKEN", "token-from-env-value")
+	stored := map[string]SecretVar{
+		"Authorization":   *NewSecretVar("Bearer dapi-token"),
+		"X-Client-Secret": *NewSecretVar("oauth-client-secret-value"),
+		"X-Client-Id":     *NewSecretVar("client-id-1234567"),
+		"X-Env":           *NewSecretVar("env.BF_TEST_HEADER_TOKEN"),
+	}
+
+	t.Run("unchanged echo restores stored values", func(t *testing.T) {
+		restored, err := RestoreRedactedExtraHeaders(echoRedacted(t, stored), stored)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		for name, want := range stored {
+			if got := restored[name]; got.GetValue() != want.GetValue() {
+				t.Errorf("%s: got %q, want %q", name, got.GetValue(), want.GetValue())
+			}
+		}
+		if got := restored["X-Env"]; !got.IsFromEnv() {
+			t.Error("X-Env lost its env reference")
+		}
+	})
+
+	t.Run("edited and new values are kept as sent", func(t *testing.T) {
+		echoed := echoRedacted(t, stored)
+		echoed["X-Client-Id"] = *NewSecretVar("new-client-id")
+		echoed["X-User-Email"] = *NewSecretVar("ops@example.com")
+		restored, err := RestoreRedactedExtraHeaders(echoed, stored)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := map[string]string{"X-Client-Id": "new-client-id", "X-User-Email": "ops@example.com", "X-Client-Secret": "oauth-client-secret-value"}
+		for name, value := range want {
+			if got := restored[name]; got.GetValue() != value {
+				t.Errorf("%s: got %q, want %q", name, got.GetValue(), value)
+			}
+		}
+	})
+
+	t.Run("renamed header with a masked value is rejected", func(t *testing.T) {
+		for _, rename := range []struct{ from, to string }{
+			{"X-Client-Secret", "X-Upstream-Secret"},
+			{"Authorization", "authorization"},
+		} {
+			echoed := echoRedacted(t, stored)
+			echoed[rename.to] = echoed[rename.from]
+			delete(echoed, rename.from)
+			if _, err := RestoreRedactedExtraHeaders(echoed, stored); err == nil || !strings.Contains(err.Error(), rename.to) {
+				t.Errorf("%s -> %s: expected an error naming %s, got %v", rename.from, rename.to, rename.to, err)
+			}
+		}
+	})
+
+	t.Run("masked value with nothing stored is rejected", func(t *testing.T) {
+		if _, err := RestoreRedactedExtraHeaders(map[string]SecretVar{"X-Client-Secret": *NewSecretVar("<REDACTED>")}, nil); err == nil {
+			t.Fatal("expected an error")
+		}
+	})
+
+	t.Run("literal asterisk values are not treated as masks", func(t *testing.T) {
+		echoed := echoRedacted(t, stored)
+		echoed["If-Match"] = *NewSecretVar("*")
+		echoed["X-Client-Id"] = *NewSecretVar("*")
+		restored, err := RestoreRedactedExtraHeaders(echoed, stored)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		for _, name := range []string{"If-Match", "X-Client-Id"} {
+			if got := restored[name]; got.GetValue() != "*" {
+				t.Errorf("%s: got %q, want *", name, got.GetValue())
+			}
+		}
+	})
+
+	t.Run("removed header stays removed", func(t *testing.T) {
+		restored, err := RestoreRedactedExtraHeaders(map[string]SecretVar{}, stored)
+		if err != nil || len(restored) != 0 {
+			t.Fatalf("got %v, %v", restored, err)
+		}
+	})
+}
+
+// TestSecretVar_UnmarshalJSON_DecodesJSONEscapes checks that a JSON string decodes its
+// escapes: an escaped slash or \u escape must yield the character, not the quoted JSON
+// text, or a header carrying it fails upstream authentication.
+func TestSecretVar_UnmarshalJSON_DecodesJSONEscapes(t *testing.T) {
+	var nc NetworkConfig
+	raw := `{"extra_headers":{"Authorization":"Bearer a\/b","X-Name":"café 😀","X-Quote":"say \"hi\""}}`
+	if err := json.Unmarshal([]byte(raw), &nc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	want := map[string]string{"Authorization": "Bearer a/b", "X-Name": "café 😀", "X-Quote": `say "hi"`}
+	for name, value := range want {
+		if got := nc.ExtraHeaders[name]; got.GetValue() != value {
+			t.Errorf("%s: got %q, want %q", name, got.GetValue(), value)
+		}
+	}
 }

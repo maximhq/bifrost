@@ -1,8 +1,13 @@
 package bedrock
 
 import (
+	"context"
+	"fmt"
+	"strings"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/providers/anthropic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -238,5 +243,341 @@ func TestToBifrostResponsesRequest_LeavesSummaryUnsetForAnthropic(t *testing.T) 
 	}
 	if s := bifrostReq.Params.Reasoning.Summary; s != nil {
 		t.Errorf("reasoning.summary should stay unset for a non-OpenAI model, got %q", *s)
+	}
+}
+
+const betweenToolsModel = "global.anthropic.claude-sonnet-5-5"
+
+// thinking:{type:"between_tools"} is a thinking type independent of effort: it is
+// sent as-is on Sonnet 5.5 with the caller's effort, and never with display.
+func TestConvertChatParameters_BetweenToolsKeepsEffort(t *testing.T) {
+	bifrostReq := &schemas.BifrostChatRequest{
+		Model: betweenToolsModel,
+		Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{
+			Type:   schemas.Ptr("between_tools"),
+			Effort: schemas.Ptr("medium"),
+		}},
+	}
+	bedrockReq := &BedrockConverseRequest{}
+	if err := convertChatParameters(nil, bifrostReq, bedrockReq, schemas.ResolveModelCaps(schemas.Bedrock, betweenToolsModel)); err != nil {
+		t.Fatalf("convertChatParameters failed: %v", err)
+	}
+	assertBetweenToolsFields(t, bedrockReq, "medium")
+}
+
+func TestToBedrockResponsesRequest_BetweenToolsKeepsEffort(t *testing.T) {
+	bedrockReq, err := ToBedrockResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+		Model: betweenToolsModel,
+		Params: &schemas.ResponsesParameters{Reasoning: &schemas.ResponsesParametersReasoning{
+			Type:   schemas.Ptr("between_tools"),
+			Effort: schemas.Ptr("low"),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("ToBedrockResponsesRequest failed: %v", err)
+	}
+	assertBetweenToolsFields(t, bedrockReq, "low")
+}
+
+// The /bedrock drop-in collapsed thinking:{type:"between_tools"} into effort
+// "none", so Sonnet 5.5 ran full adaptive thinking and the effort was lost.
+func TestToBifrostResponsesRequest_BetweenToolsKeepsTypeAndEffort(t *testing.T) {
+	fields := schemas.NewOrderedMap()
+	fields.Set("thinking", map[string]any{"type": "between_tools"})
+	fields.Set("output_config", map[string]any{"effort": "medium"})
+	req := &BedrockConverseRequest{
+		ModelID:                      betweenToolsModel,
+		AdditionalModelRequestFields: fields,
+		Messages: []BedrockMessage{{
+			Role:    "user",
+			Content: []BedrockContentBlock{{Text: schemas.Ptr("hi")}},
+		}},
+	}
+	bifrostReq, err := req.ToBifrostResponsesRequest(nil)
+	if err != nil {
+		t.Fatalf("ToBifrostResponsesRequest failed: %v", err)
+	}
+	reasoning := bifrostReq.Params.Reasoning
+	if reasoning == nil || reasoning.Type == nil || *reasoning.Type != "between_tools" {
+		t.Fatalf("reasoning.type = %+v, want \"between_tools\"", reasoning)
+	}
+	if reasoning.Effort == nil || *reasoning.Effort != "medium" {
+		t.Errorf("reasoning.effort = %v, want \"medium\"", reasoning.Effort)
+	}
+}
+
+func assertBetweenToolsFields(t *testing.T, bedrockReq *BedrockConverseRequest, wantEffort string) {
+	t.Helper()
+	if bedrockReq.AdditionalModelRequestFields == nil {
+		t.Fatalf("expected AdditionalModelRequestFields to carry the thinking config, got nil")
+	}
+	raw, ok := bedrockReq.AdditionalModelRequestFields.Get("thinking")
+	if !ok {
+		t.Fatalf("expected a `thinking` field, got none")
+	}
+	thinking, ok := raw.(map[string]any)
+	if !ok {
+		t.Fatalf("expected `thinking` to be a map, got %T: %+v", raw, raw)
+	}
+	if got := thinking["type"]; got != "between_tools" {
+		t.Errorf("thinking.type = %v, want \"between_tools\"", got)
+	}
+	if _, ok := thinking["display"]; ok {
+		t.Errorf("between_tools rejects display, got %+v", thinking)
+	}
+	outputConfig, ok := bedrockReq.AdditionalModelRequestFields.Get("output_config")
+	if !ok {
+		t.Fatalf("output_config.effort was dropped")
+	}
+	oc, ok := outputConfig.(*schemas.OrderedMap)
+	if !ok {
+		t.Fatalf("expected output_config to be an OrderedMap, got %T", outputConfig)
+	}
+	if effort, _ := oc.Get("effort"); effort != wantEffort {
+		t.Errorf("output_config.effort = %v, want %q", effort, wantEffort)
+	}
+}
+
+// /anthropic/v1/messages -> bedrock/<claude> takes the typed Converse path (the
+// raw Claude Code body is not forwarded on Converse), so the ingress mapping and
+// the Converse egress must agree end to end.
+func TestAnthropicIngressToConverse_BetweenTools(t *testing.T) {
+	cases := []struct {
+		model    string
+		wantType string
+	}{
+		{betweenToolsModel, "between_tools"},
+		{"global.anthropic.claude-sonnet-5", "disabled"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			in := &anthropic.AnthropicMessageRequest{
+				Model:     tc.model,
+				MaxTokens: 64,
+				Messages: []anthropic.AnthropicMessage{{
+					Role:    anthropic.AnthropicMessageRoleUser,
+					Content: anthropic.AnthropicContent{ContentStr: schemas.Ptr("hi")},
+				}},
+				Thinking:     &anthropic.AnthropicThinking{Type: "between_tools"},
+				OutputConfig: &anthropic.AnthropicOutputConfig{Effort: schemas.Ptr("medium")},
+			}
+			bifrostReq := in.ToBifrostResponsesRequest(ctx)
+			bifrostReq.Provider = schemas.Bedrock
+			bedrockReq, err := ToBedrockResponsesRequest(ctx, bifrostReq)
+			if err != nil {
+				t.Fatalf("ToBedrockResponsesRequest failed: %v", err)
+			}
+			raw, ok := bedrockReq.AdditionalModelRequestFields.Get("thinking")
+			if !ok {
+				t.Fatalf("thinking dropped: the model runs full adaptive thinking")
+			}
+			if got := raw.(map[string]any)["type"]; got != tc.wantType {
+				t.Errorf("thinking.type = %v, want %q", got, tc.wantType)
+			}
+			oc, _ := bedrockReq.AdditionalModelRequestFields.Get("output_config")
+			if om, ok := oc.(*schemas.OrderedMap); !ok {
+				t.Errorf("output_config.effort dropped, got %T", oc)
+			} else if effort, _ := om.Get("effort"); effort != "medium" {
+				t.Errorf("output_config.effort = %v, want \"medium\"", effort)
+			}
+		})
+	}
+}
+
+// InvokeModel (compaction, safeguards, tool search) builds the native Anthropic
+// body through the shared builder: typed from reasoning.type, or the caller's raw
+// body on Claude Code passthrough, sanitised for Bedrock.
+func TestInvokeBody_BetweenTools(t *testing.T) {
+	provider := &BedrockProvider{}
+	build := func(t *testing.T, model string, rawBody []byte, reasoning *schemas.ResponsesParametersReasoning) string {
+		t.Helper()
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Bedrock,
+			Model:    model,
+			Input: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+			}},
+			Params: &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(64), Reasoning: reasoning},
+		}
+		if rawBody != nil {
+			ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+			req.RawRequestBody = rawBody
+		}
+		body, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, req, provider.invokeBuildConfig(model, false, true, nil))
+		if bifrostErr != nil {
+			t.Fatalf("build invoke body failed: %v", bifrostErr.Error.Message)
+		}
+		return providerUtils.GetJSONField(body, "thinking.type").String()
+	}
+
+	t.Run("typed", func(t *testing.T) {
+		reasoning := &schemas.ResponsesParametersReasoning{Type: schemas.Ptr("between_tools"), Effort: schemas.Ptr("medium")}
+		if got := build(t, betweenToolsModel, nil, reasoning); got != "between_tools" {
+			t.Errorf("sonnet 5.5: thinking.type = %q, want \"between_tools\"", got)
+		}
+		if got := build(t, "global.anthropic.claude-sonnet-5", nil, reasoning); got != "disabled" {
+			t.Errorf("sonnet 5: thinking.type = %q, want \"disabled\"", got)
+		}
+	})
+
+	t.Run("raw_claude_code", func(t *testing.T) {
+		raw := func(model string) []byte {
+			return []byte(`{"model":"` + model + `","max_tokens":64,"messages":[{"role":"user","content":"hi"}],"thinking":{"type":"between_tools"}}`)
+		}
+		if got := build(t, betweenToolsModel, raw(betweenToolsModel), nil); got != "between_tools" {
+			t.Errorf("sonnet 5.5: thinking.type = %q, want \"between_tools\"", got)
+		}
+		if got := build(t, "global.anthropic.claude-sonnet-5", raw("global.anthropic.claude-sonnet-5"), nil); got != "disabled" {
+			t.Errorf("sonnet 5: thinking.type = %q, want \"disabled\"", got)
+		}
+	})
+}
+
+// Opus 5 rejects thinking:{type:"disabled"} above effort high, so the
+// between_tools downgrade must omit thinking there instead.
+func TestConvertChatParameters_BetweenToolsOpus5Xhigh(t *testing.T) {
+	model := "global.anthropic.claude-opus-5"
+	bifrostReq := &schemas.BifrostChatRequest{
+		Model: model,
+		Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{
+			Type:   schemas.Ptr("between_tools"),
+			Effort: schemas.Ptr("xhigh"),
+		}},
+	}
+	bedrockReq := &BedrockConverseRequest{}
+	if err := convertChatParameters(nil, bifrostReq, bedrockReq, schemas.ResolveModelCaps(schemas.Bedrock, model)); err != nil {
+		t.Fatalf("convertChatParameters failed: %v", err)
+	}
+	if raw, ok := bedrockReq.AdditionalModelRequestFields.Get("thinking"); ok {
+		t.Errorf("thinking = %+v, want omitted: Opus 5 rejects disabled at xhigh", raw)
+	}
+}
+
+// thinking.display "updates" needs its beta, and on Converse the beta rides in
+// additionalModelRequestFields.anthropic_beta because Bedrock's edge consumes the outer
+// header. Where the surface carries it the value is kept and the beta added; otherwise it
+// degrades to "omitted" instead of the ValidationException "thinking.adaptive.display:
+// Input should be 'summarized', 'omitted'".
+func TestConvertChatParameters_DisplayUpdates(t *testing.T) {
+	arms := map[string]*schemas.ChatReasoning{
+		"effort arm": {Effort: new("medium"), Display: new("updates")},
+		"budget arm": {MaxTokens: new(1024), Display: new("updates")},
+	}
+	for name, reasoning := range arms {
+		for _, supported := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/supported=%v", name, supported), func(t *testing.T) {
+				prev := anthropic.ProviderFeatures[schemas.Bedrock]
+				features := prev
+				features.ThinkingDisplayUpdates = supported
+				anthropic.ProviderFeatures[schemas.Bedrock] = features
+				t.Cleanup(func() { anthropic.ProviderFeatures[schemas.Bedrock] = prev })
+
+				bifrostReq := &schemas.BifrostChatRequest{
+					Model:  adaptiveOnlyModel,
+					Params: &schemas.ChatParameters{Reasoning: reasoning},
+				}
+				bedrockReq := &BedrockConverseRequest{}
+				if err := convertChatParameters(nil, bifrostReq, bedrockReq, schemas.ResolveModelCaps(schemas.Bedrock, adaptiveOnlyModel)); err != nil {
+					t.Fatalf("convertChatParameters failed: %v", err)
+				}
+				raw, _ := bedrockReq.AdditionalModelRequestFields.Get("thinking")
+				thinking, _ := raw.(map[string]any)
+				wantDisplay := "omitted"
+				if supported {
+					wantDisplay = anthropic.AnthropicThinkingDisplayUpdates
+				}
+				if got := thinking["display"]; got != wantDisplay {
+					t.Errorf("thinking.display = %v, want %q; thinking: %+v", got, wantDisplay, thinking)
+				}
+				betas, _ := bedrockReq.AdditionalModelRequestFields.Get("anthropic_beta")
+				if got := strings.Contains(fmt.Sprint(betas), anthropic.AnthropicThinkingDisplayUpdatesBetaHeader); got != supported {
+					t.Errorf("anthropic_beta carries %s = %v, want %v", anthropic.AnthropicThinkingDisplayUpdatesBetaHeader, got, supported)
+				}
+			})
+		}
+	}
+}
+
+// Bedrock takes "updates" with its beta on the adaptive-only generation only: Opus 4.6 (adaptive
+// thinking) and the 4.5 generation (enabled thinking) reject it. The enabled branches also carry
+// display, which they used to drop for every value, so a caller asking for hidden reasoning got the
+// default summaries. "updates" on a model that does not take it degrades to "omitted" (the models
+// that write no progress updates return the same thing); a datasheet row overrides either way.
+func TestConvertChatParameters_DisplayModelGate(t *testing.T) {
+	const (
+		opus46   = "global.anthropic.claude-opus-4-6-v1"
+		sonnet46 = "global.anthropic.claude-sonnet-4-6"
+		opus45   = "global.anthropic.claude-opus-4-5-20251101-v1:0"
+	)
+	yes, no := true, false
+	effort := &schemas.ChatReasoning{Effort: new("high")}
+	budget := &schemas.ChatReasoning{MaxTokens: new(2048)}
+	with := func(r *schemas.ChatReasoning, display string) *schemas.ChatReasoning {
+		c := *r
+		if display != "" {
+			c.Display = new(display)
+		}
+		return &c
+	}
+	cases := []struct {
+		name        string
+		model       string
+		reasoning   *schemas.ChatReasoning
+		override    *bool
+		wantType    string
+		wantDisplay string // "" = display must be absent
+		wantBeta    bool
+	}{
+		{"opus 4.6 adaptive, updates is omitted", opus46, with(effort, "updates"), nil, "adaptive", "omitted", false},
+		{"opus 4.6 adaptive, row says yes", opus46, with(effort, "updates"), &yes, "adaptive", "updates", true},
+		{"sonnet 4.6 enabled budget, updates is omitted", sonnet46, with(budget, "updates"), nil, "enabled", "omitted", false},
+		{"sonnet 4.6 enabled budget, summarized forwarded", sonnet46, with(budget, "summarized"), nil, "enabled", "summarized", false},
+		{"sonnet 4.6 enabled budget, omitted forwarded", sonnet46, with(budget, "omitted"), nil, "enabled", "omitted", false},
+		{"sonnet 4.6 enabled budget, no display stays absent", sonnet46, with(budget, ""), nil, "enabled", "", false},
+		{"sonnet 4.6 enabled budget, row says yes", sonnet46, with(budget, "updates"), &yes, "enabled", "updates", true},
+		{"opus 4.5 enabled effort, updates is omitted", opus45, with(effort, "updates"), nil, "enabled", "omitted", false},
+		{"opus 4.5 enabled effort, omitted forwarded", opus45, with(effort, "omitted"), nil, "enabled", "omitted", false},
+		{"opus 4.5 enabled effort, no display stays absent", opus45, with(effort, ""), nil, "enabled", "", false},
+		{"adaptive-only keeps updates", adaptiveOnlyModel, with(effort, "updates"), nil, "adaptive", "updates", true},
+		{"adaptive-only, row says no", adaptiveOnlyModel, with(effort, "updates"), &no, "adaptive", "omitted", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			providerUtils.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+				if tc.override != nil && p == schemas.Bedrock && m == tc.model {
+					return &schemas.ModelCapabilities{SupportsThinkingDisplayUpdates: tc.override}
+				}
+				return nil
+			})
+			t.Cleanup(func() { providerUtils.SetCapabilityResolver(nil) })
+
+			bifrostReq := &schemas.BifrostChatRequest{
+				Model:  tc.model,
+				Params: &schemas.ChatParameters{Reasoning: tc.reasoning, MaxCompletionTokens: new(4096)},
+			}
+			bedrockReq := &BedrockConverseRequest{}
+			if err := convertChatParameters(nil, bifrostReq, bedrockReq, schemas.ResolveModelCaps(schemas.Bedrock, tc.model)); err != nil {
+				t.Fatalf("convertChatParameters failed: %v", err)
+			}
+			raw, _ := bedrockReq.AdditionalModelRequestFields.Get("thinking")
+			thinking, _ := raw.(map[string]any)
+			if got := thinking["type"]; got != tc.wantType {
+				t.Fatalf("thinking.type = %v, want %q; thinking: %+v", got, tc.wantType, thinking)
+			}
+			display, present := thinking["display"]
+			if tc.wantDisplay == "" && present {
+				t.Errorf("thinking.display = %v, want it absent", display)
+			}
+			if tc.wantDisplay != "" && display != tc.wantDisplay {
+				t.Errorf("thinking.display = %v, want %q; thinking: %+v", display, tc.wantDisplay, thinking)
+			}
+			betas, _ := bedrockReq.AdditionalModelRequestFields.Get("anthropic_beta")
+			if got := strings.Contains(fmt.Sprint(betas), anthropic.AnthropicThinkingDisplayUpdatesBetaHeader); got != tc.wantBeta {
+				t.Errorf("anthropic_beta carries the updates beta = %v, want %v (anthropic_beta: %v)", got, tc.wantBeta, betas)
+			}
+		})
 	}
 }

@@ -97,8 +97,7 @@ func (s *Store) CalculateCostBreakdown(result *schemas.BifrostResponse, scopes *
 }
 
 // RoutingCallCost calculates the cost of one routing-classification call — a
-// semantic classification embed, or an llm classification completion when the
-// call carries OutputTokens. Exported (unlike the cache equivalent) so
+// semantic embed, LLM completion, or decision-model call. Exported so
 // telemetry can price each call independently and unconditionally, while
 // CalculateCost folds a call's cost into the request's cost only when that
 // call's CountTowardBudgets is set. If scopes is nil, an empty LookupScopes is
@@ -122,21 +121,20 @@ func (s *Store) RoutingCallCost(call schemas.BifrostRoutingCall, scopes *LookupS
 	// The classification call may use a different configured provider key, so
 	// do not let the parent request's key-specific override price this call.
 	lookupScopes.SelectedKeyID = ""
-	// Caller scopes carry the main request's provider; the classification ran
-	// against ProviderUsed, so provider-scoped overrides must key on it.
-	// The embedding can use a different provider from the main request, so its
-	// provider-scoped overrides must be resolved against the embedding provider.
+	// The classifier may use a different provider from the main request, so
+	// provider-scoped overrides must be resolved against ProviderUsed.
 	lookupScopes.Provider = *call.ProviderUsed
-	// A present OutputTokens marks the call as a chat completion (the llm
-	// classifier); an embedding call never carries one. The two price on
-	// different rate tables, so the request type must follow the call shape.
-	requestType := schemas.EmbeddingRequest
-	if call.OutputTokens != nil {
-		requestType = schemas.ChatCompletionRequest
+	// Older metadata infers chat versus embedding from token shape. New calls
+	// set RequestType explicitly when the provider uses another pricing mode.
+	requestType := call.RequestType
+	if requestType == "" {
+		requestType = schemas.EmbeddingRequest
+		if call.OutputTokens != nil {
+			requestType = schemas.ChatCompletionRequest
+		}
 	}
-	// Mirrors computeCacheEmbeddingCost: a single model identifier maps to
-	// RoutingInfo.Model — no alias resolution context exists for the internal
-	// classification call.
+	// Internal classification calls have no alias-resolution context, so
+	// RoutingInfo.Model is the model identifier used for pricing.
 	pricing := s.resolvePricing(schemas.RoutingInfo{
 		Provider: schemas.ModelProvider(*call.ProviderUsed),
 		Model:    *call.ModelUsed,
@@ -145,14 +143,21 @@ func (s *Store) RoutingCallCost(call schemas.BifrostRoutingCall, scopes *LookupS
 		return 0
 	}
 	usage := &schemas.BifrostLLMUsage{PromptTokens: *call.InputTokens}
+	if call.OutputTokens != nil {
+		usage.CompletionTokens = *call.OutputTokens
+	}
 	// The compute helpers return a per-category breakdown; a routing call is an
 	// internal sidecar with no category of its own, so only the total is kept.
 	var breakdown *schemas.BifrostCost
-	if requestType == schemas.EmbeddingRequest {
+	switch requestType {
+	case schemas.EmbeddingRequest:
 		breakdown = computeEmbeddingCost(pricing, usage, serviceTier{})
-	} else {
-		usage.CompletionTokens = *call.OutputTokens
+	case schemas.ChatCompletionRequest:
 		breakdown = computeTextCost(pricing, usage, serviceTier{})
+	case schemas.DecisionRequest:
+		breakdown = computeDecisionCost(pricing, usage, serviceTier{})
+	default:
+		return 0
 	}
 	var cost float64
 	if breakdown != nil {
@@ -199,25 +204,27 @@ func (s *Store) CalculateCostBreakdownForUsage(usage *schemas.BifrostLLMUsage, p
 	}
 
 	// If the provider already computed cost, trust it (matches calculateBaseCost).
-	if usage.Cost != nil && usage.Cost.TotalCost > 0 {
+	if s.providerCostUsable(usage.Cost, provider) {
 		return usage.Cost
 	}
 
 	// Apply the served tier (fast mode / data residency) carried on the usage so
 	// cancelled/failed fast or US-residency streams keep their multiplier.
-	input := costInput{usage: usage}
+	input := costInput{usage: usage, audioSeconds: usage.AudioSeconds}
 	input.tier = tierFromResponse(nil, usage.Speed, usage.InferenceGeo)
 
-	return s.computeCostFromInput(
-		input,
-		schemas.RoutingInfo{
-			Provider:                provider,
-			Model:                   model,
-			ServerSideFallbackModel: usage.ServerSideFallbackModel,
-		},
-		normalizeStreamRequestType(requestType),
-		lookupScopes,
-	)
+	routingInfo := schemas.RoutingInfo{
+		Provider:                provider,
+		Model:                   model,
+		ServerSideFallbackModel: usage.ServerSideFallbackModel,
+	}
+	requestType = normalizeStreamRequestType(requestType)
+	cost := s.computeCostFromInput(input, routingInfo, requestType, lookupScopes)
+	// A Responses stream cut after message_delta still owes the advisor passes that delta reported.
+	if requestType == schemas.ResponsesRequest && len(usage.Iterations) > 0 {
+		cost = cost.Add(s.calculateAdvisorIterationCost(usage.Iterations, routingInfo, input.tier, lookupScopes))
+	}
+	return cost
 }
 
 // CalculateGuardrailCost computes judge cost when no parent response is available.
@@ -322,7 +329,7 @@ func (s *Store) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage
 	// non-nil but zero cost (e.g. a partial cost object on the wire) must fall
 	// through to the catalog rates rather than price the row at zero — matching
 	// CalculateCostForUsage and calculateBaseCost.
-	if usage.Cost != nil && usage.Cost.TotalCost > 0 {
+	if s.providerCostUsable(usage.Cost, provider) {
 		return BatchCostDetails{
 			Cost:             usage.Cost.TotalCost,
 			Priced:           true,
@@ -337,6 +344,18 @@ func (s *Store) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage
 	pricing := s.resolvePricing(schemas.RoutingInfo{Provider: provider, Model: model}, normalizeStreamRequestType(requestType), lookupScopes)
 	if pricing == nil {
 		return BatchCostDetails{}
+	}
+	// An image row reached through the chat/responses fallback has no batch image-token rate: price from a
+	// custom override alone, as before that fallback existed, or leave the row unpriced
+	if pricing.Mode == normalizeRequestType(schemas.ImageGenerationRequest) {
+		if lookupScopes.Provider == "" {
+			lookupScopes.Provider = string(provider)
+		}
+		overridden, applied := s.applyPricingOverrides(model, normalizeStreamRequestType(requestType), configstoreTables.TableModelPricing{}, lookupScopes)
+		if !applied {
+			return BatchCostDetails{}
+		}
+		pricing = &overridden
 	}
 
 	switch normalizeStreamRequestType(requestType) {
@@ -375,6 +394,7 @@ func (s *Store) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage
 	}
 }
 
+// cloneFloat64Pointer returns an independent copy of value.
 func cloneFloat64Pointer(value *float64) *float64 {
 	if value == nil {
 		return nil
@@ -515,6 +535,7 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 
 	// Extract usage data from the response (passthrough and native paths unified)
 	input := extractCostInput(result)
+	input.tier.voiceLive = extraFields.PricingSurface == schemas.PricingSurfaceVoiceLive
 
 	// A video is billed once, at settlement — the job may still be queued, may
 	// produce different dimensions than were asked for, and may fail outright. This
@@ -529,12 +550,12 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 		return nil
 	}
 
-	// If provider already computed cost, use it
-	if input.usage != nil && input.usage.Cost != nil && input.usage.Cost.TotalCost > 0 {
+	// If provider already computed cost, use it unless the provider is configured to ignore it
+	if input.usage != nil && s.providerCostUsable(input.usage.Cost, routingInfo.Provider) {
 		return input.usage.Cost
 	}
 	// Image responses carry usage on imageUsage, never on input.usage.
-	if input.imageUsage != nil && input.imageUsage.Cost != nil && input.imageUsage.Cost.TotalCost > 0 {
+	if input.imageUsage != nil && s.providerCostUsable(input.imageUsage.Cost, routingInfo.Provider) {
 		return input.imageUsage.Cost
 	}
 
@@ -565,7 +586,73 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 		return s.calculateAzureModelRouterCost(result, input, routingInfo, requestType, scopes)
 	}
 
-	return s.computeCostFromInput(input, routingInfo, requestType, scopes)
+	cost := s.computeCostFromInput(input, routingInfo, requestType, scopes)
+	if requestType == schemas.ResponsesRequest {
+		if iterations := usageIterations(result); len(iterations) > 0 {
+			cost = cost.Add(s.calculateAdvisorIterationCost(iterations, routingInfo, input.tier, scopes))
+		}
+	}
+	return cost
+}
+
+// advisorIterationType marks the usage.iterations[] entry of an Anthropic advisor pass: a sub-inference
+// on the advisor tool's model, billed at that model's rates and reported only in the iterations list.
+// The top-level usage mirrors the executor passes alone, so these are added to it, never folded twice.
+const advisorIterationType = "advisor_message"
+
+// usageIterations returns the per-pass usage breakdown a response carries, or nil.
+func usageIterations(result *schemas.BifrostResponse) []schemas.ResponsesResponseUsage {
+	switch {
+	case result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil:
+		return result.ResponsesResponse.Usage.Iterations
+	case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil && result.ResponsesStreamResponse.Response.Usage != nil:
+		return result.ResponsesStreamResponse.Response.Usage.Iterations
+	case result.PassthroughResponse != nil && result.PassthroughResponse.PassthroughUsage != nil:
+		return result.PassthroughResponse.PassthroughUsage.Iterations
+	}
+	return nil
+}
+
+// calculateAdvisorIterationCost prices each advisor pass at the model that ran it, with the request's
+// fast mode, data residency and time-of-day scaling. The executor's service tier is not applied:
+// Priority Tier is a per-model commitment that does not extend to the advisor, and an iteration
+// reports no tier of its own. An advisor model with no pricing is priced at the request's own model
+// rather than as free: an estimate that may understate an expensive advisor, but never drops the
+// pass from the bill. The flat per-request surcharge is not charged again per pass.
+func (s *Store) calculateAdvisorIterationCost(iterations []schemas.ResponsesResponseUsage, routingInfo schemas.RoutingInfo, tier serviceTier, scopes LookupScopes) *schemas.BifrostCost {
+	tier = serviceTier{isFast: tier.isFast, inferenceGeoUS: tier.inferenceGeoUS}
+	var total *schemas.BifrostCost
+	for i := range iterations {
+		it := &iterations[i]
+		if it.Type == nil || *it.Type != advisorIterationType {
+			continue
+		}
+		var pricing *configstoreTables.TableModelPricing
+		var advisorModel string
+		if it.Model != nil {
+			advisorModel = *it.Model
+		}
+		if advisorModel != "" {
+			pricing = s.resolvePricing(schemas.RoutingInfo{Provider: routingInfo.Provider, Model: advisorModel}, schemas.ResponsesRequest, scopes)
+		}
+		if pricing == nil {
+			if s.logger != nil {
+				s.logger.Debug("no pricing for advisor model %q on %s, pricing its pass at %s", advisorModel, routingInfo.Provider, routingInfo.Model)
+			}
+			pricing = s.resolvePricing(routingInfo, schemas.ResponsesRequest, scopes)
+		}
+		if pricing == nil {
+			continue
+		}
+		usage := responsesUsageToBifrostUsage(it)
+		usage.Cost = nil // a pass is priced from its tokens, never from a provider-reported total
+		cost := computeTextCost(pricing, usage, tier)
+		if m, ok := offPeakMultiplier(pricing, scopes.BilledAt); ok {
+			scaleUsageCost(cost, m)
+		}
+		total = total.Add(cost)
+	}
+	return total
 }
 
 // calculateAzureModelRouterCost bills the Model Router deployment's own
@@ -629,6 +716,8 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 		cost = computeEmbeddingCost(pricing, input.usage, input.tier)
 	case schemas.RerankRequest:
 		cost = computeRerankCost(pricing, input.usage, input.tier)
+	case schemas.DecisionRequest:
+		cost = computeDecisionCost(pricing, input.usage, input.tier)
 	case schemas.SpeechRequest:
 		cost = computeSpeechCost(pricing, input.usage, input.audioSeconds, input.audioTextInputChars, input.tier)
 	case schemas.TranscriptionRequest:
@@ -641,6 +730,8 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 		cost = computeOCRCost(pricing, input.ocrProcessedPages, input.ocrIsAnnotated)
 	case schemas.ContainerCreateRequest:
 		cost = computeContainerCreationCost(pricing)
+	case schemas.LiveRequest:
+		cost = computeLiveCost(pricing, input.audioSeconds)
 	default:
 		return nil
 	}
@@ -658,8 +749,8 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 	// the resolved pricing row carries one. It maps to no token category, so it
 	// folds into the input side (InputCostDetails.RequestCost) and the total.
 	// Deliberately added after the off-peak scaling: a flat per-request fee is
-	// not a usage charge and is not discounted.
-	if pricing.CostPerRequest != nil {
+	// not a usage charge and is not discounted. A live billing window is not a request.
+	if pricing.CostPerRequest != nil && requestType != schemas.LiveRequest {
 		if cost == nil {
 			cost = &schemas.BifrostCost{}
 		}
@@ -725,6 +816,9 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 	case result.RerankResponse != nil:
 		input.usage = result.RerankResponse.Usage
 
+	case result.DecisionResponse != nil && result.DecisionResponse.Usage != nil:
+		input.usage = result.DecisionResponse.Usage
+
 	case result.SpeechResponse != nil && result.SpeechResponse.Usage != nil:
 		input.usage = speechUsageToBifrostUsage(result.SpeechResponse.Usage)
 		input.audioTextInputChars = result.SpeechResponse.Usage.InputChars
@@ -771,23 +865,25 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 	case result.VideoGenerationResponse != nil:
 		video := result.VideoGenerationResponse
 		input.videoStatus = video.Status
-		if video.Usage != nil && video.Usage.Cost != nil {
+		if video.Usage != nil && (video.Usage.Cost != nil || video.Usage.OutputTokens > 0) {
 			// Provider-reported cost (e.g. Runware's per-task cost). Routed through input.usage.Cost so
 			// the provider-cost short-circuit in computeCost uses it verbatim; covers task types (3D,
-			// etc.) that have no datasheet rate.
-			input.usage = &schemas.BifrostLLMUsage{Cost: video.Usage.Cost}
-		} else {
-			if video.Seconds != nil {
-				if seconds, err := strconv.Atoi(*video.Seconds); err == nil {
-					input.videoSeconds = &seconds
-				}
-			}
-			// Size and clip count drive the output rate and its multiplier. Neither can
-			// bypass the no-usage guard below on its own: without seconds there is still
-			// nothing to price.
-			input.videoSize = video.Size
-			input.videoCount = len(video.Videos)
+			// etc.) that have no datasheet rate. Metered output tokens (Seedance) ride along as
+			// CompletionTokens for the per-video-token rate.
+			input.usage = &schemas.BifrostLLMUsage{Cost: video.Usage.Cost, CompletionTokens: video.Usage.OutputTokens}
 		}
+		// Dimensions are kept even when a provider cost is present, so catalog pricing still
+		// works when that provider's reported cost is ignored.
+		if video.Seconds != nil {
+			if seconds, err := strconv.Atoi(*video.Seconds); err == nil {
+				input.videoSeconds = &seconds
+			}
+		}
+		// Size and clip count drive the output rate and its multiplier. Neither can
+		// bypass the no-usage guard below on its own: without seconds there is still
+		// nothing to price.
+		input.videoSize = video.Size
+		input.videoCount = videoClipCount(video.Videos)
 
 	case result.OCRResponse != nil:
 		pages := len(result.OCRResponse.Pages)
@@ -809,6 +905,7 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 	return input
 }
 
+// responsesUsageToBifrostUsage normalizes Responses API usage for shared pricing.
 func responsesUsageToBifrostUsage(u *schemas.ResponsesResponseUsage) *schemas.BifrostLLMUsage {
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     u.InputTokens,
@@ -826,20 +923,29 @@ func responsesUsageToBifrostUsage(u *schemas.ResponsesResponseUsage) *schemas.Bi
 			CachedReadTokens:        u.InputTokensDetails.CachedReadTokens,
 			CachedWriteTokens:       u.InputTokensDetails.CachedWriteTokens,
 			CachedWriteTokenDetails: u.InputTokensDetails.CachedWriteTokenDetails,
+
+			StandardSpeechAudioTokens: u.InputTokensDetails.StandardSpeechAudioTokens,
+			CustomSpeechAudioTokens:   u.InputTokensDetails.CustomSpeechAudioTokens,
 		}
 	}
 	if u.OutputTokensDetails != nil {
 		usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
 			ReasoningTokens: u.OutputTokensDetails.ReasoningTokens,
 			AudioTokens:     u.OutputTokensDetails.AudioTokens,
+			ImageTokens:     u.OutputTokensDetails.ImageTokens,
+
+			StandardSpeechAudioTokens: u.OutputTokensDetails.StandardSpeechAudioTokens,
+			CustomSpeechAudioTokens:   u.OutputTokensDetails.CustomSpeechAudioTokens,
 		}
 		if u.OutputTokensDetails.NumSearchQueries != nil {
 			usage.CompletionTokensDetails.NumSearchQueries = u.OutputTokensDetails.NumSearchQueries
 		}
 	}
+	usage.ToolUsage = u.ToolUsage
 	return usage
 }
 
+// speechUsageToBifrostUsage normalizes speech token usage for shared pricing.
 func speechUsageToBifrostUsage(u *schemas.SpeechUsage) *schemas.BifrostLLMUsage {
 	return &schemas.BifrostLLMUsage{
 		PromptTokens:     u.InputTokens,
@@ -848,8 +954,9 @@ func speechUsageToBifrostUsage(u *schemas.SpeechUsage) *schemas.BifrostLLMUsage 
 	}
 }
 
+// extractTranscriptionUsage normalizes transcription tokens and duration for pricing.
 func extractTranscriptionUsage(u *schemas.TranscriptionUsage) (*schemas.BifrostLLMUsage, *float64, *schemas.TranscriptionUsageInputTokenDetails) {
-	usage := &schemas.BifrostLLMUsage{}
+	usage := &schemas.BifrostLLMUsage{Cost: u.Cost}
 	if u.InputTokens != nil {
 		usage.PromptTokens = *u.InputTokens
 	}
@@ -975,22 +1082,51 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 	} else if outputAudioTokens > completionTokens {
 		outputAudioTokens = completionTokens
 	}
-	if inputAudioTokens > 0 && pricing.InputCostPerAudioToken != nil {
+	// An Azure Voice Live turn prices its audio at the model's Voice Live rates, and only there is
+	// the audio Azure Speech handled priced at the standard and custom speech rates.
+	inputAudioRate, outputAudioRate := pricing.InputCostPerAudioToken, pricing.OutputCostPerAudioToken
+	var inputStandardRate, outputStandardRate, inputCustomRate, outputCustomRate *float64
+	if tier.voiceLive {
+		if pricing.InputCostPerAudioTokenVoiceLive != nil {
+			inputAudioRate = pricing.InputCostPerAudioTokenVoiceLive
+		}
+		if pricing.OutputCostPerAudioTokenVoiceLive != nil {
+			outputAudioRate = pricing.OutputCostPerAudioTokenVoiceLive
+		}
+		inputStandardRate, outputStandardRate = pricing.InputCostPerStandardSpeechAudioTokenVoiceLive, pricing.OutputCostPerStandardSpeechAudioTokenVoiceLive
+		inputCustomRate, outputCustomRate = pricing.InputCostPerCustomSpeechAudioTokenVoiceLive, pricing.OutputCostPerCustomSpeechAudioTokenVoiceLive
+	}
+	if inputAudioTokens > 0 {
 		if inputAudioTokens > nonCachedPrompt {
 			inputAudioTokens = nonCachedPrompt
 		}
-		inputAudioCost = float64(inputAudioTokens) * *pricing.InputCostPerAudioToken
-		textInputCost -= float64(inputAudioTokens) * inputRate
+		details := usage.PromptTokensDetails
+		cost, priced := audioTokenCost(inputAudioTokens, details.StandardSpeechAudioTokens, details.CustomSpeechAudioTokens,
+			inputAudioRate, inputStandardRate, inputCustomRate)
+		inputAudioCost = cost
+		textInputCost -= float64(priced) * inputRate
 	}
-	if outputAudioTokens > 0 && pricing.OutputCostPerAudioToken != nil {
-		outputAudioCost = float64(outputAudioTokens) * *pricing.OutputCostPerAudioToken
-		textOutputCost -= float64(outputAudioTokens) * outputRate
+	if outputAudioTokens > 0 {
+		details := usage.CompletionTokensDetails
+		cost, priced := audioTokenCost(outputAudioTokens, details.StandardSpeechAudioTokens, details.CustomSpeechAudioTokens,
+			outputAudioRate, outputStandardRate, outputCustomRate)
+		outputAudioCost = cost
+		textOutputCost -= float64(priced) * outputRate
+	}
+
+	// Image output tokens (an image model called over chat/responses) move off the text rate onto the
+	// image-token rate, like audio above. Rows with no image-token rate keep billing them as text.
+	outputImageCost := 0.0
+	if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ImageTokens != nil && pricing.OutputCostPerImageToken != nil {
+		outputImageTokens := min(max(*usage.CompletionTokensDetails.ImageTokens, 0), completionTokens-outputAudioTokens)
+		outputImageCost = float64(outputImageTokens) * *pricing.OutputCostPerImageToken
+		textOutputCost -= float64(outputImageTokens) * outputRate
 	}
 
 	// Search query cost (billed on the output side)
 	searchCost := 0.0
-	if pricing.SearchContextCostPerQuery != nil && usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.NumSearchQueries != nil {
-		searchCost = float64(*usage.CompletionTokensDetails.NumSearchQueries) * *pricing.SearchContextCostPerQuery
+	if pricing.WebSearchCostPerRequest != nil && usage.ToolUsage != nil && usage.ToolUsage.WebSearch != nil {
+		searchCost = float64(usage.ToolUsage.WebSearch.NumRequests) * *pricing.WebSearchCostPerRequest
 	}
 
 	// Data residency (Anthropic inference_geo:"us") scales all token/cache costs
@@ -1004,10 +1140,11 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 		inputAudioCost *= m
 		textOutputCost *= m
 		outputAudioCost *= m
+		outputImageCost *= m
 	}
 
 	inputCost := textInputCost + cacheReadCost + cacheWriteCost + inputAudioCost
-	outputCost := textOutputCost + outputAudioCost + searchCost
+	outputCost := textOutputCost + outputAudioCost + outputImageCost + searchCost
 
 	cost := &schemas.BifrostCost{
 		InputCost:  inputCost,
@@ -1022,14 +1159,51 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 			CachedWriteCost: cacheWriteCost,
 		}
 	}
-	if textOutputCost != 0 || outputAudioCost != 0 || searchCost != 0 {
+	if textOutputCost != 0 || outputAudioCost != 0 || outputImageCost != 0 || searchCost != 0 {
 		cost.OutputCostDetails = &schemas.OutputCostDetails{
 			TextCost:          textOutputCost,
 			AudioCost:         outputAudioCost,
+			ImageCost:         outputImageCost,
 			SearchQueriesCost: searchCost,
 		}
 	}
 	return cost
+}
+
+// audioTokenCost prices one side's audio tokens. The parts Azure Voice Live handled with Azure Speech
+// use the standard or custom speech rate, falling back to audioRate; the rest use audioRate. A part
+// with no rate keeps the text rate, so priced counts only the tokens moved off it.
+func audioTokenCost(tokens, standardSpeech, customSpeech int, audioRate, standardRate, customRate *float64) (cost float64, priced int) {
+	// Every turn outside Voice Live carries no speech parts: all audio is priced at audioRate.
+	if standardSpeech <= 0 && customSpeech <= 0 {
+		if audioRate == nil {
+			return 0, 0
+		}
+		return float64(tokens) * *audioRate, tokens
+	}
+	standardSpeech = min(max(standardSpeech, 0), tokens)
+	customSpeech = min(max(customSpeech, 0), tokens-standardSpeech)
+	if standardRate == nil {
+		standardRate = audioRate
+	}
+	if customRate == nil {
+		customRate = audioRate
+	}
+	parts := [...]struct {
+		tokens int
+		rate   *float64
+	}{
+		{standardSpeech, standardRate},
+		{customSpeech, customRate},
+		{tokens - standardSpeech - customSpeech, audioRate},
+	}
+	for _, part := range parts {
+		if part.tokens > 0 && part.rate != nil {
+			cost += float64(part.tokens) * *part.rate
+			priced += part.tokens
+		}
+	}
+	return cost, priced
 }
 
 // computeBatchTextCost handles token usage returned by batch result retrieval.
@@ -1086,6 +1260,8 @@ func computeBatchTextCost(pricing *configstoreTables.TableModelPricing, usage *s
 				inputRate = *pricing.InputCostPerTokenAbove200kTokens * batchRatio
 			case promptTokens > TokenTierAbove128K && pricing.InputCostPerTokenAbove128kTokens != nil:
 				inputRate = *pricing.InputCostPerTokenAbove128kTokens * batchRatio
+			case promptTokens > TokenTierAbove100K && pricing.InputCostPerTokenAbove100kTokens != nil:
+				inputRate = *pricing.InputCostPerTokenAbove100kTokens * batchRatio
 			}
 
 			if pricing.CacheReadInputTokenCost != nil {
@@ -1095,6 +1271,8 @@ func computeBatchTextCost(pricing *configstoreTables.TableModelPricing, usage *s
 				cacheReadRate = *pricing.CacheReadInputTokenCostAbove272kTokens * batchRatio
 			} else if promptTokens > TokenTierAbove200K && pricing.CacheReadInputTokenCostAbove200kTokens != nil {
 				cacheReadRate = *pricing.CacheReadInputTokenCostAbove200kTokens * batchRatio
+			} else if promptTokens > TokenTierAbove100K && pricing.CacheReadInputTokenCostAbove100kTokens != nil {
+				cacheReadRate = *pricing.CacheReadInputTokenCostAbove100kTokens * batchRatio
 			}
 
 			if pricing.CacheCreationInputTokenCost != nil {
@@ -1104,10 +1282,14 @@ func computeBatchTextCost(pricing *configstoreTables.TableModelPricing, usage *s
 				cacheWriteRate = *pricing.CacheCreationInputTokenCostAbove272kTokens * batchRatio
 			} else if promptTokens > TokenTierAbove200K && pricing.CacheCreationInputTokenCostAbove200kTokens != nil {
 				cacheWriteRate = *pricing.CacheCreationInputTokenCostAbove200kTokens * batchRatio
+			} else if promptTokens > TokenTierAbove100K && pricing.CacheCreationInputTokenCostAbove100kTokens != nil {
+				cacheWriteRate = *pricing.CacheCreationInputTokenCostAbove100kTokens * batchRatio
 			}
 
 			if promptTokens > TokenTierAbove200K && pricing.CacheCreationInputTokenCostAbove1hrAbove200kTokens != nil {
 				cacheWriteAbove1hrRate = *pricing.CacheCreationInputTokenCostAbove1hrAbove200kTokens * batchRatio
+			} else if promptTokens > TokenTierAbove100K && pricing.CacheCreationInputTokenCostAbove1hrAbove100kTokens != nil {
+				cacheWriteAbove1hrRate = *pricing.CacheCreationInputTokenCostAbove1hrAbove100kTokens * batchRatio
 			} else if pricing.CacheCreationInputTokenCostAbove1hr != nil {
 				cacheWriteAbove1hrRate = *pricing.CacheCreationInputTokenCostAbove1hr * batchRatio
 			} else {
@@ -1138,6 +1320,8 @@ func computeBatchTextCost(pricing *configstoreTables.TableModelPricing, usage *s
 				outputRate = *pricing.OutputCostPerTokenAbove200kTokens * outputBatchRatio
 			case promptTokens > TokenTierAbove128K && pricing.OutputCostPerTokenAbove128kTokens != nil:
 				outputRate = *pricing.OutputCostPerTokenAbove128kTokens * outputBatchRatio
+			case promptTokens > TokenTierAbove100K && pricing.OutputCostPerTokenAbove100kTokens != nil:
+				outputRate = *pricing.OutputCostPerTokenAbove100kTokens * outputBatchRatio
 			}
 		}
 		outputCost = float64(usage.CompletionTokens) * outputRate
@@ -1200,8 +1384,8 @@ func computeRerankCost(pricing *configstoreTables.TableModelPricing, usage *sche
 		inputCost = float64(usage.PromptTokens) * tieredInputRate(pricing, tierTokens, tier)
 		outputCost = float64(usage.CompletionTokens) * tieredOutputRate(pricing, tierTokens, tier)
 
-		if pricing.SearchContextCostPerQuery != nil && usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.NumSearchQueries != nil {
-			searchCost = float64(*usage.CompletionTokensDetails.NumSearchQueries) * *pricing.SearchContextCostPerQuery
+		if pricing.WebSearchCostPerRequest != nil && usage.ToolUsage != nil && usage.ToolUsage.WebSearch != nil {
+			searchCost = float64(usage.ToolUsage.WebSearch.NumRequests) * *pricing.WebSearchCostPerRequest
 		}
 	}
 
@@ -1220,6 +1404,91 @@ func computeRerankCost(pricing *configstoreTables.TableModelPricing, usage *sche
 		outputDetails = &schemas.OutputCostDetails{TextCost: outputCost, SearchQueriesCost: searchCost}
 	}
 	return newInputOutputCostWithDetails(inputTokensCost, outputTokensCost, inputDetails, outputDetails)
+}
+
+// computeDecisionCost prices a decision request on token usage. Typesafe bills
+// input tokens only, so the output rate is normally zero, but both sides are
+// honored from the datasheet so a provider that later charges output stays
+// correct without a code change.
+//
+// A model served natively on a decisions endpoint carries its own rates on its
+// chat row (input_cost_per_token_decisions / output_cost_per_token_decisions).
+// Each side uses its decision rate when the row has one, flat across the context
+// window, wherever it came from (the datasheet or an override), and the row's
+// normal rate otherwise, which is also what a decision answered through a chat
+// model costs.
+//
+// A negative rate is the datasheet's marker for a model with no fixed price
+// (e.g. openrouter/typesafe/jev-router at -1), so it is left unpriced rather
+// than billed as a negative cost.
+//
+// Prompt-cache reads and writes, which the prompt tokens include, are priced
+// as computeTextCost prices them: OpenAI bills a decision's cached tokens at
+// the model's standard prompt-caching rates. Beside a decision rate, which is
+// flat, the cache rates are the row's flat ones, and a row without a cache
+// rate bills those tokens at the decision rate rather than the chat rate. A
+// decision without cached tokens costs, and reports, exactly what it did
+// before cache pricing.
+func computeDecisionCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, tier serviceTier) *schemas.BifrostCost {
+	if usage == nil {
+		return nil
+	}
+	tierTokens := usage.PromptTokens
+	inputRate := tieredInputRate(pricing, tierTokens, tier)
+	if pricing.InputCostPerTokenDecisions != nil {
+		inputRate = *pricing.InputCostPerTokenDecisions
+	}
+	outputRate := tieredOutputRate(pricing, tierTokens, tier)
+	if pricing.OutputCostPerTokenDecisions != nil {
+		outputRate = *pricing.OutputCostPerTokenDecisions
+	}
+	if inputRate < 0 || outputRate < 0 {
+		return nil
+	}
+	outputCost := float64(usage.CompletionTokens) * outputRate
+
+	// Clamp cached token counts as computeTextCost does, so a malformed
+	// payload never bills more cached tokens than the prompt holds.
+	cachedReadTokens, cachedWriteTokens, cachedWriteTokensAbove1hr := 0, 0, 0
+	if details := usage.PromptTokensDetails; details != nil {
+		cachedReadTokens = min(max(details.CachedReadTokens, 0), usage.PromptTokens)
+		cachedWriteTokens = min(max(details.CachedWriteTokens, 0), usage.PromptTokens-cachedReadTokens)
+		if details.CachedWriteTokenDetails != nil {
+			cachedWriteTokensAbove1hr = min(max(details.CachedWriteTokenDetails.CachedWriteTokens1h, 0), cachedWriteTokens)
+		}
+	}
+	if cachedReadTokens == 0 && cachedWriteTokens == 0 {
+		return newInputOutputCost(float64(usage.PromptTokens)*inputRate, outputCost)
+	}
+
+	cacheReadRate := tieredCacheReadInputTokenRate(pricing, tierTokens, tier)
+	cacheWriteRate := tieredCacheCreationInputTokenRate(pricing, tierTokens, tier)
+	cacheWriteAbove1hrRate := tieredCacheCreationInputAbove1hrTokenRate(pricing, tierTokens, tier)
+	if pricing.InputCostPerTokenDecisions != nil {
+		// A decision rate is flat across the context window, and so are the
+		// cache rates billed beside it; the tiered helpers would fall back to
+		// the chat input rate, so a missing cache rate falls back to the
+		// decision rate instead.
+		cacheReadRate, cacheWriteRate = inputRate, inputRate
+		if pricing.CacheReadInputTokenCost != nil {
+			cacheReadRate = *pricing.CacheReadInputTokenCost
+		}
+		if pricing.CacheCreationInputTokenCost != nil {
+			cacheWriteRate = *pricing.CacheCreationInputTokenCost
+		}
+		cacheWriteAbove1hrRate = cacheWriteRate
+		if pricing.CacheCreationInputTokenCostAbove1hr != nil {
+			cacheWriteAbove1hrRate = *pricing.CacheCreationInputTokenCostAbove1hr
+		}
+	}
+
+	inputDetails := &schemas.InputCostDetails{
+		TextCost:        float64(usage.PromptTokens-cachedReadTokens-cachedWriteTokens) * inputRate,
+		CachedReadCost:  float64(cachedReadTokens) * cacheReadRate,
+		CachedWriteCost: float64(cachedWriteTokens-cachedWriteTokensAbove1hr)*cacheWriteRate + float64(cachedWriteTokensAbove1hr)*cacheWriteAbove1hrRate,
+	}
+	inputCost := inputDetails.TextCost + inputDetails.CachedReadCost + inputDetails.CachedWriteCost
+	return newInputOutputCostWithDetails(inputCost, outputCost, inputDetails, nil)
 }
 
 // newInputOutputCost builds a BifrostCost from separate input and output costs,
@@ -1378,6 +1647,7 @@ func computeImageCost(pricing *configstoreTables.TableModelPricing, imageUsage *
 }
 
 // computeImageInputCost calculates input cost: tokens first, then per-pixel, then per-image count fallback.
+// Token pricing only applies when it yields a non-zero cost.
 func computeImageInputCost(pricing *configstoreTables.TableModelPricing, imageUsage *schemas.ImageUsage, totalTokens int, pixels int, tier serviceTier) float64 {
 	// Try token-based pricing first
 	var inputTextTokens, inputImageTokens int
@@ -1388,9 +1658,13 @@ func computeImageInputCost(pricing *configstoreTables.TableModelPricing, imageUs
 		inputTextTokens = imageUsage.InputTokens
 	}
 
+	// Tokens win only when the row prices them. Providers like BytePlus report
+	// tokens on rows that bill per image, so a zero token cost falls through.
 	if inputTextTokens > 0 || inputImageTokens > 0 {
-		return float64(inputTextTokens)*tieredInputRate(pricing, totalTokens, tier) +
-			float64(inputImageTokens)*tieredImageInputRate(pricing, totalTokens, tier)
+		if cost := float64(inputTextTokens)*tieredInputRate(pricing, totalTokens, tier) +
+			float64(inputImageTokens)*tieredImageInputRate(pricing, totalTokens, tier); cost > 0 {
+			return cost
+		}
 	}
 
 	// Per-pixel pricing fallback
@@ -1407,20 +1681,37 @@ func computeImageInputCost(pricing *configstoreTables.TableModelPricing, imageUs
 }
 
 // computeImageOutputCost calculates output cost: tokens first, then per-pixel, then per-image count fallback.
+// Token pricing only applies when it yields a non-zero cost.
 // imageQuality: "low", "medium", "high", "standard", "auto" use quality-specific rates when available; other values use base/size-tier rates.
 func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageUsage *schemas.ImageUsage, totalTokens int, width, height, pixels int, imageQuality string, tier serviceTier) float64 {
 	// Try token-based pricing first
-	var outputTextTokens, outputImageTokens int
-	if imageUsage.OutputTokensDetails != nil {
-		outputImageTokens = imageUsage.OutputTokensDetails.ImageTokens
-		outputTextTokens = imageUsage.OutputTokensDetails.TextTokens
-	} else {
+	var outputTextTokens, outputImageTokens, reasoningTokens int
+	if d := imageUsage.OutputTokensDetails; d != nil {
+		outputImageTokens, outputTextTokens, reasoningTokens = d.ImageTokens, d.TextTokens, d.ReasoningTokens
+	}
+	// Thinking billed on top of a pixel or per-image charge, when the row cannot price image tokens
+	reasoningCost := 0.0
+	switch {
+	case outputImageTokens > 0 || outputTextTokens > 0:
+		// Output the details leave unattributed bills at the text rate, and never less than the reported
+		// thinking tokens: Gemini can report a candidatesTokenCount below its own IMAGE detail
+		outputTextTokens += max(imageUsage.OutputTokens-outputImageTokens-outputTextTokens, reasoningTokens, 0)
+	case imageUsage.OutputTokensDetails == nil:
 		outputImageTokens = imageUsage.OutputTokens
+	case reasoningTokens > 0 && pricing.OutputCostPerImageToken != nil:
+		// No modality breakdown: output is image tokens, except reported thinking, which bills as text
+		outputTextTokens = min(reasoningTokens, imageUsage.OutputTokens)
+		outputImageTokens = imageUsage.OutputTokens - outputTextTokens
+	case reasoningTokens > 0:
+		reasoningCost = float64(min(reasoningTokens, imageUsage.OutputTokens)) * tieredOutputRate(pricing, totalTokens, tier)
 	}
 
+	// Same as the input side: a row with no token rate falls through to pixel/image rates.
 	if outputTextTokens > 0 || outputImageTokens > 0 {
-		return float64(outputTextTokens)*tieredOutputRate(pricing, totalTokens, tier) +
-			float64(outputImageTokens)*tieredImageOutputRate(pricing, totalTokens, tier)
+		if cost := float64(outputTextTokens)*tieredOutputRate(pricing, totalTokens, tier) +
+			float64(outputImageTokens)*tieredImageOutputRate(pricing, totalTokens, tier); cost > 0 {
+			return cost
+		}
 	}
 
 	// Per-pixel pricing fallback
@@ -1429,7 +1720,7 @@ func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageU
 		if imageUsage.OutputTokensDetails != nil && imageUsage.OutputTokensDetails.NImages > 0 {
 			numOutputImages = imageUsage.OutputTokensDetails.NImages
 		}
-		return float64(pixels*numOutputImages) * *pricing.OutputCostPerPixel
+		return reasoningCost + float64(pixels*numOutputImages)**pricing.OutputCostPerPixel
 	}
 
 	// Fall back to per-image count pricing with size-tier selection
@@ -1455,10 +1746,10 @@ func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageU
 		perImageRate = pricing.OutputCostPerImage
 	}
 	if perImageRate != nil {
-		return float64(numOutputImages) * *perImageRate
+		return reasoningCost + float64(numOutputImages)**perImageRate
 	}
 
-	return 0
+	return reasoningCost
 }
 
 // imageSizeRates holds the per-image output rates for each size threshold:
@@ -1613,11 +1904,13 @@ func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schem
 		}
 	}
 
-	// Output: completion tokens first, then per-second fallback
+	// Output: completion tokens first, then per-second fallback. A row with no token
+	// rate yields zero here and falls through to its per-second rate.
 	outputCost := 0.0
 	if usage != nil && usage.CompletionTokens > 0 {
-		outputCost = float64(usage.CompletionTokens) * tieredOutputRate(pricing, tierTokens, tier)
-	} else if videoSeconds != nil && *videoSeconds > 0 {
+		outputCost = float64(usage.CompletionTokens) * videoOutputTokenRate(pricing, tierTokens, tier)
+	}
+	if outputCost == 0 && videoSeconds != nil && *videoSeconds > 0 {
 		// Seconds is one clip's duration, and a single job can return several clips
 		// (Veo's sampleCount). Count is 0 on a job that has not produced its outputs
 		// yet, which still owes one clip's worth rather than nothing.
@@ -1625,6 +1918,15 @@ func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schem
 	}
 
 	return newInputOutputCost(inputCost, outputCost)
+}
+
+// videoOutputTokenRate returns the per-token rate for video output, preferring the
+// video-specific rate over the generic output token rate.
+func videoOutputTokenRate(pricing *configstoreTables.TableModelPricing, totalTokens int, tier serviceTier) float64 {
+	if pricing.OutputCostPerVideoToken != nil {
+		return *pricing.OutputCostPerVideoToken
+	}
+	return tieredOutputRate(pricing, totalTokens, tier)
 }
 
 // videoOutputPerSecondRate returns the per-second output rate for a generated video,
@@ -1680,6 +1982,16 @@ func videoResolutionBand(size string) int {
 	return min(width, height)
 }
 
+// computeLiveCost bills GPT Live voice duration: session seconds × input_cost_per_second.
+// Backend model tokens are priced separately as Responses usage.
+func computeLiveCost(pricing *configstoreTables.TableModelPricing, seconds *float64) *schemas.BifrostCost {
+	if seconds == nil || *seconds <= 0 || pricing.InputCostPerSecond == nil {
+		return nil
+	}
+	cost := *seconds * *pricing.InputCostPerSecond
+	return newInputOutputCostWithDetails(cost, 0, &schemas.InputCostDetails{AudioCost: cost}, nil)
+}
+
 // computeOCRCost handles OCR requests, billing per page processed.
 // ocr_cost_per_page covers base processing; annotation_cost_per_page is added when set.
 func computeOCRCost(pricing *configstoreTables.TableModelPricing, ocrProcessedPages *int, ocrIsAnnotated *bool) *schemas.BifrostCost {
@@ -1718,15 +2030,21 @@ func totalOnlyCost(c float64) *schemas.BifrostCost {
 // ---------------------------------------------------------------------------
 
 // tierFromResponse builds a serviceTier from a response's billing-relevant
-// fields: the OpenAI service_tier (priority/flex/ultrafast) and the Anthropic speed
-// (fast mode). speed == "fast" means fast mode was actually served — the
-// provider echoes the served speed, so stripped/fell-back requests report
-// "standard" and bill at standard rates.
+// fields: the OpenAI service_tier (priority/fast/flex/ultrafast) and the Anthropic
+// speed (fast mode). Both are served values: OpenAI echoes service_tier "default"
+// when it downgrades a Fast request to standard speed, and Anthropic echoes
+// speed "standard" when fast mode was stripped or fell back, so either way a
+// downgraded request bills at standard rates.
+//
+// OpenAI service_tier "fast" is the Priority tier renamed on 2026-07-30; the two
+// values are interchangeable on the wire and share the priority pricing columns.
+// It is unrelated to the Anthropic speed "fast" flag (isFast), which selects the
+// flat *Fast columns.
 func tierFromResponse(s *schemas.BifrostServiceTier, speed *string, inferenceGeo *string) serviceTier {
 	var tier serviceTier
 	if s != nil {
 		switch *s {
-		case schemas.BifrostServiceTierPriority:
+		case schemas.BifrostServiceTierPriority, schemas.BifrostServiceTierFast:
 			tier.isPriority = true
 		case schemas.BifrostServiceTierFlex:
 			tier.isFlex = true
@@ -1740,15 +2058,24 @@ func tierFromResponse(s *schemas.BifrostServiceTier, speed *string, inferenceGeo
 }
 
 // tieredInputRate returns the effective per-token input rate based on total token count.
-// Flex applies a flat rate. Priority-specific tier rates are preferred where available.
+// Flex and ultrafast have their own >272k rates. Priority-specific tier rates are preferred where available.
 func tieredInputRate(pricing *configstoreTables.TableModelPricing, totalTokens int, tier serviceTier) float64 {
+	// An Azure Voice Live turn is priced at the model's flat Voice Live rate.
+	if tier.voiceLive && pricing.InputCostPerTokenVoiceLive != nil {
+		return *pricing.InputCostPerTokenVoiceLive
+	}
 	// Fast mode (Anthropic) is a flat rate across the full context window — it
 	// takes precedence over the token-count tiers below.
 	if tier.isFast && pricing.InputCostPerTokenFast != nil {
 		return *pricing.InputCostPerTokenFast
 	}
-	if tier.isUltrafast && pricing.InputCostPerTokenUltrafast != nil {
-		return *pricing.InputCostPerTokenUltrafast
+	if tier.isUltrafast {
+		if totalTokens > TokenTierAbove272K && pricing.InputCostPerTokenAbove272kTokensUltrafast != nil {
+			return *pricing.InputCostPerTokenAbove272kTokensUltrafast
+		}
+		if pricing.InputCostPerTokenUltrafast != nil {
+			return *pricing.InputCostPerTokenUltrafast
+		}
 	}
 	if tier.isFlex {
 		if totalTokens > TokenTierAbove272K && pricing.InputCostPerTokenFlexAbove272kTokens != nil {
@@ -1777,6 +2104,9 @@ func tieredInputRate(pricing *configstoreTables.TableModelPricing, totalTokens i
 	if totalTokens > TokenTierAbove128K && pricing.InputCostPerTokenAbove128kTokens != nil {
 		return *pricing.InputCostPerTokenAbove128kTokens
 	}
+	if totalTokens > TokenTierAbove100K && pricing.InputCostPerTokenAbove100kTokens != nil {
+		return *pricing.InputCostPerTokenAbove100kTokens
+	}
 	if tier.isPriority && pricing.InputCostPerTokenPriority != nil {
 		return *pricing.InputCostPerTokenPriority
 	}
@@ -1787,15 +2117,24 @@ func tieredInputRate(pricing *configstoreTables.TableModelPricing, totalTokens i
 }
 
 // tieredOutputRate returns the effective per-token output rate based on total token count.
-// Flex applies a flat rate. Priority-specific tier rates are preferred where available.
+// Flex and ultrafast have their own >272k rates. Priority-specific tier rates are preferred where available.
 func tieredOutputRate(pricing *configstoreTables.TableModelPricing, totalTokens int, tier serviceTier) float64 {
+	// An Azure Voice Live turn is priced at the model's flat Voice Live rate.
+	if tier.voiceLive && pricing.OutputCostPerTokenVoiceLive != nil {
+		return *pricing.OutputCostPerTokenVoiceLive
+	}
 	// Fast mode (Anthropic) is a flat rate across the full context window — it
 	// takes precedence over the token-count tiers below.
 	if tier.isFast && pricing.OutputCostPerTokenFast != nil {
 		return *pricing.OutputCostPerTokenFast
 	}
-	if tier.isUltrafast && pricing.OutputCostPerTokenUltrafast != nil {
-		return *pricing.OutputCostPerTokenUltrafast
+	if tier.isUltrafast {
+		if totalTokens > TokenTierAbove272K && pricing.OutputCostPerTokenAbove272kTokensUltrafast != nil {
+			return *pricing.OutputCostPerTokenAbove272kTokensUltrafast
+		}
+		if pricing.OutputCostPerTokenUltrafast != nil {
+			return *pricing.OutputCostPerTokenUltrafast
+		}
 	}
 	if tier.isFlex {
 		if totalTokens > TokenTierAbove272K && pricing.OutputCostPerTokenFlexAbove272kTokens != nil {
@@ -1823,6 +2162,9 @@ func tieredOutputRate(pricing *configstoreTables.TableModelPricing, totalTokens 
 	}
 	if totalTokens > TokenTierAbove128K && pricing.OutputCostPerTokenAbove128kTokens != nil {
 		return *pricing.OutputCostPerTokenAbove128kTokens
+	}
+	if totalTokens > TokenTierAbove100K && pricing.OutputCostPerTokenAbove100kTokens != nil {
+		return *pricing.OutputCostPerTokenAbove100kTokens
 	}
 
 	if tier.isPriority && pricing.OutputCostPerTokenPriority != nil {
@@ -1900,13 +2242,23 @@ func tieredAudioTokenOutputRate(pricing *configstoreTables.TableModelPricing, to
 	return tieredOutputRate(pricing, totalTokens, tier)
 }
 
+// tieredCacheReadInputTokenRate returns the configured cache-read rate for the request tier.
 func tieredCacheReadInputTokenRate(pricing *configstoreTables.TableModelPricing, totalTokens int, tier serviceTier) float64 {
+	// An Azure Voice Live turn is priced at the model's flat Voice Live rate.
+	if tier.voiceLive && pricing.CacheReadInputTokenCostVoiceLive != nil {
+		return *pricing.CacheReadInputTokenCostVoiceLive
+	}
 	// Fast mode (Anthropic) is a flat rate across the full context window.
 	if tier.isFast && pricing.CacheReadInputTokenCostFast != nil {
 		return *pricing.CacheReadInputTokenCostFast
 	}
-	if tier.isUltrafast && pricing.CacheReadInputTokenCostUltrafast != nil {
-		return *pricing.CacheReadInputTokenCostUltrafast
+	if tier.isUltrafast {
+		if totalTokens > TokenTierAbove272K && pricing.CacheReadInputTokenCostAbove272kTokensUltrafast != nil {
+			return *pricing.CacheReadInputTokenCostAbove272kTokensUltrafast
+		}
+		if pricing.CacheReadInputTokenCostUltrafast != nil {
+			return *pricing.CacheReadInputTokenCostUltrafast
+		}
 	}
 	if tier.isFlex {
 		if totalTokens > TokenTierAbove272K && pricing.CacheReadInputTokenCostFlexAbove272kTokens != nil {
@@ -1932,6 +2284,9 @@ func tieredCacheReadInputTokenRate(pricing *configstoreTables.TableModelPricing,
 			return *pricing.CacheReadInputTokenCostAbove200kTokens
 		}
 	}
+	if totalTokens > TokenTierAbove100K && pricing.CacheReadInputTokenCostAbove100kTokens != nil {
+		return *pricing.CacheReadInputTokenCostAbove100kTokens
+	}
 	if tier.isPriority && pricing.CacheReadInputTokenCostPriority != nil {
 		return *pricing.CacheReadInputTokenCostPriority
 	}
@@ -1949,8 +2304,13 @@ func tieredCacheCreationInputTokenRate(pricing *configstoreTables.TableModelPric
 	if tier.isFast && pricing.CacheCreationInputTokenCostFast != nil {
 		return *pricing.CacheCreationInputTokenCostFast
 	}
-	if tier.isUltrafast && pricing.CacheCreationInputTokenCostUltrafast != nil {
-		return *pricing.CacheCreationInputTokenCostUltrafast
+	if tier.isUltrafast {
+		if totalTokens > TokenTierAbove272K && pricing.CacheCreationInputTokenCostAbove272kTokensUltrafast != nil {
+			return *pricing.CacheCreationInputTokenCostAbove272kTokensUltrafast
+		}
+		if pricing.CacheCreationInputTokenCostUltrafast != nil {
+			return *pricing.CacheCreationInputTokenCostUltrafast
+		}
 	}
 	if tier.isFlex {
 		if totalTokens > TokenTierAbove272K && pricing.CacheCreationInputTokenCostFlexAbove272kTokens != nil {
@@ -1960,12 +2320,16 @@ func tieredCacheCreationInputTokenRate(pricing *configstoreTables.TableModelPric
 			return *pricing.CacheCreationInputTokenCostFlex
 		}
 	}
-	// Priority has no long context: OpenAI does not offer priority >272k, and billing
-	// uses the served tier (response.service_tier), so an actual-priority request is
-	// always ≤272k. Its cache-write rate is flat, so it takes precedence over the
-	// standard context tiers below (which would otherwise capture the 200k–272k band).
-	if tier.isPriority && pricing.CacheCreationInputTokenCostPriority != nil {
-		return *pricing.CacheCreationInputTokenCostPriority
+	// Priority (and Fast, its renamed form) has a long-context cache-write rate
+	// above 272k; below that the rate is flat, so it takes precedence over the
+	// standard context tiers (which would otherwise capture the 200k-272k band).
+	if tier.isPriority {
+		if totalTokens > TokenTierAbove272K && pricing.CacheCreationInputTokenCostAbove272kTokensPriority != nil {
+			return *pricing.CacheCreationInputTokenCostAbove272kTokensPriority
+		}
+		if pricing.CacheCreationInputTokenCostPriority != nil {
+			return *pricing.CacheCreationInputTokenCostPriority
+		}
 	}
 	if totalTokens > TokenTierAbove272K && pricing.CacheCreationInputTokenCostAbove272kTokens != nil {
 		return *pricing.CacheCreationInputTokenCostAbove272kTokens
@@ -1973,12 +2337,16 @@ func tieredCacheCreationInputTokenRate(pricing *configstoreTables.TableModelPric
 	if totalTokens > TokenTierAbove200K && pricing.CacheCreationInputTokenCostAbove200kTokens != nil {
 		return *pricing.CacheCreationInputTokenCostAbove200kTokens
 	}
+	if totalTokens > TokenTierAbove100K && pricing.CacheCreationInputTokenCostAbove100kTokens != nil {
+		return *pricing.CacheCreationInputTokenCostAbove100kTokens
+	}
 	if pricing.CacheCreationInputTokenCost != nil {
 		return *pricing.CacheCreationInputTokenCost
 	}
 	return tieredInputRate(pricing, totalTokens, tier)
 }
 
+// tieredCacheCreationInputAbove1hrTokenRate returns the configured long-lived cache-write rate.
 func tieredCacheCreationInputAbove1hrTokenRate(pricing *configstoreTables.TableModelPricing, totalTokens int, tier serviceTier) float64 {
 	// Fast mode (Anthropic) is a flat rate across the full context window.
 	if tier.isFast && pricing.CacheCreationInputTokenCostAbove1hrFast != nil {
@@ -1987,12 +2355,16 @@ func tieredCacheCreationInputAbove1hrTokenRate(pricing *configstoreTables.TableM
 	if totalTokens > TokenTierAbove200K && pricing.CacheCreationInputTokenCostAbove1hrAbove200kTokens != nil {
 		return *pricing.CacheCreationInputTokenCostAbove1hrAbove200kTokens
 	}
+	if totalTokens > TokenTierAbove100K && pricing.CacheCreationInputTokenCostAbove1hrAbove100kTokens != nil {
+		return *pricing.CacheCreationInputTokenCostAbove1hrAbove100kTokens
+	}
 	if pricing.CacheCreationInputTokenCostAbove1hr != nil {
 		return *pricing.CacheCreationInputTokenCostAbove1hr
 	}
 	return tieredCacheCreationInputTokenRate(pricing, totalTokens, tier)
 }
 
+// inputTierTokens returns prompt tokens used to select a pricing tier.
 func inputTierTokens(usage *schemas.BifrostLLMUsage) int {
 	if usage == nil {
 		return 0
@@ -2000,6 +2372,7 @@ func inputTierTokens(usage *schemas.BifrostLLMUsage) int {
 	return usage.PromptTokens
 }
 
+// imageInputTierTokens derives input tokens used to select an image pricing tier.
 func imageInputTierTokens(usage *schemas.ImageUsage) int {
 	if usage == nil {
 		return 0
@@ -2021,6 +2394,7 @@ func imageInputTierTokens(usage *schemas.ImageUsage) int {
 	return 0
 }
 
+// imageOutputTokens returns the reported text and image output tokens.
 func imageOutputTokens(usage *schemas.ImageUsage) int {
 	if usage == nil {
 		return 0
@@ -2160,7 +2534,9 @@ func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType sche
 //   - Bedrock: prepends the vendor namespace ("anthropic.", "openai.", "google.", "xai.") inferred from the model family, then falls back to the counterpart chat/responses mode.
 //   - Bedrock Mantle: folded onto the "bedrock" provider up front (datasheet rows for all Bedrock variants are stored there), so it shares every Bedrock fallback.
 //   - All providers: chat and responses requests retry in each other's mode, since a model served over both APIs often has a datasheet row under only one of them.
+//   - All providers: decision requests retry in chat mode, since a decision served natively or by emulation is priced from the model's chat row.
 //   - All providers: for ImageEdit/ImageVariation requests, retries the lookup in image-generation mode.
+//   - All providers: realtime requests prefer "realtime" rows before the responses/chat lookups; live requests retry in "realtime" mode.
 //
 // The method acquires a read lock for the duration of the lookup.
 //
@@ -2186,9 +2562,28 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 		provider = string(schemas.Bedrock)
 	}
 
+	// Realtime voice rates take precedence over responses/chat rates for the
+	// same model. Retain those existing lookups when no realtime row exists.
+	if requestType == schemas.RealtimeRequest {
+		for _, candidate := range []string{model, strings.ToLower(model)} {
+			if pricing, ok := s.pricingData[makeKey(candidate, provider, "realtime")]; ok {
+				return &pricing, true
+			}
+		}
+	}
+
 	pricing, ok := s.pricingData[makeKey(model, provider, mode)]
 	if ok {
 		return &pricing, true
+	}
+
+	// Deployment names are case-sensitive on the wire but the feed does not always
+	// carry every casing, so retry with the lowercase name in the same mode.
+	if lower := strings.ToLower(model); lower != model {
+		pricing, ok = s.pricingData[makeKey(lower, provider, mode)]
+		if ok {
+			return &pricing, true
+		}
 	}
 
 	// Lookup in vertex if gemini not found
@@ -2273,6 +2668,15 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 		}
 	}
 
+	// The feed files GPT Live models under the Realtime API's mode.
+	if requestType == schemas.LiveRequest {
+		s.logger.Debug("primary lookup failed, trying realtime mode for the same voice model")
+		pricing, ok = s.pricingData[makeKey(model, provider, "realtime")]
+		if ok {
+			return &pricing, true
+		}
+	}
+
 	// Lookup in image generation if image edit not found
 	if requestType == schemas.ImageEditRequest ||
 		requestType == schemas.ImageEditStreamRequest ||
@@ -2281,6 +2685,26 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 		pricing, ok = s.pricingData[makeKey(model, provider, normalizeRequestType(schemas.ImageGenerationRequest))]
 		if ok {
 			return &pricing, true
+		}
+	}
+
+	// An image model called over chat/responses (e.g. Gemini generateContent with no IMAGE modality) has only an image_generation row
+	if hasFallbackMode && requestType != schemas.DecisionRequest {
+		imageMode := normalizeRequestType(schemas.ImageGenerationRequest)
+		s.logger.Debug("primary lookup failed, trying image generation mode for the same model")
+		if pricing, ok = s.pricingData[makeKey(model, provider, imageMode)]; ok {
+			return &pricing, true
+		}
+		if provider == string(schemas.Gemini) {
+			if pricing, ok = s.pricingData[makeKey(model, "vertex", imageMode)]; ok {
+				return &pricing, true
+			}
+		}
+		// Vertex "publisher/model" form, matching the prefix strip above
+		if provider == string(schemas.Vertex) && strings.Contains(model, "/") {
+			if pricing, ok = s.pricingData[makeKey(strings.SplitN(model, "/", 2)[1], provider, imageMode)]; ok {
+				return &pricing, true
+			}
 		}
 	}
 

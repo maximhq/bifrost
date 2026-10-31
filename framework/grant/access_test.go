@@ -70,6 +70,7 @@ func TestAccess_NilReceiverPermitsNothing(t *testing.T) {
 
 	assert.False(t, access.IsProviderAllowed("openai"))
 	assert.False(t, access.IsModelAllowed("openai", "gpt-4o"))
+	assert.False(t, access.AllowsEveryModel("openai"))
 	assert.False(t, access.IsMCPToolAllowed("client-tool"))
 	assert.False(t, access.IsScoped())
 	assert.Nil(t, access.Bases())
@@ -240,6 +241,62 @@ func TestAccess_AllowAllProviders(t *testing.T) {
 	assert.True(t, access.IsProviderAllowed("anthropic"))
 	assert.True(t, access.IsModelAllowed("anthropic", "claude-3-5-sonnet"), "a model in the allowlist is allowed")
 	assert.False(t, access.IsModelAllowed("anthropic", "claude-3-opus"), "allow-all must not grant a model outside a listed provider's allowlist")
+}
+
+// AllowsEveryModel is the question for a request that will run models it does not name: it is true
+// only when every permit deciding for the provider allows all models and blacklists none, so a
+// false answer means a model restriction exists that only a named model lets the access apply.
+func TestAccess_AllowsEveryModel(t *testing.T) {
+	wildcard := newPermit(permitSpec{
+		Type: PermitVirtualKey, ID: "vk1", Name: "Caller Key",
+		ProviderPermits: []schemas.ProviderPermit{{Provider: "openai", AllowedModels: []string{"*"}}},
+	})
+	restricted := newPermit(permitSpec{
+		Type: PermitVirtualKey, ID: "vk2", Name: "Restricted Key",
+		ProviderPermits: []schemas.ProviderPermit{{Provider: "openai", AllowedModels: []string{"gpt-4"}}},
+	})
+	blacklisting := newPermit(permitSpec{
+		Type: PermitVirtualKey, ID: "vk3", Name: "Blacklisting Key",
+		ProviderPermits: []schemas.ProviderPermit{{Provider: "openai", AllowedModels: []string{"*"}, BlacklistedModels: []string{"gpt-4o"}}},
+	})
+	allowAll := NewPermit(PermitVirtualKey, "vk4", "Allow All", true, false,
+		[]schemas.ProviderPermit{{Provider: "anthropic", AllowedModels: []string{"claude-sonnet-4"}}}, nil, WithAllowAllProviders(true))
+
+	assert.True(t, NewAccess(held(wildcard), nil, "", nil).AllowsEveryModel("openai"))
+	assert.False(t, NewAccess(held(wildcard), nil, "", nil).AllowsEveryModel("anthropic"), "an unlisted provider is not granted at all")
+	assert.False(t, NewAccess(held(restricted), nil, "", nil).AllowsEveryModel("openai"), "an allowlist is a restriction")
+	assert.False(t, NewAccess(held(blacklisting), nil, "", nil).AllowsEveryModel("openai"), "a blacklist is a restriction even under a wildcard allowlist")
+	assert.True(t, NewAccess(held(allowAll), nil, "", nil).AllowsEveryModel("cohere"), "allow-all grants every model of an unlisted provider")
+	assert.False(t, NewAccess(held(allowAll), nil, "", nil).AllowsEveryModel("anthropic"), "a listed provider keeps its own allowlist under allow-all")
+
+	// Several caller permits are read as one: any of them allowing every model is enough.
+	assert.True(t, NewAccess(held(restricted, wildcard), nil, "", nil).AllowsEveryModel("openai"))
+
+	// Within one permit, duplicate provider permits are a union too, as for IsModelAllowed: an
+	// unrestricted entry beside a restricted one still permits every model, unless any entry for
+	// the provider blacklists a model, which is decisive.
+	mixed := newPermit(permitSpec{
+		Type: PermitVirtualKey, ID: "vk5", Name: "Mixed Key",
+		ProviderPermits: []schemas.ProviderPermit{
+			{Provider: "openai", AllowedModels: []string{"gpt-4"}},
+			{Provider: "openai", AllowedModels: []string{"*"}},
+		},
+	})
+	mixedWithBlacklist := newPermit(permitSpec{
+		Type: PermitVirtualKey, ID: "vk6", Name: "Mixed Blacklisting Key",
+		ProviderPermits: []schemas.ProviderPermit{
+			{Provider: "openai", AllowedModels: []string{"*"}},
+			{Provider: "openai", AllowedModels: []string{"gpt-4"}, BlacklistedModels: []string{"gpt-4o"}},
+		},
+	})
+	assert.True(t, NewAccess(held(mixed), nil, "", nil).IsModelAllowed("openai", "o3"), "the union already permits every model")
+	assert.True(t, NewAccess(held(mixed), nil, "", nil).AllowsEveryModel("openai"), "an unrestricted entry beside a restricted one permits every model")
+	assert.False(t, NewAccess(held(mixedWithBlacklist), nil, "", nil).AllowsEveryModel("openai"), "a blacklist on any entry for the provider is decisive")
+
+	// A scoping permit composes under the mode, as for IsModelAllowed.
+	assert.True(t, NewAccess(held(restricted), wildcard, Union, nil).AllowsEveryModel("openai"), "union widens by the scoping permit")
+	assert.False(t, NewAccess(held(wildcard), restricted, Intersect, nil).AllowsEveryModel("openai"), "intersect narrows by the scoping permit")
+	assert.True(t, NewAccess(held(wildcard), wildcard, Intersect, nil).AllowsEveryModel("openai"))
 }
 
 // Without the flag, a provider the permit does not list is denied: allow-all is opt-in.
@@ -1663,5 +1720,32 @@ func assertPermitsAre(t *testing.T, got []schemas.Permit, want ...schemas.Permit
 	require.Len(t, got, len(want))
 	for i := range want {
 		assert.Same(t, want[i], got[i], "permit %d", i)
+	}
+}
+
+func TestIsRelayAllowed(t *testing.T) {
+	named := NewPermit(PermitVirtualKey, "vk-1", "named", true, false, nil, nil, WithRelayPermits([]string{"tavily"}))
+	// Relays have no allow-all on any holder, as agents have none: a wide permit names every relay.
+	all := NewPermit(PermitAccessProfile, "ap-2", "all", true, false, nil, nil, WithRelayPermits([]string{"tavily", "textract"}))
+	none := NewPermit(PermitVirtualKey, "vk-3", "none", true, false, nil, nil)
+
+	access := NewAccess(held(named), nil, "", nil)
+	if !access.IsRelayAllowed("tavily") || access.IsRelayAllowed("textract") {
+		t.Fatalf("a named grant allows exactly that endpoint")
+	}
+	if denied := access.DeniedPermitsForRelay("textract"); len(denied) != 1 || denied[0] != named {
+		t.Fatalf("the refusal names the permit that denied it, got %v", denied)
+	}
+	if !NewAccess(held(all), nil, "", nil).IsRelayAllowed("textract") {
+		t.Fatalf("a permit naming the endpoint grants it")
+	}
+	if NewAccess(held(none), nil, "", nil).IsRelayAllowed("tavily") {
+		t.Fatalf("no grant denies by default")
+	}
+	if NewAccess(held(all), none, Intersect, nil).IsRelayAllowed("tavily") {
+		t.Fatalf("an intersecting scope without the endpoint denies it")
+	}
+	if !NewAccess(held(none), named, Union, nil).IsRelayAllowed("tavily") {
+		t.Fatalf("a union scope with the endpoint allows it")
 	}
 }

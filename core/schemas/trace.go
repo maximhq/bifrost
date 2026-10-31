@@ -35,7 +35,119 @@ const (
 	// TraceAttrDimensions holds the map[string]string of request dimensions
 	// parsed from x-bf-dim-* headers, keyed by bare dimension name.
 	TraceAttrDimensions = "bifrost.dimensions"
+	// TraceAttrTraceState holds the inbound W3C tracestate. Vendor data such as Datadog's
+	// propagating tags lives there, not in traceparent.
+	TraceAttrTraceState = "tracestate"
 )
+
+// GetStringAttr returns a string attribute, or "" when absent or another type.
+func GetStringAttr(attrs map[string]any, key string) string {
+	v, _ := attrs[key].(string)
+	return v
+}
+
+// GetBoolAttr returns a bool attribute, or false when absent or another type.
+func GetBoolAttr(attrs map[string]any, key string) bool {
+	v, _ := attrs[key].(bool)
+	return v
+}
+
+// ContentLoggingDisabledForTrace reports whether governance turned content logging off for the
+// request behind this trace, through its virtual key or a project it was scoped to
+// (AttrBifrostContentLoggingDisabled on the root span). Every connector ORs this into its own
+// disable_content_logging: governance can only tighten what a connector exports, never loosen it.
+// Nil-safe, so a connector can call it on any trace.
+func ContentLoggingDisabledForTrace(t *Trace) bool {
+	if t == nil || t.RootSpan == nil {
+		return false
+	}
+	return GetBoolAttr(t.RootSpan.Attributes, AttrBifrostContentLoggingDisabled)
+}
+
+// GetInt64Attr returns an integer attribute, widening int and float64.
+func GetInt64Attr(attrs map[string]any, key string) int64 {
+	switch v := attrs[key].(type) {
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	case float64:
+		return int64(v)
+	}
+	return 0
+}
+
+// GetIntAttr is GetInt64Attr narrowed to int, for callers whose field is int.
+func GetIntAttr(attrs map[string]any, key string) int {
+	return int(GetInt64Attr(attrs, key))
+}
+
+// GetFloat64AttrOK returns a numeric attribute and whether one was present.
+func GetFloat64AttrOK(attrs map[string]any, key string) (float64, bool) {
+	switch v := attrs[key].(type) {
+	case float64:
+		return v, true
+	case int:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	}
+	return 0, false
+}
+
+// GetFloat64Attr returns a numeric attribute, or 0 when absent.
+func GetFloat64Attr(attrs map[string]any, key string) float64 {
+	v, _ := GetFloat64AttrOK(attrs, key)
+	return v
+}
+
+// TraceSessionID returns the session ID trace attribute, or "" when absent.
+func TraceSessionID(attrs map[string]any) string {
+	v, _ := attrs[TraceAttrSessionID].(string)
+	return v
+}
+
+// TraceTraceState returns the inbound W3C tracestate, or "" when absent.
+func TraceTraceState(attrs map[string]any) string {
+	v, _ := attrs[TraceAttrTraceState].(string)
+	return v
+}
+
+// TraceDimensions returns the x-bf-dim-* dimensions, or nil when absent.
+// Accepts map[string]any too: a trace decoded from JSON arrives that way.
+func TraceDimensions(attrs map[string]any) map[string]string {
+	switch m := attrs[TraceAttrDimensions].(type) {
+	case map[string]string:
+		return m
+	case map[string]any:
+		out := make(map[string]string, len(m))
+		for k, v := range m {
+			if s, ok := v.(string); ok {
+				out[k] = s
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// MergeDimensions adds dims to the trace's dimensions, overwriting a name already there. It stores
+// a new map, so an exporter holding the previous one never sees it change.
+func (t *Trace) MergeDimensions(dims map[string]string) {
+	if t == nil || len(dims) == 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	existing := TraceDimensions(t.Attributes)
+	merged := make(map[string]string, len(existing)+len(dims))
+	maps.Copy(merged, existing)
+	maps.Copy(merged, dims)
+	if t.Attributes == nil {
+		t.Attributes = make(map[string]any)
+	}
+	t.Attributes[TraceAttrDimensions] = merged
+}
 
 // AddSpan adds a span to the trace in a thread-safe manner
 func (t *Trace) AddSpan(span *Span) {
@@ -63,6 +175,28 @@ func (t *Trace) GetSpan(spanID string) *Span {
 		}
 	}
 	return nil
+}
+
+// FinalAttemptSpan returns the last-ending LLM or retry span, which is the
+// attempt a trace's metrics are labelled from. Datadog and Splunk each had a
+// copy and they drifted — only one guarded against a nil span.
+func FinalAttemptSpan(trace *Trace) *Span {
+	if trace == nil {
+		return nil
+	}
+	var final *Span
+	for _, span := range trace.Spans {
+		if span == nil {
+			continue
+		}
+		if span.Kind != SpanKindLLMCall && span.Kind != SpanKindRetry {
+			continue
+		}
+		if final == nil || span.EndTime.After(final.EndTime) {
+			final = span
+		}
+	}
+	return final
 }
 
 // GetRequestID retrieves the request ID from the trace
@@ -209,13 +343,21 @@ func (t *Trace) SnapshotForExport() *Trace {
 // IsOverheadBreakdownSpan); only a plugin that opts in via OverheadSpanConsumer (the
 // logging plugin) receives them.
 var overheadBreakdownSpanNames = map[string]struct{}{
-	"request-unmarshal":    {},
-	"request-marshal":      {},
-	"response-parse":       {},
-	"response-marshal":     {},
-	"convertor":            {},
-	"queue-wait":           {},
-	"attribute-population": {},
+	"a2a.push.db.authenticate": {},
+	"a2a.push.db.bind":         {},
+	"a2a.push.db.enqueue":      {},
+	"a2a.push.db.config":       {},
+	"a2a.push.db.outcome":      {},
+	"a2a.push.db.local":        {},
+	"a2a.push.db.save":         {},
+	"a2a.push.db.delete":       {},
+	"request-unmarshal":        {},
+	"request-marshal":          {},
+	"response-parse":           {},
+	"response-marshal":         {},
+	"convertor":                {},
+	"queue-wait":               {},
+	"attribute-population":     {},
 }
 
 // IsOverheadBreakdownSpan reports whether a span exists only to feed the overhead
@@ -234,7 +376,9 @@ func IsOverheadBreakdownSpan(span *Span) bool {
 		}
 		return strings.HasPrefix(span.Name, "middleware.")
 	case SpanKindPlugin:
-		return strings.HasSuffix(span.Name, ".transportprehook") || strings.HasSuffix(span.Name, ".transportposthook")
+		return strings.HasSuffix(span.Name, ".transportprehook") ||
+			strings.HasSuffix(span.Name, ".transportposthook") ||
+			strings.HasSuffix(span.Name, ".transportresponseheadershook")
 	}
 	return false
 }
@@ -414,11 +558,12 @@ func traceRedactionReplacementsForAttribute(key string, inputReplacements map[st
 func traceContentAttributeScopeForKey(key string) traceContentAttributeScope {
 	switch key {
 	case AttrInputMessages, AttrInputText, AttrInputSpeech, AttrInputEmbedding,
-		AttrPrompt, AttrInstructions,
+		AttrPrompt, AttrInstructions, AttrSuffix,
 		AttrTools, AttrToolChoiceType, AttrToolChoiceName,
-		AttrRespTools, AttrRespToolChoiceType, AttrRespToolChoiceName:
+		AttrRespTools, AttrRespToolChoiceType, AttrRespToolChoiceName,
+		AttrBifrostRawRequest:
 		return traceContentAttributeScopeInput
-	case AttrOutputMessages, AttrRespReasoningText:
+	case AttrOutputMessages, AttrRespReasoningText, AttrBifrostRawResponse:
 		return traceContentAttributeScopeOutput
 	case AttrToolName, AttrToolCallID, AttrToolCallArguments, AttrToolCallResult, AttrToolType:
 		return traceContentAttributeScopeMixed
@@ -451,22 +596,36 @@ func redactSpanAttributes(span *Span, inputReplacements map[string]string, outpu
 			}
 		}
 	}
+	// The typed payload is a separate carrier from Attributes, so it needs its own
+	// pass or connectors reading it would see unredacted content.
+	if span.LLM != nil {
+		span.LLM.redact(inputReplacements, outputReplacements)
+	}
+	if span.A2A != nil {
+		cp := *span.A2A
+		cp.RawRequest = ApplyLiteralReplacements(cp.RawRequest, inputReplacements)
+		cp.RawResponse = ApplyLiteralReplacements(cp.RawResponse, outputReplacements)
+		span.A2A = &cp
+	}
 }
 
 // Span represents a single operation within a trace
 type Span struct {
-	SpanID     string         // Unique identifier for this span
-	ParentID   string         // Parent span ID (empty for root span)
-	TraceID    string         // The trace this span belongs to
-	Name       string         // Name of the operation
-	Kind       SpanKind       // Type of span (LLM call, plugin, etc.)
-	StartTime  time.Time      // When the span started
-	EndTime    time.Time      // When the span completed
-	Status     SpanStatus     // Status of the operation
-	StatusMsg  string         // Optional status message (for errors)
-	Attributes map[string]any // Additional attributes for the span
-	Events     []SpanEvent    // Events that occurred during the span
-	mu         sync.Mutex     // Mutex for thread-safe attribute operations
+	SpanID     string          // Unique identifier for this span
+	ParentID   string          // Parent span ID (empty for root span)
+	TraceID    string          // The trace this span belongs to
+	Name       string          // Name of the operation
+	Kind       SpanKind        // Type of span (LLM call, plugin, etc.)
+	StartTime  time.Time       // When the span started
+	EndTime    time.Time       // When the span completed
+	Status     SpanStatus      // Status of the operation
+	StatusMsg  string          // Optional status message (for errors)
+	Attributes map[string]any  // Additional attributes for the span
+	LLM        *LLMSpanData    `json:"-"`
+	A2A        *A2ASpanData    `json:"-"`
+	Enrichment *SpanEnrichment // Governance/identity dimensions read off the request context
+	Events     []SpanEvent     // Events that occurred during the span
+	mu         sync.Mutex      // Mutex for thread-safe attribute operations
 }
 
 // SetAttribute sets an attribute on the span in a thread-safe manner
@@ -480,6 +639,30 @@ func (s *Span) SetAttribute(key string, value any) {
 		s.Attributes = make(map[string]any)
 	}
 	s.Attributes[key] = value
+}
+
+// SetStartTime moves the span's start, for work measured before its span was opened.
+func (s *Span) SetStartTime(start time.Time) {
+	if s == nil || start.IsZero() {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.StartTime = start
+}
+
+// SetStartTimeIfMatch is SetStartTime guarded like EndIfMatch against a recycled span.
+func (s *Span) SetStartTimeIfMatch(id string, start time.Time) bool {
+	if s == nil || start.IsZero() {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.SpanID != id {
+		return false
+	}
+	s.StartTime = start
+	return true
 }
 
 // GetAttribute reads one attribute under the span's lock.
@@ -522,29 +705,76 @@ func (s *Span) SetAttributes(attrs map[string]any) {
 func (s *Span) snapshotForExport() *Span {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cp := &Span{
-		SpanID:     s.SpanID,
-		ParentID:   s.ParentID,
-		TraceID:    s.TraceID,
-		Name:       s.Name,
-		Kind:       s.Kind,
-		StartTime:  s.StartTime,
-		EndTime:    s.EndTime,
-		Status:     s.Status,
-		StatusMsg:  s.StatusMsg,
-		Attributes: maps.Clone(s.Attributes),
+	cp := snapshotSpanPool.Get().(*Span)
+	cp.SpanID = s.SpanID
+	cp.ParentID = s.ParentID
+	cp.TraceID = s.TraceID
+	cp.Name = s.Name
+	cp.Kind = s.Kind
+	cp.StartTime = s.StartTime
+	cp.EndTime = s.EndTime
+	cp.Status = s.Status
+	cp.StatusMsg = s.StatusMsg
+	cp.LLM = s.LLM
+	cp.A2A = s.A2A
+	cp.Enrichment = s.Enrichment
+	clear(cp.Attributes)
+	for k, v := range s.Attributes {
+		cp.Attributes[k] = v
 	}
-	if len(s.Events) > 0 {
-		cp.Events = make([]SpanEvent, len(s.Events))
-		for i := range s.Events {
-			cp.Events[i] = SpanEvent{
-				Name:       s.Events[i].Name,
-				Timestamp:  s.Events[i].Timestamp,
-				Attributes: maps.Clone(s.Events[i].Attributes),
-			}
-		}
+	cp.Events = cp.Events[:0]
+	for i := range s.Events {
+		cp.Events = append(cp.Events, SpanEvent{
+			Name:       s.Events[i].Name,
+			Timestamp:  s.Events[i].Timestamp,
+			Attributes: maps.Clone(s.Events[i].Attributes),
+		})
 	}
 	return cp
+}
+
+// snapshotSpanPool backs the export snapshots. A snapshot's lifetime is bounded
+// by the flush's wg.Wait(), so it can be recycled once every connector has
+// returned - see Trace.ReleaseSnapshot.
+var snapshotSpanPool = sync.Pool{
+	New: func() any {
+		return &Span{
+			Attributes: make(map[string]any, 32),
+			Events:     make([]SpanEvent, 0, 4),
+		}
+	},
+}
+
+// ReleaseSnapshot returns a snapshot's spans to the pool. Call it only after
+// every connector has finished reading, and only on a snapshot - never on the
+// live trace. Attribute maps are retained for reuse; an outlier-sized one is
+// dropped so a single huge request cannot pin it.
+func (t *Trace) ReleaseSnapshot() {
+	if t == nil {
+		return
+	}
+	for _, span := range t.Spans {
+		if span == nil {
+			continue
+		}
+		// Reuse the maps and the event backing array, but drop every value: a
+		// pooled span otherwise holds message content live until its next use.
+		attrs := span.Attributes
+		if len(attrs) > 256 {
+			attrs = make(map[string]any, 32)
+		} else {
+			clear(attrs)
+		}
+		for i := range span.Events {
+			span.Events[i] = SpanEvent{}
+		}
+		events := span.Events[:0]
+		// Whole-struct reset, so a field added to Span later cannot be missed here.
+		*span = Span{Attributes: attrs, Events: events}
+		snapshotSpanPool.Put(span)
+	}
+	t.Spans = nil
+	t.RootSpan = nil
 }
 
 // AddEvent adds an event to the span in a thread-safe manner
@@ -576,6 +806,23 @@ func (s *Span) End(status SpanStatus, statusMsg string) {
 // check and the caller falls back to the by-ID store lookup instead of mutating a
 // recycled span. The check rides inside the lock End already takes, so it adds no
 // extra locking.
+// EndIfOpen ends a span only if it has not ended, leaving finished spans untouched.
+// Used when a trace expires: an open span would otherwise export with a zero EndTime.
+func (s *Span) EndIfOpen(at time.Time, status SpanStatus, statusMsg string) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.EndTime.IsZero() {
+		return false
+	}
+	s.EndTime = at
+	s.Status = status
+	s.StatusMsg = statusMsg
+	return true
+}
+
 func (s *Span) EndIfMatch(id string, status SpanStatus, statusMsg string) bool {
 	if s == nil {
 		return false
@@ -610,6 +857,25 @@ func (s *Span) SetAttributeIfMatch(id, key string, value any) bool {
 	return true
 }
 
+// EnsureLLMIfMatch returns the span's LLM payload, creating it when absent, but only
+// while the SpanID still equals id. Returns nil once the span has been recycled.
+// Callers must hold the returned pointer rather than re-reading span.LLM: Reset nils
+// the field, so a later deref would panic.
+func (s *Span) EnsureLLMIfMatch(id string) *LLMSpanData {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.SpanID != id {
+		return nil
+	}
+	if s.LLM == nil {
+		s.LLM = &LLMSpanData{}
+	}
+	return s.LLM
+}
+
 // MatchesID reports whether the span's SpanID still equals id, read under the span
 // lock so it does not race a concurrent Reset. Used by the tracer to decide whether
 // a cached span pointer is still the one the handle refers to before returning it.
@@ -637,6 +903,9 @@ func (s *Span) Reset() {
 	s.EndTime = time.Time{}
 	s.Status = SpanStatusUnset
 	s.StatusMsg = ""
+	s.LLM = nil
+	s.A2A = nil
+	s.Enrichment = nil
 	// Reuse the attribute map across pool cycles: tracing/store.go clears and
 	// refills it, so nil-ing here forced a fresh map alloc per pooled span every
 	// request. Drop only an outlier-sized map so one huge request can't pin it.
@@ -645,6 +914,9 @@ func (s *Span) Reset() {
 	} else {
 		clear(s.Attributes)
 	}
+	// Events can hold bounded A2A bodies. Drop their references before pooling
+	// the backing array so an idle span cannot retain a previous request's content.
+	clear(s.Events)
 	s.Events = s.Events[:0]
 }
 
@@ -668,6 +940,9 @@ const (
 	SpanKindPlugin SpanKind = "plugin"
 	// SpanKindMCPTool represents an MCP tool invocation
 	SpanKindMCPTool SpanKind = "mcp.tool"
+	// SpanKindA2AOperation represents one Agent Gateway (A2A) operation: the
+	// upstream call plus its post-hooks, mirroring the MCP op span.
+	SpanKindA2AOperation SpanKind = "a2a.operation"
 	// SpanKindMCPClient represents an MCP client lifecycle operation (connect/ping/list_tools).
 	// These run in the background per-client and are not part of an LLM request flow.
 	SpanKindMCPClient SpanKind = "mcp.client"
@@ -685,6 +960,8 @@ const (
 	SpanKindTranscription SpanKind = "transcription"
 	// SpanKindInternal represents internal operations (key selection, etc.)
 	SpanKindInternal SpanKind = "internal"
+	// SpanKindRelay represents one relay call to a non-LLM upstream API.
+	SpanKindRelay SpanKind = "relay.call"
 )
 
 // SpanStatus represents the status of a span's operation
@@ -760,6 +1037,40 @@ const (
 	AttrInputTokens  = "gen_ai.usage.input_tokens"
 	AttrOutputTokens = "gen_ai.usage.output_tokens"
 	AttrUsageCost    = "gen_ai.usage.cost"
+
+	// Cost breakdown, under bifrost.* rather than gen_ai.*: OTel has no cost
+	// convention and closed the proposal for one (semantic-conventions#1062),
+	// leaving cost to the observability platform. AttrUsageCost above predates
+	// that and stays for compatibility.
+	//
+	// Input/output/additional sum to AttrUsageCost; each side's categories sum to
+	// that side. The pricing engine produces all of it on the same call that
+	// produces the total, so emitting it is free.
+	AttrBifrostCostInput      = "bifrost.cost.input"
+	AttrBifrostCostOutput     = "bifrost.cost.output"
+	AttrBifrostCostAdditional = "bifrost.cost.additional"
+
+	AttrBifrostCostInputText        = "bifrost.cost.input.text"
+	AttrBifrostCostInputAudio       = "bifrost.cost.input.audio"
+	AttrBifrostCostInputImage       = "bifrost.cost.input.image"
+	AttrBifrostCostInputCachedRead  = "bifrost.cost.input.cached_read"
+	AttrBifrostCostInputCachedWrite = "bifrost.cost.input.cached_write"
+	AttrBifrostCostInputRequest     = "bifrost.cost.input.request"
+
+	AttrBifrostCostOutputText      = "bifrost.cost.output.text"
+	AttrBifrostCostOutputAudio     = "bifrost.cost.output.audio"
+	AttrBifrostCostOutputImage     = "bifrost.cost.output.image"
+	AttrBifrostCostOutputReasoning = "bifrost.cost.output.reasoning"
+	AttrBifrostCostOutputCitation  = "bifrost.cost.output.citation"
+	AttrBifrostCostOutputSearch    = "bifrost.cost.output.search_queries"
+
+	// Sidecar spend that maps to no token category, and is billed to the request
+	// without being produced by the model. Not reconcilable against a provider
+	// invoice, so worth slicing separately.
+	AttrBifrostCostGuardrail     = "bifrost.cost.additional.guardrail"
+	AttrBifrostCostMCP           = "bifrost.cost.additional.mcp"
+	AttrBifrostCostSemanticCache = "bifrost.cost.additional.semantic_cache"
+	AttrBifrostCostRouting       = "bifrost.cost.additional.routing"
 	// OTel GenAI spec keys for cache tokens (flat namespace).
 	AttrUsageCacheReadInputTokens     = "gen_ai.usage.cache_read.input_tokens"
 	AttrUsageCacheCreationInputTokens = "gen_ai.usage.cache_creation.input_tokens"
@@ -776,7 +1087,6 @@ const (
 	AttrCompletionTokenDetailsText      = "gen_ai.usage.completion_token_details.text_tokens"
 	AttrCompletionTokenDetailsAudio     = "gen_ai.usage.completion_token_details.audio_tokens"
 	AttrCompletionTokenDetailsImage     = "gen_ai.usage.completion_token_details.image_tokens"
-	AttrCompletionTokenDetailsReason    = "gen_ai.usage.completion_token_details.reasoning_tokens"
 	AttrCompletionTokenDetailsAccept    = "gen_ai.usage.completion_token_details.accepted_prediction_tokens"
 	AttrCompletionTokenDetailsReject    = "gen_ai.usage.completion_token_details.rejected_prediction_tokens"
 	AttrCompletionTokenDetailsCite      = "gen_ai.usage.completion_token_details.citation_tokens"
@@ -878,14 +1188,12 @@ const (
 
 	// Responses API usage detail attributes
 	AttrInputTokenDetailsImage         = "gen_ai.usage.input_token_details.image_tokens"
-	AttrInputTokenDetailsCachedRead    = "gen_ai.usage.input_token_details.cached_read_tokens"
 	AttrInputTokenDetailsCachedWrite   = "gen_ai.usage.input_token_details.cached_write_tokens"
 	AttrInputTokenDetailsCachedWrite5m = "gen_ai.usage.input_token_details.cached_write_tokens_5m"
 	AttrInputTokenDetailsCachedWrite1h = "gen_ai.usage.input_token_details.cached_write_tokens_1h"
 	AttrOutputTokenDetailsText         = "gen_ai.usage.output_token_details.text_tokens"
 	AttrOutputTokenDetailsAudio        = "gen_ai.usage.output_token_details.audio_tokens"
 	AttrOutputTokenDetailsImage        = "gen_ai.usage.output_token_details.image_tokens"
-	AttrOutputTokenDetailsReason       = "gen_ai.usage.output_token_details.reasoning_tokens"
 	AttrOutputTokenDetailsAccept       = "gen_ai.usage.output_token_details.accepted_prediction_tokens"
 	AttrOutputTokenDetailsReject       = "gen_ai.usage.output_token_details.rejected_prediction_tokens"
 	AttrOutputTokenDetailsCite         = "gen_ai.usage.output_token_details.citation_tokens"
@@ -906,6 +1214,50 @@ const (
 	// measures it, not span wall-time (which covers the PostHooks). Bifrost-namespaced; not
 	// OTel MCP semconv.
 	AttrBifrostMCPToolDurationMs = "bifrost.mcp.tool.duration_ms"
+
+	// MCP client this span talked to; the span name carries it only as a composite.
+	AttrBifrostMCPClientName = "bifrost.mcp.client.name"
+
+	// A tool call that reported failure in its result; the span status stays ok.
+	AttrBifrostMCPToolIsError = "bifrost.mcp.tool.is_error"
+
+	// A2A (Agent Gateway) span attributes. There is no A2A semconv yet. The
+	// Bifrost operation name covers protocol and gateway-owned operations, while
+	// a2a.method.name is present only for strict-v1 JSON-RPC methods.
+	AttrBifrostA2AOperationName = "bifrost.a2a.operation.name"
+	AttrA2AMethodName           = "a2a.method.name"
+	AttrA2ATaskID               = "a2a.task.id"
+	AttrA2ATaskState            = "a2a.task.state"
+	AttrA2AMessageID            = "a2a.message.id"
+	AttrA2AArtifactID           = "a2a.artifact.id"
+	AttrAgentName               = "gen_ai.agent.name"
+	AttrConversationID          = "gen_ai.conversation.id"
+
+	// Wire latency (ms) of one A2A operation as measured by the gateway, so the
+	// duration metric measures it rather than span wall-time (which covers the
+	// PostHooks). Bifrost-namespaced; not OTel semconv.
+	AttrBifrostA2AOperationDurationMs = "bifrost.a2a.operation.duration_ms"
+
+	// The transport the gateway selected for the upstream agent call
+	// (JSONRPC / GRPC / HTTP+JSON). Bifrost-namespaced because network.transport
+	// carries OSI-level values (tcp/pipe), not A2A protocol bindings.
+	AttrBifrostA2AUpstreamTransport = "bifrost.a2a.upstream.transport"
+
+	// Relay span attributes. A relay call is plain HTTP, so the method and status code use
+	// the OTel HTTP semconv names; the rest is Bifrost-namespaced.
+	AttrHTTPRequestMethod              = "http.request.method"
+	AttrBifrostRelayName               = "bifrost.relay.name"
+	AttrBifrostRelayRoutePath          = "bifrost.relay.route.path" // the matched route glob, "" for none
+	AttrBifrostRelayBillable           = "bifrost.relay.billable"
+	AttrBifrostRelayCounted            = "bifrost.relay.counted" // the call was priced and charged
+	AttrBifrostRelayStreamed           = "bifrost.relay.streamed"
+	AttrBifrostRelayCost               = "bifrost.relay.cost" // USD charged for the call
+	AttrBifrostRelayBytesOut           = "bifrost.relay.bytes_out"
+	AttrBifrostRelayUpstreamDurationMs = "bifrost.relay.upstream.duration_ms" // time blocked on the upstream socket
+
+	// RelayMethodLabelOther is the method label for a request method outside the set a relay
+	// route can name, so a relay that skips the route check cannot grow a metric's series.
+	RelayMethodLabelOther = "_OTHER"
 
 	// =====================================================================
 	// Bifrost-namespaced attributes (bifrost.*)
@@ -955,6 +1307,23 @@ const (
 	// reverse hop (enqueue->dequeue) is already the "queue-wait" span.
 	AttrBifrostWorkerHandoffMs = "bifrost.worker.handoff_ms"
 
+	// AttrBifrostBackground marks a span as work the request did not wait for (e.g. a
+	// guardrail evaluating the response after it was delivered). The overhead breakdown
+	// leaves it out; the span is still exported.
+	AttrBifrostBackground = "bifrost.background"
+
+	// AttrBifrostTimeToFirstTokenMs is request receipt to first streamed chunk, so
+	// unlike time_to_first_chunk it includes gateway overhead. Streaming only.
+	AttrBifrostTimeToFirstTokenMs = "bifrost.response.time_to_first_token_ms"
+
+	// AttrBifrostContentLoggingDisabled is set to true on the root span when governance turned
+	// content logging off for the request: its virtual key did, or a project it was scoped to did.
+	// Connectors read it through ContentLoggingDisabledForTrace and strip content the way their own
+	// disable_content_logging would. A key that keeps content on never writes it. It may read false
+	// when a project that keeps content on overrides a key that turned it off; a connector reads
+	// false the same as absent, so nothing can loosen a connector's own setting.
+	AttrBifrostContentLoggingDisabled = "bifrost.content_logging.disabled"
+
 	AttrBifrostProviderName        = "bifrost.provider.name"
 	AttrBifrostRequestID           = "bifrost.request.id"
 	AttrBifrostVirtualKeyID        = "bifrost.virtual_key.id"
@@ -980,14 +1349,22 @@ const (
 	AttrBifrostUserID              = "bifrost.user.id"
 	AttrBifrostUserName            = "bifrost.user.name"
 	AttrBifrostUserEmail           = "bifrost.user.email"
+	AttrBifrostApp                 = "bifrost.app"          // calling client, classified from User-Agent
+	AttrBifrostRawRequest          = "bifrost.raw_request"  // raw provider request body; content, opt-in
+	AttrBifrostRawResponse         = "bifrost.raw_response" // raw provider response body; content, opt-in
 	AttrBifrostRetries             = "bifrost.retries"
 	AttrBifrostFallbackIndex       = "bifrost.fallback_index"
 	AttrBifrostAlias               = "bifrost.alias"                // original requested model when it differs from the resolved model
 	AttrBifrostRoutingEngineUsed   = "bifrost.routing_engine_used"  // comma-joined routing engines that handled the request
 	AttrBifrostComplexityTier      = "bifrost.complexity_tier"      // complexity tier used for routing (SIMPLE/MEDIUM/COMPLEX); absent when no rule referenced complexity_tier
-	AttrBifrostComplexityMechanism = "bifrost.complexity_mechanism" // how the complexity tier was classified (semantic, llm, session, skipped)
-	AttrBifrostComplexityScore     = "bifrost.complexity_score"     // numeric confidence score produced by complexity classification
+	AttrBifrostComplexityMechanism = "bifrost.complexity_mechanism" // how the complexity tier was classified (semantic, decision, llm, session, skipped)
+	AttrBifrostComplexityScore     = "bifrost.complexity_score"     // semantic similarity used to classify the tier; decision-model confidence is log-only
 	AttrBifrostStopSequencesJoined = "bifrost.request.stop_sequences"
+
+	// Stored prompt the prompts plugin applied.
+	AttrBifrostPromptID      = "bifrost.prompt.id"
+	AttrBifrostPromptName    = "bifrost.prompt.name"
+	AttrBifrostPromptVersion = "bifrost.prompt.version"
 
 	// AttrBifrostErrorType is the normalized ErrorType, so span-derived connectors
 	// classify identically to the metrics. Absent on success.
@@ -1021,6 +1398,17 @@ const (
 	AttrFileOrder          = "gen_ai.file.order"
 )
 
+// Attribute keys that are declared but never emitted or read. Kept so external
+// importers keep compiling; remove in a future major.
+const (
+	// Deprecated: use AttrUsageReasoningOutputTokens.
+	AttrCompletionTokenDetailsReason = "gen_ai.usage.completion_token_details.reasoning_tokens"
+	// Deprecated: use AttrUsageReasoningOutputTokens.
+	AttrOutputTokenDetailsReason = "gen_ai.usage.output_token_details.reasoning_tokens"
+	// Deprecated: use AttrUsageCacheReadInputTokens.
+	AttrInputTokenDetailsCachedRead = "gen_ai.usage.input_token_details.cached_read_tokens"
+)
+
 // RedactedAttrValue is the placeholder recorded in place of a sensitive header
 // value, following the OpenTelemetry HTTP semantic-convention guidance for
 // redacting credentials.
@@ -1042,7 +1430,11 @@ func IsSensitiveHeader(name string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(name))
 
 	switch normalized {
-	case "authorization", "proxy-authorization", "cookie", "set-cookie":
+	case "authorization", "proxy-authorization", "cookie", "set-cookie",
+		// Bifrost's own virtual key header: a credential that no generic pattern below names.
+		"x-bf-vk",
+		// Azure AI Speech's key header, which also carries a virtual key.
+		"ocp-apim-subscription-key":
 		return true
 	}
 
@@ -1055,4 +1447,17 @@ func IsSensitiveHeader(name string) bool {
 		strings.HasPrefix(normalized, "x-amzn-oidc-") ||
 		strings.HasSuffix(normalized, "-token") ||
 		strings.HasSuffix(normalized, "_token")
+}
+
+// relayMethodLabels are the request methods a relay route can name (plus OPTIONS, which a
+// browser preflight sends); every other method is reported as RelayMethodLabelOther.
+var relayMethodLabels = map[string]struct{}{"GET": {}, "POST": {}, "PUT": {}, "PATCH": {}, "DELETE": {}, "HEAD": {}, "OPTIONS": {}}
+
+// RelayMethodLabel bounds a relay call's HTTP method to a fixed label set for metrics, as the
+// OTel HTTP semconv does for http.request.method.
+func RelayMethodLabel(method string) string {
+	if _, ok := relayMethodLabels[strings.ToUpper(strings.TrimSpace(method))]; ok {
+		return strings.ToUpper(strings.TrimSpace(method))
+	}
+	return RelayMethodLabelOther
 }

@@ -52,21 +52,127 @@ func IsOpenAIReasoningModel(model string) bool {
 	return strings.Contains(modelLower, "gpt-5") || strings.Contains(modelLower, "gpt-6")
 }
 
+// defaultCanDisableReasoning: reasoning.effort "none" exists from GPT-5.1 on.
+// GPT-6 Sol and Luna support it, while GPT-6 Astra and unknown GPT-6 variants
+// conservatively remain always-reasoning.
+func defaultCanDisableReasoning(model string) bool {
+	m := bareModelLower(model)
+	switch {
+	case strings.Contains(m, "gpt-6-sol"), strings.Contains(m, "gpt-6-luna"):
+		return true
+	case strings.Contains(m, "gpt-6"), acceptsMinimalEffort(m):
+		return false
+	case strings.Contains(m, "gpt-5"):
+		return !strings.Contains(m, "-pro")
+	default:
+		return !IsOpenAIReasoningModel(m) || strings.Contains(m, "gpt-oss")
+	}
+}
+
+// defaultSupportsToolSearch is the name-based fallback for
+// ModelCaps.SupportsToolSearch on OpenAI wires. OpenAI documents tool_search and
+// defer_loading on the Responses API for gpt-5.4 and later
+// (https://developers.openai.com/api/docs/guides/tools-tool-search). Azure and
+// Bedrock serve the same OpenAI models on the same wire; other OpenAI-compatible
+// backends are not assumed to understand defer_loading.
+// SupportsToolSearch reports whether provider serves model with OpenAI's tool search
+// (and so accepts defer_loading), the gate ToOpenAIResponsesRequest applies.
+func SupportsToolSearch(provider schemas.ModelProvider, model string) bool {
+	return schemas.ResolveModelCaps(provider, model).SupportsToolSearch(defaultSupportsToolSearch(provider, model))
+}
+
+func defaultSupportsToolSearch(provider schemas.ModelProvider, model string) bool {
+	switch provider {
+	case schemas.OpenAI, schemas.Azure, schemas.Bedrock, schemas.BedrockMantle:
+	default:
+		return false
+	}
+	m := bareModelLower(model)
+	return strings.Contains(m, "gpt-5.4") ||
+		strings.Contains(m, "gpt-5.5") ||
+		strings.Contains(m, "gpt-5.6") ||
+		strings.Contains(m, "gpt-6")
+}
+
+// defaultSupportsAsyncTools: async tool calling is GPT-6 Astra and later.
+func defaultSupportsAsyncTools(model string) bool {
+	return strings.Contains(bareModelLower(model), "gpt-6")
+}
+
+// defaultReasoningEffort is the name-based fallback for
+// ModelCaps.DefaultReasoningEffort, per OpenAI's model pages: GPT-5.1 through
+// GPT-5.4 default to "none", the -pro variants to "high", and every other
+// reasoning model (o-series, gpt-5, gpt-5.5, gpt-5.6, gpt-6) to "medium".
+// Non-reasoning models answer "".
+func defaultReasoningEffort(model string) string {
+	if !IsOpenAIReasoningModel(model) {
+		return ""
+	}
+	m := bareModelLower(model)
+	switch {
+	case strings.Contains(m, "-pro"):
+		return schemas.ReasoningEffortHigh
+	case strings.Contains(m, "gpt-5.1"), strings.Contains(m, "gpt-5.2"),
+		strings.Contains(m, "gpt-5.3"), strings.Contains(m, "gpt-5.4"):
+		return schemas.ReasoningEffortNone
+	default:
+		return schemas.ReasoningEffortMedium
+	}
+}
+
+// omittedEffortReasons reports whether the model still reasons when
+// reasoning.effort is omitted: the datasheet's default_reasoning_effort, else
+// the name-based default.
+func omittedEffortReasons(caps schemas.ModelCaps, model string) bool {
+	effort := caps.DefaultReasoningEffort(defaultReasoningEffort(model))
+	return effort != "" && effort != schemas.ReasoningEffortNone
+}
+
 // defaultEffortControl widens the base low/medium/high ladder with the effort
 // levels a model natively accepts. Only the widening is name-derived; the
 // datasheet's per-level booleans take precedence when a row exists.
-func defaultEffortControl(model string) *schemas.EffortControl {
+func defaultEffortControl(provider schemas.ModelProvider, model string) *schemas.EffortControl {
 	levels := []string{schemas.ReasoningEffortLow, schemas.ReasoningEffortMedium, schemas.ReasoningEffortHigh}
-	if acceptsMinimalEffort(model) {
+	// BytePlus Ark accepts minimal/low/medium/high on every reasoning model.
+	if acceptsMinimalEffort(model) || provider == schemas.BytePlus {
 		levels = append([]string{schemas.ReasoningEffortMinimal}, levels...)
 	}
-	if acceptsXHighEffort(model) {
+	if includeXHighInDefaultLadder(provider, model) {
 		levels = append(levels, schemas.ReasoningEffortXHigh)
 	}
-	if acceptsMaxEffort(model) {
+	// MiniMax accepts "max" on every chat model (and defaults to it); M2.x ignores effort entirely.
+	if acceptsMaxEffort(model) || provider == schemas.MiniMax {
 		levels = append(levels, schemas.ReasoningEffortMax)
 	}
 	return &schemas.EffortControl{Levels: levels}
+}
+
+// includeXHighInDefaultLadder reports whether the OpenAI-dialect fallback
+// ladder should list "xhigh". OpenAI, Azure, and xAI still use the hosted
+// catalog (gpt-5.2+ / Grok prefixes). Every other destination — built-in
+// vLLM/Ollama/SGL and custom providers with base_provider_type openai —
+// keeps the client value, because OpenAI model prefixes are the wrong
+// oracle for those upstreams.
+func includeXHighInDefaultLadder(provider schemas.ModelProvider, model string) bool {
+	switch provider {
+	case schemas.OpenAI, schemas.Azure, schemas.XAI:
+		return acceptsXHighEffort(model)
+	case schemas.BytePlus:
+		// Ark's ladder tops out at high and rejects xhigh.
+		return false
+	default:
+		return true
+	}
+}
+
+// normalizeReasoningEffort maps effort onto the levels the destination accepts.
+// A datasheet record for the provider wins; without one, the fallback ladder
+// keeps xhigh for OpenAI-compatible destinations (see includeXHighInDefaultLadder).
+func normalizeReasoningEffort(provider schemas.ModelProvider, caps schemas.ModelCaps, effort string) string {
+	if provider == "" {
+		provider = caps.Provider()
+	}
+	return caps.NormalizeReasoningEffort(effort, defaultEffortControl(provider, caps.Model()))
 }
 
 // acceptsXHighEffort reports models that natively accept "xhigh" effort. The
@@ -207,6 +313,10 @@ func ConvertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage) []Op
 			Content:         message.Content,
 			ChatToolMessage: message.ChatToolMessage,
 		}
+		// A tool message takes text only on the OpenAI wire.
+		if message.Role == schemas.ChatMessageRoleTool {
+			openaiMessages[i].Content = schemas.FlattenToolResultMedia(message.Content, nil)
+		}
 		// Strip provider reasoning signatures (e.g. Gemini thoughtSignatures embedded in
 		// call_id as "<baseID>_ts_<sig>") from the tool result's tool_call_id, but only when it
 		// exceeds OpenAI's limit — shorter IDs are left intact so distinct upstream IDs are
@@ -290,4 +400,79 @@ func toolChoiceAnySupported(provider schemas.ModelProvider, model string) bool {
 	default:
 		return false
 	}
+}
+
+// wrapSystemReminder renders system text for a user turn, matching the Anthropic converter's fallback.
+func wrapSystemReminder(text string) string {
+	return "<system-reminder>\n" + text + "\n</system-reminder>\n"
+}
+
+// inlineChatMidConversationSystem rewrites system / developer messages after the leading run as
+// user turns, prefixed with <system-reminder>
+func inlineChatMidConversationSystem(messages []OpenAIMessage) []OpenAIMessage {
+	leading := true
+	for i := range messages {
+		m := &messages[i]
+		isSystem := m.Role == schemas.ChatMessageRoleSystem || m.Role == schemas.ChatMessageRoleDeveloper
+		if leading && isSystem {
+			continue
+		}
+		leading = false
+		if !isSystem {
+			continue
+		}
+		if m.Content == nil {
+			*m = OpenAIMessage{Name: m.Name, Role: schemas.ChatMessageRoleUser}
+			continue
+		}
+		content := &schemas.ChatMessageContent{}
+		if m.Content.ContentStr != nil {
+			content.ContentStr = new(wrapSystemReminder(*m.Content.ContentStr))
+		}
+		for _, block := range m.Content.ContentBlocks {
+			if block.Text != nil {
+				block.Text = new(wrapSystemReminder(*block.Text))
+			}
+			content.ContentBlocks = append(content.ContentBlocks, block)
+		}
+		*m = OpenAIMessage{Name: m.Name, Role: schemas.ChatMessageRoleUser, Content: content}
+	}
+	return messages
+}
+
+func inlineResponsesMidConversationSystem(messages []schemas.ResponsesMessage) []schemas.ResponsesMessage {
+	leading := true
+	for i := range messages {
+		m := &messages[i]
+		// Tool declarations and configuration updates are not conversation turns, so they do not end the leading run.
+		if m.Type != nil && (*m.Type == schemas.ResponsesMessageTypeAdditionalTools || *m.Type == schemas.ResponsesMessageTypeConfigurationUpdate) {
+			continue
+		}
+		isSystem := m.Role != nil &&
+			(*m.Role == schemas.ResponsesInputMessageRoleSystem || *m.Role == schemas.ResponsesInputMessageRoleDeveloper) &&
+			(m.Type == nil || *m.Type == schemas.ResponsesMessageTypeMessage)
+		if leading && isSystem {
+			continue
+		}
+		leading = false
+		if !isSystem {
+			continue
+		}
+		m.Role = schemas.Ptr(schemas.ResponsesInputMessageRoleUser)
+		if m.Content == nil {
+			continue
+		}
+		content := &schemas.ResponsesMessageContent{}
+		if m.Content.ContentStr != nil {
+			content.ContentStr = schemas.Ptr(wrapSystemReminder(*m.Content.ContentStr))
+		}
+		for _, block := range m.Content.ContentBlocks {
+			if block.Text != nil {
+				block.Text = schemas.Ptr(wrapSystemReminder(*block.Text))
+			}
+			content.ContentBlocks = append(content.ContentBlocks, block)
+		}
+		m.Content = content
+	}
+	return messages
 }

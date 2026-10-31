@@ -59,6 +59,36 @@ func TestOpenAIWireCostResponse(t *testing.T) {
 		}
 	})
 
+	t.Run("responses keeps tool_usage top-level beside the flattened cost", func(t *testing.T) {
+		resp := &schemas.BifrostResponsesResponse{
+			Usage: &schemas.ResponsesResponseUsage{
+				TotalTokens: 15,
+				Cost:        &schemas.BifrostCost{TotalCost: 3},
+				ToolUsage:   &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: 2}},
+			},
+		}
+		js, err := sonic.Marshal(openAIWireCostResponse(resp))
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var wire struct {
+			ToolUsage *schemas.ToolUsage     `json:"tool_usage"`
+			Usage     map[string]interface{} `json:"usage"`
+		}
+		if err := sonic.Unmarshal(js, &wire); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if wire.ToolUsage == nil || wire.ToolUsage.WebSearch == nil || wire.ToolUsage.WebSearch.NumRequests != 2 {
+			t.Errorf("top-level tool_usage missing: %s", js)
+		}
+		if _, ok := wire.Usage["tool_usage"]; ok {
+			t.Errorf("usage must not carry tool_usage: %s", js)
+		}
+		if wire.Usage["cost"] != float64(3) {
+			t.Errorf("responses wire cost not flattened to float: %s", js)
+		}
+	})
+
 	t.Run("image renders cost as float total", func(t *testing.T) {
 		resp := &schemas.BifrostImageGenerationResponse{
 			Usage: &schemas.ImageUsage{Cost: &schemas.BifrostCost{TotalCost: 3}},
@@ -72,6 +102,24 @@ func TestOpenAIWireCostResponse(t *testing.T) {
 		}
 		if resp.Usage.Cost == nil {
 			t.Error("shared image usage.cost was mutated")
+		}
+	})
+
+	t.Run("chat keeps generated images beside the flattened cost", func(t *testing.T) {
+		const images = `"images":[{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}}]`
+		var resp schemas.BifrostChatResponse
+		upstream := `{"id":"gen-1","object":"chat.completion","created":1,"model":"google/gemini-2.5-flash-image",` +
+			`"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Here you go",` + images + `}}]}`
+		if err := schemas.Unmarshal([]byte(upstream), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		resp.Usage = &schemas.BifrostLLMUsage{TotalTokens: 15, Cost: &schemas.BifrostCost{TotalCost: 3}}
+		js, err := sonic.Marshal(openAIWireCostResponse(&resp))
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if s := string(js); !strings.Contains(s, images) || !strings.Contains(s, `"content":"Here you go"`) {
+			t.Errorf("drop-in chat wire lost the generated image: %s", s)
 		}
 	})
 

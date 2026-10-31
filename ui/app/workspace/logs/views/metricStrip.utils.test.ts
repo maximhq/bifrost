@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { buildSparkPoints, formatMs, formatPctChange, formatPointDelta, metricsState, SPARK_POINTS, sparkIndexAt, tokenSplit, weightedP95, windowTrend } from "./metricStrip.utils";
+import {
+	buildSparkPoints,
+	formatMs,
+	formatPctChange,
+	formatPointDelta,
+	metricsState,
+	SPARK_POINTS,
+	sparkIndexAt,
+	tokenSplit,
+	weightedP95,
+	windowTrend,
+} from "./metricStrip.utils";
 
 describe("formatPctChange", () => {
 	it("reads a rise as positive by default", () => {

@@ -67,6 +67,23 @@ func isOverheadSpanKind(kind schemas.SpanKind) bool {
 	}
 }
 
+// isStreamPostHook reports whether s is a plugin's streaming post-hook span, which
+// stands for the plugin's per-chunk hook time summed over the stream.
+func isStreamPostHook(s *schemas.Span) bool {
+	if s.Kind != schemas.SpanKindPlugin {
+		return false
+	}
+	_, ok := s.GetAttribute(schemas.AttrPluginInvocations)
+	return ok
+}
+
+// isBackground reports whether s is work the request did not wait for.
+func isBackground(s *schemas.Span) bool {
+	v, _ := s.GetAttribute(schemas.AttrBifrostBackground)
+	background, _ := v.(bool)
+	return background
+}
+
 // overheadBucketName maps an overhead-side span to its breakdown bucket.
 func overheadBucketName(s *schemas.Span) string {
 	if s.Kind == schemas.SpanKindPlugin {
@@ -117,13 +134,21 @@ func Compute(trace *schemas.Trace, overheadMs float64, overheadOK bool, upstream
 			spanByID[s.SpanID] = s
 		}
 	}
+	// Background spans are skipped throughout: they are neither overhead nor time taken
+	// from the span that started them.
 	childDur := make(map[string]time.Duration, len(trace.Spans))
 	for _, s := range trace.Spans {
-		if s == nil || s.ParentID == "" {
+		if s == nil || s.ParentID == "" || isBackground(s) {
 			continue
 		}
 		parent := spanByID[s.ParentID]
 		if parent == nil {
+			continue
+		}
+		if isStreamPostHook(parent) {
+			// Placed by its summed hook time, not by when its children ran; they ran
+			// inside the hook, so each comes out of it in full.
+			childDur[s.ParentID] += spanWall(s)
 			continue
 		}
 		childDur[s.ParentID] += spanOverlap(parent, s)
@@ -136,7 +161,7 @@ func Compute(trace *schemas.Trace, overheadMs float64, overheadOK bool, upstream
 	}
 	buckets := make(map[string]*agg)
 	for _, s := range trace.Spans {
-		if s == nil || !isOverheadSpanKind(s.Kind) {
+		if s == nil || !isOverheadSpanKind(s.Kind) || isBackground(s) {
 			continue
 		}
 		self := spanWall(s) - childDur[s.SpanID]
@@ -239,7 +264,7 @@ func Compute(trace *schemas.Trace, overheadMs float64, overheadOK bool, upstream
 		var llmSelfNs int64
 		var firstLLM time.Time
 		for _, s := range trace.Spans {
-			if s == nil || s.Kind != schemas.SpanKindLLMCall {
+			if s == nil || s.Kind != schemas.SpanKindLLMCall || isBackground(s) {
 				continue
 			}
 			if self := spanWall(s) - childDur[s.SpanID]; self > 0 {
@@ -328,6 +353,10 @@ const (
 	CategoryProcessing    = "processing"
 	CategoryNetworking    = "networking"
 	CategoryStreaming     = "streaming"
+	// CategoryProtocolSDK: time spent inside the third-party A2A protocol library
+	// (request decode, method routing, response marshal), kept separate from
+	// "processing" so library cost is not read as Bifrost pipeline cost.
+	CategoryProtocolSDK = "protocol_sdk"
 	// CategoryMiscellaneous: overhead not worth its own span. Folds the core "miscellaneous"
 	// glue span and the "scheduling" residual (overhead minus the measured phases).
 	CategoryMiscellaneous = "miscellaneous"
@@ -356,11 +385,28 @@ var bucketCategory = map[string]string{
 	"stream-backpressure":        CategoryStreaming,
 	"stream-client-write":        CategoryStreaming,
 	"scheduling":                 CategoryMiscellaneous,
+	// A2A agent-gateway phases (transport + core/agent), mirroring the LLM path.
+	"a2a.push.db.authenticate": CategoryProcessing,
+	"a2a.push.db.bind":         CategoryProcessing,
+	"a2a.push.db.enqueue":      CategoryProcessing,
+	"a2a.push.db.config":       CategoryProcessing,
+	"a2a.push.db.outcome":      CategoryProcessing,
+	"a2a.push.db.local":        CategoryProcessing,
+	"a2a.push.db.save":         CategoryProcessing,
+	"a2a.push.db.delete":       CategoryProcessing,
+	"a2a.push.db.list-due":     CategoryProcessing,
+	"a2a.push.db.prune":        CategoryProcessing,
+	"a2a.normalize":            CategorySerialization,
+	"a2a.auth":                 CategoryMiddleware,
+	"a2a.prepare":              CategoryProcessing,
+	"a2a.encode":               CategorySerialization,
+	"a2a.dispatch":             CategoryProtocolSDK,
 }
 
 // MetricComponent maps one bucket to its category, mirroring the UI's overheadCategoryKey:
-// serialization phases, middleware.*, convertor(.*) and plugin.* by rule, else bucketCategory,
-// else "other" (or "plugins" for an unmatched plugin-kind span).
+// serialization phases, middleware.*, convertor(.*) and plugin.* by rule, else
+// bucketCategory, else "other". overheadBucketName guarantees the plugin.* prefix, so
+// Kind needs no fallback here.
 func MetricComponent(b logstore.OverheadBucket) string {
 	switch b.Name {
 	case "request-unmarshal", "request-marshal", "response-parse", "response-marshal":
@@ -377,9 +423,6 @@ func MetricComponent(b logstore.OverheadBucket) string {
 	}
 	if c, ok := bucketCategory[b.Name]; ok {
 		return c
-	}
-	if b.Kind == string(schemas.SpanKindPlugin) {
-		return CategoryPlugins
 	}
 	return CategoryOther
 }

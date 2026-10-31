@@ -1,7 +1,7 @@
 import PageTitle from "@/components/pageTitle";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ProviderSelector } from "@/components/ui/providerSelector";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -22,9 +22,13 @@ export interface ModelCatalogRow {
 	totalCost24h: number;
 }
 
+// The filter spells "no provider filter" as a sentinel, since the control needs a value to
+// show for it. Module level so its identity is stable across renders.
+const ALL_PROVIDERS_VALUE = "all";
+const ALL_PROVIDERS_OPTION = { value: ALL_PROVIDERS_VALUE, label: "All Providers" };
+
 interface ModelCatalogTableProps {
 	rows: ModelCatalogRow[];
-	providers: string[];
 	providerFilter: string;
 	onProviderFilterChange: (value: string) => void;
 	totalProviders: number;
@@ -36,7 +40,6 @@ interface ModelCatalogTableProps {
 
 export default function ModelCatalogTable({
 	rows,
-	providers,
 	providerFilter,
 	onProviderFilterChange,
 	totalProviders,
@@ -69,33 +72,24 @@ export default function ModelCatalogTable({
 			{/* Header + Filter */}
 			<div className="flex items-center justify-end">
 				<PageTitle title="Model Catalog">Overview of all configured providers, models, and usage.</PageTitle>
-				<Select
-					value={providerFilter || "all"}
-					onValueChange={(val) => onProviderFilterChange(val === "all" ? "" : val)}
-					data-testid="model-catalog-provider-filter"
-				>
-					<SelectTrigger className="w-[200px]" data-testid="model-catalog-provider-trigger">
-						<SelectValue placeholder="All Providers" />
-					</SelectTrigger>
-					<SelectContent>
-						<SelectItem value="all">All Providers</SelectItem>
-						{providers.map((p) => (
-							<SelectItem key={p} value={p}>
-								{ProviderLabels[p as keyof typeof ProviderLabels] || p}
-							</SelectItem>
-						))}
-					</SelectContent>
-				</Select>
+				<ProviderSelector
+					data-testid="model-catalog-provider-trigger"
+					ariaLabel="Filter by provider"
+					className="w-[200px]"
+					allOption={ALL_PROVIDERS_OPTION}
+					value={providerFilter || ALL_PROVIDERS_VALUE}
+					onChange={(val: string) => onProviderFilterChange(val === ALL_PROVIDERS_VALUE ? "" : val)}
+				/>
 			</div>
 
 			{/* Table */}
 			<div className="rounded-sm border">
-				<Table className="table-fixed">
+				<Table className="min-w-[760px] table-fixed">
 					<colgroup>
-						<col className="w-[26%]" />
-						<col className="w-[44%]" />
-						<col className="w-[16%]" />
-						<col className="w-[14%]" />
+						<col className="w-[220px]" />
+						<col />
+						<col className="w-[180px]" />
+						<col className="w-[160px]" />
 					</colgroup>
 					<TableHeader>
 						<TableRow>
@@ -105,8 +99,8 @@ export default function ModelCatalogTable({
 									<div className="flex items-center gap-1">
 										Models
 										<Tooltip>
-											<TooltipTrigger data-testid="model-catalog-models-info-trigger">
-												<Info className="text-muted-foreground h-3.5 w-3.5" />
+											<TooltipTrigger aria-label="About the models column" data-testid="model-catalog-models-info-trigger">
+												<Info className="text-muted-foreground h-3.5 w-3.5" aria-hidden="true" />
 											</TooltipTrigger>
 											<TooltipContent side="bottom">Models used in the last 30 days</TooltipContent>
 										</Tooltip>

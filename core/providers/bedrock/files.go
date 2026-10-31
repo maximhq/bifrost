@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"html"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -25,6 +26,18 @@ func escapeS3KeyForURL(key string) string {
 		parts[i] = url.PathEscape(p)
 	}
 	return strings.Join(parts, "/")
+}
+
+// s3BucketRe matches the DNS-compatible bucket names a virtual-hosted S3 URL can carry.
+var s3BucketRe = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
+
+// validateS3Bucket rejects bucket names that would change the request host, since the
+// bucket becomes the leading label of "https://{bucket}.{s3host}/".
+func validateS3Bucket(bucket string) *schemas.BifrostError {
+	if !s3BucketRe.MatchString(bucket) {
+		return providerUtils.NewBifrostBadRequestError(fmt.Sprintf("invalid s3 bucket name: %q", bucket))
+	}
+	return nil
 }
 
 // parseS3URI parses an S3 URI (s3://bucket/key or bucket-name) and returns bucket name and key.

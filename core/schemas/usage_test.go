@@ -28,6 +28,7 @@ func TestMergeBifrostLLMUsage(t *testing.T) {
 			ImageTokens:              new(7),
 			RejectedPredictionTokens: 8,
 		},
+		ToolUsage: &ToolUsage{WebSearch: &WebSearchToolUsage{NumRequests: 2}},
 		Cost: &BifrostCost{
 			InputCost:             1,
 			InputCostDetails:      &InputCostDetails{TextCost: 1},
@@ -63,6 +64,7 @@ func TestMergeBifrostLLMUsage(t *testing.T) {
 			ImageTokens:              new(14),
 			RejectedPredictionTokens: 15,
 		},
+		ToolUsage: &ToolUsage{WebSearch: &WebSearchToolUsage{NumRequests: 3}},
 		Cost: &BifrostCost{
 			InputCost:             10,
 			InputCostDetails:      &InputCostDetails{TextCost: 10},
@@ -77,6 +79,12 @@ func TestMergeBifrostLLMUsage(t *testing.T) {
 	merged := MergeBifrostLLMUsage(base, add)
 	if merged.PromptTokens != 30 || merged.CompletionTokens != 12 || merged.TotalTokens != 42 {
 		t.Fatalf("unexpected token totals: %+v", merged)
+	}
+	if got := merged.ToolUsage.WebSearch.NumRequests; got != 5 {
+		t.Fatalf("tool_usage web search = %d, want 5", got)
+	}
+	if merged.ToolUsage == base.ToolUsage || merged.ToolUsage == add.ToolUsage {
+		t.Fatal("merged tool_usage aliases an input")
 	}
 	if merged.PromptTokensDetails.TextTokens != 8 ||
 		merged.PromptTokensDetails.AudioTokens != 6 ||
@@ -121,5 +129,56 @@ func TestMergeBifrostLLMUsageNilInputs(t *testing.T) {
 	}
 	if got := MergeBifrostLLMUsage(nil, usage); got != usage {
 		t.Fatalf("expected added usage returned for nil base")
+	}
+}
+
+func TestToolUsageRoundTripsResponsesAndChatUsage(t *testing.T) {
+	ru := &ResponsesResponseUsage{TotalTokens: 1, ToolUsage: &ToolUsage{WebSearch: &WebSearchToolUsage{NumRequests: 4}}}
+	cu := ru.ToBifrostLLMUsage()
+	if got := cu.ToolUsage.WebSearch.NumRequests; got != 4 {
+		t.Fatalf("chat tool_usage = %d, want 4", got)
+	}
+	if got := cu.ToResponsesResponseUsage().ToolUsage.WebSearch.NumRequests; got != 4 {
+		t.Fatalf("responses tool_usage = %d, want 4", got)
+	}
+	if cp := cu.DeepCopy(); cp.ToolUsage == cu.ToolUsage || cp.ToolUsage.WebSearch.NumRequests != 4 {
+		t.Fatal("DeepCopy must own tool_usage")
+	}
+	var parsed ResponsesResponseUsage
+	if err := Unmarshal([]byte(`{"total_tokens":1,"tool_usage":{"web_search":{"num_requests":1}}}`), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if parsed.ToolUsage.WebSearch.NumRequests != 1 {
+		t.Fatal("tool_usage.web_search.num_requests not decoded")
+	}
+}
+
+func TestToolUsageAddHandlesNilOperands(t *testing.T) {
+	var none *ToolUsage
+	if none.Add(nil) != nil {
+		t.Fatal("nil + nil must stay nil")
+	}
+	one := &ToolUsage{WebSearch: &WebSearchToolUsage{NumRequests: 2}}
+	for _, sum := range []*ToolUsage{none.Add(one), one.Add(nil)} {
+		if sum == one || sum.WebSearch == one.WebSearch || sum.WebSearch.NumRequests != 2 {
+			t.Fatalf("sum with nil must be an owned copy of the other side, got %+v", sum)
+		}
+	}
+	if got := (&ToolUsage{}).Add(one).WebSearch.NumRequests; got != 2 {
+		t.Fatalf("empty + one = %d, want 2", got)
+	}
+}
+
+func TestMergeBifrostLLMUsageKeepsIterations(t *testing.T) {
+	earlier := &BifrostLLMUsage{PromptTokens: 10, TotalTokens: 10, Iterations: []ResponsesResponseUsage{{Type: Ptr("advisor_message"), InputTokens: 100}}}
+	billed := &BifrostLLMUsage{PromptTokens: 20, TotalTokens: 20, Iterations: []ResponsesResponseUsage{{Type: Ptr("advisor_message"), InputTokens: 200}}}
+
+	merged := MergeBifrostLLMUsage(earlier, billed)
+	if len(merged.Iterations) != 2 || merged.Iterations[0].InputTokens != 100 || merged.Iterations[1].InputTokens != 200 {
+		t.Fatalf("merged Iterations = %+v, want both turns' passes in order", merged.Iterations)
+	}
+	merged.Iterations[0].InputTokens = 999
+	if earlier.Iterations[0].InputTokens != 100 {
+		t.Fatal("merged Iterations aliases the base usage")
 	}
 }

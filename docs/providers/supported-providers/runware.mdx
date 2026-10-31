@@ -412,6 +412,8 @@ The passthrough route forwards a **raw Runware task array** to `https://api.runw
 - **Body:** a raw Runware task array (exactly what you would send to Runware directly)
 - **Auth:** use your Bifrost key; Bifrost injects the real Runware key from its pool
 
+With a virtual key that restricts models on Runware, every `model` the task array names is checked against the key's allowed models, and an array that names none (for example only a `getResponse` task) is refused with `403` (`model_blocked`). A key that allows every model of the provider (`*`) is not affected.
+
 <Note>
 For anything slower than quick image inference, submit with `deliveryMethod: "async"` and poll with a `getResponse` task. A synchronous task that outruns the connection window returns an upstream `504 failedTaskTimeout`. This is Runware's sync limit, not a passthrough error.
 </Note>

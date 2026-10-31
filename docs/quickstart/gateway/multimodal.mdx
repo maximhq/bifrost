@@ -334,6 +334,411 @@ curl --location 'http://localhost:8080/v1/audio/transcriptions' \
 --form 'timestamp_granularities[]=segment'
 ```
 
+## Multimodal Embeddings
+
+Bifrost supports multimodal embeddings — generating vector representations that capture text, images, audio, video, and documents together. `POST /v1/embeddings` accepts every shape it always did (a string, an array of strings, token arrays) plus a multimodal form where each entry in `input` is an array of typed parts. All the parts in one entry produce **one** vector.
+
+```json
+{
+  "model": "cohere/embed-v4.0",
+  "input": [
+    [
+      { "type": "text",  "text": "a golden retriever in a park" },
+      { "type": "image", "image": { "url": "data:image/jpeg;base64,<base64-encoded-jpeg>" } }
+    ]
+  ]
+}
+```
+
+### Content parts
+
+| Type | Payload field | Notes |
+|------|---------------|-------|
+| `text` | `text` | Plain string. Several text parts in one entry are joined by the provider converter. |
+| `image` | `image` | Media part. |
+| `audio` | `audio` | Media part. |
+| `video` | `video` | Media part, plus an optional `video_config` (see Vertex `multimodalembedding@001`). |
+| `file` | `file` | Media part, for documents such as PDF. |
+| `tokens` | `tokens` | Array of integer token IDs. OpenAI-compatible providers only; cannot be mixed with `text` in one request. |
+
+Every media part is the same object:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `data` | string | One of `data` / `url` | Inline content as a base64 data URI (`data:image/png;base64,...`). Raw base64 is accepted when `mime_type` is set. |
+| `url` | string | One of `data` / `url` | A reference the provider can resolve. Which schemes are accepted is provider-specific (see the per-provider sections). |
+| `mime_type` | string | No | Media type. Required by some providers when it cannot be derived from `data` or the URL. |
+| `filename` | string | No | Display name, forwarded where the provider has a field for it. |
+
+Validation runs before plugins and before the provider is called: each part must set exactly one modality, a media part must set exactly one of `data` or `url`, and an empty entry returns `400`.
+
+### Request parameters
+
+These top-level fields apply to every entry unless an entry overrides them (see [Per-Item Parameters](#per-item-parameters)):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `encoding_format` | string | `float` (default), `base64`, or for Cohere-family models `int8`, `uint8`, `binary`, `ubinary`. |
+| `dimensions` | integer | Output vector size. Mapped to each provider's own field name. |
+| `task_type` | string | Intended use of the vector, e.g. `RETRIEVAL_QUERY` / `RETRIEVAL_DOCUMENT` on Gemini and Vertex, or an `embeddingPurpose` value on Nova. |
+| `title` | string | Document title. Gemini and Vertex text models only. |
+| `auto_truncate` | boolean | Truncate inputs that exceed the model's limit instead of failing. Gemini and Vertex. |
+
+Any other top-level field (for example Cohere's `input_type`, Nova's `embeddingMode`, or Gemini's `embedContentConfig`) is forwarded to the provider as-is.
+
+`encoding_format: "base64"` works on every provider. Where the model has a native base64 output (OpenAI, Cohere Embed v4) it is forwarded; everywhere else Bifrost encodes the float vector as little-endian float32 base64, the same layout OpenAI uses.
+
+### Response fields
+
+Each entry in `data` has `index`, `object` and `embedding`, plus three optional fields that are present only when a provider needs them:
+
+| Field | Description |
+|-------|-------------|
+| `modality` | `text`, `image`, `audio`, `video` or `audio_video`. Set when a provider returns separate vectors per modality (Vertex `multimodalembedding@001`, Nova). |
+| `video_segment` | `{ "start_offset_sec", "end_offset_sec" }` on video vectors that cover a slice of the clip. |
+| `encoding_format` | Which representation this vector is, when a provider returns several for one input (Cohere `embedding_types`). |
+
+### Provider support
+
+| Provider / model | Text | Image | Audio | Video | File | Batch (multiple entries) | Per-item params | Media sources |
+|------------------|------|-------|-------|-------|------|--------------------------|-----------------|---------------|
+| Gemini `gemini-embedding-2-preview` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | inline, Files API URI |
+| Gemini `gemini-embedding-001` | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | — |
+| Vertex `gemini-embedding-2-preview` | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | inline, `gs://`, `https://` |
+| Vertex `multimodalembedding@001` | ✅ | ✅ (max 1) | ❌ | ✅ (max 1) | ❌ | ❌ | ❌ | inline, `gs://` |
+| Vertex `text-embedding-005` and other text models | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | — |
+| Cohere `embed-v4.0` | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | inline |
+| Cohere `embed-*-v3.0` | ✅ | ✅ (image-only entries) | ❌ | ❌ | ❌ | ✅ | ❌ | inline |
+| Bedrock `amazon.titan-embed-image-v1` | ✅ | ✅ (max 1) | ❌ | ❌ | ❌ | ❌ | ❌ | inline |
+| Bedrock `amazon.titan-embed-text-v1` / `v2:0` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | — |
+| Bedrock `cohere.embed-*` | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | inline |
+| Bedrock `amazon.nova-2-multimodal-embeddings-v1:0` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | inline, `s3://` |
+| OpenAI, Azure, Mistral, Parasail and other OpenAI-compatible | ✅ (+ tokens) | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | — |
+| HuggingFace | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | — |
+
+A part the target model cannot carry returns `400` naming the modality. Bifrost never drops a part silently.
+
+### Text Embedding (all providers)
+
+The simplest form — pass a string or array of strings directly in `input`:
+
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "cohere/embed-v4.0",
+    "input": ["a golden retriever playing fetch"],
+    "input_type": "search_document"
+  }'
+```
+
+### Gemini
+
+`gemini-embedding-2-preview` accepts text, image, audio, video and `file` (PDF) parts, in any combination, in one entry. `gemini-embedding-001` is text-only.
+
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini/gemini-embedding-2-preview",
+    "input": [
+      [
+        { "type": "text",  "text": "transcript of the audio" },
+        { "type": "audio", "audio": { "data": "data:audio/mpeg;base64,<base64-encoded-mp3>" } }
+      ]
+    ]
+  }'
+```
+
+For PDFs, use the `file` part type:
+
+```json
+"input": [
+  [
+    { "type": "file", "file": { "data": "data:application/pdf;base64,<base64-encoded-pdf>", "mime_type": "application/pdf" } }
+  ]
+]
+```
+
+How Gemini receives media:
+
+- Inline `data` is sent as `inlineData`.
+- A `url` is sent as `fileData.fileUri`. The Gemini API only resolves [Files API](https://ai.google.dev/gemini-api/docs/files) URIs (`https://generativelanguage.googleapis.com/v1beta/files/...`) there, so upload large media first or send it inline. `gs://` URIs are rejected with `400` on the Gemini provider; use Vertex for Cloud Storage media.
+- Multiple entries are sent as one `:batchEmbedContents` call, and `task_type` / `title` are applied to every entry. This is also the only provider that honours per-item `params`.
+- `documentOcr` and `audioTrackExtraction` go under `embedContentConfig`, the only place Gemini accepts them:
+
+```json
+{
+  "model": "gemini/gemini-embedding-2-preview",
+  "input": [[ { "type": "file", "file": { "data": "data:application/pdf;base64,<...>" } } ]],
+  "embedContentConfig": { "documentOcr": true, "audioTrackExtraction": true }
+}
+```
+
+Token usage comes from Gemini's `usageMetadata`.
+
+### Vertex AI
+
+Vertex has three embedding APIs, and Bifrost picks the right one from the model name. Project and region come from the Vertex key configuration, not the request body.
+
+| Model | Vertex endpoint | Input |
+|-------|-----------------|-------|
+| `text-embedding-005`, `text-multilingual-embedding-002` and other text models | `:predict` | Text only. Multiple entries become one instance each. `dimensions` → `outputDimensionality`; `task_type` and `title` are set per instance; `auto_truncate` defaults to `true`. |
+| `gemini-embedding-2-preview` | `:embedContent` | Same parts as Gemini above, **one entry per request** (the endpoint has no batch form; a second entry returns `400`). |
+| `multimodalembedding@001` | `:predict` (multimodal) | One entry with any number of text parts, at most one image and at most one video. Audio and `file` parts are rejected. |
+
+#### `gemini-embedding-2-preview` on Vertex
+
+Everything in the Gemini section applies, with one addition: `gs://` URIs are accepted on image, audio, video and `file` parts, because Vertex resolves Cloud Storage itself. `https://` URLs work when Vertex can fetch them; prefer `gs://` for anything large.
+
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "vertex/gemini-embedding-2-preview",
+    "input": [
+      [
+        { "type": "video", "video": { "url": "gs://my-bucket/clip.mp4", "mime_type": "video/mp4" } }
+      ]
+    ],
+    "task_type": "RETRIEVAL_DOCUMENT"
+  }'
+```
+
+#### `multimodalembedding@001`
+
+This model returns a **separate 1408-dimension vector per modality**, all in the same embedding space. Image and video URLs must be `gs://`; inline base64 data URIs are also accepted.
+
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "vertex/multimodalembedding@001",
+    "input": [
+      [
+        { "type": "text",  "text": "product photo" },
+        { "type": "image", "image": { "url": "gs://my-bucket/photo.jpg" } }
+      ]
+    ]
+  }'
+```
+
+**Response** contains one vector per modality:
+
+```json
+{
+  "data": [
+    { "index": 0, "modality": "text",  "embedding": [0.12, -0.34, ...] },
+    { "index": 1, "modality": "image", "embedding": [0.56, -0.78, ...] }
+  ],
+  "usage": null
+}
+```
+
+Video is embedded as a **sequence of segments**. Add a `video_config` to the video part:
+
+| Field | Description |
+|-------|-------------|
+| `start_offset_sec` | Where sampling begins. |
+| `end_offset_sec` | Where sampling stops. |
+| `interval_sec` | Gap between segment embeddings. Minimum 4 seconds. |
+
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "vertex/multimodalembedding@001",
+    "input": [
+      [
+        { "type": "text",  "text": "product demo" },
+        { "type": "video", "video": { "url": "gs://my-bucket/demo.mp4" },
+          "video_config": { "start_offset_sec": 0, "end_offset_sec": 16, "interval_sec": 8 } }
+      ]
+    ]
+  }'
+```
+
+Each segment arrives as its own entry carrying a `video_segment`:
+
+```json
+{
+  "data": [
+    { "index": 0, "modality": "text",  "embedding": [ ... ] },
+    { "index": 1, "modality": "video", "video_segment": { "start_offset_sec": 0, "end_offset_sec": 8 },  "embedding": [ ... ] },
+    { "index": 2, "modality": "video", "video_segment": { "start_offset_sec": 8, "end_offset_sec": 16 }, "embedding": [ ... ] }
+  ]
+}
+```
+
+`dimensions` maps to the model's `parameters.dimension`. This model does not report token usage, so `usage` is `null`.
+
+### Cohere
+
+Cohere's API has three mutually exclusive input fields, and Bifrost picks one from the content:
+
+| Content | Cohere field | Models |
+|---------|--------------|--------|
+| Every entry is a single text part | `texts[]` | v3, v4 |
+| Every entry is a single image part | `images[]` | v3, v4 |
+| Anything else (text + image in one entry, multi-part entries) | `inputs[]` content blocks | v4 only |
+
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "cohere/embed-v4.0",
+    "input": [
+      [
+        { "type": "text",  "text": "a golden retriever in a park" },
+        { "type": "image", "image": { "url": "data:image/jpeg;base64,<base64-encoded-jpeg>" } }
+      ]
+    ],
+    "input_type": "search_document"
+  }'
+```
+
+- Images must be inline. Pass a data URI in `url` or `data`, or raw base64 in `data` with `mime_type` set; Cohere does not fetch remote URLs.
+- `input_type` defaults to `search_document` and is forwarded when set.
+- `encoding_format` maps to Cohere's `embedding_types` unless you pass `embedding_types` yourself. When Cohere returns several representations for one input, each is a separate `data` entry labelled with its `encoding_format`.
+- Image inputs bill on Cohere's image counter, surfaced as `usage.prompt_tokens_details.image_tokens` and counted into `total_tokens`, not `prompt_tokens`.
+
+The drop-in `/cohere/v2/embed` route accepts Cohere's native `texts` / `images` / `inputs` body for any provider and returns Cohere's native envelope (`embeddings`, `response_type: "embeddings_by_type"`, `meta.billed_units`).
+
+### Bedrock
+
+Bedrock embedding models are routed by family, and each family has its own wire format and constraints.
+
+#### Titan
+
+`amazon.titan-embed-image-v1` accepts one entry with text and at most one image. The image must be inline in the `data` field (a data URI or raw base64); Titan cannot fetch URLs, so a `url` returns `400`.
+
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "bedrock/amazon.titan-embed-image-v1",
+    "input": [
+      [
+        { "type": "text",  "text": "a red square" },
+        { "type": "image", "image": { "data": "data:image/png;base64,<base64-encoded-png>" } }
+      ]
+    ],
+    "dimensions": 384
+  }'
+```
+
+- `dimensions` (256, 384 or 1024) maps to `embeddingConfig.outputEmbeddingLength`.
+- The text models `amazon.titan-embed-text-v1` and `v2:0` take one entry per request; a batch returns `400` rather than being collapsed into one vector. `encoding_format: "binary"` is forwarded as Titan's `embeddingTypes` on v2.
+
+#### Cohere on Bedrock
+
+`cohere.embed-english-v3`, `cohere.embed-multilingual-v3` and `cohere.embed-v4` follow the same `texts[]` / `images[]` / `inputs[]` selection as direct Cohere, with one Bedrock-specific rule: Embed v3 only accepts `images[]` when `input_type` is `image`. Image-only requests therefore go out as `images[]` with `input_type` defaulting to `image`, which both v3 and v4 accept. A caller-supplied `input_type` is always kept. Mixed text + image entries use `inputs[]` and need Embed v4.
+
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "bedrock/cohere.embed-english-v3",
+    "input": [
+      [ { "type": "image", "image": { "data": "data:image/png;base64,<base64-encoded-png>" } } ]
+    ]
+  }'
+```
+
+#### Amazon Nova
+
+`amazon.nova-2-multimodal-embeddings-v1:0` embeds text, image, audio or video, **one modality per entry and one entry per request**. Mixing modalities returns `400`.
+
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "bedrock/amazon.nova-2-multimodal-embeddings-v1:0",
+    "input": [
+      [ { "type": "image", "image": { "url": "s3://my-bucket/photos/cat.png" } } ]
+    ],
+    "task_type": "IMAGE_RETRIEVAL",
+    "detailLevel": "STANDARD_IMAGE"
+  }'
+```
+
+- **Sources:** inline `data`, or an `s3://bucket/key` URL that Nova reads directly. Any other URL returns `400`.
+- **Format:** Nova requires a declared format per media part and checks it against the bytes. Bifrost derives it from `mime_type`, or from the S3 key's extension, and returns `400` when it cannot. Supported: `png`, `jpeg`, `webp`, `gif` images; `mp3`, `wav`, `ogg` audio; `mp4`, `mov`, `mkv`, `webm`, `flv`, `mpeg`, `wmv`, `3gp` video (sent to AWS as `three_gp`).
+- **`task_type`** maps to `embeddingPurpose`: `GENERIC_INDEX` (default), `GENERIC_RETRIEVAL`, `TEXT_RETRIEVAL`, `IMAGE_RETRIEVAL`, `VIDEO_RETRIEVAL`, `AUDIO_RETRIEVAL`, `DOCUMENT_RETRIEVAL`, `CLASSIFICATION`, `CLUSTERING`.
+- **`dimensions`:** 256, 384, 1024 or 3072 (default).
+- **Nova-specific top-level fields:** `truncationMode` (`END` default, `START`, `NONE`), `detailLevel` (`STANDARD_IMAGE` default, `DOCUMENT_IMAGE` for text-heavy pages; image parts only), `embeddingMode` (video only, below).
+
+Video returns one `audio_video` vector by default. Set `embeddingMode` to `AUDIO_VIDEO_SEPARATE` to get an `audio` vector and a `video` vector from one input:
+
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "bedrock/amazon.nova-2-multimodal-embeddings-v1:0",
+    "input": [
+      [ { "type": "video", "video": { "url": "s3://my-bucket/clips/demo.mp4" } } ]
+    ],
+    "embeddingMode": "AUDIO_VIDEO_SEPARATE"
+  }'
+```
+
+```json
+{
+  "data": [
+    { "index": 0, "modality": "audio", "embedding": [ ... ] },
+    { "index": 1, "modality": "video", "embedding": [ ... ] }
+  ]
+}
+```
+
+Nova and Cohere-on-Bedrock report token usage only in a response header, which Bifrost reads into `usage`.
+
+The native `/bedrock/model/{modelId}/invoke` route accepts Titan (`inputText` + `inputImage`), Nova (`SINGLE_EMBEDDING`) and Cohere (`texts` / `images` / `inputs`) bodies and returns each family's own envelope.
+
+### OpenAI-compatible providers
+
+OpenAI, Azure OpenAI, Mistral, Parasail and every other provider that speaks the OpenAI embeddings dialect accept `text` and `tokens` parts only, and the two cannot be mixed in one request. Only `encoding_format` and `dimensions` are sent on the wire; `task_type`, `title` and `auto_truncate` are not part of the OpenAI format and are not forwarded.
+
+### Per-Item Parameters
+
+Every entry in `input` may instead be an object carrying its own `params`, which override the
+request-level ones for that entry alone. Use it when the items need *different* parameters —
+a query embedded with `RETRIEVAL_QUERY` alongside documents embedded with
+`RETRIEVAL_DOCUMENT`, say. Plain entries and entries with params can be mixed freely.
+
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini/gemini-embedding-001",
+    "dimensions": 768,
+    "input": [
+      { "content": [{ "type": "text", "text": "how do I reset my password?" }],
+        "params": { "task_type": "RETRIEVAL_QUERY", "dimensions": 768 } },
+      { "content": [{ "type": "text", "text": "Password reset guide" }],
+        "params": { "task_type": "RETRIEVAL_DOCUMENT", "dimensions": 256 } },
+      [ { "type": "text", "text": "a plain entry, using the request-level params" } ]
+    ]
+  }'
+```
+
+An item's `params` **replaces** the request-level params rather than merging field by field,
+so repeat any request-level value you still want (as `dimensions` is repeated above).
+
+<Warning>
+Only providers whose wire format has one parameter block per item can honour this — currently
+Gemini (`:batchEmbedContents`). Everything else returns a 400 naming the offending item index
+rather than silently ignoring the override and returning a correct-looking but wrong vector.
+</Warning>
+
+Requests arriving on the GenAI drop-in routes (`:embedContent`, `:batchEmbedContents`) get the reverse treatment: when every `requests[]` entry carries the same `taskType` / `outputDimensionality`, those are hoisted to request level so the call works against non-Gemini providers too.
+
+### Things to know
+
+- **Token usage is uneven across multimodal models.** Vertex `multimodalembedding@001` returns `usage: null`, Titan image-only inputs report zero tokens, and Cohere image tokens live under `prompt_tokens_details`. Budgets and cost metered on `prompt_tokens` do not see those inputs.
+- **Semantic cache** keys include `task_type`, `title` and `auto_truncate`, so a `RETRIEVAL_QUERY` request is never served a cached `RETRIEVAL_DOCUMENT` vector.
+- **Logs** store the full `input` in a dedicated `embedding_input` column and render it in the log detail view. Inline media above the large-payload threshold is redacted.
+
 <Info>
 Check the [Supported Providers](/providers/supported-providers/overview) page for more information on multimodal capabilities supported by each provider.
 </Info>

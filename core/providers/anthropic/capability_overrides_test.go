@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"context"
 	"testing"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -186,6 +187,63 @@ func TestSupportsFastMode_OverrideAbsent_FallbackTakesOver(t *testing.T) {
 	assert.False(t, schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929").SupportsFastMode(DefaultSupportsFastMode("claude-sonnet-4-5-20250929")))
 }
 
+func TestSupportsSafeguards_OverrideHit(t *testing.T) {
+	model := "non-claude-test-model-safeguards-yes"
+	yes := true
+	setOverride(t, model, schemas.ModelCapabilities{SupportsSafeguards: &yes})
+	assert.True(t, schemas.ResolveModelCaps(schemas.Anthropic, model).SupportsSafeguards(DefaultSupportsSafeguards(schemas.Anthropic, model)))
+}
+
+func TestSupportsSafeguards_OverrideExplicitFalse(t *testing.T) {
+	// Even on a name the substring fallback marks supported (Sonnet 5), an
+	// explicit false override wins.
+	model := "claude-sonnet-5-test-overridden"
+	no := false
+	setOverride(t, model, schemas.ModelCapabilities{SupportsSafeguards: &no})
+	assert.False(t, schemas.ResolveModelCaps(schemas.Anthropic, model).SupportsSafeguards(DefaultSupportsSafeguards(schemas.Anthropic, model)))
+}
+
+// Catalog overrides can enable models outside the default model family gate.
+func TestSupportsSafeguards_CloudOverrideEnables(t *testing.T) {
+	model := "claude-haiku-4-5-cloud-enabled"
+	yes := true
+	// setOverride only answers for Anthropic, so register a resolver that covers
+	// the cloud pairs this case is about.
+	providerUtils.SetCapabilityResolver(func(_ schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if m == model {
+			return &schemas.ModelCapabilities{SupportsSafeguards: &yes}
+		}
+		return nil
+	})
+	t.Cleanup(func() { providerUtils.SetCapabilityResolver(nil) })
+
+	for _, provider := range []schemas.ModelProvider{schemas.Bedrock, schemas.Vertex, schemas.Azure} {
+		assert.True(t, schemas.ResolveModelCaps(provider, model).SupportsSafeguards(DefaultSupportsSafeguards(provider, model)),
+			"datasheet override must enable %s", provider)
+	}
+}
+
+func TestSupportsSafeguards_OverrideAbsent_FallbackTakesOver(t *testing.T) {
+	// Anthropic direct: supported on the auto-mode models (Sonnet 5, Opus 4.7+
+	// covering 4.8 and 5, Fable); Haiku, Sonnet 4.6 and Opus 4.5 are out.
+	assert.True(t, schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-5").SupportsSafeguards(DefaultSupportsSafeguards(schemas.Anthropic, "claude-sonnet-5")))
+	assert.True(t, schemas.ResolveModelCaps(schemas.Anthropic, "claude-opus-4-7-20260401").SupportsSafeguards(DefaultSupportsSafeguards(schemas.Anthropic, "claude-opus-4-7-20260401")))
+	assert.True(t, schemas.ResolveModelCaps(schemas.Anthropic, "claude-opus-4-8").SupportsSafeguards(DefaultSupportsSafeguards(schemas.Anthropic, "claude-opus-4-8")))
+	assert.True(t, schemas.ResolveModelCaps(schemas.Anthropic, "claude-opus-5").SupportsSafeguards(DefaultSupportsSafeguards(schemas.Anthropic, "claude-opus-5")))
+	assert.True(t, schemas.ResolveModelCaps(schemas.Anthropic, "claude-fable-5-1").SupportsSafeguards(DefaultSupportsSafeguards(schemas.Anthropic, "claude-fable-5-1")))
+	assert.False(t, schemas.ResolveModelCaps(schemas.Anthropic, "claude-haiku-4-5").SupportsSafeguards(DefaultSupportsSafeguards(schemas.Anthropic, "claude-haiku-4-5")))
+	assert.False(t, schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-6").SupportsSafeguards(DefaultSupportsSafeguards(schemas.Anthropic, "claude-sonnet-4-6")))
+	assert.False(t, schemas.ResolveModelCaps(schemas.Anthropic, "claude-opus-4-5-20251101").SupportsSafeguards(DefaultSupportsSafeguards(schemas.Anthropic, "claude-opus-4-5-20251101")))
+
+	// Claude cloud surfaces share the supported model families.
+	for _, provider := range []schemas.ModelProvider{schemas.Bedrock, schemas.BedrockMantle, schemas.Vertex, schemas.Azure} {
+		for _, model := range []string{"claude-sonnet-5", "claude-opus-4-8", "claude-fable-5-1", "claude-haiku-4-5"} {
+			assert.Equal(t, model != "claude-haiku-4-5", schemas.ResolveModelCaps(provider, model).SupportsSafeguards(DefaultSupportsSafeguards(provider, model)),
+				"%s/%s must respect the model gate", provider, model)
+		}
+	}
+}
+
 func TestSupportsAdaptiveThinking_OverrideHit(t *testing.T) {
 	model := "non-opus-test-model-adaptive-yes"
 	yes := true
@@ -353,10 +411,10 @@ func forcedToolChoiceChatRequest(model string, tc *schemas.ChatToolChoice) *sche
 	}
 }
 
-func TestForcedToolChoice_DroppedOnFable51(t *testing.T) {
+func TestForcedToolChoice_DroppedWhenUnsupported(t *testing.T) {
 	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
 
-	for _, model := range []string{"claude-fable-5-1", "claude-mythos-5-1"} {
+	for _, model := range []string{"claude-fable-5-1", "claude-mythos-5-1", "claude-opus-5-5"} {
 		t.Run(model+" responses any", func(t *testing.T) {
 			req, err := ToAnthropicResponsesRequest(ctx, forcedToolChoiceResponsesRequest(model,
 				&schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr("any")}))
@@ -437,4 +495,101 @@ func TestForcedToolChoice_DatasheetOutranksFallback(t *testing.T) {
 		require.NoError(t, err)
 		assert.Nil(t, req.ToolChoice)
 	})
+}
+
+func TestBetweenToolsThinking_OverrideHit(t *testing.T) {
+	yes := true
+	setOverride(t, "claude-sonnet-5", schemas.ModelCapabilities{SupportsBetweenToolsThinking: &yes})
+	got := BetweenToolsThinking(schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-5"), nil)
+	require.NotNil(t, got)
+	assert.Equal(t, "between_tools", got.Type)
+}
+
+func TestBetweenToolsThinking_OverrideAbsent_FallbackTakesOver(t *testing.T) {
+	providerUtils.SetCapabilityResolver(nil)
+	assert.True(t, DefaultSupportsBetweenToolsThinking("global.anthropic.claude-sonnet-5-5"))
+	assert.True(t, DefaultSupportsBetweenToolsThinking("claude-sonnet-5-5@20260901"))
+	assert.False(t, DefaultSupportsBetweenToolsThinking("claude-sonnet-5"))
+	assert.False(t, DefaultSupportsBetweenToolsThinking("claude-sonnet-4-5"))
+	assert.False(t, DefaultSupportsBetweenToolsThinking("claude-opus-5-5"))
+}
+
+// setProviderOverride installs a resolver answering for one (provider, model) pair. Datasheet
+// records are keyed per provider, so a Vertex record must not leak onto Anthropic or Bedrock.
+func setProviderOverride(t *testing.T, provider schemas.ModelProvider, model string, ov schemas.ModelCapabilities) {
+	t.Helper()
+	providerUtils.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if p == provider && m == model {
+			return &ov
+		}
+		return nil
+	})
+	t.Cleanup(func() { providerUtils.SetCapabilityResolver(nil) })
+}
+
+// perMessageEffortRawBody is the Claude Code 2.1.285 shape: a text-bearing role:"system"
+// message carrying output_config next to the top-level output_config.
+const perMessageEffortRawBody = `{"model":"claude-opus-5-5","max_tokens":64,"output_config":{"effort":"medium"},"messages":[` +
+	`{"role":"user","content":[{"type":"text","text":"hi"}]},` +
+	`{"role":"system","content":[{"type":"text","text":"reminder"}],"output_config":{"effort":"medium"}}]}`
+
+func TestSupportsPerMessageOutputConfig_FallbackIsHardcodedState(t *testing.T) {
+	// No datasheet record: Anthropic direct on the documented models only.
+	assert.True(t, supportsPerMessageOutputConfig(schemas.ResolveModelCaps(schemas.Anthropic, "claude-opus-5-5")))
+	assert.True(t, supportsPerMessageOutputConfig(schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-5-5")))
+	assert.True(t, supportsPerMessageOutputConfig(schemas.ResolveModelCaps(schemas.Anthropic, "claude-fable-5-1")))
+	assert.False(t, supportsPerMessageOutputConfig(schemas.ResolveModelCaps(schemas.Anthropic, "claude-opus-4-8")))
+	for _, p := range []schemas.ModelProvider{schemas.Vertex, schemas.Bedrock, schemas.BedrockMantle, schemas.Azure} {
+		assert.False(t, supportsPerMessageOutputConfig(schemas.ResolveModelCaps(p, "claude-opus-5-5")), "provider %s", p)
+	}
+}
+
+func TestSupportsPerMessageOutputConfig_DatasheetTrueEnablesVertex(t *testing.T) {
+	yes := true
+	setProviderOverride(t, schemas.Vertex, "claude-opus-5-5", schemas.ModelCapabilities{SupportsMidConvOutputConfig: &yes})
+
+	assert.True(t, supportsPerMessageOutputConfig(schemas.ResolveModelCaps(schemas.Vertex, "claude-opus-5-5")))
+	// The record is per provider: Bedrock keeps the hardcoded (false) answer.
+	assert.False(t, supportsPerMessageOutputConfig(schemas.ResolveModelCaps(schemas.Bedrock, "claude-opus-5-5")))
+
+	t.Run("raw strip keeps the field", func(t *testing.T) {
+		out, err := StripUnsupportedFieldsFromRawBody([]byte(perMessageEffortRawBody), schemas.Vertex, "claude-opus-5-5")
+		require.NoError(t, err)
+		assert.Equal(t, "medium", providerUtils.GetJSONField(out, "messages.1.output_config.effort").String(), "body=%s", out)
+	})
+
+	t.Run("conversion forwards the override", func(t *testing.T) {
+		var input []schemas.ResponsesMessage
+		require.NoError(t, schemas.Unmarshal([]byte(`[
+			{"type":"message","role":"user","content":"Say hello."},
+			{"type":"message","role":"system","content":[],"output_config":{"effort":"low"}}
+		]`), &input))
+		out, err := ToAnthropicResponsesRequest(effortTestCtx(t), &schemas.BifrostResponsesRequest{
+			Provider: schemas.Vertex,
+			Model:    "claude-opus-5-5",
+			Input:    input,
+			Params:   &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(128)},
+		})
+		require.NoError(t, err)
+		msgs, wire := jsonArrayOfObjects(t, out.Messages)
+		require.Len(t, msgs, 2, "override dropped although the datasheet enables it: %s", wire)
+		assertEffortOnlySystemMessage(t, msgs[1], "low", wire)
+	})
+
+	t.Run("beta header injected", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		require.NoError(t, AddMissingBetaHeadersToContextFromRawBody(ctx, []byte(perMessageEffortRawBody), schemas.Vertex))
+		assert.Contains(t, MergeBetaHeaders(ctx, nil), AnthropicMidConversationOutputConfigBetaHeader)
+	})
+}
+
+func TestSupportsPerMessageOutputConfig_DatasheetFalseDisablesAnthropic(t *testing.T) {
+	no := false
+	setProviderOverride(t, schemas.Anthropic, "claude-opus-5-5", schemas.ModelCapabilities{SupportsMidConvOutputConfig: &no})
+
+	assert.False(t, supportsPerMessageOutputConfig(schemas.ResolveModelCaps(schemas.Anthropic, "claude-opus-5-5")))
+	out, err := StripUnsupportedFieldsFromRawBody([]byte(perMessageEffortRawBody), schemas.Anthropic, "claude-opus-5-5")
+	require.NoError(t, err)
+	assert.False(t, providerUtils.JSONFieldExists(out, "messages.1.output_config"), "body=%s", out)
+	assert.Equal(t, "medium", providerUtils.GetJSONField(out, "output_config.effort").String(), "top-level effort must survive")
 }

@@ -2,11 +2,18 @@ package mcp
 
 import (
 	"context"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
+	mcpgo "github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // =============================================================================
@@ -16,7 +23,8 @@ import (
 // mockToolClientManager is a ClientManager that returns a pre-defined set of MCP tools.
 // It is used to drive ParseAndAddToolsToRequest without a real MCP server.
 type mockToolClientManager struct {
-	tools []schemas.ChatTool
+	tools        []schemas.ChatTool
+	instructions []schemas.MCPServerInstructions
 }
 
 func (m *mockToolClientManager) GetClientByName(clientName string) *schemas.MCPClientState {
@@ -42,6 +50,12 @@ func (m *mockToolClientManager) GetToolPerClient(ctx context.Context) map[string
 	return map[string][]schemas.ChatTool{
 		"test-client": m.tools,
 	}
+}
+
+func (m *mockToolClientManager) InstructionCaps() InstructionCaps { return InstructionCaps{} }
+
+func (m *mockToolClientManager) GetServerInstructions(_ context.Context) []schemas.MCPServerInstructions {
+	return m.instructions
 }
 
 func (m *mockToolClientManager) GetPluginPipeline() PluginPipeline             { return nil }
@@ -1021,5 +1035,355 @@ func TestParseAndAddToolsToRequest_OpenCode_NoDuplicate(t *testing.T) {
 			t.Errorf("OpenCode: expected exactly 1 %q, got %d (names: %v)",
 				prefixed, countOccurrences(names, prefixed), names)
 		}
+	}
+}
+
+// =============================================================================
+// Upstream MCP instructions on the inference path
+// =============================================================================
+
+// newInstructionsToolsManager builds a manager at the given mode whose single client
+// advertises one tool and one instructions block.
+func newInstructionsToolsManager() *ToolsManager {
+	cm := &mockToolClientManager{
+		tools: []schemas.ChatTool{{
+			Type:     schemas.ChatToolTypeFunction,
+			Function: &schemas.ChatToolFunction{Name: "test-client-echo"},
+		}},
+		instructions: []schemas.MCPServerInstructions{{ClientName: "test-client", Instructions: "Echo politely."}},
+	}
+	return NewToolsManager(
+		&schemas.MCPToolManagerConfig{MaxAgentDepth: 5},
+		cm,
+		nil,
+		nil,
+		&MockLogger{},
+	)
+}
+
+func newChatRequest() *schemas.BifrostRequest {
+	return &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+		},
+	}
+}
+
+func TestParseAndAddTools_PrependsInstructionsAsSystemMessageAtModeAll(t *testing.T) {
+	m := newInstructionsToolsManager()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	req := m.ParseAndAddToolsToRequest(ctx, newChatRequest())
+
+	require.Len(t, req.ChatRequest.Input, 2)
+	assert.Equal(t, schemas.ChatMessageRoleSystem, req.ChatRequest.Input[0].Role)
+	assert.Contains(t, *req.ChatRequest.Input[0].Content.ContentStr, "Echo politely.")
+	// The caller's own message must come through untouched, and stay last so a conflict
+	// resolves in their favour.
+	assert.Equal(t, schemas.ChatMessageRoleUser, req.ChatRequest.Input[1].Role)
+}
+
+// Prompt-cache placement (#6180) resolves its points against the caller's transcript, so it has
+// to know which leading system message the gateway added. The injection records it on ctx.
+func TestParseAndAddTools_RecordsInjectedInstructionsForCachePlacement(t *testing.T) {
+	m := newInstructionsToolsManager()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	req := m.ParseAndAddToolsToRequest(ctx, newChatRequest())
+
+	recorded, ok := ctx.Value(schemas.BifrostContextKeyMCPInstructionsText).(*string)
+	require.True(t, ok, "the injected instructions were not recorded on the context")
+	require.NotNil(t, recorded)
+	require.NotNil(t, req.ChatRequest.Input[0].Content.ContentStr)
+	assert.Equal(t, *req.ChatRequest.Input[0].Content.ContentStr, *recorded)
+}
+
+// The agent loop re-enters this path once per turn against the same context. Without the
+// guard the block is prepended again every turn, growing the prompt without bound.
+func TestParseAndAddTools_InjectsInstructionsOnlyOncePerContext(t *testing.T) {
+	m := newInstructionsToolsManager()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	req := m.ParseAndAddToolsToRequest(ctx, newChatRequest())
+	req = m.ParseAndAddToolsToRequest(ctx, req)
+	req = m.ParseAndAddToolsToRequest(ctx, req)
+
+	systemCount := 0
+	for _, msg := range req.ChatRequest.Input {
+		if msg.Role == schemas.ChatMessageRoleSystem {
+			systemCount++
+		}
+	}
+	assert.Equal(t, 1, systemCount)
+}
+
+func TestParseAndAddTools_ResponsesKeepsCallerInstructionsFirst(t *testing.T) {
+	m := newInstructionsToolsManager()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	callerText := "Answer in French."
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ResponsesRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Params: &schemas.ResponsesParameters{Instructions: &callerText},
+		},
+	}
+
+	got := m.ParseAndAddToolsToRequest(ctx, req)
+
+	require.NotNil(t, got.ResponsesRequest.Params.Instructions)
+	assert.Equal(t, "Answer in French.\n\n<mcp_server name=\"test-client\">\nEcho politely.\n</mcp_server>",
+		*got.ResponsesRequest.Params.Instructions)
+}
+
+func TestParseAndAddTools_ResponsesSetsInstructionsWhenCallerSentNone(t *testing.T) {
+	m := newInstructionsToolsManager()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostRequest{
+		RequestType:      schemas.ResponsesRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{},
+	}
+
+	got := m.ParseAndAddToolsToRequest(ctx, req)
+
+	require.NotNil(t, got.ResponsesRequest.Params.Instructions)
+	assert.Equal(t, "<mcp_server name=\"test-client\">\nEcho politely.\n</mcp_server>",
+		*got.ResponsesRequest.Params.Instructions)
+}
+
+// A caller's own system message must survive untouched and stay nearer the conversation than
+// the injected block, so where the two conflict the caller's instruction is the later one.
+func TestParseAndAddTools_PreservesCallerSystemMessageAndKeepsItLast(t *testing.T) {
+	m := newInstructionsToolsManager()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	callerSystem := "CALLER-SYSTEM: always end with ZZTOP."
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr(callerSystem)}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		}},
+	}
+
+	got := m.ParseAndAddToolsToRequest(ctx, req)
+
+	require.Len(t, got.ChatRequest.Input, 3)
+	assert.Equal(t, schemas.ChatMessageRoleSystem, got.ChatRequest.Input[0].Role)
+	assert.Contains(t, *got.ChatRequest.Input[0].Content.ContentStr, "<mcp_server name=")
+	// Byte-identical: never merged into, rewritten, or re-ordered relative to the user turn.
+	assert.Equal(t, schemas.ChatMessageRoleSystem, got.ChatRequest.Input[1].Role)
+	assert.Equal(t, callerSystem, *got.ChatRequest.Input[1].Content.ContentStr)
+	assert.Equal(t, schemas.ChatMessageRoleUser, got.ChatRequest.Input[2].Role)
+}
+
+// The agent loop re-enters injection once per turn against a conversation that has GROWN —
+// assistant tool-call and tool-result turns appended. Re-calling with the identical request
+// would not catch a guard keyed on message content, so this grows the history between calls
+// exactly as the loop does.
+func TestParseAndAddTools_InjectsOnceAcrossAGrowingAgentLoop(t *testing.T) {
+	m := newInstructionsToolsManager()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	req := m.ParseAndAddToolsToRequest(ctx, newChatRequest())
+
+	// Turn 2: the model called a tool and the result came back.
+	toolID := "call-1"
+	req.ChatRequest.Input = append(req.ChatRequest.Input,
+		schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant},
+		schemas.ChatMessage{
+			Role:            schemas.ChatMessageRoleTool,
+			Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr("echoed")},
+			ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: &toolID},
+		})
+	req = m.ParseAndAddToolsToRequest(ctx, req)
+
+	// Turn 3.
+	req.ChatRequest.Input = append(req.ChatRequest.Input,
+		schemas.ChatMessage{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("and again")}})
+	req = m.ParseAndAddToolsToRequest(ctx, req)
+
+	blocks := 0
+	systems := 0
+	for _, msg := range req.ChatRequest.Input {
+		if msg.Role == schemas.ChatMessageRoleSystem {
+			systems++
+			if msg.Content != nil && msg.Content.ContentStr != nil {
+				blocks += strings.Count(*msg.Content.ContentStr, "<mcp_server name=")
+			}
+		}
+	}
+	// One block, once — not one per turn. Unbounded prompt growth is the failure this prevents.
+	assert.Equal(t, 1, systems)
+	assert.Equal(t, 1, blocks)
+}
+
+// Instructions follow tools on the Responses path too: with auto-injection disabled and no
+// filter, the caller's own Instructions field must come back untouched.
+func TestParseAndAddTools_ResponsesUntouchedWhenAutoInjectDisabled(t *testing.T) {
+	cm := &mockToolClientManager{
+		tools:        []schemas.ChatTool{makeTool("echo")},
+		instructions: []schemas.MCPServerInstructions{{ClientName: "test-client", Instructions: "Echo politely."}},
+	}
+	m := NewToolsManager(
+		&schemas.MCPToolManagerConfig{MaxAgentDepth: 5, DisableAutoToolInject: true},
+		cm, nil, nil, &MockLogger{},
+	)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	caller := "Answer in French."
+	req := &schemas.BifrostRequest{
+		RequestType:      schemas.ResponsesRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{Params: &schemas.ResponsesParameters{Instructions: &caller}},
+	}
+
+	got := m.ParseAndAddToolsToRequest(ctx, req)
+
+	require.NotNil(t, got.ResponsesRequest.Params.Instructions)
+	assert.Equal(t, caller, *got.ResponsesRequest.Params.Instructions)
+}
+
+// Instructions follow tools. With auto-injection disabled and no per-request filter, Bifrost
+// adds no MCP tools, so it must add no instructions either — a block explaining how to use
+// tools the model was never given costs tokens on every request and invites calls it cannot make.
+func TestParseAndAddToolsToRequest_NoInstructionsWhenAutoInjectDisabled(t *testing.T) {
+	t.Parallel()
+
+	cm := &mockToolClientManager{
+		tools:        []schemas.ChatTool{makeTool("echo")},
+		instructions: []schemas.MCPServerInstructions{{ClientName: "test-client", Instructions: "Always call echo first."}},
+	}
+	tm := NewToolsManager(
+		&schemas.MCPToolManagerConfig{
+			MaxAgentDepth:         5,
+			DisableAutoToolInject: true,
+		},
+		cm, nil, nil, &MockLogger{},
+	)
+
+	req := buildChatRequest()
+	userMsg := "hello"
+	req.ChatRequest.Input = []schemas.ChatMessage{{
+		Role:    schemas.ChatMessageRoleUser,
+		Content: &schemas.ChatMessageContent{ContentStr: &userMsg},
+	}}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result := tm.ParseAndAddToolsToRequest(ctx, req)
+
+	assert.Empty(t, toolNamesFromChatRequest(result), "no tools should be injected")
+	require.Len(t, result.ChatRequest.Input, 1, "the caller's message must be the only one")
+	assert.Equal(t, schemas.ChatMessageRoleUser, result.ChatRequest.Input[0].Role,
+		"no instructions block should be prepended when no tools were injected")
+}
+
+// The same deployment with an explicit include filter does inject tools, and instructions ride along.
+func TestParseAndAddToolsToRequest_InstructionsWhenFilterOptsIn(t *testing.T) {
+	t.Parallel()
+
+	cm := &mockToolClientManager{
+		tools:        []schemas.ChatTool{makeTool("echo")},
+		instructions: []schemas.MCPServerInstructions{{ClientName: "test-client", Instructions: "Always call echo first."}},
+	}
+	tm := NewToolsManager(
+		&schemas.MCPToolManagerConfig{
+			MaxAgentDepth:         5,
+			DisableAutoToolInject: true,
+		},
+		cm, nil, nil, &MockLogger{},
+	)
+
+	req := buildChatRequest()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.MCPContextKeyIncludeTools, []string{"echo"})
+	result := tm.ParseAndAddToolsToRequest(ctx, req)
+
+	assert.Contains(t, toolNamesFromChatRequest(result), "echo")
+	require.NotEmpty(t, result.ChatRequest.Input)
+	assert.Equal(t, schemas.ChatMessageRoleSystem, result.ChatRequest.Input[0].Role)
+	assert.Contains(t, *result.ChatRequest.Input[0].Content.ContentStr, "Always call echo first.")
+}
+
+// missingCapabilityError is how a compliant upstream refuses a call it cannot serve without a
+// client capability Bifrost did not declare (-32021, 2026-07-28).
+type missingCapabilityError struct{ capability string }
+
+func (e missingCapabilityError) Error() string { return "missing required client capability" }
+
+func (e missingCapabilityError) JSONRPCError() mcpgo.JSONRPCError {
+	return mcpgo.JSONRPCError{
+		JSONRPC: mcpgo.JSONRPC_VERSION,
+		Error: mcpgo.JSONRPCErrorDetails{
+			Code: mcpgo.MISSING_REQUIRED_CLIENT_CAPABILITY, Message: e.Error(),
+			Data: map[string]any{"capability": e.capability},
+		},
+	}
+}
+
+// A tool whose upstream needs something only a user-facing client can provide fails with an error
+// that names the upstream and what it needed, instead of mcp-go's internal wording.
+func TestExecuteTool_UpstreamNeedsUserInput_ExplainsWhy(t *testing.T) {
+	var calls atomic.Int32
+	s := server.NewMCPServer("needs-input-upstream", "1.0.0", server.WithToolCapabilities(true))
+	handle := func(name string, result func() (*mcpgo.CallToolResult, error)) {
+		s.AddTool(mcpgo.NewTool(name), func(context.Context, mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+			calls.Add(1)
+			return result()
+		})
+	}
+	handle("elicit", func() (*mcpgo.CallToolResult, error) {
+		return server.NewInputRequestBuilder("").Elicit("github_login", mcpgo.ElicitationParams{Message: "Please provide your GitHub username"}).ToolResult(), nil
+	})
+	handle("sample", func() (*mcpgo.CallToolResult, error) {
+		return server.NewInputRequestBuilder("").Sample("summary", mcpgo.CreateMessageParams{MaxTokens: 10}).ToolResult(), nil
+	})
+	handle("needs_capability", func() (*mcpgo.CallToolResult, error) {
+		return nil, server.NewHandlerError(missingCapabilityError{capability: "elicitation"})
+	})
+	handle("busy", func() (*mcpgo.CallToolResult, error) {
+		return server.NewInputRequestBuilder("").RequestState("later").ToolResult(), nil
+	})
+	handle("connect_url", func() (*mcpgo.CallToolResult, error) {
+		return nil, mcpgo.URLElicitationRequiredError{Elicitations: []mcpgo.ElicitationParams{
+			{Mode: "url", Message: "Connect your GitHub account", URL: "https://example.com/connect"},
+		}}
+	})
+
+	connect := func(t *testing.T, id string, opts ...server.StreamableHTTPOption) *MCPManager {
+		ts := httptest.NewServer(server.NewStreamableHTTPServer(s, opts...))
+		t.Cleanup(ts.Close)
+		m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+		t.Cleanup(func() { _ = m.Cleanup() })
+		require.NoError(t, m.connectToMCPClient(context.Background(), &schemas.MCPClientConfig{
+			ID: id, Name: "upstream", ConnectionType: schemas.MCPConnectionTypeHTTP,
+			ConnectionString: schemas.NewSecretVar(ts.URL), NeedsSessionStickiness: schemas.Ptr(true), ToolsToExecute: []string{"*"},
+		}))
+		return m
+	}
+	modern := connect(t, "needs-input-modern")
+	legacy := connect(t, "needs-input-legacy", server.WithStreamableHTTPProtocolVersions(mcpgo.ProtocolVersion20251125))
+
+	cases := []struct {
+		m         *MCPManager
+		tool      string
+		want      []string
+		wantCalls int32
+	}{
+		{modern, "elicit", []string{`MCP server "upstream"`, "input from the user (elicitation)", "Bifrost cannot provide"}, 1},
+		{modern, "sample", []string{`MCP server "upstream"`, "LLM completion (sampling)", "Bifrost cannot provide"}, 1},
+		{modern, "needs_capability", []string{`MCP server "upstream"`, `client capability "elicitation"`, "Bifrost does not support"}, 1},
+		{modern, "busy", []string{`MCP server "upstream"`, "kept asking Bifrost to retry"}, 0},
+		{legacy, "connect_url", []string{`MCP server "upstream"`, "Connect your GitHub account", "https://example.com/connect"}, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.tool, func(t *testing.T) {
+			before := calls.Load()
+			_, bErr := executeEchoTool(tc.m, "upstream-"+tc.tool)
+			require.NotNil(t, bErr)
+			for _, want := range tc.want {
+				assert.Contains(t, bErr.Error.Message, want)
+			}
+			assert.NotContains(t, bErr.Error.Message, "handler configured", "mcp-go's internal wording must not leak")
+			if tc.wantCalls > 0 {
+				assert.Equal(t, tc.wantCalls, calls.Load()-before, "a call the upstream cannot serve is not retried")
+			}
+		})
 	}
 }

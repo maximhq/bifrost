@@ -2,11 +2,23 @@ package integrations
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
+	"github.com/fasthttp/router"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
+	"github.com/stretchr/testify/require"
+	"github.com/valyala/fasthttp"
 )
 
 // stubAccessResolver records that it was asked and publishes what a fixed access grants, standing
@@ -105,4 +117,184 @@ func TestGrantedProvidersShapeMatchesWhatTheRouterPublishes(t *testing.T) {
 			t.Fatalf("expected granted providers %#v, got %#v", want, granted)
 		}
 	}
+}
+
+// The retrieve routes must coexist with the static list route rather than shadow it, and the
+// catch-all has to survive a "provider/model" id, which is how Bifrost addresses models.
+func TestModelRetrieveRoutesCoexistWithListModels(t *testing.T) {
+	r := router.New()
+	seen := map[string]bool{}
+	var configs []RouteConfig
+	configs = append(configs, CreateOpenAIRouteConfigs("/openai", nil)...)
+	configs = append(configs, CreateOpenAIListModelsRouteConfigs("/openai", nil)...)
+	configs = append(configs, CreateOpenAIModelRetrieveRouteConfigs("/openai", nil)...)
+	for _, config := range configs {
+		key := config.Method + " " + config.Path
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		matched := config.Path
+		r.Handle(config.Method, config.Path, func(ctx *fasthttp.RequestCtx) { ctx.SetBodyString(matched) })
+	}
+
+	for _, test := range []struct {
+		path      string
+		wantRoute string
+		wantModel string
+	}{
+		{"/openai/v1/models", "/openai/v1/models", ""},
+		{"/openai/v1/models/gpt-5", "/openai/v1/models/{model:*}", "gpt-5"},
+		{"/openai/v1/models/openai/gpt-5", "/openai/v1/models/{model:*}", "openai/gpt-5"},
+	} {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod("GET")
+		ctx.Request.SetRequestURI(test.path)
+		r.Handler(ctx)
+
+		if got := string(ctx.Response.Body()); got != test.wantRoute {
+			t.Errorf("%s matched route %q, want %q", test.path, got, test.wantRoute)
+		}
+		model, _ := ctx.UserValue("model").(string)
+		if model != test.wantModel {
+			t.Errorf("%s captured model %q, want %q", test.path, model, test.wantModel)
+		}
+	}
+}
+
+// The provider is decided before the request leaves the integration layer: an explicit header
+// wins, a known prefix on the path is next, and a bare model falls back to OpenAI.
+func TestExtractOpenAIModelRetrieveParams(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		pathModel    string
+		header       string
+		wantProvider schemas.ModelProvider
+		wantModel    string
+	}{
+		{"bare model defaults to openai", "gpt-5", "", schemas.OpenAI, "gpt-5"},
+		{"known prefix picks the provider", "anthropic/claude-sonnet-4-5", "", schemas.Anthropic, "claude-sonnet-4-5"},
+		{"header wins over the path", "gpt-5", "azure", schemas.ModelProvider("azure"), "gpt-5"},
+		{"header strips its own prefix", "myproxy/gpt-5", "myproxy", schemas.ModelProvider("myproxy"), "gpt-5"},
+		{"unknown prefix stays in the model", "myproxy/gpt-5", "", schemas.OpenAI, "myproxy/gpt-5"},
+		{"encoded provider/model (what OpenAI SDKs send)", "anthropic%2Fclaude-sonnet-4-5", "", schemas.Anthropic, "claude-sonnet-4-5"},
+		{"encoded namespaced id under the header", "openai%2Fgpt-oss-120b", "groq", schemas.ModelProvider("groq"), "openai/gpt-oss-120b"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.SetUserValue("model", test.pathModel)
+			if test.header != "" {
+				ctx.Request.Header.Set("x-model-provider", test.header)
+			}
+			req := &schemas.BifrostModelRetrieveRequest{}
+
+			if err := extractOpenAIModelRetrieveParams(ctx, listModelsCtx(), req); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if req.Provider != test.wantProvider {
+				t.Errorf("provider = %q, want %q", req.Provider, test.wantProvider)
+			}
+			if req.Model != test.wantModel {
+				t.Errorf("model = %q, want %q", req.Model, test.wantModel)
+			}
+		})
+	}
+}
+
+func TestExtractOpenAIModelRetrieveParamsRejectsMalformedEncoding(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue("model", "openai%2")
+	if err := extractOpenAIModelRetrieveParams(ctx, listModelsCtx(), &schemas.BifrostModelRetrieveRequest{}); err == nil {
+		t.Fatal("expected an error for a malformed percent-encoding")
+	}
+}
+
+func TestExtractOpenAIModelRetrieveParamsRejectsEmptyModel(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue("model", "///")
+	if err := extractOpenAIModelRetrieveParams(ctx, listModelsCtx(), &schemas.BifrostModelRetrieveRequest{}); err == nil {
+		t.Fatal("expected an error for a path that carries no model")
+	}
+}
+
+// The drop-in model routes used to hand the provider's answer straight to the converter, so a
+// client discovering models through /anthropic/v1/models or /openai/v1/models never saw the
+// context limits the catalog holds, while /v1/models on the same instance reported them. The
+// integration routes now backfill from the catalog exactly as the native route does (#7319).
+func TestIntegrationModelRoutesEnrichFromTheCatalog(t *testing.T) {
+	anthropicSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"claude-test","type":"model","display_name":"Claude Test","created_at":"2026-01-01T00:00:00Z"}],"has_more":false}`))
+	}))
+	defer anthropicSrv.Close()
+	openAISrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/models/gpt-test") {
+			_, _ = w.Write([]byte(`{"id":"gpt-test","object":"model","created":1700000000,"owned_by":"test"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"gpt-test","object":"model","created":1700000000,"owned_by":"test"}]}`))
+	}))
+	defer openAISrv.Close()
+
+	pricingPath := filepath.Join(t.TempDir(), "pricing.json")
+	require.NoError(t, os.WriteFile(pricingPath, []byte(`{
+		"claude-test": {"provider":"anthropic","mode":"chat","base_model":"claude-test","max_input_tokens":200000,"max_output_tokens":64000},
+		"gpt-test": {"provider":"openai","mode":"chat","base_model":"gpt-test","max_input_tokens":128000,"max_output_tokens":16384}
+	}`), 0o600))
+	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + pricingPath})
+	require.NoError(t, ds.LoadFromURLIntoMemory(t.Context()))
+	store := &mockHandlerStore{
+		availableProviders: []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic},
+		modelCatalog:       modelcatalog.NewTestCatalogWithDatasheet(ds),
+	}
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: directKeyTestAccount{openAIURL: openAISrv.URL, anthropicURL: anthropicSrv.URL},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	NewOpenAIRouter(client, store, nil, &testLogger{}).RegisterRoutes(r, identity)
+	NewAnthropicRouter(client, store, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	get := func(uri, provider string) map[string]any {
+		var ctx fasthttp.RequestCtx
+		ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+		ctx.Request.SetRequestURI(uri)
+		ctx.Request.Header.Set("x-bf-model-provider", provider)
+		r.Handler(&ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "%s body: %s", uri, ctx.Response.Body())
+		var body map[string]any
+		require.NoError(t, sonic.Unmarshal(ctx.Response.Body(), &body), "%s body: %s", uri, ctx.Response.Body())
+		return body
+	}
+	firstEntry := func(body map[string]any) map[string]any {
+		data, _ := body["data"].([]any)
+		require.Len(t, data, 1, "body: %v", body)
+		entry, _ := data[0].(map[string]any)
+		return entry
+	}
+
+	t.Run("anthropic list carries max_input_tokens and max_tokens", func(t *testing.T) {
+		entry := firstEntry(get("/anthropic/v1/models", "anthropic"))
+		require.Equal(t, "claude-test", entry["id"])
+		require.Equal(t, float64(200000), entry["max_input_tokens"], "entry: %v", entry)
+		require.Equal(t, float64(64000), entry["max_tokens"], "entry: %v", entry)
+	})
+
+	t.Run("openai list carries context_window", func(t *testing.T) {
+		entry := firstEntry(get("/openai/v1/models", "openai"))
+		require.Equal(t, "openai/gpt-test", entry["id"])
+		require.Equal(t, float64(128000), entry["context_window"], "entry: %v", entry)
+	})
+
+	t.Run("openai retrieve carries context_window", func(t *testing.T) {
+		entry := get("/openai/v1/models/gpt-test", "openai")
+		require.Equal(t, "openai/gpt-test", entry["id"])
+		require.Equal(t, float64(128000), entry["context_window"], "entry: %v", entry)
+	})
 }

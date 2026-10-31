@@ -1,10 +1,55 @@
 import { describe, expect, it } from "vitest";
+import { renderToStaticMarkup } from "react-dom/server";
+import { createTable, flexRender, getCoreRowModel } from "@tanstack/react-table";
 
 import type { LogEntry } from "@/lib/types/logs";
 
-import { getMessage } from "./columns";
+import { createColumns, getMessage } from "./columns";
+
+describe("metadata cells", () => {
+	it.each([
+		[[{ id: "item_audio", index: 0 }], "item_audio"],
+		[{ nested: { id: "item_audio" } }, "nested"],
+		[false, "false"],
+		[0, "0"],
+		["custom value", "custom value"],
+		[null, "-"],
+		[undefined, "-"],
+	])("renders JSON metadata safely: %j", (value, expected) => {
+		const log = { id: "log", metadata: { realtime_input_items: value } } as unknown as LogEntry;
+		const table = createTable({
+			data: [log],
+			columns: createColumns(() => {}, false, ["realtime_input_items"]),
+			getCoreRowModel: getCoreRowModel(),
+			state: {},
+			onStateChange: () => {},
+			renderFallbackValue: null,
+		});
+		const cell = table
+			.getRowModel()
+			.rows[0].getAllCells()
+			.find((cell) => cell.column.id === "metadata_realtime_input_items")!;
+		expect(renderToStaticMarkup(flexRender(cell.column.columnDef.cell, cell.getContext()))).toContain(expected);
+	});
+});
 
 describe("getMessage", () => {
+	it("shows N/A for a successful model retrieve, which has no message body", () => {
+		const log = { object: "model_retrieve", status: "success" } as unknown as LogEntry;
+
+		expect(getMessage(log)).toBe("N/A");
+	});
+
+	it("keeps the error summary for a failed model retrieve", () => {
+		const log = {
+			object: "model_retrieve",
+			status: "error",
+			content_summary: "invalid model: path delimiters and percent-encoding are not allowed",
+		} as unknown as LogEntry;
+
+		expect(getMessage(log)).toBe("invalid model: path delimiters and percent-encoding are not allowed");
+	});
+
 	it("returns EI realtime text from input history", () => {
 		const log = {
 			object: "realtime.turn",

@@ -101,3 +101,111 @@ func TestParseOpenAIError_DefaultStatusCodeFallsBackWithStatusNumber(t *testing.
 		t.Fatalf("expected fallback message with default status, got %q", errResp.Error.Message)
 	}
 }
+
+// An SSE error rides a committed HTTP 200, so the error carries no status of its
+// own. Left nil it reaches metrics as a caller 400 and ClassifyFailure has nothing
+// to act on.
+func TestResponsesStreamError_CarriesGatewayStatus(t *testing.T) {
+	cases := []struct {
+		name, wire string
+		want       int
+	}{
+		{
+			"overload with no recognizable signal defaults to 502",
+			`{"type":"response.failed","response":{"error":{"code":"server_error","message":"Our servers are currently overloaded. Please try again later."}}}`,
+			fasthttp.StatusBadGateway,
+		},
+		{
+			"empty error object still gets a status",
+			`{"type":"error","error":{}}`,
+			fasthttp.StatusBadGateway,
+		},
+		{
+			// 502 would read as transient and retry the same key instead of rotating.
+			"rate limit by type keeps its 429",
+			`{"type":"error","error":{"type":"too_many_requests","code":"no_capacity","message":"capacity"}}`,
+			fasthttp.StatusTooManyRequests,
+		},
+		{
+			"quota by code keeps its 429",
+			`{"type":"error","error":{"code":"insufficient_quota","message":"quota"}}`,
+			fasthttp.StatusTooManyRequests,
+		},
+		{
+			// 502 would retry a request that can never succeed.
+			"context length is a caller fault",
+			`{"type":"response.failed","response":{"error":{"code":"context_length_exceeded","message":"input is too large"}}}`,
+			fasthttp.StatusBadRequest,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var response schemas.BifrostResponsesStreamResponse
+			if err := schemas.Unmarshal([]byte(tc.wire), &response); err != nil {
+				t.Fatalf("unmarshal stream error: %v", err)
+			}
+			got := responsesStreamError(&response)
+			if got.StatusCode == nil {
+				t.Fatalf("StatusCode is nil, want %d", tc.want)
+			}
+			if *got.StatusCode != tc.want {
+				t.Fatalf("StatusCode = %d, want %d", *got.StatusCode, tc.want)
+			}
+			// The status is what makes this reach 5xx dashboards rather than 400.
+			if got.EffectiveHTTPStatus() != tc.want {
+				t.Fatalf("EffectiveHTTPStatus() = %d, want %d", got.EffectiveHTTPStatus(), tc.want)
+			}
+		})
+	}
+}
+
+// The chat, text, speech, transcription and image streaming paths unmarshal the SSE
+// error body straight into a BifrostError. OpenAI's body has no status_code field, so
+// every one of them used to resolve to a caller 400 with nothing for ClassifyFailure
+// to act on.
+func TestApplyStreamErrorStatus(t *testing.T) {
+	cases := []struct {
+		name, wire string
+		want       int
+	}{
+		{
+			"overload gets the gateway default",
+			`{"error":{"message":"Our servers are currently overloaded. Please try again later.","type":"server_error"}}`,
+			fasthttp.StatusBadGateway,
+		},
+		{
+			"rate limit keeps its 429",
+			`{"error":{"message":"Rate limit reached","type":"rate_limit_error","code":"rate_limit_exceeded"}}`,
+			fasthttp.StatusTooManyRequests,
+		},
+		{
+			"context length is a caller fault",
+			`{"error":{"message":"too long","code":"context_length_exceeded"}}`,
+			fasthttp.StatusBadRequest,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var bifrostErr schemas.BifrostError
+			if err := schemas.Unmarshal([]byte(tc.wire), &bifrostErr); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if bifrostErr.StatusCode != nil {
+				t.Fatalf("precondition: the wire body should carry no status, got %d", *bifrostErr.StatusCode)
+			}
+			applyStreamErrorStatus(&bifrostErr)
+			if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != tc.want {
+				t.Fatalf("StatusCode = %v, want %d", bifrostErr.StatusCode, tc.want)
+			}
+		})
+	}
+}
+
+// An upstream status already on the error must not be overwritten.
+func TestApplyStreamErrorStatus_PreservesExistingStatus(t *testing.T) {
+	bifrostErr := &schemas.BifrostError{StatusCode: schemas.Ptr(429), Error: &schemas.ErrorField{Message: "x"}}
+	applyStreamErrorStatus(bifrostErr)
+	if *bifrostErr.StatusCode != 429 {
+		t.Fatalf("StatusCode = %d, want 429 preserved", *bifrostErr.StatusCode)
+	}
+}

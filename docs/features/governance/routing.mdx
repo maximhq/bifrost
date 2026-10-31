@@ -24,7 +24,7 @@ This powerful feature enables key use cases like:
 - **Fine-grained Access Control**: Ensure that different teams or applications only use the models and API keys they are explicitly permitted to.
 
 <Info>
-This page covers **static governance routing** through Virtual Key provider configuration. If you want routing decisions to depend on runtime request attributes such as headers, budgets, or request-content complexity, use [Routing Rules](/providers/routing-rules). For complexity-based tiering specifically, see [Complexity Router](/features/governance/complexity-router).
+This page covers **static governance routing** through Virtual Key provider configuration. If you want routing decisions to depend on runtime request attributes such as headers, budgets, or request-content complexity, use [Routing Rules](/providers/routing-rules). For complexity-based tiering specifically, see [Complexity Router](/features/complexity-router).
 </Info>
 
 ## Provider/Model Restrictions
@@ -48,7 +48,7 @@ When you configure provider restrictions on a Virtual Key, Bifrost validates tha
 
 ## Weighted Load Balancing
 
-When you configure multiple providers on a Virtual Key, Bifrost automatically implements weighted load balancing. Each provider can be assigned a weight, and requests are distributed proportionally. The `weight` field is optional - omitting it (or setting it to `null`) excludes the provider from weighted selection while still allowing it to be used for direct `provider/model` requests or as a fallback.
+When you configure multiple providers on a Virtual Key, Bifrost automatically implements weighted load balancing. Each provider can be assigned a weight, and requests are distributed proportionally. The `weight` field is optional - omitting it (or setting it to `null`) excludes the provider from weighted selection while still allowing it to be used for direct `provider/model` requests or as a fallback the request names explicitly. It is not added to the automatic fallback chain.
 
 **Example Configuration:**
 ```
@@ -82,7 +82,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 ```
 
 <Info>
-Weights are automatically normalized to a sum 1.0 based on the weights of all providers available on the VK for the given model.
+Weights are automatically normalized to a sum 1.0 based on the weights of all providers available on the VK for the given model. A weight must be a finite number of 0 or more; the API rejects anything else with `400`. A provider with weight `0` is not picked while another has a positive weight, and when every eligible weight is `0` the first configured provider is picked.
 </Info>
 
 **Example with Wildcard `allowed_models` (allow all via Model Catalog):**
@@ -115,7 +115,7 @@ When multiple providers are configured on a Virtual Key, Bifrost automatically c
 
 **How It Works:**
 - **Only activated when**: Your request has no existing `fallbacks` array in the request body
-- **Fallback creation**: Providers are sorted by weight (highest first) and added as fallbacks
+- **Fallback creation**: Providers with a weight are sorted by weight (highest first) and added as fallbacks; providers with equal weights come in no fixed order
 - **Respects existing fallbacks**: If you manually specify fallbacks, they are preserved
 
 **Example Request Flow:**

@@ -8,6 +8,14 @@ virtual-key-users:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List users attached to a virtual key
     tags: [Virtual Keys, Users]
     parameters:
@@ -41,6 +49,14 @@ virtual-key-users:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Attach users to a virtual key
     tags: [Virtual Keys, Users]
     parameters:
@@ -81,6 +97,14 @@ virtual-key-user:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Detach a user from a virtual key
     tags: [Virtual Keys, Users]
     parameters:
@@ -113,6 +137,14 @@ user-virtual-keys:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List virtual keys available to a user
     description: |
       Returns every virtual key assigned to the user, independent of access profiles, so
@@ -156,6 +188,14 @@ user-virtual-keys:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Mint an extra virtual key for a user
     description: |
       Issues an additional virtual key for the user.
@@ -204,6 +244,14 @@ user-vk-creation-policy:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get the calling user's virtual-key creation policy
     description: |
       Resolves the access profile that would govern a virtual key the **calling** user creates,
@@ -214,6 +262,8 @@ user-vk-creation-policy:
       Self-scoped: it always describes the caller and takes no user ID. Returns
       `{"has_access_profile": false}` when the caller has no per-user identity (local admin) or holds
       no active access profile. When several of their profiles qualify, the highest-ranked one governs.
+      Holding no profile does not by itself block a caller from creating a key: given
+      `VirtualKeys:Create`, the key is created ungoverned.
     tags: [Users, Virtual Keys]
     security:
       - ManagementBearerAuth: []
@@ -245,6 +295,14 @@ team-customers:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Teams:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List customers attached to a team
     tags: [Teams, Customers]
     parameters:
@@ -279,6 +337,14 @@ team-customers:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Teams:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Attach a customer to a team
     tags: [Teams, Customers]
     parameters:
@@ -316,6 +382,14 @@ team-customer:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Teams:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Detach a customer from a team
     tags: [Teams, Customers]
     parameters:
@@ -348,6 +422,14 @@ customer-teams:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Customers:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List teams attached to a customer
     tags: [Customers, Teams]
     parameters:
@@ -384,6 +466,14 @@ business-unit-customers:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `BusinessUnits:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List customers attached to a business unit
     tags: [Business Units, Customers]
     parameters:
@@ -428,6 +518,14 @@ business-unit-customers:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `BusinessUnits:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Attach customers to a business unit
     tags: [Business Units, Customers]
     parameters:
@@ -467,6 +565,14 @@ business-unit-customer:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `BusinessUnits:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Detach a customer from a business unit
     tags: [Business Units, Customers]
     parameters:
@@ -499,6 +605,14 @@ customer-business-units:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Customers:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List business units attached to a customer
     tags: [Customers, Business Units]
     parameters:
@@ -524,3 +638,105 @@ customer-business-units:
                     properties:
                       id: { type: string }
                       name: { type: string }
+
+budget-request-approve:
+  post:
+    operationId: approveBudgetRequest
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:Update` | RBAC role or API key scope |
+        | `AccessProfiles:Update` | Also required when the request targets an access-profile budget |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Approve a budget increase request
+    description: |
+      Approves a pending budget increase request and applies the approved amount as an override on the
+      target budget. The override is additive: the budget's `max_limit`, `current_usage` and reset schedule
+      are unchanged. The status change and the override write happen in one transaction, so a failed write
+      leaves the request pending and two approvers can never both apply it.
+
+      The body is optional. `amount`, `mode` and `cycles` default to the values in the request.
+
+      When the budget already has an active override, the approved amount is added to it. A plain add
+      (`override_strategy` empty or `add`) needs both to share a lifetime, meaning the same `mode` and, for
+      `cycles`, the same number of cycles remaining; otherwise it returns `409`. Use `replace` to drop the
+      active override and apply the approved amount and duration on their own, or `add_keep_lifetime` to add
+      the amount while keeping the active override's mode and remaining cycles. With `add_keep_lifetime`,
+      any `mode` and `cycles` in the body are ignored and the request records the duration actually applied.
+
+      Approvers only see requests for virtual keys and access profiles in their data scope; a request outside
+      it returns `404`. An approver cannot decide their own request.
+    tags:
+      - Governance
+    parameters:
+      - name: request_id
+        in: path
+        required: true
+        description: Budget request ID
+        schema:
+          type: string
+    requestBody:
+      required: false
+      content:
+        application/json:
+          schema:
+            $ref: "../../schemas/management/governance.yaml#/ApproveBudgetRequestRequest"
+          example:
+            override_strategy: add_keep_lifetime
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      "200":
+        description: Request approved and override applied
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/governance.yaml#/BudgetRequest"
+      "400":
+        description: |
+          Invalid body: malformed JSON, `note` longer than 2000 characters, an unknown `override_strategy`,
+          `amount` not greater than 0, `mode` not `cycles` or `forever`, or `cycles` outside 1-120 in
+          `cycles` mode.
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+      "401":
+        $ref: "../../openapi.yaml#/components/responses/Unauthorized"
+      "403":
+        description: |
+          The caller lacks `VirtualKeys:Update`, the request targets an access-profile budget and the caller
+          lacks `AccessProfiles:Update`, or the caller is the requester.
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+      "404":
+        description: |
+          The budget request does not exist or is outside the approver's data scope, or its virtual key,
+          access profile or budget no longer exists.
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+      "409":
+        description: |
+          The request was already decided, the active override's lifetime differs from the approval under a
+          plain add, or the override was removed while approving with `add_keep_lifetime`.
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"

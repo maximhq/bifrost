@@ -1,12 +1,30 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "child_process";
-import { chmodSync, createWriteStream, existsSync, fsyncSync, mkdirSync, mkdtempSync, rmSync } from "fs";
+import { createHash } from "crypto";
+import {
+	chmodSync,
+	createWriteStream,
+	existsSync,
+	fsyncSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	unlinkSync,
+} from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { Readable } from "stream";
 
 const BASE_URL = "https://downloads.getmaxim.ai";
+const REQUEST_TIMEOUT_MS = 30_000; // checksum fetch
+
+// First release whose binaries ship with a .sha256 file. Older releases were
+// published without one, so a missing checksum is only tolerated below this.
+const CHECKSUM_REQUIRED_SINCE = "v2.3.3";
 
 function isTransportVersionFlag(arg) {
 	const eq = arg.indexOf("=");
@@ -241,6 +259,141 @@ async function downloadBinary(url, dest) {
 	chmodSync(dest, 0o755);
 }
 
+// Parses "v1.2.3" / "v1.2.3-pre" into [major, minor, patch]; null when unparseable.
+function parseCoreVersion(version) {
+	const match = /^v(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?$/.exec(version || "");
+	return match ? match.slice(1, 4).map(Number) : null;
+}
+
+// A checksum is mandatory for unresolved versions ("latest") and for any release
+// at or above CHECKSUM_REQUIRED_SINCE, prereleases of that line included.
+function isChecksumRequired(version) {
+	const current = parseCoreVersion(version);
+	if (!current) {
+		return true;
+	}
+	const since = parseCoreVersion(CHECKSUM_REQUIRED_SINCE);
+	for (let i = 0; i < 3; i++) {
+		if (current[i] !== since[i]) {
+			return current[i] > since[i];
+		}
+	}
+	return true;
+}
+
+function refuseBinary(binaryPath, ...messages) {
+	try {
+		unlinkSync(binaryPath);
+	} catch {
+		// already gone
+	}
+	for (const message of messages) {
+		console.error(message);
+	}
+	process.exit(1);
+}
+
+// Checks binaryPath against its published SHA-256 checksum. Returns null when it may run (verified, or
+// an older release published without one), otherwise { messages, rejected }. rejected is true when the
+// file itself failed (wrong hash, or gone), false when no usable checksum was fetched to compare it with.
+async function checksumProblem(binaryPath, checksumUrl, version) {
+	const unchecked = (message) => ({ messages: [message], rejected: false });
+	let res;
+	try {
+		res = await fetch(checksumUrl, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+	} catch (error) {
+		return unchecked(`❌ Could not fetch checksum file: ${error.message}. Refusing to run an unverified binary.`);
+	}
+
+	if (res.status === 404 && !isChecksumRequired(version)) {
+		console.warn(`⚠️ Release ${version} was published without a checksum file; skipping verification.`);
+		return null;
+	}
+	if (!res.ok) {
+		return unchecked(`❌ Checksum file not available (${res.status}). Refusing to run an unverified binary.`);
+	}
+
+	// Format: "<hash>  <filename>" (shasum output)
+	let body;
+	try {
+		body = await res.text();
+	} catch (error) {
+		return unchecked(`❌ Could not read checksum file: ${error.message}. Refusing to run an unverified binary.`);
+	}
+	const expectedHash = body.trim().split(/\s+/)[0].toLowerCase();
+	if (!/^[0-9a-f]{64}$/.test(expectedHash)) {
+		return unchecked("❌ Could not parse checksum file. Refusing to run an unverified binary.");
+	}
+
+	let contents;
+	try {
+		contents = readFileSync(binaryPath);
+	} catch (error) {
+		// Another launcher removed it while this one was fetching the checksum.
+		if (error.code === "ENOENT") {
+			return { messages: [`❌ ${binaryPath} disappeared before it could be verified.`], rejected: true };
+		}
+		throw error;
+	}
+	const actualHash = createHash("sha256").update(contents).digest("hex");
+	if (actualHash !== expectedHash) {
+		return {
+			messages: [
+				"❌ Checksum verification failed!",
+				`   Expected: ${expectedHash}`,
+				`   Got:      ${actualHash}`,
+				"   The downloaded binary has been deleted for safety.",
+			],
+			rejected: true,
+		};
+	}
+	return null;
+}
+
+function processAlive(pid) {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return error.code === "EPERM";
+	}
+}
+
+// Removes temp downloads (see the download loop) left in dir by launchers that were interrupted:
+// Ctrl+C, a kill or a crash. The pid in the name keeps a concurrent launcher's download in progress.
+function removeAbandonedDownloads(dir, binaryName) {
+	let names;
+	try {
+		names = readdirSync(dir);
+	} catch {
+		return;
+	}
+	for (const name of names) {
+		const match = /\.download-(\d+)-\d+$/.exec(name);
+		if (!match || !name.startsWith(`${binaryName}-`)) {
+			continue;
+		}
+		const pid = Number(match[1]);
+		// pid 0 would signal this process group, so only a positive pid is checked.
+		if (!(pid > 0) || processAlive(pid)) {
+			continue;
+		}
+		try {
+			unlinkSync(join(dir, name));
+		} catch {
+			// another launcher removed it first
+		}
+	}
+}
+
+// Verify the downloaded binary against its published SHA-256 checksum, deleting it and exiting if it fails
+async function verifyChecksum(binaryPath, checksumUrl, version) {
+	const problem = await checksumProblem(binaryPath, checksumUrl, version);
+	if (problem) {
+		refuseBinary(binaryPath, ...problem.messages);
+	}
+}
+
 // Returns the os cache directory path for storing binaries
 // Linux: $XDG_CACHE_HOME or ~/.cache
 // macOS: ~/Library/Caches
@@ -260,14 +413,23 @@ function cacheDir() {
 }
 
 // gets the latest version number for transport
+// Returns the latest release tag, or null when it cannot be resolved. The tag becomes a cache path
+// segment and a URL segment, so anything that is not a release tag ("v1.2.3", "v1.2.3-pre") is
+// treated as unresolved.
 async function getLatestVersion() {
 	const releaseUrl = "https://getbifrost.ai/latest-release";
 	const res = await fetch(releaseUrl);
 	if (!res.ok) {
 		return null;
 	}
-	const data = await res.json();
-	return data.name;
+	let data;
+	try {
+		data = await res.json();
+	} catch {
+		return null;
+	}
+	const name = data && data.name;
+	return typeof name === "string" && parseCoreVersion(name) ? name : null;
 }
 
 // Check if a specific version exists on the download server
@@ -346,12 +508,59 @@ function formatBytes(bytes) {
 		console.error(`❌ Failed to create directory ${bifrostBinDir}:`, mkdirError.message);
 		process.exit(1);
 	}
+	if (namedVersionFound) {
+		removeAbandonedDownloads(bifrostBinDir, binaryName);
+	}
 
 	for (let i = 0; i < downloadUrls.length; i++) {
 		const binaryPath = join(bifrostBinDir, `${binaryName}-${i}`);
+		const checksumUrl = `${downloadUrls[i]}.sha256`;
+		// Only a version the user pinned may fall under the legacy no-checksum exception; a
+		// resolved "latest" always needs one, whatever tag the resolver answered with.
+		const checksumVersion = VERSION === "latest" ? VERSION : urlVersion;
 
-		if (!namedVersionFound || !existsSync(binaryPath)) {
-			await downloadBinary(downloadUrls[i], binaryPath);
+		// A cached binary is held to the same checksum policy as a fresh download: launcher versions
+		// before checksums cached whatever they downloaded. One that fails is downloaded again; one
+		// whose checksum cannot be fetched is kept but not run. A concurrent launcher may remove the
+		// file at any point here, which is a cache miss.
+		let cached = namedVersionFound && existsSync(binaryPath);
+		const problem = cached ? await checksumProblem(binaryPath, checksumUrl, checksumVersion) : null;
+		if (problem && !problem.rejected) {
+			for (const message of problem.messages) {
+				console.error(message);
+			}
+			console.error(`   The cached binary was kept: ${binaryPath}`);
+			process.exit(1);
+		}
+		if (problem) {
+			console.warn(`⚠️ Cached binary ${binaryPath} could not be verified; downloading it again.`);
+			try {
+				unlinkSync(binaryPath);
+			} catch (unlinkError) {
+				if (unlinkError.code !== "ENOENT") {
+					console.error(`❌ Failed to remove unverified cached binary ${binaryPath}:`, unlinkError.message);
+					process.exit(1);
+				}
+			}
+			cached = false;
+		}
+
+		if (!cached) {
+			// Download next to the final path and only move it into place once verified,
+			// so an interrupted or rejected download never lands in the cache.
+			const tempBinaryPath = `${binaryPath}.download-${process.pid}-${Date.now()}`;
+			try {
+				await downloadBinary(downloadUrls[i], tempBinaryPath);
+				await verifyChecksum(tempBinaryPath, checksumUrl, checksumVersion);
+				renameSync(tempBinaryPath, binaryPath);
+			} catch (err) {
+				try {
+					unlinkSync(tempBinaryPath);
+				} catch {
+					// already gone
+				}
+				throw err;
+			}
 			console.log(`✅ Downloaded binary to ${binaryPath}`);
 
 			// Add a small delay to ensure file is fully written and not busy

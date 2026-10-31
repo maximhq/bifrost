@@ -19,6 +19,7 @@ type observableStore struct {
 	mu               sync.Mutex
 	chunks           map[string]vectorstore.SearchResult
 	addIDs           []string
+	addEmbeddings    [][]float32
 	deleteIDs        []string
 	deleteAllQueries [][]vectorstore.Query
 	namespaceDeletes int
@@ -67,6 +68,7 @@ func (s *observableStore) RequiresVectors() bool { return false }
 func (s *observableStore) Add(ctx context.Context, ns string, id string, e []float32, m map[string]interface{}) error {
 	s.mu.Lock()
 	s.addIDs = append(s.addIDs, id)
+	s.addEmbeddings = append(s.addEmbeddings, e)
 	s.chunks[id] = vectorstore.SearchResult{ID: id, Properties: m}
 	s.mu.Unlock()
 	return nil

@@ -12,6 +12,10 @@ import (
 // servers (governed by MCPClientConfig.AuthType).
 type MCPServerAuthMode string
 
+// AllowAnyRedirectURI as an allowed_redirect_uris entry approves every remote
+// callback that passes the redirect URI shape checks.
+const AllowAnyRedirectURI = "*"
+
 const (
 	DefaultAuthCodeTTL    = 300 // 5 minutes
 	MaxAuthCodeTTL        = 900 // 15 minutes — hard ceiling; enforced at config save and at code issuance
@@ -40,13 +44,15 @@ const (
 // MCPServerAuthMode is MCPServerAuthModeBoth or MCPServerAuthModeOAuth.
 // Not a table of its own.
 type OAuth2ServerConfig struct {
+	AllowedRedirectURIs []string `json:"allowed_redirect_uris,omitempty"` // Exact administrator-approved remote callbacks, or AllowAnyRedirectURI.
 	// IssuerURL is Bifrost's OAuth authorization-server identity — it appears
 	// as the `issuer` in discovery documents and as the `iss` claim in every
-	// issued JWT. Supports env var syntax ("env.MY_VAR"). When empty,
-	// BuildBaseURL(request) is used as a per-request fallback, which works for
-	// single-host / dev deployments. Multi-host or reverse-proxy deployments
-	// MUST set a stable value; token verification fails when the Host header
-	// differs across nodes.
+	// issued JWT. Supports env var syntax ("env.MY_VAR"). Required whenever MCP
+	// OAuth discovery is enabled (mcp_server_auth_mode is "oauth" or "both") -
+	// both the config-save handler and load-time validation reject an unset
+	// value in that case. Left unset with discovery disabled,
+	// BuildBaseURL(request) is used as a per-request fallback for
+	// header-mode-only deployments where no OAuth issuer identity is needed.
 	IssuerURL *schemas.SecretVar `json:"issuer_url,omitempty"`
 
 	// AuthCodeTTL is the lifetime of the one-time authorization code issued by

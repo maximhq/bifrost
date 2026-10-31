@@ -545,13 +545,25 @@ function readRoundScript(kase, leg, cellId) {
         `run core/providers/bedrock/midconvcachepoint_test.go to rule the converters out before reading them.'`
       : `' - identical bytes were sent in round 1, so the warm prefix should have been read back.'`;
 
+  // Round 1's counters are read back here for two reasons. The message names how big the write
+  // was, which is the number that separates "breakpoint dropped" from "rounds diverged" above.
+  // And the read is the only thing that ties this request to round 1: nothing in this body names
+  // the write round, so a selection that keeps round 2 without round 1 (--rerun-failed, a cost
+  // slice) would otherwise run it alone, in a process with its own pcNonce, and fail on read=0
+  // for a reason unrelated to the cache. filter-collection.mjs follows collectionVariables.get()
+  // in scripts to pull producers in, so this line is what keeps the pair in one newman process.
   return `
 ${EXTRACT[leg]}
 ${HIT_RATE}
+var r1 = JSON.parse(pm.collectionVariables.get(${J(`ca_${cellId}_write`)}) || 'null');
+pm.test(${J(`Cache anchor [${cellLabel}] round 1 (write) ran first in this process`)}, function () {
+  pm.expect(r1, 'round 1 recorded no counters - the write round was filtered out, skipped, or ran in another newman process (each process salts with its own pcNonce), so this read started cold').to.not.equal(null);
+});
 pm.test(${J(`Cache anchor [${cellLabel}] round 2 (read) succeeds`)}, function () {
   pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);
 });
 if (pm.response.code < 400) {
+  if (r1) { detail = detail + ' (round 1 wrote ' + r1.write + ')'; }
   console.log('CACHE_ANCHOR_REPORT', JSON.stringify({
     cell: ${J(cellId)},
     caseKey: ${J(kase.key)},

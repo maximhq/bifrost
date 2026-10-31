@@ -1,12 +1,14 @@
 package utils
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -15,7 +17,9 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/cespare/xxhash/v2"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -2141,6 +2145,34 @@ func TestExtractPassthroughProviderResponseHeaders_StripsSensitiveCustomHeaders(
 	}
 }
 
+// TestExtractPassthroughProviderResponseHeaders_OmitsMissingContentType verifies that an upstream
+// response without content-type yields no content-type, so the stream handler applies its
+// text/event-stream fallback instead of fasthttp's text/plain default.
+func TestExtractPassthroughProviderResponseHeaders_OmitsMissingContentType(t *testing.T) {
+	resp := &fasthttp.Response{}
+	raw := "HTTP/1.1 200 OK\r\nX-Request-Id: req-789\r\nContent-Length: 0\r\n\r\n"
+	if err := resp.Read(bufio.NewReader(strings.NewReader(raw))); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+
+	headers := ExtractPassthroughProviderResponseHeaders(resp)
+	if v, ok := lookupHeaderFold(headers, "content-type"); ok {
+		t.Fatalf("missing upstream content-type was reported as %q", v)
+	}
+	if v, ok := lookupHeaderFold(headers, "x-request-id"); !ok || v != "req-789" {
+		t.Fatalf("benign header x-request-id was dropped: %v", headers)
+	}
+
+	sent := &fasthttp.Response{}
+	raw = "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 0\r\n\r\n"
+	if err := sent.Read(bufio.NewReader(strings.NewReader(raw))); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if v, ok := lookupHeaderFold(ExtractPassthroughProviderResponseHeaders(sent), "content-type"); !ok || v != "text/plain; charset=utf-8" {
+		t.Fatalf("explicit upstream content-type was not preserved: got %q ok=%v", v, ok)
+	}
+}
+
 // TestExtractProviderResponseHeadersFromHTTP_StripsSensitiveCustomHeaders verifies the same for
 // the net/http extractor used by providers such as Bedrock, which shares the identical filter.
 func TestExtractProviderResponseHeadersFromHTTP_StripsSensitiveCustomHeaders(t *testing.T) {
@@ -2272,10 +2304,12 @@ func TestSanitizeAnthropicToolUseIDPtr(t *testing.T) {
 
 // finalizerTestTracer is a minimal schemas.Tracer that models only the
 // deferred-span lifecycle: a span stays parked until ClearDeferredSpan runs.
-// It records the status passed to EndSpan so tests can assert span outcomes.
+// It records the status passed to EndSpan so tests can assert span outcomes,
+// and reports chunks as the parked span's counted chunks.
 type finalizerTestTracer struct {
 	schemas.NoOpTracer
 	parked    bool
+	chunks    int
 	endStatus schemas.SpanStatus
 }
 
@@ -2286,100 +2320,107 @@ func (t *finalizerTestTracer) GetDeferredSpanHandle(_ string) schemas.SpanHandle
 	return nil
 }
 
+func (t *finalizerTestTracer) GetAccumulatedChunks(_ string) (*schemas.BifrostResponse, int64, int) {
+	return nil, 0, t.chunks
+}
+
 func (t *finalizerTestTracer) ClearDeferredSpan(_ string) { t.parked = false }
 
 func (t *finalizerTestTracer) EndSpan(_ schemas.SpanHandle, status schemas.SpanStatus, _ string) {
 	t.endStatus = status
 }
 
+func newFinalizerTestContext(tracer *finalizerTestTracer) *schemas.BifrostContext {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+	return ctx
+}
+
 // A streaming goroutine that exits without reaching the final-chunk path (a
 // failed final send with a live context, or a mid-stream death) must not leak
-// its deferred span. EnsureStreamFinalizerCalled runs on every goroutine exit
-// and clears it.
-func TestEnsureStreamFinalizerCalled_ClearsOrphanedDeferredSpan(t *testing.T) {
-	tracer := &finalizerTestTracer{parked: true}
+// its deferred span. CloseStream runs on every goroutine exit and clears it.
+func TestCloseStream_ClearsOrphanedDeferredSpan(t *testing.T) {
+	tracer := &finalizerTestTracer{parked: true, chunks: 1}
+	ctx := newFinalizerTestContext(tracer)
 
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
-	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
-
-	if tracer.GetDeferredSpanHandle("trace-1") == nil {
-		t.Fatal("expected a parked deferred span before the finalizer runs")
-	}
-
-	EnsureStreamFinalizerCalled(ctx, func(context.Context) {})
+	CloseStream(ctx, make(chan *schemas.BifrostStreamChunk))
 
 	if tracer.GetDeferredSpanHandle("trace-1") != nil {
-		t.Error("deferred span should be cleared when the streaming goroutine exits")
+		t.Error("deferred span should be cleared when the streaming goroutine closes its stream")
 	}
 }
 
-// The clear must survive a nil finalizer (finalizer is optional; the span
-// cleanup is not).
-func TestEnsureStreamFinalizerCalled_ClearsDeferredSpanWithNilFinalizer(t *testing.T) {
-	tracer := &finalizerTestTracer{parked: true}
-
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
-	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
-
-	EnsureStreamFinalizerCalled(ctx, nil)
-
-	if tracer.GetDeferredSpanHandle("trace-1") != nil {
-		t.Error("deferred span should be cleared even when no finalizer is registered")
-	}
-}
-
-// When the terminal path already cleared the span (the common case), the
-// safety-net completion is a no-op (handle == nil early return) but the
-// finalizer must still run exactly once.
-func TestEnsureStreamFinalizerCalled_NoParkedSpan_StillRunsFinalizerOnce(t *testing.T) {
-	tracer := &finalizerTestTracer{parked: false}
-
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
-	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+// After the close the trace's deferred span may already be the next attempt's,
+// so the finalizer safety net must leave spans alone and only run the finalizer.
+func TestEnsureStreamFinalizerCalled_LeavesDeferredSpanAlone(t *testing.T) {
+	tracer := &finalizerTestTracer{parked: true, chunks: 1}
+	ctx := newFinalizerTestContext(tracer)
 
 	calls := 0
 	EnsureStreamFinalizerCalled(ctx, func(context.Context) { calls++ })
 
+	if tracer.GetDeferredSpanHandle("trace-1") == nil || tracer.endStatus != "" {
+		t.Error("EnsureStreamFinalizerCalled must not complete a deferred span")
+	}
 	if calls != 1 {
-		t.Errorf("finalizer should run exactly once on the no-op path, ran %d times", calls)
+		t.Errorf("finalizer should run exactly once, ran %d times", calls)
 	}
 }
 
 // A stream that exits with its span parked and no terminal chunk
 // (StreamEndIndicator unset) died mid-flight and must be marked failed — not OK.
-func TestEnsureStreamFinalizerCalled_IncompleteStreamMarkedError(t *testing.T) {
-	tracer := &finalizerTestTracer{parked: true}
-
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
-	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+func TestCloseStream_IncompleteStreamMarkedError(t *testing.T) {
+	tracer := &finalizerTestTracer{parked: true, chunks: 1}
+	ctx := newFinalizerTestContext(tracer)
 	// StreamEndIndicator deliberately unset: the stream never reached its end.
 
-	EnsureStreamFinalizerCalled(ctx, func(context.Context) {})
+	CloseStream(ctx, make(chan *schemas.BifrostStreamChunk))
 
 	if tracer.endStatus != schemas.SpanStatusError {
 		t.Errorf("incomplete stream should end as %q, got %q", schemas.SpanStatusError, tracer.endStatus)
 	}
 }
 
+// An unended stream that produced no chunk is the retry loop's empty stream: its
+// span is left for the retry loop to end, without a fabricated error.
+func TestCloseStream_LeavesChunklessStreamToRetryLoop(t *testing.T) {
+	tracer := &finalizerTestTracer{parked: true}
+	ctx := newFinalizerTestContext(tracer)
+
+	CloseStream(ctx, make(chan *schemas.BifrostStreamChunk))
+
+	if tracer.GetDeferredSpanHandle("trace-1") == nil || tracer.endStatus != "" {
+		t.Errorf("a chunkless stream's span must stay for the retry loop, got status %q", tracer.endStatus)
+	}
+}
+
 // A stream that reached its terminal chunk (StreamEndIndicator set) but was left
 // parked — e.g. the final send failed — succeeded at the LLM level and must keep
 // its OK status, never a fabricated error.
-func TestEnsureStreamFinalizerCalled_CompletedStreamKeepsOkStatus(t *testing.T) {
-	tracer := &finalizerTestTracer{parked: true}
-
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
-	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+func TestCloseStream_CompletedStreamKeepsOkStatus(t *testing.T) {
+	tracer := &finalizerTestTracer{parked: true, chunks: 1}
+	ctx := newFinalizerTestContext(tracer)
 	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 
-	EnsureStreamFinalizerCalled(ctx, func(context.Context) {})
+	CloseStream(ctx, make(chan *schemas.BifrostStreamChunk))
 
 	if tracer.endStatus != schemas.SpanStatusOk {
 		t.Errorf("completed-but-undelivered stream should end as %q, got %q", schemas.SpanStatusOk, tracer.endStatus)
+	}
+}
+
+// When the terminal path already cleared the span (the common case), the
+// finalizer must still run exactly once.
+func TestEnsureStreamFinalizerCalled_NoParkedSpan_StillRunsFinalizerOnce(t *testing.T) {
+	tracer := &finalizerTestTracer{parked: false}
+	ctx := newFinalizerTestContext(tracer)
+
+	calls := 0
+	EnsureStreamFinalizerCalled(ctx, func(context.Context) { calls++ })
+
+	if calls != 1 {
+		t.Errorf("finalizer should run exactly once on the no-op path, ran %d times", calls)
 	}
 }
 
@@ -3208,7 +3249,7 @@ func TestResponsesNamespaceToolsSupported_RowCannotEnableAWireWithoutNamespaces(
 }
 
 // A datasheet row cannot make the hashed alias form impossible. The over-limit
-// alias is "<8-hex hash>_<function>", so any row below 10 leaves no room for a
+// alias is "t<8-hex hash>_<function>", so any row below 11 leaves no room for a
 // readable tail (and a negative slice window). Such a row is ignored in favour of
 // the provider default; a hand-built limit still never panics or exceeds itself.
 func TestResolveToolNameLimit_RowBelowHashFloorKeepsDefault(t *testing.T) {
@@ -3243,6 +3284,35 @@ func TestNamespaceToolAlias_TinyLimitNeverPanicsOrExceeds(t *testing.T) {
 	}
 }
 
+// moonshotai.kimi-k3 on Bedrock answers a request carrying any tool whose name starts
+// with a digit with HTTP 200 and an empty stream, and a bare 8-hex hash starts with a
+// digit 10 times in 16. Codex's long MCP namespaces land on the hashed form, so every
+// hashed alias must start with a letter, at every limit including the tiny ones.
+func TestNamespaceToolAlias_HashedFormStartsWithLetter(t *testing.T) {
+	letterFirst := regexp.MustCompile(`^[A-Za-z]`)
+	sawDigitHash := false
+	for i := range 64 {
+		namespace := fmt.Sprintf("mcp__codex_apps__codex_document_control_%02d_with_a_long_suffix", i)
+		function := "execute_document_command"
+		if full := namespace + namespaceToolSeparator + function; fmt.Sprintf("%08x", uint32(xxhash.Sum64String(full)))[0] <= '9' {
+			sawDigitHash = true
+		}
+		for _, max := range []int{64, 128, 12, 10, 9, 1} {
+			limit := ToolNameLimit{MaxLength: max, unsafe: toolNameUnsafeStrict}
+			got := namespaceToolAlias(namespace, function, limit)
+			if len(namespace)+len(namespaceToolSeparator)+len(function) <= max {
+				continue
+			}
+			if !letterFirst.MatchString(got) {
+				t.Errorf("limit %d: hashed alias %q must start with a letter", max, got)
+			}
+		}
+	}
+	if !sawDigitHash {
+		t.Fatal("sweep never produced a digit-leading raw hash, so it cannot prove the prefix")
+	}
+}
+
 // Sanitization is many-to-one on strict wires: "a:b" and "a.b" both flatten to "a_b".
 // Alias existence alone therefore does not prove a history call belongs to the tool
 // that owns the alias. A call from a namespace that merely collides must keep its own
@@ -3273,5 +3343,1033 @@ func TestRealiasNamespacedFunctionCalls_RequiresExactNamespaceOwner(t *testing.T
 	owner := out.Input[1].ResponsesToolMessage
 	if *owner.Name != "a_b__x" || owner.Namespace != nil {
 		t.Errorf("the exact owner a:b must still be rewritten to its alias, got name=%q namespace=%v", *owner.Name, owner.Namespace)
+	}
+}
+
+// TestHandleProviderAPIErrorRootMessage covers AWS's flat error shape, which every Bedrock
+// surface answers with. The shared Anthropic and OpenAI handlers serve those surfaces and
+// their own parsers only read a nested error object, so without this seeding the failure
+// reason is dropped and the log shows an error with no message.
+func TestHandleProviderAPIErrorRootMessage(t *testing.T) {
+	tests := []struct {
+		name            string
+		body            string
+		expectedMessage string
+	}{
+		{
+			name:            "AWS flat error shape",
+			body:            `{"message":"data retention mode 'default' is not available for this model"}`,
+			expectedMessage: "data retention mode 'default' is not available for this model",
+		},
+		{
+			name:            "AWS flat error shape with exception type",
+			body:            `{"message":"rate exceeded","__type":"ThrottlingException"}`,
+			expectedMessage: "rate exceeded",
+		},
+		{
+			name:            "nested error envelope is left to the caller's parser",
+			body:            `{"type":"error","error":{"type":"invalid_request_error","message":"bad request"}}`,
+			expectedMessage: "",
+		},
+		{
+			name:            "blank root message is ignored",
+			body:            `{"message":"   "}`,
+			expectedMessage: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := &fasthttp.Response{}
+			resp.SetStatusCode(400)
+			resp.Header.Set("Content-Type", "application/json")
+			resp.SetBodyString(tt.body)
+
+			var errorResp map[string]interface{}
+			bifrostErr := HandleProviderAPIError(resp, &errorResp)
+
+			if bifrostErr == nil || bifrostErr.Error == nil {
+				t.Fatal("expected a non-nil error with an error field")
+			}
+			if bifrostErr.Error.Message != tt.expectedMessage {
+				t.Errorf("expected message %q, got %q", tt.expectedMessage, bifrostErr.Error.Message)
+			}
+		})
+	}
+}
+
+// TestStripCallerAuthForInsecureURL verifies that a forwarded caller Authorization
+// header only survives to HTTPS or loopback upstreams (RFC 6750 section 5.3, with
+// the RFC 8252 section 8.3 loopback rationale).
+func TestStripCallerAuthForInsecureURL(t *testing.T) {
+	for name, tc := range map[string]struct {
+		url      string
+		header   string
+		wantKept bool
+	}{
+		"https kept":              {"https://api.openai.com/v1/responses", "authorization", true},
+		"http stripped":           {"http://api.internal.example/v1/responses", "authorization", false},
+		"http localhost kept":     {"http://localhost:8080/v1/responses", "authorization", true},
+		"http 127.0.0.1 kept":     {"http://127.0.0.1:9090/v1/messages", "authorization", true},
+		"http ::1 kept":           {"http://[::1]:9090/v1/messages", "authorization", true},
+		"unparsable stripped":     {"http://bad url\x00", "authorization", false},
+		"mixed case key stripped": {"http://api.internal.example/v1/messages", "Authorization", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			safeHeaders := map[string]string{
+				tc.header:        "Bearer sk-ant-oat01-token",
+				"anthropic-beta": "context-1m",
+			}
+			StripCallerAuthForInsecureURL(tc.url, safeHeaders)
+			_, kept := safeHeaders[tc.header]
+			if kept != tc.wantKept {
+				t.Fatalf("StripCallerAuthForInsecureURL(%q): authorization kept = %v, want %v", tc.url, kept, tc.wantKept)
+			}
+			if _, ok := safeHeaders["anthropic-beta"]; !ok {
+				t.Fatal("non-auth safe header must never be stripped")
+			}
+		})
+	}
+}
+
+func TestNormalizeRegexNULEscape(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		// The pattern Claude Code's Artifact tool ships, which DeepSeek rejects with
+		// a 400 and kimi-k3 on Bedrock answers with an empty 200 stream.
+		{"NUL escape in a negated class", `^[^\0]*$`, `^[^\x00]*$`},
+		{"bare NUL escape", `^\0$`, `^\x00$`},
+		{"NUL escape among other escapes", `^\d+\0\w+$`, `^\d+\x00\w+$`},
+
+		// Must not fire.
+		{"already normalized", `^[^\x00]*$`, `^[^\x00]*$`},
+		{"legacy octal escape is not a NUL escape", `^\012$`, `^\012$`},
+		// 8 and 9 are not octal digits, so `\08` is a NUL escape then a literal 8.
+		{"NUL escape followed by 8", `^\08$`, `^\x008$`},
+		{"NUL escape followed by 9 inside a class", `^[^\09]*$`, `^[^\x009]*$`},
+		{"octal escape inside a class", `^[\0123]$`, `^[\0123]$`},
+		{"escaped backslash then a zero digit", `^\\0$`, `^\\0$`},
+		{"digit and word escapes", `^\d+\w+$`, `^\d+\w+$`},
+		{"no escapes at all", `^[a-z]+$`, `^[a-z]+$`},
+		{"literal zero", `^0$`, `^0$`},
+		{"trailing lone backslash is left intact", `^a\`, `^a\`},
+		{"empty", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := NormalizeRegexNULEscape(tc.in); got != tc.want {
+				t.Fatalf("NormalizeRegexNULEscape(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// normalizeSchemaFromJSON round-trips a schema through ToolFunctionParameters so
+// the test exercises the same nested shapes a real tool arrives as.
+func normalizeSchemaFromJSON(t *testing.T, raw string) (*schemas.ToolFunctionParameters, *schemas.ToolFunctionParameters, bool) {
+	t.Helper()
+	var params schemas.ToolFunctionParameters
+	if err := json.Unmarshal([]byte(raw), &params); err != nil {
+		t.Fatalf("failed to unmarshal schema: %v", err)
+	}
+	normalized, changed := ApplyToolSchemaPolicy(&params, ToolSchemaPolicy{NormalizeNULEscape: true})
+	return &params, normalized, changed
+}
+
+func TestNormalizeToolSchemaPatterns_RewritesEveryNestedPattern(t *testing.T) {
+	raw := `{
+		"type": "object",
+		"properties": {
+			"file_paths": {"type": "array", "items": {"type": "string", "pattern": "^[^\\0]*$"}},
+			"after": {"type": "string", "pattern": "^[A-Za-z0-9_=-]{1,4096}$"},
+			"nested": {"type": "object", "properties": {"deep": {"type": "string", "pattern": "^\\0$"}}}
+		},
+		"required": ["file_paths"]
+	}`
+	_, normalized, changed := normalizeSchemaFromJSON(t, raw)
+	if !changed {
+		t.Fatal("expected the schema to be rewritten")
+	}
+	out, err := json.Marshal(normalized)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	rendered := string(out)
+	if strings.Contains(rendered, `\\0]`) || strings.Contains(rendered, `^\\0$`) {
+		t.Fatalf("a NUL escape survived normalization: %s", rendered)
+	}
+	for _, want := range []string{`^[^\\x00]*$`, `^\\x00$`, `^[A-Za-z0-9_=-]{1,4096}$`} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected %s in the normalized schema, got %s", want, rendered)
+		}
+	}
+}
+
+// The rewrite must not reach back into the caller's schema. OrderedMap.Clone is
+// shallow, so a clone taken at the wrong level would leave nested maps shared and
+// silently mutate the request the caller still holds.
+func TestNormalizeToolSchemaPatterns_LeavesTheCallerSchemaUntouched(t *testing.T) {
+	raw := `{"type":"object","properties":{"p":{"type":"string","pattern":"^[^\\0]*$"}}}`
+	original, normalized, changed := normalizeSchemaFromJSON(t, raw)
+	if !changed {
+		t.Fatal("expected the schema to be rewritten")
+	}
+	if normalized == original {
+		t.Fatal("a rewritten schema must be a copy, not the caller's schema")
+	}
+	before, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(before), `\\0]`) {
+		t.Fatalf("the caller's schema was mutated in place: %s", before)
+	}
+}
+
+// A schema with nothing to rewrite must come back as the very same pointer: this
+// is what keeps tool bytes, and therefore prompt cache keys, identical for every
+// request that already works.
+func TestNormalizeToolSchemaPatterns_UnchangedSchemaIsNotCopied(t *testing.T) {
+	raw := `{"type":"object","properties":{"p":{"type":"string","pattern":"^[a-z]+$"}},"required":["p"]}`
+	original, normalized, changed := normalizeSchemaFromJSON(t, raw)
+	if changed {
+		t.Fatal("a schema with no NUL escape must not report a change")
+	}
+	if normalized != original {
+		t.Fatal("a schema with no NUL escape must be returned as-is, not copied")
+	}
+}
+
+// Key order feeds the prompt cache key, so a rewrite must not reorder anything.
+func TestNormalizeToolSchemaPatterns_PreservesKeyOrder(t *testing.T) {
+	raw := `{"type":"object","properties":{"zulu":{"type":"string","pattern":"^[^\\0]*$"},"alpha":{"type":"string"}},"required":["zulu"]}`
+	_, normalized, changed := normalizeSchemaFromJSON(t, raw)
+	if !changed {
+		t.Fatal("expected the schema to be rewritten")
+	}
+	out, err := json.Marshal(normalized)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	rendered := string(out)
+	if strings.Index(rendered, `"zulu"`) > strings.Index(rendered, `"alpha"`) {
+		t.Fatalf("property order changed during normalization: %s", rendered)
+	}
+}
+
+func TestNormalizeResponsesToolSchemas_CopiesOnlyTheRewrittenTool(t *testing.T) {
+	withNUL := schemas.ToolFunctionParameters{Type: "object", Pattern: schemas.Ptr(`^[^\0]*$`)}
+	clean := schemas.ToolFunctionParameters{Type: "object", Pattern: schemas.Ptr(`^[a-z]+$`)}
+	tools := []schemas.ResponsesTool{
+		{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("clean"),
+			ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &clean}},
+		{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("dirty"),
+			ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &withNUL}},
+	}
+
+	updated, changed := ApplyResponsesToolSchemaPolicy(tools, ToolSchemaPolicy{NormalizeNULEscape: true})
+	if !changed {
+		t.Fatal("expected the tool slice to be rewritten")
+	}
+	if *withNUL.Pattern != `^[^\0]*$` {
+		t.Fatalf("the caller's tool schema was mutated in place: %q", *withNUL.Pattern)
+	}
+	if got := *updated[1].ResponsesToolFunction.Parameters.Pattern; got != `^[^\x00]*$` {
+		t.Fatalf("dirty tool not normalized, got %q", got)
+	}
+	if updated[0].ResponsesToolFunction != tools[0].ResponsesToolFunction {
+		t.Fatal("a tool with no NUL escape must not be copied")
+	}
+}
+
+func TestNormalizeToolSchemas_NoToolsIsANoOp(t *testing.T) {
+	if tools, changed := ApplyResponsesToolSchemaPolicy(nil, ToolSchemaPolicy{NormalizeNULEscape: true}); changed || tools != nil {
+		t.Fatal("nil responses tools must be returned unchanged")
+	}
+	if params, changed := ApplyToolSchemaPolicy(nil, ToolSchemaPolicy{NormalizeNULEscape: true}); changed || params != nil {
+		t.Fatal("a nil schema must be returned unchanged")
+	}
+}
+
+func TestStripRegexLookaround(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		// The four ArtifactData patterns that made every Claude Code request to
+		// kimi-k3 come back as an empty stream.
+		{"ArtifactData doc_id", `^(?!\.\.?(?:\/|$))[A-Za-z0-9_\-.~:@+]{1,200}$`, `^[A-Za-z0-9_\-.~:@+]{1,200}$`},
+		{"ArtifactData collection", `^(?!\.\.?(?:\/|$))[A-Za-z0-9_\-.~:@+]{1,200}(?:\/(?!\.\.?(?:\/|$))[A-Za-z0-9_\-.~:@+]{1,200}){0,14}$`,
+			`^[A-Za-z0-9_\-.~:@+]{1,200}(?:\/[A-Za-z0-9_\-.~:@+]{1,200}){0,14}$`},
+
+		{"positive lookahead", `^(?=.*\d).{8,}$`, `^.{8,}$`},
+		{"positive lookbehind", `(?<=\$)\d+`, `\d+`},
+		{"negative lookbehind", `(?<!x)y`, `y`},
+		{"nested group inside lookahead", `(?!(a|b)c)d`, `d`},
+		{"escaped paren inside lookahead", `(?!\))x`, `x`},
+		{"class holding a paren inside lookahead", `(?![)])x`, `x`},
+		{"class with leading literal bracket", `(?![]a])x`, `x`},
+
+		// Not lookaround: must be untouched.
+		{"non-capturing group", `^(?:a|b)$`, `^(?:a|b)$`},
+		{"named group", `(?<year>\d{4})`, `(?<year>\d{4})`},
+		{"inline flags", `(?i)abc`, `(?i)abc`},
+		{"paren literal inside a class", `[(?!]x`, `[(?!]x`},
+		{"escaped lookaround-looking text", `\(\?!x`, `\(\?!x`},
+		{"plain", `^[a-z]+$`, `^[a-z]+$`},
+		{"empty", ``, ``},
+
+		// A quantifier attached to the assertion goes with it: left behind it would
+		// lead the pattern (RE2: "missing argument to repetition operator") or bind
+		// to the previous atom and change its meaning.
+		{"leading quantified lookahead", `(?=b)+a`, `a`},
+		{"trailing quantified lookahead", `a(?=b)+`, `a`},
+		{"lazy counted quantifier", `(?!x){2,3}?y`, `y`},
+		{"open-ended counted quantifier", `(?!x){2,}y`, `y`},
+		{"exact counted quantifier", `(?!x){2}y`, `y`},
+		{"malformed brace is not a quantifier", `(?!x){2,y`, `{2,y`},
+
+		// Never truncate a pattern that does not balance.
+		{"unbalanced lookahead", `(?!abc`, `(?!abc`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := StripRegexLookaround(tc.in); got != tc.want {
+				t.Fatalf("StripRegexLookaround(%q)\n got %q\nwant %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestToolSchemaPolicy_RewritesPatternInOrderAndStaysNoOpWhenIdle(t *testing.T) {
+	both := ToolSchemaPolicy{NormalizeNULEscape: true, StripLookaround: true}
+	if got := both.rewritePattern(`^(?!\0)[^\0]*$`); got != `^[^\x00]*$` {
+		t.Fatalf("policy rewrite = %q, want %q", got, `^[^\x00]*$`)
+	}
+	if in := `^[a-z]+$`; both.rewritePattern(in) != in {
+		t.Fatal("a policy must return a pattern unchanged when nothing applies")
+	}
+	if !(ToolSchemaPolicy{}).IsZero() || both.IsZero() || (ToolSchemaPolicy{StringFormats: []string{"uuid"}}).IsZero() {
+		t.Fatal("IsZero must hold only for the policy that changes nothing")
+	}
+}
+
+// The lossy rewrite must go through the same copy-on-write walker as the
+// lossless one: nothing copied unless a pattern actually changed, and the
+// caller's schema never written through.
+func TestApplyToolSchemaPolicy_LookaroundIsCopyOnWrite(t *testing.T) {
+	raw := `{"type":"object","properties":{"doc_id":{"type":"string","pattern":"^(?!\\.\\.?$)[A-Za-z0-9_.]{1,200}$"},"note":{"type":"string","pattern":"^[a-z]+$"}}}`
+	var params schemas.ToolFunctionParameters
+	if err := json.Unmarshal([]byte(raw), &params); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	updated, changed := ApplyToolSchemaPolicy(&params, ToolSchemaPolicy{StripLookaround: true})
+	if !changed || updated == &params {
+		t.Fatal("expected a rewritten copy")
+	}
+	before, _ := json.Marshal(&params)
+	if !strings.Contains(string(before), `(?!`) {
+		t.Fatalf("caller's schema was mutated in place: %s", before)
+	}
+	after, _ := json.Marshal(updated)
+	if strings.Contains(string(after), `(?!`) || !strings.Contains(string(after), `^[A-Za-z0-9_.]{1,200}$`) {
+		t.Fatalf("lookahead not stripped: %s", after)
+	}
+	// The untouched property keeps the caller's nested map: Clone is shallow and
+	// only the changed spine may be copied.
+	origNote, _ := params.Properties.Get("note")
+	newNote, _ := updated.Properties.Get("note")
+	if origNote != newNote {
+		t.Fatal("an unchanged nested schema was copied")
+	}
+}
+
+// A model that rejects tool-schema patterns loses the keyword wherever a schema can
+// carry one, and nothing else: sibling constraints, a property that is merely named
+// "pattern" and instance data stay, the caller's schema is never written through,
+// and an untouched subtree is shared rather than copied.
+func TestApplyToolSchemaPolicy_DropPatternRemovesEveryKeyword(t *testing.T) {
+	raw := `{
+		"type": "object",
+		"properties": {
+			"collection": {"type": "string", "minLength": 1, "pattern": "^[a-z]{1,200}(?:\\/[a-z]{1,200}){0,14}$"},
+			"pattern": {"type": "string", "pattern": "^x$", "default": {"pattern": "kept"}},
+			"rows": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string", "pattern": "^[a-z]+$"}}}},
+			"either": {"anyOf": [{"type": "string", "pattern": "^a$"}, {"type": "null"}]},
+			"plain": {"type": "string", "enum": ["a", "b"]}
+		},
+		"additionalProperties": {"type": "string", "pattern": "^extra$"},
+		"$defs": {"Id": {"type": "string", "pattern": "^id$"}}
+	}`
+	var params schemas.ToolFunctionParameters
+	if err := json.Unmarshal([]byte(raw), &params); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	policy := ToolSchemaPolicy{DropPattern: true}
+	if policy.IsZero() {
+		t.Fatal("a policy that drops patterns must not be the zero policy")
+	}
+
+	updated, changed := ApplyToolSchemaPolicy(&params, policy)
+	if !changed || updated == &params {
+		t.Fatal("expected a rewritten copy")
+	}
+	out, err := json.Marshal(updated)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	props := got["properties"].(map[string]any)
+	collection := props["collection"].(map[string]any)
+	if _, ok := collection["pattern"]; ok || collection["minLength"] != float64(1) {
+		t.Fatalf("collection should lose only its pattern: %v", collection)
+	}
+	named := props["pattern"].(map[string]any)
+	if kept, _ := named["default"].(map[string]any); named["type"] != "string" || kept["pattern"] != "kept" || len(named) != 2 {
+		t.Fatalf("a property named pattern keeps itself and its default, loses its keyword: %v", named)
+	}
+	name := props["rows"].(map[string]any)["items"].(map[string]any)["properties"].(map[string]any)["name"].(map[string]any)
+	either := props["either"].(map[string]any)["anyOf"].([]any)[0].(map[string]any)
+	extra := got["additionalProperties"].(map[string]any)
+	id := got["$defs"].(map[string]any)["Id"].(map[string]any)
+	for label, node := range map[string]map[string]any{"items": name, "anyOf": either, "additionalProperties": extra, "$defs": id} {
+		if _, ok := node["pattern"]; ok {
+			t.Fatalf("%s kept its pattern: %s", label, out)
+		}
+	}
+
+	if before, _ := json.Marshal(&params); !strings.Contains(string(before), `(?:`) || !strings.Contains(string(before), `^extra$`) {
+		t.Fatalf("caller's schema was mutated in place: %s", before)
+	}
+	origPlain, _ := params.Properties.Get("plain")
+	newPlain, _ := updated.Properties.Get("plain")
+	if origPlain != newPlain {
+		t.Fatal("an unchanged nested schema was copied")
+	}
+
+	clean := schemas.ToolFunctionParameters{Type: "object", Properties: schemas.NewOrderedMap()}
+	if out, changed := ApplyToolSchemaPolicy(&clean, policy); changed || out != &clean {
+		t.Fatal("a schema with no pattern must be returned as-is")
+	}
+	top := schemas.ToolFunctionParameters{Type: "string", Pattern: new("^[a-z]+$")}
+	if out, changed := ApplyToolSchemaPolicy(&top, policy); !changed || out.Pattern != nil || top.Pattern == nil {
+		t.Fatal("a root-level pattern must be dropped from the copy only")
+	}
+}
+
+// Only models whose row drops patterns pay for the walk: a schema with no pattern must
+// stay allocation-free, and one with patterns copies just the spine that changed.
+func BenchmarkApplyToolSchemaPolicy_DropPattern(b *testing.B) {
+	policy := ToolSchemaPolicy{DropPattern: true}
+	for name, raw := range map[string]string{
+		"no_pattern": `{"type":"object","properties":{"collection":{"type":"string","minLength":1},"doc_id":{"type":"string"}}}`,
+		"patterns": `{"type":"object","properties":{` +
+			`"collection":{"type":"string","pattern":"^[a-z]{1,200}(?:\\/[a-z]{1,200}){0,14}$"},` +
+			`"doc_id":{"type":"string","pattern":"^[a-z]{1,200}$"},` +
+			`"writes":{"type":"array","items":{"type":"object","properties":{"collection":{"type":"string","pattern":"^[a-z]+$"}}}}}}`,
+	} {
+		var params schemas.ToolFunctionParameters
+		if err := json.Unmarshal([]byte(raw), &params); err != nil {
+			b.Fatalf("unmarshal: %v", err)
+		}
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				ApplyToolSchemaPolicy(&params, policy)
+			}
+		})
+	}
+}
+
+// additionalProperties may itself be a schema (JSON Schema: "the value of the
+// additionalProperties keyword is a schema"), so a pattern under it is reachable
+// by the model and must be rewritten like any other. The boolean form has no
+// schema and must pass through as the caller's own pointer.
+func TestApplyToolSchemaPolicy_CoversTopLevelAdditionalProperties(t *testing.T) {
+	extra := schemas.NewOrderedMap()
+	extra.Set("type", "string")
+	extra.Set("pattern", `^[^\0]*$`)
+	params := schemas.ToolFunctionParameters{
+		Type:                 "object",
+		Properties:           schemas.NewOrderedMap(),
+		AdditionalProperties: &schemas.AdditionalPropertiesStruct{AdditionalPropertiesMap: extra},
+	}
+
+	updated, changed := ApplyToolSchemaPolicy(&params, ToolSchemaPolicy{NormalizeNULEscape: true})
+	if !changed {
+		t.Fatal("a pattern under additionalProperties was not rewritten")
+	}
+	if updated.AdditionalProperties == params.AdditionalProperties {
+		t.Fatal("AdditionalPropertiesStruct must be copied, not written through")
+	}
+	got, _ := updated.AdditionalProperties.AdditionalPropertiesMap.Get("pattern")
+	if got != `^[^\x00]*$` {
+		t.Fatalf("additionalProperties pattern = %q, want %q", got, `^[^\x00]*$`)
+	}
+	orig, _ := params.AdditionalProperties.AdditionalPropertiesMap.Get("pattern")
+	if orig != `^[^\0]*$` {
+		t.Fatalf("caller's additionalProperties schema was mutated in place: %q", orig)
+	}
+
+	// Boolean variant: nothing to rewrite, nothing copied.
+	boolParams := schemas.ToolFunctionParameters{
+		Type:                 "object",
+		Properties:           schemas.NewOrderedMap(),
+		AdditionalProperties: &schemas.AdditionalPropertiesStruct{AdditionalPropertiesBool: schemas.Ptr(false)},
+	}
+	if out, changed := ApplyToolSchemaPolicy(&boolParams, ToolSchemaPolicy{NormalizeNULEscape: true}); changed || out != &boolParams {
+		t.Fatal("boolean additionalProperties must be returned as-is")
+	}
+}
+
+// Schemas built in code, not parsed from JSON, carry nested schemas as plain
+// maps: BuildDecisionSchema sets each question's schema into an OrderedMap as a
+// map[string]any. The walker must descend into those too, copy-on-write, and
+// must hand back the caller's own map when nothing inside it changes.
+func TestApplyToolSchemaPolicy_DescendsIntoPlainMapSchemas(t *testing.T) {
+	dirty := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"id": map[string]any{"type": "string", "pattern": `^[^\0]*$`},
+		},
+	}
+	clean := map[string]any{"type": "string", "enum": []any{"a", "b"}}
+	props := schemas.NewOrderedMap()
+	props.Set("dirty", dirty)
+	props.Set("clean", clean)
+	params := schemas.ToolFunctionParameters{Type: "object", Properties: props}
+
+	updated, changed := ApplyToolSchemaPolicy(&params, ToolSchemaPolicy{NormalizeNULEscape: true})
+	if !changed {
+		t.Fatal("a pattern inside a plain-map nested schema was not rewritten")
+	}
+	v, _ := updated.Properties.Get("dirty")
+	got := v.(map[string]any)["properties"].(map[string]any)["id"].(map[string]any)["pattern"]
+	if got != `^[^\x00]*$` {
+		t.Fatalf("plain-map pattern = %q, want %q", got, `^[^\x00]*$`)
+	}
+	// The caller's maps are untouched at every level.
+	if orig := dirty["properties"].(map[string]any)["id"].(map[string]any)["pattern"]; orig != `^[^\0]*$` {
+		t.Fatalf("caller's plain-map schema was mutated in place: %q", orig)
+	}
+	// The untouched sibling must be the caller's very own map, not a copy: a
+	// write through the original has to be visible through the returned schema.
+	clean["sentinel"] = true
+	if c2, _ := updated.Properties.Get("clean"); c2.(map[string]any)["sentinel"] != true {
+		t.Fatal("an unchanged plain-map schema was copied instead of shared")
+	}
+}
+
+// kimiSchemaFormats is the string-format allowlist moonshotai.kimi-k3 on Bedrock accepts.
+var kimiSchemaFormats = []string{"date", "date-time", "time", "duration", "email", "hostname", "ipv4", "ipv6", "uri", "uuid"}
+
+// A format outside the allowlist is dropped from every string or untyped schema at any
+// depth. Numeric formats, allowlisted ones, instance data, and properties merely named
+// "format" or "default" are schema-aware exceptions that must survive.
+func TestApplyToolSchemaPolicy_DropsFormatsOutsideAllowlist(t *testing.T) {
+	raw := `{"type":"object","format":"byte","properties":{` +
+		`"blob":{"type":"string","format":"byte"},` +
+		`"when":{"type":"string","format":"date-time"},` +
+		`"size":{"type":"integer","format":"int64"},` +
+		`"ratio":{"type":["number","null"],"format":"double"},` +
+		`"maybe":{"type":["string","null"],"format":"binary"},` +
+		`"untyped":{"format":"password"},` +
+		`"list":{"type":"array","items":{"type":"string","format":"base64"}},` +
+		`"either":{"anyOf":[{"type":"string","format":"int64"},{"type":"null"}]},` +
+		`"format":{"type":"object","default":{"format":"byte"},"examples":[{"format":"byte"}]},` +
+		`"default":{"type":"object","properties":{"inner":{"type":"string","format":"uri-reference"}}}},` +
+		`"$defs":{"Attachment":{"type":"object","properties":{"content":{"type":"string","format":"byte"}}}}}`
+	var params schemas.ToolFunctionParameters
+	if err := json.Unmarshal([]byte(raw), &params); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	updated, changed := ApplyToolSchemaPolicy(&params, ToolSchemaPolicy{StringFormats: kimiSchemaFormats})
+	if !changed {
+		t.Fatal("expected the schema to be rewritten")
+	}
+	out, err := json.Marshal(updated)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, path := range []string{
+		"format",
+		"properties.blob.format",
+		"properties.maybe.format",
+		"properties.untyped.format",
+		"properties.list.items.format",
+		"properties.either.anyOf.0.format",
+		"properties.default.properties.inner.format",
+		`\$defs.Attachment.properties.content.format`,
+	} {
+		if v := gjson.GetBytes(out, path); v.Exists() {
+			t.Errorf("%s = %s survived: %s", path, v.Raw, out)
+		}
+	}
+	for path, want := range map[string]string{
+		"properties.when.format":              "date-time",
+		"properties.size.format":              "int64",
+		"properties.ratio.format":             "double",
+		"properties.format.default.format":    "byte",
+		"properties.format.examples.0.format": "byte",
+		"properties.blob.type":                "string",
+	} {
+		if got := gjson.GetBytes(out, path).String(); got != want {
+			t.Errorf("%s = %q, want %q: %s", path, got, want, out)
+		}
+	}
+	if s := string(out); strings.Index(s, `"blob"`) > strings.Index(s, `"when"`) {
+		t.Fatalf("property order changed: %s", s)
+	}
+	before, _ := json.Marshal(&params)
+	if got := gjson.GetBytes(before, `\$defs.Attachment.properties.content.format`).String(); got != "byte" {
+		t.Fatalf("caller's schema was mutated in place: %s", before)
+	}
+}
+
+// A schema whose formats are all allowed, or a policy without an allowlist, must hand
+// back the caller's own schema so its bytes and prompt-cache key stay identical.
+func TestApplyToolSchemaPolicy_AllowedFormatsAreNotCopied(t *testing.T) {
+	var allowed schemas.ToolFunctionParameters
+	if err := json.Unmarshal([]byte(`{"type":"object","properties":{"when":{"type":"string","format":"date-time"},"size":{"type":"integer","format":"int64"}}}`), &allowed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out, changed := ApplyToolSchemaPolicy(&allowed, ToolSchemaPolicy{StringFormats: kimiSchemaFormats}); changed || out != &allowed {
+		t.Fatal("a schema with only allowed formats must be returned as-is")
+	}
+	var blob schemas.ToolFunctionParameters
+	if err := json.Unmarshal([]byte(`{"type":"object","properties":{"blob":{"type":"string","format":"byte"}}}`), &blob); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out, changed := ApplyToolSchemaPolicy(&blob, ToolSchemaPolicy{NormalizeNULEscape: true}); changed || out != &blob {
+		t.Fatal("a policy with no allowlist must keep every format")
+	}
+}
+
+func TestApplyChatToolSchemaPolicy_CopiesOnlyTheChangedTool(t *testing.T) {
+	var clean, dirty schemas.ToolFunctionParameters
+	if err := json.Unmarshal([]byte(`{"type":"object","properties":{"when":{"type":"string","format":"date-time"}}}`), &clean); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if err := json.Unmarshal([]byte(`{"type":"object","properties":{"blob":{"type":"string","format":"byte"}}}`), &dirty); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	tools := []schemas.ChatTool{
+		{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "clean", Parameters: &clean}},
+		{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "dirty", Parameters: &dirty}},
+		{Type: schemas.ChatToolTypeCustom},
+	}
+	updated, changed := ApplyChatToolSchemaPolicy(tools, ToolSchemaPolicy{StringFormats: kimiSchemaFormats})
+	if !changed {
+		t.Fatal("expected the tool slice to be rewritten")
+	}
+	if updated[0].Function != tools[0].Function {
+		t.Fatal("a tool with nothing to change must not be copied")
+	}
+	if updated[1].Function == tools[1].Function || updated[1].Function.Parameters.Properties == dirty.Properties {
+		t.Fatal("the changed tool must be copied, not written through")
+	}
+	out, _ := json.Marshal(updated[1].Function.Parameters)
+	if gjson.GetBytes(out, "properties.blob.format").Exists() {
+		t.Fatalf("byte format survived: %s", out)
+	}
+	if before, _ := json.Marshal(&dirty); !gjson.GetBytes(before, "properties.blob.format").Exists() {
+		t.Fatalf("caller's tool schema was mutated in place: %s", before)
+	}
+	if tools, changed := ApplyChatToolSchemaPolicy(nil, ToolSchemaPolicy{StringFormats: kimiSchemaFormats}); changed || tools != nil {
+		t.Fatal("nil chat tools must be returned unchanged")
+	}
+}
+
+// A namespace that stays intact on the wire still sends its members' schemas, so they
+// are normalized too, copy-on-write like top-level tools.
+func TestApplyResponsesToolSchemaPolicy_WalksNamespaceMembers(t *testing.T) {
+	var clean, dirty schemas.ToolFunctionParameters
+	if err := json.Unmarshal([]byte(`{"type":"object","properties":{"when":{"type":"string","format":"date-time"}}}`), &clean); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if err := json.Unmarshal([]byte(`{"type":"object","properties":{"blob":{"type":"string","format":"byte"}}}`), &dirty); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	namespace := &schemas.ResponsesToolNamespace{Tools: []schemas.ResponsesTool{
+		{Type: schemas.ResponsesToolTypeFunction, Name: new("list_labels"), ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &clean}},
+		{Type: schemas.ResponsesToolTypeFunction, Name: new("send_message"), ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &dirty}},
+	}}
+	tools := []schemas.ResponsesTool{
+		{Type: schemas.ResponsesToolTypeFunction, Name: new("top"), ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &clean}},
+		{Type: schemas.ResponsesToolTypeNamespace, Name: new("gmail"), ResponsesToolNamespace: namespace},
+	}
+	updated, changed := ApplyResponsesToolSchemaPolicy(tools, ToolSchemaPolicy{StringFormats: kimiSchemaFormats})
+	if !changed {
+		t.Fatal("expected the namespace member to be rewritten")
+	}
+	if updated[0].ResponsesToolFunction != tools[0].ResponsesToolFunction {
+		t.Fatal("a tool with nothing to change must not be copied")
+	}
+	if updated[1].ResponsesToolNamespace == namespace {
+		t.Fatal("the changed namespace must be copied, not written through")
+	}
+	members := updated[1].ResponsesToolNamespace.Tools
+	if members[0].ResponsesToolFunction != namespace.Tools[0].ResponsesToolFunction {
+		t.Fatal("a member with nothing to change must not be copied")
+	}
+	out, _ := json.Marshal(members[1].ResponsesToolFunction.Parameters)
+	if gjson.GetBytes(out, "properties.blob.format").Exists() {
+		t.Fatalf("byte format survived in a namespace member: %s", out)
+	}
+	if namespace.Tools[1].ResponsesToolFunction.Parameters != &dirty {
+		t.Fatal("caller's namespace member was written through")
+	}
+	if before, _ := json.Marshal(&dirty); !gjson.GetBytes(before, "properties.blob.format").Exists() {
+		t.Fatalf("caller's member schema was mutated in place: %s", before)
+	}
+}
+
+// TestIsAbsoluteRequestURL pins the rule GetRequestPath and the management API's auth guard
+// share: only a scheme plus host makes a request-path override a full destination URL.
+func TestIsAbsoluteRequestURL(t *testing.T) {
+	cases := map[string]bool{
+		"https://evil.example.com/v1/chat": true,
+		"  http://10.0.0.5:8080/x  ":       true,
+		"/v2/chat/completions":             false,
+		"v2/chat/completions":              false,
+		"https:///no-host":                 false,
+		"":                                 false,
+	}
+	for in, want := range cases {
+		if got := IsAbsoluteRequestURL(in); got != want {
+			t.Errorf("IsAbsoluteRequestURL(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+// TestBuildPassthroughURL pins that the resolved passthrough URL always keeps the provider's
+// authority: a remainder that would turn the base host into userinfo or a scheme-relative
+// authority is refused, while ordinary rooted paths and queries are forwarded byte-for-byte.
+func TestBuildPassthroughURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		baseURL  string
+		path     string
+		rawQuery string
+		want     string
+		wantErr  bool
+	}{
+		{name: "rooted path on bare origin", baseURL: "https://api.anthropic.com", path: "/v1/messages", want: "https://api.anthropic.com/v1/messages"},
+		{name: "query appended", baseURL: "https://api.anthropic.com", path: "/v1/messages", rawQuery: "beta=true", want: "https://api.anthropic.com/v1/messages?beta=true"},
+		{name: "trailing slash on base trimmed", baseURL: "https://api.anthropic.com/", path: "/v1/messages", want: "https://api.anthropic.com/v1/messages"},
+		{name: "base with path", baseURL: "https://generativelanguage.googleapis.com/v1beta", path: "/models/gemini:generateContent", rawQuery: "alt=sse", want: "https://generativelanguage.googleapis.com/v1beta/models/gemini:generateContent?alt=sse"},
+		{name: "empty path hits base", baseURL: "https://api.runware.ai/v1", path: "", want: "https://api.runware.ai/v1"},
+		{name: "at sign past first segment is path", baseURL: "https://aiplatform.googleapis.com/v1", path: "/projects/p/locations/l/publishers/anthropic/models/claude@20250929:rawPredict", want: "https://aiplatform.googleapis.com/v1/projects/p/locations/l/publishers/anthropic/models/claude@20250929:rawPredict"},
+		{name: "decoded percent stays an encoded percent", baseURL: "https://api.anthropic.com", path: "/v1/files/a%2Fb", want: "https://api.anthropic.com/v1/files/a%252Fb"},
+		{name: "decoded percent before question mark", baseURL: "https://api.anthropic.com", path: "/v1/files/a%3F?b", want: "https://api.anthropic.com/v1/files/a%253F%3Fb"},
+		{name: "decoded question mark stays in the path", baseURL: "https://api.anthropic.com", path: "/v1/files/a?b", rawQuery: "beta=true", want: "https://api.anthropic.com/v1/files/a%3Fb?beta=true"},
+		{name: "decoded hash stays in the path", baseURL: "https://api.anthropic.com", path: "/v1/files/a#b", want: "https://api.anthropic.com/v1/files/a%23b"},
+		{name: "at sign in query is query", baseURL: "https://api.anthropic.com", path: "/v1/messages", rawQuery: "user=a@b", want: "https://api.anthropic.com/v1/messages?user=a@b"},
+		{name: "base with userinfo kept", baseURL: "https://user:pw@proxy.internal", path: "/v1/messages", want: "https://user:pw@proxy.internal/v1/messages"},
+		{name: "userinfo remainder rejected", baseURL: "https://api.anthropic.com", path: "@127.0.0.1/x", wantErr: true},
+		{name: "port smuggling remainder rejected", baseURL: "https://api.anthropic.com", path: ":8443@evil.example/x", wantErr: true},
+		{name: "unanchored remainder rejected", baseURL: "https://api.anthropic.com", path: "foo/x", wantErr: true},
+		{name: "scheme-relative remainder rejected", baseURL: "https://api.anthropic.com", path: "//evil.example/x", wantErr: true},
+		{name: "base without scheme rejected", baseURL: "api.anthropic.com", path: "/v1/messages", wantErr: true},
+		{name: "empty base rejected", baseURL: "", path: "/v1/messages", wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := BuildPassthroughURL(tc.baseURL, tc.path, tc.rawQuery)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("BuildPassthroughURL(%q, %q, %q) = %q, want error", tc.baseURL, tc.path, tc.rawQuery, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("BuildPassthroughURL(%q, %q, %q) unexpected error: %v", tc.baseURL, tc.path, tc.rawQuery, err)
+			}
+			if got != tc.want {
+				t.Fatalf("BuildPassthroughURL(%q, %q, %q) = %q, want %q", tc.baseURL, tc.path, tc.rawQuery, got, tc.want)
+			}
+		})
+	}
+}
+
+// newRoundTripperClient returns an *http.Client on fasthttpRoundTripper over a plain
+// fasthttp client, the way NewProviderHTTPClient and the fetch client wire it.
+func newRoundTripperClient(dial fasthttp.DialFunc) *http.Client {
+	client := &fasthttp.Client{Dial: dial, Transport: NewContextTransport()}
+	return &http.Client{Transport: &fasthttpRoundTripper{client: client}}
+}
+
+func TestFasthttpRoundTripper_MapsRequestAndResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Add("X-Echo-Method", r.Method)
+		w.Header().Add("X-Echo-Auth", r.Header.Get("Authorization"))
+		w.Header().Add("X-Multi", "a")
+		w.Header().Add("X-Multi", "b")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write(append([]byte("echo:"), body...))
+	}))
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/token?grant_type=client_credentials", strings.NewReader("form=1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Basic c3A6c2VjcmV0")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := newRoundTripperClient(nil).Do(req)
+	if err != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusCreated || resp.Status != "201 Created" {
+		t.Errorf("status = %d %q, want 201 Created", resp.StatusCode, resp.Status)
+	}
+	if string(body) != "echo:form=1" {
+		t.Errorf("body = %q, want the request body echoed", body)
+	}
+	if resp.ContentLength != int64(len(body)) {
+		t.Errorf("ContentLength = %d, want %d", resp.ContentLength, len(body))
+	}
+	if got := resp.Header.Get("X-Echo-Method"); got != http.MethodPost {
+		t.Errorf("method reached the server as %q", got)
+	}
+	if got := resp.Header.Get("X-Echo-Auth"); got != "Basic c3A6c2VjcmV0" {
+		t.Errorf("Authorization reached the server as %q", got)
+	}
+	if got := resp.Header.Values("X-Multi"); len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Errorf("multi-valued header = %v, want [a b]", got)
+	}
+	if resp.Request != req {
+		t.Error("resp.Request must be the original request")
+	}
+}
+
+func TestFasthttpRoundTripper_RedirectsStayWithHTTPClient(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/start" {
+			http.Redirect(w, r, "/final", http.StatusFound)
+			return
+		}
+		_, _ = w.Write([]byte("final"))
+	}))
+	defer server.Close()
+
+	var hops int
+	client := newRoundTripperClient(nil)
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		hops++
+		return nil
+	}
+	resp, err := client.Get(server.URL + "/start")
+	if err != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "final" || hops != 1 {
+		t.Errorf("body = %q after %d CheckRedirect calls, want \"final\" after 1", body, hops)
+	}
+}
+
+// TestFasthttpRoundTripper_ContextEndsWhileDialing pins that RoundTrip returns as soon
+// as the request context ends, even though fasthttp cannot interrupt a dial. net/http
+// cancels dials through the context, and oauth2 and azidentity rely on that.
+func TestFasthttpRoundTripper_ContextEndsWhileDialing(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	client := newRoundTripperClient(func(string) (net.Conn, error) {
+		<-release
+		return nil, fmt.Errorf("dial released")
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://slow-dial.example/", nil)
+
+	start := time.Now()
+	_, err := client.Do(req)
+	if err == nil || !strings.Contains(err.Error(), context.DeadlineExceeded.Error()) {
+		t.Fatalf("expected the context deadline, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("RoundTrip took %v after the context ended, want it to return promptly", elapsed)
+	}
+}
+
+// A provider-injected tool loop chains several upstream streams into one client stream.
+// While another turn will follow, an upstream stream's final chunk is not the end of the
+// request, so the request's single LLM span must stay open for the turns still to come.
+func TestCompleteDeferredSpan_LeavesSpanOpenWhileStreamTurnPending(t *testing.T) {
+	tracer := &finalizerTestTracer{parked: true}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	ctx.SetValue(schemas.BifrostContextKeyStreamTurnPending, true)
+
+	CloseStream(ctx, make(chan *schemas.BifrostStreamChunk))
+	if tracer.GetDeferredSpanHandle("trace-1") == nil {
+		t.Fatal("the span must stay parked while another turn is pending")
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyStreamTurnPending, false)
+	CloseStream(ctx, make(chan *schemas.BifrostStreamChunk))
+	if tracer.GetDeferredSpanHandle("trace-1") != nil {
+		t.Error("the span completes once no turn is pending")
+	}
+}
+
+func decisionUserMessage(parts ...schemas.DecisionInputPart) schemas.DecisionInputMessage {
+	return schemas.DecisionInputMessage{Role: "user", Content: schemas.DecisionInputContent{Parts: parts}}
+}
+
+func decisionTextPart(text string) schemas.DecisionInputPart {
+	return schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText(text)}
+}
+
+func decisionImagePart(url string, detail *string) schemas.DecisionInputPart {
+	return schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr(url), Detail: detail}
+}
+
+// TestExtractDecisionImages_LeavesImageFreeInputsAlone pins that an input without images
+// comes back unchanged with a nil state, so callers keep the state they already send.
+func TestExtractDecisionImages_LeavesImageFreeInputsAlone(t *testing.T) {
+	for name, input := range map[string]schemas.DecisionInput{
+		"empty":      {},
+		"text":       {Text: schemas.Ptr("The sky is blue.")},
+		"structured": {Structured: map[string]any{"ticket": "A-4021"}},
+		"messages":   {Messages: []schemas.DecisionInputMessage{decisionUserMessage(decisionTextPart("hi"))}},
+	} {
+		textOnly, state, err := ExtractDecisionImages(input)
+		if err != nil {
+			t.Fatalf("%s: unexpected error %v", name, err)
+		}
+		if state != nil {
+			t.Errorf("%s: state = %#v, want nil", name, state)
+		}
+		want, _ := json.Marshal(input)
+		got, _ := json.Marshal(textOnly)
+		if string(got) != string(want) {
+			t.Errorf("%s: input = %s, want it unchanged %s", name, got, want)
+		}
+	}
+}
+
+// TestExtractDecisionImages_SendsPlainTextAndImageItems pins the state layout: text as
+// plain strings and images as image_url items, in their original order across messages,
+// with roles dropped. Message objects would reach the model as JSON text.
+func TestExtractDecisionImages_SendsPlainTextAndImageItems(t *testing.T) {
+	second := "data:image/jpeg;base64,/9j/4AAQ"
+	input := schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{
+		decisionUserMessage(decisionTextPart("Compare these"), decisionImagePart("data:image/png;base64,iVBORw0KGgo=", schemas.Ptr("high")), decisionTextPart("and this")),
+		{Role: "assistant", Content: schemas.DecisionInputContent{Text: schemas.Ptr("Send the next one")}},
+		decisionUserMessage(decisionImagePart(second, nil)),
+	}}
+	before, _ := json.Marshal(input)
+
+	textOnly, state, err := ExtractDecisionImages(input)
+	if err != nil {
+		t.Fatalf("unexpected error %v", err)
+	}
+
+	gotState, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantState := `["Compare these",` +
+		`{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo=","detail":"high"}},` +
+		`"and this",` +
+		`"Send the next one",` +
+		`{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,/9j/4AAQ"}}]`
+	if string(gotState) != wantState {
+		t.Errorf("state =\n%s\nwant\n%s", gotState, wantState)
+	}
+	gotText, _ := json.Marshal(textOnly)
+	wantText := `[{"role":"user","content":[{"type":"input_text","text":"Compare these"},{"type":"input_text","text":"and this"}]},{"role":"assistant","content":"Send the next one"}]`
+	if string(gotText) != wantText {
+		t.Errorf("text-only input =\n%s\nwant\n%s", gotText, wantText)
+	}
+	after, _ := json.Marshal(input)
+	if string(before) != string(after) {
+		t.Errorf("extraction modified the input:\nbefore %s\nafter  %s", before, after)
+	}
+}
+
+// TestExtractDecisionImages_ConversationItems pins the conversation in the image layout: a
+// tool call or output is one JSON text item, which keeps the call an output answers, and an
+// assistant's output text and refusal and a JSON part are plain strings. Before, a tool call
+// added nothing to the state once any image was present. The payload is synthetic.
+func TestExtractDecisionImages_ConversationItems(t *testing.T) {
+	var input schemas.DecisionInput
+	if err := schemas.Unmarshal([]byte(`[
+		{"role":"user","content":[{"type":"input_text","text":"Is the receipt right?"},{"type":"input_json","data":{"total":49}},{"type":"input_image","image_url":"https://example.com/r.png"}]},
+		{"type":"function_call","call_id":"call_1","name":"render_receipt","arguments":"{}"},
+		{"type":"function_call_output","call_id":"call_1","output":"receipt total 49"},
+		{"role":"assistant","content":[{"type":"output_text","text":"Looks right."},{"type":"refusal","refusal":"Cannot verify tax."}]}
+	]`), &input); err != nil {
+		t.Fatal(err)
+	}
+	_, state, err := ExtractDecisionImages(input)
+	if err != nil {
+		t.Fatalf("unexpected error %v", err)
+	}
+	got, _ := json.Marshal(state)
+	want := `["Is the receipt right?","{\"total\":49}",{"type":"image_url","image_url":{"url":"https://example.com/r.png"}},` +
+		`"{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"render_receipt\",\"arguments\":\"{}\"}",` +
+		`"{\"type\":\"function_call_output\",\"call_id\":\"call_1\",\"output\":\"receipt total 49\"}",` +
+		`"Looks right.","Cannot verify tax."]`
+	if string(got) != want {
+		t.Errorf("state =\n%s\nwant\n%s", got, want)
+	}
+}
+
+// TestExtractDecisionImages_ForwardsURLsForTheProviderToJudge pins that only a missing
+// image_url is rejected locally; a remote URL is passed on for the provider to accept or not.
+func TestExtractDecisionImages_ForwardsURLsForTheProviderToJudge(t *testing.T) {
+	_, state, err := ExtractDecisionImages(schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{
+		decisionUserMessage(decisionImagePart("https://example.com/red.png", nil)),
+	}})
+	if err != nil {
+		t.Fatalf("remote URL: unexpected error %v", err)
+	}
+	got, _ := json.Marshal(state)
+	if want := `[{"type":"image_url","image_url":{"url":"https://example.com/red.png"}}]`; string(got) != want {
+		t.Errorf("state = %s, want %s", got, want)
+	}
+
+	for name, part := range map[string]schemas.DecisionInputPart{
+		"nil image_url":   {Type: schemas.DecisionInputPartTypeImage},
+		"empty image_url": {Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr("")},
+	} {
+		_, _, err := ExtractDecisionImages(schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{decisionUserMessage(decisionTextPart("hi"), part)}})
+		if _, ok := AsBifrostBadRequestError(err); !ok {
+			t.Errorf("%s: err = %v, want a 400 invalid-request error", name, err)
+		}
+	}
+}
+
+// BenchmarkStreamGoroutineExit measures the CloseStream + EnsureStreamFinalizerCalled
+// pair every provider goroutine runs on exit, for a stream whose terminal path already
+// completed its span (the common case).
+func BenchmarkStreamGoroutineExit(b *testing.B) {
+	ctx := newFinalizerTestContext(&finalizerTestTracer{})
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	finalizer := func(context.Context) {}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		CloseStream(ctx, make(chan *schemas.BifrostStreamChunk))
+		EnsureStreamFinalizerCalled(ctx, finalizer)
 	}
 }

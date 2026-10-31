@@ -364,11 +364,11 @@ func ResolveToolNameLimit(ctx *schemas.BifrostContext, baseProvider schemas.Mode
 }
 
 // minToolNameLimit is the smallest limit the hashed alias form can honour: the
-// 8-hex hash, the "_" separator and one character of the function name.
+// "t"-prefixed hash, the "_" separator and one character of the function name.
 const minToolNameLimit = namespaceAliasHashLength + 2
 
-// namespaceAliasHashLength is the width of the "%08x" prefix in a hashed alias.
-const namespaceAliasHashLength = 8
+// namespaceAliasHashLength is the width of the "t%08x" prefix in a hashed alias.
+const namespaceAliasHashLength = 9
 
 // namespaceToolAlias returns the flat tool name for one nested function under the
 // wire's limit. It is a pure function of (namespace, function, limit): history items
@@ -376,10 +376,13 @@ const namespaceAliasHashLength = 8
 // the same inputs must always yield the same string.
 //
 // The plain "<namespace>__<function>" form is used when it fits. Over the limit the
-// name becomes "<8-hex xxhash>_<function>", the same scheme bedrockAliasToolName uses:
+// name becomes "t<8-hex xxhash>_<function>", the same scheme bedrockAliasToolName uses:
 // the hash of the full alias keeps the name unique per (namespace, function), and the
-// tail keeps the function readable to the model. The response-side alias map is keyed
-// on whichever string was produced, so restore never needs to invert this.
+// tail keeps the function readable to the model. The "t" keeps the name letter-first:
+// a bare hex hash starts with a digit 10 times in 16, and moonshotai.kimi-k3 on
+// Bedrock answers any digit-leading tool name with HTTP 200 and an empty stream. The
+// response-side alias map is keyed on whichever string was produced, so restore never
+// needs to invert this.
 func namespaceToolAlias(namespace, function string, limit ToolNameLimit) string {
 	full := namespace + namespaceToolSeparator + function
 	sanitized := limit.Sanitize(full)
@@ -388,7 +391,7 @@ func namespaceToolAlias(namespace, function string, limit ToolNameLimit) string 
 	}
 	// Hash the unsanitized alias so namespaces that differ only in a replaced
 	// character still hash apart.
-	hash := fmt.Sprintf("%08x", uint32(xxhash.Sum64String(full)))
+	hash := fmt.Sprintf("t%08x", uint32(xxhash.Sum64String(full)))
 	semantic := strings.Trim(limit.Sanitize(function), "_")
 	if semantic == "" {
 		semantic = "tool"

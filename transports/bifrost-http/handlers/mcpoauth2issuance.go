@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -18,13 +19,13 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/oauth2"
 	"github.com/maximhq/bifrost/framework/temptoken"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -32,7 +33,8 @@ import (
 //
 //   - POST /oauth2/register   — RFC 7591 Dynamic Client Registration
 //   - GET  /oauth2/authorize  — Authorization endpoint (PKCE-S256, RFC 8707)
-//   - POST /oauth2/token      — Token endpoint (auth-code + refresh grants)
+//   - POST /oauth2/token      — Token endpoint (auth-code + refresh grants, plus
+//     any grant an OAuth2Extensions serves)
 type OAuth2IssuanceHandler struct {
 	store      *lib.Config
 	tempTokens *temptoken.Service // optional; nil = no consent temp-token minted
@@ -41,21 +43,52 @@ type OAuth2IssuanceHandler struct {
 	// when user identity is available). May be nil — VK refresh is never blocked
 	// then, matching availableModes which keeps offering vk without a resolver.
 	identityResolver OAuth2IdentityResolver
+	// extensions serves grant types the handler does not; nil when none.
+	extensions     OAuth2Extensions
+	clientMetadata *oauth2ClientMetadataResolver // resolves Client ID Metadata Document client_ids
 }
 
 // NewOAuth2IssuanceHandler creates a new issuance handler. identityResolver may
 // be nil — the VK-refresh cutoff degrades to a no-op, consistent with the
 // consent handler offering vk when no resolver is present.
 func NewOAuth2IssuanceHandler(store *lib.Config, tempTokens *temptoken.Service, identityResolver OAuth2IdentityResolver) *OAuth2IssuanceHandler {
-	return &OAuth2IssuanceHandler{store: store, tempTokens: tempTokens, identityResolver: identityResolver}
+	return &OAuth2IssuanceHandler{store: store, tempTokens: tempTokens, identityResolver: identityResolver, clientMetadata: defaultClientMetadataResolver}
 }
+
+// Bounds on the client-controlled free-text fields of the issuance endpoints.
+// Registration and authorization are anonymous and the backing columns are
+// unbounded text, so these caps are what keeps an unauthenticated caller from
+// parking request-body-sized payloads in the config store. They are enforced
+// before any row is written and sit well above what real clients send (the
+// longest pinned by regression tests is a 4096-char state and a 1024-char
+// client_name), so they bound abuse without constraining legitimate clients.
+const (
+	maxOAuth2ClientNameLen    = 2048
+	maxOAuth2ScopeLen         = 4096
+	maxOAuth2StateLen         = 8192
+	maxOAuth2CodeChallengeLen = 128
+	maxOAuth2RedirectURIs     = 32
+	maxOAuth2RedirectURILen   = 2048
+)
 
 // RegisterRoutes wires the three OAuth2 issuance routes.
 func (h *OAuth2IssuanceHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
-	// These routes are public — no auth middleware applied.
+	// These routes are public — no auth middleware applied. Each handler 404s
+	// when MCP OAuth is disabled (see issuanceEnabled).
 	r.POST("/oauth2/register", h.handleRegister)
 	r.GET("/oauth2/authorize", h.handleAuthorize)
 	r.POST("/oauth2/token", h.handleToken)
+}
+
+// issuanceEnabled reports whether the authorization server is on, using the
+// same predicate as the discovery handler so that disabling MCP OAuth
+// (mcp_server_auth_mode=headers) disables the issuer and not just its metadata.
+// Every issuance handler returns 404 when this is false, matching discovery.
+func (h *OAuth2IssuanceHandler) issuanceEnabled() bool {
+	h.store.Mu.RLock()
+	enabled := h.store.ClientConfig.IsMCPOAuthDiscoveryEnabled()
+	h.store.Mu.RUnlock()
+	return enabled
 }
 
 // --- POST /oauth2/register (RFC 7591 DCR) ---
@@ -67,9 +100,85 @@ type dcrRequest struct {
 	ResponseTypes           []string `json:"response_types"`
 	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
 	Scope                   string   `json:"scope"`
+	ApplicationType         string   `json:"application_type"` // accepted, not enforced
+}
+
+// oauth2ClientMetadataError is an OAuth error for invalid client metadata.
+type oauth2ClientMetadataError struct{ code, description string }
+
+func (e *oauth2ClientMetadataError) Error() string { return e.description }
+
+// httpStatus is 503 for a resolver at its fetch limit, else 400.
+func (e *oauth2ClientMetadataError) httpStatus() int {
+	if e.code == "temporarily_unavailable" {
+		return fasthttp.StatusServiceUnavailable
+	}
+	return fasthttp.StatusBadRequest
+}
+
+// validateOAuth2ClientMetadata validates DCR or CIMD client metadata and returns its grant types,
+// response types and scope with defaults applied. Redirects must be https or loopback http
+// (RFC 9700 §4.1.3), unless administrator-approved.
+func validateOAuth2ClientMetadata(store *lib.Config, req dcrRequest) (grantTypes, responseTypes []string, scope string, err *oauth2ClientMetadataError) {
+	reject := func(code, format string, args ...any) ([]string, []string, string, *oauth2ClientMetadataError) {
+		return nil, nil, "", &oauth2ClientMetadataError{code: code, description: fmt.Sprintf(format, args...)}
+	}
+	if len(req.RedirectURIs) == 0 {
+		return reject("invalid_redirect_uri", "redirect_uris is required")
+	}
+	if len(req.RedirectURIs) > maxOAuth2RedirectURIs {
+		return reject("invalid_redirect_uri", "at most %d redirect_uris are allowed", maxOAuth2RedirectURIs)
+	}
+	if len(req.ClientName) > maxOAuth2ClientNameLen {
+		return reject("invalid_client_metadata", "client_name exceeds %d bytes", maxOAuth2ClientNameLen)
+	}
+	if len(req.Scope) > maxOAuth2ScopeLen {
+		return reject("invalid_client_metadata", "scope exceeds %d bytes", maxOAuth2ScopeLen)
+	}
+	for _, uri := range req.RedirectURIs {
+		if len(uri) > maxOAuth2RedirectURILen {
+			return reject("invalid_redirect_uri", "redirect_uri exceeds %d bytes", maxOAuth2RedirectURILen)
+		}
+		if !oauth2RedirectAllowed(store, uri) {
+			return reject("invalid_redirect_uri", "redirect_uri must be a valid local callback or an administrator-approved remote callback")
+		}
+	}
+	// Only public clients supported.
+	if req.TokenEndpointAuthMethod != "" && req.TokenEndpointAuthMethod != "none" {
+		return reject("invalid_client_metadata", "only token_endpoint_auth_method=none is supported")
+	}
+	grantTypes = req.GrantTypes
+	if len(grantTypes) == 0 {
+		grantTypes = []string{"authorization_code"}
+	}
+	// The token endpoint only implements the authorization-code and refresh-token grants.
+	for _, gt := range grantTypes {
+		if gt != "authorization_code" && gt != "refresh_token" {
+			return reject("invalid_client_metadata", "unsupported grant_type")
+		}
+	}
+	responseTypes = req.ResponseTypes
+	if len(responseTypes) == 0 {
+		responseTypes = []string{"code"}
+	}
+	// The authorize endpoint only implements response_type=code.
+	for _, rt := range responseTypes {
+		if rt != "code" {
+			return reject("invalid_client_metadata", "unsupported response_type")
+		}
+	}
+	scope = req.Scope
+	if scope == "" {
+		scope = "mcp"
+	}
+	return grantTypes, responseTypes, scope, nil
 }
 
 func (h *OAuth2IssuanceHandler) handleRegister(ctx *fasthttp.RequestCtx) {
+	if !h.issuanceEnabled() {
+		ctx.SetStatusCode(fasthttp.StatusNotFound)
+		return
+	}
 	if h.store.ConfigStore == nil {
 		sendOAuthError(ctx, fasthttp.StatusServiceUnavailable, "server_error", "config store unavailable")
 		return
@@ -80,52 +189,10 @@ func (h *OAuth2IssuanceHandler) handleRegister(ctx *fasthttp.RequestCtx) {
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_request", "malformed request body")
 		return
 	}
-	if len(req.RedirectURIs) == 0 {
-		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_redirect_uri", "redirect_uris is required")
+	grantTypes, responseTypes, scope, metadataErr := validateOAuth2ClientMetadata(h.store, req)
+	if metadataErr != nil {
+		sendOAuthError(ctx, fasthttp.StatusBadRequest, metadataErr.code, metadataErr.description)
 		return
-	}
-	// Registration is public and unauthenticated, so reject dangerous schemes
-	// (javascript:, data:, etc.) here at the source. Only https is allowed, with
-	// http permitted exclusively for loopback addresses (RFC 9700 §4.1.3).
-	for _, uri := range req.RedirectURIs {
-		if !isAllowedRedirectScheme(uri) {
-			sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_redirect_uri", "redirect_uris must use https (or http for loopback addresses)")
-			return
-		}
-	}
-	// Only public clients supported.
-	if req.TokenEndpointAuthMethod != "" && req.TokenEndpointAuthMethod != "none" {
-		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_client_metadata", "only token_endpoint_auth_method=none is supported")
-		return
-	}
-
-	grantTypes := req.GrantTypes
-	if len(grantTypes) == 0 {
-		grantTypes = []string{"authorization_code"}
-	}
-	// The token endpoint only implements the authorization-code and refresh-token
-	// grants. Reject anything else here so a registration never advertises a flow
-	// that would later be refused at /oauth2/token.
-	for _, gt := range grantTypes {
-		if gt != "authorization_code" && gt != "refresh_token" {
-			sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_client_metadata", "unsupported grant_type")
-			return
-		}
-	}
-	responseTypes := req.ResponseTypes
-	if len(responseTypes) == 0 {
-		responseTypes = []string{"code"}
-	}
-	// The authorize endpoint only implements response_type=code.
-	for _, rt := range responseTypes {
-		if rt != "code" {
-			sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_client_metadata", "unsupported response_type")
-			return
-		}
-	}
-	scope := req.Scope
-	if scope == "" {
-		scope = "mcp"
 	}
 
 	clientID := uuid.New().String()
@@ -164,6 +231,10 @@ func (h *OAuth2IssuanceHandler) handleRegister(ctx *fasthttp.RequestCtx) {
 // --- GET /oauth2/authorize ---
 
 func (h *OAuth2IssuanceHandler) handleAuthorize(ctx *fasthttp.RequestCtx) {
+	if !h.issuanceEnabled() {
+		ctx.SetStatusCode(fasthttp.StatusNotFound)
+		return
+	}
 	if h.store.ConfigStore == nil {
 		sendOAuthError(ctx, fasthttp.StatusServiceUnavailable, "server_error", "config store unavailable")
 		return
@@ -178,8 +249,21 @@ func (h *OAuth2IssuanceHandler) handleAuthorize(ctx *fasthttp.RequestCtx) {
 	resource := string(q.Peek("resource"))
 	scope := string(q.Peek("scope"))
 
-	// Validate client exists before using redirect_uri.
-	client, err := h.store.ConfigStore.GetOAuth2ClientByClientID(ctx, clientID)
+	// Bound every parameter that ends up in the authorize-request row before
+	// touching the store. Answered directly (not via redirect) so an oversize
+	// value is neither persisted nor echoed back in a Location header.
+	if len(state) > maxOAuth2StateLen || len(scope) > maxOAuth2ScopeLen || len(codeChallenge) > maxOAuth2CodeChallengeLen {
+		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_request", "state, scope or code_challenge exceeds the maximum length")
+		return
+	}
+
+	// Validate client exists before using redirect_uri. No state is created until
+	// both the client and its redirect_uri have been verified.
+	client, metadataErr, err := lookupOAuth2Client(ctx, h.store, h.clientMetadata, clientID)
+	if metadataErr != nil {
+		sendOAuthError(ctx, metadataErr.httpStatus(), metadataErr.code, metadataErr.description)
+		return
+	}
 	if err != nil || client == nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_client", "unknown client_id")
@@ -190,7 +274,7 @@ func (h *OAuth2IssuanceHandler) handleAuthorize(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Validate redirect_uri (loopback any-port per RFC 8252 §7.3).
-	if !matchRedirectURI(redirectURIRaw, client.RedirectURIs) {
+	if !oauth2RedirectAllowed(h.store, redirectURIRaw) || !matchRedirectURI(redirectURIRaw, client.RedirectURIs) {
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_redirect_uri", "redirect_uri not registered for this client")
 		return
 	}
@@ -304,19 +388,33 @@ func (h *OAuth2IssuanceHandler) handleAuthorize(ctx *fasthttp.RequestCtx) {
 
 // --- POST /oauth2/token ---
 
+// handleToken serves POST /oauth2/token. Each grant is served only while its
+// own feature is on: authorization_code and refresh_token with MCP OAuth, an
+// extension grant with its extension. With neither on the endpoint is absent.
 func (h *OAuth2IssuanceHandler) handleToken(ctx *fasthttp.RequestCtx) {
+	mcpOAuth, extension := h.issuanceEnabled(), extensionServing(h.extensions, h.store)
+	if !mcpOAuth && !extension {
+		ctx.SetStatusCode(fasthttp.StatusNotFound)
+		return
+	}
 	if h.store.ConfigStore == nil {
 		sendOAuthError(ctx, fasthttp.StatusServiceUnavailable, "server_error", "config store unavailable")
 		return
 	}
 
 	grantType := string(ctx.FormValue("grant_type"))
-	switch grantType {
-	case "authorization_code":
+	switch {
+	case grantType == "authorization_code" && mcpOAuth:
 		h.handleTokenAuthCode(ctx)
-	case "refresh_token":
+	case grantType == "refresh_token" && mcpOAuth:
 		h.handleTokenRefresh(ctx)
 	default:
+		if extension {
+			if grant := h.extensions.GrantHandler(grantType); grant != nil {
+				grant(ctx, h)
+				return
+			}
+		}
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "unsupported_grant_type", fmt.Sprintf("grant_type %q not supported", grantType))
 	}
 }
@@ -356,7 +454,7 @@ func (h *OAuth2IssuanceHandler) handleTokenAuthCode(ctx *fasthttp.RequestCtx) {
 	// against the client's registered URIs at /oauth2/authorize), so per RFC 6749
 	// §4.1.3 the token request must present it and it must match exactly. Accepting
 	// a missing redirect_uri would let a code be exchanged outside its bound redirect.
-	if redirectURI == "" || req.RedirectURI != redirectURI {
+	if !oauth2RedirectAllowed(h.store, redirectURI) || req.RedirectURI != redirectURI {
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "redirect_uri mismatch")
 		return
 	}
@@ -371,7 +469,7 @@ func (h *OAuth2IssuanceHandler) handleTokenAuthCode(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	accessToken, refreshToken, refreshTokenObj, err := h.issueTokenPair(ctx, req.ID, req.ClientID, req.BfMode, req.BfSub, req.Scope, req.Resource)
+	accessToken, refreshToken, refreshTokenObj, err := h.issueTokenPair(ctx, req.ID, req.ClientID, req.BfMode, req.BfSub, req.Scope, req.Resource, h.consentedClientName(ctx, req.ClientID))
 	if err != nil {
 		return
 	}
@@ -496,7 +594,7 @@ func (h *OAuth2IssuanceHandler) handleTokenRefresh(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	accessToken, newRefreshToken, newRefreshTokenObj, err := h.issueTokenPair(ctx, rt.FamilyID, rt.ClientID, rt.BfMode, rt.BfSub, rt.Scope, resource)
+	accessToken, newRefreshToken, newRefreshTokenObj, err := h.issueTokenPair(ctx, rt.FamilyID, rt.ClientID, rt.BfMode, rt.BfSub, rt.Scope, resource, rt.ClientDisplayName)
 	if err != nil {
 		return
 	}
@@ -532,44 +630,17 @@ func (h *OAuth2IssuanceHandler) handleTokenRefresh(ctx *fasthttp.RequestCtx) {
 // non-nil error so the caller can return immediately without writing again.
 func (h *OAuth2IssuanceHandler) issueTokenPair(
 	ctx *fasthttp.RequestCtx,
-	familyID, clientID, bfMode, bfSub, scope, resource string,
+	familyID, clientID, bfMode, bfSub, scope, resource, clientDisplayName string,
 ) (accessToken, refreshTokenPlain string, rt *configtables.TableOAuth2RefreshToken, err error) {
 	cfg := oauth2ServerCfg(h.store)
-	accessTokenTTL := cfg.AccessTokenTTL
-	if accessTokenTTL <= 0 {
-		accessTokenTTL = configtables.DefaultAccessTokenTTL
-	}
-
-	signingKey, err := h.store.GetOAuth2SigningKey(ctx)
+	accessToken, err = h.signAccessToken(ctx, AccessTokenSpec{
+		Mode: bfMode, Subject: bfSub, Scope: scope, Audience: []string{resource}, TTL: cfg.AccessTokenTTL,
+	})
 	if err != nil {
-		sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "signing key unavailable")
+		sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", err.Error())
 		return
 	}
-	privKey, err := parseRSAPrivateKeyPEM(signingKey.PrivateKeyPEM)
-	if err != nil {
-		sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "invalid signing key")
-		return
-	}
-
-	issuer := oauth2IssuerURL(ctx, h.store)
 	now := time.Now()
-	claims := jwt.MapClaims{
-		"iss":     issuer,
-		"aud":     jwt.ClaimStrings{resource},
-		"sub":     bfSub,
-		"bf_mode": bfMode,
-		"scope":   scope,
-		"iat":     now.Unix(),
-		"nbf":     now.Unix(),
-		"exp":     now.Add(time.Duration(accessTokenTTL) * time.Second).Unix(),
-	}
-	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-	tok.Header["kid"] = signingKey.KID
-	accessToken, err = tok.SignedString(privKey)
-	if err != nil {
-		sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "failed to sign access token")
-		return
-	}
 
 	refreshTokenPlain, err = generateSecureToken(32)
 	if err != nil {
@@ -586,11 +657,27 @@ func (h *OAuth2IssuanceHandler) issueTokenPair(
 		Scope:     scope,
 		Resource:  resource,
 		CreatedAt: now,
+
+		ClientDisplayName: clientDisplayName,
 	}
 	return
 }
 
-// sendTokenResponse writes the RFC 6749 token response to ctx.
+// consentedClientName is the name a metadata-document client was consented under, kept on its grant
+// because it has no client row to be listed by. Best effort: consent just resolved it, so this is cached.
+func (h *OAuth2IssuanceHandler) consentedClientName(ctx context.Context, clientID string) string {
+	if !oauth2.IsClientMetadataURL(clientID) {
+		return ""
+	}
+	client, metadataErr, err := lookupOAuth2Client(ctx, h.store, h.clientMetadata, clientID)
+	if err != nil || metadataErr != nil || client == nil {
+		return ""
+	}
+	return client.ClientName
+}
+
+// sendTokenResponse writes the RFC 6749 token response to ctx. refresh_token is
+// omitted when empty, for grants that issue none.
 func sendTokenResponse(ctx *fasthttp.RequestCtx, accessToken, refreshToken, scope string, accessTokenTTL int) {
 	if accessTokenTTL <= 0 {
 		accessTokenTTL = configtables.DefaultAccessTokenTTL
@@ -599,13 +686,16 @@ func sendTokenResponse(ctx *fasthttp.RequestCtx, accessToken, refreshToken, scop
 	ctx.SetContentType("application/json")
 	ctx.Response.Header.Set("Cache-Control", "no-store")
 	ctx.Response.Header.Set("Pragma", "no-cache")
-	data, err := sonic.Marshal(map[string]any{
-		"access_token":  accessToken,
-		"token_type":    "Bearer",
-		"expires_in":    accessTokenTTL,
-		"refresh_token": refreshToken,
-		"scope":         scope,
-	})
+	body := map[string]any{
+		"access_token": accessToken,
+		"token_type":   "Bearer",
+		"expires_in":   accessTokenTTL,
+		"scope":        scope,
+	}
+	if refreshToken != "" {
+		body["refresh_token"] = refreshToken
+	}
+	data, err := sonic.Marshal(body)
 	if err != nil {
 		sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "failed to marshal token response")
 		return
@@ -671,7 +761,7 @@ var allowedPrivateUseRedirectSchemes = map[string]struct{}{
 // It is default-deny: any scheme not matching one of the above is rejected.
 func isAllowedRedirectScheme(candidate string) bool {
 	parsed, err := url.Parse(candidate)
-	if err != nil {
+	if err != nil || parsed.Hostname() == "" || parsed.Opaque != "" || parsed.User != nil || strings.ContainsAny(candidate, "#\\") {
 		return false
 	}
 	switch parsed.Scheme {
@@ -692,6 +782,9 @@ func isAllowedRedirectScheme(candidate string) bool {
 // matchRedirectURI validates redirect_uri against registered URIs.
 // For loopback addresses (localhost / 127.0.0.1 / [::1]), port is ignored per RFC 8252 §7.3.
 func matchRedirectURI(candidate string, registered []string) bool {
+	if !isAllowedRedirectScheme(candidate) {
+		return false
+	}
 	parsed, err := url.Parse(candidate)
 	if err != nil {
 		return false
@@ -705,7 +798,7 @@ func matchRedirectURI(candidate string, registered []string) bool {
 		}
 		if isLoopback && isLoopbackRedirectHost(rParsed.Hostname()) {
 			// Loopback: match scheme + host (without port) + path.
-			if parsed.Scheme == rParsed.Scheme && parsed.Path == rParsed.Path {
+			if parsed.Scheme == rParsed.Scheme && parsed.EscapedPath() == rParsed.EscapedPath() && parsed.RawQuery == rParsed.RawQuery && parsed.ForceQuery == rParsed.ForceQuery {
 				return true
 			}
 		} else {

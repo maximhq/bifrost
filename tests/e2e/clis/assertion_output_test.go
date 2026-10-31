@@ -227,6 +227,8 @@ func TestRateLimitDelayDetectsErrorFirstWording(t *testing.T) {
 		"Error: rate_limit_error",
 		"Rate limit exceeded. Please wait 12 seconds before retrying.",
 		"429 Too Many Requests",
+		"Error: 429",
+		`{"type":"error","message":"provider returned statusCode":429}`,
 	} {
 		if _, ok := rateLimitDelay(throttled, nil); !ok {
 			t.Errorf("genuine throttle not detected: %q", throttled)
@@ -236,6 +238,9 @@ func TestRateLimitDelayDetectsErrorFirstWording(t *testing.T) {
 	for _, prose := range []string{
 		"PreLLMHook Pipeline (auth, rate-limit, cache check - registration order)",
 		"The gateway supports rate limiting per virtual key.",
+		// The regression: a token count of exactly 429 in opencode's
+		// step-finish JSON must not read as a throttle.
+		`{"type":"step-finish","tokens":{"total":21558,"input":429,"output":9,"reasoning":0,"cache":{"write":0,"read":21120}},"cost":0}`,
 	} {
 		if _, ok := rateLimitDelay(prose, nil); ok {
 			t.Errorf("model prose about rate limits mistaken for a throttle: %q", prose)

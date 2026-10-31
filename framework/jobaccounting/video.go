@@ -55,6 +55,8 @@ var videoProviders = map[schemas.ModelProvider]struct{}{
 	schemas.Replicate: {},
 	schemas.Runway:    {},
 	schemas.Runware:   {},
+	schemas.MiniMax:   {},
+	schemas.BytePlus:  {},
 }
 
 // VideoRetriever is the provider call the video settler needs: given a job row,
@@ -211,6 +213,7 @@ func videoDebugFor(videoID string, status schemas.VideoStatus, dims modelcatalog
 				Seconds:      dims.Seconds,
 				Size:         dims.Size,
 				OutputCount:  dims.OutputCount,
+				OutputTokens: dims.OutputTokens,
 				Incomplete:   incomplete,
 				RequestType:  videoRequestTypeFor(dims.RequestType),
 				ProviderCost: dims.ProviderCost,
@@ -249,8 +252,15 @@ func (s *VideoSettler) RepriceFromLog(entry *logstore.Log, pricing PricingManage
 
 	// A provider that reported its own cost is right about its own bill. Without
 	// this a full reprice would quietly replace an exact figure with an estimate.
+	// The calculator decides, so a provider configured to ignore its cost reprices.
 	if accounting.ProviderCost != nil && *accounting.ProviderCost > 0 {
-		return &RepricedCost{Cost: *accounting.ProviderCost}, nil
+		details := pricing.CalculateVideoCostDetails(modelcatalog.VideoPricingDimensions{
+			Model:        entry.Model,
+			ProviderCost: accounting.ProviderCost,
+		}, schemas.ModelProvider(entry.Provider), nil)
+		if details.ProviderCostUsed {
+			return &RepricedCost{Cost: details.Cost}, nil
+		}
 	}
 
 	// A failed generation settled at a real price of zero, not an absent one.
@@ -271,11 +281,12 @@ func (s *VideoSettler) RepriceFromLog(entry *logstore.Log, pricing PricingManage
 
 	scopes := PricingScopesForLog(entry)
 	details := pricing.CalculateVideoCostDetails(modelcatalog.VideoPricingDimensions{
-		Model:       entry.Model,
-		RequestType: requestType,
-		Seconds:     accounting.Seconds,
-		Size:        accounting.Size,
-		OutputCount: accounting.OutputCount,
+		Model:        entry.Model,
+		RequestType:  requestType,
+		Seconds:      accounting.Seconds,
+		Size:         accounting.Size,
+		OutputCount:  accounting.OutputCount,
+		OutputTokens: accounting.OutputTokens,
 	}, schemas.ModelProvider(entry.Provider), &scopes)
 	if !details.Priced {
 		return nil, fmt.Errorf("%w: no video rate for log %s", ErrPricingInputsUnavailable, entry.ID)

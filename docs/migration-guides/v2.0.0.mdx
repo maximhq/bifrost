@@ -398,6 +398,16 @@ The removed prefix is swallowed by the HTTP transport and is not forwarded upstr
 
 ---
 
+## Skills Marketplace URL Migration
+
+During the database migration, Bifrost copies a nonempty `mcp_external_client_url` into an empty `skills_external_client_url`. It preserves the MCP value and any explicitly configured skills URL.
+
+After migration, the two settings are independent. Changing the MCP URL does not update the skills URL. If no MCP URL is available to copy, set **Skills → Skills Settings → External Client URL** before registering a marketplace. Skill management and direct downloads remain available without this URL.
+
+See [Skills Repository marketplace access](/features/skills-repository#configure-marketplace-access) for configuration and Git prerequisites.
+
+---
+
 ## Migration Checklist
 
 <Steps>
@@ -443,5 +453,8 @@ If you implement `framework/logstore.LogStore`, change `BulkUpdateCost` to take 
 
 <Step title="Migrate legacy observability attribute and custom-label keys">
 Update dashboards, alerts, collector processors, recording rules, and Go integrations to use the [canonical observability keys](#breaking-change-6-legacy-observability-attribute-aliases-were-removed). Replace any `x-bf-prom-*` request headers with `x-bf-dim-*`.
+</Step>
+<Step title="Verify the skills marketplace URL if using marketplaces">
+Check the migrated `client.skills_external_client_url`, or set it explicitly before registering a marketplace. See [Skills Marketplace URL Migration](#skills-marketplace-url-migration).
 </Step>
 </Steps>

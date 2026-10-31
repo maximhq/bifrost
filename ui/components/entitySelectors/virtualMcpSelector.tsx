@@ -7,6 +7,7 @@ import {
 	type EntityLabelResolverProps,
 	type EntitySelectorModeProps,
 	type EntitySelectorOption,
+	useEntitySelectorPages,
 	useEntitySelectorSearch,
 } from "@/components/entitySelectors/entitySelector";
 import { useGetVirtualMCPQuery, useGetVirtualMCPsQuery } from "@/lib/store";
@@ -31,19 +32,24 @@ interface VirtualMCPSelectorOwnProps extends EntitySelectorCommonProps {
 export type VirtualMCPSelectorProps = VirtualMCPSelectorOwnProps & EntitySelectorModeProps;
 
 export function VirtualMCPSelector({ limit = ENTITY_SELECTOR_PAGE_SIZE, ...props }: VirtualMCPSelectorProps) {
-	const { open, setOpen, setSearch, debouncedSearch, skip, isDebouncing } = useEntitySelectorSearch();
+	const search = useEntitySelectorSearch();
 
-	const { data, isFetching, isError } = useGetVirtualMCPsQuery({ limit, search: debouncedSearch || undefined }, { skip });
+	const { currentData, isFetching, isError, refetch } = useGetVirtualMCPsQuery(
+		{ limit, offset: search.offset, search: search.debouncedSearch || undefined },
+		{ skip: search.skip },
+	);
 
-	const options = useMemo(
+	const entries = useMemo(
 		() =>
-			(data?.virtual_mcps ?? []).map((vmcp) => ({
+			currentData?.virtual_mcps?.map((vmcp) => ({
 				value: String(vmcp.id),
 				label: vmcp.name || String(vmcp.id),
 				description: vmcp.endpoint_slug ? `/mcp/${vmcp.endpoint_slug}` : undefined,
 			})),
-		[data],
+		[currentData],
 	);
+
+	const listProps = useEntitySelectorPages(search, { entries, totalCount: currentData?.total_count, isFetching, isError, refetch });
 
 	return (
 		<EntitySelector
@@ -51,14 +57,7 @@ export function VirtualMCPSelector({ limit = ENTITY_SELECTOR_PAGE_SIZE, ...props
 			LabelResolver={VirtualMCPLabelResolver}
 			entityLabel="Virtual MCP"
 			entityLabelPlural="Virtual MCPs"
-			options={options}
-			isFetching={isFetching}
-			isError={isError}
-			open={open}
-			onOpenChange={setOpen}
-			onSearchChange={setSearch}
-			isSearching={isDebouncing || (isFetching && !!debouncedSearch)}
-			debouncedSearch={debouncedSearch}
+			{...listProps}
 		/>
 	);
 }

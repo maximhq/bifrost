@@ -1,9 +1,11 @@
 package streaming
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -12,17 +14,180 @@ import (
 // consumer is notified and memory is released.
 const gateReplayBufMaxBytes int64 = 100 * 1024 * 1024
 
-// chunkBytes returns the approximate wire size of a BifrostStreamChunk via
-// MarshalJSON. Used only on the paused replay path to bound buffer growth.
-func chunkBytes(chunk *schemas.BifrostStreamChunk) int64 {
-	if chunk == nil {
+// gateChunkSizeFloor is the per-chunk baseline for replay accounting: struct
+// overhead plus the small scalar fields the estimator does not walk. Measured
+// heap overhead for a passthrough chunk is ~500B; 512 keeps the floor honest
+// without tripping the 100MB cap on large-but-legitimate streams (a 60MB
+// stream in 1.4KB events carries ~43k chunks — a 1KB floor alone would have
+// added 43MB to the estimate).
+const gateChunkSizeFloor int64 = 512
+
+// gateReplayEntry pairs a buffered chunk with its size estimate, computed once
+// at append so cap accounting never re-serializes held chunks.
+//
+// Ownership contract: a chunk handed to GateSend belongs to the delivery
+// pipeline from that point on. Producers must hand over freshly built,
+// right-sized chunks (no shared scratch buffers, no sub-slices of larger
+// arrays) and must not retain or mutate them afterward — the same invariant
+// the non-gated channel send already requires, since the chunk outlives the
+// producer's loop either way. The only sanctioned post-append modification is
+// TransformPausedBuffer, whose copy-on-write replacements are re-estimated at
+// install. Violating this contract cannot corrupt delivery or bypass guardrail
+// inspection; it can only make the cached size (and thus the
+// gateReplayBufMaxBytes accounting) under- or over-read.
+type gateReplayEntry struct {
+	chunk *schemas.BifrostStreamChunk
+	size  int64
+}
+
+// gateRawBytes sizes the raw request/response carriers without serializing:
+// they typically hold json.RawMessage, []byte, or string. An atypical carrier
+// (e.g. a pre-parsed map) is sonic-sized rather than riding the buffer
+// uncounted; that path only exists for providers that deviate from
+// compactRawJSON's json.RawMessage contract.
+func gateRawBytes(v interface{}) int64 {
+	switch b := v.(type) {
+	case nil:
+		return 0
+	case *interface{}:
+		// Unwrap a pointer-boxed value so its payload hits the fast len()
+		// cases below instead of the sonic fallback.
+		if b == nil {
+			return 0
+		}
+		return gateRawBytes(*b)
+	case json.RawMessage:
+		return int64(len(b))
+	case []byte:
+		return int64(len(b))
+	case string:
+		return int64(len(b))
+	}
+	return gateCompositeBytes(v)
+}
+
+func gateStrPtrBytes(s *string) int64 {
+	if s == nil {
 		return 0
 	}
-	b, err := chunk.MarshalJSON()
+	return int64(len(*s))
+}
+
+// gateCompositeBytes sizes a composite carrier (full item, part, or terminal
+// message copy) with a plain sonic marshal. Composites ride only item-boundary
+// events, never per-delta chunks, so this stays off the hot append path.
+func gateCompositeBytes(v interface{}) int64 {
+	b, err := sonic.Marshal(v)
 	if err != nil {
 		return 0
 	}
 	return int64(len(b))
+}
+
+// estimateChunkBytes estimates the heap held by one buffered chunk without
+// serializing it. It feeds only the gateReplayBufMaxBytes safety cap, so
+// exactness is not required: it counts the carriers that grow with response
+// size — passthrough bodies, raw request/response bytes, delta/text strings,
+// tool-call arguments, and composite item copies — and covers everything else
+// with a fixed per-chunk floor.
+func estimateChunkBytes(chunk *schemas.BifrostStreamChunk) int64 {
+	if chunk == nil {
+		return 0
+	}
+	size := gateChunkSizeFloor
+	switch {
+	case chunk.BifrostPassthroughResponse != nil:
+		r := chunk.BifrostPassthroughResponse
+		size += int64(len(r.Body))
+		size += gateRawBytes(r.ExtraFields.RawRequest) + gateRawBytes(r.ExtraFields.RawResponse)
+	case chunk.BifrostChatResponse != nil:
+		r := chunk.BifrostChatResponse
+		size += int64(len(r.ID)) + gateChoiceBytes(r.Choices)
+		size += gateRawBytes(r.ExtraFields.RawRequest) + gateRawBytes(r.ExtraFields.RawResponse)
+	case chunk.BifrostTextCompletionResponse != nil:
+		r := chunk.BifrostTextCompletionResponse
+		size += int64(len(r.ID)) + gateChoiceBytes(r.Choices)
+		size += gateRawBytes(r.ExtraFields.RawRequest) + gateRawBytes(r.ExtraFields.RawResponse)
+	case chunk.BifrostResponsesStreamResponse != nil:
+		r := chunk.BifrostResponsesStreamResponse
+		size += gateStrPtrBytes(r.Delta) + gateStrPtrBytes(r.Text) + gateStrPtrBytes(r.Arguments) +
+			gateStrPtrBytes(r.Input) + gateStrPtrBytes(r.Refusal) + gateStrPtrBytes(r.Obfuscation) +
+			gateStrPtrBytes(r.PartialImageB64) + gateStrPtrBytes(r.Signature)
+		if r.Item != nil {
+			size += gateCompositeBytes(r.Item)
+		}
+		if r.Part != nil {
+			size += gateCompositeBytes(r.Part)
+		}
+		if r.Response != nil {
+			size += gateCompositeBytes(r.Response)
+		}
+		if len(r.LogProbs) > 0 {
+			// Same treatment as chat choice logprobs: only present when the
+			// client requested them, several KB per chunk at high top_logprobs.
+			size += gateCompositeBytes(r.LogProbs)
+		}
+		size += gateRawBytes(r.ExtraFields.RawRequest) + gateRawBytes(r.ExtraFields.RawResponse)
+	case chunk.BifrostSpeechStreamResponse != nil:
+		r := chunk.BifrostSpeechStreamResponse
+		size += int64(len(r.Audio))
+		size += gateRawBytes(r.ExtraFields.RawRequest) + gateRawBytes(r.ExtraFields.RawResponse)
+	case chunk.BifrostTranscriptionStreamResponse != nil:
+		r := chunk.BifrostTranscriptionStreamResponse
+		size += gateStrPtrBytes(r.Delta) + int64(len(r.Text))
+		size += gateRawBytes(r.ExtraFields.RawRequest) + gateRawBytes(r.ExtraFields.RawResponse)
+	case chunk.BifrostImageGenerationStreamResponse != nil:
+		r := chunk.BifrostImageGenerationStreamResponse
+		size += int64(len(r.B64JSON)) + int64(len(r.URL))
+		// The image variant carries direct raw strings separate from ExtraFields.
+		size += int64(len(r.RawRequest)) + int64(len(r.RawResponse))
+		size += gateRawBytes(r.ExtraFields.RawRequest) + gateRawBytes(r.ExtraFields.RawResponse)
+	case chunk.BifrostError != nil:
+		e := chunk.BifrostError
+		if e.Error != nil {
+			size += int64(len(e.Error.Message))
+		}
+		size += gateRawBytes(e.ExtraFields.RawRequest) + gateRawBytes(e.ExtraFields.RawResponse)
+	}
+	return size
+}
+
+// gateChoiceBytes sizes the text carriers of chat/text-completion choices:
+// stream deltas (content, reasoning, refusal, tool-call arguments), terminal
+// message copies, and text-completion text.
+func gateChoiceBytes(choices []schemas.BifrostResponseChoice) int64 {
+	var size int64
+	for i := range choices {
+		c := &choices[i]
+		if c.ChatStreamResponseChoice != nil && c.ChatStreamResponseChoice.Delta != nil {
+			d := c.ChatStreamResponseChoice.Delta
+			size += gateStrPtrBytes(d.Content) + gateStrPtrBytes(d.Reasoning) + gateStrPtrBytes(d.Refusal)
+			size += int64(len(d.ExtraContent))
+			for j := range d.ToolCalls {
+				size += int64(len(d.ToolCalls[j].Function.Arguments))
+			}
+			if d.Audio != nil {
+				size += int64(len(d.Audio.Data)) + int64(len(d.Audio.Transcript))
+			}
+			for j := range d.ReasoningDetails {
+				rd := &d.ReasoningDetails[j]
+				size += gateStrPtrBytes(rd.Text) + gateStrPtrBytes(rd.Data) +
+					gateStrPtrBytes(rd.Signature) + gateStrPtrBytes(rd.Summary)
+			}
+		}
+		if c.LogProbs != nil {
+			// Only present when the client requested logprobs; several KB per
+			// chunk at top_logprobs=20, far past the floor.
+			size += gateCompositeBytes(c.LogProbs)
+		}
+		if c.ChatNonStreamResponseChoice != nil && c.ChatNonStreamResponseChoice.Message != nil {
+			size += gateCompositeBytes(c.ChatNonStreamResponseChoice.Message)
+		}
+		if c.TextCompletionResponseChoice != nil {
+			size += gateStrPtrBytes(c.TextCompletionResponseChoice.Text)
+		}
+	}
+	return size
 }
 
 // PauseStream is the Tracer-level entry point for pausing a stream.
@@ -360,7 +525,12 @@ func (sa *StreamAccumulator) TransformPausedBuffer(transform schemas.PausedStrea
 		sa.mu.Unlock()
 		return fmt.Errorf("paused stream buffer transform scope is invalid")
 	}
-	original := append([]*schemas.BifrostStreamChunk(nil), sa.gateReplayBuf[start:]...)
+	original := make([]*schemas.BifrostStreamChunk, len(sa.gateReplayBuf)-start)
+	var originalBytes int64
+	for i, entry := range sa.gateReplayBuf[start:] {
+		original[i] = entry.chunk
+		originalBytes += entry.size
+	}
 	sa.mu.Unlock()
 
 	result, err := transform(original)
@@ -374,10 +544,12 @@ func (sa *StreamAccumulator) TransformPausedBuffer(transform schemas.PausedStrea
 		return fmt.Errorf("paused stream buffer transform release count %d is outside [0,%d]", result.ReleaseCount, len(original))
 	}
 
-	var originalBytes, transformedBytes int64
-	for i := range original {
-		originalBytes += chunkBytes(original[i])
-		transformedBytes += chunkBytes(result.Chunks[i])
+	// Size the replacements once; cached alongside each installed entry below.
+	transformedSizes := make([]int64, len(result.Chunks))
+	var transformedBytes int64
+	for i := range result.Chunks {
+		transformedSizes[i] = estimateChunkBytes(result.Chunks[i])
+		transformedBytes += transformedSizes[i]
 	}
 
 	sa.mu.Lock()
@@ -390,7 +562,7 @@ func (sa *StreamAccumulator) TransformPausedBuffer(transform schemas.PausedStrea
 		return fmt.Errorf("paused stream buffer changed during transformation")
 	}
 	for i := range original {
-		if sa.gateReplayBuf[currentStart+i] != original[i] {
+		if sa.gateReplayBuf[currentStart+i].chunk != original[i] {
 			return fmt.Errorf("paused stream buffer changed during transformation")
 		}
 	}
@@ -401,7 +573,9 @@ func (sa *StreamAccumulator) TransformPausedBuffer(transform schemas.PausedStrea
 	if nextBytes > gateReplayBufMaxBytes {
 		return fmt.Errorf("transformed paused stream buffer exceeds %d bytes", gateReplayBufMaxBytes)
 	}
-	copy(sa.gateReplayBuf[currentStart:], result.Chunks)
+	for i := range result.Chunks {
+		sa.gateReplayBuf[currentStart+i] = gateReplayEntry{chunk: result.Chunks[i], size: transformedSizes[i]}
+	}
 	sa.gateReplayBufBytes = nextBytes
 	nextBoundary := currentStart + result.ReleaseCount
 	sa.gateTransformStart = nextBoundary
@@ -447,6 +621,23 @@ func (sa *StreamAccumulator) End(err *schemas.BifrostError) {
 	}
 }
 
+// sendStreamCommitMarker tells the core's waiting first-chunk check that the upstream has
+// produced valid output while a plugin holds it. Without it the check waits for the first
+// delivered chunk, which a buffering plugin releases only once the whole upstream response
+// is in, so the transport writes no byte (not even headers) and a proxy idle timeout in
+// front of Bifrost cuts the request. Sent outside sa.mu: the check is the receiver, and a
+// flusher racing it is harmless because every forwarder past the check drops the marker.
+func sendStreamCommitMarker(ch chan *schemas.BifrostStreamChunk, ctx *schemas.BifrostContext) {
+	defer func() {
+		// The channel may already be closed by a consumer that abandoned it.
+		_ = recover()
+	}()
+	select {
+	case ch <- schemas.StreamCommitMarker():
+	case <-ctx.Done():
+	}
+}
+
 // GateSend implements the per-chunk delivery gate.
 //
 //   - Active state: chunk is forwarded to ch (with ctx.Done() guard).
@@ -458,6 +649,8 @@ func (sa *StreamAccumulator) End(err *schemas.BifrostError) {
 // buffered, the final chunk is appended to the buffer so the flusher delivers
 // it in order.
 func (sa *StreamAccumulator) GateSend(chunk *schemas.BifrostStreamChunk, isFinal, isHardErr bool, ch chan *schemas.BifrostStreamChunk, ctx *schemas.BifrostContext) bool {
+	// Consumed on every chunk, so a ready watch never outlives the chunk it was set for.
+	commit := ctx != nil && ctx.ConsumeStreamCommitWatch()
 	sa.mu.Lock()
 	sa.gateSeq++
 	// Cache (ch, ctx) for the flusher. They are stable for the life of the stream.
@@ -479,7 +672,7 @@ func (sa *StreamAccumulator) GateSend(chunk *schemas.BifrostStreamChunk, isFinal
 	// or until EndStream is called explicitly. Enforces a 100 MB cap to
 	// prevent unbounded heap growth from a paused-and-forgotten stream.
 	if sa.gateState == StreamStatePaused {
-		size := chunkBytes(chunk)
+		size := estimateChunkBytes(chunk)
 		if sa.gateReplayBufBytes+size > gateReplayBufMaxBytes {
 			// Overflow: force-end the gate with a synthetic error so the
 			// consumer is notified and memory is released. Drops this chunk
@@ -505,7 +698,7 @@ func (sa *StreamAccumulator) GateSend(chunk *schemas.BifrostStreamChunk, isFinal
 			sa.mu.Unlock()
 			return false
 		}
-		sa.gateReplayBuf = append(sa.gateReplayBuf, chunk)
+		sa.gateReplayBuf = append(sa.gateReplayBuf, gateReplayEntry{chunk: chunk, size: size})
 		sa.gateReplayBufBytes += size
 		if isFinal || isHardErr {
 			sa.gatePendingTerminal = true
@@ -522,6 +715,9 @@ func (sa *StreamAccumulator) GateSend(chunk *schemas.BifrostStreamChunk, isFinal
 			}
 		}
 		sa.mu.Unlock()
+		if commit && !isHardErr && chunk != nil && chunk.BifrostError == nil {
+			sendStreamCommitMarker(ch, ctx)
+		}
 		return true
 	}
 
@@ -530,8 +726,9 @@ func (sa *StreamAccumulator) GateSend(chunk *schemas.BifrostStreamChunk, isFinal
 		// If there's already a flusher or a non-empty buffer, append the final
 		// chunk so it's delivered after pending chunks. Otherwise fast-path send.
 		if sa.gateFlusherOn || len(sa.gateReplayBuf) > 0 {
-			sa.gateReplayBuf = append(sa.gateReplayBuf, chunk)
-			sa.gateReplayBufBytes += chunkBytes(chunk)
+			size := estimateChunkBytes(chunk)
+			sa.gateReplayBuf = append(sa.gateReplayBuf, gateReplayEntry{chunk: chunk, size: size})
+			sa.gateReplayBufBytes += size
 			sa.gateState = StreamStateEnded
 			if sa.gateCond != nil {
 				sa.gateCond.Broadcast()
@@ -548,8 +745,9 @@ func (sa *StreamAccumulator) GateSend(chunk *schemas.BifrostStreamChunk, isFinal
 	// so order is preserved between buffered and live chunks. Otherwise pure
 	// passthrough.
 	if len(sa.gateReplayBuf) > 0 {
-		sa.gateReplayBuf = append(sa.gateReplayBuf, chunk)
-		sa.gateReplayBufBytes += chunkBytes(chunk)
+		size := estimateChunkBytes(chunk)
+		sa.gateReplayBuf = append(sa.gateReplayBuf, gateReplayEntry{chunk: chunk, size: size})
+		sa.gateReplayBufBytes += size
 		sa.gateCond.Broadcast()
 		sa.mu.Unlock()
 		return true
@@ -564,7 +762,7 @@ func (sa *StreamAccumulator) GateSend(chunk *schemas.BifrostStreamChunk, isFinal
 // current unevaluated suffix held. It also stops when ctx is done.
 func (sa *StreamAccumulator) drainBufferLocked() {
 	for len(sa.gateReplayBuf) > 0 && (sa.gateState != StreamStatePaused || sa.gateApprovedPrefix > 0) {
-		chunk := sa.gateReplayBuf[0]
+		entry := sa.gateReplayBuf[0]
 		sa.gateReplayBuf = sa.gateReplayBuf[1:]
 		if sa.gateTransformStart > 0 {
 			sa.gateTransformStart--
@@ -573,17 +771,16 @@ func (sa *StreamAccumulator) drainBufferLocked() {
 			sa.gateApprovedPrefix--
 		}
 		// Decrement bytes per-chunk so the counter stays accurate even if
-		// the loop exits mid-drain (Pause). Clamp at zero to absorb any
-		// rounding drift between MarshalJSON sizes captured on append vs.
-		// re-computed here.
-		sa.gateReplayBufBytes -= chunkBytes(chunk)
+		// the loop exits mid-drain (Pause). Sizes are cached at append, so
+		// this is exact; the clamp is pure defense.
+		sa.gateReplayBufBytes -= entry.size
 		if sa.gateReplayBufBytes < 0 {
 			sa.gateReplayBufBytes = 0
 		}
 		ch := sa.gateFlusherCh
 		ctx := sa.gateFlusherCtx
 		sa.mu.Unlock()
-		ok := sendOrCancel(ctx, ch, chunk)
+		ok := sendOrCancel(ctx, ch, entry.chunk)
 		sa.mu.Lock()
 		if ok && len(sa.gateReplayBuf) > 0 {
 			ok = sa.waitForReplayIntervalLocked()
@@ -634,7 +831,10 @@ func (sa *StreamAccumulator) gateFlusher() {
 	for {
 		// Wait while paused (chunks may continue to arrive), or while active
 		// with empty buffer (no work). Wake on Ended or buffered-while-active.
-		for sa.gateState != StreamStateEnded && (len(sa.gateReplayBuf) == 0 || (sa.gateState == StreamStatePaused && sa.gateApprovedPrefix == 0)) {
+		// Also wake when Resume makes a pending terminal finishable: an approved
+		// prefix may have drained the whole buffer while still paused.
+		for sa.gateState != StreamStateEnded && !(sa.gatePendingTerminal && sa.gateState == StreamStateActive) &&
+			(len(sa.gateReplayBuf) == 0 || (sa.gateState == StreamStatePaused && sa.gateApprovedPrefix == 0)) {
 			sa.gateCond.Wait()
 		}
 		// Drain whatever is buffered (state is Active or Ended here).

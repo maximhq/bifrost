@@ -32,11 +32,27 @@ const (
 	LimitHolderVirtualKeyModelConfig    LimitHolderKind = "vk_model_config"
 
 	// Held by an access profile attached to a user. Named for the user rather than generically,
-	// because a profile is currently only attachable to a user; if it becomes attachable to other
-	// kinds of holder, each will need its own kind so a refusal can say whose profile it was.
+	// because a profile attached to something else is a different holder: see the team, business
+	// unit and customer profile kinds below, which exist for exactly the reason this comment once
+	// anticipated - a refusal has to say whose profile it was.
 	LimitHolderUserAccessProfile               LimitHolderKind = "user_access_profile"
 	LimitHolderUserAccessProfileProviderConfig LimitHolderKind = "user_access_profile_provider_config"
 	LimitHolderUserAccessProfileModelConfig    LimitHolderKind = "user_access_profile_model_config"
+
+	// Held by an access profile attached to a team, business unit or customer. The money is the
+	// entity's: it is charged on every request made under the entity - by a member or with a key the
+	// entity owns - whichever permit admitted the model. One holder each, for the same reason the
+	// permit kinds are separate: a caller told only that "an access profile is exhausted" cannot tell
+	// whose.
+	LimitHolderTeamAccessProfile                       LimitHolderKind = "team_access_profile"
+	LimitHolderTeamAccessProfileProviderConfig         LimitHolderKind = "team_access_profile_provider_config"
+	LimitHolderTeamAccessProfileModelConfig            LimitHolderKind = "team_access_profile_model_config"
+	LimitHolderBusinessUnitAccessProfile               LimitHolderKind = "business_unit_access_profile"
+	LimitHolderBusinessUnitAccessProfileProviderConfig LimitHolderKind = "business_unit_access_profile_provider_config"
+	LimitHolderBusinessUnitAccessProfileModelConfig    LimitHolderKind = "business_unit_access_profile_model_config"
+	LimitHolderCustomerAccessProfile                   LimitHolderKind = "customer_access_profile"
+	LimitHolderCustomerAccessProfileProviderConfig     LimitHolderKind = "customer_access_profile_provider_config"
+	LimitHolderCustomerAccessProfileModelConfig        LimitHolderKind = "customer_access_profile_model_config"
 
 	// Held by the user a request is attributed to, directly — a per-model limit assigned straight
 	// to the user rather than derived from an access profile they hold. Kept distinct from the

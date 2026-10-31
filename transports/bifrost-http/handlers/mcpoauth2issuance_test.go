@@ -5,14 +5,18 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -134,6 +138,34 @@ func TestHandleRegister_DCR(t *testing.T) {
 		assert.Equal(t, "none", resp["token_endpoint_auth_method"])
 		assert.Equal(t, "mcp", resp["scope"])
 		assert.Equal(t, []any{"authorization_code"}, resp["grant_types"])
+	})
+
+	// RFC 7591 §2 puts no bound on client_name or scope; both were varchar(255),
+	// which Postgres enforces, so a long value failed registration with an opaque
+	// server_error. They must be stored and echoed verbatim.
+	t.Run("long client_name and scope are accepted and stored verbatim", func(t *testing.T) {
+		h, store, _ := newIssuanceHandler(t)
+		longName := strings.Repeat("n", 1024)
+		longScope := longScopeValue()
+		body, err := json.Marshal(map[string]any{
+			"client_name":   longName,
+			"redirect_uris": []string{"http://127.0.0.1:1234/cb"},
+			"scope":         longScope,
+		})
+		require.NoError(t, err)
+		ctx := formPostCtx("")
+		ctx.Request.SetBody(body)
+		ctx.Request.Header.SetContentType("application/json")
+
+		h.handleRegister(ctx)
+		require.Equal(t, fasthttp.StatusCreated, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		var resp map[string]any
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+		assert.Equal(t, longScope, resp["scope"])
+		stored, err := store.GetOAuth2ClientByClientID(context.Background(), resp["client_id"].(string))
+		require.NoError(t, err)
+		assert.Equal(t, longName, stored.ClientName)
+		assert.Equal(t, longScope, stored.Scope)
 	})
 
 	t.Run("missing redirect_uris is rejected", func(t *testing.T) {
@@ -282,6 +314,74 @@ func TestHandleAuthorize(t *testing.T) {
 		require.Equal(t, fasthttp.StatusFound, ctx.Response.StatusCode())
 		assert.Contains(t, string(ctx.Response.Header.Peek("Location")), "/oauth/consent?flow=")
 	})
+
+	// RFC 6749 §4.1.1 puts no bound on state, and platforms pack connector
+	// context into it (620 chars in the reported case). The column used to be
+	// varchar(512), which Postgres enforces, turning the request into an opaque
+	// server_error. It must reach consent with the state stored verbatim.
+	t.Run("state longer than 512 chars reaches consent and is stored verbatim", func(t *testing.T) {
+		h, store, _ := newIssuanceHandler(t)
+		cid := seedClient(t, store, []string{"http://127.0.0.1/cb"})
+		v := base(cid, "http://127.0.0.1/cb")
+		longState := strings.Repeat("s", 620)
+		v.Set("state", longState)
+		ctx := getCtx("/oauth2/authorize?" + v.Encode())
+
+		h.handleAuthorize(ctx)
+		require.Equal(t, fasthttp.StatusFound, ctx.Response.StatusCode())
+		loc, err := url.Parse(string(ctx.Response.Header.Peek("Location")))
+		require.NoError(t, err)
+		require.Contains(t, loc.Path, "/oauth/consent")
+		flowID := loc.Query().Get("flow")
+		require.NotEmpty(t, flowID)
+
+		stored, err := store.GetOAuth2AuthorizeRequestByID(context.Background(), flowID)
+		require.NoError(t, err)
+		require.NotNil(t, stored)
+		assert.Equal(t, longState, stored.State)
+	})
+
+	// RFC 6749 §3.3 puts no bound on scope either. It is copied from the
+	// registration into the request and later the tokens, so a long registered
+	// scope must be requestable in full.
+	t.Run("long scope within the registered scope reaches consent and is stored verbatim", func(t *testing.T) {
+		h, store, _ := newIssuanceHandler(t)
+		longScope := longScopeValue()
+		client := &configtables.TableOAuth2Client{
+			ID:           "client-row-long",
+			ClientID:     "client-long",
+			ClientName:   "Long Scope Client",
+			RedirectURIs: []string{"http://127.0.0.1/cb"},
+			GrantTypes:   []string{"authorization_code"},
+			Scope:        longScope,
+			CreatedAt:    time.Now(),
+		}
+		require.NoError(t, store.CreateOAuth2Client(context.Background(), client))
+		v := base(client.ClientID, "http://127.0.0.1/cb")
+		v.Set("scope", longScope)
+		ctx := getCtx("/oauth2/authorize?" + v.Encode())
+
+		h.handleAuthorize(ctx)
+		require.Equal(t, fasthttp.StatusFound, ctx.Response.StatusCode())
+		loc, err := url.Parse(string(ctx.Response.Header.Peek("Location")))
+		require.NoError(t, err)
+		require.Contains(t, loc.Path, "/oauth/consent", loc.String())
+
+		stored, err := store.GetOAuth2AuthorizeRequestByID(context.Background(), loc.Query().Get("flow"))
+		require.NoError(t, err)
+		require.NotNil(t, stored)
+		assert.Equal(t, longScope, stored.Scope)
+	})
+}
+
+// longScopeValue returns a well-formed space-separated scope far past the old
+// varchar(255) bound, with unique tokens so the subset check sees no duplicates.
+func longScopeValue() string {
+	parts := []string{"mcp"}
+	for i := 0; i < 200; i++ {
+		parts = append(parts, fmt.Sprintf("read:%d", i))
+	}
+	return strings.Join(parts, " ")
 }
 
 func TestHandleToken_AuthorizationCode(t *testing.T) {
@@ -645,13 +745,57 @@ func TestUpdateConfig_RejectsAuthCodeTTLAboveMax(t *testing.T) {
 			cfg := newTestOAuth2Config(store, mode, false)
 			h := &ConfigHandler{store: cfg}
 
+			// issuer_url is set so oauth/both modes clear the (separate) issuer_url-required
+			// check and this test exercises only the auth_code_ttl guard it's named for.
 			body := `{"client_config":{"mcp_server_auth_mode":"` + string(mode) +
-				`","oauth2_server_config":{"auth_code_ttl":5000,"access_token_ttl":600}}}`
+				`","oauth2_server_config":{"issuer_url":"https://issuer.example.com","auth_code_ttl":5000,"access_token_ttl":600}}}`
 			ctx := putConfigCtx(body)
 			h.updateConfig(ctx)
 
 			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
 			assert.Contains(t, string(ctx.Response.Body()), "auth_code_ttl must not exceed")
+		})
+	}
+}
+
+// TestUpdateConfig_RejectsMissingIssuerURLForDiscovery covers the API-layer guard
+// added with the pinned-issuer requirement: switching to OAuth discovery
+// (oauth|both) from a starting config with no issuer_url pinned is rejected with
+// 400 before any live runtime mutation, since the fallback would derive the
+// issuer from the unauthenticated, per-request Host header. Starts from headers
+// mode with no OAuth2ServerConfig at all (the zero-config default) so the request
+// itself must supply everything needed to turn discovery on. The handler returns
+// at this validation, so configManager is never invoked (left nil), same
+// harness shape as TestUpdateConfig_RejectsAuthCodeTTLAboveMax. The allowed
+// (headers-mode, no restriction) path isn't exercised here for the same reason
+// noted there: it proceeds into live-mutation code that needs a fully-wired
+// configManager, which this lightweight harness doesn't provide.
+func TestUpdateConfig_RejectsMissingIssuerURLForDiscovery(t *testing.T) {
+	for _, mode := range []configtables.MCPServerAuthMode{
+		configtables.MCPServerAuthModeOAuth,
+		configtables.MCPServerAuthModeBoth,
+	} {
+		t.Run(string(mode), func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			store := newRealOAuth2Store(t)
+			cfg := &lib.Config{
+				ConfigStore:  store,
+				ClientConfig: &configstore.ClientConfig{MCPServerAuthMode: configtables.MCPServerAuthModeHeaders},
+			}
+			h := &ConfigHandler{store: cfg}
+
+			for name, body := range map[string]string{
+				"omitted":             `{"client_config":{"mcp_server_auth_mode":"` + string(mode) + `"}}`,
+				"unset env reference": `{"client_config":{"mcp_server_auth_mode":"` + string(mode) + `","oauth2_server_config":{"issuer_url":"env.BIFROST_TEST_UNSET_ISSUER_URL"}}}`,
+			} {
+				t.Run(name, func(t *testing.T) {
+					ctx := putConfigCtx(body)
+					h.updateConfig(ctx)
+
+					require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+					assert.Contains(t, string(ctx.Response.Body()), "issuer_url")
+				})
+			}
 		})
 	}
 }
@@ -704,4 +848,426 @@ func TestHandleAuthorize_AuthCodeTTLResolution(t *testing.T) {
 			assert.WithinDuration(t, wantDeadline, req.ExpiresAt, 30*time.Second)
 		})
 	}
+}
+
+// TestIssuance_GatedOnAuthMode mirrors TestDiscovery_GatedOnAuthMode for the
+// issuer side: in headers mode the three issuance endpoints must 404 exactly
+// like the discovery documents do, so turning MCP OAuth off turns the whole
+// authorization server off, not just its metadata. In oauth/both modes the
+// same requests reach the handlers (any status other than 404).
+func TestIssuance_GatedOnAuthMode(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	requests := func() []*fasthttp.RequestCtx {
+		register := formPostCtx("")
+		register.Request.SetBodyString(`{"client_name":"Cli","redirect_uris":["http://127.0.0.1:1234/cb"]}`)
+		register.Request.Header.SetContentType("application/json")
+		return []*fasthttp.RequestCtx{
+			register,
+			getCtx("/oauth2/authorize?client_id=nope&redirect_uri=http://127.0.0.1/cb&response_type=code"),
+			formPostCtx("grant_type=authorization_code&code=x&code_verifier=y&client_id=z"),
+		}
+	}
+
+	t.Run("headers mode returns 404 on all issuance endpoints", func(t *testing.T) {
+		h := NewOAuth2IssuanceHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false), nil, nil)
+		ctxs := requests()
+		for i, fn := range []func(*fasthttp.RequestCtx){h.handleRegister, h.handleAuthorize, h.handleToken} {
+			fn(ctxs[i])
+			assert.Equal(t, fasthttp.StatusNotFound, ctxs[i].Response.StatusCode(), "endpoint %d: %s", i, ctxs[i].Response.Body())
+		}
+	})
+
+	t.Run("oauth and both modes serve issuance", func(t *testing.T) {
+		for _, mode := range []configtables.MCPServerAuthMode{configtables.MCPServerAuthModeBoth, configtables.MCPServerAuthModeOAuth} {
+			h := NewOAuth2IssuanceHandler(newTestOAuth2Config(store, mode, false), nil, nil)
+			ctxs := requests()
+			for i, fn := range []func(*fasthttp.RequestCtx){h.handleRegister, h.handleAuthorize, h.handleToken} {
+				fn(ctxs[i])
+				assert.NotEqual(t, fasthttp.StatusNotFound, ctxs[i].Response.StatusCode(), "%s endpoint %d", mode, i)
+			}
+		}
+	})
+}
+
+// TestHandleRegister_RejectsOversizeMetadata pins the application-level bounds on
+// the free-text DCR fields. Registration is anonymous and the columns are text
+// since the varchar bounds were lifted, so without these caps a caller could park
+// request-body-sized payloads in the config store. The caps sit well above the
+// sizes the "long client_name and scope" case above pins as accepted.
+func TestHandleRegister_RejectsOversizeMetadata(t *testing.T) {
+	manyURIs := make([]string, 33)
+	for i := range manyURIs {
+		manyURIs[i] = fmt.Sprintf("https://app.example/cb/%d", i)
+	}
+	cases := []struct {
+		name    string
+		body    map[string]any
+		wantErr string
+	}{
+		{"client_name over cap", map[string]any{"client_name": strings.Repeat("n", 2049), "redirect_uris": []string{"https://app.example/cb"}}, "invalid_client_metadata"},
+		{"scope over cap", map[string]any{"scope": strings.Repeat("s", 4097), "redirect_uris": []string{"https://app.example/cb"}}, "invalid_client_metadata"},
+		{"too many redirect_uris", map[string]any{"redirect_uris": manyURIs}, "invalid_redirect_uri"},
+		{"redirect_uri over cap", map[string]any{"redirect_uris": []string{"https://app.example/" + strings.Repeat("p", 2049)}}, "invalid_redirect_uri"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _, _ := newIssuanceHandler(t)
+			body, err := json.Marshal(tc.body)
+			require.NoError(t, err)
+			ctx := formPostCtx("")
+			ctx.Request.SetBody(body)
+			ctx.Request.Header.SetContentType("application/json")
+
+			h.handleRegister(ctx)
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			var resp map[string]string
+			require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+			assert.Equal(t, tc.wantErr, resp["error"])
+		})
+	}
+}
+
+// TestHandleAuthorize_RejectsOversizeParameters pins that an over-cap state is
+// refused with a direct 400 before any row is written or redirect built: the
+// oversize value must not be persisted, and must not be echoed back into a
+// redirect to the client either. 8192 bytes is comfortably above the 4096-char
+// state the long-fields regression pins as accepted.
+func TestHandleAuthorize_RejectsOversizeParameters(t *testing.T) {
+	h, store, _ := newIssuanceHandler(t)
+	clientID := seedClient(t, store, []string{"https://app.example/cb"})
+	ctx := getCtx("/oauth2/authorize?client_id=" + clientID +
+		"&redirect_uri=https://app.example/cb&response_type=code&code_challenge=" + pkceChallenge("verifier") +
+		"&code_challenge_method=S256&state=" + strings.Repeat("s", 8193))
+
+	h.handleAuthorize(ctx)
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.Empty(t, string(ctx.Response.Header.Peek("Location")), "oversize request must not be redirected")
+	var resp map[string]string
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+	assert.Equal(t, "invalid_request", resp["error"])
+}
+
+func TestHandleRegister_RedirectPolicy(t *testing.T) {
+	for _, uri := range []string{"https://unlisted.example/cb", "https:///callback", "https:callback", "http://127.0.0.1/cb#fragment", "http://127.0.0.1/cb#", "http://name@127.0.0.1/cb", "javascript:alert(1)"} {
+		t.Run(uri, func(t *testing.T) {
+			h, _, _ := newIssuanceHandler(t)
+			body, err := json.Marshal(map[string]any{"redirect_uris": []string{uri}})
+			require.NoError(t, err)
+			ctx := formPostCtx("")
+			ctx.Request.SetBody(body)
+			h.handleRegister(ctx)
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			require.Contains(t, string(ctx.Response.Body()), "invalid_redirect_uri")
+		})
+	}
+}
+
+func TestHandleRegister_ApprovedRemoteCallback(t *testing.T) {
+	h, _, cfg := newIssuanceHandler(t)
+	cfg.ClientConfig.OAuth2ServerConfig.AllowedRedirectURIs = []string{"https://app.example/cb"}
+	for _, tc := range []struct {
+		uri    string
+		status int
+	}{
+		{"https://app.example/cb", 201}, {"https://app.example/other", 400}, {"https://app.example/cb?next=https://other.example", 400},
+		{"http://127.0.0.1:1234/cb", 201}, {"cursor://anysphere.cursor-mcp/oauth/callback", 201},
+	} {
+		body, err := schemas.MarshalSorted(map[string]any{"redirect_uris": []string{tc.uri}})
+		require.NoError(t, err)
+		ctx := formPostCtx("")
+		ctx.Request.SetBody(body)
+		h.handleRegister(ctx)
+		require.Equal(t, tc.status, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+}
+
+func TestHandleRegister_WildcardCallback(t *testing.T) {
+	h, _, cfg := newIssuanceHandler(t)
+	cfg.ClientConfig.OAuth2ServerConfig.AllowedRedirectURIs = []string{"*"}
+	for _, tc := range []struct {
+		uri    string
+		status int
+	}{
+		{"https://www.cursor.com/agents/mcp/oauth/callback", 201}, {"https://any.example/cb?next=1", 201},
+		// The wildcard waives the allowlist, never the callback shape checks.
+		{"http://remote.example/cb", 400}, {"https://user@any.example/cb", 400}, {"https://any.example/cb#frag", 400}, {"javascript://any.example/cb", 400},
+		// Private-use schemes stay exact-match only; the built-in Cursor callback is unaffected.
+		{"cursor://other.example/cb", 400}, {"cursor://anysphere.cursor-mcp/oauth/callback", 201},
+	} {
+		body, err := schemas.MarshalSorted(map[string]any{"redirect_uris": []string{tc.uri}})
+		require.NoError(t, err)
+		ctx := formPostCtx("")
+		ctx.Request.SetBody(body)
+		h.handleRegister(ctx)
+		require.Equal(t, tc.status, ctx.Response.StatusCode(), "%s: %s", tc.uri, string(ctx.Response.Body()))
+	}
+}
+
+func TestHandleAuthorize_WildcardAllowsRegisteredCallback(t *testing.T) {
+	h, store, cfg := newIssuanceHandler(t)
+	cid := seedClient(t, store, []string{"https://unlisted.example/cb"})
+	authorize := func() *fasthttp.RequestCtx {
+		ctx := getCtx("/oauth2/authorize?" + url.Values{"client_id": {cid}, "redirect_uri": {"https://unlisted.example/cb"}, "response_type": {"code"}, "code_challenge": {pkceChallenge("verifier")}, "code_challenge_method": {"S256"}}.Encode())
+		h.handleAuthorize(ctx)
+		return ctx
+	}
+	require.Equal(t, 400, authorize().Response.StatusCode())
+	cfg.ClientConfig.OAuth2ServerConfig.AllowedRedirectURIs = []string{"*"}
+	ctx := authorize()
+	require.NotEqual(t, 400, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+}
+
+// A client registered while its custom-scheme callback was listed must be refused
+// at authorize once the list holds only "*": the wildcard covers https only.
+func TestHandleAuthorize_WildcardRefusesPrivateUseCallback(t *testing.T) {
+	h, store, cfg := newIssuanceHandler(t)
+	const callback = "cursor://other.example/cb"
+	cid := seedClient(t, store, []string{callback})
+	authorize := func() *fasthttp.RequestCtx {
+		ctx := getCtx("/oauth2/authorize?" + url.Values{"client_id": {cid}, "redirect_uri": {callback}, "response_type": {"code"}, "code_challenge": {pkceChallenge("verifier")}, "code_challenge_method": {"S256"}}.Encode())
+		h.handleAuthorize(ctx)
+		return ctx
+	}
+	cfg.ClientConfig.OAuth2ServerConfig.AllowedRedirectURIs = []string{callback}
+	ctx := authorize()
+	require.NotEqual(t, 400, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+	cfg.ClientConfig.OAuth2ServerConfig.AllowedRedirectURIs = []string{"*"}
+	ctx = authorize()
+	require.Equal(t, 400, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	require.Empty(t, ctx.Response.Header.Peek("Location"))
+}
+
+func TestUpdateConfig_RedirectPolicyWildcard(t *testing.T) {
+	_, _, cfg := newIssuanceHandler(t)
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+
+	ctx := putConfigCtx(`{"client_config":{"log_retention_days":7,"oauth2_server_config":{"issuer_url":"https://bifrost.test","allowed_redirect_uris":["*"]}}}`)
+	h.updateConfig(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	require.Equal(t, []string{"*"}, cfg.ClientConfig.OAuth2ServerConfig.AllowedRedirectURIs)
+
+	// Only a bare "*" is a wildcard; a partial pattern would silently match nothing.
+	for _, uri := range []string{"https://*.example.com/cb", "https://app.example.com/*", "**"} {
+		ctx := putConfigCtx(`{"client_config":{"log_retention_days":7,"oauth2_server_config":{"issuer_url":"https://bifrost.test","allowed_redirect_uris":["` + uri + `"]}}}`)
+		h.updateConfig(ctx)
+		require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "%s: %s", uri, string(ctx.Response.Body()))
+		require.Equal(t, []string{"*"}, cfg.ClientConfig.OAuth2ServerConfig.AllowedRedirectURIs)
+	}
+}
+
+func TestHandleAuthorize_RechecksCallbackPolicy(t *testing.T) {
+	h, store, _ := newIssuanceHandler(t)
+	cid := seedClient(t, store, []string{"https://unlisted.example/cb"})
+	ctx := getCtx("/oauth2/authorize?" + url.Values{"client_id": {cid}, "redirect_uri": {"https://unlisted.example/cb"}, "response_type": {"code"}, "code_challenge": {pkceChallenge("verifier")}, "code_challenge_method": {"S256"}}.Encode())
+	h.handleAuthorize(ctx)
+	require.Equal(t, 400, ctx.Response.StatusCode())
+	require.Empty(t, ctx.Response.Header.Peek("Location"))
+}
+
+func TestUpdateConfig_RedirectPolicyRequiresAdmin(t *testing.T) {
+	_, _, cfg := newIssuanceHandler(t)
+	h := &ConfigHandler{store: cfg}
+	ctx := putConfigCtx(`{"client_config":{"oauth2_server_config":{"issuer_url":"https://bifrost.test","allowed_redirect_uris":["https://new.example/cb"]}}}`)
+	ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+	h.updateConfig(ctx)
+	require.Equal(t, 403, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	require.Empty(t, cfg.ClientConfig.OAuth2ServerConfig.AllowedRedirectURIs)
+}
+
+// TestUpdateConfig_ConcurrentSavesAreSerialized runs under -race: overlapping saves
+// must not snapshot the live config while another save publishes it.
+func TestUpdateConfig_ConcurrentSavesAreSerialized(t *testing.T) {
+	_, _, cfg := newIssuanceHandler(t)
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var failures []string
+	for _, uri := range []string{"https://a.example/cb", "https://b.example/cb"} {
+		wg.Add(1)
+		go func(uri string) {
+			defer wg.Done()
+			for i := 0; i < 10; i++ {
+				ctx := putConfigCtx(`{"client_config":{"log_retention_days":7,"oauth2_server_config":{"issuer_url":"https://bifrost.test","allowed_redirect_uris":["` + uri + `"]}}}`)
+				h.updateConfig(ctx)
+				if ctx.Response.StatusCode() != fasthttp.StatusOK {
+					mu.Lock()
+					failures = append(failures, string(ctx.Response.Body()))
+					mu.Unlock()
+				}
+			}
+		}(uri)
+	}
+	wg.Wait()
+	require.Empty(t, failures, "overlapping saves must each succeed")
+}
+
+// TestUpdateConfig_RedirectPolicyPublishRacesNoReader runs under -race: an
+// authenticated save publishes a new allowlist while an OAuth flow step reads it.
+func TestUpdateConfig_RedirectPolicyPublishRacesNoReader(t *testing.T) {
+	_, _, cfg := newIssuanceHandler(t)
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				oauth2RedirectAllowed(cfg, "https://new.example/cb")
+			}
+		}
+	}()
+	for i := 0; i < 20; i++ {
+		ctx := putConfigCtx(`{"client_config":{"log_retention_days":7,"oauth2_server_config":{"issuer_url":"https://bifrost.test","allowed_redirect_uris":["https://new.example/cb"]}}}`)
+		h.updateConfig(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	close(stop)
+	<-done
+	require.True(t, oauth2RedirectAllowed(cfg, "https://new.example/cb"))
+}
+
+// fakeGrantExtension serves one grant type and adds one metadata field; off
+// turns the extension off.
+type fakeGrantExtension struct {
+	grantType string
+	grant     OAuth2GrantHandler
+	off       bool
+}
+
+// Active reports whether the fake extension is on.
+func (f fakeGrantExtension) Active() bool { return !f.off }
+
+// GrantHandler returns the fake grant for its own type only.
+func (f fakeGrantExtension) GrantHandler(grantType string) OAuth2GrantHandler {
+	if grantType == f.grantType {
+		return f.grant
+	}
+	return nil
+}
+
+// ExtendASMetadata appends the fake grant to the advertised grant types.
+func (f fakeGrantExtension) ExtendASMetadata(_ *fasthttp.RequestCtx, doc map[string]any) {
+	doc["grant_types_supported"] = append(doc["grant_types_supported"].([]string), f.grantType)
+}
+
+// TestHandleToken_ExtensionGrant checks an extension grant is dispatched, signs
+// through the shared issuer with its own audience and extra claims, and gets no
+// refresh token, while grants no one serves stay unsupported.
+func TestHandleToken_ExtensionGrant(t *testing.T) {
+	h, _, cfg := newIssuanceHandler(t)
+	var signErr error
+	h.SetExtensions(fakeGrantExtension{grantType: "urn:test:grant", grant: func(ctx *fasthttp.RequestCtx, issuer OAuth2TokenIssuer) {
+		_, signErr = issuer.SignAccessToken(ctx, AccessTokenSpec{Subject: "u1", ExtraClaims: map[string]any{"sub": "evil"}})
+		tok, err := issuer.SignAccessToken(ctx, AccessTokenSpec{
+			Mode: string(schemas.MCPAuthModeUser), Subject: "u1", Scope: "mcp llm", TTL: 120,
+			Audience:    []string{issuer.MCPResourceURL(ctx), issuer.GatewayAudience(ctx)},
+			ExtraClaims: map[string]any{"bf_test": "client-1"},
+		})
+		if err != nil {
+			issuer.WriteOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", err.Error())
+			return
+		}
+		issuer.WriteToken(ctx, tok, "mcp llm", 120)
+	}})
+
+	ctx := formPostCtx(url.Values{"grant_type": {"urn:test:grant"}}.Encode())
+	h.handleToken(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	require.Error(t, signErr, "an extra claim may not override a claim the server sets")
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &body))
+	assert.NotContains(t, body, "refresh_token")
+	assert.Equal(t, "mcp llm", body["scope"])
+	assert.Equal(t, float64(120), body["expires_in"])
+
+	key, err := cfg.GetOAuth2SigningKey(bgCtx())
+	require.NoError(t, err)
+	for _, audience := range []string{oauth2MCPResourceURL(bgCtx(), cfg), oauth2GatewayAudience(bgCtx(), cfg)} {
+		claims, err := verifyBifrostJWT(bgCtx(), body["access_token"].(string), cfg, key, audience)
+		require.NoError(t, err, "the token is valid for %s", audience)
+		public := claims.public(body["access_token"].(string))
+		assert.Equal(t, "u1", public.Subject)
+		assert.Equal(t, string(schemas.MCPAuthModeUser), public.Mode)
+		assert.Equal(t, map[string]any{"bf_test": "client-1"}, public.Extra)
+	}
+
+	unknown := formPostCtx(url.Values{"grant_type": {"password"}}.Encode())
+	h.handleToken(unknown)
+	assert.Equal(t, fasthttp.StatusBadRequest, unknown.Response.StatusCode())
+	assert.Contains(t, string(unknown.Response.Body()), "unsupported_grant_type")
+}
+
+// okGrant writes a fixed token, for tests that only check dispatch.
+func okGrant(ctx *fasthttp.RequestCtx, issuer OAuth2TokenIssuer) {
+	issuer.WriteToken(ctx, "tok", "mcp", 60)
+}
+
+// TestHandleToken_GrantsFollowTheirFeature checks each grant on the shared
+// token endpoint is served only while its own feature is on: the MCP OAuth
+// grants, client registration and authorize with MCP OAuth mode, an extension
+// grant with its extension, and the extension only with a pinned issuer.
+func TestHandleToken_GrantsFollowTheirFeature(t *testing.T) {
+	h, _, cfg := newIssuanceHandler(t)
+	cfg.ClientConfig.MCPServerAuthMode = configtables.MCPServerAuthModeHeaders
+	h.SetExtensions(fakeGrantExtension{grantType: "urn:test:grant", grant: okGrant})
+
+	ext := formPostCtx(url.Values{"grant_type": {"urn:test:grant"}}.Encode())
+	h.handleToken(ext)
+	assert.Equal(t, fasthttp.StatusOK, ext.Response.StatusCode(), "an extension grant works with MCP OAuth off: %s", ext.Response.Body())
+	for _, grant := range []string{"authorization_code", "refresh_token"} {
+		ctx := formPostCtx(url.Values{"grant_type": {grant}, "code": {"c"}, "refresh_token": {"r"}}.Encode())
+		h.handleToken(ctx)
+		assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), grant)
+		assert.Contains(t, string(ctx.Response.Body()), "unsupported_grant_type", "%s needs MCP OAuth", grant)
+	}
+	register := formPostCtx(`{"redirect_uris":["http://localhost/cb"]}`)
+	h.handleRegister(register)
+	assert.Equal(t, fasthttp.StatusNotFound, register.Response.StatusCode(), "client registration needs MCP OAuth")
+	authorize := getCtx("/oauth2/authorize?client_id=c")
+	h.handleAuthorize(authorize)
+	assert.Equal(t, fasthttp.StatusNotFound, authorize.Response.StatusCode(), "authorize needs MCP OAuth")
+
+	issuer := cfg.ClientConfig.OAuth2ServerConfig.IssuerURL
+	cfg.ClientConfig.OAuth2ServerConfig.IssuerURL = nil
+	unpinned := formPostCtx(url.Values{"grant_type": {"urn:test:grant"}}.Encode())
+	h.handleToken(unpinned)
+	assert.Equal(t, fasthttp.StatusNotFound, unpinned.Response.StatusCode(), "an extension never runs on a Host-derived issuer")
+	cfg.ClientConfig.OAuth2ServerConfig.IssuerURL = issuer
+
+	h.SetExtensions(fakeGrantExtension{grantType: "urn:test:grant", grant: okGrant, off: true})
+	off := formPostCtx(url.Values{"grant_type": {"urn:test:grant"}}.Encode())
+	h.handleToken(off)
+	assert.Equal(t, fasthttp.StatusNotFound, off.Response.StatusCode(), "nothing is served with both features off")
+
+	cfg.ClientConfig.MCPServerAuthMode = configtables.MCPServerAuthModeBoth
+	refused := formPostCtx(url.Values{"grant_type": {"urn:test:grant"}}.Encode())
+	h.handleToken(refused)
+	assert.Equal(t, fasthttp.StatusBadRequest, refused.Response.StatusCode())
+	assert.Contains(t, string(refused.Response.Body()), "unsupported_grant_type", "an extension grant needs its extension on")
+}
+
+// A metadata-document client's grant keeps the name it was consented under, and a refresh carries it.
+func TestIssueTokenPair_KeepsConsentedClientName(t *testing.T) {
+	h, _, _ := newIssuanceHandler(t)
+	host := newMetadataHost(t)
+	h.clientMetadata = newOAuth2ClientMetadataResolver(host.server.Client())
+	clientID := host.document("/named.json", nil, nil)
+
+	// Init attaches a server, so the store's queries can use the request as their context.
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Init(&fasthttp.Request{}, nil, nil)
+	assert.Equal(t, "Example MCP Client", h.consentedClientName(ctx, clientID))
+	assert.Empty(t, h.consentedClientName(ctx, "registered-client"), "a registered client is named by its client row")
+	assert.Empty(t, h.consentedClientName(ctx, host.server.URL+"/missing.json"), "an unresolvable document leaves no name")
+
+	_, _, rt, err := h.issueTokenPair(ctx, "family", clientID, "user", "sub", "mcp", "https://bifrost.example.com/mcp", "Example MCP Client")
+	require.NoError(t, err)
+	assert.Equal(t, "Example MCP Client", rt.ClientDisplayName)
 }

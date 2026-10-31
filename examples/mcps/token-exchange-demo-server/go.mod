@@ -1,10 +1,10 @@
 module token-exchange-demo-server
 
-go 1.27.0
+go 1.27.3
 
 require (
 	github.com/coreos/go-oidc/v3 v3.16.0
-	github.com/go-jose/go-jose/v4 v4.1.4
+	github.com/go-jose/go-jose/v4 v4.1.6
 	github.com/mark3labs/mcp-go v0.43.2
 )
 

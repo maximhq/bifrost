@@ -14,6 +14,12 @@ const (
 	ModelConfigScopeGlobal     = "global"
 	ModelConfigScopeVirtualKey = "virtual_key"
 	ModelConfigScopeProject    = "project"
+	// The scopes the enterprise build writes its per-model limits under: one for the profile a user
+	// holds, one for the profile a team, business unit or customer holds. Declared here because the
+	// rows live in this table and the values are persisted in its scope column - they cannot change
+	// without a migration, and the enterprise build resolves limits by reading them back.
+	ModelConfigScopeAccessProfile       = "access_profile"
+	ModelConfigScopeEntityAccessProfile = "entity_access_profile"
 )
 
 // ModelConfigAllModels is the model_name sentinel meaning "all models". Combined with a

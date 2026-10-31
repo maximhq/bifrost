@@ -130,11 +130,12 @@ type BifrostVideoGenerationResponse struct {
 }
 
 // VideoUsage carries provider-reported usage for a video (or other async media) generation job.
-// Currently only the provider-computed cost is modeled; providers that report an exact price
-// (e.g. Runware's per-task cost) populate Cost so pricing uses it verbatim instead of a datasheet
-// estimate.
+// Providers that report an exact price (e.g. Runware's per-task cost) populate Cost so pricing uses
+// it verbatim instead of a datasheet estimate. Providers that meter video in tokens (BytePlus
+// Seedance's completion_tokens) populate OutputTokens, priced at the row's per-video-token rate.
 type VideoUsage struct {
-	Cost *BifrostCost `json:"cost,omitempty"`
+	Cost         *BifrostCost `json:"cost,omitempty"`
+	OutputTokens int          `json:"output_tokens,omitempty"`
 }
 
 // getSecondsFromVideoRequest extracts Seconds from video-related requests.
@@ -365,6 +366,8 @@ type VideoAccountingDebug struct {
 	// OutputCount is how many clips the job returned; the per-second rate is
 	// multiplied by it.
 	OutputCount int `json:"output_count,omitempty"`
+	// OutputTokens is the provider-metered output the per-video-token rate applied to.
+	OutputTokens int `json:"output_tokens,omitempty"`
 	// Incomplete marks a row whose cost is known to be short — priced with no rate,
 	// or from dimensions the provider never confirmed.
 	Incomplete bool `json:"incomplete,omitempty"`

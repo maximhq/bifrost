@@ -432,3 +432,54 @@ func TestAccumulateAnthropicResponsesUsage_CacheReadSurfacesCachedTokens(t *test
 		}
 	})
 }
+
+// A streamed advisor request reports its passes only in message_delta usage.iterations, and stream
+// cost is priced from the terminal chunk's usage, so the accumulator must keep the advisor pass (with
+// its model) while the billable top-level counts stay the executor's. A later cumulative list
+// replaces the earlier one, and a delta without iterations keeps it.
+func TestAccumulateAnthropicResponsesUsage_KeepsAdvisorIterations(t *testing.T) {
+	t.Parallel()
+
+	usage := &schemas.ResponsesResponseUsage{}
+	billed := &schemas.BifrostLLMUsage{}
+	accumulateAnthropicResponsesUsage(usage, billed, &AnthropicUsage{
+		InputTokens:  1000,
+		OutputTokens: 200,
+		Iterations: []AnthropicUsage{
+			{Type: schemas.Ptr("message"), InputTokens: 1000, OutputTokens: 120},
+		},
+	})
+	accumulateAnthropicResponsesUsage(usage, billed, &AnthropicUsage{
+		InputTokens:  1000,
+		OutputTokens: 500,
+		Iterations: []AnthropicUsage{
+			{Type: schemas.Ptr("message"), InputTokens: 1000, OutputTokens: 120},
+			{Type: schemas.Ptr("advisor_message"), Model: schemas.Ptr("claude-opus-4-8"), InputTokens: 2000, OutputTokens: 900},
+			{Type: schemas.Ptr("message"), InputTokens: 1100, OutputTokens: 380},
+		},
+	})
+	accumulateAnthropicResponsesUsage(usage, billed, &AnthropicUsage{InputTokens: 1000, OutputTokens: 500})
+
+	if len(usage.Iterations) != 3 {
+		t.Fatalf("Iterations = %d, want the latest cumulative list of 3", len(usage.Iterations))
+	}
+	advisor := usage.Iterations[1]
+	if advisor.Type == nil || *advisor.Type != "advisor_message" || advisor.Model == nil || *advisor.Model != "claude-opus-4-8" {
+		t.Fatalf("advisor pass lost its type or model: %+v", advisor)
+	}
+	if advisor.InputTokens != 2000 || advisor.OutputTokens != 900 {
+		t.Fatalf("advisor pass tokens = %d/%d, want 2000/900", advisor.InputTokens, advisor.OutputTokens)
+	}
+	for _, n := range []int{usage.InputTokens, usage.OutputTokens} {
+		if n >= 2000 {
+			t.Fatalf("advisor tokens folded into the executor totals: input=%d output=%d", usage.InputTokens, usage.OutputTokens)
+		}
+	}
+	// The billed usage is what a cancelled or timed-out stream is charged from, so it carries the same passes.
+	if len(billed.Iterations) != 3 {
+		t.Fatalf("billed Iterations = %d, want 3: an interrupted stream would not bill its advisor pass", len(billed.Iterations))
+	}
+	if b := billed.Iterations[1]; b.Type == nil || *b.Type != "advisor_message" || b.Model == nil || *b.Model != "claude-opus-4-8" || b.InputTokens != 2000 || b.OutputTokens != 900 {
+		t.Fatalf("billed advisor pass = %+v, want advisor_message claude-opus-4-8 2000/900", b)
+	}
+}

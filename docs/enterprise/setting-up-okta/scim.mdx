@@ -123,11 +123,11 @@ The provider configuration includes a **Provisioning source** setting that contr
 | Option | Config value | Behavior |
 | --- | --- | --- |
 | **SCIM and login claims** (default) | `both` | Both SCIM and IdP login / token-refresh claims create and update users, roles, teams, and business units. |
-| **SCIM only - ignore login claims** | `scim` | SCIM is the sole source of truth. OIDC claims will be ignored and will never create or update users from claims - new users must be pushed by SCIM. Users not already provisioned by SCIM are denied access at login. |
+| **SCIM only - ignore login claims** | `scim` | SCIM is the sole source of truth. OIDC claims will be ignored and will never create or update users from claims - new users must be pushed by SCIM. At login, a user is admitted only if what SCIM last pushed for them resolves to a role, even if they already hold one; anyone SCIM hasn't pushed yet is denied. |
 
 Choose **SCIM only** when provisioning must be fully controlled by your IdP's SCIM app and login-time claim changes should never alter membership. Leave it on the default **SCIM and login claims** if users are also provisioned just-in-time on first login.
 
-This maps to the `claimsSyncMode` config key (`both` or `scim`) and is inert when SCIM is disabled - claims always sync then.
+This maps to the `claimsSyncMode` config key (`both` or `scim`) and is inert when SCIM Provisioning is disabled - claims always sync then.
 
 ---
 
@@ -325,7 +325,7 @@ Changes in Okta - new assignments, group membership updates, deactivations - wil
 
 **Real-time push** - Okta pushes user and group changes to Bifrost immediately when they occur.
 
-**Background reconciliation** - if you configured an API token in [SSO using OIDC Step 4](./oidc#step-4-copy-your-credentials), Bifrost also runs a full reconciliation every 24 hours to catch anything the SCIM push may have missed.
+**No background reconciliation while SCIM Provisioning is on** - even if you configured an API token in [SSO using OIDC Step 4](./oidc#step-4-copy-your-credentials), Bifrost's scheduled directory sync is turned off while SCIM Provisioning is enabled. Make sure Okta pushes every change, including deactivations.
 
 ---
 

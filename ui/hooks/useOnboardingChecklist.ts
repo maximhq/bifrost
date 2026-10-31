@@ -2,8 +2,10 @@ import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { useGetCoreConfigQuery } from "@/lib/store";
 import { useGetModelConfigsQuery, useGetVirtualKeysQuery } from "@/lib/store/apis/governanceApi";
 import { useGetAllKeysQuery } from "@/lib/store/apis/providersApi";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetSCIMProvidersQuery } from "@enterprise/lib/store/apis/scimApi";
 import { useMemo } from "react";
+import { isOnboardingChecklistReady, onboardingStepsHiddenByAccess, type OnboardingAccess } from "./useOnboardingChecklist.utils";
 
 export const METADATA_DISMISSED_KEY = "onboarding_dismissed";
 export const METADATA_SKIPPED_KEY = "onboarding_skipped";
@@ -37,26 +39,53 @@ const authValueSet = (secretVar: { value?: string; ref?: string; type?: string }
 // the sidebar's "resume setup" promo card read this, so they can't silently
 // disagree on what counts as done. RTK Query dedupes the underlying
 // core-config/keys/governance calls across both consumers automatically.
+// This runs from the sidebar on every page, so each gated source is fetched only
+// with the permission its endpoint needs; a step the user cannot read is hidden
+// (see onboardingStepsHiddenByAccess) instead of waiting on a 403 forever.
 export function useOnboardingChecklist({ skip = false }: { skip?: boolean } = {}) {
 	const { data: bifrostConfig } = useGetCoreConfigQuery({}, { skip });
-	const isDismissedForAll = bifrostConfig?.metadata?.[METADATA_DISMISSED_KEY] === true;
-	const shouldSkipChecklistQueries = skip || isDismissedForAll;
+	// disable_onboarding comes from config.json / BIFROST_DISABLE_ONBOARDING and holds on
+	// stateless deployments where the metadata flag would be lost on restart.
+	const isDismissedForAll = bifrostConfig?.disable_onboarding === true || bifrostConfig?.metadata?.[METADATA_DISMISSED_KEY] === true;
+	// Hold the checklist queries until config arrives, so a dismissed instance never fetches them.
+	const shouldSkipChecklistQueries = skip || bifrostConfig === undefined || isDismissedForAll;
 
-	const { data: allKeys } = useGetAllKeysQuery(undefined, { skip: shouldSkipChecklistQueries });
+	const hasVirtualKeysAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.View);
+	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
+	const hasUserProvisioningAccess = useRbac(RbacResource.UserProvisioning, RbacOperation.View);
+	const access = useMemo<OnboardingAccess>(
+		() => ({
+			providerKeys: hasVirtualKeysAccess,
+			virtualKeys: hasVirtualKeysAccess,
+			modelConfigs: hasGovernanceAccess,
+			scimProviders: hasUserProvisioningAccess,
+		}),
+		[hasVirtualKeysAccess, hasGovernanceAccess, hasUserProvisioningAccess],
+	);
+
+	const { data: allKeys } = useGetAllKeysQuery(undefined, { skip: shouldSkipChecklistQueries || !access.providerKeys });
 	const { data: vksResponse } = useGetVirtualKeysQuery(undefined, {
-		skip: shouldSkipChecklistQueries || !IS_ENTERPRISE,
+		skip: shouldSkipChecklistQueries || !IS_ENTERPRISE || !access.virtualKeys,
 	});
 	const { data: modelConfigsResponse } = useGetModelConfigsQuery(undefined, {
-		skip: shouldSkipChecklistQueries || !IS_ENTERPRISE,
+		skip: shouldSkipChecklistQueries || !IS_ENTERPRISE || !access.modelConfigs,
 	});
 	const { data: scimProviders } = useGetSCIMProvidersQuery(undefined, {
-		skip: shouldSkipChecklistQueries || !IS_ENTERPRISE,
+		skip: shouldSkipChecklistQueries || !IS_ENTERPRISE || !access.scimProviders,
 	});
 
-	const checklistReady =
-		bifrostConfig !== undefined &&
-		allKeys !== undefined &&
-		(!IS_ENTERPRISE || (vksResponse !== undefined && modelConfigsResponse !== undefined && scimProviders !== undefined));
+	const checklistReady = isOnboardingChecklistReady({
+		isEnterprise: IS_ENTERPRISE,
+		access,
+		loaded: {
+			config: bifrostConfig !== undefined,
+			providerKeys: allKeys !== undefined,
+			virtualKeys: vksResponse !== undefined,
+			modelConfigs: modelConfigsResponse !== undefined,
+			scimProviders: scimProviders !== undefined,
+		},
+	});
+	const hiddenStepIds = useMemo(() => onboardingStepsHiddenByAccess({ isEnterprise: IS_ENTERPRISE, access }), [access]);
 
 	const skippedIds = useMemo<string[]>(() => {
 		return parseSkippedIds(bifrostConfig?.metadata?.[METADATA_SKIPPED_KEY]);
@@ -133,8 +162,8 @@ export function useOnboardingChecklist({ skip = false }: { skip?: boolean } = {}
 					},
 				]
 			: [];
-		return [...common, ...enterprise];
-	}, [allKeys, clientConfig, authConfig, ssoGatesDashboard, scimProviders, modelConfigsResponse, vksResponse]);
+		return [...common, ...enterprise].filter((step) => !hiddenStepIds.has(step.id));
+	}, [allKeys, clientConfig, authConfig, ssoGatesDashboard, scimProviders, modelConfigsResponse, vksResponse, hiddenStepIds]);
 
 	return { bifrostConfig, steps, skippedIds, checklistReady, isDismissedForAll };
 }

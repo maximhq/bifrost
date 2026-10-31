@@ -36,3 +36,41 @@ func TestRedactSensitiveHeaders_Nil(t *testing.T) {
 		t.Errorf("got %v, want nil", got)
 	}
 }
+
+// The virtual key travels in Bifrost's own x-bf-vk header, which no generic credential pattern
+// names. It is a credential all the same and is redacted like Authorization, in any casing.
+func TestRedactSensitiveHeaders_VirtualKeyHeader(t *testing.T) {
+	for _, name := range []string{"x-bf-vk", "X-BF-VK", " x-bf-vk "} {
+		if !IsSensitiveHeader(name) {
+			t.Errorf("IsSensitiveHeader(%q) = false, want true", name)
+		}
+	}
+	out := RedactSensitiveHeaders(map[string]string{"x-bf-vk": "sk-bf-secret", "x-bf-session-id": "sess-1"})
+	if out["x-bf-vk"] != RedactedAttrValue {
+		t.Errorf("x-bf-vk = %q, want %q", out["x-bf-vk"], RedactedAttrValue)
+	}
+	if out["x-bf-session-id"] != "sess-1" {
+		t.Errorf("x-bf-session-id = %q, want it preserved", out["x-bf-session-id"])
+	}
+}
+
+// Ocp-Apim-Subscription-Key carries an Azure AI Speech key or a virtual key, and no generic pattern names it.
+func TestIsSensitiveHeader_AzureSpeechKeyHeader(t *testing.T) {
+	for _, name := range []string{"ocp-apim-subscription-key", "Ocp-Apim-Subscription-Key"} {
+		if !IsSensitiveHeader(name) {
+			t.Errorf("IsSensitiveHeader(%q) = false, want true", name)
+		}
+	}
+}
+
+// BenchmarkIsSensitiveHeader measures the redaction check run on every captured header when a
+// trace is exported, over a typical request's header names.
+func BenchmarkIsSensitiveHeader(b *testing.B) {
+	names := []string{"content-type", "user-agent", "accept", "authorization", "x-bf-vk", "x-request-id", "x-api-key", "x-stainless-os", "cookie", "traceparent"}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		for _, name := range names {
+			_ = IsSensitiveHeader(name)
+		}
+	}
+}

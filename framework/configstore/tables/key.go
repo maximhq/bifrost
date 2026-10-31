@@ -39,12 +39,18 @@ type TableKey struct {
 	AzureTenantID     *schemas.SecretVar `gorm:"type:text" json:"azure_tenant_id,omitempty"`
 	AzureScopesJSON   *string            `gorm:"column:azure_scopes;type:text" json:"-"` // JSON serialized []string
 
+	AzureUseSpeechEndpoints *bool `gorm:"column:azure_use_speech_endpoints" json:"azure_use_speech_endpoints,omitempty"`
+
+	AzureUseVoiceLiveEndpoints *bool `gorm:"column:azure_use_voice_live_endpoints" json:"azure_use_voice_live_endpoints,omitempty"`
+
 	// Vertex config fields (embedded)
-	VertexProjectID         *schemas.SecretVar `gorm:"type:text" json:"vertex_project_id,omitempty"`
-	VertexProjectNumber     *schemas.SecretVar `gorm:"type:text" json:"vertex_project_number,omitempty"`
-	VertexRegion            *schemas.SecretVar `gorm:"type:text" json:"vertex_region,omitempty"`
-	VertexAuthCredentials   *schemas.SecretVar `gorm:"type:text" json:"vertex_auth_credentials,omitempty"`
-	VertexForceSingleRegion *bool              `gorm:"column:vertex_force_single_region" json:"vertex_force_single_region,omitempty"`
+	VertexProjectID               *schemas.SecretVar `gorm:"type:text" json:"vertex_project_id,omitempty"`
+	VertexProjectNumber           *schemas.SecretVar `gorm:"type:text" json:"vertex_project_number,omitempty"`
+	VertexRegion                  *schemas.SecretVar `gorm:"type:text" json:"vertex_region,omitempty"`
+	VertexAuthCredentials         *schemas.SecretVar `gorm:"type:text" json:"vertex_auth_credentials,omitempty"`
+	VertexForceSingleRegion       *bool              `gorm:"column:vertex_force_single_region" json:"vertex_force_single_region,omitempty"`
+	VertexUseSessionRouting       *bool              `gorm:"column:vertex_use_session_routing" json:"vertex_use_session_routing,omitempty"`
+	VertexAWSWorkloadIdentityJSON *string            `gorm:"type:text" json:"-"` // JSON serialized schemas.VertexAWSWorkloadIdentityConfig
 
 	// Bedrock config fields (embedded)
 	BedrockAccessKey         *schemas.SecretVar `gorm:"type:text" json:"bedrock_access_key,omitempty"`
@@ -71,6 +77,16 @@ type TableKey struct {
 	BedrockMantleProjectID       *schemas.SecretVar `gorm:"type:text" json:"bedrock_mantle_project_id,omitempty"`
 	BedrockMantleEndpointsJSON   *string            `gorm:"type:text" json:"-"` // JSON serialized schemas.BedrockEndpoints
 
+	// SageMaker config fields (embedded)
+	SageMakerAccessKey       *schemas.SecretVar `gorm:"type:text;column:sagemaker_access_key" json:"sagemaker_access_key,omitempty"`
+	SageMakerSecretKey       *schemas.SecretVar `gorm:"type:text;column:sagemaker_secret_key" json:"sagemaker_secret_key,omitempty"`
+	SageMakerSessionToken    *schemas.SecretVar `gorm:"type:text;column:sagemaker_session_token" json:"sagemaker_session_token,omitempty"`
+	SageMakerRegion          *schemas.SecretVar `gorm:"type:text;column:sagemaker_region" json:"sagemaker_region,omitempty"`
+	SageMakerRoleARN         *schemas.SecretVar `gorm:"type:text;column:sagemaker_role_arn" json:"sagemaker_role_arn,omitempty"`
+	SageMakerExternalID      *schemas.SecretVar `gorm:"type:text;column:sagemaker_external_id" json:"sagemaker_external_id,omitempty"`
+	SageMakerRoleSessionName *schemas.SecretVar `gorm:"type:text;column:sagemaker_role_session_name" json:"sagemaker_role_session_name,omitempty"`
+	SageMakerEndpointsJSON   *string            `gorm:"type:text;column:sagemaker_endpoints_json" json:"-"` // JSON serialized schemas.SageMakerEndpoints
+
 	// VLLM config fields (embedded)
 	VLLMUrl       *schemas.SecretVar `gorm:"type:text" json:"vllm_url,omitempty"`
 	VLLMModelName *string            `gorm:"type:varchar(255)" json:"vllm_model_name,omitempty"`
@@ -83,6 +99,9 @@ type TableKey struct {
 
 	// SGL config fields (embedded)
 	SGLUrl *schemas.SecretVar `gorm:"type:text" json:"sgl_url,omitempty"`
+
+	// Cloudflare config fields (embedded)
+	CloudflareAccountID *schemas.SecretVar `gorm:"type:text" json:"cloudflare_account_id,omitempty"`
 
 	// Databricks config fields (embedded)
 	DatabricksWorkspaceURL       *schemas.SecretVar `gorm:"type:text" json:"databricks_workspace_url,omitempty"`
@@ -109,11 +128,14 @@ type TableKey struct {
 	EncryptionStatus string `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
 
 	// GitHub Copilot config fields (embedded)
-	GithubCopilotAppID          *schemas.SecretVar `gorm:"type:text" json:"github_copilot_app_id,omitempty"`
-	GithubCopilotInstallationID *schemas.SecretVar `gorm:"type:text" json:"github_copilot_installation_id,omitempty"`
-	GithubCopilotRepositoryID   *schemas.SecretVar `gorm:"type:text" json:"github_copilot_repository_id,omitempty"`
-	GithubCopilotPrivateKey     *schemas.SecretVar `gorm:"type:text" json:"github_copilot_private_key,omitempty"`
-	GithubCopilotGithubDomain   *schemas.SecretVar `gorm:"type:text" json:"github_copilot_github_domain,omitempty"`
+
+	// oauth_key_config: the credential fields get their own encrypted columns; the
+	// non-secret settings (grant, scopes, claims, auth style) travel as one JSON column.
+	OAuthTokenURL     *schemas.SecretVar `gorm:"column:oauth_token_url;type:text" json:"oauth_token_url,omitempty"`
+	OAuthClientID     *schemas.SecretVar `gorm:"column:oauth_client_id;type:text" json:"oauth_client_id,omitempty"`
+	OAuthClientSecret *schemas.SecretVar `gorm:"column:oauth_client_secret;type:text" json:"oauth_client_secret,omitempty"`
+	OAuthPrivateKey   *schemas.SecretVar `gorm:"column:oauth_private_key;type:text" json:"oauth_private_key,omitempty"`
+	OAuthSettingsJSON *schemas.SecretVar `gorm:"column:oauth_settings_json;type:text" json:"-"` // Non-credential settings; still encrypted, since extra_params is free-form
 
 	// Virtual fields for runtime use (not stored in DB)
 	Models                 schemas.WhiteList               `gorm:"-" json:"models"` // ["*"] allows all models; empty denies all (deny-by-default)
@@ -123,12 +145,14 @@ type TableKey struct {
 	VertexKeyConfig        *schemas.VertexKeyConfig        `gorm:"-" json:"vertex_key_config,omitempty"`
 	BedrockKeyConfig       *schemas.BedrockKeyConfig       `gorm:"-" json:"bedrock_key_config,omitempty"`
 	BedrockMantleKeyConfig *schemas.BedrockMantleKeyConfig `gorm:"-" json:"bedrock_mantle_key_config,omitempty"`
+	SageMakerKeyConfig     *schemas.SageMakerKeyConfig     `gorm:"-" json:"sagemaker_key_config,omitempty"`
 	VLLMKeyConfig          *schemas.VLLMKeyConfig          `gorm:"-" json:"vllm_key_config,omitempty"`
 	ReplicateKeyConfig     *schemas.ReplicateKeyConfig     `gorm:"-" json:"replicate_key_config,omitempty"`
 	OllamaKeyConfig        *schemas.OllamaKeyConfig        `gorm:"-" json:"ollama_key_config,omitempty"`
 	SGLKeyConfig           *schemas.SGLKeyConfig           `gorm:"-" json:"sgl_key_config,omitempty"`
 	DatabricksKeyConfig    *schemas.DatabricksKeyConfig    `gorm:"-" json:"databricks_key_config,omitempty"`
-	GithubCopilotKeyConfig *schemas.GithubCopilotKeyConfig `gorm:"-" json:"github_copilot_key_config,omitempty"`
+	CloudflareKeyConfig    *schemas.CloudflareKeyConfig    `gorm:"-" json:"cloudflare_key_config,omitempty"`
+	OAuthKeyConfig         *schemas.OAuthKeyConfig         `gorm:"-" json:"oauth_key_config,omitempty"`
 }
 
 // TableName sets the table name for each model
@@ -212,12 +236,18 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		} else {
 			k.AzureScopesJSON = nil
 		}
+		useSpeech := k.AzureKeyConfig.UseSpeechEndpoints
+		k.AzureUseSpeechEndpoints = &useSpeech
+		useVoiceLive := k.AzureKeyConfig.UseVoiceLiveEndpoints
+		k.AzureUseVoiceLiveEndpoints = &useVoiceLive
 	} else {
 		k.AzureEndpoint = nil
 		k.AzureClientID = nil
 		k.AzureClientSecret = nil
 		k.AzureTenantID = nil
 		k.AzureScopesJSON = nil
+		k.AzureUseSpeechEndpoints = nil
+		k.AzureUseVoiceLiveEndpoints = nil
 	}
 	if k.VertexKeyConfig != nil {
 		if k.VertexKeyConfig.ProjectID.IsSet() {
@@ -246,12 +276,21 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		}
 		fsr := k.VertexKeyConfig.ForceSingleRegion
 		k.VertexForceSingleRegion = &fsr
+		sr := k.VertexKeyConfig.UseSessionRouting
+		k.VertexUseSessionRouting = &sr
+		wif, err := MarshalVertexAWSWorkloadIdentityJSON(k.VertexKeyConfig.AWSWorkloadIdentity)
+		if err != nil {
+			return err
+		}
+		k.VertexAWSWorkloadIdentityJSON = wif
 	} else {
 		k.VertexProjectID = nil
 		k.VertexProjectNumber = nil
 		k.VertexRegion = nil
 		k.VertexAuthCredentials = nil
 		k.VertexForceSingleRegion = nil
+		k.VertexUseSessionRouting = nil
+		k.VertexAWSWorkloadIdentityJSON = nil
 	}
 	if k.BedrockKeyConfig != nil {
 		if k.BedrockKeyConfig.AccessKey.IsSet() {
@@ -424,6 +463,71 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.BedrockMantleEndpointsJSON = nil
 	}
 
+	// Copy to avoid encrypting the shared SageMakerKeyConfig through the pointer.
+	if k.SageMakerKeyConfig != nil {
+		if k.SageMakerKeyConfig.AccessKey.IsSet() {
+			ak := k.SageMakerKeyConfig.AccessKey
+			k.SageMakerAccessKey = &ak
+		} else {
+			k.SageMakerAccessKey = nil
+		}
+		if k.SageMakerKeyConfig.SecretKey.IsSet() {
+			sk := k.SageMakerKeyConfig.SecretKey
+			k.SageMakerSecretKey = &sk
+		} else {
+			k.SageMakerSecretKey = nil
+		}
+		if k.SageMakerKeyConfig.SessionToken != nil {
+			v := *k.SageMakerKeyConfig.SessionToken
+			k.SageMakerSessionToken = &v
+		} else {
+			k.SageMakerSessionToken = nil
+		}
+		if k.SageMakerKeyConfig.Region != nil {
+			v := *k.SageMakerKeyConfig.Region
+			k.SageMakerRegion = &v
+		} else {
+			k.SageMakerRegion = nil
+		}
+		if k.SageMakerKeyConfig.RoleARN != nil {
+			v := *k.SageMakerKeyConfig.RoleARN
+			k.SageMakerRoleARN = &v
+		} else {
+			k.SageMakerRoleARN = nil
+		}
+		if k.SageMakerKeyConfig.ExternalID != nil {
+			v := *k.SageMakerKeyConfig.ExternalID
+			k.SageMakerExternalID = &v
+		} else {
+			k.SageMakerExternalID = nil
+		}
+		if k.SageMakerKeyConfig.RoleSessionName != nil {
+			v := *k.SageMakerKeyConfig.RoleSessionName
+			k.SageMakerRoleSessionName = &v
+		} else {
+			k.SageMakerRoleSessionName = nil
+		}
+		if k.SageMakerKeyConfig.Endpoints != nil {
+			data, err := sonic.Marshal(k.SageMakerKeyConfig.Endpoints)
+			if err != nil {
+				return err
+			}
+			s := string(data)
+			k.SageMakerEndpointsJSON = &s
+		} else {
+			k.SageMakerEndpointsJSON = nil
+		}
+	} else {
+		k.SageMakerAccessKey = nil
+		k.SageMakerSecretKey = nil
+		k.SageMakerSessionToken = nil
+		k.SageMakerRegion = nil
+		k.SageMakerRoleARN = nil
+		k.SageMakerExternalID = nil
+		k.SageMakerRoleSessionName = nil
+		k.SageMakerEndpointsJSON = nil
+	}
+
 	if k.Aliases != nil {
 		data, err := sonic.Marshal(k.Aliases)
 		if err != nil {
@@ -474,6 +578,13 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.SGLUrl = nil
 	}
 
+	if k.CloudflareKeyConfig != nil && k.CloudflareKeyConfig.AccountID.IsSet() {
+		a := k.CloudflareKeyConfig.AccountID
+		k.CloudflareAccountID = &a
+	} else {
+		k.CloudflareAccountID = nil
+	}
+
 	if k.DatabricksKeyConfig != nil {
 		if k.DatabricksKeyConfig.WorkspaceURL.IsSet() {
 			u := k.DatabricksKeyConfig.WorkspaceURL // Value-copy to prevent shared pointer mutation
@@ -508,47 +619,40 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.DatabricksAPIFormat = nil
 		k.DatabricksForwardGatewayTags = nil
 	}
-	// GitHub Copilot. Every SecretVar is value-copied before assignment, per the invariant
-	// above: the caller may retain the config struct pointer, and encryption mutates in
-	// place, so sharing one would corrupt the caller's in-memory config.
-	if k.GithubCopilotKeyConfig != nil {
-		if k.GithubCopilotKeyConfig.AppID.IsSet() {
-			v := k.GithubCopilotKeyConfig.AppID
-			k.GithubCopilotAppID = &v
-		} else {
-			k.GithubCopilotAppID = nil
+	// oauth_key_config. The credential fields are value-copied into their own columns, per
+	// the invariant above; the rest is serialised with those fields cleared so no secret
+	// ever lands in the settings column.
+	if k.OAuthKeyConfig != nil {
+		copyPtr := func(v *schemas.SecretVar) *schemas.SecretVar {
+			if v == nil || !v.IsSet() {
+				return nil
+			}
+			c := *v
+			return &c
 		}
-		if k.GithubCopilotKeyConfig.InstallationID.IsSet() {
-			v := k.GithubCopilotKeyConfig.InstallationID
-			k.GithubCopilotInstallationID = &v
+		if k.OAuthKeyConfig.TokenURL.IsSet() {
+			v := k.OAuthKeyConfig.TokenURL
+			k.OAuthTokenURL = &v
 		} else {
-			k.GithubCopilotInstallationID = nil
+			k.OAuthTokenURL = nil
 		}
-		if k.GithubCopilotKeyConfig.RepositoryID.IsSet() {
-			v := k.GithubCopilotKeyConfig.RepositoryID
-			k.GithubCopilotRepositoryID = &v
-		} else {
-			k.GithubCopilotRepositoryID = nil
+		k.OAuthClientID = copyPtr(k.OAuthKeyConfig.ClientID)
+		k.OAuthClientSecret = copyPtr(k.OAuthKeyConfig.ClientSecret)
+		k.OAuthPrivateKey = copyPtr(k.OAuthKeyConfig.PrivateKey)
+		settings := *k.OAuthKeyConfig
+		settings.TokenURL = schemas.SecretVar{}
+		settings.ClientID, settings.ClientSecret, settings.PrivateKey = nil, nil, nil
+		data, err := json.Marshal(settings)
+		if err != nil {
+			return fmt.Errorf("failed to serialize oauth key config: %w", err)
 		}
-		if k.GithubCopilotKeyConfig.PrivateKey.IsSet() {
-			v := k.GithubCopilotKeyConfig.PrivateKey
-			k.GithubCopilotPrivateKey = &v
-		} else {
-			k.GithubCopilotPrivateKey = nil
-		}
-		if k.GithubCopilotKeyConfig.GithubDomain.IsSet() {
-			v := k.GithubCopilotKeyConfig.GithubDomain
-			k.GithubCopilotGithubDomain = &v
-		} else {
-			k.GithubCopilotGithubDomain = nil
-		}
+		k.OAuthSettingsJSON = schemas.NewSecretVar(string(data))
 	} else {
-		k.GithubCopilotAppID = nil
-		k.GithubCopilotInstallationID = nil
-		k.GithubCopilotRepositoryID = nil
-		k.GithubCopilotPrivateKey = nil
-		k.GithubCopilotGithubDomain = nil
-
+		k.OAuthTokenURL = nil
+		k.OAuthClientID = nil
+		k.OAuthClientSecret = nil
+		k.OAuthPrivateKey = nil
+		k.OAuthSettingsJSON = nil
 	}
 
 	// Store plaintext SecretVar columns into the vault and rewrite them to vault refs.
@@ -593,6 +697,9 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		}
 		if err := encryptSecretVarPtr(&k.VertexAuthCredentials); err != nil {
 			return fmt.Errorf("failed to encrypt vertex auth credentials: %w", err)
+		}
+		if err := encryptString(k.VertexAWSWorkloadIdentityJSON); err != nil {
+			return fmt.Errorf("failed to encrypt vertex aws workload identity: %w", err)
 		}
 		// Bedrock
 		if err := encryptSecretVarPtr(&k.BedrockAccessKey); err != nil {
@@ -659,6 +766,31 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		if err := encryptString(k.BedrockMantleEndpointsJSON); err != nil {
 			return fmt.Errorf("failed to encrypt bedrock mantle endpoints: %w", err)
 		}
+		// SageMaker
+		if err := encryptSecretVarPtr(&k.SageMakerAccessKey); err != nil {
+			return fmt.Errorf("failed to encrypt sagemaker access key: %w", err)
+		}
+		if err := encryptSecretVarPtr(&k.SageMakerSecretKey); err != nil {
+			return fmt.Errorf("failed to encrypt sagemaker secret key: %w", err)
+		}
+		if err := encryptSecretVarPtr(&k.SageMakerSessionToken); err != nil {
+			return fmt.Errorf("failed to encrypt sagemaker session token: %w", err)
+		}
+		if err := encryptSecretVarPtr(&k.SageMakerRegion); err != nil {
+			return fmt.Errorf("failed to encrypt sagemaker region: %w", err)
+		}
+		if err := encryptSecretVarPtr(&k.SageMakerRoleARN); err != nil {
+			return fmt.Errorf("failed to encrypt sagemaker role arn: %w", err)
+		}
+		if err := encryptSecretVarPtr(&k.SageMakerExternalID); err != nil {
+			return fmt.Errorf("failed to encrypt sagemaker external id: %w", err)
+		}
+		if err := encryptSecretVarPtr(&k.SageMakerRoleSessionName); err != nil {
+			return fmt.Errorf("failed to encrypt sagemaker role session name: %w", err)
+		}
+		if err := encryptString(k.SageMakerEndpointsJSON); err != nil {
+			return fmt.Errorf("failed to encrypt sagemaker endpoints: %w", err)
+		}
 		// Aliases
 		if err := encryptString(k.AliasesJSON); err != nil {
 			return fmt.Errorf("failed to encrypt aliases: %w", err)
@@ -675,6 +807,10 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		if err := encryptSecretVarPtr(&k.SGLUrl); err != nil {
 			return fmt.Errorf("failed to encrypt sgl url: %w", err)
 		}
+		// Cloudflare
+		if err := encryptSecretVarPtr(&k.CloudflareAccountID); err != nil {
+			return fmt.Errorf("failed to encrypt cloudflare account id: %w", err)
+		}
 		// Databricks
 		if err := encryptSecretVarPtr(&k.DatabricksWorkspaceURL); err != nil {
 			return fmt.Errorf("failed to encrypt databricks workspace url: %w", err)
@@ -685,22 +821,21 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		if err := encryptSecretVarPtr(&k.DatabricksClientSecret); err != nil {
 			return fmt.Errorf("failed to encrypt databricks client secret: %w", err)
 		}
-		// GitHub Copilot. The private key is the whole credential, so it must never sit
-		// in the database in plaintext when encryption is enabled.
-		if err := encryptSecretVarPtr(&k.GithubCopilotAppID); err != nil {
-			return fmt.Errorf("failed to encrypt github copilot app id: %w", err)
+		// oauth_key_config. The client secret or private key is the whole credential.
+		if err := encryptSecretVarPtr(&k.OAuthTokenURL); err != nil {
+			return fmt.Errorf("failed to encrypt oauth token url: %w", err)
 		}
-		if err := encryptSecretVarPtr(&k.GithubCopilotInstallationID); err != nil {
-			return fmt.Errorf("failed to encrypt github copilot installation id: %w", err)
+		if err := encryptSecretVarPtr(&k.OAuthClientID); err != nil {
+			return fmt.Errorf("failed to encrypt oauth client id: %w", err)
 		}
-		if err := encryptSecretVarPtr(&k.GithubCopilotRepositoryID); err != nil {
-			return fmt.Errorf("failed to encrypt github copilot repository id: %w", err)
+		if err := encryptSecretVarPtr(&k.OAuthClientSecret); err != nil {
+			return fmt.Errorf("failed to encrypt oauth client secret: %w", err)
 		}
-		if err := encryptSecretVarPtr(&k.GithubCopilotPrivateKey); err != nil {
-			return fmt.Errorf("failed to encrypt github copilot private key: %w", err)
+		if err := encryptSecretVarPtr(&k.OAuthPrivateKey); err != nil {
+			return fmt.Errorf("failed to encrypt oauth private key: %w", err)
 		}
-		if err := encryptSecretVarPtr(&k.GithubCopilotGithubDomain); err != nil {
-			return fmt.Errorf("failed to encrypt github copilot github domain: %w", err)
+		if err := encryptSecretVarPtr(&k.OAuthSettingsJSON); err != nil {
+			return fmt.Errorf("failed to encrypt oauth settings: %w", err)
 		}
 		k.EncryptionStatus = EncryptionStatusEncrypted
 	}
@@ -741,6 +876,9 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		}
 		if err := decryptSecretVarPtr(&k.VertexAuthCredentials); err != nil {
 			return fmt.Errorf("failed to decrypt vertex auth credentials: %w", err)
+		}
+		if err := decryptString(k.VertexAWSWorkloadIdentityJSON); err != nil {
+			return fmt.Errorf("failed to decrypt vertex aws workload identity: %w", err)
 		}
 		// Bedrock
 		if err := decryptSecretVarPtr(&k.BedrockAccessKey); err != nil {
@@ -807,6 +945,31 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		if err := decryptString(k.BedrockMantleEndpointsJSON); err != nil {
 			return fmt.Errorf("failed to decrypt bedrock mantle endpoints: %w", err)
 		}
+		// SageMaker
+		if err := decryptSecretVarPtr(&k.SageMakerAccessKey); err != nil {
+			return fmt.Errorf("failed to decrypt sagemaker access key: %w", err)
+		}
+		if err := decryptSecretVarPtr(&k.SageMakerSecretKey); err != nil {
+			return fmt.Errorf("failed to decrypt sagemaker secret key: %w", err)
+		}
+		if err := decryptSecretVarPtr(&k.SageMakerSessionToken); err != nil {
+			return fmt.Errorf("failed to decrypt sagemaker session token: %w", err)
+		}
+		if err := decryptSecretVarPtr(&k.SageMakerRegion); err != nil {
+			return fmt.Errorf("failed to decrypt sagemaker region: %w", err)
+		}
+		if err := decryptSecretVarPtr(&k.SageMakerRoleARN); err != nil {
+			return fmt.Errorf("failed to decrypt sagemaker role arn: %w", err)
+		}
+		if err := decryptSecretVarPtr(&k.SageMakerExternalID); err != nil {
+			return fmt.Errorf("failed to decrypt sagemaker external id: %w", err)
+		}
+		if err := decryptSecretVarPtr(&k.SageMakerRoleSessionName); err != nil {
+			return fmt.Errorf("failed to decrypt sagemaker role session name: %w", err)
+		}
+		if err := decryptString(k.SageMakerEndpointsJSON); err != nil {
+			return fmt.Errorf("failed to decrypt sagemaker endpoints: %w", err)
+		}
 		// Aliases
 		if err := decryptString(k.AliasesJSON); err != nil {
 			return fmt.Errorf("failed to decrypt aliases: %w", err)
@@ -823,6 +986,10 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		if err := decryptSecretVarPtr(&k.SGLUrl); err != nil {
 			return fmt.Errorf("failed to decrypt sgl url: %w", err)
 		}
+		// Cloudflare
+		if err := decryptSecretVarPtr(&k.CloudflareAccountID); err != nil {
+			return fmt.Errorf("failed to decrypt cloudflare account id: %w", err)
+		}
 
 		// Databricks
 		if err := decryptSecretVarPtr(&k.DatabricksWorkspaceURL); err != nil {
@@ -835,20 +1002,21 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 			return fmt.Errorf("failed to decrypt databricks client secret: %w", err)
 		}
 		// GitHub Copilot
-		if err := decryptSecretVarPtr(&k.GithubCopilotAppID); err != nil {
-			return fmt.Errorf("failed to decrypt github copilot app id: %w", err)
+		// oauth_key_config
+		if err := decryptSecretVarPtr(&k.OAuthTokenURL); err != nil {
+			return fmt.Errorf("failed to decrypt oauth token url: %w", err)
 		}
-		if err := decryptSecretVarPtr(&k.GithubCopilotInstallationID); err != nil {
-			return fmt.Errorf("failed to decrypt github copilot installation id: %w", err)
+		if err := decryptSecretVarPtr(&k.OAuthClientID); err != nil {
+			return fmt.Errorf("failed to decrypt oauth client id: %w", err)
 		}
-		if err := decryptSecretVarPtr(&k.GithubCopilotRepositoryID); err != nil {
-			return fmt.Errorf("failed to decrypt github copilot repository id: %w", err)
+		if err := decryptSecretVarPtr(&k.OAuthClientSecret); err != nil {
+			return fmt.Errorf("failed to decrypt oauth client secret: %w", err)
 		}
-		if err := decryptSecretVarPtr(&k.GithubCopilotPrivateKey); err != nil {
-			return fmt.Errorf("failed to decrypt github copilot private key: %w", err)
+		if err := decryptSecretVarPtr(&k.OAuthPrivateKey); err != nil {
+			return fmt.Errorf("failed to decrypt oauth private key: %w", err)
 		}
-		if err := decryptSecretVarPtr(&k.GithubCopilotGithubDomain); err != nil {
-			return fmt.Errorf("failed to decrypt github copilot github domain: %w", err)
+		if err := decryptSecretVarPtr(&k.OAuthSettingsJSON); err != nil {
+			return fmt.Errorf("failed to decrypt oauth settings: %w", err)
 		}
 	}
 
@@ -879,7 +1047,7 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		k.UseOpenAIEndpoints = &useOpenAIEndpoints
 	}
 	// Reconstruct Azure config if fields are present
-	if k.AzureEndpoint != nil || k.AzureClientID != nil || k.AzureClientSecret != nil || k.AzureTenantID != nil || (k.AzureScopesJSON != nil && *k.AzureScopesJSON != "") {
+	if k.AzureEndpoint != nil || k.AzureClientID != nil || k.AzureClientSecret != nil || k.AzureTenantID != nil || k.AzureUseSpeechEndpoints != nil || k.AzureUseVoiceLiveEndpoints != nil || (k.AzureScopesJSON != nil && *k.AzureScopesJSON != "") {
 		var scopes []string
 		if k.AzureScopesJSON != nil && *k.AzureScopesJSON != "" {
 			if err := json.Unmarshal([]byte(*k.AzureScopesJSON), &scopes); err != nil {
@@ -897,11 +1065,17 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		if k.AzureEndpoint != nil {
 			azureConfig.Endpoint = *k.AzureEndpoint
 		}
+		if k.AzureUseSpeechEndpoints != nil {
+			azureConfig.UseSpeechEndpoints = *k.AzureUseSpeechEndpoints
+		}
+		if k.AzureUseVoiceLiveEndpoints != nil {
+			azureConfig.UseVoiceLiveEndpoints = *k.AzureUseVoiceLiveEndpoints
+		}
 
 		k.AzureKeyConfig = azureConfig
 	}
 	// Reconstruct Vertex config if fields are present
-	if k.VertexProjectID != nil || k.VertexProjectNumber != nil || k.VertexRegion != nil || k.VertexAuthCredentials != nil || k.VertexForceSingleRegion != nil {
+	if k.VertexProjectID != nil || k.VertexProjectNumber != nil || k.VertexRegion != nil || k.VertexAuthCredentials != nil || k.VertexForceSingleRegion != nil || k.VertexUseSessionRouting != nil || (k.VertexAWSWorkloadIdentityJSON != nil && *k.VertexAWSWorkloadIdentityJSON != "") {
 		config := &schemas.VertexKeyConfig{}
 
 		if k.VertexProjectID != nil {
@@ -920,6 +1094,16 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		}
 		if k.VertexForceSingleRegion != nil {
 			config.ForceSingleRegion = *k.VertexForceSingleRegion
+		}
+		if k.VertexUseSessionRouting != nil {
+			config.UseSessionRouting = *k.VertexUseSessionRouting
+		}
+		if k.VertexAWSWorkloadIdentityJSON != nil && *k.VertexAWSWorkloadIdentityJSON != "" {
+			var wif schemas.VertexAWSWorkloadIdentityConfig
+			if err := json.Unmarshal([]byte(*k.VertexAWSWorkloadIdentityJSON), &wif); err != nil {
+				return err
+			}
+			config.AWSWorkloadIdentity = &wif
 		}
 		k.VertexKeyConfig = config
 	}
@@ -986,6 +1170,29 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		}
 		k.BedrockMantleKeyConfig = mantleConfig
 	}
+	// Reconstruct SageMaker config if fields are present
+	if k.SageMakerAccessKey != nil || k.SageMakerSecretKey != nil || k.SageMakerSessionToken != nil || k.SageMakerRegion != nil || k.SageMakerRoleARN != nil || k.SageMakerExternalID != nil || k.SageMakerRoleSessionName != nil || (k.SageMakerEndpointsJSON != nil && *k.SageMakerEndpointsJSON != "") {
+		smConfig := &schemas.SageMakerKeyConfig{}
+		if k.SageMakerAccessKey != nil {
+			smConfig.AccessKey = *k.SageMakerAccessKey
+		}
+		if k.SageMakerSecretKey != nil {
+			smConfig.SecretKey = *k.SageMakerSecretKey
+		}
+		smConfig.SessionToken = k.SageMakerSessionToken
+		smConfig.Region = k.SageMakerRegion
+		smConfig.RoleARN = k.SageMakerRoleARN
+		smConfig.ExternalID = k.SageMakerExternalID
+		smConfig.RoleSessionName = k.SageMakerRoleSessionName
+		if k.SageMakerEndpointsJSON != nil && *k.SageMakerEndpointsJSON != "" {
+			var endpoints schemas.SageMakerEndpoints
+			if err := json.Unmarshal([]byte(*k.SageMakerEndpointsJSON), &endpoints); err != nil {
+				return err
+			}
+			smConfig.Endpoints = &endpoints
+		}
+		k.SageMakerKeyConfig = smConfig
+	}
 	// Reconstruct Aliases
 	if k.AliasesJSON != nil && *k.AliasesJSON != "" {
 		var aliases schemas.KeyAliases
@@ -1033,6 +1240,14 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 	} else {
 		k.SGLKeyConfig = nil
 	}
+	// Reconstruct Cloudflare config if fields are present
+	if k.CloudflareAccountID != nil {
+		k.CloudflareKeyConfig = &schemas.CloudflareKeyConfig{
+			AccountID: *k.CloudflareAccountID,
+		}
+	} else {
+		k.CloudflareKeyConfig = nil
+	}
 
 	// Reconstruct Databricks config if fields are present
 	if k.DatabricksWorkspaceURL != nil || k.DatabricksClientID != nil || k.DatabricksClientSecret != nil ||
@@ -1054,29 +1269,35 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 	} else {
 		k.DatabricksKeyConfig = nil
 	}
-	// Reconstruct GitHub Copilot config if any field is present
-	if k.GithubCopilotAppID != nil || k.GithubCopilotInstallationID != nil ||
-		k.GithubCopilotRepositoryID != nil || k.GithubCopilotPrivateKey != nil ||
-		k.GithubCopilotGithubDomain != nil {
-		config := &schemas.GithubCopilotKeyConfig{}
-		if k.GithubCopilotAppID != nil {
-			config.AppID = *k.GithubCopilotAppID
+	// Reconstruct oauth_key_config if any part is present
+	settings := ""
+	if k.OAuthSettingsJSON != nil {
+		settings = k.OAuthSettingsJSON.GetValue()
+	}
+	if settings != "" || k.OAuthTokenURL != nil || k.OAuthClientID != nil ||
+		k.OAuthClientSecret != nil || k.OAuthPrivateKey != nil {
+		config := &schemas.OAuthKeyConfig{}
+		if settings != "" {
+			if err := json.Unmarshal([]byte(settings), config); err != nil {
+				return fmt.Errorf("failed to parse oauth key config: %w", err)
+			}
 		}
-		if k.GithubCopilotInstallationID != nil {
-			config.InstallationID = *k.GithubCopilotInstallationID
+		if k.OAuthTokenURL != nil {
+			config.TokenURL = *k.OAuthTokenURL
 		}
-		if k.GithubCopilotRepositoryID != nil {
-			config.RepositoryID = *k.GithubCopilotRepositoryID
+		copyPtr := func(v *schemas.SecretVar) *schemas.SecretVar {
+			if v == nil {
+				return nil
+			}
+			c := *v
+			return &c
 		}
-		if k.GithubCopilotPrivateKey != nil {
-			config.PrivateKey = *k.GithubCopilotPrivateKey
-		}
-		if k.GithubCopilotGithubDomain != nil {
-			config.GithubDomain = *k.GithubCopilotGithubDomain
-		}
-		k.GithubCopilotKeyConfig = config
+		config.ClientID = copyPtr(k.OAuthClientID)
+		config.ClientSecret = copyPtr(k.OAuthClientSecret)
+		config.PrivateKey = copyPtr(k.OAuthPrivateKey)
+		k.OAuthKeyConfig = config
 	} else {
-		k.GithubCopilotKeyConfig = nil
+		k.OAuthKeyConfig = nil
 	}
 	return nil
 }
@@ -1091,3 +1312,49 @@ func (k *TableKey) VaultPathKey() string { return k.KeyID }
 // inside BeforeSave and then encrypted in the same hook; the vault store must run at
 // the midpoint between those two steps, which only BeforeSave itself can reach.
 func (k *TableKey) VaultStoreSelfManaged() {}
+
+// vertexAWSWorkloadIdentityRecord is the storage form of the aws_workload_identity block. Each
+// SecretVar is reduced to the same string the SecretVar-backed columns persist through driver.Valuer:
+// the env./vault. reference when the value comes from a secret, otherwise the plain value. The
+// resolved secret therefore never reaches the database, and SecretVar.UnmarshalJSON re-resolves the
+// bare reference string on load.
+type vertexAWSWorkloadIdentityRecord struct {
+	Audience             string `json:"audience,omitempty"`
+	ServiceAccountEmail  string `json:"service_account_email,omitempty"`
+	TokenLifetimeSeconds int    `json:"token_lifetime_seconds,omitempty"`
+	AWSRegion            string `json:"aws_region,omitempty"`
+	AWSRoleARN           string `json:"aws_role_arn,omitempty"`
+}
+
+// secretVarStorageString mirrors SecretVar.Value: the reference for secret-backed values, else the value.
+func secretVarStorageString(sv *schemas.SecretVar) string {
+	if sv == nil {
+		return ""
+	}
+	if sv.IsFromSecret() {
+		return sv.GetRawRef()
+	}
+	return sv.GetValue()
+}
+
+// MarshalVertexAWSWorkloadIdentityJSON serializes the Vertex AWS workload identity block for the
+// vertex_aws_workload_identity_json column in reference-preserving form, returning nil when the block
+// is absent so the column stays NULL for keys that do not federate.
+func MarshalVertexAWSWorkloadIdentityJSON(cfg *schemas.VertexAWSWorkloadIdentityConfig) (*string, error) {
+	if cfg == nil {
+		return nil, nil
+	}
+	record := vertexAWSWorkloadIdentityRecord{
+		Audience:             secretVarStorageString(&cfg.Audience),
+		ServiceAccountEmail:  secretVarStorageString(cfg.ServiceAccountEmail),
+		TokenLifetimeSeconds: cfg.TokenLifetimeSeconds,
+		AWSRegion:            secretVarStorageString(cfg.AWSRegion),
+		AWSRoleARN:           secretVarStorageString(cfg.AWSRoleARN),
+	}
+	data, err := sonic.Marshal(record)
+	if err != nil {
+		return nil, err
+	}
+	s := string(data)
+	return &s, nil
+}

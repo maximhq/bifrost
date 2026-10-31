@@ -1,0 +1,48 @@
+---
+title: "Troubleshooting"
+description: "Resolve common Bifrost CLI errors with authentication, management permissions, contexts, models, and coding agents."
+icon: "screwdriver-wrench"
+---
+
+Start with `bifrost doctor` and `bifrost auth status --output json`. They show whether the gateway is reachable, which credentials the current context holds, and whether model discovery works. Exit code `3` means an authentication or authorization failure; see [exit codes](/quickstart/cli/commands#output-timeouts-and-exit-codes).
+
+<AccordionGroup>
+  <Accordion title="Exit code 3 or 401 after SSO login">
+    Run `bifrost auth status --output json`. For inference, `inference_credential_type` must be `enterprise-sso` or `virtual-key`. Administrative commands need a management API key; SSO alone returns an authorization error. If the session expired, run `bifrost auth login`.
+  </Accordion>
+  <Accordion title="403 on a management command">
+    The management API key lacks the required scope. Run `bifrost auth whoami` to list its permissions, and ask an administrator to update the key's scopes under **Settings → API Keys**.
+  </Accordion>
+  <Accordion title="no gateway URL configured">
+    Add a context with `bifrost context add <name> --base-url <url> --use`, or pass `--base-url` with credential environment variables.
+  </Accordion>
+  <Accordion title="persistent authentication requires a named context">
+    `auth login`, `auth set-virtual-key`, and `auth set-management-key` store secrets only in a named context. Add one first.
+  </Accordion>
+  <Accordion title="insecure gateway URL: HTTPS is required">
+    Use an `https://` URL for any host other than `localhost`, `127.0.0.1`, or `::1`.
+  </Accordion>
+  <Accordion title="Models do not load or a model is rejected">
+    Run `bifrost doctor` and `bifrost models list --output json`. Confirm a provider is configured and the virtual key or access profile allows the model. Under the default `version: 2` semantics, an empty provider-key model allow-list or virtual-key `allowed_models` list denies all models in that scope; use `["*"]` to allow all.
+  </Accordion>
+  <Accordion title="Gemini asks for an API key">
+    Store a virtual key with `bifrost auth set-virtual-key --stdin`. Gemini CLI cannot use an SSO session.
+  </Accordion>
+  <Accordion title="Claude Code uses a virtual key instead of SSO">
+    A previous `bifrost configure claude` left `ANTHROPIC_AUTH_TOKEN` in `~/.claude/settings.json`. Run `bifrost unconfigure claude`.
+  </Accordion>
+  <Accordion title="configure or unconfigure refuses to change a file">
+    The file changed after Bifrost configured it, or a previous attempt did not finish. Review the file, then rerun with `--force`.
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Enterprise setup" icon="building" href="/quickstart/cli/enterprise-setup">
+    Sign in with SSO and add a management API key.
+  </Card>
+  <Card title="Coding agents" icon="terminal" href="/quickstart/cli/coding-agents">
+    Launch Claude Code, Codex, OpenCode, or Gemini through Bifrost.
+  </Card>
+</CardGroup>

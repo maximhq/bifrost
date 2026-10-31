@@ -8,6 +8,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
 )
@@ -190,6 +191,9 @@ func TestAnthropicIngressBedrockPreservesInterleavedThinkingOrder(t *testing.T) 
 			"signature": fmt.Sprintf("ErUBCkYIBxgCKkA_signature_%d", step),
 		}
 	}
+	redacted := func(step int) map[string]any {
+		return map[string]any{"type": "redacted_thinking", "data": fmt.Sprintf("EmwKAhgBEgy_redacted_%d", step)}
+	}
 	text := func(step int) map[string]any {
 		return map[string]any{"type": "text", "text": fmt.Sprintf("calling the tool, step %d", step)}
 	}
@@ -231,65 +235,113 @@ func TestAnthropicIngressBedrockPreservesInterleavedThinkingOrder(t *testing.T) 
 				"text:calling the tool, step 1",
 			},
 		},
+		{
+			// No text between the calls: reasoning arrives while the previous tool call is
+			// still pending, the case that used to be emitted ahead of it.
+			name:  "thinking, tool_use",
+			order: func(step int) []map[string]any { return []map[string]any{think(step), toolUse(step)} },
+			want: []string{
+				"reasoning:ErUBCkYIBxgCKkA_signature_0",
+				"toolUse:toolu_01Step00",
+				"reasoning:ErUBCkYIBxgCKkA_signature_1",
+				"toolUse:toolu_01Step01",
+			},
+		},
+		{
+			name:  "redacted_thinking, text, tool_use",
+			order: func(step int) []map[string]any { return []map[string]any{redacted(step), text(step), toolUse(step)} },
+			want: []string{
+				"reasoning:EmwKAhgBEgy_redacted_0", // Converse carries redacted_thinking as reasoningText with the data in signature
+				"text:calling the tool, step 0",
+				"toolUse:toolu_01Step00",
+				"reasoning:EmwKAhgBEgy_redacted_1", // Converse carries redacted_thinking as reasoningText with the data in signature
+				"text:calling the tool, step 1",
+				"toolUse:toolu_01Step01",
+			},
+		},
+		{
+			name: "thinking, redacted_thinking, text, tool_use",
+			order: func(step int) []map[string]any {
+				return []map[string]any{think(step), redacted(step), text(step), toolUse(step)}
+			},
+			want: []string{
+				"reasoning:ErUBCkYIBxgCKkA_signature_0",
+				"reasoning:EmwKAhgBEgy_redacted_0", // Converse carries redacted_thinking as reasoningText with the data in signature
+				"text:calling the tool, step 0",
+				"toolUse:toolu_01Step00",
+				"reasoning:ErUBCkYIBxgCKkA_signature_1",
+				"reasoning:EmwKAhgBEgy_redacted_1", // Converse carries redacted_thinking as reasoningText with the data in signature
+				"text:calling the tool, step 1",
+				"toolUse:toolu_01Step01",
+			},
+		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var assistantBlocks []map[string]any
-			for step := 0; step < 2; step++ {
-				assistantBlocks = append(assistantBlocks, tt.order(step)...)
-			}
-
-			body, err := json.Marshal(map[string]any{
-				"model":      "bedrock/us.anthropic.claude-opus-4-8",
-				"max_tokens": 4096,
-				"thinking":   map[string]any{"type": "adaptive"},
-				"tools": []map[string]any{{
-					"name":         "get_weather",
-					"description":  "look up the weather",
-					"input_schema": map[string]any{"type": "object"},
-				}},
-				"messages": []map[string]any{
-					{"role": "user", "content": []map[string]any{{"type": "text", "text": "run the tool twice"}}},
-					{"role": "assistant", "content": assistantBlocks},
-					{"role": "user", "content": []map[string]any{
-						{"type": "tool_result", "tool_use_id": "toolu_01Step00", "content": "sunny"},
-						{"type": "tool_result", "tool_use_id": "toolu_01Step01", "content": "windy"},
-					}},
-				},
-			})
-			require.NoError(t, err)
-
-			var ingressReq anthropic.AnthropicMessageRequest
-			require.NoError(t, json.Unmarshal(body, &ingressReq))
-
-			ctx := &schemas.BifrostContext{}
-			converseReq, err := bedrock.ToBedrockResponsesRequest(ctx, ingressReq.ToBifrostResponsesRequest(ctx))
-			require.NoError(t, err)
-
-			require.Len(t, converseReq.Messages, 3, "roles: %s", converseRoles(converseReq.Messages))
-			turn := converseReq.Messages[1]
-			require.Equal(t, bedrock.BedrockMessageRoleAssistant, turn.Role)
-
-			got := make([]string, 0, len(turn.Content))
-			for _, block := range turn.Content {
-				switch {
-				case block.ReasoningContent != nil && block.ReasoningContent.ReasoningText != nil:
-					sig := ""
-					if block.ReasoningContent.ReasoningText.Signature != nil {
-						sig = *block.ReasoningContent.ReasoningText.Signature
-					}
-					got = append(got, "reasoning:"+sig)
-				case block.Text != nil:
-					got = append(got, "text:"+*block.Text)
-				case block.ToolUse != nil:
-					got = append(got, "toolUse:"+block.ToolUse.ToolUseID)
-				default:
-					got = append(got, "other")
+	// A bare Claude id converts before governance picks a provider, so it must keep
+	// the order too (issue #7768).
+	for _, model := range []string{"bedrock/us.anthropic.claude-opus-4-8", "claude-opus-5-5"} {
+		for _, tt := range tests {
+			t.Run(model+"/"+tt.name, func(t *testing.T) {
+				var assistantBlocks []map[string]any
+				for step := 0; step < 2; step++ {
+					assistantBlocks = append(assistantBlocks, tt.order(step)...)
 				}
-			}
-			require.Equal(t, tt.want, got, "interleaved turn must reach Bedrock in the order the client sent it")
-		})
+
+				body, err := json.Marshal(map[string]any{
+					"model":      model,
+					"max_tokens": 4096,
+					"thinking":   map[string]any{"type": "adaptive"},
+					"tools": []map[string]any{{
+						"name":         "get_weather",
+						"description":  "look up the weather",
+						"input_schema": map[string]any{"type": "object"},
+					}},
+					"messages": []map[string]any{
+						{"role": "user", "content": []map[string]any{{"type": "text", "text": "run the tool twice"}}},
+						{"role": "assistant", "content": assistantBlocks},
+						{"role": "user", "content": []map[string]any{
+							{"type": "tool_result", "tool_use_id": "toolu_01Step00", "content": "sunny"},
+							{"type": "tool_result", "tool_use_id": "toolu_01Step01", "content": "windy"},
+						}},
+					},
+				})
+				require.NoError(t, err)
+
+				var ingressReq anthropic.AnthropicMessageRequest
+				require.NoError(t, json.Unmarshal(body, &ingressReq))
+
+				ctx := &schemas.BifrostContext{}
+				converseReq, err := bedrock.ToBedrockResponsesRequest(ctx, ingressReq.ToBifrostResponsesRequest(ctx))
+				require.NoError(t, err)
+
+				require.Len(t, converseReq.Messages, 3, "roles: %s", converseRoles(converseReq.Messages))
+				turn := converseReq.Messages[1]
+				require.Equal(t, bedrock.BedrockMessageRoleAssistant, turn.Role)
+
+				got := make([]string, 0, len(turn.Content))
+				for _, block := range turn.Content {
+					switch {
+					case block.ReasoningContent != nil && block.ReasoningContent.RedactedContent != nil:
+						got = append(got, "redacted:"+*block.ReasoningContent.RedactedContent)
+					case block.ReasoningContent != nil && block.ReasoningContent.ReasoningText != nil && block.ReasoningContent.ReasoningText.RedactedContent != nil:
+						got = append(got, "redacted:"+*block.ReasoningContent.ReasoningText.RedactedContent)
+					case block.ReasoningContent != nil && block.ReasoningContent.ReasoningText != nil:
+						sig := ""
+						if block.ReasoningContent.ReasoningText.Signature != nil {
+							sig = *block.ReasoningContent.ReasoningText.Signature
+						}
+						got = append(got, "reasoning:"+sig)
+					case block.Text != nil:
+						got = append(got, "text:"+*block.Text)
+					case block.ToolUse != nil:
+						got = append(got, "toolUse:"+block.ToolUse.ToolUseID)
+					default:
+						got = append(got, "other")
+					}
+				}
+				require.Equal(t, tt.want, got, "interleaved turn must reach Bedrock in the order the client sent it")
+			})
+		}
 	}
 }
 
@@ -474,4 +526,194 @@ func TestAnthropicIngressBedrockReplayKeepsReasoningInItsOwnTurn(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAnthropicIngressBedrockTopLevelCacheControl pins issue #8541: Anthropic's automatic caching
+// (a top-level cache_control on POST /anthropic/v1/messages with a bedrock/ model) must become a
+// Converse cachePoint after the last cacheable block, the same place the Claude API puts the
+// automatic breakpoint. It used to be parked in ExtraParams and never read, so the request billed
+// as uncached input with no error.
+func TestAnthropicIngressBedrockTopLevelCacheControl(t *testing.T) {
+	longSystem := strings.Repeat("You are a meticulous assistant. ", 64)
+
+	convert := func(t *testing.T, payload map[string]any) (*schemas.BifrostResponsesRequest, *bedrock.BedrockConverseRequest) {
+		t.Helper()
+		body, err := json.Marshal(payload)
+		require.NoError(t, err)
+		var ingressReq anthropic.AnthropicMessageRequest
+		require.NoError(t, json.Unmarshal(body, &ingressReq))
+		ctx := &schemas.BifrostContext{}
+		bifrostReq := ingressReq.ToBifrostResponsesRequest(ctx)
+		require.NotNil(t, bifrostReq)
+		converseReq, err := bedrock.ToBedrockResponsesRequest(ctx, bifrostReq)
+		require.NoError(t, err)
+		return bifrostReq, converseReq
+	}
+	countCachePoints := func(req *bedrock.BedrockConverseRequest) int {
+		n := 0
+		for _, s := range req.System {
+			if s.CachePoint != nil {
+				n++
+			}
+		}
+		for _, m := range req.Messages {
+			for _, b := range m.Content {
+				if b.CachePoint != nil {
+					n++
+				}
+			}
+		}
+		return n
+	}
+
+	t.Run("string system and user turn get a trailing cachePoint", func(t *testing.T) {
+		bifrostReq, converseReq := convert(t, map[string]any{
+			"model":         "bedrock/eu.anthropic.claude-sonnet-5-5",
+			"max_tokens":    64,
+			"cache_control": map[string]any{"type": "ephemeral"},
+			"system":        longSystem,
+			"messages":      []map[string]any{{"role": "user", "content": "Say OK."}},
+		})
+		require.NotEmpty(t, converseReq.Messages)
+		last := converseReq.Messages[len(converseReq.Messages)-1].Content
+		require.GreaterOrEqual(t, len(last), 2, "expected [text, cachePoint] on the last message, got %+v", last)
+		require.NotNil(t, last[len(last)-1].CachePoint,
+			"top-level cache_control must become a cachePoint after the last cacheable block; last message content: %+v", last)
+		require.Nil(t, last[len(last)-1].CachePoint.TTL, "no ttl on the marker means Bedrock's 5m default")
+		require.NotNil(t, last[len(last)-2].Text)
+		require.Equal(t, 1, countCachePoints(converseReq), "automatic caching spends exactly one breakpoint")
+		require.NotContains(t, converseReq.ExtraParams, "cache_control", "the marker must not be forwarded as an unknown field")
+		require.Contains(t, bifrostReq.Params.ExtraParams, "cache_control",
+			"the shared Bifrost request must keep the marker so a fallback provider still sees it")
+	})
+
+	t.Run("ttl 1h is carried onto the cachePoint", func(t *testing.T) {
+		_, converseReq := convert(t, map[string]any{
+			"model":         "bedrock/eu.anthropic.claude-sonnet-5-5",
+			"max_tokens":    64,
+			"cache_control": map[string]any{"type": "ephemeral", "ttl": "1h"},
+			"system":        longSystem,
+			"messages":      []map[string]any{{"role": "user", "content": "Say OK."}},
+		})
+		last := converseReq.Messages[len(converseReq.Messages)-1].Content
+		cp := last[len(last)-1].CachePoint
+		require.NotNil(t, cp, "last message content: %+v", last)
+		require.NotNil(t, cp.TTL)
+		require.Equal(t, "1h", *cp.TTL)
+	})
+
+	t.Run("explicit marker on the last block makes automatic caching a no-op", func(t *testing.T) {
+		_, converseReq := convert(t, map[string]any{
+			"model":         "bedrock/eu.anthropic.claude-sonnet-5-5",
+			"max_tokens":    64,
+			"cache_control": map[string]any{"type": "ephemeral"},
+			"system":        longSystem,
+			"messages": []map[string]any{{"role": "user", "content": []map[string]any{{
+				"type": "text", "text": "Say OK.", "cache_control": map[string]any{"type": "ephemeral"},
+			}}}},
+		})
+		require.Equal(t, 1, countCachePoints(converseReq), "the explicit breakpoint already covers the last block")
+	})
+
+	t.Run("explicit system breakpoint plus automatic caching uses two slots", func(t *testing.T) {
+		_, converseReq := convert(t, map[string]any{
+			"model":         "bedrock/eu.anthropic.claude-sonnet-5-5",
+			"max_tokens":    64,
+			"cache_control": map[string]any{"type": "ephemeral"},
+			"system": []map[string]any{{
+				"type": "text", "text": longSystem, "cache_control": map[string]any{"type": "ephemeral"},
+			}},
+			"messages": []map[string]any{
+				{"role": "user", "content": "first question"},
+				{"role": "assistant", "content": "first answer"},
+				{"role": "user", "content": "second question"},
+			},
+		})
+		require.Equal(t, 2, countCachePoints(converseReq))
+		last := converseReq.Messages[len(converseReq.Messages)-1].Content
+		require.NotNil(t, last[len(last)-1].CachePoint, "the automatic breakpoint lands on the last message: %+v", last)
+	})
+
+	t.Run("trailing tool result is the last cacheable block", func(t *testing.T) {
+		_, converseReq := convert(t, map[string]any{
+			"model":         "bedrock/eu.anthropic.claude-sonnet-5-5",
+			"max_tokens":    64,
+			"cache_control": map[string]any{"type": "ephemeral"},
+			"system":        longSystem,
+			"tools": []map[string]any{{
+				"name": "get_weather", "description": "look up the weather",
+				"input_schema": map[string]any{"type": "object", "properties": map[string]any{"city": map[string]any{"type": "string"}}},
+			}},
+			"messages": []map[string]any{
+				{"role": "user", "content": "weather in Paris?"},
+				{"role": "assistant", "content": []map[string]any{{
+					"type": "tool_use", "id": "toolu_01Paris", "name": "get_weather", "input": map[string]any{"city": "Paris"},
+				}}},
+				{"role": "user", "content": []map[string]any{{
+					"type": "tool_result", "tool_use_id": "toolu_01Paris", "content": "sunny",
+				}}},
+			},
+		})
+		last := converseReq.Messages[len(converseReq.Messages)-1].Content
+		require.GreaterOrEqual(t, len(last), 2, "last message content: %+v", last)
+		require.NotNil(t, last[len(last)-2].ToolResult)
+		require.NotNil(t, last[len(last)-1].CachePoint)
+	})
+
+	t.Run("no top-level marker adds no cachePoint", func(t *testing.T) {
+		_, converseReq := convert(t, map[string]any{
+			"model":      "bedrock/eu.anthropic.claude-sonnet-5-5",
+			"max_tokens": 64,
+			"system":     longSystem,
+			"messages":   []map[string]any{{"role": "user", "content": "Say OK."}},
+		})
+		require.Equal(t, 0, countCachePoints(converseReq))
+	})
+}
+
+// TestAnthropicIngressBedrockTopLevelCacheControlTTLConflict is the /anthropic/v1/messages side of
+// the PR #8573 TTL-conflict review finding: an explicit 5m marker on the last block plus a 1h
+// top-level cache_control is a 400 on the Claude API, so the Bedrock path rejects it too rather
+// than silently caching for 5 minutes.
+func TestAnthropicIngressBedrockTopLevelCacheControlTTLConflict(t *testing.T) {
+	body, err := json.Marshal(map[string]any{
+		"model":         "bedrock/eu.anthropic.claude-sonnet-5-5",
+		"max_tokens":    64,
+		"cache_control": map[string]any{"type": "ephemeral", "ttl": "1h"},
+		"messages": []map[string]any{{"role": "user", "content": []map[string]any{{
+			"type": "text", "text": "Say OK.", "cache_control": map[string]any{"type": "ephemeral"},
+		}}}},
+	})
+	require.NoError(t, err)
+	var ingressReq anthropic.AnthropicMessageRequest
+	require.NoError(t, json.Unmarshal(body, &ingressReq))
+	ctx := &schemas.BifrostContext{}
+	bifrostReq := ingressReq.ToBifrostResponsesRequest(ctx)
+	require.NotNil(t, bifrostReq)
+
+	_, err = bedrock.ToBedrockResponsesRequest(ctx, bifrostReq)
+	require.Error(t, err, "a 5m explicit marker under a 1h top-level cache_control must be rejected")
+	require.True(t, providerUtils.IsInvalidRequestError(err), "the conflict is a caller fault and must surface as a 400, got %v", err)
+	require.Contains(t, err.Error(), "cache_control")
+}
+
+// TestAnthropicIngressBedrockTopLevelCacheControlUnsupportedTTL is the /anthropic/v1/messages
+// side of the unsupported-TTL review finding: a top-level ttl Bedrock cannot honour is a 400.
+func TestAnthropicIngressBedrockTopLevelCacheControlUnsupportedTTL(t *testing.T) {
+	body, err := json.Marshal(map[string]any{
+		"model":         "bedrock/eu.anthropic.claude-sonnet-5-5",
+		"max_tokens":    64,
+		"cache_control": map[string]any{"type": "ephemeral", "ttl": "2h"},
+		"messages":      []map[string]any{{"role": "user", "content": "Say OK."}},
+	})
+	require.NoError(t, err)
+	var ingressReq anthropic.AnthropicMessageRequest
+	require.NoError(t, json.Unmarshal(body, &ingressReq))
+	ctx := &schemas.BifrostContext{}
+	bifrostReq := ingressReq.ToBifrostResponsesRequest(ctx)
+	require.NotNil(t, bifrostReq)
+
+	_, err = bedrock.ToBedrockResponsesRequest(ctx, bifrostReq)
+	require.Error(t, err, "a top-level ttl of 2h must be rejected, not cached for 5m")
+	require.True(t, providerUtils.IsInvalidRequestError(err), "unsupported ttl is a caller fault and must surface as a 400, got %v", err)
 }

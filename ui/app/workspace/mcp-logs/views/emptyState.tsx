@@ -46,7 +46,7 @@ function CodeBlock({ code, language, onLanguageChange, showLanguageSelect = fals
 			<div className="absolute top-4 right-4 z-10 flex items-center gap-2">
 				{showLanguageSelect && onLanguageChange && (
 					<Select value={language} onValueChange={onLanguageChange}>
-						<SelectTrigger className="h-8 w-fit text-xs">
+						<SelectTrigger className="h-8 w-fit text-xs" aria-label="Code language">
 							<SelectValue />
 						</SelectTrigger>
 						<SelectContent>

@@ -1,11 +1,13 @@
 package openai
 
 import (
+	"encoding/base64"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // Regression tests for URL-sourced documents being dropped on the OpenAI/Azure chat path.
@@ -254,4 +256,102 @@ func TestResolveChatFileURLsForwardsUnfetchableSchemes(t *testing.T) {
 			assert.Contains(t, string(body), rawURL, "file_url must not be silently stripped")
 		})
 	}
+}
+
+// Regression tests for bare-base64 file_data reaching OpenAI-shaped wires with no media type.
+//
+// Callers may send file_data as bare base64 and name the media type in Bifrost's file_type
+// extension. Native converters (Gemini, Anthropic, Bedrock) read file_type, but the OpenAI
+// wire has no such field, so MarshalJSON stripped it and shipped bare base64. OpenAI and
+// Databricks both require a data URL there, and a Vertex -> Databricks fallback failed with
+// "INVALID_PARAMETER_VALUE: Invalid base64 data URL format. Expected format:
+// data:{mimeType};base64,...". file_type has to be folded into file_data before it is dropped.
+
+var barePDFBase64 = base64.StdEncoding.EncodeToString([]byte("%PDF-1.2\r\n1 0 obj\r\n<<>>\r\nendobj\r\n"))
+
+func TestFileDataAsDataURL(t *testing.T) {
+	plain := "Invoice 42\nTotal: 10 USD"
+	cases := []struct {
+		name     string
+		fileData string
+		fileType *string
+		want     string
+	}{
+		{"file_type names the media type", barePDFBase64, schemas.Ptr("application/pdf"), "data:application/pdf;base64," + barePDFBase64},
+		{"file_type parameters are dropped", barePDFBase64, schemas.Ptr("Application/PDF; charset=binary"), "data:application/pdf;base64," + barePDFBase64},
+		{"short extension file_type resolves", barePDFBase64, schemas.Ptr("pdf"), "data:application/pdf;base64," + barePDFBase64},
+		{"no file_type sniffs the bytes", barePDFBase64, nil, "data:application/pdf;base64," + barePDFBase64},
+		{"existing data URL is untouched", "data:image/png;base64,iVBORw0KGgo=", schemas.Ptr("application/pdf"), "data:image/png;base64,iVBORw0KGgo="},
+		{"plain text file_type is encoded as text", plain, schemas.Ptr("text/plain"), "data:text/plain;base64," + base64.StdEncoding.EncodeToString([]byte(plain))},
+		{"txt shorthand is encoded as text", plain, schemas.Ptr("txt"), "data:text/plain;base64," + base64.StdEncoding.EncodeToString([]byte(plain))},
+		// text/plain means raw text even when the text happens to be valid base64: it is the same
+		// convention the Anthropic converters apply, and guessing would misread real text such as "Hello".
+		{"text/plain payload that looks like base64 is still raw text", "SGVsbG8=", schemas.Ptr("text/plain"), "data:text/plain;base64," + base64.StdEncoding.EncodeToString([]byte("SGVsbG8="))},
+		{"text/plain word that is valid base64 is still raw text", "Hello", schemas.Ptr("text/plain"), "data:text/plain;base64," + base64.StdEncoding.EncodeToString([]byte("Hello"))},
+		{"non-base64 without a text type is left alone", "not base64 at all!", schemas.Ptr("application/pdf"), "not base64 at all!"},
+		{"empty stays empty", "", schemas.Ptr("application/pdf"), ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, fileDataAsDataURL(tc.fileData, tc.fileType))
+		})
+	}
+}
+
+func TestChatMarshalFoldsFileTypeIntoFileData(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		fileType *string
+	}{
+		{"with file_type", schemas.Ptr("application/pdf")},
+		{"without file_type", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			file := &schemas.ChatInputFile{
+				FileData: schemas.Ptr(barePDFBase64),
+				Filename: schemas.Ptr("invoice.pdf"),
+				FileType: tc.fileType,
+			}
+			req := &OpenAIChatRequest{Model: "databricks-gemini-3-8-flash", Messages: []OpenAIMessage{{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+					{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("Extract the bill.")},
+					{Type: schemas.ChatContentBlockTypeFile, File: file},
+				}},
+			}}}
+
+			body, err := req.MarshalJSON()
+			require.NoError(t, err)
+
+			wire := gjson.GetBytes(body, "messages.0.content.1.file")
+			assert.Equal(t, "data:application/pdf;base64,"+barePDFBase64, wire.Get("file_data").String(),
+				"the OpenAI wire has no file_type, so the media type must travel in file_data")
+			assert.False(t, wire.Get("file_type").Exists(), "file_type is a Bifrost extension and must not reach the wire")
+			assert.Equal(t, barePDFBase64, *file.FileData, "the caller's request is reused by fallbacks and must not change")
+		})
+	}
+}
+
+func TestResponsesMarshalFoldsFileTypeIntoFileData(t *testing.T) {
+	file := &schemas.ResponsesInputMessageContentBlockFile{
+		FileData: schemas.Ptr(barePDFBase64),
+		Filename: schemas.Ptr("invoice.pdf"),
+		FileType: schemas.Ptr("application/pdf"),
+	}
+	input := OpenAIResponsesRequestInput{OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+			Type:                                  schemas.ResponsesInputMessageContentBlockTypeFile,
+			ResponsesInputMessageContentBlockFile: file,
+		}}},
+	}}}
+
+	body, err := input.MarshalJSON()
+	require.NoError(t, err)
+
+	wire := gjson.GetBytes(body, "0.content.0")
+	assert.Equal(t, "data:application/pdf;base64,"+barePDFBase64, wire.Get("file_data").String())
+	assert.False(t, wire.Get("file_type").Exists())
+	assert.Equal(t, barePDFBase64, *file.FileData, "the caller's request must not change")
 }

@@ -37,6 +37,9 @@ func (s *promptReloadStore) CreatePromptVersion(context.Context, *tables.TablePr
 	return s.writeErr
 }
 func (s *promptReloadStore) DeletePromptVersion(context.Context, uint) error { return s.writeErr }
+func (s *promptReloadStore) GetPromptVersionByID(context.Context, uint) (*tables.TablePromptVersion, error) {
+	return &tables.TablePromptVersion{ID: 1, PromptID: "prompt-1", VersionNumber: 1}, nil
+}
 func (s *promptReloadStore) GetPromptSessionByID(context.Context, uint) (*tables.TablePromptSession, error) {
 	return &tables.TablePromptSession{
 		ID:       1,
