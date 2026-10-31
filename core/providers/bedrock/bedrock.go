@@ -1766,6 +1766,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 
 						if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 							response.ExtraFields.RawResponse = string(message.Payload)
+							response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatBedrockConverseStreamEvent
 						}
 
 						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan, postHookSpanFinalizer)
@@ -1803,6 +1804,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 
 					if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 						response.ExtraFields.RawResponse = string(message.Payload)
+						response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatBedrockConverseStreamEvent
 					}
 
 					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan, postHookSpanFinalizer)

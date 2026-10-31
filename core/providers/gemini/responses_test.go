@@ -2237,6 +2237,67 @@ func TestGeminiContinuationRequestRoundTrip(t *testing.T) {
 	}
 }
 
+// TestGeminiResponsesRawAttachment verifies a Gemini chunk's raw payload rides on the event carrying its text, so the
+// closing events a finishing chunk also expands into never hold text they do not back, and that the payload is
+// declared only when that one event carries all of the chunk's text.
+func TestGeminiResponsesRawAttachment(t *testing.T) {
+	textChunk := func(finish FinishReason, texts ...string) *GenerateContentResponse {
+		parts := make([]*Part, 0, len(texts))
+		for _, text := range texts {
+			parts = append(parts, &Part{Text: text})
+		}
+		return &GenerateContentResponse{Candidates: []*Candidate{{Content: &Content{Role: "model", Parts: parts}, FinishReason: finish}}}
+	}
+	cases := map[string]struct {
+		chunks     []*GenerateContentResponse
+		wantType   schemas.ResponsesStreamResponseType
+		wantFormat schemas.RawResponseFormat
+		notLast    bool // the chunk also expands into closing events after its text
+	}{
+		"first chunk": {
+			chunks:     []*GenerateContentResponse{textChunk("", "Hello")},
+			wantType:   schemas.ResponsesStreamResponseTypeOutputTextDelta,
+			wantFormat: schemas.RawResponseFormatGeminiStreamChunk,
+		},
+		"finishing chunk": {
+			chunks:     []*GenerateContentResponse{textChunk("", "Hello"), textChunk(FinishReasonStop, " there")},
+			wantType:   schemas.ResponsesStreamResponseTypeOutputTextDelta,
+			wantFormat: schemas.RawResponseFormatGeminiStreamChunk,
+			notLast:    true,
+		},
+		"finishing chunk without text": {
+			chunks:     []*GenerateContentResponse{textChunk("", "Hello"), textChunk(FinishReasonStop)},
+			wantType:   schemas.ResponsesStreamResponseTypeCompleted,
+			wantFormat: schemas.RawResponseFormatGeminiStreamChunk,
+		},
+		"text spread over several deltas": {
+			chunks:   []*GenerateContentResponse{textChunk("", "Hello"), textChunk(FinishReasonStop, " there", " friend")},
+			wantType: schemas.ResponsesStreamResponseTypeCompleted,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			state := &GeminiResponsesStreamState{}
+			state.flush()
+			var responses []*schemas.BifrostResponsesStreamResponse
+			for _, chunk := range tc.chunks {
+				converted, bifrostErr := chunk.ToBifrostResponsesStream(0, state)
+				require.Nil(t, bifrostErr)
+				responses = converted
+			}
+
+			rawIdx, format := geminiResponsesRawAttachment(responses)
+
+			require.GreaterOrEqual(t, rawIdx, 0)
+			assert.Equal(t, tc.wantType, responses[rawIdx].Type)
+			assert.Equal(t, tc.wantFormat, format)
+			if tc.notLast {
+				assert.Less(t, rawIdx, len(responses)-1, "raw must move off the closing events")
+			}
+		})
+	}
+}
+
 // The /anthropic ingress routed to gemini-4: Claude Code style thinking.budget_tokens
 // must reach Google as thinkingLevel, because gemini-4 rejects thinkingBudget.
 // Source: https://ai.google.dev/gemini-api/docs/thinking
