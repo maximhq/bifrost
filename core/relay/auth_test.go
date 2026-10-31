@@ -93,6 +93,7 @@ func TestAuthHeaderName(t *testing.T) {
 	assert.Equal(t, "", authProvider(schemas.RelayAuthConfig{Type: schemas.RelayAuthNone}).authHeader())
 }
 
+// TestExtractCallerCredential verifies extracting caller credentials across header, query, and Basic relay auth configurations.
 func TestExtractCallerCredential(t *testing.T) {
 	m := NewManager(nil, nil)
 	require.NoError(t, m.Upsert(&schemas.RelayConfig{

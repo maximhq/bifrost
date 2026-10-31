@@ -387,7 +387,8 @@ func redactQuery(raw string) string {
 		}
 		decodedVal, err := url.QueryUnescape(val)
 		if err != nil {
-			decodedVal = val
+			parts[i] = name + "=" + url.QueryEscape(schemas.RedactedAttrValue)
+			continue
 		}
 		trimmedVal := strings.TrimSpace(decodedVal)
 		isVK := len(trimmedVal) >= 6 && strings.EqualFold(trimmedVal[:6], "sk-bf-")

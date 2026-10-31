@@ -31,10 +31,12 @@ func (e *endpoint) authHeader() string {
 	return ""
 }
 
+// hasPrefixFold reports whether s begins with prefix, matched ASCII case-insensitively without allocating.
 func hasPrefixFold(s, prefix string) bool {
 	return len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix)
 }
 
+// unescapeQueryPart query-unescapes s only when percent-encoding or '+' is present, returning s unchanged otherwise.
 func unescapeQueryPart(s string) (string, error) {
 	if !strings.ContainsAny(s, "%+") {
 		return s, nil

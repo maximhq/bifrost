@@ -89,6 +89,7 @@ func endpointRequestPath(full string) (string, string, bool) {
 	return name, "/" + path, true
 }
 
+// handle authenticates and proxies one incoming /relay/{endpoint}/{path} data-plane request.
 func (r *RelayGatewayHandler) handle(ctx *fasthttp.RequestCtx) {
 	name, path, ok := endpointRequestPath(string(ctx.Path()))
 	if !ok {
