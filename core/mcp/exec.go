@@ -6,7 +6,7 @@ import (
 	"sync"
 
 	"github.com/mark3labs/mcp-go/client"
-	"github.com/maximhq/bifrost/core/internal/injectedauth"
+	"github.com/maximhq/bifrost/core/internal/mcpvouch"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -82,7 +82,33 @@ func (m *MCPManager) executeToolWithHooks(
 		}
 	}
 
+	// A call named like a client's connect tool is marked on a context of its own
+	// before the gate, so a policy plugin can authorize a connect by the caller's
+	// access to the client (see mcpvouch) and the mark covers this call only.
+	// Whether it is Bifrost's connect or an upstream tool of that name in the
+	// caller's discovery is settled once the caller is known: a direct tool
+	// execution names its caller only when a policy plugin resolves its
+	// credential, after this point.
+	// A call already vouched for as injected runs a tool from the caller's own
+	// discovery, so it is never Bifrost's connect and keeps its mark.
+	var connectState *schemas.MCPClientState
+	if toolName := request.GetToolName(); strings.HasSuffix(toolName, connectToolSuffix) {
+		if state := m.connectCandidate(toolName); state != nil && mcpvouch.Kind(ctx, state.ExecutionConfig.Name, toolName) != schemas.MCPToolCallKindInjected {
+			connectState = state
+			ctx = schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			mcpvouch.SetConnect(ctx, connectState.ExecutionConfig.Name, toolName, func(callCtx *schemas.BifrostContext) (bool, bool) {
+				return m.ConnectToolClient(callCtx, toolName) != nil, connectCaller(callCtx)
+			})
+		}
+	}
+
 	resp, bErr := m.RunWithPluginPipeline(ctx, request, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
+		// A plugin may have retargeted the request; connect runs only for the
+		// tool it was decided on, and only as the plugins were told it would.
+		if connectState != nil && preReq.GetToolName() == connectToolName(connectState.ExecutionConfig.Name) &&
+			mcpvouch.Kind(ctx, connectState.ExecutionConfig.Name, preReq.GetToolName()) == schemas.MCPToolCallKindConnect {
+			return m.runConnect(ctx, preReq, connectState)
+		}
 		// Resolve and acquire after PreMCPHook so policy plugins can reject denied
 		// MCP clients before any auth or transport work.
 		state, discovery, conn, release, prepErr := m.prepareToolExecution(ctx, preReq)
@@ -211,7 +237,7 @@ func (m *MCPManager) codeModeClientReachable(ctx *schemas.BifrostContext) bool {
 //  3. Tool allow-list   — client-level ToolsToExecute (most restrictive).
 //  4. Tool narrowing    — request-context MCPContextKeyIncludeTools.
 //
-// A provider-injected tool (core's injectedauth marker names it) skips 2-4.
+// A provider-injected tool (core's mcpvouch mark names it) skips 2-4.
 // The operator chose it in the provider config, and the caller never saw it in the
 // request, so neither the client's allow-list nor the caller's include lists apply.
 // The marker names one client and one exact prefixed tool, and both must match, so it
@@ -221,7 +247,7 @@ func checkToolExecutionPermitted(ctx *schemas.BifrostContext, state *schemas.MCP
 	if state.State == schemas.MCPConnectionStateDisabled {
 		return fmt.Errorf("tool '%s' is not permitted (client %s is disabled)", toolName, clientName)
 	}
-	if injectedauth.Authorizes(ctx, clientName, toolName) {
+	if mcpvouch.Kind(ctx, clientName, toolName) == schemas.MCPToolCallKindInjected {
 		return nil
 	}
 	var includeClients []string

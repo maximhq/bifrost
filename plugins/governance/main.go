@@ -11,10 +11,11 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tidwall/gjson"
 	"sync"
 	"time"
 	"unsafe"
+
+	"github.com/tidwall/gjson"
 
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -1771,7 +1772,7 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 	// disagree. What is left is a question about the tool, which the access answers whatever granted it.
 	// A request carrying no access is unrestricted and may execute any tool, as it always could.
 	access := ctx.Grant().Access()
-	if access != nil && !access.IsMCPToolAllowed(toolName) && !hasMCPExecutionAuthorization(ctx, req) {
+	if access != nil && !mcpToolCallAllowed(ctx, req, access) {
 		ctx.SetValue(governanceRejectedContextKey, true)
 		return req, &schemas.MCPPluginShortCircuit{Error: &schemas.BifrostError{
 			Type:       bifrost.Ptr(string(DecisionMCPToolBlocked)),
