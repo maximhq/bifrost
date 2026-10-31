@@ -30,20 +30,22 @@ import (
 // creation happens in the unified POST /api/mcp/client handler — mirrors
 // the per-user OAuth shape.
 type MCPPerUserHeadersHandler struct {
-	store      *lib.Config
-	mcpManager MCPManager
-	tempTokens *temptoken.Service // optional — set when a temp-token service is wired; flowSubmit uses it to revoke the bound token on completion
+	store        *lib.Config
+	mcpManager   MCPManager
+	cacheManager MCPCredentialCacheManager // drops caches on every node after revoke; nil skips that
+	tempTokens   *temptoken.Service        // optional — set when a temp-token service is wired; flowSubmit uses it to revoke the bound token on completion
 }
 
 // NewMCPPerUserHeadersHandler constructs the handler. tempTokens is optional —
 // pass nil if the deployment does not run the temp-token service (the
 // auth-page URL will then only be usable from a dashboard-authenticated
 // browser session).
-func NewMCPPerUserHeadersHandler(mcpManager MCPManager, store *lib.Config, tempTokens *temptoken.Service) *MCPPerUserHeadersHandler {
+func NewMCPPerUserHeadersHandler(mcpManager MCPManager, cacheManager MCPCredentialCacheManager, store *lib.Config, tempTokens *temptoken.Service) *MCPPerUserHeadersHandler {
 	return &MCPPerUserHeadersHandler{
-		store:      store,
-		mcpManager: mcpManager,
-		tempTokens: tempTokens,
+		store:        store,
+		mcpManager:   mcpManager,
+		cacheManager: cacheManager,
+		tempTokens:   tempTokens,
 	}
 }
 
@@ -410,6 +412,7 @@ func (h *MCPPerUserHeadersHandler) revoke(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to revoke credential: %v", err))
 		return
 	}
+	evictRevokedCredentialDiscovery(ctx, h.cacheManager, credMode, credIdentity, cred.MCPClientID)
 	credClientName := cred.MCPClientID
 	if cred.MCPClient != nil && cred.MCPClient.Name != "" {
 		credClientName = cred.MCPClient.Name

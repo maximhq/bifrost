@@ -37,6 +37,18 @@ type MCPCredentialCacheManager interface {
 	EvictOauthTokenCacheByMCPClient(ctx context.Context, mcpClientID string)
 	EvictMCPHeaderCredentialCacheByID(ctx context.Context, credentialID string)
 	EvictMCPHeaderCredentialCacheByMCPClient(ctx context.Context, mcpClientID string)
+	EvictMCPPerUserDiscoveryCache(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string)
+	EvictMCPPerUserDiscoveryCacheByMCPClient(ctx context.Context, mcpClientID string)
+}
+
+// evictRevokedCredentialDiscovery drops the cached discovery made with a revoked
+// credential of mode and identity, on every node: its row was deleted with the
+// credential. Only user and virtual-key callers keep one.
+func evictRevokedCredentialDiscovery(ctx context.Context, cache MCPCredentialCacheManager, mode schemas.MCPAuthMode, identity, mcpClientID string) {
+	if cache == nil || identity == "" || (mode != schemas.MCPAuthModeUser && mode != schemas.MCPAuthModeVK) {
+		return
+	}
+	cache.EvictMCPPerUserDiscoveryCache(ctx, mode, identity, mcpClientID)
 }
 
 // MCPSessionsHandler serves the sessions tab API.
@@ -656,6 +668,7 @@ func (h *MCPSessionsHandler) revoke(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		h.mcpCredentialCacheManager.EvictMCPHeaderCredentialCacheByID(ctx, headerCred.ID)
+		evictRevokedCredentialDiscovery(ctx, h.mcpCredentialCacheManager, credMode, credIdentity, headerCred.MCPClientID)
 		logger.Debug("[mcp/sessions] revoked header credential: id=%s mcp_client=%s mode=%s", rowID, headerCred.MCPClientID, headerCred.AuthMode)
 		lib.RecordAuditChange(ctx, "mcp_session.revoked", "mcp_session", headerCred.ID, mcpSessionAuditName(headerCred.MCPClient, headerCred.MCPClientID), auditMCPSession("header_credential", headerCred.MCPClientID, headerCred.AuthMode, headerCred.UserID, headerCred.VirtualKeyID), nil)
 		ctx.SetStatusCode(fasthttp.StatusNoContent)
@@ -703,6 +716,7 @@ func (h *MCPSessionsHandler) revoke(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	h.mcpCredentialCacheManager.EvictOauthTokenCacheByID(ctx, tok.ID)
+	evictRevokedCredentialDiscovery(ctx, h.mcpCredentialCacheManager, rowMode, rowIdentity, tok.MCPClientID)
 	logger.Debug("[mcp/sessions] revoked: token=%s mcp_client=%s mode=%s", rowID, tok.MCPClientID, tok.AuthMode)
 	lib.RecordAuditChange(ctx, "mcp_session.revoked", "mcp_session", tok.ID, mcpSessionAuditName(tok.MCPClient, tok.MCPClientID), auditMCPSession("oauth_token", tok.MCPClientID, tok.AuthMode, tok.UserID, tok.VirtualKeyID), nil)
 	ctx.SetStatusCode(fasthttp.StatusNoContent)

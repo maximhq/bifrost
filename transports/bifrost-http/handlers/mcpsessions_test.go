@@ -1,9 +1,16 @@
 package handlers
 
 import (
+	"context"
 	"strings"
+	"sync"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
 
@@ -104,5 +111,134 @@ func TestMCPSessionsListQuery_KindAllowed(t *testing.T) {
 	}
 	if q.kindAllowed("flow") {
 		t.Fatalf("flow should not match {token, header}")
+	}
+}
+
+// evictionLog records every cache eviction a handler asks for, one line per call.
+type evictionLog struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (l *evictionLog) add(call string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.calls = append(l.calls, call)
+}
+
+func (l *evictionLog) logged() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.calls...)
+}
+
+func (l *evictionLog) EvictOauthTokenCacheByID(_ context.Context, id string) { l.add("token " + id) }
+func (l *evictionLog) EvictOauthTokenCacheByMCPClient(_ context.Context, id string) {
+	l.add("tokens of " + id)
+}
+func (l *evictionLog) EvictMCPHeaderCredentialCacheByID(_ context.Context, id string) {
+	l.add("header credential " + id)
+}
+func (l *evictionLog) EvictMCPHeaderCredentialCacheByMCPClient(_ context.Context, id string) {
+	l.add("header credentials of " + id)
+}
+func (l *evictionLog) EvictMCPPerUserDiscoveryCache(_ context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) {
+	l.add("discovery " + string(mode) + "/" + identity + "/" + mcpClientID)
+}
+func (l *evictionLog) EvictMCPPerUserDiscoveryCacheByMCPClient(_ context.Context, id string) {
+	l.add("discoveries of " + id)
+}
+
+// seedDiscovery stores a discovery of clientID for mode and identity.
+func seedDiscovery(t *testing.T, store configstore.ConfigStore, mode schemas.MCPAuthMode, identity, clientID string) {
+	t.Helper()
+	row := &tables.TableMCPPerUserDiscovery{
+		MCPClientID:   clientID,
+		AuthMode:      string(mode),
+		Tools:         signInDiscovery("notes").Tools,
+		DiscoveryHash: "hash-" + identity,
+	}
+	switch mode {
+	case schemas.MCPAuthModeUser:
+		row.UserID = schemas.Ptr(identity)
+	case schemas.MCPAuthModeVK:
+		row.VirtualKeyID = schemas.Ptr(identity)
+	case schemas.MCPAuthModeSession:
+		row.SessionID = identity
+	}
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(context.Background(), row))
+}
+
+// callRevoke runs route for the credential row id as the dashboard admin and
+// returns the status.
+func callRevoke(route func(*fasthttp.RequestCtx), id string) int {
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodDelete)
+	var ctx fasthttp.RequestCtx
+	ctx.Init(&req, nil, nil)
+	ctx.SetUserValue("id", id)
+	route(&ctx)
+	return ctx.Response.StatusCode()
+}
+
+// TestMCPSessionsRevoke_DropsTheRevokedCredentialsDiscovery revokes a caller's
+// credential and their discovery with it: the row in the same write, and every
+// node's cached copy through the cache manager. A session-mode credential keeps
+// no discovery, so nothing is evicted for it.
+func TestMCPSessionsRevoke_DropsTheRevokedCredentialsDiscovery(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		mode     schemas.MCPAuthMode
+		identity string
+		seed     func(t *testing.T, store configstore.ConfigStore, clientID string) string
+	}{
+		{
+			name: "header credential", mode: schemas.MCPAuthModeUser, identity: "alice",
+			seed: func(t *testing.T, store configstore.ConfigStore, clientID string) string {
+				cred := &tables.TableMCPPerUserHeaderCredential{MCPClientID: clientID, AuthMode: "user", UserID: schemas.Ptr("alice"), Status: "active", HeadersJSON: `{"x-api-key":"k"}`}
+				require.NoError(t, store.UpsertMCPPerUserHeaderCredential(context.Background(), cred))
+				return cred.ID
+			},
+		},
+		{
+			name: "oauth token", mode: schemas.MCPAuthModeVK, identity: "vk-1",
+			seed: func(t *testing.T, store configstore.ConfigStore, clientID string) string {
+				token := &tables.TableMCPOauthToken{ID: "tok-vk", MCPClientID: clientID, AuthMode: "vk", VirtualKeyID: schemas.Ptr("vk-1"), Status: "active", AccessToken: "x", TokenType: "Bearer", OauthConfigID: "oauth-notes"}
+				require.NoError(t, store.CreateOauthToken(context.Background(), token))
+				return token.ID
+			},
+		},
+		{
+			name: "session-mode header credential", mode: schemas.MCPAuthModeSession, identity: "sess-1",
+			seed: func(t *testing.T, store configstore.ConfigStore, clientID string) string {
+				cred := &tables.TableMCPPerUserHeaderCredential{MCPClientID: clientID, AuthMode: "session", SessionID: "sess-1", Status: "active", HeadersJSON: `{"x-api-key":"k"}`}
+				require.NoError(t, store.UpsertMCPPerUserHeaderCredential(context.Background(), cred))
+				return cred.ID
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, store := newSignInConfig(t)
+			client := headersNotesClient()
+			createSignInClient(t, store, client, true)
+			require.NoError(t, store.CreateVirtualKey(context.Background(), &tables.TableVirtualKey{ID: "vk-1", Name: "vk-1", Value: *schemas.NewSecretVar("sk-bf-vk-1"), IsActive: schemas.Ptr(true)}))
+			rowID := tc.seed(t, store, client.ID)
+			seedDiscovery(t, store, schemas.MCPAuthModeUser, "bob", client.ID)
+			if tc.mode != schemas.MCPAuthModeSession {
+				seedDiscovery(t, store, tc.mode, tc.identity, client.ID)
+			}
+			log := &evictionLog{}
+
+			require.Equal(t, fasthttp.StatusNoContent, callRevoke(NewMCPSessionsHandler(cfg, log).revoke, rowID))
+
+			assert.Nil(t, storedDiscovery(store, tc.mode, tc.identity, client.ID))
+			assert.NotNil(t, storedDiscovery(store, schemas.MCPAuthModeUser, "bob", client.ID), "other callers keep theirs")
+			binding := "discovery " + string(tc.mode) + "/" + tc.identity + "/" + client.ID
+			if tc.mode == schemas.MCPAuthModeSession {
+				assert.NotContains(t, strings.Join(log.logged(), "\n"), "discovery ")
+			} else {
+				assert.Contains(t, log.logged(), binding, "every node drops its cached copy")
+			}
+		})
 	}
 }

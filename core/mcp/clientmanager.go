@@ -269,6 +269,7 @@ func (m *MCPManager) acquireClientConn(ctx *schemas.BifrostContext, state *schem
 			_ = tempClient.Close()
 		}
 		if authRequiredErr != nil {
+			m.dropCallerDiscovery(ctx, config)
 			return nil, nil, "", authRequiredErr
 		}
 		if gateErr.Error != nil {
@@ -397,6 +398,22 @@ func (m *MCPManager) notePerCallVersion(clientID, url, version string) {
 func (m *MCPManager) dropPerCallConn(clientID string) {
 	if old, loaded := m.perCallConns.LoadAndDelete(clientID); loaded {
 		old.(*perCallConn).httpClient.CloseIdleConnections()
+	}
+}
+
+// dropCallerDiscovery deletes the caller's discovery of config once their
+// credential turns out to need sign-in, so their next request offers the
+// client's connect tool rather than tools that cannot be called. A discovery is
+// deleted with its credential wherever Bifrost changes the credential; this
+// covers what no such write sees, such as a token read as expired before
+// anything has marked it. It runs only on that error path, and writes only
+// when the caller has a discovery.
+func (m *MCPManager) dropCallerDiscovery(ctx *schemas.BifrostContext, config *schemas.MCPClientConfig) {
+	if !perUserDiscoveryOn(config) || m.discoveryStore.GetDiscovery(ctx, config) == nil {
+		return
+	}
+	if err := m.discoveryStore.DeleteDiscovery(ctx, config); err != nil {
+		m.logger.Warn("%s Failed to delete the discovery of MCP client %s for a caller who must sign in again: %v", MCPLogPrefix, config.Name, err)
 	}
 }
 

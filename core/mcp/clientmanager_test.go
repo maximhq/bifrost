@@ -96,6 +96,45 @@ func TestCreateSTDIOConnectionRejectsEmptyEnvAssignmentName(t *testing.T) {
 	require.Contains(t, err.Error(), "environment variable name is empty")
 }
 
+// TestAcquireClientConn_DropsTheDiscoveryOfACallerWhoMustSignInAgain: a caller
+// whose credential turns out to need sign-in keeps no discovery, so their next
+// request offers the client's connect tool rather than tools that cannot be
+// called. Nothing is written for a caller with no discovery, and a client
+// without per_user_discovery keeps its shared tools.
+func TestAcquireClientConn_DropsTheDiscoveryOfACallerWhoMustSignInAgain(t *testing.T) {
+	t.Run("caller with a discovery", func(t *testing.T) {
+		upstream, _ := buildConnectUpstream(t, "search")
+		m, perUser, notes := newConnectTestManager(t, &connectCredStore{}, upstream.URL, schemas.MCPConfig{})
+		require.NoError(t, perUser.SetDiscovery(userContext("alice"), notes, discoveryOf("notes", "search")))
+
+		_, bErr := m.ExecuteChatTool(userContext("alice"), connectToolCall("notes-search"))
+		require.NotNil(t, bErr, "the call still asks alice to sign in")
+
+		assert.Nil(t, perUser.GetDiscovery(userContext("alice"), notes))
+		assert.Equal(t, []string{"notes-connect"}, toolNames(m.GetConnectTools(userContext("alice"))))
+	})
+
+	t.Run("caller without one", func(t *testing.T) {
+		upstream, _ := buildConnectUpstream(t, "search")
+		m, perUser, _ := newConnectTestManager(t, &connectCredStore{}, upstream.URL, schemas.MCPConfig{})
+
+		_, bErr := m.ExecuteChatTool(userContext("bob"), connectToolCall("notes-connect"))
+		require.Nil(t, bErr)
+		assert.Empty(t, perUser.written, "a caller who has nothing to drop costs no write")
+	})
+
+	t.Run("client without per_user_discovery", func(t *testing.T) {
+		upstream, _ := buildConnectUpstream(t, "search")
+		m, _, notes := newConnectTestManager(t, &connectCredStore{}, upstream.URL, schemas.MCPConfig{})
+		notes.PerUserDiscovery = schemas.Ptr(false)
+		require.NoError(t, m.discoveryStore.SetDiscovery(context.Background(), notes, discoveryOf("notes", "search")))
+
+		_, bErr := m.ExecuteChatTool(userContext("alice"), connectToolCall("notes-search"))
+		require.NotNil(t, bErr)
+		assert.NotNil(t, m.discoveryStore.GetDiscovery(context.Background(), notes), "one caller's sign-in prompt leaves the shared tools alone")
+	})
+}
+
 // TestCloseAndMarkNeedsReauth_ClosesLiveConnectionAndFlipsState covers the
 // core behavior this method exists for: after OAuth credential rotation, a
 // shared client's live connection (still bound to the now-invalidated

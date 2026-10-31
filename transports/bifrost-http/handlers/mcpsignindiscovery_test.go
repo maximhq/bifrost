@@ -328,7 +328,7 @@ func TestHeadersSubmit_KeepsTheVerificationAsTheCallersDiscovery(t *testing.T) {
 	createHeadersFlow(t, store, &tables.TableMCPPerUserHeaderFlow{ID: "flow-1", MCPClientID: client.ID, FlowMode: string(schemas.MCPAuthModeUser), UserID: schemas.Ptr("alice")})
 	manager := &signInMCPManager{}
 
-	body := submitHeaders(t, NewMCPPerUserHeadersHandler(manager, cfg, nil), "flow-1", "alice")
+	body := submitHeaders(t, NewMCPPerUserHeadersHandler(manager, nil, cfg, nil), "flow-1", "alice")
 
 	row := storedDiscovery(store, schemas.MCPAuthModeUser, "alice", client.ID)
 	require.NotNil(t, row, "the verification submit already ran becomes the caller's discovery")
@@ -350,7 +350,7 @@ func TestHeadersSubmit_ReportsADiscoveryItCouldNotStore(t *testing.T) {
 	failDiscoveryWrites(cfg, store)
 	createHeadersFlow(t, store, &tables.TableMCPPerUserHeaderFlow{ID: "flow-1", MCPClientID: client.ID, FlowMode: string(schemas.MCPAuthModeUser), UserID: schemas.Ptr("alice")})
 
-	body := submitHeaders(t, NewMCPPerUserHeadersHandler(&signInMCPManager{}, cfg, nil), "flow-1", "alice")
+	body := submitHeaders(t, NewMCPPerUserHeadersHandler(&signInMCPManager{}, nil, cfg, nil), "flow-1", "alice")
 
 	assert.Equal(t, "success", body["status"])
 	assert.Contains(t, body["discovery_error"], "disk full")
@@ -368,7 +368,7 @@ func TestHeadersSubmit_StoresAVirtualKeysDiscoveryUnderTheKey(t *testing.T) {
 	require.NoError(t, store.CreateVirtualKey(context.Background(), &tables.TableVirtualKey{ID: "vk-1", Name: "vk-1", Value: *schemas.NewSecretVar("sk-bf-vk-1"), IsActive: schemas.Ptr(true)}))
 	createHeadersFlow(t, store, &tables.TableMCPPerUserHeaderFlow{ID: "flow-1", MCPClientID: client.ID, FlowMode: string(schemas.MCPAuthModeVK), VirtualKeyID: schemas.Ptr("vk-1")})
 
-	submitHeaders(t, NewMCPPerUserHeadersHandler(&signInMCPManager{}, cfg, nil), "flow-1", "bob")
+	submitHeaders(t, NewMCPPerUserHeadersHandler(&signInMCPManager{}, nil, cfg, nil), "flow-1", "bob")
 
 	assert.NotNil(t, storedDiscovery(store, schemas.MCPAuthModeVK, "vk-1", client.ID), "stored under the key the credential belongs to")
 	assert.Nil(t, storedDiscovery(store, schemas.MCPAuthModeUser, "bob", client.ID), "never under the dashboard user who submitted it")
@@ -380,7 +380,7 @@ func TestHeadersSubmit_StoresNoDiscoveryForAClientWithoutPerUserDiscovery(t *tes
 	createSignInClient(t, store, client, false)
 	createHeadersFlow(t, store, &tables.TableMCPPerUserHeaderFlow{ID: "flow-1", MCPClientID: client.ID, FlowMode: string(schemas.MCPAuthModeUser), UserID: schemas.Ptr("alice")})
 
-	body := submitHeaders(t, NewMCPPerUserHeadersHandler(&signInMCPManager{}, cfg, nil), "flow-1", "alice")
+	body := submitHeaders(t, NewMCPPerUserHeadersHandler(&signInMCPManager{}, nil, cfg, nil), "flow-1", "alice")
 	assert.Nil(t, storedDiscovery(store, schemas.MCPAuthModeUser, "alice", client.ID))
 	assert.NotContains(t, body, "discovery_error")
 }

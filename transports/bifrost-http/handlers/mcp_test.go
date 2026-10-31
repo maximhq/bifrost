@@ -104,11 +104,16 @@ func (as *reregisterAuthServer) registrationCount() int {
 // one under test panics rather than passing unnoticed.
 type recordingCredentialCache struct {
 	MCPCredentialCacheManager
-	evictedClients []string
+	evictedClients          []string
+	evictedDiscoveryClients []string
 }
 
 func (c *recordingCredentialCache) EvictOauthTokenCacheByMCPClient(_ context.Context, mcpClientID string) {
 	c.evictedClients = append(c.evictedClients, mcpClientID)
+}
+
+func (c *recordingCredentialCache) EvictMCPPerUserDiscoveryCacheByMCPClient(_ context.Context, mcpClientID string) {
+	c.evictedDiscoveryClients = append(c.evictedDiscoveryClients, mcpClientID)
 }
 
 // recordingMCPManager embeds the interface for the same reason.
@@ -253,6 +258,25 @@ func TestReregisterMCPClient_InvalidatesInMemoryStateWhenItRotates(t *testing.T)
 		"cached tokens issued under the replaced client must be evicted, or they keep being served over a needs_reauth row")
 	assert.Equal(t, []string{reregisterMCPClientID}, f.manager.closedClients,
 		"the live connection still carries the replaced client's bearer and must be closed")
+}
+
+// TestReregisterMCPClient_DropsCallersDiscoveriesWhenItRotates: for a client
+// that keeps a discovery per caller, the rotation's needs_reauth cascade deletes
+// every caller's discovery too, and every node drops its cached copies.
+func TestReregisterMCPClient_DropsCallersDiscoveriesWhenItRotates(t *testing.T) {
+	f := newReregisterFixture(t)
+	ctx := context.Background()
+	row, err := f.store.GetMCPClientByID(ctx, reregisterMCPClientID)
+	require.NoError(t, err)
+	row.PerUserDiscovery = schemas.Ptr(true)
+	require.NoError(t, f.store.UpdateMCPClientConfig(ctx, reregisterMCPClientID, row))
+	seedDiscovery(t, f.store, schemas.MCPAuthModeUser, "alice", reregisterMCPClientID)
+
+	status, _, raw := f.call(t, f.handler.reregisterMCPClient)
+	require.Equal(t, fasthttp.StatusOK, status, raw)
+
+	assert.Nil(t, storedDiscovery(f.store, schemas.MCPAuthModeUser, "alice", reregisterMCPClientID))
+	assert.Equal(t, []string{reregisterMCPClientID}, f.cache.evictedDiscoveryClients)
 }
 
 // TestReregisterMCPClient_LeavesInMemoryStateAloneWhenNothingRotated is the
@@ -1531,6 +1555,36 @@ func TestParseRequestDurationUnits(t *testing.T) {
 				got, err := parseRequestDuration([]byte(raw), tc.field, tc.unit, tc.label)
 				require.NoError(t, err)
 				assert.Zero(t, got)
+			}
+		})
+	}
+}
+
+// TestUpdateMCPClient_DropsCallersCachedDiscoveriesOfAPerUserDiscoveryClient:
+// an update of a client that keeps a discovery per caller may delete their
+// discoveries (here, by adding a required header key), so every node drops its
+// cached copies. Any other client's update evicts nothing.
+func TestUpdateMCPClient_DropsCallersCachedDiscoveriesOfAPerUserDiscoveryClient(t *testing.T) {
+	for _, perUser := range []bool{true, false} {
+		t.Run(fmt.Sprintf("per_user_discovery=%v", perUser), func(t *testing.T) {
+			h, _ := newOpenAPITestHandler(t)
+			log := &evictionLog{}
+			h.mcpCredentialCacheManager = log
+			client := headersNotesClient()
+			createSignInClient(t, h.store.ConfigStore, client, perUser)
+			h.store.MCPConfig.ClientConfigs = []*schemas.MCPClientConfig{client}
+			if perUser {
+				seedDiscovery(t, h.store.ConfigStore, schemas.MCPAuthModeUser, "alice", client.ID)
+			}
+
+			status, body := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"per_user_header_keys":["x-api-key","x-team"]}`, client.ID, false)
+			require.Equal(t, fasthttp.StatusOK, status, body)
+
+			if perUser {
+				assert.Nil(t, storedDiscovery(h.store.ConfigStore, schemas.MCPAuthModeUser, "alice", client.ID), "callers resubmit their headers, then rediscover")
+				assert.Contains(t, log.logged(), "discoveries of "+client.ID)
+			} else {
+				assert.NotContains(t, log.logged(), "discoveries of "+client.ID)
 			}
 		})
 	}
