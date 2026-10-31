@@ -262,6 +262,32 @@ func routingErrorSummary(e *schemas.BifrostError) string {
 	return strings.Join(parts, " ")
 }
 
+// fallbackAttemptOf records what became of one fallback for the primary's error, which is what the
+// caller gets once the whole chain has failed (see schemas.FallbackAttempt). A nil err is a fallback
+// that was skipped before any attempt.
+func fallbackAttemptOf(fallback schemas.Fallback, err *schemas.BifrostError) schemas.FallbackAttempt {
+	attempt := schemas.FallbackAttempt{Provider: fallback.Provider, Model: fallback.Model}
+	if err == nil {
+		attempt.Skipped = true
+		return attempt
+	}
+	if err.StatusCode != nil {
+		attempt.StatusCode = new(*err.StatusCode)
+	}
+	if err.Type != nil && *err.Type != "" {
+		attempt.Type = *err.Type
+	} else if err.Error != nil && err.Error.Type != nil {
+		attempt.Type = *err.Error.Type
+	}
+	if err.Error != nil {
+		attempt.Message = err.Error.Message
+		if attempt.Message == "" && err.Error.Error != nil {
+			attempt.Message = err.Error.Error.Error()
+		}
+	}
+	return attempt
+}
+
 // newBifrostError wraps a standard error into a BifrostError with IsBifrostError set to false.
 // This helper function reduces code duplication when handling non-Bifrost errors.
 func newBifrostError(err error) *schemas.BifrostError {

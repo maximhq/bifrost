@@ -298482,6 +298482,325 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "297. Routing rule fallbacks refused by a virtual key are reported to the caller (fallback attempts) (#3261)",
+      "description": "Issue #3261: a routing rule's fallback that the request's virtual key does not allow is refused by governance before it reaches its provider. Core then returns the primary's error, so the caller saw a fast 403/429 and concluded the fallback never ran. The primary error now carries extra_fields.fallback_attempts, one entry per fallback (provider, model, status_code, type, message, skipped). Case 1 pins that entry with no provider call at all: the virtual key refuses both the rule primary (model_blocked) and the fallback provider (provider_blocked). Case 2 pins the claim in the issue title: a governance 403 on the rule primary still falls back to a model the key allows. Each row creates its virtual key and header-gated rule at run time and deletes them in its test script.",
+      "item": [
+        {
+          "name": "[EXPECT-403] openai routing rule: a fallback the virtual key refuses is reported in fallback_attempts on the primary error - gpt-4o - fallback attempts - #3261",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-fbattempts-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function cleanup(state) {",
+                  "  var paths = [];",
+                  "  if (state.rule) { paths.push('/api/governance/routing-rules/' + state.rule); }",
+                  "  if (state.vk) { paths.push('/api/governance/virtual-keys/' + state.vk.id); }",
+                  "  (function next() {",
+                  "    if (!paths.length) { return; }",
+                  "    var p = paths.shift();",
+                  "    call('DELETE', p, null, function (res) { expectOk('cleanup: ' + p.split('/').slice(0, 4).join('/') + ' removed', res); next(); });",
+                  "  })();",
+                  "}",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "// Priorities must be distinct within a scope; derive them from the clock so two runs, or two",
+                  "// shards of one run, never collide on a fixed number.",
+                  "var PRIO = 600000 + (Date.now() % 90000);",
+                  "var run = 'run-' + Date.now();",
+                  "var state = { run: run };",
+                  "call('GET', '/api/governance/routing-rules', null, function (r0, j0) {",
+                  "  var staleRules = ((j0 && j0.rules) || []).filter(function (r) { return isStale(r.name); });",
+                  "  (function sweepRules() {",
+                  "    if (staleRules.length) { return call('DELETE', '/api/governance/routing-rules/' + staleRules.shift().id, null, function () { sweepRules(); }); }",
+                  "    call('GET', '/api/governance/virtual-keys', null, function (r1, j1) {",
+                  "      var staleVKs = ((j1 && j1.virtual_keys) || []).filter(function (v) { return isStale(v.name); });",
+                  "      (function sweepVKs() {",
+                  "        if (staleVKs.length) { return call('DELETE', '/api/governance/virtual-keys/' + staleVKs.shift().id, null, function () { sweepVKs(); }); }",
+                  "        call('POST', '/api/governance/virtual-keys', { name: PREFIX + 'vk-1-' + run, provider_configs: [{\"provider\":\"openai\",\"allowed_models\":[\"gpt-4o-mini\"],\"key_ids\":[\"*\"],\"weight\":1}] }, function (res, j) {",
+                  "          if (!expectOk('setup: created the virtual key', res)) { return; }",
+                  "          var vk = (j || {}).virtual_key || {};",
+                  "          state.vk = { id: vk.id, value: (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value };",
+                  "          var rule = { name: PREFIX + 'rule-1-' + run, description: 'Provider harness, created at run time and deleted by the same row.', priority: PRIO, cel_expression: '\"x-harness-fbattempts-run\" in headers && headers[\"x-harness-fbattempts-run\"] == \"' + run + '\"', targets: [{\"provider\":\"openai\",\"model\":\"gpt-4o\",\"weight\":1}], fallbacks: [\"anthropic/claude-sonnet-4-6\"], scope: 'global' };",
+                  "          call('POST', '/api/governance/routing-rules', rule, function (r2, j2) {",
+                  "            if (!expectOk('setup: created the routing rule', r2)) { cleanup(state); return; }",
+                  "            state.rule = ((j2 || {}).rule || {}).id || null;",
+                  "            pm.collectionVariables.set('fbAttempts1State', JSON.stringify(state));",
+                  "            pm.collectionVariables.set('fbAttempts1Run', run);",
+                  "            pm.collectionVariables.set('fbAttempts1VK', state.vk.value || 'missing');",
+                  "          });",
+                  "        });",
+                  "      })();",
+                  "    });",
+                  "  })();",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-fbattempts-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function cleanup(state) {",
+                  "  var paths = [];",
+                  "  if (state.rule) { paths.push('/api/governance/routing-rules/' + state.rule); }",
+                  "  if (state.vk) { paths.push('/api/governance/virtual-keys/' + state.vk.id); }",
+                  "  (function next() {",
+                  "    if (!paths.length) { return; }",
+                  "    var p = paths.shift();",
+                  "    call('DELETE', p, null, function (res) { expectOk('cleanup: ' + p.split('/').slice(0, 4).join('/') + ' removed', res); next(); });",
+                  "  })();",
+                  "}",
+                  "var state = JSON.parse(pm.collectionVariables.get('fbAttempts1State') || '{}');",
+                  "var text = pm.response.text();",
+                  "var json = {}; try { json = pm.response.json() || {}; } catch (e) { json = {}; }",
+                  "var ef = json.extra_fields || {};",
+                  "pm.test('the caller gets the primary refusal: the virtual key does not allow gpt-4o', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + text).to.eql(403);",
+                  "  pm.expect(json.type, text).to.eql('model_blocked');",
+                  "  pm.expect(ef.provider, text).to.eql('openai');",
+                  "});",
+                  "pm.test('the primary error says the rule fallback ran and was refused by the virtual key', function () {",
+                  "  var attempts = ef.fallback_attempts;",
+                  "  pm.expect(attempts, 'fallback_attempts missing, so the fallback looks like it never ran: ' + text).to.be.an('array').with.lengthOf(1);",
+                  "  var a = attempts[0];",
+                  "  pm.expect(a.provider, text).to.eql('anthropic');",
+                  "  pm.expect(a.model, text).to.eql('claude-sonnet-4-6');",
+                  "  pm.expect(a.status_code, text).to.eql(403);",
+                  "  pm.expect(a.type, text).to.eql('provider_blocked');",
+                  "  pm.expect(a.message, text).to.include('not allowed');",
+                  "  pm.expect(a.skipped, text).to.not.eql(true);",
+                  "});",
+                  "cleanup(state);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{fbAttempts1VK}}"
+              },
+              {
+                "key": "x-harness-fbattempts-run",
+                "value": "{{fbAttempts1Run}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "openai routing rule: a primary the virtual key refuses still falls back to a model it allows - gpt-4o-mini - fallback attempts - #3261",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-fbattempts-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function cleanup(state) {",
+                  "  var paths = [];",
+                  "  if (state.rule) { paths.push('/api/governance/routing-rules/' + state.rule); }",
+                  "  if (state.vk) { paths.push('/api/governance/virtual-keys/' + state.vk.id); }",
+                  "  (function next() {",
+                  "    if (!paths.length) { return; }",
+                  "    var p = paths.shift();",
+                  "    call('DELETE', p, null, function (res) { expectOk('cleanup: ' + p.split('/').slice(0, 4).join('/') + ' removed', res); next(); });",
+                  "  })();",
+                  "}",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "// Priorities must be distinct within a scope; derive them from the clock so two runs, or two",
+                  "// shards of one run, never collide on a fixed number.",
+                  "var PRIO = 600000 + (Date.now() % 90000);",
+                  "var run = 'run-' + Date.now();",
+                  "var state = { run: run };",
+                  "call('GET', '/api/governance/routing-rules', null, function (r0, j0) {",
+                  "  var staleRules = ((j0 && j0.rules) || []).filter(function (r) { return isStale(r.name); });",
+                  "  (function sweepRules() {",
+                  "    if (staleRules.length) { return call('DELETE', '/api/governance/routing-rules/' + staleRules.shift().id, null, function () { sweepRules(); }); }",
+                  "    call('GET', '/api/governance/virtual-keys', null, function (r1, j1) {",
+                  "      var staleVKs = ((j1 && j1.virtual_keys) || []).filter(function (v) { return isStale(v.name); });",
+                  "      (function sweepVKs() {",
+                  "        if (staleVKs.length) { return call('DELETE', '/api/governance/virtual-keys/' + staleVKs.shift().id, null, function () { sweepVKs(); }); }",
+                  "        call('POST', '/api/governance/virtual-keys', { name: PREFIX + 'vk-2-' + run, provider_configs: [{\"provider\":\"openai\",\"allowed_models\":[\"gpt-4o-mini\"],\"key_ids\":[\"*\"],\"weight\":1}] }, function (res, j) {",
+                  "          if (!expectOk('setup: created the virtual key', res)) { return; }",
+                  "          var vk = (j || {}).virtual_key || {};",
+                  "          state.vk = { id: vk.id, value: (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value };",
+                  "          var rule = { name: PREFIX + 'rule-2-' + run, description: 'Provider harness, created at run time and deleted by the same row.', priority: PRIO, cel_expression: '\"x-harness-fbattempts-run\" in headers && headers[\"x-harness-fbattempts-run\"] == \"' + run + '\"', targets: [{\"provider\":\"openai\",\"model\":\"gpt-4o\",\"weight\":1}], fallbacks: [\"openai/gpt-4o-mini\"], scope: 'global' };",
+                  "          call('POST', '/api/governance/routing-rules', rule, function (r2, j2) {",
+                  "            if (!expectOk('setup: created the routing rule', r2)) { cleanup(state); return; }",
+                  "            state.rule = ((j2 || {}).rule || {}).id || null;",
+                  "            pm.collectionVariables.set('fbAttempts2State', JSON.stringify(state));",
+                  "            pm.collectionVariables.set('fbAttempts2Run', run);",
+                  "            pm.collectionVariables.set('fbAttempts2VK', state.vk.value || 'missing');",
+                  "          });",
+                  "        });",
+                  "      })();",
+                  "    });",
+                  "  })();",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-fbattempts-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function cleanup(state) {",
+                  "  var paths = [];",
+                  "  if (state.rule) { paths.push('/api/governance/routing-rules/' + state.rule); }",
+                  "  if (state.vk) { paths.push('/api/governance/virtual-keys/' + state.vk.id); }",
+                  "  (function next() {",
+                  "    if (!paths.length) { return; }",
+                  "    var p = paths.shift();",
+                  "    call('DELETE', p, null, function (res) { expectOk('cleanup: ' + p.split('/').slice(0, 4).join('/') + ' removed', res); next(); });",
+                  "  })();",
+                  "}",
+                  "var state = JSON.parse(pm.collectionVariables.get('fbAttempts2State') || '{}');",
+                  "var text = pm.response.text();",
+                  "var json = {}; try { json = pm.response.json() || {}; } catch (e) { json = {}; }",
+                  "var ri = (json.extra_fields || {}).routing_info || {};",
+                  "pm.test('the governance 403 on the rule primary is answered by the rule fallback', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + text).to.eql(200);",
+                  "  pm.expect(ri.is_fallback, text).to.eql(true);",
+                  "  pm.expect(ri.provider, text).to.eql('openai');",
+                  "  pm.expect(ri.model, text).to.include('gpt-4o-mini');",
+                  "  pm.expect(ri.primary_model, text).to.eql('gpt-4o');",
+                  "});",
+                  "cleanup(state);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{fbAttempts2VK}}"
+              },
+              {
+                "key": "x-harness-fbattempts-run",
+                "value": "{{fbAttempts2Run}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }
