@@ -8,6 +8,10 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 ## Changelog
 
+### Upcoming
+
+- Added `bifrost.server.basePath` (`server.base_path`) to serve Bifrost under a URL path prefix behind an ingress (e.g. `https://abc.com/bifrost`). The UI, redirects and OAuth callback URLs use the prefix. Requests are accepted with or without it, so the ingress can forward or strip it and probes stay on `/health`.
+
 ### 2.1.46
 
 - Removed GitHub App authentication from GitHub Copilot provider keys: Bifrost now ignores `github_copilot_key_config` (`app_id`, `installation_id`, `repository_id`, `private_key`, `github_domain`). **Migrate before upgrading:** put a fine-grained personal access token (`github_pat_…`, with the **Copilot Requests** account permission, from an account with an active Copilot plan or assigned Copilot seat) or a GitHub OAuth token (`ghu_…` / `gho_…`) in the key's `value`; a key that relied on the App fields no longer authenticates.
