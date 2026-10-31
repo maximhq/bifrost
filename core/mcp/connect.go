@@ -36,8 +36,8 @@ const connectToolSuffix = "-connect"
 // context, so the list never carries from one request to the next.
 const addedConnectToolsKey schemas.BifrostContextKey = "bifrost-mcp-added-connect-tools"
 
-// connectToolName returns the name of clientName's connect tool.
-func connectToolName(clientName string) string {
+// ConnectToolName returns the name of clientName's connect tool.
+func ConnectToolName(clientName string) string {
 	return clientName + connectToolSuffix
 }
 
@@ -49,7 +49,7 @@ func connectTool(config *schemas.MCPClientConfig) schemas.ChatTool {
 	return schemas.ChatTool{
 		Type: schemas.ChatToolTypeFunction,
 		Function: &schemas.ChatToolFunction{
-			Name:        connectToolName(config.Name),
+			Name:        ConnectToolName(config.Name),
 			Description: schemas.Ptr(description),
 			Parameters: &schemas.ToolFunctionParameters{
 				Type:       "object",
@@ -177,7 +177,7 @@ func (m *MCPManager) runConnect(ctx *schemas.BifrostContext, request *schemas.Bi
 		return nil, fmt.Errorf("%s keeps tools per caller and needs a signed-in user or a virtual key to connect", config.Name)
 	}
 	if !connectAccessible(ctx, state, m.logger) {
-		return nil, fmt.Errorf("tool '%s' is not available or not permitted", connectToolName(config.Name))
+		return nil, fmt.Errorf("tool '%s' is not available or not permitted", ConnectToolName(config.Name))
 	}
 
 	var text string

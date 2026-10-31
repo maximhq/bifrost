@@ -8082,6 +8082,35 @@ func (c *Config) GetMCPClientNames() map[string]string {
 	return result
 }
 
+// MCPPerUserDiscoveryClient is an enabled MCP client with per_user_discovery on, as the MCP gateway
+// registers it.
+type MCPPerUserDiscoveryClient struct {
+	Name     string
+	CodeMode bool // reached through the code-mode tools rather than its own
+}
+
+// GetMCPPerUserDiscoveryClients returns every enabled MCP client with
+// per_user_discovery on, keyed by client ID. Read-only snapshot.
+func (c *Config) GetMCPPerUserDiscoveryClients() map[string]MCPPerUserDiscoveryClient {
+	c.muMCP.RLock()
+	defer c.muMCP.RUnlock()
+
+	if c.MCPConfig == nil {
+		return nil
+	}
+	var result map[string]MCPPerUserDiscoveryClient
+	for _, client := range c.MCPConfig.ClientConfigs {
+		if client == nil || client.Disabled || client.PerUserDiscovery == nil || !*client.PerUserDiscovery {
+			continue
+		}
+		if result == nil {
+			result = make(map[string]MCPPerUserDiscoveryClient)
+		}
+		result[client.ID] = MCPPerUserDiscoveryClient{Name: client.Name, CodeMode: client.IsCodeModeClient}
+	}
+	return result
+}
+
 // GetMCPClientBySlug resolves an MCP client by its endpoint slug, returning its ID and name so a single
 // client can be served at /mcp/<slug>. Read-only snapshot.
 func (c *Config) GetMCPClientBySlug(slug string) (clientID, clientName string, ok bool) {

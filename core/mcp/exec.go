@@ -105,7 +105,7 @@ func (m *MCPManager) executeToolWithHooks(
 	resp, bErr := m.RunWithPluginPipeline(ctx, request, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
 		// A plugin may have retargeted the request; connect runs only for the
 		// tool it was decided on, and only as the plugins were told it would.
-		if connectState != nil && preReq.GetToolName() == connectToolName(connectState.ExecutionConfig.Name) &&
+		if connectState != nil && preReq.GetToolName() == ConnectToolName(connectState.ExecutionConfig.Name) &&
 			mcpvouch.Kind(ctx, connectState.ExecutionConfig.Name, preReq.GetToolName()) == schemas.MCPToolCallKindConnect {
 			return m.runConnect(ctx, preReq, connectState)
 		}

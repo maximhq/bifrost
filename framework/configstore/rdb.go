@@ -11231,6 +11231,113 @@ func (s *RDBConfigStore) GetMCPPerUserDiscoveryToolCallerCounts(ctx context.Cont
 	return counts, nil
 }
 
+// MCPPerUserDiscoveryNames is what the callers' discoveries of one client hold,
+// by name only, each list sorted: tool and prompt names without the client
+// prefix, resource URIs and resource template URIs.
+type MCPPerUserDiscoveryNames struct {
+	Tools             []string
+	Prompts           []string
+	Resources         []string
+	ResourceTemplates []string
+}
+
+// GetMCPPerUserDiscoveryNames returns, for each of the clients, the union of
+// the names its user and virtual-key callers' discoveries hold. Callers who see
+// the same discovery share its hash, so one row per distinct discovery is read,
+// and only the names in it are decoded.
+func (s *RDBConfigStore) GetMCPPerUserDiscoveryNames(ctx context.Context, mcpClientIDs []string) (map[string]MCPPerUserDiscoveryNames, error) {
+	names := make(map[string]MCPPerUserDiscoveryNames)
+	if len(mcpClientIDs) == 0 {
+		return names, nil
+	}
+	distinct := s.DB().WithContext(ctx).Model(&tables.TableMCPPerUserDiscovery{}).
+		Select("MIN(id) AS id").
+		Where("mcp_client_id IN ? AND auth_mode IN ?", mcpClientIDs, []string{string(schemas.MCPAuthModeUser), string(schemas.MCPAuthModeVK)}).
+		Group("mcp_client_id, discovery_hash")
+	var rows []struct {
+		MCPClientID           string
+		ToolsJSON             string
+		PromptsJSON           string
+		ResourcesJSON         string
+		ResourceTemplatesJSON string
+	}
+	if err := s.DB().WithContext(ctx).Table("mcp_per_user_discoveries AS d").
+		Select("d.mcp_client_id, d.tools_json, d.prompts_json, d.resources_json, d.resource_templates_json").
+		Joins("JOIN (?) AS g ON g.id = d.id", distinct).
+		Scan(&rows).Error; err != nil {
+		return nil, fmt.Errorf("failed to read the names in mcp per-user discoveries: %w", err)
+	}
+	sets := make(map[string]*[4]map[string]struct{})
+	add := func(set map[string]struct{}, name string) {
+		if name != "" {
+			set[name] = struct{}{}
+		}
+	}
+	for _, row := range rows {
+		set := sets[row.MCPClientID]
+		if set == nil {
+			set = &[4]map[string]struct{}{{}, {}, {}, {}}
+			sets[row.MCPClientID] = set
+		}
+		var tools map[string]json.RawMessage
+		if err := sonic.UnmarshalString(row.ToolsJSON, &tools); err != nil {
+			return nil, fmt.Errorf("failed to read the tool names of a per-user discovery of mcp client %s: %w", row.MCPClientID, err)
+		}
+		for name := range tools {
+			add(set[0], name)
+		}
+		var prompts []struct {
+			Name string `json:"name"`
+		}
+		var resources []struct {
+			URI string `json:"uri"`
+		}
+		var templates []struct {
+			URITemplate string `json:"uriTemplate"`
+		}
+		for _, list := range []struct {
+			raw  string
+			into any
+		}{{row.PromptsJSON, &prompts}, {row.ResourcesJSON, &resources}, {row.ResourceTemplatesJSON, &templates}} {
+			if list.raw == "" {
+				continue
+			}
+			if err := sonic.UnmarshalString(list.raw, list.into); err != nil {
+				return nil, fmt.Errorf("failed to read the prompts and resources of a per-user discovery of mcp client %s: %w", row.MCPClientID, err)
+			}
+		}
+		for _, prompt := range prompts {
+			add(set[1], prompt.Name)
+		}
+		for _, resource := range resources {
+			add(set[2], resource.URI)
+		}
+		for _, template := range templates {
+			add(set[3], template.URITemplate)
+		}
+	}
+	sorted := func(set map[string]struct{}) []string {
+		if len(set) == 0 {
+			return nil
+		}
+		list := make([]string, 0, len(set))
+		for name := range set {
+			list = append(list, name)
+		}
+		sort.Strings(list)
+		return list
+	}
+	for clientID, set := range sets {
+		names[clientID] = MCPPerUserDiscoveryNames{
+			Tools:             sorted(set[0]),
+			Prompts:           sorted(set[1]),
+			Resources:         sorted(set[2]),
+			ResourceTemplates: sorted(set[3]),
+		}
+	}
+	return names, nil
+}
+
 // GetMCPPerUserDiscoveryByMode looks up the discovery for one (mode, identity,
 // mcp client) binding. Returns nil, nil when the binding has none.
 func (s *RDBConfigStore) GetMCPPerUserDiscoveryByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPPerUserDiscovery, error) {

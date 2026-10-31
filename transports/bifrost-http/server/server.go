@@ -1609,23 +1609,41 @@ func (s *BifrostHTTPServer) EvictMCPHeaderCredentialCacheByVirtualKey(ctx contex
 }
 
 // EvictMCPPerUserDiscoveryCache drops one caller's cached per-user discovery
-// of one MCP client from the in-memory cache after a write. A clustered
-// deployment overrides this to also notify peers.
+// of one MCP client from the in-memory cache after a write, and brings the
+// MCP gateway's per-caller entries up to date. A clustered deployment
+// overrides this to also notify peers.
 func (s *BifrostHTTPServer) EvictMCPPerUserDiscoveryCache(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) {
 	if s.Config == nil || s.Config.MCPPerUserDiscoveryStore == nil {
 		return
 	}
 	s.Config.MCPPerUserDiscoveryStore.EvictDiscovery(mode, identity, mcpClientID)
+	s.resyncMCPGatewayPerCallerEntries()
 }
 
 // EvictMCPPerUserDiscoveryCacheByMCPClient drops every caller's cached per-user
 // discovery of one MCP client from the in-memory cache after a client-level
-// write. A clustered deployment overrides this to also notify peers.
+// write, and brings the MCP gateway's per-caller entries up to date. A
+// clustered deployment overrides this to also notify peers.
 func (s *BifrostHTTPServer) EvictMCPPerUserDiscoveryCacheByMCPClient(ctx context.Context, mcpClientID string) {
 	if s.Config == nil || s.Config.MCPPerUserDiscoveryStore == nil {
 		return
 	}
 	s.Config.MCPPerUserDiscoveryStore.EvictDiscoveriesByMCPClient(mcpClientID)
+	s.resyncMCPGatewayPerCallerEntries()
+}
+
+// resyncMCPGatewayPerCallerEntries registers on the MCP gateway the names a
+// changed per-user discovery added, and drops those no discovery holds any
+// more, off the caller's path: it reads the config store.
+func (s *BifrostHTTPServer) resyncMCPGatewayPerCallerEntries() {
+	if s.MCPServerHandler == nil {
+		return
+	}
+	go func() {
+		if err := s.MCPServerHandler.ResyncPerCallerEntries(context.Background()); err != nil {
+			logger.Warn("failed to update the MCP gateway after a per-user discovery changed: %v", err)
+		}
+	}()
 }
 
 // FlushMCPHeaderCredentialCache drops every cached per-user MCP header

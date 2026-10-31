@@ -45865,7 +45865,7 @@
                           "per_user_discovery": {
                             "type": "boolean",
                             "default": false,
-                            "description": "Per-user auth types only (`per_user_oauth`, `per_user_headers`,\n`token_exchange`), and not for connection_type \"openapi\". When true,\neach caller's tools, prompts and resources are discovered with their\nown credential when they connect, and the client keeps no admin\ncredential or discovery of its own: the admin's verification only\nchecks the server. When false or omitted, every caller is served what\nwas discovered with the admin credential.\n"
+                            "description": "Per-user auth types only (`per_user_oauth`, `per_user_headers`,\n`token_exchange`), and not for connection_type \"openapi\". When true,\neach caller's tools, prompts and resources are discovered with their\nown credential when they connect, and the client keeps no admin\ncredential or discovery of its own: the admin's verification only\nchecks the server. Every caller is served their own tools, prompts,\nresources and resource templates, the MCP gateway (`/mcp`) included, and a caller who has not\nconnected yet is offered the client's `<name>-connect` tool. When false\nor omitted, every caller is served what was discovered with the admin\ncredential.\n"
                           },
                           "user_headers": {
                             "type": "object",
@@ -46219,7 +46219,7 @@
                           "per_user_discovery": {
                             "type": "boolean",
                             "default": false,
-                            "description": "Per-user auth types only (`per_user_oauth`, `per_user_headers`,\n`token_exchange`), and not for connection_type \"openapi\". When true,\neach caller's tools, prompts and resources are discovered with their\nown credential when they connect, and the client keeps no admin\ncredential or discovery of its own: the admin's verification only\nchecks the server. When false or omitted, every caller is served what\nwas discovered with the admin credential.\n"
+                            "description": "Per-user auth types only (`per_user_oauth`, `per_user_headers`,\n`token_exchange`), and not for connection_type \"openapi\". When true,\neach caller's tools, prompts and resources are discovered with their\nown credential when they connect, and the client keeps no admin\ncredential or discovery of its own: the admin's verification only\nchecks the server. Every caller is served their own tools, prompts,\nresources and resource templates, the MCP gateway (`/mcp`) included, and a caller who has not\nconnected yet is offered the client's `<name>-connect` tool. When false\nor omitted, every caller is served what was discovered with the admin\ncredential.\n"
                           },
                           "user_headers": {
                             "type": "object",
@@ -46573,7 +46573,7 @@
                           "per_user_discovery": {
                             "type": "boolean",
                             "default": false,
-                            "description": "Per-user auth types only (`per_user_oauth`, `per_user_headers`,\n`token_exchange`), and not for connection_type \"openapi\". When true,\neach caller's tools, prompts and resources are discovered with their\nown credential when they connect, and the client keeps no admin\ncredential or discovery of its own: the admin's verification only\nchecks the server. When false or omitted, every caller is served what\nwas discovered with the admin credential.\n"
+                            "description": "Per-user auth types only (`per_user_oauth`, `per_user_headers`,\n`token_exchange`), and not for connection_type \"openapi\". When true,\neach caller's tools, prompts and resources are discovered with their\nown credential when they connect, and the client keeps no admin\ncredential or discovery of its own: the admin's verification only\nchecks the server. Every caller is served their own tools, prompts,\nresources and resource templates, the MCP gateway (`/mcp`) included, and a caller who has not\nconnected yet is offered the client's `<name>-connect` tool. When false\nor omitted, every caller is served what was discovered with the admin\ncredential.\n"
                           },
                           "user_headers": {
                             "type": "object",
@@ -46947,7 +46947,7 @@
                           "per_user_discovery": {
                             "type": "boolean",
                             "default": false,
-                            "description": "Per-user auth types only (`per_user_oauth`, `per_user_headers`,\n`token_exchange`), and not for connection_type \"openapi\". When true,\neach caller's tools, prompts and resources are discovered with their\nown credential when they connect, and the client keeps no admin\ncredential or discovery of its own: the admin's verification only\nchecks the server. When false or omitted, every caller is served what\nwas discovered with the admin credential.\n"
+                            "description": "Per-user auth types only (`per_user_oauth`, `per_user_headers`,\n`token_exchange`), and not for connection_type \"openapi\". When true,\neach caller's tools, prompts and resources are discovered with their\nown credential when they connect, and the client keeps no admin\ncredential or discovery of its own: the admin's verification only\nchecks the server. Every caller is served their own tools, prompts,\nresources and resource templates, the MCP gateway (`/mcp`) included, and a caller who has not\nconnected yet is offered the client's `<name>-connect` tool. When false\nor omitted, every caller is served what was discovered with the admin\ncredential.\n"
                           },
                           "user_headers": {
                             "type": "object",

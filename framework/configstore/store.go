@@ -932,6 +932,11 @@ type ConfigStore interface {
 	// many of those discoveries include it. Clients no caller holds a discovery
 	// of are left out.
 	GetMCPPerUserDiscoveryToolCallerCounts(ctx context.Context, mcpClientIDs []string) (map[string]map[string]int, error)
+	// GetMCPPerUserDiscoveryNames returns, for each of the clients, the union
+	// of the tool and prompt names and the resource and template URIs its user
+	// and virtual-key callers' discoveries hold. Clients no caller holds a
+	// discovery of are left out.
+	GetMCPPerUserDiscoveryNames(ctx context.Context, mcpClientIDs []string) (map[string]MCPPerUserDiscoveryNames, error)
 	UpsertMCPPerUserDiscovery(ctx context.Context, discovery *tables.TableMCPPerUserDiscovery) error
 	DeleteMCPPerUserDiscovery(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) error
 	DeleteMCPPerUserDiscoveriesByClient(ctx context.Context, mcpClientID string) error

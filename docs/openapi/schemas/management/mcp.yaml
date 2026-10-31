@@ -422,8 +422,11 @@ MCPClientCreateRequestBase:
         each caller's tools, prompts and resources are discovered with their
         own credential when they connect, and the client keeps no admin
         credential or discovery of its own: the admin's verification only
-        checks the server. When false or omitted, every caller is served what
-        was discovered with the admin credential.
+        checks the server. Every caller is served their own tools, prompts,
+        resources and resource templates, the MCP gateway (`/mcp`) included, and a caller who has not
+        connected yet is offered the client's `<name>-connect` tool. When false
+        or omitted, every caller is served what was discovered with the admin
+        credential.
     user_headers:
       type: object
       additionalProperties:
