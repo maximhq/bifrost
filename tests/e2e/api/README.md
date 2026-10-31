@@ -221,6 +221,22 @@ Start the fixture and the isolated gateway as in
 make run-provider-harness-test PROVIDER=openai FEATURE="extra content deltas" BASE_URL=http://localhost:8790 ENV_FILE=tmp/content-length-truncation.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1
 ```
 
+## Configured stream read buffer
+
+Folder 297 pins `stream_read_buffer_size_kb` through the Gemini chat stream route. The fixture
+model `upstream-oversized-line` streams one 11 MB SSE line, above the gateway's default 10 MB line
+limit. The `gemini` provider in the fixture profile sets the buffer to 16384 KB and must return the
+whole text. The `gemini_default_buffer` provider serves the same model without the setting and must
+end the stream with the line-too-long error. These cases make no live provider calls and are
+skipped unless `providerErrorFixture=1`.
+
+Start the fixture and the isolated gateway as in
+[Fixed-length response truncation](#fixed-length-response-truncation), then run:
+
+```bash
+make run-provider-harness-test PROVIDER=gemini FEATURE="stream read buffer" BASE_URL=http://localhost:8790 ENV_FILE=tmp/content-length-truncation.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1
+```
+
 ## Provider 5xx failover and 429 retry-hint propagation
 
 These deterministic cases use a local HTTP fixture and an isolated gateway. They make no live

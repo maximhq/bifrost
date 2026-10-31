@@ -6,6 +6,9 @@
       "mcp_library_sync_interval": 0
     }
   },
+  "client": {
+    "enforce_auth_on_inference": false
+  },
   "providers": {
     "openai": {
       "keys": [
@@ -27,6 +30,45 @@
       ],
       "network_config": {
         "base_url": "http://127.0.0.1:8791",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
+    "gemini": {
+      "keys": [
+        {
+          "name": "local-error-fixture",
+          "value": "test-key",
+          "models": [
+            "upstream-oversized-line"
+          ],
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/v1beta",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10,
+        "stream_read_buffer_size_kb": 16384
+      }
+    },
+    "gemini_default_buffer": {
+      "keys": [
+        {
+          "name": "local-error-fixture",
+          "value": "test-key",
+          "models": [
+            "upstream-oversized-line"
+          ],
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "gemini",
+        "is_key_less": false
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/v1beta",
         "max_retries": 0,
         "default_request_timeout_in_seconds": 10
       }

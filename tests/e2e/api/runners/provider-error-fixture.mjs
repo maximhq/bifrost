@@ -106,6 +106,19 @@ const responsesFor = (body, count) => {
 	};
 };
 
+// A Gemini stream whose single SSE line is larger than the gateway's default 10 MB line limit. The
+// line a real provider sends at this size is usually inline media; plain text keeps the assertion simple.
+const OVERSIZED_LINE_BYTES = 11 * 1024 * 1024;
+const geminiOversizedLine = () => {
+	const chunk = {
+		candidates: [{ content: { role: "model", parts: [{ text: "a".repeat(OVERSIZED_LINE_BYTES) }] }, finishReason: "STOP", index: 0 }],
+		usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+		responseId: "gemini-oversized-line",
+		modelVersion: "upstream-oversized-line",
+	};
+	return `data: ${JSON.stringify(chunk)}\n\n`;
+};
+
 // Hit counters are keyed by the request body's model, so they must not inherit Object.prototype names.
 const hits = Object.create(null);
 
@@ -131,6 +144,13 @@ const server = http.createServer((req, res) => {
 	}
 	if (req.method === "GET" && path === "/__hits") {
 		return send(200, {}, JSON.stringify({ data: [{ hits: { ...hits } }] }));
+	}
+	if (req.method === "POST" && path === "/v1beta/models/upstream-oversized-line:streamGenerateContent") {
+		req.resume();
+		return req.on("end", () => {
+			res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+			res.end(geminiOversizedLine());
+		});
 	}
 	if (req.method !== "POST" || (path !== "/v1/chat/completions" && path !== "/openai/v1/chat/completions" && path !== "/v1/responses" && path !== "/v1/live/sessions")) {
 		return send(404, {}, errorBody("not found", "invalid_request_error", "not_found"));
