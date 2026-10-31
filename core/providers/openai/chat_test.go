@@ -3023,6 +3023,48 @@ func BenchmarkToOpenAIChatRequest_DeepSeekResponseFormat(b *testing.B) {
 	}
 }
 
+// BenchmarkToOpenAIChatRequest_MidConversationSystem measures the name-based
+// fallback with no datasheet row: a non-Qwen model keeps the mid-conversation
+// system message, a Qwen model with only a leading system message has nothing
+// to inline, and a Qwen model with a mid-conversation system message inlines it.
+func BenchmarkToOpenAIChatRequest_MidConversationSystem(b *testing.B) {
+	text := func(role schemas.ChatMessageRole, s string) schemas.ChatMessage {
+		return schemas.ChatMessage{Role: role, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr(s)}}
+	}
+	leading := []schemas.ChatMessage{
+		text(schemas.ChatMessageRoleSystem, "be brief"),
+		text(schemas.ChatMessageRoleUser, "hi"),
+		text(schemas.ChatMessageRoleAssistant, "hello"),
+		text(schemas.ChatMessageRoleUser, "how are you"),
+	}
+	mid := []schemas.ChatMessage{
+		text(schemas.ChatMessageRoleSystem, "be brief"),
+		text(schemas.ChatMessageRoleUser, "hi"),
+		text(schemas.ChatMessageRoleAssistant, "hello"),
+		text(schemas.ChatMessageRoleSystem, "answer in french"),
+		text(schemas.ChatMessageRoleUser, "how are you"),
+	}
+	for _, tc := range []struct {
+		name  string
+		model string
+		input []schemas.ChatMessage
+	}{
+		{"kimi_mid_system", "accounts/fireworks/models/kimi-k3", mid},
+		{"qwen_leading_system", "accounts/fireworks/models/qwen3p8-max", leading},
+		{"qwen_mid_system", "accounts/fireworks/models/qwen3p8-max", mid},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			bifrostReq := &schemas.BifrostChatRequest{Provider: schemas.Fireworks, Model: tc.model, Input: tc.input}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_ = ToOpenAIChatRequest(ctx, bifrostReq)
+			}
+		})
+	}
+}
+
 // TestOpenAIChatRequestUnknownFields pins which top-level chat fields count as
 // unknown: every field OpenAIChatRequest decodes (its own, ChatParameters', the
 // reasoning_* shorthands, fallbacks and extra_params) is known, anything else
