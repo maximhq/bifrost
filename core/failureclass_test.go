@@ -303,7 +303,8 @@ func TestFailureClass_CoversAllModels(t *testing.T) {
 // Each failure class through the real retry and fallback loops, on a provider with two keys and a
 // fallback: a transient error stays on its key, a rate limit rotates within the budget, a permanent
 // per-key refusal walks the pool with one granted attempt per key, a caller fault and a provider
-// timeout are not retried, and all of them move to the fallback. A caller's cancel and a request
+// timeout are not retried, and all of them move to the fallback. A per-request timeout override
+// (BifrostContextKeyRequestTimeout) is a provider timeout too. A caller's cancel and a request
 // deadline end the request without a fallback (plan row LB-27).
 func TestScenarioFailureClassLadder(t *testing.T) {
 	type outcome struct {
@@ -318,6 +319,7 @@ func TestScenarioFailureClassLadder(t *testing.T) {
 		reply    scenarioReply
 		deadURL  bool
 		timeout  bool
+		override bool
 		cancel   bool
 		deadline bool
 		want     outcome
@@ -336,6 +338,7 @@ func TestScenarioFailureClassLadder(t *testing.T) {
 		// stops on them, and labels the attempt: a provider timeout and a request deadline are timeouts,
 		// a caller's cancel is cancelled (see TestScenarioTimedOutAttemptCarriesItsClass for the fields).
 		{name: "provider timeout", reply: scenarioReply{stall: 3 * time.Second}, timeout: true, want: outcome{trail: 1, class: schemas.FailureClassTimeout, fallback: true}},
+		{name: "request timeout override", reply: scenarioReply{stall: 3 * time.Second}, override: true, want: outcome{trail: 1, class: schemas.FailureClassTimeout, fallback: true}},
 		{name: "caller cancel", reply: scenarioReply{stall: 3 * time.Second}, cancel: true, want: outcome{trail: 1, class: schemas.FailureClassCancelled}},
 		{name: "request deadline", reply: scenarioReply{stall: 3 * time.Second}, deadline: true, want: outcome{trail: 1, class: schemas.FailureClassTimeout}},
 	}
@@ -364,6 +367,9 @@ func TestScenarioFailureClassLadder(t *testing.T) {
 				deadline = time.Now().Add(300 * time.Millisecond)
 			}
 			ctx := schemas.NewBifrostContext(parent, deadline)
+			if tc.override {
+				ctx.SetValue(schemas.BifrostContextKeyRequestTimeout, 300*time.Millisecond)
+			}
 			if tc.cancel {
 				time.AfterFunc(300*time.Millisecond, cancel)
 			}

@@ -28,7 +28,8 @@ import (
 // contextTransport owns the socket for the life of the request, so it can:
 //   - apply the client's WriteTimeout / ReadTimeout (default_request_timeout_in_seconds)
 //     to the request write and to the wait for response headers, tightened by the
-//     request context's deadline;
+//     request context's deadline. A per-request BifrostContextKeyRequestTimeout
+//     replaces both client timeouts for that request (GetRequestTimeout);
 //   - clear those deadlines the moment headers are parsed for a streamed body, so
 //     stream_idle_timeout_in_seconds (NewIdleTimeoutReader) is the only bound on the
 //     body, exactly as before;
@@ -142,7 +143,12 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 	watcher := startCancelWatcher(ctx, abort, conn)
 	defer watcher.stop()
 
-	if err = conn.SetWriteDeadline(deadlineFor(hc.WriteTimeout, ctx)); err != nil {
+	writeTimeout, readTimeout := hc.WriteTimeout, hc.ReadTimeout
+	if override := GetRequestTimeout(ctx, 0); override > 0 {
+		writeTimeout, readTimeout = override, override
+	}
+
+	if err = conn.SetWriteDeadline(deadlineFor(writeTimeout, ctx)); err != nil {
 		hc.CloseConn(cc)
 		return retryOn(err), watcher.classify(err)
 	}
@@ -169,7 +175,7 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 
 	// Setting a deadline fails with "use of closed network connection" when the
 	// watcher closed the socket a moment ago; classify turns that into ctx.Err().
-	if err = conn.SetReadDeadline(deadlineFor(hc.ReadTimeout, ctx)); err != nil {
+	if err = conn.SetReadDeadline(deadlineFor(readTimeout, ctx)); err != nil {
 		hc.CloseConn(cc)
 		return retryOn(err), watcher.classify(err)
 	}

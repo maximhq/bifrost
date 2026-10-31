@@ -569,6 +569,80 @@ func DoHTTPRequest(client *http.Client, req *http.Request) (*http.Response, erro
 	return resp, err
 }
 
+// DoHTTPRequestWithTimeout is DoHTTPRequest bounded per attempt by
+// GetRequestTimeout(req.Context(), timeout): the caller's
+// BifrostContextKeyRequestTimeout when set, otherwise the provider's
+// default_request_timeout_in_seconds. It stands in for http.Client.Timeout
+// (boundBody: headers and body, for unary calls) and for
+// http.Transport.ResponseHeaderTimeout (!boundBody: the header wait only, for
+// streams), neither of which can change per request. The request ctx deadline
+// still applies on top. A zero timeout with no override is plain DoHTTPRequest.
+func DoHTTPRequestWithTimeout(client *http.Client, req *http.Request, timeout time.Duration, boundBody bool) (*http.Response, error) {
+	timeout = GetRequestTimeout(req.Context(), timeout)
+	if timeout <= 0 {
+		return DoHTTPRequest(client, req)
+	}
+	if boundBody {
+		attemptCtx, cancel := context.WithTimeout(req.Context(), timeout)
+		resp, err := DoHTTPRequest(client, req.WithContext(attemptCtx))
+		if err != nil {
+			expired := errors.Is(attemptCtx.Err(), context.DeadlineExceeded)
+			cancel()
+			if expired && !errors.Is(err, context.DeadlineExceeded) {
+				err = fmt.Errorf("%w: %w", context.DeadlineExceeded, err)
+			}
+			return nil, err
+		}
+		releaseOnBodyClose(resp, cancel)
+		return resp, nil
+	}
+	attemptCtx, cancel := context.WithCancel(req.Context())
+	var expired atomic.Bool
+	timer := time.AfterFunc(timeout, func() {
+		expired.Store(true)
+		cancel()
+	})
+	resp, err := DoHTTPRequest(client, req.WithContext(attemptCtx))
+	timer.Stop()
+	if expired.Load() {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		cancel()
+		return nil, fmt.Errorf("response headers not received within %s: %w", timeout, context.DeadlineExceeded)
+	}
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	releaseOnBodyClose(resp, cancel)
+	return resp, nil
+}
+
+// releaseOnBodyClose ties cancel to closing resp.Body. The hook goes inside
+// DoHTTPRequest's upstreamTimingBody so NewIdleTimeoutReader still recognizes
+// and unwraps it.
+func releaseOnBodyClose(resp *http.Response, cancel context.CancelFunc) {
+	if tb, ok := resp.Body.(*upstreamTimingBody); ok {
+		tb.inner = &cancelOnCloseBody{ReadCloser: tb.inner, cancel: cancel}
+		return
+	}
+	resp.Body = &cancelOnCloseBody{ReadCloser: resp.Body, cancel: cancel}
+}
+
+// cancelOnCloseBody releases the attempt context of DoHTTPRequestWithTimeout
+// once the caller is done with the body.
+type cancelOnCloseBody struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b *cancelOnCloseBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.cancel()
+	return err
+}
+
 // Deprecated: ConfigureRetry is now handled internally by ConfigureDialer.
 // This function is kept for backward compatibility but is no longer needed.
 func ConfigureRetry(client *fasthttp.Client) *fasthttp.Client {
@@ -2224,8 +2298,9 @@ func BuildStreamingClient(base *fasthttp.Client) *fasthttp.Client {
 // responses over net/http (e.g. Bedrock EventStream). It reuses the base's
 // Transport (safe for concurrent use by multiple clients) and sets Timeout=0
 // so Client.Timeout does not cap the entire request lifecycle including body
-// reads. The transport's ResponseHeaderTimeout still bounds the initial
-// response-headers wait; per-chunk idle is enforced by NewIdleTimeoutReader.
+// reads. The initial response-headers wait is bounded by the transport's
+// ResponseHeaderTimeout, or by DoHTTPRequestWithTimeout with boundBody=false;
+// per-chunk idle is enforced by NewIdleTimeoutReader.
 func BuildStreamingHTTPClient(base *http.Client) *http.Client {
 	if base == nil {
 		return &http.Client{}
@@ -4016,6 +4091,21 @@ func GetStreamIdleTimeout(ctx *schemas.BifrostContext) time.Duration {
 		return timeout
 	}
 	return DefaultStreamIdleTimeout
+}
+
+// GetRequestTimeout returns the per-attempt upstream timeout for a request:
+// BifrostContextKeyRequestTimeout when the caller set one, otherwise fallback
+// (the provider's default_request_timeout_in_seconds). It replaces the provider
+// timeout in both directions, but never the ctx deadline: that stays the budget
+// for the whole request across retries and fallbacks.
+func GetRequestTimeout(ctx context.Context, fallback time.Duration) time.Duration {
+	if ctx == nil {
+		return fallback
+	}
+	if timeout, ok := ctx.Value(schemas.BifrostContextKeyRequestTimeout).(time.Duration); ok && timeout > 0 {
+		return timeout
+	}
+	return fallback
 }
 
 // streamCloserWithError is implemented by fasthttp's streaming body reader.

@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -4097,6 +4098,158 @@ func TestBuildPassthroughURL(t *testing.T) {
 			}
 		})
 	}
+}
+
+// slowBodyServer sends headers after headerDelay, then the body after bodyDelay.
+func slowBodyServer(t testing.TB, headerDelay, bodyDelay time.Duration) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wait := func(d time.Duration) bool {
+			select {
+			case <-time.After(d):
+				return true
+			case <-r.Context().Done():
+				return false
+			}
+		}
+		if !wait(headerDelay) {
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		if !wait(bodyDelay) {
+			return
+		}
+		_, _ = w.Write([]byte("done"))
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func doWithTimeout(t *testing.T, server *httptest.Server, ctx context.Context, timeout time.Duration, boundBody bool) (string, error) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := DoHTTPRequestWithTimeout(server.Client(), req, timeout, boundBody)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if _, ok := resp.Body.(*upstreamTimingBody); !ok {
+		t.Fatalf("resp.Body is %T, want *upstreamTimingBody outermost so NewIdleTimeoutReader can unwrap it", resp.Body)
+	}
+	body, err := io.ReadAll(resp.Body)
+	return string(body), err
+}
+
+func TestDoHTTPRequestWithTimeout_UnaryBoundsHeadersAndBody(t *testing.T) {
+	server := slowBodyServer(t, 0, 300*time.Millisecond)
+	_, err := doWithTimeout(t, server, context.Background(), 100*time.Millisecond, true)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected the 100ms timeout to cut the 300ms body with context.DeadlineExceeded, got %v", err)
+	}
+}
+
+func TestDoHTTPRequestWithTimeout_StreamBoundsHeadersOnly(t *testing.T) {
+	server := slowBodyServer(t, 0, 300*time.Millisecond)
+	body, err := doWithTimeout(t, server, context.Background(), 100*time.Millisecond, false)
+	if err != nil || body != "done" {
+		t.Fatalf("a 100ms header bound must not cut a body that arrives after headers, got body=%q err=%v", body, err)
+	}
+
+	server = slowBodyServer(t, 300*time.Millisecond, 0)
+	_, err = doWithTimeout(t, server, context.Background(), 100*time.Millisecond, false)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected the 100ms header bound to fail a 300ms header wait with context.DeadlineExceeded, got %v", err)
+	}
+}
+
+func TestDoHTTPRequestWithTimeout_OverrideReplacesTimeout(t *testing.T) {
+	server := slowBodyServer(t, 300*time.Millisecond, 0)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestTimeout, 2*time.Second)
+	for _, boundBody := range []bool{true, false} {
+		if body, err := doWithTimeout(t, server, ctx, 100*time.Millisecond, boundBody); err != nil || body != "done" {
+			t.Fatalf("boundBody=%v: override (2s) should replace the 100ms timeout, got body=%q err=%v", boundBody, body, err)
+		}
+	}
+}
+
+func TestGetRequestTimeout(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if got := GetRequestTimeout(ctx, time.Second); got != time.Second {
+		t.Fatalf("unset override: got %v, want the 1s fallback", got)
+	}
+	ctx.SetValue(schemas.BifrostContextKeyRequestTimeout, time.Duration(0))
+	if got := GetRequestTimeout(ctx, time.Second); got != time.Second {
+		t.Fatalf("zero override: got %v, want the 1s fallback", got)
+	}
+	ctx.SetValue(schemas.BifrostContextKeyRequestTimeout, 5*time.Minute)
+	if got := GetRequestTimeout(ctx, time.Second); got != 5*time.Minute {
+		t.Fatalf("override: got %v, want 5m", got)
+	}
+	if got := GetRequestTimeout(nil, time.Second); got != time.Second { //nolint:staticcheck
+		t.Fatalf("nil ctx: got %v, want the 1s fallback", got)
+	}
+}
+
+// BenchmarkHTTPUnaryTimeout compares Bedrock's old unary bound (http.Client.Timeout)
+// with DoHTTPRequestWithTimeout on a BifrostContext without an override.
+func BenchmarkHTTPUnaryTimeout(b *testing.B) {
+	server := slowBodyServer(b, 0, 0)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	run := func(b *testing.B, client *http.Client, do func(*http.Client, *http.Request) (*http.Response, error)) {
+		b.ReportAllocs()
+		for b.Loop() {
+			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, server.URL, nil)
+			resp, err := do(client, req)
+			if err != nil {
+				b.Fatal(err)
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}
+	}
+	b.Run("ClientTimeout", func(b *testing.B) {
+		client := &http.Client{Transport: server.Client().Transport, Timeout: 30 * time.Second}
+		run(b, client, DoHTTPRequest)
+	})
+	b.Run("DoHTTPRequestWithTimeout", func(b *testing.B) {
+		run(b, server.Client(), func(c *http.Client, r *http.Request) (*http.Response, error) {
+			return DoHTTPRequestWithTimeout(c, r, 30*time.Second, true)
+		})
+	})
+}
+
+// BenchmarkHTTPStreamHeaderTimeout compares Bedrock's old stream header bound
+// (http.Transport.ResponseHeaderTimeout) with DoHTTPRequestWithTimeout.
+func BenchmarkHTTPStreamHeaderTimeout(b *testing.B) {
+	server := slowBodyServer(b, 0, 0)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	run := func(b *testing.B, client *http.Client, do func(*http.Client, *http.Request) (*http.Response, error)) {
+		b.ReportAllocs()
+		for b.Loop() {
+			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, server.URL, nil)
+			resp, err := do(client, req)
+			if err != nil {
+				b.Fatal(err)
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}
+	}
+	b.Run("ResponseHeaderTimeout", func(b *testing.B) {
+		transport := server.Client().Transport.(*http.Transport).Clone()
+		transport.ResponseHeaderTimeout = 30 * time.Second
+		run(b, &http.Client{Transport: transport}, DoHTTPRequest)
+	})
+	b.Run("DoHTTPRequestWithTimeout", func(b *testing.B) {
+		run(b, server.Client(), func(c *http.Client, r *http.Request) (*http.Response, error) {
+			return DoHTTPRequestWithTimeout(c, r, 30*time.Second, false)
+		})
+	})
 }
 
 // newRoundTripperClient returns an *http.Client on fasthttpRoundTripper over a plain

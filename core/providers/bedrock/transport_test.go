@@ -394,6 +394,104 @@ func TestRequest_ConnectionFailure_IsUpstreamError(t *testing.T) {
 	}
 }
 
+// newSlowBedrockProvider builds a real provider with a 1s
+// default_request_timeout_in_seconds and points its own clients and transport
+// at a server that answers after delay, so the provider's timeouts are what
+// bound the request.
+func newSlowBedrockProvider(t *testing.T, delay time.Duration) *BedrockProvider {
+	t.Helper()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(delay):
+		case <-r.Context().Done():
+			return
+		}
+		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(ts.Close)
+	config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 1}}
+	config.CheckAndSetDefaults()
+	provider, err := NewBedrockProvider(config, noopLogger{})
+	require.NoError(t, err)
+	targetURL, err := url.Parse(ts.URL)
+	require.NoError(t, err)
+	redirect := &redirectTransport{target: targetURL, transport: provider.client.Transport}
+	provider.client.Transport = redirect
+	provider.streamingClient.Transport = redirect
+	return provider
+}
+
+func requestTimeoutBedrockCtx(override time.Duration) *schemas.BifrostContext {
+	ctx := testBedrockCtx()
+	if override > 0 {
+		ctx.SetValue(schemas.BifrostContextKeyRequestTimeout, override)
+	}
+	return ctx
+}
+
+func bedrockSlowConverse(t *testing.T, p *BedrockProvider, ctx context.Context) *schemas.BifrostError {
+	t.Helper()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://bedrock-runtime.us-east-1.amazonaws.com/model/m/converse", strings.NewReader(`{}`))
+	require.NoError(t, err)
+	_, _, _, bifrostErr := p.executeBedrockRequest(req)
+	return bifrostErr
+}
+
+func bedrockSlowStream(t *testing.T, p *BedrockProvider, ctx *schemas.BifrostContext) *schemas.BifrostError {
+	t.Helper()
+	resp, bifrostErr := p.makeStreamingRequest(ctx, []byte(`{}`), testBedrockKey(), "anthropic.claude-sonnet-4-5", "converse-stream")
+	if resp != nil {
+		resp.Body.Close()
+	}
+	return bifrostErr
+}
+
+func requireBedrockTimeout(t *testing.T, elapsed time.Duration, bifrostErr *schemas.BifrostError) {
+	t.Helper()
+	assert.Less(t, elapsed, 1400*time.Millisecond, "the 1s provider timeout should end the attempt before the upstream answers")
+	require.NotNil(t, bifrostErr, "expected default_request_timeout_in_seconds (1s) to bound a 1.5s upstream")
+	require.NotNil(t, bifrostErr.Error)
+	require.NotNil(t, bifrostErr.Error.Type)
+	assert.Equal(t, schemas.RequestTimedOut, *bifrostErr.Error.Type)
+}
+
+// A per-request BifrostContextKeyRequestTimeout replaces the provider's 1s
+// default_request_timeout_in_seconds on Bedrock's net/http paths, where the
+// timeout used to be fixed on the client (unary) and transport (stream headers).
+func TestBedrockRequestTimeoutOverride(t *testing.T) {
+	const delay = 1500 * time.Millisecond
+	t.Run("unary override extends", func(t *testing.T) {
+		t.Parallel()
+		bifrostErr := bedrockSlowConverse(t, newSlowBedrockProvider(t, delay), requestTimeoutBedrockCtx(3*time.Second))
+		if bifrostErr != nil {
+			t.Fatalf("override (3s) should replace the 1s provider timeout, got: %s", bifrostErr.Error.Message)
+		}
+	})
+	t.Run("stream header override extends", func(t *testing.T) {
+		t.Parallel()
+		bifrostErr := bedrockSlowStream(t, newSlowBedrockProvider(t, delay), requestTimeoutBedrockCtx(3*time.Second))
+		if bifrostErr != nil {
+			t.Fatalf("override (3s) should replace the 1s provider timeout, got: %s", bifrostErr.Error.Message)
+		}
+	})
+	t.Run("unary default still bounds", func(t *testing.T) {
+		t.Parallel()
+		p := newSlowBedrockProvider(t, delay)
+		start := time.Now()
+		bifrostErr := bedrockSlowConverse(t, p, requestTimeoutBedrockCtx(0))
+		requireBedrockTimeout(t, time.Since(start), bifrostErr)
+	})
+	t.Run("stream header default still bounds", func(t *testing.T) {
+		t.Parallel()
+		p := newSlowBedrockProvider(t, delay)
+		start := time.Now()
+		bifrostErr := bedrockSlowStream(t, p, requestTimeoutBedrockCtx(0))
+		requireBedrockTimeout(t, time.Since(start), bifrostErr)
+	})
+}
+
 func TestNewRequestError(t *testing.T) {
 	cases := []struct {
 		name           string
