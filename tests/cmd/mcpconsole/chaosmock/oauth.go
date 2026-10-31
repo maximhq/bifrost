@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/url"
@@ -14,9 +15,9 @@ import (
 
 // A virtual server can be made an OAuth 2.1 protected resource with its own
 // authorization server, so a client's whole upstream OAuth path runs for real:
-// discovery (RFC 9728, RFC 8414), dynamic registration (RFC 7591),
-// authorization with PKCE (RFC 7636), and token exchange and refresh
-// (RFC 6749, with RFC 8707 resource indicators).
+// discovery (RFC 9728, RFC 8414), dynamic registration (RFC 7591) or Client
+// ID Metadata Documents, authorization with PKCE (RFC 7636), and token
+// exchange and refresh (RFC 6749, with RFC 8707 resource indicators).
 //
 // Consent is approved automatically. A test follows the authorization URL
 // with a client that does not follow redirects and reads the code off the
@@ -61,12 +62,33 @@ type OAuthConfig struct {
 	// RotateRefresh issues a new refresh token on every refresh and retires
 	// the one presented.
 	RotateRefresh bool `json:"rotate_refresh,omitempty"`
+	// MetadataDocuments takes a client_id that is an https URL as a Client ID
+	// Metadata Document: the server fetches it at authorization, checks it and
+	// knows the client as a public one from then on. "advertised" also
+	// announces support in the metadata; "accepted" takes documents without
+	// announcing it. Empty treats such a client_id as any unknown one.
+	MetadataDocuments string `json:"metadata_documents,omitempty"`
+	// MetadataDocumentsVia is the base URL documents are fetched through: the
+	// document URL's scheme and host are replaced by this base's, and its own
+	// host and scheme are sent as Host and X-Forwarded-Proto. A document named
+	// under an address nothing resolves can then be served by a local process.
+	// Empty fetches the document URL itself.
+	MetadataDocumentsVia string `json:"metadata_documents_via,omitempty"`
 }
 
 // validate rejects a configuration the server would otherwise misread.
 func (c *OAuthConfig) validate() error {
 	if c.Challenge != "" && c.Challenge != "bare" {
 		return fmt.Errorf(`oauth challenge must be "bare" or empty, got %q`, c.Challenge)
+	}
+	if c.MetadataDocuments != "" && c.MetadataDocuments != "advertised" && c.MetadataDocuments != "accepted" {
+		return fmt.Errorf(`oauth metadata_documents must be "advertised", "accepted" or empty, got %q`, c.MetadataDocuments)
+	}
+	if c.MetadataDocumentsVia != "" {
+		via, err := url.Parse(c.MetadataDocumentsVia)
+		if err != nil || (via.Scheme != "http" && via.Scheme != "https") || via.Host == "" {
+			return fmt.Errorf("oauth metadata_documents_via must be an http or https URL, got %q", c.MetadataDocumentsVia)
+		}
 	}
 	for _, client := range c.Clients {
 		if client.ClientID == "" {
@@ -124,6 +146,9 @@ type OAuthCounters struct {
 	TokenRefresh int64 `json:"token_refresh"`
 	TokenErrors  int64 `json:"token_errors"`
 	Rejected     int64 `json:"rejected"`
+	// MetadataDocumentFetches counts Client ID Metadata Documents fetched,
+	// whether or not they were accepted.
+	MetadataDocumentFetches int64 `json:"metadata_document_fetches"`
 }
 
 // OAuthLogEntry records one authorization server request with the raw values
@@ -576,6 +601,9 @@ func (s *Server) ServeAuthorizationServerMetadata(w http.ResponseWriter, r *http
 	if cfg.Registration == nil || *cfg.Registration {
 		meta["registration_endpoint"] = issuer + "/register"
 	}
+	if cfg.MetadataDocuments == "advertised" {
+		meta["client_id_metadata_document_supported"] = true
+	}
 	writeJSON(w, http.StatusOK, meta)
 }
 
@@ -687,6 +715,7 @@ func (s *Server) serveAuthorize(w http.ResponseWriter, r *http.Request, cfg *OAu
 		State:       q.Get("state"),
 		LoginHint:   q.Get("login_hint"),
 	}
+	s.resolveMetadataDocument(cfg, entry.ClientID)
 
 	s.oauth.mu.Lock()
 	defer s.oauth.mu.Unlock()
@@ -749,6 +778,102 @@ func (s *Server) serveAuthorize(w http.ResponseWriter, r *http.Request, cfg *OAu
 	entry.Status = http.StatusFound
 	s.oauth.record(entry)
 	http.Redirect(w, r, location, http.StatusFound)
+}
+
+// metadataDocumentFetchTimeout bounds one Client ID Metadata Document fetch.
+const metadataDocumentFetchTimeout = 5 * time.Second
+
+// isMetadataDocumentURL reports whether clientID names a Client ID Metadata
+// Document: an https URL with a path.
+func isMetadataDocumentURL(clientID string) bool {
+	u, err := url.Parse(clientID)
+	return err == nil && u.Scheme == "https" && u.Host != "" && u.Path != "" && u.Path != "/"
+}
+
+// resolveMetadataDocument knows the public client a Client ID Metadata
+// Document describes from the moment its first authorization request arrives,
+// when the server takes documents. The fetch runs without the lock, since the
+// document may be served by the very client waiting on this answer. A refused
+// document is logged and leaves the client unknown, so the request is answered
+// as for any unknown client.
+func (s *Server) resolveMetadataDocument(cfg *OAuthConfig, clientID string) {
+	if cfg.MetadataDocuments == "" || !isMetadataDocumentURL(clientID) {
+		return
+	}
+	s.oauth.mu.Lock()
+	_, known := s.oauth.clients[clientID]
+	s.oauth.mu.Unlock()
+	if known {
+		return
+	}
+	client, err := fetchMetadataDocument(cfg.MetadataDocumentsVia, clientID)
+
+	s.oauth.mu.Lock()
+	defer s.oauth.mu.Unlock()
+	s.oauth.counters.MetadataDocumentFetches++
+	entry := OAuthLogEntry{Endpoint: "metadata_document", Status: http.StatusOK, ClientID: clientID}
+	if err != nil {
+		entry.Status, entry.Error = http.StatusBadRequest, err.Error()
+	} else {
+		s.oauth.putClient(client)
+	}
+	s.oauth.record(entry)
+}
+
+// fetchMetadataDocument fetches the document at clientID, through via when it
+// is set, and returns the public client it describes. The document must name
+// clientID as its client_id, list a redirect URI and authenticate with none.
+func fetchMetadataDocument(via, clientID string) (OAuthClient, error) {
+	target, err := url.Parse(clientID)
+	if err != nil {
+		return OAuthClient{}, fmt.Errorf("document URL is invalid")
+	}
+	fetch := *target
+	if via != "" {
+		base, err := url.Parse(via)
+		if err != nil {
+			return OAuthClient{}, fmt.Errorf("metadata_documents_via is invalid")
+		}
+		fetch.Scheme, fetch.Host = base.Scheme, base.Host
+	}
+	req, err := http.NewRequest(http.MethodGet, fetch.String(), nil)
+	if err != nil {
+		return OAuthClient{}, fmt.Errorf("document URL is invalid")
+	}
+	req.Host = target.Host
+	req.Header.Set("X-Forwarded-Proto", target.Scheme)
+	req.Header.Set("Accept", "application/json")
+	httpClient := &http.Client{
+		Timeout: metadataDocumentFetchTimeout,
+		// The document must come from its own URL.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return OAuthClient{}, fmt.Errorf("document could not be fetched: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return OAuthClient{}, fmt.Errorf("document fetch returned HTTP %d", resp.StatusCode)
+	}
+	var doc struct {
+		ClientID                string   `json:"client_id"`
+		RedirectURIs            []string `json:"redirect_uris"`
+		TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
+		Scope                   string   `json:"scope"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&doc); err != nil {
+		return OAuthClient{}, fmt.Errorf("document is not a JSON object")
+	}
+	switch {
+	case doc.ClientID != clientID:
+		return OAuthClient{}, fmt.Errorf("document client_id %q does not match its URL", doc.ClientID)
+	case len(doc.RedirectURIs) == 0:
+		return OAuthClient{}, fmt.Errorf("document lists no redirect_uris")
+	case doc.TokenEndpointAuthMethod != "" && doc.TokenEndpointAuthMethod != "none":
+		return OAuthClient{}, fmt.Errorf("document token_endpoint_auth_method must be none, got %q", doc.TokenEndpointAuthMethod)
+	}
+	return OAuthClient{ClientID: clientID, RedirectURIs: doc.RedirectURIs, AuthMethod: "none", Scope: doc.Scope}, nil
 }
 
 // withQuery adds params to raw, keeping the query it already has.
