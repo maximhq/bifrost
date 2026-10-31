@@ -645,6 +645,53 @@ func TestExecuteTool_AuthFailureRetry_PerUser_RetryAlsoFails(t *testing.T) {
 	}
 }
 
+// TestExecuteTool_AuthFailureRetry_PerUser_ClientReplacedDuringCall_RejectsRetry
+// pins the per-user twin of the shared branch's identity guard: the retry
+// re-resolves its client by tool name, and if the client was deleted and
+// re-added under the same name while the call was in flight, that lookup
+// returns the new client. The retry must not run against it, since the call
+// was permitted for the old one, and the original auth failure surfaces.
+func TestExecuteTool_AuthFailureRetry_PerUser_ClientReplacedDuringCall_RejectsRetry(t *testing.T) {
+	state, stateDiscovery, toolName := newAuthRetryClientState("testclient", "dotool", nil, boolPtr(true))
+
+	// Same name and tool, new ID: what the tool-name lookup finds once the
+	// client has been re-added.
+	replaced := &schemas.MCPClientState{
+		Name:            "testclient",
+		ExecutionConfig: &schemas.MCPClientConfig{ID: "testclient-id-v2", Name: "testclient"},
+	}
+
+	ft := &fakeCallToolTransport{callErrs: []error{errors.New("tool call failed: 401 Unauthorized")}}
+	conn := client.NewClient(ft, client.WithSession())
+
+	cm := &authRetryClientManager{
+		state:            state,
+		stateDiscovery:   stateDiscovery,
+		acquireConn:      conn,
+		rerouteToolState: replaced,
+		rerouteDiscovery: stateDiscovery,
+	}
+	cs := &authRetryCredStore{requiresPerCall: true}
+	tm := newAuthRetryToolsManager(cm, cs)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := newAuthRetryToolCallRequest(toolName)
+
+	_, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig, stateDiscovery.ToolNameMapping)
+	if err == nil {
+		t.Fatal("expected the original auth failure to surface when the client was replaced, got no error")
+	}
+	if got := ft.CallCount(); got != 1 {
+		t.Errorf("must not retry against the replacement client: expected exactly 1 CallTool invocation (the original), got %d", got)
+	}
+	if got := cm.acquireCalls.Load(); got != 0 {
+		t.Errorf("must not acquire a connection for the replacement client, got %d AcquireClientConn calls", got)
+	}
+	if got := cs.forceRefreshCalls.Load(); got != 0 {
+		t.Errorf("must not refresh a credential for a client that no longer exists, got %d ForceRefresh calls", got)
+	}
+}
+
 // TestExecuteTool_AuthFailureRetry_Shared_RetriesAfterReconnectCompletes
 // covers the shared-connection happy path: the original call fails with a
 // 401, a background goroutine forces a refresh and reconnects, and because
