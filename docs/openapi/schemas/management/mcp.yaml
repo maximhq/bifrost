@@ -1318,6 +1318,81 @@ MCPClient:
       items:
         $ref: '#/MCPVKConfigResponse'
       description: Virtual key assignments for this MCP client
+    credential:
+      $ref: '#/MCPClientCredential'
+
+MCPClientCredential:
+  type: object
+  description: |
+    Read-only view of the credential the client holds on its own behalf, as
+    opposed to the per-caller credentials listed under /api/mcp/sessions: the
+    shared token of an `oauth` client, the retained admin token of a
+    `per_user_oauth` or `token_exchange` client, or the retained admin header
+    values of a `per_user_headers` client. Absent for auth types that hold no
+    such credential (`none`, `headers`), while none has been issued yet (a
+    client still pending its one-time authorization), and for a client with
+    `per_user_discovery` on, which keeps none. Secret material never appears:
+    a refresh token is reported as present or absent, and header values only
+    by name.
+  required: [kind, status, has_refresh_token, created_at, updated_at]
+  properties:
+    kind:
+      type: string
+      enum: [oauth, headers]
+    status:
+      type: string
+      enum: [active, orphaned, needs_reauth, needs_update]
+      description: |
+        `oauth` credentials are `active`, `orphaned` or `needs_reauth`;
+        `headers` credentials are `active`, `orphaned` or `needs_update`.
+    status_reason:
+      type: string
+      description: |
+        Why an `oauth` credential left `active`: the provider's rejection of
+        the last refresh (HTTP status plus the OAuth error and description), a
+        credential rotation, or a failed admin exchange. Absent while `active`
+        and for `headers` credentials.
+    expires_at:
+      type: string
+      format: date-time
+      description: |
+        When the access token of an `oauth` credential expires. Absent when
+        the provider did not report an expiry, and for `headers` credentials.
+    last_refreshed_at:
+      type: string
+      format: date-time
+      description: |
+        Set on an `oauth` credential once its access token has been refreshed
+        or the credential re-authorized at least once.
+    has_refresh_token:
+      type: boolean
+      description: |
+        Whether the provider issued a refresh token, so the access token can
+        be renewed without another consent. Always false for `headers`
+        credentials.
+    scopes:
+      type: array
+      items:
+        type: string
+      description: |
+        The scopes the provider reported at consent time. Absent when it
+        reported none.
+    header_keys:
+      type: array
+      items:
+        type: string
+      description: |
+        The names of the headers the stored admin values of a `headers`
+        credential cover, sorted. Absent when the stored values hold no
+        headers or could not be read. A name in the client's
+        `per_user_header_keys` that is missing from a present list is one the
+        stored values predate.
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
 
 MCPIcon:
   type: object
