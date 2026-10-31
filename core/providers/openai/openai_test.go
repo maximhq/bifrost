@@ -2,22 +2,30 @@ package openai_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
+	"runtime"
+	"runtime/pprof"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+	"weak"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/internal/llmtests"
 	"github.com/maximhq/bifrost/core/providers/openai"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
 
 type oauthTestLogger struct{}
@@ -618,6 +626,329 @@ func TestOpenAIDisableStoreForcesStoreFalse(t *testing.T) {
 					if v, ok := callerExtra["store"]; ok && v != true {
 						t.Fatalf("caller's ExtraParams store was rewritten to %v", v)
 					}
+				})
+			}
+		}
+	}
+}
+
+func TestStreamingRequestBodyLifetime(t *testing.T) {
+	for _, kind := range []string{"chat", "responses", "text"} {
+		for _, capture := range []bool{false, true} {
+			for _, cancelStream := range []bool{false, true} {
+				// flag is the handler's sendBackRawRequest argument; the context key must win when they disagree.
+				for _, flag := range []bool{capture, !capture} {
+					t.Run(fmt.Sprintf("%s/capture=%v/flag=%v/cancel=%v", kind, capture, flag, cancelStream), func(t *testing.T) {
+						release := make(chan struct{})
+						var releaseOnce sync.Once
+						upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+							_, _ = io.Copy(io.Discard, r.Body)
+							w.Header().Set("Content-Type", "text/event-stream")
+							w.WriteHeader(http.StatusOK)
+							w.(http.Flusher).Flush()
+							select {
+							case <-release:
+							case <-r.Context().Done():
+								return
+							}
+							switch kind {
+							case "responses":
+								_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp\",\"model\":\"gpt-4o\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n")
+							case "text":
+								_, _ = io.WriteString(w, "data: {\"id\":\"resp\",\"model\":\"gpt-4o\",\"choices\":[{\"text\":\"ok\",\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\ndata: [DONE]\n\n")
+							default:
+								_, _ = io.WriteString(w, "data: {\"id\":\"resp\",\"model\":\"gpt-4o\",\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\ndata: [DONE]\n\n")
+							}
+						}))
+						t.Cleanup(upstream.Close)
+						t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+						ctx, cancel := schemas.NewBifrostContextWithTimeout(t.Context(), 5*time.Second)
+						defer cancel()
+						ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+						ctx.SetValue(schemas.BifrostContextKeyCaptureRawRequest, capture)
+						client := &fasthttp.Client{StreamResponseBody: true}
+						defer client.CloseIdleConnections()
+						errors := make(chan *schemas.BifrostError, 1)
+						hook := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+							if err != nil {
+								select {
+								case errors <- err:
+								default:
+								}
+							}
+							return result, err
+						}
+						// Return only a weak pointer so this test does not itself keep the upload alive.
+						var expectedRawHash [sha256.Size]byte
+						start := func() (chan *schemas.BifrostStreamChunk, weak.Pointer[byte]) {
+							body := []byte(`{"model":"gpt-4o","stream":true,"prompt":"` + strings.Repeat("x", 1<<20) + `"}`)
+							expectedRawHash = sha256.Sum256(body)
+							pointer := weak.Make(&body[0])
+							var stream chan *schemas.BifrostStreamChunk
+							var err *schemas.BifrostError
+							switch kind {
+							case "responses":
+								stream, err = openai.HandleOpenAIResponsesStreaming(ctx, client, upstream.URL, &schemas.BifrostResponsesRequest{Model: "gpt-4o", RawRequestBody: body}, nil, nil, 2, flag, false, schemas.OpenAI, hook, nil, nil, nil, nil, nil, oauthTestLogger{}, func(context.Context) {})
+							case "text":
+								stream, err = openai.HandleOpenAITextCompletionStreaming(ctx, client, upstream.URL, &schemas.BifrostTextCompletionRequest{Model: "gpt-4o", RawRequestBody: body}, nil, nil, 2, flag, false, schemas.OpenAI, nil, hook, nil, nil, oauthTestLogger{}, func(context.Context) {})
+							default:
+								stream, err = openai.HandleOpenAIChatCompletionStreaming(ctx, client, upstream.URL, &schemas.BifrostChatRequest{Model: "gpt-4o", RawRequestBody: body}, nil, nil, 2, flag, false, schemas.OpenAI, hook, nil, nil, nil, nil, nil, nil, oauthTestLogger{}, func(context.Context) {})
+							}
+							if err != nil {
+								t.Fatalf("stream setup: %v", err)
+							}
+							return stream, pointer
+						}
+						stream, pointer := start()
+						// Chat and text register usage asynchronously; wait before replacing
+						// their handle so cancellation cannot observe a later empty value.
+						// Responses streams do not register a usage handle here.
+						if kind != "responses" {
+							deadline := time.NewTimer(time.Second)
+							defer deadline.Stop()
+							ticker := time.NewTicker(time.Millisecond)
+							defer ticker.Stop()
+							for ctx.Value(schemas.BifrostContextKeyStreamAccumulatedUsage) == nil {
+								select {
+								case <-deadline.C:
+									t.Fatal("stream did not register accumulated usage")
+								case <-ticker.C:
+								}
+							}
+						}
+						for range 5 {
+							runtime.GC()
+							runtime.Gosched()
+						}
+						if retained := pointer.Value() != nil; retained != capture {
+							t.Errorf("upload retained during open stream=%v, want %v", retained, capture)
+						}
+						if cancelStream {
+							ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, &schemas.BifrostLLMUsage{PromptTokens: 7, CompletionTokens: 3, TotalTokens: 10})
+							cancel()
+						} else {
+							releaseOnce.Do(func() { close(release) })
+						}
+						sawRaw := false
+						checkRaw := func(raw any) {
+							if raw == nil {
+								return
+							}
+							sawRaw = true
+							data, ok := raw.(json.RawMessage)
+							if !ok || sha256.Sum256(data) != expectedRawHash {
+								t.Fatal("terminal raw request changed or was truncated")
+							}
+						}
+						for chunk := range stream {
+							if chunk.BifrostError != nil && !cancelStream {
+								t.Fatalf("stream error: %v", chunk.BifrostError)
+							}
+							if chunk.BifrostChatResponse != nil {
+								checkRaw(chunk.BifrostChatResponse.ExtraFields.RawRequest)
+							}
+							if chunk.BifrostTextCompletionResponse != nil {
+								checkRaw(chunk.BifrostTextCompletionResponse.ExtraFields.RawRequest)
+							}
+							if chunk.BifrostResponsesStreamResponse != nil {
+								checkRaw(chunk.BifrostResponsesStreamResponse.ExtraFields.RawRequest)
+							}
+						}
+						if cancelStream {
+							select {
+							case err := <-errors:
+								checkRaw(err.ExtraFields.RawRequest)
+								if err.ExtraFields.BilledUsage == nil || err.ExtraFields.BilledUsage.TotalTokens != 10 {
+									t.Fatal("cancel lost billed usage")
+								}
+							case <-time.After(time.Second):
+								t.Fatal("cancellation posthook never ran")
+							}
+						}
+						if sawRaw != capture {
+							t.Errorf("terminal raw request=%v, want %v", sawRaw, capture)
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
+func BenchmarkOpenAIStreamSetup(b *testing.B) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"id\":\"resp\",\"model\":\"gpt-4o\",\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+	client := &fasthttp.Client{StreamResponseBody: true}
+	defer client.CloseIdleConnections()
+	body := []byte(`{"model":"gpt-4o","prompt":"` + strings.Repeat("x", 4096) + `"}`)
+	hook := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, err
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		stream, err := openai.HandleOpenAIChatCompletionStreaming(ctx, client, upstream.URL, &schemas.BifrostChatRequest{Model: "gpt-4o", RawRequestBody: body}, nil, nil, 2, false, false, schemas.OpenAI, hook, nil, nil, nil, nil, nil, nil, oauthTestLogger{}, func(context.Context) {})
+		if err != nil {
+			b.Fatal(err)
+		}
+		for range stream {
+		}
+	}
+}
+
+type streamHeapAccount struct {
+	config schemas.ProviderConfig
+}
+
+func (a *streamHeapAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.OpenAI}, nil
+}
+
+func (a *streamHeapAccount) GetKeysForProvider(context.Context, schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{{ID: "heap-test", Value: *schemas.NewSecretVar("local-test"), Models: []string{"gpt-4o"}, Weight: 1}}, nil
+}
+
+func (a *streamHeapAccount) GetConfigForProvider(schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	config := a.config
+	return &config, nil
+}
+
+// BenchmarkOpenAIConcurrentStreamHeap measures live heap, not allocation throughput.
+// Run each selected leaf in a fresh process with -benchtime=1x. All uploads have
+// finished and every stream has delivered content before the heap is sampled.
+// The upstream keeps streams open with heartbeats until measurement is complete.
+// BIFROST_HEAP_HOLD overrides the default 3s hold; it must be below 60s.
+func BenchmarkOpenAIConcurrentStreamHeap(b *testing.B) {
+	hold := 3 * time.Second
+	if value := os.Getenv("BIFROST_HEAP_HOLD"); value != "" {
+		var err error
+		hold, err = time.ParseDuration(value)
+		if err != nil || hold <= 0 || hold >= 60*time.Second {
+			b.Fatal("BIFROST_HEAP_HOLD must be a positive duration below 60s")
+		}
+	}
+	for _, path := range []string{"sdk-raw", "sdk-typed"} {
+		for _, size := range []struct{ streams, mib int }{{32, 1}, {128, 1}, {32, 4}} {
+			for _, capture := range []bool{false, true} {
+				name := fmt.Sprintf("%s/%dx%dMiB/capture=%v", path, size.streams, size.mib, capture)
+				b.Run(name, func(b *testing.B) {
+					if b.N != 1 {
+						b.Skip("use -benchtime=1x for a retained-heap measurement")
+					}
+					ctx, cancel := context.WithTimeout(b.Context(), 90*time.Second)
+					defer cancel()
+					upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						if _, err := io.Copy(io.Discard, r.Body); err != nil {
+							return
+						}
+						w.Header().Set("Content-Type", "text/event-stream")
+						_, _ = io.WriteString(w, "data: {\"id\":\"heap\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ready\"}}]}\n\n")
+						w.(http.Flusher).Flush()
+						ticker := time.NewTicker(200 * time.Millisecond)
+						defer ticker.Stop()
+						for {
+							select {
+							case <-ctx.Done():
+								return
+							case <-r.Context().Done():
+								return
+							case <-ticker.C:
+								if _, err := io.WriteString(w, ": heartbeat\n\n"); err != nil {
+									return
+								}
+								w.(http.Flusher).Flush()
+							}
+						}
+					}))
+					defer upstream.Close()
+					defer cancel() // Close active streams before waiting for the server.
+					gateway, err := bifrost.Init(ctx, schemas.BifrostConfig{
+						Account: &streamHeapAccount{config: schemas.ProviderConfig{
+							NetworkConfig: schemas.NetworkConfig{
+								BaseURL: upstream.URL, AllowPrivateNetwork: true,
+								StreamIdleTimeoutInSeconds: 60, MaxConnsPerHost: size.streams + 1,
+							},
+							ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 4, BufferSize: size.streams},
+							SendBackRawRequest:       capture,
+						}},
+						Logger: oauthTestLogger{}, InitialPoolSize: 4,
+					})
+					if err != nil {
+						b.Fatal(err)
+					}
+					defer gateway.Shutdown()
+					var streams []chan *schemas.BifrostStreamChunk
+					defer func() {
+						cancel()
+						for _, stream := range streams {
+							for range stream {
+							}
+						}
+					}()
+					snapshot := func(label string) uint64 {
+						runtime.GC()
+						runtime.GC() // Also clear sync.Pool victim buffers from uploads.
+						var stats runtime.MemStats
+						runtime.ReadMemStats(&stats)
+						if dir := os.Getenv("BIFROST_HEAP_PROFILE_DIR"); dir != "" {
+							file, err := os.Create(filepath.Join(dir, label+".pprof"))
+							if err != nil {
+								b.Fatal(err)
+							}
+							err = pprof.WriteHeapProfile(file)
+							closeErr := file.Close()
+							if err != nil || closeErr != nil {
+								b.Fatalf("heap profile: write=%v close=%v", err, closeErr)
+							}
+						}
+						return stats.HeapAlloc
+					}
+					idle := snapshot("idle")
+					// Keep request construction in a separate frame. The benchmark owns
+					// only the returned channel, just as a caller that drops its request.
+					start := func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+						requestCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+						request := &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}
+						if path == "sdk-typed" {
+							content := strings.Repeat("x", size.mib<<20)
+							request.Input = []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &content}}}
+						} else {
+							request.RawRequestBody = []byte(`{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"` + strings.Repeat("x", size.mib<<20) + `"}]}`)
+							request.Input = []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("raw input")}}}
+							requestCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+						}
+						return gateway.ChatCompletionStreamRequest(requestCtx, request)
+					}
+					for range size.streams {
+						stream, err := start()
+						if err != nil {
+							b.Fatalf("stream setup: %v", err)
+						}
+						streams = append(streams, stream)
+						select {
+						case chunk, ok := <-stream:
+							if !ok || chunk == nil || chunk.BifrostError != nil {
+								b.Fatalf("stream did not deliver initial content: %+v", chunk)
+							}
+						case <-ctx.Done():
+							b.Fatal(ctx.Err())
+						}
+					}
+					select {
+					case <-time.After(hold):
+					case <-ctx.Done():
+						b.Fatal(ctx.Err())
+					}
+					active := snapshot("active")
+					b.ReportMetric(float64(idle), "idle-heap-B")
+					b.ReportMetric(float64(active), "active-heap-B")
+					b.ReportMetric(float64(int64(active)-int64(idle)), "retained-heap-B")
+					b.ReportMetric(float64(int64(active)-int64(idle))/float64(size.streams), "retained-B/stream")
 				})
 			}
 		}
