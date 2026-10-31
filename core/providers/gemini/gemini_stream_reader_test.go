@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"io"
+	"strings"
 	"testing"
 )
 
@@ -58,5 +59,22 @@ func TestReadNextSSEDataLine_SkipInlineDataContinuedLine(t *testing.T) {
 	_, err = readNextSSEDataLine(bufio.NewReaderSize(bytes.NewReader(nil), 64*1024), true)
 	if err != io.EOF {
 		t.Fatalf("expected EOF on empty reader, got %v", err)
+	}
+}
+
+// A line longer than the reader's buffer arrives in fragments. A space that lands
+// on a fragment boundary is payload, so the reassembled line must keep it.
+func TestReadNextSSEDataLine_KeepsSpaceAtFragmentBoundary(t *testing.T) {
+	const bufSize = 1024
+	prefix := "data: "
+	text := `{"text":"` + strings.Repeat("a", bufSize-len(prefix)-len(`{"text":"`)-1) + " " + strings.Repeat("b", 64) + `"}`
+	stream := prefix + text + "\n"
+
+	line, err := readNextSSEDataLine(bufio.NewReaderSize(strings.NewReader(stream), bufSize), false)
+	if err != nil {
+		t.Fatalf("expected reassembled line, got error: %v", err)
+	}
+	if string(line) != text {
+		t.Fatalf("reassembled line changed: got %d bytes, want %d", len(line), len(text))
 	}
 }

@@ -625,7 +625,7 @@ func (provider *AzureProvider) speechSynthesisStream(ctx *schemas.BifrostContext
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 
-		buffer := make([]byte, 64*1024)
+		buffer := make([]byte, provider.networkConfig.StreamReadBufferSize())
 		chunkIndex := -1
 		lastChunkTime := startTime
 		for {

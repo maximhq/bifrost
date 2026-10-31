@@ -7272,7 +7272,7 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 16384,
-          "description": "Read buffer size for streaming responses, in KB. Applies to Azure speech streaming and the Gemini/Vertex streaming readers. The buffer is allocated per stream, so large values cost memory per concurrent stream. Default: 64."
+          "description": "Read buffer size for streaming responses, in KB. Applies to Azure speech streaming and to Gemini and Vertex Gemini model streaming; other providers and Vertex Anthropic streams ignore it. The buffer is allocated per stream, so large values cost memory per concurrent stream. Default: 64."
         },
         "max_conns_per_host": {
           "type": "integer",
@@ -7359,7 +7359,7 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 16384,
-          "description": "Read buffer size for streaming responses, in KB. Applies to Azure speech streaming and the Gemini/Vertex streaming readers. The buffer is allocated per stream, so large values cost memory per concurrent stream. Default: 64."
+          "description": "Read buffer size for streaming responses, in KB. Applies to Azure speech streaming and to Gemini and Vertex Gemini model streaming; other providers and Vertex Anthropic streams ignore it. The buffer is allocated per stream, so large values cost memory per concurrent stream. Default: 64."
         },
         "max_conns_per_host": {
           "type": "integer",

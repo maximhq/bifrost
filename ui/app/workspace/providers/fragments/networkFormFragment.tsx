@@ -458,8 +458,9 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 										/>
 									</FormControl>
 									<FormDescription>
-										Read buffer size for streaming responses, in KB. Allocated per stream, so large values cost memory per concurrent
-										stream. Default: 64. Range: 1–16384.
+										Read buffer size for streaming responses, in KB. Applies to Azure speech streaming and to Gemini and Vertex Gemini
+										model streaming; other providers and Vertex Anthropic streams ignore it. Allocated per stream, so large values cost
+										memory per concurrent stream. Default: 64. Range: 1–16384.
 									</FormDescription>
 									<FormMessage />
 								</FormItem>

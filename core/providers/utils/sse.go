@@ -95,9 +95,10 @@ func GetSSEDataReader(ctx *schemas.BifrostContext, reader io.Reader) SSEDataRead
 }
 
 // GetSSEDataReaderSize is like GetSSEDataReader but uses bufSize as the scanner's
-// initial buffer capacity. bufSize <= 0 falls back to the 8KB default. The max
-// token size is the larger of sseMaxBufSize and bufSize. Enterprise-injected
-// factories ignore bufSize because NewDataReader does not accept it.
+// initial buffer capacity. A bufSize at or below the 64KB stream read default
+// starts at the 8KB default. The max token size is the larger of sseMaxBufSize and
+// bufSize. Enterprise-injected factories ignore bufSize because NewDataReader does
+// not accept it.
 func GetSSEDataReaderSize(ctx *schemas.BifrostContext, reader io.Reader, bufSize int) SSEDataReader {
 	if ctx != nil {
 		if factory, ok := ctx.Value(schemas.BifrostContextKeySSEReaderFactory).(*SSEReaderFactory); ok && factory != nil && factory.NewDataReader != nil {
@@ -160,7 +161,9 @@ func newDefaultSSEDataReader(ctx *schemas.BifrostContext, reader io.Reader) *def
 }
 
 func newDefaultSSEDataReaderSize(ctx *schemas.BifrostContext, reader io.Reader, bufSize int) *defaultSSEDataReader {
-	if bufSize <= 0 {
+	// The scanner grows on demand, so a size at or below the stream read default
+	// starts at the usual 8KB. Only a size raised above the default costs memory.
+	if bufSize <= schemas.DefaultStreamReadBufferSizeKB*1024 {
 		bufSize = sseInitialBufSize
 	}
 	maxSize := sseMaxBufSize

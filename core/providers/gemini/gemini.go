@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -3345,7 +3346,14 @@ func readNextSSEDataLine(reader *bufio.Reader, skipInlineData bool) ([]byte, err
 			return nil, err
 		}
 
-		trimmed := bytes.TrimSpace(fragment)
+		// A fragment that ends mid-line stops at the reader's buffer boundary, not at
+		// the end of the payload, so a space there is payload and must be kept.
+		var trimmed []byte
+		if isPrefix {
+			trimmed = bytes.TrimLeftFunc(fragment, unicode.IsSpace)
+		} else {
+			trimmed = bytes.TrimSpace(fragment)
+		}
 		if len(trimmed) == 0 || trimmed[0] == ':' || !bytes.HasPrefix(trimmed, []byte("data:")) {
 			for isPrefix {
 				_, isPrefix, err = reader.ReadLine()
