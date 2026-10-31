@@ -1118,6 +1118,10 @@ type MCPClientResponse struct {
 	// auth type has no such credential (none, headers) or when none has been
 	// issued yet (a client still pending its one-time authorization).
 	Credential *MCPClientCredentialResponse `json:"credential,omitempty"`
+	// CallersByTool is set for a client with per_user_discovery on, whose Tools
+	// are the names seen in its callers' discoveries: how many of those
+	// discoveries include each. Nil until a caller holds one.
+	CallersByTool map[string]int `json:"callers_by_tool,omitempty"`
 }
 
 // setResourcesAndPrompts copies client's lists, empty rather than null when the server offers none.
@@ -1786,14 +1790,21 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 	adminTokenByClientID := make(map[string]*configstoreTables.TableMCPOauthToken)
 	adminCredByClientID := make(map[string]*configstoreTables.TableMCPPerUserHeaderCredential)
 	sharedTokenByClientID := make(map[string]*configstoreTables.TableMCPOauthToken)
+	// A client with per_user_discovery on has no tools of its own: it lists the
+	// names seen in its callers' discoveries, with how many callers see each.
+	callersByToolByClientID := make(map[string]map[string]int)
 	if h.store.ConfigStore != nil {
 		adminTokenClientIDs := make([]string, 0)
 		perUserHeaderClientIDs := make([]string, 0)
+		perUserDiscoveryClientIDs := make([]string, 0)
 		// Shared-OAuth rows are keyed by oauth_config_id, not client id, so
 		// keep the reverse mapping to fold the result back onto clients.
 		sharedOauthConfigIDs := make([]string, 0)
 		clientIDsByOauthConfigID := make(map[string][]string)
 		for _, c := range dbClients {
+			if c.PerUserDiscovery != nil && *c.PerUserDiscovery {
+				perUserDiscoveryClientIDs = append(perUserDiscoveryClientIDs, c.ClientID)
+			}
 			switch schemas.MCPAuthType(c.AuthType) {
 			case schemas.MCPAuthTypePerUserOauth, schemas.MCPAuthTypeTokenExchange:
 				adminTokenClientIDs = append(adminTokenClientIDs, c.ClientID)
@@ -1835,6 +1846,13 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 				}
 			} else {
 				logger.Debug("failed to batch-get shared oauth tokens for MCP registry state projection: %v", err)
+			}
+		}
+		if len(perUserDiscoveryClientIDs) > 0 {
+			if counts, err := h.store.ConfigStore.GetMCPPerUserDiscoveryToolCallerCounts(ctx, perUserDiscoveryClientIDs); err == nil {
+				callersByToolByClientID = counts
+			} else {
+				logger.Debug("failed to count the tools in callers' discoveries for the MCP registry: %v", err)
 			}
 		}
 	}
@@ -1907,26 +1925,48 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 		adminCred := adminCredByClientID[dbClient.ClientID]
 		sharedToken := sharedTokenByClientID[dbClient.ClientID]
 		credential := mcpClientCredentialResponse(clientConfig.AuthType, adminToken, adminCred, sharedToken)
+		// A client with per_user_discovery on keeps no credential of its own, so
+		// none is shown or projected onto its state, even one left from before.
+		// Its tools are the names seen in its callers' discoveries: only names,
+		// since descriptions and schemas can differ from one caller to another.
+		perUserDiscovery := perUserDiscoveryOn(clientConfig)
+		callersByTool := callersByToolByClientID[clientConfig.ID]
+		callerTools := make([]schemas.MCPClientTool, 0, len(callersByTool))
+		if perUserDiscovery {
+			credential = nil
+			for name := range callersByTool {
+				callerTools = append(callerTools, schemas.MCPClientTool{ChatToolFunction: schemas.ChatToolFunction{Name: name}})
+			}
+			sort.Slice(callerTools, func(i, j int) bool {
+				return callerTools[i].Name < callerTools[j].Name
+			})
+		}
 		if connectedClient, exists := connectedClientsMap[clientConfig.ID]; exists {
 			sortedTools := make([]schemas.MCPClientTool, len(connectedClient.Tools))
 			copy(sortedTools, connectedClient.Tools)
 			sort.Slice(sortedTools, func(i, j int) bool {
 				return sortedTools[i].Name < sortedTools[j].Name
 			})
-			resolvedState := projectMCPCredentialState(
-				clientConfig.AuthType,
-				connectedClient.State,
-				oauthTokenStatus(adminToken),
-				headerCredentialStatus(adminCred),
-				oauthTokenStatus(sharedToken),
-			)
+			resolvedState := connectedClient.State
+			if perUserDiscovery {
+				sortedTools = callerTools
+			} else {
+				resolvedState = projectMCPCredentialState(
+					clientConfig.AuthType,
+					connectedClient.State,
+					oauthTokenStatus(adminToken),
+					headerCredentialStatus(adminCred),
+					oauthTokenStatus(sharedToken),
+				)
+			}
 			resp := MCPClientResponse{
-				Config:      redactedConfig,
-				Tools:       sortedTools,
-				State:       resolvedState,
-				LastFailure: connectedClient.LastFailure,
-				VKConfigs:   vkConfigs,
-				Credential:  credential,
+				Config:        redactedConfig,
+				Tools:         sortedTools,
+				State:         resolvedState,
+				LastFailure:   connectedClient.LastFailure,
+				VKConfigs:     vkConfigs,
+				Credential:    credential,
+				CallersByTool: callersByTool,
 			}
 			resp.setResourcesAndPrompts(&connectedClient)
 			if aggregator, ok := h.mcpManager.(MCPClusterStateAggregator); ok {
@@ -1939,11 +1979,12 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 			clients = append(clients, resp)
 		} else {
 			resp := MCPClientResponse{
-				Config:     redactedConfig,
-				Tools:      []schemas.MCPClientTool{},
-				State:      schemas.MCPConnectionStateError,
-				VKConfigs:  vkConfigs,
-				Credential: credential,
+				Config:        redactedConfig,
+				Tools:         callerTools,
+				State:         schemas.MCPConnectionStateError,
+				VKConfigs:     vkConfigs,
+				Credential:    credential,
+				CallersByTool: callersByTool,
 			}
 			resp.setResourcesAndPrompts(nil)
 			clients = append(clients, resp)

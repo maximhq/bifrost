@@ -1783,6 +1783,60 @@ func (s *readBackFailingStore) GetMCPClientConfigByID(ctx context.Context, id st
 	return s.ConfigStore.GetMCPClientConfigByID(ctx, id)
 }
 
+// TestGetMCPClients_APerUserDiscoveryClientListsTheToolNamesItsCallersSee: a
+// client with per_user_discovery on has no tools of its own, so the list gives
+// the names seen in its callers' discoveries with how many callers see each,
+// none until someone connects, and no credential of its own to show or to
+// project a state from.
+func TestGetMCPClients_APerUserDiscoveryClientListsTheToolNamesItsCallersSee(t *testing.T) {
+	ctx := context.Background()
+	notes := headersNotesClient()
+	notes.PerUserDiscovery = schemas.Ptr(true)
+	wiki := headersNotesClient()
+	wiki.ID, wiki.Name, wiki.PerUserDiscovery = "client-wiki", "wiki", schemas.Ptr(true)
+	h, _ := newVerificationHandler(t, newVerificationRuntime(t, notes, wiki))
+	for _, client := range []*schemas.MCPClientConfig{notes, wiki} {
+		require.NoError(t, h.store.ConfigStore.CreateMCPClientConfig(ctx, client))
+	}
+	tool := func(names ...string) map[string]schemas.ChatTool {
+		tools := make(map[string]schemas.ChatTool, len(names))
+		for _, name := range names {
+			tools[name] = schemas.ChatTool{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: name, Description: schemas.Ptr("seen by one caller")}}
+		}
+		return tools
+	}
+	for _, discovery := range []*configtables.TableMCPPerUserDiscovery{
+		{MCPClientID: notes.ID, AuthMode: "user", UserID: schemas.Ptr("alice"), Tools: tool("search", "read"), DiscoveryHash: "hash-shared"},
+		{MCPClientID: notes.ID, AuthMode: "user", UserID: schemas.Ptr("bob"), Tools: tool("search", "read"), DiscoveryHash: "hash-shared"},
+		{MCPClientID: notes.ID, AuthMode: "vk", VirtualKeyID: schemas.Ptr("vk-1"), Tools: tool("search"), DiscoveryHash: "hash-vk-1"},
+	} {
+		require.NoError(t, h.store.ConfigStore.UpsertMCPPerUserDiscovery(ctx, discovery))
+	}
+	// An admin credential left from before the flag was on is not the client's.
+	require.NoError(t, h.store.ConfigStore.UpsertMCPPerUserHeaderCredential(ctx, &configtables.TableMCPPerUserHeaderCredential{MCPClientID: notes.ID, AuthMode: "admin", Status: "needs_update", HeadersJSON: `{"x-api-key":"old"}`}))
+
+	status, body := doMCPRequest(t, h.getMCPClients, fasthttp.MethodGet, "", "", false)
+	require.Equal(t, fasthttp.StatusOK, status, body)
+	var list struct {
+		Clients []MCPClientResponse `json:"clients"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(body), &list), body)
+	listed := map[string]MCPClientResponse{}
+	for _, client := range list.Clients {
+		listed[client.Config.ID] = client
+	}
+
+	got := listed[notes.ID]
+	assert.Equal(t, []schemas.MCPClientTool{{ChatToolFunction: schemas.ChatToolFunction{Name: "read"}}, {ChatToolFunction: schemas.ChatToolFunction{Name: "search"}}}, got.Tools, "names only, sorted")
+	assert.Equal(t, map[string]int{"search": 3, "read": 2}, got.CallersByTool)
+	assert.Nil(t, got.Credential)
+	assert.Equal(t, schemas.MCPConnectionStateHealthy, got.State, "no credential state is projected")
+	assert.NotContains(t, body, "seen by one caller", "no caller's description is shown")
+
+	assert.Empty(t, listed[wiki.ID].Tools, "no tools until someone connects")
+	assert.Nil(t, listed[wiki.ID].CallersByTool)
+}
+
 // verificationRecorder stands in for the runtime on the admin verification
 // routes: verification finds one tool, and it records whether the result was
 // handed over as tools or as a config recording the verification.
@@ -1905,6 +1959,7 @@ func newVerificationRuntime(t *testing.T, clients ...*schemas.MCPClientConfig) *
 	})
 	require.NoError(t, err)
 	t.Cleanup(runtime.Shutdown)
+	runtime.ConnectConfiguredMCPClients(t.Context())
 	return runtime
 }
 
