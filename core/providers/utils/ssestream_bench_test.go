@@ -89,6 +89,7 @@ func BenchmarkSSEDataReaderSize(b *testing.B) {
 		size int
 	}{
 		{"Fallback8KB", 0},
+		{"Configured32KB", 32 * 1024},
 		{"Default64KB", 64 * 1024},
 		{"Configured1MB", 1024 * 1024},
 	} {
