@@ -869,8 +869,7 @@ type MCPClientConfig struct {
 	AllowByDefault bool `json:"allow_by_default"`
 
 	// Discovered tools for per-user OAuth clients (persisted so they survive restart)
-	DiscoveredTools           map[string]ChatTool `json:"-"` // Discovered tool schemas keyed by prefixed name
-	DiscoveredToolNameMapping map[string]string   `json:"-"` // Mapping from sanitized tool names to original MCP names
+	DiscoveredTools map[string]ChatTool `json:"-"` // Discovered tool schemas keyed by prefixed name
 	// DiscoveredInstructions is the upstream's initialize `instructions`, persisted for the
 	// same reason DiscoveredTools is: per-call clients hold no connection to re-read it from.
 	DiscoveredInstructions string `json:"-"`
@@ -1382,7 +1381,6 @@ type MCPClientState struct {
 	Conn            *client.Client           // Active MCP client connection
 	ExecutionConfig *MCPClientConfig         // Tool filtering settings
 	ToolMap         map[string]ChatTool      // Available tools mapped by name
-	ToolNameMapping map[string]string        // Maps sanitized_name -> original_mcp_name (e.g., "notion_search" -> "notion-search")
 	ConnectionInfo  *MCPClientConnectionInfo `json:"connection_info"` // Connection metadata for management
 	// ServerInstructions is the upstream's initialize `instructions`, as of the last handshake.
 	// Overwritten (never appended to) on reconnect, so dropping it upstream drops it here.
@@ -1391,7 +1389,7 @@ type MCPClientState struct {
 	State              MCPConnectionState    // Connection state (healthy, unstable, needs_reauth, ...)
 	LastFailure        *MCPConnectionFailure `json:"last_failure,omitempty"` // Why State is not Healthy; nil while Healthy (see MCPConnectionFailure)
 	ConnGeneration     uint64                `json:"-"`                      // Counts connection swaps; late writers bound to an older Conn compare against it to detect staleness (not serialized)
-	LastDiscoveryHash  string                `json:"-"`                      // Content hash of the last discovery (tools, mapping, instructions, resources, prompts) the change callback fired for; gates it to genuine changes (not serialized)
+	LastDiscoveryHash  string                `json:"-"`                      // Content hash of the last discovery (tools, instructions, resources, prompts) the change callback fired for; gates it to genuine changes (not serialized)
 
 	Resources         []mcp.Resource         `json:"-"` // As the server lists them
 	ResourceTemplates []mcp.ResourceTemplate `json:"-"` // As the server lists them
@@ -1403,7 +1401,6 @@ type MCPClientState struct {
 // and templates are the server's own.
 type MCPDiscovery struct {
 	Tools             map[string]ChatTool
-	ToolNameMapping   map[string]string // sanitized_name -> original_mcp_name
 	Instructions      string
 	Resources         []mcp.Resource
 	ResourceTemplates []mcp.ResourceTemplate

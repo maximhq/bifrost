@@ -2,8 +2,11 @@ package mcp
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1386,4 +1389,67 @@ func TestExecuteTool_UpstreamNeedsUserInput_ExplainsWhy(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestExecuteTool_CallsTheUpstreamToolByItsExactName pins that a call runs the upstream tool the
+// caller named. Execution used to translate the name through a map keyed by each tool's underscore
+// form, so when a server listed "a_b" before "a-b" the "a_b" key pointed at "a-b" and a call to
+// alpha-a_b ran a-b upstream. Tools are listed and resolved by their exact upstream names, so
+// execution sends that name unchanged.
+func TestExecuteTool_CallsTheUpstreamToolByItsExactName(t *testing.T) {
+	var mu sync.Mutex
+	calls := map[string]int{}
+	hooks := &server.Hooks{}
+	// mcp-go lists tools sorted by name, which puts "a-b" before "a_b"; other servers list them in
+	// the order they were registered.
+	hooks.AddAfterListTools(func(_ context.Context, _ any, _ *mcpgo.ListToolsRequest, result *mcpgo.ListToolsResult) {
+		slices.Reverse(result.Tools)
+	})
+	s := server.NewMCPServer("collision", "1.0.0", server.WithToolCapabilities(true), server.WithHooks(hooks))
+	for _, name := range []string{"a-b", "a_b", "web-search"} {
+		s.AddTool(mcpgo.NewTool(name), func(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+			mu.Lock()
+			calls[req.Params.Name]++
+			mu.Unlock()
+			return mcpgo.NewToolResultText("ok"), nil
+		})
+	}
+	ts := httptest.NewServer(server.NewStreamableHTTPServer(s))
+	t.Cleanup(ts.Close)
+
+	ctx := context.Background()
+	m := &MCPManager{credStore: &fakeAdminCredStore{headers: http.Header{}}, logger: &MockLogger{}, clientMap: map[string]*schemas.MCPClientState{}}
+	config := &schemas.MCPClientConfig{
+		ID:               "client-alpha",
+		Name:             "alpha",
+		AuthType:         schemas.MCPAuthTypeHeaders,
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(ts.URL),
+	}
+	discovery, err := m.performAdminToolDiscovery(ctx, config, 0)
+	require.NoError(t, err)
+	require.Contains(t, discovery.Tools, "alpha-a_b")
+	require.Contains(t, discovery.Tools, "alpha-a-b")
+	state := &schemas.MCPClientState{Name: "alpha", ExecutionConfig: config, ToolMap: discovery.Tools}
+
+	conn, err := client.NewStreamableHttpClient(ts.URL)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+	require.NoError(t, conn.Start(ctx))
+	_, err = initializeClient(ctx, conn, mcpgo.InitializeRequest{Params: mcpgo.InitializeParams{
+		ProtocolVersion: mcpgo.LATEST_PROTOCOL_VERSION,
+		ClientInfo:      mcpgo.Implementation{Name: "test", Version: "1.0.0"},
+	}}, "")
+	require.NoError(t, err)
+
+	tm := newAuthRetryToolsManager(&authRetryClientManager{state: state, acquireConn: conn}, &authRetryCredStore{})
+	for _, name := range []string{"alpha-a_b", "alpha-a-b", "alpha-web-search"} {
+		bctx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+		_, err := tm.ExecuteTool(bctx, newAuthRetryToolCallRequest(name), conn, state.ExecutionConfig)
+		require.NoError(t, err, name)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, map[string]int{"a_b": 1, "a-b": 1, "web-search": 1}, calls, "each call runs the tool it named, once")
 }

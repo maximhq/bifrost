@@ -620,7 +620,7 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("Verification failed: %v", verifyErr))
 		return
 	}
-	tools, toolNameMapping := discovery.Tools, discovery.ToolNameMapping
+	tools := discovery.Tools
 
 	// Re-load the row before activating and persisting: discovery above
 	// holds an upstream network round-trip, and pushing the pre-discovery
@@ -660,7 +660,6 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	clientConfig.DiscoveredTools = tools
-	clientConfig.DiscoveredToolNameMapping = toolNameMapping
 	clientConfig.DiscoveredResources, clientConfig.DiscoveredResourceTemplates, clientConfig.DiscoveredPrompts = discovery.Resources, discovery.ResourceTemplates, discovery.Prompts
 	clientConfig.DiscoveredInstructions = discovery.Instructions
 
@@ -686,33 +685,32 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 	// headers, pricing, and the other editable fields. clientConfig was
 	// re-loaded after discovery and carries the discovered tools.
 	updateReq := &configstoreTables.TableMCPClient{
-		ClientID:                  clientConfig.ID,
-		Name:                      clientConfig.Name,
-		IsCodeModeClient:          clientConfig.IsCodeModeClient,
-		ConnectionType:            string(clientConfig.ConnectionType),
-		ConnectionString:          clientConfig.ConnectionString,
-		StdioConfig:               clientConfig.StdioConfig,
-		TLSConfig:                 clientConfig.TLSConfig,
-		AuthType:                  string(clientConfig.AuthType),
-		OauthConfigID:             clientConfig.OauthConfigID,
-		ToolsToExecute:            clientConfig.ToolsToExecute,
-		ToolsToAutoExecute:        clientConfig.ToolsToAutoExecute,
-		PromptsToExpose:           clientConfig.PromptsToExpose,
-		ResourcesToExpose:         clientConfig.ResourcesToExpose,
-		Headers:                   clientConfig.Headers,
-		AllowedExtraHeaders:       clientConfig.AllowedExtraHeaders,
-		IsPingAvailable:           clientConfig.IsPingAvailable,
-		NeedsSessionStickiness:    clientConfig.NeedsSessionStickiness,
-		ToolPricing:               clientConfig.ToolPricing,
-		ToolSyncInterval:          int(clientConfig.ToolSyncInterval / time.Second),
-		MaxProtocolVersion:        clientConfig.MaxProtocolVersion,
-		ToolExecutionTimeout:      int(clientConfig.ToolExecutionTimeout / time.Second),
-		MaxInstructionsLength:     clientConfig.MaxInstructionsLength,
-		AllowByDefault:            clientConfig.AllowByDefault,
-		PerUserHeaderKeys:         clientConfig.PerUserHeaderKeys,
-		DiscoveredTools:           clientConfig.DiscoveredTools,
-		DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
-		Disabled:                  clientConfig.Disabled,
+		ClientID:               clientConfig.ID,
+		Name:                   clientConfig.Name,
+		IsCodeModeClient:       clientConfig.IsCodeModeClient,
+		ConnectionType:         string(clientConfig.ConnectionType),
+		ConnectionString:       clientConfig.ConnectionString,
+		StdioConfig:            clientConfig.StdioConfig,
+		TLSConfig:              clientConfig.TLSConfig,
+		AuthType:               string(clientConfig.AuthType),
+		OauthConfigID:          clientConfig.OauthConfigID,
+		ToolsToExecute:         clientConfig.ToolsToExecute,
+		ToolsToAutoExecute:     clientConfig.ToolsToAutoExecute,
+		PromptsToExpose:        clientConfig.PromptsToExpose,
+		ResourcesToExpose:      clientConfig.ResourcesToExpose,
+		Headers:                clientConfig.Headers,
+		AllowedExtraHeaders:    clientConfig.AllowedExtraHeaders,
+		IsPingAvailable:        clientConfig.IsPingAvailable,
+		NeedsSessionStickiness: clientConfig.NeedsSessionStickiness,
+		ToolPricing:            clientConfig.ToolPricing,
+		ToolSyncInterval:       int(clientConfig.ToolSyncInterval / time.Second),
+		MaxProtocolVersion:     clientConfig.MaxProtocolVersion,
+		ToolExecutionTimeout:   int(clientConfig.ToolExecutionTimeout / time.Second),
+		MaxInstructionsLength:  clientConfig.MaxInstructionsLength,
+		AllowByDefault:         clientConfig.AllowByDefault,
+		PerUserHeaderKeys:      clientConfig.PerUserHeaderKeys,
+		DiscoveredTools:        clientConfig.DiscoveredTools,
+		Disabled:               clientConfig.Disabled,
 	}
 	if err := h.store.ConfigStore.UpdateMCPClientConfig(ctx, clientConfig.ID, updateReq); err != nil {
 		// NOTE: Partial success; the runtime client is activated (Healthy)
@@ -851,7 +849,7 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("Verification failed: %v", verifyErr))
 		return
 	}
-	tools, toolNameMapping := discovery.Tools, discovery.ToolNameMapping
+	tools := discovery.Tools
 
 	// Same reload-activate-persist ordering as verify-headers, for the same
 	// reasons: the reload narrows the concurrent-edit window opened by the
@@ -864,7 +862,6 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	clientConfig.DiscoveredTools = tools
-	clientConfig.DiscoveredToolNameMapping = toolNameMapping
 	clientConfig.DiscoveredResources, clientConfig.DiscoveredResourceTemplates, clientConfig.DiscoveredPrompts = discovery.Resources, discovery.ResourceTemplates, discovery.Prompts
 	clientConfig.DiscoveredInstructions = discovery.Instructions
 
@@ -878,33 +875,32 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 	// verify-headers: the store writes every editable column from the given
 	// struct, so a sparse one would zero the other editable fields.
 	updateReq := &configstoreTables.TableMCPClient{
-		ClientID:                  clientConfig.ID,
-		Name:                      clientConfig.Name,
-		IsCodeModeClient:          clientConfig.IsCodeModeClient,
-		ConnectionType:            string(clientConfig.ConnectionType),
-		ConnectionString:          clientConfig.ConnectionString,
-		StdioConfig:               clientConfig.StdioConfig,
-		TLSConfig:                 clientConfig.TLSConfig,
-		AuthType:                  string(clientConfig.AuthType),
-		OauthConfigID:             clientConfig.OauthConfigID,
-		ToolsToExecute:            clientConfig.ToolsToExecute,
-		ToolsToAutoExecute:        clientConfig.ToolsToAutoExecute,
-		PromptsToExpose:           clientConfig.PromptsToExpose,
-		ResourcesToExpose:         clientConfig.ResourcesToExpose,
-		Headers:                   clientConfig.Headers,
-		AllowedExtraHeaders:       clientConfig.AllowedExtraHeaders,
-		IsPingAvailable:           clientConfig.IsPingAvailable,
-		NeedsSessionStickiness:    clientConfig.NeedsSessionStickiness,
-		ToolPricing:               clientConfig.ToolPricing,
-		ToolSyncInterval:          int(clientConfig.ToolSyncInterval / time.Second),
-		MaxProtocolVersion:        clientConfig.MaxProtocolVersion,
-		ToolExecutionTimeout:      int(clientConfig.ToolExecutionTimeout / time.Second),
-		MaxInstructionsLength:     clientConfig.MaxInstructionsLength,
-		AllowByDefault:            clientConfig.AllowByDefault,
-		TokenExchange:             clientConfig.TokenExchange,
-		DiscoveredTools:           clientConfig.DiscoveredTools,
-		DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
-		Disabled:                  clientConfig.Disabled,
+		ClientID:               clientConfig.ID,
+		Name:                   clientConfig.Name,
+		IsCodeModeClient:       clientConfig.IsCodeModeClient,
+		ConnectionType:         string(clientConfig.ConnectionType),
+		ConnectionString:       clientConfig.ConnectionString,
+		StdioConfig:            clientConfig.StdioConfig,
+		TLSConfig:              clientConfig.TLSConfig,
+		AuthType:               string(clientConfig.AuthType),
+		OauthConfigID:          clientConfig.OauthConfigID,
+		ToolsToExecute:         clientConfig.ToolsToExecute,
+		ToolsToAutoExecute:     clientConfig.ToolsToAutoExecute,
+		PromptsToExpose:        clientConfig.PromptsToExpose,
+		ResourcesToExpose:      clientConfig.ResourcesToExpose,
+		Headers:                clientConfig.Headers,
+		AllowedExtraHeaders:    clientConfig.AllowedExtraHeaders,
+		IsPingAvailable:        clientConfig.IsPingAvailable,
+		NeedsSessionStickiness: clientConfig.NeedsSessionStickiness,
+		ToolPricing:            clientConfig.ToolPricing,
+		ToolSyncInterval:       int(clientConfig.ToolSyncInterval / time.Second),
+		MaxProtocolVersion:     clientConfig.MaxProtocolVersion,
+		ToolExecutionTimeout:   int(clientConfig.ToolExecutionTimeout / time.Second),
+		MaxInstructionsLength:  clientConfig.MaxInstructionsLength,
+		AllowByDefault:         clientConfig.AllowByDefault,
+		TokenExchange:          clientConfig.TokenExchange,
+		DiscoveredTools:        clientConfig.DiscoveredTools,
+		Disabled:               clientConfig.Disabled,
 	}
 	if err := h.store.ConfigStore.UpdateMCPClientConfig(ctx, clientConfig.ID, updateReq); err != nil {
 		// NOTE: Partial success; the runtime client is activated (Healthy)
@@ -2581,9 +2577,8 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("Verification failed: %v", verifyErr))
 			return
 		}
-		tools, toolNameMapping, serverInstructions := discovery.Tools, discovery.ToolNameMapping, discovery.Instructions
+		tools, serverInstructions := discovery.Tools, discovery.Instructions
 		schemasConfig.DiscoveredTools = tools
-		schemasConfig.DiscoveredToolNameMapping = toolNameMapping
 		schemasConfig.DiscoveredResources, schemasConfig.DiscoveredResourceTemplates, schemasConfig.DiscoveredPrompts = discovery.Resources, discovery.ResourceTemplates, discovery.Prompts
 		schemasConfig.DiscoveredInstructions = serverInstructions
 
@@ -2752,9 +2747,8 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 				SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("Verification failed: %v", verifyErr))
 				return
 			}
-			tools, toolNameMapping, serverInstructions := discovery.Tools, discovery.ToolNameMapping, discovery.Instructions
+			tools, serverInstructions := discovery.Tools, discovery.Instructions
 			schemasConfig.DiscoveredTools = tools
-			schemasConfig.DiscoveredToolNameMapping = toolNameMapping
 			schemasConfig.DiscoveredResources, schemasConfig.DiscoveredResourceTemplates, schemasConfig.DiscoveredPrompts = discovery.Resources, discovery.ResourceTemplates, discovery.Prompts
 			schemasConfig.DiscoveredInstructions = serverInstructions
 		}
@@ -3651,7 +3645,6 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			migrated[newKey] = tool
 		}
 		dbUpdateRecord.DiscoveredTools = migrated
-		dbUpdateRecord.DiscoveredToolNameMapping = oldDBConfig.DiscoveredToolNameMapping
 	}
 	if h.store.ConfigStore != nil {
 		if err := h.store.ConfigStore.UpdateMCPClientConfig(ctx, id, &dbUpdateRecord); err != nil {
@@ -4292,7 +4285,7 @@ func (h *MCPHandler) completePerUserOAuthAdminRepair(ctx *fasthttp.RequestCtx, b
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("OAuth configuration test failed: %v", err))
 		return
 	}
-	tools, toolNameMapping := discovery.Tools, discovery.ToolNameMapping
+	tools := discovery.Tools
 
 	// Re-load the row before persisting: verification above holds an
 	// upstream network round-trip, and pushing the pre-verification snapshot
@@ -4319,7 +4312,6 @@ func (h *MCPHandler) completePerUserOAuthAdminRepair(ctx *fasthttp.RequestCtx, b
 	}
 
 	clientConfig.DiscoveredTools = tools
-	clientConfig.DiscoveredToolNameMapping = toolNameMapping
 	clientConfig.DiscoveredResources, clientConfig.DiscoveredResourceTemplates, clientConfig.DiscoveredPrompts = discovery.Resources, discovery.ResourceTemplates, discovery.Prompts
 	clientConfig.DiscoveredInstructions = discovery.Instructions
 
@@ -4328,33 +4320,32 @@ func (h *MCPHandler) completePerUserOAuthAdminRepair(ctx *fasthttp.RequestCtx, b
 	// the update must carry the full config; clientConfig was re-loaded
 	// above and carries the discovered tools.
 	updateReq := &configstoreTables.TableMCPClient{
-		ClientID:                  clientConfig.ID,
-		Name:                      clientConfig.Name,
-		IsCodeModeClient:          clientConfig.IsCodeModeClient,
-		ConnectionType:            string(clientConfig.ConnectionType),
-		ConnectionString:          clientConfig.ConnectionString,
-		StdioConfig:               clientConfig.StdioConfig,
-		TLSConfig:                 clientConfig.TLSConfig,
-		AuthType:                  string(clientConfig.AuthType),
-		OauthConfigID:             clientConfig.OauthConfigID,
-		ToolsToExecute:            clientConfig.ToolsToExecute,
-		ToolsToAutoExecute:        clientConfig.ToolsToAutoExecute,
-		PromptsToExpose:           clientConfig.PromptsToExpose,
-		ResourcesToExpose:         clientConfig.ResourcesToExpose,
-		Headers:                   clientConfig.Headers,
-		AllowedExtraHeaders:       clientConfig.AllowedExtraHeaders,
-		IsPingAvailable:           clientConfig.IsPingAvailable,
-		NeedsSessionStickiness:    clientConfig.NeedsSessionStickiness,
-		ToolPricing:               clientConfig.ToolPricing,
-		ToolSyncInterval:          int(clientConfig.ToolSyncInterval / time.Second),
-		MaxProtocolVersion:        clientConfig.MaxProtocolVersion,
-		ToolExecutionTimeout:      int(clientConfig.ToolExecutionTimeout / time.Second),
-		MaxInstructionsLength:     clientConfig.MaxInstructionsLength,
-		AllowByDefault:            clientConfig.AllowByDefault,
-		PerUserHeaderKeys:         clientConfig.PerUserHeaderKeys,
-		DiscoveredTools:           clientConfig.DiscoveredTools,
-		DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
-		Disabled:                  clientConfig.Disabled,
+		ClientID:               clientConfig.ID,
+		Name:                   clientConfig.Name,
+		IsCodeModeClient:       clientConfig.IsCodeModeClient,
+		ConnectionType:         string(clientConfig.ConnectionType),
+		ConnectionString:       clientConfig.ConnectionString,
+		StdioConfig:            clientConfig.StdioConfig,
+		TLSConfig:              clientConfig.TLSConfig,
+		AuthType:               string(clientConfig.AuthType),
+		OauthConfigID:          clientConfig.OauthConfigID,
+		ToolsToExecute:         clientConfig.ToolsToExecute,
+		ToolsToAutoExecute:     clientConfig.ToolsToAutoExecute,
+		PromptsToExpose:        clientConfig.PromptsToExpose,
+		ResourcesToExpose:      clientConfig.ResourcesToExpose,
+		Headers:                clientConfig.Headers,
+		AllowedExtraHeaders:    clientConfig.AllowedExtraHeaders,
+		IsPingAvailable:        clientConfig.IsPingAvailable,
+		NeedsSessionStickiness: clientConfig.NeedsSessionStickiness,
+		ToolPricing:            clientConfig.ToolPricing,
+		ToolSyncInterval:       int(clientConfig.ToolSyncInterval / time.Second),
+		MaxProtocolVersion:     clientConfig.MaxProtocolVersion,
+		ToolExecutionTimeout:   int(clientConfig.ToolExecutionTimeout / time.Second),
+		MaxInstructionsLength:  clientConfig.MaxInstructionsLength,
+		AllowByDefault:         clientConfig.AllowByDefault,
+		PerUserHeaderKeys:      clientConfig.PerUserHeaderKeys,
+		DiscoveredTools:        clientConfig.DiscoveredTools,
+		Disabled:               clientConfig.Disabled,
 	}
 	// Past this point the credential is already promoted, so failures here
 	// are logged as a partial success rather than returned as an error:
@@ -4594,44 +4585,42 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("OAuth configuration test failed: %v", err))
 			return
 		}
-		tools, toolNameMapping := discovery.Tools, discovery.ToolNameMapping
+		tools := discovery.Tools
 
 		// Attach discovered tools before persisting so the DB row includes them from the start.
 		mcpClientConfig.DiscoveredTools = tools
-		mcpClientConfig.DiscoveredToolNameMapping = toolNameMapping
 		mcpClientConfig.DiscoveredResources, mcpClientConfig.DiscoveredResourceTemplates, mcpClientConfig.DiscoveredPrompts = discovery.Resources, discovery.ResourceTemplates, discovery.Prompts
 		mcpClientConfig.DiscoveredInstructions = discovery.Instructions
 
 		if isUpdateFlow {
 			oldDBConfig := *existingDBConfig
 			updateReq := &configstoreTables.TableMCPClient{
-				ClientID:                  mcpClientConfig.ID,
-				Name:                      mcpClientConfig.Name,
-				IsCodeModeClient:          mcpClientConfig.IsCodeModeClient,
-				ConnectionType:            string(mcpClientConfig.ConnectionType),
-				ConnectionString:          mcpClientConfig.ConnectionString,
-				StdioConfig:               mcpClientConfig.StdioConfig,
-				TLSConfig:                 mcpClientConfig.TLSConfig,
-				AuthType:                  string(mcpClientConfig.AuthType),
-				OauthConfigID:             mcpClientConfig.OauthConfigID,
-				ToolsToExecute:            mcpClientConfig.ToolsToExecute,
-				ToolsToAutoExecute:        mcpClientConfig.ToolsToAutoExecute,
-				PromptsToExpose:           mcpClientConfig.PromptsToExpose,
-				ResourcesToExpose:         mcpClientConfig.ResourcesToExpose,
-				Headers:                   mcpClientConfig.Headers,
-				AllowedExtraHeaders:       mcpClientConfig.AllowedExtraHeaders,
-				IsPingAvailable:           mcpClientConfig.IsPingAvailable,
-				NeedsSessionStickiness:    mcpClientConfig.NeedsSessionStickiness,
-				ToolPricing:               mcpClientConfig.ToolPricing,
-				ToolSyncInterval:          int(mcpClientConfig.ToolSyncInterval / time.Second),
-				MaxProtocolVersion:        mcpClientConfig.MaxProtocolVersion,
-				ToolExecutionTimeout:      int(mcpClientConfig.ToolExecutionTimeout / time.Second),
-				MaxInstructionsLength:     mcpClientConfig.MaxInstructionsLength,
-				AllowByDefault:            mcpClientConfig.AllowByDefault,
-				PerUserHeaderKeys:         mcpClientConfig.PerUserHeaderKeys,
-				DiscoveredTools:           mcpClientConfig.DiscoveredTools,
-				DiscoveredToolNameMapping: mcpClientConfig.DiscoveredToolNameMapping,
-				Disabled:                  mcpClientConfig.Disabled,
+				ClientID:               mcpClientConfig.ID,
+				Name:                   mcpClientConfig.Name,
+				IsCodeModeClient:       mcpClientConfig.IsCodeModeClient,
+				ConnectionType:         string(mcpClientConfig.ConnectionType),
+				ConnectionString:       mcpClientConfig.ConnectionString,
+				StdioConfig:            mcpClientConfig.StdioConfig,
+				TLSConfig:              mcpClientConfig.TLSConfig,
+				AuthType:               string(mcpClientConfig.AuthType),
+				OauthConfigID:          mcpClientConfig.OauthConfigID,
+				ToolsToExecute:         mcpClientConfig.ToolsToExecute,
+				ToolsToAutoExecute:     mcpClientConfig.ToolsToAutoExecute,
+				PromptsToExpose:        mcpClientConfig.PromptsToExpose,
+				ResourcesToExpose:      mcpClientConfig.ResourcesToExpose,
+				Headers:                mcpClientConfig.Headers,
+				AllowedExtraHeaders:    mcpClientConfig.AllowedExtraHeaders,
+				IsPingAvailable:        mcpClientConfig.IsPingAvailable,
+				NeedsSessionStickiness: mcpClientConfig.NeedsSessionStickiness,
+				ToolPricing:            mcpClientConfig.ToolPricing,
+				ToolSyncInterval:       int(mcpClientConfig.ToolSyncInterval / time.Second),
+				MaxProtocolVersion:     mcpClientConfig.MaxProtocolVersion,
+				ToolExecutionTimeout:   int(mcpClientConfig.ToolExecutionTimeout / time.Second),
+				MaxInstructionsLength:  mcpClientConfig.MaxInstructionsLength,
+				AllowByDefault:         mcpClientConfig.AllowByDefault,
+				PerUserHeaderKeys:      mcpClientConfig.PerUserHeaderKeys,
+				DiscoveredTools:        mcpClientConfig.DiscoveredTools,
+				Disabled:               mcpClientConfig.Disabled,
 			}
 			if err := h.store.ConfigStore.UpdateMCPClientConfig(ctx, mcpClientConfig.ID, updateReq); err != nil {
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to update MCP config: %v", err))
@@ -4742,32 +4731,31 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 		// must carry the full config: omitting a field here silently resets
 		// it (a per-client timeout back to the global, or the TLS config).
 		updateReq := &configstoreTables.TableMCPClient{
-			ClientID:                  mcpClientConfig.ID,
-			Name:                      mcpClientConfig.Name,
-			IsCodeModeClient:          mcpClientConfig.IsCodeModeClient,
-			ConnectionType:            string(mcpClientConfig.ConnectionType),
-			ConnectionString:          mcpClientConfig.ConnectionString,
-			StdioConfig:               mcpClientConfig.StdioConfig,
-			AuthType:                  string(mcpClientConfig.AuthType),
-			OauthConfigID:             mcpClientConfig.OauthConfigID,
-			ToolsToExecute:            mcpClientConfig.ToolsToExecute,
-			ToolsToAutoExecute:        mcpClientConfig.ToolsToAutoExecute,
-			PromptsToExpose:           mcpClientConfig.PromptsToExpose,
-			ResourcesToExpose:         mcpClientConfig.ResourcesToExpose,
-			Headers:                   mcpClientConfig.Headers,
-			AllowedExtraHeaders:       mcpClientConfig.AllowedExtraHeaders,
-			IsPingAvailable:           mcpClientConfig.IsPingAvailable,
-			NeedsSessionStickiness:    mcpClientConfig.NeedsSessionStickiness,
-			ToolPricing:               mcpClientConfig.ToolPricing,
-			ToolSyncInterval:          int(mcpClientConfig.ToolSyncInterval / time.Second),
-			MaxProtocolVersion:        mcpClientConfig.MaxProtocolVersion,
-			ToolExecutionTimeout:      int(mcpClientConfig.ToolExecutionTimeout / time.Second),
-			MaxInstructionsLength:     mcpClientConfig.MaxInstructionsLength,
-			TLSConfig:                 mcpClientConfig.TLSConfig,
-			AllowByDefault:            mcpClientConfig.AllowByDefault,
-			DiscoveredTools:           mcpClientConfig.DiscoveredTools,
-			DiscoveredToolNameMapping: mcpClientConfig.DiscoveredToolNameMapping,
-			Disabled:                  mcpClientConfig.Disabled,
+			ClientID:               mcpClientConfig.ID,
+			Name:                   mcpClientConfig.Name,
+			IsCodeModeClient:       mcpClientConfig.IsCodeModeClient,
+			ConnectionType:         string(mcpClientConfig.ConnectionType),
+			ConnectionString:       mcpClientConfig.ConnectionString,
+			StdioConfig:            mcpClientConfig.StdioConfig,
+			AuthType:               string(mcpClientConfig.AuthType),
+			OauthConfigID:          mcpClientConfig.OauthConfigID,
+			ToolsToExecute:         mcpClientConfig.ToolsToExecute,
+			ToolsToAutoExecute:     mcpClientConfig.ToolsToAutoExecute,
+			PromptsToExpose:        mcpClientConfig.PromptsToExpose,
+			ResourcesToExpose:      mcpClientConfig.ResourcesToExpose,
+			Headers:                mcpClientConfig.Headers,
+			AllowedExtraHeaders:    mcpClientConfig.AllowedExtraHeaders,
+			IsPingAvailable:        mcpClientConfig.IsPingAvailable,
+			NeedsSessionStickiness: mcpClientConfig.NeedsSessionStickiness,
+			ToolPricing:            mcpClientConfig.ToolPricing,
+			ToolSyncInterval:       int(mcpClientConfig.ToolSyncInterval / time.Second),
+			MaxProtocolVersion:     mcpClientConfig.MaxProtocolVersion,
+			ToolExecutionTimeout:   int(mcpClientConfig.ToolExecutionTimeout / time.Second),
+			MaxInstructionsLength:  mcpClientConfig.MaxInstructionsLength,
+			TLSConfig:              mcpClientConfig.TLSConfig,
+			AllowByDefault:         mcpClientConfig.AllowByDefault,
+			DiscoveredTools:        mcpClientConfig.DiscoveredTools,
+			Disabled:               mcpClientConfig.Disabled,
 		}
 		if err := h.store.ConfigStore.UpdateMCPClientConfig(ctx, mcpClientConfig.ID, updateReq); err != nil {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to update MCP config: %v", err))

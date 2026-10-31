@@ -30,7 +30,6 @@ func registerHealthyClientWithChecker(t *testing.T, m *MCPManager, id string, pe
 		ExecutionConfig: config,
 		State:           schemas.MCPConnectionStateHealthy,
 		ToolMap:         map[string]schemas.ChatTool{},
-		ToolNameMapping: map[string]string{},
 	}
 	m.mu.Unlock()
 	checker := NewClientConnectionChecker(m, id, ResolveToolSyncInterval(config, m.checkerManager.GetGlobalInterval()), false, &MockLogger{})
