@@ -1,0 +1,1 @@
+[feat]: opt-in boolean tool schema compatibility for OpenAI-base custom providers [@Xytronix](https://github.com/Xytronix)

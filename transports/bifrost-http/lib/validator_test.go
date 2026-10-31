@@ -3035,6 +3035,32 @@ func TestSchemaProviderRawRequest(t *testing.T) {
 			t.Errorf("provider with custom_provider_config should be valid, got: %v", err)
 		}
 	})
+
+	t.Run("custom_provider_config accepts boolean_schema_nodes_unsupported", func(t *testing.T) {
+		compiled := compileSchema(t)
+		config := `{
+			"providers": {
+				"openai": {
+					"keys": [{"name": "test", "value": "sk-test", "weight": 1, "models": ["*"]}],
+					"custom_provider_config": {
+						"base_provider_type": "openai",
+						"boolean_schema_nodes_unsupported": true
+					}
+				}
+			}
+		}`
+		if err := validateConfig(t, compiled, config); err != nil {
+			t.Errorf("boolean_schema_nodes_unsupported should be valid, got: %v", err)
+		}
+		disabled := strings.Replace(config, `"boolean_schema_nodes_unsupported": true`, `"boolean_schema_nodes_unsupported": false`, 1)
+		if err := validateConfig(t, compiled, disabled); err != nil {
+			t.Errorf("an explicitly disabled flag should be valid, got: %v", err)
+		}
+		invalid := strings.Replace(config, `"boolean_schema_nodes_unsupported": true`, `"boolean_schema_nodes_unsupported": "yes"`, 1)
+		if err := validateConfig(t, compiled, invalid); err == nil {
+			t.Error("a non-boolean boolean_schema_nodes_unsupported should be rejected")
+		}
+	})
 }
 
 func TestSchemaGovernanceProviders(t *testing.T) {

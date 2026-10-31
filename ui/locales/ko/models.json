@@ -434,7 +434,9 @@
 		},
 		"custom": {
 			"waitForUsage": "후행 사용량 청크를 기다리시겠습니까?",
-			"waitForUsageHelp": "후행 사용 청크가 수집되도록 Finish_reason 이후 계속 읽으세요. 이것이 없으면 요청은 토큰 0개와 비용 0을 기록해요."
+			"waitForUsageHelp": "후행 사용 청크가 수집되도록 Finish_reason 이후 계속 읽으세요. 이것이 없으면 요청은 토큰 0개와 비용 0을 기록해요.",
+			"rewriteBooleanToolSchemas": "도구의 불리언 스키마를 다시 작성할까요?",
+			"rewriteBooleanToolSchemasHelp": "공급자의 검증기가 불리언 스키마를 거부할 경우 items: true 같은 도구의 불리언 하위 스키마를 동등한 객체 형식으로 전송합니다"
 		},
 		"allowedRequests": {
 			"types": {

@@ -434,7 +434,9 @@
 		},
 		"custom": {
 			"waitForUsage": "後続使用チャンクを待ちますか？",
-			"waitForUsageHelp": "trailing usage チャンクが収集されるように、finish_reason の後も読み続けてください。これを行わないと、リクエストはトークンもコストもゼロとして記録されます"
+			"waitForUsageHelp": "trailing usage チャンクが収集されるように、finish_reason の後も読み続けてください。これを行わないと、リクエストはトークンもコストもゼロとして記録されます",
+			"rewriteBooleanToolSchemas": "ツールのブール値スキーマを書き換えますか？",
+			"rewriteBooleanToolSchemasHelp": "プロバイダーの検証器がブール値スキーマを拒否する場合、items: true などのツールのブール値サブスキーマを等価なオブジェクト形式で送信します"
 		},
 		"allowedRequests": {
 			"types": {

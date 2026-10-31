@@ -7965,6 +7965,11 @@
               "type": "boolean",
               "description": "With does_not_send_done_marker, keep reading past finish_reason so the trailing usage-only chunk is collected instead of dropped. Without it the request records zero tokens and zero cost"
             },
+            "boolean_schema_nodes_unsupported": {
+              "type": "boolean",
+              "default": false,
+              "description": "For OpenAI-base custom providers whose validators reject boolean tool subschemas, send true as {} and false as {\"not\":{}}. Boolean additionalProperties, unevaluatedProperties and unevaluatedItems and instance data such as enum, const and default are unchanged"
+            },
             "base_provider_type": {
               "type": "string"
             },
