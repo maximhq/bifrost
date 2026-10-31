@@ -6118,3 +6118,54 @@ func TestAddMissingBetaHeaders_SingleMCPClientDate(t *testing.T) {
 		})
 	}
 }
+
+// An Anthropic output_config.format schema may leave properties optional, so
+// the converted Responses text.format must not inherit OpenAI's strict=true
+// default (which would require every property to be listed in required).
+func TestConvertAnthropicOutputFormatSetsStrictFalse(t *testing.T) {
+	raw := json.RawMessage(`{"type":"json_schema","schema":{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"}},"required":["a"],"additionalProperties":false}}`)
+
+	cfg := convertAnthropicOutputFormatToResponsesTextConfig(raw)
+	if cfg == nil || cfg.Format == nil {
+		t.Fatalf("expected a text config with a format, got %+v", cfg)
+	}
+	if cfg.Format.Strict == nil || *cfg.Format.Strict {
+		t.Fatalf("expected strict=false, got %v", cfg.Format.Strict)
+	}
+
+	out, err := json.Marshal(cfg.Format)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if v, ok := m["strict"]; !ok || v != false {
+		t.Fatalf("expected serialized strict=false, got %s", out)
+	}
+}
+
+func TestConvertAnthropicOutputFormatNonSchemaUnchanged(t *testing.T) {
+	if cfg := convertAnthropicOutputFormatToResponsesTextConfig(json.RawMessage(`{"type":"text"}`)); cfg != nil {
+		t.Fatalf("expected nil for non json_schema format, got %+v", cfg)
+	}
+}
+
+func TestConvertAnthropicOutputFormatHonorsExplicitStrict(t *testing.T) {
+	raw := json.RawMessage(`{"type":"json_schema","strict":true,"schema":{"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}}`)
+	cfg := convertAnthropicOutputFormatToResponsesTextConfig(raw)
+	if cfg == nil || cfg.Format == nil || cfg.Format.Strict == nil || !*cfg.Format.Strict {
+		t.Fatalf("expected explicit strict=true to be carried over, got %+v", cfg)
+	}
+}
+
+// BenchmarkConvertAnthropicOutputFormatToResponsesTextConfig measures the
+// output_config.format conversion on the request path.
+func BenchmarkConvertAnthropicOutputFormatToResponsesTextConfig(b *testing.B) {
+	raw := json.RawMessage(`{"type":"json_schema","schema":{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"}},"required":["a"],"additionalProperties":false}}`)
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = convertAnthropicOutputFormatToResponsesTextConfig(raw)
+	}
+}

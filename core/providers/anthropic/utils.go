@@ -4900,6 +4900,18 @@ func convertAnthropicOutputFormatToResponsesTextConfig(outputFormat json.RawMess
 		format.Name = schemas.Ptr("output_format")
 	}
 
+	// Anthropic structured outputs accept optional properties, but OpenAI's
+	// Responses API treats an omitted text.format.strict as true and rejects
+	// any schema whose properties are not all listed in required. Pin strict
+	// to false so a request that is valid on the Anthropic surface is not
+	// rejected upstream; this mirrors the default for function tools. An
+	// explicit boolean strict on the incoming format is carried over as is.
+	if strict, ok := formatMap["strict"].(bool); ok {
+		format.Strict = schemas.Ptr(strict)
+	} else {
+		format.Strict = schemas.Ptr(false)
+	}
+
 	// Extract schema if present (an *OrderedMap after the ordered decode)
 	if schemaOrdered, ok := schemas.SafeExtractOrderedMap(formatMap["schema"]); ok {
 		schemaMap := schemaOrdered.ToMap() // shallow: nested values stay ordered
