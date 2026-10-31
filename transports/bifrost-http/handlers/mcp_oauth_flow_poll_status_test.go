@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/valyala/fasthttp"
 )
 
 // TestResolveOAuthFlowPollStatus pins what a reauthorize poll must report.
@@ -83,5 +85,23 @@ func TestResolveOAuthFlowPollStatus(t *testing.T) {
 				t.Errorf("resolveOAuthFlowPollStatus(%+v, %q, %v) = %q, want %q", tt.flow, tt.configStatus, now, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestPerUserCallbackRedirect_BasePath pins that the post-callback Location
+// lands back under server.base_path, and is unchanged at the domain root.
+func TestPerUserCallbackRedirect_BasePath(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	if got := perUserCallbackRedirect(ctx, nil, "", true); got != "/workspace/mcp-sessions/auth-success" {
+		t.Fatalf("redirect without base path = %q", got)
+	}
+
+	lib.SetBasePath("/bifrost")
+	t.Cleanup(func() { lib.SetBasePath("") })
+	if got := perUserCallbackRedirect(ctx, nil, "", true); got != "/bifrost/workspace/mcp-sessions/auth-success" {
+		t.Fatalf("success redirect = %q", got)
+	}
+	if got := perUserCallbackRedirect(ctx, nil, "denied", false); got != "/bifrost/workspace/mcp-sessions/auth-failed?error=denied" {
+		t.Fatalf("failure redirect = %q", got)
 	}
 }

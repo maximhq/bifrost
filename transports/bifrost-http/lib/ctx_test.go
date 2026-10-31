@@ -859,6 +859,35 @@ func TestBuildBaseURL(t *testing.T) {
 	}
 }
 
+// TestBuildBaseURL_BasePath pins that the Host-derived URL carries
+// server.base_path (the browser reached Bifrost under it even when the proxy
+// strips it), while an explicit external URL is used exactly as configured.
+func TestBuildBaseURL_BasePath(t *testing.T) {
+	SetBasePath("/bifrost")
+	t.Cleanup(func() { SetBasePath("") })
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetHost("abc.com")
+	ctx.Request.Header.Set("X-Forwarded-Proto", "https")
+	if got := BuildBaseURL(ctx, ""); got != "https://abc.com/bifrost" {
+		t.Fatalf("BuildBaseURL() = %q, want https://abc.com/bifrost", got)
+	}
+	if got := BuildBaseURL(ctx, "") + "/api/oauth/callback"; got != "https://abc.com/bifrost/api/oauth/callback" {
+		t.Fatalf("callback URL = %q", got)
+	}
+	if got := BuildBaseURL(ctx, "https://gw.example.com/edge"); got != "https://gw.example.com/edge" {
+		t.Fatalf("BuildBaseURL() with external URL = %q, want it unchanged", got)
+	}
+	if got := WithBasePath("/workspace/logs"); got != "/bifrost/workspace/logs" {
+		t.Fatalf("WithBasePath() = %q", got)
+	}
+
+	SetBasePath("")
+	if got := BuildBaseURL(ctx, ""); got != "https://abc.com" {
+		t.Fatalf("BuildBaseURL() without base path = %q, want https://abc.com", got)
+	}
+}
+
 // A virtual key presented via Azure's native "api-key" header (used by the
 // Azure OpenAI SDK on passthrough) must be captured into the context so
 // governance/logging attribute the call to the VK, not the base key.
@@ -3042,5 +3071,23 @@ func TestConvertToBifrostContext_MarksExtraFieldsInHeaders(t *testing.T) {
 	cancel()
 	if !ExtraFieldsInHeaders(headersCtx) {
 		t.Fatal("headers mode must mark the request")
+	}
+}
+
+// BenchmarkBuildBaseURL covers the per-request call from ConvertToBifrostContext,
+// with and without a base path.
+func BenchmarkBuildBaseURL(b *testing.B) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetHost("abc.com")
+	ctx.Request.Header.Set("X-Forwarded-Proto", "https")
+	for name, basePath := range map[string]string{"root": "", "prefixed": "/bifrost"} {
+		b.Run(name, func(b *testing.B) {
+			SetBasePath(basePath)
+			defer SetBasePath("")
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = BuildBaseURL(ctx, "")
+			}
+		})
 	}
 }
