@@ -1,0 +1,1 @@
+- [feat]: copy `x-bf-bedrock-metadata-*` request headers into Bedrock Converse `requestMetadata` [@wangrat](https://github.com/wangrat)

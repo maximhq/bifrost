@@ -1429,6 +1429,60 @@ func applyBedrockExtraParams(extraParams map[string]interface{}, bedrockReq *Bed
 	return nil
 }
 
+// requestMetadataHeaderPrefix marks request headers copied into Converse requestMetadata,
+// e.g. "x-bf-bedrock-metadata-tenant: acme" becomes {"tenant": "acme"}.
+const requestMetadataHeaderPrefix = "x-bf-bedrock-metadata-"
+
+// Bedrock rejects the whole request when requestMetadata breaks these limits.
+const maxRequestMetadataEntries = 16
+
+var requestMetadataPattern = regexp.MustCompile(`^[a-zA-Z0-9\s:_@$#=/+,\-.]{0,256}$`)
+
+// applyHeaderRequestMetadata adds x-bf-bedrock-metadata-* request headers to requestMetadata.
+// Unlike extra_params, the headers reach only Bedrock, so callers that route to other
+// providers first can tag invocation logs without the opt-in passthrough merge. Entries
+// set through extra_params win, and entries Bedrock would reject are skipped so a
+// caller's tag never fails the request.
+func applyHeaderRequestMetadata(ctx *schemas.BifrostContext, bedrockReq *BedrockConverseRequest) {
+	headers, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
+	keys := make([]string, 0)
+	for header := range headers {
+		if key, ok := strings.CutPrefix(header, requestMetadataHeaderPrefix); ok && key != "" {
+			keys = append(keys, key)
+		}
+	}
+	if len(keys) == 0 {
+		return
+	}
+	slices.Sort(keys)
+	// The body map can belong to the caller, so header entries go into a copy.
+	metadata := maps.Clone(bedrockReq.RequestMetadata)
+	if metadata == nil {
+		metadata = make(map[string]string, len(keys))
+	}
+	for _, key := range keys {
+		if len(metadata) >= maxRequestMetadataEntries {
+			break
+		}
+		value := headers[requestMetadataHeaderPrefix+key]
+		if _, exists := metadata[key]; exists || !requestMetadataPattern.MatchString(key) || !requestMetadataPattern.MatchString(value) {
+			continue
+		}
+		metadata[key] = value
+	}
+	if len(metadata) > 0 {
+		bedrockReq.RequestMetadata = metadata
+	}
+}
+
+// withHeaderRequestMetadata applies x-bf-bedrock-metadata-* headers to a built Converse request.
+func withHeaderRequestMetadata(ctx *schemas.BifrostContext, bedrockReq *BedrockConverseRequest, err error) (providerUtils.RequestBodyWithExtraParams, error) {
+	if err == nil {
+		applyHeaderRequestMetadata(ctx, bedrockReq)
+	}
+	return bedrockReq, err
+}
+
 func setOutputConfigField(fields *schemas.OrderedMap, key string, value any) {
 	if fields == nil {
 		return
@@ -1904,12 +1958,10 @@ func bedrockTopLevelCacheControl(extraParams map[string]interface{}) *schemas.Ca
 	return cc
 }
 
-// withoutTopLevelCacheControl returns extraParams minus "cache_control", cloning only when the key
-// is present. The map belongs to the Bifrost request, which fallbacks reuse, so it is never written.
+// withoutTopLevelCacheControl returns a copy of extraParams minus "cache_control". The map belongs
+// to the Bifrost request, which retries and fallbacks reuse, and conversion deletes keys from the
+// copy (e.g. requestMetadata), so the original is never written.
 func withoutTopLevelCacheControl(extraParams map[string]interface{}) map[string]interface{} {
-	if _, ok := extraParams["cache_control"]; !ok {
-		return extraParams
-	}
 	out := maps.Clone(extraParams)
 	delete(out, "cache_control")
 	return out
