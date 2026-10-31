@@ -44141,6 +44141,785 @@
         }
       }
     },
+    "/api/models/datasheet": {
+      "get": {
+        "operationId": "listDatasheetEntries",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `ModelProvider:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "List datasheet entries",
+        "description": "Lists the synced model datasheet as the datasheet editor shows it: one entry per (provider, model, mode) with the upstream values, the effective values after datasheet overrides, the overrides that apply, and the patched fields whose upstream value changed since the override was saved. Custom entries and overrides whose model is no longer in the datasheet are included.",
+        "tags": [
+          "Providers"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "query",
+            "in": "query",
+            "description": "Case-insensitive substring match on the model name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "provider",
+            "in": "query",
+            "description": "Only entries for this provider",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "overridden_only",
+            "in": "query",
+            "description": "Only entries with at least one datasheet override",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size (default 50, maximum 500)",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "entries": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "provider": {
+                            "type": "string"
+                          },
+                          "model": {
+                            "type": "string"
+                          },
+                          "mode": {
+                            "type": "string"
+                          },
+                          "is_custom": {
+                            "type": "boolean"
+                          },
+                          "upstream": {
+                            "description": "Upstream values; null for a custom entry or an override whose model left the datasheet",
+                            "oneOf": [
+                              {
+                                "type": "object",
+                                "description": "A datasheet pricing entry (the governance_model_pricing row shape)",
+                                "additionalProperties": true,
+                                "properties": {
+                                  "model": {
+                                    "type": "string"
+                                  },
+                                  "provider": {
+                                    "type": "string"
+                                  },
+                                  "mode": {
+                                    "type": "string"
+                                  },
+                                  "context_length": {
+                                    "type": "integer"
+                                  },
+                                  "max_input_tokens": {
+                                    "type": "integer"
+                                  },
+                                  "max_output_tokens": {
+                                    "type": "integer"
+                                  },
+                                  "is_deprecated": {
+                                    "type": "boolean"
+                                  },
+                                  "input_cost_per_token": {
+                                    "type": "number"
+                                  },
+                                  "output_cost_per_token": {
+                                    "type": "number"
+                                  }
+                                }
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "effective": {
+                            "description": "Values after datasheet overrides; null when no row exists",
+                            "oneOf": [
+                              {
+                                "type": "object",
+                                "description": "A datasheet pricing entry (the governance_model_pricing row shape)",
+                                "additionalProperties": true,
+                                "properties": {
+                                  "model": {
+                                    "type": "string"
+                                  },
+                                  "provider": {
+                                    "type": "string"
+                                  },
+                                  "mode": {
+                                    "type": "string"
+                                  },
+                                  "context_length": {
+                                    "type": "integer"
+                                  },
+                                  "max_input_tokens": {
+                                    "type": "integer"
+                                  },
+                                  "max_output_tokens": {
+                                    "type": "integer"
+                                  },
+                                  "is_deprecated": {
+                                    "type": "boolean"
+                                  },
+                                  "input_cost_per_token": {
+                                    "type": "number"
+                                  },
+                                  "output_cost_per_token": {
+                                    "type": "number"
+                                  }
+                                }
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "overrides": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "description": "A user edit of one datasheet entry, re-applied on top of the synced datasheet after every sync.",
+                              "properties": {
+                                "id": {
+                                  "type": "string"
+                                },
+                                "provider": {
+                                  "type": "string"
+                                },
+                                "model": {
+                                  "type": "string"
+                                },
+                                "mode": {
+                                  "type": "string",
+                                  "description": "Datasheet mode; empty applies the pricing patch to every mode of the model"
+                                },
+                                "is_custom": {
+                                  "type": "boolean",
+                                  "description": "The entry is absent from the upstream datasheet"
+                                },
+                                "pricing_patch": {
+                                  "type": "object",
+                                  "additionalProperties": true,
+                                  "description": "RFC 7386 merge patch over the pricing entry (context_length, max_output_tokens, is_deprecated, cost fields, ...)"
+                                },
+                                "params_patch": {
+                                  "type": "object",
+                                  "additionalProperties": true,
+                                  "description": "RFC 7386 merge patch over the model-parameters entry (supports_* flags, reasoning_effort_levels, ...)"
+                                },
+                                "baseline": {
+                                  "type": "object",
+                                  "description": "Upstream value of every patched key when the override was last saved",
+                                  "properties": {
+                                    "pricing": {
+                                      "type": "object",
+                                      "additionalProperties": true
+                                    },
+                                    "params": {
+                                      "type": "object",
+                                      "additionalProperties": true
+                                    }
+                                  }
+                                },
+                                "config_hash": {
+                                  "type": "string",
+                                  "description": "Set when the override came from config.json"
+                                },
+                                "created_at": {
+                                  "type": "string",
+                                  "format": "date-time"
+                                },
+                                "updated_at": {
+                                  "type": "string",
+                                  "format": "date-time"
+                                }
+                              }
+                            }
+                          },
+                          "drifted_fields": {
+                            "type": "array",
+                            "description": "Patched fields whose upstream value changed since the override was saved, prefixed pricing. or params.",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "count": {
+                      "type": "integer"
+                    },
+                    "total_count": {
+                      "type": "integer"
+                    },
+                    "limit": {
+                      "type": "integer"
+                    },
+                    "offset": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/models/datasheet/entry": {
+      "get": {
+        "operationId": "getDatasheetEntry",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `ModelProvider:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Get a datasheet entry",
+        "description": "Returns one datasheet entry with its model-parameters record before and after datasheet overrides.",
+        "tags": [
+          "Providers"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "model",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "description": "Datasheet mode of the entry, e.g. chat",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "provider": {
+                          "type": "string"
+                        },
+                        "model": {
+                          "type": "string"
+                        },
+                        "mode": {
+                          "type": "string"
+                        },
+                        "is_custom": {
+                          "type": "boolean"
+                        },
+                        "upstream": {
+                          "description": "Upstream values; null for a custom entry or an override whose model left the datasheet",
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "description": "A datasheet pricing entry (the governance_model_pricing row shape)",
+                              "additionalProperties": true,
+                              "properties": {
+                                "model": {
+                                  "type": "string"
+                                },
+                                "provider": {
+                                  "type": "string"
+                                },
+                                "mode": {
+                                  "type": "string"
+                                },
+                                "context_length": {
+                                  "type": "integer"
+                                },
+                                "max_input_tokens": {
+                                  "type": "integer"
+                                },
+                                "max_output_tokens": {
+                                  "type": "integer"
+                                },
+                                "is_deprecated": {
+                                  "type": "boolean"
+                                },
+                                "input_cost_per_token": {
+                                  "type": "number"
+                                },
+                                "output_cost_per_token": {
+                                  "type": "number"
+                                }
+                              }
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "effective": {
+                          "description": "Values after datasheet overrides; null when no row exists",
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "description": "A datasheet pricing entry (the governance_model_pricing row shape)",
+                              "additionalProperties": true,
+                              "properties": {
+                                "model": {
+                                  "type": "string"
+                                },
+                                "provider": {
+                                  "type": "string"
+                                },
+                                "mode": {
+                                  "type": "string"
+                                },
+                                "context_length": {
+                                  "type": "integer"
+                                },
+                                "max_input_tokens": {
+                                  "type": "integer"
+                                },
+                                "max_output_tokens": {
+                                  "type": "integer"
+                                },
+                                "is_deprecated": {
+                                  "type": "boolean"
+                                },
+                                "input_cost_per_token": {
+                                  "type": "number"
+                                },
+                                "output_cost_per_token": {
+                                  "type": "number"
+                                }
+                              }
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "overrides": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "description": "A user edit of one datasheet entry, re-applied on top of the synced datasheet after every sync.",
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "provider": {
+                                "type": "string"
+                              },
+                              "model": {
+                                "type": "string"
+                              },
+                              "mode": {
+                                "type": "string",
+                                "description": "Datasheet mode; empty applies the pricing patch to every mode of the model"
+                              },
+                              "is_custom": {
+                                "type": "boolean",
+                                "description": "The entry is absent from the upstream datasheet"
+                              },
+                              "pricing_patch": {
+                                "type": "object",
+                                "additionalProperties": true,
+                                "description": "RFC 7386 merge patch over the pricing entry (context_length, max_output_tokens, is_deprecated, cost fields, ...)"
+                              },
+                              "params_patch": {
+                                "type": "object",
+                                "additionalProperties": true,
+                                "description": "RFC 7386 merge patch over the model-parameters entry (supports_* flags, reasoning_effort_levels, ...)"
+                              },
+                              "baseline": {
+                                "type": "object",
+                                "description": "Upstream value of every patched key when the override was last saved",
+                                "properties": {
+                                  "pricing": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                  },
+                                  "params": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                  }
+                                }
+                              },
+                              "config_hash": {
+                                "type": "string",
+                                "description": "Set when the override came from config.json"
+                              },
+                              "created_at": {
+                                "type": "string",
+                                "format": "date-time"
+                              },
+                              "updated_at": {
+                                "type": "string",
+                                "format": "date-time"
+                              }
+                            }
+                          }
+                        },
+                        "drifted_fields": {
+                          "type": "array",
+                          "description": "Patched fields whose upstream value changed since the override was saved, prefixed pricing. or params.",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "upstream_params": {
+                          "type": "object",
+                          "additionalProperties": true
+                        },
+                        "effective_params": {
+                          "type": "object",
+                          "additionalProperties": true
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/models/datasheet/overrides": {
+      "put": {
+        "operationId": "saveDatasheetOverride",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `ModelProvider:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Save a datasheet override",
+        "description": "Creates or replaces the datasheet override for a (provider, model, mode) target. Both patches are RFC 7386 JSON merge patches applied on top of the synced datasheet after every sync, so the values survive datasheet updates. Saving re-records the upstream baseline, which clears drift. A body with no patches for a non-custom target removes that target's override and restores the upstream entry.",
+        "tags": [
+          "Providers"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "provider",
+                  "model"
+                ],
+                "properties": {
+                  "provider": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "mode": {
+                    "type": "string",
+                    "description": "Required when is_custom is true"
+                  },
+                  "is_custom": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "pricing_patch": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "description": "Keys are datasheet pricing fields; null clears a value, an omitted key keeps upstream"
+                  },
+                  "params_patch": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "description": "Keys are model-parameters fields; provider cannot be patched"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Override saved, or removed when the body carried no patches",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "override": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "description": "A user edit of one datasheet entry, re-applied on top of the synced datasheet after every sync.",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "provider": {
+                              "type": "string"
+                            },
+                            "model": {
+                              "type": "string"
+                            },
+                            "mode": {
+                              "type": "string",
+                              "description": "Datasheet mode; empty applies the pricing patch to every mode of the model"
+                            },
+                            "is_custom": {
+                              "type": "boolean",
+                              "description": "The entry is absent from the upstream datasheet"
+                            },
+                            "pricing_patch": {
+                              "type": "object",
+                              "additionalProperties": true,
+                              "description": "RFC 7386 merge patch over the pricing entry (context_length, max_output_tokens, is_deprecated, cost fields, ...)"
+                            },
+                            "params_patch": {
+                              "type": "object",
+                              "additionalProperties": true,
+                              "description": "RFC 7386 merge patch over the model-parameters entry (supports_* flags, reasoning_effort_levels, ...)"
+                            },
+                            "baseline": {
+                              "type": "object",
+                              "description": "Upstream value of every patched key when the override was last saved",
+                              "properties": {
+                                "pricing": {
+                                  "type": "object",
+                                  "additionalProperties": true
+                                },
+                                "params": {
+                                  "type": "object",
+                                  "additionalProperties": true
+                                }
+                              }
+                            },
+                            "config_hash": {
+                              "type": "string",
+                              "description": "Set when the override came from config.json"
+                            },
+                            "created_at": {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            "updated_at": {
+                              "type": "string",
+                              "format": "date-time"
+                            }
+                          }
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/models/datasheet/overrides/{id}": {
+      "delete": {
+        "operationId": "deleteDatasheetOverride",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `ModelProvider:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Delete a datasheet override",
+        "description": "Removes a datasheet override, restoring the upstream values it replaced.",
+        "tags": [
+          "Providers"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Override deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/models/base": {
       "get": {
         "operationId": "listBaseModels",

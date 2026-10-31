@@ -733,6 +733,210 @@ models-parameters:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+models-datasheet:
+  get:
+    operationId: listDatasheetEntries
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `ModelProvider:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: List datasheet entries
+    description: >-
+      Lists the synced model datasheet as the datasheet editor shows it: one
+      entry per (provider, model, mode) with the upstream values, the effective
+      values after datasheet overrides, the overrides that apply, and the
+      patched fields whose upstream value changed since the override was saved.
+      Custom entries and overrides whose model is no longer in the datasheet are
+      included.
+    tags:
+      - Providers
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    parameters:
+      - name: query
+        in: query
+        description: Case-insensitive substring match on the model name
+        schema:
+          type: string
+      - name: provider
+        in: query
+        description: Only entries for this provider
+        schema:
+          type: string
+      - name: overridden_only
+        in: query
+        description: Only entries with at least one datasheet override
+        schema:
+          type: boolean
+      - name: limit
+        in: query
+        description: Page size (default 50, maximum 500)
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+      - name: offset
+        in: query
+        schema:
+          type: integer
+          minimum: 0
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/providers.yaml#/ListDatasheetEntriesResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+models-datasheet-entry:
+  get:
+    operationId: getDatasheetEntry
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `ModelProvider:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get a datasheet entry
+    description: >-
+      Returns one datasheet entry with its model-parameters record before and
+      after datasheet overrides.
+    tags:
+      - Providers
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    parameters:
+      - name: provider
+        in: query
+        required: true
+        schema:
+          type: string
+      - name: model
+        in: query
+        required: true
+        schema:
+          type: string
+      - name: mode
+        in: query
+        description: Datasheet mode of the entry, e.g. chat
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/providers.yaml#/DatasheetEntryDetail'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+models-datasheet-overrides:
+  put:
+    operationId: saveDatasheetOverride
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `ModelProvider:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Save a datasheet override
+    description: >-
+      Creates or replaces the datasheet override for a (provider, model, mode)
+      target. Both patches are RFC 7386 JSON merge patches applied on top of
+      the synced datasheet after every sync, so the values survive datasheet
+      updates. Saving re-records the upstream baseline, which clears drift.
+      A body with no patches for a non-custom target removes that target's
+      override and restores the upstream entry.
+    tags:
+      - Providers
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/providers.yaml#/SaveDatasheetOverrideRequest'
+    responses:
+      '200':
+        description: Override saved, or removed when the body carried no patches
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                message:
+                  type: string
+                override:
+                  oneOf:
+                    - $ref: '../../schemas/management/providers.yaml#/DatasheetOverride'
+                    - type: 'null'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+models-datasheet-override-by-id:
+  delete:
+    operationId: deleteDatasheetOverride
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `ModelProvider:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Delete a datasheet override
+    description: Removes a datasheet override, restoring the upstream values it replaced.
+    tags:
+      - Providers
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Override deleted
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                message:
+                  type: string
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
 models-base:
   get:
     operationId: listBaseModels

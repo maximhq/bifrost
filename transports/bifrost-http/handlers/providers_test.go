@@ -3722,3 +3722,133 @@ func TestProviderBaseURLShape(t *testing.T) {
 		}
 	}
 }
+
+// datasheetHandlerForTest boots a real catalog on sqlite with a local
+// datasheet, wired into a ProviderHandler the way the server wires it.
+func datasheetHandlerForTest(t *testing.T) *ProviderHandler {
+	t.Helper()
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	ctx := context.Background()
+	dir := t.TempDir()
+	pricingPath := filepath.Join(dir, "pricing.json")
+	paramsPath := filepath.Join(dir, "params.json")
+	if err := os.WriteFile(pricingPath, []byte(`{"gpt-4o":{"provider":"openai","mode":"chat","context_length":128000,"input_cost_per_token":0.0000025,"output_cost_per_token":0.00001}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paramsPath, []byte(`{"gpt-4o":{"provider":"openai","mode":"chat","max_output_tokens":16384}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config:  &configstore.SQLiteConfig{Path: filepath.Join(dir, "config.db")},
+	}, bifrost.NewNoOpLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cs.Close(ctx) })
+	pricingURL, paramsURL := "file://"+pricingPath, "file://"+paramsPath
+	disabled := int64(0)
+	mc, err := modelcatalog.Init(ctx, &modelcatalog.Config{PricingURL: &pricingURL, ModelParametersURL: &paramsURL, MCPLibrarySyncInterval: &disabled}, cs, bifrost.NewNoOpLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = mc.Cleanup() })
+	return &ProviderHandler{inMemoryStore: &lib.Config{ModelCatalog: mc}, dbStore: cs}
+}
+
+// datasheetRequest builds a RequestCtx through Init so it carries a server and
+// works as a context.Context for the real config store underneath.
+func datasheetRequest(method, uri, body string) *fasthttp.RequestCtx {
+	var req fasthttp.Request
+	req.Header.SetMethod(method)
+	req.SetRequestURI(uri)
+	if body != "" {
+		req.SetBodyString(body)
+	}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Init(&req, nil, nil)
+	return ctx
+}
+
+// Save, list, read and reset an override through the HTTP handlers.
+func TestDatasheetOverrideHandlers_SaveListResetDelete(t *testing.T) {
+	h := datasheetHandlerForTest(t)
+
+	save := datasheetRequest("PUT", "/api/models/datasheet/overrides",
+		`{"provider":"openai","model":"gpt-4o","mode":"chat","pricing_patch":{"context_length":64000},"params_patch":{"max_output_tokens":4096}}`)
+	h.saveDatasheetOverride(save)
+	if save.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("save: %d %s", save.Response.StatusCode(), save.Response.Body())
+	}
+	var saved struct {
+		Override configstoreTables.TableDatasheetOverride `json:"override"`
+	}
+	if err := json.Unmarshal(save.Response.Body(), &saved); err != nil || saved.Override.ID == "" {
+		t.Fatalf("save response: %v %s", err, save.Response.Body())
+	}
+
+	list := datasheetRequest("GET", "/api/models/datasheet?query=gpt-4o&overridden_only=true", "")
+	h.listDatasheetEntries(list)
+	var listed ListDatasheetEntriesResponse
+	if err := json.Unmarshal(list.Response.Body(), &listed); err != nil {
+		t.Fatalf("list: %v %s", err, list.Response.Body())
+	}
+	if listed.TotalCount != 1 || *listed.Entries[0].Effective.ContextLength != 64000 || *listed.Entries[0].Upstream.ContextLength != 128000 {
+		t.Fatalf("list returned %s", list.Response.Body())
+	}
+
+	entry := datasheetRequest("GET", "/api/models/datasheet/entry?provider=openai&model=gpt-4o&mode=chat", "")
+	h.getDatasheetEntry(entry)
+	var detail modelcatalog.DatasheetEntryDetail
+	if err := json.Unmarshal(entry.Response.Body(), &detail); err != nil {
+		t.Fatalf("entry: %v %s", err, entry.Response.Body())
+	}
+	if !strings.Contains(string(detail.EffectiveParams), `"max_output_tokens":4096`) || !strings.Contains(string(detail.UpstreamParams), `"max_output_tokens":16384`) {
+		t.Fatalf("entry params: %s", entry.Response.Body())
+	}
+
+	// Saving with no patches resets the target to upstream.
+	reset := datasheetRequest("PUT", "/api/models/datasheet/overrides", `{"provider":"openai","model":"gpt-4o","mode":"chat","pricing_patch":{}}`)
+	h.saveDatasheetOverride(reset)
+	if reset.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("reset: %d %s", reset.Response.StatusCode(), reset.Response.Body())
+	}
+	if got := *h.inMemoryStore.ModelCatalog.GetModelCapabilityEntryForModel("gpt-4o", schemas.OpenAI).ContextLength; got != 128000 {
+		t.Fatalf("context_length after reset = %d, want upstream 128000", got)
+	}
+
+	missing := datasheetRequest("DELETE", "/api/models/datasheet/overrides/"+saved.Override.ID, "")
+	missing.SetUserValue("id", saved.Override.ID)
+	h.deleteDatasheetOverride(missing)
+	if missing.Response.StatusCode() != fasthttp.StatusNotFound {
+		t.Fatalf("delete of a reset override: %d, want 404", missing.Response.StatusCode())
+	}
+}
+
+func TestDatasheetOverrideHandlers_RejectInvalidBodies(t *testing.T) {
+	h := datasheetHandlerForTest(t)
+	for name, body := range map[string]string{
+		"unknown field":    `{"provider":"openai","model":"gpt-4o","mode":"chat","pricing_patch":{"nope":1}}`,
+		"negative":         `{"provider":"openai","model":"gpt-4o","mode":"chat","pricing_patch":{"input_cost_per_token":-1}}`,
+		"custom no mode":   `{"provider":"openai","model":"ft","is_custom":true}`,
+		"missing model":    `{"provider":"openai","pricing_patch":{"context_length":1}}`,
+		"malformed json":   `{"provider":`,
+		"patch not object": `{"provider":"openai","model":"gpt-4o","pricing_patch":[1]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := datasheetRequest("PUT", "/api/models/datasheet/overrides", body)
+			h.saveDatasheetOverride(ctx)
+			if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+				t.Fatalf("status %d, want 400: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+			}
+		})
+	}
+
+	missing := datasheetRequest("GET", "/api/models/datasheet/entry?provider=openai&model=nope&mode=chat", "")
+	h.getDatasheetEntry(missing)
+	if missing.Response.StatusCode() != fasthttp.StatusNotFound {
+		t.Fatalf("entry for unknown model: %d, want 404", missing.Response.StatusCode())
+	}
+}

@@ -270,6 +270,10 @@ func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...schema
 	r.GET("/api/models/base", lib.ChainMiddlewares(h.listBaseModels, middlewares...))
 	r.GET("/api/models/newest", lib.ChainMiddlewares(h.listNewestModels, middlewares...))
 	r.PUT("/api/models/catalog", lib.ChainMiddlewares(h.upsertModelCatalogEntries, middlewares...))
+	r.GET("/api/models/datasheet", lib.ChainMiddlewares(h.listDatasheetEntries, middlewares...))
+	r.GET("/api/models/datasheet/entry", lib.ChainMiddlewares(h.getDatasheetEntry, middlewares...))
+	r.PUT("/api/models/datasheet/overrides", lib.ChainMiddlewares(h.saveDatasheetOverride, middlewares...))
+	r.DELETE("/api/models/datasheet/overrides/{id}", lib.ChainMiddlewares(h.deleteDatasheetOverride, middlewares...))
 }
 
 // listProviders handles GET /api/providers - List all providers
@@ -1847,6 +1851,177 @@ func (h *ProviderHandler) upsertModelCatalogEntries(ctx *fasthttp.RequestCtx) {
 	}
 	lib.RecordAuditChange(ctx, "model_catalog.updated", "model_catalog", "model_catalog", "Model catalog", nil, map[string]any{"count": len(payload), "entries": payload})
 	ctx.SetStatusCode(fasthttp.StatusNoContent)
+}
+
+// ListDatasheetEntriesResponse is the response for GET /api/models/datasheet.
+type ListDatasheetEntriesResponse struct {
+	Entries    []modelcatalog.DatasheetEntry `json:"entries"`
+	Count      int                           `json:"count"`
+	TotalCount int                           `json:"total_count"`
+	Limit      int                           `json:"limit"`
+	Offset     int                           `json:"offset"`
+}
+
+// SaveDatasheetOverrideRequest is the body of PUT /api/models/datasheet/overrides.
+// The (provider, model, mode) target identifies the override; saving it again
+// replaces both patches.
+type SaveDatasheetOverrideRequest struct {
+	Provider     string          `json:"provider"`
+	Model        string          `json:"model"`
+	Mode         string          `json:"mode"`
+	IsCustom     bool            `json:"is_custom"`
+	PricingPatch json.RawMessage `json:"pricing_patch,omitempty"`
+	ParamsPatch  json.RawMessage `json:"params_patch,omitempty"`
+}
+
+const (
+	datasheetDefaultLimit = 50
+	datasheetMaxLimit     = 500
+)
+
+// listDatasheetEntries handles GET /api/models/datasheet: the datasheet as
+// the editor shows it, one row per (provider, model, mode) with upstream and
+// effective values. Query: query, provider, overridden_only, limit, offset.
+func (h *ProviderHandler) listDatasheetEntries(ctx *fasthttp.RequestCtx) {
+	limit := datasheetDefaultLimit
+	if n, err := ctx.QueryArgs().GetUint("limit"); err == nil && n > 0 {
+		limit = min(n, datasheetMaxLimit)
+	}
+	offset := 0
+	if n, err := ctx.QueryArgs().GetUint("offset"); err == nil {
+		offset = n
+	}
+	catalog := h.inMemoryStore.ModelCatalog
+	if catalog == nil {
+		SendJSON(ctx, ListDatasheetEntriesResponse{Entries: []modelcatalog.DatasheetEntry{}, Limit: limit, Offset: offset})
+		return
+	}
+	entries, total := catalog.ListDatasheetEntries(modelcatalog.DatasheetEntryQuery{
+		Search:         string(ctx.QueryArgs().Peek("query")),
+		Provider:       string(ctx.QueryArgs().Peek("provider")),
+		OverriddenOnly: ctx.QueryArgs().GetBool("overridden_only"),
+		Limit:          limit,
+		Offset:         offset,
+	})
+	if entries == nil {
+		entries = []modelcatalog.DatasheetEntry{}
+	}
+	SendJSON(ctx, ListDatasheetEntriesResponse{Entries: entries, Count: len(entries), TotalCount: total, Limit: limit, Offset: offset})
+}
+
+// getDatasheetEntry handles GET /api/models/datasheet/entry?provider=&model=&mode=:
+// one entry including its model-parameters blob before and after overrides.
+func (h *ProviderHandler) getDatasheetEntry(ctx *fasthttp.RequestCtx) {
+	provider := strings.TrimSpace(string(ctx.QueryArgs().Peek("provider")))
+	model := strings.TrimSpace(string(ctx.QueryArgs().Peek("model")))
+	mode := strings.TrimSpace(string(ctx.QueryArgs().Peek("mode")))
+	if provider == "" || model == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "provider and model query parameters are required")
+		return
+	}
+	catalog := h.inMemoryStore.ModelCatalog
+	if catalog == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "model catalog not available")
+		return
+	}
+	entry, err := catalog.GetDatasheetEntry(ctx, provider, model, mode)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to read datasheet entry: %v", err))
+		return
+	}
+	if entry == nil {
+		SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("no datasheet entry for %s/%s (%s)", provider, model, mode))
+		return
+	}
+	SendJSON(ctx, entry)
+}
+
+// saveDatasheetOverride handles PUT /api/models/datasheet/overrides. A body
+// with no patches on a non-custom target removes that target's override, which
+// is how resetting the last edited field restores the upstream entry.
+func (h *ProviderHandler) saveDatasheetOverride(ctx *fasthttp.RequestCtx) {
+	var req SaveDatasheetOverrideRequest
+	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
+		return
+	}
+	catalog := h.inMemoryStore.ModelCatalog
+	if catalog == nil || h.dbStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "datasheet overrides require a config store")
+		return
+	}
+	row := &tables.TableDatasheetOverride{
+		Provider:     strings.TrimSpace(req.Provider),
+		Model:        strings.TrimSpace(req.Model),
+		Mode:         strings.TrimSpace(req.Mode),
+		IsCustom:     req.IsCustom,
+		PricingPatch: req.PricingPatch,
+		ParamsPatch:  req.ParamsPatch,
+	}
+	existing := catalog.FindDatasheetOverride(row.Provider, row.Model, row.Mode)
+	if !row.IsCustom && isEmptyJSONPatch(row.PricingPatch) && isEmptyJSONPatch(row.ParamsPatch) && existing != nil {
+		if err := catalog.DeleteDatasheetOverride(ctx, existing.ID); err != nil && !errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to remove datasheet override: %v", err))
+			return
+		}
+		lib.RecordAuditChange(ctx, "datasheet_override.deleted", "datasheet_override", existing.ID, existing.Provider+"/"+existing.Model, existing, nil)
+		SendJSON(ctx, map[string]any{"message": "Datasheet override removed", "override": nil})
+		return
+	}
+	if existing != nil {
+		// A UI edit of a config.json-managed entry stands until the file entry changes.
+		row.ConfigHash = existing.ConfigHash
+	}
+	if err := modelcatalog.ValidateDatasheetOverride(row); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	if err := catalog.SaveDatasheetOverride(ctx, row); err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to save datasheet override: %v", err))
+		return
+	}
+	action := "datasheet_override.created"
+	var before any
+	if existing != nil {
+		action = "datasheet_override.updated"
+		before = existing
+	}
+	lib.RecordAuditChange(ctx, action, "datasheet_override", row.ID, row.Provider+"/"+row.Model, before, row)
+	SendJSON(ctx, map[string]any{"message": "Datasheet override saved", "override": row})
+}
+
+// deleteDatasheetOverride handles DELETE /api/models/datasheet/overrides/{id},
+// restoring the upstream values the override replaced.
+func (h *ProviderHandler) deleteDatasheetOverride(ctx *fasthttp.RequestCtx) {
+	id, _ := ctx.UserValue("id").(string)
+	catalog := h.inMemoryStore.ModelCatalog
+	if catalog == nil || h.dbStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "datasheet overrides require a config store")
+		return
+	}
+	existing, _ := h.dbStore.GetDatasheetOverrideByID(ctx, id)
+	if err := catalog.DeleteDatasheetOverride(ctx, id); err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusNotFound, "Datasheet override not found")
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to delete datasheet override: %v", err))
+		return
+	}
+	targetName := id
+	var before any
+	if existing != nil {
+		targetName = existing.Provider + "/" + existing.Model
+		before = existing
+	}
+	lib.RecordAuditChange(ctx, "datasheet_override.deleted", "datasheet_override", id, targetName, before, nil)
+	SendJSON(ctx, map[string]any{"message": "Datasheet override deleted"})
+}
+
+// isEmptyJSONPatch reports whether raw is absent, null or an empty object.
+func isEmptyJSONPatch(raw json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	return trimmed == "" || trimmed == "null" || trimmed == "{}"
 }
 
 // providerInterceptionChanges returns the settings next adds or changes, relative to old, that
