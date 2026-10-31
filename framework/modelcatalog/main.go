@@ -221,6 +221,11 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		if paramsErr != nil {
 			return nil, paramsErr
 		}
+		// Datasheet overrides go on after the first load; every later load and
+		// sync re-applies them on its own.
+		if err := mc.datasheet.ReloadEntryOverrides(ctx); err != nil {
+			return nil, err
+		}
 
 		// MCP library catalog follows the datasheet bootstrap pattern: if the DB
 		// already has catalog rows, refresh from URL in the background; if it is
@@ -299,9 +304,13 @@ func (mc *ModelCatalog) SetAfterSyncHook(fn func(ctx context.Context)) {
 	mc.afterSyncHook = fn
 }
 
-// ReloadFromDB reloads pricing + model-parameters caches from the database.
-// Gossip handler on non-leader pods.
+// ReloadFromDB reloads datasheet overrides, pricing and model-parameters
+// caches from the database. Gossip handler on non-leader pods.
 func (mc *ModelCatalog) ReloadFromDB(ctx context.Context) error {
+	// Overrides first: both loads below re-apply whatever set is installed.
+	if err := mc.datasheet.LoadEntryOverridesFromStore(ctx); err != nil {
+		return err
+	}
 	if err := mc.datasheet.LoadFromDB(ctx); err != nil {
 		return err
 	}

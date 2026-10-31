@@ -1617,6 +1617,24 @@ func (m *MockConfigStore) DeletePricingOverride(ctx context.Context, id string, 
 	return nil
 }
 
+// Datasheet overrides
+
+func (m *MockConfigStore) GetDatasheetOverrides(ctx context.Context) ([]tables.TableDatasheetOverride, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetDatasheetOverrideByID(ctx context.Context, id string) (*tables.TableDatasheetOverride, error) {
+	return nil, configstore.ErrNotFound
+}
+
+func (m *MockConfigStore) UpsertDatasheetOverride(ctx context.Context, override *tables.TableDatasheetOverride, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) DeleteDatasheetOverride(ctx context.Context, id string, tx ...*gorm.DB) error {
+	return nil
+}
+
 // Model parameters
 
 func (m *MockConfigStore) GetModelParameters(ctx context.Context) ([]tables.TableModelParameters, error) {

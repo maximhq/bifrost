@@ -223,6 +223,7 @@ func (s *Store) LoadFromDB(ctx context.Context) error {
 		key := makeKey(pricing.Model, pricing.Provider, pricing.Mode)
 		s.pricingData[key] = pricing
 	}
+	s.applyPricingEntryOverridesUnsafe()
 	s.rebuildDatasheetViewUnsafe()
 	s.mu.Unlock()
 
@@ -255,6 +256,7 @@ func (s *Store) applyPricingData(pricingData map[string]Entry) {
 	for _, pricing := range records {
 		s.pricingData[makeKey(pricing.Model, pricing.Provider, pricing.Mode)] = pricing
 	}
+	s.applyPricingEntryOverridesUnsafe()
 	s.rebuildDatasheetViewUnsafe()
 	s.mu.Unlock()
 }

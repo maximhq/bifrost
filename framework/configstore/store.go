@@ -593,6 +593,12 @@ type ConfigStore interface {
 	UpdatePricingOverride(ctx context.Context, override *tables.TablePricingOverride, tx ...*gorm.DB) error
 	DeletePricingOverride(ctx context.Context, id string, tx ...*gorm.DB) error
 
+	// Datasheet overrides: user edits re-applied on top of every datasheet sync
+	GetDatasheetOverrides(ctx context.Context) ([]tables.TableDatasheetOverride, error)
+	GetDatasheetOverrideByID(ctx context.Context, id string) (*tables.TableDatasheetOverride, error)
+	UpsertDatasheetOverride(ctx context.Context, override *tables.TableDatasheetOverride, tx ...*gorm.DB) error
+	DeleteDatasheetOverride(ctx context.Context, id string, tx ...*gorm.DB) error
+
 	// Model parameters
 	GetModelParameters(ctx context.Context) ([]tables.TableModelParameters, error)
 	GetModelParametersByModel(ctx context.Context, model string) (*tables.TableModelParameters, error)
