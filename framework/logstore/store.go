@@ -265,6 +265,9 @@ func NewLogStore(ctx context.Context, config *Config, logger schemas.Logger) (Lo
 	if config == nil {
 		return nil, fmt.Errorf("logstore: config is nil")
 	}
+	if err := config.ValidateRoutes(); err != nil {
+		return nil, fmt.Errorf("logstore: %w", err)
+	}
 
 	var inner LogStore
 	var err error
