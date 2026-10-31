@@ -217,7 +217,7 @@ func TestGeminiResponsesStreamWithoutFinishReasonEndsIncomplete(t *testing.T) {
 			stream, bErr := HandleGeminiResponsesStream(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
 				&fasthttp.Client{}, ts.URL+"/models/gemini-2.5-flash:streamGenerateContent?alt=sse", []byte(`{}`),
 				map[string]string{"Accept": "text/event-stream"}, nil, 30, false, false, schemas.Gemini, "gemini-2.5-flash",
-				noopPostHook, nil, testNoopLogger{}, func(context.Context) {})
+				noopPostHook, nil, testNoopLogger{}, func(context.Context) {}, schemas.DefaultStreamReadBufferSizeKB*1024)
 			if bErr != nil {
 				t.Fatalf("stream setup failed: %v", bErr)
 			}
@@ -288,7 +288,7 @@ func TestGeminiResponsesStreamPromptBlockedEndsOnFailed(t *testing.T) {
 	stream, bErr := HandleGeminiResponsesStream(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
 		&fasthttp.Client{}, ts.URL+"/models/gemini-4-argon:streamGenerateContent?alt=sse", []byte(`{}`),
 		map[string]string{"Accept": "text/event-stream"}, nil, 30, false, false, schemas.Vertex, "gemini-4-argon",
-		postHook, nil, testNoopLogger{}, func(context.Context) {})
+		postHook, nil, testNoopLogger{}, func(context.Context) {}, schemas.DefaultStreamReadBufferSizeKB*1024)
 	if bErr != nil {
 		t.Fatalf("stream setup failed: %v", bErr)
 	}

@@ -1,3 +1,4 @@
+import { providersApi } from "../../core/actions/api";
 import { expect, test } from "../../core/fixtures/base.fixture";
 import type { Page } from "@playwright/test";
 import { createHTTPClientData } from "../mcp-registry/mcp-registry.data";
@@ -310,6 +311,70 @@ test.describe("Provider Settings", () => {
       // Restore original value to avoid leaving form dirty
       await providerSettingsPage.fillNumberInput(timeoutInput, originalValue);
       await providerSettingsPage.saveNetworkConfig();
+    });
+
+    test("should keep the stream read buffer size after a reload", async ({
+      providersPage,
+      providerSettingsPage,
+      request,
+    }) => {
+      // The form minimum rejects the seeded backoff of 0, so cleanup has to go through the API
+      const { network_config, concurrency_and_buffer_size } = (await providersApi.get(request, "openai")) as {
+        network_config: unknown;
+        concurrency_and_buffer_size: unknown;
+      };
+
+      try {
+        await providerSettingsPage.selectConfigTab("network");
+
+        // Ensure backoff fields are valid (minimum 100ms) so form validation passes
+        const initialBackoff = providerSettingsPage.page.getByLabel(/Initial Backoff/i);
+        const maxBackoff = providerSettingsPage.page.getByLabel(/Max Backoff/i);
+        const ibVal = await initialBackoff.inputValue();
+        const mbVal = await maxBackoff.inputValue();
+        if (Number(ibVal) < 100) {
+          await providerSettingsPage.fillNumberInput(initialBackoff, "500");
+        }
+        if (Number(mbVal) < 100) {
+          await providerSettingsPage.fillNumberInput(maxBackoff, "10000");
+        }
+
+        const bufferInput = providerSettingsPage.getStreamReadBufferSizeInput();
+        const originalValue = await bufferInput.inputValue();
+        const newValue = originalValue === "128" ? "256" : "128";
+
+        await providerSettingsPage.fillNumberInput(bufferInput, newValue);
+        await providerSettingsPage.saveNetworkConfig();
+
+        await providerSettingsPage.page.reload();
+        await providersPage.selectProvider("openai");
+        await providerSettingsPage.selectConfigTab("network");
+        await expect(bufferInput).toHaveValue(newValue);
+      } finally {
+        await providersApi.update(request, "openai", { network_config, concurrency_and_buffer_size });
+      }
+    });
+
+    test("should enforce the stream read buffer size bounds", async ({ providerSettingsPage }) => {
+      await providerSettingsPage.selectConfigTab("network");
+
+      const bufferInput = providerSettingsPage.getStreamReadBufferSizeInput();
+      const page = providerSettingsPage.page;
+
+      await providerSettingsPage.fillNumberInput(bufferInput, "0");
+      await expect(page.getByText("Stream read buffer size must be at least 1 KB")).toBeVisible();
+
+      await providerSettingsPage.fillNumberInput(bufferInput, "16385");
+      await expect(page.getByText("Stream read buffer size must be at most 16384 KB")).toBeVisible();
+
+      await providerSettingsPage.fillNumberInput(bufferInput, "1");
+      await expect(page.getByText(/Stream read buffer size must be/)).toHaveCount(0);
+
+      await providerSettingsPage.fillNumberInput(bufferInput, "16384");
+      await expect(page.getByText(/Stream read buffer size must be/)).toHaveCount(0);
+
+      // Nothing was saved; drop the edits so the form is clean for the next test
+      await page.reload();
     });
 
     test("should update max retries value", async ({ providerSettingsPage }) => {

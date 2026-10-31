@@ -298482,6 +298482,133 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "297. Configured stream read buffer (stream read buffer)",
+      "description": "Local fixture regression, no live provider calls. Start provider-error-fixture.mjs and an isolated gateway using provider-error-fixture.config.json; enable providerErrorFixture=1. The fixture model upstream-oversized-line streams one 11 MB SSE line, above the 10 MB line limit of the Gemini stream reader. A real provider cannot send a line that size on cue. 297.1 goes through the gemini provider, which sets stream_read_buffer_size_kb to 16384, and must receive the whole text. 297.2 goes through gemini_default_buffer, the same upstream without the setting, and must get the line-too-long error, so 297.1 passes because of the setting. Setup and scoped run commands are in tests/e2e/api/README.md under Configured stream read buffer.",
+      "item": [
+        {
+          "name": "297.1 gemini gemini/upstream-oversized-line delivers a line above 10 MB with stream_read_buffer_size_kb set (stream read buffer)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "var head = raw.slice(0, 500);",
+                  "var text = '';",
+                  "var finish = null;",
+                  "raw.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data: ') !== 0 || line === 'data: [DONE]') { return; }",
+                  "  var chunk = JSON.parse(line.slice(6));",
+                  "  var choice = chunk.choices && chunk.choices[0];",
+                  "  if (!choice) { return; }",
+                  "  if (choice.delta && choice.delta.content) { text += choice.delta.content; }",
+                  "  if (choice.finish_reason) { finish = choice.finish_reason; }",
+                  "});",
+                  "pm.test('the stream completes', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + head).to.equal(200);",
+                  "  pm.expect(finish, 'finish_reason missing: ' + head).to.equal('stop');",
+                  "  pm.expect(raw.indexOf('data: [DONE]'), 'completion missing: ' + head).to.be.above(-1);",
+                  "});",
+                  "pm.test('the client receives the whole 11 MB line', function () {",
+                  "  pm.expect(text.length, 'content truncated: ' + head).to.equal(11 * 1024 * 1024);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/upstream-oversized-line\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "297.2 [EXPECT-500] gemini gemini_default_buffer/upstream-oversized-line rejects the same line without the setting (stream read buffer)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('the default reader rejects a line above 10 MB', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + raw.slice(0, 500)).to.equal(500);",
+                  "  pm.expect(raw, 'line-too-long error missing: ' + raw.slice(0, 500)).to.include('token too long');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini_default_buffer/upstream-oversized-line\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

@@ -78,6 +78,45 @@ func BenchmarkSSEDataReader(b *testing.B) {
 	}
 }
 
+// BenchmarkSSEDataReaderSize measures the configured stream read buffer. 64KB is
+// what a provider with no explicit setting passes, since
+// NetworkConfig.StreamReadBufferSize defaults to it, and it must cost the same as
+// the reader's 8KB fallback at size 0.
+func BenchmarkSSEDataReaderSize(b *testing.B) {
+	stream := benchSSEDataStream()
+	for _, tc := range []struct {
+		name string
+		size int
+	}{
+		{"Fallback8KB", 0},
+		{"Configured32KB", 32 * 1024},
+		{"Default64KB", 64 * 1024},
+		{"Configured1MB", 1024 * 1024},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.SetBytes(int64(len(stream)))
+			b.ReportAllocs()
+			for b.Loop() {
+				reader := GetSSEDataReaderSize(nil, bytes.NewReader(stream), tc.size)
+				lines := 0
+				for {
+					line, err := reader.ReadDataLine()
+					if err != nil {
+						if errors.Is(err, io.EOF) {
+							break
+						}
+						b.Fatalf("read data line: %v", err)
+					}
+					lines += len(line)
+				}
+				if lines == 0 {
+					b.Fatal("no data lines read")
+				}
+			}
+		})
+	}
+}
+
 func BenchmarkSSEEventReader(b *testing.B) {
 	stream := benchSSEEventStream()
 	b.SetBytes(int64(len(stream)))

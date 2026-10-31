@@ -1,9 +1,12 @@
 package utils
 
 import (
+	"bufio"
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 // drainSSEDataReader reads payloads until EOF, failing the test on any other error.
@@ -276,5 +279,71 @@ func TestSSEDataReader_PartialObjectAtEOF(t *testing.T) {
 	payloads := drainSSEDataReader(t, newDefaultSSEDataReader(nil, strings.NewReader(stream)))
 	if len(payloads) != 1 || payloads[0] != "{\n  \"error\": {" {
 		t.Errorf("unexpected payloads: %#v", payloads)
+	}
+}
+
+func TestGetSSEDataReaderSize_ZeroFallsBackToDefault(t *testing.T) {
+	stream := "data: {\"a\":1}\ndata: [DONE]\n"
+	payloads := drainSSEDataReader(t, GetSSEDataReaderSize(nil, strings.NewReader(stream), 0))
+	if len(payloads) != 1 || payloads[0] != `{"a":1}` {
+		t.Errorf("unexpected payloads: %#v", payloads)
+	}
+}
+
+// A size other than the stream read default is the operator's choice and must
+// reach the scanner, including one below the default.
+func TestSSEStartingBufSize(t *testing.T) {
+	defaultSize := schemas.DefaultStreamReadBufferSizeKB * 1024
+	for _, tc := range []struct {
+		name string
+		size int
+		want int
+	}{
+		{"zero falls back", 0, sseInitialBufSize},
+		{"negative falls back", -1, sseInitialBufSize},
+		{"default falls back", defaultSize, sseInitialBufSize},
+		{"1KB is kept", 1024, 1024},
+		{"8KB is kept", 8 * 1024, 8 * 1024},
+		{"32KB is kept", 32 * 1024, 32 * 1024},
+		{"63KB is kept", 63 * 1024, 63 * 1024},
+		{"65KB is kept", 65 * 1024, 65 * 1024},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sseStartingBufSize(tc.size); got != tc.want {
+				t.Fatalf("sseStartingBufSize(%d) = %d, want %d", tc.size, got, tc.want)
+			}
+		})
+	}
+}
+
+// A configured size below the 8KB starting size still reads a longer line: the
+// scanner grows on demand up to sseMaxBufSize.
+func TestGetSSEDataReaderSize_SmallSizeStillGrows(t *testing.T) {
+	payload := strings.Repeat("x", 64*1024)
+	stream := "data: " + payload + "\ndata: [DONE]\n"
+	payloads := drainSSEDataReader(t, GetSSEDataReaderSize(nil, strings.NewReader(stream), 1024))
+	if len(payloads) != 1 || payloads[0] != payload {
+		t.Fatalf("got %d payloads, want the whole %d byte line", len(payloads), len(payload))
+	}
+}
+
+// A configured size above sseMaxBufSize must raise the scanner max so a single
+// oversized SSE event is not rejected with ErrTooLong.
+func TestGetSSEDataReaderSize_RaisesMaxTokenSize(t *testing.T) {
+	payload := strings.Repeat("x", sseMaxBufSize)
+	stream := "data: " + payload + "\ndata: [DONE]\n"
+
+	defaultReader := GetSSEDataReader(nil, strings.NewReader(stream))
+	if _, err := defaultReader.ReadDataLine(); err != bufio.ErrTooLong {
+		t.Fatalf("default reader: expected ErrTooLong, got %v", err)
+	}
+
+	sized := GetSSEDataReaderSize(nil, strings.NewReader(stream), sseMaxBufSize+64)
+	data, err := sized.ReadDataLine()
+	if err != nil {
+		t.Fatalf("sized reader: %v", err)
+	}
+	if string(data) != payload {
+		t.Fatalf("sized reader got %d bytes, want %d", len(data), len(payload))
 	}
 }

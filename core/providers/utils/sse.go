@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	sseInitialBufSize = 8 * 1024        // 8KB — sufficient for >99.9% of SSE lines
+	sseInitialBufSize = 8 * 1024         // 8KB — sufficient for >99.9% of SSE lines
 	sseMaxBufSize     = 10 * 1024 * 1024 // 10MB — allow large tokens (tool calls, audio)
 )
 
@@ -91,12 +91,21 @@ type SSEReaderFactory struct {
 // If enterprise has injected an SSEReaderFactory via context, uses that.
 // Otherwise returns a default implementation wrapping bufio.NewScanner.
 func GetSSEDataReader(ctx *schemas.BifrostContext, reader io.Reader) SSEDataReader {
+	return GetSSEDataReaderSize(ctx, reader, 0)
+}
+
+// GetSSEDataReaderSize is like GetSSEDataReader but uses bufSize as the scanner's
+// initial buffer capacity. A bufSize of 0 or the 64KB stream read default starts
+// at the 8KB default. The max token size is the larger of sseMaxBufSize and
+// bufSize. Enterprise-injected factories ignore bufSize because NewDataReader does
+// not accept it.
+func GetSSEDataReaderSize(ctx *schemas.BifrostContext, reader io.Reader, bufSize int) SSEDataReader {
 	if ctx != nil {
 		if factory, ok := ctx.Value(schemas.BifrostContextKeySSEReaderFactory).(*SSEReaderFactory); ok && factory != nil && factory.NewDataReader != nil {
 			return factory.NewDataReader(reader)
 		}
 	}
-	return newDefaultSSEDataReader(ctx, reader)
+	return newDefaultSSEDataReaderSize(ctx, reader, bufSize)
 }
 
 // GetSSEEventReader returns an SSEEventReader for the given reader.
@@ -148,8 +157,28 @@ func (r *defaultSSEDataReader) EndOnCommentAfterFinish() { r.endOnComment = true
 func (r *defaultSSEDataReader) EndedOnComment() bool { return r.sawComment }
 
 func newDefaultSSEDataReader(ctx *schemas.BifrostContext, reader io.Reader) *defaultSSEDataReader {
+	return newDefaultSSEDataReaderSize(ctx, reader, 0)
+}
+
+// sseStartingBufSize returns the scanner's starting capacity for a requested size.
+// A provider with no setting passes the stream read default, since NetworkConfig
+// fills that in. The scanner grows on demand, so that case starts at the usual 8KB
+// rather than allocating 64KB per stream. Any other positive size is used as given.
+func sseStartingBufSize(bufSize int) int {
+	if bufSize <= 0 || bufSize == schemas.DefaultStreamReadBufferSizeKB*1024 {
+		return sseInitialBufSize
+	}
+	return bufSize
+}
+
+func newDefaultSSEDataReaderSize(ctx *schemas.BifrostContext, reader io.Reader, bufSize int) *defaultSSEDataReader {
+	bufSize = sseStartingBufSize(bufSize)
+	maxSize := sseMaxBufSize
+	if bufSize > maxSize {
+		maxSize = bufSize
+	}
 	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 0, sseInitialBufSize), sseMaxBufSize)
+	scanner.Buffer(make([]byte, 0, bufSize), maxSize)
 	return &defaultSSEDataReader{scanner: scanner, ctx: ctx}
 }
 
