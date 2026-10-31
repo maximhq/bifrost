@@ -33,6 +33,8 @@ type State struct {
 	Streams  int              `json:"streams"`
 	// Instructions is what the initialize result carries, empty for none.
 	Instructions string `json:"instructions,omitempty"`
+	// ProtocolVersions are the MCP protocol versions the server speaks, newest first.
+	ProtocolVersions []string `json:"protocol_versions"`
 	// StdioPID is the child process bridging this server over stdin and
 	// stdout, or 0 when none has registered.
 	StdioPID int `json:"stdio_pid"`
@@ -73,6 +75,7 @@ func (s *Server) State() State {
 		Sessions:          s.sessions.count(),
 		Streams:           s.streams.count(),
 		Instructions:      s.Instructions(),
+		ProtocolVersions:  s.ProtocolVersions(),
 		StdioPID:          s.StdioPID(),
 		StdioEnv:          s.StdioEnv(),
 		OAuth:             oauth,
@@ -202,8 +205,11 @@ type controlBody struct {
 	Prompts   []Prompt           `json:"prompts,omitempty"`
 	Resources []Resource         `json:"resources,omitempty"`
 	Templates []ResourceTemplate `json:"templates,omitempty"`
+	// Versions drives the versions verb.
+	Versions []string `json:"versions,omitempty"`
 }
 
+// applyControl applies one per-server control verb, refusing an unknown verb or a body it cannot use.
 func (s *Server) applyControl(verb string, r *http.Request) error {
 	var body controlBody
 	if err := decodeBody(r, &body); err != nil {
@@ -309,6 +315,10 @@ func (s *Server) applyControl(verb string, r *http.Request) error {
 		if err := s.prompts.setResources(body.Resources, body.Templates); err != nil {
 			return errBadRequest(err.Error())
 		}
+	case "versions":
+		if err := s.versions.set(body.Versions); err != nil {
+			return errBadRequest(err.Error())
+		}
 	case "counters/reset":
 		s.prompts.clearReads()
 		s.counters.Reset()
@@ -407,6 +417,7 @@ func decodeBody(r *http.Request, v any) error {
 
 type errBadRequest string
 
+// Error returns the refusal's text.
 func (e errBadRequest) Error() string { return string(e) }
 
 // applyLLMScript handles llm/script, which replaces a scenario's turns and

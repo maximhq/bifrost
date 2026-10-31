@@ -69,6 +69,23 @@ there. Under streamable HTTP a drop fails the request in flight; under SSE it
 to land. `sse_test.go` pins that a client gives up on its own deadline rather
 than being told.
 
+### Protocol versions
+
+Each server speaks a list of MCP protocol versions, set with the `versions` verb. A fresh server
+speaks 2025-06-18, 2025-03-26 and 2024-11-05, the session-era revisions it always has, so a
+scenario that never sets versions keeps the handshakes and session counts it had.
+
+| The list includes | The server |
+|---|---|
+| only session-era revisions | answers `server/discover` with method-not-found, so a current client falls back to `initialize`, and negotiates there: the requested version when listed, else the newest listed |
+| 2025-11-25 | also negotiates the last `initialize` revision |
+| 2026-07-28 | answers `server/discover` with the list, and serves sessionless requests: no `Mcp-Session-Id`, the version required in both the `MCP-Protocol-Version` header and `_meta`, `Mcp-Method` and `Mcp-Name` checked against the body (`-32020` and 400 on a mismatch), an unlisted version refused with `-32022`, 400 and the supported list, and `subscriptions/listen` held open for `list_changed` |
+
+`init_fail` and `bad_version` apply to `server/discover` as they do to `initialize`: the first
+fails the handshake, the second advertises that one version instead of the list. Requests the
+STDIO bridge forwards never take the sessionless path: stdio has no headers to check, and the
+bridge answers one message at a time, so it cannot hold a listen stream open.
+
 ### The STDIO bridge
 
 A STDIO server cannot share memory with the fleet, since the process under
@@ -125,6 +142,7 @@ exactly like the system under test behaving correctly.
 | `POST /control/<s>/instructions` | `{"text":"..."}` / `{"clear":true}` | set or remove the instructions served in the initialize result |
 | `POST /control/<s>/prompts/set` | `{"prompts":[{"name":"greet","arguments":[{"name":"name","required":true}],"text":"Hello, {name}","completions":{"name":["Ada"]}}]}` | replace the prompts served by `prompts/list`, `prompts/get` and `completion/complete`; the server advertises prompts and completions only while it has some, and the state's `reads` lists each `prompts/get`, `resources/read` and `completion/complete` it answered |
 | `POST /control/<s>/resources/set` | `{"resources":[{"uri":"file:///x","text":"..."}],"templates":[{"uriTemplate":"file:///docs/{name}","text":"doc {uri}"}]}` | replace the resources and templates served by `resources/list`, `resources/templates/list` and `resources/read`; the server advertises resources only while it has some |
+| `POST /control/<s>/versions` | `{"versions":["2026-07-28","2025-11-25","2025-06-18"]}` | the protocol versions the server speaks (see Protocol versions); the state lists them newest first as `protocol_versions` |
 | `POST /control/<s>/faults` | `{"faults":{...}}` | set the fault state |
 | `POST /control/<s>/faults/clear` | | return to healthy |
 | `POST /control/<s>/auth` | `{"auth":{...}}` | set auth requirements |
@@ -354,6 +372,7 @@ something other than one call (`methods`, `init_fail`, `bad_version`,
 | `open_streams` / `max_streams` | stream-level leak detection |
 | `methods` | every JSON-RPC request received, counted as it arrives, before any fault, credential or session check can answer it. A call answered with an injected status, a 401 or a 404 still counts, so retries are countable. Unimplemented methods count too, so a surprise surfaces. |
 | `faulted` | how many responses were injected failures rather than real ones |
+| `handshakes` | every `initialize` and `server/discover` the server answered, in order, with the version the client `requested` and the one it was answered with (`negotiated`), which is how a client's version cap is checked |
 
 **Connection counts are not the HTTP reconnect signal.** Every mcp-go streamable
 HTTP transport is built with a bare `&http.Client{}`, whose nil Transport
@@ -373,7 +392,8 @@ carry an unsolicited notification, and a client only has one if it opted in with
 `WithContinuousListening()`. `listening_test.go` pins both sides: a listening
 client receives `notifications/tools/list_changed`, and a non-listening one
 opens no stream at all, so the notification reaches nobody and the change is
-only discoverable by asking again.
+only discoverable by asking again. A client on 2026-07-28 has no GET stream: it opts in with
+`subscriptions/listen`, whose stream carries the same notifications after an acknowledgement.
 
 ## Testing
 
