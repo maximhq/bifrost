@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -117,4 +118,36 @@ func TestModelRetrieveUpstreamErrorIsPropagated(t *testing.T) {
 	require.NotNil(t, bifrostErr)
 	require.Equal(t, schemas.Ptr(http.StatusNotFound), bifrostErr.StatusCode)
 	require.Contains(t, bifrostErr.Error.Message, "does not exist")
+}
+
+func TestOpenAIModelContextLength(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		body string
+		want *int
+	}{
+		{name: "max_model_len only", body: `{"id":"m","max_model_len":32768}`, want: schemas.Ptr(32768)},
+		{name: "context_window only", body: `{"id":"m","context_window":8192}`, want: schemas.Ptr(8192)},
+		{name: "both, context_window wins", body: `{"id":"m","context_window":8192,"max_model_len":32768}`, want: schemas.Ptr(8192)},
+		{name: "neither", body: `{"id":"m"}`, want: nil},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			var model OpenAIModel
+			require.NoError(t, json.Unmarshal([]byte(test.body), &model))
+
+			list := (&OpenAIListModelsResponse{Data: []OpenAIModel{model}}).
+				ToBifrostListModelsResponse(schemas.ModelProvider("test"), schemas.WhiteList{"*"}, nil, nil, true)
+			require.Len(t, list.Data, 1)
+			require.Equal(t, test.want, list.Data[0].ContextLength)
+
+			retrieve := model.ToBifrostModelRetrieveResponse(schemas.ModelProvider("test"))
+			require.Equal(t, test.want, retrieve.Model.ContextLength)
+		})
+	}
 }

@@ -1657,6 +1657,8 @@ type OpenAIModel struct {
 	// GROQ specific fields
 	Active        *bool `json:"active,omitempty"`
 	ContextWindow *int  `json:"context_window,omitempty"`
+
+	MaxModelLen *int `json:"max_model_len,omitempty"` // vLLM
 }
 
 // OpenAIListModelsResponse represents an OpenAI list models response
