@@ -1547,7 +1547,8 @@ func (m *MCPManager) performAdminToolDiscovery(ctx context.Context, config *sche
 }
 
 // SetClientDiscovery installs a discovery discovered outside client creation: per-user verification,
-// per-call discovery, or a cluster peer's stored result.
+// per-call discovery, or a cluster peer's stored result. A client that was in pending_verification
+// also gets its connection checker started here.
 func (m *MCPManager) SetClientDiscovery(clientID string, discovery *schemas.MCPDiscovery) {
 	if discovery == nil {
 		discovery = &schemas.MCPDiscovery{}
@@ -1571,6 +1572,12 @@ func (m *MCPManager) SetClientDiscovery(clientID string, discovery *schemas.MCPD
 	precomputeToolSerialization(tools)
 	client.ToolMap = tools
 	client.ToolNameMapping = toolNameMapping
+	// Only the admin's own verification moves a pending client here (the
+	// checker stays quiet for one and a refresh refuses it), and a pending
+	// client has no checker: AddClient and EnableClient start none until the
+	// admin acts. Leaving pending is when it needs one, or its tools are never
+	// synced again.
+	leftPending := client.State == schemas.MCPConnectionStatePendingVerification
 	// Record the discovery on the config too. The callback below persists these
 	// same tools to the client's row, and that row is what makes the client
 	// verified after the next restart; until then awaitsAdminVerification reads
@@ -1602,6 +1609,27 @@ func (m *MCPManager) SetClientDiscovery(clientID string, discovery *schemas.MCPD
 	// Fired outside the lock — see discoveryChangeCallback's field doc.
 	if fire != nil {
 		fire()
+	}
+	// Started after the lock is released: Start() takes m.mu.RLock itself. The
+	// callback above can take a while (it persists), so the client is read again:
+	// an edit made meanwhile applies, and a client removed, replaced or disabled
+	// meanwhile is left to whatever checker it has now.
+	if !leftPending || clientID == BifrostMCPClientKey {
+		return
+	}
+	m.mu.RLock()
+	var config *schemas.MCPClientConfig
+	if current, ok := m.clientMap[clientID]; ok && current == client && current.State != schemas.MCPConnectionStateDisabled {
+		config = current.ExecutionConfig
+	}
+	m.mu.RUnlock()
+	if config != nil {
+		isPingAvailable := true
+		if config.IsPingAvailable != nil {
+			isPingAvailable = *config.IsPingAvailable
+		}
+		syncInterval := ResolveToolSyncInterval(config, m.checkerManager.GetGlobalInterval())
+		m.checkerManager.StartChecking(NewClientConnectionChecker(m, clientID, syncInterval, isPingAvailable, m.logger))
 	}
 }
 

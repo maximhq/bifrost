@@ -6330,7 +6330,21 @@ const pollClientTools = (clientId, n, seconds, t0Var) => [
   "}",
   "poll();",
 ];
-// seenWithin checks the client polled by pollClientTools listed the tools within seconds of the kept time.
+// pollClientsTools is pollClientTools for several clients at once, budgets mapping each client id to its seconds
+// from the kept time: every poll starts with this request, so a slow client cannot use up another's budget.
+const pollClientsTools = (budgets, n, t0Var) => [
+  `var t0 = Number(pm.collectionVariables.get(${lit(t0Var)}));`,
+  "function poll(id, deadline) {",
+  "  pm.sendRequest({ url: pm.variables.get('base_url') + '/api/mcp/clients?server=' + id, method: 'GET', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) {",
+  "    var c = !err && res.code === 200 ? (res.json().clients || [])[0] : null;",
+  `    if (c && (c.tools || []).length >= ${n}) { pm.collectionVariables.set(id + '_seen_ms', Date.now() - t0); return; }`,
+  "    if (Date.now() >= deadline) { return; }",
+  "    setTimeout(function () { poll(id, deadline); }, 500);",
+  "  });",
+  "}",
+  ...Object.entries(budgets).map(([id, seconds]) => `pm.collectionVariables.set(${lit(id + "_seen_ms")}, -1); poll(${lit(id)}, t0 + ${seconds * 1000});`),
+];
+// seenWithin checks the client polled by pollClientTools or pollClientsTools listed the tools within seconds of the kept time.
 const seenWithin = (clientId, seconds) => A.custom(`it first listed them within ${seconds}s of the add`, [
   `var ms = Number(pm.collectionVariables.get(${lit(clientId + "_seen_ms")}));`,
   "pm.expect(ms, 'ms after the add (-1: never)').to.be.at.least(0);",
@@ -6357,9 +6371,9 @@ const ADM86 = folder("ADM-86 Verifying a pending client starts its tool sync", `
   getClient("ADM-86", "adm86-o", "the per_user_oauth client is healthy with two tools", [clientState("healthy"), toolNamesAre(["add_tool", "echo_tool"])]),
   request("ADM-86", "adm86h adds extra_tool", "POST", "/control/adm86h/tools/add", { base: CHAOS, noAuth: true, body: { tool: { name: "extra_tool" } }, asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('adm86_t0', Date.now());"] }),
   mockPost("ADM-86", "adm86o", "tools/add", "adm86o adds extra_tool", { tool: { name: "extra_tool" } }),
-  getClient("ADM-86", "adm86-c", "control: the config.json headers client lists extra_tool within 30s", [toolNamesAre(ADM86_TOOLS), seenWithin("adm86-c", 30)], { pre: pollClientTools("adm86-c", 3, 30, "adm86_t0") }),
-  getClient("ADM-86", "adm86-h", "the per_user_headers client lists extra_tool within 20s", [A.skip(toolNamesAre(ADM86_TOOLS)), A.skip(seenWithin("adm86-h", 20))], { pre: pollClientTools("adm86-h", 3, 20, "adm86_t0") }),
-  getClient("ADM-86", "adm86-o", "the per_user_oauth client lists extra_tool within 20s", [A.skip(toolNamesAre(ADM86_TOOLS)), A.skip(seenWithin("adm86-o", 20))], { pre: pollClientTools("adm86-o", 3, 20, "adm86_t0") }),
+  getClient("ADM-86", "adm86-c", "control: the config.json headers client lists extra_tool within 30s (all three clients polled together)", [toolNamesAre(ADM86_TOOLS), seenWithin("adm86-c", 30)], { pre: pollClientsTools({ "adm86-c": 30, "adm86-h": 20, "adm86-o": 20 }, 3, "adm86_t0") }),
+  getClient("ADM-86", "adm86-h", "the per_user_headers client lists extra_tool within 20s", [toolNamesAre(ADM86_TOOLS), seenWithin("adm86-h", 20)]),
+  getClient("ADM-86", "adm86-o", "the per_user_oauth client lists extra_tool within 20s", [toolNamesAre(ADM86_TOOLS), seenWithin("adm86-o", 20)]),
   deleteClient("ADM-86", "adm86-c"),
   deleteClient("ADM-86", "adm86-h"),
   deleteClient("ADM-86", "adm86-o"),
