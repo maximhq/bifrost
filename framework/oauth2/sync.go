@@ -220,6 +220,7 @@ type PerUserOAuthSweepWorker struct {
 	stopOnce         sync.Once
 	cancel           context.CancelFunc
 	logger           schemas.Logger
+	shouldSweep      atomic.Pointer[func(ctx context.Context) bool] // see SetShouldSweepGate
 }
 
 // NewPerUserOAuthSweepWorker creates a sweep worker with sensible defaults.
@@ -241,6 +242,31 @@ func NewPerUserOAuthSweepWorker(provider *OAuth2Provider, orphanRetention time.D
 		stopCh:           make(chan struct{}),
 		logger:           logger,
 	}
+}
+
+// SetShouldSweepGate installs a predicate consulted before every sweep, the
+// one run on start included; a sweep proceeds only when the gate is unset or
+// returns true. Every sweep is gated: expired per-user flows, orphaned tokens,
+// and abandoned OAuth configs, which include never-completed shared installs.
+// The deletes act on the shared store, so a deployment with several workers on
+// one store can let a single one of them sweep. Safe to
+// call at any time, including while the worker is running; passing nil
+// restores the default (always sweep).
+func (w *PerUserOAuthSweepWorker) SetShouldSweepGate(gate func(ctx context.Context) bool) {
+	if w == nil {
+		return
+	}
+	if gate == nil {
+		w.shouldSweep.Store(nil)
+		return
+	}
+	w.shouldSweep.Store(&gate)
+}
+
+// sweepAllowed reports whether the installed gate, if any, lets a sweep run.
+func (w *PerUserOAuthSweepWorker) sweepAllowed(ctx context.Context) bool {
+	gate := w.shouldSweep.Load()
+	return gate == nil || (*gate)(ctx)
 }
 
 // Start begins the sweep worker in a background goroutine.
@@ -291,6 +317,9 @@ func (w *PerUserOAuthSweepWorker) run(ctx context.Context) {
 }
 
 func (w *PerUserOAuthSweepWorker) sweepExpiredFlows(ctx context.Context) {
+	if !w.sweepAllowed(ctx) {
+		return
+	}
 	n, err := w.provider.configStore.DeleteExpiredOauthUserSessions(ctx)
 	if err != nil {
 		w.logger.Error("per-user OAuth flow sweep failed: %v", err)
@@ -312,7 +341,7 @@ func (w *PerUserOAuthSweepWorker) sweepExpiredFlows(ctx context.Context) {
 }
 
 func (w *PerUserOAuthSweepWorker) sweepOrphanedTokens(ctx context.Context) {
-	if w.orphanRetention <= 0 {
+	if w.orphanRetention <= 0 || !w.sweepAllowed(ctx) {
 		return
 	}
 	n, err := w.provider.configStore.DeleteOrphanedOauthUserTokens(ctx, w.orphanRetention)
