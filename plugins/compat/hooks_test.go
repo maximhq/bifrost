@@ -374,3 +374,51 @@ func TestConfigConvertDecisionToResponsesDefaultsOff(t *testing.T) {
 		t.Error("convert_decision_to_responses should be true when set")
 	}
 }
+
+// TestDropParamsPrefersProviderQualifiedRow guards against a bare catalog row
+// (here a Decisions-only OpenAI row with no function-calling surface) governing
+// the allowlist of the same model served through another provider.
+func TestDropParamsPrefersProviderQualifiedRow(t *testing.T) {
+	p := newTestPlugin(t, map[string][]string{
+		"openai/gpt-6-luna":            {"temperature", "top_p"},
+		"openrouter/openai/gpt-6-luna": {"temperature", "tools", "tool_choice"},
+	})
+	ctx := newTestContext()
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenRouter,
+			Model:    "openai/gpt-6-luna",
+			Params: &schemas.ChatParameters{
+				Tools:      []schemas.ChatTool{{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "echo"}}},
+				ToolChoice: &schemas.ChatToolChoice{ChatToolChoiceStr: schemas.Ptr("required")},
+			},
+		},
+	}
+	out, _, err := p.PreLLMHook(ctx, req)
+	if err != nil {
+		t.Fatalf("PreLLMHook: %v", err)
+	}
+	got := out.ChatRequest.Params
+	if len(got.Tools) != 1 || got.ToolChoice == nil {
+		t.Fatalf("tools/tool_choice were dropped using the bare openai row: tools=%d tool_choice=%v", len(got.Tools), got.ToolChoice)
+	}
+
+	// Without a qualified row the bare row still applies (unchanged behavior).
+	p2 := newTestPlugin(t, map[string][]string{"openai/gpt-6-luna": {"temperature"}})
+	req2 := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenRouter,
+			Model:    "openai/gpt-6-luna",
+			Params:   &schemas.ChatParameters{Tools: []schemas.ChatTool{{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "echo"}}}},
+		},
+	}
+	out2, _, err := p2.PreLLMHook(newTestContext(), req2)
+	if err != nil {
+		t.Fatalf("PreLLMHook: %v", err)
+	}
+	if len(out2.ChatRequest.Params.Tools) != 0 {
+		t.Fatalf("bare row fallback should still drop unsupported tools")
+	}
+}

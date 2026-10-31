@@ -183,9 +183,9 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 
 	// Compute unsupported parameters to drop based on model catalog allowlist
 	if ((shouldDropParamsOverrideEnabled && shouldDropParamsOverride) || p.config.ShouldDropParams) && p.modelCatalog != nil {
-		_, model, _ := modifiedReq.GetRequestFields()
+		reqProvider, model, _ := modifiedReq.GetRequestFields()
 		if model != "" {
-			supportedParams := p.modelCatalog.GetSupportedParameters(model)
+			supportedParams := p.supportedParametersFor(reqProvider, model)
 			if supportedParams == nil {
 				ctx.Log(schemas.LogLevelDebug, fmt.Sprintf("model catalog has no supported-parameter list for model %s, no params dropped", model))
 			} else {
@@ -313,6 +313,19 @@ func (p *CompatPlugin) markDecisionForEmulation(ctx *schemas.BifrostContext, pro
 	ctx.Log(schemas.LogLevelInfo, fmt.Sprintf("model %s (%s) does not serve %s natively, emulating it through %s", model, provider, schemas.DecisionRequest, schemas.ResponsesRequest))
 }
 
+// supportedParametersFor returns the catalog's allowlist for model as served by
+// provider. The provider-qualified row (e.g. "openrouter/openai/gpt-6-luna") wins
+// over a bare row with the same model name, which can describe the model on
+// another provider or endpoint (e.g. a Decisions-only "openai/gpt-6-luna").
+func (p *CompatPlugin) supportedParametersFor(provider schemas.ModelProvider, model string) []string {
+	if provider != "" {
+		if params := p.modelCatalog.GetSupportedParameters(string(provider) + "/" + model); params != nil {
+			return params
+		}
+	}
+	return p.modelCatalog.GetSupportedParameters(model)
+}
+
 // markReasoningWithToolsForResponses routes a chat request to Responses when the
 // datasheet sets supports_reasoning_with_tool_calls false for the model.
 func (p *CompatPlugin) markReasoningWithToolsForResponses(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) {
@@ -323,7 +336,7 @@ func (p *CompatPlugin) markReasoningWithToolsForResponses(ctx *schemas.BifrostCo
 		return
 	}
 	provider, model := req.ChatRequest.Provider, req.ChatRequest.Model
-	supported := p.modelCatalog.GetSupportedParameters(model)
+	supported := p.supportedParametersFor(provider, model)
 	// reasoning_with_tool_calls is listed unless the datasheet sets it explicitly false.
 	if supported == nil || !slices.Contains(supported, "reasoning") || slices.Contains(supported, "reasoning_with_tool_calls") {
 		return
