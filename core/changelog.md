@@ -1,0 +1,1 @@
+- feat: oauth_key_config token_exchange grant (RFC 8693) for workload identity federation: the subject token is read from subject_token_file on every exchange, and request_encoding json covers OpenAI's token endpoint. The file must be inside a directory listed in BIFROST_SUBJECT_TOKEN_DIRS and token_url must be listed in BIFROST_TOKEN_EXCHANGE_URLS

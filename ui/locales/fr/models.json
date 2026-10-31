@@ -747,6 +747,8 @@
 			"oauthGrantClientCredentialsShort": "Identifiants du client",
 			"oauthGrantClientCredentials": "Identifiants du client (ID client + secret)",
 			"oauthGrantJwtBearer": "JWT Bearer (assertion signée, RFC 7523)",
+			"oauthGrantTokenExchange": "Échange de jetons (fédération d'identité de charge de travail, RFC 8693)",
+			"oauthGrantTokenExchangeNote": "La fédération d'identité de charge de travail se configure via l'API ou config.json.",
 			"oauthTokenUrl": "URL du jeton",
 			"oauthTokenUrlHelp": "Point de terminaison de jetons du fournisseur d’identité. Doit utiliser https.",
 			"oauthClientIdPlaceholder": "ID client ou env.IDP_CLIENT_ID",

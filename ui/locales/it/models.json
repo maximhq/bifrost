@@ -759,6 +759,8 @@
 			"oauthGrantClientCredentialsShort": "Credenziali client",
 			"oauthGrantClientCredentials": "Credenziali client (ID client + secret)",
 			"oauthGrantJwtBearer": "JWT bearer (asserzione firmata, RFC 7523)",
+			"oauthGrantTokenExchange": "Scambio di token (federazione delle identità dei carichi di lavoro, RFC 8693)",
+			"oauthGrantTokenExchangeNote": "La federazione delle identità dei carichi di lavoro si configura tramite l'API o config.json.",
 			"oauthTokenUrl": "URL del token",
 			"oauthTokenUrlHelp": "Endpoint dei token del provider di identità. Deve usare HTTPS.",
 			"oauthClientIdPlaceholder": "ID client o env.IDP_CLIENT_ID",

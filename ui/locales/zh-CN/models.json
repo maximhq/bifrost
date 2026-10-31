@@ -759,6 +759,8 @@
 			"oauthGrantClientCredentialsShort": "客户端凭据",
 			"oauthGrantClientCredentials": "客户端凭据（客户端 ID + 密钥）",
 			"oauthGrantJwtBearer": "JWT bearer（签名断言，RFC 7523）",
+			"oauthGrantTokenExchange": "令牌交换（工作负载身份联合，RFC 8693）",
+			"oauthGrantTokenExchangeNote": "工作负载身份联合通过 API 或 config.json 配置。",
 			"oauthTokenUrl": "令牌 URL",
 			"oauthTokenUrlHelp": "身份提供商的令牌端点。必须使用 https。",
 			"oauthClientIdPlaceholder": "客户端 ID 或 env.IDP_CLIENT_ID",

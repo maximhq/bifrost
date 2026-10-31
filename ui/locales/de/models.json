@@ -759,6 +759,8 @@
 			"oauthGrantClientCredentialsShort": "Client-Anmeldedaten",
 			"oauthGrantClientCredentials": "Client-Anmeldedaten (Client-ID + Secret)",
 			"oauthGrantJwtBearer": "JWT-Bearer (signierte Assertion, RFC 7523)",
+			"oauthGrantTokenExchange": "Token-Austausch (Workload Identity Federation, RFC 8693)",
+			"oauthGrantTokenExchangeNote": "Workload Identity Federation wird über die API oder config.json konfiguriert.",
 			"oauthTokenUrl": "Token-URL",
 			"oauthTokenUrlHelp": "Der Token-Endpunkt des Identity Providers. Muss https verwenden.",
 			"oauthClientIdPlaceholder": "Client-ID oder env.IDP_CLIENT_ID",

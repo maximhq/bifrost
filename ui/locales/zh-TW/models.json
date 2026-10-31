@@ -759,6 +759,8 @@
 			"oauthGrantClientCredentialsShort": "用戶端憑證",
 			"oauthGrantClientCredentials": "用戶端憑證（用戶端 ID + 密碼）",
 			"oauthGrantJwtBearer": "JWT bearer（已簽署的 assertion，RFC 7523）",
+			"oauthGrantTokenExchange": "權杖交換（工作負載身分識別同盟，RFC 8693）",
+			"oauthGrantTokenExchangeNote": "工作負載身分識別同盟需透過 API 或 config.json 設定。",
 			"oauthTokenUrl": "權杖 URL",
 			"oauthTokenUrlHelp": "身分提供者的權杖端點。必須使用 https。",
 			"oauthClientIdPlaceholder": "用戶端 ID 或 env.IDP_CLIENT_ID",

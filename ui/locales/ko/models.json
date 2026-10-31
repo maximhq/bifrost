@@ -759,6 +759,8 @@
 			"oauthGrantClientCredentialsShort": "클라이언트 자격 증명",
 			"oauthGrantClientCredentials": "클라이언트 자격 증명 (클라이언트 ID + 시크릿)",
 			"oauthGrantJwtBearer": "JWT bearer (서명된 어설션, RFC 7523)",
+			"oauthGrantTokenExchange": "토큰 교환(워크로드 ID 페더레이션, RFC 8693)",
+			"oauthGrantTokenExchangeNote": "워크로드 ID 페더레이션은 API 또는 config.json에서 구성합니다.",
 			"oauthTokenUrl": "토큰 URL",
 			"oauthTokenUrlHelp": "ID 공급자의 토큰 엔드포인트입니다. https를 사용해야 합니다.",
 			"oauthClientIdPlaceholder": "클라이언트 ID 또는 env.IDP_CLIENT_ID",

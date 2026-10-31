@@ -779,6 +779,8 @@
 			"oauthGrantClientCredentialsShort": "Учётные данные клиента",
 			"oauthGrantClientCredentials": "Учётные данные клиента (ID и секрет клиента)",
 			"oauthGrantJwtBearer": "JWT bearer (подписанное утверждение, RFC 7523)",
+			"oauthGrantTokenExchange": "Обмен токенами (федерация удостоверений рабочих нагрузок, RFC 8693)",
+			"oauthGrantTokenExchangeNote": "Федерация удостоверений рабочих нагрузок настраивается через API или config.json.",
 			"oauthTokenUrl": "URL токена",
 			"oauthTokenUrlHelp": "Конечная точка токенов поставщика удостоверений. Должен использоваться HTTPS.",
 			"oauthClientIdPlaceholder": "ID клиента или env.IDP_CLIENT_ID",

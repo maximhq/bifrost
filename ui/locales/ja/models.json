@@ -759,6 +759,8 @@
 			"oauthGrantClientCredentialsShort": "クライアント資格情報",
 			"oauthGrantClientCredentials": "クライアント資格情報（クライアント ID + シークレット）",
 			"oauthGrantJwtBearer": "JWT bearer（署名付きアサーション、RFC 7523）",
+			"oauthGrantTokenExchange": "トークン交換（ワークロード ID フェデレーション、RFC 8693）",
+			"oauthGrantTokenExchangeNote": "ワークロード ID フェデレーションは API または config.json で設定します。",
 			"oauthTokenUrl": "トークン URL",
 			"oauthTokenUrlHelp": "ID プロバイダーのトークンエンドポイントです。https が必須です。",
 			"oauthClientIdPlaceholder": "クライアント ID または env.IDP_CLIENT_ID",

@@ -198,6 +198,9 @@ async function startWorker(w) {
       BIFROST_ADMIN_USERNAME: ADMIN_USERNAME,
       BIFROST_ADMIN_PASSWORD: ADMIN_PASSWORD,
       BIFROST_DISABLE_PROFILER: '1',
+      // Lets the providers spec save a token_exchange key; nothing is read or exchanged.
+      BIFROST_SUBJECT_TOKEN_DIRS: '/var/run/secrets/openai',
+      BIFROST_TOKEN_EXCHANGE_URLS: 'https://auth.openai.com/oauth/token',
     },
   })
   children.push(child)

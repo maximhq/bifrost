@@ -1347,7 +1347,15 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 								render={({ field }) => (
 									<FormItem>
 										<FormLabel>{t("providers.keys.oauthGrantType")}</FormLabel>
-										<Select value={field.value ?? "client_credentials"} onValueChange={field.onChange}>
+										{/* No inputs for token_exchange yet: locking the select keeps an edit from converting the key. */}
+										{field.value === "token_exchange" && (
+											<FormDescription>{t("providers.keys.oauthGrantTokenExchangeNote")}</FormDescription>
+										)}
+										<Select
+											value={field.value ?? "client_credentials"}
+											onValueChange={field.onChange}
+											disabled={field.value === "token_exchange"}
+										>
 											<FormControl>
 												<SelectTrigger className="w-full" data-testid="key-select-oauth-grant-type">
 													<SelectValue placeholder={t("providers.keys.oauthGrantClientCredentialsShort")} />
@@ -1356,6 +1364,9 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 											<SelectContent>
 												<SelectItem value="client_credentials">{t("providers.keys.oauthGrantClientCredentials")}</SelectItem>
 												<SelectItem value="jwt_bearer">{t("providers.keys.oauthGrantJwtBearer")}</SelectItem>
+												<SelectItem value="token_exchange" disabled>
+													{t("providers.keys.oauthGrantTokenExchange")}
+												</SelectItem>
 											</SelectContent>
 										</Select>
 										<FormMessage />

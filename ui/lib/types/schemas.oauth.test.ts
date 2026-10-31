@@ -31,6 +31,26 @@ describe("oauthKeyConfigSchema", () => {
 		expect(result.success).toBe(true);
 	});
 
+	it("accepts and keeps a token exchange block", () => {
+		const block = {
+			_auth_type: "oauth" as const,
+			grant_type: "token_exchange" as const,
+			token_url: { value: "https://auth.openai.com/oauth/token" },
+			subject_token_file: "/var/run/secrets/openai/token",
+			request_encoding: "json" as const,
+			extra_params: { identity_provider_id: "idp_1", service_account_id: "sa_1" },
+		};
+		const result = oauthKeyConfigSchema.safeParse(block);
+		expect(result.success).toBe(true);
+		expect(result.data).toMatchObject({ subject_token_file: block.subject_token_file, request_encoding: "json" });
+	});
+
+	it("requires an absolute subject token file for token exchange", () => {
+		const base = { _auth_type: "oauth", grant_type: "token_exchange", token_url: tokenUrl };
+		expect(issues(oauthKeyConfigSchema.safeParse(base))).toEqual(["subject_token_file"]);
+		expect(issues(oauthKeyConfigSchema.safeParse({ ...base, subject_token_file: "token" }))).toEqual(["subject_token_file"]);
+	});
+
 	// The OAuth tab hides the API key field, so a block saved from it must be whole or the
 	// key has no credentials at all.
 	it("requires the client pair once the OAuth method is selected", () => {
@@ -193,6 +213,8 @@ describe("oauthKeyConfigComplete", () => {
 			oauthKeyConfigComplete({ grant_type: "jwt_bearer", token_url: tokenUrl, private_key: { value: pem }, issuer: "i", audience: "a" }),
 		).toBe(true);
 		expect(oauthKeyConfigComplete({ grant_type: "jwt_bearer", token_url: tokenUrl, private_key: { value: pem }, issuer: "i" })).toBe(false);
+		expect(oauthKeyConfigComplete({ grant_type: "token_exchange", token_url: tokenUrl, subject_token_file: "/var/run/secrets/token" })).toBe(true);
+		expect(oauthKeyConfigComplete({ grant_type: "token_exchange", token_url: tokenUrl })).toBe(false);
 		expect(oauthKeyConfigComplete(undefined)).toBe(false);
 	});
 });
