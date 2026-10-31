@@ -2398,6 +2398,81 @@ func TestMigrationAddMCPCodeModeLimitsClientColumn(t *testing.T) {
 	require.NoError(t, migrationAddMCPCodeModeLimitsClientColumn(ctx, db, testMigrationLogger))
 }
 
+// TestMigrationAddMCPPerUserDiscoveries pins the upgrade path: the per_user_discovery flag column,
+// the mcp_per_user_discoveries table with its instructions column (a discovery carries the
+// server's instructions alongside its tools), and the per-mode partial unique indexes that keep
+// one row per (identity, client) binding.
+func TestMigrationAddMCPPerUserDiscoveries(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	ctx := context.Background()
+	mg := db.Migrator()
+
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`).Error)
+	require.NoError(t, db.AutoMigrate(&tables.TableMCPClient{}))
+
+	// Simulate the pre-migration schema
+	require.NoError(t, mg.DropColumn(&tables.TableMCPClient{}, "per_user_discovery"))
+	require.False(t, mg.HasColumn(&tables.TableMCPClient{}, "per_user_discovery"))
+	require.False(t, mg.HasTable(&tables.TableMCPPerUserDiscovery{}))
+
+	require.NoError(t, migrationAddMCPPerUserDiscoveries(ctx, db, testMigrationLogger))
+
+	assert.True(t, mg.HasColumn(&tables.TableMCPClient{}, "per_user_discovery"))
+	require.True(t, mg.HasTable(&tables.TableMCPPerUserDiscovery{}))
+	for _, column := range []string{"tools_json", "tool_name_mapping_json", "instructions", "discovery_hash", "discovered_at"} {
+		assert.True(t, mg.HasColumn(&tables.TableMCPPerUserDiscovery{}, column), "%s column should exist after migration", column)
+	}
+	for _, index := range []string{
+		"idx_mcp_per_user_discoveries_user_mcp",
+		"idx_mcp_per_user_discoveries_vk_mcp",
+		"idx_mcp_per_user_discoveries_session_mcp",
+	} {
+		assert.True(t, mg.HasIndex(&tables.TableMCPPerUserDiscovery{}, index), "%s should exist after migration", index)
+	}
+
+	// Idempotent: a re-run on an already-migrated schema is a no-op.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_mcp_per_user_discoveries").Error)
+	require.NoError(t, migrationAddMCPPerUserDiscoveries(ctx, db, testMigrationLogger))
+}
+
+// TestMigrationAddMCPPerUserDiscoveriesBoundsLockWait pins that on postgres the per_user_discovery
+// column's ALTER on config_mcp_clients gives up on a held lock instead of queueing every later query
+// on the table behind it.
+func TestMigrationAddMCPPerUserDiscoveriesBoundsLockWait(t *testing.T) {
+	var db *gorm.DB
+	for _, ndb := range indexMigrationDBs(t) {
+		if ndb.name == "postgres" {
+			db = ndb.db
+		}
+	}
+	if db == nil {
+		t.Skip("local test Postgres is not reachable")
+	}
+	require.NoError(t, db.Exec("CREATE TABLE config_mcp_clients (id SERIAL PRIMARY KEY, client_id VARCHAR(255) NOT NULL UNIQUE)").Error)
+
+	ctx := context.Background()
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	reader, err := sqlDB.Conn(ctx)
+	require.NoError(t, err)
+	defer reader.Close()
+	_, err = reader.ExecContext(ctx, "BEGIN")
+	require.NoError(t, err)
+	defer reader.ExecContext(ctx, "ROLLBACK") //nolint:errcheck
+	// A long reader's ACCESS SHARE lock conflicts with the ACCESS EXCLUSIVE lock ALTER TABLE needs.
+	_, err = reader.ExecContext(ctx, "SELECT * FROM config_mcp_clients")
+	require.NoError(t, err)
+
+	migrateCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	err = migrationAddMCPPerUserDiscoveries(migrateCtx, db, testMigrationLogger)
+	require.Error(t, err)
+	assert.True(t, postgresconn.IsLockNotAvailableError(err), "expected lock_not_available, got: %v", err)
+}
+
 func TestMigrationAddCompatForceReasoningOnlyModelsToResponsesColumn(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),

@@ -350,3 +350,29 @@ func TestGenerateMCPClientHash_ExposeLists(t *testing.T) {
 	assert.NotEqual(t, hash(schemas.WhiteList{"review"}, nil), hash(nil, schemas.WhiteList{"review"}), "the two lists hash apart")
 	assert.NotEqual(t, hash(schemas.WhiteList{"review,approve"}, nil), hash(schemas.WhiteList{"review", "approve"}, nil), "entry boundaries count")
 }
+
+// TestGenerateMCPClientHash_PerUserDiscovery pins the flag's hash contract:
+// unset and false contribute nothing (a stored hash from before the field
+// existed must keep matching a file entry that still omits it), and true
+// drifts the hash so flipping per_user_discovery in config.json triggers
+// reconciliation.
+func TestGenerateMCPClientHash_PerUserDiscovery(t *testing.T) {
+	base := func(perUserDiscovery *bool) tables.TableMCPClient {
+		return tables.TableMCPClient{
+			Name:             "client",
+			ConnectionType:   "http",
+			AuthType:         "per_user_headers",
+			PerUserDiscovery: perUserDiscovery,
+		}
+	}
+
+	unsetHash, err := GenerateMCPClientHash(base(nil))
+	require.NoError(t, err)
+	offHash, err := GenerateMCPClientHash(base(schemas.Ptr(false)))
+	require.NoError(t, err)
+	onHash, err := GenerateMCPClientHash(base(schemas.Ptr(true)))
+	require.NoError(t, err)
+
+	assert.Equal(t, unsetHash, offHash, "an omitted per_user_discovery must hash like false")
+	assert.NotEqual(t, offHash, onHash, "flipping per_user_discovery must drift the hash")
+}

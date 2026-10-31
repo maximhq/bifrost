@@ -1911,6 +1911,23 @@ func (m *MockConfigStore) MarkMCPPerUserHeaderCredentialsNeedsUpdate(ctx context
 func (m *MockConfigStore) DeleteOrphanedMCPPerUserHeaderCredentials(ctx context.Context, olderThan time.Duration) (int64, error) {
 	return 0, nil
 }
+
+func (m *MockConfigStore) GetMCPPerUserDiscoveryByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPPerUserDiscovery, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) UpsertMCPPerUserDiscovery(ctx context.Context, discovery *tables.TableMCPPerUserDiscovery) error {
+	return nil
+}
+
+func (m *MockConfigStore) DeleteMCPPerUserDiscovery(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) error {
+	return nil
+}
+
+func (m *MockConfigStore) DeleteMCPPerUserDiscoveriesByClient(ctx context.Context, mcpClientID string) error {
+	return nil
+}
+
 func (m *MockConfigStore) CreateMCPPerUserHeaderFlow(ctx context.Context, flow *tables.TableMCPPerUserHeaderFlow) error {
 	return nil
 }
@@ -24016,6 +24033,59 @@ func TestLoadMCPConfig_FileReloadKeepsSavedMaxProtocolVersion(t *testing.T) {
 	}
 }
 
+// TestLoadMCPConfig_PerUserDiscoveryFollowsSourceOfTruth: an entry that omits
+// per_user_discovery keeps the stored value under split, where the file only
+// adds and edits, and turns it off under config.json, where the file is the
+// whole configuration. An explicit value wins in both.
+func TestLoadMCPConfig_PerUserDiscoveryFollowsSourceOfTruth(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+
+	fileMCP := func(perUserDiscovery *bool) *schemas.MCPConfig {
+		return &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{
+			Name:              "notes",
+			ConnectionType:    schemas.MCPConnectionTypeHTTP,
+			ConnectionString:  schemas.NewSecretVar("http://localhost:3001/mcp"),
+			AuthType:          schemas.MCPAuthTypePerUserHeaders,
+			PerUserHeaderKeys: []string{"x-api-key"},
+			ToolsToExecute:    schemas.WhiteList{"*"},
+			PerUserDiscovery:  perUserDiscovery,
+		}}}
+	}
+	on := func(flag *bool) bool { return flag != nil && *flag }
+
+	cases := []struct {
+		name   string
+		sot    string
+		second *bool
+		want   bool
+	}{
+		{name: "split, omitted keeps the stored value", sot: SourceOfTruthSplit, want: true},
+		{name: "split, explicit false turns it off", sot: SourceOfTruthSplit, second: schemas.Ptr(false), want: false},
+		{name: "config.json, omitted turns it off", sot: SourceOfTruthConfigJSON, want: false},
+		{name: "config.json, explicit true keeps it on", sot: SourceOfTruthConfigJSON, second: schemas.Ptr(true), want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := createTestSQLiteConfigStore(t, createTempDir(t))
+
+			first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+			loadMCPConfig(ctx, first, &ConfigData{SourceOfTruth: tc.sot, MCP: fileMCP(schemas.Ptr(true))})
+			require.Len(t, first.MCPConfig.ClientConfigs, 1)
+			require.True(t, on(first.MCPConfig.ClientConfigs[0].PerUserDiscovery), "fixture check: the first boot turns the flag on")
+
+			second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+			loadMCPConfig(ctx, second, &ConfigData{SourceOfTruth: tc.sot, MCP: fileMCP(tc.second)})
+			require.Len(t, second.MCPConfig.ClientConfigs, 1)
+			runtime := second.MCPConfig.ClientConfigs[0]
+			assert.Equal(t, tc.want, on(runtime.PerUserDiscovery), "runtime config")
+			stored, err := store.GetMCPClientConfigByID(ctx, runtime.ID)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, on(stored.PerUserDiscovery), "stored config")
+		})
+	}
+}
+
 // TestReconcileVirtualMCPsConfig covers the config.json → store reconciliation for
 // mcp.virtual_mcps: create (with explicit slug + name-resolved tool client + VK attach),
 // idempotent no-op on unchanged hash, update on change, and prune of absent entries.
@@ -25951,6 +26021,20 @@ func TestUpdateMCPClient_RequirePublicTargetOnlyTightens(t *testing.T) {
 	update.RequirePublicTarget = false
 	require.NoError(t, cfg.UpdateMCPClient(context.Background(), stored.ID, &update))
 	assert.True(t, cfg.MCPConfig.ClientConfigs[0].RequirePublicTarget)
+}
+
+// TestUpdateMCPClient_UnsetPerUserDiscoveryKeepsStored: an update that leaves
+// per_user_discovery unset keeps the stored value, matching the database and
+// the runtime, instead of clearing the management copy.
+func TestUpdateMCPClient_UnsetPerUserDiscoveryKeepsStored(t *testing.T) {
+	cfg, stored := newOpenAPIUpdateTestConfig(t, false)
+	stored.PerUserDiscovery = schemas.Ptr(false)
+	update := *stored
+	update.PerUserDiscovery = nil
+	require.NoError(t, cfg.UpdateMCPClient(context.Background(), stored.ID, &update))
+	got := cfg.MCPConfig.ClientConfigs[0].PerUserDiscovery
+	require.NotNil(t, got)
+	assert.False(t, *got)
 }
 
 // TestGetMCPClientOpenAPISpec_ReadsUnderLock: the stored document is copied out

@@ -1252,6 +1252,16 @@ func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
 			return fmt.Errorf("oauth_config_id must not be set for per_user_headers auth type in client '%s'", config.Name)
 		}
 	}
+	if config.PerUserDiscovery != nil && *config.PerUserDiscovery {
+		if !config.AuthType.IsPerUser() {
+			return fmt.Errorf("per_user_discovery is only valid for per-user auth types (per_user_oauth, per_user_headers, token_exchange), not '%s', in client '%s'", config.AuthType, config.Name)
+		}
+		// The per-user discovery lifecycle (direct-approve, per-caller
+		// discovery, manual refresh) is not wired up yet; accepting the flag
+		// now would persist it while the runtime still serves the admin's
+		// discovery to everyone. Lifted when that lands.
+		return fmt.Errorf("per_user_discovery is not supported yet in client '%s'", config.Name)
+	}
 	if config.AuthType == schemas.MCPAuthTypeTokenExchange {
 		if config.TokenExchange == nil || strings.TrimSpace(config.TokenExchange.Audience) == "" {
 			return fmt.Errorf("token_exchange.audience is required (non-empty) for token_exchange auth type in client '%s'", config.Name)

@@ -1579,6 +1579,47 @@ func TestUpdateClient_RequirePublicTargetOnlyTightens(t *testing.T) {
 	m.mu.RUnlock()
 }
 
+// TestUpdateClient_KeepsPerUserDiscovery: UpdateClient rebuilds the config
+// field by field, so a field on neither list is reset by every edit. The flag
+// comes from the update when the update sets it, and is kept when it leaves it
+// unset, the same rule the store applies.
+func TestUpdateClient_KeepsPerUserDiscovery(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	defer m.checkerManager.StopAll()
+
+	config := newVerifiedClientConfig("client", schemas.MCPAuthTypePerUserHeaders, map[string]schemas.ChatTool{})
+	config.PerUserHeaderKeys = []string{"x-api-key"}
+	config.PerUserDiscovery = schemas.Ptr(true)
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{
+		Name:            config.Name,
+		ExecutionConfig: config,
+		State:           schemas.MCPConnectionStateHealthy,
+		ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
+	}
+	m.mu.Unlock()
+	perUserDiscovery := func() *bool {
+		m.mu.RLock()
+		defer m.mu.RUnlock()
+		return m.clientMap[config.ID].ExecutionConfig.PerUserDiscovery
+	}
+
+	edit := *config
+	edit.ToolExecutionTimeout = 45 * time.Second
+	require.NoError(t, m.UpdateClient(config.ID, &edit))
+	assert.Equal(t, schemas.Ptr(true), perUserDiscovery(), "an edit that carries the flag keeps it on")
+
+	unset := *config
+	unset.PerUserDiscovery = nil
+	require.NoError(t, m.UpdateClient(config.ID, &unset))
+	assert.Equal(t, schemas.Ptr(true), perUserDiscovery(), "an edit that leaves the flag unset keeps the stored value")
+
+	off := *config
+	off.PerUserDiscovery = schemas.Ptr(false)
+	require.NoError(t, m.UpdateClient(config.ID, &off))
+	assert.Equal(t, schemas.Ptr(false), perUserDiscovery(), "an edit can turn the flag off")
+}
+
 // TestUpdateClient_OpenAPI_RenameRebuildsServer: synthesized tool names are
 // shortened to fit beside the client name, so a rename rebuilds the server
 // rather than only swapping the prefix on the old names.

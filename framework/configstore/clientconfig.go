@@ -2279,6 +2279,14 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 		}
 	}
 
+	// Hash PerUserDiscovery so flipping it in config.json drifts the hash. Only
+	// true contributes: false is the default every row and every file entry
+	// written before the field existed already has, and a stored hash from
+	// that time must keep matching a file that still omits the field.
+	if m.PerUserDiscovery != nil && *m.PerUserDiscovery {
+		hash.Write([]byte("per_user_discovery:true"))
+	}
+
 	// will enable it in the future with a migration
 	// hash.Write([]byte("disabled:" + strconv.FormatBool(m.Disabled)))
 	return hex.EncodeToString(hash.Sum(nil)), nil

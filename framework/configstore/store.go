@@ -916,6 +916,17 @@ type ConfigStore interface {
 	// status='orphaned' and updated_at is older than olderThan.
 	DeleteOrphanedMCPPerUserHeaderCredentials(ctx context.Context, olderThan time.Duration) (int64, error)
 
+	// Per-user MCP discovery CRUD, for clients with per_user_discovery on.
+	// One row per (auth_mode, identity, mcp_client_id) binding — the same key
+	// the per-user credential rows use — holding the tools and instructions
+	// discovered with that caller's own credential. There is no staleness
+	// sweep: rows are refreshed only by the caller's manual refresh and die
+	// with their credential or their client.
+	GetMCPPerUserDiscoveryByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPPerUserDiscovery, error)
+	UpsertMCPPerUserDiscovery(ctx context.Context, discovery *tables.TableMCPPerUserDiscovery) error
+	DeleteMCPPerUserDiscovery(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) error
+	DeleteMCPPerUserDiscoveriesByClient(ctx context.Context, mcpClientID string) error
+
 	// Per-user-headers submission flow CRUD. Mirrors the OAuth user-session
 	// surface — the resolver creates a pending flow row when the inline-401
 	// fires, the submit endpoint deletes the row on success, and the sweep
