@@ -553,6 +553,8 @@ func TestHandleSSEConnectionLost_MovesTheCheckerOntoTheUnstableCadence(t *testin
 	assert.False(t, onSteady(), "the checker is on the unstable cadence")
 }
 
+// TestConnectConfiguredClientsAfterCleanupDoesNotRecover covers late boot dials:
+// a canceled manager must not turn AddClient's error into a new client and checker.
 func TestConnectConfiguredClientsAfterCleanupDoesNotRecover(t *testing.T) {
 	config := &schemas.MCPClientConfig{
 		ID: "cleaned-up-boot", Name: "matrix", ConnectionType: schemas.MCPConnectionTypeHTTP,
@@ -569,6 +571,8 @@ func TestConnectConfiguredClientsAfterCleanupDoesNotRecover(t *testing.T) {
 	assert.Nil(t, registeredChecker(m, config.ID), "boot recovery must not restart a checker after cleanup")
 }
 
+// TestClientConnectionCheckerDoesNotStartAfterCleanup covers both sides of the
+// registration/start split, including Start delayed past StopAll.
 func TestClientConnectionCheckerDoesNotStartAfterCleanup(t *testing.T) {
 	for _, mode := range []string{"registration", "start after StopAll"} {
 		t.Run(mode, func(t *testing.T) {

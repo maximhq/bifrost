@@ -358,6 +358,8 @@ func TestResourcesAndPrompts_PerListBudgetOutlivesSpentDeadline(t *testing.T) {
 	requireResourcesAndPrompts(t, discovery, "docs")
 }
 
+// TestCleanupCancelsPendingDiscoveryLists ensures fresh per-list budgets do not
+// keep ephemeral resource, template, or prompt requests alive after cleanup.
 func TestCleanupCancelsPendingDiscoveryLists(t *testing.T) {
 	for _, method := range []string{"resources/list", "resources/templates/list", "prompts/list"} {
 		t.Run(method, func(t *testing.T) {
