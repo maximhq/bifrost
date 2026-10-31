@@ -610,6 +610,8 @@ test.describe("Providers", () => {
         expect(saved.custom_provider_config?.boolean_schema_nodes_unsupported ?? false).toBe(enabled);
       };
 
+      createdProviders.push(providerData.name);
+
       try {
         await providersPage.fillCustomProviderForm(providerData);
         await providersPage.customProviderAllowPrivateNetworkSwitch.click();
@@ -630,7 +632,15 @@ test.describe("Providers", () => {
           await reloadAndExpectCompatibility(enabled);
         }
       } finally {
-        await page.request.delete(providerPath);
+        const response = await page.request.delete(providerPath);
+        if (response.ok()) {
+          const idx = createdProviders.indexOf(providerData.name);
+          if (idx >= 0) createdProviders.splice(idx, 1);
+        }
+        expect(
+          response.ok(),
+          `Failed to delete provider ${providerData.name}: HTTP ${response.status()} ${await response.text()}`,
+        ).toBe(true);
       }
     });
 
@@ -657,6 +667,8 @@ test.describe("Providers", () => {
         baseProviderType: "anthropic",
         baseUrl: new URL(page.url()).origin,
       });
+      createdProviders.push(providerData.name);
+
       try {
         await providersPage.fillCustomProviderForm(providerData);
         await providersPage.customProviderAllowPrivateNetworkSwitch.click();
@@ -668,7 +680,15 @@ test.describe("Providers", () => {
 
         await expect(providerSettingsPage.getBooleanSchemaNodesUnsupportedSwitch()).toHaveCount(0);
       } finally {
-        await page.request.delete(`/api/providers/${encodeURIComponent(providerData.name)}`);
+        const response = await page.request.delete(`/api/providers/${encodeURIComponent(providerData.name)}`);
+        if (response.ok()) {
+          const idx = createdProviders.indexOf(providerData.name);
+          if (idx >= 0) createdProviders.splice(idx, 1);
+        }
+        expect(
+          response.ok(),
+          `Failed to delete provider ${providerData.name}: HTTP ${response.status()} ${await response.text()}`,
+        ).toBe(true);
       }
     });
 
