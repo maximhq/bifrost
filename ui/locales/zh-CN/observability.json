@@ -124,7 +124,9 @@
 			"barChart": "柱状图",
 			"lineChart": "折线图",
 			"directValue": "直接：{{value}}",
-			"semanticValue": "语义：{{value}}"
+			"semanticValue": "语义：{{value}}",
+			"tokensPerSecValue": "{{value}} 令牌/秒",
+			"moreCount_other": "还有 {{count}} 项"
 		},
 		"rankings": {
 			"topDimension": "热门{{dimension}}",
@@ -136,7 +138,9 @@
 			"avgLatency": "平均延迟",
 			"noData": "该时间段内暂无{{dimension}}用量数据。",
 			"attributedTooltipShort": "归因：一条请求会计入其所属的每个{{dimension}}，因此可能超过实际请求数。",
-			"attributedTooltipLong": "一条请求会计入其所属的每个{{dimension}}，因此可能超过总请求数。"
+			"attributedTooltipLong": "一条请求会计入其所属的每个{{dimension}}，因此可能超过总请求数。",
+			"newBadge": "新增",
+			"requestsCount_other": "{{formattedCount}} 个请求"
 		},
 		"noModelUsage": "该时间段内暂无模型用量数据。"
 	},
@@ -144,7 +148,21 @@
 		"fallbackChain": {
 			"openFinalAttempt": "打开最终尝试",
 			"title": "回退链",
-			"viewing": "正在查看"
+			"viewing": "正在查看",
+			"outcome": {
+				"succeeded": "请求成功",
+				"failed": "所有尝试均失败",
+				"inProgress": "仍在运行"
+			},
+			"summary": {
+				"attempt": "第 {{position}} 次尝试，共 {{total}} 次",
+				"fellBack": "第 {{position}} 次尝试，共 {{total}} 次。此次尝试失败，请求已回退到 {{label}}。",
+				"later": "第 {{position}} 次尝试，共 {{total}} 次。此次之后还有后续尝试。"
+			},
+			"attempts_other": "{{count}} 次尝试",
+			"attemptsWithTotal_other": "{{count}} 次尝试 · 共 {{latency}}",
+			"keyName": "密钥 {{name}}",
+			"retries_other": "{{count}} 次重试"
 		},
 		"searchPlaceholder": "搜索日志或粘贴请求 ID",
 		"loggingSettings": "日志设置",
@@ -241,7 +259,13 @@
 			"toastCancelled": "费用重新计算已取消",
 			"toastComplete": "费用重新计算完成",
 			"toastProgress": "正在重新计算日志费用…",
-			"errorGeneric": "重新计算费用失败"
+			"errorGeneric": "重新计算费用失败",
+			"noLogsMatch": "没有日志符合当前筛选条件。",
+			"toastStopped": "已停止：更新 {{updated}} 条，跳过 {{skipped}} 条",
+			"toastUpdatedSkipped": "更新 {{updated}} 条，跳过 {{skipped}} 条",
+			"toastCheckedOfTotal": "已检查 {{processed}}/{{total}}，更新 {{updated}} 条，跳过 {{skipped}} 条",
+			"toastChecked": "已检查 {{processed}} 条，更新 {{updated}} 条，跳过 {{skipped}} 条",
+			"errorGenericStatus": "重新计算费用失败（{{status}}）"
 		},
 		"session": {
 			"logs": "日志",
@@ -548,7 +572,12 @@
 				"monitoredWouldTransform": "该规则仅作监控：本应对此内容进行改写，但请求原样继续执行。",
 				"monitored": "该规则仅作监控：请求原样继续执行。",
 				"detected": "该规则已标记此请求，并让其原样继续执行。"
-			}
+			},
+			"unknown": "未知",
+			"sourceEventInitiated": "事件触发",
+			"sourceLanguageModel": "语言模型",
+			"batchItemResult": "批处理项 {{type}}",
+			"providerReturnedHttp": "提供商返回 HTTP {{status}}"
 		},
 		"media": {
 			"pause": "暂停",
@@ -764,9 +793,21 @@
 				"virtualKeys": "虚拟密钥（{{total}}）",
 				"teams": "团队（{{total}}）",
 				"customers": "客户（{{total}}）",
-				"period": "时间段 {{value}}"
+				"period": "时间段 {{value}}",
+				"relays": "中继 ({{total}})",
+				"methods": "方法 ({{total}})",
+				"kinds": "类型 ({{total}})",
+				"users": "用户 ({{total}})",
+				"businessUnits": "业务单元 ({{total}})",
+				"projects": "项目 ({{total}})",
+				"apps": "应用 ({{total}})",
+				"billableOnly": "仅计费",
+				"nonBillableOnly": "仅不计费",
+				"minCost": "最低费用 {{value}}",
+				"maxCost": "最高费用 {{value}}"
 			}
-		}
+		},
+		"batchMixedModel": "混合"
 	},
 	"relayLogs": {
 		"fields": {
@@ -1076,7 +1117,8 @@
 			"overheadLatencySpans": "开销延迟 spans",
 			"overheadLatencySpansHelp": "内部计时 spans（setup、密钥选择、pipeline 阶段）。默认关闭。",
 			"configJsonPrecedence": "若在 config.json 的 <plugin>{{pluginName}}</plugin> 插件配置中设置了 <filter>plugin_span_filter</filter>，重启 Bifrost 后将优先于此处设置。",
-			"destinationOtel": "the OTEL collector"
+			"destinationOtel": "the OTEL collector",
+			"noChangePermission": "您无权更改可观测性设置"
 		},
 		"savePrometheus": "保存 Prometheus 配置",
 		"saveOtel": "保存 OTEL 配置",
@@ -1233,7 +1275,12 @@
 		"passthrough_stream": "流式透传",
 		"websocket_responses": "WebSocket Responses",
 		"realtime": "实时",
-		"realtime_turn": "实时轮次"
+		"realtime_turn": "实时轮次",
+		"model_retrieve": "获取模型",
+		"live": "实时",
+		"live_session": "实时会话",
+		"live_content": "实时录音",
+		"live_sideband": "实时旁路"
 	},
 	"celBuilder": {
 		"copied": "已复制",
@@ -1260,7 +1307,8 @@
 		"value": "值",
 		"enterValue": "输入值...",
 		"commaSeparated": "输入逗号分隔的值或 JSON 数组",
-		"celPlaceholder": "例如 model == \"claude-sonnet-4-6\""
+		"celPlaceholder": "例如 model == \"claude-sonnet-4-6\"",
+		"remove": "移除"
 	},
 	"routingEngineLabels": {
 		"routing_rule": "路由规则",
@@ -1717,6 +1765,12 @@
 			"stepRegister": "在代理网关中注册并启用上游代理。",
 			"stepReplace": "将 <code>{{agentName}}</code> 替换为其注册名称。",
 			"stepVirtualKey": "使用有权访问该代理的虚拟密钥；如果已禁用身份验证，请移除 <code>x-bf-vk</code> 请求头。"
+		},
+		"interactive": {
+			"copied": "已复制",
+			"filterBy": "按{{label}}筛选",
+			"clickToFilter": "点击筛选 · 右键复制",
+			"rightClickToCopy": "右键复制"
 		}
 	},
 	"overhead": {

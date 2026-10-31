@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import { toast } from "sonner";
+import i18n from "@/lib/i18n";
 
 interface UseCopyToClipboardOptions {
 	successMessage?: string;
@@ -8,7 +9,7 @@ interface UseCopyToClipboardOptions {
 }
 
 export function useCopyToClipboard(options: UseCopyToClipboardOptions = {}) {
-	const { successMessage = "Copied to clipboard", errorMessage = "Failed to copy", resetDelay = 2000 } = options;
+	const { successMessage, errorMessage, resetDelay = 2000 } = options;
 	const [copied, setCopied] = useState(false);
 	const timeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
@@ -17,12 +18,12 @@ export function useCopyToClipboard(options: UseCopyToClipboardOptions = {}) {
 			try {
 				await navigator.clipboard.writeText(text);
 				setCopied(true);
-				toast.success(successMessage);
+				toast.success(successMessage ?? i18n.t("copyToClipboard.success", { ns: "common" }));
 
 				if (timeoutRef.current) clearTimeout(timeoutRef.current);
 				timeoutRef.current = setTimeout(() => setCopied(false), resetDelay);
 			} catch {
-				toast.error(errorMessage);
+				toast.error(errorMessage ?? i18n.t("copyToClipboard.failed", { ns: "common" }));
 			}
 		},
 		[successMessage, errorMessage, resetDelay],

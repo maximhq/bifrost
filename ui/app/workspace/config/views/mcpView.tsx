@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { MCP_MAX_PROTOCOL_VERSION_OPTIONS } from "@/lib/constants/mcp";
+import { MCP_MAX_PROTOCOL_VERSION_OPTIONS, mcpMaxProtocolVersionLabel } from "@/lib/constants/mcp";
 import { Switch } from "@/components/ui/switch";
 import { TagInput } from "@/components/ui/tagInput";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
@@ -403,9 +403,7 @@ export default function MCPView() {
 						<label htmlFor="mcp-max-protocol-version" className="text-sm font-medium">
 							{t("mcpSettings.maxProtocolVersion")}
 						</label>
-						<p className="text-muted-foreground text-sm">
-							{t("mcpSettings.maxProtocolVersionHelp")}
-						</p>
+						<p className="text-muted-foreground text-sm">{t("mcpSettings.maxProtocolVersionHelp")}</p>
 					</div>
 					<Select
 						value={localConfig.mcp_max_protocol_version || "auto"}
@@ -418,7 +416,7 @@ export default function MCPView() {
 						<SelectContent>
 							{MCP_MAX_PROTOCOL_VERSION_OPTIONS.map((option) => (
 								<SelectItem key={option.value} value={option.value} data-testid={`mcp-max-protocol-version-${option.value}`}>
-									{option.label}
+									{mcpMaxProtocolVersionLabel(option.value)}
 								</SelectItem>
 							))}
 						</SelectContent>

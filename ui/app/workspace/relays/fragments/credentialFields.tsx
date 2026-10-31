@@ -3,7 +3,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { RelayAuthTypeLabels, RelayAuthTypes } from "@/lib/types/relays";
+import { RelayAuthTypes, relayAuthTypeLabel } from "@/lib/types/relays";
 import type { RelayFormValues } from "@/lib/types/schemas";
 import { useEffect, useState } from "react";
 import type { UseFormReturn } from "react-hook-form";
@@ -31,10 +31,7 @@ export function CredentialFields({ form, disabled }: { form: UseFormReturn<Relay
 				name="auth.type"
 				render={({ field }) => (
 					<FormItem>
-						<InfoLabel
-							label={t("relays.credentials.authLabel")}
-							info={t("relays.credentials.authInfo")}
-						/>
+						<InfoLabel label={t("relays.credentials.authLabel")} info={t("relays.credentials.authInfo")} />
 						<Select onValueChange={field.onChange} value={field.value} disabled={disabled}>
 							<FormControl>
 								<SelectTrigger className="w-60" data-testid="relay-auth-type">
@@ -43,8 +40,8 @@ export function CredentialFields({ form, disabled }: { form: UseFormReturn<Relay
 							</FormControl>
 							<SelectContent>
 								{RelayAuthTypes.map((authKind) => (
-										<SelectItem key={authKind} value={authKind}>
-											{RelayAuthTypeLabels[authKind]}
+									<SelectItem key={authKind} value={authKind}>
+										{relayAuthTypeLabel(authKind)}
 									</SelectItem>
 								))}
 							</SelectContent>
@@ -74,10 +71,7 @@ export function CredentialFields({ form, disabled }: { form: UseFormReturn<Relay
 						name="auth.value_prefix"
 						render={({ field }) => (
 							<FormItem>
-								<InfoLabel
-									label={t("relays.credentials.valuePrefixLabel")}
-									info={t("relays.credentials.valuePrefixInfo")}
-								/>
+								<InfoLabel label={t("relays.credentials.valuePrefixLabel")} info={t("relays.credentials.valuePrefixInfo")} />
 								<FormControl>
 									{/* i18n-ignore: sample prefix */}
 									<Input placeholder="Token " disabled={disabled} {...field} value={field.value ?? ""} />
@@ -145,10 +139,7 @@ export function CredentialFields({ form, disabled }: { form: UseFormReturn<Relay
 						)}
 					/>
 					<div className="space-y-2">
-						<InfoLabel
-							label={t("relays.credentials.awsMethodLabel")}
-							info={t("relays.credentials.awsMethodInfo")}
-						/>
+						<InfoLabel label={t("relays.credentials.awsMethodLabel")} info={t("relays.credentials.awsMethodInfo")} />
 						<Tabs
 							value={awsMode}
 							onValueChange={(v) => {
@@ -162,20 +153,14 @@ export function CredentialFields({ form, disabled }: { form: UseFormReturn<Relay
 						>
 							<TabsList className="flex w-full justify-start">
 								<TabsTrigger value="iam_role" data-testid="relay-aws-iam-role-tab">
-									
-										{t("relays.credentials.iamRoleTab")}
-
+									{t("relays.credentials.iamRoleTab")}
 								</TabsTrigger>
 								<TabsTrigger value="explicit" data-testid="relay-aws-explicit-tab">
-									
-										{t("relays.credentials.explicitTab")}
-
+									{t("relays.credentials.explicitTab")}
 								</TabsTrigger>
 							</TabsList>
 						</Tabs>
-						{awsMode === "iam_role" && (
-							<p className="text-muted-foreground text-sm">{t("relays.credentials.iamRoleInfo")}</p>
-						)}
+						{awsMode === "iam_role" && <p className="text-muted-foreground text-sm">{t("relays.credentials.iamRoleInfo")}</p>}
 					</div>
 					{awsMode === "explicit" &&
 						(
@@ -230,10 +215,7 @@ export function CredentialFields({ form, disabled }: { form: UseFormReturn<Relay
 						name="aws.role_arn"
 						render={({ field }) => (
 							<FormItem>
-								<InfoLabel
-									label={t("relays.credentials.roleArnLabel")}
-									info={t("relays.credentials.roleArnInfo")}
-								/>
+								<InfoLabel label={t("relays.credentials.roleArnLabel")} info={t("relays.credentials.roleArnInfo")} />
 								<FormControl>
 									<SecretVarInput
 										placeholder={t("relays.credentials.roleArnPlaceholder")}
@@ -251,12 +233,14 @@ export function CredentialFields({ form, disabled }: { form: UseFormReturn<Relay
 						name="aws.external_id"
 						render={({ field }) => (
 							<FormItem>
-								<InfoLabel
-									label={t("relays.credentials.externalIdLabel")}
-									info={t("relays.credentials.externalIdInfo")}
-								/>
+								<InfoLabel label={t("relays.credentials.externalIdLabel")} info={t("relays.credentials.externalIdInfo")} />
 								<FormControl>
-									<SecretVarInput placeholder={t("relays.credentials.externalIdPlaceholder")} disabled={disabled} {...field} value={field.value} />
+									<SecretVarInput
+										placeholder={t("relays.credentials.externalIdPlaceholder")}
+										disabled={disabled}
+										{...field}
+										value={field.value}
+									/>
 								</FormControl>
 								<FormMessage />
 							</FormItem>

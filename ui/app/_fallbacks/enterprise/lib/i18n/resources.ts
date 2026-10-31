@@ -3,14 +3,4 @@ export const ENTERPRISE_NAMESPACES = [] as const;
 
 export const enterpriseResources = {
 	en: {},
-	"zh-CN": {},
-	"zh-TW": {},
-	ja: {},
-	ko: {},
-	es: {},
-	pt: {},
-	fr: {},
-	de: {},
-	it: {},
-	ru: {},
 } as const;

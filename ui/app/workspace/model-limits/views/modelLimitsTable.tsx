@@ -42,6 +42,8 @@ import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import "@enterprise/lib/registrations/modelLimitScopes";
 import { useNavigate } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
+import { useActionParam } from "@/hooks/useActionParam";
+import { getLocale } from "@/lib/i18n";
 
 // Helper to format reset duration for display
 const formatResetDuration = (duration: string) => {
@@ -225,6 +227,7 @@ export default function ModelLimitsTable({
 		void setEditParam(null);
 		setIsCreatingModelLimit(true);
 	};
+	useActionParam("create", handleAddModelLimit, { isOpen: isCreatingModelLimit, enabled: hasCreateAccess });
 
 	const handleEditModelLimit = (config: ModelConfig) => {
 		setIsCreatingModelLimit(false);
@@ -505,7 +508,9 @@ export default function ModelLimitsTable({
 																		<div className="space-y-1.5">
 																			<div className="flex items-center justify-between gap-4 text-xs">
 																				<span className="font-medium">
-																					{t("modelLimits.tokensCount", { value: config.rate_limit.token_max_limit.toLocaleString() })}
+																					{t("modelLimits.tokensCount", {
+																						value: config.rate_limit.token_max_limit.toLocaleString(getLocale()),
+																					})}
 																				</span>
 																				<span className="text-muted-foreground">
 																					{formatResetDuration(config.rate_limit.token_reset_duration || "1h")}
@@ -528,8 +533,8 @@ export default function ModelLimitsTable({
 																	<TooltipContent>
 																		<p className="font-medium">
 																			{t("modelLimits.usageTokens", {
-																				used: config.rate_limit.token_current_usage.toLocaleString(),
-																				max: config.rate_limit.token_max_limit.toLocaleString(),
+																				used: config.rate_limit.token_current_usage.toLocaleString(getLocale()),
+																				max: config.rate_limit.token_max_limit.toLocaleString(getLocale()),
 																			})}
 																		</p>
 																		<p className="text-primary-foreground/80 text-xs">
@@ -548,7 +553,9 @@ export default function ModelLimitsTable({
 																		<div className="space-y-1.5">
 																			<div className="flex items-center justify-between gap-4 text-xs">
 																				<span className="font-medium">
-																					{t("modelLimits.reqCount", { value: config.rate_limit.request_max_limit.toLocaleString() })}
+																					{t("modelLimits.reqCount", {
+																						value: config.rate_limit.request_max_limit.toLocaleString(getLocale()),
+																					})}
 																				</span>
 																				<span className="text-muted-foreground">
 																					{formatResetDuration(config.rate_limit.request_reset_duration || "1h")}
@@ -571,8 +578,8 @@ export default function ModelLimitsTable({
 																	<TooltipContent>
 																		<p className="font-medium">
 																			{t("modelLimits.usageRequests", {
-																				used: config.rate_limit.request_current_usage.toLocaleString(),
-																				max: config.rate_limit.request_max_limit.toLocaleString(),
+																				used: config.rate_limit.request_current_usage.toLocaleString(getLocale()),
+																				max: config.rate_limit.request_max_limit.toLocaleString(getLocale()),
 																			})}
 																		</p>
 																		<p className="text-primary-foreground/80 text-xs">
@@ -619,9 +626,9 @@ export default function ModelLimitsTable({
 					<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 						<div className="text-muted-foreground flex items-center gap-2">
 							{t("virtualKeys.rangeOf", {
-								from: (offset + 1).toLocaleString(),
-								to: Math.min(offset + limit, totalCount).toLocaleString(),
-								total: totalCount.toLocaleString(),
+								from: (offset + 1).toLocaleString(getLocale()),
+								to: Math.min(offset + limit, totalCount).toLocaleString(getLocale()),
+								total: totalCount.toLocaleString(getLocale()),
 							})}
 						</div>
 

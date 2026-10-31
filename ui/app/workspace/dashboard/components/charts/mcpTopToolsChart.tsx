@@ -7,6 +7,8 @@ import { formatCost, getModelColor } from "../../utils/chartUtils";
 import { rankingBarShape } from "./barShape";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import { NoChartData } from "./noChartData";
+import { getLocale } from "@/lib/i18n";
+import { useLocale } from "@/lib/i18n/useLocale";
 
 interface MCPTopToolsChartProps {
 	data: MCPTopToolsResponse | null;
@@ -25,7 +27,7 @@ function CustomTooltip({ active, payload }: any) {
 			<div className="space-y-1 text-sm">
 				<div className="flex items-center justify-between gap-4">
 					<span className="text-zinc-600 dark:text-zinc-400">{t("labels.count")}</span>
-					<span className="font-medium">{data.count.toLocaleString()}</span>
+					<span className="font-medium">{data.count.toLocaleString(getLocale())}</span>
 				</div>
 				<div className="flex items-center justify-between gap-4">
 					<span className="text-zinc-600 dark:text-zinc-400">{t("labels.cost")}</span>
@@ -37,6 +39,7 @@ function CustomTooltip({ active, payload }: any) {
 }
 
 function MCPTopToolsChartImpl({ data }: MCPTopToolsChartProps) {
+	useLocale();
 	const chartData = useMemo(() => {
 		if (!data?.tools || data.tools.length === 0) {
 			return [];

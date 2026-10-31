@@ -402,6 +402,20 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Fetching existing framework config. The URL checks below skip a URL equal
+	// to the stored one, so a save that sends the stored config back is not
+	// refused for a URL only config.json may set, such as a file:// catalog.
+	frameworkConfig, err := h.store.ConfigStore.GetFrameworkConfig(ctx)
+	if err != nil {
+		logger.Warn("failed to get framework config from store: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get framework config from store: %v", err))
+		return
+	}
+	var storedPricingURL, storedModelParametersURL, storedMCPLibraryURL *string
+	if frameworkConfig != nil {
+		storedPricingURL, storedModelParametersURL, storedMCPLibraryURL = frameworkConfig.PricingURL, frameworkConfig.ModelParametersURL, frameworkConfig.MCPLibraryURL
+	}
+
 	// Validating framework config. An empty pricing_url or model_parameters_url
 	// (what the UI sends when the field is cleared) resets it to the default.
 	if payload.FrameworkConfig.PricingURL != nil && strings.TrimSpace(*payload.FrameworkConfig.PricingURL) == "" {
@@ -410,14 +424,16 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if payload.FrameworkConfig.ModelParametersURL != nil && strings.TrimSpace(*payload.FrameworkConfig.ModelParametersURL) == "" {
 		payload.FrameworkConfig.ModelParametersURL = bifrost.Ptr(modelcatalog.DefaultModelParametersURL)
 	}
-	if payload.FrameworkConfig.PricingURL != nil && *payload.FrameworkConfig.PricingURL != modelcatalog.DefaultPricingURL {
+	if payload.FrameworkConfig.PricingURL != nil && *payload.FrameworkConfig.PricingURL != modelcatalog.DefaultPricingURL &&
+		!sameAsStoredURL(*payload.FrameworkConfig.PricingURL, storedPricingURL) {
 		if err := checkURLAccessibility(*payload.FrameworkConfig.PricingURL); err != nil {
 			logger.Warn("failed to check the accessibility of the pricing URL: %v", err)
 			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to check the accessibility of the pricing URL: %v", err))
 			return
 		}
 	}
-	if payload.FrameworkConfig.ModelParametersURL != nil && *payload.FrameworkConfig.ModelParametersURL != modelcatalog.DefaultModelParametersURL {
+	if payload.FrameworkConfig.ModelParametersURL != nil && *payload.FrameworkConfig.ModelParametersURL != modelcatalog.DefaultModelParametersURL &&
+		!sameAsStoredURL(*payload.FrameworkConfig.ModelParametersURL, storedModelParametersURL) {
 		if err := checkURLAccessibility(*payload.FrameworkConfig.ModelParametersURL); err != nil {
 			logger.Warn("failed to check the accessibility of the model parameters URL: %v", err)
 			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", err))
@@ -432,8 +448,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Validate MCP library catalog URL override (only when set and non-default)
-	if payload.FrameworkConfig.MCPLibraryURL != nil && *payload.FrameworkConfig.MCPLibraryURL != "" && *payload.FrameworkConfig.MCPLibraryURL != modelcatalog.DefaultMCPLibraryURL {
+	// Validate MCP library catalog URL override (only when set, non-default and changed)
+	if payload.FrameworkConfig.MCPLibraryURL != nil && *payload.FrameworkConfig.MCPLibraryURL != "" && *payload.FrameworkConfig.MCPLibraryURL != modelcatalog.DefaultMCPLibraryURL &&
+		!sameAsStoredURL(*payload.FrameworkConfig.MCPLibraryURL, storedMCPLibraryURL) {
 		if err := checkURLAccessibility(*payload.FrameworkConfig.MCPLibraryURL); err != nil {
 			logger.Warn("failed to check the accessibility of the MCP library URL: %v", err)
 			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to check the accessibility of the MCP library URL: %v", err))
@@ -1015,13 +1032,6 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		h.store.MCPConfig.ToolManagerConfig.OAuthPrivateAllowlist = updatedConfig.MCPOAuthPrivateAllowlist
 	}
 
-	// Fetching existing framework config
-	frameworkConfig, err := h.store.ConfigStore.GetFrameworkConfig(ctx)
-	if err != nil {
-		logger.Warn("failed to get framework config from store: %v", err)
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get framework config from store: %v", err))
-		return
-	}
 	// if framework config is nil, we will use the default pricing config
 	if frameworkConfig == nil {
 		frameworkConfig = &configstoreTables.TableFrameworkConfig{
@@ -1566,6 +1576,14 @@ var checkURLAccessibilityDialContext = network.SSRFSafeDialContext(10 * time.Sec
 // errURLNotReachable is the only failure checkURLAccessibility reports for a
 // URL that could not be fetched, whatever the cause.
 var errURLNotReachable = errors.New("url is not reachable")
+
+// sameAsStoredURL reports whether a framework URL in a config save equals the
+// stored one. Such a URL needs no accessibility check: it was set in
+// config.json, where file:// and private hosts are allowed, or it passed the
+// check when it was first saved over the API.
+func sameAsStoredURL(submitted string, stored *string) bool {
+	return stored != nil && *stored == submitted
+}
 
 // errFileURLOverAPI is returned for a file:// URL supplied over the API.
 var errFileURLOverAPI = errors.New("file:// URLs can only be configured in config.json, not over the API")

@@ -16,6 +16,7 @@ import type { ColumnOrderState, ColumnPinningState, VisibilityState } from "@tan
 import { ColumnDef, flexRender, getCoreRowModel, SortingState, useReactTable } from "@tanstack/react-table";
 import { ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
+import { getLocale } from "@/lib/i18n";
 
 interface DataTableProps {
 	columns: ColumnDef<MCPToolLogEntry>[];
@@ -217,9 +218,9 @@ export function MCPLogsDataTable({
 				<div className="flex items-center justify-between text-xs" data-testid="pagination">
 					<div className="text-muted-foreground flex items-center gap-2">
 						{t("logs.entryRange", {
-							start: startItemDisplay.toLocaleString(),
-							end: endItemDisplay.toLocaleString(),
-							total: totalItems.toLocaleString(),
+							start: startItemDisplay.toLocaleString(getLocale()),
+							end: endItemDisplay.toLocaleString(getLocale()),
+							total: totalItems.toLocaleString(getLocale()),
 						})}
 					</div>
 

@@ -1,3 +1,5 @@
+import { i18nReady } from "@/lib/i18n";
+import { boundedWait } from "@/lib/i18n/boundedWait";
 import { clearAutoReloadGuard, getSkewMode, installVersionSkewListeners, subscribeSkew } from "@/lib/utils/versionSkew";
 import { RouterProvider, createRouter, parseSearchWith, stringifySearchWith } from "@tanstack/react-router";
 import { StrictMode, useEffect, useSyncExternalStore } from "react";
@@ -76,6 +78,8 @@ function Root() {
 	);
 }
 
+const I18N_READY_TIMEOUT_MS = 3000;
+
 declare global {
 	interface Window {
 		__bifrostBooted?: boolean;
@@ -86,8 +90,11 @@ window.__bifrostBooted = true;
 const rootEl = document.getElementById("root");
 if (!rootEl) throw new Error("Root element #root not found");
 
-createRoot(rootEl).render(
-	<StrictMode>
-		<Root />
-	</StrictMode>,
+// A stalled catalog request must not hold the app on the loading shell; English renders and the language fills in on arrival.
+void boundedWait(i18nReady, I18N_READY_TIMEOUT_MS).then(() =>
+	createRoot(rootEl).render(
+		<StrictMode>
+			<Root />
+		</StrictMode>,
+	),
 );

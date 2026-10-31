@@ -84,7 +84,8 @@ import { assignedToLabel, csvAssignedToCell, latestGraceDeadline } from "./virtu
 // where the user filter stays hidden because no picker is registered.
 import "@enterprise/lib/registrations/userPicker";
 import { useTranslation } from "react-i18next";
-import i18n from "@/lib/i18n";
+import i18n, { getLocale } from "@/lib/i18n";
+import { useActionParam } from "@/hooks/useActionParam";
 
 const formatResetDuration = (duration: string) =>
 	i18n.t(`virtualKeys.resetDurations.${duration}`, { ns: "models", defaultValue: resetDurationLabels[duration] || duration });
@@ -316,9 +317,9 @@ function VKActiveSwitch({
 	// A user's managed key can't be toggled here even by a caller who does have update access. A
 	// key its owner's access profile governs is still the owner's key, toggled like any other.
 	const disabledReason = isUserProfileManaged
-		? "This virtual key is managed by an access profile. Enable or disable it from the profile."
+		? t("virtualKeys.managedByProfileToggleHint")
 		: !hasUpdateAccess
-			? "You don't have permission to update virtual keys."
+			? t("virtualKeys.noUpdatePermission")
 			: undefined;
 
 	const control = (
@@ -629,7 +630,9 @@ export default function VirtualKeysTable({
 
 			const failureCount = result.errors ? Object.keys(result.errors).length : 0;
 			const graceUntil = latestGraceDeadline(result.virtual_keys);
-			const graceNote = graceUntil ? ` ${t("virtualKeys.rotateGraceNote", { date: new Date(graceUntil).toLocaleString() })}` : "";
+			const graceNote = graceUntil
+				? ` ${t("virtualKeys.rotateGraceNote", { date: new Date(graceUntil).toLocaleString(getLocale()) })}`
+				: "";
 			if (failureCount > 0) {
 				toast.warning(t("virtualKeys.rotatedBulkPartial", { count: result.virtual_keys.length, failed: failureCount, graceNote }));
 			} else {
@@ -644,6 +647,7 @@ export default function VirtualKeysTable({
 		setEditingVirtualKeyId(null);
 		setShowVirtualKeySheet(true);
 	};
+	useActionParam("create", handleAddVirtualKey, { isOpen: showVirtualKeySheet, enabled: hasCreateAccess });
 
 	const handleEditVirtualKey = (vk: VirtualKey) => {
 		setEditingVirtualKeyId(vk.id);
@@ -1251,9 +1255,9 @@ export default function VirtualKeysTable({
 					<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 						<div className="text-muted-foreground flex items-center gap-2">
 							{t("virtualKeys.rangeOf", {
-								from: (offset + 1).toLocaleString(),
-								to: Math.min(offset + limit, totalCount).toLocaleString(),
-								total: totalCount.toLocaleString(),
+								from: (offset + 1).toLocaleString(getLocale()),
+								to: Math.min(offset + limit, totalCount).toLocaleString(getLocale()),
+								total: totalCount.toLocaleString(getLocale()),
 							})}
 						</div>
 

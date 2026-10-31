@@ -28,7 +28,7 @@ import { AgentFilterSidebar } from "./views/agentFilterSidebar";
 import { AgentHeaderView } from "./views/agentHeaderView";
 import { AgentLogDetailSheet } from "./views/agentLogDetailsSheet";
 import { AgentLogsDataTable } from "./views/agentLogsTable";
-import { AGENT_COLUMN_LABELS, createAgentColumns } from "./views/columns";
+import { createAgentColumns, getAgentColumnLabels } from "./views/columns";
 import { AgentEmptyState } from "./views/emptyState";
 
 // Filters carried in the URL, matching the backend's query parameter names.
@@ -682,7 +682,7 @@ export default function AgentLogsPage() {
 								onRefresh={refreshAllData}
 								loading={logsIsFetching}
 								columnEntries={columnEntries}
-								columnLabels={AGENT_COLUMN_LABELS}
+								columnLabels={getAgentColumnLabels(t)}
 								onToggleColumnVisibility={toggleColumnVisibility}
 								onResetColumns={resetColumns}
 							/>
