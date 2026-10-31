@@ -70,7 +70,7 @@ describe("changeLocale storage", () => {
 		await i18nReady;
 		const resolvers = new Map<string, () => void>();
 		vi.spyOn(i18n, "changeLanguage").mockImplementation((locale) => {
-			return new Promise<void>((resolve) => resolvers.set(locale, resolve)).then(() => i18n.t);
+			return new Promise<void>((resolve) => resolvers.set(locale ?? "en", resolve)).then(() => i18n.t);
 		});
 
 		const japanese = changeLocale("ja");
