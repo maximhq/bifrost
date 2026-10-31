@@ -897,7 +897,22 @@
 			"boundTo": "繫結到",
 			"status": "狀態",
 			"accessTokenExpiry": "存取令牌過期",
+			"discovery": "發現",
+			"discoveryHelp": "在啟用按呼叫方發現的伺服器上，Bifrost 使用此憑證發現的內容：其工具、提示詞與資源，以及發現時間。尚未：呼叫方登入後尚未連線，或發現失敗；將在其下次連線時執行。共用：伺服器保留一份所有呼叫方共用的發現結果。短橫線：憑證需要先處理，或已綁定到會話。",
 			"created": "建立時間"
+		},
+		"discoveryCell": {
+			"shared": "共用",
+			"noTools": "無工具",
+			"tools_one": "{{count}} 個工具",
+			"tools_other": "{{count}} 個工具",
+			"prompts_one": "{{count}} 個提示詞",
+			"prompts_other": "{{count}} 個提示詞",
+			"resources_one": "{{count}} 個資源",
+			"resources_other": "{{count}} 個資源",
+			"discoveredAgo": "{{time}}發現",
+			"notYet": "尚未",
+			"onNextConnect": "下次連線時"
 		},
 		"tooltips": {
 			"type": "OAuth：每使用者 OAuth 憑證，可能是已完成登入後的已存令牌，或進行中的登入流程。請求頭：每使用者請求頭值（API 金鑰 / 簽名令牌），可能是已儲存或待提交。",

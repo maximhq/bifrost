@@ -897,7 +897,22 @@
 			"boundTo": "Lié à",
 			"status": "Statut",
 			"accessTokenExpiry": "Expiration du jeton d’accès",
+			"discovery": "Découverte",
+			"discoveryHelp": "Ce que Bifrost a découvert avec cet identifiant sur un serveur où la découverte par appelant est activée : ses outils, prompts et ressources, et quand. Pas encore : l'appelant ne s'est pas reconnecté depuis qu'il s'est authentifié, ou la découverte a échoué ; elle s'exécute à sa prochaine connexion. Partagé : le serveur conserve une découverte que tous les appelants utilisent. Un tiret : l'identifiant nécessite d'abord une action, ou il est lié à une session.",
 			"created": "Créé"
+		},
+		"discoveryCell": {
+			"shared": "Partagé",
+			"noTools": "Aucun outil",
+			"tools_one": "{{count}} outil",
+			"tools_other": "{{count}} outils",
+			"prompts_one": "{{count}} prompt",
+			"prompts_other": "{{count}} prompts",
+			"resources_one": "{{count}} ressource",
+			"resources_other": "{{count}} ressources",
+			"discoveredAgo": "découvert {{time}}",
+			"notYet": "Pas encore",
+			"onNextConnect": "à la prochaine connexion"
 		},
 		"tooltips": {
 			"type": "OAuth : identifiant OAuth par utilisateur, soit un jeton stocké après connexion, soit un flux de connexion en attente. En-têtes : valeurs d’en-tête par utilisateur (clés API / jetons signés), stockées ou en attente de soumission.",

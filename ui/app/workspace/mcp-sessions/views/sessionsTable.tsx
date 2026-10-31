@@ -42,6 +42,7 @@ import { useToast } from "@/hooks/use-toast";
 import { getErrorMessage, useReauthMCPSessionMutation, useRevokeMCPSessionMutation } from "@/lib/store";
 import { MCPSessionRow } from "@/lib/types/mcpSessions";
 import { formatRelativePast, formatTokenExpiry } from "@/lib/utils/mcpCredential";
+import { sessionDiscoveryCell } from "@/lib/utils/mcpPerUserDiscovery";
 import { RefreshTokenStatus } from "@/components/refreshTokenStatus";
 import { ScopeChips } from "@/components/scopeChips";
 import { ExternalLink, Fingerprint, KeyRound, Loader2, MoreHorizontal, Pencil, RefreshCcw, Trash2, UserRound } from "lucide-react";
@@ -178,6 +179,9 @@ export default function SessionsTable({
 								<TableHead>
 									<HeaderWithTooltip label={t("sessions.refreshToken")} tooltip={t("sessions.refreshTokenHelp")} />
 								</TableHead>
+								<TableHead>
+									<HeaderWithTooltip label={t("sessions.columns.discovery")} tooltip={t("sessions.columns.discoveryHelp")} />
+								</TableHead>
 								<TableHead>{t("sessions.columns.created")}</TableHead>
 								<TableHead className={`bg-muted sticky right-0 z-10 w-[56px] text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
 							</TableRow>
@@ -185,7 +189,7 @@ export default function SessionsTable({
 						<TableBody>
 							{sessions.length === 0 ? (
 								<TableRow>
-									<TableCell colSpan={9} className="h-24 text-center">
+									<TableCell colSpan={10} className="h-24 text-center">
 										{isFetching ? (
 											<div role="status" className="text-muted-foreground flex items-center justify-center gap-2 text-sm">
 												<Loader2 className="size-4 animate-spin" aria-hidden="true" />
@@ -224,6 +228,9 @@ export default function SessionsTable({
 										</TableCell>
 										<TableCell className="text-sm">
 											<RefreshTokenCell row={row} />
+										</TableCell>
+										<TableCell className="text-sm">
+											<DiscoveryCell row={row} />
 										</TableCell>
 										<TableCell className="text-muted-foreground text-sm">{formatRelativePast(row.created_at)}</TableCell>
 										<TableCell
@@ -351,6 +358,18 @@ function RefreshTokenCell({ row }: { row: MCPSessionRow }) {
 		return <span className="text-muted-foreground text-sm">-</span>;
 	}
 	return <RefreshTokenStatus hasRefreshToken={row.has_refresh_token} status={row.status} />;
+}
+
+// What the row's binding holds on its server: counts and when for a held
+// discovery, else why it holds none (see sessionDiscoveryCell).
+function DiscoveryCell({ row }: { row: MCPSessionRow }) {
+	const cell = sessionDiscoveryCell(row);
+	return (
+		<div className="flex flex-col" data-testid={`mcp-session-discovery-${row.id}`}>
+			<span className={cell.muted ? "text-muted-foreground" : undefined}>{cell.text}</span>
+			{cell.sub && <span className="text-muted-foreground text-xs">{cell.sub}</span>}
+		</div>
+	);
 }
 
 function TypeBadge({ authKind }: { authKind: string }) {

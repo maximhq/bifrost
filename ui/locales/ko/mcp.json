@@ -897,7 +897,22 @@
 			"boundTo": "바인딩",
 			"status": "상태",
 			"accessTokenExpiry": "액세스 토큰 만료",
+			"discovery": "검색",
+			"discoveryHelp": "호출자별 검색이 켜진 서버에서 Bifrost가 이 자격 증명으로 검색한 내용(도구, 프롬프트, 리소스와 검색 시점)이에요. 아직 안 됨: 호출자가 로그인한 후 아직 연결하지 않았거나 검색에 실패했어요. 다음 연결 때 실행돼요. 공유: 서버가 모든 호출자가 사용하는 검색 결과 하나를 보관해요. 대시: 자격 증명에 먼저 조치가 필요하거나 세션에 연결되어 있어요.",
 			"created": "생성됨"
+		},
+		"discoveryCell": {
+			"shared": "공유",
+			"noTools": "도구 없음",
+			"tools_one": "도구 {{count}}개",
+			"tools_other": "도구 {{count}}개",
+			"prompts_one": "프롬프트 {{count}}개",
+			"prompts_other": "프롬프트 {{count}}개",
+			"resources_one": "리소스 {{count}}개",
+			"resources_other": "리소스 {{count}}개",
+			"discoveredAgo": "{{time}} 검색됨",
+			"notYet": "아직 안 됨",
+			"onNextConnect": "다음 연결 시"
 		},
 		"tooltips": {
 			"type": "OAuth: 사용자별 OAuth 자격 증명, 완료된 로그인에서 저장된 토큰 또는 보류 중인 로그인 흐름. 헤더: 저장되었거나 제출 대기 중인 사용자별 헤더 값(API 키/서명된 토큰)이에요.",

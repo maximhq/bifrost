@@ -6475,6 +6475,66 @@ func TestPerUserDiscovery_BindingsListsUserAndVirtualKeyHoldersOfOneClient(t *te
 	assert.Empty(t, rows)
 }
 
+// TestPerUserDiscovery_SummariesOfBindings reads the counts and discovery time
+// of exactly the bindings asked for, the way the sessions listing reads the
+// discoveries behind a page of credential rows.
+func TestPerUserDiscovery_SummariesOfBindings(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	alice := samplePerUserDiscovery(schemas.MCPAuthModeUser, "alice", "notes", "search", "read")
+	alice.Resources = []mcpgo.Resource{mcpgo.NewResource("file:///handbook.md", "handbook")}
+	alice.ResourceTemplates = []mcpgo.ResourceTemplate{mcpgo.NewResourceTemplate("notes://note/{id}", "note")}
+	alice.Prompts = []mcpgo.Prompt{mcpgo.NewPrompt("review")}
+	for _, discovery := range []*tables.TableMCPPerUserDiscovery{
+		alice,
+		samplePerUserDiscovery(schemas.MCPAuthModeVK, "vk-1", "notes"),
+		samplePerUserDiscovery(schemas.MCPAuthModeSession, "sess-1", "notes", "search"),
+		// Same user and client ids as two asked bindings, but not a binding asked for.
+		samplePerUserDiscovery(schemas.MCPAuthModeUser, "alice", "wiki", "read"),
+		samplePerUserDiscovery(schemas.MCPAuthModeUser, "bob", "wiki", "read"),
+	} {
+		require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, discovery))
+	}
+
+	aliceNotes := MCPPerUserDiscoveryBinding{Mode: schemas.MCPAuthModeUser, Identity: "alice", MCPClientID: "notes"}
+	vkNotes := MCPPerUserDiscoveryBinding{Mode: schemas.MCPAuthModeVK, Identity: "vk-1", MCPClientID: "notes"}
+	bobWiki := MCPPerUserDiscoveryBinding{Mode: schemas.MCPAuthModeUser, Identity: "bob", MCPClientID: "wiki"}
+	sessionNotes := MCPPerUserDiscoveryBinding{Mode: schemas.MCPAuthModeSession, Identity: "sess-1", MCPClientID: "notes"}
+	carolNotes := MCPPerUserDiscoveryBinding{Mode: schemas.MCPAuthModeUser, Identity: "carol", MCPClientID: "notes"}
+
+	got, err := store.GetMCPPerUserDiscoverySummaries(ctx, []MCPPerUserDiscoveryBinding{aliceNotes, vkNotes, bobWiki, sessionNotes, carolNotes})
+	require.NoError(t, err)
+	held := make([]MCPPerUserDiscoveryBinding, 0, len(got))
+	for binding := range got {
+		held = append(held, binding)
+	}
+	require.ElementsMatch(t, []MCPPerUserDiscoveryBinding{aliceNotes, vkNotes, bobWiki}, held,
+		"alice on wiki was not asked for, a session binding keeps no discovery, and carol holds none")
+
+	assert.Equal(t, 2, got[aliceNotes].ToolCount)
+	assert.Equal(t, 1, got[aliceNotes].PromptCount)
+	assert.Equal(t, 2, got[aliceNotes].ResourceCount, "resource templates count as resources")
+	assert.WithinDuration(t, alice.DiscoveredAt, got[aliceNotes].DiscoveredAt, time.Second)
+	assert.Empty(t, got[aliceNotes].Tools, "a summary must not load the tool schemas")
+	assert.Zero(t, got[vkNotes].ToolCount, "a discovery with no tools still counts as held")
+
+	// A re-discovery replaces the counts and the time.
+	rediscovered := samplePerUserDiscovery(schemas.MCPAuthModeUser, "alice", "notes", "search")
+	rediscovered.DiscoveredAt = time.Now()
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, rediscovered))
+	got, err = store.GetMCPPerUserDiscoverySummaries(ctx, []MCPPerUserDiscoveryBinding{aliceNotes})
+	require.NoError(t, err)
+	assert.Equal(t, 1, got[aliceNotes].ToolCount)
+	assert.Zero(t, got[aliceNotes].PromptCount)
+	assert.Zero(t, got[aliceNotes].ResourceCount)
+	assert.WithinDuration(t, rediscovered.DiscoveredAt, got[aliceNotes].DiscoveredAt, time.Second)
+
+	got, err = store.GetMCPPerUserDiscoverySummaries(ctx, nil)
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}
+
 // TestPerUserDiscovery_ToolCallerCountsOfEachClient counts, for each client, how
 // many user and virtual-key callers' discoveries include each tool. Callers
 // holding the same discovery are each counted, though only one of their rows is

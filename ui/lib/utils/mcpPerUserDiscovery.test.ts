@@ -1,7 +1,8 @@
 import { beforeAll, describe, expect, test } from "vitest";
 import i18n from "@/lib/i18n";
 import type { MCPClient } from "@/lib/types/mcp";
-import { perUserDiscoveryOn, supportsPerUserDiscovery, toolSubtitle } from "./mcpPerUserDiscovery";
+import type { MCPSessionRow } from "@/lib/types/mcpSessions";
+import { perUserDiscoveryOn, sessionDiscoveryCell, supportsPerUserDiscovery, toolSubtitle } from "./mcpPerUserDiscovery";
 
 beforeAll(async () => {
 	await i18n.changeLanguage("en");
@@ -37,5 +38,66 @@ describe("mcpPerUserDiscovery", () => {
 		const shared = { config: {} } as unknown as MCPClient;
 		expect(toolSubtitle(shared, { name: "search", description: "Search the notes" })).toBe("Search the notes");
 		expect(toolSubtitle(shared, { name: "search" })).toBeUndefined();
+	});
+
+	describe("sessionDiscoveryCell", () => {
+		const fourMinutesAgo = () => new Date(Date.now() - 4 * 60_000).toISOString();
+		const row = (over: Partial<MCPSessionRow>): MCPSessionRow =>
+			({
+				kind: "token",
+				auth_mode: "user",
+				status: "active",
+				mcp_client: { client_id: "c1", name: "notes", per_user_discovery: true },
+				...over,
+			}) as MCPSessionRow;
+		const discovery = (tools: number, prompts: number, resources: number) => ({
+			discovered_at: fourMinutesAgo(),
+			tool_count: tools,
+			prompt_count: prompts,
+			resource_count: resources,
+		});
+
+		test("a server without per-caller discovery shares one discovery", () => {
+			expect(sessionDiscoveryCell(row({ mcp_client: { client_id: "c1", name: "notes" } }))).toEqual({ text: "Shared", muted: true });
+			expect(sessionDiscoveryCell(row({ mcp_client: null, kind: "flow" }))).toEqual({ text: "Shared", muted: true });
+		});
+
+		test("a held discovery lists what it holds and when it was made", () => {
+			expect(sessionDiscoveryCell(row({ discovery: discovery(3, 1, 2) }))).toEqual({
+				text: "3 tools · 1 prompt · 2 resources",
+				sub: "discovered 4 min ago",
+				muted: false,
+			});
+			expect(sessionDiscoveryCell(row({ kind: "header", auth_mode: "vk", discovery: discovery(1, 0, 1) })).text).toBe(
+				"1 tool · 1 resource",
+			);
+			expect(sessionDiscoveryCell(row({ discovery: discovery(0, 2, 0) })).text).toBe("No tools · 2 prompts");
+			expect(sessionDiscoveryCell(row({ discovery: discovery(0, 0, 0) })).text).toBe("No tools");
+		});
+
+		test("a held discovery shows whatever the credential's status", () => {
+			expect(sessionDiscoveryCell(row({ status: "orphaned", discovery: discovery(2, 0, 0) })).text).toBe("2 tools");
+		});
+
+		test("an active credential without one gets it on the caller's next connect", () => {
+			expect(sessionDiscoveryCell(row({}))).toEqual({ text: "Not yet", sub: "on the next connect", muted: true });
+			expect(sessionDiscoveryCell(row({ kind: "header", auth_mode: "vk" }))).toEqual({
+				text: "Not yet",
+				sub: "on the next connect",
+				muted: true,
+			});
+		});
+
+		test("a pending sign-in has no discovery yet", () => {
+			expect(sessionDiscoveryCell(row({ kind: "flow", status: "pending" }))).toEqual({ text: "Not yet", muted: true });
+		});
+
+		test("a credential that needs action, or a session-bound one, holds none", () => {
+			for (const status of ["needs_reauth", "needs_update", "orphaned"] as const) {
+				expect(sessionDiscoveryCell(row({ status }))).toEqual({ text: "-", muted: true });
+			}
+			expect(sessionDiscoveryCell(row({ auth_mode: "session" }))).toEqual({ text: "-", muted: true });
+			expect(sessionDiscoveryCell(row({ auth_mode: "session", kind: "flow", status: "pending" }))).toEqual({ text: "-", muted: true });
+		});
 	});
 });

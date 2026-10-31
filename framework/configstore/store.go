@@ -222,6 +222,15 @@ type MCPSessionsFilterParams struct {
 	MatchedUserIDs []string
 }
 
+// MCPPerUserDiscoveryBinding names one caller's discovery on one MCP client:
+// the (mode, identity, client) binding the discovery shares with the
+// credential it was made with.
+type MCPPerUserDiscoveryBinding struct {
+	Mode        schemas.MCPAuthMode
+	Identity    string
+	MCPClientID string
+}
+
 // OAuth2SessionsQueryParams holds the filters + pagination for the OAuth2
 // grants list (Connected Clients UI). Search is a case-insensitive substring
 // matched against the client name/id, the bound identity (bf_sub), and the
@@ -937,6 +946,11 @@ type ConfigStore interface {
 	// and virtual-key callers' discoveries hold. Clients no caller holds a
 	// discovery of are left out.
 	GetMCPPerUserDiscoveryNames(ctx context.Context, mcpClientIDs []string) (map[string]MCPPerUserDiscoveryNames, error)
+	// GetMCPPerUserDiscoverySummaries returns the discovery each of the user
+	// and virtual-key bindings holds, keyed by binding, with only the identity
+	// columns, the counts and discovered_at read. Bindings without one, and
+	// bindings of any other mode, are left out.
+	GetMCPPerUserDiscoverySummaries(ctx context.Context, bindings []MCPPerUserDiscoveryBinding) (map[MCPPerUserDiscoveryBinding]tables.TableMCPPerUserDiscovery, error)
 	UpsertMCPPerUserDiscovery(ctx context.Context, discovery *tables.TableMCPPerUserDiscovery) error
 	DeleteMCPPerUserDiscovery(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) error
 	DeleteMCPPerUserDiscoveriesByClient(ctx context.Context, mcpClientID string) error

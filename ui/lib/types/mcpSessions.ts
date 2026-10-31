@@ -27,6 +27,19 @@ export type MCPSessionStatus = "active" | "orphaned" | "pending" | "needs_reauth
 export interface MCPClientSummary {
 	client_id: string;
 	name: string;
+	// per_user_discovery: session rows only. Each caller keeps their own
+	// discovery on this server; absent when the server keeps one shared one.
+	per_user_discovery?: boolean;
+}
+
+// MCPSessionDiscovery is what Bifrost discovered with a credential row's
+// binding on a server with per_user_discovery on.
+export interface MCPSessionDiscovery {
+	discovered_at: string;
+	tool_count: number;
+	prompt_count: number;
+	// resource_count counts resources and resource templates together.
+	resource_count: number;
 }
 
 export interface VirtualKeySummary {
@@ -79,6 +92,9 @@ export interface MCPSessionRow {
 	// kind === "flow" rows — those are completed via /api/oauth/per-user/
 	// flows/{id}/start, not /reauth, and the UI's flow branch ignores this field.
 	can_reauth: boolean;
+	// discovery: token and header rows of user and virtual-key callers on a
+	// server with per_user_discovery on, when the binding holds one.
+	discovery?: MCPSessionDiscovery | null;
 }
 
 export interface MCPSessionsListResponse {

@@ -1477,6 +1477,12 @@ MCPClientSummary:
       type: string
     name:
       type: string
+    per_user_discovery:
+      type: boolean
+      description: |
+        Set on sessions list rows. True when each caller keeps their own
+        discovery on this client; absent when the client keeps one discovery
+        every caller shares.
 
 MCPVirtualKeySummary:
   type: object
@@ -1588,6 +1594,30 @@ MCPSessionRow:
         enough to see the row, but reauthing mints credentials under whoever clicks
         the URL, so the server returns 403 to non-bound callers. The UI hides the
         Re-authenticate / Edit values action when this is false.
+    discovery:
+      $ref: '#/MCPSessionDiscovery'
+      nullable: true
+      description: |
+        What Bifrost discovered with this credential's binding on a client with
+        per_user_discovery on. Token and header rows of user and virtual-key
+        callers only; absent when the binding holds none.
+
+MCPSessionDiscovery:
+  type: object
+  description: A caller's discovery on a client with per_user_discovery on, as counts.
+  required: [discovered_at, tool_count, prompt_count, resource_count]
+  properties:
+    discovered_at:
+      type: string
+      format: date-time
+      description: When the upstream last answered tools/list for this caller
+    tool_count:
+      type: integer
+    prompt_count:
+      type: integer
+    resource_count:
+      type: integer
+      description: Resources plus resource templates
 
 MCPSessionsListResponse:
   type: object

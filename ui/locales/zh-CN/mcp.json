@@ -897,7 +897,22 @@
 			"boundTo": "绑定到",
 			"status": "状态",
 			"accessTokenExpiry": "访问令牌过期",
+			"discovery": "发现",
+			"discoveryHelp": "在启用了按调用方发现的服务器上，Bifrost 使用此凭证发现的内容：其工具、提示词和资源，以及发现时间。尚未：调用方登录后尚未连接，或发现失败；将在其下次连接时运行。共享：服务器保留一份所有调用方共用的发现结果。短横线：凭证需要先处理，或已绑定到会话。",
 			"created": "创建时间"
+		},
+		"discoveryCell": {
+			"shared": "共享",
+			"noTools": "无工具",
+			"tools_one": "{{count}} 个工具",
+			"tools_other": "{{count}} 个工具",
+			"prompts_one": "{{count}} 个提示词",
+			"prompts_other": "{{count}} 个提示词",
+			"resources_one": "{{count}} 个资源",
+			"resources_other": "{{count}} 个资源",
+			"discoveredAgo": "{{time}}发现",
+			"notYet": "尚未",
+			"onNextConnect": "下次连接时"
 		},
 		"tooltips": {
 			"type": "OAuth：每用户 OAuth 凭证，可能是已完成登录后的已存令牌，或进行中的登录流程。请求头：每用户请求头值（API 密钥 / 签名令牌），可能是已存储或待提交。",

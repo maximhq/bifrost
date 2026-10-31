@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"slices"
 	"sort"
@@ -9278,7 +9279,7 @@ func (s *RDBConfigStore) ListOauthUserTokens(ctx context.Context, params MCPSess
 	})
 	var tokens []tables.TableMCPOauthToken
 	if err := query.
-		Preload("MCPClient", func(db *gorm.DB) *gorm.DB { return db.Select("client_id, name") }).
+		Preload("MCPClient", func(db *gorm.DB) *gorm.DB { return db.Select("client_id, name, per_user_discovery") }).
 		Preload("VirtualKey", func(db *gorm.DB) *gorm.DB { return db.Select("id, name") }).
 		Order("mcp_oauth_tokens.created_at DESC").
 		Find(&tokens).Error; err != nil {
@@ -9303,7 +9304,7 @@ func (s *RDBConfigStore) ListPendingOauthUserSessions(ctx context.Context, param
 	})
 	var flows []tables.TableMCPOauthFlow
 	if err := query.
-		Preload("MCPClient", func(db *gorm.DB) *gorm.DB { return db.Select("client_id, name") }).
+		Preload("MCPClient", func(db *gorm.DB) *gorm.DB { return db.Select("client_id, name, per_user_discovery") }).
 		Preload("VirtualKey", func(db *gorm.DB) *gorm.DB { return db.Select("id, name") }).
 		Order("mcp_oauth_flows.created_at DESC").
 		Find(&flows).Error; err != nil {
@@ -9618,7 +9619,7 @@ func (s *RDBConfigStore) ListMCPPerUserHeaderCredentials(ctx context.Context, pa
 	})
 	var creds []tables.TableMCPPerUserHeaderCredential
 	if err := query.
-		Preload("MCPClient", func(db *gorm.DB) *gorm.DB { return db.Select("client_id, name") }).
+		Preload("MCPClient", func(db *gorm.DB) *gorm.DB { return db.Select("client_id, name, per_user_discovery") }).
 		Preload("VirtualKey", func(db *gorm.DB) *gorm.DB { return db.Select("id, name") }).
 		Order("mcp_per_user_header_credentials.created_at DESC").
 		Find(&creds).Error; err != nil {
@@ -9806,7 +9807,7 @@ func (s *RDBConfigStore) ListPendingMCPPerUserHeaderFlows(ctx context.Context, p
 	})
 	var flows []tables.TableMCPPerUserHeaderFlow
 	if err := query.
-		Preload("MCPClient", func(db *gorm.DB) *gorm.DB { return db.Select("client_id, name") }).
+		Preload("MCPClient", func(db *gorm.DB) *gorm.DB { return db.Select("client_id, name, per_user_discovery") }).
 		Preload("VirtualKey", func(db *gorm.DB) *gorm.DB { return db.Select("id, name") }).
 		Order("mcp_per_user_header_flows.created_at DESC").
 		Find(&flows).Error; err != nil {
@@ -11336,6 +11337,54 @@ func (s *RDBConfigStore) GetMCPPerUserDiscoveryNames(ctx context.Context, mcpCli
 		}
 	}
 	return names, nil
+}
+
+// GetMCPPerUserDiscoverySummaries returns the discovery each user and
+// virtual-key binding holds, with only the identity columns, the counts and
+// discovered_at read. One query matches the clients and identities asked for;
+// since those lists can pair a user with a client they were not asked about,
+// only the exact bindings asked are kept.
+func (s *RDBConfigStore) GetMCPPerUserDiscoverySummaries(ctx context.Context, bindings []MCPPerUserDiscoveryBinding) (map[MCPPerUserDiscoveryBinding]tables.TableMCPPerUserDiscovery, error) {
+	summaries := make(map[MCPPerUserDiscoveryBinding]tables.TableMCPPerUserDiscovery)
+	asked := make(map[MCPPerUserDiscoveryBinding]struct{}, len(bindings))
+	clientIDs := make(map[string]struct{})
+	userIDs := make(map[string]struct{})
+	vkIDs := make(map[string]struct{})
+	for _, binding := range bindings {
+		if strings.TrimSpace(binding.Identity) == "" || strings.TrimSpace(binding.MCPClientID) == "" {
+			continue
+		}
+		switch binding.Mode {
+		case schemas.MCPAuthModeUser:
+			userIDs[binding.Identity] = struct{}{}
+		case schemas.MCPAuthModeVK:
+			vkIDs[binding.Identity] = struct{}{}
+		default:
+			continue
+		}
+		clientIDs[binding.MCPClientID] = struct{}{}
+		asked[binding] = struct{}{}
+	}
+	if len(asked) == 0 {
+		return summaries, nil
+	}
+	var rows []tables.TableMCPPerUserDiscovery
+	if err := s.DB().WithContext(ctx).
+		Select("auth_mode", "user_id", "virtual_key_id", "mcp_client_id", "tool_count", "prompt_count", "resource_count", "discovered_at").
+		Where("mcp_client_id IN ?", slices.Collect(maps.Keys(clientIDs))).
+		Where("((auth_mode = ? AND user_id IN ?) OR (auth_mode = ? AND virtual_key_id IN ?))",
+			string(schemas.MCPAuthModeUser), slices.Collect(maps.Keys(userIDs)),
+			string(schemas.MCPAuthModeVK), slices.Collect(maps.Keys(vkIDs))).
+		Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("failed to read mcp per-user discovery summaries: %w", err)
+	}
+	for _, row := range rows {
+		binding := MCPPerUserDiscoveryBinding{Mode: schemas.MCPAuthMode(row.AuthMode), Identity: row.Identity(), MCPClientID: row.MCPClientID}
+		if _, ok := asked[binding]; ok {
+			summaries[binding] = row
+		}
+	}
+	return summaries, nil
 }
 
 // GetMCPPerUserDiscoveryByMode looks up the discovery for one (mode, identity,

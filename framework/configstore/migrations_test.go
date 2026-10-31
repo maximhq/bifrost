@@ -2400,9 +2400,9 @@ func TestMigrationAddMCPCodeModeLimitsClientColumn(t *testing.T) {
 
 // TestMigrationAddMCPPerUserDiscoveries pins the upgrade path: the per_user_discovery flag column,
 // the mcp_per_user_discoveries table with its instructions column (a discovery carries the
-// server's instructions alongside its tools), the per-mode partial unique indexes that keep
-// one row per (identity, client) binding, and the (client, hash) index callers holding the same
-// discovery are grouped by.
+// server's instructions alongside its tools) and the count columns a sessions listing reads, the
+// per-mode partial unique indexes that keep one row per (identity, client) binding, and the
+// (client, hash) index callers holding the same discovery are grouped by.
 func TestMigrationAddMCPPerUserDiscoveries(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
@@ -2423,7 +2423,7 @@ func TestMigrationAddMCPPerUserDiscoveries(t *testing.T) {
 
 	assert.True(t, mg.HasColumn(&tables.TableMCPClient{}, "per_user_discovery"))
 	require.True(t, mg.HasTable(&tables.TableMCPPerUserDiscovery{}))
-	for _, column := range []string{"tools_json", "tool_name_mapping_json", "instructions", "discovery_hash", "discovered_at"} {
+	for _, column := range []string{"tools_json", "tool_name_mapping_json", "instructions", "discovery_hash", "tool_count", "prompt_count", "resource_count", "discovered_at"} {
 		assert.True(t, mg.HasColumn(&tables.TableMCPPerUserDiscovery{}, column), "%s column should exist after migration", column)
 	}
 	for _, index := range []string{

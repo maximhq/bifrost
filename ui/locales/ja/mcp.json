@@ -897,7 +897,22 @@
 			"boundTo": "縛られている",
 			"status": "ステータス",
 			"accessTokenExpiry": "アクセストークンの有効期限",
+			"discovery": "検出",
+			"discoveryHelp": "呼び出し元ごとの検出が有効なサーバーで、この認証情報を使って Bifrost が検出した内容（ツール、プロンプト、リソースと検出日時）です。まだ: 呼び出し元がサインイン後にまだ接続していないか、検出に失敗しました。次回の接続時に実行されます。共有: サーバーはすべての呼び出し元が使用する 1 つの検出結果を保持します。ダッシュ: 認証情報に先に対応が必要か、セッションに紐付いています。",
 			"created": "作成された"
+		},
+		"discoveryCell": {
+			"shared": "共有",
+			"noTools": "ツールなし",
+			"tools_one": "ツール {{count}} 件",
+			"tools_other": "ツール {{count}} 件",
+			"prompts_one": "プロンプト {{count}} 件",
+			"prompts_other": "プロンプト {{count}} 件",
+			"resources_one": "リソース {{count}} 件",
+			"resources_other": "リソース {{count}} 件",
+			"discoveredAgo": "{{time}}に検出",
+			"notYet": "まだ",
+			"onNextConnect": "次回の接続時"
 		},
 		"tooltips": {
 			"type": "OAuth: ユーザーごとのOAuth認証情報、完了したサインインからの保存されたトークン、または保留中のサインインフローのいずれか。ヘッダー: ユーザーごとのヘッダー値（APIキー / 署名付きトークン）、保存済みまたは提出保留中のいずれか。",
