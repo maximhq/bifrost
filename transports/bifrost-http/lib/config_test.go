@@ -24086,6 +24086,49 @@ func TestLoadMCPConfig_PerUserDiscoveryFollowsSourceOfTruth(t *testing.T) {
 	}
 }
 
+// TestLoadMCPConfig_ConfigJSONKeepsTheStoredIDOfANameMatch: under config.json
+// a declaration is matched to a stored client by name first. When it also
+// declares the ID of a different stored client (a copied block, say), the
+// runtime client must keep the ID of the client it was matched to: credentials
+// are keyed by client ID, so taking the other ID would send that client's
+// per-user credentials to this client's URL. The client whose ID was borrowed
+// is no longer declared, so it is pruned.
+func TestLoadMCPConfig_ConfigJSONKeepsTheStoredIDOfANameMatch(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	client := func(id, name, url string) *schemas.MCPClientConfig {
+		return &schemas.MCPClientConfig{
+			ID:               id,
+			Name:             name,
+			ConnectionType:   schemas.MCPConnectionTypeHTTP,
+			ConnectionString: schemas.NewSecretVar(url),
+			ToolsToExecute:   schemas.WhiteList{"*"},
+		}
+	}
+	store := createTestSQLiteConfigStore(t, createTempDir(t))
+
+	first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	loadMCPConfig(ctx, first, &ConfigData{SourceOfTruth: SourceOfTruthConfigJSON, MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+		client("id-alpha", "alpha", "http://alpha.example/mcp"),
+		client("id-beta", "beta", "http://beta.example/mcp"),
+	}}})
+	require.Len(t, first.MCPConfig.ClientConfigs, 2)
+
+	second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	loadMCPConfig(ctx, second, &ConfigData{SourceOfTruth: SourceOfTruthConfigJSON, MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+		client("id-beta", "alpha", "http://alpha.example/mcp"),
+	}}})
+
+	require.Len(t, second.MCPConfig.ClientConfigs, 1)
+	runtime := second.MCPConfig.ClientConfigs[0]
+	assert.Equal(t, "id-alpha", runtime.ID, "the runtime client keeps the ID of the stored client it was matched to by name")
+	assert.Equal(t, "http://alpha.example/mcp", runtime.ConnectionString.GetValue())
+	_, err := store.GetMCPClientConfigByID(ctx, "id-alpha")
+	require.NoError(t, err)
+	_, err = store.GetMCPClientConfigByID(ctx, "id-beta")
+	assert.ErrorIs(t, err, configstore.ErrNotFound, "beta is no longer declared, so it is pruned")
+}
+
 // TestMCPClientStartsPendingVerification: a client declared in config.json
 // starts pending its admin step exactly when its auth type has one and there is
 // an upstream to run it against.
