@@ -8211,6 +8211,149 @@ const GO18 = folder("GO-18 Automatic STDIO respawn", "Setup: alpha (echo_tool, a
   deleteClient("GO-18", "go18-c"),
 ]);
 
+// ================================================================ max protocol version
+const ALL_VERSIONS = ["2026-07-28", "2025-11-25", "2025-06-18"];
+const setVersions = (id, server, versions) => mockPost(id, server, "versions", `setup: ${server} speaks ${versions.join(", ")}`, { versions });
+const hs = (method, requested, negotiated = requested) => ({ method, requested, negotiated });
+const DISCOVER = hs("server/discover", "2026-07-28");
+const INIT = (version) => hs("initialize", version);
+// saveHandshakes keeps how many handshakes server has answered; handshakesSince checks the ones answered after that.
+const saveHandshakes = (id, server, varName) => mockGet(id, server, `setup: record ${server}'s handshakes`, [], [`pm.collectionVariables.set(${lit(varName)}, pm.response.json().counters.handshakes.length);`]);
+const handshakesSince = (varName, want) => A.custom(`the handshakes since are ${lit(want)}`, [
+  "var all = pm.response.json().counters.handshakes || [];",
+  `pm.expect(all.slice(Number(pm.collectionVariables.get(${lit(varName)}))), 'handshakes: ' + JSON.stringify(all)).to.eql(${lit(want)});`,
+]);
+// waitForHandshakes polls server, 250ms apart, until it has answered n handshakes since varName was saved, or about 10s pass.
+const waitForHandshakes = (server, varName, n, tries = 40) => [
+  `var left = ${tries};`,
+  "function poll() {",
+  `  pm.sendRequest({ url: pm.variables.get('chaos_url') + '/control/${server}', method: 'GET' }, function (err, res) {`,
+  `    var got = !err && res.code === 200 ? res.json().counters.handshakes.length : 0;`,
+  `    if (got >= Number(pm.collectionVariables.get(${lit(varName)})) + ${n} || --left <= 0) { return; }`,
+  "    setTimeout(poll, 250);",
+  "  });",
+  "}",
+  "poll();",
+];
+const stickyOn = (clientId, name, server, over = {}) => httpClient(clientId, name, server, { needs_session_stickiness: true, tools_to_execute: ["*"], ...over });
+const capMessage = (field, v) => `${field} must be one of auto, 2026-07-28, 2025-11-25, 2025-06-18, got "${v}"`;
+const setGlobalCap = (id, title, v, asserts = [A.status(200)]) => putConfig(id, title, [`cc.mcp_max_protocol_version = ${lit(v)};`], asserts);
+const omitGlobalCap = (id, title) => putConfig(id, title, ["delete cc.mcp_max_protocol_version;"], [A.status(200)]);
+const globalCap = (id, title, v) => request(id, title, "GET", "/api/config", { asserts: [A.status(200), A.custom(`mcp_max_protocol_version is ${v === undefined ? "absent" : lit(v)}`, [
+  `pm.expect(pm.response.json().client_config.mcp_max_protocol_version, 'body: ' + JSON.stringify(pm.response.json().client_config)).to.${v === undefined ? "equal(undefined)" : `equal(${lit(v)})`};`,
+])] });
+const capIs = (v) => A.custom(`max_protocol_version is ${v === undefined ? "absent" : lit(v)}`, [
+  `pm.expect(pm.response.json().clients[0].config.max_protocol_version, 'body: ' + pm.response.text()).to.${v === undefined ? "equal(undefined)" : `equal(${lit(v)})`};`,
+]);
+const noClient = (id, clientId, title) => request(id, title, "GET", `/api/mcp/clients?server=${clientId}`, { asserts: [A.status(200), A.custom("no such client is listed", ["pm.expect(pm.response.json().clients || [], 'body: ' + pm.response.text()).to.eql([]);"])] });
+const healthyAfterHandshakes = (id, clientId, title) => request(id, title, "GET", `/api/mcp/clients?server=${clientId}`, { pre: waitForClient(clientId, "c.state === 'healthy'"), asserts: [A.status(200), clientState("healthy")] });
+
+const SET27 = folder("SET-27 Max protocol version validation", "Setup: admin credentials; alpha (echo_tool); client set27-c, per call on alpha, with no cap.", [
+  ...freshServer("SET-27", "alpha", ["echo_tool"]),
+  createClient("SET-27", httpClient("set27-c", "set27_c", "alpha", { tools_to_execute: ["*"] }), "setup: create the client"),
+  ...["2024-11-05", "nope"].flatMap((v) => [
+    createExpect("SET-27", `create with max_protocol_version ${lit(v)}`, stickyOn("set27-x", "set27_x", "alpha", { max_protocol_version: v }), [A.status(400), A.msgEquals(capMessage("max_protocol_version", v))]),
+    noClient("SET-27", "set27-x", `the ${lit(v)} create stored no client`),
+    clientPut("SET-27", `PUT max_protocol_version ${lit(v)}`, "set27-c", { max_protocol_version: v }, [A.status(400), A.msgEquals(capMessage("max_protocol_version", v))]),
+  ]),
+  getClient("SET-27", "set27-c", "the client still has no cap", [capIs(undefined)]),
+  readConfig("SET-27"),
+  setGlobalCap("SET-27", "PUT /api/config with mcp_max_protocol_version \"bogus\"", "bogus", [A.status(400), A.msgEquals(capMessage("mcp_max_protocol_version", "bogus"))]),
+  request("SET-27", "the global setting is unchanged", "GET", "/api/config", { asserts: [A.status(200), A.custom("mcp_max_protocol_version is what it was", [
+    "var before = JSON.parse(pm.collectionVariables.get('client_config')).mcp_max_protocol_version;",
+    "pm.expect(pm.response.json().client_config.mcp_max_protocol_version).to.equal(before);",
+  ])] }),
+  deleteClient("SET-27", "set27-c"),
+]);
+
+const SET28 = folder("SET-28 A capped client offers no newer version", "Setup: global max protocol version auto; fleet servers set28u, set28n and set28o, each speaking 2026-07-28, 2025-11-25 and 2025-06-18; on each a sticky client: set28-u with no cap, set28-n capped at 2025-11-25, set28-o capped at 2025-06-18.", [
+  ...[["set28u", "set28-u", "set28_u", {}, [DISCOVER]], ["set28n", "set28-n", "set28_n", { max_protocol_version: "2025-11-25" }, [INIT("2025-11-25"), INIT("2025-11-25")]], ["set28o", "set28-o", "set28_o", { max_protocol_version: "2025-06-18" }, [INIT("2025-06-18"), INIT("2025-06-18")]]].flatMap(([server, clientId, name, over, want]) => [
+    ...freshServer("SET-28", server, ["echo_tool"]),
+    setVersions("SET-28", server, ALL_VERSIONS),
+    saveHandshakes("SET-28", server, `${server}_h`),
+    createClient("SET-28", stickyOn(clientId, name, server, over), `setup: create ${clientId}`),
+    mockGet("SET-28", server, `${server} answered ${want.map((h) => `${h.method} ${h.requested}`).join(" and ")}`, [handshakesSince(`${server}_h`, want)]),
+    getClient("SET-28", clientId, `${clientId} is healthy and reads back its cap`, [clientState("healthy"), capIs(over.max_protocol_version)]),
+    execTool("SET-28", `execute through ${clientId}`, `${name}-echo_tool`, [A.status(200)]),
+  ]),
+  mockGet("SET-28", "set28u", "the uncapped client holds no session, only its subscriptions/listen stream", [
+    A.custom("sessions 0 and one open stream", ["var b = pm.response.json();", "pm.expect(b.counters.sessions, 'body: ' + pm.response.text()).to.equal(0);", "pm.expect(b.streams).to.equal(1);"]),
+  ]),
+  deleteClient("SET-28", "set28-u"), deleteClient("SET-28", "set28-n"), deleteClient("SET-28", "set28-o"),
+]);
+
+const SET29_CAP_MESSAGE = "mcp protocol version above the configured maximum: upstream negotiated 2025-11-25, newer than this client's max protocol version 2025-06-18";
+const SET29 = folder("SET-29 Upstream answering above the cap", "Setup: alpha (echo_tool) answers initialize with protocol version 2025-11-25 (bad_version). Clients on alpha: a sticky one capped at 2025-06-18, a per-call one capped at 2025-06-18, a sticky one with no cap, a sticky one capped at 2025-11-25.", [
+  ...freshServer("SET-29", "alpha", ["echo_tool"]),
+  mockPost("SET-29", "alpha", "faults", "setup: alpha answers initialize with 2025-11-25", { faults: { bad_version: "2025-11-25" } }),
+  saveHandshakes("SET-29", "alpha", "set29_h"),
+  createExpect("SET-29", "create the sticky client capped at 2025-06-18", stickyOn("set29-s", "set29_s", "alpha", { max_protocol_version: "2025-06-18" }),
+    [A.status(500), A.msgEquals(`Failed to connect MCP client: failed to initialize MCP client: ${SET29_CAP_MESSAGE}`)]),
+  mockGet("SET-29", "alpha", "alpha answered one initialize, not retried", [handshakesSince("set29_h", [hs("initialize", "2025-06-18", "2025-11-25")])]),
+  noClient("SET-29", "set29-s", "the sticky client is not kept"),
+  createClient("SET-29", httpClient("set29-p", "set29_p", "alpha", { tools_to_execute: ["*"], max_protocol_version: "2025-06-18" }), "create the per-call client capped at 2025-06-18"),
+  getClient("SET-29", "set29-p", "the per-call client is unstable at stage tool_discovery, with no tools", [clientState("unstable"), clientField("last_failure.stage", "tool_discovery"), toolNamesAre([]),
+    A.custom("last_failure.message names the cap", [`pm.expect(pm.response.json().clients[0].last_failure.message, 'body: ' + pm.response.text()).to.include(${lit(SET29_CAP_MESSAGE)});`])]),
+  execTool("SET-29", "execute through the per-call client", "set29_p-echo_tool", [A.status(400), A.msgContains("is not available or not permitted")]),
+  createClient("SET-29", stickyOn("set29-u", "set29_u", "alpha"), "create the sticky client with no cap"),
+  getClient("SET-29", "set29-u", "the uncapped client is healthy", [clientState("healthy")]),
+  createClient("SET-29", stickyOn("set29-n", "set29_n", "alpha", { max_protocol_version: "2025-11-25" }), "create the sticky client capped at 2025-11-25"),
+  getClient("SET-29", "set29-n", "the client capped at 2025-11-25 is healthy", [clientState("healthy")]),
+  mockPost("SET-29", "alpha", "faults/clear", "teardown: clear alpha's faults"),
+  deleteClient("SET-29", "set29-p"), deleteClient("SET-29", "set29-u"), deleteClient("SET-29", "set29-n"),
+]);
+
+const SET30 = folder("SET-30 Global max protocol version round trip", "Setup: admin credentials; a fresh install, so no global max protocol version is stored. The folder ends with the global setting at auto.", [
+  globalCap("SET-30", "a fresh install stores no global setting", undefined),
+  readConfig("SET-30"),
+  setGlobalCap("SET-30", "PUT mcp_max_protocol_version 2025-06-18", "2025-06-18"),
+  globalCap("SET-30", "2025-06-18 is stored", "2025-06-18"),
+  readConfig("SET-30"),
+  omitGlobalCap("SET-30", "PUT the client config without mcp_max_protocol_version"),
+  globalCap("SET-30", "omitting the field keeps 2025-06-18", "2025-06-18"),
+  readConfig("SET-30"),
+  setGlobalCap("SET-30", "PUT mcp_max_protocol_version auto", "auto"),
+  request("SET-30", "auto is stored", "GET", "/api/config", { pre: afterSeconds(3), asserts: [A.status(200), A.custom("mcp_max_protocol_version is \"auto\"", ["pm.expect(pm.response.json().client_config.mcp_max_protocol_version).to.equal('auto');"])] }),
+]);
+
+const SET31 = folder("SET-31 A global cap change reconnects only the clients it affects", "Setup: global max protocol version auto; fleet servers set31u and set31c, each speaking 2026-07-28, 2025-11-25 and 2025-06-18; sticky client set31-u on set31u following the global setting, sticky client set31-c on set31c capped at 2025-06-18. The folder ends with the global setting at auto.", [
+  ...freshServer("SET-31", "set31u", ["echo_tool"]), setVersions("SET-31", "set31u", ALL_VERSIONS),
+  ...freshServer("SET-31", "set31c", ["echo_tool"]), setVersions("SET-31", "set31c", ALL_VERSIONS),
+  createClient("SET-31", stickyOn("set31-u", "set31_u", "set31u"), "setup: create set31-u, following the global setting"),
+  createClient("SET-31", stickyOn("set31-c", "set31_c", "set31c", { max_protocol_version: "2025-06-18" }), "setup: create set31-c, capped at 2025-06-18"),
+  readConfig("SET-31"),
+  saveHandshakes("SET-31", "set31u", "set31u_h"), saveHandshakes("SET-31", "set31c", "set31c_h"),
+  setGlobalCap("SET-31", "lower the global setting to 2025-06-18", "2025-06-18"),
+  mockGetAfter("SET-31", "set31u", "set31-u reconnects at 2025-06-18 within 10s", [handshakesSince("set31u_h", [INIT("2025-06-18"), INIT("2025-06-18")])], waitForHandshakes("set31u", "set31u_h", 2)),
+  healthyAfterHandshakes("SET-31", "set31-u", "set31-u is healthy"),
+  mockGet("SET-31", "set31c", "set31-c, with its own cap, did not reconnect", [handshakesSince("set31c_h", [])]),
+  readConfig("SET-31"),
+  saveHandshakes("SET-31", "set31u", "set31u_h"), saveHandshakes("SET-31", "set31c", "set31c_h"),
+  setGlobalCap("SET-31", "raise the global setting to auto", "auto"),
+  mockGetAfter("SET-31", "set31u", "set31-u reconnects at 2026-07-28 within 10s", [handshakesSince("set31u_h", [DISCOVER])], waitForHandshakes("set31u", "set31u_h", 1)),
+  healthyAfterHandshakes("SET-31", "set31-u", "set31-u is healthy"),
+  mockGetAfter("SET-31", "set31c", "set31-c still did not reconnect", [handshakesSince("set31c_h", [])], afterSeconds(3)),
+  execTool("SET-31", "execute through set31-u", "set31_u-echo_tool", [A.status(200)]),
+  deleteClient("SET-31", "set31-u"), deleteClient("SET-31", "set31-c"),
+]);
+
+const SET32 = folder("SET-32 Changing a client's own cap", "Setup: global max protocol version auto; fleet server set32 speaking 2026-07-28, 2025-11-25 and 2025-06-18; sticky client set32-c on it capped at 2025-06-18.", [
+  ...freshServer("SET-32", "set32", ["echo_tool"]), setVersions("SET-32", "set32", ALL_VERSIONS),
+  saveHandshakes("SET-32", "set32", "set32_h"),
+  createClient("SET-32", stickyOn("set32-c", "set32_c", "set32", { max_protocol_version: "2025-06-18" }), "setup: create set32-c, capped at 2025-06-18"),
+  mockGet("SET-32", "set32", "set32-c connected at 2025-06-18", [handshakesSince("set32_h", [INIT("2025-06-18"), INIT("2025-06-18")])]),
+  ...[["auto", [DISCOVER], "auto"], ["2026-07-28", [], "2026-07-28"], ["2025-11-25", [INIT("2025-11-25"), INIT("2025-11-25")], "2025-11-25"], ["", [DISCOVER], undefined]].flatMap(([cap, want, readBack]) => [
+    saveHandshakes("SET-32", "set32", "set32_h"),
+    clientPut("SET-32", `PUT max_protocol_version ${lit(cap)}`, "set32-c", { max_protocol_version: cap }, [A.status(200), A.jsonMessage("MCP client edited successfully")]),
+    want.length
+      ? mockGetAfter("SET-32", "set32", `set32-c reconnects with ${want.map((h) => `${h.method} ${h.requested}`).join(" and ")} within 10s`, [handshakesSince("set32_h", want)], waitForHandshakes("set32", "set32_h", want.length))
+      : mockGetAfter("SET-32", "set32", "set32-c does not reconnect: it already runs at 2026-07-28", [handshakesSince("set32_h", [])], afterSeconds(3)),
+    request("SET-32", `set32-c is healthy and reads back ${readBack === undefined ? "no cap" : lit(readBack)}`, "GET", "/api/mcp/clients?server=set32-c", { pre: waitForClient("set32-c", "c.state === 'healthy'"), asserts: [A.status(200), clientState("healthy"), capIs(readBack)] }),
+  ]),
+  execTool("SET-32", "execute through set32-c", "set32_c-echo_tool", [A.status(200)]),
+  deleteClient("SET-32", "set32-c"),
+]);
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -8229,7 +8372,7 @@ const collection = {
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, GO18, CONN23, CONN24, CONN25, CONN27]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS40, OAS42]),
-    section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET26]),
+    section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET26, SET27, SET28, SET29, SET30, SET31, SET32]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV37, GOV38, GOV39]),
     section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB27, LIB32, LIB33, LIB34, LIB36, LIB37]),
