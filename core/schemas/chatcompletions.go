@@ -1961,7 +1961,16 @@ type ContentLogProb struct {
 }
 
 // BifrostLLMUsage represents token usage information
+// TokenUsageEstimation identifies locally estimated fields of interrupted usage.
+// Provider-reported fields and successfully completed responses are unchanged.
+type TokenUsageEstimation struct {
+	Prompt     bool   `json:"prompt,omitempty"`
+	Completion bool   `json:"completion,omitempty"`
+	Tokenizer  string `json:"tokenizer"`
+}
+
 type BifrostLLMUsage struct {
+	Estimation              *TokenUsageEstimation        `json:"estimation,omitempty"`
 	PromptTokens            int                          `json:"prompt_tokens,omitempty"`
 	PromptTokensDetails     *ChatPromptTokensDetails     `json:"prompt_tokens_details,omitempty"`
 	CompletionTokens        int                          `json:"completion_tokens,omitempty"`
@@ -2560,6 +2569,10 @@ func (u *BifrostLLMUsage) DeepCopy() *BifrostLLMUsage {
 		return nil
 	}
 	c := *u
+	if u.Estimation != nil {
+		e := *u.Estimation
+		c.Estimation = &e
+	}
 	if u.PromptTokensDetails != nil {
 		pd := *u.PromptTokensDetails
 		if u.PromptTokensDetails.CachedWriteTokenDetails != nil {

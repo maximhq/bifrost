@@ -18,6 +18,7 @@ var NoDeadline time.Time
 // assert the type before indexing: SetValue/ClearValue/GetAndSetValue accept any,
 // and indexing a map with a non-comparable key (slice, map, func) would panic.
 var reservedKeys = map[BifrostContextKey]struct{}{
+	BifrostContextKeyStreamUsageUpdates:      {},
 	BifrostContextKeyVirtualKey:              {},
 	BifrostContextKeyAPIKeyName:              {},
 	BifrostContextKeyAPIKeyID:                {},

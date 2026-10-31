@@ -115,6 +115,15 @@ For terminal failures (no retry happens, including non-retryable errors), the tr
 
 ![Multimodal Request Tracing](../../media/ui-multimodal-tracing.png)
 
+### **Cancelled & Timed-Out Streams**
+
+When a chat completion, text completion, or Responses stream is cancelled or times out, Bifrost bills whatever usage the provider already reported. Many providers send usage only in the final event, so a stream cut short often has none. In that case Bifrost counts the prompt and the output received so far, and records the result as billed usage before governance, logging, and telemetry see the request, so all three agree.
+
+- **Tokenizer**: models in the Anthropic, DeepSeek, Llama 2, and Llama 3 families are counted with their own vocabularies, which ship inside Bifrost; every other model uses `o200k_base` (newer OpenAI models) or `cl100k_base`. A family's vocabulary is loaded the first time one of its streams is cancelled. That takes 40–220 ms once and keeps 4–18 MB in memory.
+- **Provenance**: estimated fields are marked in `usage.estimation` (`prompt`, `completion`, `tokenizer`). Provider-reported fields are never overwritten, except the provisional output count a Claude stream reports in `message_start`, which is replaced when the stream is cancelled before a later usage event. This applies to every provider that serves Claude's streaming format (Anthropic, Vertex, Bedrock, Azure and others).
+- **Requires stream accumulation**: the estimate reads the output from the stream accumulator that this logging plugin (or the Maxim plugin) maintains. With neither enabled, only provider-reported usage is billed.
+- **Limits**: only the first choice of an `n > 1` stream is counted, and image or audio prompt content is not estimated.
+
 ---
 
 ## How It Works

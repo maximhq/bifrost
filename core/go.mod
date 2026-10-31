@@ -19,6 +19,7 @@ require (
 	github.com/bytedance/sonic v1.15.3-0.20260730064818-2a36d6da63e2
 	github.com/canonical/starlark v0.0.0-20260428155828-9a81051fac39
 	github.com/cespare/xxhash/v2 v2.3.0
+	github.com/dlclark/regexp2/v2 v2.5.1
 	github.com/fasthttp/websocket v1.5.12
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
@@ -29,6 +30,7 @@ require (
 	github.com/stretchr/testify v1.12.1
 	github.com/tidwall/gjson v1.18.0
 	github.com/tidwall/sjson v1.2.5
+	github.com/tiktoken-go/tokenizer v0.10.0
 	github.com/valyala/fasthttp v1.74.0
 	golang.org/x/mod v0.41.0
 	golang.org/x/net v0.61.0
