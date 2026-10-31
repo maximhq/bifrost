@@ -597,6 +597,13 @@ func (h *OAuth2IssuanceHandler) handleTokenRefresh(ctx *fasthttp.RequestCtx) {
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "resource mismatch")
 		return
 	}
+	// The grant is bound to the /mcp resource as it was when it was authorized. A changed issuer_url
+	// moves that resource, and a token minted for the old one is refused by /mcp for its audience, so
+	// the grant cannot refresh; the client authorizes again against the server's current address.
+	if resource != oauth2MCPResourceURL(ctx, h.store) {
+		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "the grant was issued for a resource this server no longer serves; authorize again")
+		return
+	}
 
 	accessToken, newRefreshToken, newRefreshTokenObj, err := h.issueTokenPair(ctx, rt.FamilyID, rt.ClientID, rt.BfMode, rt.BfSub, rt.Scope, resource, rt.ClientDisplayName)
 	if err != nil {

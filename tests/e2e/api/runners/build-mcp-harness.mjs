@@ -1590,6 +1590,18 @@ const OAS34 = folder("OAS-34 Access token expiry", `Setup: ${GRANT_TEXT}; ${BOTH
   ...fleetGrantTeardown("OAS-34"),
 ]);
 
+const OAS35 = folder("OAS-35 Changing issuer_url", `Setup: ${GRANT_TEXT}; ${BOTH}, temp-token auth on; one grant (an access token and a refresh token), then issuer_url switched to ${OTHER_ISS}.`, [
+  ...fleetGrantSetup("OAS-35"), oauthConfig("OAS-35", "both"),
+  register("OAS-35", "oas35_client", LOOPBACK_CB, undefined, REFRESHABLE),
+  ...vkGrant("OAS-35", "oas35_client", "oas35_f", "the grant"),
+  mcpWithToken("OAS-35", "control: the access token on /mcp", "oas35_f_at", [A.status(200)]),
+  oauthConfig("OAS-35", "both", [`cc.oauth2_server_config = { issuer_url: ${lit(OTHER_ISS)} };`], `setup: switch issuer_url to ${OTHER_ISS}`),
+  request("OAS-35", "authorization server metadata names the new issuer", "GET", "/.well-known/oauth-authorization-server", { noAuth: true, asserts: [A.status(200), A.jsonEquals("issuer", OTHER_ISS)] }),
+  mcpWithToken("OAS-35", "the old access token on /mcp", "oas35_f_at", [A.status(401), A.msgStartsWith("invalid token")]),
+  tokenReq("OAS-35", "refresh the grant", refreshParams("oas35_f_rt", "oas35_client"), [A.status(400), O.error("invalid_grant"), O.descEquals("the grant was issued for a resource this server no longer serves; authorize again")]),
+  ...fleetGrantTeardown("OAS-35"),
+]);
+
 const OAS38 = folder("OAS-38 disable_vk_identity without an identity provider", `Setup: ${FLEET}; the full-access VK (${VKS.full.text}); mcp_server_auth_mode oauth with issuer_url set to the base URL, disable_vk_identity on, temp-token auth on; no identity provider is configured.`, [
   ...fleetGrantSetup("OAS-38"), oauthConfig("OAS-38", "oauth", ["cc.oauth2_server_config.disable_vk_identity = true;"], "setup: mcp_server_auth_mode oauth, issuer_url set to the base URL, disable_vk_identity on, temp-token auth on"),
   request("OAS-38", "control: the config reads disable_vk_identity true in oauth mode", "GET", "/api/config", { asserts: [A.status(200), A.custom("disable_vk_identity true, mcp_server_auth_mode oauth", ["var cc = pm.response.json().client_config;", "pm.expect(cc.oauth2_server_config.disable_vk_identity, 'body: ' + pm.response.text()).to.equal(true);", "pm.expect(cc.mcp_server_auth_mode).to.equal('oauth');"])] }),
@@ -7597,7 +7609,7 @@ const collection = {
     section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH48, AUTH49, AUTH50]),
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN20, CONN22, CONN23, CONN24, CONN25, CONN27]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54]),
-    section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS36, OAS38, OAS42]),
+    section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS42]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET21, SET22]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV37, GOV38]),
     section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
