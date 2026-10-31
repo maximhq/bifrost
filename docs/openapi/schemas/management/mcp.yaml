@@ -403,11 +403,13 @@ MCPClientCreateRequestBase:
       description: |
         Used only at create time when `auth_type` is `per_user_headers`. A sample
         set of header values the admin supplies so Bifrost can run a one-time
-        upstream verify and discover the tool list. Not persisted by the create
-        call; each end-user submits their own values at runtime. To have Bifrost
-        retain an admin discovery credential for periodic tool-list refresh,
-        use POST /api/mcp/client/{id}/verify-headers, which stores the sample
-        values as that credential.
+        upstream verify and discover the tool list. The create call also keeps
+        them as the client's admin discovery credential, as
+        POST /api/mcp/client/{id}/verify-headers does, used only for periodic
+        and on-demand (POST /api/mcp/client/{id}/refresh-tools) tool-list
+        refresh. Keeping them is best effort: if storing the credential fails,
+        the client is still created. Each end-user submits their own values at
+        runtime.
 
 MCPClientCreateRequestHTTP:
   allOf:
