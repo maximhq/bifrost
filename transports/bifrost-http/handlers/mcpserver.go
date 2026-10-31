@@ -205,7 +205,7 @@ func (h *MCPServerHandler) handleMCPServer(ctx *fasthttp.RequestCtx) {
 
 	if refusal := h.admit(ctx, bifrostCtx); refusal != nil {
 		cancel()
-		SendError(ctx, refusal.status, refusal.message)
+		sendMCPRefusal(ctx, refusal)
 		return
 	}
 
@@ -590,9 +590,22 @@ func (h *MCPServerHandler) narrowListedTools(ctx context.Context, _ any, _ *mcp.
 // Admission
 
 // mcpRefusal is what a /mcp request is refused with: the status to answer and the message to say.
+// A governance refusal also keeps the error it came as, so /mcp answers with the same error type
+// execute and chat answer with.
 type mcpRefusal struct {
 	status  int
 	message string
+	err     *schemas.BifrostError
+}
+
+// sendMCPRefusal writes a refusal: the governance error as it came, with the refusal's status, or
+// a plain error carrying the status and message.
+func sendMCPRefusal(ctx *fasthttp.RequestCtx, refusal *mcpRefusal) {
+	if refusal.err != nil {
+		SendBifrostError(ctx, refusal.err)
+		return
+	}
+	SendError(ctx, refusal.status, refusal.message)
 }
 
 // admit settles who is asking and what they may reach, in that order, before a single JSON-RPC
@@ -603,6 +616,12 @@ type mcpRefusal struct {
 // request may see and call.
 func (h *MCPServerHandler) admit(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext) *mcpRefusal {
 	if err := h.authenticate(ctx, bifrostCtx); err != nil {
+		// Every credential refusal in a mode that accepts Bifrost-issued tokens points at where a
+		// token can be obtained, including the ones authenticate returns without setting it itself
+		// (a token whose virtual key no longer exists, for one).
+		if h.discoveryEnabled() && len(ctx.Response.Header.Peek("WWW-Authenticate")) == 0 {
+			ctx.Response.Header.Set("WWW-Authenticate", wwwAuthenticateValue(ctx, h.config))
+		}
 		return &mcpRefusal{status: fasthttp.StatusUnauthorized, message: err.Error()}
 	}
 
@@ -617,7 +636,9 @@ func (h *MCPServerHandler) admit(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.B
 		if status == fasthttp.StatusUnauthorized && h.discoveryEnabled() {
 			ctx.Response.Header.Set("WWW-Authenticate", wwwAuthenticateValue(ctx, h.config))
 		}
-		return &mcpRefusal{status: status, message: bifrost.GetErrorMessage(refused)}
+		sent := *refused
+		sent.StatusCode = &status
+		return &mcpRefusal{status: status, message: bifrost.GetErrorMessage(refused), err: &sent}
 	}
 
 	// A /mcp/<slug> endpoint serves one Virtual MCP or one MCP client: gate on the caller's grant and

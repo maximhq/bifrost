@@ -2563,9 +2563,9 @@ const EP48 = folder("EP-48 VK changed after the JWT was issued", `Setup: ${FLEET
   authMode("EP-48", "O", false),
   list("EP-48", "oauth: the token after the deactivation", "/mcp", [bearer("{{ep48_g_at}}")], [A.status(403), A.msgEquals("virtual key is inactive")]),
   request("EP-48", "setup: delete the VK", "DELETE", "/api/governance/virtual-keys/{{ep-48_full_id}}", { asserts: [A.status(200)] }),
-  list("EP-48", "oauth: the token after the delete", "/mcp", [bearer("{{ep48_g_at}}")], [A.status(401), A.msgEquals(EP48_GONE), A.skip(wwwPresent())]),
+  list("EP-48", "oauth: the token after the delete", "/mcp", [bearer("{{ep48_g_at}}")], [A.status(401), A.msgEquals(EP48_GONE), wwwPresent()]),
   authMode("EP-48", "B", false),
-  list("EP-48", "the token after the delete", "/mcp", [bearer("{{ep48_g_at}}")], [A.status(401), A.msgEquals(EP48_GONE), A.skip(wwwPresent())]),
+  list("EP-48", "the token after the delete", "/mcp", [bearer("{{ep48_g_at}}")], [A.status(401), A.msgEquals(EP48_GONE), wwwPresent()]),
   restoreConfig("EP-48"), ...fleetTeardown("EP-48"),
 ]);
 
@@ -6008,6 +6008,25 @@ const GOV15 = folder("GOV-15 Expired VK", `Setup: ${LLM_TEXT}; alpha (echo, add,
   deleteClient("GOV-15", "gov-15-alpha"),
 ]);
 
+// typeIs checks the refusal's top-level error type.
+const typeIs = (t) => A.custom(`type is ${lit(t)}`, [`pm.expect(pm.response.json().type, 'body: ' + pm.response.text()).to.equal(${lit(t)});`]);
+const INACTIVE = [A.status(403), typeIs("access_blocked"), A.msgEquals("virtual key is inactive")];
+const GOV14 = folder("GOV-14 Inactive VK", `Setup: ${LLM_TEXT}; alpha (echo, add, greet) registered as client alpha, per call, tools_to_execute ["*"]; an inactive virtual key allowed openai with any model and key and mcp_configs alpha ["*"].`, [
+  ...freshServer("GOV-14", "alpha", ["echo", "add", "greet"]),
+  alphaClient("GOV-14"),
+  request("GOV-14", "setup: create the inactive virtual key", "POST", "/api/governance/virtual-keys", {
+    body: { name: "GOV-14 key", provider_configs: OPENAI_GRANT, mcp_configs: [{ mcp_client_name: "alpha", tools_to_execute: ["*"] }], is_active: false }, asserts: [A.status(200)],
+    extraTests: ["pm.collectionVariables.set('gov14_vk_id', pm.response.json().virtual_key.id);", "pm.collectionVariables.set('gov14_vk', pm.response.json().virtual_key.value);"],
+  }),
+  llmScript("GOV-14", "gov14", TEXT_OK),
+  govExec("GOV-14", "alpha-echo", INACTIVE),
+  rpc("GOV-14", "/mcp initialize with the inactive key", init("2025-03-26"), { headers: [MCP_ACCEPT, ...withVK("GOV-14")], asserts: INACTIVE }),
+  infPost("GOV-14", "chat with the inactive key", "/v1/chat/completions", chatBody("gov14"), INACTIVE, { headers: withVK("GOV-14") }),
+  llmCaptured("GOV-14", "control: the chat never reached the model", "gov14", [reqCount(0)]),
+  govTeardownVK("GOV-14"),
+  deleteClient("GOV-14", "gov-14-alpha"),
+]);
+
 const GOV20 = folder("GOV-20 Agent mode respects the VK", `Setup: ${LLM_TEXT}; alpha (echo, add, greet) registered as client alpha, per call, tools_to_execute ["*"], tools_to_auto_execute ["*"]; a virtual key allowed openai with any model and key, mcp_configs alpha ["echo"]; turn 1 calls alpha-add, turn 2 answers "done".`, [
   ...agentSetup("GOV-20", ["*"]),
   govVK("GOV-20", [{ mcp_client_name: "alpha", tools_to_execute: ["echo"] }]),
@@ -7388,7 +7407,7 @@ const collection = {
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP17, EP18, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS30, OAS31, OAS32, OAS33, OAS34, OAS36, OAS38, OAS42]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET21, SET22]),
-    section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV11, GOV12, GOV15, GOV16, GOV17, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV31, GOV32, GOV33, GOV34, GOV35, GOV38]),
+    section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV31, GOV32, GOV33, GOV34, GOV35, GOV38]),
     section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43]),
