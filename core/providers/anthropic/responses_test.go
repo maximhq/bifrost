@@ -3657,3 +3657,143 @@ func BenchmarkGroupedConversion_ToolUseBlocks(b *testing.B) {
 		_ = convertAnthropicContentBlocksToResponsesMessagesGrouped(blocks, &assistant, true)
 	}
 }
+
+func terminalArgumentsItem(id string, index int, eventType schemas.ResponsesStreamResponseType) *schemas.BifrostResponsesStreamResponse {
+	return &schemas.BifrostResponsesStreamResponse{
+		Type: eventType, OutputIndex: schemas.Ptr(index),
+		Item: &schemas.ResponsesMessage{
+			ID: schemas.Ptr(id), Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("call_" + id), Name: schemas.Ptr("Read")},
+		},
+	}
+}
+
+func terminalArgumentsEvent(id string, index int, eventType schemas.ResponsesStreamResponseType, arguments string) *schemas.BifrostResponsesStreamResponse {
+	return &schemas.BifrostResponsesStreamResponse{
+		Type: eventType, ItemID: schemas.Ptr(id), OutputIndex: schemas.Ptr(index), Arguments: schemas.Ptr(arguments),
+	}
+}
+
+func terminalArgumentsJSON(events []*AnthropicStreamEvent) string {
+	var result strings.Builder
+	for _, event := range events {
+		if event.Delta != nil && event.Delta.Type == AnthropicStreamDeltaTypeInputJSON && event.Delta.PartialJSON != nil {
+			result.WriteString(*event.Delta.PartialJSON)
+		}
+	}
+	return result.String()
+}
+
+func TestTerminalToolArguments(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		deltas     []string
+		complete   string
+		wantSuffix string
+	}{
+		{"terminal only", nil, `{"file_path":"/etc/hostname"}`, `{"file_path":"/etc/hostname"}`},
+		{"partial", []string{`{"file_path":`}, `{"file_path":"/etc/hostname"}`, `"/etc/hostname"}`},
+		{"complete", []string{`{"file_`, `path":"/etc/hostname"}`}, `{"file_path":"/etc/hostname"}`, ""},
+		{"empty object", nil, `{}`, `{}`},
+		{"unicode", []string{`{"file_path":"世界`}, `{"file_path":"世界.txt"}`, `.txt"}`},
+		{"divergent", []string{`{"a":1`}, `{"b":2}`, ""},
+		{"shorter", []string{`{"file_path":"long`}, `{}`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(nil, time.Time{})
+			ToAnthropicResponsesStreamResponse(ctx, terminalArgumentsItem("fc_1", 0, schemas.ResponsesStreamResponseTypeOutputItemAdded))
+			for _, delta := range tc.deltas {
+				ToAnthropicResponsesStreamResponse(ctx, terminalArgumentsEvent("fc_1", 0, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, delta))
+			}
+			done := terminalArgumentsEvent("fc_1", 0, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone, tc.complete)
+			if got := terminalArgumentsJSON(ToAnthropicResponsesStreamResponse(ctx, done)); got != tc.wantSuffix {
+				t.Fatalf("terminal argument suffix = %q, want %q", got, tc.wantSuffix)
+			}
+			if got := terminalArgumentsJSON(ToAnthropicResponsesStreamResponse(ctx, done)); got != "" {
+				t.Fatalf("repeated terminal event duplicated arguments: %q", got)
+			}
+			ToAnthropicResponsesStreamResponse(ctx, terminalArgumentsItem("fc_1", 0, schemas.ResponsesStreamResponseTypeOutputItemDone))
+			if got := terminalArgumentsJSON(ToAnthropicResponsesStreamResponse(ctx, done)); got != "" {
+				t.Fatalf("closed block received arguments: %q", got)
+			}
+		})
+	}
+}
+
+func TestTerminalToolArgumentsParallel(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, time.Time{})
+	for i := range 3 {
+		id := fmt.Sprintf("fc_%d", i)
+		ToAnthropicResponsesStreamResponse(ctx, terminalArgumentsItem(id, i, schemas.ResponsesStreamResponseTypeOutputItemAdded))
+	}
+	for _, i := range []int{2, 0, 1} {
+		id := fmt.Sprintf("fc_%d", i)
+		arguments := fmt.Sprintf(`{"file_path":"/etc/file%d"}`, i)
+		events := ToAnthropicResponsesStreamResponse(ctx, terminalArgumentsEvent(id, i, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone, arguments))
+		if got := terminalArgumentsJSON(events); got != arguments {
+			t.Fatalf("call %d arguments = %q, want %q", i, got, arguments)
+		}
+		if len(events) != 1 || events[0].Index == nil || *events[0].Index != i {
+			t.Fatalf("call %d mapped to wrong block: %+v", i, events)
+		}
+	}
+}
+
+func TestTerminalToolArgumentsPassthroughAndUnknown(t *testing.T) {
+	for _, passthrough := range []bool{false, true} {
+		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		state := getOrCreateAnthropicToResponsesStreamState(ctx)
+		state.passthrough = passthrough
+		if passthrough {
+			ToAnthropicResponsesStreamResponse(ctx, terminalArgumentsItem("fc_1", 0, schemas.ResponsesStreamResponseTypeOutputItemAdded))
+		}
+		if events := ToAnthropicResponsesStreamResponse(ctx, terminalArgumentsEvent("fc_1", 0, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone, `{}`)); len(events) != 0 {
+			t.Fatalf("passthrough=%v emitted terminal arguments: %+v", passthrough, events)
+		}
+	}
+}
+
+func BenchmarkTerminalToolArguments(b *testing.B) {
+	for _, terminalOnly := range []bool{false, true} {
+		b.Run(fmt.Sprintf("terminalOnly=%v", terminalOnly), func(b *testing.B) {
+			added := terminalArgumentsItem("fc_1", 0, schemas.ResponsesStreamResponseTypeOutputItemAdded)
+			delta := terminalArgumentsEvent("fc_1", 0, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, `{"file_path":"/etc/hostname"}`)
+			done := terminalArgumentsEvent("fc_1", 0, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone, *delta.Arguments)
+			stop := terminalArgumentsItem("fc_1", 0, schemas.ResponsesStreamResponseTypeOutputItemDone)
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx := schemas.NewBifrostContext(nil, time.Time{})
+				ToAnthropicResponsesStreamResponse(ctx, added)
+				if !terminalOnly {
+					ToAnthropicResponsesStreamResponse(ctx, delta)
+				}
+				ToAnthropicResponsesStreamResponse(ctx, done)
+				ToAnthropicResponsesStreamResponse(ctx, stop)
+			}
+		})
+	}
+}
+
+func TestTerminalToolArgumentsPreservesWebSearchSanitization(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, time.Time{})
+	added := terminalArgumentsItem("fc_search", 0, schemas.ResponsesStreamResponseTypeOutputItemAdded)
+	added.Item.ResponsesToolMessage.Name = schemas.Ptr("WebSearch")
+	ToAnthropicResponsesStreamResponse(ctx, added)
+	done := terminalArgumentsEvent("fc_search", 0, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone, `{"query":"test"}`)
+	if events := ToAnthropicResponsesStreamResponse(ctx, done); len(events) != 0 {
+		t.Fatalf("WebSearch bypassed its output_item.done sanitizer: %+v", events)
+	}
+}
+
+func TestTerminalToolArgumentsDeltaField(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, time.Time{})
+	ToAnthropicResponsesStreamResponse(ctx, terminalArgumentsItem("fc_1", 0, schemas.ResponsesStreamResponseTypeOutputItemAdded))
+	delta := terminalArgumentsEvent("fc_1", 0, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, "")
+	delta.Arguments = nil
+	delta.Delta = schemas.Ptr(`{"file_path":`)
+	ToAnthropicResponsesStreamResponse(ctx, delta)
+	done := terminalArgumentsEvent("fc_1", 0, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone, `{"file_path":"/etc/hostname"}`)
+	if got := terminalArgumentsJSON(ToAnthropicResponsesStreamResponse(ctx, done)); got != `"/etc/hostname"}` {
+		t.Fatalf("terminal suffix after Delta field = %q", got)
+	}
+}
