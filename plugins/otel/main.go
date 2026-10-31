@@ -698,6 +698,13 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 			}
 			return nil, fmt.Errorf("profile %d: failed to initialize metrics exporter: %w", index, err)
 		}
+		if target.client != nil {
+			if err := target.metricsExporter.registerTraceExportMetrics(target, index); err != nil {
+				_ = target.metricsExporter.Shutdown(context.Background())
+				_ = target.client.Close()
+				return nil, fmt.Errorf("profile %d: failed to register trace export metrics: %w", index, err)
+			}
+		}
 		logger.Info("OTEL metrics push enabled for profile %d, pushing to %s every %d seconds", index, profile.MetricsEndpoint.GetValue(), pushInterval)
 	}
 
