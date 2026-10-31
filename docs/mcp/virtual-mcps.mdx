@@ -172,13 +172,13 @@ curl -X POST http://localhost:8080/api/mcp/virtual-mcps \
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `name` | string | Yes | Display name |
-| `endpoint_slug` | string | No | Honored on create only; derived from `name` when omitted; immutable after |
+| `endpoint_slug` | string | No | Honored on create only; derived from `name` when omitted (a `name` that yields no slug, such as `"!!!"`, then returns `400`); immutable after |
 | `description` | string | No | Free text |
 | `enabled` | boolean | No | Defaults to `true` |
-| `tools` | array | Yes | Tool specs: `mcp_client_id` + `tool_names` (`["*"]` = all current and future tools, `[]` = none) |
+| `tools` | array | Yes | Tool specs: `mcp_client_id` (the client's `client_id`, not its name) + `tool_names` (`["*"]` = all current and future tools, `[]` = none) |
 
 <Note>
-Unknown `mcp_client_id`s are rejected on save. Unknown tool **names** are not validated on save; they're enforced at call time. A slug already used by another vMCP or a direct MCP client returns `409`.
+Unknown `mcp_client_id`s, including a client's name, are rejected on save with `400`. Unknown tool **names** are not validated on save; they're enforced at call time. A slug already used by another vMCP or a direct MCP client returns `409`.
 </Note>
 
 </Tab>

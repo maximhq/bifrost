@@ -80290,7 +80290,7 @@
                               "properties": {
                                 "mcp_client_id": {
                                   "type": "string",
-                                  "description": "ID of a deployed MCP client."
+                                  "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                                 },
                                 "tool_names": {
                                   "type": "array",
@@ -80418,7 +80418,7 @@
                       "properties": {
                         "mcp_client_id": {
                           "type": "string",
-                          "description": "ID of a deployed MCP client."
+                          "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                         },
                         "tool_names": {
                           "type": "array",
@@ -80490,7 +80490,7 @@
                             "properties": {
                               "mcp_client_id": {
                                 "type": "string",
-                                "description": "ID of a deployed MCP client."
+                                "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                               },
                               "tool_names": {
                                 "type": "array",
@@ -80641,7 +80641,7 @@
                             "properties": {
                               "mcp_client_id": {
                                 "type": "string",
-                                "description": "ID of a deployed MCP client."
+                                "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                               },
                               "tool_names": {
                                 "type": "array",
@@ -80781,7 +80781,7 @@
                       "properties": {
                         "mcp_client_id": {
                           "type": "string",
-                          "description": "ID of a deployed MCP client."
+                          "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                         },
                         "tool_names": {
                           "type": "array",
@@ -80853,7 +80853,7 @@
                             "properties": {
                               "mcp_client_id": {
                                 "type": "string",
-                                "description": "ID of a deployed MCP client."
+                                "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                               },
                               "tool_names": {
                                 "type": "array",
@@ -81266,7 +81266,7 @@
                               "properties": {
                                 "mcp_client_id": {
                                   "type": "string",
-                                  "description": "ID of a deployed MCP client."
+                                  "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                                 },
                                 "tool_names": {
                                   "type": "array",
@@ -81401,7 +81401,7 @@
                       "properties": {
                         "mcp_client_id": {
                           "type": "string",
-                          "description": "ID of a deployed MCP client."
+                          "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                         },
                         "tool_names": {
                           "type": "array",
@@ -81500,7 +81500,7 @@
                             "properties": {
                               "mcp_client_id": {
                                 "type": "string",
-                                "description": "ID of a deployed MCP client."
+                                "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                               },
                               "tool_names": {
                                 "type": "array",
@@ -81650,7 +81650,7 @@
                             "properties": {
                               "mcp_client_id": {
                                 "type": "string",
-                                "description": "ID of a deployed MCP client."
+                                "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                               },
                               "tool_names": {
                                 "type": "array",
@@ -81783,7 +81783,7 @@
                       "properties": {
                         "mcp_client_id": {
                           "type": "string",
-                          "description": "ID of a deployed MCP client."
+                          "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                         },
                         "tool_names": {
                           "type": "array",
@@ -81882,7 +81882,7 @@
                             "properties": {
                               "mcp_client_id": {
                                 "type": "string",
-                                "description": "ID of a deployed MCP client."
+                                "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                               },
                               "tool_names": {
                                 "type": "array",
