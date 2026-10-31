@@ -683,6 +683,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 
 				if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 					response.ExtraFields.RawResponse = eventData
+					response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatCohereChatStreamEvent
 				}
 
 				if isLastChunk {
@@ -962,6 +963,8 @@ func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 				// post-loop truncation check from reporting the same stream twice.
 				return
 			}
+			// Attach the upstream event to exactly one response: the one streaming its text or arguments.
+			rawIdx := providerUtils.ResponsesStreamRawIndex(responses, len(responses)-1)
 			// Handle each response in the slice
 			for i, response := range responses {
 				if response != nil {
@@ -972,8 +975,9 @@ func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 					lastChunkTime = time.Now()
 					chunkIndex++
 
-					if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+					if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) && i == rawIdx {
 						response.ExtraFields.RawResponse = eventData
+						response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatCohereChatStreamEvent
 					}
 
 					if isLastChunk && i == len(responses)-1 {

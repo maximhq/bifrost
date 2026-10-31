@@ -1871,6 +1871,61 @@ func TestResponsesFallbackRawResponseKeepsEveryFrameExactlyOnce(t *testing.T) {
 	}
 }
 
+// TestResponsesFallbackRawRidesWithItsText verifies a chat frame carrying text is attached to the Responses delta that
+// streams that text, never to an earlier lifecycle event of its expansion, and follows a change to that delta.
+func TestResponsesFallbackRawRidesWithItsText(t *testing.T) {
+	server := completeSSEServer(t, fullShapeSSEBody())
+	defer server.Close()
+
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig:       schemas.NetworkConfig{BaseURL: server.URL},
+		SendBackRawResponse: true,
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			AllowedRequests: &schemas.AllowedRequests{ChatCompletionStream: true, ResponsesStream: false},
+		},
+	}, testNoopLogger{})
+	request := &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "repro-model",
+		Input: []schemas.ResponsesMessage{{
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+		}},
+	}
+	stream, bifrostErr := provider.ResponsesStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), request)
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	var carrier *schemas.BifrostResponsesStreamResponse
+	for _, chunk := range collectChunks(t, stream) {
+		event := chunk.BifrostResponsesStreamResponse
+		if event == nil {
+			continue
+		}
+		if raw, _ := event.ExtraFields.RawResponse.(string); strings.Contains(raw, rawContentFrame) {
+			carrier = event
+		}
+	}
+	if carrier == nil {
+		t.Fatal("no event carried the content frame")
+	}
+	if carrier.Type != schemas.ResponsesStreamResponseTypeOutputTextDelta || carrier.Delta == nil || *carrier.Delta != "hello" {
+		t.Fatalf("content frame rides on %s (delta %v), want the output_text.delta streaming its text", carrier.Type, carrier.Delta)
+	}
+
+	redacted := *carrier
+	redacted.Delta = schemas.Ptr("[REDACTED]")
+	synced, err := schemas.SyncRawResponseText(carrier.ExtraFields.RawResponse, carrier.ExtraFields.RawResponseFormat, carrier, &redacted)
+	if err != nil {
+		t.Fatalf("raw payload did not follow the delta: %v", err)
+	}
+	if strings.Contains(synced.(string), `"content":"hello"`) || !strings.Contains(synced.(string), `"content":"[REDACTED]"`) {
+		t.Fatalf("raw payload after sync = %s", synced)
+	}
+}
+
 // Raw capture queues every frame that produces no client chunk, and nothing drains
 // that queue until a chunk is actually forwarded. An upstream that streams only
 // such frames therefore grows it for the life of the connection - and because every

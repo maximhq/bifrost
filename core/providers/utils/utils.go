@@ -3546,6 +3546,18 @@ func ShouldSendBackRawResponse(ctx context.Context, defaultSendBackRawResponse b
 	return defaultSendBackRawResponse
 }
 
+// ResponsesStreamRawIndex picks the one response of a provider event's Responses expansion that carries the event's
+// raw payload: the response streaming the event's text or arguments (its delta), so the raw text travels with the
+// normalized text it backs and is never sent ahead of it, otherwise fallback.
+func ResponsesStreamRawIndex(responses []*schemas.BifrostResponsesStreamResponse, fallback int) int {
+	for i := len(responses) - 1; i >= 0; i-- {
+		if responses[i] != nil && responses[i].Delta != nil {
+			return i
+		}
+	}
+	return fallback
+}
+
 // SendCreatedEventResponsesChunk sends a ResponsesStreamResponseTypeCreated event.
 func SendCreatedEventResponsesChunk(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, startTime time.Time, responseChan chan *schemas.BifrostStreamChunk, postHookSpanFinalizer func(context.Context)) {
 	firstChunk := &schemas.BifrostResponsesStreamResponse{

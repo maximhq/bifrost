@@ -8011,11 +8011,10 @@ func clearAnthropicPassthroughForNonNativeProvider(ctx *schemas.BifrostContext, 
 // disableAnthropicPassthrough switches an attempt from forwarding the caller's raw
 // Anthropic body to the typed conversion path.
 func disableAnthropicPassthrough(ctx *schemas.BifrostContext) {
-	// Native redaction codecs are valid only while the matching Anthropic body
-	// and response stream are forwarded; converted fallbacks must not inherit them.
+	// The native request-body rewriter is valid only while the matching Anthropic
+	// body is forwarded; converted fallbacks must not inherit it.
 	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
 	ctx.ClearValue(schemas.BifrostContextKeyRawRequestBodyTextRewriter)
-	ctx.ClearValue(schemas.BifrostContextKeyRawStreamTextCodec)
 	ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, false)
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, false)
 	ctx.ClearValue(schemas.BifrostContextKeyURLPath)

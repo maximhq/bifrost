@@ -1927,3 +1927,74 @@ func TestToReplicateChatRequest_FlattensToolResultMedia(t *testing.T) {
 	require.NotNil(t, req.Input.Messages[1].Content.ContentStr, "the tool message is text")
 	assert.Contains(t, *req.Input.Messages[1].Content.ContentStr, "[image/png")
 }
+
+// TestReplicateResponsesStreamRawRidesWithEachDelta verifies each Replicate output event's raw payload rides on the
+// Responses delta carrying its text, declared as Replicate's format, and that the completed response carries only the
+// done event, not a copy of the whole stream's text.
+func TestReplicateResponsesStreamRawRidesWithEachDelta(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"p1","status":"starting","urls":{"stream":"` + server.URL + `/stream"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: output\ndata: mail alex@\n\nevent: output\ndata: example.com\n\nevent: done\ndata: {}\n\n"))
+	}))
+	defer server.Close()
+
+	provider, err := replicate.NewReplicateProvider(&schemas.ProviderConfig{
+		NetworkConfig:       schemas.NetworkConfig{BaseURL: server.URL},
+		SendBackRawResponse: true,
+	}, &testLogger{})
+	require.NoError(t, err)
+	request := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Replicate,
+		Model:    "meta/meta-llama-3-8b-instruct",
+		Input: []schemas.ResponsesMessage{{
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+		}},
+	}
+	passthrough := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, err
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	stream, bifrostErr := provider.ResponsesStream(ctx, passthrough, nil, schemas.Key{Value: *schemas.NewSecretVar("r8_test_key")}, request)
+	require.Nil(t, bifrostErr)
+
+	var deltaRaws []string
+	var completedRaw any
+	for chunk := range stream {
+		event := chunk.BifrostResponsesStreamResponse
+		if event == nil {
+			continue
+		}
+		switch event.Type {
+		case schemas.ResponsesStreamResponseTypeOutputTextDelta:
+			require.Equal(t, schemas.RawResponseFormatReplicateStreamEvent, event.ExtraFields.RawResponseFormat)
+			raw, ok := event.ExtraFields.RawResponse.(string)
+			require.True(t, ok, "delta raw payload must be the event's JSON")
+			deltaRaws = append(deltaRaws, raw)
+
+			redacted := *event
+			redacted.Delta = schemas.Ptr("[REDACTED]")
+			synced, err := schemas.SyncRawResponseText(event.ExtraFields.RawResponse, event.ExtraFields.RawResponseFormat, event, &redacted)
+			require.NoError(t, err)
+			assert.JSONEq(t, `{"Data":"[REDACTED]","Event":"output","ID":""}`, synced.(string))
+		case schemas.ResponsesStreamResponseTypeCompleted:
+			completedRaw = event.ExtraFields.RawResponse
+		default:
+			assert.Nil(t, event.ExtraFields.RawResponse, "%s carries raw it does not back", event.Type)
+		}
+	}
+	require.Len(t, deltaRaws, 2)
+	assert.JSONEq(t, `{"Data":"mail alex@","Event":"output","ID":""}`, deltaRaws[0])
+	assert.JSONEq(t, `{"Data":"example.com","Event":"output","ID":""}`, deltaRaws[1])
+	completedText, ok := completedRaw.(string)
+	require.True(t, ok, "completed raw payload must be the done event's JSON, not the whole stream")
+	assert.JSONEq(t, `{"Data":"{}","Event":"done","ID":""}`, completedText)
+}
