@@ -152,6 +152,10 @@ const decisionSchema = z.object({
 		.string()
 		.min(1, { error: () => complexityT("enterDecisionTimeout") })
 		.refine((value) => isPositiveDurationString(value), { error: () => complexityT("timeoutGtZero") }),
+	min_confidence: z
+		.number({ error: () => complexityT("similarityNumber") })
+		.min(0, { error: () => complexityT("mustBeZeroOrGreater") })
+		.max(1, { error: () => complexityT("mustBeAtMost", { max: 1 }) }),
 });
 
 const llmSchema = z.object({
@@ -198,6 +202,7 @@ export const analyzerConfigSchema = z
 			model: z.string(),
 			previous_message_count: z.number().or(z.nan()),
 			timeout: z.string(),
+			min_confidence: z.number().or(z.nan()),
 			criteria: z.object({
 				SIMPLE: decisionTierFormShape,
 				MEDIUM: decisionTierFormShape,
@@ -442,6 +447,7 @@ export function toFormValues(config: AnalyzerConfig, decisionDefaults?: Decision
 				: { provider: DEFAULT_DECISION_CONFIG.provider, model: DEFAULT_DECISION_CONFIG.model }),
 			previous_message_count: config.decision?.previous_message_count ?? DEFAULT_DECISION_CONFIG.previous_message_count,
 			timeout: config.decision?.timeout ?? DEFAULT_DECISION_CONFIG.timeout,
+			min_confidence: config.decision?.min_confidence ?? DEFAULT_DECISION_CONFIG.min_confidence,
 			...decisionGuidanceFormValues(config.decision, decisionDefaults),
 		},
 		session: config.session ?? { enabled: false },
@@ -508,6 +514,7 @@ function toDecisionPayload(decision: AnalyzerFormValues["decision"]): NonNullabl
 		model: decision.model.trim(),
 		previous_message_count: decision.previous_message_count,
 		timeout: decision.timeout,
+		...(decision.min_confidence > 0 ? { min_confidence: decision.min_confidence } : {}),
 		...(Object.keys(criteria).length ? { criteria } : {}),
 	};
 }

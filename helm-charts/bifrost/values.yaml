@@ -1285,6 +1285,7 @@ bifrost:
       #   model: "jev-latest"              # Set together with provider; omit both for typesafe/jev-latest
       #   previous_message_count: 1        # Earlier user messages sent with the current request (0-5)
       #   timeout: "1.5s"                  # Maximum wait for one decision-model call; usage counts toward request cost and budgets
+      #   min_confidence: 0.7              # Optional: an answer below this publishes no tier (0-1; 0 keeps every answer)
       #   criteria:                        # Optional: per-tier overrides; tiers are SIMPLE, MEDIUM, COMPLEX
       #     COMPLEX:
       #       definition: "..."            # Replaces the shipped definition of this tier (max 500 chars)

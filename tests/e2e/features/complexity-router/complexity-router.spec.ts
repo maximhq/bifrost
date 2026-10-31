@@ -33,6 +33,7 @@ test.describe('Complexity Router', () => {
                 model: savedModel,
                 previous_message_count: 2,
                 timeout: '3000ms',
+                min_confidence: 0.7,
               },
             },
           })
@@ -159,5 +160,18 @@ test.describe('Complexity Router', () => {
         expect(modelQueries.every((params) => params.get('decisions') === 'true')).toBe(true)
       })
     }
+
+    test('should show the saved confidence threshold in the model configuration sheet', async ({ page }) => {
+      decisionProvider = 'openai'
+      savedModel = 'gpt-6-luna'
+      decisionModels = ['gpt-6-luna']
+      chatModels = ['gpt-4o-mini']
+      await page.goto('/workspace/complexity-router')
+      await page.getByTestId('complexity-router-decision-settings-button').click()
+      await expect(page.getByTestId('complexity-router-decision-sheet')).toBeVisible({ timeout: 5000 })
+
+      await expect(page.getByTestId('complexity-router-decision-sheet')).toContainText('Confidence threshold')
+      await expect(page.getByTestId('complexity-router-decision-min-confidence-input')).toHaveValue('0.7')
+    })
   })
 })

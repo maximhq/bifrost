@@ -1226,3 +1226,79 @@ func TestMergeComplexityAnalyzerConfigByHashesDecision(t *testing.T) {
 		assert.Equal(t, 2, *merged.Decision.PreviousMessageCount)
 	})
 }
+
+// TestComplexityDecisionConfigMinConfidence pins the decode, normalize, and
+// validation path of decision.min_confidence, including that leaving it unset
+// changes neither the JSON nor the section hash of an existing config.
+func TestComplexityDecisionConfigMinConfidence(t *testing.T) {
+	var cfg ComplexityDecisionConfig
+	require.NoError(t, json.Unmarshal([]byte(`{"min_confidence":0.75}`), &cfg))
+	assert.Equal(t, 0.75, cfg.MinConfidence)
+	assert.Equal(t, 0.75, cfg.normalized().MinConfidence, "normalizing must not drop the threshold")
+
+	unset, err := json.Marshal(ComplexityDecisionConfig{Model: "jev-latest"})
+	require.NoError(t, err)
+	assert.NotContains(t, string(unset), "min_confidence")
+	unsetHash, err := hashComplexityValue(ComplexityDecisionConfig{Model: "jev-latest"})
+	require.NoError(t, err)
+	setHash, err := hashComplexityValue(ComplexityDecisionConfig{Model: "jev-latest", MinConfidence: 0.75})
+	require.NoError(t, err)
+	assert.NotEqual(t, unsetHash, setHash, "changing the threshold must register as a decision settings change")
+
+	for _, value := range []float64{0, 0.5, 1} {
+		assert.NoError(t, (&ComplexityDecisionConfig{MinConfidence: value}).Validate(), "value %v", value)
+	}
+	for _, value := range []float64{-0.1, 1.1, math.NaN()} {
+		assert.ErrorContains(t, (&ComplexityDecisionConfig{MinConfidence: value}).Validate(), "min_confidence", "value %v", value)
+	}
+}
+
+// TestComplexitySemanticRowDecisionMinConfidenceRollback pins the storage shape:
+// the threshold round-trips through the row, but never inside the decision
+// block, whose released decoder rejects any field it does not know.
+func TestComplexitySemanticRowDecisionMinConfidenceRollback(t *testing.T) {
+	config := testDecisionAnalyzerConfig()
+	config.Decision = &ComplexityDecisionConfig{Provider: "typesafe", Model: "jev-latest", MinConfidence: 0.6}
+
+	row, err := encodeComplexitySemanticConfigRow(*config)
+	require.NoError(t, err)
+	assert.Equal(t, 0.6, config.Decision.MinConfidence, "encoding must not mutate the live config")
+
+	var stored struct {
+		Decision              map[string]json.RawMessage `json:"decision"`
+		DecisionMinConfidence float64                    `json:"decision_min_confidence"`
+	}
+	require.NoError(t, json.Unmarshal(row, &stored))
+	assert.NotContains(t, stored.Decision, "min_confidence", "a released binary would mark the whole row unreadable")
+	for field := range stored.Decision {
+		assert.Contains(t, []string{"provider", "model", "previous_message_count", "timeout", "criteria"}, field, "a released binary rejects this field")
+	}
+	assert.Equal(t, 0.6, stored.DecisionMinConfidence)
+
+	decoded, err := decodeComplexitySemanticConfigRow(row)
+	require.NoError(t, err)
+	combined := applyComplexitySemanticConfigRow(&ComplexityAnalyzerConfig{}, decoded)
+	require.NotNil(t, combined.Decision)
+	assert.Equal(t, 0.6, combined.Decision.MinConfidence)
+
+	config.Decision.MinConfidence = 0
+	row, err = encodeComplexitySemanticConfigRow(*config)
+	require.NoError(t, err)
+	assert.NotContains(t, string(row), "min_confidence", "an unset threshold must leave the row byte-compatible")
+}
+
+// TestRDBConfigStore_ComplexityDecisionMinConfidencePersistence pins the
+// threshold through a real save and load.
+func TestRDBConfigStore_ComplexityDecisionMinConfidencePersistence(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	cfg := testDecisionAnalyzerConfig()
+	cfg.Decision = &ComplexityDecisionConfig{MinConfidence: 0.8}
+	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, cfg))
+
+	got, err := store.GetComplexityAnalyzerConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.NotNil(t, got.Decision)
+	assert.Equal(t, 0.8, got.Decision.MinConfidence)
+}

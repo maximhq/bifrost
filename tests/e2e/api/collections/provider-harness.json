@@ -298482,6 +298482,164 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "297. Complexity Router decision.min_confidence (decision min confidence) [SERIAL]",
+      "description": "decision.min_confidence is the confidence a decision-model answer must reach to publish its complexity tier. The first row checks that the management API refuses an out-of-range value before anything is saved. The second row snapshots the global complexity analyzer config, switches it to the typesafe decision classifier with min_confidence 1, and sends one /v1/chat/completions request through a global routing rule that reads complexity_tier. Only requests that carry this run's x-harness-min-confidence-run header match the rule, so classification never runs for other rows. The answer must fall below the threshold: the log must show the rejection, the skipped mechanism, and no tier, and the request must not be served by the rule's target. The row then deletes the rule and restores the snapshot on every path. Because it changes global router state for a short time, the folder is [SERIAL]. It makes one paid typesafe decision call and one openai chat call. A typesafe confidence of exactly 1.00 would meet the threshold and fail the row.",
+      "item": [
+        {
+          "name": "[EXPECT-400] PUT /api/routing/complexity-analyzer-config rejects typesafe decision min_confidence above 1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('out-of-range min_confidence is refused by name', function () {",
+                  "  pm.expect(pm.response.code, 'expected the validation rejection: ' + text).to.equal(400);",
+                  "  pm.expect(text, 'expected the min_confidence bound in the error: ' + text).to.include('decision min_confidence must be between 0 and 1');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"classifier\":\"decision\",\"keywords\":{\"simple_keywords\":[\"simple\"],\"medium_keywords\":[\"medium\"],\"complex_keywords\":[\"complex\"]},\"decision\":{\"min_confidence\":1.5}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/routing/complexity-analyzer-config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "routing",
+                "complexity-analyzer-config"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET-snapshot /api/routing/complexity-analyzer-config, typesafe decision min_confidence 1 publishes no complexity tier on /v1/chat/completions",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Serialized global-state row: snapshot the global complexity analyzer config (this request's",
+                  "// response), switch it to the decision classifier with min_confidence 1, route one request through a",
+                  "// header-gated rule that reads complexity_tier, then restore the snapshot byte for byte. Cleanup runs",
+                  "// on every path, including a failed setup step, so a red run never leaves the gate on.",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var RUN = 'run-' + Date.now();",
+                  "var HEADER = 'x-harness-min-confidence-run';",
+                  "var SNAPSHOT = pm.response.text();",
+                  "var RULE_TARGET = 'gpt-4.1-nano';",
+                  "function call(method, path, raw, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (raw !== null && raw !== undefined) { req.body = { mode: 'raw', raw: raw }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "var ruleId = null;",
+                  "function cleanup() {",
+                  "  function restore() {",
+                  "    call('PUT', '/api/routing/complexity-analyzer-config', SNAPSHOT, function (res) { expectOk('cleanup: the snapshotted analyzer config is restored', res); });",
+                  "  }",
+                  "  if (!ruleId) { return restore(); }",
+                  "  call('DELETE', '/api/governance/routing-rules/' + ruleId, null, function (res) { expectOk('cleanup: the complexity rule is deleted', res); restore(); });",
+                  "}",
+                  "pm.test('snapshot: the global complexity analyzer config was read', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "// The saved config is read only for its phrase lists, so the setup PUT keeps the stored phrases.",
+                  "// Its body is a fresh literal in schema order, never the snapshot round-tripped; SNAPSHOT stays raw for cleanup.",
+                  "var saved = null;",
+                  "try { saved = pm.response.json(); } catch (e) { saved = null; }",
+                  "var keywords = (saved && saved.keywords) || null;",
+                  "if (pm.response.code !== 200 || !keywords) {",
+                  "  pm.test('snapshot: config body carries its phrase lists', function () { pm.expect.fail('cannot snapshot the analyzer config, so nothing was changed: ' + pm.response.text()); });",
+                  "} else {",
+                  "  var setup = {",
+                  "    classifier: 'decision',",
+                  "    keywords: { simple_keywords: keywords.simple_keywords, medium_keywords: keywords.medium_keywords, complex_keywords: keywords.complex_keywords },",
+                  "    decision: { provider: 'typesafe', model: 'jev-latest', timeout: '5s', min_confidence: 1 }",
+                  "  };",
+                  "  call('PUT', '/api/routing/complexity-analyzer-config', JSON.stringify(setup), function (putRes) {",
+                  "    if (!expectOk('setup: decision classifier with min_confidence 1 is saved', putRes)) { return cleanup(); }",
+                  "    var rule = { name: 'Harness min confidence ' + RUN, description: 'Provider harness, created at run time and deleted by the same row.', priority: 900000 + (Date.now() % 90000), cel_expression: '\"' + HEADER + '\" in headers && headers[\"' + HEADER + '\"] == \"' + RUN + '\" && complexity_tier != \"\"', targets: [{ provider: 'openai', model: RULE_TARGET, weight: 1 }], scope: 'global' };",
+                  "    call('POST', '/api/governance/routing-rules', JSON.stringify(rule), function (ruleRes, ruleJson) {",
+                  "      if (!expectOk('setup: the header-gated complexity rule is created', ruleRes)) { return cleanup(); }",
+                  "      ruleId = ((ruleJson || {}).rule || {}).id || null;",
+                  "      var h = { 'Content-Type': 'application/json' }; h[HEADER] = RUN;",
+                  "      var body = { model: 'openai/gpt-4o-mini', messages: [{ role: 'user', content: 'Explain how a hash map handles collisions.' }], max_tokens: 16 };",
+                  "      pm.sendRequest({ url: BASE + '/v1/chat/completions', method: 'POST', header: h, body: { mode: 'raw', raw: JSON.stringify(body) } }, function (err, res) {",
+                  "        if (err || !res) { pm.test('routed request reached the gateway', function () { pm.expect.fail(String(err)); }); return cleanup(); }",
+                  "        pm.test('routed request: served without the rule target', function () {",
+                  "          pm.expect(res.code, res.text()).to.eql(200);",
+                  "          pm.expect(String((res.json() || {}).model || ''), 'a published tier would have matched the rule: ' + res.text()).to.not.include(RULE_TARGET);",
+                  "        });",
+                  "        var reqId = res.headers.get('x-bifrost-request-id');",
+                  "        if (!reqId) { pm.test('routed request: x-bifrost-request-id echoed', function () { pm.expect.fail('no request id: ' + res.text()); }); return cleanup(); }",
+                  "        (function checkLog(attempt) {",
+                  "          call('GET', '/api/logs/' + reqId, null, function (logRes, j) {",
+                  "            var engine = String((j && j.routing_engine_logs) || '');",
+                  "            if (engine.indexOf('Decision model complexity') !== -1) {",
+                  "              pm.test('log: the decision answer is rejected below min_confidence', function () { pm.expect(engine, engine).to.include('below min_confidence=1.00'); });",
+                  "              pm.test('log: no complexity tier is published', function () {",
+                  "                pm.expect(j.complexity_mechanism, JSON.stringify(j)).to.eql('skipped');",
+                  "                pm.expect(j.complexity_tier, JSON.stringify(j)).to.not.exist;",
+                  "              });",
+                  "              return cleanup();",
+                  "            }",
+                  "            if (attempt < 10) { return setTimeout(function () { checkLog(attempt + 1); }, 1000); }",
+                  "            pm.test('log: the decision classification was recorded', function () { pm.expect.fail('log ' + reqId + ' has no decision complexity line after 10 reads: ' + (logRes ? logRes.code + ' ' + logRes.text() : 'no response')); });",
+                  "            cleanup();",
+                  "          });",
+                  "        })(0);",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/routing/complexity-analyzer-config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "routing",
+                "complexity-analyzer-config"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }
