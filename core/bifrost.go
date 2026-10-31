@@ -1056,6 +1056,16 @@ func (bifrost *Bifrost) ChatCompletionRequest(ctx *schemas.BifrostContext, req *
 		ctx = bifrost.ctx
 	}
 
+	// One x-bf-request-timeout budget for the whole call, agent tool
+	// execution and later turns included; each turn's handleRequest nests
+	// under this arm instead of starting a fresh timer.
+	ctx, ownedCtx := resolveRequestContext(ctx, bifrost.ctx)
+	if ownedCtx != nil {
+		defer ownedCtx.Cancel()
+	}
+	stopRequestTimeout, _ := armRequestTimeout(ctx)
+	defer stopRequestTimeout()
+
 	response, err := bifrost.makeChatCompletionRequest(ctx, req)
 	if err != nil {
 		return nil, err
@@ -1157,6 +1167,14 @@ func (bifrost *Bifrost) ResponsesRequest(ctx *schemas.BifrostContext, req *schem
 	if ctx == nil {
 		ctx = bifrost.ctx
 	}
+
+	// One budget for the whole call, agent turns included; see ChatCompletionRequest.
+	ctx, ownedCtx := resolveRequestContext(ctx, bifrost.ctx)
+	if ownedCtx != nil {
+		defer ownedCtx.Cancel()
+	}
+	stopRequestTimeout, _ := armRequestTimeout(ctx)
+	defer stopRequestTimeout()
 
 	response, err := bifrost.makeResponsesRequest(ctx, req)
 	if err != nil {
@@ -5822,6 +5840,13 @@ func (bifrost *Bifrost) shouldTryFallbacks(ctx *schemas.BifrostContext, req *sch
 		return false
 	}
 
+	// The caller's total deadline already passed: a fallback would only run
+	// pre-hooks and routing on a cancelled context before failing too.
+	if requestTimeoutFired(ctx) {
+		bifrost.logger.Debug("request timeout fired, we should not try fallbacks")
+		return false
+	}
+
 	// Check if this is a short-circuit error that doesn't allow fallbacks
 	// Note: AllowFallbacks = nil is treated as true (allow fallbacks by default)
 	if primaryErr.AllowFallbacks != nil && !*primaryErr.AllowFallbacks {
@@ -6022,9 +6047,17 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	defer bifrost.releaseBifrostRequest(req)
 	provider, model, fallbacks := req.GetRequestFields()
 
-	// Handle nil context early to prevent blocking
-	if ctx == nil {
-		ctx = bifrost.ctx
+	// Handle nil context early to prevent blocking. When a deadline is
+	// declared, this hands back a request-scoped context instead of
+	// bifrost.ctx itself, so armRequestTimeout's ctx.Cancel() on expiry
+	// cannot cancel every other nil-ctx request sharing that root. See
+	// resolveRequestContext for why the derivation is conditional.
+	ctx, ownedCtx := resolveRequestContext(ctx, bifrost.ctx)
+	if ownedCtx != nil {
+		// handleRequest is synchronous, so returning means the request is
+		// done and the derived context (and its watchCancellation goroutine)
+		// can be released on every return path.
+		defer ownedCtx.Cancel()
 	}
 
 	// What the caller asked for, before any hook rewrites it: the name under which a session
@@ -6046,6 +6079,14 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	if continuation == nil {
 		stampRequestedRoute(ctx, requested)
 	}
+
+	// Arms once for the whole call, including every fallback attempt below --
+	// a caller's declared total-duration budget must not restart per attempt,
+	// or a request with N configured fallbacks could take up to N times the
+	// declared deadline. See armRequestTimeout's doc comment.
+	stopRequestTimeout, _ := armRequestTimeout(ctx)
+	defer stopRequestTimeout()
+	defer func() { bifrostErr = asRequestTimeoutError(ctx, bifrostErr) }()
 
 	// Reset first: bifrost.ctx is shared across every nil-ctx caller. A later agent turn
 	// keeps turn 1's totals so earlier turns' provider time is not counted as overhead.
@@ -6201,7 +6242,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		tracer.EndSpan(handle, schemas.SpanStatusError, "fallback failed")
 
 		// Check if we should continue with more fallbacks
-		if !bifrost.shouldContinueWithFallbacks(fallback, fallbackErr) {
+		if requestTimeoutFired(ctx) || !bifrost.shouldContinueWithFallbacks(fallback, fallbackErr) {
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Fallback %s/%s failed (%s); halting further fallbacks", fallback.Provider, fallback.Model, routingErrorSummary(fallbackErr)))
 			return nil, fallbackErr
 		}
@@ -6267,10 +6308,9 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	defer bifrost.releaseBifrostRequest(req)
 	provider, model, fallbacks := req.GetRequestFields()
 
-	// Handle nil context early to prevent blocking
-	if ctx == nil {
-		ctx = bifrost.ctx
-	}
+	// Handle nil context early to prevent blocking. See the identical
+	// resolution (and why) in handleRequest.
+	ctx, ownedCtx := resolveRequestContext(ctx, bifrost.ctx)
 
 	// What the caller asked for, before any hook rewrites it: the name under which a session
 	// remembers where these requests were served. Reported back with how the request ended.
@@ -6283,6 +6323,30 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		bifrost.observeSessionOutcome(ctx, requested, served, servedFallback, directKey, bifrostErr)
 	}()
 	stampRequestedRoute(ctx, requested)
+
+	// Arms once for the whole call, including every fallback attempt below.
+	// See the identical comment in handleRequest, and armRequestTimeout's doc
+	// comment, for why this must not restart per attempt. Every return path
+	// below either wraps the returned channel with wrapStreamForRequestTimeout
+	// (success: stop only once the caller has fully drained the stream) or
+	// calls stopRequestTimeout directly (error: nothing to wrap).
+	stopRequestTimeout, requestTimeoutArmed := armRequestTimeout(ctx)
+	defer func() { bifrostErr = asRequestTimeoutError(ctx, bifrostErr) }()
+	if ownedCtx != nil {
+		// Unlike handleRequest, this returns while the caller is still
+		// draining the stream, so the derived context cannot be released on
+		// return -- it is released wherever the timer is stopped, which every
+		// return path below already reaches exactly once. requestTimeoutArmed
+		// is necessarily true here (resolveRequestContext only derives when
+		// root declares a deadline, which is the same value armRequestTimeout
+		// reads through this context), so the wrapped-stream path that runs
+		// stop after drain is guaranteed to be the one taken on success.
+		stopTimer := stopRequestTimeout
+		stopRequestTimeout = func() {
+			stopTimer()
+			ownedCtx.Cancel()
+		}
+	}
 
 	ctx.ResetUpstreamLatency()
 	ctx.ResetStreamOverhead()
@@ -6317,6 +6381,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	validateErr := validateRequestAfterPreRequestHooks(req)
 	bifrost.endCoreSpan(preDispatchSpan)
 	if validateErr != nil {
+		stopRequestTimeout()
 		// Returning before tryStreamRequest skips the downstream log drain, so
 		// flush any PreRequestHook-emitted plugin logs here.
 		flushPluginLogs(ctx)
@@ -6352,10 +6417,12 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	// Check if we should proceed with fallbacks
 	shouldTryFallbacks := bifrost.shouldTryFallbacks(ctx, req, primaryErr)
 	if !shouldTryFallbacks {
-		if primaryErr == nil {
-			served = &schemas.Route{Provider: provider, Model: model}
+		if primaryErr != nil {
+			stopRequestTimeout()
+			return primaryResult, primaryErr
 		}
-		return primaryResult, primaryErr
+		served = &schemas.Route{Provider: provider, Model: model}
+		return wrapStreamForRequestTimeout(ctx, primaryResult, stopRequestTimeout, requestTimeoutArmed), nil
 	}
 
 	// Mirror handleRequest: register core on the engines-used list and post
@@ -6424,7 +6491,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 			tracer.EndSpan(handle, schemas.SpanStatusOk, "")
 			served = &schemas.Route{Provider: fallback.Provider, Model: fallback.Model}
 			servedFallback = true
-			return result, nil
+			return wrapStreamForRequestTimeout(ctx, result, stopRequestTimeout, requestTimeoutArmed), nil
 		}
 
 		// End span with error status
@@ -6434,7 +6501,8 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		tracer.EndSpan(handle, schemas.SpanStatusError, "fallback failed")
 
 		// Check if we should continue with more fallbacks
-		if !bifrost.shouldContinueWithFallbacks(fallback, fallbackErr) {
+		if requestTimeoutFired(ctx) || !bifrost.shouldContinueWithFallbacks(fallback, fallbackErr) {
+			stopRequestTimeout()
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Fallback %s/%s failed (%s); halting further fallbacks", fallback.Provider, fallback.Model, routingErrorSummary(fallbackErr)))
 			return nil, fallbackErr
 		}
@@ -6442,6 +6510,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		lastErr = fallbackErr
 	}
 
+	stopRequestTimeout()
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("All %d fallback(s) exhausted; returning primary error (%s)", len(fallbacks), routingErrorSummary(primaryErr)))
 	// All providers failed, return the original error, with the provider headers it came with
 	restoreProviderResponseHeaders(ctx, primaryHeaders)

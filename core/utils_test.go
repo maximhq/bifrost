@@ -806,6 +806,42 @@ func TestWrapConvertedStreamPostHookRunnerMarksConvertedChunks(t *testing.T) {
 	}
 }
 
+// TestNewBifrostCtxDoneError_RequestTimeoutFiredReportsTimedOut verifies that
+// a fired x-bf-request-timeout deadline is reported as 504 RequestTimedOut
+// even though armRequestTimeout cancels via ctx.Cancel() (not WithDeadline),
+// which leaves ctx.Err() == context.Canceled -- indistinguishable from an
+// arbitrary caller cancellation without checking the fired sentinel.
+func TestNewBifrostCtxDoneError_RequestTimeoutFiredReportsTimedOut(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	ctx.SetValue(schemas.BifrostContextKeyRequestTimeoutFired, true)
+	cancel()
+
+	err := newBifrostCtxDoneError(ctx, "during the request")
+	require.NotNil(t, err.StatusCode)
+	assert.Equal(t, 504, *err.StatusCode)
+	require.NotNil(t, err.Error.Type)
+	assert.Equal(t, schemas.RequestTimedOut, *err.Error.Type)
+	assert.ErrorIs(t, err.Error.Error, context.DeadlineExceeded)
+	assert.NotErrorIs(t, err.Error.Error, context.Canceled)
+	assert.NotContains(t, err.Error.Message, "context canceled")
+}
+
+// TestNewBifrostCtxDoneError_PlainCancellationStillReportsCancelled is the
+// negative case: a plain ctx.Cancel() with no fired sentinel must still
+// report 499 RequestCancelled, preserving existing behavior for an arbitrary
+// caller disconnect.
+func TestNewBifrostCtxDoneError_PlainCancellationStillReportsCancelled(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	cancel()
+
+	err := newBifrostCtxDoneError(ctx, "during the request")
+	require.NotNil(t, err.StatusCode)
+	assert.Equal(t, 499, *err.StatusCode)
+	require.NotNil(t, err.Error.Type)
+	assert.Equal(t, schemas.RequestCancelled, *err.Error.Type)
+	assert.ErrorIs(t, err.Error.Error, context.Canceled)
+}
+
 // A plugin-owned sub-request is built on a context DERIVED from the caller's,
 // and BifrostContext.Value reads through to its parent. So every piece of
 // caller-request state that a provider egress consults has to be shed here, or
