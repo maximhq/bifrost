@@ -298482,6 +298482,155 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "297. Anthropic Responses drops empty text blocks (empty text blocks) (#9318)",
+      "description": "Pins that an empty text item in a /v1/responses request routed to Anthropic is dropped before egress instead of reaching the provider as {\"type\":\"text\",\"text\":\"\"}, which Anthropic rejects with 400 'messages: text content blocks must be non-empty' (or the same for system). OpenAI accepts empty input_text, so OpenAI Responses clients such as Codex send it; the Chat Completions converter already skipped empty text, the Responses converter did not. Case 1 sends an empty input_text block in its own user message (non-streaming). Case 2 is the streaming variant of the same request, the shape Codex sends. Case 3 sends an empty string content on a leading developer message (system path), an empty output_text on an assistant message, and an empty block beside a non-empty one. Each case asserts 200, the absence of the provider's rejection message, and a successful answer: a completed response with output_text for the unary cases, and output_text deltas with a response.completed terminal and no error event for the stream.",
+      "item": [
+        {
+          "name": "anthropic/claude-haiku-4-5 /v1/responses: empty input_text message is dropped - #9318",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('empty input_text block does not reach Anthropic - #9318', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(text, 'empty text block reached Anthropic: ' + text.slice(0, 400)).to.not.include('text content blocks must be non-empty');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + text.slice(0, 400)).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.status, 'response did not complete: ' + text.slice(0, 400)).to.eql('completed');",
+                  "  var out = '';",
+                  "  (body.output || []).forEach(function (item) {",
+                  "    if (item.type !== 'message') { return; }",
+                  "    (item.content || []).forEach(function (part) { if (part.type === 'output_text' && part.text) { out += part.text; } });",
+                  "  });",
+                  "  pm.expect(out.length, 'no output_text in the response: ' + text.slice(0, 400)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-haiku-4-5\",\"max_output_tokens\":16,\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"\"}]},{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Say OK.\"}]}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-haiku-4-5 /v1/responses streaming: empty input_text message is dropped - #9318",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('empty input_text block does not reach Anthropic on the stream route - #9318', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(text, 'empty text block reached Anthropic: ' + text.slice(0, 400)).to.not.include('text content blocks must be non-empty');",
+                  "  pm.expect(pm.response.code, 'stream request failed: ' + text.slice(0, 400)).to.eql(200);",
+                  "  pm.expect(text, 'expected output_text deltas: ' + text.slice(0, 400)).to.include('response.output_text.delta');",
+                  "  pm.expect(text, 'expected the stream to complete: ' + text.slice(0, 400)).to.include('response.completed');",
+                  "  pm.expect(text.indexOf('response.failed'), 'stream emitted response.failed: ' + text.slice(0, 400)).to.equal(-1);",
+                  "  pm.expect(text.indexOf('\"type\":\"error\"'), 'stream emitted an error event: ' + text.slice(0, 400)).to.equal(-1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-haiku-4-5\",\"max_output_tokens\":16,\"stream\":true,\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"\"}]},{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Say OK.\"}]}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-haiku-4-5 /v1/responses: empty developer, assistant and sibling text are dropped - #9318",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('empty system, assistant and sibling text blocks do not reach Anthropic - #9318', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(text, 'empty text block reached Anthropic: ' + text.slice(0, 400)).to.not.include('text content blocks must be non-empty');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + text.slice(0, 400)).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.status, 'response did not complete: ' + text.slice(0, 400)).to.eql('completed');",
+                  "  var out = '';",
+                  "  (body.output || []).forEach(function (item) {",
+                  "    if (item.type !== 'message') { return; }",
+                  "    (item.content || []).forEach(function (part) { if (part.type === 'output_text' && part.text) { out += part.text; } });",
+                  "  });",
+                  "  pm.expect(out.length, 'no output_text in the response: ' + text.slice(0, 400)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-haiku-4-5\",\"max_output_tokens\":16,\"input\":[{\"type\":\"message\",\"role\":\"developer\",\"content\":\"\"},{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Hi.\"}]},{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"\"}]},{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"\"},{\"type\":\"input_text\",\"text\":\"Say OK.\"}]}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

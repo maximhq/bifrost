@@ -5861,6 +5861,38 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 	// already-emitted role:"system" messages (an effort-only override, an earlier reminder) is
 	// skipped before requiring the user turn; without that, the second member of a system
 	// group would be judged against its sibling and inlined, dropping its override.
+	// droppedAsEmpty reports whether a user/assistant input item leaves no message on the
+	// wire because all of its text is empty (convertBifrostMessageToAnthropicMessage returns
+	// nil for it). Turn-shape checks below must not count it. Pending thinking flushes at a
+	// system message, so it cannot attach to the item a lookahead skips.
+	droppedAsEmpty := func(m *schemas.ResponsesMessage) bool {
+		if m.Type != nil && *m.Type != schemas.ResponsesMessageTypeMessage {
+			return false
+		}
+		if m.Role != nil && (*m.Role == schemas.ResponsesInputMessageRoleSystem || *m.Role == schemas.ResponsesInputMessageRoleDeveloper) {
+			return false
+		}
+		if m.Content == nil {
+			return true
+		}
+		if m.Content.ContentStr != nil {
+			return *m.Content.ContentStr == ""
+		}
+		for _, block := range m.Content.ContentBlocks {
+			// Text decides without converting, so the common prefill-trim check allocates nothing.
+			if block.Type == schemas.ResponsesInputMessageContentBlockTypeText || block.Type == schemas.ResponsesOutputMessageContentTypeText {
+				if block.Text != nil && *block.Text != "" {
+					return false
+				}
+				continue
+			}
+			if convertContentBlockToAnthropicWithCaps(caps, block) != nil {
+				return false
+			}
+		}
+		return true
+	}
+
 	midConvPlacementOK := func(i int) bool {
 		prev := len(anthropicMessages) - 1
 		for prev >= 0 && anthropicMessages[prev].Role == AnthropicMessageRoleSystem {
@@ -5886,9 +5918,10 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 		// that will join this system section, then require end-of-messages or an assistant
 		// turn. Judging the first member by its system sibling would inline it.
 		next := i + 1
-		for next < len(bifrostMessages) && bifrostMessages[next].Role != nil &&
+		for next < len(bifrostMessages) && ((bifrostMessages[next].Role != nil &&
 			(*bifrostMessages[next].Role == schemas.ResponsesInputMessageRoleSystem ||
-				*bifrostMessages[next].Role == schemas.ResponsesInputMessageRoleDeveloper) {
+				*bifrostMessages[next].Role == schemas.ResponsesInputMessageRoleDeveloper)) ||
+			droppedAsEmpty(&bifrostMessages[next])) {
 			next++
 		}
 		if next == len(bifrostMessages) {
@@ -6042,7 +6075,7 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 	if isRequestMessage && ctx.Value(schemas.BifrostContextKeySupportsAssistantPrefill) == false {
 		for trimIndex > 0 {
 			m := bifrostMessages[trimIndex-1]
-			if m.Role != nil && *m.Role == schemas.ResponsesInputMessageRoleAssistant {
+			if (m.Role != nil && *m.Role == schemas.ResponsesInputMessageRoleAssistant) || droppedAsEmpty(&m) {
 				trimIndex--
 			} else {
 				break
@@ -8198,6 +8231,9 @@ func convertAnthropicContentBlocksToResponsesMessagesOrdered(ctx *schemas.Bifros
 func convertBifrostMessageToAnthropicSystemContent(caps schemas.ModelCaps, msg *schemas.ResponsesMessage) *AnthropicContent {
 	if msg.Content != nil {
 		if msg.Content.ContentStr != nil {
+			if *msg.Content.ContentStr == "" {
+				return nil
+			}
 			return &AnthropicContent{
 				ContentStr: msg.Content.ContentStr,
 			}
@@ -8258,10 +8294,12 @@ func convertBifrostMessageToAnthropicMessage(caps schemas.ModelCaps, msg *schema
 		// Add content blocks after pending reasoning content blocks are added
 		if msg.Content != nil {
 			if msg.Content.ContentStr != nil {
-				contentBlocks = append(contentBlocks, AnthropicContentBlock{
-					Type: AnthropicContentBlockTypeText,
-					Text: msg.Content.ContentStr,
-				})
+				if *msg.Content.ContentStr != "" {
+					contentBlocks = append(contentBlocks, AnthropicContentBlock{
+						Type: AnthropicContentBlockTypeText,
+						Text: msg.Content.ContentStr,
+					})
+				}
 			} else if msg.Content.ContentBlocks != nil {
 				contentBlocks = append(contentBlocks, convertBifrostContentBlocksToAnthropic(caps, msg.Content.ContentBlocks)...)
 			}
@@ -8272,7 +8310,7 @@ func convertBifrostMessageToAnthropicMessage(caps schemas.ModelCaps, msg *schema
 	} else {
 		// Convert content
 		if msg.Content != nil {
-			if msg.Content.ContentStr != nil {
+			if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
 				anthropicMsg.Content = AnthropicContent{
 					ContentBlocks: []AnthropicContentBlock{{
 						Type: AnthropicContentBlockTypeText,
@@ -8288,6 +8326,12 @@ func convertBifrostMessageToAnthropicMessage(caps schemas.ModelCaps, msg *schema
 				}
 			}
 		}
+	}
+
+	// Every block was empty: an Anthropic message with no content is rejected, so the
+	// caller skips it.
+	if len(anthropicMsg.Content.ContentBlocks) == 0 && anthropicMsg.Content.ContentStr == nil {
+		return nil
 	}
 
 	return &anthropicMsg
@@ -10511,7 +10555,9 @@ func convertContentBlockToAnthropicWithCaps(caps schemas.ModelCaps, block schema
 		}
 	case schemas.ResponsesInputMessageContentBlockTypeText, schemas.ResponsesOutputMessageContentTypeText:
 		anthropicBlock := AnthropicContentBlock{}
-		if block.Text != nil {
+		// Anthropic rejects an empty text block with a 400, so it is skipped like the
+		// Chat Completions converter does.
+		if block.Text != nil && *block.Text != "" {
 			anthropicBlock = AnthropicContentBlock{
 				Type:         AnthropicContentBlockTypeText,
 				Text:         block.Text,
