@@ -61,6 +61,7 @@ func (s testWSHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
 func (s testWSHandlerStore) ShouldAllowPerRequestStorageOverride() bool      { return false }
 func (s testWSHandlerStore) ShouldAllowPerRequestRawOverride() bool          { return false }
 func (s testWSHandlerStore) ShouldAllowDirectKeys() bool                     { return s.allowDirectKeys }
+func (s testWSHandlerStore) GetMaxRequestTimeout() time.Duration             { return 0 }
 func (s testWSHandlerStore) ShouldSendExtraFieldsInHeaders() bool            { return false }
 func (s testWSHandlerStore) IsProviderConfigured(schemas.ModelProvider) bool { return false }
 func (s testWSHandlerStore) GetMCPExternalServerURL() string                 { return "" }

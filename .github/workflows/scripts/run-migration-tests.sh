@@ -1452,6 +1452,7 @@ config_agent_registrations|credential_origins|'["https://client.example.com"]'|n
 config_agent_registrations|require_public_target|false|name = 'migration-test-agent'
 config_client|skills_external_client_url|''|id = 1
 config_client|a2a_private_allowlist_json|'[]'|id = 1
+config_client|max_request_timeout_in_seconds|0|id = 1
 config_keys|vertex_use_session_routing|NULL|name = 'migration-test-key-anthropic'
 config_mcp_clients|openapi_spec|''|client_id = 'mcp-migration-test-001'
 config_mcp_clients|openapi_config_json|NULL|client_id = 'mcp-migration-test-001'

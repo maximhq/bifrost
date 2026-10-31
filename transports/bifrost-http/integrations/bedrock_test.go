@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/bytedance/sonic"
@@ -74,6 +75,10 @@ func (m *mockHandlerStore) ShouldAllowPerRequestRawOverride() bool {
 
 func (m *mockHandlerStore) ShouldAllowDirectKeys() bool {
 	return false
+}
+
+func (m *mockHandlerStore) GetMaxRequestTimeout() time.Duration {
+	return 0
 }
 
 func (m *mockHandlerStore) ShouldSendExtraFieldsInHeaders() bool {

@@ -405,6 +405,7 @@ bifrost:
     # skipAccessProfileUserVirtualKeyDeletion: false # Enterprise: when true, removing a user's last access profile does not delete their virtual keys (deleting the user still does)
     # whitelistedRoutes: []                  # Routes that bypass auth middleware
     # routingChainMaxDepth: 10               # Maximum depth for routing rule chain evaluation
+    # maxRequestTimeoutInSeconds: 0          # Cap on the per-request x-bf-request-timeout header; 0 ignores the header
     # allowDirectKeys: false                 # Allow callers to bypass the key pool via x-bf-direct-key + Authorization header
     # vkRotationCooldown: "5m"              # Grace period after a virtual key rotation during which the previous value still authenticates ("0" disables; max 30d)
     # mcpExternalClientUrl: ""               # Public base URL used as redirect_uri when Bifrost is an OAuth client to MCP servers

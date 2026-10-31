@@ -96,7 +96,7 @@ Per-provider `network_config` options (applies to all standard providers):
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `default_request_timeout_in_seconds` | integer | Per-request timeout. For streaming requests it bounds the connection, request write and wait for response headers; the body is governed by `stream_idle_timeout_in_seconds` |
+| `default_request_timeout_in_seconds` | integer | Per-request timeout. For streaming requests it bounds the connection, request write and wait for response headers; the body is governed by `stream_idle_timeout_in_seconds`. A single request can replace it with [`x-bf-request-timeout`](../../providers/request-options#request-timeout) once `client.max_request_timeout_in_seconds` is set |
 | `max_retries` | integer | Retry attempts on transient errors |
 | `retry_backoff_initial` | integer | Initial backoff in milliseconds |
 | `retry_backoff_max` | integer | Maximum backoff in milliseconds |

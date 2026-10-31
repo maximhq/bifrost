@@ -2459,6 +2459,37 @@ func TestMigrationAddCompatConvertDecisionToResponsesColumn(t *testing.T) {
 	assert.False(t, rows[0].CompatConvertDecisionToResponses, "existing rows must keep decision emulation off")
 }
 
+func TestMigrationAddMaxRequestTimeoutInSecondsColumn(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`).Error)
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+
+	// Simulate the pre-migration schema
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableClientConfig{}, "max_request_timeout_in_seconds"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "max_request_timeout_in_seconds"))
+
+	now := time.Now()
+	require.NoError(t, db.Exec(`INSERT INTO config_client (created_at, updated_at) VALUES (?, ?)`, now, now).Error)
+
+	require.NoError(t, migrationAddMaxRequestTimeoutInSecondsColumn(ctx, db, testMigrationLogger))
+	assert.True(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "max_request_timeout_in_seconds"))
+	// Idempotent: a second run is a no-op.
+	require.NoError(t, migrationAddMaxRequestTimeoutInSecondsColumn(ctx, db, testMigrationLogger))
+
+	type row struct {
+		MaxRequestTimeoutInSeconds int `gorm:"column:max_request_timeout_in_seconds"`
+	}
+	var rows []row
+	require.NoError(t, db.Table("config_client").Select("max_request_timeout_in_seconds").Order("id").Find(&rows).Error)
+	require.Len(t, rows, 1)
+	assert.Zero(t, rows[0].MaxRequestTimeoutInSeconds, "existing rows must keep the header ignored")
+}
+
 // setupCalendarAlignedPreMigrationDB creates a SQLite DB with governance_virtual_keys,
 // governance_budgets, and governance_rate_limits tables, then drops the calendar_aligned
 // column from budgets and rate_limits to simulate the pre-migration schema state.

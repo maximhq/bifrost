@@ -585,6 +585,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_relays_tables"}, run: migrationAddRelaysTables},
 	{IDs: []string{"add_video_token_pricing_column"}, run: migrationAddVideoTokenPricingColumn},
 	{IDs: []string{"add_voice_live_pricing_columns"}, run: migrationAddVoiceLivePricingColumns},
+	{IDs: []string{"add_max_request_timeout_in_seconds_column"}, run: migrationAddMaxRequestTimeoutInSecondsColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -16897,4 +16898,34 @@ func migrationAddVoiceLivePricingColumns(ctx context.Context, db *gorm.DB, logge
 // the columns hold operator-set rates.
 func rollbackVoiceLivePricingColumns(context.Context, *gorm.DB, schemas.Logger) error {
 	return fmt.Errorf("add_voice_live_pricing_columns is non-rollbackable: dropping the _voice_live columns would permanently delete every Voice Live rate an operator has set, and Voice Live turns would silently bill at the normal rates; the columns are additive and older binaries safely ignore them")
+}
+
+// migrationAddMaxRequestTimeoutInSecondsColumn adds max_request_timeout_in_seconds to config_client.
+// No backfill: 0 keeps the x-bf-request-timeout header ignored, so upgrading changes nothing until
+// an operator sets a cap.
+func migrationAddMaxRequestTimeoutInSecondsColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_max_request_timeout_in_seconds_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db.WithContext(ctx), migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "max_request_timeout_in_seconds"); err != nil {
+				return fmt.Errorf("failed to add max_request_timeout_in_seconds column: %w", err)
+			}
+			return nil
+		},
+		// Dropping the column would delete the cap an operator configured.
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping the column would delete the configured cap on x-bf-request-timeout; it is additive and older binaries ignore it", migrationName)
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
 }

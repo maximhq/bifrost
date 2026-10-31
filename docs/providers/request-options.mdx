@@ -18,6 +18,7 @@ Bifrost provides request options that control behavior, enable features, and pas
 | `BifrostContextKeySessionTTL`              | `x-bf-session-ttl`                                   | `time.Duration`       | Session binding TTL (duration string or seconds)                                                                                      |
 | `BifrostContextKeySessionAffinity`         | `x-bf-session-affinity`                              | `bool`                | Whether the session decides routing for this request: `on` (default) or `off`                                                         |
 | `BifrostContextKeyRequestID`               | `x-request-id`                                       | `string`              | Custom request ID for tracking                                                                                                        |
+| `BifrostContextKeyRequestTimeout`          | `x-bf-request-timeout`                               | `time.Duration`       | Per-attempt upstream timeout for this request, replacing the provider's `default_request_timeout_in_seconds`. On the gateway, requires `max_request_timeout_in_seconds` server-side and is clamped to it |
 | `BifrostContextKeySendBackRawRequest`      | `x-bf-send-back-raw-request`                         | `bool`                | Include raw provider request in the response                                                                                          |
 | `BifrostContextKeySendBackRawResponse`     | `x-bf-send-back-raw-response`                        | `bool`                | Include raw provider response in the response                                                                                         |
 | `BifrostContextKeyStoreRawRequestResponse` | `x-bf-store-raw-request-response`                    | `bool`                | Persist raw request/response in log records                                                                                           |
@@ -344,6 +345,51 @@ Input: messages,
 })
 
 ````
+</Tab>
+</Tabs>
+
+### Request Timeout
+
+**Context Key:** `BifrostContextKeyRequestTimeout`
+**Header:** `x-bf-request-timeout`
+**Type:** `time.Duration` (header value: duration string like `"10m"`, or seconds as integer)
+**Required:** No
+
+Replaces the provider's `default_request_timeout_in_seconds` for this request only. Use it for a call that needs longer than the provider-wide timeout (reasoning models, image or video generation, cold starts), or to fail a latency-sensitive call sooner, without changing the provider's configuration.
+
+The value bounds each attempt, the same way the provider timeout it replaces does. An attempt that runs past it fails with `504` (`request_timed_out`), and Bifrost moves on to the next [fallback](/features/retries-and-fallbacks). For streaming requests it bounds the wait for the response headers; once tokens flow, `stream_idle_timeout_in_seconds` applies instead.
+
+On the **gateway**, the header is off by default:
+
+1. The server admin sets `max_request_timeout_in_seconds` (see [client config](../deployment-guides/config-json/client)). Until it is set, the header is ignored and Bifrost logs a warning for each request that sends it.
+2. A header value above that cap is clamped to it. A value that is not a positive duration is ignored, and the provider timeout applies.
+
+In the **Go SDK** there is no cap: set `BifrostContextKeyRequestTimeout` to a `time.Duration`. The context deadline remains the budget for the whole request, across retries and fallbacks, and still caps every attempt.
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-request-timeout: 10m' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/o3",
+    "messages": [{"role": "user", "content": "Prove that there are infinitely many primes."}]
+}'
+```
+
+</Tab>
+<Tab title="Go SDK">
+```go
+bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+bfCtx.SetValue(schemas.BifrostContextKeyRequestTimeout, 10*time.Minute)
+
+response, err := client.ChatCompletionRequest(bfCtx, &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "o3",
+    Input:    messages,
+})
+```
 </Tab>
 </Tabs>
 

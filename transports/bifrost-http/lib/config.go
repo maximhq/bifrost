@@ -84,6 +84,8 @@ type HandlerStore interface {
 	GetAsyncJobExecutor() *logstore.AsyncJobExecutor
 	// GetAsyncJobResultTTL returns the default TTL for async job results in seconds.
 	GetAsyncJobResultTTL() int
+	// GetMaxRequestTimeout returns the cap on the x-bf-request-timeout header; 0 means the header is ignored.
+	GetMaxRequestTimeout() time.Duration
 	// GetKVStore returns the shared in-memory kvstore instance.
 	// Returns nil if not initialized.
 	GetKVStore() *kvstore.Store
@@ -8116,6 +8118,12 @@ func (c *Config) GetStreamChunkInterceptor() StreamChunkInterceptor {
 // Returns nil if LogsStore or governance plugin is not configured.
 func (c *Config) GetAsyncJobExecutor() *logstore.AsyncJobExecutor {
 	return c.AsyncJobExecutor
+}
+
+// GetMaxRequestTimeout returns client.max_request_timeout_in_seconds as a duration: the cap on
+// the per-request x-bf-request-timeout header. 0 (the default) means the header is ignored.
+func (c *Config) GetMaxRequestTimeout() time.Duration {
+	return time.Duration(c.ClientConfig.MaxRequestTimeoutInSeconds) * time.Second
 }
 
 // GetAsyncJobResultTTL returns the default TTL for async job results in seconds.
