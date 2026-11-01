@@ -491,7 +491,7 @@
 		"proxyConfiguration": "Configurazione proxy",
 		"proxyType": "Tipo di proxy",
 		"httpHttps": "HTTP / HTTPS",
-		"proxyTypeHelp": "Seleziona il tipo di protocollo del proxy. Al momento è supportato solo il proxy HTTP.",
+		"proxyTypeHelp": "HTTP / HTTPS accetta un URL proxy http:// o https:// (https:// cifra la connessione al proxy). SOCKS5 accetta un URL socks5://.",
 		"selectType": "Seleziona tipo",
 		"proxyUrl": "URL del proxy",
 		"proxyUrlHelp": "URL completo del server proxy inclusi protocollo e porta.",
@@ -512,16 +512,16 @@
 		"scimHelp": "Usa il proxy per le richieste di sincronizzazione della directory SCIM.",
 		"scimEnterpriseOnly": "Il supporto per il proxy SCIM è disponibile in Bifrost Enterprise.",
 		"inference": "Inferenza",
-		"inferenceHelp": "Usa il proxy per le richieste di inferenza LLM ai provider di modelli.",
+		"inferenceHelp": "Usa il proxy per le richieste di inferenza LLM verso i provider di modelli. Un provider con impostazioni proxy proprie le mantiene.",
 		"comingSoon": "In arrivo",
 		"api": "API",
-		"apiHelp": "Usa il proxy per le chiamate API esterne e i webhook.",
+		"apiHelp": "Usa il proxy per le chiamate API in uscita: server MCP, OAuth, webhook, download dei plugin, sincronizzazione del catalogo modelli ed export OpenTelemetry.",
 		"noPermission": "Non hai i permessi per aggiornare le impostazioni",
 		"toastSaved": "Configurazione del proxy aggiornata con successo.",
 		"connectionTimeoutHelp": "Timeout per stabilire connessioni proxy. 0 significa nessun timeout. Il valore predefinito è 60 secondi.",
 		"caCertificateHelp": "Certificato CA con codifica PEM da considerare attendibile per le connessioni TLS tramite proxy con intercettazione SSL.",
 		"skipTlsHelp": "Disabilita la verifica del certificato TLS per i proxy HTTPS. Non consigliato per la produzione.",
-		"unsupportedType": "Il proxy {{type}} non è ancora supportato. Usa un proxy HTTP."
+		"unsupportedType": "Il proxy {{type}} non è ancora supportato. Usa un proxy HTTP o SOCKS5."
 	},
 	"userAgent": {
 		"title": "Mappature User Agent",

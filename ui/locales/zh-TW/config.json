@@ -491,7 +491,7 @@
 		"proxyConfiguration": "代理配置",
 		"proxyType": "代理型別",
 		"httpHttps": "HTTP / HTTPS",
-		"proxyTypeHelp": "選擇代理協議型別。目前僅支援 HTTP 代理。",
+		"proxyTypeHelp": "HTTP / HTTPS 使用 http:// 或 https:// 代理 URL（https:// 會加密與代理之間的連線）。SOCKS5 使用 socks5:// URL。",
 		"selectType": "選擇型別",
 		"proxyUrl": "代理 URL",
 		"proxyUrlHelp": "代理伺服器的完整 URL，包含協議與埠。",
@@ -512,16 +512,16 @@
 		"scimHelp": "對 SCIM 目錄同步請求使用代理。",
 		"scimEnterpriseOnly": "Bifrost Enterprise 提供 SCIM 代理支援。",
 		"inference": "推理",
-		"inferenceHelp": "對發往模型供應商的 LLM 推理請求使用代理。",
+		"inferenceHelp": "對傳送至模型提供者的 LLM 推論請求使用代理。已設定自身代理的提供者保留其設定。",
 		"comingSoon": "即將推出",
 		"api": "API",
-		"apiHelp": "對外部 API 呼叫與 webhook 使用代理。",
+		"apiHelp": "對外送 API 呼叫使用代理：MCP 伺服器、OAuth、Webhook、外掛下載、模型目錄同步及 OpenTelemetry 匯出。",
 		"noPermission": "你沒有更新設定的許可權",
 		"toastSaved": "代理配置已成功更新。",
 		"connectionTimeoutHelp": "建立代理連線的超時時間。0 表示不設超時，預設值為 60 秒。",
 		"caCertificateHelp": "透過會攔截 SSL 的代理建立 TLS 連線時，使用此 PEM 編碼的 CA 證書作為受信任證書。",
 		"skipTlsHelp": "停用 HTTPS 代理的 TLS 證書驗證。不建議在生產環境中使用。",
-		"unsupportedType": "暫不支援 {{type}} 代理，請使用 HTTP 代理。"
+		"unsupportedType": "暫不支援 {{type}} 代理，請使用 HTTP 或 SOCKS5 代理。"
 	},
 	"userAgent": {
 		"title": "User-Agent 對映",

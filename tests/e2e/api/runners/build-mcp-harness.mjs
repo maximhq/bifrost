@@ -476,8 +476,9 @@ const oas06Checks = (p, clientVar) => [
   request("OAS-06", `${p}protected resource metadata without credentials`, "GET", "/.well-known/oauth-protected-resource", { noAuth: true, asserts: [A.status(200)] }),
   request("OAS-06", `${p}authorization server metadata without credentials`, "GET", "/.well-known/oauth-authorization-server", { noAuth: true, asserts: [A.status(200)] }),
 ];
-const OAS06 = folder("OAS-06 Issuance endpoints are public", `Setup: ${BOTH}, dashboard auth on; the issuance and discovery requests carry no credentials.`, [
+const OAS06 = folder("OAS-06 Issuance endpoints are public", `Setup: ${BOTH}, dashboard auth on; the issuance and discovery requests carry no credentials; the requests run in both and then again in oauth.`, [
   ...withMode("OAS-06", "both", oas06Checks("", "oas06_client")),
+  ...withMode("OAS-06", "oauth", oas06Checks("oauth: ", "oas06o_client")),
 ]);
 
 const OAS07 = folder("OAS-07 Register a client", `Setup: ${BOTH}.`, withMode("OAS-07", "both", [
@@ -847,7 +848,7 @@ const ADM10 = folder("ADM-10 Per-call connections only for HTTP", "Setup: admin 
   deleteClient("ADM-10", "adm10-http"),
 ]);
 
-const ADM11 = folder("ADM-11 Duplicate names and slugs", "Setup: admin credentials; client dup_a on alpha; a virtual MCP with slug \"vm-slug\".", [
+const ADM11 = folder("ADM-11 Duplicate names and slugs", "Setup: admin credentials; clients dup_a and adm11_b on alpha; a virtual MCP with slug \"vm-slug\".", [
   ...freshServer("ADM-11", "alpha", ["echo_tool", "add_tool"]),
   createClient("ADM-11", httpClient("adm11-dup-a", "dup_a", "alpha"), "setup: create client dup_a"),
   request("ADM-11", "setup: create a virtual MCP with slug \"vm-slug\"", "POST", "/api/mcp/virtual-mcps", {
@@ -858,12 +859,15 @@ const ADM11 = folder("ADM-11 Duplicate names and slugs", "Setup: admin credentia
   createExpect("ADM-11", "the same name with another slug is rejected", httpClient("adm11-x", "dup_a", "alpha", { endpoint_slug: "other" }), [A.status(409), A.msgEquals("An MCP client with this name already exists")]),
   createExpect("ADM-11", "\"DUP_A\" is rejected", httpClient("adm11-x", "DUP_A", "alpha"), [A.status(409), A.msgEquals("An MCP endpoint with this slug already exists")]),
   createExpect("ADM-11", "\"vm_slug\" is rejected", httpClient("adm11-x", "vm_slug", "alpha"), [A.status(409), A.msgEquals("An MCP endpoint with this slug already exists")]),
+  createClient("ADM-11", httpClient("adm11-b", "adm11_b", "alpha"), "setup: create client adm11_b"),
+  request("ADM-11", "renaming adm11_b to dup_a is rejected", "PUT", "/api/mcp/client/adm11-b", { body: { name: "dup_a" }, asserts: [A.status(409), A.msgEquals("An MCP client with this name already exists")] }),
   request("ADM-11", "one dup_a is listed", "GET", "/api/mcp/clients?search=dup_a", {
     asserts: [A.status(200), A.custom("exactly one client is named dup_a", [
       "var n = pm.response.json().clients.filter(function (c) { return c.config.name === 'dup_a'; }).length;",
       "pm.expect(n, 'body: ' + pm.response.text()).to.equal(1);",
     ])],
   }),
+  deleteClient("ADM-11", "adm11-b"),
   deleteClient("ADM-11", "adm11-dup-a"),
   request("ADM-11", "teardown: delete the virtual MCP", "DELETE", "/api/mcp/virtual-mcps/{{adm11_vmcp_id}}", { asserts: [A.status(200)] }),
 ]);
@@ -887,9 +891,9 @@ const ADM12 = folder("ADM-12 Reused explicit client_id", "Setup: admin credentia
 const ADM16 = folder("ADM-16 Missing connection target is rolled back", "Setup: admin credentials; alpha (echo_tool, add_tool) for the reuse checks (an HTTP client and a STDIO bridge).", [
   ...freshServer("ADM-16", "alpha", ["echo_tool", "add_tool"]),
   createExpect("ADM-16", "http without connection_string", { client_id: "adm16-http", name: "adm16_http", connection_type: "http", auth_type: "none" },
-    [A.status(500), A.msgContains("ConnectionString is required for HTTP connection type")]),
+    [A.status(400), A.msgEquals("connection_string is required for http connection type")]),
   createExpect("ADM-16", "stdio without stdio_config", { client_id: "adm16-stdio", name: "adm16_stdio", connection_type: "stdio", auth_type: "none" },
-    [A.status(500), A.msgContains("StdioConfig is required")]),
+    [A.status(400), A.msgEquals("stdio_config is required for stdio connection type")]),
   request("ADM-16", "no client was kept", "GET", "/api/mcp/clients?search=adm16", {
     asserts: [A.status(200), A.custom("neither client is listed", [
       "var names = pm.response.json().clients.map(function (c) { return c.config.name; });",
@@ -1058,6 +1062,19 @@ const EP15 = folder("EP-15 Hyphenated upstream tool name", `Setup: ${FLEET}; alp
   ...fleetTeardown("EP-15"),
 ]);
 
+const EP16 = folder("EP-16 \"a-b\" and \"a_b\" stay distinct", `Setup: ${FLEET}; alpha also lists "a_b" and "a-b".`, [
+  ...fleetSetupWith("EP-16", { alphaTools: ["echo", "add", "a_b", "a-b"] }),
+  rpc("EP-16", "tools/list", listMsg, { asserts: [A.status(200), A.custom("alpha-a_b and alpha-a-b are both listed", [
+    "var names = pm.response.json().result.tools.map(function (t) { return t.name; });",
+    "pm.expect(names, 'body: ' + pm.response.text()).to.include('alpha-a_b');",
+    "pm.expect(names).to.include('alpha-a-b');",
+  ])] }),
+  rpc("EP-16", "tools/call alpha-a_b", call("alpha-a_b", { q: "x" }), { asserts: [A.status(200)] }),
+  mockCalls("EP-16", "alpha", "a_b", 1),
+  mockCalls("EP-16", "alpha", "a-b", 0),
+  ...fleetTeardown("EP-16"),
+]);
+
 const EP17 = folder("EP-17 Names with \"/\" or \"..\" are not served", `Setup: ${FLEET}; alpha also serves "x/y" and "a..b".`, [
   ...fleetSetupWith("EP-17", { alphaTools: ["echo", "add", "x/y", "a..b"] }),
   rpc("EP-17", "tools/list", listMsg, { asserts: [A.status(200), toolNamesInList(["alpha-add", "alpha-echo", "beta-echo"]), A.custom("neither name is listed", [
@@ -1067,6 +1084,18 @@ const EP17 = folder("EP-17 Names with \"/\" or \"..\" are not served", `Setup: $
   ])] }),
   rpc("EP-17", "tools/call alpha-x/y", call("alpha-x/y"), { asserts: [A.status(200), rpcError(-32602)] }),
   ...fleetTeardown("EP-17"),
+]);
+
+// mockToolErrorText is the text the mock's err_kind tool result carries for tool.
+const mockToolErrorText = (tool) => `tool ${JSON.stringify(tool)} reported an error (injected)`;
+const EP19 = folder("EP-19 Upstream returns isError", `Setup: ${FLEET}; alpha fault err_rate 1, err_kind tool.`, [
+  ...fleetSetup("EP-19"),
+  mockPost("EP-19", "alpha", "faults", "setup: alpha answers every call with an isError result", { faults: { err_rate: 1, err_kind: "tool" } }),
+  rpc("EP-19", "tools/call alpha-echo", call("alpha-echo", { text: "hi" }), { asserts: [A.status(200), toolResultError(mockToolErrorText("echo"), null), A.custom("the text is exactly the mock's", [
+    `pm.expect(pm.response.json().result.content[0].text, 'body: ' + pm.response.text()).to.equal(${lit(mockToolErrorText("echo"))});`,
+  ])] }),
+  mockCalls("EP-19", "alpha", "echo", 1),
+  ...fleetTeardown("EP-19"),
 ]);
 
 const EP20 = folder("EP-20 Upstream fails the exchange", `Setup: ${FLEET}; alpha fault err_rate 1, err_kind protocol.`, [
@@ -1377,7 +1406,7 @@ const OAS25 = folder("OAS-25 Token request rejections", `Setup: ${GRANT_TEXT}; $
   ...fleetGrantTeardown("OAS-25"),
 ]);
 
-const OAS27 = folder("OAS-27 Refresh grant", `Setup: ${GRANT_TEXT}; ${BOTH}, temp-token auth on; a second registered client.`, [
+const OAS27 = folder("OAS-27 Refresh grant", `Setup: ${GRANT_TEXT}; ${BOTH}, temp-token auth on; a second registered client; a third client registered with grant_types authorization_code only, with one grant.`, [
   ...fleetGrantSetup("OAS-27"), oauthConfig("OAS-27", "both"),
   register("OAS-27", "oas27_client", LOOPBACK_CB, undefined, REFRESHABLE),
   register("OAS-27", "oas27_other", LOOPBACK_CB, "OAS-27 other client"),
@@ -1399,6 +1428,9 @@ const OAS27 = folder("OAS-27 Refresh grant", `Setup: ${GRANT_TEXT}; ${BOTH}, tem
   tokenReq("OAS-27", "another client's client_id", refreshParams("oas27_r_rt", "oas27_other"), [A.status(400), O.descEquals("client_id mismatch")]),
   tokenReq("OAS-27", "no refresh_token", refreshParams("oas27_r_rt", "oas27_client", { refresh_token: undefined }), [A.status(400), O.descEquals("refresh_token and client_id are required")]),
   tokenReq("OAS-27", "no client_id", refreshParams("oas27_r_rt", "oas27_client", { client_id: undefined }), [A.status(400), O.descEquals("refresh_token and client_id are required")]),
+  register("OAS-27", "oas27_noref", LOOPBACK_CB, "OAS-27 client without refresh_token"),
+  ...vkGrant("OAS-27", "oas27_noref", "oas27_n", "the grant of the client registered without refresh_token"),
+  tokenReq("OAS-27", "refresh by a client registered without refresh_token", refreshParams("oas27_n_rt", "oas27_noref"), [A.status(400), O.error("unauthorized_client"), O.descEquals("client is not registered for the refresh_token grant")]),
   ...fleetGrantTeardown("OAS-27"),
 ]);
 
@@ -1422,6 +1454,39 @@ const OAS28 = folder("OAS-28 Rotated refresh token replay", `Setup: ${GRANT_TEXT
     "pm.expect(list.length, 'body: ' + pm.response.text()).to.equal(0);",
   ])] }),
   ...fleetGrantTeardown("OAS-28"),
+]);
+
+// vkGrantWith runs a whole grant as vkGrant does, consenting with the key held in <vkVar> instead of
+// the full-access VK.
+const vkGrantWith = (id, clientVar, flow, label, vkVar) => [
+  authorize(id, clientVar, flow, `setup: authorize ${label}`),
+  consent(id, flow, `setup: consent ${label}`, "temp", { mode: "vk", value: `{{${vkVar}}}` }, [A.status(200), codeIssued()], { extraTests: saveCode(flow) }),
+  tokenReq(id, `setup: exchange ${label}'s code`, codeParams(flow, clientVar), [A.status(200), tokensIssued()], { extraTests: saveTokens(flow) }),
+];
+const OAS29 = folder("OAS-29 Refresh after the VK changes", `Setup: ${GRANT_TEXT}; ${BOTH}, temp-token auth on. Three more keys with the full-access VK's grants hold one grant each: one is then deactivated, one deleted, and one, set after its control refresh to expire 2s later, stays active past its expiry.`, [
+  ...fleetGrantSetup("OAS-29"), oauthConfig("OAS-29", "both"),
+  register("OAS-29", "oas29_client", LOOPBACK_CB, undefined, REFRESHABLE),
+  vkCreate("OAS-29", "setup: create the key to deactivate", { name: "OAS-29 deactivated key", mcp_configs: VKS.full.configs }, "oas29_off"),
+  ...vkGrantWith("OAS-29", "oas29_client", "oas29_off_f", "the deactivated key's grant", "oas29_off"),
+  request("OAS-29", "setup: deactivate the key", "PUT", "/api/governance/virtual-keys/{{oas29_off_id}}", { body: { is_active: false }, asserts: [A.status(200)] }),
+  tokenReq("OAS-29", "refresh after the key is deactivated", refreshParams("oas29_off_f_rt", "oas29_client"), [A.status(400), O.descEquals("virtual key is no longer active")]),
+  vkCreate("OAS-29", "setup: create the key to delete", { name: "OAS-29 deleted key", mcp_configs: VKS.full.configs }, "oas29_gone"),
+  ...vkGrantWith("OAS-29", "oas29_client", "oas29_gone_f", "the deleted key's grant", "oas29_gone"),
+  vkDelete("OAS-29", "setup: delete the key", "oas29_gone"),
+  tokenReq("OAS-29", "refresh after the key is deleted (its grants go with it)", refreshParams("oas29_gone_f_rt", "oas29_client"), [A.status(400), O.error("invalid_grant")]),
+  vkCreate("OAS-29", "setup: create the key that will expire", { name: "OAS-29 expiring key", mcp_configs: VKS.full.configs }, "oas29_exp"),
+  ...vkGrantWith("OAS-29", "oas29_client", "oas29_exp_f", "the expiring key's grant", "oas29_exp"),
+  tokenReq("OAS-29", "control: refresh before the key expires", refreshParams("oas29_exp_f_rt", "oas29_client"), [A.status(200), tokensIssued()], { extraTests: saveTokens("oas29_exp_r") }),
+  request("OAS-29", "setup: set the key to expire 2s from now", "PUT", "/api/governance/virtual-keys/{{oas29_exp_id}}", {
+    raw: "{{oas29_exp_body}}", asserts: [A.status(200)],
+    pre: ["pm.variables.set('oas29_exp_body', JSON.stringify({ expires_at: new Date(Date.now() + 2000).toISOString() }));"],
+  }),
+  tokenReq("OAS-29", "refresh after the key expires, 3s later", refreshParams("oas29_exp_r_rt", "oas29_client"), [A.status(400), O.descEquals("virtual key has expired")], { pre: ["setTimeout(function () {}, 3000);"] }),
+  authorize("OAS-29", "oas29_client", "oas29_exp_c", "setup: authorize a new grant for the expired key"),
+  consent("OAS-29", "oas29_exp_c", "consent with the expired key", "temp", { mode: "vk", value: "{{oas29_exp}}" }, [A.status(400), A.msgEquals("virtual key has expired")]),
+  vkDelete("OAS-29", "teardown: delete the deactivated key", "oas29_off"),
+  vkDelete("OAS-29", "teardown: delete the expired key", "oas29_exp"),
+  ...fleetGrantTeardown("OAS-29"),
 ]);
 
 const OAS30 = folder("OAS-30 List OAuth sessions", `Setup: ${GRANT_TEXT}; ${BOTH}, temp-token auth on; two clients, "OAS-30 client one" and "OAS-30 client two", one grant each; a second key "Second session key" with one grant for "Second key client".`, [
@@ -1504,9 +1569,10 @@ const oas32Pass = (mode, v, p, label) => [
   tokenReq("OAS-32", `${p}refresh with its refresh token`, refreshParams(`${v}_f_rt`, `${v}_client`), [A.status(400), O.error("invalid_grant")]),
   mcpWithToken("OAS-32", `${p}its unexpired access token on /mcp`, `${v}_f_at`, [A.status(200)]),
 ];
-const OAS32 = folder("OAS-32 Revoke a session", `Setup: ${GRANT_TEXT}; ${BOTH}, temp-token auth on.`, [
+const OAS32 = folder("OAS-32 Revoke a session", `Setup: ${GRANT_TEXT}; ${BOTH}, temp-token auth on; then the same in mcp_server_auth_mode oauth with a second grant.`, [
   ...fleetGrantSetup("OAS-32"),
   ...oas32Pass("both", "oas32", "", "the grant"),
+  ...oas32Pass("oauth", "oas32o", "oauth: ", "the oauth-mode grant"),
   ...fleetGrantTeardown("OAS-32"),
 ]);
 
@@ -1523,10 +1589,43 @@ const oas34Pass = (mode, v, p) => [
   tokenReq("OAS-34", `setup: ${p}refresh`, refreshParams(`${v}_f_rt`, `${v}_client`), [A.status(200), tokensIssued()], { extraTests: saveTokens(`${v}_r`) }),
   mcpWithToken("OAS-34", `${p}the refreshed access token on /mcp`, `${v}_r_at`, [A.status(200)]),
 ];
-const OAS34 = folder("OAS-34 Access token expiry", `Setup: ${GRANT_TEXT}; ${BOTH}, temp-token auth on, access_token_ttl 2.`, [
+const OAS34 = folder("OAS-34 Access token expiry", `Setup: ${GRANT_TEXT}; ${BOTH}, temp-token auth on, access_token_ttl 2; then the same in mcp_server_auth_mode oauth with a second grant.`, [
   ...fleetGrantSetup("OAS-34"),
   ...oas34Pass("both", "oas34", ""),
+  ...oas34Pass("oauth", "oas34o", "oauth: "),
   ...fleetGrantTeardown("OAS-34"),
+]);
+
+const OAS35 = folder("OAS-35 Changing issuer_url", `Setup: ${GRANT_TEXT}; ${BOTH}, temp-token auth on; one grant (an access token and a refresh token), then issuer_url switched to ${OTHER_ISS}.`, [
+  ...fleetGrantSetup("OAS-35"), oauthConfig("OAS-35", "both"),
+  register("OAS-35", "oas35_client", LOOPBACK_CB, undefined, REFRESHABLE),
+  ...vkGrant("OAS-35", "oas35_client", "oas35_f", "the grant"),
+  mcpWithToken("OAS-35", "control: the access token on /mcp", "oas35_f_at", [A.status(200)]),
+  oauthConfig("OAS-35", "both", [`cc.oauth2_server_config = { issuer_url: ${lit(OTHER_ISS)} };`], `setup: switch issuer_url to ${OTHER_ISS}`),
+  request("OAS-35", "authorization server metadata names the new issuer", "GET", "/.well-known/oauth-authorization-server", { noAuth: true, asserts: [A.status(200), A.jsonEquals("issuer", OTHER_ISS)] }),
+  mcpWithToken("OAS-35", "the old access token on /mcp", "oas35_f_at", [A.status(401), A.msgStartsWith("invalid token")]),
+  tokenReq("OAS-35", "refresh the grant", refreshParams("oas35_f_rt", "oas35_client"), [A.status(400), O.error("invalid_grant"), O.descEquals("the grant was issued for a resource this server no longer serves; authorize again")]),
+  ...fleetGrantTeardown("OAS-35"),
+]);
+
+// noDoubleSlash checks a URL field of the response body has no "//" after its scheme.
+const noDoubleSlash = (field) => A.custom(`${field} has no "//" after the scheme`, [
+  "var b = pm.response.json();",
+  `var v = String(b[${lit(field)}] || '');`,
+  `pm.expect(v, ${lit(field + " is set")}).to.not.equal('');`,
+  `pm.expect(v.replace(/^[a-z]+:\\/\\//, ''), ${lit(field + ": ")} + v).to.not.include('//');`,
+]);
+const OAS40 = folder("OAS-40 issuer_url with a trailing slash", "Setup: mcp_server_auth_mode both with issuer_url set to the base URL followed by \"/\", temp-token auth on; a registered client with a loopback redirect.", [
+  readConfig("OAS-40"),
+  putConfig("OAS-40", "setup: switch mcp_server_auth_mode to both with issuer_url set to the base URL followed by \"/\"", [
+    "cc.mcp_server_auth_mode = 'both';",
+    "cc.oauth2_server_config = { issuer_url: pm.variables.get('base_url') + '/' };",
+    "cc.mcp_enable_temp_token_auth = true;",
+  ], [A.status(200)]),
+  request("OAS-40", "authorization server metadata", "GET", "/.well-known/oauth-authorization-server", { noAuth: true, asserts: [A.status(200), ...["authorization_endpoint", "token_endpoint", "registration_endpoint", "jwks_uri"].map(noDoubleSlash)] }),
+  register("OAS-40", "oas40_client"),
+  request("OAS-40", "the authorize redirect's consent URL", "GET", goodAuthorize("oas40_client"), { noAuth: true, noRedirect: true, asserts: [A.status(302), consentLocation()] }),
+  restoreHeaders("OAS-40"),
 ]);
 
 const OAS38 = folder("OAS-38 disable_vk_identity without an identity provider", `Setup: ${FLEET}; the full-access VK (${VKS.full.text}); mcp_server_auth_mode oauth with issuer_url set to the base URL, disable_vk_identity on, temp-token auth on; no identity provider is configured.`, [
@@ -1642,7 +1741,7 @@ const ADM20 = folder("ADM-20 require_public_target is set by the server, never c
 const ADM22 = folder("ADM-22 OAuth create input checks", "Setup: admin credentials.", [
   createExpect("ADM-22", "auth_type oauth without oauth_config", { name: "adm22_oauth", connection_type: "http", connection_string: "http://127.0.0.1:9/mcp", auth_type: "oauth" }, [A.status(400), A.msgEquals("OAuth configuration is required when auth_type is 'oauth'")]),
   createExpect("ADM-22", "auth_type per_user_oauth without oauth_config", { name: "adm22_puo", connection_type: "http", connection_string: "http://127.0.0.1:9/mcp", auth_type: "per_user_oauth" }, [A.status(400), A.msgEquals("OAuth configuration is required when auth_type is 'per_user_oauth'")]),
-  createExpect("ADM-22", "oauth_config {} without connection_string", { name: "adm22_noserver", connection_type: "http", auth_type: "oauth", oauth_config: {} }, [A.status(400), A.msgContains("Either client_id must be provided, or server URL must be set")]),
+  createExpect("ADM-22", "oauth_config {} without connection_string", { name: "adm22_noserver", connection_type: "http", auth_type: "oauth", oauth_config: {} }, [A.status(400), A.msgEquals("connection_string is required for http connection type")]),
 ]);
 
 const ADM47 = folder("ADM-47 PUT is a patch and ignores immutable fields", "Setup: alpha (echo_tool, add_tool); a client on alpha with headers and tool lists, then pricing set with PUT.", [
@@ -1724,25 +1823,46 @@ const ADM54 = folder("ADM-54 Assign and remove vk_configs", "Setup: alpha (echo_
   vkDelete("ADM-54", "teardown: delete vk2", "adm54_vk2"),
 ]);
 
-const ADM55 = folder("ADM-55 vk_configs validation", "Setup: alpha (echo_tool, add_tool); a client on alpha; virtual key vk1.", [
+// adm61Tools checks whether vk1's /mcp tools/list has the client's two tools or none of them.
+const adm61Tools = (present) => A.custom(present ? "adm61_c-add_tool and adm61_c-echo_tool are listed" : "no adm61_c tool is listed", [
+  "var names = pm.response.json().result.tools.map(function (t) { return t.name; }).filter(function (n) { return n.indexOf('adm61_c-') === 0; }).sort();",
+  `pm.expect(names, 'body: ' + pm.response.text()).to.eql(${present ? lit(["adm61_c-add_tool", "adm61_c-echo_tool"]) : "[]"});`,
+]);
+const ADM61 = folder("ADM-61 Recreating a client_id does not restore old VK access", "Setup: alpha (echo_tool, add_tool); a client on alpha with client_id \"reuse-id\", granted to virtual key vk1 with tools_to_execute [\"*\"]. The client is deleted and created again with the same client_id.", [
+  ...freshServer("ADM-61", "alpha", ["echo_tool", "add_tool"]),
+  createClient("ADM-61", httpClient("reuse-id", "adm61_c", "alpha", { tools_to_execute: ["*"] }), "setup: create the client"),
+  vkCreate("ADM-61", "setup: create vk1", { name: "ADM-61 vk1" }, "adm61_vk1"),
+  request("ADM-61", "setup: grant vk1 every tool of the client", "PUT", "/api/mcp/client/reuse-id", { body: { vk_configs: [{ virtual_key_id: "{{adm61_vk1_id}}", tools_to_execute: ["*"] }] }, asserts: [A.status(200)] }),
+  rpc("ADM-61", "control: vk1's tools/list has the client's tools", listMsg, { headers: [MCP_ACCEPT, { key: "x-bf-vk", value: "{{adm61_vk1}}" }], asserts: [A.status(200), adm61Tools(true)] }),
+  request("ADM-61", "control: ?virtual_keys=vk1 lists the client", "GET", "/api/mcp/clients?virtual_keys={{adm61_vk1_id}}&limit=100", { asserts: [A.status(200), clientIdsIn(true, "adm61_vk1_id", "reuse-id")] }),
+  request("ADM-61", "delete the client", "DELETE", "/api/mcp/client/reuse-id", { asserts: [A.status(200)] }),
+  createClient("ADM-61", httpClient("reuse-id", "adm61_c", "alpha", { tools_to_execute: ["*"] }), "create the client again with client_id \"reuse-id\""),
+  rpc("ADM-61", "vk1's tools/list", listMsg, { headers: [MCP_ACCEPT, { key: "x-bf-vk", value: "{{adm61_vk1}}" }], asserts: [A.status(200), adm61Tools(false)] }),
+  request("ADM-61", "?virtual_keys=vk1", "GET", "/api/mcp/clients?virtual_keys={{adm61_vk1_id}}&limit=100", { asserts: [A.status(200), A.custom("no client is listed", ["pm.expect(pm.response.json().clients || [], 'body: ' + pm.response.text()).to.have.lengthOf(0);"])] }),
+  deleteClient("ADM-61", "reuse-id"),
+  vkDelete("ADM-61", "teardown: delete vk1", "adm61_vk1"),
+]);
+
+const ADM55 = folder("ADM-55 vk_configs validation", "Setup: alpha (echo_tool, add_tool); a client on alpha; virtual key vk1. Each invalid vk_configs is sent with a rename to adm55_renamed, which must not be applied.", [
   ...freshServer("ADM-55", "alpha", ["echo_tool", "add_tool"]),
   createClient("ADM-55", httpClient("adm55-c", "adm55_c", "alpha"), "setup: create the client"),
   vkCreate("ADM-55", "setup: create vk1", { name: "ADM-55 vk1" }, "adm55_vk1"),
   request("ADM-55", "a duplicate virtual_key_id", "PUT", "/api/mcp/client/adm55-c", {
-    body: { vk_configs: [{ virtual_key_id: "{{adm55_vk1_id}}", tools_to_execute: ["*"] }, { virtual_key_id: "{{adm55_vk1_id}}", tools_to_execute: ["*"] }] },
+    body: { name: "adm55_renamed", vk_configs: [{ virtual_key_id: "{{adm55_vk1_id}}", tools_to_execute: ["*"] }, { virtual_key_id: "{{adm55_vk1_id}}", tools_to_execute: ["*"] }] },
     asserts: [A.status(400), A.custom("error message is \"duplicate virtual_key_id in vk_configs: <vk1 id>\"", [
       "var b = pm.response.json();",
       "pm.expect(b.error && b.error.message, 'body: ' + pm.response.text()).to.equal('duplicate virtual_key_id in vk_configs: ' + pm.collectionVariables.get('adm55_vk1_id'));",
     ])],
   }),
-  request("ADM-55", "an empty virtual_key_id", "PUT", "/api/mcp/client/adm55-c", { body: { vk_configs: [{ virtual_key_id: "", tools_to_execute: ["*"] }] }, asserts: [A.status(400), A.msgEquals("virtual_key_id must not be empty")] }),
+  request("ADM-55", "an empty virtual_key_id", "PUT", "/api/mcp/client/adm55-c", { body: { name: "adm55_renamed", vk_configs: [{ virtual_key_id: "", tools_to_execute: ["*"] }] }, asserts: [A.status(400), A.msgEquals("virtual_key_id must not be empty")] }),
   request("ADM-55", "tools_to_execute [\"*\",\"x\"]", "PUT", "/api/mcp/client/adm55-c", {
-    body: { vk_configs: [{ virtual_key_id: "{{adm55_vk1_id}}", tools_to_execute: ["*", "x"] }] },
+    body: { name: "adm55_renamed", vk_configs: [{ virtual_key_id: "{{adm55_vk1_id}}", tools_to_execute: ["*", "x"] }] },
     asserts: [A.status(400), A.custom("error message contains \"invalid tools_to_execute for virtual key <vk1 id>\"", [
       "var b = pm.response.json();",
       "pm.expect(b.error && b.error.message, 'body: ' + pm.response.text()).to.include('invalid tools_to_execute for virtual key ' + pm.collectionVariables.get('adm55_vk1_id'));",
     ])],
   }),
+  getClient("ADM-55", "adm55-c", "the client is still named adm55_c", [A.custom("name is \"adm55_c\"", ["pm.expect(pm.response.json().clients[0].config.name, 'body: ' + pm.response.text()).to.equal('adm55_c');"])]),
   deleteClient("ADM-55", "adm55-c"),
   vkDelete("ADM-55", "teardown: delete vk1", "adm55_vk1"),
 ]);
@@ -1766,9 +1886,14 @@ const ADM66 = folder("ADM-66 per_user_headers create succeeds", "Setup: admin cr
   ...alphaRequiresKey("ADM-66"),
   createExpect("ADM-66", "create with X-Key \"good\"", HEADERS_BASE("adm66-h", "adm66_h", { per_user_header_keys: ["X-Key"], user_headers: { "X-Key": "good" } }),
     [A.status(200), A.jsonMessage("MCP client registered. 2 tools discovered. Each user will submit their own headers on first tool use.")]),
-  getClient("ADM-66", "adm66-h", "keys [\"x-key\"], healthy, 2 tools, no credential", [clientField("config.per_user_header_keys", ["x-key"]), clientState("healthy"), toolNamesAre(["add_tool", "echo_tool"]), A.custom("there is no credential", [
-    "pm.expect(pm.response.json().clients[0], 'body: ' + pm.response.text()).to.not.have.property('credential');",
-  ])]),
+  getClient("ADM-66", "adm66-h", "keys [\"x-key\"], healthy, 2 tools, an active headers credential for x-key", [clientField("config.per_user_header_keys", ["x-key"]), clientState("healthy"), toolNamesAre(["add_tool", "echo_tool"]),
+    A.custom("credential kind \"headers\", status \"active\", header_keys [\"x-key\"], and no value", [
+      "var cr = pm.response.json().clients[0].credential || {};",
+      "pm.expect(cr.kind, 'body: ' + pm.response.text()).to.equal('headers');",
+      "pm.expect(cr.status).to.equal('active');",
+      "pm.expect(cr.header_keys).to.eql(['x-key']);",
+      "pm.expect(JSON.stringify(cr)).to.not.include('good');",
+    ])]),
   deleteClient("ADM-66", "adm66-h"),
 ]);
 
@@ -1979,7 +2104,6 @@ const headersFlow = ({ saveAs, sameAs, full }) => A.custom(`mcp_auth_required ki
   ...(sameAs ? [`pm.expect(m[1]).to.equal(pm.collectionVariables.get(${lit(sameAs)}));`] : []),
   ...(full ? ["pm.expect(r.required_header_keys).to.eql(['x-api-key']);", "pm.expect(r.admin_header_keys).to.eql(['X-Org']);"] : []),
 ]);
-const noCredential = () => A.custom("there is no credential", ["pm.expect(pm.response.json().clients[0], 'body: ' + pm.response.text()).to.not.have.property('credential');"]);
 
 const AUTH41 = folder("AUTH-41 per_user_headers create", `Setup: ${KEY_A_TEXT}; per_user_headers clients on alpha with tools_to_execute ["*"].`, [
   ...alphaKeyA("AUTH-41"),
@@ -2027,7 +2151,11 @@ const AUTH45 = folder("AUTH-45 verify-headers", `Setup: ${KEY_A_TEXT}; the AUTH-
   createClient("AUTH-45", perUser("auth45-c", "auth45_c", PER_USER_KEY_A), "setup: create the per_user_headers client"),
   createClient("AUTH-45", httpClient("auth45-h", "auth45_h", "alpha", { auth_type: "headers", headers: { "X-Api-Key": "key-a" } }), "setup: create the headers client"),
   createClient("AUTH-45", { client_id: "auth45-o", name: "auth45_o", connection_type: "openapi", auth_type: "per_user_headers", per_user_header_keys: ["x-api-key"], tools_to_execute: ["*"], openapi_config: { spec: PETSTORE } }, "setup: create the OpenAPI per_user_headers client"),
-  getClient("AUTH-45", "auth45-c", "control: no credential before verify-headers", [noCredential()]),
+  getClient("AUTH-45", "auth45-c", "control: the create already kept an active headers credential", [A.custom("credential kind \"headers\", status \"active\"", [
+    "var cr = pm.response.json().clients[0].credential || {};",
+    "pm.expect(cr.kind, 'body: ' + pm.response.text()).to.equal('headers');",
+    "pm.expect(cr.status).to.equal('active');",
+  ])], { extraTests: ["pm.collectionVariables.set('auth45_cred_at', (pm.response.json().clients[0].credential || {}).updated_at || '');"] }),
   verifyHeaders("AUTH-45", "verify-headers on the headers client", "auth45-h", { "x-api-key": "key-a" }, [A.status(400)]),
   verifyHeaders("AUTH-45", "verify-headers on the OpenAPI client", "auth45-o", { "x-api-key": "key-a" }, [A.status(400), A.msgContains("verify-headers does not apply to openapi clients")]),
   verifyHeaders("AUTH-45", "verify-headers with an empty x-api-key", "auth45-c", { "x-api-key": "" }, [A.status(400)]),
@@ -2039,6 +2167,10 @@ const AUTH45 = folder("AUTH-45 verify-headers", `Setup: ${KEY_A_TEXT}; the AUTH-
     "pm.expect(cr.status).to.equal('active');",
     "pm.expect(cr.header_keys).to.eql(['x-api-key']);",
     "pm.expect(JSON.stringify(cr)).to.not.include('key-a');",
+  ]), A.custom("verify-headers rewrote it: updated_at is later than after the create", [
+    "var before = pm.collectionVariables.get('auth45_cred_at');",
+    "var after = pm.response.json().clients[0].credential.updated_at;",
+    "pm.expect(Date.parse(after), 'before ' + before + ', after ' + after).to.be.above(Date.parse(before));",
   ])]),
   deleteClient("AUTH-45", "auth45-c"),
   deleteClient("AUTH-45", "auth45-h"),
@@ -2177,38 +2309,72 @@ const grantFor = (id, clientVar, flow, label) => [
   consent(id, flow, `setup: consent with ${VKS[label].label}`, "temp", { mode: "vk", value: vkVar(id, label) }, [A.status(200), codeIssued()], { extraTests: saveCode(flow) }),
   tokenReq(id, `setup: exchange the code for ${VKS[label].label}'s token`, codeParams(flow, clientVar), [A.status(200), tokensIssued()], { extraTests: saveTokens(flow) }),
 ];
+// grantWith is grantFor for a VK kept in any variable: the consent sends {{vkVarName}}.
+const grantWith = (id, clientVar, flow, vkVarName, label = "the VK") => [
+  authorize(id, clientVar, flow, `setup: authorize a grant for ${label}`),
+  consent(id, flow, `setup: consent with ${label}`, "temp", { mode: "vk", value: `{{${vkVarName}}}` }, [A.status(200), codeIssued()], { extraTests: saveCode(flow) }),
+  tokenReq(id, `setup: exchange the code for ${label}'s token`, codeParams(flow, clientVar), [A.status(200), tokensIssued()], { extraTests: saveTokens(flow) }),
+];
 const ACCESS_DENIED = [A.status(403), A.msgEquals("access_denied")];
 const OAUTH_MODE_MSG = "this server requires OAuth JWT authentication; header credentials are not accepted in oauth mode";
+const NO_VK_MSG = "virtual key required to access mcp server";
 
-const EP34 = folder("EP-34 GET refusals", "Setup: GET /mcp with Accept: text/event-stream; mcp_server_auth_mode oauth with no token, then headers with enforce_auth_on_inference off on /mcp/nope.", [
+// getMcp sends GET (the SSE stream request) to path with no admin credentials. Only refusals are sent this way:
+// an admitted GET opens a stream that never ends.
+const getMcp = (id, title, path, headers, asserts) => request(id, title, "GET", path, { noAuth: true, headers: [{ key: "Accept", value: "text/event-stream" }, ...headers], asserts });
+const EP34 = folder("EP-34 GET refusals", "Setup: GET with Accept: text/event-stream and no admin credentials; a VK with no MCP configs. mcp_server_auth_mode oauth with no token and then with the VK in x-bf-vk; headers and then both with enforce_auth_on_inference on and no credential; /mcp/nope in headers and then both with enforce_auth_on_inference off.", [
   readConfig("EP-34"),
+  vkCreate("EP-34", "setup: create a VK with no MCP configs", { name: "EP-34 key" }, "ep34_vk"),
   authMode("EP-34", "O", false),
   request("EP-34", "GET /mcp in oauth mode with no token", "GET", "/mcp", { noAuth: true, headers: [{ key: "Accept", value: "text/event-stream" }], asserts: [A.status(401), wwwPresent(), jsonNotStream()] }),
+  getMcp("EP-34", "GET /mcp in oauth mode with the VK in x-bf-vk", "/mcp", [{ key: "x-bf-vk", value: "{{ep34_vk}}" }], [A.status(401), A.msgEquals(OAUTH_MODE_MSG), wwwPresent(), jsonNotStream()]),
+  authMode("EP-34", "H", true),
+  getMcp("EP-34", "headers, enforce_auth_on_inference on: GET /mcp with no credential", "/mcp", [], [A.status(401), A.msgContains(NO_VK_MSG), noWww(), jsonNotStream()]),
+  authMode("EP-34", "B", true),
+  list("EP-34", "control: both, enforce_auth_on_inference on: POST /mcp with the VK in x-bf-vk", "/mcp", [{ key: "x-bf-vk", value: "{{ep34_vk}}" }], [A.status(200)]),
+  getMcp("EP-34", "both, enforce_auth_on_inference on: GET /mcp with no credential", "/mcp", [], [A.status(401), A.msgContains(NO_VK_MSG), wwwPresent(), jsonNotStream()]),
   authMode("EP-34", "H", false),
   request("EP-34", "GET /mcp/nope", "GET", "/mcp/nope", { noAuth: true, headers: [{ key: "Accept", value: "text/event-stream" }], asserts: [...ACCESS_DENIED, jsonNotStream()] }),
+  authMode("EP-34", "B", false),
+  getMcp("EP-34", "both: GET /mcp/nope", "/mcp/nope", [], [...ACCESS_DENIED, jsonNotStream()]),
   restoreConfig("EP-34"),
+  vkDelete("EP-34", "teardown: delete the VK", "ep34_vk"),
 ]);
 
-const EP36 = folder("EP-36 Client slug gated by grant and state", `Setup: ${FLEET}; the echo-only VK (${VKS.echo.text}) and the full-access VK (${VKS.full.text}); alpha is disabled later.`, [
+const EP36 = folder("EP-36 Client slug gated by grant and state", `Setup: ${FLEET}; the echo-only VK (${VKS.echo.text}) and the full-access VK (${VKS.full.text}); alpha is disabled later; each check runs in mcp_server_auth_mode headers and in both, enforce_auth_on_inference off.`, [
   ...fleetSetup("EP-36"), createVK("EP-36", "echo"), createVK("EP-36", "full"),
-  list("EP-36", "/mcp/beta with the echo-only VK", "/mcp/beta", [vkHeader("EP-36", "echo")], ACCESS_DENIED),
-  list("EP-36", "/mcp/beta with the full-access VK", "/mcp/beta", [vkHeader("EP-36", "full")], [A.status(200), toolNamesInList(["beta-echo"])]),
-  list("EP-36", "control: /mcp/alpha with the full-access VK before the disable", "/mcp/alpha", [vkHeader("EP-36", "full")], [A.status(200), toolNamesInList(["alpha-add", "alpha-echo"])]),
+  readConfig("EP-36"),
+  ...["H", "B"].flatMap((m) => [
+    authMode("EP-36", m, false),
+    list("EP-36", `${modePrefix(m)}/mcp/beta with the echo-only VK`, "/mcp/beta", [vkHeader("EP-36", "echo")], ACCESS_DENIED),
+    list("EP-36", `${modePrefix(m)}/mcp/beta with the full-access VK`, "/mcp/beta", [vkHeader("EP-36", "full")], [A.status(200), toolNamesInList(["beta-echo"])]),
+    list("EP-36", `${modePrefix(m)}control: /mcp/alpha with the full-access VK before the disable`, "/mcp/alpha", [vkHeader("EP-36", "full")], [A.status(200), toolNamesInList(["alpha-add", "alpha-echo"])]),
+  ]),
   request("EP-36", "setup: disable alpha", "PUT", "/api/mcp/client/ep-36-alpha", { body: { disabled: true }, asserts: [A.status(200)] }),
-  list("EP-36", "/mcp/alpha with the full-access VK after the disable", "/mcp/alpha", [vkHeader("EP-36", "full")], [A.status(403)]),
+  ...["B", "H"].flatMap((m, i) => [
+    ...(i > 0 ? [authMode("EP-36", m, false)] : []),
+    list("EP-36", `${modePrefix(m)}/mcp/alpha with the full-access VK after the disable`, "/mcp/alpha", [vkHeader("EP-36", "full")], [A.status(403)]),
+  ]),
+  restoreConfig("EP-36"),
   deleteVK("EP-36", "echo"), deleteVK("EP-36", "full"),
   ...fleetTeardown("EP-36"),
 ]);
 
-const EP38 = folder("EP-38 Virtual MCP slug refusals", `Setup: ${FLEET}; the full-access VK (${VKS.full.text}) and the echo-only VK (${VKS.echo.text}); ${TEAM_TEXT}; mcp_server_auth_mode headers, enforce_auth_on_inference off.`, [
+const EP38 = folder("EP-38 Virtual MCP slug refusals", `Setup: ${FLEET}; the full-access VK (${VKS.full.text}) and the echo-only VK (${VKS.echo.text}); ${TEAM_TEXT}; mcp_server_auth_mode headers, and each check again in both, enforce_auth_on_inference off.`, [
   readConfig("EP-38"), authMode("EP-38", "H", false),
   ...fleetSetup("EP-38"), createVK("EP-38", "full"), createVK("EP-38", "echo"), ...teamSetup("EP-38"),
-  list("EP-38", "/mcp/team anonymously", "/mcp/team", [], ACCESS_DENIED),
-  list("EP-38", "/mcp/team with the echo-only VK, which team is not attached to", "/mcp/team", [vkHeader("EP-38", "echo")], ACCESS_DENIED),
-  list("EP-38", "control: /mcp/team with the full-access VK", "/mcp/team", [vkHeader("EP-38", "full")], [A.status(200), toolNamesInList(["alpha-echo", "beta-echo"])]),
+  ...["H", "B"].flatMap((m) => [
+    ...(m === "B" ? [authMode("EP-38", m, false)] : []),
+    list("EP-38", `${modePrefix(m)}/mcp/team anonymously`, "/mcp/team", [], ACCESS_DENIED),
+    list("EP-38", `${modePrefix(m)}/mcp/team with the echo-only VK, which team is not attached to`, "/mcp/team", [vkHeader("EP-38", "echo")], ACCESS_DENIED),
+    list("EP-38", `${modePrefix(m)}control: /mcp/team with the full-access VK`, "/mcp/team", [vkHeader("EP-38", "full")], [A.status(200), toolNamesInList(["alpha-echo", "beta-echo"])]),
+  ]),
   request("EP-38", "setup: disable team", "PUT", "/api/mcp/virtual-mcps/{{ep-38_team_id}}", { body: { enabled: false }, asserts: [A.status(200)] }),
-  list("EP-38", "/mcp/team with the full-access VK after the disable", "/mcp/team", [vkHeader("EP-38", "full")], ACCESS_DENIED),
-  list("EP-38", "/mcp/nope with the full-access VK", "/mcp/nope", [vkHeader("EP-38", "full")], ACCESS_DENIED),
+  ...["B", "H"].flatMap((m, i) => [
+    ...(i > 0 ? [authMode("EP-38", m, false)] : []),
+    list("EP-38", `${modePrefix(m)}/mcp/team with the full-access VK after the disable`, "/mcp/team", [vkHeader("EP-38", "full")], ACCESS_DENIED),
+    list("EP-38", `${modePrefix(m)}/mcp/nope with the full-access VK`, "/mcp/nope", [vkHeader("EP-38", "full")], ACCESS_DENIED),
+  ]),
   teamTeardown("EP-38"), deleteVK("EP-38", "full"), deleteVK("EP-38", "echo"),
   ...fleetTeardown("EP-38"),
   restoreConfig("EP-38"),
@@ -2236,13 +2402,22 @@ const EP40_CARRIERS = [
   ["x-goog-api-key", (v) => ({ key: "x-goog-api-key", value: v })],
   ["api-key", (v) => ({ key: "api-key", value: v })],
 ];
-const EP40 = folder("EP-40 VK header carriers", `Setup: ${FLEET}; the full-access VK (${VKS.full.text}); enforce_auth_on_inference on, in mcp_server_auth_mode headers and then both.`, [
-  readConfig("EP-40"), ...fleetSetup("EP-40"), createVK("EP-40", "full"),   ...["H", "B"].flatMap((m) => [
+// EP40_PAIRS are adjacent carriers in the documented order (x-bf-vk, Bearer, x-api-key, x-goog-api-key, api-key), higher first.
+// The higher one carries the echo-only VK and must win in either header order; today the request context keeps the last VK
+// header sent, so the higher-first order is a known issue.
+const EP40_PAIRS = [[0, 1], [1, 3], [3, 4], [4, 5]].map(([h, l]) => [EP40_CARRIERS[h], EP40_CARRIERS[l]]);
+const EP40 = folder("EP-40 VK header carriers", `Setup: ${FLEET}; the full-access VK (${VKS.full.text}) and the echo-only VK (${VKS.echo.text}); enforce_auth_on_inference on, in mcp_server_auth_mode headers and then both. Then each pair of adjacent carriers in the order x-bf-vk, Authorization: Bearer, x-api-key, x-goog-api-key, api-key carries the echo-only VK in the higher one and the full-access VK in the lower one, sent in both header orders.`, [
+  readConfig("EP-40"), ...fleetSetup("EP-40"), createVK("EP-40", "full"), createVK("EP-40", "echo"),
+  ...["H", "B"].flatMap((m) => [
     authMode("EP-40", m, true),
     noCredControl("EP-40", `${MODE_NAMES[m]}: `),
     ...EP40_CARRIERS.map(([label, header]) => list("EP-40", `${MODE_NAMES[m]}: the VK in ${label}`, "/mcp", [header(vkVar("EP-40", "full"))], [A.status(200), toolNamesInList(ALL_TOOLS)])),
+    ...EP40_PAIRS.flatMap(([[hi, hiH], [lo, loH]]) => [
+      list("EP-40", `${MODE_NAMES[m]}: ${hi} (the echo-only VK) sent before ${lo} (the full-access VK)`, "/mcp", [hiH(vkVar("EP-40", "echo")), loH(vkVar("EP-40", "full"))], [A.status(200), A.skip(toolNamesInList(["alpha-echo"]))]),
+      list("EP-40", `${MODE_NAMES[m]}: ${lo} (the full-access VK) sent before ${hi} (the echo-only VK)`, "/mcp", [loH(vkVar("EP-40", "full")), hiH(vkVar("EP-40", "echo"))], [A.status(200), toolNamesInList(["alpha-echo"])]),
+    ]),
   ]),
-  restoreConfig("EP-40"), deleteVK("EP-40", "full"), ...fleetTeardown("EP-40"),
+  restoreConfig("EP-40"), deleteVK("EP-40", "full"), deleteVK("EP-40", "echo"), ...fleetTeardown("EP-40"),
 ]);
 
 const EP41 = folder("EP-41 No credential by mode", `Setup: tools/list on /mcp with no credential, in each mcp_server_auth_mode (headers, both, oauth) with enforce_auth_on_inference off and on; both and oauth set issuer_url ${OTHER_ISS} (another origin than the requests).`, [
@@ -2284,7 +2459,7 @@ const EP43 = folder("EP-43 Unknown, inactive, expired VK", "Setup: an unknown ke
   }),
   ...["H", "B"].flatMap((m, pass) => [
     authMode("EP-43", m, false),
-    rpc("EP-43", `${MODE_NAMES[m]}: an unknown VK`, listMsg, { headers: [MCP_ACCEPT, { key: "x-bf-vk", value: "sk-bf-ep43-no-such-key" }], asserts: [A.status(401), A.msgEquals("access not found. The provided credential does not exist or has been revoked.")] }),
+    rpc("EP-43", `${MODE_NAMES[m]}: an unknown VK`, listMsg, { headers: [MCP_ACCEPT, { key: "x-bf-vk", value: "sk-bf-ep43-no-such-key" }], asserts: [A.status(401), A.msgEquals("access not found. The provided credential does not exist or has been revoked."), m === "H" ? noWww() : wwwPresent()] }),
     rpc("EP-43", `${MODE_NAMES[m]}: the inactive VK`, listMsg, { headers: [MCP_ACCEPT, { key: "x-bf-vk", value: "{{ep43_inactive}}" }], asserts: [A.status(403), A.msgEquals("virtual key is inactive")] }),
     request("EP-43", `${MODE_NAMES[m]}: the expired VK`, "POST", "/mcp", {
       noAuth: true, raw: JSON.stringify(listMsg), headers: [MCP_ACCEPT, { key: "x-bf-vk", value: "{{ep43_expired}}" }],
@@ -2345,23 +2520,34 @@ const EP44 = folder("EP-44 Invalid bearer JWTs", `Setup: ${FLEET}; the full-acce
 ]);
 
 const CONFLICT_MSG = "conflicting credentials: an OAuth token and a virtual key header were both provided; send only the OAuth token";
-const EP45 = folder("EP-45 JWT plus a VK header", `Setup: ${FLEET}; the full-access VK (${VKS.full.text}); ${BOTH}, temp-token auth on, enforce_auth_on_inference off; a token from a grant consented with that VK.`, [
+const EP45 = folder("EP-45 JWT plus a VK header", `Setup: ${FLEET}; the full-access VK (${VKS.full.text}); ${BOTH} and then oauth, temp-token auth on, enforce_auth_on_inference off; a token from a grant consented with that VK.`, [
   readConfig("EP-45"), ...fleetSetup("EP-45"), createVK("EP-45", "full"), authMode("EP-45", "B", false),
   register("EP-45", "ep45_client", LOOPBACK_CB, undefined, REFRESHABLE),
   ...grantFor("EP-45", "ep45_client", "ep45_g", "full"),
-  list("EP-45", "control: the token alone", "/mcp", [bearer("{{ep45_g_at}}")], [A.status(200)]),
-  list("EP-45", "the token plus x-bf-vk", "/mcp", [bearer("{{ep45_g_at}}"), vkHeader("EP-45", "full")], [A.status(401), A.msgEquals(CONFLICT_MSG)]),
-  list("EP-45", "the token plus x-api-key", "/mcp", [bearer("{{ep45_g_at}}"), { key: "x-api-key", value: vkVar("EP-45", "full") }], [A.status(401), A.msgEquals(CONFLICT_MSG)]),
+  ...["B", "O"].flatMap((m) => {
+    const p = m === "O" ? "oauth: " : "";
+    const conflict = [A.status(401), A.msgEquals(CONFLICT_MSG), wwwPresent()];
+    return [
+      ...(m === "O" ? [authMode("EP-45", m, false)] : []),
+      list("EP-45", `${p}control: the token alone`, "/mcp", [bearer("{{ep45_g_at}}")], [A.status(200)]),
+      list("EP-45", `${p}the token plus x-bf-vk`, "/mcp", [bearer("{{ep45_g_at}}"), vkHeader("EP-45", "full")], conflict),
+      list("EP-45", `${p}the token plus x-api-key`, "/mcp", [bearer("{{ep45_g_at}}"), { key: "x-api-key", value: vkVar("EP-45", "full") }], conflict),
+    ];
+  }),
   restoreConfig("EP-45"), deleteVK("EP-45", "full"), ...fleetTeardown("EP-45"),
 ]);
 
 const NO_VK_401 = [A.status(401), A.msgContains("virtual key required to access mcp server"), wwwPresent()];
-const EP46 = folder("EP-46 Non-credentials do not open /mcp", `Setup: ${BOTH}, temp-token auth on, enforce_auth_on_inference on; a registered client's authorize gives a temp token. Each request carries one of: that temp token, the admin's Basic credentials, x-bf-mcp-session-id, the setup token.`, [
+const EP46 = folder("EP-46 Non-credentials do not open /mcp", `Setup: ${BOTH}, temp-token auth on, enforce_auth_on_inference on; a registered client's authorize gives a temp token. Each request carries one of: that temp token, the admin's Basic credentials, x-bf-mcp-session-id, the setup token. The four requests run in both, then in oauth, then in headers (the temp token kept from both).`, [
   readConfig("EP-46"), authMode("EP-46", "B", true),
   register("EP-46", "ep46_client"),
   authorize("EP-46", "ep46_client", "ep46_f", "setup: authorize to get a temp token"),
   flowGet("EP-46", "ep46_f", "control: the temp token opens its own flow", "temp", [A.status(200)]),
-  ...[["B", NO_VK_401]].flatMap(([m, refused]) => {
+  ...[
+    ["B", NO_VK_401],
+    ["O", [A.status(401), A.msgEquals(OAUTH_MODE_MSG), wwwPresent()]],
+    ["H", [A.status(401), A.msgContains(NO_VK_MSG), noWww()]],
+  ].flatMap(([m, refused]) => {
     const p = m === "B" ? "" : `${MODE_NAMES[m]}: `;
     return [
       ...(m === "B" ? [] : [authMode("EP-46", m, true)]),
@@ -2374,19 +2560,25 @@ const EP46 = folder("EP-46 Non-credentials do not open /mcp", `Setup: ${BOTH}, t
   restoreConfig("EP-46"),
 ]);
 
-const EP47 = folder("EP-47 VK JWT matches the VK header", `Setup: ${FLEET}; the full-access VK (${VKS.full.text}) and the echo-only VK (${VKS.echo.text}); ${TEAM_TEXT}; ${BOTH}, temp-token auth on, enforce_auth_on_inference on; one registered client gets a grant consented with each VK.`, [
+const EP47 = folder("EP-47 VK JWT matches the VK header", `Setup: ${FLEET}; the full-access VK (${VKS.full.text}) and the echo-only VK (${VKS.echo.text}); ${TEAM_TEXT}; ${BOTH} and then oauth, temp-token auth on, enforce_auth_on_inference on; one registered client gets a grant consented with each VK.`, [
   readConfig("EP-47"), ...fleetSetup("EP-47"), createVK("EP-47", "full"), createVK("EP-47", "echo"), ...teamSetup("EP-47"), authMode("EP-47", "B", true),
   register("EP-47", "ep47_client", LOOPBACK_CB, undefined, REFRESHABLE),
   ...grantFor("EP-47", "ep47_client", "ep47_r", "echo"),
   ...grantFor("EP-47", "ep47_client", "ep47_a", "full"),
-  list("EP-47", "the echo-only VK's token lists", "/mcp", [bearer("{{ep47_r_at}}")], [A.status(200), toolNamesInList(["alpha-echo"])]),
-  rpc("EP-47", "the echo-only VK's token calls alpha-add", call("alpha-add", { a: 1, b: 2 }), { headers: [MCP_ACCEPT, bearer("{{ep47_r_at}}")], asserts: [A.status(200), toolResultError("Tool execution failed: MCP tool 'alpha-add' is not allowed", null)] }),
-  mockGet("EP-47", "alpha", "alpha received no tool call", [A.custom("calls is empty", ["pm.expect(pm.response.json().counters.calls, 'body: ' + pm.response.text()).to.eql({});"])]),
-  list("EP-47", "the full-access VK's token lists /mcp/team", "/mcp/team", [bearer("{{ep47_a_at}}")], [A.status(200), toolNamesInList(["alpha-echo", "beta-echo"])]),
+  ...["B", "O"].flatMap((m) => {
+    const p = m === "O" ? "oauth: " : "";
+    return [
+      ...(m === "O" ? [authMode("EP-47", m, true)] : []),
+      list("EP-47", `${p}the echo-only VK's token lists`, "/mcp", [bearer("{{ep47_r_at}}")], [A.status(200), toolNamesInList(["alpha-echo"])]),
+      rpc("EP-47", `${p}the echo-only VK's token calls alpha-add`, call("alpha-add", { a: 1, b: 2 }), { headers: [MCP_ACCEPT, bearer("{{ep47_r_at}}")], asserts: [A.status(200), toolResultError("Tool execution failed: MCP tool 'alpha-add' is not allowed", null)] }),
+      mockGet("EP-47", "alpha", `${p}alpha received no tool call`, [A.custom("calls is empty", ["pm.expect(pm.response.json().counters.calls, 'body: ' + pm.response.text()).to.eql({});"])]),
+      list("EP-47", `${p}the full-access VK's token lists /mcp/team`, "/mcp/team", [bearer("{{ep47_a_at}}")], [A.status(200), toolNamesInList(["alpha-echo", "beta-echo"])]),
+    ];
+  }),
   restoreConfig("EP-47"), teamTeardown("EP-47"), deleteVK("EP-47", "full"), deleteVK("EP-47", "echo"), ...fleetTeardown("EP-47"),
 ]);
 
-const EP49 = folder("EP-49 Session-mode JWT", `Setup: ${FLEET}; the full-access VK (${VKS.full.text}); ${TEAM_TEXT}; ${BOTH}, temp-token auth on, enforce_auth_on_inference off; a session-mode token as in OAS-20 (consent by the admin with Bearer base64(admin:pw)); enforce_auth_on_inference on for the last case.`, [
+const EP49 = folder("EP-49 Session-mode JWT", `Setup: ${FLEET}; the full-access VK (${VKS.full.text}); ${TEAM_TEXT}; ${BOTH}, temp-token auth on, enforce_auth_on_inference off; a session-mode token as in OAS-20 (consent by the admin with Bearer base64(admin:pw)); enforce_auth_on_inference on for the last case. The checks then repeat in oauth, with a token from a grant consented with the full-access VK as the /mcp/team control.`, [
   readConfig("EP-49"), ...fleetSetup("EP-49"), createVK("EP-49", "full"), ...teamSetup("EP-49"), authMode("EP-49", "B", false),
   register("EP-49", "ep49_client", LOOPBACK_CB, undefined, REFRESHABLE),
   authorize("EP-49", "ep49_client", "ep49_s", "setup: authorize"),
@@ -2397,47 +2589,130 @@ const EP49 = folder("EP-49 Session-mode JWT", `Setup: ${FLEET}; the full-access 
   list("EP-49", "the session token on /mcp/team", "/mcp/team", [bearer("{{ep49_s_at}}")], [A.status(403)]),
   authMode("EP-49", "B", true),
   list("EP-49", "the session token with enforce_auth_on_inference on", "/mcp", [bearer("{{ep49_s_at}}")], [A.status(401), A.msgContains("session-mode tokens are not accepted when authentication is enforced")]),
+  ...grantFor("EP-49", "ep49_client", "ep49_a", "full"),
+  authMode("EP-49", "O", false),
+  list("EP-49", "oauth: the session token lists the anonymous tools", "/mcp", [bearer("{{ep49_s_at}}")], [A.status(200), toolNamesInList(ALL_TOOLS)]),
+  list("EP-49", "oauth: control: /mcp/team with the full-access VK's token", "/mcp/team", [bearer("{{ep49_a_at}}")], [A.status(200)]),
+  list("EP-49", "oauth: the session token on /mcp/team", "/mcp/team", [bearer("{{ep49_s_at}}")], [A.status(403)]),
+  authMode("EP-49", "O", true),
+  list("EP-49", "oauth: the session token with enforce_auth_on_inference on", "/mcp", [bearer("{{ep49_s_at}}")], [A.status(401), A.msgContains("session-mode tokens are not accepted when authentication is enforced")]),
   revokeGrants("EP-49", "ep49_client"),
   restoreConfig("EP-49"), teamTeardown("EP-49"), deleteVK("EP-49", "full"), ...fleetTeardown("EP-49"),
 ]);
 
 // EP-12, EP-14 and EP-24 sit below the OAuth helpers because their both and oauth passes use them.
 // EP-12 runs once per mode that accepts header credentials; both adds WWW-Authenticate to the no-credential refusal.
-const EP12 = folder("EP-12 tools/list per VK", `Setup: ${FLEET}; mcp_server_auth_mode headers, enforce_auth_on_inference on; ${VK_TEXT}.`, [
+const EP12 = folder("EP-12 tools/list per VK", `Setup: ${FLEET}; mcp_server_auth_mode headers and then both, enforce_auth_on_inference on; ${VK_TEXT}.`, [
   ...fleetSetup("EP-12"),
   createVK("EP-12", "full"), createVK("EP-12", "echo"), createVK("EP-12", "none"),
   readConfig("EP-12"),
-  authMode("EP-12", "H", true),
-  noCredControl("EP-12", ""),
-  rpc("EP-12", "tools/list with the full-access VK", listMsg, { headers: [MCP_ACCEPT, vkHeader("EP-12", "full")], asserts: [A.status(200), toolNamesInList(["alpha-add", "alpha-echo", "beta-echo"])] }),
-  rpc("EP-12", "tools/list with the echo-only VK", listMsg, { headers: [MCP_ACCEPT, vkHeader("EP-12", "echo")], asserts: [A.status(200), toolNamesInList(["alpha-echo"])] }),
-  rpc("EP-12", "tools/list with the no-grant VK", listMsg, { headers: [MCP_ACCEPT, vkHeader("EP-12", "none")], asserts: [A.status(200), toolNamesInList([])] }),
+  ...["H", "B"].flatMap((m) => {
+    const p = modePrefix(m);
+    return [
+      authMode("EP-12", m, true),
+      m === "B" ? list("EP-12", `${p}control: no credential is refused`, "/mcp", [], NO_VK_401)
+        : list("EP-12", "control: no credential is refused", "/mcp", [], [A.status(401), A.msgContains(NO_VK_MSG), noWww()]),
+      rpc("EP-12", `${p}tools/list with the full-access VK`, listMsg, { headers: [MCP_ACCEPT, vkHeader("EP-12", "full")], asserts: [A.status(200), toolNamesInList(["alpha-add", "alpha-echo", "beta-echo"])] }),
+      rpc("EP-12", `${p}tools/list with the echo-only VK`, listMsg, { headers: [MCP_ACCEPT, vkHeader("EP-12", "echo")], asserts: [A.status(200), toolNamesInList(["alpha-echo"])] }),
+      rpc("EP-12", `${p}tools/list with the no-grant VK`, listMsg, { headers: [MCP_ACCEPT, vkHeader("EP-12", "none")], asserts: [A.status(200), toolNamesInList([])] }),
+    ];
+  }),
   restoreConfig("EP-12"),
   deleteVK("EP-12", "full"), deleteVK("EP-12", "echo"), deleteVK("EP-12", "none"),
   ...fleetTeardown("EP-12"),
 ]);
 
-const EP14 = folder("EP-14 Include headers on /mcp", `Setup: ${FLEET}; an anonymous caller, and the echo-only VK (${VKS.echo.text}).`, [
+const EP14 = folder("EP-14 Include headers on /mcp", `Setup: ${FLEET}; an anonymous caller, and the echo-only VK (${VKS.echo.text}); mcp_server_auth_mode headers and then both, enforce_auth_on_inference off; then, in both and in oauth, a token from a grant consented with the echo-only VK.`, [
   ...fleetSetup("EP-14"),
   createVK("EP-14", "echo"),
-  rpc("EP-14", "include-clients beta", listMsg, { headers: [MCP_ACCEPT, inc("clients", "beta")], asserts: [A.status(200), toolNamesInList(["beta-echo"])] }),
-  rpc("EP-14", "include-tools alpha-echo", listMsg, { headers: [MCP_ACCEPT, inc("tools", "alpha-echo")], asserts: [A.status(200), toolNamesInList(["alpha-echo"])] }),
-  rpc("EP-14", "include-clients empty", listMsg, { headers: [MCP_ACCEPT, inc("clients", "")], asserts: [A.status(200), toolNamesInList([])] }),
-  rpc("EP-14", "control: the echo-only VK with include-tools alpha-echo", listMsg, { headers: [MCP_ACCEPT, vkHeader("EP-14", "echo"), inc("tools", "alpha-echo")], asserts: [A.status(200), toolNamesInList(["alpha-echo"])] }),
-  rpc("EP-14", "the echo-only VK with include-tools beta-echo", listMsg, { headers: [MCP_ACCEPT, vkHeader("EP-14", "echo"), inc("tools", "beta-echo")], asserts: [A.status(200), toolNamesInList([])] }),
+  readConfig("EP-14"),
+  ...["H", "B"].flatMap((m) => {
+    const p = modePrefix(m);
+    return [
+      authMode("EP-14", m, false),
+      rpc("EP-14", `${p}include-clients beta`, listMsg, { headers: [MCP_ACCEPT, inc("clients", "beta")], asserts: [A.status(200), toolNamesInList(["beta-echo"])] }),
+      rpc("EP-14", `${p}include-tools alpha-echo`, listMsg, { headers: [MCP_ACCEPT, inc("tools", "alpha-echo")], asserts: [A.status(200), toolNamesInList(["alpha-echo"])] }),
+      rpc("EP-14", `${p}include-clients empty`, listMsg, { headers: [MCP_ACCEPT, inc("clients", "")], asserts: [A.status(200), toolNamesInList([])] }),
+      rpc("EP-14", `${p}control: the echo-only VK with include-tools alpha-echo`, listMsg, { headers: [MCP_ACCEPT, vkHeader("EP-14", "echo"), inc("tools", "alpha-echo")], asserts: [A.status(200), toolNamesInList(["alpha-echo"])] }),
+      rpc("EP-14", `${p}the echo-only VK with include-tools beta-echo`, listMsg, { headers: [MCP_ACCEPT, vkHeader("EP-14", "echo"), inc("tools", "beta-echo")], asserts: [A.status(200), toolNamesInList([])] }),
+    ];
+  }),
+  register("EP-14", "ep14_client"),
+  ...grantFor("EP-14", "ep14_client", "ep14_r", "echo"),
+  ...["B", "O"].flatMap((m) => [
+    ...(m === "O" ? [authMode("EP-14", m, false)] : []),
+    list("EP-14", `${modePrefix(m)}control: the echo-only VK's token with include-tools alpha-echo`, "/mcp", [bearer("{{ep14_r_at}}"), inc("tools", "alpha-echo")], [A.status(200), toolNamesInList(["alpha-echo"])]),
+    list("EP-14", `${modePrefix(m)}the echo-only VK's token with include-tools beta-echo`, "/mcp", [bearer("{{ep14_r_at}}"), inc("tools", "beta-echo")], [A.status(200), toolNamesInList([])]),
+  ]),
+  restoreConfig("EP-14"),
   deleteVK("EP-14", "echo"),
   ...fleetTeardown("EP-14"),
 ]);
 
-const EP24 = folder("EP-24 Listed but not granted", `Setup: ${FLEET}; the echo-only VK (${VKS.echo.text}) calls alpha-add, the no-grant VK (${VKS.none.text}) calls alpha-echo.`, [
+const EP24 = folder("EP-24 Listed but not granted", `Setup: ${FLEET}; the echo-only VK (${VKS.echo.text}) calls alpha-add, the no-grant VK (${VKS.none.text}) calls alpha-echo; mcp_server_auth_mode headers and then both, enforce_auth_on_inference off.`, [
   ...fleetSetup("EP-24"),
   createVK("EP-24", "echo"), createVK("EP-24", "none"),
-  rpc("EP-24", "control: the echo-only VK calls alpha-echo", call("alpha-echo", { text: "hi" }), { headers: [MCP_ACCEPT, vkHeader("EP-24", "echo")], asserts: [A.status(200), A.custom("isError is not set and the content is the echo", ["var r = pm.response.json().result;", "pm.expect(r && r.isError, 'body: ' + pm.response.text()).to.not.equal(true);", "pm.expect(r.content).to.eql([{ type: 'text', text: 'echo:{\"text\":\"hi\"}' }]);"])] }),
-  rpc("EP-24", "the echo-only VK calls alpha-add", call("alpha-add", { a: 1, b: 2 }), { headers: [MCP_ACCEPT, vkHeader("EP-24", "echo")], asserts: [A.status(200), toolResultError("Tool execution failed: MCP tool 'alpha-add' is not allowed", null)] }),
-  rpc("EP-24", "the no-grant VK calls alpha-echo", call("alpha-echo", { text: "hi" }), { headers: [MCP_ACCEPT, vkHeader("EP-24", "none")], asserts: [A.status(200), toolResultError("Tool execution failed: MCP tool 'alpha-echo' is not allowed", null)] }),
-  mockGet("EP-24", "alpha", "alpha ran only the control call", [A.custom("calls is {echo: 1}", ["pm.expect(pm.response.json().counters.calls, 'body: ' + pm.response.text()).to.eql({ echo: 1 });"])]),
+  readConfig("EP-24"),
+  ...["H", "B"].flatMap((m, pass) => {
+    const p = modePrefix(m);
+    return [
+      authMode("EP-24", m, false),
+      rpc("EP-24", `${p}control: the echo-only VK calls alpha-echo`, call("alpha-echo", { text: "hi" }), { headers: [MCP_ACCEPT, vkHeader("EP-24", "echo")], asserts: [A.status(200), A.custom("isError is not set and the content is the echo", ["var r = pm.response.json().result;", "pm.expect(r && r.isError, 'body: ' + pm.response.text()).to.not.equal(true);", "pm.expect(r.content).to.eql([{ type: 'text', text: 'echo:{\"text\":\"hi\"}' }]);"])] }),
+      rpc("EP-24", `${p}the echo-only VK calls alpha-add`, call("alpha-add", { a: 1, b: 2 }), { headers: [MCP_ACCEPT, vkHeader("EP-24", "echo")], asserts: [A.status(200), toolResultError("Tool execution failed: MCP tool 'alpha-add' is not allowed", null)] }),
+      rpc("EP-24", `${p}the no-grant VK calls alpha-echo`, call("alpha-echo", { text: "hi" }), { headers: [MCP_ACCEPT, vkHeader("EP-24", "none")], asserts: [A.status(200), toolResultError("Tool execution failed: MCP tool 'alpha-echo' is not allowed", null)] }),
+      mockGet("EP-24", "alpha", `${p}alpha ran only the control call${pass ? "s" : ""}`, [A.custom(`calls is {echo: ${pass + 1}}`, [`pm.expect(pm.response.json().counters.calls, 'body: ' + pm.response.text()).to.eql({ echo: ${pass + 1} });`])]),
+    ];
+  }),
+  restoreConfig("EP-24"),
   deleteVK("EP-24", "echo"), deleteVK("EP-24", "none"),
   ...fleetTeardown("EP-24"),
+]);
+
+// EP-48 checks a token whose key changes after it was issued: deactivated, then deleted.
+const EP48_GONE = "virtual key not found or inactive";
+const EP48 = folder("EP-48 VK changed after the JWT was issued", `Setup: ${FLEET}; the full-access VK (${VKS.full.text}); ${BOTH}, temp-token auth on, enforce_auth_on_inference off; a token from a grant consented with that VK. The VK is then deactivated, and then deleted; each state is checked in both and in oauth.`, [
+  readConfig("EP-48"), ...fleetSetup("EP-48"), createVK("EP-48", "full"), authMode("EP-48", "B", false),
+  register("EP-48", "ep48_client"),
+  ...grantFor("EP-48", "ep48_client", "ep48_g", "full"),
+  list("EP-48", "control: the token lists every tool", "/mcp", [bearer("{{ep48_g_at}}")], [A.status(200), toolNamesInList(ALL_TOOLS)]),
+  request("EP-48", "setup: deactivate the VK", "PUT", "/api/governance/virtual-keys/{{ep-48_full_id}}", { body: { is_active: false }, asserts: [A.status(200)] }),
+  list("EP-48", "the token after the deactivation", "/mcp", [bearer("{{ep48_g_at}}")], [A.status(403), A.msgEquals("virtual key is inactive")]),
+  authMode("EP-48", "O", false),
+  list("EP-48", "oauth: the token after the deactivation", "/mcp", [bearer("{{ep48_g_at}}")], [A.status(403), A.msgEquals("virtual key is inactive")]),
+  request("EP-48", "setup: delete the VK", "DELETE", "/api/governance/virtual-keys/{{ep-48_full_id}}", { asserts: [A.status(200)] }),
+  list("EP-48", "oauth: the token after the delete", "/mcp", [bearer("{{ep48_g_at}}")], [A.status(401), A.msgEquals(EP48_GONE), wwwPresent()]),
+  authMode("EP-48", "B", false),
+  list("EP-48", "the token after the delete", "/mcp", [bearer("{{ep48_g_at}}")], [A.status(401), A.msgEquals(EP48_GONE), wwwPresent()]),
+  restoreConfig("EP-48"), ...fleetTeardown("EP-48"),
+]);
+
+// EP-54 checks keys that are not virtual keys in the VK headers. Bearer, x-api-key, x-goog-api-key and api-key carry a VK only
+// with the sk-bf- prefix, so a provider key there is no credential at all; x-bf-vk is taken as written and looked up.
+const EP54_PROVIDER_KEY = "sk-ant-ep54-provider-key";
+const EP54_CARRIERS = [
+  ["Authorization Bearer", (v) => bearer(v)],
+  ["x-api-key", (v) => ({ key: "x-api-key", value: v })],
+  ["x-goog-api-key", (v) => ({ key: "x-goog-api-key", value: v })],
+  ["api-key", (v) => ({ key: "api-key", value: v })],
+];
+const EP54_UNKNOWN = "access not found. The provided credential does not exist or has been revoked.";
+const EP54 = folder("EP-54 Non-VK keys in VK headers", `Setup: ${FLEET}; a provider key "${EP54_PROVIDER_KEY}" without the sk-bf- prefix. mcp_server_auth_mode headers and then both, each with enforce_auth_on_inference off and then on; then oauth.`, [
+  readConfig("EP-54"), ...fleetSetup("EP-54"),
+  ...["H", "B"].flatMap((m) => {
+    const p = `${MODE_NAMES[m]}: `;
+    const www = m === "H" ? noWww() : wwwPresent();
+    return [
+      authMode("EP-54", m, false),
+      ...EP54_CARRIERS.map(([name, h]) => list("EP-54", `${p}enforcement off: the provider key in ${name} is anonymous`, "/mcp", [h(EP54_PROVIDER_KEY)], [A.status(200), toolNamesInList(ALL_TOOLS)])),
+      list("EP-54", `${p}enforcement off: x-bf-vk without the sk-bf- prefix is looked up as a VK`, "/mcp", [{ key: "x-bf-vk", value: "ep54-not-a-key" }], [A.status(401), A.msgEquals(EP54_UNKNOWN), www]),
+      authMode("EP-54", m, true),
+      ...EP54_CARRIERS.map(([name, h]) => list("EP-54", `${p}enforcement on: the provider key in ${name} is refused`, "/mcp", [h(EP54_PROVIDER_KEY)], [A.status(401), A.msgContains(NO_VK_MSG), www])),
+    ];
+  }),
+  authMode("EP-54", "O", false),
+  list("EP-54", "oauth: the provider key as a Bearer token", "/mcp", [bearer(EP54_PROVIDER_KEY)], [A.status(401), A.msgEquals(OAUTH_MODE_MSG), wwwPresent()]),
+  list("EP-54", "oauth: the provider key in x-api-key", "/mcp", [{ key: "x-api-key", value: EP54_PROVIDER_KEY }], [A.status(401), A.msgEquals(OAUTH_MODE_MSG), wwwPresent()]),
+  restoreConfig("EP-54"), ...fleetTeardown("EP-54"),
 ]);
 
 // EP-53 polls for up to about 15s until the asynchronous log write lands and is no longer "processing".
@@ -3535,7 +3810,7 @@ const EP11 = folder("EP-11 tools/list, anonymous", `Setup: ${FLEET}, alpha's ech
   restoreConfig("EP-11"),
 ]);
 
-const EP37 = folder("EP-37 /mcp/{virtual MCP slug}", `Setup: ${FLEET}, plus gamma (echo) registered the same way; alpha, beta and gamma send instructions "A1", "B1" and "G1"; a VK granting every tool of alpha, beta and gamma; ${TEAM_TEXT}.`, [
+const EP37 = folder("EP-37 /mcp/{virtual MCP slug}", `Setup: ${FLEET}, plus gamma (echo) registered the same way; alpha, beta and gamma send instructions "A1", "B1" and "G1"; a VK granting every tool of alpha, beta and gamma; ${TEAM_TEXT}; the checks run in mcp_server_auth_mode headers and again in both, enforce_auth_on_inference off.`, [
   ...fleetInstructions("EP-37", { alpha: ["A1", "\"A1\""], beta: ["B1", "\"B1\""] }),
   ...freshServer("EP-37", "gamma", ["echo"]),
   setInstructions("EP-37", "gamma", "G1", "\"G1\""),
@@ -3547,6 +3822,13 @@ const EP37 = folder("EP-37 /mcp/{virtual MCP slug}", `Setup: ${FLEET}, plus gamm
   rpc("EP-37", "tools/call alpha-add on /mcp/team with the VK", call("alpha-add", { a: 1, b: 2 }), { path: "/mcp/team", headers: [MCP_ACCEPT, vkHeader("EP-37", "full")], asserts: [A.status(200), toolResultError(null, "filtered by request context")] }),
   mockCalls("EP-37", "alpha", "add", 0),
   initialize("EP-37", "initialize on /mcp/team with the VK", [instructionsEqual(block("alpha", "A1") + "\n\n" + block("beta", "B1"), "alpha's and beta's blocks only")], { path: "/mcp/team", headers: [MCP_ACCEPT, vkHeader("EP-37", "full")] }),
+  readConfig("EP-37"), authMode("EP-37", "B", false),
+  initialize("EP-37", "both: control: initialize on /mcp with the VK shows all three", [instructionsEqual(block("alpha", "A1") + "\n\n" + block("beta", "B1") + "\n\n" + block("gamma", "G1"))], { headers: [MCP_ACCEPT, vkHeader("EP-37", "full")] }),
+  list("EP-37", "both: tools/list on /mcp/team with the VK", "/mcp/team", [vkHeader("EP-37", "full")], [A.status(200), toolNamesInList(["alpha-echo", "beta-echo"])]),
+  rpc("EP-37", "both: tools/call alpha-add on /mcp/team with the VK", call("alpha-add", { a: 1, b: 2 }), { path: "/mcp/team", headers: [MCP_ACCEPT, vkHeader("EP-37", "full")], asserts: [A.status(200), toolResultError(null, "filtered by request context")] }),
+  mockCalls("EP-37", "alpha", "add", 0),
+  initialize("EP-37", "both: initialize on /mcp/team with the VK", [instructionsEqual(block("alpha", "A1") + "\n\n" + block("beta", "B1"), "alpha's and beta's blocks only")], { path: "/mcp/team", headers: [MCP_ACCEPT, vkHeader("EP-37", "full")] }),
+  restoreConfig("EP-37"),
   teamTeardown("EP-37"), deleteVK("EP-37", "full"),
   ...fleetTeardown("EP-37"), deleteClient("EP-37", "ep-37-gamma"),
 ]);
@@ -3835,6 +4117,15 @@ const AUTH12 = folder("AUTH-12 Discovery fallbacks", `Setup: ${ALLOWLIST_TEXT}; 
 ]);
 
 const R2 = "https://r2.mcp-harness.example/mcp";
+const AUTH13 = folder("AUTH-13 Discovery blocked without the allowlist", "Setup: dashboard auth on, admin credentials; no mcp_oauth_private_allowlist; a fleet server auth13 (echo_tool, add_tool) on 127.0.0.1 as an OAuth protected resource with its own authorization server; an OAuth client created on it with oauth_config {}.", [
+  readConfig("AUTH-13"),
+  putConfig("AUTH-13", "setup: no mcp_oauth_private_allowlist", ["cc.mcp_oauth_private_allowlist = [];"], [A.status(200)]),
+  ...asServer("AUTH-13", "auth13"),
+  request("AUTH-13", "create the OAuth client", "POST", "/api/mcp/client", { body: oauthBody("auth13-c", "auth13", "auth13"), asserts: [A.status(400), A.msgStartsWith("Failed to initiate OAuth flow: OAuth discovery failed"), A.msgContains("blocked connection to non-public address 127.0.0.1")] }),
+  mockGet("AUTH-13", "auth13", "no client registered with the authorization server", [A.custom("no registration request reached it", ["pm.expect(pm.response.json().oauth.counters.register || 0, 'body: ' + pm.response.text()).to.equal(0);"])]),
+  restoreConfig("AUTH-13"),
+]);
+
 const AUTH14 = folder("AUTH-14 Pre-registered client skips discovery", `Setup: ${ALLOWLIST_TEXT}; a fleet server auth14 (echo_tool, add_tool) as an OAuth protected resource whose authorization server knows client C1 with secret S1; an OAuth client on it with oauth_config client_id C1, client_secret S1, the authorization server's authorize and token URLs, scopes ["a","b"] and resource ${R2}; consent and callback run so the token request is made.`, [
   ...allowlistOn("AUTH-14"),
   ...asServer("AUTH-14", "auth14", { clients: [{ client_id: "C1", client_secret: "S1" }] }),
@@ -4030,11 +4321,11 @@ const AUTH25 = folder("AUTH-25 Reregister through DCR", `Setup: ${ALLOWLIST_TEXT
   restoreConfig("AUTH-25"),
 ]);
 
-const ADM21 = folder("ADM-21 OAuth on a loopback authorization server follows the private allowlist", "Setup: dashboard auth on, admin credentials; fleet server adm21 as an OAuth protected resource on 127.0.0.1 with dynamic registration. Creates use oauth_config {}: with no mcp_oauth_private_allowlist, with it set to [\"127.0.0.1\"], and with /api/mcp/client whitelisted and no credential. With no allowlist the create returns 500 where 400 is intended, a known issue, so that status check is skipped.", [
+const ADM21 = folder("ADM-21 OAuth on a loopback authorization server follows the private allowlist", "Setup: dashboard auth on, admin credentials; fleet server adm21 as an OAuth protected resource on 127.0.0.1 with dynamic registration. Creates use oauth_config {}: with no mcp_oauth_private_allowlist, with it set to [\"127.0.0.1\"], and with /api/mcp/client whitelisted and no credential.", [
   readConfig("ADM-21"),
   putConfig("ADM-21", "setup: no mcp_oauth_private_allowlist", ["cc.mcp_oauth_private_allowlist = [];"], [A.status(200)]),
   ...asServer("ADM-21", "adm21"),
-  request("ADM-21", "create with no allowlist", "POST", "/api/mcp/client", { body: oauthBody("adm21-a", "adm21a", "adm21"), asserts: [A.skip(A.status(400)), A.msgContains("blocked connection to non-public address")] }),
+  request("ADM-21", "create with no allowlist", "POST", "/api/mcp/client", { body: oauthBody("adm21-a", "adm21a", "adm21"), asserts: [A.status(400), A.msgContains("blocked connection to non-public address")] }),
   putConfig("ADM-21", "setup: mcp_oauth_private_allowlist [\"127.0.0.1\"]", ["cc.mcp_oauth_private_allowlist = ['127.0.0.1'];"], [A.status(200)]),
   createOAuth("ADM-21", "create with the allowlist set", oauthBody("adm21-b", "adm21b", "adm21"), "adm21b", [statusIs("pending_oauth")]),
   putConfig("ADM-21", "setup: whitelist /api/mcp/client", ["cc.mcp_oauth_private_allowlist = ['127.0.0.1'];", "cc.whitelisted_routes = ['/api/mcp/client'];"], [A.status(200)]),
@@ -4081,16 +4372,20 @@ const ADM25 = folder("ADM-25 Callback plus complete activates a shared OAuth cli
   restoreConfig("ADM-25"),
 ]);
 
-const ADM29 = folder("ADM-29 OAuth name conflict appears at completion", `Setup: dashboard auth on, admin credentials; a client named taken_name (HTTP, auth none, on fleet server alpha); ${OAUTH_SERVER_TEXT} (adm29); an OAuth client named taken_name created on it, then consent and callback.`, [
+const ADM29 = folder("ADM-29 OAuth name and slug conflicts appear at create", `Setup: dashboard auth on, admin credentials; a client named taken_name (HTTP, auth none, on fleet server alpha); ${OAUTH_SERVER_TEXT} (adm29); OAuth creates on it named taken_name, then named adm29_o with endpoint_slug taken-name, then named adm29_o with endpoint_slug adm29-custom, which is consented and completed.`, [
   ...allowlistOn("ADM-29"),
   ...freshServer("ADM-29", "alpha", ["echo_tool", "add_tool"]),
   createClient("ADM-29", httpClient("adm29-t", "taken_name", "alpha"), "setup: create the client taken_name"),
   ...asServer("ADM-29", "adm29"),
-  createOAuth("ADM-29", "create the OAuth client named taken_name", oauthBody("adm29-o", "taken_name", "adm29"), "adm29", [statusIs("pending_oauth")]),
+  request("ADM-29", "create the OAuth client named taken_name", "POST", "/api/mcp/client", { body: oauthBody("adm29-o", "taken_name", "adm29"), asserts: [A.status(409), A.msgEquals("An MCP endpoint with this slug already exists")] }),
+  request("ADM-29", "create an OAuth client with endpoint_slug taken-name", "POST", "/api/mcp/client", { body: oauthBody("adm29-o", "adm29_o", "adm29", { endpoint_slug: "taken-name" }), asserts: [A.status(409), A.msgEquals("An MCP endpoint with this slug already exists")] }),
+  createOAuth("ADM-29", "create the OAuth client adm29_o with endpoint_slug adm29-custom", oauthBody("adm29-o", "adm29_o", "adm29", { endpoint_slug: "adm29-custom" }), "adm29", [statusIs("pending_oauth")]),
   consentAs("ADM-29", "consent", "adm29", null),
   followCallback("ADM-29", "the callback", "adm29", callbackSuccess()),
-  completeOAuth("ADM-29", "complete", "adm29", [A.status(409), A.msgEquals("An MCP endpoint with this slug already exists")]),
+  completeOAuth("ADM-29", "complete", "adm29", [A.status(200)]),
+  getClient("ADM-29", "adm29-o", "adm29_o has endpoint_slug adm29-custom", [A.custom("endpoint_slug is adm29-custom", ["pm.expect(pm.response.json().clients[0].config.endpoint_slug, 'body: ' + pm.response.text()).to.equal('adm29-custom');"])]),
   request("ADM-29", "there is one taken_name", "GET", "/api/mcp/clients?search=taken_name", { asserts: [A.status(200), A.custom("exactly one client is named taken_name", ["pm.expect(pm.response.json().clients.filter(function (c) { return c.config.name === 'taken_name'; }).length, 'body: ' + pm.response.text()).to.equal(1);"])] }),
+  deleteClient("ADM-29", "adm29-o"),
   deleteClient("ADM-29", "adm29-t"),
   restoreConfig("ADM-29"),
 ]);
@@ -4174,7 +4469,7 @@ const ADM39 = folder("ADM-39 OAuth config status endpoint", `Setup: dashboard au
   restoreConfig("ADM-39"),
 ]);
 
-const ADM40 = folder("ADM-40 Deleting an OAuth config revokes the shared token", `Setup: dashboard auth on, admin credentials; ${OAUTH_SERVER_TEXT} (adm40); a shared OAuth client on it, connected; and another OAuth client created on it and left pending, as in ADM-23.`, [
+const ADM40 = folder("ADM-40 Deleting an OAuth config revokes the shared token", `Setup: dashboard auth on, admin credentials; ${OAUTH_SERVER_TEXT} (adm40); a shared OAuth client on it, connected; and another OAuth client created on it and left pending, as in ADM-23; no OAuth config has the id adm40-nope.`, [
   ...allowlistOn("ADM-40"),
   ...connectedO("ADM-40", "adm40"),
   createOAuth("ADM-40", "setup: create the pending OAuth client", oauthBody("adm40-p", "adm40p", "adm40"), "adm40p"),
@@ -4184,6 +4479,7 @@ const ADM40 = folder("ADM-40 Deleting an OAuth config revokes the shared token",
   oauthStatus("ADM-40", "the connected client's status has no token_id", "adm40", "", [A.custom("there is no token_id", ["pm.expect(pm.response.json(), 'body: ' + pm.response.text()).to.not.have.property('token_id');"])]),
   getClient("ADM-40", "adm40-o", "GET the connected client: no credential", [A.custom("there is no credential", ["pm.expect(pm.response.json().clients[0].credential == null, 'body: ' + pm.response.text()).to.equal(true);"])]),
   request("ADM-40", "delete the pending OAuth config", "DELETE", "/api/oauth/config/{{adm40p_oc}}", { asserts: [A.status(500), A.msgContains("no token linked to oauth config")] }),
+  request("ADM-40", "delete an unknown OAuth config", "DELETE", "/api/oauth/config/adm40-nope", { asserts: [A.status(404), A.msgEquals("oauth config not found")] }),
   deleteClient("ADM-40", "adm40-o"),
   restoreConfig("ADM-40"),
 ]);
@@ -4308,7 +4604,7 @@ const NO_FLOW = "OAuth flow not found";
 const AUTH27 = folder("AUTH-27 per_user_oauth create with admin verification", `Setup: ${PU_TEXT(false)}; ${PU_SERVER_TEXT("auth27")}, created and verified by consenting as admin.`, [
   ...puConfig("AUTH-27", false),
   ...asServer("AUTH-27", "auth27"),
-  createOAuth("AUTH-27", "create the per-user OAuth client", puBody("auth27"), "auth27", [statusIs("pending_oauth"), messageStarts("Test OAuth configuration"), A.skip(A.custom("the message does not say the login \"will not be saved\"", ["pm.expect(pm.response.json().message, 'body: ' + pm.response.text()).to.not.include('will not be saved');"]))]),
+  createOAuth("AUTH-27", "create the per-user OAuth client", puBody("auth27"), "auth27", [statusIs("pending_oauth"), messageStarts("Test OAuth configuration"), A.custom("the message does not say the login \"will not be saved\"", ["pm.expect(pm.response.json().message, 'body: ' + pm.response.text()).to.not.include('will not be saved');"]), A.custom("the message says the login is kept as the admin credential for periodic tool discovery and never used for a user's tool calls", ["var msg = pm.response.json().message;", "pm.expect(msg, 'body: ' + pm.response.text()).to.include(\"kept as the client's admin credential for periodic tool discovery\");", "pm.expect(msg, 'body: ' + pm.response.text()).to.include(\"never used for a user's tool calls\");"])]),
   consentAs("AUTH-27", "consent as admin", "auth27", "admin"),
   followCallback("AUTH-27", "follow the callback", "auth27", callbackSuccess()),
   completeOAuth("AUTH-27", "complete", "auth27", [A.status(200), messageStarts("OAuth configuration verified successfully. 2 tools discovered")]),
@@ -4753,17 +5049,21 @@ const deleteIfPresent = (id, clientId) => request(id, `teardown: delete client $
 });
 const CONN27 = folder("CONN-27 OpenAPI per_user_headers with spec credentials is refused", `Setup: admin credentials; fleet server conn27 with a REST surface; ${PETS_TEXT}, with an apiKey scheme KeyAuth sent in header X-Key, and the credential k-admin for it.`, [
   ...freshServer("CONN-27", "conn27", ["echo_tool"]),
-  createExpect("CONN-27", "create a per_user_headers OpenAPI client with security_credentials", oasClient("conn27u-c", "conn27u", "conn27", { auth_type: "per_user_headers", per_user_header_keys: ["x-key"] }, { spec: PETS_KEY, security_credentials: CONN27_CRED }), [A.skip(A.status(400))]),
-  request("CONN-27", "no per_user_headers client with security_credentials was created", "GET", "/api/mcp/clients?server=conn27u-c", { asserts: [A.status(200), A.skip(A.custom("no client is returned", ["pm.expect(pm.response.json().clients, 'body: ' + pm.response.text()).to.eql([]);"]))] }),
+  createExpect("CONN-27", "create a per_user_headers OpenAPI client with security_credentials", oasClient("conn27u-c", "conn27u", "conn27", { auth_type: "per_user_headers", per_user_header_keys: ["x-key"] }, { spec: PETS_KEY, security_credentials: CONN27_CRED }), [A.status(400)]),
+  request("CONN-27", "no per_user_headers client with security_credentials was created", "GET", "/api/mcp/clients?server=conn27u-c", { asserts: [A.status(200), A.custom("no client is returned", ["pm.expect(pm.response.json().clients, 'body: ' + pm.response.text()).to.eql([]);"])] }),
   deleteIfPresent("CONN-27", "conn27u-c"),
   createExpect("CONN-27", "control: create an auth_type none OpenAPI client with the same security_credentials", oasClient("conn27n-c", "conn27n", "conn27", {}, { spec: PETS_KEY, security_credentials: CONN27_CRED }), [A.status(200)]),
   request("CONN-27", "control: PUT security_credentials onto the auth_type none client", "PUT", "/api/mcp/client/conn27n-c", { body: { openapi_config: { security_credentials: CONN27_CRED } }, asserts: [A.status(200)] }),
   createClient("CONN-27", oasClient("conn27p-c", "conn27p", "conn27", { auth_type: "per_user_headers", per_user_header_keys: ["x-key"] }, { spec: PETS_KEY }), "setup: create a per_user_headers OpenAPI client without security_credentials"),
   request("CONN-27", "control: PUT openapi_config with only its base_url onto the per_user_headers client", "PUT", "/api/mcp/client/conn27p-c", { body: { openapi_config: { base_url: REST("conn27") } }, asserts: [A.status(200)] }),
-  request("CONN-27", "PUT security_credentials onto the per_user_headers client", "PUT", "/api/mcp/client/conn27p-c", { body: { openapi_config: { security_credentials: CONN27_CRED } }, asserts: [A.skip(A.status(400))] }),
-  getClient("CONN-27", "conn27p-c", "the per_user_headers client keeps no security_credentials", [A.skip(A.custom("openapi_config has no security_credentials", ["var oc = pm.response.json().clients[0].config.openapi_config || {};", "pm.expect(Object.keys(oc.security_credentials || {}), 'body: ' + pm.response.text()).to.eql([]);"]))]),
+  request("CONN-27", "PUT security_credentials onto the per_user_headers client", "PUT", "/api/mcp/client/conn27p-c", { body: { openapi_config: { security_credentials: CONN27_CRED } }, asserts: [A.status(400)] }),
+  getClient("CONN-27", "conn27p-c", "the per_user_headers client keeps no security_credentials", [A.custom("openapi_config has no security_credentials", ["var oc = pm.response.json().clients[0].config.openapi_config || {};", "pm.expect(Object.keys(oc.security_credentials || {}), 'body: ' + pm.response.text()).to.eql([]);"])]),
+  createExpect("CONN-27", "control: create a per_user_headers OpenAPI client storing KeyAuth while callers supply x-other", oasClient("conn27m-c", "conn27m", "conn27", { auth_type: "per_user_headers", per_user_header_keys: ["x-other"] }, { spec: PETS_KEY, security_credentials: CONN27_CRED }), [A.status(200)]),
+  request("CONN-27", "PUT per_user_header_keys adding x-key onto the client storing KeyAuth", "PUT", "/api/mcp/client/conn27m-c", { body: { per_user_header_keys: ["x-other", "x-key"] }, asserts: [A.status(400)] }),
+  getClient("CONN-27", "conn27m-c", "that client keeps per_user_header_keys [\"x-other\"]", [A.custom("per_user_header_keys is [\"x-other\"]", ["pm.expect(pm.response.json().clients[0].config.per_user_header_keys, 'body: ' + pm.response.text()).to.eql(['x-other']);"])]),
   deleteClient("CONN-27", "conn27n-c"),
   deleteClient("CONN-27", "conn27p-c"),
+  deleteClient("CONN-27", "conn27m-c"),
 ]);
 
 // ================================================================ the MCP library against the mock's HTTP catalog
@@ -5570,6 +5870,20 @@ const LOG08 = folder("LOG-08 Agent mode over two turns", `Setup: ${AGENT_TEXT(["
   agentTeardown("LOG-08"),
 ]);
 
+const LOG10 = folder("LOG-10 Code mode inside agent mode", `Setup: ${AGENT_TEXT(["*"])}, alpha a code-mode client; the model calls executeToolCode, which calls alpha.echo twice, then answers "done".`, [
+  ...freshServer("LOG-10", "alpha", ["echo", "add", "greet"]),
+  alphaClient("LOG-10", { tools_to_auto_execute: ["*"], is_code_mode_client: true }),
+  llmScript("LOG-10", "log10", { turns: [{ tool_calls: [llmCall("c1", "executeToolCode", { code: "a = alpha.echo(text=\"log10-a\")\nb = alpha.echo(text=\"log10-b\")\nresult = [a, b]" })] }, { text: "done" }] }),
+  infPost("LOG-10", "chat", "/v1/chat/completions", chatBody("log10"), [A.status(200), chatContent("done")]),
+  mockCalls("LOG-10", "alpha", "echo", 2),
+  request("LOG-10", "two echo log entries with distinct ids", "GET", "/api/mcp-logs?tool_names=echo&content_search=log10-", { pre: pollLogCount("tool_names=echo&content_search=log10-", 2), asserts: [A.status(200), A.custom("total_count is 2 and the ids differ", [
+    "var b = pm.response.json();",
+    "pm.expect(b.pagination.total_count, 'body: ' + pm.response.text()).to.equal(2);",
+    "pm.expect(b.logs[0].id).to.not.equal(b.logs[1].id);",
+  ])] }),
+  agentTeardown("LOG-10"),
+]);
+
 // ================================================================ provider-injected tools on the mock LLM
 
 // A provider's injected_tools expose one MCP tool to the model under a name of the provider's choosing, and Bifrost
@@ -5843,6 +6157,25 @@ const GOV15 = folder("GOV-15 Expired VK", `Setup: ${LLM_TEXT}; alpha (echo, add,
   deleteClient("GOV-15", "gov-15-alpha"),
 ]);
 
+// typeIs checks the refusal's top-level error type.
+const typeIs = (t) => A.custom(`type is ${lit(t)}`, [`pm.expect(pm.response.json().type, 'body: ' + pm.response.text()).to.equal(${lit(t)});`]);
+const INACTIVE = [A.status(403), typeIs("access_blocked"), A.msgEquals("virtual key is inactive")];
+const GOV14 = folder("GOV-14 Inactive VK", `Setup: ${LLM_TEXT}; alpha (echo, add, greet) registered as client alpha, per call, tools_to_execute ["*"]; an inactive virtual key allowed openai with any model and key and mcp_configs alpha ["*"].`, [
+  ...freshServer("GOV-14", "alpha", ["echo", "add", "greet"]),
+  alphaClient("GOV-14"),
+  request("GOV-14", "setup: create the inactive virtual key", "POST", "/api/governance/virtual-keys", {
+    body: { name: "GOV-14 key", provider_configs: OPENAI_GRANT, mcp_configs: [{ mcp_client_name: "alpha", tools_to_execute: ["*"] }], is_active: false }, asserts: [A.status(200)],
+    extraTests: ["pm.collectionVariables.set('gov14_vk_id', pm.response.json().virtual_key.id);", "pm.collectionVariables.set('gov14_vk', pm.response.json().virtual_key.value);"],
+  }),
+  llmScript("GOV-14", "gov14", TEXT_OK),
+  govExec("GOV-14", "alpha-echo", INACTIVE),
+  rpc("GOV-14", "/mcp initialize with the inactive key", init("2025-03-26"), { headers: [MCP_ACCEPT, ...withVK("GOV-14")], asserts: INACTIVE }),
+  infPost("GOV-14", "chat with the inactive key", "/v1/chat/completions", chatBody("gov14"), INACTIVE, { headers: withVK("GOV-14") }),
+  llmCaptured("GOV-14", "control: the chat never reached the model", "gov14", [reqCount(0)]),
+  govTeardownVK("GOV-14"),
+  deleteClient("GOV-14", "gov-14-alpha"),
+]);
+
 const GOV20 = folder("GOV-20 Agent mode respects the VK", `Setup: ${LLM_TEXT}; alpha (echo, add, greet) registered as client alpha, per call, tools_to_execute ["*"], tools_to_auto_execute ["*"]; a virtual key allowed openai with any model and key, mcp_configs alpha ["echo"]; turn 1 calls alpha-add, turn 2 answers "done".`, [
   ...agentSetup("GOV-20", ["*"]),
   govVK("GOV-20", [{ mcp_client_name: "alpha", tools_to_execute: ["echo"] }]),
@@ -5997,7 +6330,7 @@ const ADM41 = folder("ADM-41 Callback edge cases", `Setup: no credential on the 
   restoreConfig("ADM-41"),
 ]);
 
-const ADM43 = folder("ADM-43 Reconnect refusals", `Setup: admin credentials; client adm43-c, auth none, per call on alpha; client adm43-s, sticky on alpha, disabled; ${BOOT_TEXT("adm43-p", "a sticky oauth", "adm43")}.`, [
+const ADM43 = folder("ADM-43 Reconnect refusals", `Setup: admin credentials; client adm43-c, auth none, per call on alpha; client adm43-s, sticky on alpha, disabled; ${BOOT_TEXT("adm43-p", "a sticky oauth", "adm43")}; no client has the id adm43-nope.`, [
   ...freshServer("ADM-43", "alpha", ["echo_tool", "add_tool"]),
   createClient("ADM-43", httpClient("adm43-c", "adm43_c", "alpha"), "setup: create the per-call client"),
   createClient("ADM-43", httpClient("adm43-s", "adm43_s", "alpha", { needs_session_stickiness: true }), "setup: create the sticky client"),
@@ -6005,6 +6338,7 @@ const ADM43 = folder("ADM-43 Reconnect refusals", `Setup: admin credentials; cli
   clientPost("ADM-43", "reconnect the per-call client", "adm43-c", "reconnect", [A.status(400), A.msgContains("client uses per-call connections; there is no persistent connection to reconnect")]),
   clientPost("ADM-43", "reconnect the disabled client", "adm43-s", "reconnect", [A.status(400), A.msgEquals("cannot reconnect a disabled MCP client: enable the client first")]),
   clientPost("ADM-43", "reconnect the pending client", "adm43-p", "reconnect", [A.status(400), A.msgContains("awaiting admin OAuth authorization")]),
+  clientPost("ADM-43", "reconnect an unknown client", "adm43-nope", "reconnect", [A.status(404), A.msgEquals("mcp client not found")]),
   deleteClient("ADM-43", "adm43-s"),
   deleteClient("ADM-43", "adm43-c"),
 ]);
@@ -6142,7 +6476,21 @@ const pollClientTools = (clientId, n, seconds, t0Var) => [
   "}",
   "poll();",
 ];
-// seenWithin checks the client polled by pollClientTools listed the tools within seconds of the kept time.
+// pollClientsTools is pollClientTools for several clients at once, budgets mapping each client id to its seconds
+// from the kept time: every poll starts with this request, so a slow client cannot use up another's budget.
+const pollClientsTools = (budgets, n, t0Var) => [
+  `var t0 = Number(pm.collectionVariables.get(${lit(t0Var)}));`,
+  "function poll(id, deadline) {",
+  "  pm.sendRequest({ url: pm.variables.get('base_url') + '/api/mcp/clients?server=' + id, method: 'GET', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) {",
+  "    var c = !err && res.code === 200 ? (res.json().clients || [])[0] : null;",
+  `    if (c && (c.tools || []).length >= ${n}) { pm.collectionVariables.set(id + '_seen_ms', Date.now() - t0); return; }`,
+  "    if (Date.now() >= deadline) { return; }",
+  "    setTimeout(function () { poll(id, deadline); }, 500);",
+  "  });",
+  "}",
+  ...Object.entries(budgets).map(([id, seconds]) => `pm.collectionVariables.set(${lit(id + "_seen_ms")}, -1); poll(${lit(id)}, t0 + ${seconds * 1000});`),
+];
+// seenWithin checks the client polled by pollClientTools or pollClientsTools listed the tools within seconds of the kept time.
 const seenWithin = (clientId, seconds) => A.custom(`it first listed them within ${seconds}s of the add`, [
   `var ms = Number(pm.collectionVariables.get(${lit(clientId + "_seen_ms")}));`,
   "pm.expect(ms, 'ms after the add (-1: never)').to.be.at.least(0);",
@@ -6169,13 +6517,26 @@ const ADM86 = folder("ADM-86 Verifying a pending client starts its tool sync", `
   getClient("ADM-86", "adm86-o", "the per_user_oauth client is healthy with two tools", [clientState("healthy"), toolNamesAre(["add_tool", "echo_tool"])]),
   request("ADM-86", "adm86h adds extra_tool", "POST", "/control/adm86h/tools/add", { base: CHAOS, noAuth: true, body: { tool: { name: "extra_tool" } }, asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('adm86_t0', Date.now());"] }),
   mockPost("ADM-86", "adm86o", "tools/add", "adm86o adds extra_tool", { tool: { name: "extra_tool" } }),
-  getClient("ADM-86", "adm86-c", "control: the config.json headers client lists extra_tool within 30s", [toolNamesAre(ADM86_TOOLS), seenWithin("adm86-c", 30)], { pre: pollClientTools("adm86-c", 3, 30, "adm86_t0") }),
-  getClient("ADM-86", "adm86-h", "the per_user_headers client lists extra_tool within 20s", [A.skip(toolNamesAre(ADM86_TOOLS)), A.skip(seenWithin("adm86-h", 20))], { pre: pollClientTools("adm86-h", 3, 20, "adm86_t0") }),
-  getClient("ADM-86", "adm86-o", "the per_user_oauth client lists extra_tool within 20s", [A.skip(toolNamesAre(ADM86_TOOLS)), A.skip(seenWithin("adm86-o", 20))], { pre: pollClientTools("adm86-o", 3, 20, "adm86_t0") }),
+  getClient("ADM-86", "adm86-c", "control: the config.json headers client lists extra_tool within 30s (all three clients polled together)", [toolNamesAre(ADM86_TOOLS), seenWithin("adm86-c", 30)], { pre: pollClientsTools({ "adm86-c": 30, "adm86-h": 20, "adm86-o": 20 }, 3, "adm86_t0") }),
+  getClient("ADM-86", "adm86-h", "the per_user_headers client lists extra_tool within 20s", [toolNamesAre(ADM86_TOOLS), seenWithin("adm86-h", 20)]),
+  getClient("ADM-86", "adm86-o", "the per_user_oauth client lists extra_tool within 20s", [toolNamesAre(ADM86_TOOLS), seenWithin("adm86-o", 20)]),
   deleteClient("ADM-86", "adm86-c"),
   deleteClient("ADM-86", "adm86-h"),
   deleteClient("ADM-86", "adm86-o"),
   restoreConfig("ADM-86"),
+]);
+
+// AUTH-46: a per_user_headers client created over the API keeps the admin's sample values as its admin credential, which
+// periodic discovery uses to pick up a tool the server adds later.
+const AUTH46_TOOLS = ["add_tool", "echo_tool", "extra_tool"];
+const AUTH46 = folder("AUTH-46 Periodic discovery of an API-created per_user_headers client", "Setup: admin credentials; fleet server auth46 (echo_tool, add_tool) requires x-key: good; a per_user_headers client on it, created over the API with per_user_header_keys [\"x-key\"], sample x-key good, tools_to_execute [\"*\"] and tool_sync_interval \"5s\"; auth46 then adds extra_tool.", [
+  ...freshServer("AUTH-46", "auth46", ["echo_tool", "add_tool"]),
+  mockAuth("AUTH-46", "auth46", "setup: auth46 requires x-key: good", { require_headers: { "x-key": "good" } }),
+  createClient("AUTH-46", HEADERS_BASE("auth46-h", "auth46_h", { connection_string: `${CHAOS}/s/auth46/mcp`, per_user_header_keys: ["x-key"], user_headers: { "x-key": "good" }, tools_to_execute: ["*"], tool_sync_interval: "5s" }), "setup: create the per_user_headers client, syncing every 5s"),
+  getClient("AUTH-46", "auth46-h", "after create: healthy with two tools, syncing every 5s, with an active headers credential", [clientState("healthy"), toolNamesAre(["add_tool", "echo_tool"]), SYNC_5S, credKind("headers"), credStatus("active")]),
+  request("AUTH-46", "auth46 adds extra_tool", "POST", "/control/auth46/tools/add", { base: CHAOS, noAuth: true, body: { tool: { name: "extra_tool" } }, asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('auth46_t0', Date.now());"] }),
+  getClient("AUTH-46", "auth46-h", "the client lists extra_tool within 20s and stays healthy", [toolNamesAre(AUTH46_TOOLS), seenWithin("auth46-h", 20), clientState("healthy")], { pre: pollClientTools("auth46-h", 3, 20, "auth46_t0") }),
+  deleteClient("AUTH-46", "auth46-h"),
 ]);
 
 // ================================================================ per-user header credentials, flows and the sessions list
@@ -6436,6 +6797,30 @@ const CONN07 = folder("CONN-07 Result content types on execute", "Setup: alpha s
   deleteClient("CONN-07", "conn07-c"),
 ]);
 
+const CONN08 = folder("CONN-08 Tool reports isError", "Setup: alpha (echo_tool, add_tool); an HTTP client on alpha named conn08, auth none, per call, tools_to_execute [\"*\"]; alpha answers every tools/call with an isError result (err_rate 1, err_kind tool). The tool is executed in the chat format, in the Responses format and on /mcp.", [
+  ...freshServer("CONN-08", "alpha", ["echo_tool", "add_tool"]),
+  createClient("CONN-08", httpClient("conn08-c", "conn08", "alpha", { tools_to_execute: ["*"] })),
+  mockPost("CONN-08", "alpha", "faults", "setup: alpha answers every tools/call with an isError result", { faults: { err_rate: 1, err_kind: "tool", methods: ["tools/call"] } }),
+  mockPost("CONN-08", "alpha", "counters/reset", "setup: reset alpha's counters"),
+  execTool("CONN-08", "execute in the chat format", "conn08-echo_tool", [A.status(200), toolErrorFlag(true), A.jsonEquals("content", mockToolErrorText("echo_tool"))]),
+  execBody("CONN-08", "execute in the Responses format", { call_id: "conn08-call", name: "conn08-echo_tool", arguments: lit({ text: "hi" }) },
+    [A.status(200), A.jsonEquals("type", "function_call_output"), A.jsonEquals("status", "incomplete")], { query: "?format=responses" }),
+  rpc("CONN-08", "tools/call conn08-echo_tool on /mcp", call("conn08-echo_tool", { text: "hi" }), { asserts: [A.status(200), toolResultError(mockToolErrorText("echo_tool"), null)] }),
+  mockGet("CONN-08", "alpha", "the tool was called 3 times", [callsIs("echo_tool", 3)]),
+  mockPost("CONN-08", "alpha", "faults/clear", "teardown: clear alpha's faults"),
+  deleteClient("CONN-08", "conn08-c"),
+]);
+
+const INF28 = folder("INF-28 Tool-reported failure", `Setup: ${ALPHA_GREET_TEXT}; alpha then answers every tools/call with an isError result (err_kind tool).`, [
+  ...alphaGreetSetup("INF-28"),
+  mockPost("INF-28", "alpha", "faults", "setup: alpha answers every tools/call with an isError result", { faults: { err_rate: 1, err_kind: "tool" } }),
+  execBody("INF-28", "execute alpha-echo", ECHO_CALL, [A.status(200), toolErrorFlag(true)]),
+  execBody("INF-28", "execute alpha-echo in the Responses format", { call_id: "inf28-call", name: "alpha-echo", arguments: lit({ text: "hi" }) },
+    [A.status(200), A.jsonEquals("type", "function_call_output"), A.jsonEquals("status", "incomplete")], { query: "?format=responses" }),
+  mockPost("INF-28", "alpha", "faults/clear", "teardown: clear alpha's faults"),
+  alphaGreetTeardown("INF-28"),
+]);
+
 const CONN11 = folder("CONN-11 Per-call handshake and the tool timeout", "Setup: alpha (echo_tool, add_tool); a per-call client conn11_c on alpha, auth none, tool_execution_timeout 2, tools_to_execute [\"*\"]; alpha then hangs on initialize only. Each initialize attempt has its own 30s bound and failed attempts are retried, so the call fails after 30s or more.", [
   ...freshServer("CONN-11", "alpha", ["echo_tool", "add_tool"]),
   createClient("CONN-11", httpClient("conn11-c", "conn11_c", "alpha", { tool_execution_timeout: 2, tools_to_execute: ["*"] }), "setup: create the per-call client"),
@@ -6566,7 +6951,7 @@ const EP51_AUTH_REQUIRED = [toolResultError("Authentication required for ph. Ope
     `var rem = ${JSON.stringify(" IMPORTANT: this link includes a required fragment after the '#' character (a one-time auth token). Copy and share the ENTIRE URL exactly as given, including everything after the '#' — the link will not work without it.")};`,
     "pm.expect(text.slice(-rem.length), 'text: ' + text).to.equal(rem);",
   ])];
-const EP51 = folder("EP-51 Per-user headers tool through `/mcp`", `Setup: ${FLEET}; a fleet server ph (echo_tool, add_tool) that requires X-Token, and a per_user_headers client ph on it with per_user_header_keys ["x-token"], tools_to_execute ["*"]; a VK granted every tool of alpha, beta and ph; temp-token auth on. The caller has no X-Token credential.`, [
+const EP51 = folder("EP-51 Per-user headers tool through `/mcp`", `Setup: ${FLEET}; a fleet server ph (echo_tool, add_tool) that requires X-Token, and a per_user_headers client ph on it with per_user_header_keys ["x-token"], tools_to_execute ["*"]; a VK granted every tool of alpha, beta and ph; temp-token auth on. The caller has no X-Token credential. The call is made with the VK in mcp_server_auth_mode headers and both, and with a token from a grant consented with the VK in both and oauth (enforce_auth_on_inference off).`, [
   ...fleetSetup("EP-51"),
   readConfig("EP-51"),
   putConfig("EP-51", "setup: temp-token auth on", ["cc.mcp_enable_temp_token_auth = true;"], [A.status(200)]),
@@ -6575,6 +6960,13 @@ const EP51 = folder("EP-51 Per-user headers tool through `/mcp`", `Setup: ${FLEE
   createClient("EP-51", HEADERS_BASE("ep-51-ph", "ph", { connection_string: `${CHAOS}/s/ph/mcp`, per_user_header_keys: ["x-token"], user_headers: { "x-token": "good" }, tools_to_execute: ["*"] }), "setup: create the per_user_headers client ph"),
   vkCreate("EP-51", "setup: create the VK, granted alpha, beta and ph", { name: "EP-51 key", mcp_configs: [{ mcp_client_name: "alpha", tools_to_execute: ["*"] }, { mcp_client_name: "beta", tools_to_execute: ["*"] }, { mcp_client_name: "ph", tools_to_execute: ["*"] }] }, "ep51_vk"),
   gwCall("EP-51", "tools/call ph-echo_tool with the VK", "ph-echo_tool", EP51_AUTH_REQUIRED, [{ key: "x-bf-vk", value: "{{ep51_vk}}" }]),
+  authMode("EP-51", "B", false),
+  gwCall("EP-51", "both: tools/call ph-echo_tool with the VK", "ph-echo_tool", EP51_AUTH_REQUIRED, [{ key: "x-bf-vk", value: "{{ep51_vk}}" }]),
+  register("EP-51", "ep51_client"),
+  ...grantWith("EP-51", "ep51_client", "ep51_g", "ep51_vk"),
+  gwCall("EP-51", "both: tools/call ph-echo_tool with the VK's token", "ph-echo_tool", EP51_AUTH_REQUIRED, [bearer("{{ep51_g_at}}")]),
+  authMode("EP-51", "O", false),
+  gwCall("EP-51", "oauth: tools/call ph-echo_tool with the VK's token", "ph-echo_tool", EP51_AUTH_REQUIRED, [bearer("{{ep51_g_at}}")]),
   mockGet("EP-51", "ph", "ph received no call", [A.custom("calls is empty", ["pm.expect(pm.response.json().counters.calls, 'body: ' + pm.response.text()).to.eql({});"])]),
   deleteClient("EP-51", "ep-51-ph"),
   vkDelete("EP-51", "teardown: delete the VK", "ep51_vk"),
@@ -6589,13 +6981,27 @@ const EP52_AUTH_REQUIRED = [toolResultError("Authentication required for po. Ope
     "pm.expect(rest.indexOf(prefix), 'text: ' + text).to.equal(0);",
     "pm.expect(/^[0-9a-f-]{36}$/.test(rest.slice(prefix.length)), 'text: ' + text).to.equal(true);",
   ])];
-const EP52 = folder("EP-52 Per-user OAuth tool through `/mcp`", `Setup: ${FLEET}; ${PU_TEXT(false)}; ${PU_SERVER_TEXT("po")}, verified as admin; a VK granted every tool of alpha, beta and po, with no po token.`, [
+// ep52Mode keeps EP-52's per-user OAuth settings while it switches mcp_server_auth_mode; temp tokens are on only for the grant.
+const ep52Mode = (m, tt) => putConfig("EP-52", `setup: ${PU_TEXT(tt)}, mcp_server_auth_mode ${MODE_NAMES[m]} with issuer_url set to the base URL, enforce_auth_on_inference off`, [
+  "cc.mcp_oauth_private_allowlist = ['127.0.0.1'];", `cc.mcp_enable_temp_token_auth = ${tt};`, `cc.mcp_server_auth_mode = ${lit(MODE_NAMES[m])};`,
+  "cc.oauth2_server_config = { issuer_url: pm.variables.get('base_url') };", "cc.enforce_auth_on_inference = false;",
+], [A.status(200)]);
+const EP52 = folder("EP-52 Per-user OAuth tool through `/mcp`", `Setup: ${FLEET}; ${PU_TEXT(false)}; ${PU_SERVER_TEXT("po")}, verified as admin; a VK granted every tool of alpha, beta and po, with no po token. The call is made with the VK in mcp_server_auth_mode headers and both, and with a token from a grant consented with the VK in both and oauth (enforce_auth_on_inference off; temp-token auth on only for the grant).`, [
   ...fleetSetup("EP-52"),
   ...puConfig("EP-52", false),
   ...puConnect("EP-52", "po"),
   vkCreate("EP-52", "setup: create the VK, granted alpha, beta and po", { name: "EP-52 key", mcp_configs: [{ mcp_client_name: "alpha", tools_to_execute: ["*"] }, { mcp_client_name: "beta", tools_to_execute: ["*"] }, { mcp_client_name: "po", tools_to_execute: ["*"] }] }, "ep52_vk"),
   mockPost("EP-52", "po", "counters/reset", "setup: reset po's counters", {}),
   gwCall("EP-52", "tools/call po-echo_tool with the VK", "po-echo_tool", EP52_AUTH_REQUIRED, [{ key: "x-bf-vk", value: "{{ep52_vk}}" }]),
+  ep52Mode("B", false),
+  gwCall("EP-52", "both: tools/call po-echo_tool with the VK", "po-echo_tool", EP52_AUTH_REQUIRED, [{ key: "x-bf-vk", value: "{{ep52_vk}}" }]),
+  ep52Mode("B", true),
+  register("EP-52", "ep52_client"),
+  ...grantWith("EP-52", "ep52_client", "ep52_g", "ep52_vk"),
+  ep52Mode("B", false),
+  gwCall("EP-52", "both: tools/call po-echo_tool with the VK's token", "po-echo_tool", EP52_AUTH_REQUIRED, [bearer("{{ep52_g_at}}")]),
+  ep52Mode("O", false),
+  gwCall("EP-52", "oauth: tools/call po-echo_tool with the VK's token", "po-echo_tool", EP52_AUTH_REQUIRED, [bearer("{{ep52_g_at}}")]),
   mockGet("EP-52", "po", "po received no call", [A.custom("calls is empty", ["pm.expect(pm.response.json().counters.calls || {}, 'body: ' + pm.response.text()).to.eql({});"])]),
   deleteClient("EP-52", "po-u"),
   vkDelete("EP-52", "teardown: delete the VK", "ep52_vk"),
@@ -6653,15 +7059,98 @@ const noEvil = () => A.custom("no body field, Location or WWW-Authenticate conta
   "pm.expect(pm.response.headers.get('Location') || '').to.not.include('evil.example');",
   "pm.expect(pm.response.headers.get('WWW-Authenticate') || '').to.not.include('evil.example');",
 ]);
-const OAS05 = folder("OAS-05 Spoofed Host", `Setup: ${FLEET}; ${BOTH}, temp-token auth on, enforce_auth_on_inference on (so /mcp answers 401 with WWW-Authenticate); a registered OAuth client. Requests send Host evil.example.`, [
+const OAS05 = folder("OAS-05 Spoofed Host", `Setup: ${FLEET}; ${BOTH}, temp-token auth on, enforce_auth_on_inference on (so /mcp answers 401 with WWW-Authenticate); a registered OAuth client. Requests send Host evil.example; they run in both and then again in oauth.`, [
   readConfig("OAS-05"), ...fleetSetup("OAS-05"),
   authMode("OAS-05", "B", true),
   register("OAS-05", "oas05_client"),
-  request("OAS-05", "authorization server metadata", "GET", "/.well-known/oauth-authorization-server", { noAuth: true, headers: [EVIL], asserts: [A.status(200), noEvil(), A.custom("issuer is the base URL", ["pm.expect(pm.response.json().issuer, 'body: ' + pm.response.text()).to.equal(pm.variables.get('base_url'));"])] }),
-  request("OAS-05", "protected resource metadata", "GET", "/.well-known/oauth-protected-resource/mcp", { noAuth: true, headers: [EVIL], asserts: [A.status(200), noEvil(), A.custom("resource is the base URL plus /mcp", ["pm.expect(pm.response.json().resource, 'body: ' + pm.response.text()).to.equal(pm.variables.get('base_url') + '/mcp');"])] }),
-  request("OAS-05", "authorize", "GET", goodAuthorize("oas05_client"), { noAuth: true, noRedirect: true, headers: [EVIL], asserts: [A.status(302), noEvil(), A.custom("the consent Location starts with the issuer", ["pm.expect((pm.response.headers.get('Location') || '').indexOf(pm.variables.get('base_url')), 'Location: ' + pm.response.headers.get('Location')).to.equal(0);"])] }),
-  rpc("OAS-05", "/mcp tools/list with no credential", listMsg, { headers: [MCP_ACCEPT, EVIL], asserts: [A.status(401), noEvil(), A.custom("WWW-Authenticate points at the base URL's resource metadata", ["pm.expect(pm.response.headers.get('WWW-Authenticate'), 'headers').to.equal('Bearer resource_metadata=\"' + pm.variables.get('base_url') + '/.well-known/oauth-protected-resource/mcp\"');"])] }),
+  ...["B", "O"].flatMap((m) => {
+    const p = m === "O" ? "oauth: " : "";
+    return [
+      ...(m === "O" ? [authMode("OAS-05", m, true)] : []),
+      request("OAS-05", `${p}authorization server metadata`, "GET", "/.well-known/oauth-authorization-server", { noAuth: true, headers: [EVIL], asserts: [A.status(200), noEvil(), A.custom("issuer is the base URL", ["pm.expect(pm.response.json().issuer, 'body: ' + pm.response.text()).to.equal(pm.variables.get('base_url'));"])] }),
+      request("OAS-05", `${p}protected resource metadata`, "GET", "/.well-known/oauth-protected-resource/mcp", { noAuth: true, headers: [EVIL], asserts: [A.status(200), noEvil(), A.custom("resource is the base URL plus /mcp", ["pm.expect(pm.response.json().resource, 'body: ' + pm.response.text()).to.equal(pm.variables.get('base_url') + '/mcp');"])] }),
+      request("OAS-05", `${p}authorize`, "GET", goodAuthorize("oas05_client"), { noAuth: true, noRedirect: true, headers: [EVIL], asserts: [A.status(302), noEvil(), A.custom("the consent Location starts with the issuer", ["pm.expect((pm.response.headers.get('Location') || '').indexOf(pm.variables.get('base_url')), 'Location: ' + pm.response.headers.get('Location')).to.equal(0);"])] }),
+      rpc("OAS-05", `${p}/mcp tools/list with no credential`, listMsg, { headers: [MCP_ACCEPT, EVIL], asserts: [A.status(401), noEvil(), A.custom("WWW-Authenticate points at the base URL's resource metadata", ["pm.expect(pm.response.headers.get('WWW-Authenticate'), 'headers').to.equal('Bearer resource_metadata=\"' + pm.variables.get('base_url') + '/.well-known/oauth-protected-resource/mcp\"');"])] }),
+    ];
+  }),
   restoreConfig("OAS-05"), ...fleetTeardown("OAS-05"),
+]);
+
+// OAS-42 takes one client through issuance with mcp_server_auth_mode oauth, where a token is the only way into /mcp.
+const OAS42 = folder("OAS-42 Issuance in oauth mode", `Setup: ${GRANT_TEXT}; mcp_server_auth_mode oauth with issuer_url set to the base URL, temp-token auth on, enforce_auth_on_inference off.`, [
+  ...fleetGrantSetup("OAS-42"), oauthConfig("OAS-42", "oauth"),
+  list("OAS-42", "control: the full-access VK in x-bf-vk is refused", "/mcp", [vkHeader("OAS-42", "full")], [A.status(401), A.msgEquals(OAUTH_MODE_MSG)]),
+  request("OAS-42", "register", "POST", "/oauth2/register", {
+    noAuth: true, body: { client_name: "OAS-42 client", redirect_uris: [LOOPBACK_CB], grant_types: REFRESHABLE }, asserts: [A.status(201)],
+    extraTests: ["pm.collectionVariables.set('oas42_client', pm.response.json().client_id);"],
+  }),
+  authorize("OAS-42", "oas42_client", "oas42_f", "authorize"),
+  consent("OAS-42", "oas42_f", "consent with the full-access VK through the temp token", "temp", vkBody("OAS-42"), [A.status(200), codeIssued()], { extraTests: saveCode("oas42_f") }),
+  tokenReq("OAS-42", "exchange the code", codeParams("oas42_f", "oas42_client"), [A.status(200), tokensIssued(), sessionBfMode("vk")], { extraTests: saveTokens("oas42_f") }),
+  mcpWithToken("OAS-42", "the access token lists every tool", "oas42_f_at", [A.status(200), toolNamesInList(ALL_TOOLS)]),
+  tokenReq("OAS-42", "refresh", refreshParams("oas42_f_rt", "oas42_client"), [A.status(200), tokensIssued()], { extraTests: saveTokens("oas42_r") }),
+  mcpWithToken("OAS-42", "the refreshed access token lists every tool", "oas42_r_at", [A.status(200), toolNamesInList(ALL_TOOLS)]),
+  tokenReq("OAS-42", "replay the first refresh token", refreshParams("oas42_f_rt", "oas42_client"), [A.status(400), O.descEquals("refresh token not found or revoked")]),
+  tokenReq("OAS-42", "the second refresh token after the replay", refreshParams("oas42_r_rt", "oas42_client"), [A.status(400), O.descEquals("refresh token not found or revoked")]),
+  ...fleetGrantTeardown("OAS-42"),
+]);
+
+// AUTH-49 and AUTH-50: a VK outranks x-bf-mcp-session-id as the per-user identity, and a session id longer than 255
+// characters is no identity at all. SID_255 is exactly 255 characters; one more makes it too long.
+const SID_255 = "sid-" + "s".repeat(251);
+const noAuthRequired = () => A.custom("there is no mcp_auth_required", ["pm.expect((pm.response.json().extra_fields || {}).mcp_auth_required, 'body: ' + pm.response.text()).to.equal(undefined);"]);
+const AUTH49_MSG = "per-user OAuth for auth49 requires an identity: send a Virtual Key (x-bf-vk)";
+const AUTH49_VK = { key: "x-bf-vk", value: "{{auth49_vk}}" };
+const AUTH49 = folder("AUTH-49 Per-user OAuth identity: VK over session id, session id length", `Setup: ${PU_TEXT(false)}; ${PU_SERVER_TEXT("auth49")}, verified as admin; a VK granted every tool of auth49. The caller sends the VK and x-bf-mcp-session-id auth49-sess1 and completes the flow as alice; then auth49-sess1 alone, and session ids of 255 and 256 characters.`, [
+  ...puConfig("AUTH-49", false),
+  ...puConnect("AUTH-49", "auth49"),
+  puVK("AUTH-49", "caller's", "auth49", "auth49_vk"),
+  execTool("AUTH-49", "execute with the VK and auth49-sess1", "auth49-echo_tool", [A.status(400), keepFlow("auth49_f1")], { session: "auth49-sess1", headers: [AUTH49_VK] }),
+  flowDetail("AUTH-49", "the flow is keyed to the VK", "auth49_f1", [A.status(200), A.jsonEquals("flow_mode", "vk"), A.custom("virtual_key is the caller's VK and there is no session_id", [
+    "var b = pm.response.json();",
+    "pm.expect(b.virtual_key && b.virtual_key.id, 'body: ' + pm.response.text()).to.equal(pm.collectionVariables.get('auth49_vk_id'));",
+    "pm.expect(b, 'body: ' + pm.response.text()).to.not.have.property('session_id');",
+  ])]),
+  ...puFinish("AUTH-49", "auth49_f1", "alice", "the flow"),
+  execTool("AUTH-49", "execute with the VK alone", "auth49-echo_tool", [A.status(200)], vkExec("auth49_vk")),
+  execTool("AUTH-49", "execute with the VK and auth49-sess1", "auth49-echo_tool", [A.status(200)], { session: "auth49-sess1", headers: [AUTH49_VK] }),
+  mockGet("AUTH-49", "auth49", "both calls ran under alice", [identityCallsAre({ alice: 2 })]),
+  execTool("AUTH-49", "execute with auth49-sess1 alone", "auth49-echo_tool", [A.status(400), keepFlow("auth49_f2", "auth49_f1")], { session: "auth49-sess1" }),
+  flowDetail("AUTH-49", "that flow is keyed to auth49-sess1", "auth49_f2", [A.status(200), A.jsonEquals("flow_mode", "session"), A.jsonEquals("session_id", "auth49-sess1")]),
+  execTool("AUTH-49", "execute with a 255-character session id", "auth49-echo_tool", [A.status(400), keepFlow("auth49_f3")], { session: SID_255 }),
+  flowDetail("AUTH-49", "that flow is keyed to the 255-character session id", "auth49_f3", [A.status(200), A.jsonEquals("flow_mode", "session"), A.jsonEquals("session_id", SID_255)]),
+  execTool("AUTH-49", "execute with a 256-character session id", "auth49-echo_tool", [A.status(400), A.msgStartsWith(AUTH49_MSG), noAuthRequired()], { session: SID_255 + "s" }),
+  gwCall("AUTH-49", "/mcp tools/call with a 256-character session id", "auth49-echo_tool", [toolResultError(null, AUTH49_MSG)], [{ key: "x-bf-mcp-session-id", value: SID_255 + "s" }]),
+  mockGet("AUTH-49", "auth49", "no other call reached auth49", [identityCallsAre({ alice: 2 })]),
+  deleteClient("AUTH-49", "auth49-u"),
+  vkDelete("AUTH-49", "teardown: delete the VK", "auth49_vk"),
+  restoreConfig("AUTH-49"),
+]);
+
+const AUTH50_MSG = "per-user headers for auth50_c requires an identity: send a Virtual Key (x-bf-vk)";
+const AUTH50_VK = { key: "x-bf-vk", value: "{{auth50_vk}}" };
+const AUTH50 = folder("AUTH-50 Per-user headers identity: none, VK over session id, session id length", `Setup: ${KEY_A_TEXT}; a per_user_headers client auth50_c on alpha with per_user_header_keys ["x-api-key"], sample key-a, tools_to_execute ["*"]; a VK granted every tool of auth50_c. A caller with no identity; then the VK with x-bf-mcp-session-id auth50-sess1, which submits key-a; then auth50-sess1 alone, and a 256-character session id.`, [
+  ...alphaKeyA("AUTH-50"),
+  createClient("AUTH-50", perUser("auth50-c", "auth50_c", PER_USER_KEY_A), "setup: create the per_user_headers client"),
+  vkCreate("AUTH-50", "setup: create the VK, granted every tool of auth50_c", { name: "AUTH-50 key", mcp_configs: [{ mcp_client_name: "auth50_c", tools_to_execute: ["*"] }] }, "auth50_vk"),
+  execTool("AUTH-50", "execute with no VK and no session id", "auth50_c-echo_tool", [A.status(400), A.msgStartsWith(AUTH50_MSG), noAuthRequired()]),
+  gwCall("AUTH-50", "/mcp tools/call with no VK and no session id", "auth50_c-echo_tool", [toolResultError(null, AUTH50_MSG)]),
+  execTool("AUTH-50", "execute with the VK and auth50-sess1", "auth50_c-echo_tool", [A.status(400), headersFlow({ saveAs: "auth50_h1" })], { session: "auth50-sess1", headers: [AUTH50_VK] }),
+  request("AUTH-50", "the header flow is keyed to the VK", "GET", `${HDR_FLOWS}{{auth50_h1}}`, { asserts: [A.status(200), A.custom("flow_mode vk, virtual key is the caller's VK, no session_id", [
+    "var b = pm.response.json();",
+    "pm.expect(b.flow_mode, 'body: ' + pm.response.text()).to.equal('vk');",
+    "pm.expect(b.virtual_key && b.virtual_key.id).to.equal(pm.collectionVariables.get('auth50_vk_id'));",
+    "pm.expect(b).to.not.have.property('session_id');",
+  ])] }),
+  request("AUTH-50", "setup: submit key-a", "PUT", `${HDR_FLOWS}{{auth50_h1}}`, { body: { headers: { "x-api-key": "key-a" } }, asserts: [A.status(200)] }),
+  execTool("AUTH-50", "execute with the VK alone", "auth50_c-echo_tool", [A.status(200)], vkExec("auth50_vk")),
+  mockGet("AUTH-50", "alpha", "the call ran under key-a", [identityCallsAre({ "key-a": 1 })]),
+  execTool("AUTH-50", "execute with auth50-sess1 alone", "auth50_c-echo_tool", [A.status(400), headersFlow({ saveAs: "auth50_h2" })], { session: "auth50-sess1" }),
+  request("AUTH-50", "that header flow is keyed to auth50-sess1", "GET", `${HDR_FLOWS}{{auth50_h2}}`, { asserts: [A.status(200), A.jsonEquals("flow_mode", "session"), A.jsonEquals("session_id", "auth50-sess1")] }),
+  execTool("AUTH-50", "execute with a 256-character session id", "auth50_c-echo_tool", [A.status(400), A.msgStartsWith(AUTH50_MSG), noAuthRequired()], { session: SID_255 + "s" }),
+  mockGet("AUTH-50", "alpha", "no other call reached alpha", [identityCallsAre({ "key-a": 1 })]),
+  deleteClient("AUTH-50", "auth50-c"),
+  vkDelete("AUTH-50", "teardown: delete the VK", "auth50_vk"),
 ]);
 
 const SET14 = folder("SET-14 OAuth private allowlist validation", "Setup: PUT /api/config with admin credentials.", [
@@ -6815,12 +7304,29 @@ const GOV24 = folder("GOV-24 Unpriced and failed calls cost nothing", `Setup: al
   agentTeardown("GOV-24"),
 ]);
 
-const GOV25 = folder("GOV-25 Request rate limit counts tool calls", `Setup: ${ALPHA_EA}; a VK with mcp_configs alpha ["*"] and a request limit of 1 per 1h.`, [
+// govTokenPasses repeats GOV-25's and GOV-38's /mcp check in mcp_server_auth_mode both, with the VK in x-bf-vk and with a token
+// from a grant consented with the VK, and in oauth with the token.
+const govTokenPasses = (id, vkVarName, asserts) => {
+  const p = id.toLowerCase().replace("-", "");
+  return [
+    readConfig(id), authMode(id, "B", false),
+    register(id, `${p}_client`),
+    ...grantWith(id, `${p}_client`, `${p}_g`, vkVarName),
+    list(id, "both: /mcp tools/list with the VK", "/mcp", [{ key: "x-bf-vk", value: `{{${vkVarName}}}` }], asserts),
+    list(id, "both: /mcp tools/list with the VK's token", "/mcp", [bearer(`{{${p}_g_at}}`)], asserts),
+    authMode(id, "O", false),
+    list(id, "oauth: /mcp tools/list with the VK's token", "/mcp", [bearer(`{{${p}_g_at}}`)], asserts),
+    restoreConfig(id),
+  ];
+};
+const GOV_TOKEN_TEXT = ". The /mcp request is then repeated in mcp_server_auth_mode both, with the VK in x-bf-vk and with a token from a grant consented with the VK, and in oauth with the token (enforce_auth_on_inference off)";
+const GOV25 = folder("GOV-25 Request rate limit counts tool calls", `Setup: ${ALPHA_EA}; a VK with mcp_configs alpha ["*"] and a request limit of 1 per 1h${GOV_TOKEN_TEXT}.`, [
   ...alphaEA("GOV-25"),
   govKey("GOV-25", "gov25_vk", ALPHA_ALL, { rate_limit: { request_max_limit: 1, request_reset_duration: "1h" } }),
   execTool("GOV-25", "call 1", "alpha-add", [A.status(200)], vkUse("gov25_vk")),
   execTool("GOV-25", "call 2", "alpha-add", [A.status(429), A.custom("type request_limited", ["pm.expect(pm.response.json().type, 'body: ' + pm.response.text()).to.equal('request_limited');"]), A.msgContains("request limit exceeded (1/1, resets every 1h)")], vkUse("gov25_vk")),
   rpc("GOV-25", "/mcp tools/list with the VK", listMsg, { headers: [MCP_ACCEPT, { key: "x-bf-vk", value: "{{gov25_vk}}" }], asserts: [A.status(429)] }),
+  ...govTokenPasses("GOV-25", "gov25_vk", [A.status(429)]),
   vkDelete("GOV-25", "teardown: delete the VK", "gov25_vk"),
   agentTeardown("GOV-25"),
 ]);
@@ -6835,6 +7341,63 @@ const GOV26 = folder("GOV-26 Code mode bills nested calls, not the meta call", `
   vkMemory("GOV-26", "the budget rose by 0.002", "gov26_vk", [budgetPlus("gov26_b0", 0.002)]),
   vkDelete("GOV-26", "teardown: delete the VK", "gov26_vk"),
   cmTeardown("GOV-26"),
+]);
+
+// vkPost sends a VK create body and expects the given asserts; it creates nothing a later step relies on.
+const vkPost = (id, title, body, asserts) => request(id, title, "POST", "/api/governance/virtual-keys", { body, asserts });
+const GOV09 = folder("GOV-09 VK create validation", `Setup: ${ALPHA_GREET_TEXT}. Each create names alpha twice, mixes "*" with a tool name, or names an MCP client that does not exist.`, [
+  ...alphaGreetSetup("GOV-09"),
+  vkPost("GOV-09", "alpha twice", { name: "GOV-09 twice", mcp_configs: [{ mcp_client_name: "alpha", tools_to_execute: ["echo"] }, { mcp_client_name: "alpha", tools_to_execute: ["add"] }] }, [A.status(400), A.msgEquals("duplicate mcp_client_name: alpha")]),
+  vkPost("GOV-09", "[\"*\", \"echo\"]", { name: "GOV-09 wildcard", mcp_configs: [{ mcp_client_name: "alpha", tools_to_execute: ["*", "echo"] }] }, [A.status(400), A.msgContains("wildcard '*' cannot be used with other values")]),
+  vkPost("GOV-09", "an unknown client", { name: "GOV-09 unknown", mcp_configs: [{ mcp_client_name: "gov09-no-such-client", tools_to_execute: ["echo"] }] }, [A.status(400), A.msgEquals("unknown mcp_client_name: gov09-no-such-client")]),
+  alphaGreetTeardown("GOV-09"),
+]);
+
+const GOV10 = folder("GOV-10 VK update replaces grants live", `Setup: ${ALPHA_GREET_TEXT}; a VK with mcp_configs alpha ["echo"], switched to ["add"] by its config id (as the dashboard sends it) and then to []; a second VK with mcp_configs alpha ["echo"], whose config id the first VK's update then names.`, [
+  ...alphaGreetSetup("GOV-10"),
+  govKey("GOV-10", "gov10_vk", [{ mcp_client_name: "alpha", tools_to_execute: ["echo"] }]),
+  execTool("GOV-10", "control: alpha-echo with the VK", "alpha-echo", [A.status(200)], vkUse("gov10_vk")),
+  request("GOV-10", "setup: read the VK's MCP config id", "GET", "/api/governance/virtual-keys/{{gov10_vk_id}}", { asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('gov10_cfg', pm.response.json().virtual_key.mcp_configs[0].id);"] }),
+  request("GOV-10", "switch the grant to [\"add\"]", "PUT", "/api/governance/virtual-keys/{{gov10_vk_id}}", { raw: '{"mcp_configs": [{"id": {{gov10_cfg}}, "mcp_client_name": "alpha", "tools_to_execute": ["add"]}]}', asserts: [A.status(200)] }),
+  execTool("GOV-10", "alpha-add with the VK", "alpha-add", [A.status(200)], vkUse("gov10_vk")),
+  execTool("GOV-10", "alpha-echo with the VK", "alpha-echo", [A.status(403)], vkUse("gov10_vk")),
+  request("GOV-10", "switch the grant to []", "PUT", "/api/governance/virtual-keys/{{gov10_vk_id}}", { body: { mcp_configs: [] }, asserts: [A.status(200)] }),
+  execTool("GOV-10", "alpha-add with the VK after []", "alpha-add", [A.status(403)], vkUse("gov10_vk")),
+  vkCreate("GOV-10", "setup: create the second VK", { name: "GOV-10 other key", mcp_configs: [{ mcp_client_name: "alpha", tools_to_execute: ["echo"] }] }, "gov10_other"),
+  request("GOV-10", "setup: read the second VK's MCP config id", "GET", "/api/governance/virtual-keys/{{gov10_other_id}}", { asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('gov10_other_cfg', pm.response.json().virtual_key.mcp_configs[0].id);"] }),
+  request("GOV-10", "update with the second VK's config id", "PUT", "/api/governance/virtual-keys/{{gov10_vk_id}}", { raw: '{"mcp_configs": [{"id": {{gov10_other_cfg}}, "mcp_client_name": "alpha", "tools_to_execute": ["*"]}]}', asserts: [A.status(400), A.msgContains("does not belong to this virtual key")] }),
+  execTool("GOV-10", "control: the second VK still runs alpha-echo", "alpha-echo", [A.status(200)], vkUse("gov10_other")),
+  vkDelete("GOV-10", "teardown: delete the second VK", "gov10_other"),
+  vkDelete("GOV-10", "teardown: delete the VK", "gov10_vk"),
+  alphaGreetTeardown("GOV-10"),
+]);
+
+const GOV30 = folder("GOV-30 Virtual MCP conflicts", `Setup: ${ALPHA_GREET_TEXT}; ${V_TEXT}. Creates then take the slug tools-a, the slug alpha (client alpha's), V's name with a new slug, and the name "!!!", which yields no slug.`, [
+  ...alphaGreetSetup("GOV-30"), createV("GOV-30", "gov30_vmcp_id"),
+  request("GOV-30", "slug tools-a", "POST", "/api/mcp/virtual-mcps", { body: { name: "GOV-30 b", endpoint_slug: "tools-a", tools: V_BODY("GOV-30").tools }, asserts: [A.status(409), A.msgEquals("an MCP endpoint with this slug already exists")] }),
+  request("GOV-30", "slug alpha", "POST", "/api/mcp/virtual-mcps", { body: { name: "GOV-30 c", endpoint_slug: "alpha", tools: V_BODY("GOV-30").tools }, asserts: [A.status(409), A.msgEquals("an MCP endpoint with this slug already exists")] }),
+  request("GOV-30", "V's name with a new slug", "POST", "/api/mcp/virtual-mcps", { body: { name: "Tools A", endpoint_slug: "gov30-new", tools: V_BODY("GOV-30").tools }, asserts: [A.status(409)] }),
+  request("GOV-30", "name \"!!!\"", "POST", "/api/mcp/virtual-mcps", { body: { name: "!!!", tools: V_BODY("GOV-30").tools }, asserts: [A.status(400)] }),
+  deleteV("GOV-30", "gov30_vmcp_id"),
+  alphaGreetTeardown("GOV-30"),
+]);
+
+const GOV37 = folder("GOV-37 Virtual MCP that names a client by name", `Setup: ${ALPHA_GREET_TEXT} (client_id gov-37-alpha). A virtual MCP is created with tools [{mcp_client_id "alpha"}], the client's name.`, [
+  ...alphaGreetSetup("GOV-37"),
+  request("GOV-37", "create with the client's name as mcp_client_id", "POST", "/api/mcp/virtual-mcps", { body: { name: "GOV-37 by name", tools: [{ mcp_client_id: "alpha", tool_names: ["echo"] }] }, asserts: [A.status(400), A.msgEquals("invalid MCP client IDs: alpha")] }),
+  alphaGreetTeardown("GOV-37"),
+]);
+
+const GOV18 = folder("GOV-18 Code-mode meta tools are gated", `Setup: ${CM_TEXT}; an inactive VK with mcp_configs cm ["*"]; then enforce_auth_on_inference true and no credential. listToolFiles is executed each way.`, [
+  ...cmSetup("GOV-18"),
+  vkCreate("GOV-18", "setup: create the inactive VK", { name: "GOV-18 key", mcp_configs: [{ mcp_client_name: "cm", tools_to_execute: ["*"] }], is_active: false }, "gov18_vk"),
+  metaWith("GOV-18", "listToolFiles with the inactive VK", "listToolFiles", {}, INACTIVE, vkUse("gov18_vk")),
+  meta("GOV-18", "control: listToolFiles with no credential and enforcement off", "listToolFiles", {}, [A.status(200)]),
+  readConfig("GOV-18"), setEnforce("GOV-18", true),
+  meta("GOV-18", "listToolFiles with no credential", "listToolFiles", {}, [A.status(401), A.jsonEquals("type", "virtual_key_required"), A.msgEquals("virtual key is required. Provide a virtual key via the x-bf-vk header.")]),
+  restoreConfig("GOV-18"),
+  vkDelete("GOV-18", "teardown: delete the VK", "gov18_vk"),
+  cmTeardown("GOV-18"),
 ]);
 
 const GOV28 = folder("GOV-28 Pricing edits apply live", `Setup: ${ALPHA_EA}, echo priced 0.001. Pricing is then set to 0.005, then to {}, and the client is renamed alpha2.`, [
@@ -6853,12 +7416,13 @@ const GOV28 = folder("GOV-28 Pricing edits apply live", `Setup: ${ALPHA_EA}, ech
   agentTeardown("GOV-28"),
 ]);
 
-const GOV38 = folder("GOV-38 Budget enforced on `/mcp`", `Setup: ${ALPHA_EA}, echo priced 0.001; a VK with mcp_configs alpha ["*"] and a budget of 0.001 per 1h.`, [
+const GOV38 = folder("GOV-38 Budget enforced on `/mcp`", `Setup: ${ALPHA_EA}, echo priced 0.001; a VK with mcp_configs alpha ["*"] and a budget of 0.001 per 1h${GOV_TOKEN_TEXT}.`, [
   ...alphaEA("GOV-38"),
   priceAlpha("GOV-38", "setup: price echo at 0.001", "gov-38-alpha", { echo: 0.001 }),
   govKey("GOV-38", "gov38_vk", ALPHA_ALL, { budgets: [{ max_limit: 0.001, reset_duration: "1h" }] }),
   gwCall("GOV-38", "first tools/call alpha-echo", "alpha-echo", [A.custom("isError is not set", ["pm.expect(pm.response.json().result.isError || false, 'body: ' + pm.response.text()).to.equal(false);"])], [{ key: "x-bf-vk", value: "{{gov38_vk}}" }]),
   rpc("GOV-38", "the next /mcp request", listMsg, { headers: [MCP_ACCEPT, { key: "x-bf-vk", value: "{{gov38_vk}}" }], asserts: [A.status(402), A.msgContains("Budget exceeded:")] }),
+  ...govTokenPasses("GOV-38", "gov38_vk", [A.status(402), A.msgContains("Budget exceeded:")]),
   vkDelete("GOV-38", "teardown: delete the VK", "gov38_vk"),
   agentTeardown("GOV-38"),
 ]);
@@ -7082,16 +7646,16 @@ const collection = {
     { key: "admin_auth_header", value: "" },
   ],
   item: [
-    section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM86]),
-    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH48]),
-    section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN20, CONN22, CONN23, CONN24, CONN25, CONN27]),
-    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP17, EP18, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP49, EP50, EP51, EP52, EP53]),
-    section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS30, OAS31, OAS32, OAS33, OAS34, OAS36, OAS38]),
+    section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM86]),
+    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH48, AUTH49, AUTH50]),
+    section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN20, CONN22, CONN23, CONN24, CONN25, CONN27]),
+    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54]),
+    section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS40, OAS42]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET21, SET22]),
-    section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV11, GOV12, GOV15, GOV16, GOV17, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV31, GOV32, GOV33, GOV34, GOV35, GOV38]),
-    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
+    section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV37, GOV38]),
+    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB32, LIB33, LIB34, LIB36, LIB37]),
-    section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43]),
+    section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL14, FAIL16, FAIL18, FAIL19]),
   ],
 };

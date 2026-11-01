@@ -308,6 +308,18 @@ Under **Automatic key rotation**, pick **Every 7 / 30 / 90 days** or **Custom** 
 	only carry a list of allowed tools per server; "everything except X" can't be represented. List the tools you want instead.
 </Warning>
 
+### Configure relay access
+
+<Frame>
+	<img src="/media/access-profiles/access-profile-relay-access.png" alt="Relays picker in the access profile form with two granted relays" />
+</Frame>
+
+Under **Relays**, pick each [relay](/relays/overview) that holders of the profile may call at `/relay/<name>/...`. A profile with no relays allows none. Each call's cost is charged to the profile's budgets, like model usage — unless the call is scoped to an Enterprise [project](/enterprise/projects) with `accounting_mode: project_only`, in which case the project's budget answers for the call and the profile's budgets are not touched.
+
+A virtual key governed by the profile takes its relays from here, so the key's own relay grants are not used. A call the profile does not allow is refused with `403`, naming the profile: `Relay 'web-search' is not allowed for access profile 'contractors'`.
+
+Through the API, `relay_grants` on [Update access profile](/api-reference/access-profiles/update-access-profile) replaces the list; leave it out to keep the current grants, or send `[]` to remove them all. See [relay_grants in config.json and Helm](#declaring-profiles-in-config-json-and-helm).
+
 ### Assign the profile to users
 
 Click **Create**, then assign the profile in any of these ways. A user can hold profiles from all of them at once.
@@ -403,7 +415,8 @@ Profiles are declared under `access_profiles`, and a team, business unit, or cus
 		{
 			"name": "Engineering",
 			"provider_configs": [{ "provider_name": "openai", "all_models_allowed": true }],
-			"budgets": [{ "id": "budget-engineering", "max_limit": 5000, "reset_duration": "1M" }]
+			"budgets": [{ "id": "budget-engineering", "max_limit": 5000, "reset_duration": "1M" }],
+			"relay_grants": [{ "relay_name": "web-search" }, { "relay_name": "translate" }]
 		}
 	],
 	"governance": {
@@ -414,7 +427,30 @@ Profiles are declared under `access_profiles`, and a team, business unit, or cus
 }
 ```
 
-In Helm, set the same fields under `bifrost.accessProfiles` and `bifrost.governance.teams[].access_profile`, `.businessUnits[].access_profile`, and `.customers[].access_profile`.
+In Helm, set the same fields under `bifrost.accessProfiles` and `bifrost.governance.teams[].access_profile`, `.businessUnits[].access_profile`, and `.customers[].access_profile`:
+
+```yaml
+bifrost:
+  accessProfiles:
+    - name: Engineering
+      provider_configs:
+        - provider_name: openai
+          all_models_allowed: true
+      budgets:
+        - id: budget-engineering
+          max_limit: 5000
+          reset_duration: 1M
+      relay_grants:
+        - relay_name: web-search
+        - relay_name: translate
+  governance:
+    teams:
+      - id: team-platform
+        name: Platform
+        access_profile: Engineering
+```
+
+`relay_grants` lists the [relays](#configure-relay-access) the profile allows. A profile that names a relay that does not exist is skipped as a whole, with a warning in the server log.
 
 How the file is applied depends on your [source of truth](/deployment-guides/config-json/source-of-truth):
 

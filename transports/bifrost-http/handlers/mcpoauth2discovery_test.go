@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -68,6 +69,35 @@ func TestDiscovery_AuthorizationServerMetadata(t *testing.T) {
 	assert.Equal(t, true, doc["authorization_response_iss_parameter_supported"])
 	// MCP 2025-11-25+: clients may use a Client ID Metadata Document URL as client_id.
 	assert.Equal(t, true, doc["client_id_metadata_document_supported"])
+}
+
+// TestDiscovery_IssuerWithTrailingSlash pins that an issuer_url ending in "/" is
+// served without it, so no URL built from the issuer carries "//".
+func TestDiscovery_IssuerWithTrailingSlash(t *testing.T) {
+	cfg := newTestOAuth2Config(&mockOAuth2Store{}, configtables.MCPServerAuthModeOAuth, false)
+	cfg.ClientConfig.OAuth2ServerConfig.IssuerURL = schemas.NewSecretVar(testIssuer + "/")
+	h := NewOAuth2DiscoveryHandler(cfg)
+
+	ctx := &fasthttp.RequestCtx{}
+	h.handleASMetadata(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &doc))
+	assert.Equal(t, testIssuer, doc["issuer"])
+	assert.Equal(t, testIssuer+"/oauth2/authorize", doc["authorization_endpoint"])
+	assert.Equal(t, testIssuer+"/oauth2/token", doc["token_endpoint"])
+	assert.Equal(t, testIssuer+"/oauth2/register", doc["registration_endpoint"])
+	assert.Equal(t, testIssuer+"/.well-known/jwks.json", doc["jwks_uri"])
+
+	prm := &fasthttp.RequestCtx{}
+	h.handlePRM(prm)
+	require.Equal(t, fasthttp.StatusOK, prm.Response.StatusCode())
+	var prmDoc map[string]any
+	require.NoError(t, json.Unmarshal(prm.Response.Body(), &prmDoc))
+	assert.Equal(t, testMCPResource, prmDoc["resource"])
+	assert.Equal(t, []any{testIssuer}, prmDoc["authorization_servers"])
+
+	assert.Equal(t, `Bearer resource_metadata="`+testIssuer+`/.well-known/oauth-protected-resource/mcp"`, wwwAuthenticateValue(&fasthttp.RequestCtx{}, cfg))
 }
 
 func TestDiscovery_JWKS(t *testing.T) {

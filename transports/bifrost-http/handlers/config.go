@@ -240,6 +240,7 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 			if proxyConfig.Password != "" {
 				proxyConfig.Password = "<redacted>"
 			}
+			proxyConfig.URL = lib.RedactProxyURLPassword(proxyConfig.URL)
 			mapConfig["proxy_config"] = proxyConfig
 		}
 		// Fetching restart required config
@@ -1341,6 +1342,7 @@ func (h *ConfigHandler) getProxyConfig(ctx *fasthttp.RequestCtx) {
 	if proxyConfig.Password != "" {
 		proxyConfig.Password = "<redacted>"
 	}
+	proxyConfig.URL = lib.RedactProxyURLPassword(proxyConfig.URL)
 	SendJSON(ctx, proxyConfig)
 }
 
@@ -1355,6 +1357,22 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 	if err := json.Unmarshal(ctx.PostBody(), &payload); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
+	}
+	// The settings form trims what it validates; store what the dialer will parse.
+	payload.URL = strings.TrimSpace(payload.URL)
+	// GET redacts a password in the URL, and the settings page sends back what it got:
+	// restore the stored one before the URL is compared or validated.
+	if strings.Contains(payload.URL, lib.RedactedProxyURLPassword) {
+		existingConfig, err := h.store.ConfigStore.GetProxyConfig(ctx)
+		if err != nil && !errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get existing proxy config: %v", err))
+			return
+		}
+		stored := ""
+		if existingConfig != nil {
+			stored = existingConfig.URL
+		}
+		payload.URL = lib.RestoreProxyURLPassword(payload.URL, stored)
 	}
 
 	// Under the fail-open bypass (dashboard auth disabled/unconfigured), refuse to point the
@@ -1374,29 +1392,11 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 
 	// Validate proxy config
 	if payload.Enabled {
-		// Validate proxy type
+		// Validate proxy type. http and socks5 have dialers in the HTTP client
+		// factory and the provider stacks (network.DialViaProxy); tcp has none.
 		switch payload.Type {
-		case network.GlobalProxyTypeHTTP:
-			// HTTP proxy is supported
-			// Make sure the URL is provided
-			if payload.URL == "" {
-				SendError(ctx, fasthttp.StatusBadRequest, "proxy URL is required when proxy is enabled")
-				return
-			}
-			// Every proxied request carries its provider credentials to this host, so the
-			// proxy URL follows the same destination rule as a provider base URL. Private
-			// and loopback hosts stay allowed (a self-hosted egress proxy is the normal
-			// setup); link-local and unspecified addresses never are.
-			if err := bifrost.ValidateExternalURL(payload.URL, true); err != nil {
-				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid proxy URL: %v", err))
-				return
-			}
-			// Validate timeout if provided
-			if payload.Timeout < 0 {
-				SendError(ctx, fasthttp.StatusBadRequest, "proxy timeout must be non-negative")
-				return
-			}
-		case network.GlobalProxyTypeSOCKS5, network.GlobalProxyTypeTCP:
+		case network.GlobalProxyTypeHTTP, network.GlobalProxyTypeSOCKS5:
+		case network.GlobalProxyTypeTCP:
 			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("proxy type %s is not yet supported", payload.Type))
 			return
 		default:
@@ -1407,6 +1407,21 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 		// Validate URL is provided when enabled
 		if payload.URL == "" {
 			SendError(ctx, fasthttp.StatusBadRequest, "proxy URL is required when proxy is enabled")
+			return
+		}
+
+		proxyURL, err := lib.ValidateGlobalProxyURL(payload.Type, payload.URL)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
+		// Every proxied request carries its provider credentials to this host, so the
+		// proxy URL follows the same destination rule as a provider base URL. Private
+		// and loopback hosts stay allowed (a self-hosted egress proxy is the normal
+		// setup); link-local and unspecified addresses never are. The rule is about
+		// the host, so it is checked the same way whatever the proxy scheme.
+		if err := bifrost.ValidateExternalURL("http://"+proxyURL.Host, true); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid proxy URL: %v", err))
 			return
 		}
 
@@ -1757,5 +1772,18 @@ func globalProxyInterceptionChanges(old *configstoreTables.GlobalProxyConfig, ne
 	if next.SkipTLSVerify && !prev.SkipTLSVerify {
 		changed = append(changed, "skip_tls_verify")
 	}
+	// The type picks the dialer, so the same URL under another type is another proxy
+	// protocol (a bare host:port takes its scheme from the type, and no type dials as http).
+	if (prev.Type != "" || prev.URL != "") && effectiveGlobalProxyType(next.Type) != effectiveGlobalProxyType(prev.Type) {
+		changed = append(changed, "type")
+	}
 	return changed
+}
+
+// effectiveGlobalProxyType is the type the dialer uses: an empty type dials as http.
+func effectiveGlobalProxyType(t network.GlobalProxyType) network.GlobalProxyType {
+	if t == "" {
+		return network.GlobalProxyTypeHTTP
+	}
+	return t
 }

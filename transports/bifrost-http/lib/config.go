@@ -2403,7 +2403,7 @@ func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) 
 // runtime):
 //   - OauthConfigID links the oauth_configs row (token / provider config)
 //     created by the admin's browser flow.
-//   - DiscoveredTools / DiscoveredToolNameMapping are populated by the
+//   - DiscoveredTools is populated by the
 //     one-time admin verification for per-user auth types.
 //   - PendingOAuthConfig stays whatever the store holds: the stash declared
 //     at creation while verification is pending, nil once the OAuth callback
@@ -2482,7 +2482,6 @@ func pinMCPClientImmutableFields(fileClient, existing *schemas.MCPClientConfig) 
 	fileClient.OauthConfigID = existing.OauthConfigID
 	if len(fileClient.DiscoveredTools) == 0 {
 		fileClient.DiscoveredTools = existing.DiscoveredTools
-		fileClient.DiscoveredToolNameMapping = existing.DiscoveredToolNameMapping
 		fileClient.DiscoveredInstructions = existing.DiscoveredInstructions
 	}
 	if fileClient.DiscoveredResources == nil && fileClient.DiscoveredResourceTemplates == nil && fileClient.DiscoveredPrompts == nil {
@@ -2775,7 +2774,6 @@ func applyMCPClientPinnedStateToRow(row *configstoreTables.TableMCPClient, clien
 	row.TokenExchange = clientConfig.TokenExchange
 	row.OauthConfigID = clientConfig.OauthConfigID
 	row.DiscoveredTools = clientConfig.DiscoveredTools
-	row.DiscoveredToolNameMapping = clientConfig.DiscoveredToolNameMapping
 	row.DiscoveredInstructions = clientConfig.DiscoveredInstructions
 	row.DiscoveredResources = clientConfig.DiscoveredResources
 	row.DiscoveredResourceTemplates = clientConfig.DiscoveredResourceTemplates
@@ -3052,38 +3050,37 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 		authType = string(schemas.MCPAuthTypeHeaders)
 	}
 	return configstoreTables.TableMCPClient{
-		ClientID:                  clientConfig.ID,
-		Name:                      clientConfig.Name,
-		EndpointSlug:              clientConfig.EndpointSlug,
-		IsCodeModeClient:          clientConfig.IsCodeModeClient,
-		ConnectionType:            string(clientConfig.ConnectionType),
-		ConnectionString:          clientConfig.ConnectionString,
-		StdioConfig:               clientConfig.StdioConfig,
-		AuthType:                  authType,
-		OauthConfigID:             clientConfig.OauthConfigID,
-		ToolsToExecute:            clientConfig.ToolsToExecute,
-		ToolsToAutoExecute:        clientConfig.ToolsToAutoExecute,
-		PromptsToExpose:           clientConfig.PromptsToExpose,
-		ResourcesToExpose:         clientConfig.ResourcesToExpose,
-		Headers:                   clientConfig.Headers,
-		AllowedExtraHeaders:       clientConfig.AllowedExtraHeaders,
-		IsPingAvailable:           clientConfig.IsPingAvailable,
-		NeedsSessionStickiness:    clientConfig.NeedsSessionStickiness,
-		RequirePublicTarget:       clientConfig.RequirePublicTarget,
-		ToolSyncInterval:          int(clientConfig.ToolSyncInterval / time.Second),
-		MaxProtocolVersion:        clientConfig.MaxProtocolVersion,
-		ToolExecutionTimeout:      int(math.Ceil(clientConfig.ToolExecutionTimeout.Seconds())),
-		ToolPricing:               clientConfig.ToolPricing,
-		AllowByDefault:            clientConfig.AllowByDefault,
-		Disabled:                  clientConfig.Disabled,
-		DiscoveredTools:           clientConfig.DiscoveredTools,
-		DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
-		DiscoveredInstructions:    clientConfig.DiscoveredInstructions,
-		PerUserHeaderKeys:         mcputils.CanonicalizeHeaderKeys(clientConfig.PerUserHeaderKeys),
-		TokenExchange:             clientConfig.TokenExchange,
-		PendingOAuthConfig:        clientConfig.PendingOAuthConfig,
-		OpenAPIConfig:             clientConfig.OpenAPIConfig,
-		ConfigHash:                clientConfig.ConfigHash,
+		ClientID:               clientConfig.ID,
+		Name:                   clientConfig.Name,
+		EndpointSlug:           clientConfig.EndpointSlug,
+		IsCodeModeClient:       clientConfig.IsCodeModeClient,
+		ConnectionType:         string(clientConfig.ConnectionType),
+		ConnectionString:       clientConfig.ConnectionString,
+		StdioConfig:            clientConfig.StdioConfig,
+		AuthType:               authType,
+		OauthConfigID:          clientConfig.OauthConfigID,
+		ToolsToExecute:         clientConfig.ToolsToExecute,
+		ToolsToAutoExecute:     clientConfig.ToolsToAutoExecute,
+		PromptsToExpose:        clientConfig.PromptsToExpose,
+		ResourcesToExpose:      clientConfig.ResourcesToExpose,
+		Headers:                clientConfig.Headers,
+		AllowedExtraHeaders:    clientConfig.AllowedExtraHeaders,
+		IsPingAvailable:        clientConfig.IsPingAvailable,
+		NeedsSessionStickiness: clientConfig.NeedsSessionStickiness,
+		RequirePublicTarget:    clientConfig.RequirePublicTarget,
+		ToolSyncInterval:       int(clientConfig.ToolSyncInterval / time.Second),
+		MaxProtocolVersion:     clientConfig.MaxProtocolVersion,
+		ToolExecutionTimeout:   int(math.Ceil(clientConfig.ToolExecutionTimeout.Seconds())),
+		ToolPricing:            clientConfig.ToolPricing,
+		AllowByDefault:         clientConfig.AllowByDefault,
+		Disabled:               clientConfig.Disabled,
+		DiscoveredTools:        clientConfig.DiscoveredTools,
+		DiscoveredInstructions: clientConfig.DiscoveredInstructions,
+		PerUserHeaderKeys:      mcputils.CanonicalizeHeaderKeys(clientConfig.PerUserHeaderKeys),
+		TokenExchange:          clientConfig.TokenExchange,
+		PendingOAuthConfig:     clientConfig.PendingOAuthConfig,
+		OpenAPIConfig:          clientConfig.OpenAPIConfig,
+		ConfigHash:             clientConfig.ConfigHash,
 
 		DiscoveredResources:         clientConfig.DiscoveredResources,
 		DiscoveredResourceTemplates: clientConfig.DiscoveredResourceTemplates,

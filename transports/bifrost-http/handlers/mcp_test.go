@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -17,9 +18,11 @@ import (
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/mcp_headers"
 	"github.com/maximhq/bifrost/framework/oauth2"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
@@ -440,13 +443,15 @@ func TestAddMCPClient_OAuthOnLoopbackFollowsPrivateAllowlist(t *testing.T) {
 
 	for _, tc := range []struct {
 		name         string
+		authType     string
 		allow        []string
 		authBypassed bool
 		wantStatus   int
 		wantBody     string
 	}{
 		{name: "authenticated, loopback allowlisted", allow: []string{"127.0.0.1"}, wantStatus: fasthttp.StatusOK, wantBody: "authorize_url"},
-		{name: "authenticated, no allowlist", wantStatus: fasthttp.StatusInternalServerError, wantBody: "blocked connection to non-public address"},
+		{name: "authenticated, no allowlist", wantStatus: fasthttp.StatusBadRequest, wantBody: "blocked connection to non-public address"},
+		{name: "authenticated, no allowlist, per-user OAuth", authType: "per_user_oauth", wantStatus: fasthttp.StatusBadRequest, wantBody: "blocked connection to non-public address"},
 		{name: "auth bypassed, loopback allowlisted", allow: []string{"127.0.0.1"}, authBypassed: true, wantStatus: fasthttp.StatusForbidden, wantBody: "unauthenticated callers cannot register MCP clients"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -462,7 +467,11 @@ func TestAddMCPClient_OAuthOnLoopbackFollowsPrivateAllowlist(t *testing.T) {
 			req.Header.SetMethod(fasthttp.MethodPost)
 			req.Header.SetContentType("application/json")
 			req.Header.SetHost("bifrost.example.com")
-			req.SetBodyString(`{"name":"local_oauth","connection_type":"http","connection_string":"` + server.URL + `/mcp","auth_type":"oauth","oauth_config":{}}`)
+			authType := tc.authType
+			if authType == "" {
+				authType = "oauth"
+			}
+			req.SetBodyString(`{"name":"local_oauth","connection_type":"http","connection_string":"` + server.URL + `/mcp","auth_type":"` + authType + `","oauth_config":{}}`)
 			ctx := initCtx(&req)
 			if tc.authBypassed {
 				ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
@@ -581,6 +590,86 @@ func TestDeleteMCPClient_UnknownIDIsNotFound(t *testing.T) {
 	assert.Equal(t, []string{"mcp-delete-known"}, manager.removed)
 	_, err := store.GetMCPClientByID(context.Background(), "mcp-delete-known")
 	assert.ErrorIs(t, err, configstore.ErrNotFound)
+}
+
+// TestDeleteMCPClient_ReloadsTheKeysThatGrantedIt pins that deleting a client reloads every virtual key
+// that granted it. The delete cascades over those grants in the store, but the keys cached in memory
+// kept them, so a client created again under the same client_id was granted to them once more.
+func TestDeleteMCPClient_ReloadsTheKeysThatGrantedIt(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := newRealOAuth2Store(t)
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID:               "mcp-delete-granted",
+		Name:             "delete_granted",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://example.invalid/mcp"),
+	}))
+	row, err := store.GetMCPClientByID(ctx, "mcp-delete-granted")
+	require.NoError(t, err)
+	active := true
+	for _, id := range []string{"vk-grant-a", "vk-grant-b", "vk-no-grant"} {
+		require.NoError(t, store.CreateVirtualKey(ctx, &configtables.TableVirtualKey{ID: id, Name: id, Value: *schemas.NewSecretVar("sk-bf-" + id), IsActive: &active}))
+	}
+	for _, id := range []string{"vk-grant-a", "vk-grant-b"} {
+		require.NoError(t, store.CreateVirtualKeyMCPConfig(ctx, &configtables.TableVirtualKeyMCPConfig{VirtualKeyID: id, MCPClientID: row.ID, ToolsToExecute: []string{"*"}}))
+	}
+
+	governance := &reloadCountingGovernanceManager{}
+	h := &MCPHandler{store: &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}, mcpManager: &removeRecordingMCPManager{}, governanceManager: governance}
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodDelete)
+	reqCtx := initCtx(&req)
+	reqCtx.SetUserValue("id", "mcp-delete-granted")
+	h.deleteMCPClient(reqCtx)
+	require.Equal(t, fasthttp.StatusOK, reqCtx.Response.StatusCode(), string(reqCtx.Response.Body()))
+
+	var reloaded []string
+	for _, batch := range governance.reloadedBatches {
+		reloaded = append(reloaded, batch...)
+	}
+	reloaded = append(reloaded, governance.reloaded...)
+	sort.Strings(reloaded)
+	assert.Equal(t, []string{"vk-grant-a", "vk-grant-b"}, reloaded, "exactly the keys that granted the client are reloaded")
+	remaining, err := store.GetVirtualKeyMCPConfigsByMCPClientID(ctx, row.ID)
+	require.NoError(t, err)
+	assert.Empty(t, remaining, "the grants are gone from the store, so the reload drops them from memory")
+}
+
+// grantReadFailingStore is a config store whose read of a client's virtual key grants fails.
+type grantReadFailingStore struct{ configstore.ConfigStore }
+
+// GetVirtualKeyMCPConfigsByMCPClientID always fails.
+func (grantReadFailingStore) GetVirtualKeyMCPConfigsByMCPClientID(context.Context, uint) ([]configtables.TableVirtualKeyMCPConfig, error) {
+	return nil, errors.New("database unavailable")
+}
+
+// TestDeleteMCPClient_RefusesWhenItsGrantsCannotBeRead pins that a delete whose granting keys cannot
+// be read deletes nothing. It used to go ahead with no keys to reload: the grants left the store but
+// stayed cached on the keys, where they applied again to a client created later under the same id.
+func TestDeleteMCPClient_RefusesWhenItsGrantsCannotBeRead(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := newRealOAuth2Store(t)
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID:               "mcp-delete-unread",
+		Name:             "delete_unread",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://example.invalid/mcp"),
+	}))
+	mgr := &removeRecordingMCPManager{}
+	h := &MCPHandler{store: &lib.Config{ConfigStore: grantReadFailingStore{store}, ClientConfig: &configstore.ClientConfig{}}, mcpManager: mgr, governanceManager: &reloadCountingGovernanceManager{}}
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodDelete)
+	reqCtx := initCtx(&req)
+	reqCtx.SetUserValue("id", "mcp-delete-unread")
+	h.deleteMCPClient(reqCtx)
+
+	assert.Equal(t, fasthttp.StatusInternalServerError, reqCtx.Response.StatusCode(), string(reqCtx.Response.Body()))
+	assert.Contains(t, string(reqCtx.Response.Body()), "nothing was deleted")
+	_, err := store.GetMCPClientByID(ctx, "mcp-delete-unread")
+	assert.NoError(t, err, "the client is still stored")
+	assert.Empty(t, mgr.removed, "the runtime client is untouched")
 }
 
 // =============================================================================
@@ -761,6 +850,7 @@ func TestUseClientMetadataDocument_ReachesTheProvider(t *testing.T) {
 func TestOAuthBootstrapErrorStatus(t *testing.T) {
 	assert.Equal(t, fasthttp.StatusBadRequest, oauthBootstrapErrorStatus(fmt.Errorf("x: %w", oauth2.ErrClientMetadataDocumentWithClientID)))
 	assert.Equal(t, fasthttp.StatusBadRequest, oauthBootstrapErrorStatus(fmt.Errorf("x: %w", oauth2.ErrClientMetadataDocumentUnavailable)))
+	assert.Equal(t, fasthttp.StatusBadRequest, oauthBootstrapErrorStatus(fmt.Errorf("x: %w", &network.PrivateTargetNotAllowedError{Host: "127.0.0.1", IP: net.ParseIP("127.0.0.1")})))
 	assert.Equal(t, fasthttp.StatusInternalServerError, oauthBootstrapErrorStatus(errors.New("discovery failed")))
 }
 
@@ -1534,4 +1624,220 @@ func TestParseRequestDurationUnits(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAddMCPClient_PerUserHeadersKeepsAdminCredential: creating a per_user_headers
+// client keeps the admin's sample values as its admin credential, the one periodic
+// tool discovery connects with, just as verify-headers keeps them. Without it the
+// client's first discovery check finds no credential and marks it unstable.
+func TestAddMCPClient_PerUserHeadersKeepsAdminCredential(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	h.store.MCPHeadersProvider = mcp_headers.NewProvider(h.store.ConfigStore, &mockLogger{})
+
+	body, err := json.Marshal(map[string]any{
+		"name": "acme_h", "connection_type": "http", "connection_string": "http://127.0.0.1:1/mcp",
+		"auth_type": "per_user_headers", "per_user_header_keys": []string{"X-Api-Key"},
+		"user_headers": map[string]string{"X-Api-Key": "sample-key"}, "tools_to_execute": []string{"*"},
+	})
+	require.NoError(t, err)
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(body), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	require.Len(t, mgr.added, 1)
+
+	cred, err := h.store.MCPHeadersProvider.GetCredentialByMode(context.Background(), schemas.MCPAuthModeAdmin, "", mgr.added[0].ID)
+	require.NoError(t, err, "the create call keeps an admin credential")
+	require.NotNil(t, cred)
+	assert.Equal(t, map[string]string{"x-api-key": "sample-key"}, cred.Headers, "the sample value, under its canonical key")
+	assert.Equal(t, schemas.MCPHeadersUserCredentialStatusActive, cred.Status)
+}
+
+// failingHeaderCredentialStore is a config store whose header credential writes fail.
+type failingHeaderCredentialStore struct{ configstore.ConfigStore }
+
+// UpsertMCPPerUserHeaderCredential always fails.
+func (failingHeaderCredentialStore) UpsertMCPPerUserHeaderCredential(context.Context, *configtables.TableMCPPerUserHeaderCredential) error {
+	return errors.New("credential table unavailable")
+}
+
+// TestAddMCPClient_PerUserHeadersCreatesWhenTheCredentialCannotBeKept: keeping the
+// sample values is best effort, so a failed credential write leaves the verified
+// client created and registered; verify-headers can store the credential later.
+func TestAddMCPClient_PerUserHeadersCreatesWhenTheCredentialCannotBeKept(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	h.store.MCPHeadersProvider = mcp_headers.NewProvider(failingHeaderCredentialStore{h.store.ConfigStore}, &mockLogger{})
+
+	body, err := json.Marshal(map[string]any{
+		"name": "acme_h", "connection_type": "http", "connection_string": "http://127.0.0.1:1/mcp",
+		"auth_type": "per_user_headers", "per_user_header_keys": []string{"X-Api-Key"},
+		"user_headers": map[string]string{"X-Api-Key": "sample-key"}, "tools_to_execute": []string{"*"},
+	})
+	require.NoError(t, err)
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(body), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	require.Len(t, mgr.added, 1, "the client is registered without the credential")
+	_, err = h.store.MCPHeadersProvider.GetCredentialByMode(context.Background(), schemas.MCPAuthModeAdmin, "", mgr.added[0].ID)
+	assert.Error(t, err, "no admin credential was kept")
+}
+
+// TestAddMCPClient_MissingConnectionTargetIs400 pins that a client created without
+// the target its connection type needs is a caller error: 400 with the reason, and
+// nothing is stored or handed to the runtime. It was a 500 after a create and a
+// rollback.
+func TestAddMCPClient_MissingConnectionTargetIs400(t *testing.T) {
+	for _, tc := range []struct {
+		body, name, want string
+	}{
+		{body: `{"name":"no_url","connection_type":"http","auth_type":"none"}`, name: "no_url", want: "connection_string is required for http connection type"},
+		{body: `{"name":"no_command","connection_type":"stdio","auth_type":"none"}`, name: "no_command", want: "stdio_config is required for stdio connection type"},
+		{body: `{"name":"empty_command","connection_type":"stdio","auth_type":"none","stdio_config":{"command":""}}`, name: "empty_command", want: "stdio_config.command is required for stdio connection type"},
+		{body: `{"name":"blank_command","connection_type":"stdio","auth_type":"none","stdio_config":{"command":"  "}}`, name: "blank_command", want: "stdio_config.command is required for stdio connection type"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, mgr := newOpenAPITestHandler(t)
+			status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, tc.body, "", false)
+			require.Equal(t, fasthttp.StatusBadRequest, status, respBody)
+			assert.Contains(t, respBody, tc.want)
+			assert.Empty(t, mgr.added, "the runtime is not asked to connect")
+			_, err := h.store.ConfigStore.GetMCPClientByName(context.Background(), tc.name)
+			assert.ErrorIs(t, err, configstore.ErrNotFound, "no row is stored")
+		})
+	}
+}
+
+// TestUpdateMCPClient_RenameToATakenNameIs409 pins that renaming a client to
+// another client's name answers 409, like creating one with that name, and
+// applies nothing. It was a 500.
+func TestUpdateMCPClient_RenameToATakenNameIs409(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	for _, name := range []string{"petstore", "petstore_b"} {
+		createBody, _ := json.Marshal(map[string]any{
+			"name": name, "connection_type": "openapi", "auth_type": "none",
+			"tools_to_execute": []string{"listPets"},
+			"openapi_config":   map[string]any{"spec": petstoreSpecJSON, "base_url": "https://petstore.example.com/v1/"},
+		})
+		status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(createBody), "", false)
+		require.Equal(t, fasthttp.StatusOK, status, respBody)
+	}
+	h.store.MCPConfig.ClientConfigs = mgr.added
+	second := mgr.added[1]
+
+	status, respBody := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"name":"petstore"}`, second.ID, false)
+	require.Equal(t, fasthttp.StatusConflict, status, respBody)
+	assert.Contains(t, respBody, "An MCP client with this name already exists")
+	assert.Empty(t, mgr.updated, "the runtime client is not touched")
+	stored, err := h.store.ConfigStore.GetMCPClientByID(context.Background(), second.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "petstore_b", stored.Name, "the stored row keeps its name")
+}
+
+// reconnectRecordingMCPManager records reconnect calls and answers them as the
+// server does for an id it has no config for.
+type reconnectRecordingMCPManager struct {
+	MCPManager
+	reconnected []string
+}
+
+// ReconnectMCPClient records the id and reports it unknown.
+func (m *reconnectRecordingMCPManager) ReconnectMCPClient(_ context.Context, id string) error {
+	m.reconnected = append(m.reconnected, id)
+	return fmt.Errorf("MCP client '%s' not found", id)
+}
+
+// TestReconnectMCPClient_UnknownIDIsNotFound pins that reconnecting an id no
+// client has answers 404, like refreshing its tools, without reaching the
+// runtime. It was a 500.
+func TestReconnectMCPClient_UnknownIDIsNotFound(t *testing.T) {
+	SetLogger(&mockLogger{})
+	mgr := &reconnectRecordingMCPManager{}
+	h := &MCPHandler{
+		store:      &lib.Config{ConfigStore: newRealOAuth2Store(t), ClientConfig: &configstore.ClientConfig{}, MCPConfig: &schemas.MCPConfig{}},
+		mcpManager: mgr,
+	}
+	status, respBody := doMCPRequest(t, h.reconnectMCPClient, fasthttp.MethodPost, "", "no-such-client", false)
+	require.Equal(t, fasthttp.StatusNotFound, status, respBody)
+	assert.Contains(t, respBody, "mcp client not found")
+	assert.Empty(t, mgr.reconnected)
+}
+
+// newLoopbackOAuthMCPHandler returns an MCP handler whose OAuth creates discover
+// against a loopback authorization server the private allowlist permits.
+func newLoopbackOAuthMCPHandler(t *testing.T) (*MCPHandler, *oauth2.OAuth2Provider, *httptest.Server) {
+	t.Helper()
+	SetLogger(&mockLogger{})
+	oauth2.SetDiscoveryDialContextForTests(nil)
+	t.Cleanup(func() {
+		oauth2.SetDiscoveryDialContextForTests((&net.Dialer{}).DialContext)
+		require.NoError(t, lib.ApplyMCPOAuthPrivateAllowlist(nil))
+	})
+	require.NoError(t, lib.ApplyMCPOAuthPrivateAllowlist([]string{"127.0.0.1"}))
+	server := newLoopbackOAuthMCPServer(t)
+	store := newRealOAuth2Store(t)
+	provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	cfg := &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, OAuthProvider: provider, MCPConfig: &schemas.MCPConfig{}}
+	return &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg)}, provider, server
+}
+
+// TestAddMCPClient_OAuthRefusesATakenNameOrSlugBeforeAuthorizing pins that an
+// OAuth create whose name or endpoint slug is already taken answers 409 at
+// create, before anyone is sent to consent. The conflict used to surface only
+// when the flow was completed.
+func TestAddMCPClient_OAuthRefusesATakenNameOrSlugBeforeAuthorizing(t *testing.T) {
+	for _, tc := range []struct {
+		name, authType, body, want string
+	}{
+		{name: "oauth, same name", authType: "oauth", body: `"name":"taken"`, want: "An MCP endpoint with this slug already exists"},
+		{name: "per-user OAuth, same name", authType: "per_user_oauth", body: `"name":"taken"`, want: "An MCP endpoint with this slug already exists"},
+		{name: "oauth, another name with the taken slug", authType: "oauth", body: `"name":"other","endpoint_slug":"taken"`, want: "An MCP endpoint with this slug already exists"},
+		{name: "oauth, same name with another slug", authType: "oauth", body: `"name":"taken","endpoint_slug":"other"`, want: "An MCP client with this name already exists"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _, server := newLoopbackOAuthMCPHandler(t)
+			require.NoError(t, h.store.ConfigStore.CreateMCPClientConfig(context.Background(), &schemas.MCPClientConfig{
+				ID: "taken-id", Name: "taken", ConnectionType: schemas.MCPConnectionTypeHTTP,
+				ConnectionString: schemas.NewSecretVar("https://taken.example.com/mcp"), AuthType: schemas.MCPAuthTypeNone,
+			}))
+			body := `{` + tc.body + `,"connection_type":"http","connection_string":"` + server.URL + `/mcp","auth_type":"` + tc.authType + `","oauth_config":{}}`
+			status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, body, "", false)
+			require.Equal(t, fasthttp.StatusConflict, status, respBody)
+			assert.Contains(t, respBody, tc.want)
+			assert.NotContains(t, respBody, "authorize_url")
+		})
+	}
+}
+
+// TestAddMCPClient_OAuthKeepsTheEndpointSlug pins that an OAuth create's
+// endpoint_slug is kept for the client its completion creates. It was dropped,
+// so the client got the slug derived from its name.
+func TestAddMCPClient_OAuthKeepsTheEndpointSlug(t *testing.T) {
+	for _, authType := range []string{"oauth", "per_user_oauth"} {
+		t.Run(authType, func(t *testing.T) {
+			h, provider, server := newLoopbackOAuthMCPHandler(t)
+			body := `{"name":"slugged","endpoint_slug":"custom-slug","connection_type":"http","connection_string":"` + server.URL + `/mcp","auth_type":"` + authType + `","oauth_config":{}}`
+			status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, body, "", false)
+			require.Equal(t, fasthttp.StatusOK, status, respBody)
+			var resp struct {
+				OauthConfigID string `json:"oauth_config_id"`
+			}
+			require.NoError(t, json.Unmarshal([]byte(respBody), &resp))
+			pending, err := provider.GetPendingMCPClient(resp.OauthConfigID)
+			require.NoError(t, err)
+			require.NotNil(t, pending)
+			assert.Equal(t, "custom-slug", pending.EndpointSlug)
+		})
+	}
+}
+
+// TestRevokeOAuthConfig_UnknownIDIsNotFound pins that deleting an OAuth config
+// id that does not exist answers 404. It was a 500 reading
+// "oauth config not found: %!w(<nil>)".
+func TestRevokeOAuthConfig_UnknownIDIsNotFound(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	cfg := &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, OAuthProvider: provider}
+	h := NewOAuthHandler(provider, nil, cfg)
+	status, respBody := doMCPRequest(t, h.revokeOAuthConfig, fasthttp.MethodDelete, "", "no-such-config", false)
+	require.Equal(t, fasthttp.StatusNotFound, status, respBody)
+	assert.Contains(t, respBody, "oauth config not found")
+	assert.NotContains(t, respBody, "%!w")
 }

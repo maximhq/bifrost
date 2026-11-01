@@ -101,8 +101,10 @@ func (h *VirtualMCPHandler) withVKs(ctx context.Context, def *configstoreTables.
 	return h.toResponse(def, vkIDs), nil
 }
 
-// validateToolSpecs rejects specs whose MCP client is not configured. Tool names are not checked
-// here: a client's advertised set can change between save and use, so names are enforced at call time.
+// validateToolSpecs rejects specs whose MCP client is not configured. A spec names its client by
+// client_id, the key grants are resolved by; a client's name is refused rather than saved as a spec
+// that grants nothing. Tool names are not checked here: a client's advertised set can change between
+// save and use, so names are enforced at call time.
 func (h *VirtualMCPHandler) validateToolSpecs(tools []configstoreTables.MCPToolSpec) string {
 	if len(tools) == 0 {
 		return ""
@@ -117,7 +119,6 @@ func (h *VirtualMCPHandler) validateToolSpecs(tools []configstoreTables.MCPToolS
 		for _, c := range clients {
 			if c.Config != nil {
 				known[c.Config.ID] = true
-				known[c.Config.Name] = true
 			}
 		}
 	}
@@ -217,7 +218,7 @@ func (h *VirtualMCPHandler) createVirtualMCP(ctx *fasthttp.RequestCtx) {
 		ParsedTools:  req.Tools,
 	}
 	if err := h.store.ConfigStore.CreateVirtualMCP(ctx, def); err != nil {
-		if code, msg, ok := virtualMCPConflict(err); ok {
+		if code, msg, ok := virtualMCPStoreError(err); ok {
 			SendError(ctx, code, msg)
 			return
 		}
@@ -265,7 +266,7 @@ func (h *VirtualMCPHandler) updateVirtualMCP(ctx *fasthttp.RequestCtx) {
 	}
 	// EndpointSlug is immutable: ignored even if the body carries one.
 	if err := h.store.ConfigStore.UpdateVirtualMCP(ctx, def); err != nil {
-		if code, msg, ok := virtualMCPConflict(err); ok {
+		if code, msg, ok := virtualMCPStoreError(err); ok {
 			SendError(ctx, code, msg)
 			return
 		}
@@ -418,12 +419,15 @@ func (h *VirtualMCPHandler) parseID(ctx *fasthttp.RequestCtx) (uint, bool) {
 	return uint(id), true
 }
 
-// virtualMCPConflict maps a uniqueness conflict to a 409 with a clear message: an explicit endpoint
-// clash, or a name clash surfaced by the table's own unique index.
-func virtualMCPConflict(err error) (int, string, bool) {
+// virtualMCPStoreError maps a store error the caller caused to its status and a clear message: an
+// explicit endpoint clash or a name clash surfaced by the table's own unique index is a 409, and a
+// name that yields no endpoint slug, with none supplied, is a 400.
+func virtualMCPStoreError(err error) (int, string, bool) {
 	switch {
 	case errors.Is(err, configstore.ErrMCPEndpointSlugExists):
 		return fasthttp.StatusConflict, configstore.ErrMCPEndpointSlugExists.Error(), true
+	case errors.Is(err, configstore.ErrMCPEndpointSlugInvalid):
+		return fasthttp.StatusBadRequest, configstore.ErrMCPEndpointSlugInvalid.Error(), true
 	case IsUniqueConstraintError(err):
 		return fasthttp.StatusConflict, "a virtual MCP with this name or endpoint already exists", true
 	}

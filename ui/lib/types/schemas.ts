@@ -2033,11 +2033,16 @@ export const globalProxyConfigSchema = z
 	)
 	.refine(
 		(data) => {
-			// Validate URL format when provided and enabled
+			// Validate URL format when provided and enabled. A bare host:port takes the type's
+			// scheme, as on the server: "10.0.0.5:1080" is not a URL on its own.
 			if (data.enabled && data.url && data.url.trim().length > 0) {
+				// The server trims the URL before reading it.
+				const url = data.url.trim();
 				try {
-					new URL(data.url);
-					return true;
+					// socks5 is not a special scheme, so its URLs can parse with an empty host. Parsing
+					// accepts port 0, which the server refuses.
+					const parsed = new URL(url.includes("://") ? url : `${data.type === "socks5" ? "socks5" : "http"}://${url}`);
+					return parsed.hostname !== "" && parsed.port !== "0";
 				} catch {
 					return false;
 				}
@@ -2046,6 +2051,34 @@ export const globalProxyConfigSchema = z
 		},
 		{
 			error: () => i18n.t("validation.mustBeAValidUrlEGHttpProxyExample"),
+			path: ["url"],
+		},
+	)
+	.refine(
+		(data) => {
+			// The dialer follows the URL's scheme, so a SOCKS5 proxy must be named by a socks5 URL.
+			// A bare host:port takes its scheme from the type, as on the server.
+			if (data.enabled && data.type === "socks5" && data.url && data.url.includes("://")) {
+				return /^socks5h?:\/\//i.test(data.url.trim());
+			}
+			return true;
+		},
+		{
+			message: "A SOCKS5 proxy URL must start with socks5:// or socks5h://",
+			path: ["url"],
+		},
+	)
+	.refine(
+		(data) => {
+			// Switching the type keeps the URL, and the server refuses an http proxy named by
+			// another scheme. A bare host:port takes the type's scheme.
+			if (data.enabled && data.type === "http" && data.url && data.url.includes("://")) {
+				return /^https?:\/\//i.test(data.url.trim());
+			}
+			return true;
+		},
+		{
+			message: "An HTTP proxy URL must start with http:// or https://",
 			path: ["url"],
 		},
 	);

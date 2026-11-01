@@ -491,7 +491,7 @@
 		"proxyConfiguration": "Proxy-Konfiguration",
 		"proxyType": "Proxy-Typ",
 		"httpHttps": "HTTP / HTTPS",
-		"proxyTypeHelp": "Wähle den Proxy-Protokolltyp aus. Derzeit wird nur der HTTP-Proxy unterstützt.",
+		"proxyTypeHelp": "HTTP / HTTPS erwartet eine http://- oder https://-Proxy-URL (https:// verschlüsselt die Verbindung zum Proxy). SOCKS5 erwartet eine socks5://-URL.",
 		"selectType": "Typ auswählen",
 		"proxyUrl": "Proxy-URL",
 		"proxyUrlHelp": "Vollständige URL des Proxy-Servers inklusive Protokoll und Port.",
@@ -512,16 +512,16 @@
 		"scimHelp": "Proxy für SCIM-Verzeichnissynchronisierungsanfragen verwenden.",
 		"scimEnterpriseOnly": "SCIM-Proxy-Unterstützung ist in Bifrost Enterprise verfügbar.",
 		"inference": "Inferenz",
-		"inferenceHelp": "Proxy für LLM-Inferenzanfragen an Modellanbieter verwenden.",
+		"inferenceHelp": "Proxy für LLM-Inferenzanfragen an Modellanbieter verwenden. Ein Anbieter mit eigenen Proxy-Einstellungen behält diese.",
 		"comingSoon": "Demnächst verfügbar",
 		"api": "API",
-		"apiHelp": "Proxy für externe API-Aufrufe und Webhooks verwenden.",
+		"apiHelp": "Proxy für ausgehende API-Aufrufe verwenden: MCP-Server, OAuth, Webhooks, Plugin-Downloads, Modellkatalog-Sync und OpenTelemetry-Export.",
 		"noPermission": "Du hast keine Berechtigung zum Aktualisieren der Einstellungen",
 		"toastSaved": "Proxy-Konfiguration erfolgreich aktualisiert.",
 		"connectionTimeoutHelp": "Timeout für den Aufbau von Proxy-Verbindungen. 0 bedeutet kein Timeout. Standardwert ist 60 Sekunden.",
 		"caCertificateHelp": "PEM-codiertes CA-Zertifikat, dem für TLS-Verbindungen über SSL-intercepting Proxys vertraut werden soll.",
 		"skipTlsHelp": "TLS-Zertifikatsüberprüfung für HTTPS-Proxys deaktivieren. Für Produktionsumgebungen nicht empfohlen.",
-		"unsupportedType": "{{type}}-Proxy wird noch nicht unterstützt. Bitte verwende einen HTTP-Proxy."
+		"unsupportedType": "{{type}}-Proxy wird noch nicht unterstützt. Bitte verwende einen HTTP- oder SOCKS5-Proxy."
 	},
 	"userAgent": {
 		"title": "User-Agent-Zuordnungen",
