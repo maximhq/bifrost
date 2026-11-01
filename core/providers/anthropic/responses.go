@@ -199,6 +199,10 @@ type anthropicToResponsesStreamState struct {
 	// retaining a second full copy of the streamed response.
 	emittedTextByBlock map[int]*emittedTextProgress
 
+	// Argument progress retains a byte count and digest per active tool block,
+	// never the arguments themselves. Entries are released at output_item.done.
+	emittedArgumentsByBlock map[int]*emittedTextProgress
+
 	// blockIndexMisses records non-empty item keys for which blockIndexFor was
 	// asked for an index that allocBlockIndex never assigned — i.e. a
 	// content_block_stop/_delta referencing a block whose content_block_start was
@@ -341,6 +345,47 @@ func (s *anthropicToResponsesStreamState) clearEmittedTextProgress(key string) {
 	if blockIndex, ok := s.blockIndexByItem[key]; ok {
 		delete(s.emittedTextByBlock, blockIndex)
 	}
+}
+
+// recordEmittedArgumentsEvents tracks only argument deltas sent to the client.
+func (s *anthropicToResponsesStreamState) recordEmittedArgumentsEvents(events []*AnthropicStreamEvent) {
+	if s.passthrough {
+		return
+	}
+	for _, event := range events {
+		if event == nil || event.Index == nil || event.Delta == nil ||
+			event.Delta.Type != AnthropicStreamDeltaTypeInputJSON || event.Delta.PartialJSON == nil || *event.Delta.PartialJSON == "" {
+			continue
+		}
+		if s.emittedArgumentsByBlock == nil {
+			s.emittedArgumentsByBlock = make(map[int]*emittedTextProgress)
+		}
+		progress := s.emittedArgumentsByBlock[*event.Index]
+		if progress == nil {
+			progress = &emittedTextProgress{prefixHasher: sha256.New()}
+			s.emittedArgumentsByBlock[*event.Index] = progress
+		}
+		_, _ = progress.prefixHasher.Write([]byte(*event.Delta.PartialJSON))
+		progress.emittedBytes += len(*event.Delta.PartialJSON)
+	}
+}
+
+// missingTerminalArguments verifies that the final arguments extend the bytes
+// already emitted before returning their missing suffix.
+func (s *anthropicToResponsesStreamState) missingTerminalArguments(blockIndex int, aggregate string) (string, bool) {
+	emittedBytes := 0
+	if progress := s.emittedArgumentsByBlock[blockIndex]; progress != nil {
+		emittedBytes = progress.emittedBytes
+		if emittedBytes > len(aggregate) {
+			return "", false
+		}
+		digest := sha256.Sum256([]byte(aggregate[:emittedBytes]))
+		if !bytes.Equal(progress.prefixHasher.Sum(nil), digest[:]) {
+			return "", false
+		}
+	}
+	missing := aggregate[emittedBytes:]
+	return missing, missing != ""
 }
 
 // allocBlockIndex assigns and returns the next Anthropic content-block index. A
@@ -3332,6 +3377,10 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 	state := getOrCreateAnthropicToResponsesStreamState(ctx)
 	events = enforceStreamBlockTypes(state, events)
 	state.recordEmittedTextEvents(events)
+	if bifrostResp.Type == schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta ||
+		bifrostResp.Type == schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone {
+		state.recordEmittedArgumentsEvents(events)
+	}
 	// The terminal frame is the last one that can carry usage worth reshaping, so
 	// the prompt-usage readings are released once it has been rendered -- here,
 	// rather than when the reader goroutine returned, because this frame is
@@ -3859,6 +3908,27 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 			}
 		}
 
+	case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone:
+		state := getOrCreateAnthropicToResponsesStreamState(ctx)
+		key := reverseStreamItemKey(bifrostResp)
+		if state.passthrough || bifrostResp.Arguments == nil || state.webSearchItemIDs[key] {
+			return nil
+		}
+		blockIndex, ok := state.blockIndexByItem[key]
+		if !ok || state.blockType(blockIndex) != AnthropicContentBlockTypeToolUse {
+			return nil
+		}
+		missing, ok := state.missingTerminalArguments(blockIndex, *bifrostResp.Arguments)
+		if !ok {
+			return nil
+		}
+		streamResp.Type = AnthropicStreamEventTypeContentBlockDelta
+		streamResp.Index = schemas.Ptr(blockIndex)
+		streamResp.Delta = &AnthropicStreamDelta{
+			Type:        AnthropicStreamDeltaTypeInputJSON,
+			PartialJSON: schemas.Ptr(missing),
+		}
+
 	case schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta:
 		state := getOrCreateAnthropicToResponsesStreamState(ctx)
 		key := reverseStreamItemKey(bifrostResp)
@@ -3913,7 +3983,11 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 		return nil
 
 	case schemas.ResponsesStreamResponseTypeOutputItemDone:
-		getOrCreateAnthropicToResponsesStreamState(ctx).clearEmittedTextProgress(reverseStreamItemKey(bifrostResp))
+		state := getOrCreateAnthropicToResponsesStreamState(ctx)
+		state.clearEmittedTextProgress(reverseStreamItemKey(bifrostResp))
+		if index, ok := state.blockIndexByItem[reverseStreamItemKey(bifrostResp)]; ok {
+			delete(state.emittedArgumentsByBlock, index)
+		}
 		if isVerbatimToolSearchItem(bifrostResp.Item) {
 			return openAIToolSearchItemStreamEvents(ctx, bifrostResp)
 		}
