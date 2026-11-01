@@ -1,3 +1,6 @@
+import { DefaultNetworkConfig } from "@/lib/constants/config";
+import { ProviderFormSchema } from "@/lib/schemas/providerForm";
+import { networkConfigSchema, networkFormConfigSchema } from "@/lib/types/schemas";
 import type { ModelProvider } from "@/lib/types/config";
 import { describe, expect, it } from "vitest";
 import { buildProviderUpdatePayload } from "./utils";
@@ -47,5 +50,23 @@ describe("buildProviderUpdatePayload passthrough", () => {
 		expect(JSON.parse(JSON.stringify(buildProviderUpdatePayload(bare, { prompt_cache: { auto_inject: true } })))).not.toHaveProperty(
 			"passthrough",
 		);
+	});
+});
+
+describe.each([
+	["provider config", networkConfigSchema],
+	["network settings", networkFormConfigSchema],
+	["provider creation", ProviderFormSchema.shape.networkConfig],
+])("%s remote file limit", (_name, schema) => {
+	it.each([undefined, 0, 67108864, 1073741824])("preserves the configured limit %s", (limit) => {
+		const result = schema.safeParse({ ...DefaultNetworkConfig, max_remote_file_size_bytes: limit });
+		expect(result.success).toBe(true);
+		expect(result.data).toHaveProperty("max_remote_file_size_bytes", limit);
+	});
+
+	it.each([-1, 1.5, 1073741825, Infinity, NaN])("rejects the invalid limit %s", (limit) => {
+		const result = schema.safeParse({ ...DefaultNetworkConfig, max_remote_file_size_bytes: limit });
+		expect(result.success).toBe(false);
+		expect(result.error?.issues.map((issue) => issue.path.join("."))).toContain("max_remote_file_size_bytes");
 	});
 });

@@ -1,13 +1,16 @@
 package utils
 
 import (
+	"bufio"
 	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,6 +20,185 @@ import (
 	"github.com/maximhq/bifrost/core/network/proxytest"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// The configured proxy serves a public target locally, preserving the production
+// SSRF checks. Raw responses exercise length, chunked and close-delimited framing.
+func fetchSizeTestProxy(t *testing.T) *schemas.ProxyConfig {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodConnect {
+			http.Error(w, "expected CONNECT", 400)
+			return
+		}
+		conn, rw, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		if _, err := conn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
+			return
+		}
+		req, err := http.ReadRequest(bufio.NewReader(rw))
+		if err != nil {
+			return
+		}
+		parts := strings.Split(strings.Trim(req.URL.Path, "/"), "/")
+		if len(parts) != 2 {
+			return
+		}
+		size, err := strconv.Atoi(parts[1])
+		if err != nil {
+			return
+		}
+		body := strings.Repeat("x", size)
+		fmt.Fprint(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/pdf\r\nConnection: close\r\n")
+		switch parts[0] {
+		case "length":
+			fmt.Fprintf(conn, "Content-Length: %d\r\n\r\n%s", size, body)
+		case "chunked":
+			fmt.Fprintf(conn, "Transfer-Encoding: chunked\r\n\r\n%x\r\n%s\r\n0\r\n\r\n", size, body)
+		case "close":
+			fmt.Fprintf(conn, "\r\n%s", body)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(server.URL)}
+}
+
+// TestFetchAndEncodeURL_ConfigurableLimit checks size boundaries across HTTP framing modes and downloads above the default cap.
+func TestFetchAndEncodeURL_ConfigurableLimit(t *testing.T) {
+	proxy := fetchSizeTestProxy(t)
+	for _, mode := range []string{"length", "chunked", "close"} {
+		for _, size := range []int{15, 16, 17, 18} {
+			t.Run(fmt.Sprintf("%s/%d", mode, size), func(t *testing.T) {
+				ctx := context.WithValue(t.Context(), schemas.BifrostContextKeyProviderProxyConfig, proxy)
+				ctx = context.WithValue(ctx, schemas.BifrostContextKeyMaxRemoteFileSizeBytes, int64(16))
+				mediaType, encoded, err := FetchAndEncodeURL(ctx, fmt.Sprintf("http://203.0.113.10/%s/%d?sig=secret", mode, size))
+				if size > 16 {
+					if err == nil || !strings.Contains(err.Error(), "exceeds 16-byte limit") {
+						t.Fatalf("expected size rejection, got %v", err)
+					}
+					if strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "sig=") {
+						t.Fatal("error leaked the signed URL")
+					}
+					if encoded != "" {
+						t.Fatal("oversized resource returned data")
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if mediaType != "application/pdf" || encoded != base64.StdEncoding.EncodeToString([]byte(strings.Repeat("x", size))) {
+					t.Fatal("download content changed")
+				}
+			})
+		}
+	}
+
+	// A real body above the historical cap verifies both the HTTP client's bound
+	// and the final reader check, not just which limit appears in an error.
+	for _, limit := range []int64{0, 64 << 20} {
+		ctx := context.WithValue(t.Context(), schemas.BifrostContextKeyProviderProxyConfig, proxy)
+		ctx = context.WithValue(ctx, schemas.BifrostContextKeyMaxRemoteFileSizeBytes, limit)
+		size := int(schemas.DefaultMaxRemoteFileSizeBytes + 1)
+		_, encoded, err := FetchAndEncodeURL(ctx, fmt.Sprintf("http://203.0.113.10/length/%d", size))
+		if limit == 0 {
+			if err == nil || !strings.Contains(err.Error(), "exceeds 26214400-byte limit") {
+				t.Fatalf("default cap: %v", err)
+			}
+		} else {
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(encoded) != base64.StdEncoding.EncodedLen(size) {
+				t.Fatal("large resource was truncated")
+			}
+		}
+	}
+}
+
+// TestFetchClientFor_LimitIsolation checks client caching isolates effective limits and rejects invalid overrides.
+func TestFetchClientFor_LimitIsolation(t *testing.T) {
+	proxy := &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar("http://127.0.0.1:3128")}
+	for _, pc := range []*schemas.ProxyConfig{nil, proxy} {
+		ctx := context.WithValue(t.Context(), schemas.BifrostContextKeyProviderProxyConfig, pc)
+		var previous *http.Client
+		for _, limit := range []int64{0, 64 << 20, 8} {
+			ctx := context.WithValue(ctx, schemas.BifrostContextKeyMaxRemoteFileSizeBytes, limit)
+			client, effective, err := fetchClientFor(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := limit
+			if want == 0 {
+				want = schemas.DefaultMaxRemoteFileSizeBytes
+			}
+			if effective != want || client.Transport.(*fasthttpRoundTripper).client.MaxResponseBodySize != int(want)+1 {
+				t.Fatal("client and reader limits disagree")
+			}
+			if previous == client {
+				t.Fatal("different limits shared a client")
+			}
+			previous = client
+			var wg sync.WaitGroup
+			for range 16 {
+				wg.Go(func() {
+					got, n, err := fetchClientFor(ctx)
+					if err != nil || got != client || n != want {
+						t.Error("concurrent fetch used another limit")
+					}
+				})
+			}
+			wg.Wait()
+		}
+	}
+	for _, limit := range []int64{-1, schemas.MaxRemoteFileSizeBytesUpperBound + 1} {
+		ctx := context.WithValue(t.Context(), schemas.BifrostContextKeyMaxRemoteFileSizeBytes, limit)
+		if client, _, err := fetchClientFor(ctx); err == nil || client != nil {
+			t.Fatal("invalid limit must not create a client")
+		}
+	}
+}
+
+// TestFetchAndEncodeURL_ConfiguredLimitKeepsProtections checks custom limits preserve private-address rejection and cancellation.
+func TestFetchAndEncodeURL_ConfiguredLimitKeepsProtections(t *testing.T) {
+	ctx := context.WithValue(t.Context(), schemas.BifrostContextKeyMaxRemoteFileSizeBytes, int64(64<<20))
+	for _, resource := range []string{"http://127.0.0.1/private", "http://169.254.169.254/latest/meta-data/"} {
+		if _, _, err := FetchAndEncodeURL(ctx, resource); err == nil || !strings.Contains(err.Error(), "non-public address") {
+			t.Fatalf("configured cap bypassed SSRF protection for %s: %v", resource, err)
+		}
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, _, err := FetchAndEncodeURL(canceled, "http://203.0.113.10/document.pdf"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("configured cap ignored cancellation: %v", err)
+	}
+}
+
+// BenchmarkFetchClientFor measures cached client lookup for direct and proxied downloads.
+func BenchmarkFetchClientFor(b *testing.B) {
+	for _, name := range []string{"direct", "proxy"} {
+		b.Run(name, func(b *testing.B) {
+			var ctx context.Context = context.Background()
+			if name == "proxy" {
+				ctx = context.WithValue(ctx, schemas.BifrostContextKeyProviderProxyConfig, &schemas.ProxyConfig{
+					Type: schemas.HTTPProxy, URL: schemas.NewSecretVar("http://127.0.0.1:3128"),
+				})
+			}
+			if _, _, err := fetchClientFor(ctx); err != nil {
+				b.Fatal(err)
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				if _, _, err := fetchClientFor(ctx); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
 
 // TestRedactURLForError pins that nothing a caller could authenticate with survives into
 // an error string. AWS documents pre-signed URLs as bearer tokens valid for up to 7 days
@@ -248,7 +430,7 @@ func TestFetchClientFor_OneClientPerResolvedProxy(t *testing.T) {
 	clientFor := func(pc *schemas.ProxyConfig) *http.Client {
 		t.Helper()
 		ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyProviderProxyConfig, pc)
-		client, err := fetchClientFor(ctx)
+		client, _, err := fetchClientFor(ctx)
 		if err != nil {
 			t.Fatalf("fetchClientFor: %v", err)
 		}

@@ -126,6 +126,7 @@ export const DefaultNetworkConfig = {
 	stream_idle_timeout_in_seconds: 120,
 	keep_alive_timeout_in_seconds: 30,
 	max_conns_per_host: 5000,
+	max_remote_file_size_bytes: 0,
 	enforce_http2: false,
 	http2_ping_interval_in_seconds: 0,
 	allow_private_network: false,

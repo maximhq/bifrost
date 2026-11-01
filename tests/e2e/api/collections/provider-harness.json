@@ -313194,6 +313194,235 @@
           ]
         }
       ]
+    },
+    {
+      "name": "322. Bedrock configurable remote file limit (remote-file-limit) (#9384) [SERIAL]",
+      "description": "Pins the per-provider cap in the shared HTTP(S) downloader through unary and streaming /v1/responses. Creates a uniquely named custom provider with a 16-byte cap and dummy credentials, so the public PDF is rejected before inference; then deletes that provider and verifies deletion. Existing providers are never changed. Each rerun uses a fresh name. If interrupted, delete the leftover bedrock-remote-file-limit-<UUID> provider through the management API or UI. Requires setupToken; no cloud credentials are needed. Go tests cover files above 25 MiB, boundaries, fallback and concurrent isolation.",
+      "item": [
+        {
+          "name": "[EXPECT-200] bedrock amazon.nova-lite-v1:0 remote-file-limit creates an isolated provider - #9384",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('remoteFileLimitProvider', 'bedrock-remote-file-limit-' + pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('isolated provider stores the operator cap', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().name, pm.response.text()).to.equal(pm.collectionVariables.get('remoteFileLimitProvider'));",
+                  "  pm.expect(pm.response.json().network_config.max_remote_file_size_bytes, pm.response.text()).to.equal(16);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Bifrost-Setup-Token",
+                "value": "{{setupToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": \"{{remoteFileLimitProvider}}\",\n  \"network_config\": {\n    \"max_remote_file_size_bytes\": 16,\n    \"max_retries\": 0\n  },\n  \"concurrency_and_buffer_size\": {\n    \"concurrency\": 1,\n    \"buffer_size\": 10\n  },\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"bedrock\",\n    \"allowed_requests\": {\n      \"responses\": true,\n      \"responses_stream\": true\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] bedrock amazon.nova-lite-v1:0 remote-file-limit adds dummy credentials - #9384",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('dummy key is available for selection without cloud credentials', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Bifrost-Setup-Token",
+                "value": "{{setupToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers/{{remoteFileLimitProvider}}/keys",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{remoteFileLimitProvider}}\",\n  \"value\": \"\",\n  \"models\": [\n    \"amazon.nova-lite-v1:0\"\n  ],\n  \"weight\": 1,\n  \"bedrock_key_config\": {\n    \"access_key\": \"harness-not-a-real-access-key\",\n    \"secret_key\": \"harness-not-a-real-secret\",\n    \"region\": \"us-east-1\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-500] bedrock amazon.nova-lite-v1:0 remote-file-limit /v1/responses unary - #9384",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the provider cap rejects the download before inference', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(500);",
+                  "  pm.expect(pm.response.text()).to.include('exceeds 16-byte limit');",
+                  "  pm.expect(pm.response.text()).not.to.include('26214400-byte limit');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/responses",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{remoteFileLimitProvider}}/amazon.nova-lite-v1:0\",\n  \"stream\": false,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"file_url\": \"https://storage.googleapis.com/cloud-samples-data/generative-ai/pdf/1706.03762v7.pdf\"\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Summarize this PDF in one sentence.\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 32\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-500] bedrock amazon.nova-lite-v1:0 remote-file-limit /v1/responses stream - #9384",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the provider cap rejects the download before inference', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(500);",
+                  "  pm.expect(pm.response.text()).to.include('exceeds 16-byte limit');",
+                  "  pm.expect(pm.response.text()).not.to.include('26214400-byte limit');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/responses",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{remoteFileLimitProvider}}/amazon.nova-lite-v1:0\",\n  \"stream\": true,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"file_url\": \"https://storage.googleapis.com/cloud-samples-data/generative-ai/pdf/1706.03762v7.pdf\"\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Summarize this PDF in one sentence.\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 32\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] bedrock amazon.nova-lite-v1:0 remote-file-limit deletes its isolated provider - #9384",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the isolated provider and dummy key are removed', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Bifrost-Setup-Token",
+                "value": "{{setupToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers/{{remoteFileLimitProvider}}"
+          }
+        },
+        {
+          "name": "[EXPECT-404] bedrock amazon.nova-lite-v1:0 remote-file-limit verifies cleanup - #9384",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the isolated provider no longer exists', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(404);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Bifrost-Setup-Token",
+                "value": "{{setupToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers/{{remoteFileLimitProvider}}"
+          }
+        }
+      ]
     }
   ]
 }

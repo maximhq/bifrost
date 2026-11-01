@@ -493,6 +493,7 @@ export interface NetworkConfig {
 	stream_idle_timeout_in_seconds?: number;
 	keep_alive_timeout_in_seconds?: number;
 	max_conns_per_host?: number;
+	max_remote_file_size_bytes?: number;
 	enforce_http2?: boolean;
 	http2_ping_interval_in_seconds?: number;
 	beta_header_overrides?: Record<string, boolean>;

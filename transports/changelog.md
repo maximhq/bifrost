@@ -1,3 +1,5 @@
+[feat]: expose max_remote_file_size_bytes in provider configuration and the Network settings UI [@Constantine3](https://github.com/Constantine3)
+
 ## ✨ Features
 
 - **MCP Per-User Tool Discovery** - Per-user OAuth and per-user headers clients can set `per_user_discovery`, so each caller sees the tools, prompts and resources their own credential unlocks on the MCP gateway. Discovery is stored at sign-in, shared across callers with identical results, and removed with the credential. A per-caller connect tool, caller counts in the sessions table and registry, and a Refresh tools action on the sessions page come with it. Turning it off sends a per-user OAuth server back to pending verification

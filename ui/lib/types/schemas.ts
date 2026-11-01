@@ -938,6 +938,15 @@ export const modelProviderKeySchema = z
 		},
 	);
 
+/** Resolves limit-validation text lazily so it follows the current UI language. */
+const remoteFileSizeLimitError = () => i18n.t("providers.network.remoteFileSizeLimitError", { ns: "models" });
+export const remoteFileSizeLimitSchema = z
+	.number({ error: remoteFileSizeLimitError })
+	.int({ error: remoteFileSizeLimitError })
+	.min(0, { error: remoteFileSizeLimitError })
+	.max(1073741824, { error: remoteFileSizeLimitError })
+	.optional();
+
 // Network config schema
 export const networkConfigSchema = z
 	.object({
@@ -970,6 +979,7 @@ export const networkConfigSchema = z
 			.min(1, msg("validation.maxConnectionsMustBeAtLeast1"))
 			.max(10000, msg("validation.maxConnectionsMustBeAtMost10000"))
 			.optional(),
+		max_remote_file_size_bytes: remoteFileSizeLimitSchema,
 		enforce_http2: z.boolean().optional(),
 		http2_ping_interval_in_seconds: z
 			.number()
@@ -1035,6 +1045,7 @@ export const networkFormConfigSchema = z
 			.min(1, msg("validation.maxConnectionsMustBeAtLeast1"))
 			.max(10000, msg("validation.maxConnectionsMustBeAtMost10000"))
 			.optional(),
+		max_remote_file_size_bytes: remoteFileSizeLimitSchema,
 		enforce_http2: z.boolean().optional(),
 		http2_ping_interval_in_seconds: z.coerce
 			.number(msg("validation.http2PingIntervalMustBeANumber"))
