@@ -881,6 +881,59 @@ test.describe("Providers", () => {
       await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
     });
 
+    // Switching a federated key back to the API key method must remove the federation block, or the
+    // server would keep it beside the new value.
+    test("should drop workload identity when an Anthropic key is switched back to an API key", async ({
+      providersPage,
+      page,
+      request,
+    }) => {
+      const providerData = createCustomProviderData({
+        name: `test-anthropic-wif-switch-${Date.now()}`,
+        baseProviderType: "anthropic",
+        baseUrl: "https://api.anthropic.com",
+      });
+      createdProviders.push(providerData.name);
+
+      await providersPage.createProvider(providerData);
+      await expect(providersPage.getProviderItem(providerData.name)).toBeVisible({ timeout: 15000 });
+      await providersPage.selectProvider(providerData.name);
+
+      const keyName = `anthropic-wif-switch-key-${Date.now()}`;
+      await providersPage.addAnthropicWorkloadIdentityKey({
+        name: keyName,
+        federationRuleId: "fdrl_e2e01",
+        organizationId: "00000000-0000-4000-8000-0000000000e2",
+        serviceAccountId: "svac_e2e01",
+        identityTokenFile: "/var/run/secrets/anthropic/token",
+      });
+      await expect(providersPage.getKeyRow(keyName)).toBeVisible();
+
+      await providersPage.openKeyEditor(keyName);
+      await page.getByTestId("apikey-anthropic-api-key-tab").click();
+      await page.getByTestId("key-input-anthropic-api-key").fill("sk-ant-e2e-switched-key");
+      await providersPage.keySaveBtn.click();
+      await providersPage.waitForSuccessToast();
+      await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
+
+      const response = await request.get(`/api/providers/${encodeURIComponent(providerData.name)}/keys`);
+      expect(response.ok(), await response.text()).toBe(true);
+      const body = (await response.json()) as {
+        keys: { name: string; value?: { value?: string; ref?: string }; anthropic_key_config?: unknown }[];
+      };
+      const saved = body.keys.find((k) => k.name === keyName);
+      expect(saved, "saved key must be listed").toBeTruthy();
+      expect(saved?.value?.value ?? "", "the new API key must be stored").not.toBe("");
+      expect(saved?.anthropic_key_config ?? null, "the federation block must be gone").toBeNull();
+
+      // Reopen: the editor now shows the API key method.
+      await providersPage.openKeyEditor(keyName);
+      await expect(page.getByTestId("apikey-anthropic-api-key-tab")).toHaveAttribute("data-state", "active");
+      await expect(page.getByTestId("key-input-anthropic-wif-federation-rule-id")).toHaveCount(0);
+      await providersPage.keyCancelBtn.click();
+      await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
+    });
+
     // A key can carry both a static value and a workload identity block when it comes from the API or
     // config.json, and the server keeps using the value. Editing it without switching the auth method
     // must not delete that value and silently move the key onto federation.

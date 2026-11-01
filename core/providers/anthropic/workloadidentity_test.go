@@ -665,6 +665,81 @@ func TestWorkloadIdentityDirectRequestPaths(t *testing.T) {
 	require.Contains(t, strings.Split(api[1].header.Get(AnthropicBetaHeader), ","), "client-beta-2026-01-01")
 }
 
+// Every other method resolves the key before it builds its request, so each reaches the API with
+// the bearer. The fake answers every path with a message body, so a method may fail to parse it;
+// only what reached the wire is checked.
+func TestWorkloadIdentityEveryMethodSendsBearer(t *testing.T) {
+	key := wifKey(writeIdentityTokenFile(t, fakeIdentityToken(`{"sub":"s"}`)))
+	responsesRequest := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-repro",
+		Input: []schemas.ResponsesMessage{{
+			Role:    new(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: new("hi")},
+		}},
+	}
+	cases := []struct {
+		name string
+		call func(p *AnthropicProvider, ctx *schemas.BifrostContext)
+	}{
+		{"Responses", func(p *AnthropicProvider, ctx *schemas.BifrostContext) {
+			_, _ = p.Responses(ctx, key, responsesRequest)
+		}},
+		{"CountTokens", func(p *AnthropicProvider, ctx *schemas.BifrostContext) {
+			_, _ = p.CountTokens(ctx, key, responsesRequest)
+		}},
+		{"TextCompletion", func(p *AnthropicProvider, ctx *schemas.BifrostContext) {
+			_, _ = p.TextCompletion(ctx, key, &schemas.BifrostTextCompletionRequest{Provider: schemas.Anthropic, Model: "claude-repro", Input: &schemas.TextCompletionInput{PromptStr: new("hi")}})
+		}},
+		{"ListModels", func(p *AnthropicProvider, ctx *schemas.BifrostContext) {
+			_, _ = p.ListModels(ctx, []schemas.Key{key}, &schemas.BifrostListModelsRequest{Provider: schemas.Anthropic})
+		}},
+		{"BatchCreate", func(p *AnthropicProvider, ctx *schemas.BifrostContext) {
+			_, _ = p.BatchCreate(ctx, key, &schemas.BifrostBatchCreateRequest{Provider: schemas.Anthropic, Requests: []schemas.BatchRequestItem{{
+				CustomID: "r1",
+				Params:   map[string]any{"model": "claude-repro", "max_tokens": 8, "messages": []any{map[string]any{"role": "user", "content": "hi"}}},
+			}}})
+		}},
+		{"BatchList", func(p *AnthropicProvider, ctx *schemas.BifrostContext) {
+			_, _ = p.BatchList(ctx, []schemas.Key{key}, &schemas.BifrostBatchListRequest{Provider: schemas.Anthropic})
+		}},
+		{"BatchCancel", func(p *AnthropicProvider, ctx *schemas.BifrostContext) {
+			_, _ = p.BatchCancel(ctx, []schemas.Key{key}, &schemas.BifrostBatchCancelRequest{Provider: schemas.Anthropic, BatchID: "msgbatch_1"})
+		}},
+		{"BatchResults", func(p *AnthropicProvider, ctx *schemas.BifrostContext) {
+			_, _ = p.BatchResults(ctx, []schemas.Key{key}, &schemas.BifrostBatchResultsRequest{Provider: schemas.Anthropic, BatchID: "msgbatch_1"})
+		}},
+		{"FileUpload", func(p *AnthropicProvider, ctx *schemas.BifrostContext) {
+			_, _ = p.FileUpload(ctx, key, &schemas.BifrostFileUploadRequest{Provider: schemas.Anthropic, File: []byte("hello"), Filename: "hello.txt"})
+		}},
+		{"FileRetrieve", func(p *AnthropicProvider, ctx *schemas.BifrostContext) {
+			_, _ = p.FileRetrieve(ctx, []schemas.Key{key}, &schemas.BifrostFileRetrieveRequest{Provider: schemas.Anthropic, FileID: "file_1"})
+		}},
+		{"FileDelete", func(p *AnthropicProvider, ctx *schemas.BifrostContext) {
+			_, _ = p.FileDelete(ctx, []schemas.Key{key}, &schemas.BifrostFileDeleteRequest{Provider: schemas.Anthropic, FileID: "file_1"})
+		}},
+		{"FileContent", func(p *AnthropicProvider, ctx *schemas.BifrostContext) {
+			_, _ = p.FileContent(ctx, []schemas.Key{key}, &schemas.BifrostFileContentRequest{Provider: schemas.Anthropic, FileID: "file_1"})
+		}},
+		{"PassthroughStream", func(p *AnthropicProvider, ctx *schemas.BifrostContext) {
+			stream, _ := p.PassthroughStream(ctx, truncationPassthroughPostHook, nil, key, &schemas.BifrostPassthroughRequest{Method: http.MethodPost, Path: "/v1/messages", Body: []byte(`{"stream":true}`)})
+			for range stream {
+			}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := newWIFUpstream(t, http.StatusOK, wifTokenOK, wifMessageResponse)
+			tc.call(newWIFTestProvider(upstream.URL), schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+			_, api := upstream.snapshot()
+			require.NotEmpty(t, api, "%s never reached the API", tc.name)
+			for _, rec := range api {
+				requireBearerAuth(t, rec)
+			}
+		})
+	}
+}
+
 // A key whose token cannot be minted is skipped like any failing key, and the next one serves.
 func TestWorkloadIdentityMultiKeyLoopSkipsFailedMint(t *testing.T) {
 	upstream := newWIFUpstream(t, http.StatusOK, wifTokenOK,
