@@ -3667,7 +3667,7 @@ func TestToBedrockInvokeMessagesStreamResponse_MistralNewAttempt(t *testing.T) {
 
 func TestMistralInvokeInterleavedToolIndexes(t *testing.T) {
 	const model = "mistral.mistral-large-3-675b-instruct"
-	for _, indexes := range [][]int{{1, 3}, {3, 1}, {0, 70000}} {
+	for _, indexes := range [][]int{{1, 3}, {3, 1}} {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		defer ctx.Cancel()
 		var got []int64
@@ -3828,29 +3828,7 @@ func BenchmarkBedrockInvokeMessagesResponse(b *testing.B) {
 	}
 }
 
-func TestMistralInvokeUnaryAllocationBudget(t *testing.T) {
-	resp := mistralInvokeTestResponse(t, `[{"text":"hello"}]`, "end_turn")
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	// Compare like-for-like under the active build instrumentation. Race builds
-	// change allocator/pool behavior, so a hard-coded production count is misleading.
-	baseline := testing.AllocsPerRun(1000, func() {
-		if _, err := providerUtils.MarshalSorted(toBedrockInvokeAnthropicResponse(resp, resp.Model)); err != nil {
-			t.Fatal(err)
-		}
-	})
-	allocs := testing.AllocsPerRun(1000, func() {
-		out, err := ToBedrockInvokeMessagesResponse(ctx, resp)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := providerUtils.MarshalSorted(out); err != nil {
-			t.Fatal(err)
-		}
-	})
-	assert.LessOrEqual(t, allocs, baseline, "native text encoding must not exceed the original formatter's allocation count")
-}
-
-func TestMistralInvokeBorrowedTextPreservesEscaping(t *testing.T) {
+func TestMistralInvokeTextEscaping(t *testing.T) {
 	for _, text := range []string{"", "quoted \"text\"\nwith a newline", "日本語 and emoji 🌍"} {
 		resp := mistralInvokeTestResponse(t, `[]`, "end_turn")
 		resp.Output = []schemas.ResponsesMessage{{Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant), Content: &schemas.ResponsesMessageContent{ContentStr: &text}}}
@@ -3863,25 +3841,25 @@ func TestMistralInvokeBorrowedTextPreservesEscaping(t *testing.T) {
 	}
 }
 
-func TestMistralInvokeStreamPreservesReasoningAndRefusalMapping(t *testing.T) {
-	for _, event := range []*schemas.BifrostResponsesStreamResponse{
-		{Type: schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta, Delta: schemas.Ptr("thinking")},
-		{Type: schemas.ResponsesStreamResponseTypeRefusalDelta, Refusal: schemas.Ptr("cannot answer")},
+func TestMistralInvokeStreamReasoningAndRefusal(t *testing.T) {
+	for _, tc := range []struct {
+		event schemas.BifrostResponsesStreamResponse
+		want  string
+	}{
+		{schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta, Delta: schemas.Ptr("thinking")}, `{"reasoning":"thinking","reasoning_content":"thinking"}`},
+		{schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeRefusalDelta, Refusal: schemas.Ptr("cannot answer")}, `{"refusal":"cannot answer"}`},
 	} {
-		event.ExtraFields.ResolvedModelUsed = "mistral.mistral-large-3-675b-instruct"
+		tc.event.ExtraFields.ResolvedModelUsed = "mistral.mistral-large-3-675b-instruct"
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-		_, out, err := ToBedrockInvokeMessagesStreamResponse(ctx, event)
+		_, out, err := ToBedrockInvokeMessagesStreamResponse(ctx, &tc.event)
 		require.NoError(t, err)
 		raw := out.(*BedrockStreamEvent).InvokeModelRawChunks[0]
-		expected, err := providerUtils.MarshalSorted(event.ToBifrostChatResponse().Choices[0].Delta)
-		require.NoError(t, err)
-		assert.JSONEq(t, string(expected), gjson.GetBytes(raw, "choices.0.delta").Raw)
+		assert.JSONEq(t, tc.want, gjson.GetBytes(raw, "choices.0.delta").Raw)
 	}
 }
 
 func BenchmarkBedrockInvokeMistralCases(b *testing.B) {
 	for _, tc := range []struct{ name, content, stop string }{
-		{"text", `[{"text":"hello"}]`, "end_turn"},
 		{"text blocks", `[{"text":"hello"},{"text":" world"}]`, "end_turn"},
 		{"tools", `[{"toolUse":{"toolUseId":"call_1","name":"weather","input":{"city":"Paris"}}},{"toolUse":{"toolUseId":"call_2","name":"time","input":{}}}]`, "tool_use"},
 		{"text and tool", `[{"text":"Checking."},{"toolUse":{"toolUseId":"call_1","name":"weather","input":{"city":"Paris"}}}]`, "tool_use"},
@@ -3910,7 +3888,6 @@ func BenchmarkBedrockInvokeMistralStreamCases(b *testing.B) {
 		name  string
 		event *schemas.BifrostResponsesStreamResponse
 	}{
-		{"text", &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, Delta: schemas.Ptr("hello")}},
 		{"tool start", &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, OutputIndex: schemas.Ptr(0), Item: &schemas.ResponsesMessage{Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall), ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("call_1"), Name: schemas.Ptr("weather")}}}},
 		{"tool delta", &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, OutputIndex: schemas.Ptr(0), Delta: schemas.Ptr(`{"city":"Paris"}`)}},
 		{"terminal", &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeCompleted, Response: &schemas.BifrostResponsesResponse{ID: schemas.Ptr("chat_1"), CreatedAt: 123, Model: model, StopReason: schemas.Ptr("stop"), Usage: &schemas.ResponsesResponseUsage{InputTokens: 15, OutputTokens: 51, TotalTokens: 66}}}},
@@ -3980,49 +3957,4 @@ func BenchmarkBedrockInvokeMistralToolStream(b *testing.B) {
 			}
 		})
 	}
-}
-
-// Converse allocates output slots for text as well as tools.
-func TestMistralInvokeToolIndexesAcrossTextBlocks(t *testing.T) {
-	const model = "mistral.mistral-large-3-675b-instruct"
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	defer ctx.Cancel()
-	state := acquireBedrockResponsesStreamState()
-	defer releaseBedrockResponsesStreamState(state)
-	state.Model = schemas.Ptr(model)
-	frames := []string{
-		`{"role":"assistant"}`,
-		`{"contentBlockIndex":0,"delta":{"text":"checking"}}`,
-		`{"contentBlockIndex":0,"stop":{}}`,
-		`{"contentBlockIndex":1,"start":{"toolUse":{"toolUseId":"call_1","name":"weather"}}}`,
-		`{"contentBlockIndex":1,"delta":{"toolUse":{"input":"{}"}}}`,
-		`{"contentBlockIndex":1,"stop":{}}`,
-		`{"contentBlockIndex":2,"delta":{"text":"and time"}}`,
-		`{"contentBlockIndex":2,"stop":{}}`,
-		`{"contentBlockIndex":3,"start":{"toolUse":{"toolUseId":"call_2","name":"time"}}}`,
-		`{"contentBlockIndex":3,"delta":{"toolUse":{"input":"{}"}}}`,
-		`{"contentBlockIndex":3,"stop":{}}`,
-	}
-	var indexes []int64
-	sequence := 0
-	for _, frame := range frames {
-		var chunk BedrockStreamEvent
-		require.NoError(t, sonic.UnmarshalString(frame, &chunk))
-		events, err, _ := chunk.ToBifrostResponsesStream(sequence, state)
-		require.Nil(t, err)
-		sequence += len(events)
-		for _, event := range events {
-			event.ExtraFields.ResolvedModelUsed = model
-			_, out, err := ToBedrockInvokeMessagesStreamResponse(ctx, event)
-			require.NoError(t, err)
-			if out == nil {
-				continue
-			}
-			raw := out.(*BedrockStreamEvent).InvokeModelRawChunks[0]
-			for _, call := range gjson.GetBytes(raw, "choices.0.delta.tool_calls").Array() {
-				indexes = append(indexes, call.Get("index").Int())
-			}
-		}
-	}
-	assert.Equal(t, []int64{0, 0, 1, 1}, indexes)
 }

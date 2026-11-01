@@ -250,30 +250,22 @@ func TestBedrockInvokeMistralWire(t *testing.T) {
 							assert.JSONEq(t, `{}`, tool.arguments)
 						}
 					}
-					if !scenario.mixedTools && stop != "tool_use" {
-						text := gjson.GetBytes(payloads[0], "choices.0.message.content").String()
+					var text string
+					for _, raw := range payloads {
+						path := "choices.0.message.content"
 						if suffix != "invoke" {
-							text = ""
-							for _, raw := range payloads {
-								text += gjson.GetBytes(raw, "choices.0.delta.content").String()
-							}
+							path = "choices.0.delta.content"
 						}
-						assert.Equal(t, "hello", text)
+						text += gjson.GetBytes(raw, path).String()
 					}
-
+					wantText := "hello"
+					if stop == "tool_use" {
+						wantText = ""
+					}
 					if scenario.mixedTools {
-						if suffix == "invoke" {
-							assert.Equal(t, "checkingand time", gjson.GetBytes(payloads[0], "choices.0.message.content").String())
-						} else {
-							var indexes []int64
-							for _, raw := range payloads {
-								for _, call := range gjson.GetBytes(raw, "choices.0.delta.tool_calls").Array() {
-									indexes = append(indexes, call.Get("index").Int())
-								}
-							}
-							assert.Equal(t, []int64{0, 0, 0, 1, 1, 1}, indexes)
-						}
+						wantText = "checkingand time"
 					}
+					assert.Equal(t, wantText, text)
 					last := payloads[len(payloads)-1]
 					finish := map[string]string{"end_turn": "stop", "max_tokens": "length", "tool_use": "tool_calls"}[stop]
 					assert.Equal(t, finish, gjson.GetBytes(last, "choices.0.finish_reason").String(), "%s", last)

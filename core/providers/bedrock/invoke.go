@@ -2137,17 +2137,14 @@ func ToBedrockInvokeMessagesStreamResponse(ctx *schemas.BifrostContext, resp *sc
 
 const bedrockInvokeMistralStreamStateKey schemas.BifrostContextKey = "bedrock-invoke-mistral-stream-state"
 
-// Only fixed-size header/index metadata lives on ctx, never stream content.
-// The HTTP stream writer calls the converter serially; the record is released on
-// the terminal event, or with ctx when the stream is cancelled.
+// Fixed-size metadata only; the HTTP stream writer calls the converter serially.
 type bedrockInvokeMistralStreamState struct {
 	id                   string
 	created              int
 	firstToolOutputIndex int
 }
 
-// Include the stream handle to isolate attempts sharing a request ID, as the
-// provider stream-preamble manager does. Tool mappings never live on ctx.
+// Isolate attempts sharing a request ID. Tool mappings never live on ctx.
 type bedrockInvokeMistralToolIndexKey struct {
 	requestID string
 	stream    *bedrockInvokeMistralStreamState
@@ -2158,9 +2155,8 @@ type bedrockInvokeMistralToolIndexState struct {
 	stopCleanup func() bool
 }
 
-// Only multi-tool streams allocate an entry. Each retains one integer mapping
-// per tool (at most 65536), not tool arguments or content. Completion, conversion
-// errors, cancellation and a new attempt all remove the entry.
+// Only multi-tool streams allocate mappings, bounded to 65536 entries per stream.
+// Completion, conversion errors, cancellation, and retries release them.
 var bedrockInvokeMistralToolIndexes sync.Map // bedrockInvokeMistralToolIndexKey -> *bedrockInvokeMistralToolIndexState
 
 func mistralInvokeToolIndexKey(ctx *schemas.BifrostContext, state *bedrockInvokeMistralStreamState) bedrockInvokeMistralToolIndexKey {
@@ -2222,42 +2218,36 @@ func releaseMistralInvokeToolIndexes(ctx *schemas.BifrostContext, state *bedrock
 }
 
 func toBedrockInvokeMistralStreamResponse(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse, model string) (string, interface{}, error) {
-	switch resp.Type {
-	case schemas.ResponsesStreamResponseTypeCreated,
-		schemas.ResponsesStreamResponseTypeOutputTextDelta,
-		schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
-		schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta,
-		schemas.ResponsesStreamResponseTypeRefusalDelta,
-		schemas.ResponsesStreamResponseTypeCompleted,
-		schemas.ResponsesStreamResponseTypeIncomplete:
-	case schemas.ResponsesStreamResponseTypeOutputItemAdded:
-		if resp.Item == nil || resp.Item.Type == nil || *resp.Item.Type != schemas.ResponsesMessageTypeFunctionCall || resp.Item.ResponsesToolMessage == nil {
-			return "", nil, nil
-		}
-	default:
-		return "", nil, nil
-	}
-	if (resp.Type == schemas.ResponsesStreamResponseTypeOutputTextDelta || resp.Type == schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta || resp.Type == schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta) && resp.Delta == nil {
-		return "", nil, nil
-	}
 	choice := BedrockInvokeMistralChoice{}
 	var usage *schemas.ResponsesResponseUsage
 	switch resp.Type {
 	case schemas.ResponsesStreamResponseTypeCreated:
 		choice.Delta = &schemas.ChatStreamResponseChoiceDelta{Role: schemas.Ptr("assistant")}
 	case schemas.ResponsesStreamResponseTypeOutputTextDelta:
+		if resp.Delta == nil {
+			return "", nil, nil
+		}
 		choice.Delta = &schemas.ChatStreamResponseChoiceDelta{Content: resp.Delta}
 	case schemas.ResponsesStreamResponseTypeOutputItemAdded:
+		if resp.Item == nil || resp.Item.Type == nil || *resp.Item.Type != schemas.ResponsesMessageTypeFunctionCall || resp.Item.ResponsesToolMessage == nil {
+			return "", nil, nil
+		}
 		tool := resp.Item.ResponsesToolMessage
 		choice.Delta = &schemas.ChatStreamResponseChoiceDelta{ToolCalls: []schemas.ChatAssistantMessageToolCall{{
 			Type: schemas.Ptr("function"), ID: tool.CallID,
 			Function: schemas.ChatAssistantMessageToolCallFunction{Name: tool.Name},
 		}}}
 	case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta:
+		if resp.Delta == nil {
+			return "", nil, nil
+		}
 		choice.Delta = &schemas.ChatStreamResponseChoiceDelta{ToolCalls: []schemas.ChatAssistantMessageToolCall{{
 			Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: *resp.Delta},
 		}}}
 	case schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta:
+		if resp.Delta == nil {
+			return "", nil, nil
+		}
 		choice.Delta = &schemas.ChatStreamResponseChoiceDelta{Reasoning: resp.Delta}
 	case schemas.ResponsesStreamResponseTypeRefusalDelta:
 		choice.Delta = &schemas.ChatStreamResponseChoiceDelta{Refusal: resp.Refusal}
@@ -2267,27 +2257,26 @@ func toBedrockInvokeMistralStreamResponse(ctx *schemas.BifrostContext, resp *sch
 		if resp.Type == schemas.ResponsesStreamResponseTypeIncomplete {
 			status, fallback = schemas.ResponsesResponseStatusIncomplete, string(schemas.BifrostFinishReasonLength)
 		}
-		var details *schemas.ResponsesResponseIncompleteDetails
-		var stop *string
-		var output []schemas.ResponsesMessage
 		if resp.Response != nil {
-			details, stop, output, usage = resp.Response.IncompleteDetails, resp.Response.StopReason, resp.Response.Output, resp.Response.Usage
+			choice.FinishReason = schemas.ChatFinishReasonFromResponses(&status, resp.Response.IncompleteDetails, resp.Response.StopReason, resp.Response.Output)
+			usage = resp.Response.Usage
 		}
-		choice.FinishReason = schemas.ChatFinishReasonFromResponses(&status, details, stop, output)
 		if choice.FinishReason == nil {
 			choice.FinishReason = &fallback
 		}
 		choice.Delta = &schemas.ChatStreamResponseChoiceDelta{}
+	default:
+		return "", nil, nil
 	}
 	var state *bedrockInvokeMistralStreamState
-	if ctx != nil && resp.Type != schemas.ResponsesStreamResponseTypeCreated {
+	if ctx != nil {
 		state, _ = ctx.Value(bedrockInvokeMistralStreamStateKey).(*bedrockInvokeMistralStreamState)
 	}
+	if resp.Type == schemas.ResponsesStreamResponseTypeCreated {
+		releaseMistralInvokeToolIndexes(ctx, state)
+		state = nil
+	}
 	if state == nil {
-		if ctx != nil && resp.Type == schemas.ResponsesStreamResponseTypeCreated {
-			previous, _ := ctx.Value(bedrockInvokeMistralStreamStateKey).(*bedrockInvokeMistralStreamState)
-			releaseMistralInvokeToolIndexes(ctx, previous)
-		}
 		state = &bedrockInvokeMistralStreamState{firstToolOutputIndex: -1}
 		if resp.Response != nil {
 			if resp.Response.ID != nil {
