@@ -265,12 +265,12 @@ The admin's sample values are retained as a client-level **admin discovery crede
 - **Tool-list refresh only.** The periodic tool syncer uses it for a one-shot connect, `tools/list`, disconnect cycle on the client's [tool sync interval](#periodic-tool-sync), and an on-demand refresh (`POST /api/mcp/client/{id}/refresh-tools`) runs the same cycle with it. It is **never** used for end-user tool calls; those always run under the caller's own submitted values.
 - **Invisible on the sessions page.** Admin credentials are excluded from [MCP Sessions](../sessions); they are managed from the client sheet instead.
 
-If the credential falls into `needs_update` (typically because `per_user_header_keys` changed), the client list projects a **`needs_reauth`** badge next to the client's **View sessions** link. This is a display-level state: end-user credentials and tool calls keep working, only tool-list refresh pauses until an admin repairs it. A client created with inline `user_headers` on an earlier version has no admin row: its periodic sync fails and the client shows as `unstable` until an admin stores the credential with **Update headers** (below) or a `verify-headers` call.
+If the credential falls into `needs_update` (typically because `per_user_header_keys` changed), the client list projects a **`needs_reauth`** badge next to the client's **View sessions** link. This is a display-level state: end-user credentials and tool calls keep working, only tool-list refresh pauses until an admin repairs it. A client created with inline `user_headers` on an earlier version has no admin row: its periodic sync fails and the client shows as `unstable` until an admin stores the credential with **Refresh admin credential** (below) or a `verify-headers` call.
 
-To repair it, open the client sheet and click **Update headers**: the same sample-values dialog re-runs the upstream verify, re-discovers tools, and flips the credential back to `active`. The scriptable equivalent is another `POST /api/mcp/client/{id}/verify-headers` call with fresh sample values.
+To repair it, open the server's actions menu (**⋯**) in the MCP Server Catalog and choose **Refresh admin credential**: the same sample-values dialog re-runs the upstream verify, re-discovers tools, and flips the credential back to `active`. The scriptable equivalent is another `POST /api/mcp/client/{id}/verify-headers` call with fresh sample values.
 
 <Frame>
-  <img src="/media/ui-mcp-per-user-headers-admin-repair.png" alt="Per-user headers client sheet showing the needs_reauth badge next to View sessions and the Update headers button" />
+  <img src="/media/ui-mcp-per-user-headers-admin-repair.png" alt="MCP Server Catalog with a per-user headers client in Needs Reauth state and Refresh admin credential highlighted in its actions menu" />
 </Frame>
 
 ### Periodic tool sync
