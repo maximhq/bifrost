@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -267,6 +268,45 @@ func TestHandleAuthorize_ClientIDMetadataDocument(t *testing.T) {
 	ctx = getCtx("/oauth2/authorize?" + query("http://127.0.0.1:3000/elsewhere"))
 	h.handleAuthorize(ctx)
 	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "a redirect_uri the document does not list is refused")
+}
+
+// TestHandleToken_RefreshAsAMetadataDocumentClient pins that a client identified by a Client ID
+// Metadata Document refreshes by the grant types its document lists, as a registered client does by
+// the ones it registered. Such a client is never in the store, so a store-only lookup refused every
+// one of its refreshes.
+func TestHandleToken_RefreshAsAMetadataDocumentClient(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		grantTypes any
+		wantStatus int
+	}{
+		{name: "document lists refresh_token", grantTypes: []string{"authorization_code", "refresh_token"}, wantStatus: fasthttp.StatusOK},
+		{name: "document omits grant_types", grantTypes: nil, wantStatus: fasthttp.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, store, _ := newIssuanceHandler(t)
+			host := newMetadataHost(t)
+			h.clientMetadata = newOAuth2ClientMetadataResolver(host.server.Client())
+			clientID := host.document("/client.json", map[string]any{"grant_types": tc.grantTypes}, nil)
+			require.NoError(t, store.CreateVirtualKey(context.Background(), &configtables.TableVirtualKey{
+				ID: "vk-1", Name: "vk-1", Value: *schemas.NewSecretVar("sk-bf-vk-1"), IsActive: new(true),
+			}))
+			seedConsentedRequest(t, store, "fam-vk", clientID, "auth-code-vk", pkceChallenge("v"), "vk", "vk-1", time.Now().Add(time.Minute))
+			require.NoError(t, store.ConsumeOAuth2AuthorizeRequest(context.Background(), "fam-vk", &configtables.TableOAuth2RefreshToken{
+				ID: "rt-vk", TokenHash: hashSHA256Hex("refresh-vk-1"), FamilyID: "fam-vk", ClientID: clientID,
+				BfMode: "vk", BfSub: "vk-1", Scope: "mcp", Resource: testMCPResource, CreatedAt: time.Now(),
+			}))
+
+			ctx := formPostCtx(url.Values{
+				"grant_type": {"refresh_token"}, "refresh_token": {"refresh-vk-1"}, "client_id": {clientID},
+			}.Encode())
+			h.handleToken(ctx)
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			if tc.wantStatus == fasthttp.StatusBadRequest {
+				assert.Contains(t, string(ctx.Response.Body()), "client is not registered for the refresh_token grant")
+			}
+		})
+	}
 }
 
 // BenchmarkOAuth2ClientMetadataResolver_Cached measures a cached lookup, the per-request cost once a

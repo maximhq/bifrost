@@ -298230,6 +298230,258 @@
           }
         }
       ]
+    },
+    {
+      "name": "296. Gemini image models are priced on /genai with or without the IMAGE modality (genai image pricing) (PR #9263)",
+      "description": "A /genai generateContent call to an image model without responseModalities [\"IMAGE\"] (how Antigravity calls it) is typed as a Responses request. gemini-3.1-flash-image only has an image_generation pricing row, so the lookup missed and the log showed $0 even though usage reported image tokens. Gemini CLI sends [\"IMAGE\"], is typed as image generation, and was priced, but its thinking tokens were dropped. The first case pins the Responses-typed call: it must be priced from the image_generation row with image tokens at output_cost_per_image_token. The second pins the image-generation-typed call: thinking and other non-image output tokens bill at the text rate. The third sends thinkingLevel high on /genai_passthrough, the route where Gemini returns thoughtsTokenCount: there candidatesTokenCount can fall below the IMAGE detail, and the thinking tokens must still bill at the text rate. Every case asserts the logged total against the datasheet rates and the usageMetadata the client sees, and checks that prompt + candidates + thoughts equals totalTokenCount, so thinking tokens dropped by a converter show up as a gap. None requires a positive live thoughtsTokenCount; the converter round trip is pinned by TestGeminiImageUsage_ThoughtsTokenCountRoundTrip and the passthrough extractor tests.",
+      "item": [
+        {
+          "name": "/genai generateContent without responseModalities is priced from the image row - gemini/gemini-3.1-flash-image",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var LABEL = 'genai image pricing (no modality)';",
+                  "// gemini-3.1-flash-image datasheet rates: text input, text/thinking output, image output token",
+                  "var RATES = { input: 5e-7, output: 3e-6, imageOutput: 6e-5 };",
+                  "pm.test(LABEL + ': request succeeds', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "var parts = (((body.candidates || [])[0] || {}).content || {}).parts || [];",
+                  "pm.test(LABEL + ': an image came back', function () {",
+                  "  pm.expect(parts.some(function (p) { return p && p.inlineData && p.inlineData.data; }), 'parts: ' + JSON.stringify(parts).slice(0, 500)).to.eql(true);",
+                  "});",
+                  "var u = body.usageMetadata || {};",
+                  "var imageTokens = 0;",
+                  "(u.candidatesTokensDetails || []).forEach(function (d) { if (d.modality === 'IMAGE') { imageTokens += d.tokenCount || 0; } });",
+                  "pm.test(LABEL + ': usage reports image output tokens', function () { pm.expect(imageTokens, 'usageMetadata: ' + JSON.stringify(u)).to.be.above(0); });",
+                  "// totalTokenCount comes straight from Gemini, so thinking tokens a converter drops show up as a gap here",
+                  "pm.test(LABEL + ': prompt + candidates + thoughts add up to totalTokenCount', function () {",
+                  "  pm.expect((u.promptTokenCount || 0) + (u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0), 'usageMetadata: ' + JSON.stringify(u)).to.eql(u.totalTokenCount);",
+                  "});",
+                  "// thoughtsTokenCount sits outside candidatesTokenCount and can exceed what is left after the IMAGE detail; it bills at the text rate",
+                  "var otherOutput = Math.max((u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0) - imageTokens, u.thoughtsTokenCount || 0, 0);",
+                  "var expected = (u.promptTokenCount || 0) * RATES.input + imageTokens * RATES.imageOutput + otherOutput * RATES.output;",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test(LABEL + ': x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// /api is locked behind the setup token on the harness profile; pm.sendRequest does not inherit the collection header.",
+                  "var setupToken = pm.variables.get('setupToken');",
+                  "var logHeaders = setupToken ? [{ key: 'X-Bifrost-Setup-Token', value: setupToken }] : [];",
+                  "// The log row is written by the batching writer, so poll the logs API. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET', header: logHeaders }, function (err, res) {",
+                  "    if (!err && res.code === 200) {",
+                  "      var j = res.json();",
+                  "      var cb = j.cost_breakdown;",
+                  "      pm.test(LABEL + ': routed as responses', function () { pm.expect(j.object, 'log: ' + res.text().slice(0, 500)).to.eql('responses'); });",
+                  "      pm.test(LABEL + ': logged cost bills image tokens at the image rate and the rest at the text rate', function () {",
+                  "        pm.expect(cb, 'cost_breakdown: ' + res.text().slice(0, 1000)).to.be.an('object');",
+                  "        pm.expect(cb.total_cost, 'expected ' + expected + ' for usageMetadata ' + JSON.stringify(u) + ', cost_breakdown: ' + JSON.stringify(cb)).to.be.closeTo(expected, expected * 1e-6);",
+                  "      });",
+                  "      pm.test(LABEL + ': breakdown carries the image cost', function () { pm.expect((cb.output_cost_details || {}).image_cost, 'cost_breakdown: ' + JSON.stringify(cb)).to.be.closeTo(imageTokens * RATES.imageOutput, 1e-9); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test(LABEL + ': log row appeared', function () { pm.expect.fail('log ' + reqId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Draw a small red circle on a white background.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-3.1-flash-image:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini-3.1-flash-image:generateContent"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/genai generateContent with responseModalities IMAGE bills non-image output tokens - gemini/gemini-3.1-flash-image",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var LABEL = 'genai image pricing (IMAGE modality)';",
+                  "// gemini-3.1-flash-image datasheet rates: text input, text/thinking output, image output token",
+                  "var RATES = { input: 5e-7, output: 3e-6, imageOutput: 6e-5 };",
+                  "pm.test(LABEL + ': request succeeds', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "var parts = (((body.candidates || [])[0] || {}).content || {}).parts || [];",
+                  "pm.test(LABEL + ': an image came back', function () {",
+                  "  pm.expect(parts.some(function (p) { return p && p.inlineData && p.inlineData.data; }), 'parts: ' + JSON.stringify(parts).slice(0, 500)).to.eql(true);",
+                  "});",
+                  "var u = body.usageMetadata || {};",
+                  "var imageTokens = 0;",
+                  "(u.candidatesTokensDetails || []).forEach(function (d) { if (d.modality === 'IMAGE') { imageTokens += d.tokenCount || 0; } });",
+                  "pm.test(LABEL + ': usage reports image output tokens', function () { pm.expect(imageTokens, 'usageMetadata: ' + JSON.stringify(u)).to.be.above(0); });",
+                  "// totalTokenCount comes straight from Gemini, so thinking tokens a converter drops show up as a gap here",
+                  "pm.test(LABEL + ': prompt + candidates + thoughts add up to totalTokenCount', function () {",
+                  "  pm.expect((u.promptTokenCount || 0) + (u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0), 'usageMetadata: ' + JSON.stringify(u)).to.eql(u.totalTokenCount);",
+                  "});",
+                  "// thoughtsTokenCount sits outside candidatesTokenCount and can exceed what is left after the IMAGE detail; it bills at the text rate",
+                  "var otherOutput = Math.max((u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0) - imageTokens, u.thoughtsTokenCount || 0, 0);",
+                  "var expected = (u.promptTokenCount || 0) * RATES.input + imageTokens * RATES.imageOutput + otherOutput * RATES.output;",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test(LABEL + ': x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// /api is locked behind the setup token on the harness profile; pm.sendRequest does not inherit the collection header.",
+                  "var setupToken = pm.variables.get('setupToken');",
+                  "var logHeaders = setupToken ? [{ key: 'X-Bifrost-Setup-Token', value: setupToken }] : [];",
+                  "// The log row is written by the batching writer, so poll the logs API. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET', header: logHeaders }, function (err, res) {",
+                  "    if (!err && res.code === 200) {",
+                  "      var j = res.json();",
+                  "      var cb = j.cost_breakdown;",
+                  "      pm.test(LABEL + ': routed as image_generation', function () { pm.expect(j.object, 'log: ' + res.text().slice(0, 500)).to.eql('image_generation'); });",
+                  "      pm.test(LABEL + ': logged cost bills image tokens at the image rate and the rest at the text rate', function () {",
+                  "        pm.expect(cb, 'cost_breakdown: ' + res.text().slice(0, 1000)).to.be.an('object');",
+                  "        pm.expect(cb.total_cost, 'expected ' + expected + ' for usageMetadata ' + JSON.stringify(u) + ', cost_breakdown: ' + JSON.stringify(cb)).to.be.closeTo(expected, expected * 1e-6);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test(LABEL + ': log row appeared', function () { pm.expect.fail('log ' + reqId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Draw a small red circle on a white background.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"responseModalities\": [\n      \"IMAGE\"\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-3.1-flash-image:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini-3.1-flash-image:generateContent"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/genai_passthrough generateContent with thinkingLevel high bills thinking tokens - gemini/gemini-3.1-flash-image",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var LABEL = 'genai image pricing (passthrough thinking)';",
+                  "// gemini-3.1-flash-image datasheet rates: text input, text/thinking output, image output token",
+                  "var RATES = { input: 5e-7, output: 3e-6, imageOutput: 6e-5 };",
+                  "pm.test(LABEL + ': request succeeds', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "var parts = (((body.candidates || [])[0] || {}).content || {}).parts || [];",
+                  "pm.test(LABEL + ': an image came back', function () {",
+                  "  pm.expect(parts.some(function (p) { return p && p.inlineData && p.inlineData.data; }), 'parts: ' + JSON.stringify(parts).slice(0, 500)).to.eql(true);",
+                  "});",
+                  "var u = body.usageMetadata || {};",
+                  "var imageTokens = 0;",
+                  "(u.candidatesTokensDetails || []).forEach(function (d) { if (d.modality === 'IMAGE') { imageTokens += d.tokenCount || 0; } });",
+                  "pm.test(LABEL + ': usage reports image output tokens', function () { pm.expect(imageTokens, 'usageMetadata: ' + JSON.stringify(u)).to.be.above(0); });",
+                  "// totalTokenCount comes straight from Gemini, so thinking tokens a converter drops show up as a gap here",
+                  "pm.test(LABEL + ': prompt + candidates + thoughts add up to totalTokenCount', function () {",
+                  "  pm.expect((u.promptTokenCount || 0) + (u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0), 'usageMetadata: ' + JSON.stringify(u)).to.eql(u.totalTokenCount);",
+                  "});",
+                  "// thoughtsTokenCount sits outside candidatesTokenCount and can exceed what is left after the IMAGE detail; it bills at the text rate",
+                  "var otherOutput = Math.max((u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0) - imageTokens, u.thoughtsTokenCount || 0, 0);",
+                  "var expected = (u.promptTokenCount || 0) * RATES.input + imageTokens * RATES.imageOutput + otherOutput * RATES.output;",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test(LABEL + ': x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// /api is locked behind the setup token on the harness profile; pm.sendRequest does not inherit the collection header.",
+                  "var setupToken = pm.variables.get('setupToken');",
+                  "var logHeaders = setupToken ? [{ key: 'X-Bifrost-Setup-Token', value: setupToken }] : [];",
+                  "// The log row is written by the batching writer, so poll the logs API. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET', header: logHeaders }, function (err, res) {",
+                  "    if (!err && res.code === 200) {",
+                  "      var j = res.json();",
+                  "      var cb = j.cost_breakdown;",
+                  "      pm.test(LABEL + ': logged cost bills image tokens at the image rate and the rest at the text rate', function () {",
+                  "        pm.expect(cb, 'cost_breakdown: ' + res.text().slice(0, 1000)).to.be.an('object');",
+                  "        pm.expect(cb.total_cost, 'expected ' + expected + ' for usageMetadata ' + JSON.stringify(u) + ', cost_breakdown: ' + JSON.stringify(cb)).to.be.closeTo(expected, expected * 1e-6);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test(LABEL + ': log row appeared', function () { pm.expect.fail('log ' + reqId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Draw a small red circle on a white background.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"responseModalities\": [\n      \"TEXT\",\n      \"IMAGE\"\n    ],\n    \"thinkingConfig\": {\n      \"includeThoughts\": true,\n      \"thinkingLevel\": \"high\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta/models/gemini-3.1-flash-image:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta",
+                "models",
+                "gemini-3.1-flash-image:generateContent"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

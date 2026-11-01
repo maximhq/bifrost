@@ -1377,6 +1377,15 @@ func convertGeminiUsageMetadataToImageUsage(metadata *GenerateContentResponseUsa
 		usage.OutputTokensDetails = outputDetails
 	}
 
+	// thoughtsTokenCount sits outside candidatesTokenCount; fold it into output like the chat and responses converters
+	if metadata.ThoughtsTokenCount > 0 {
+		if usage.OutputTokensDetails == nil {
+			usage.OutputTokensDetails = &schemas.ImageTokenDetails{}
+		}
+		usage.OutputTokensDetails.ReasoningTokens = int(metadata.ThoughtsTokenCount)
+		usage.OutputTokens += int(metadata.ThoughtsTokenCount)
+	}
+
 	return usage
 }
 
@@ -1390,6 +1399,10 @@ func convertBifrostImageUsageToGeminiUsageMetadata(usage *schemas.ImageUsage) *G
 		PromptTokenCount:     int32(usage.InputTokens),
 		CandidatesTokenCount: int32(usage.OutputTokens),
 		TotalTokenCount:      int32(usage.TotalTokens),
+	}
+	if usage.OutputTokensDetails != nil && usage.OutputTokensDetails.ReasoningTokens > 0 {
+		metadata.ThoughtsTokenCount = int32(usage.OutputTokensDetails.ReasoningTokens)
+		metadata.CandidatesTokenCount -= metadata.ThoughtsTokenCount
 	}
 
 	// Process input token details to PromptTokensDetails

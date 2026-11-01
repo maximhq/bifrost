@@ -1,0 +1,511 @@
+package chaosmock_test
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"sort"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
+	"github.com/mark3labs/mcp-go/mcp"
+
+	"github.com/maximhq/bifrost/tests/cmd/mcpconsole/chaosmock"
+)
+
+// These tests point a real mcp-go client, the same library and version the
+// system under test uses, at the hand-rolled mock. The mock deliberately
+// implements the protocol itself so it can violate it on demand, and that
+// freedom is only safe if a genuine client accepts it when it is behaving.
+// Everything else in the harness rests on that, so it is checked first.
+
+func newFleetWithTools(t *testing.T, tools ...chaosmock.Tool) (*chaosmock.Fleet, *chaosmock.Server) {
+	t.Helper()
+	fleet := chaosmock.NewFleet()
+	srv := fleet.Add("alpha")
+	srv.Tools().Set(tools)
+	fleet.Start()
+	t.Cleanup(fleet.Stop)
+	return fleet, srv
+}
+
+func connect(t *testing.T, url string) (*client.Client, context.Context) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	t.Cleanup(cancel)
+
+	c, err := client.NewStreamableHttpClient(url)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	if err := c.Start(ctx); err != nil {
+		t.Fatalf("failed to start client: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+
+	var req mcp.InitializeRequest
+	req.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+	req.Params.ClientInfo = mcp.Implementation{Name: "chaosmock-compat", Version: "1.0.0"}
+	if _, err := c.Initialize(ctx, req); err != nil {
+		t.Fatalf("initialize failed: %v", err)
+	}
+	return c, ctx
+}
+
+func TestRealClientCompletesHandshakeAndListsTools(t *testing.T) {
+	fleet, srv := newFleetWithTools(t,
+		chaosmock.Tool{Name: "alpha_one"},
+		chaosmock.Tool{Name: "alpha_two"},
+	)
+
+	c, ctx := connect(t, fleet.ServerURL("alpha"))
+
+	res, err := c.ListTools(ctx, mcp.ListToolsRequest{})
+	if err != nil {
+		t.Fatalf("tools/list failed: %v", err)
+	}
+	if len(res.Tools) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(res.Tools))
+	}
+	// Sorted by name, so the order is part of the contract rather than an
+	// accident of map iteration.
+	if res.Tools[0].Name != "alpha_one" || res.Tools[1].Name != "alpha_two" {
+		t.Fatalf("unexpected tool names: %q, %q", res.Tools[0].Name, res.Tools[1].Name)
+	}
+
+	counters := srv.Counters().Snapshot()
+	if counters.Initializes != 1 {
+		t.Errorf("expected 1 initialize, got %d", counters.Initializes)
+	}
+	if counters.ToolsList != 1 {
+		t.Errorf("expected 1 tools/list, got %d", counters.ToolsList)
+	}
+	if counters.Sessions != 1 {
+		t.Errorf("expected 1 session, got %d", counters.Sessions)
+	}
+	// The handshake's own notification has to have landed, otherwise the
+	// client is not as far along as it appears.
+	if counters.Methods["notifications/initialized"] != 1 {
+		t.Errorf("expected the initialized notification, got methods %v", counters.Methods)
+	}
+}
+
+func TestRealClientCallsToolAndCounterRecordsDispatch(t *testing.T) {
+	fleet, srv := newFleetWithTools(t, chaosmock.Tool{Name: "echo_tool"})
+	c, ctx := connect(t, fleet.ServerURL("alpha"))
+
+	var req mcp.CallToolRequest
+	req.Params.Name = "echo_tool"
+	req.Params.Arguments = map[string]any{"value": "hello"}
+
+	res, err := c.CallTool(ctx, req)
+	if err != nil {
+		t.Fatalf("tools/call failed: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("expected a successful call, got an error result")
+	}
+	if len(res.Content) == 0 {
+		t.Fatalf("expected content in the result")
+	}
+	text, ok := mcp.AsTextContent(res.Content[0])
+	if !ok {
+		t.Fatalf("expected text content, got %T", res.Content[0])
+	}
+	// The default reply names the tool that ran, so a misdispatch is visible
+	// in the response body before the counters are even consulted.
+	if want := "echo_tool:"; len(text.Text) < len(want) || text.Text[:len(want)] != want {
+		t.Errorf("expected the reply to name the tool that ran, got %q", text.Text)
+	}
+
+	counters := srv.Counters().Snapshot()
+	if counters.Calls["echo_tool"] != 1 {
+		t.Errorf("expected 1 call to echo_tool, got %v", counters.Calls)
+	}
+}
+
+func TestRealClientPings(t *testing.T) {
+	fleet, srv := newFleetWithTools(t)
+	c, ctx := connect(t, fleet.ServerURL("alpha"))
+
+	if err := c.Ping(ctx); err != nil {
+		t.Fatalf("ping failed: %v", err)
+	}
+	if got := srv.Counters().Snapshot().Pings; got != 1 {
+		t.Errorf("expected 1 ping, got %d", got)
+	}
+}
+
+func TestToolMutationIsVisibleToTheNextList(t *testing.T) {
+	fleet, srv := newFleetWithTools(t, chaosmock.Tool{Name: "before_tool"})
+	c, ctx := connect(t, fleet.ServerURL("alpha"))
+
+	first, err := c.ListTools(ctx, mcp.ListToolsRequest{})
+	if err != nil {
+		t.Fatalf("first tools/list failed: %v", err)
+	}
+	if len(first.Tools) != 1 || first.Tools[0].Name != "before_tool" {
+		t.Fatalf("unexpected initial tools: %+v", first.Tools)
+	}
+
+	// Mutate underneath the live session. The connection is not disturbed, so
+	// this isolates "did the tool set change" from "did the client reconnect".
+	srv.Tools().Add(chaosmock.Tool{Name: "after_tool"})
+	srv.Tools().Remove("before_tool")
+
+	second, err := c.ListTools(ctx, mcp.ListToolsRequest{})
+	if err != nil {
+		t.Fatalf("second tools/list failed: %v", err)
+	}
+	if len(second.Tools) != 1 || second.Tools[0].Name != "after_tool" {
+		t.Fatalf("expected only after_tool, got %+v", second.Tools)
+	}
+
+	if got := srv.Counters().Snapshot().Sessions; got != 1 {
+		t.Errorf("mutating tools must not force a new session, got %d sessions", got)
+	}
+}
+
+func TestKilledSessionForcesReinitialization(t *testing.T) {
+	fleet, srv := newFleetWithTools(t, chaosmock.Tool{Name: "some_tool"})
+	c, ctx := connect(t, fleet.ServerURL("alpha"))
+
+	if _, err := c.ListTools(ctx, mcp.ListToolsRequest{}); err != nil {
+		t.Fatalf("tools/list before session kill failed: %v", err)
+	}
+
+	// The transport stays up; only the session goes away. A client that only
+	// watches for transport errors should not notice until its next request.
+	srv.KillSessions()
+
+	_, err := c.ListTools(ctx, mcp.ListToolsRequest{})
+	if err == nil {
+		t.Fatalf("expected tools/list to fail after the session was killed")
+	}
+	if srv.SessionCount() != 0 {
+		t.Errorf("expected no live sessions, got %d", srv.SessionCount())
+	}
+}
+
+func TestInjectedStatusReachesTheClient(t *testing.T) {
+	fleet, srv := newFleetWithTools(t, chaosmock.Tool{Name: "some_tool"})
+	c, ctx := connect(t, fleet.ServerURL("alpha"))
+
+	srv.SetFaults(chaosmock.Faults{Status: 429, RetryAfter: "3"})
+
+	if _, err := c.ListTools(ctx, mcp.ListToolsRequest{}); err == nil {
+		t.Fatalf("expected tools/list to fail while a 429 is injected")
+	}
+
+	// Clearing the fault has to restore service without any client-side action,
+	// which is what makes a transient upstream failure testable at all.
+	srv.ClearFaults()
+	if _, err := c.ListTools(ctx, mcp.ListToolsRequest{}); err != nil {
+		t.Fatalf("tools/list should succeed once the fault is cleared: %v", err)
+	}
+}
+
+func TestPerIdentityOverlayServesDifferentTools(t *testing.T) {
+	fleet := chaosmock.NewFleet()
+	srv := fleet.Add("alpha")
+	srv.Tools().Set([]chaosmock.Tool{{Name: "shared_tool"}})
+	srv.SetAuth(chaosmock.Auth{Bearer: map[string]string{
+		"token-a": "user-a",
+		"token-b": "user-b",
+	}})
+	// Only user-a sees a private tool. Two callers against one server seeing
+	// two tool lists is the shape per-user auth has to reproduce.
+	srv.Tools().SetOverlay("user-a", []chaosmock.Tool{
+		{Name: "shared_tool"}, {Name: "private_tool"},
+	})
+	fleet.Start()
+	t.Cleanup(fleet.Stop)
+
+	for _, tc := range []struct {
+		token string
+		want  int
+	}{{"token-a", 2}, {"token-b", 1}} {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		c, err := client.NewStreamableHttpClient(fleet.ServerURL("alpha"),
+			transportHeaders(map[string]string{"Authorization": "Bearer " + tc.token}))
+		if err != nil {
+			t.Fatalf("failed to create client: %v", err)
+		}
+		if err := c.Start(ctx); err != nil {
+			t.Fatalf("failed to start client: %v", err)
+		}
+		var req mcp.InitializeRequest
+		req.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+		req.Params.ClientInfo = mcp.Implementation{Name: "chaosmock-compat", Version: "1.0.0"}
+		if _, err := c.Initialize(ctx, req); err != nil {
+			t.Fatalf("initialize failed for %s: %v", tc.token, err)
+		}
+		res, err := c.ListTools(ctx, mcp.ListToolsRequest{})
+		if err != nil {
+			t.Fatalf("tools/list failed for %s: %v", tc.token, err)
+		}
+		if len(res.Tools) != tc.want {
+			t.Errorf("token %s: expected %d tools, got %d", tc.token, tc.want, len(res.Tools))
+		}
+		_ = c.Close()
+		cancel()
+	}
+
+	// Revoking one token must leave the other working. This asymmetry is the
+	// whole point of per-identity credentials, and a shared-state
+	// implementation fails exactly here.
+	if !srv.RevokeToken("token-a") {
+		t.Fatalf("expected token-a to be revokable")
+	}
+	if _, ok := srv.Auth().Bearer["token-b"]; !ok {
+		t.Errorf("revoking token-a must not remove token-b")
+	}
+}
+
+// transportHeaders is a thin alias for the mcp-go option that bakes static
+// headers onto a client, named locally so the tests above read as being about
+// identity rather than about transport plumbing.
+func transportHeaders(h map[string]string) transport.StreamableHTTPCOption {
+	return transport.WithHTTPHeaders(h)
+}
+
+func TestRealClientReadsInstructionsAndAnnotations(t *testing.T) {
+	fleet, srv := newFleetWithTools(t,
+		chaosmock.Tool{Name: "echo_ro", Annotations: json.RawMessage(`{"readOnlyHint":true,"title":"Echo"}`)},
+		chaosmock.Tool{Name: "plain_tool"},
+	)
+	srv.SetInstructions("Call echo_ro first")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	c, err := client.NewStreamableHttpClient(fleet.ServerURL("alpha"))
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	defer c.Close()
+	if err := c.Start(ctx); err != nil {
+		t.Fatalf("failed to start client: %v", err)
+	}
+	var req mcp.InitializeRequest
+	req.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+	req.Params.ClientInfo = mcp.Implementation{Name: "chaosmock-compat", Version: "1.0.0"}
+	initRes, err := c.Initialize(ctx, req)
+	if err != nil {
+		t.Fatalf("initialize failed: %v", err)
+	}
+	if initRes.Instructions != "Call echo_ro first" {
+		t.Errorf("expected the instructions in the initialize result, got %q", initRes.Instructions)
+	}
+
+	res, err := c.ListTools(ctx, mcp.ListToolsRequest{})
+	if err != nil {
+		t.Fatalf("tools/list failed: %v", err)
+	}
+	ro := res.Tools[0].Annotations
+	if ro.ReadOnlyHint == nil || !*ro.ReadOnlyHint || ro.Title != "Echo" {
+		t.Errorf("expected echo_ro to arrive read-only and titled, got %+v", ro)
+	}
+	if plain := res.Tools[1].Annotations; plain.ReadOnlyHint != nil || plain.Title != "" {
+		t.Errorf("a tool without annotations must arrive without them, got %+v", plain)
+	}
+}
+
+func TestRealClientParsesScriptedReplies(t *testing.T) {
+	fleet, _ := newFleetWithTools(t,
+		chaosmock.Tool{Name: "mixed_tool", Reply: json.RawMessage(`{"content":[` +
+			`{"type":"text","text":"a"},{"type":"text","text":"b"},` +
+			`{"type":"image","data":"QUJD","mimeType":"image/png"}],"structuredContent":{"k":1}}`)},
+		chaosmock.Tool{Name: "empty_tool", Reply: json.RawMessage(`{"content":[]}`)},
+		chaosmock.Tool{Name: "failing_tool", Reply: json.RawMessage(`{"content":[{"type":"text","text":"no"}],"isError":true}`)},
+	)
+	c, ctx := connect(t, fleet.ServerURL("alpha"))
+
+	call := func(name string) *mcp.CallToolResult {
+		t.Helper()
+		var req mcp.CallToolRequest
+		req.Params.Name = name
+		res, err := c.CallTool(ctx, req)
+		if err != nil {
+			t.Fatalf("tools/call %s failed: %v", name, err)
+		}
+		return res
+	}
+
+	mixed := call("mixed_tool")
+	if len(mixed.Content) != 3 {
+		t.Fatalf("expected three content blocks, got %d", len(mixed.Content))
+	}
+	if img, ok := mcp.AsImageContent(mixed.Content[2]); !ok || img.Data != "QUJD" || img.MIMEType != "image/png" {
+		t.Errorf("expected the image block to survive, got %+v", mixed.Content[2])
+	}
+	if sc, ok := mixed.StructuredContent.(map[string]any); !ok || sc["k"] != float64(1) {
+		t.Errorf("expected structuredContent {k:1}, got %#v", mixed.StructuredContent)
+	}
+
+	// An empty result is "content":[], which a client must accept as a
+	// success with nothing to show.
+	if empty := call("empty_tool"); len(empty.Content) != 0 || empty.IsError {
+		t.Errorf("expected an empty successful result, got %+v", empty)
+	}
+	if failing := call("failing_tool"); !failing.IsError {
+		t.Errorf("expected the scripted isError to reach the client")
+	}
+}
+
+// rawPost sends one JSON-RPC message to a streamable HTTP endpoint and returns
+// the status, the session id and the body, for assertions about bytes on the
+// wire that a client library would normalize away.
+func rawPost(t *testing.T, url, sessionID, body string) (int, string, []byte) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("failed to build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	if sessionID != "" {
+		req.Header.Set(chaosmock.HeaderSessionID, sessionID)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	out, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read body: %v", err)
+	}
+	return resp.StatusCode, resp.Header.Get(chaosmock.HeaderSessionID), out
+}
+
+func TestToolsListSendsOnlyWireFields(t *testing.T) {
+	fleet, _ := newFleetWithTools(t, chaosmock.Tool{
+		Name:        "echo_ro",
+		Annotations: json.RawMessage(`{"readOnlyHint":true}`),
+		Reply:       json.RawMessage(`{"content":[]}`),
+		Fault:       &chaosmock.Faults{Latency: chaosmock.Duration(time.Millisecond)},
+	})
+	url := fleet.ServerURL("alpha")
+
+	_, session, _ := rawPost(t, url, "", `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`)
+	status, _, body := rawPost(t, url, session, `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)
+	if status != http.StatusOK {
+		t.Fatalf("tools/list returned %d: %s", status, body)
+	}
+	var res struct {
+		Result struct {
+			Tools []map[string]json.RawMessage `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil || len(res.Result.Tools) != 1 {
+		t.Fatalf("unexpected tools/list body: %s", body)
+	}
+	var keys []string
+	for k := range res.Result.Tools[0] {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	// The reply and the fault are instructions to the mock. A client that saw
+	// them would be looking at fields no real server sends.
+	if got := strings.Join(keys, ","); got != "annotations,description,inputSchema,name" {
+		t.Errorf("expected only wire fields, got %s", got)
+	}
+}
+
+func TestScopedFaultSparesTheHandshakeAndIsCounted(t *testing.T) {
+	fleet, srv := newFleetWithTools(t, chaosmock.Tool{Name: "echo_tool"})
+	srv.SetFaults(chaosmock.Faults{Status: 503, Methods: []string{"tools/call"}})
+
+	// The handshake and the listing are out of scope, so they succeed.
+	c, ctx := connect(t, fleet.ServerURL("alpha"))
+	if _, err := c.ListTools(ctx, mcp.ListToolsRequest{}); err != nil {
+		t.Fatalf("tools/list is out of the fault's scope and should succeed: %v", err)
+	}
+
+	var req mcp.CallToolRequest
+	req.Params.Name = "echo_tool"
+	if _, err := c.CallTool(ctx, req); err == nil || !strings.Contains(err.Error(), "503") {
+		t.Fatalf("expected the call to fail with 503, got %v", err)
+	}
+
+	// The refused call is counted as a request for its method, but it never
+	// reached the tool.
+	counters := srv.Counters().Snapshot()
+	if counters.Methods["tools/call"] != 1 {
+		t.Errorf("expected the faulted tools/call to be counted, got methods %v", counters.Methods)
+	}
+	if counters.Calls["echo_tool"] != 0 {
+		t.Errorf("a call answered by an injected status must not count as reaching the tool, got %v", counters.Calls)
+	}
+	if counters.Initializes != 1 {
+		t.Errorf("expected one successful handshake, got %d", counters.Initializes)
+	}
+}
+
+func TestPerToolFaultBreaksOneToolOnce(t *testing.T) {
+	fleet, srv := newFleetWithTools(t,
+		chaosmock.Tool{Name: "flaky_tool", Fault: &chaosmock.Faults{Status: 503, StatusOnce: true}},
+		chaosmock.Tool{Name: "steady_tool"},
+	)
+	c, ctx := connect(t, fleet.ServerURL("alpha"))
+
+	call := func(name string) error {
+		var req mcp.CallToolRequest
+		req.Params.Name = name
+		_, err := c.CallTool(ctx, req)
+		return err
+	}
+
+	if err := call("steady_tool"); err != nil {
+		t.Fatalf("a tool without a fault must be unaffected: %v", err)
+	}
+	if err := call("flaky_tool"); err == nil || !strings.Contains(err.Error(), "503") {
+		t.Fatalf("expected the first flaky_tool call to fail with 503, got %v", err)
+	}
+	if err := call("flaky_tool"); err != nil {
+		t.Fatalf("the one-shot fault should be spent after one call: %v", err)
+	}
+
+	counters := srv.Counters().Snapshot()
+	if counters.Methods["tools/call"] != 3 {
+		t.Errorf("expected three tools/call requests, got %v", counters.Methods)
+	}
+	if counters.Calls["flaky_tool"] != 1 {
+		t.Errorf("expected flaky_tool to be reached once, got %v", counters.Calls)
+	}
+	// Spending the fault is not a change to the tool set.
+	if rev := srv.Tools().Revision(); rev != 1 {
+		t.Errorf("expected the revision to stay at 1, got %d", rev)
+	}
+}
+
+func TestInjectedFailuresCarryTheConfiguredMessage(t *testing.T) {
+	fleet, srv := newFleetWithTools(t, chaosmock.Tool{Name: "echo_tool"})
+	c, ctx := connect(t, fleet.ServerURL("alpha"))
+
+	var req mcp.CallToolRequest
+	req.Params.Name = "echo_tool"
+
+	srv.SetFaults(chaosmock.Faults{Status: 503, Message: "upstream overloaded", Methods: []string{"tools/call"}})
+	if _, err := c.CallTool(ctx, req); err == nil || !strings.Contains(err.Error(), "upstream overloaded") {
+		t.Errorf("expected the status body to carry the message, got %v", err)
+	}
+
+	srv.SetFaults(chaosmock.Faults{ErrRate: 1, ErrKind: chaosmock.ErrKindProtocol, Message: "access forbidden by tool policy"})
+	if _, err := c.CallTool(ctx, req); err == nil || !strings.Contains(err.Error(), "access forbidden by tool policy") {
+		t.Errorf("expected the JSON-RPC error to carry the message, got %v", err)
+	}
+
+	srv.SetFaults(chaosmock.Faults{ErrRate: 1, ErrKind: chaosmock.ErrKindTool, Message: "quota exceeded"})
+	res, err := c.CallTool(ctx, req)
+	if err != nil {
+		t.Fatalf("a tool-level error is a successful exchange: %v", err)
+	}
+	if text, ok := mcp.AsTextContent(res.Content[0]); !res.IsError || !ok || text.Text != "quota exceeded" {
+		t.Errorf("expected an isError result reading %q, got %+v", "quota exceeded", res)
+	}
+}
