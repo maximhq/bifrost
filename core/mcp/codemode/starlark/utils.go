@@ -5,6 +5,7 @@ package starlark
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strings"
@@ -299,6 +300,40 @@ func generatePythonErrorHints(errorMessage string, serverKeys []string) []string
 	return hints
 }
 
+const structuredMediaKey = "_media"
+
+// structuredMediaObject reports whether media can be named without replacing server data.
+func structuredMediaObject(result *mcp.CallToolResult) (map[string]any, bool) {
+	object, ok := result.StructuredContent.(map[string]any)
+	if !ok || object == nil {
+		return nil, false
+	}
+	_, taken := object[structuredMediaKey]
+	return object, !taken
+}
+
+// Bound placeholder count and size before allocating the structured projection.
+func structuredMediaPlaceholders(result *mcp.CallToolResult, valueLimit int) ([]string, error) {
+	var names []string
+	size := 0
+	for _, block := range result.Content {
+		_, kind, data := mediaBlock(block)
+		if data == "" {
+			continue
+		}
+		if len(result.Content) > valueLimit/128 || len(kind) > valueLimit-size {
+			return nil, fmt.Errorf("code mode tool result exceeds size limit")
+		}
+		name := schemas.MediaPlaceholder(kind, len(data))
+		if len(name) > valueLimit-size {
+			return nil, fmt.Errorf("code mode tool result exceeds size limit")
+		}
+		size += len(name)
+		names = append(names, name)
+	}
+	return names, nil
+}
+
 // extractTextFromMCPResponse extracts text content from an MCP tool response,
 // bounded by valueLimit bytes.
 func extractTextFromMCPResponse(toolResponse *mcp.CallToolResult, toolName string, valueLimit int) (string, error) {
@@ -308,7 +343,19 @@ func extractTextFromMCPResponse(toolResponse *mcp.CallToolResult, toolName strin
 	// Structured content is the machine-readable result the MCP spec defines; the text
 	// blocks beside it are a copy kept for older clients. An error result keeps its text.
 	if !toolResponse.IsError && toolResponse.StructuredContent != nil {
-		encoded, err := schemas.MarshalSorted(toolResponse.StructuredContent)
+		value := toolResponse.StructuredContent
+		if object, ok := structuredMediaObject(toolResponse); ok {
+			names, err := structuredMediaPlaceholders(toolResponse, valueLimit)
+			if err != nil {
+				return "", err
+			}
+			if len(names) > 0 {
+				named := maps.Clone(object)
+				named[structuredMediaKey] = names
+				value = named
+			}
+		}
+		encoded, err := schemas.MarshalSorted(value)
 		if err != nil {
 			return "", err
 		}
@@ -330,10 +377,12 @@ func extractTextFromMCPResponse(toolResponse *mcp.CallToolResult, toolName strin
 		switch content := contentBlock.(type) {
 		case mcp.TextContent:
 			parts = []string{content.Text}
-		case mcp.ImageContent:
-			parts = []string{schemas.MediaPlaceholder(orKind(content.MIMEType, "image"), len(content.Data))}
-		case mcp.AudioContent:
-			parts = []string{schemas.MediaPlaceholder(orKind(content.MIMEType, "audio"), len(content.Data))}
+		case mcp.ImageContent, mcp.AudioContent:
+			_, kind, data := mediaBlock(contentBlock)
+			if len(kind) > valueLimit-size {
+				return "", fmt.Errorf("code mode tool result exceeds size limit")
+			}
+			parts = []string{schemas.MediaPlaceholder(kind, len(data))}
 		case mcp.EmbeddedResource:
 			parts = []string{embeddedResourceText(content.Resource)}
 		case mcp.ResourceLink:

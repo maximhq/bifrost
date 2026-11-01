@@ -298482,6 +298482,378 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "297. Code mode returns nested image and audio over /mcp (code-mode-media) [SERIAL]",
+      "description": "Exercises executeToolCode through the real /mcp gateway and the SSE fixture at localhost:3012. A run-scoped code-mode client permits only capture_media. The success case reads the structured title and both _media placeholders, then checks text-first PNG and WAV content blocks with exact bytes and MIME types. Controls with a nested tool error and a later sandbox failure must withhold media. No provider requests are made. Serial because registering a code-mode client makes its meta-tools visible gateway-wide. Run with FEATURE=code-mode-media; rebuild examples/mcps/remote-test-server before reusing a fixture already listening on :3012.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai code-mode-media provision a run-scoped code-mode SSE client",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('codeModeMediaClient', 'harness_codemode_media_' + pm.variables.replaceIn('{{$guid}}').replace(/-/g, ''));",
+                  "pm.collectionVariables.unset('codeModeMediaClientId');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the code-mode SSE client is created', function () {",
+                  "  pm.expect(pm.response.code, 'create failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().status, pm.response.text()).to.equal('success');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{codeModeMediaClient}}\",\n  \"connection_type\": \"sse\",\n  \"connection_string\": \"http://localhost:3012/sse\",\n  \"auth_type\": \"none\",\n  \"is_code_mode_client\": true,\n  \"tools_to_execute\": [\"capture_media\"],\n  \"tools_to_auto_execute\": [\"capture_media\"]\n}"
+            },
+            "url": "{{baseUrl}}/api/mcp/client"
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-media capture the returned client id and fixture readiness",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the run-scoped client exposes capture_media and its returned id', function () {",
+                  "  pm.expect(pm.response.code, 'listing failed: ' + pm.response.text()).to.equal(200);",
+                  "  var clients = pm.response.json().clients;",
+                  "  pm.expect(clients, pm.response.text()).to.be.an('array');",
+                  "  var matches = clients.filter(function (c) { return c.config && c.config.name === pm.collectionVariables.get('codeModeMediaClient'); });",
+                  "  pm.expect(matches, 'the run-scoped client is not uniquely listed: ' + pm.response.text()).to.have.lengthOf(1);",
+                  "  var mine = matches[0];",
+                  "  pm.expect(mine.config.client_id, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.collectionVariables.set('codeModeMediaClientId', mine.config.client_id);",
+                  "  pm.expect(mine.config.is_code_mode_client, pm.response.text()).to.equal(true);",
+                  "  pm.expect(mine.config.tools_to_execute, pm.response.text()).to.eql(['capture_media']);",
+                  "  pm.expect(mine.config.tools_to_auto_execute, pm.response.text()).to.eql(['capture_media']);",
+                  "  pm.expect(mine.tools, pm.response.text()).to.be.an('array');",
+                  "  var capture = mine.tools.filter(function (t) { return t.name === 'capture_media'; });",
+                  "  pm.expect(capture, 'capture_media is missing; rebuild the SSE fixture on :3012: ' + pm.response.text()).to.have.lengthOf(1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/mcp/clients?search={{codeModeMediaClient}}"
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-media /mcp forwards nested image and audio after text",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The gateway can return plain JSON or an SSE data frame.",
+                  "function rpc(res) {",
+                  "  var text = res.text();",
+                  "  var line = text;",
+                  "  if (text.indexOf('data:') !== -1) {",
+                  "    var lines = text.split('\\n');",
+                  "    for (var i = 0; i < lines.length; i++) {",
+                  "      var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "      if (t.charAt(0) === '{') { line = t; break; }",
+                  "    }",
+                  "  }",
+                  "  return JSON.parse(line);",
+                  "}",
+                  "",
+                  "pm.test('nested media survives the gateway without leaking into script text', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var msg = rpc(pm.response);",
+                  "  pm.expect(msg.jsonrpc, pm.response.text()).to.equal('2.0');",
+                  "  pm.expect(msg.id, pm.response.text()).to.equal(2971);",
+                  "  pm.expect(msg.error, pm.response.text()).to.be.undefined;",
+                  "  var result = msg.result;",
+                  "  pm.expect(result, pm.response.text()).to.be.an('object');",
+                  "  pm.expect(result.isError, pm.response.text()).to.not.equal(true);",
+                  "  pm.expect(result.content, pm.response.text()).to.be.an('array').with.lengthOf(3);",
+                  "  pm.expect(result.content.map(function (c) { return c.type; })).to.eql(['text', 'image', 'audio']);",
+                  "  var png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';",
+                  "  var wav = 'UklGRiYAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQIAAAAAAA==';",
+                  "  pm.expect(result.content[1].data).to.equal(png);",
+                  "  pm.expect(result.content[1].mimeType).to.equal('image/png');",
+                  "  pm.expect(result.content[2].data).to.equal(wav);",
+                  "  pm.expect(result.content[2].mimeType).to.equal('audio/wav');",
+                  "  var text = result.content[0].text;",
+                  "  pm.expect(text, pm.response.text()).to.be.a('string');",
+                  "  pm.expect(text).to.not.include(png).and.to.not.include(wav).and.to.not.include('base64,');",
+                  "  var imageLabel = '[image/png, ' + (png.length / 4 * 3) + ' bytes returned by the tool, not shown]';",
+                  "  var audioLabel = '[audio/wav, ' + (wav.length / 4 * 3) + ' bytes returned by the tool, not shown]';",
+                  "  pm.expect(text).to.include('Attached media: ' + imageLabel + ' ' + audioLabel);",
+                  "  var marker = 'Return value: ';",
+                  "  var at = text.indexOf(marker);",
+                  "  pm.expect(at, 'the script returned no compact value: ' + text).to.be.above(-1);",
+                  "  var compact = text.substring(at + marker.length).split('\\nAttached media:')[0];",
+                  "  pm.expect(JSON.parse(compact), 'the script did not read its structured title and media placeholders: ' + text).to.eql(['Fixture capture', imageLabel, audioLabel]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "MCP-Protocol-Version",
+                "value": "2025-06-18"
+              },
+              {
+                "key": "Mcp-Method",
+                "value": "tools/call"
+              },
+              {
+                "key": "Mcp-Name",
+                "value": "executeToolCode"
+              }
+            ],
+            "url": "{{baseUrl}}/mcp",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":2971,\"method\":\"tools/call\",\"params\":{\"name\":\"executeToolCode\",\"arguments\":{\"code\":\"r = {{codeModeMediaClient}}.capture_media()\\nresult = [r[\\\"title\\\"], r[\\\"_media\\\"][0], r[\\\"_media\\\"][1]]\"}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-media /mcp withholds nested-error image and audio",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function rpc(res) {",
+                  "  var text = res.text();",
+                  "  var line = text;",
+                  "  if (text.indexOf('data:') !== -1) {",
+                  "    var lines = text.split('\\n');",
+                  "    for (var i = 0; i < lines.length; i++) {",
+                  "      var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "      if (t.charAt(0) === '{') { line = t; break; }",
+                  "    }",
+                  "  }",
+                  "  return JSON.parse(line);",
+                  "}",
+                  "",
+                  "pm.test('a handled nested error returns diagnostic text but no media', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var msg = rpc(pm.response);",
+                  "  pm.expect(msg.jsonrpc, pm.response.text()).to.equal('2.0');",
+                  "  pm.expect(msg.id, pm.response.text()).to.equal(2972);",
+                  "  pm.expect(msg.error, pm.response.text()).to.be.undefined;",
+                  "  var result = msg.result;",
+                  "  pm.expect(result, pm.response.text()).to.be.an('object');",
+                  "  pm.expect(result.isError, pm.response.text()).to.not.equal(true);",
+                  "  pm.expect(result.content, pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(result.content[0].type, pm.response.text()).to.equal('text');",
+                  "  var text = result.content[0].text;",
+                  "  pm.expect(text).to.include('capture media fixture failed');",
+                  "  pm.expect(text).to.include('Execution completed, but 1 nested tool call failed.');",
+                  "  pm.expect(text).to.not.include('Attached media:');",
+                  "  pm.expect(text).to.not.include('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=');",
+                  "  pm.expect(text).to.not.include('UklGRiYAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQIAAAAAAA==');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "MCP-Protocol-Version",
+                "value": "2025-06-18"
+              },
+              {
+                "key": "Mcp-Method",
+                "value": "tools/call"
+              },
+              {
+                "key": "Mcp-Name",
+                "value": "executeToolCode"
+              }
+            ],
+            "url": "{{baseUrl}}/mcp",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":2972,\"method\":\"tools/call\",\"params\":{\"name\":\"executeToolCode\",\"arguments\":{\"code\":\"r = {{codeModeMediaClient}}.capture_media(fail=True)\\nresult = r.error\"}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-media /mcp withholds media after a sandbox failure",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function rpc(res) {",
+                  "  var text = res.text();",
+                  "  var line = text;",
+                  "  if (text.indexOf('data:') !== -1) {",
+                  "    var lines = text.split('\\n');",
+                  "    for (var i = 0; i < lines.length; i++) {",
+                  "      var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "      if (t.charAt(0) === '{') { line = t; break; }",
+                  "    }",
+                  "  }",
+                  "  return JSON.parse(line);",
+                  "}",
+                  "",
+                  "pm.test('a failed sandbox discards media collected before its failure', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var msg = rpc(pm.response);",
+                  "  pm.expect(msg.jsonrpc, pm.response.text()).to.equal('2.0');",
+                  "  pm.expect(msg.id, pm.response.text()).to.equal(2973);",
+                  "  pm.expect(msg.error, pm.response.text()).to.be.undefined;",
+                  "  var result = msg.result;",
+                  "  pm.expect(result, pm.response.text()).to.be.an('object');",
+                  "  pm.expect(result.isError, pm.response.text()).to.equal(true);",
+                  "  pm.expect(result.content, pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(result.content[0].type, pm.response.text()).to.equal('text');",
+                  "  var text = result.content[0].text;",
+                  "  pm.expect(text).to.include('code-mode-media sandbox stopped after capture');",
+                  "  pm.expect(text).to.include('code-mode-media capture observed: Fixture capture');",
+                  "  pm.expect(text).to.not.include('Attached media:');",
+                  "  pm.expect(text).to.not.include('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=');",
+                  "  pm.expect(text).to.not.include('UklGRiYAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQIAAAAAAA==');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "MCP-Protocol-Version",
+                "value": "2025-06-18"
+              },
+              {
+                "key": "Mcp-Method",
+                "value": "tools/call"
+              },
+              {
+                "key": "Mcp-Name",
+                "value": "executeToolCode"
+              }
+            ],
+            "url": "{{baseUrl}}/mcp",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":2973,\"method\":\"tools/call\",\"params\":{\"name\":\"executeToolCode\",\"arguments\":{\"code\":\"r = {{codeModeMediaClient}}.capture_media()\\nprint(\\\"code-mode-media capture observed:\\\", r[\\\"title\\\"])\\nfail(\\\"code-mode-media sandbox stopped after capture\\\")\"}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-media delete the run-scoped client by its returned id",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.collectionVariables.get('codeModeMediaClientId'), 'the fixture readiness request did not capture the client id').to.be.a('string').and.not.empty;"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the run-scoped code-mode client is removed', function () {",
+                  "  pm.expect(pm.response.code, 'cleanup failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().status, pm.response.text()).to.equal('success');",
+                  "});",
+                  "pm.collectionVariables.unset('codeModeMediaClient');",
+                  "pm.collectionVariables.unset('codeModeMediaClientId');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/mcp/client/{{codeModeMediaClientId}}"
+          }
+        }
+      ]
     }
   ]
 }
