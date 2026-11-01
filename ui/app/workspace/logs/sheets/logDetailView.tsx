@@ -1439,6 +1439,18 @@ export function LogDetailView({
 										}
 									/>
 								)}
+								{log.client_ip && (
+									<LogEntryDetailsView
+										className="w-full"
+										label={t("labels.clientIp")}
+										valueTooltip={log.client_ip}
+										value={
+											<span className="font-mono" data-testid="logdetails-client-ip">
+												{log.client_ip}
+											</span>
+										}
+									/>
+								)}
 								<LogEntryDetailsView
 									className="w-full"
 									label={t("labels.type")}
