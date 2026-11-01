@@ -519,6 +519,10 @@ RelayLog:
       type: string
     user_name:
       type: string
+    user_email:
+      type: string
+      description: Email of the user the request was attributed to, recorded at request time. Set by enterprise governance for user sessions and for virtual keys assigned to a user.
+      nullable: true
     virtual_key_id:
       type: string
     virtual_key_name:
