@@ -568,6 +568,14 @@ export function RelayLogDetailSheet({
 												/>
 											)}
 											<AttributionLink label={t("labels.user")} id={display.user_id} name={display.user_name} filterKey="user_ids" />
+											{display.user_email && (
+												<LogEntryDetailsView
+													className="w-full"
+													label={t("labels.userEmail")}
+													valueTooltip={display.user_email}
+													value={<span data-testid="relaylogdetails-user-email">{display.user_email}</span>}
+												/>
+											)}
 											<AttributionLink label={t("labels.team")} id={display.team_id} name={display.team_name} filterKey="team_ids" />
 											<AttributionLink
 												label={t("labels.customer")}

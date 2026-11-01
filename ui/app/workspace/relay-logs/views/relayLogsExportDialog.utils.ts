@@ -48,6 +48,7 @@ export const RELAY_LOGS_CSV_HEADERS = [
 	"Project",
 	"Job ID",
 	"Client IP",
+	"User Email",
 ] as const;
 
 /** The client app for a row, resolved the way the table's App column resolves it. */
@@ -99,6 +100,7 @@ export function relayLogToCSVRow(log: RelayLog): unknown[] {
 		log.project_name || log.project_id || "",
 		log.job_id || "",
 		log.client_ip || "",
+		log.user_email || "",
 	];
 }
 

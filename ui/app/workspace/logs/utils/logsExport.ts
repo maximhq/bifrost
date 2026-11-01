@@ -35,6 +35,7 @@ export const LOGS_CSV_HEADERS = [
 	"Project",
 	"Stop Reason",
 	"Client IP",
+	"User Email",
 ];
 
 /**
@@ -177,6 +178,7 @@ export function logEntryToCSVRow(log: LogEntry): unknown[] {
 		project,
 		log.stop_reason || "",
 		log.client_ip || "",
+		log.user_email || "",
 	];
 }
 
