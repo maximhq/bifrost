@@ -191,6 +191,7 @@ type BifrostPassthroughResponse struct {
 	ExtraFields      BifrostResponseExtraFields
 	Path             string                   // stripped provider path, e.g. "/v1/chat/completions"
 	PassthroughUsage *BifrostPassthroughUsage // usage extracted by the provider for billing — set on the unary response (non-streaming) or the final streaming chunk; nil when no billable usage could be extracted
+	ServedModel      string                   // model or agent the upstream reports running, for requests that named none (an Interactions poll)
 }
 
 type PassthroughLogParams struct {

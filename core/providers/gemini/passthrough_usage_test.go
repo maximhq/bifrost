@@ -283,6 +283,52 @@ func TestInteractionsPassthroughPathKinds(t *testing.T) {
 	}
 }
 
+// TestInteractionsPassthroughUsageNamesAgent pins the Deep Research polling flow: every poll names
+// the agent, including an in-progress one that reports no usage, and a completed read carries the
+// run's usage.
+func TestInteractionsPassthroughUsageNamesAgent(t *testing.T) {
+	inProgress := []byte(`{"id":"int_named","agent":"deep-research-preview-04-2026","status":"in_progress"}`)
+	completed := []byte(`{"id":"int_named","agent":"deep-research-preview-04-2026","status":"completed","usage":{"total_input_tokens":361700,"total_output_tokens":20000,"total_thought_tokens":13400,"total_tokens":437000}}`)
+
+	u, model := gemini.InteractionsPassthroughUsage(inProgress)
+	if u != nil || model != "deep-research-preview-04-2026" {
+		t.Fatalf("in-progress poll: usage=%v model=%q, want nil usage and the agent", u, model)
+	}
+	u, model = gemini.InteractionsPassthroughUsage(completed)
+	if u == nil || u.LLMUsage.PromptTokens != 361700 || u.LLMUsage.CompletionTokens != 33400 || u.LLMUsage.TotalTokens != 437000 {
+		t.Fatalf("completed read: usage=%+v, want the run's usage", u)
+	}
+	if model != "deep-research-preview-04-2026" {
+		t.Fatalf("completed read: model=%q", model)
+	}
+}
+
+func TestInteractionsPassthroughUsageModelFallback(t *testing.T) {
+	body := []byte(`{"model":"gemini-3.8-flash","status":"completed","usage":{"total_input_tokens":10,"total_output_tokens":5,"total_tokens":15}}`)
+	if u, model := gemini.InteractionsPassthroughUsage(body); u == nil || model != "gemini-3.8-flash" {
+		t.Fatalf("usage=%v model=%q, want the run's usage and the model", u, model)
+	}
+}
+
+// TestInteractionsStreamObserverNamesModel pins that a stream's final chunk names the agent from
+// the nested interaction.completed event and keeps the observed usage.
+func TestInteractionsStreamObserverNamesModel(t *testing.T) {
+	completedEvt := []byte(`{"event_type":"interaction.completed","interaction":{"id":"int_stream","agent":"deep-research-max-preview-04-2026","status":"completed","usage":{"total_input_tokens":1000,"total_output_tokens":50,"total_tokens":1050}}}`)
+	o := gemini.NewInteractionsStreamObserver()
+	u, model := o.Finalize(o.Observe(completedEvt))
+	if u == nil || u.LLMUsage.TotalTokens != 1050 || model != "deep-research-max-preview-04-2026" {
+		t.Fatalf("usage=%+v model=%q", u, model)
+	}
+}
+
+func BenchmarkInteractionsPassthroughUsage(b *testing.B) {
+	body := []byte(`{"id":"int_bench","agent":"deep-research-preview-04-2026","status":"completed","usage":{"total_input_tokens":361700,"total_output_tokens":20000,"total_thought_tokens":13400,"total_tokens":437000}}`)
+	b.ReportAllocs()
+	for b.Loop() {
+		_, _ = gemini.InteractionsPassthroughUsage(body)
+	}
+}
+
 // TestExtractGeminiPassthroughUsage_EmbeddingPredictBilling pins that a Vertex embedding model on
 // :predict is billed from its predict response (token statistics) whatever the path classifies as,
 // and that an Imagen :predict is still billed per image.

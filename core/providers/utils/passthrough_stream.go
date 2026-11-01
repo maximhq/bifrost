@@ -44,6 +44,9 @@ type PassthroughStreamParams struct {
 	// attached to the final chunk. Implementations populate usage directly from the event —
 	// no full response body is retained.
 	Observe func(event []byte) *schemas.BifrostPassthroughUsage
+	// Finalize, when set, settles the observed usage once the stream ends and names the model the
+	// stream reported running. It may drop usage that was already billed (a re-read Interactions run).
+	Finalize func(usage *schemas.BifrostPassthroughUsage) (*schemas.BifrostPassthroughUsage, string)
 }
 
 // StreamPassthrough runs the shared passthrough streaming loop. It forwards each raw upstream
@@ -204,12 +207,17 @@ func streamPassthrough(
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 			extraFields.Latency = time.Since(params.StartTime).Milliseconds()
 			extraFields.RawRequest = params.RawRequest
+			var servedModel string
+			if params.Finalize != nil && success {
+				usage, servedModel = params.Finalize(usage)
+			}
 			ProcessAndSendResponse(ctx, postHookRunner, &schemas.BifrostResponse{
 				PassthroughResponse: &schemas.BifrostPassthroughResponse{
 					StatusCode:       params.StatusCode,
 					Headers:          params.Headers,
 					ExtraFields:      extraFields,
 					PassthroughUsage: usage,
+					ServedModel:      servedModel,
 				},
 			}, ch, postHookSpanFinalizer)
 		}

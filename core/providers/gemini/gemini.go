@@ -4276,8 +4276,13 @@ func (provider *GeminiProvider) Passthrough(
 	}
 
 	var passthroughUsage *schemas.BifrostPassthroughUsage
+	var servedModel string
 	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
-		passthroughUsage = ExtractGeminiPassthroughUsage(req.Path, req.Body, body)
+		if IsInteractionsPassthroughPath(req.Path) {
+			passthroughUsage, servedModel = InteractionsPassthroughUsage(body)
+		} else {
+			passthroughUsage = ExtractGeminiPassthroughUsage(req.Path, req.Body, body)
+		}
 	}
 
 	bifrostResponse := &schemas.BifrostPassthroughResponse{
@@ -4290,6 +4295,7 @@ func (provider *GeminiProvider) Passthrough(
 			PassthroughPath:         req.Path,
 		},
 		PassthroughUsage: passthroughUsage,
+		ServedModel:      servedModel,
 	}
 
 	return bifrostResponse, nil
@@ -4368,21 +4374,24 @@ func (provider *GeminiProvider) PassthroughStream(
 	}
 
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
-	return providerUtils.StreamPassthrough(
-		ctx, postHookRunner, postHookSpanFinalizer, resp, bodyStream,
-		providerUtils.PassthroughStreamParams{
-			StatusCode:          resp.StatusCode(),
-			Headers:             headers,
-			Path:                req.Path,
-			RawRequest:          req.Body,
-			CancellationBody:    providerUtils.PassthroughJSONBody(fasthttpReq, req.Body),
-			StartTime:           startTime,
-			UseTerminalDetector: true,
-			Logger:              provider.logger,
-			HasUsage:            HasGeminiPassthroughUsage,
-			Observe: func(event []byte) *schemas.BifrostPassthroughUsage {
-				return ExtractGeminiPassthroughUsage(req.Path, req.Body, event)
-			},
+	params := providerUtils.PassthroughStreamParams{
+		StatusCode:          resp.StatusCode(),
+		Headers:             headers,
+		Path:                req.Path,
+		RawRequest:          req.Body,
+		CancellationBody:    providerUtils.PassthroughJSONBody(fasthttpReq, req.Body),
+		StartTime:           startTime,
+		UseTerminalDetector: true,
+		Logger:              provider.logger,
+		HasUsage:            HasGeminiPassthroughUsage,
+		Observe: func(event []byte) *schemas.BifrostPassthroughUsage {
+			return ExtractGeminiPassthroughUsage(req.Path, req.Body, event)
 		},
-	), nil
+	}
+	if IsInteractionsPassthroughPath(req.Path) {
+		observer := NewInteractionsStreamObserver()
+		params.Observe = observer.Observe
+		params.Finalize = observer.Finalize
+	}
+	return providerUtils.StreamPassthrough(ctx, postHookRunner, postHookSpanFinalizer, resp, bodyStream, params), nil
 }
