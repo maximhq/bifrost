@@ -426,12 +426,14 @@ type replayTestFixture struct {
 	calls       atomic.Int32
 	commits     atomic.Int32
 	backoff     chan struct{}
+	backoffAck  chan struct{}
 	afterCommit func()
 }
 
 type replayTestLogger struct {
 	MockLogger
-	backoff chan struct{}
+	backoff    chan struct{}
+	backoffAck <-chan struct{}
 }
 
 func (l *replayTestLogger) Debug(format string, args ...any) {
@@ -439,6 +441,9 @@ func (l *replayTestLogger) Debug(format string, args ...any) {
 		select {
 		case l.backoff <- struct{}{}:
 		default:
+		}
+		if l.backoffAck != nil {
+			<-l.backoffAck
 		}
 	}
 }
@@ -509,7 +514,7 @@ func newReplayTestFixture(t *testing.T, connectionType schemas.MCPConnectionType
 
 func (f *replayTestFixture) manager(t *testing.T, connectionType schemas.MCPConnectionType, timeout time.Duration) *MCPManager {
 	t.Helper()
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &replayTestLogger{backoff: f.backoff}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &replayTestLogger{backoff: f.backoff, backoffAck: f.backoffAck}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 	url := f.server.URL
 	if connectionType == schemas.MCPConnectionTypeSSE {
@@ -607,6 +612,8 @@ func TestMCPToolReplaySafety_RechecksDuringBackoff(t *testing.T) {
 	for _, disabled := range []bool{false, true} {
 		t.Run(fmt.Sprintf("disabled=%t", disabled), func(t *testing.T) {
 			f := newReplayTestFixture(t, schemas.MCPConnectionTypeHTTP, http.StatusServiceUnavailable, 1, mcpgo.ToolAnnotation{IdempotentHint: schemas.Ptr(true)})
+			f.backoffAck = make(chan struct{})
+			defer close(f.backoffAck)
 			m := f.manager(t, schemas.MCPConnectionTypeHTTP, 2*time.Second)
 			done := make(chan *schemas.BifrostError, 1)
 			go func() { _, err := replayTestCall(m, context.Background()); done <- err }()
@@ -623,6 +630,7 @@ func TestMCPToolReplaySafety_RechecksDuringBackoff(t *testing.T) {
 				tool.Annotations = &schemas.MCPToolAnnotations{IdempotentHint: schemas.Ptr(false)}
 				m.SetClientTools(state.ExecutionConfig.ID, map[string]schemas.ChatTool{"replay-append": tool}, state.ToolNameMapping, "")
 			}
+			f.backoffAck <- struct{}{}
 			select {
 			case err := <-done:
 				require.NotNil(t, err)

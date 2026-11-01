@@ -3,7 +3,7 @@ import http from "node:http";
 // Local-only Streamable HTTP MCP fixture. Each operation commits before its
 // first response is replaced with a 503. Counts are independent of JSON-RPC IDs:
 // assigning a new request ID is not a deduplication mechanism.
-const port = Number(process.env.MCP_REPLAY_FIXTURE_PORT || "8793");
+const port = 8793;
 const policies = {
 	unknown: undefined,
 	additive: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
