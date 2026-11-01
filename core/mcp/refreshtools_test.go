@@ -287,7 +287,8 @@ func TestRefreshClientTools_AwaitingAdminVerification_Refuses(t *testing.T) {
 // TestRefreshClientTools_RefusesAPerUserDiscoveryClient: a client with
 // per_user_discovery on has no shared tool list to refresh and no admin
 // credential to discover one with, so the refresh is refused as not
-// applicable rather than failing on the missing credential.
+// applicable rather than failing on the missing credential, and says where
+// one caller's tools are refreshed instead.
 func TestRefreshClientTools_RefusesAPerUserDiscoveryClient(t *testing.T) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
 	t.Cleanup(func() { m.checkerManager.StopAll() })
@@ -306,6 +307,7 @@ func TestRefreshClientTools_RefusesAPerUserDiscoveryClient(t *testing.T) {
 
 	_, err := m.RefreshClientTools(context.Background(), config.ID)
 	require.ErrorIs(t, err, schemas.ErrMCPRefreshNotApplicable)
+	assert.Contains(t, err.Error(), "refresh a caller's tools from their session")
 }
 
 // TestRefreshClientTools_DisabledAndNeedsReauth_Refuse pins the other two

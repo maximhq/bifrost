@@ -941,6 +941,7 @@
 			"completeAuth": "autenticación completa",
 			"triggerReauth": "Procurar una solicitud para volver a autenticar",
 			"revoke": "Revocación",
+			"refreshTools": "Actualizar herramientas",
 			"updateValues": "Valores de actualización",
 			"editValues": "Modificar los valores"
 		},
@@ -957,7 +958,10 @@
 			"headerRevoked": "Valores de encabezado revocados",
 			"sessionRevoked": "Período de sesiones revocado",
 			"headerRevokeFailed": "Fallado para revocar los valores de cabecera",
-			"sessionRevokeFailed": "Error al revocar la sesión"
+			"sessionRevokeFailed": "Error al revocar la sesión",
+			"toolsRefreshed_one": "Actualizado: {{count}} herramienta",
+			"toolsRefreshed_other": "Actualizado: {{count}} herramientas",
+			"toolsRefreshFailed": "No se pudieron actualizar las herramientas"
 		},
 		"filter": {
 			"type": "Tipo",

@@ -92,6 +92,10 @@ export interface MCPSessionRow {
 	// kind === "flow" rows — those are completed via /api/oauth/per-user/
 	// flows/{id}/start, not /reauth, and the UI's flow branch ignores this field.
 	can_reauth: boolean;
+	// can_refresh mirrors what POST /refresh accepts for this row: an active token or header
+	// credential of a user or virtual-key caller on a server with per_user_discovery on, refreshable
+	// by the same callers as can_reauth. The UI offers Refresh tools only when true.
+	can_refresh?: boolean;
 	// discovery: token and header rows of user and virtual-key callers on a
 	// server with per_user_discovery on, when the binding holds one.
 	discovery?: MCPSessionDiscovery | null;
@@ -140,6 +144,14 @@ export interface MCPSessionReauthResponse {
 	submit_url?: string;
 	session_id: string;
 	kind?: "oauth" | "headers";
+}
+
+// MCPSessionRefreshResponse is what POST /refresh found with the row's stored credential.
+export interface MCPSessionRefreshResponse {
+	status: string;
+	tool_count: number;
+	prompt_count: number;
+	resource_count: number; // resources plus resource templates
 }
 
 export interface MCPFlowDetail {

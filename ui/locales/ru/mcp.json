@@ -977,6 +977,7 @@
 			"completeAuth": "Завершить аутентификацию",
 			"triggerReauth": "Запустить запрос на повторную аутентификацию",
 			"revoke": "Отозвать",
+			"refreshTools": "Обновить инструменты",
 			"updateValues": "Обновить значения",
 			"editValues": "Изменить значения"
 		},
@@ -993,7 +994,12 @@
 			"headerRevoked": "Значения заголовков отозваны",
 			"sessionRevoked": "Сеанс отозван",
 			"headerRevokeFailed": "Не удалось отозвать значения заголовков",
-			"sessionRevokeFailed": "Не удалось отозвать сеанс"
+			"sessionRevokeFailed": "Не удалось отозвать сеанс",
+			"toolsRefreshed_one": "Обновлено: {{count}} инструмент",
+			"toolsRefreshed_few": "Обновлено: {{count}} инструмента",
+			"toolsRefreshed_many": "Обновлено: {{count}} инструментов",
+			"toolsRefreshed_other": "Обновлено: {{count}} инструмента",
+			"toolsRefreshFailed": "Не удалось обновить инструменты"
 		},
 		"filter": {
 			"type": "Тип",

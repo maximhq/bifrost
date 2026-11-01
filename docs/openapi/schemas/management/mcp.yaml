@@ -1623,6 +1623,7 @@ MCPSessionRow:
     - status
     - created_at
     - can_reauth
+    - can_refresh
   properties:
     id:
       type: string
@@ -1701,6 +1702,14 @@ MCPSessionRow:
         enough to see the row, but reauthing mints credentials under whoever clicks
         the URL, so the server returns 403 to non-bound callers. The UI hides the
         Re-authenticate / Edit values action when this is false.
+    can_refresh:
+      type: boolean
+      description: |
+        Whether POST /api/mcp/sessions/{id}/refresh accepts this row for the
+        calling user: an active OAuth token or header credential of a `user` or
+        `vk` caller on an MCP client with `per_user_discovery` on that is not
+        awaiting admin verification, and, for a `user` row, only when the calling
+        user is the row's user. The UI offers Refresh tools only when this is true.
     discovery:
       $ref: '#/MCPSessionDiscovery'
       nullable: true
@@ -1734,6 +1743,24 @@ MCPSessionsListResponse:
       type: array
       items:
         $ref: '#/MCPSessionRow'
+
+MCPSessionRefreshResponse:
+  type: object
+  description: Response for POST /api/mcp/sessions/{id}/refresh, with what the new discovery holds.
+  required: [status, tool_count, prompt_count, resource_count]
+  properties:
+    status:
+      type: string
+      example: success
+    tool_count:
+      type: integer
+      description: Tools the caller's new discovery holds
+    prompt_count:
+      type: integer
+      description: Prompts the caller's new discovery holds
+    resource_count:
+      type: integer
+      description: Resources plus resource templates the caller's new discovery holds
 
 MCPSessionReauthResponse:
   type: object

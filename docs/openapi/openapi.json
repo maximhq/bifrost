@@ -48507,6 +48507,117 @@
         }
       }
     },
+    "/api/mcp/sessions/{id}/refresh": {
+      "post": {
+        "summary": "Refresh the tools of an MCP session's caller",
+        "description": "Discovers the tools, prompts and resources of the caller a session row\nbelongs to again, with the credential the row stores, and keeps what it\nfinds as that caller's discovery of the row's MCP client. Use it after the\nupstream server adds or removes tools, so the caller is served them\nwithout signing in again.\n\nOnly an `active` OAuth token or header credential of a `user` or `vk`\ncaller can be refreshed, on an MCP client with `per_user_discovery` on\nthat is not awaiting admin verification. A `user` row can be refreshed\nonly by that user; the row's `can_refresh` says whether the caller may.\n\nA refresh that cannot discover answers 502 and keeps the caller's\nexisting discovery. If the row is revoked or replaced while discovery\nruns, nothing is stored and the refresh answers 409.\n",
+        "operationId": "refreshMcpSession",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPGateway:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "tags": [
+          "MCP"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Session row ID (OAuth token or header credential)"
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The caller's tools were discovered again",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Response for POST /api/mcp/sessions/{id}/refresh, with what the new discovery holds.",
+                  "required": [
+                    "status",
+                    "tool_count",
+                    "prompt_count",
+                    "resource_count"
+                  ],
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "success"
+                    },
+                    "tool_count": {
+                      "type": "integer",
+                      "description": "Tools the caller's new discovery holds"
+                    },
+                    "prompt_count": {
+                      "type": "integer",
+                      "description": "Prompts the caller's new discovery holds"
+                    },
+                    "resource_count": {
+                      "type": "integer",
+                      "description": "Resources plus resource templates the caller's new discovery holds"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The row cannot be refreshed: its client keeps one tool list for every\ncaller, it belongs to a session-bound caller, its client is awaiting\nadmin verification, or its credential needs reauthorizing or updated\nheaders first\n"
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A user's session, refreshed by someone other than that user"
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The row was revoked or replaced while its tools were being discovered"
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Discovery with the stored credential failed; the caller keeps their existing discovery"
+          }
+        }
+      }
+    },
     "/api/mcp/per-user-headers/flows/{id}": {
       "get": {
         "summary": "Get per-user-headers submission flow",
@@ -135980,7 +136091,8 @@
           "auth_mode",
           "status",
           "created_at",
-          "can_reauth"
+          "can_reauth",
+          "can_refresh"
         ],
         "properties": {
           "id": {
@@ -136077,6 +136189,10 @@
           "can_reauth": {
             "type": "boolean",
             "description": "Mirrors the server-side identity gate on POST /api/mcp/sessions/{id}/reauth.\nAlways true for vk- and session-mode rows. For user-mode rows, true only\nwhen the calling user matches the row's bound user — admin DAC scope is\nenough to see the row, but reauthing mints credentials under whoever clicks\nthe URL, so the server returns 403 to non-bound callers. The UI hides the\nRe-authenticate / Edit values action when this is false.\n"
+          },
+          "can_refresh": {
+            "type": "boolean",
+            "description": "Whether POST /api/mcp/sessions/{id}/refresh accepts this row for the\ncalling user: an active OAuth token or header credential of a `user` or\n`vk` caller on an MCP client with `per_user_discovery` on that is not\nawaiting admin verification, and, for a `user` row, only when the calling\nuser is the row's user. The UI offers Refresh tools only when this is true.\n"
           },
           "discovery": {
             "type": "object",

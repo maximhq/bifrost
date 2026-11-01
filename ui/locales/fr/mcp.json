@@ -941,6 +941,7 @@
 			"completeAuth": "Terminer l’authentification",
 			"triggerReauth": "Déclencher une requête de réauthentification",
 			"revoke": "Révoquer",
+			"refreshTools": "Actualiser les outils",
 			"updateValues": "Mettre à jour les valeurs",
 			"editValues": "Modifier les valeurs"
 		},
@@ -957,7 +958,10 @@
 			"headerRevoked": "Valeurs d’en-tête révoquées",
 			"sessionRevoked": "Session révoquée",
 			"headerRevokeFailed": "Échec de la révocation des valeurs d’en-tête",
-			"sessionRevokeFailed": "Échec de la révocation de la session"
+			"sessionRevokeFailed": "Échec de la révocation de la session",
+			"toolsRefreshed_one": "Actualisé : {{count}} outil",
+			"toolsRefreshed_other": "Actualisé : {{count}} outils",
+			"toolsRefreshFailed": "Impossible d'actualiser les outils"
 		},
 		"filter": {
 			"type": "Type de session",

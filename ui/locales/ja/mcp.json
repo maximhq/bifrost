@@ -941,6 +941,7 @@
 			"completeAuth": "認証完了",
 			"triggerReauth": "再認証を要求するリクエストをトリガーする",
 			"revoke": "取り消す",
+			"refreshTools": "ツールを更新",
 			"updateValues": "値を更新",
 			"editValues": "値を編集"
 		},
@@ -957,7 +958,10 @@
 			"headerRevoked": "ヘッダー値が無効になりました",
 			"sessionRevoked": "セッションが取り消されました",
 			"headerRevokeFailed": "ヘッダー値の取り消しに失敗しました",
-			"sessionRevokeFailed": "セッションの取り消しに失敗しました"
+			"sessionRevokeFailed": "セッションの取り消しに失敗しました",
+			"toolsRefreshed_one": "更新しました: ツール {{count}} 件",
+			"toolsRefreshed_other": "更新しました: ツール {{count}} 件",
+			"toolsRefreshFailed": "ツールを更新できませんでした"
 		},
 		"filter": {
 			"type": "タイプ",
