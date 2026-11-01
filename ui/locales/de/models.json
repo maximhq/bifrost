@@ -434,7 +434,9 @@
 		},
 		"custom": {
 			"waitForUsage": "Auf abschließenden Usage-Chunk warten?",
-			"waitForUsageHelp": "Nach finish_reason weiterlesen, damit der abschließende Usage-Chunk erfasst wird. Ohne dies erfasst die Anfrage null Tokens und null Kosten"
+			"waitForUsageHelp": "Nach finish_reason weiterlesen, damit der abschließende Usage-Chunk erfasst wird. Ohne dies erfasst die Anfrage null Tokens und null Kosten",
+			"rewriteBooleanToolSchemas": "Boolesche Tool-Schemas umschreiben?",
+			"rewriteBooleanToolSchemasHelp": "Boolesche Tool-Unterschemas wie items: true in gleichwertiger Objektform senden, wenn der Validator des Anbieters boolesche Schemas ablehnt"
 		},
 		"allowedRequests": {
 			"types": {

@@ -591,6 +591,7 @@ export interface CustomProviderConfig {
 	is_key_less?: boolean;
 	does_not_send_done_marker?: boolean;
 	wait_for_usage?: boolean;
+	boolean_schema_nodes_unsupported?: boolean;
 	allowed_requests?: AllowedRequests;
 	request_path_overrides?: Record<string, string>;
 }

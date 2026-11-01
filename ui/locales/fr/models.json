@@ -434,7 +434,9 @@
 		},
 		"custom": {
 			"waitForUsage": "Attendre le segment d’utilisation final ?",
-			"waitForUsageHelp": "Continuer la lecture après finish_reason afin de collecter le segment d’utilisation final. Sans cela, la requête enregistre zéro jeton et zéro coût"
+			"waitForUsageHelp": "Continuer la lecture après finish_reason afin de collecter le segment d’utilisation final. Sans cela, la requête enregistre zéro jeton et zéro coût",
+			"rewriteBooleanToolSchemas": "Réécrire les schémas booléens des outils ?",
+			"rewriteBooleanToolSchemasHelp": "Envoyer les sous-schémas booléens des outils, tels que items: true, sous forme d’objets équivalents lorsque le validateur du fournisseur rejette les schémas booléens"
 		},
 		"allowedRequests": {
 			"types": {

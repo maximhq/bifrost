@@ -434,7 +434,9 @@
 		},
 		"custom": {
 			"waitForUsage": "等待末尾的用量資料塊？",
-			"waitForUsageHelp": "在收到 finish_reason 後繼續讀取，以獲取末尾的用量資料塊。否則，該請求記錄的 token 數和費用均為零。"
+			"waitForUsageHelp": "在收到 finish_reason 後繼續讀取，以獲取末尾的用量資料塊。否則，該請求記錄的 token 數和費用均為零。",
+			"rewriteBooleanToolSchemas": "重寫工具的布林值結構描述？",
+			"rewriteBooleanToolSchemasHelp": "當提供者的驗證器拒絕布林值結構描述時，將 items: true 等工具布林值子結構描述轉換為等效的物件形式傳送"
 		},
 		"allowedRequests": {
 			"types": {

@@ -434,7 +434,9 @@
 		},
 		"custom": {
 			"waitForUsage": "Esperar pelo chunk de utilização final?",
-			"waitForUsageHelp": "Continuar a ler após finish_reason para recolher o chunk de utilização final. Sem isto, o pedido regista zero tokens e zero custo"
+			"waitForUsageHelp": "Continuar a ler após finish_reason para recolher o chunk de utilização final. Sem isto, o pedido regista zero tokens e zero custo",
+			"rewriteBooleanToolSchemas": "Reescrever esquemas booleanos de ferramentas?",
+			"rewriteBooleanToolSchemasHelp": "Enviar subesquemas booleanos de ferramentas, como items: true, na forma de objeto equivalente quando o validador do fornecedor rejeitar esquemas booleanos"
 		},
 		"allowedRequests": {
 			"types": {

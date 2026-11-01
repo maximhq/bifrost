@@ -37,6 +37,8 @@ export class ProvidersPage extends BasePage {
   readonly customProviderNameInput: Locator
   readonly baseProviderSelect: Locator
   readonly baseUrlInput: Locator
+  readonly customProviderAllowPrivateNetworkSwitch: Locator
+  readonly customProviderBooleanSchemaNodesUnsupportedSwitch: Locator
   readonly customProviderSaveBtn: Locator
   readonly customProviderCancelBtn: Locator
 
@@ -66,6 +68,8 @@ export class ProvidersPage extends BasePage {
     this.customProviderNameInput = page.getByTestId('custom-provider-name')
     this.baseProviderSelect = page.getByTestId('base-provider-select')
     this.baseUrlInput = page.getByTestId('base-url-input')
+    this.customProviderAllowPrivateNetworkSwitch = this.customProviderSheet.getByTestId('custom-provider-allow-private-network-switch')
+    this.customProviderBooleanSchemaNodesUnsupportedSwitch = this.customProviderSheet.getByTestId('custom-provider-boolean-schema-nodes-unsupported-switch')
     this.customProviderSaveBtn = page.getByTestId('custom-provider-save-btn')
     this.customProviderCancelBtn = page.getByTestId('custom-provider-cancel-btn')
 
@@ -387,8 +391,13 @@ export class ProvidersPage extends BasePage {
    * Save the open custom provider sheet and wait for it to close
    */
   async saveCustomProvider(): Promise<void> {
-    // Save the provider
-    await this.customProviderSaveBtn.click()
+    const [response] = await Promise.all([
+      this.page.waitForResponse((response) =>
+        new URL(response.url()).pathname === '/api/providers' && response.request().method() === 'POST'
+      ),
+      this.customProviderSaveBtn.click(),
+    ])
+    expect(response.ok(), `Create provider returned ${response.status()}: ${await response.text()}`).toBe(true)
 
     // Wait for sheet to close (indicates success)
     await expect(this.customProviderSheet).not.toBeVisible({ timeout: 10000 })

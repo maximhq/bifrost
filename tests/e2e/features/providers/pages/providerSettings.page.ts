@@ -48,7 +48,7 @@ export class ProviderSettingsPage extends BasePage {
    * Select a configuration tab
    */
   async selectConfigTab(
-    tabName: 'network' | 'proxy' | 'performance' | 'governance' | 'debugging' | 'tools' | 'passthrough',
+    tabName: 'api-structure' | 'network' | 'proxy' | 'performance' | 'governance' | 'debugging' | 'tools' | 'passthrough',
   ): Promise<void> {
     await this.openConfigSheet()
 
@@ -68,8 +68,9 @@ export class ProviderSettingsPage extends BasePage {
   /**
    * Get the save button for the current config tab
    */
-  getConfigSaveBtn(configType: 'network' | 'proxy' | 'performance' | 'governance' | 'debugging'): Locator {
+  getConfigSaveBtn(configType: 'api-structure' | 'network' | 'proxy' | 'performance' | 'governance' | 'debugging'): Locator {
     const buttonNames: Record<string, string> = {
+      'api-structure': 'Save API Structure Configuration',
       network: 'Save Network Configuration',
       proxy: 'Save Proxy Configuration',
       performance: 'Save Performance Configuration',
@@ -77,6 +78,13 @@ export class ProviderSettingsPage extends BasePage {
       debugging: 'Save Debugging Configuration',
     }
     return this.page.getByRole('button', { name: buttonNames[configType] })
+  }
+
+  /**
+   * Get the boolean schema compatibility switch in the API Structure tab
+   */
+  getBooleanSchemaNodesUnsupportedSwitch(): Locator {
+    return this.page.getByRole('tabpanel').getByTestId('custom-provider-boolean-schema-nodes-unsupported-switch')
   }
 
   // ============================================

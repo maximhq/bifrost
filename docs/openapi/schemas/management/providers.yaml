@@ -508,6 +508,15 @@ CustomProviderConfig:
         Provider ends streams on finish_reason without sending a data: [DONE] marker.
         Without this, a provider that also keeps the connection open leaves the stream
         waiting for a marker it never sends.
+    boolean_schema_nodes_unsupported:
+      type: boolean
+      default: false
+      description: >-
+        For OpenAI-base custom providers whose validators reject boolean tool
+        subschemas, send true as {} and false as {"not":{}} on Chat Completions
+        and Responses, including streaming. Boolean additionalProperties,
+        unevaluatedProperties and unevaluatedItems and instance data such as
+        enum, const and default are unchanged.
     base_provider_type:
       $ref: '../../schemas/inference/common.yaml#/ModelProvider'
     allowed_requests:

@@ -434,7 +434,9 @@
 		},
 		"custom": {
 			"waitForUsage": "¿Esperar a Trailing Usage Chunk?",
-			"waitForUsageHelp": "Sigue leyendo después de end_reason para que se recoja el trozo de uso que sigue. Sin esto la solicitud registra cero fichas y cero costo"
+			"waitForUsageHelp": "Sigue leyendo después de end_reason para que se recoja el trozo de uso que sigue. Sin esto la solicitud registra cero fichas y cero costo",
+			"rewriteBooleanToolSchemas": "¿Reescribir esquemas booleanos de herramientas?",
+			"rewriteBooleanToolSchemasHelp": "Enviar subesquemas booleanos de herramientas, como items: true, en su forma de objeto equivalente cuando el validador del proveedor rechace esquemas booleanos"
 		},
 		"allowedRequests": {
 			"types": {

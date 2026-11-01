@@ -434,7 +434,9 @@
 		},
 		"custom": {
 			"waitForUsage": "等待末尾的用量数据块？",
-			"waitForUsageHelp": "在收到 finish_reason 后继续读取，以获取末尾的用量数据块。否则，该请求记录的 token 数和费用均为零。"
+			"waitForUsageHelp": "在收到 finish_reason 后继续读取，以获取末尾的用量数据块。否则，该请求记录的 token 数和费用均为零。",
+			"rewriteBooleanToolSchemas": "重写工具的布尔值架构？",
+			"rewriteBooleanToolSchemasHelp": "当提供商的验证器拒绝布尔值架构时，将 items: true 等工具布尔值子架构转换为等效的对象形式发送"
 		},
 		"allowedRequests": {
 			"types": {
