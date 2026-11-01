@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
@@ -22,6 +23,8 @@ import (
 	"github.com/maximhq/bifrost/core/internal/memtest"
 	"github.com/maximhq/bifrost/core/keyselectors"
 	"github.com/maximhq/bifrost/core/mcp"
+	"github.com/maximhq/bifrost/core/network/proxytest"
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	mistralprovider "github.com/maximhq/bifrost/core/providers/mistral"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -4916,6 +4919,820 @@ func TestApplyProviderProxySignal_RewritesPerAttempt(t *testing.T) {
 	ctx.UnblockRestrictedWrites()
 	if got, _ := ctx.Value(schemas.BifrostContextKeyProviderProxyConfig).(*schemas.ProxyConfig); got != nil {
 		t.Fatal("a plugin write must not be able to redirect provider fetches through another proxy")
+	}
+}
+
+// Pin #9384 through real Vertex dispatch in both Responses modes, without cloud
+// credentials or changes to a running gateway. The configured proxy serves the PDF locally.
+func TestVertexResponsesRemoteFileLimit(t *testing.T) {
+	var downloads atomic.Int32
+	proxy := proxytest.ForwardProxy(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Host != "203.0.113.10" || r.URL.Path != "/document.pdf" {
+			t.Errorf("unexpected upstream request: %s", r.URL)
+			http.Error(w, "unexpected upstream", http.StatusBadGateway)
+			return
+		}
+		downloads.Add(1)
+		w.Header().Set("Content-Type", "application/pdf")
+		_, _ = io.WriteString(w, "%PDF"+strings.Repeat("x", 28))
+	})
+	account := NewMockAccount()
+	account.AddProvider(schemas.Vertex, 1, 1)
+	account.configs[schemas.Vertex].NetworkConfig.MaxRemoteFileSizeBytes = 16
+	account.configs[schemas.Vertex].NetworkConfig.MaxRetries = 0
+	account.configs[schemas.Vertex].ProxyConfig = &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(proxy.URL)}
+	account.SetKeysForProvider(schemas.Vertex, []schemas.Key{{
+		ID: "vertex-download-fixture", Models: schemas.WhiteList{"*"}, Weight: 1,
+		VertexKeyConfig: &schemas.VertexKeyConfig{
+			ProjectID: *schemas.NewSecretVar("fixture"), Region: *schemas.NewSecretVar("us-central1"),
+			// If the cap stops working, fail locally before any token exchange.
+			AuthCredentials: *schemas.NewSecretVar(`{"type":"unsupported_test_credential"}`),
+		},
+	}})
+	client := newStreamTestClient(t, account)
+	for _, streaming := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream_%t", streaming), func(t *testing.T) {
+			var request schemas.BifrostResponsesRequest
+			if err := json.Unmarshal([]byte(`{"provider":"vertex","model":"gemini-2.5-flash","input":[{"role":"user","content":[{"type":"input_file","file_url":"http://203.0.113.10/document.pdf"}]}]}`), &request); err != nil {
+				t.Fatal(err)
+			}
+			ctx := schemas.NewBifrostContext(t.Context(), time.Now().Add(5*time.Second))
+			var bifrostErr *schemas.BifrostError
+			if streaming {
+				_, bifrostErr = client.ResponsesStreamRequest(ctx, &request)
+			} else {
+				_, bifrostErr = client.ResponsesRequest(ctx, &request)
+			}
+			if bifrostErr == nil || !strings.Contains(bifrostErr.String(), "exceeds 16-byte limit") {
+				t.Fatalf("expected the configured Vertex download limit before inference, got %v", bifrostErr)
+			}
+		})
+	}
+	if got := downloads.Load(); got != 2 {
+		t.Fatalf("got %d downloads, want one per Responses mode", got)
+	}
+}
+
+// Pause inside the provider, after core publishes its per-attempt signals but
+// before the real downloader reads them. This makes cross-request leakage deterministic.
+type remoteLimitBarrierProvider struct {
+	schemas.Provider
+	entered chan *schemas.BifrostContext
+	release <-chan struct{}
+}
+
+// download waits for overlapping requests before fetching the local fixture and returning its result as an error.
+func (p *remoteLimitBarrierProvider) download(ctx *schemas.BifrostContext) *schemas.BifrostError {
+	p.entered <- ctx
+	select {
+	case <-p.release:
+	case <-ctx.Done():
+		return createBifrostError(ctx.Err().Error(), schemas.Ptr(400), nil, false)
+	}
+	_, _, err := providerUtils.FetchAndEncodeURL(ctx, "http://203.0.113.10/document.pdf")
+	message := "download succeeded"
+	if err != nil {
+		message = err.Error()
+	}
+	// Always terminate locally; no inference or credentials leave the test.
+	return createBifrostError(message, schemas.Ptr(400), nil, false)
+}
+
+// ChatCompletion exercises the shared downloader through chat dispatch without calling an inference service.
+func (p *remoteLimitBarrierProvider) ChatCompletion(ctx *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	return nil, p.download(ctx)
+}
+
+// Responses exercises the shared downloader through Responses dispatch without calling an inference service.
+func (p *remoteLimitBarrierProvider) Responses(ctx *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	return nil, p.download(ctx)
+}
+
+// ChatCompletionStream exercises download validation before a chat stream can start.
+func (p *remoteLimitBarrierProvider) ChatCompletionStream(ctx *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	return nil, p.download(ctx)
+}
+
+// ResponsesStream exercises download validation before a Responses stream can start.
+func (p *remoteLimitBarrierProvider) ResponsesStream(ctx *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	return nil, p.download(ctx)
+}
+
+// Embedding exercises the common unary dispatch path using the download fixture.
+func (p *remoteLimitBarrierProvider) Embedding(ctx *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+	return nil, p.download(ctx)
+}
+
+// TestNilContextRemoteFileLimitIsolation checks concurrent nil-context calls keep their provider limits and release owned contexts.
+func TestNilContextRemoteFileLimitIsolation(t *testing.T) {
+	proxy := proxytest.ForwardProxy(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Host != "203.0.113.10" || r.URL.Path != "/document.pdf" {
+			t.Errorf("unexpected fetch: %s", r.URL)
+			http.Error(w, "unexpected fetch", http.StatusBadGateway)
+			return
+		}
+		_, _ = io.WriteString(w, strings.Repeat("x", 32))
+	})
+	for _, api := range []string{"chat", "responses", "chat_stream", "responses_stream", "embedding"} {
+		for _, largeLimit := range []int64{64, 0} {
+			t.Run(fmt.Sprintf("%s/large_%d", api, largeLimit), func(t *testing.T) {
+				account := NewMockAccount()
+				client := newStreamTestClient(t, account)
+				release := make(chan struct{})
+				unblock := sync.OnceFunc(func() { close(release) })
+				t.Cleanup(unblock)
+				var providers []schemas.Provider
+				entered := make([]chan *schemas.BifrostContext, 2)
+				keys := []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic}
+				for i, key := range keys {
+					account.AddProvider(key, 1, 1)
+					account.keys[key][0].Models = schemas.WhiteList{"*"}
+					config := account.configs[key]
+					config.NetworkConfig.MaxRetries = 0
+					config.NetworkConfig.MaxRemoteFileSizeBytes = []int64{16, largeLimit}[i]
+					config.ProxyConfig = &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(proxy.URL)}
+					base, err := client.createBaseProvider(key, config)
+					if err != nil {
+						t.Fatal(err)
+					}
+					entered[i] = make(chan *schemas.BifrostContext, 1)
+					provider := &remoteLimitBarrierProvider{Provider: base, entered: entered[i], release: release}
+					providers = append(providers, provider)
+					queue := &ProviderQueue{queue: make(chan *ChannelMessage, 1), done: make(chan struct{})}
+					client.requestQueues.Store(key, queue)
+					wg := &sync.WaitGroup{}
+					client.waitGroups.Store(key, wg)
+					wg.Add(1)
+					go client.requestWorker(provider, config, queue, wg)
+				}
+				client.providers.Store(&providers)
+				results := make([]chan *schemas.BifrostError, 2)
+				contexts := make([]*schemas.BifrostContext, 2)
+				for i, key := range keys {
+					results[i] = make(chan *schemas.BifrostError, 1)
+					go func() {
+						chat := &schemas.BifrostChatRequest{Provider: key, Model: "test-model", Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("test")}}}}
+						responses := responsesReqWithText("test")
+						responses.Provider, responses.Model = key, "test-model"
+						var err *schemas.BifrostError
+						switch api {
+						case "chat":
+							_, err = client.ChatCompletionRequest(nil, chat)
+						case "responses":
+							_, err = client.ResponsesRequest(nil, responses)
+						case "chat_stream":
+							_, err = client.ChatCompletionStreamRequest(nil, chat)
+						case "responses_stream":
+							_, err = client.ResponsesStreamRequest(nil, responses)
+						case "embedding":
+							_, err = client.EmbeddingRequest(nil, &schemas.BifrostEmbeddingRequest{Provider: key, Model: "test-model", Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("test")}}}}})
+						}
+						results[i] <- err
+					}()
+					select {
+					case contexts[i] = <-entered[i]:
+					case err := <-results[i]:
+						t.Fatalf("request failed before downloader: %v", err)
+					case <-time.After(5 * time.Second):
+						t.Fatal("provider did not start")
+					}
+				}
+				unblock()
+				for i := range keys {
+					select {
+					case err := <-results[i]:
+						want := "download succeeded"
+						if i == 0 {
+							want = "exceeds 16-byte limit"
+						}
+						if err == nil || !strings.Contains(err.GetErrorString(), want) {
+							t.Errorf("provider %s: want %q, got %v", keys[i], want, err)
+						}
+					case <-time.After(5 * time.Second):
+						t.Fatal("request did not complete")
+					}
+				}
+				if contexts[0] == contexts[1] || contexts[0] == client.ctx || contexts[1] == client.ctx {
+					t.Error("requests reused the shared context")
+				}
+				if client.ctx.Value(schemas.BifrostContextKeyMaxRemoteFileSizeBytes) != nil || client.ctx.Value(schemas.BifrostContextKeyProviderProxyConfig) != nil {
+					t.Error("provider signals leaked to instance context")
+				}
+				for _, ctx := range contexts {
+					select {
+					case <-ctx.Done():
+					case <-time.After(time.Second):
+						t.Error("owned request context was not released")
+					}
+				}
+			})
+		}
+	}
+}
+
+type requestContextRecorder struct {
+	streamHookRecorder
+	seen chan *schemas.BifrostContext
+}
+
+// PreLLMHook records the request root so stream tests can verify context ownership and lifetime.
+func (p *requestContextRecorder) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	p.seen <- ctx.Root()
+	return req, nil, nil
+}
+
+// TestNilContextStreamLifetime checks that an owned context follows stream production, even if the caller pauses reading.
+func TestNilContextStreamLifetime(t *testing.T) {
+	for _, mode := range []string{"complete", "paused_reader", "shutdown", "caller_context"} {
+		t.Run(mode, func(t *testing.T) {
+			release := make(chan struct{})
+			unblock := sync.OnceFunc(func() { close(release) })
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprint(w, "data: {\"id\":\"nil-context\",\"object\":\"chat.completion.chunk\",\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"}}]}\n\n")
+				w.(http.Flusher).Flush()
+				select {
+				case <-release:
+				case <-r.Context().Done():
+					return
+				}
+				if mode == "paused_reader" {
+					fmt.Fprint(w, "data: {\"id\":\"nil-context\",\"object\":\"chat.completion.chunk\",\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" world\"}}]}\n\n")
+				}
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			t.Cleanup(server.Close)
+			account := NewMockAccount()
+			account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
+			account.keys[schemas.OpenAI][0].Models = schemas.WhiteList{"*"}
+			account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+			plugin := &requestContextRecorder{seen: make(chan *schemas.BifrostContext, 1)}
+			client := newStreamTestClient(t, account, plugin)
+			t.Cleanup(unblock)
+			var callerCtx *schemas.BifrostContext
+			if mode == "caller_context" {
+				callerCtx = schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+				defer callerCtx.Cancel()
+			}
+			stream, err := client.ChatCompletionStreamRequest(callerCtx, &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI, Model: "test-model",
+				Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("test")}}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := <-plugin.seen
+			if ctx.Err() != nil {
+				t.Fatal("context cancelled before stream consumption")
+			}
+			if callerCtx != nil && ctx != callerCtx {
+				t.Fatal("caller-owned context replaced")
+			}
+			select {
+			case chunk, ok := <-stream:
+				if !ok || chunk == nil || chunk.BifrostError != nil {
+					t.Fatalf("lost first chunk: %v", chunk)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("first chunk not delivered")
+			}
+			if mode == "shutdown" {
+				client.ctx.Cancel()
+			} else {
+				unblock()
+			}
+			if mode == "paused_reader" {
+				// The provider can finish within its existing buffer. The caller
+				// reads nothing further until the owned context is released.
+				select {
+				case <-ctx.Done():
+				case <-time.After(time.Second):
+					t.Fatal("finished stream retained its context while the caller stopped reading")
+				}
+			}
+			drained := make(chan struct{})
+			var remaining string
+			var streamErrors []string
+			go func() {
+				remaining, streamErrors = drainChatStream(stream)
+				close(drained)
+			}()
+			select {
+			case <-drained:
+			case <-time.After(5 * time.Second):
+				t.Fatal("stream did not close")
+			}
+			if mode == "paused_reader" && (remaining != " world" || len(streamErrors) != 0) {
+				t.Fatalf("buffered data did not survive context cleanup: content=%q errors=%v", remaining, streamErrors)
+			}
+			if mode == "shutdown" {
+				require.Len(t, streamErrors, 1, "shutdown after partial data must deliver one terminal error")
+			}
+			if callerCtx != nil {
+				if callerCtx.Err() != nil {
+					t.Fatal("caller-owned context cancelled")
+				}
+			} else {
+				select {
+				case <-ctx.Done():
+				case <-time.After(time.Second):
+					t.Fatal("stream context was not released")
+				}
+			}
+		})
+	}
+}
+
+// TestNilContextStreamShutdownAtEOF checks which event ends a relay waiting after the last successful send.
+func TestNilContextStreamShutdownAtEOF(t *testing.T) {
+	for _, eofFirst := range []bool{true, false} {
+		t.Run(fmt.Sprintf("eof_first=%t", eofFirst), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				instance, shutdown := context.WithCancel(t.Context())
+				defer shutdown()
+				ctx := schemas.NewBifrostContext(instance, schemas.NoDeadline)
+				source := make(chan *schemas.BifrostStreamChunk)
+				stream := streamWithContextCleanup(ctx, source, &sdkStreamForwarding{BifrostContext: ctx})
+				last := &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "last"}}
+				source <- last
+				require.Same(t, last, <-stream)
+				synctest.Wait() // The last chunk was delivered and the relay is waiting on its source.
+
+				if eofFirst {
+					close(source)
+					shutdown()
+				} else {
+					shutdown()
+					<-ctx.Done()
+					close(source)
+					chunk, ok := <-stream
+					require.True(t, ok)
+					require.NotNil(t, chunk.BifrostError)
+					require.NotNil(t, chunk.BifrostError.Error)
+					require.Equal(t, new(schemas.RequestCancelled), chunk.BifrostError.Error.Type)
+				}
+				chunk, ok := <-stream
+				require.False(t, ok, "expected EOF, got %+v", chunk)
+			})
+		})
+	}
+}
+
+// TestNilContextStreamShutdownWithClosedSource checks whether the last buffered send completed before shutdown.
+func TestNilContextStreamShutdownWithClosedSource(t *testing.T) {
+	for _, delivered := range []bool{true, false} {
+		t.Run(fmt.Sprintf("last_delivered=%t", delivered), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				instance, shutdown := context.WithCancel(t.Context())
+				defer shutdown()
+				ctx := schemas.NewBifrostContext(instance, schemas.NoDeadline)
+				source := make(chan *schemas.BifrostStreamChunk, 1)
+				stream := streamWithContextCleanup(ctx, source, &sdkStreamForwarding{BifrostContext: ctx})
+				first := &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "first"}}
+				final := &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "last"}}
+				source <- first
+				source <- final
+				synctest.Wait()
+				require.Empty(t, source, "the relay must hold the final chunk")
+				require.Len(t, stream, cap(stream), "the first chunk must fill the output")
+				close(source)
+				if delivered {
+					require.Same(t, first, <-stream) // Frees the slot for the waiting send.
+					require.Len(t, stream, 1, "the final chunk must occupy the slot before shutdown")
+				}
+				shutdown()
+				synctest.Wait()
+
+				last, ok := <-stream
+				require.True(t, ok)
+				if delivered {
+					require.Same(t, final, last)
+				} else {
+					require.NotNil(t, last.BifrostError)
+					require.NotNil(t, last.BifrostError.Error)
+					require.Equal(t, new(schemas.RequestCancelled), last.BifrostError.Error.Type)
+				}
+				_, ok = <-stream
+				require.False(t, ok)
+			})
+		})
+	}
+}
+
+// geminiBlockedStreamChunk returns the actual Responses event Gemini emits for a blocked prompt.
+func geminiBlockedStreamChunk(t *testing.T) *schemas.BifrostStreamChunk {
+	t.Helper()
+	state := gemini.AcquireGeminiResponsesStreamState()
+	t.Cleanup(func() { gemini.ReleaseGeminiResponsesStreamState(state) })
+	response := gemini.GenerateContentResponse{PromptFeedback: &gemini.GenerateContentResponsePromptFeedback{
+		BlockReason: "SAFETY", BlockReasonMessage: "The prompt is blocked due to safety",
+	}}
+	events, err := response.ToBifrostResponsesStream(0, state)
+	require.Nil(t, err)
+	require.NotEmpty(t, events)
+	failed := events[len(events)-1]
+	require.Equal(t, schemas.ResponsesStreamResponseTypeFailed, failed.Type)
+	require.Equal(t, &schemas.ResponsesResponseError{Code: "invalid_prompt", Message: response.PromptFeedback.BlockReasonMessage}, failed.Response.Error)
+	return &schemas.BifrostStreamChunk{BifrostResponsesStreamResponse: failed}
+}
+
+// TestNilContextStreamShutdownThroughProviderRelay exercises the provider and SDK relays in series.
+func TestNilContextStreamShutdownThroughProviderRelay(t *testing.T) {
+	blocked := geminiBlockedStreamChunk(t)
+	for _, preamble := range []bool{false, true} {
+		for _, ending := range []string{"eof", "interrupted", "response.failed"} {
+			t.Run(fmt.Sprintf("preamble=%t/%s", preamble, ending), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					sdk := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+					upstream, stopUpstream := schemas.NewBifrostContextWithCancel(sdk)
+					defer stopUpstream()
+					forwarding := &sdkStreamForwarding{BifrostContext: upstream}
+					source := make(chan *schemas.BifrostStreamChunk, 1)
+					data := &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "partial"}}
+					tail := &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "last"}}
+					source <- data
+					var wrapped chan *schemas.BifrostStreamChunk
+					var done <-chan struct{}
+					var err *schemas.BifrostError
+					if preamble {
+						wrapped, done, err = providerUtils.CheckStreamPreambleForError(forwarding, t.Name(), source, func(*schemas.BifrostStreamChunk) bool { return false })
+					} else {
+						wrapped, done, err = providerUtils.CheckFirstStreamChunkForError(forwarding, source)
+					}
+					require.Nil(t, err)
+					stream := streamWithContextCleanup(sdk, wrapped, forwarding)
+					require.Same(t, data, <-stream)
+
+					// One chunk fills each output and each relay holds one blocked send.
+					for range 3 {
+						source <- data
+					}
+					if ending == "response.failed" {
+						source <- blocked
+					} else {
+						source <- tail
+					}
+					close(source)
+					synctest.Wait()
+					require.Empty(t, source)
+					require.Len(t, wrapped, 1)
+					require.Len(t, stream, 1)
+					if ending == "eof" {
+						for range 3 {
+							require.Same(t, data, <-stream)
+						}
+						<-done
+						synctest.Wait() // The last chunk is in the SDK's output.
+						sdk.Cancel()
+						require.Same(t, tail, <-stream)
+						_, ok := <-stream
+						require.False(t, ok)
+						return
+					}
+					// Cancel only the upstream. The SDK must learn why it closed
+					// from the forwarding result, even while its own context is live.
+					stopUpstream()
+					<-done
+					var received []*schemas.BifrostStreamChunk
+					for chunk := range stream {
+						received = append(received, chunk)
+					}
+					require.NotEmpty(t, received)
+					last := received[len(received)-1]
+					for _, chunk := range received[:len(received)-1] {
+						require.Same(t, data, chunk)
+					}
+					if ending == "response.failed" {
+						require.Same(t, blocked, last)
+						return
+					}
+					require.NotNil(t, last.BifrostError, "interrupted upstream forwarding must not end in clean EOF")
+					require.Equal(t, new(499), last.BifrostError.StatusCode)
+					require.Equal(t, new(schemas.RequestCancelled), last.BifrostError.Error.Type)
+					require.ErrorIs(t, last.BifrostError.Error.Error, context.Canceled)
+				})
+			})
+		}
+	}
+}
+
+// TestNilContextStreamShutdown checks which error reaches an SDK caller who stops reading before shutdown.
+func TestNilContextStreamShutdown(t *testing.T) {
+	data := &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "partial"}}
+	providerError := &schemas.BifrostStreamChunk{BifrostError: createBifrostError("upstream overloaded", new(503), new("overloaded_error"), false)}
+	statusOnly := &schemas.BifrostStreamChunk{BifrostError: &schemas.BifrostError{StatusCode: new(503)}}
+	blocked := geminiBlockedStreamChunk(t)
+	eventError := &schemas.BifrostStreamChunk{BifrostResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeError, Message: new("too many requests"),
+	}}
+	emptyError := &schemas.BifrostStreamChunk{BifrostError: &schemas.BifrostError{Error: &schemas.ErrorField{}}}
+	for _, tc := range []struct {
+		name              string
+		outputTail, held  *schemas.BifrostStreamChunk
+		queued, wantError *schemas.BifrostStreamChunk
+	}{
+		{"queued_error", data, data, providerError, providerError},
+		{"queued_status_only", data, data, statusOnly, statusOnly},
+		{"in_flight_error", data, providerError, nil, providerError},
+		{"forwarded_error", providerError, nil, nil, providerError},
+		{"in_flight_response_failed", data, blocked, nil, blocked},
+		{"queued_response_failed", data, data, blocked, blocked},
+		{"forwarded_response_failed", blocked, nil, nil, blocked},
+		{"in_flight_response_error", data, eventError, nil, eventError},
+		{"no_error", data, data, nil, nil},
+		{"empty_error", data, emptyError, nil, nil},
+		{"idle", nil, nil, nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				instance, shutdown := context.WithCancel(t.Context())
+				defer shutdown()
+				ctx := schemas.NewBifrostContext(instance, schemas.NoDeadline)
+				source := make(chan *schemas.BifrostStreamChunk, 2)
+				defer close(source) // The SDK must close its output before the producer exits.
+				stream := streamWithContextCleanup(ctx, source, &sdkStreamForwarding{BifrostContext: ctx})
+				source <- data
+				require.Same(t, data, <-stream)
+				if tc.outputTail != nil {
+					source <- data
+					source <- tc.outputTail
+					synctest.Wait()
+					require.Len(t, stream, cap(stream))
+				}
+				if tc.held != nil {
+					source <- tc.held
+					synctest.Wait()
+					require.Empty(t, source, "the relay must already hold the blocked chunk")
+				}
+				if tc.queued != nil {
+					source <- data
+					source <- tc.queued
+				}
+
+				shutdown()
+				synctest.Wait()
+				var received []*schemas.BifrostStreamChunk
+				for range len(stream) {
+					received = append(received, <-stream)
+				}
+				select {
+				case _, ok := <-stream:
+					require.False(t, ok, "shutdown must complete before the caller resumes reading")
+				default:
+					t.Fatal("SDK stream is still open after shutdown")
+				}
+				require.NotEmpty(t, received)
+				last := received[len(received)-1]
+				for _, chunk := range received[:len(received)-1] {
+					require.Same(t, data, chunk, "only the last chunk may report an error")
+				}
+				if tc.wantError == nil {
+					require.NotNil(t, last.BifrostError)
+					require.NotNil(t, last.BifrostError.Error)
+					require.Equal(t, new(schemas.RequestCancelled), last.BifrostError.Error.Type)
+					require.Equal(t, new(499), last.BifrostError.StatusCode)
+					require.ErrorIs(t, last.BifrostError.Error.Error, context.Canceled)
+				} else {
+					require.Same(t, tc.wantError, last, "preserve the original chunk and all its metadata")
+				}
+			})
+		})
+	}
+}
+
+type bufferedSDKStreamProvider struct {
+	schemas.Provider
+	finished chan<- *schemas.BifrostContext
+}
+
+func (p *bufferedSDKStreamProvider) ChatCompletionStream(ctx *schemas.BifrostContext, _ schemas.PostHookRunner, finalize func(context.Context), _ schemas.Key, _ *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	source := make(chan *schemas.BifrostStreamChunk, 2)
+	go func() {
+		defer func() {
+			close(source)
+			p.finished <- ctx
+		}()
+		defer finalize(ctx)
+		// The provider can finish before the first read, with more chunks pending
+		// than fit into the returned two-slot channel.
+		for i := range 5 {
+			chunk := &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: fmt.Sprint(i)}}
+			select {
+			case source <- chunk:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return source, nil
+}
+
+func TestNilContextStreamLifetimeWithFullBuffer(t *testing.T) {
+	for _, abandoned := range []bool{true, false} {
+		t.Run(fmt.Sprintf("abandoned=%v", abandoned), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				account := NewMockAccount()
+				client := newStreamTestClient(t, account)
+				account.AddProvider(schemas.OpenAI, 1, 1)
+				account.keys[schemas.OpenAI][0].Models = schemas.WhiteList{"*"}
+				config := account.configs[schemas.OpenAI]
+				config.NetworkConfig.MaxRetries = 0
+				base, err := client.createBaseProvider(schemas.OpenAI, config)
+				require.NoError(t, err)
+				finished := make(chan *schemas.BifrostContext, 1)
+				upstream := &bufferedSDKStreamProvider{Provider: base, finished: finished}
+				client.providers.Store(&[]schemas.Provider{upstream})
+				queue := &ProviderQueue{queue: make(chan *ChannelMessage, 1), done: make(chan struct{})}
+				wg := &sync.WaitGroup{}
+				client.requestQueues.Store(schemas.OpenAI, queue)
+				client.waitGroups.Store(schemas.OpenAI, wg)
+				wg.Add(1)
+				go client.requestWorker(upstream, config, queue, wg)
+
+				stream, streamErr := client.ChatCompletionStreamRequest(nil, &schemas.BifrostChatRequest{
+					Provider: schemas.OpenAI, Model: "test-model",
+					Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("test")}}},
+				})
+				require.Nil(t, streamErr)
+				// Let the provider close before reading even the first chunk.
+				var ctx *schemas.BifrostContext
+				select {
+				case ctx = <-finished:
+				case <-time.After(time.Second):
+					t.Fatal("provider did not finish before the first read")
+				}
+				first := <-stream
+				require.Equal(t, "0", first.BifrostChatResponse.ID)
+				synctest.Wait()
+				require.Equal(t, cap(stream), len(stream), "the returned buffer must be full after one read")
+				require.NoError(t, ctx.Err(), "a full buffer alone must not end the stream")
+
+				if abandoned {
+					time.Sleep(2*time.Minute - time.Second)
+					require.NoError(t, ctx.Err(), "the caller gets the full grace period")
+					select {
+					case <-ctx.Done():
+					case <-time.After(2 * time.Second):
+						t.Fatal("completed provider stream retained its context while the returned buffer was full")
+					}
+					require.NoError(t, client.ctx.Err(), "cleanup must not cancel the instance")
+					synctest.Wait()
+					var terminal *schemas.BifrostStreamChunk
+					for chunk := range stream {
+						terminal = chunk
+					}
+					require.NotNil(t, terminal)
+					require.NotNil(t, terminal.BifrostError)
+					require.NotNil(t, terminal.BifrostError.Error)
+					require.NotNil(t, terminal.BifrostError.Error.Type)
+					require.Equal(t, schemas.RequestTimedOut, *terminal.BifrostError.Error.Type)
+					require.Contains(t, terminal.BifrostError.GetErrorString(), "stream consumer stopped reading")
+					return
+				}
+
+				time.Sleep(time.Minute)
+				var remaining []string
+				for chunk := range stream {
+					require.Nil(t, chunk.BifrostError)
+					remaining = append(remaining, chunk.BifrostChatResponse.ID)
+				}
+				require.Equal(t, []string{"1", "2", "3", "4"}, remaining)
+				select {
+				case <-ctx.Done():
+				case <-time.After(time.Second):
+					t.Fatal("context was retained after the resumed reader drained the stream")
+				}
+			})
+		})
+	}
+}
+
+// An invalid request stops before dispatch, isolating the entrypoint's context cost.
+func BenchmarkNilContextEntrypoints(b *testing.B) {
+	client := &Bifrost{ctx: schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)}
+	defer client.ctx.Cancel()
+	callerCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer callerCtx.Cancel()
+	for _, api := range []string{"chat", "responses"} {
+		for _, nilContext := range []bool{false, true} {
+			b.Run(fmt.Sprintf("%s/nil_%t", api, nilContext), func(b *testing.B) {
+				ctx := callerCtx
+				if nilContext {
+					ctx = nil
+				}
+				b.ReportAllocs()
+				for b.Loop() {
+					if api == "chat" {
+						_, _ = client.ChatCompletionRequest(ctx, nil)
+					} else {
+						_, _ = client.ResponsesRequest(ctx, nil)
+					}
+				}
+			})
+		}
+	}
+}
+
+// BenchmarkNilContextStreamDelivery measures delivery of a completed one-chunk stream.
+func BenchmarkNilContextStreamDelivery(b *testing.B) {
+	parent := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer parent.Cancel()
+	chunk := &schemas.BifrostStreamChunk{}
+	for _, owned := range []bool{false, true} {
+		b.Run(fmt.Sprintf("owned_%t", owned), func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				stream := make(chan *schemas.BifrostStreamChunk, 1)
+				stream <- chunk
+				close(stream)
+				if owned {
+					ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+					stream = streamWithContextCleanup(ctx, stream, &sdkStreamForwarding{BifrostContext: ctx})
+				}
+				for range stream {
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkApplyProviderProxySignal measures per-attempt context writes for default and configured download limits.
+func BenchmarkApplyProviderProxySignal(b *testing.B) {
+	for _, limit := range []int64{0, 64 << 20} {
+		b.Run(fmt.Sprintf("limit_%d", limit), func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{MaxRemoteFileSizeBytes: limit}}
+			applyProviderProxySignal(ctx, config)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				applyProviderProxySignal(ctx, config)
+			}
+		})
+	}
+}
+
+// TestApplyProviderProxySignal_RemoteFileLimitSnapshot checks each attempt stores an immutable limit snapshot rather than shared configuration.
+func TestApplyProviderProxySignal_RemoteFileLimitSnapshot(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{MaxRemoteFileSizeBytes: 64 << 20}}
+	applyProviderProxySignal(ctx, config)
+	ctx.BlockRestrictedWrites()
+	// A hook may read a reserved value even though SetValue is blocked.
+	// Mutating anything exposed by that read must not change shared configuration.
+	if exposed, ok := ctx.Value(schemas.BifrostContextKeyMaxRemoteFileSizeBytes).(*schemas.NetworkConfig); ok {
+		exposed.MaxRemoteFileSizeBytes = 16
+	}
+	if config.NetworkConfig.MaxRemoteFileSizeBytes != 64<<20 {
+		t.Fatal("a context read exposed mutable provider configuration")
+	}
+	config.NetworkConfig.MaxRemoteFileSizeBytes = 32 << 20
+	if got := ctx.Value(schemas.BifrostContextKeyMaxRemoteFileSizeBytes); got != int64(64<<20) {
+		t.Fatalf("attempt must retain its scalar snapshot after a config change, got %v", got)
+	}
+}
+
+// TestApplyProviderProxySignal_RemoteFileLimitPerAttempt checks fallback limits replace or clear earlier snapshots even while post-hooks block reserved writes.
+func TestApplyProviderProxySignal_RemoteFileLimitPerAttempt(t *testing.T) {
+	for _, blocked := range []bool{false, true} {
+		t.Run(fmt.Sprintf("blocked_%t", blocked), func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			defer ctx.Cancel()
+			large := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{MaxRemoteFileSizeBytes: 64 << 20}}
+			small := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{MaxRemoteFileSizeBytes: 16}}
+			applyProviderProxySignal(ctx, large)
+			if blocked {
+				ctx.BlockRestrictedWrites()
+				defer ctx.UnblockRestrictedWrites()
+			}
+			for _, config := range []*schemas.ProviderConfig{large, small, {}, large, nil} {
+				applyProviderProxySignal(ctx, config)
+				got := ctx.Value(schemas.BifrostContextKeyMaxRemoteFileSizeBytes)
+				if config == nil || config.NetworkConfig.MaxRemoteFileSizeBytes == 0 {
+					if got != nil {
+						t.Fatal("default fallback inherited the prior limit")
+					}
+				} else if got != config.NetworkConfig.MaxRemoteFileSizeBytes {
+					t.Fatalf("attempt limit = %v, want %d", got, config.NetworkConfig.MaxRemoteFileSizeBytes)
+				}
+			}
+			ctx.BlockRestrictedWrites()
+			ctx.SetValue(schemas.BifrostContextKeyMaxRemoteFileSizeBytes, large.NetworkConfig.MaxRemoteFileSizeBytes)
+			if ctx.Value(schemas.BifrostContextKeyMaxRemoteFileSizeBytes) != nil {
+				t.Fatal("plugin changed the operator's limit")
+			}
+		})
+	}
+}
+
+// TestCreateBaseProvider_RejectsInvalidRemoteFileLimit checks invalid Go SDK limits fail before provider construction.
+func TestCreateBaseProvider_RejectsInvalidRemoteFileLimit(t *testing.T) {
+	client := &Bifrost{}
+	for _, limit := range []int64{-1, schemas.MaxRemoteFileSizeBytesUpperBound + 1} {
+		_, err := client.createBaseProvider(schemas.OpenAI, &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{MaxRemoteFileSizeBytes: limit}})
+		if err == nil || !strings.Contains(err.Error(), "max_remote_file_size_bytes") {
+			t.Fatalf("invalid SDK config: %v", err)
+		}
 	}
 }
 

@@ -272,6 +272,10 @@ stream, err := client.ChatCompletionStreamRequest(schemas.NewBifrostContext(ctx,
 // Stream will automatically stop after 30 seconds
 ```
 
+When you pass a `nil` context to a streaming request, Bifrost gives a blocked send two minutes to proceed. If the returned channel stays full, Bifrost cancels the stream and closes the channel with a `RequestTimedOut` chunk. Pass your own cancellable context when you need to control the stream lifetime.
+
+Once every chunk has been forwarded, the caller reads any remaining buffered chunks followed by EOF (`ok == false`), even if the instance then shuts down. If shutdown interrupts delivery, the SDK reports `RequestCancelled` unless it already has an upstream failure. This includes a failure waiting on the SDK input or reported by the upstream relay when its send was interrupted. The caller receives the original event, including the reason in a Responses `response.failed` event. A failure still buffered earlier in the provider pipeline can be lost. A terminal error can replace one unread chunk in a full channel.
+
 ## Voice Options
 
 OpenAI TTS supports these voices:

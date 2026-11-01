@@ -18,6 +18,8 @@ type EventBroadcaster func(eventType string, data interface{})
 
 // LLMPluginShortCircuit represents a plugin's decision to short-circuit the normal flow.
 // It can contain either a response (success short-circuit), a stream (streaming short-circuit), or an error (error short-circuit).
+// A plugin that supplies Stream owns the channel and must close it when its producer exits.
+// The producer must observe request cancellation both while waiting for input and while sending chunks.
 type LLMPluginShortCircuit struct {
 	Response *BifrostResponse         // If set, short-circuit with this response (skips provider call)
 	Stream   chan *BifrostStreamChunk // If set, short-circuit with this stream (skips provider call)
