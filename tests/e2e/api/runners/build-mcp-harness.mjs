@@ -8775,6 +8775,146 @@ const OAS39 = folder("OAS-39 A real SDK OAuth client end to end", `Setup: ${FLEE
   ...fleetGrantTeardown("OAS-39"),
 ]);
 
+// ================================================================ sync intervals, timeouts, TLS and env-sourced headers
+
+// stickyClient is an HTTP client on server that keeps one session open.
+const stickyClient = (clientId, name, server, over = {}) => httpClient(clientId, name, server, { needs_session_stickiness: true, tools_to_execute: ["*"], ...over });
+const SET_TOOLS = ["add_tool", "echo_tool"];
+const SET_NEW_TOOLS = ["add_tool", "echo_tool", "new_tool"];
+// waitClientFor polls the client list, 500ms apart, until cond (ES5 on the client c) holds or seconds have passed.
+const waitClientFor = (clientId, cond, seconds) => [
+  `var deadline = Date.now() + ${seconds * 1000};`,
+  "function poll() {",
+  `  pm.sendRequest({ url: pm.variables.get('base_url') + '/api/mcp/clients?server=${clientId}', method: 'GET', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) {`,
+  "    var c = !err && res.code === 200 ? (res.json().clients || [])[0] : null;",
+  `    if ((c && (${cond})) || Date.now() >= deadline) { return; }`,
+  "    setTimeout(poll, 500);",
+  "  });",
+  "}",
+  "poll();",
+];
+const listsNewTool = (clientId, seconds) => ({ pre: waitClientFor(clientId, "(c.tools || []).length >= 3", seconds) });
+
+const SET04 = folder("SET-04 Per-client sync interval drives rediscovery", "Setup: fleet server set04 (echo_tool, add_tool); a sticky client set04 on it with tool_sync_interval \"5s\" while mcp_tool_sync_interval stays at its default; a VK granting every tool of set04. set04 then adds new_tool and nothing asks for a refresh.", [
+  ...freshServer("SET-04", "set04", ["echo_tool", "add_tool"]),
+  createClient("SET-04", stickyClient("set04-c", "set04", "set04", { tool_sync_interval: "5s" })),
+  vkCreate("SET-04", "setup: create a VK granting every tool of set04", { name: "SET-04 key", mcp_configs: [{ mcp_client_name: "set04", tools_to_execute: ["*"] }] }, "set04_vk"),
+  mockGet("SET-04", "set04", "setup: record set04's tools/list and ping counts", [], [
+    "var m = pm.response.json().counters.methods || {};",
+    "pm.collectionVariables.set('set04_list', m['tools/list'] || 0);",
+    "pm.collectionVariables.set('set04_ping', m.ping || 0);",
+  ]),
+  mockPost("SET-04", "set04", "tools/add", "set04 adds new_tool", { tool: { name: "new_tool" } }),
+  getClient("SET-04", "set04-c", "within 20s the client lists new_tool", [toolNamesAre(SET_NEW_TOOLS)], listsNewTool("set04-c", 20)),
+  rpc("SET-04", "/mcp tools/list with the VK includes set04-new_tool", listMsg, { headers: [MCP_ACCEPT, { key: "x-bf-vk", value: "{{set04_vk}}" }], asserts: [A.status(200), A.custom("the tools include set04-new_tool", [
+    "var names = ((pm.response.json().result || {}).tools || []).map(function (t) { return t.name; });",
+    "pm.expect(names, 'body: ' + pm.response.text()).to.include('set04-new_tool');",
+  ])] }),
+  mockGet("SET-04", "set04", "set04 was asked tools/list and ping again", [A.custom("tools/list +1 or more and ping +1 or more since the add", [
+    "var m = pm.response.json().counters.methods || {};",
+    "pm.expect(m['tools/list'] || 0, JSON.stringify(m)).to.be.at.least(Number(pm.collectionVariables.get('set04_list')) + 1);",
+    "pm.expect(m.ping || 0, JSON.stringify(m)).to.be.at.least(Number(pm.collectionVariables.get('set04_ping')) + 1);",
+  ])]),
+  vkDelete("SET-04", "teardown: delete the VK", "set04_vk"),
+  deleteClient("SET-04", "set04-c"),
+]);
+
+const SET05 = folder("SET-05 Global sync interval re-times only clients that follow it", "Setup: fleet servers set05a and set05b (echo_tool, add_tool); a sticky client set05a on set05a with no tool_sync_interval of its own, so it follows the global, and a sticky client set05b on set05b with tool_sync_interval \"10m\"; then mcp_tool_sync_interval 1 (minute), and each server adds new_tool.", [
+  readConfig("SET-05"),
+  ...freshServer("SET-05", "set05a", ["echo_tool", "add_tool"]),
+  ...freshServer("SET-05", "set05b", ["echo_tool", "add_tool"]),
+  createClient("SET-05", stickyClient("set05-a", "set05a", "set05a")),
+  createClient("SET-05", stickyClient("set05-b", "set05b", "set05b", { tool_sync_interval: "10m" })),
+  putConfig("SET-05", "setup: mcp_tool_sync_interval 1", ["cc.mcp_tool_sync_interval = 1;"], [A.status(200)]),
+  mockPost("SET-05", "set05a", "tools/add", "set05a adds new_tool", { tool: { name: "new_tool" } }),
+  mockPost("SET-05", "set05b", "tools/add", "set05b adds new_tool", { tool: { name: "new_tool" } }),
+  // Newman bounds one script at 60s, so the 75s wait is split over two polls.
+  request("SET-05", "setup: wait up to 45s for set05-a to list new_tool", "GET", "/api/mcp/clients?server=set05-a", { asserts: [A.status(200)], ...listsNewTool("set05-a", 45) }),
+  getClient("SET-05", "set05-a", "within 75s the client that follows the global lists new_tool", [toolNamesAre(SET_NEW_TOOLS)], listsNewTool("set05-a", 30)),
+  getClient("SET-05", "set05-b", "the client on its own 10m interval still does not", [toolNamesAre(SET_TOOLS)]),
+  putConfig("SET-05", "mcp_tool_sync_interval -1", ["cc.mcp_tool_sync_interval = -1;"], [A.status(400), A.msgEquals("mcp_tool_sync_interval must be 0 (use the default) or a positive number of minutes")]),
+  restoreConfig("SET-05"),
+  deleteClient("SET-05", "set05-a"), deleteClient("SET-05", "set05-b"),
+]);
+
+const setDelay = (id, server, delay) => mockPost(id, server, "faults", `setup: ${server} delays every tools/call by ${delay}`, { faults: { latency: delay, methods: ["tools/call"] } });
+const clientTimeout = (id, clientId, v) => request(id, `setup: set ${clientId}'s tool_execution_timeout to ${v}`, "PUT", `/api/mcp/client/${clientId}`, { body: { tool_execution_timeout: v }, asserts: [A.status(200)] });
+const SET10 = folder("SET-10 Per-client timeout overrides the global", "Setup: fleet server set10 (echo_tool, add_tool) delaying every tools/call by 3s; a sticky client set10 on it with tool_execution_timeout 2, while the global stays 30s. Its timeout is then set to 5, then to 0 with the delay raised to 7s.", [
+  ...freshServer("SET-10", "set10", ["echo_tool", "add_tool"]),
+  createClient("SET-10", stickyClient("set10-c", "set10", "set10", { tool_execution_timeout: 2 })),
+  setDelay("SET-10", "set10", "3s"),
+  execTool("SET-10", "execute with the 2s override", "set10-echo_tool", [A.status(400), A.msgContains("MCP tool call timed out after 2s: set10-echo_tool"), responseTime(1500, 3500)]),
+  clientTimeout("SET-10", "set10-c", 5),
+  execTool("SET-10", "execute with the timeout set to 5", "set10-echo_tool", [A.status(200)]),
+  clientTimeout("SET-10", "set10-c", 0),
+  setDelay("SET-10", "set10", "7s"),
+  execTool("SET-10", "with the timeout set to 0, a 7s call runs under the global 30s", "set10-echo_tool", [A.status(200)]),
+  mockPost("SET-10", "set10", "faults/clear", "teardown: clear set10's faults", {}),
+  deleteClient("SET-10", "set10-c"),
+]);
+
+const globalTimeout = (id, title, v, asserts = [A.status(200)]) => putConfig(id, title, [`cc.mcp_tool_execution_timeout = ${v};`], asserts);
+const SET11 = folder("SET-11 Global timeout applies at runtime", "Setup: fleet server set11 (echo_tool, add_tool) delaying every tools/call by 3s; a client set11 on it, per call, with no tool_execution_timeout of its own; mcp_tool_execution_timeout 2, then 10, then 0 sent.", [
+  readConfig("SET-11"),
+  ...freshServer("SET-11", "set11", ["echo_tool", "add_tool"]),
+  createClient("SET-11", httpClient("set11-c", "set11", "set11", { tools_to_execute: ["*"] })),
+  setDelay("SET-11", "set11", "3s"),
+  globalTimeout("SET-11", "setup: mcp_tool_execution_timeout 2", 2),
+  execTool("SET-11", "execute under the 2s global", "set11-echo_tool", [A.status(400), A.msgContains("timed out after 2s"), responseTime(1500, 3500)]),
+  globalTimeout("SET-11", "mcp_tool_execution_timeout 10", 10),
+  execTool("SET-11", "execute under the 10s global", "set11-echo_tool", [A.status(200)]),
+  globalTimeout("SET-11", "send mcp_tool_execution_timeout 0", 0),
+  request("SET-11", "0 left the global at 10", "GET", "/api/config", { asserts: [A.status(200), A.custom("mcp_tool_execution_timeout is 10", ["pm.expect(pm.response.json().client_config.mcp_tool_execution_timeout, 'body: ' + pm.response.text()).to.equal(10);"])] }),
+  execTool("SET-11", "execute after sending 0", "set11-echo_tool", [A.status(200)]),
+  mockPost("SET-11", "set11", "faults/clear", "teardown: clear set11's faults", {}),
+  putConfig("SET-11", "teardown: restore the original config", ["if (!cc.mcp_tool_execution_timeout) { cc.mcp_tool_execution_timeout = 30; }"], [A.status(200)]),
+  deleteClient("SET-11", "set11-c"),
+]);
+
+const SET15 = folder("SET-15 TLS: custom CA, skip verify, none", "Setup: fleet server set15 (echo_tool, add_tool) reached through the fleet's TLS listener, whose certificate is self-signed; sticky clients on its https URL: set15-ca with tls_config.ca_cert_pem set to that certificate, set15-skip with insecure_skip_verify true, and set15-none with no tls_config.", [
+  ...freshServer("SET-15", "set15", ["echo_tool", "add_tool"]),
+  request("SET-15", "setup: read the fleet's TLS listener and its certificate", "GET", "/control", { base: CHAOS, noAuth: true, asserts: [A.status(200), A.custom("the fleet has a TLS listener", [
+    "pm.expect(pm.response.json().tls_url, 'body: ' + pm.response.text()).to.match(/^https:/);",
+  ])], extraTests: [
+    "var b = pm.response.json();",
+    "pm.collectionVariables.set('set15_tls', b.tls_url);",
+    // Escaped for use inside a JSON string in the create body.
+    "pm.collectionVariables.set('set15_ca', JSON.stringify(b.tls_cert_pem).slice(1, -1));",
+  ] }),
+  createExpect("SET-15", "create with the certificate as ca_cert_pem", stickyClient("set15-ca", "set15_ca", "set15", { connection_string: "{{set15_tls}}/s/set15/mcp", tls_config: { ca_cert_pem: "{{set15_ca}}" } }), [A.status(200)]),
+  getClient("SET-15", "set15-ca", "it is healthy and ca_cert_pem is masked", [clientState("healthy"), A.custom("ca_cert_pem is not returned as the certificate", [
+    "var t = pm.response.json().clients[0].config.tls_config || {};",
+    "var v = (t.ca_cert_pem || {}).value || '';",
+    "pm.expect(v, 'tls_config: ' + JSON.stringify(t)).to.not.equal('');",
+    "pm.expect(v).to.not.include('BEGIN CERTIFICATE');",
+  ])]),
+  createExpect("SET-15", "create with insecure_skip_verify", stickyClient("set15-skip", "set15_skip", "set15", { connection_string: "{{set15_tls}}/s/set15/mcp", tls_config: { insecure_skip_verify: true } }), [A.status(200)]),
+  getClient("SET-15", "set15-skip", "it is healthy", [clientState("healthy")]),
+  createExpect("SET-15", "create with no tls_config", stickyClient("set15-none", "set15_none", "set15", { connection_string: "{{set15_tls}}/s/set15/mcp" }), [A.status(500), A.msgContains("certificate"), responseTime(null, 5000)]),
+  notListed("SET-15", "set15-none"),
+  deleteClient("SET-15", "set15-ca"), deleteClient("SET-15", "set15-skip"),
+]);
+
+// SET23_KEY is the value the runner puts in Bifrost's environment as MCP_E2E_HEADER_KEY.
+const SET23_KEY = "mcp-e2e-header-key";
+const SET23 = folder("SET-23 Header value from an environment variable", `Setup: Bifrost runs with MCP_E2E_HEADER_KEY=${SET23_KEY} and without MCP_E2E_UNSET_KEY; fleet server set23 (echo_tool, add_tool) accepts only X-Api-Key ${SET23_KEY}; sticky headers clients on it: set23-c with X-Api-Key "env.MCP_E2E_HEADER_KEY", and set23-u with X-Api-Key "env.MCP_E2E_UNSET_KEY".`, [
+  ...freshServer("SET-23", "set23", ["echo_tool", "add_tool"]),
+  mockAuth("SET-23", "set23", `setup: set23 accepts only X-Api-Key ${SET23_KEY}`, { identity_header: "X-Api-Key", require_headers: { "X-Api-Key": SET23_KEY } }),
+  createExpect("SET-23", "create with the header from MCP_E2E_HEADER_KEY", stickyClient("set23-c", "set23_c", "set23", { auth_type: "headers", headers: { "X-Api-Key": "env.MCP_E2E_HEADER_KEY" } }), [A.status(200)]),
+  execTool("SET-23", "execute", "set23_c-echo_tool", [A.status(200)]),
+  mockGet("SET-23", "set23", "the call carried the variable's value", [identityCalls(SET23_KEY, 1)]),
+  getClient("SET-23", "set23-c", "the header reads back masked, with its reference", [A.custom("X-Api-Key is masked (its first four characters, 24 asterisks and its last four), ref env.MCP_E2E_HEADER_KEY, type env", [
+    "var h = pm.response.json().clients[0].config.headers['X-Api-Key'];",
+    "pm.expect(h, 'body: ' + pm.response.text()).to.be.an('object');",
+    `pm.expect(h.value).to.equal(${lit(SET23_KEY.slice(0, 4) + "*".repeat(24) + SET23_KEY.slice(-4))});`,
+    "pm.expect(h.ref).to.equal('env.MCP_E2E_HEADER_KEY');",
+    "pm.expect(h.type).to.equal('env');",
+  ])]),
+  createExpect("SET-23", "create with the header from the unset MCP_E2E_UNSET_KEY", stickyClient("set23-u", "set23_u", "set23", { auth_type: "headers", headers: { "X-Api-Key": "env.MCP_E2E_UNSET_KEY" } }), [A.status(500), A.msgContains("authorization required")]),
+  notListed("SET-23", "set23-u"),
+  deleteClient("SET-23", "set23-c"),
+]);
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -8793,7 +8933,7 @@ const collection = {
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, GO18, CONN23, CONN24, CONN25, CONN27, CONN28, CONN29]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43]),
-    section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET26, SET27, SET28, SET29, SET30, SET31, SET32]),
+    section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET26, SET27, SET28, SET29, SET30, SET31, SET32, SET04, SET05, SET10, SET11, SET15, SET23]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV37, GOV38, GOV39]),
     section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66, INF76, INF77]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB27, LIB32, LIB33, LIB34, LIB36, LIB37]),

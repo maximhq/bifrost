@@ -264,7 +264,8 @@ start_bifrost() {
     write_config "$SERVER_DIR"
     local log="$SERVER_DIR/server.log"
     # The setup token is what lets enable_dashboard_auth create the first admin account.
-    BIFROST_SETUP_TOKEN="$SETUP_TOKEN" "$BIFROST_BINARY" --app-dir "$SERVER_DIR" --port "$PORT" --log-level info > "$log" 2>&1 &
+    # SET-23 reads a header value from this variable; MCP_E2E_UNSET_KEY stays unset.
+    MCP_E2E_HEADER_KEY="mcp-e2e-header-key" BIFROST_SETUP_TOKEN="$SETUP_TOKEN" "$BIFROST_BINARY" --app-dir "$SERVER_DIR" --port "$PORT" --log-level info > "$log" 2>&1 &
     SERVER_PID=$!
     local elapsed=0
     while [ $elapsed -lt 60 ]; do
