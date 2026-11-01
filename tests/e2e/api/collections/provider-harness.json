@@ -103,6 +103,13 @@
           "        var parts = j.candidates[0].content.parts || [];",
           "        // Image-output models (responseModalities IMAGE) answer with inlineData parts only; the image IS the content.",
           "        hasContent = parts.some(function (p) { return p && (p.text || p.functionCall || p.executableCode || (p.inlineData && p.inlineData.data)); });",
+          "    } else if (Array.isArray(j)) {",
+          "        shape = 'gemini-stream-array';",
+          "        hasContent = j.some(function (event) {",
+          "            return event && Array.isArray(event.candidates) && event.candidates.some(function (candidate) {",
+          "                return candidate && candidate.content && Array.isArray(candidate.content.parts) && candidate.content.parts.some(function (p) { return p && (p.text || p.functionCall || p.executableCode || (p.inlineData && p.inlineData.data)); });",
+          "            });",
+          "        });",
           "    } else if (j.object === 'interaction') {",
           "        shape = 'interactions';",
           "        // A completed interaction carries its reply as a model_output step (a store:false reply has no id).",
@@ -276758,6 +276765,353 @@
               "path": [
                 "v1",
                 "models"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "263. Passthrough semantic completion without upstream EOF (#8780 / PR #8838)",
+      "description": "Deterministic local Gemini fixture, no live provider calls. Enable streamTerminalFixture=1 only against an isolated gateway using stream-terminal-fixture.config.json and stream-terminal-fixture.mjs. The fixture holds its HTTP body open after terminal SSE events, an undelimited JSON array, or a native 429 error; the gateway must close the downstream stream, preserve status and Content-Type, and forward every byte unchanged. LF coverage includes ordinary marker-free content, marker words in text, a nested finishReason, malformed JSON, usage-only metadata, and an escaped terminal key. An 8KB ordinary event forces multiple stream reads so premature completion cannot pass by forwarding one coalesced buffer. CRLF and JSON-array cases pin alternate framing. The EOF control contains no semantic terminal marker. Use Newman --timeout-request 5000 so an unbounded drain fails instead of hanging. Exact token accounting, bounded HTTP-framing cleanup, safe connection reuse, and Vertex TLS/Anthropic-host behavior are checked by Go tests, not claimed by these response-body assertions. Commands are in tests/e2e/api/README.md under Passthrough semantic completion.",
+      "item": [
+        {
+          "name": "263.1 gemini gemini-2.5-flash /genai_passthrough LF SSE ignores benign and malformed markers before an escaped terminal - #8780",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('streamTerminalFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('native status and content type survive semantic completion', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type'), raw).to.include(\"text/event-stream\");",
+                  "});",
+                  "pm.test('downstream completes with every fixture byte and no synthesized error', function () {",
+                  "var expected = \"data: {\\\"candidates\\\":[{\\\"content\\\":{\\\"parts\\\":[{\\\"text\\\":\\\"hello\\\"}],\\\"role\\\":\\\"model\\\"},\\\"index\\\":0}]}\\n\\ndata: {\\\"text\\\":\\\"finishReason message_stop error blockReason\\\\n\\\",\\\"metadata\\\":{\\\"finishReason\\\":\\\"STOP\\\"}}\\n\\ndata: {\\\"finishReason\\\":\\\"STOP\\\",}\\n\\n\" + \"data: {\\\"text\\\":\\\"\" + new Array(8193).join('x') + \"\\\"}\\n\\n\" + \"data: {\\\"usageMetadata\\\":{\\\"promptTokenCount\\\":5,\\\"candidatesTokenCount\\\":1,\\\"totalTokenCount\\\":6}}\\n\\ndata: {\\\"candidates\\\":[{\\\"finish\\\\u0052eason\\\":\\\"STOP\\\"}]}\\n\\n\";",
+              "  pm.expect(raw, 'changed or truncated stream: ' + raw).to.equal(expected);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"sse-lf\"\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta",
+                "models",
+                "gemini-2.5-flash:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "263.2 gemini gemini-2.5-flash /genai_passthrough CRLF SSE completes before upstream EOF - #8780",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('streamTerminalFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('native status and content type survive semantic completion', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type'), raw).to.include(\"text/event-stream\");",
+                  "});",
+                  "pm.test('downstream completes with every fixture byte and no synthesized error', function () {",
+                  "  pm.expect(raw, 'changed or truncated stream: ' + raw).to.equal(\"data: {\\\"candidates\\\":[{\\\"content\\\":{\\\"parts\\\":[{\\\"text\\\":\\\"hello\\\"}],\\\"role\\\":\\\"model\\\"},\\\"index\\\":0}]}\\r\\n\\r\\ndata: {\\\"usageMetadata\\\":{\\\"promptTokenCount\\\":5,\\\"candidatesTokenCount\\\":1,\\\"totalTokenCount\\\":6}}\\r\\n\\r\\ndata: {\\\"candidates\\\":[{\\\"finish\\\\u0052eason\\\":\\\"STOP\\\"}]}\\r\\n\\r\\n\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"sse-crlf\"\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta",
+                "models",
+                "gemini-2.5-flash:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "263.3 gemini gemini-2.5-flash /genai_passthrough JSON array completes before upstream EOF - #8780",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('streamTerminalFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('native status and content type survive semantic completion', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type'), raw).to.include(\"application/json\");",
+                  "});",
+                  "pm.test('downstream completes with every fixture byte and no synthesized error', function () {",
+                  "  pm.expect(raw, 'changed or truncated stream: ' + raw).to.equal(\"[{\\\"candidates\\\":[{\\\"content\\\":{\\\"parts\\\":[{\\\"text\\\":\\\"hello\\\"}],\\\"role\\\":\\\"model\\\"},\\\"index\\\":0}]},{\\\"usageMetadata\\\":{\\\"promptTokenCount\\\":5,\\\"candidatesTokenCount\\\":1,\\\"totalTokenCount\\\":6}},{\\\"candidates\\\":[{\\\"finish\\\\u0052eason\\\":\\\"STOP\\\"}]}]\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"json-array\"\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=json",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta",
+                "models",
+                "gemini-2.5-flash:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "json"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "263.4 gemini gemini-2.5-flash /genai_passthrough [EXPECT-429] native error array completes before upstream EOF - #8780",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('streamTerminalFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('native status and content type survive semantic completion', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(429);",
+                  "  pm.expect(pm.response.headers.get('content-type'), raw).to.include(\"application/json\");",
+                  "});",
+                  "pm.test('downstream completes with every fixture byte and no synthesized error', function () {",
+                  "  pm.expect(raw, 'changed or truncated stream: ' + raw).to.equal(\"[{\\\"error\\\":{\\\"code\\\":429,\\\"status\\\":\\\"RESOURCE_EXHAUSTED\\\",\\\"message\\\":\\\"fixture rate limit\\\"}}]\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"error-array\"\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=json",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta",
+                "models",
+                "gemini-2.5-flash:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "json"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "263.5 gemini gemini-2.5-flash /genai_passthrough HTTP EOF completes without a semantic marker - #8780",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('streamTerminalFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('native status and content type survive semantic completion', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type'), raw).to.include(\"text/event-stream\");",
+                  "});",
+                  "pm.test('downstream completes with every fixture byte and no synthesized error', function () {",
+                  "  pm.expect(raw, 'changed or truncated stream: ' + raw).to.equal(\"data: {\\\"candidates\\\":[{\\\"content\\\":{\\\"parts\\\":[{\\\"text\\\":\\\"hello\\\"}],\\\"role\\\":\\\"model\\\"},\\\"index\\\":0}]}\\n\\ndata: {\\\"usageMetadata\\\":{\\\"promptTokenCount\\\":5,\\\"candidatesTokenCount\\\":1,\\\"totalTokenCount\\\":6}}\\n\\n\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"eof-control\"\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta",
+                "models",
+                "gemini-2.5-flash:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
               ]
             }
           }

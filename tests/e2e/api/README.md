@@ -74,6 +74,53 @@ The cases are skipped unless `azureStreamPreambleFixture=1`.
 
 Stop the fixture and isolated gateway with Ctrl+C after testing.
 
+## Passthrough semantic completion
+
+Folder 263 (`passthrough semantic completion`, #8780 / PR #8838) uses an isolated
+Gemini fixture with a dummy key and local pricing metadata. It makes no live
+provider calls and needs no backing services. The loopback-only profile explicitly
+sets `client.enforce_auth_on_inference=false` so a fresh deployment does not
+require a virtual key. Enable `streamTerminalFixture=1` only with this profile; otherwise its five cases are skipped.
+
+The fixture keeps its HTTP body open after the semantic terminal event. Newman
+must receive downstream EOF within its 5-second request timeout, with exact body
+bytes, native status and Content-Type. Cases cover LF SSE with benign/nested and
+malformed markers before an escaped terminal key (with an 8KB ordinary event to
+make premature completion observable), CRLF SSE, an undelimited JSON array, a native 429 error array, and a normal HTTP-EOF control without a terminal
+marker. Connection reuse, framing deadlines, final hook usage accounting, and
+Vertex TLS/Anthropic-host behavior are covered by the Go tests, not by Newman.
+
+From the repository root, check ports 8796 and 8797 are free, then start the fixture:
+
+```bash
+lsof -nP -iTCP:8796 -iTCP:8797 -sTCP:LISTEN
+node tests/e2e/api/runners/stream-terminal-fixture.mjs
+```
+
+In a second terminal, use a Go workspace resolving this checkout's modules, build
+and start this checkout's gateway with a fresh isolated profile:
+
+```bash
+stream_terminal_app_dir=$(mktemp -d)
+cp tests/e2e/api/provider_config/stream-terminal-fixture.config.json "$stream_terminal_app_dir/config.json"
+mkdir -p transports/bifrost-http/ui
+touch transports/bifrost-http/ui/.tmp
+go run ./transports/bifrost-http -app-dir "$stream_terminal_app_dir" -host 127.0.0.1 -port 8796
+```
+
+After `/health` responds, run all five cases in a third terminal:
+
+```bash
+newman run tests/e2e/api/collections/provider-harness.json \
+  --folder "263. Passthrough semantic completion without upstream EOF (#8780 / PR #8838)" \
+  --env-var baseUrl=http://127.0.0.1:8796 \
+  --env-var streamTerminalFixture=1 --timeout-request 5000
+```
+
+Stop the fixture and isolated gateway with Ctrl+C after testing. Never point this
+folder at the normal live-provider profile: its body assertions require the local
+fixture, and the flag is an explicit opt-in rather than credential auto-detection.
+
 ## Fixed-length response truncation
 
 Folder 196 pins Content-Length validation through both native and OpenAI SDK chat streaming

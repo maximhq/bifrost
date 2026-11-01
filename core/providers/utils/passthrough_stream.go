@@ -58,7 +58,9 @@ func StreamPassthrough(
 	rawBodyStream io.Reader,
 	params PassthroughStreamParams,
 ) chan *schemas.BifrostStreamChunk {
-	return streamPassthrough(ctx, postHookRunner, postHookSpanFinalizer, func() { ReleaseStreamingResponse(ctx, resp) }, rawBodyStream, params)
+	return streamPassthrough(ctx, postHookRunner, postHookSpanFinalizer, func(semanticCompletion bool) {
+		releaseStreamingResponse(ctx, resp, semanticCompletion)
+	}, rawBodyStream, params)
 }
 
 // StreamPassthroughHTTP is StreamPassthrough for providers built on net/http (Bedrock): the response
@@ -71,14 +73,14 @@ func StreamPassthroughHTTP(
 	body io.ReadCloser,
 	params PassthroughStreamParams,
 ) chan *schemas.BifrostStreamChunk {
-	return streamPassthrough(ctx, postHookRunner, postHookSpanFinalizer, func() { _ = body.Close() }, body, params)
+	return streamPassthrough(ctx, postHookRunner, postHookSpanFinalizer, func(bool) { _ = body.Close() }, body, params)
 }
 
 func streamPassthrough(
 	ctx *schemas.BifrostContext,
 	postHookRunner schemas.PostHookRunner,
 	postHookSpanFinalizer func(context.Context),
-	release func(),
+	release func(semanticCompletion bool),
 	rawBodyStream io.Reader,
 	params PassthroughStreamParams,
 ) chan *schemas.BifrostStreamChunk {
@@ -94,6 +96,7 @@ func streamPassthrough(
 
 	ch := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 	go func() {
+		semanticCompletion := false
 		defer EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer func() {
 			if ctx.Err() == context.Canceled {
@@ -103,7 +106,7 @@ func streamPassthrough(
 			}
 			close(ch)
 		}()
-		defer release()
+		defer func() { release(semanticCompletion) }()
 		defer stopIdleTimeout()
 		defer stopCancellation()
 
@@ -225,6 +228,9 @@ func streamPassthrough(
 				if !params.SkipFraming {
 					pending.Write(chunk)
 					if drainFrames() {
+						// Let transport cleanup confirm HTTP completion before reusing
+						// the connection. A semantic marker alone does not prove EOF.
+						semanticCompletion = readErr != io.EOF
 						finalize()
 						return
 					}

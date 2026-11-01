@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -793,6 +794,30 @@ func TestReleaseStreamingResponse_NoBodyDoesNotClaimConnection(t *testing.T) {
 	}
 }
 
+func TestReleaseStreamingResponse_SemanticCompletionAbandonsOnce(t *testing.T) {
+	for _, name := range []string{"parked", "unknown-body"} {
+		t.Run(name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+			defer ctx.Cancel()
+			if name == "parked" {
+				ctx.SetValue(schemas.BifrostContextKeyStreamParkedAfterFinish, true)
+			}
+			body := &countingStreamCloser{}
+			// This response is not pooled: abandonment intentionally leaves it to GC.
+			resp := &fasthttp.Response{}
+			resp.SetBodyStream(body, -1)
+			releaseStreamingResponse(ctx, resp, true)
+			releaseStreamingResponse(ctx, resp, true)
+			if reads, closes := body.readCount.Load(), body.closeCount.Load(); reads != 0 || closes != 1 {
+				t.Fatalf("semantic completion read %d times and closed %d times", reads, closes)
+			}
+			if ctx.Err() != nil {
+				t.Fatalf("semantic completion cancelled the request: %v", ctx.Err())
+			}
+		})
+	}
+}
+
 type closeRecorder struct {
 	closed chan struct{}
 	once   sync.Once
@@ -852,5 +877,40 @@ func TestSetupStreamCancellation_DisarmedDeadlineStillHonoursCtx(t *testing.T) {
 	case <-body.closed:
 	case <-time.After(2 * time.Second):
 		t.Fatal("ctx cancellation no longer closes the body after disarm")
+	}
+}
+
+func TestReleaseStreamingResponseSemanticCompletionClosesOwnedBodyOnce(t *testing.T) {
+	for _, connectionClose := range []bool{false, true} {
+		t.Run(fmt.Sprintf("connectionClose=%t", connectionClose), func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+			defer ctx.Cancel()
+			conn, peer := net.Pipe()
+			defer conn.Close()
+			defer peer.Close()
+			reader := &countingStreamCloser{}
+			releases := 0
+			discarded := false
+			body := &streamBody{
+				reader: &contentLengthBody{reader: io.LimitedReader{R: reader, N: 1}},
+				conn:   conn,
+				release: func(discard bool) {
+					releases++
+					discarded = discard
+				},
+			}
+			resp := fasthttp.AcquireResponse()
+			resp.SetBodyStream(body, 1)
+			if connectionClose {
+				resp.Header.SetConnectionClose()
+			}
+			releaseStreamingResponse(ctx, resp, true)
+			if err := body.CloseWithError(nil); err != nil {
+				t.Fatal(err)
+			}
+			if releases != 1 || !discarded || reader.readCount.Load() != 0 {
+				t.Fatalf("releases=%d, discarded=%v, reads=%d", releases, discarded, reader.readCount.Load())
+			}
+		})
 	}
 }
