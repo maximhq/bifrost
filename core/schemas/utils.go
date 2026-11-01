@@ -143,17 +143,17 @@ func ParseFallbacks(fallbacks []string) []Fallback {
 	}
 	var parsedFallbacks []Fallback
 	for _, fallback := range fallbacks {
-		if fallback == "" {
-			continue
+		fallbackProvider, fallbackModel, prefixed := strings.Cut(fallback, "/")
+		if !prefixed {
+			fallbackProvider, fallbackModel = "", fallback
 		}
-		fallbackProvider, fallbackModel := ParseModelString(fallback, "")
-		if fallbackModel == "" || (fallbackProvider == "" && strings.Contains(fallback, "/")) {
+		if fallbackModel == "" || (prefixed && !IsKnownProvider(fallbackProvider)) {
 			continue
 		}
 		if parsedFallbacks == nil {
 			parsedFallbacks = make([]Fallback, 0, len(fallbacks))
 		}
-		parsedFallbacks = append(parsedFallbacks, Fallback{Provider: fallbackProvider, Model: fallbackModel})
+		parsedFallbacks = append(parsedFallbacks, Fallback{Provider: ModelProvider(fallbackProvider), Model: fallbackModel})
 	}
 	return parsedFallbacks
 }

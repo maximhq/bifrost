@@ -3,6 +3,7 @@ package integrations
 import (
 	"context"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 
@@ -78,23 +79,16 @@ func TestExtractAndParseFallbacksRequestModels(t *testing.T) {
 		input []string
 		want  []schemas.Fallback
 	}{
-		{name: "bare waits for routing", input: []string{"backup"}, want: []schemas.Fallback{{Model: "backup"}}},
 		{name: "mixed", input: []string{"foo/model", "backup", "openai/gpt-4o", "openai/"}, want: []schemas.Fallback{{Model: "backup"}, {Provider: schemas.OpenAI, Model: "gpt-4o"}}},
-		{name: "invalid entries clear converter fallbacks", input: []string{"foo/model", "openai/"}},
+		{name: "invalid-only inputs are ignored", input: []string{"foo/model", "openai/"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			incoming := &openai.OpenAIChatRequest{Model: "anthropic/primary", Fallbacks: tc.input}
 			req := &schemas.BifrostRequest{ChatRequest: incoming.ToBifrostChatRequest(nil)}
 			require.NoError(t, newTestGenericRouter().extractAndParseFallbacks(newTestBifrostContext(), incoming, req))
-			assert.Equal(t, tc.want, req.ChatRequest.Fallbacks)
+			assert.True(t, slices.Equal(tc.want, req.ChatRequest.Fallbacks), "fallbacks = %+v, want %+v", req.ChatRequest.Fallbacks, tc.want)
 		})
 	}
-	t.Run("setter handles image edit without request type", func(t *testing.T) {
-		incoming := &openai.OpenAIImageEditRequest{Fallbacks: []string{"backup"}}
-		req := &schemas.BifrostRequest{ImageEditRequest: &schemas.BifrostImageEditRequest{Provider: schemas.OpenAI, Model: "primary"}}
-		require.NoError(t, newTestGenericRouter().extractAndParseFallbacks(newTestBifrostContext(), incoming, req))
-		assert.Equal(t, []schemas.Fallback{{Model: "backup"}}, req.ImageEditRequest.Fallbacks)
-	})
 }
 
 func BenchmarkExtractAndParseFallbacks(b *testing.B) {

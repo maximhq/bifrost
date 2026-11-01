@@ -25,7 +25,7 @@ RerankRequest:
       type: array
       items:
         type: string
-      description: Fallback models as provider/model strings or bare names that inherit the routing-selected primary provider. Unknown provider prefixes and empty models are ignored.
+      description: Fallback model names or provider/model strings. Bare names use the routing-selected primary provider.
     top_n:
       type: integer
       minimum: 1

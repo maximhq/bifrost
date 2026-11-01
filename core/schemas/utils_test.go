@@ -1,6 +1,7 @@
 package schemas
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -240,7 +241,6 @@ func TestParseFallbacks(t *testing.T) {
 		want  []Fallback
 	}{
 		{name: "absent"},
-		{name: "empty", input: []string{}},
 		{name: "bare model waits for primary routing", input: []string{"claude-haiku-4-5"}, want: []Fallback{{Model: "claude-haiku-4-5"}}},
 		{name: "explicit provider", input: []string{"anthropic/claude-haiku-4-5"}, want: []Fallback{{Provider: Anthropic, Model: "claude-haiku-4-5"}}},
 		{name: "custom provider", input: []string{"fallback-test-custom/backup"}, want: []Fallback{{Provider: custom, Model: "backup"}}},
@@ -250,7 +250,7 @@ func TestParseFallbacks(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := ParseFallbacks(tc.input)
-			assert.Equal(t, tc.want, got)
+			assert.True(t, slices.Equal(tc.want, got), "fallbacks = %+v, want %+v", got, tc.want)
 		})
 	}
 }

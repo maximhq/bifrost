@@ -128,168 +128,88 @@ func validateRequestAfterPreRequestHooks(req *schemas.BifrostRequest) *schemas.B
 	return nil
 }
 
-// resolveFallbackProviders binds bare request fallbacks to the routed primary.
-// Clone only when binding is needed: SDK callers and routing plugins can reuse
-// their fallback slices across requests, including requests routed differently.
-func resolveFallbackProviders(provider schemas.ModelProvider, fallbacks []schemas.Fallback) []schemas.Fallback {
-	if provider == "" {
-		return fallbacks
-	}
-	for i, fallback := range fallbacks {
-		if fallback.Provider != "" || fallback.Model == "" {
-			continue
-		}
-		resolved := slices.Clone(fallbacks)
-		for j := i; j < len(resolved); j++ {
-			if resolved[j].Provider == "" && resolved[j].Model != "" {
-				resolved[j].Provider = provider
-			}
-		}
-		return resolved
-	}
-	return fallbacks
-}
-
-// copyInferenceRequest shallow-copies inference bodies so attempt-local routing
-// and fallback binding cannot rewrite a caller's reusable request. A non-nil
-// target overrides provider/model for a fallback attempt; payloads stay shared.
-func copyInferenceRequest(req *schemas.BifrostRequest, target *schemas.Fallback) schemas.BifrostRequest {
-	// Clone the inference bodies, preserving unrelated request metadata.
+// copyInferenceRequest isolates routing fields while sharing request payloads.
+// Fallback attempts and session promotion must not rewrite the caller's body.
+func copyInferenceRequest(req *schemas.BifrostRequest, provider schemas.ModelProvider, model string) schemas.BifrostRequest {
 	copied := *req
-
 	if req.TextCompletionRequest != nil {
 		tmp := *req.TextCompletionRequest
-		if target != nil {
-			tmp.Provider = target.Provider
-			tmp.Model = target.Model
-		}
+		tmp.Provider, tmp.Model = provider, model
 		copied.TextCompletionRequest = &tmp
 	}
-
 	if req.ChatRequest != nil {
 		tmp := *req.ChatRequest
-		if target != nil {
-			tmp.Provider = target.Provider
-			tmp.Model = target.Model
-		}
+		tmp.Provider, tmp.Model = provider, model
 		copied.ChatRequest = &tmp
 	}
-
 	if req.ResponsesRequest != nil {
 		tmp := *req.ResponsesRequest
-		if target != nil {
-			tmp.Provider = target.Provider
-			tmp.Model = target.Model
-		}
+		tmp.Provider, tmp.Model = provider, model
 		copied.ResponsesRequest = &tmp
 	}
-
 	if req.CountTokensRequest != nil {
 		tmp := *req.CountTokensRequest
-		if target != nil {
-			tmp.Provider = target.Provider
-			tmp.Model = target.Model
-		}
+		tmp.Provider, tmp.Model = provider, model
 		copied.CountTokensRequest = &tmp
 	}
-
 	if req.CompactionRequest != nil {
 		tmp := *req.CompactionRequest
-		if target != nil {
-			tmp.Provider = target.Provider
-			tmp.Model = target.Model
-		}
+		tmp.Provider, tmp.Model = provider, model
 		copied.CompactionRequest = &tmp
 	}
-
 	if req.EmbeddingRequest != nil {
 		tmp := *req.EmbeddingRequest
-		if target != nil {
-			tmp.Provider = target.Provider
-			tmp.Model = target.Model
-		}
+		tmp.Provider, tmp.Model = provider, model
 		copied.EmbeddingRequest = &tmp
 	}
 	if req.RerankRequest != nil {
 		tmp := *req.RerankRequest
-		if target != nil {
-			tmp.Provider = target.Provider
-			tmp.Model = target.Model
-		}
+		tmp.Provider, tmp.Model = provider, model
 		copied.RerankRequest = &tmp
 	}
 	if req.DecisionRequest != nil {
 		tmp := *req.DecisionRequest
-		if target != nil {
-			tmp.Provider = target.Provider
-			tmp.Model = target.Model
-		}
+		tmp.Provider, tmp.Model = provider, model
 		copied.DecisionRequest = &tmp
 	}
 	if req.OCRRequest != nil {
 		tmp := *req.OCRRequest
-		if target != nil {
-			tmp.Provider = target.Provider
-			tmp.Model = target.Model
-		}
+		tmp.Provider, tmp.Model = provider, model
 		copied.OCRRequest = &tmp
 	}
-
 	if req.SpeechRequest != nil {
 		tmp := *req.SpeechRequest
-		if target != nil {
-			tmp.Provider = target.Provider
-			tmp.Model = target.Model
-		}
+		tmp.Provider, tmp.Model = provider, model
 		copied.SpeechRequest = &tmp
 	}
-
 	if req.TranscriptionRequest != nil {
 		tmp := *req.TranscriptionRequest
-		if target != nil {
-			tmp.Provider = target.Provider
-			tmp.Model = target.Model
-		}
+		tmp.Provider, tmp.Model = provider, model
 		copied.TranscriptionRequest = &tmp
 	}
 	if req.ImageGenerationRequest != nil {
 		tmp := *req.ImageGenerationRequest
-		if target != nil {
-			tmp.Provider = target.Provider
-			tmp.Model = target.Model
-		}
+		tmp.Provider, tmp.Model = provider, model
 		copied.ImageGenerationRequest = &tmp
 	}
 	if req.VideoGenerationRequest != nil {
 		tmp := *req.VideoGenerationRequest
-		if target != nil {
-			tmp.Provider = target.Provider
-			tmp.Model = target.Model
-		}
+		tmp.Provider, tmp.Model = provider, model
 		copied.VideoGenerationRequest = &tmp
 	}
 	if req.VideoEditRequest != nil {
 		tmp := *req.VideoEditRequest
-		if target != nil {
-			tmp.Provider = target.Provider
-			tmp.Model = target.Model
-		}
+		tmp.Provider, tmp.Model = provider, model
 		copied.VideoEditRequest = &tmp
 	}
 	if req.ImageEditRequest != nil {
 		tmp := *req.ImageEditRequest
-		if target != nil {
-			tmp.Provider = target.Provider
-			tmp.Model = target.Model
-		}
+		tmp.Provider, tmp.Model = provider, model
 		copied.ImageEditRequest = &tmp
 	}
 	if req.ImageVariationRequest != nil {
 		tmp := *req.ImageVariationRequest
-		if target != nil {
-			tmp.Provider = target.Provider
-			tmp.Model = target.Model
-		}
+		tmp.Provider, tmp.Model = provider, model
 		copied.ImageVariationRequest = &tmp
 	}
 	return copied

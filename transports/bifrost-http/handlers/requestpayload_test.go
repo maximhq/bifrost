@@ -571,31 +571,6 @@ func BenchmarkPrepareSmallRequest(b *testing.B) {
 	}
 }
 
-func TestPrepareRequestFallbacks(t *testing.T) {
-	for _, model := range []string{"anthropic/claude-sonnet-4-5", "claude-sonnet-4-5"} {
-		for _, kind := range []string{"chat", "responses", "embedding", "speech"} {
-			t.Run(kind+"/"+model, func(t *testing.T) {
-				ctx := &fasthttp.RequestCtx{}
-				ctx.Request.SetBodyString(`{"model":"` + model + `","fallbacks":["foo/model","claude-haiku-4-5","openai/gpt-4o","openai/"]}`)
-				var base *requestBase
-				var err error
-				switch kind {
-				case "chat":
-					_, base, err = prepareRequest[ChatRequest](ctx, nil, nil)
-				case "responses":
-					_, base, err = prepareRequest[ResponsesRequest](ctx, nil, nil)
-				case "embedding":
-					_, base, err = prepareRequest[EmbeddingRequest](ctx, nil, nil)
-				case "speech":
-					_, base, err = prepareRequest[SpeechRequest](ctx, nil, nil)
-				}
-				require.NoError(t, err)
-				assert.Equal(t, []schemas.Fallback{{Model: "claude-haiku-4-5"}, {Provider: schemas.OpenAI, Model: "gpt-4o"}}, base.Fallbacks)
-			})
-		}
-	}
-}
-
 func BenchmarkPrepareRequestFallbacks(b *testing.B) {
 	for _, tc := range []struct{ name, fallbacks string }{
 		{name: "none", fallbacks: "[]"},

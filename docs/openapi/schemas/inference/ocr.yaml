@@ -19,7 +19,7 @@ OCRRequest:
       type: array
       items:
         type: string
-      description: Fallback models as provider/model strings or bare names that inherit the routing-selected primary provider. Unknown provider prefixes and empty models are ignored.
+      description: Fallback model names or provider/model strings. Bare names use the routing-selected primary provider.
     include_image_base64:
       type: boolean
       description: Whether to include base64-encoded images in the response

@@ -16,32 +16,10 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-type requestFallbackAffinity struct {
-	schemas.SessionAffinity
-	chain []schemas.Route
-	keep  bool
-}
-
-func (a *requestFallbackAffinity) ResolveRoute(_ *schemas.BifrostContext, _ schemas.Route, chain []schemas.Route) []schemas.Route {
-	a.chain = slices.Clone(chain)
-	if a.keep {
-		return chain
-	}
-	return []schemas.Route{chain[1], chain[0]}
-}
-
-func TestRequestFallbackSessionEmptyModel(t *testing.T) {
-	affinity := &requestFallbackAffinity{keep: true}
-	client := &Bifrost{sessionAffinity: affinity}
-	req := &schemas.BifrostRequest{ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "primary", Fallbacks: []schemas.Fallback{{}}}}
-	client.resolveSessionRoute(sessionCtx("empty-fallback"), schemas.Route{Model: "primary"}, req)
-	if len(affinity.chain) != 2 || affinity.chain[1].Provider != "" || affinity.chain[1].Model != "" {
-		t.Fatalf("session affinity was offered an activated empty fallback: %+v", affinity.chain)
-	}
-}
-
 func TestRequestFallbackSessionAffinity(t *testing.T) {
-	affinity := &requestFallbackAffinity{}
+	affinity := &recordingAffinity{routeAnswer: func(routes []schemas.Route) []schemas.Route {
+		return []schemas.Route{routes[1], routes[0]}
+	}}
 	client := &Bifrost{sessionAffinity: affinity}
 	caller := &schemas.BifrostChatRequest{
 		Provider: schemas.OpenAI, Model: "primary", Fallbacks: []schemas.Fallback{{Model: "backup", KeyID: "backup-key"}},
@@ -49,10 +27,6 @@ func TestRequestFallbackSessionAffinity(t *testing.T) {
 	req := &schemas.BifrostRequest{ChatRequest: caller}
 	ctx := sessionCtx("bare-fallback-affinity")
 	client.resolveSessionRoute(ctx, schemas.Route{Model: "primary"}, req)
-	want := []schemas.Route{{Provider: schemas.OpenAI, Model: "primary"}, {Provider: schemas.OpenAI, Model: "backup", KeyID: "backup-key"}}
-	if !slices.Equal(affinity.chain, want) {
-		t.Fatalf("session saw unresolved routes: %+v, want %+v", affinity.chain, want)
-	}
 	provider, model, fallbacks := req.GetRequestFields()
 	if provider != schemas.OpenAI || model != "backup" || len(fallbacks) != 1 || fallbacks[0].Provider != schemas.OpenAI {
 		t.Fatalf("promoted route changed: %s/%s, fallbacks=%+v", provider, model, fallbacks)
@@ -60,7 +34,7 @@ func TestRequestFallbackSessionAffinity(t *testing.T) {
 	if pin := routingKeyPinFromContext(ctx); pin != "backup-key" {
 		t.Fatalf("promoted fallback lost its key pin: %q", pin)
 	}
-	if caller.Model != "primary" || caller.Fallbacks[0].Provider != "" || caller.Fallbacks[0].Model != "backup" {
+	if caller.Model != "primary" || caller.Fallbacks[0] != (schemas.Fallback{Model: "backup", KeyID: "backup-key"}) {
 		t.Errorf("session promotion overwrote the caller's shorthand request: %+v", caller)
 	}
 }

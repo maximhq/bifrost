@@ -5662,9 +5662,9 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		return nil
 	}
 
-	fallbackReq := copyInferenceRequest(req, &fallback)
+	fallbackReq := copyInferenceRequest(req, fallback.Provider, fallback.Model)
 
-	// A sub-request type without an arm above keeps the primary's pointer through the
+	// A sub-request type not handled by copyInferenceRequest keeps the primary's pointer through the
 	// shallow copy, so the "fallback" would be routed back to the primary while
 	// RoutingInfo reports it as a fallback (#6966). Skip it loudly instead of silently
 	// re-running the primary; the caller treats nil as a skipped fallback.
@@ -5791,15 +5791,6 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	preDispatchSpan := bifrost.startCoreSpan(ctx, "miscellaneous")
 	// Re-read after PreRequestHook — provider/model/fallbacks may have changed.
 	provider, model, fallbacks = req.GetRequestFields()
-	if len(fallbacks) > 0 {
-		resolved := resolveFallbackProviders(provider, fallbacks)
-		if &resolved[0] != &fallbacks[0] {
-			// Isolate the body as well as the slice: the caller may reuse the request.
-			*req = copyInferenceRequest(req, nil)
-			req.SetFallbacks(resolved)
-		}
-		fallbacks = resolved
-	}
 	// Empty provider/model after PreRequestHook means no plugin
 	// could pick a provider for this model — the caller's input is unresolvable.
 	validateErr := validateRequestAfterPreRequestHooks(req)
@@ -5849,6 +5840,10 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 
 	// Try fallbacks in order
 	for i, fallback := range fallbacks {
+		// Bind the attempt's copy, not the caller's reusable fallback chain.
+		if fallback.Provider == "" && fallback.Model != "" {
+			fallback.Provider = provider
+		}
 		ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, i+1)
 		bifrost.logger.Debug("trying fallback provider %s with model %s", fallback.Provider, fallback.Model)
 		ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Trying fallback %d/%d: %s/%s (previous attempt failed: %s)", i+1, len(fallbacks), fallback.Provider, fallback.Model, routingErrorSummary(lastErr)))
@@ -6012,15 +6007,6 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	preDispatchSpan := bifrost.startCoreSpan(ctx, "miscellaneous")
 	// Re-read after PreRequestHook — provider/model/fallbacks may have changed.
 	provider, model, fallbacks = req.GetRequestFields()
-	if len(fallbacks) > 0 {
-		resolved := resolveFallbackProviders(provider, fallbacks)
-		if &resolved[0] != &fallbacks[0] {
-			// Isolate the body as well as the slice: the caller may reuse the request.
-			*req = copyInferenceRequest(req, nil)
-			req.SetFallbacks(resolved)
-		}
-		fallbacks = resolved
-	}
 	// Empty provider after PreRequestHook means no plugin
 	// could pick a provider for this model — the caller's input is unresolvable.
 	validateErr := validateRequestAfterPreRequestHooks(req)
@@ -6077,6 +6063,10 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 
 	// Try fallbacks in order
 	for i, fallback := range fallbacks {
+		// Bind the attempt's copy, not the caller's reusable fallback chain.
+		if fallback.Provider == "" && fallback.Model != "" {
+			fallback.Provider = provider
+		}
 		ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, i+1)
 		ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Trying fallback %d/%d: %s/%s (previous attempt failed: %s)", i+1, len(fallbacks), fallback.Provider, fallback.Model, routingErrorSummary(lastErr)))
 		ctx.SetValue(schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())

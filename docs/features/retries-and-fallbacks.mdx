@@ -296,9 +296,9 @@ Pass a `fallbacks` array in the request body. An entry can be a `provider/model`
 For example, `"model": "anthropic/claude-sonnet-4-5"` with `"fallbacks": ["claude-haiku-4-5", "openai/gpt-4o-mini"]` tries Haiku on Anthropic first, then GPT on OpenAI. This parsing behavior is shared by the native `/v1` endpoints and SDK drop-ins, including `/anthropic/v1/messages`.
 
 <Note>
-Unknown provider prefixes, empty entries, and entries with no model after a known prefix (such as `"openai/"`) are silently ignored, not returned as HTTP 400 errors. A namespaced model must include its provider, for example `"openrouter/meta-llama/Llama-3.1-8B"`; `"meta-llama/Llama-3.1-8B"` alone has an unknown provider prefix and is ignored. Malformed request shapes still undergo normal request validation.
+Unknown provider prefixes, empty entries, and entries with no model after a known prefix (such as `"openai/"`) are silently ignored, not returned as HTTP 400 errors. A namespaced model must include its provider, for example `"openrouter/meta-llama/Llama-3.1-8B"`; `"meta-llama/Llama-3.1-8B"` alone has an unknown provider prefix and is ignored.
 
-Routing-rule fallbacks retain their stricter creation/update validation. Anthropic native fallback objects (`{"model": "..."}`) and the `"default"` preset remain separate provider-native features; they are not interpreted as Bifrost string fallbacks.
+Anthropic native fallback objects (`{"model": "..."}`) and the `"default"` preset remain separate provider-native features; they are not interpreted as Bifrost string fallbacks.
 </Note>
 
 ```bash
@@ -358,7 +358,7 @@ The response's `extra_fields.routing_info` tells you which provider actually ser
 </Tab>
 <Tab title="Go SDK">
 
-An empty `schemas.Fallback.Provider` inherits the routing-selected primary provider. An explicit provider remains authoritative. Binding preserves the caller's fallback fields, so reusing a request does not turn shorthand into an explicit fallback to the previous provider. Unchanged request payloads are shared, not deep-copied.
+Leave `schemas.Fallback.Provider` empty to use the routing-selected primary provider. Explicit fallback providers remain unchanged.
 
 ```go
 package main

@@ -340,14 +340,12 @@ func (bifrost *Bifrost) resolveSessionRoute(ctx *schemas.BifrostContext, request
 	chain = append(chain, schemas.Route{Provider: provider, Model: model, KeyID: primaryKeyPin})
 	hasBareFallback := false
 	for _, fallback := range fallbacks {
-		fallbackProvider := fallback.Provider
-		if fallbackProvider == "" && fallback.Model != "" {
-			// Affinity reorders concrete routes; bare fallbacks inherit the
-			// routing-selected primary before they can be promoted.
-			fallbackProvider = provider
+		if fallback.Provider == "" && fallback.Model != "" {
+			// Resolve before affinity can promote a fallback to primary.
+			fallback.Provider = provider
 			hasBareFallback = true
 		}
-		chain = append(chain, schemas.Route{Provider: fallbackProvider, Model: fallback.Model, KeyID: strings.TrimSpace(fallback.KeyID)})
+		chain = append(chain, schemas.Route{Provider: fallback.Provider, Model: fallback.Model, KeyID: strings.TrimSpace(fallback.KeyID)})
 	}
 	resolved := bifrost.sessionAffinity.ResolveRoute(ctx, requested, chain)
 	if len(resolved) == 0 || slices.Equal(resolved, chain) {
@@ -355,7 +353,7 @@ func (bifrost *Bifrost) resolveSessionRoute(ctx *schemas.BifrostContext, request
 	}
 	if hasBareFallback {
 		// Promotion must not persist bound shorthand on a reusable SDK request.
-		*req = copyInferenceRequest(req, nil)
+		*req = copyInferenceRequest(req, provider, model)
 	}
 	req.SetProvider(resolved[0].Provider)
 	req.SetModel(resolved[0].Model)

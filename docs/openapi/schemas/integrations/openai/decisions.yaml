@@ -32,7 +32,7 @@ OpenAIDecisionRequest:
       type: array
       items:
         type: string
-      description: Fallback models as provider/model strings or bare names that inherit the routing-selected primary provider. Unknown provider prefixes and empty models are ignored. Never sent upstream.
+      description: Fallback model names or provider/model strings. Bare names use the routing-selected primary provider. Never sent upstream.
 
 OpenAIDecisionQuestion:
   type: object
