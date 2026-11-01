@@ -218,9 +218,42 @@ The Bedrock integration currently supports:
 - **Converse** API (`/bedrock/model/{modelId}/converse`) for text/chat-style workloads  
 - **Invoke** API (`/bedrock/model/{modelId}/invoke`) for model-specific text completion workloads
 - **Streaming** via `converse_stream` and `invoke_model_with_response_stream`
-- **Tools** via `toolConfig`, `toolUse`, and `toolResult` inside Converse requests  
+- **Tools** via `toolConfig`, `toolUse`, and `toolResult` inside Converse requests; Mistral messages-based Invoke requests also accept native `tools[].function`, `tool_choice` (`auto`, `any`, `none`), and `role: "tool"` messages with `tool_call_id`
 - **Image and multimodal** responses where supported by the underlying Bedrock model  
 - All Bifrost core features that apply to these flows (governance, load balancing, semantic cache, observability, etc.)
+
+### Mistral native Invoke tools
+
+Messages-based Mistral requests on `/invoke` and `/invoke-with-response-stream`
+accept native OpenAI-style tools and tool-result messages:
+
+```json
+{
+  "max_tokens": 256,
+  "messages": [{"role": "user", "content": "What is the weather in San Francisco?"}],
+  "tools": [{
+    "type": "function",
+    "function": {
+      "name": "get_weather",
+      "parameters": {
+        "type": "object",
+        "properties": {"location": {"type": "string"}},
+        "required": ["location"]
+      }
+    }
+  }],
+  "tool_choice": "any"
+}
+```
+
+Use `any` to require a tool call, `auto` to let the model choose, and `none` to
+prevent another call. Replay results as `role: "tool"` messages with `tool_call_id`
+set to the corresponding assistant tool call's `id`. Invalid tools return an HTTP
+`400` `ValidationException` naming the invalid field. Replies use native `choices[]`,
+including inside AWS EventStream chunks.
+
+Compatibility fields (`system`, `inferenceConfig`, or `toolConfig`) still route through Converse. Prompt-based
+Invoke requests and neutral `/v1/chat/completions` and `/v1/responses` routing are unchanged.
 
 ---
 
