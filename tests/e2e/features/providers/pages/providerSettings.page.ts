@@ -283,6 +283,20 @@ export class ProviderSettingsPage extends BasePage {
   }
 
   /**
+   * Initial backoff input on the Network tab
+   */
+  getInitialBackoffInput(): Locator {
+    return this.page.getByTestId('network-config-retry-backoff-initial-input')
+  }
+
+  /**
+   * Max backoff input on the Network tab
+   */
+  getMaxBackoffInput(): Locator {
+    return this.page.getByTestId('network-config-retry-backoff-max-input')
+  }
+
+  /**
    * Stream read buffer size input on the Network tab
    */
   getStreamReadBufferSizeInput(): Locator {

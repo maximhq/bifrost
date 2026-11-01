@@ -328,8 +328,8 @@ test.describe("Provider Settings", () => {
         await providerSettingsPage.selectConfigTab("network");
 
         // Ensure backoff fields are valid (minimum 100ms) so form validation passes
-        const initialBackoff = providerSettingsPage.page.getByLabel(/Initial Backoff/i);
-        const maxBackoff = providerSettingsPage.page.getByLabel(/Max Backoff/i);
+        const initialBackoff = providerSettingsPage.getInitialBackoffInput();
+        const maxBackoff = providerSettingsPage.getMaxBackoffInput();
         const ibVal = await initialBackoff.inputValue();
         const mbVal = await maxBackoff.inputValue();
         if (Number(ibVal) < 100) {

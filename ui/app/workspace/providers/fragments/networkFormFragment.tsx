@@ -306,6 +306,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 										<FormControl>
 											<Input
 												placeholder="e.g 500"
+												data-testid="network-config-retry-backoff-initial-input"
 												{...field}
 												value={field.value === undefined || Number.isNaN(field.value) ? "" : field.value}
 												disabled={!hasUpdateProviderAccess}
@@ -336,6 +337,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 										<FormControl>
 											<Input
 												placeholder="e.g 10000"
+												data-testid="network-config-retry-backoff-max-input"
 												{...field}
 												value={field.value === undefined || Number.isNaN(field.value) ? "" : field.value}
 												disabled={!hasUpdateProviderAccess}
