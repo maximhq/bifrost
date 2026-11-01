@@ -8600,6 +8600,7 @@ func (c *Config) AddProvider(ctx context.Context, provider schemas.ModelProvider
 			if errors.Is(err, configstore.ErrAlreadyExists) {
 				// Provider already exists in DB but not in memory - sync and return
 				c.Providers[provider] = config
+				schemas.RegisterKnownProvider(provider)
 				logger.Info("provider %s already exists in DB, synced to memory", provider)
 				return fmt.Errorf("provider/provider key name %s: %w", provider, ErrAlreadyExists)
 			}
@@ -8607,6 +8608,8 @@ func (c *Config) AddProvider(ctx context.Context, provider schemas.ModelProvider
 		}
 	}
 	c.Providers[provider] = config
+	// Recognize the prefix before discovery or inference lazily initializes core.
+	schemas.RegisterKnownProvider(provider)
 	logger.Info("added provider: %s", provider)
 	return nil
 }
@@ -8906,7 +8909,7 @@ func (c *Config) RemoveProvider(ctx context.Context, provider schemas.ModelProvi
 		}
 	}
 	if c.ConfigStore != nil && !skipDBUpdate {
-		if err := c.ConfigStore.DeleteProvider(ctx, provider); err != nil && !errors.Is(err, configstore.ErrNotFound) {
+		if err := c.ConfigStore.DeleteProvider(ctx, provider); err != nil {
 			return fmt.Errorf("failed to delete provider config from store: %w", err)
 		}
 	}
@@ -8914,6 +8917,7 @@ func (c *Config) RemoveProvider(ctx context.Context, provider schemas.ModelProvi
 		return nil
 	}
 	delete(c.Providers, provider)
+	schemas.UnregisterKnownProvider(provider)
 	logger.Info("Removed provider: %s", provider)
 	return nil
 }

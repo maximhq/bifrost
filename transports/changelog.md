@@ -1,7 +1,6 @@
 ## 🐛 Bug Fixes
 
-- [fix]: API-created providers are initialized before success, so their model prefixes immediately bypass virtual-key load balancing even when model discovery is skipped. Failed reloads roll back runtime and catalog state; failed persistence cleanup restores the retained provider's routing, and deletion errors are reported instead of returning success.
-- [fix]: Raw-override and auth harness config helpers preserve effective log retention instead of replacing an unset value with one day.
+- [fix]: Register management-created provider prefixes when configuration is added, so the first inference request honors the explicit provider even when model discovery is skipped. Remove the prefix when its configuration is removed.
 
 ## 🔒 Security
 

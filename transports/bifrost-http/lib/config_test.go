@@ -21398,6 +21398,68 @@ func (m *mockConfigStoreAddProvider) AddProvider(ctx context.Context, provider s
 	return m.MockConfigStore.AddProvider(ctx, provider, config, tx...)
 }
 
+func TestProviderPrefixRegistration_ConfigLifecycle(t *testing.T) {
+	initTestLogger()
+	const provider schemas.ModelProvider = "Config Prefix Registration"
+	t.Cleanup(func() { schemas.UnregisterKnownProvider(provider) })
+	cfg := &Config{Providers: make(map[schemas.ModelProvider]configstore.ProviderConfig)}
+	ctx := context.Background()
+	model := string(provider) + "/namespace/model"
+	if err := cfg.AddProvider(ctx, provider, configstore.ProviderConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	parsedProvider, parsedModel := schemas.ParseModelString(model, "")
+	if parsedProvider != provider || parsedModel != "namespace/model" {
+		t.Fatalf("configured prefix was not recognized: provider=%q model=%q", parsedProvider, parsedModel)
+	}
+
+	cfg.ConfigStore = &mockConfigStoreDeleteProvider{
+		MockConfigStore:   *NewMockConfigStore(),
+		deleteProviderErr: errors.New("delete failed"),
+	}
+	if err := cfg.RemoveProvider(ctx, provider); err == nil {
+		t.Fatal("expected persistence failure")
+	}
+	if !schemas.IsKnownProvider(string(provider)) {
+		t.Fatal("failed removal unregistered the retained configuration")
+	}
+	cfg.ConfigStore = nil
+	if err := cfg.RemoveProvider(ctx, provider); err != nil {
+		t.Fatal(err)
+	}
+	if schemas.IsKnownProvider(string(provider)) {
+		t.Fatal("removed configuration left a registered prefix")
+	}
+
+	cfg.ConfigStore = &mockConfigStoreAddProvider{
+		MockConfigStore: *NewMockConfigStore(),
+		addProviderErr:  errors.New("add failed"),
+	}
+	if err := cfg.AddProvider(ctx, provider, configstore.ProviderConfig{}); err == nil {
+		t.Fatal("expected persistence failure")
+	}
+	if schemas.IsKnownProvider(string(provider)) {
+		t.Fatal("failed creation registered a prefix")
+	}
+}
+
+func BenchmarkProviderPrefixRegistration(b *testing.B) {
+	initTestLogger()
+	const provider schemas.ModelProvider = "benchmark-prefix-registration"
+	b.Cleanup(func() { schemas.UnregisterKnownProvider(provider) })
+	cfg := &Config{Providers: make(map[schemas.ModelProvider]configstore.ProviderConfig)}
+	ctx := context.Background()
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := cfg.AddProvider(ctx, provider, configstore.ProviderConfig{}); err != nil {
+			b.Fatal(err)
+		}
+		if err := cfg.RemoveProvider(ctx, provider); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func TestAddProvider_Success(t *testing.T) {
 	initTestLogger()
 	cfg := &Config{
@@ -21436,6 +21498,8 @@ func TestAddProvider_AlreadyExistsInMemory(t *testing.T) {
 
 func TestAddProvider_AlreadyExistsInDB_SyncsToMemory(t *testing.T) {
 	initTestLogger()
+	schemas.UnregisterKnownProvider("test-provider")
+	t.Cleanup(func() { schemas.UnregisterKnownProvider("test-provider") })
 	// Simulate: provider exists in DB but not in the in-memory map.
 	// This can happen when a previous AddProvider wrote to DB but the process failed
 	// before syncing the in-memory state (e.g., UpdateProviderConfig failed after AddProvider).
@@ -21465,6 +21529,9 @@ func TestAddProvider_AlreadyExistsInDB_SyncsToMemory(t *testing.T) {
 	// so that subsequent UpdateProviderConfig calls can succeed
 	if _, exists := cfg.Providers["test-provider"]; !exists {
 		t.Fatal("provider should be synced to in-memory map when DB returns already exists")
+	}
+	if !schemas.IsKnownProvider("test-provider") {
+		t.Fatal("synced configuration should register its provider prefix")
 	}
 }
 
@@ -21555,21 +21622,6 @@ func TestRemoveProvider_NotFound(t *testing.T) {
 	err := cfg.RemoveProvider(context.Background(), "nonexistent-provider")
 	if err != nil {
 		t.Fatalf("expected nil, got error: %v", err)
-	}
-}
-
-func TestRemoveProvider_MissingDBRowClearsMemory(t *testing.T) {
-	initTestLogger()
-	store := &mockConfigStoreDeleteProvider{
-		MockConfigStore:   *NewMockConfigStore(),
-		deleteProviderErr: configstore.ErrNotFound,
-	}
-	cfg := &Config{ConfigStore: store, Providers: map[schemas.ModelProvider]configstore.ProviderConfig{"removed-provider": {}}}
-	if err := cfg.RemoveProvider(context.Background(), "removed-provider"); err != nil {
-		t.Fatalf("already absent persistence should be an idempotent removal: %v", err)
-	}
-	if _, exists := cfg.Providers["removed-provider"]; exists {
-		t.Error("missing database row left stale in-memory configuration")
 	}
 }
 

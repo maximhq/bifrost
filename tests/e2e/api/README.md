@@ -2,38 +2,15 @@
 
 End-to-end API tests for the Bifrost API using Postman collections and [Newman](https://www.npmjs.com/package/newman) (CLI).
 
-## Configuration helpers on reused gateways
-
-`runners/set-raw-override-config.mjs` and `runners/set-auth-config.mjs` preserve
-the current client and framework settings when enabling or disabling their feature.
-An unset `client_config.log_retention_days` is written as `365`, matching the log
-cleaner's effective default; an explicit positive value, including `1`, is kept.
-The raw-override helper does not resend dashboard credentials or write anything
-when its requested setting is already active.
-
-Run their local regression tests without a gateway or provider credentials:
-
-```bash
-node tests/e2e/api/runners/lib/content-logging-matrix.test.mjs
-```
-
-If an older helper already changed retention to `1`, restore your intended policy
-manually. The helpers cannot distinguish an accidental one-day value from an
-intentional one or recover logs already deleted by retention cleanup.
-
 ## Immediate registration of management-created provider prefixes
 
-Folder 267 (`provider-prefix-registration`) creates a fresh custom provider per
-request with model discovery disabled and a virtual key that assigns all
-load-balancing weight to a different, already initialized provider. The first
-chat or Responses request on native and `/openai` SDK routes (unary and streaming)
-must retain the explicit new provider prefix. Eight cases expect the local
-fixture's `503`; the zero-key case expects `400 no_key_supports_model`, not a request sent to the competing provider.
-Successful keyed/keyless responses and SSE are covered by the Go server tests.
-Each harness case removes its own providers and virtual key.
+Folder 267 (`provider-prefix-registration`) creates fresh providers with discovery
+disabled and a virtual key weighted toward a competitor. The first native chat
+and streamed `/openai` Responses requests must retain the new provider prefix,
+even when the upstream returns `503`. A missing-key case must return `400` without
+rerouting. Each case removes its providers and virtual key.
 
-These cases require no real credentials and make no paid provider calls. Start
-`runners/provider-error-fixture.mjs` and an isolated gateway as described in
+Start the local fixture and isolated gateway described in
 [Provider 5xx failover](#provider-5xx-failover-and-429-retry-hint-propagation), setting
 `BIFROST_SETUP_TOKEN=provider-registration-local-token` on that gateway. Then run:
 

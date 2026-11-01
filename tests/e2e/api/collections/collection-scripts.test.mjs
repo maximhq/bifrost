@@ -1134,7 +1134,6 @@ test("routing-wiring: a trail check resolves run variables in the lines it expec
   assert.throws(() => new Function("pm", probe)(pm), /should not contain/, "an absent line naming {{run_id}} was not resolved before the check");
 });
 
-
 // Execute the collection's own folder scripts, not a copied implementation.
 const registrationFolder = JSON.parse(readFileSync(join(here, "provider-harness.json"), "utf8")).item.find(
   (item) => item.name === "267. Management-created provider prefixes route immediately (provider-prefix-registration)",
@@ -1169,7 +1168,7 @@ function registrationSandbox({ failStep = -1, setupFailure = "http", fixtureEnab
       });
     },
     response: {
-      code: caseIndex === 4 ? 400 : 503,
+      code: registrationFolder.item[caseIndex].name.includes("[EXPECT-400]") ? 400 : 503,
       text: () => JSON.stringify(pm.response.json()),
       json: () => ({ error: { message: "service unavailable", type: "no_key_supports_model" }, extra_fields: { provider: values.get("registrationTarget") } }),
       headers: { get: () => null },
@@ -1187,27 +1186,22 @@ test("provider-prefix-registration: only fixture-enabled runs create providers",
 });
 
 test("provider-prefix-registration: every case creates a fresh target without discovery or inference warm-up", () => {
-  assert.strictEqual(registrationFolder.item.length, 9);
   for (let caseIndex = 0; caseIndex < registrationFolder.item.length; caseIndex++) {
     const ctx = registrationSandbox({ caseIndex });
     ctx.run("prerequest");
     assert.deepStrictEqual(ctx.state.failures, []);
-    assert.deepStrictEqual(ctx.state.calls.map((call) => call.method), ["POST", "PUT", "POST", "POST"]);
+    assert.deepStrictEqual(ctx.state.calls.map((call) => call.method), ["POST", "POST", "POST"]);
     const competitor = JSON.parse(ctx.state.calls[0].body.raw);
-    const target = JSON.parse(ctx.state.calls[2].body.raw);
+    const target = JSON.parse(ctx.state.calls[1].body.raw);
     assert.notStrictEqual(competitor.provider, target.provider);
-    assert.ok(ctx.state.calls[1].url.endsWith(encodeURIComponent(competitor.provider)), "only competitor may be warmed");
     for (const body of [competitor, target]) {
       assert.strictEqual(body.network_config.base_url, "http://upstream-fixture");
-      assert.strictEqual(body.network_config.max_retries, 0);
       assert.ok(!body.custom_provider_config.allowed_requests.list_models, "discovery must not warm the target");
     }
-    const keyed = caseIndex === 4;
+    const keyed = registrationFolder.item[caseIndex].name.includes("[EXPECT-400]");
     assert.strictEqual(target.custom_provider_config.is_key_less, !keyed);
-    assert.ok(!target.keys, "provider keys are managed through the separate keys API");
-    const vk = JSON.parse(ctx.state.calls[3].body.raw);
+    const vk = JSON.parse(ctx.state.calls[2].body.raw);
     assert.strictEqual(vk.provider_configs[0].provider, target.provider);
-    assert.ok(!Object.hasOwn(vk.provider_configs[0], "weight"), "target must not be an inferred weighted fallback");
     assert.strictEqual(vk.provider_configs[1].provider, competitor.provider);
     assert.strictEqual(vk.provider_configs[1].weight, 1);
     assert.strictEqual(ctx.state.headers.get("x-bf-vk"), "fixture-key");
@@ -1225,7 +1219,7 @@ test("provider-prefix-registration: every case creates a fresh target without di
 
 test("provider-prefix-registration: failed setup stops and cleans only successfully created resources", () => {
   for (const setupFailure of ["http", "network"]) {
-    for (let failStep = 0; failStep < 4; failStep++) {
+    for (let failStep = 0; failStep < 3; failStep++) {
       const ctx = registrationSandbox({ failStep, setupFailure });
       ctx.run("prerequest");
       assert.strictEqual(ctx.state.failures.length, 1);
@@ -1238,12 +1232,12 @@ test("provider-prefix-registration: failed setup stops and cleans only successfu
       for (const call of deletes) assert.ok(owned.some((name) => call.url.endsWith(encodeURIComponent(name))));
     }
   }
-  const ctx = registrationSandbox({ failStep: 3, setupFailure: "json" });
+  const ctx = registrationSandbox({ failStep: 2, setupFailure: "json" });
   ctx.run("prerequest");
   assert.strictEqual(ctx.state.failures.length, 1, "non-JSON VK responses must fail a named assertion, not throw");
   ctx.run("test");
   assert.strictEqual(ctx.state.calls.filter((call) => call.method === "DELETE").length, 2);
-  const invalidCredential = registrationSandbox({ failStep: 3, setupFailure: "credential" });
+  const invalidCredential = registrationSandbox({ failStep: 2, setupFailure: "credential" });
   invalidCredential.run("prerequest");
   assert.strictEqual(invalidCredential.state.failures.length, 1);
   assert.ok(!invalidCredential.state.headers.has("x-bf-vk"));

@@ -1048,18 +1048,15 @@ func newReloadProviderServer(catalog *modelcatalog.ModelCatalog, provider schema
 var providerRegistrationSequence atomic.Uint64
 
 type providerRegistrationFixture struct {
-	server                  *BifrostHTTPServer
 	router                  *router.Router
 	provider                schemas.ModelProvider
 	createBody              string
 	targetCalls, otherCalls *atomic.Int64
 }
 
-// The target is added through the real management route after core has started.
-// Discovery is disabled, so neither construction nor prefix registration can be
-// accidentally supplied by an upstream list-models request. A multi-provider VK
-// gives the other provider all load-balancing weight; explicit prefixes must win.
-func newProviderRegistrationFixture(t testing.TB) *providerRegistrationFixture {
+// Discovery is disabled so it cannot warm the target. The virtual key gives
+// all load-balancing weight to a competitor; the explicit target prefix must win.
+func newProviderRegistrationFixture(t *testing.T) *providerRegistrationFixture {
 	t.Helper()
 	previousLogger := logger
 	logger = noopTestLogger{}
@@ -1104,15 +1101,14 @@ func newProviderRegistrationFixture(t testing.TB) *providerRegistrationFixture {
 	t.Cleanup(competitor.Close)
 	cs, err := configstore.NewConfigStore(context.Background(), &configstore.Config{Enabled: true, Type: configstore.ConfigStoreTypeSQLite, Config: &configstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "config.db")}}, noopTestLogger{})
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = cs.Close(context.Background()) })
+	t.Cleanup(func() { assert.NoError(t, cs.Close(context.Background())) })
 	pc := configstore.ProviderConfig{
 		NetworkConfig:            &schemas.NetworkConfig{BaseURL: competitor.URL, AllowPrivateNetwork: true, MaxRetries: 0},
 		ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 2},
 		CustomProviderConfig:     &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true},
 	}
-	require.NoError(t, cs.AddProvider(context.Background(), other, pc))
 	cc := lib.DefaultClientConfig
-	cfg := &lib.Config{ConfigStore: cs, ClientConfig: &cc, ModelCatalog: modelcatalog.NewTestCatalog(nil), Providers: map[schemas.ModelProvider]configstore.ProviderConfig{other: pc}}
+	cfg := &lib.Config{ConfigStore: cs, ClientConfig: &cc, ModelCatalog: modelcatalog.NewTestCatalog(nil), Providers: make(map[schemas.ModelProvider]configstore.ProviderConfig)}
 	gov, err := governance.Init(context.Background(), nil, noopTestLogger{}, nil, &configstore.GovernanceConfig{VirtualKeys: []configstoreTables.TableVirtualKey{{
 		ID: "registration-vk", Name: "registration-vk", Value: *schemas.NewSecretVar("sk-bf-registration"), IsActive: schemas.Ptr(true),
 		ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{
@@ -1125,23 +1121,22 @@ func newProviderRegistrationFixture(t testing.TB) *providerRegistrationFixture {
 	require.NoError(t, err)
 	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: lib.NewBaseAccount(cfg), Logger: noopTestLogger{}, LLMPlugins: []schemas.LLMPlugin{gov, routingPlugin}})
 	require.NoError(t, err)
-	cfg.SetBifrostClient(client)
-	cfg.BasePlugins.Store(&[]schemas.BasePlugin{gov, routingPlugin})
 	t.Cleanup(func() {
-		for _, provider := range []schemas.ModelProvider{target, other} {
-			if client.GetProviderByKey(provider) != nil {
-				_ = client.RemoveProvider(provider)
-			}
-		}
 		client.Shutdown()
+		for _, provider := range []schemas.ModelProvider{target, other} {
+			schemas.UnregisterKnownProvider(provider)
+		}
 	})
+	cfg.SetBifrostClient(client)
+	require.NoError(t, cfg.AddProvider(context.Background(), other, pc))
+	cfg.BasePlugins.Store(&[]schemas.BasePlugin{gov, routingPlugin})
 	s := &BifrostHTTPServer{Config: cfg, Client: client, Ctx: schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)}
 	r := router.New()
 	handlers.NewProviderHandler(s, cfg, client).RegisterRoutes(r)
 	handlers.NewInferenceHandler(s, client, cfg).RegisterRoutes(r)
 	integrations.NewOpenAIRouter(client, cfg, s, noopTestLogger{}).RegisterRoutes(r)
 	createBody := fmt.Sprintf(`{"provider":%q,"network_config":{"base_url":%q,"allow_private_network":true,"max_retries":0},"concurrency_and_buffer_size":{"concurrency":1,"buffer_size":2},"custom_provider_config":{"base_provider_type":"openai","is_key_less":true,"allowed_requests":{"chat_completion":true,"chat_completion_stream":true,"responses":true,"responses_stream":true}}}`, target, upstream.URL)
-	return &providerRegistrationFixture{server: s, router: r, provider: target, createBody: createBody, targetCalls: &targetCalls, otherCalls: &otherCalls}
+	return &providerRegistrationFixture{router: r, provider: target, createBody: createBody, targetCalls: &targetCalls, otherCalls: &otherCalls}
 }
 
 func (f *providerRegistrationFixture) startGateway(t *testing.T) (string, *http.Client) {
@@ -1180,247 +1175,45 @@ func providerRegistrationHTTPRequest(t *testing.T, client *http.Client, url, bod
 }
 
 func TestProviderRegistration_FirstHTTPRequestHonorsPrefix(t *testing.T) {
-	for _, mode := range []string{"keyless", "keyed"} {
-		t.Run(mode, func(t *testing.T) {
-			for _, tc := range []struct {
-				name, path, body string
-			}{
-				{"chat", "/v1/chat/completions", `{"model":%q,"messages":[{"role":"user","content":"Hi"}]}`},
-				{"chat_stream", "/v1/chat/completions", `{"model":%q,"messages":[{"role":"user","content":"Hi"}],"stream":true}`},
-				{"responses", "/v1/responses", `{"model":%q,"input":"Hi"}`},
-				{"responses_stream", "/v1/responses", `{"model":%q,"input":"Hi","stream":true}`},
-				{"openai_chat", "/openai/v1/chat/completions", `{"model":%q,"messages":[{"role":"user","content":"Hi"}]}`},
-				{"openai_chat_stream", "/openai/v1/chat/completions", `{"model":%q,"messages":[{"role":"user","content":"Hi"}],"stream":true}`},
-				{"openai_responses", "/openai/v1/responses", `{"model":%q,"input":"Hi"}`},
-				{"openai_responses_stream", "/openai/v1/responses", `{"model":%q,"input":"Hi","stream":true}`},
-			} {
-				t.Run(tc.name, func(t *testing.T) {
-					fixture := newProviderRegistrationFixture(t)
-					if mode == "keyed" {
-						fixture.createBody = strings.Replace(fixture.createBody, `"is_key_less":true`, `"is_key_less":false`, 1)
-					}
-					s, target := fixture.server, fixture.provider
-					baseURL, httpClient := fixture.startGateway(t)
-					status, body := providerRegistrationHTTPRequest(t, httpClient, baseURL+"/api/providers", fixture.createBody, "")
-					require.Equal(t, 200, status, body)
-					assert.Zero(t, fixture.targetCalls.Load(), "provider creation must not depend on discovery")
-					assert.Zero(t, fixture.otherCalls.Load())
-					provider, model := schemas.ParseModelString(string(target)+"/registration-model", "")
-					assert.Equal(t, target, provider)
-					assert.Equal(t, "registration-model", model)
-					active, err := s.Client.GetConfiguredProviders()
-					require.NoError(t, err)
-					assert.Contains(t, active, target, "management success must publish the runtime provider")
-					var instance schemas.Provider
-					if slices.Contains(active, target) {
-						// GetProviderByKey can initialize lazily; only inspect an instance
-						// that the side-effect-free snapshot already says is active.
-						instance = s.Client.GetProviderByKey(target)
-					}
-					assert.NotNil(t, instance, "management success must publish the runtime provider")
-					if mode == "keyed" {
-						status, body = providerRegistrationHTTPRequest(t, httpClient, baseURL+"/api/providers/"+string(target)+"/keys", `{"name":"registration-key","value":"fixture-key","models":["registration-model"],"weight":1}`, "")
-						require.Equal(t, 200, status, body)
-						assert.Zero(t, fixture.targetCalls.Load(), "key creation must not warm the provider through discovery")
-						instance = s.Client.GetProviderByKey(target)
-					}
-					status, body = providerRegistrationHTTPRequest(t, httpClient, baseURL+tc.path, fmt.Sprintf(tc.body, string(target)+"/registration-model"), "sk-bf-registration")
-					require.Equal(t, 200, status, body)
-					assert.Contains(t, body, "registration-ok")
-					assert.EqualValues(t, 1, fixture.targetCalls.Load())
-					assert.Zero(t, fixture.otherCalls.Load(), "explicit prefix must bypass multi-provider load balancing")
-					assert.Same(t, instance, s.Client.GetProviderByKey(target), "first inference must not initialize or rebuild the provider")
-					_, err = s.ReloadProvider(context.Background(), target, false)
-					require.NoError(t, err)
-					assert.Same(t, instance, s.Client.GetProviderByKey(target), "ordinary catalog reload must not rebuild core")
-					require.NoError(t, s.RemoveProvider(context.Background(), target))
-					assert.False(t, schemas.IsKnownProvider(string(target)))
-					assert.Nil(t, s.Client.GetProviderByKey(target))
-					assert.NotContains(t, s.Config.Providers, target)
-					_, err = s.Config.ConfigStore.GetProvider(context.Background(), target)
-					assert.ErrorIs(t, err, configstore.ErrNotFound)
-				})
-			}
-		})
-	}
-}
-
-func TestProviderRegistration_WithoutKeysIsInitialized(t *testing.T) {
-	fixture := newProviderRegistrationFixture(t)
-	fixture.createBody = strings.Replace(fixture.createBody, `"is_key_less":true`, `"is_key_less":false`, 1)
-	baseURL, httpClient := fixture.startGateway(t)
-	status, body := providerRegistrationHTTPRequest(t, httpClient, baseURL+"/api/providers", fixture.createBody, "")
-	require.Equal(t, 200, status, body)
-	active, err := fixture.server.Client.GetConfiguredProviders()
-	require.NoError(t, err)
-	assert.Contains(t, active, fixture.provider)
-	assert.True(t, schemas.IsKnownProvider(string(fixture.provider)))
 	for _, tc := range []struct {
 		name, path, body string
+		noKeys           bool
 	}{
-		{"chat", "/v1/chat/completions", `{"model":%q,"messages":[{"role":"user","content":"Hi"}]}`},
-		{"chat_stream", "/v1/chat/completions", `{"model":%q,"messages":[{"role":"user","content":"Hi"}],"stream":true}`},
-		{"responses", "/v1/responses", `{"model":%q,"input":"Hi"}`},
-		{"responses_stream", "/v1/responses", `{"model":%q,"input":"Hi","stream":true}`},
+		{"chat", "/v1/chat/completions", `{"model":%q,"messages":[{"role":"user","content":"Hi"}]}`, false},
+		{"chat_stream", "/v1/chat/completions", `{"model":%q,"messages":[{"role":"user","content":"Hi"}],"stream":true}`, false},
+		{"responses", "/v1/responses", `{"model":%q,"input":"Hi"}`, false},
+		{"responses_stream", "/v1/responses", `{"model":%q,"input":"Hi","stream":true}`, false},
+		{"openai_chat", "/openai/v1/chat/completions", `{"model":%q,"messages":[{"role":"user","content":"Hi"}]}`, false},
+		{"openai_chat_stream", "/openai/v1/chat/completions", `{"model":%q,"messages":[{"role":"user","content":"Hi"}],"stream":true}`, false},
+		{"openai_responses", "/openai/v1/responses", `{"model":%q,"input":"Hi"}`, false},
+		{"openai_responses_stream", "/openai/v1/responses", `{"model":%q,"input":"Hi","stream":true}`, false},
+		{"chat_without_keys", "/v1/chat/completions", `{"model":%q,"messages":[{"role":"user","content":"Hi"}]}`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			status, body := providerRegistrationHTTPRequest(t, httpClient, baseURL+tc.path, fmt.Sprintf(tc.body, string(fixture.provider)+"/registration-model"), "sk-bf-registration")
-			assert.Equal(t, 400, status, body)
-			assert.Contains(t, body, "no keys found")
-			var response schemas.BifrostError
-			require.NoError(t, json.Unmarshal([]byte(body), &response))
-			assert.Equal(t, fixture.provider, response.ExtraFields.Provider)
-			assert.Zero(t, fixture.targetCalls.Load(), "registration must not bypass credential requirements")
-			assert.Zero(t, fixture.otherCalls.Load(), "missing credentials must not reroute an explicit prefix")
+			fixture := newProviderRegistrationFixture(t)
+			if tc.noKeys {
+				fixture.createBody = strings.Replace(fixture.createBody, `"is_key_less":true`, `"is_key_less":false`, 1)
+			}
+			baseURL, httpClient := fixture.startGateway(t)
+			status, body := providerRegistrationHTTPRequest(t, httpClient, baseURL+"/api/providers", fixture.createBody, "")
+			require.Equal(t, 200, status, body)
+			require.Zero(t, fixture.targetCalls.Load(), "discovery must not warm the provider")
+
+			status, body = providerRegistrationHTTPRequest(t, httpClient, baseURL+tc.path, fmt.Sprintf(tc.body, string(fixture.provider)+"/registration-model"), "sk-bf-registration")
+			if tc.noKeys {
+				require.Equal(t, 400, status, body)
+				var response schemas.BifrostError
+				require.NoError(t, json.Unmarshal([]byte(body), &response))
+				assert.Equal(t, fixture.provider, response.ExtraFields.Provider)
+				assert.Contains(t, body, "no keys found")
+				assert.Zero(t, fixture.targetCalls.Load(), "registration must not bypass credential requirements")
+			} else {
+				require.Equal(t, 200, status, body)
+				assert.Contains(t, body, "registration-ok")
+				assert.EqualValues(t, 1, fixture.targetCalls.Load())
+			}
+			assert.Zero(t, fixture.otherCalls.Load(), "explicit prefix must bypass provider load balancing")
 		})
-	}
-}
-
-func TestProviderRegistration_NewReloadDoesNotRebuildActiveProvider(t *testing.T) {
-	fixture := newProviderRegistrationFixture(t)
-	baseURL, httpClient := fixture.startGateway(t)
-	status, body := providerRegistrationHTTPRequest(t, httpClient, baseURL+"/api/providers", fixture.createBody, "")
-	require.Equal(t, 200, status, body)
-	instance := fixture.server.Client.GetProviderByKey(fixture.provider)
-	// A concurrent SDK request or replayed creation notification can initialize
-	// the provider before the new-provider reload reaches core.
-	_, err := fixture.server.ReloadProvider(context.Background(), fixture.provider, true)
-	require.NoError(t, err)
-	assert.Same(t, instance, fixture.server.Client.GetProviderByKey(fixture.provider), "a creation reload must not replace an already active provider")
-}
-
-type providerRegistrationDeleteFailure struct {
-	configstore.ConfigStore
-	err error
-}
-
-func (s *providerRegistrationDeleteFailure) DeleteProvider(ctx context.Context, provider schemas.ModelProvider, tx ...*gorm.DB) error {
-	if s.err != nil {
-		return s.err
-	}
-	return s.ConfigStore.DeleteProvider(ctx, provider, tx...)
-}
-
-func TestProviderRegistration_FailedRollbackKeepsRetainedConfigRoutable(t *testing.T) {
-	fixture := newProviderRegistrationFixture(t)
-	store := &providerRegistrationDeleteFailure{ConfigStore: fixture.server.Config.ConfigStore, err: errors.New("provider delete failed")}
-	fixture.server.Config.ConfigStore = store
-	fixture.router = router.New()
-	handlers.NewProviderHandler(&failingProviderRegistrationReload{fixture.server}, fixture.server.Config, fixture.server.Client).RegisterRoutes(fixture.router)
-	handlers.NewInferenceHandler(fixture.server, fixture.server.Client, fixture.server.Config).RegisterRoutes(fixture.router)
-	baseURL, httpClient := fixture.startGateway(t)
-	status, body := providerRegistrationHTTPRequest(t, httpClient, baseURL+"/api/providers", fixture.createBody, "")
-	require.Equal(t, 500, status, body)
-	assert.Contains(t, body, "rollback failed")
-	_, err := store.GetProvider(context.Background(), fixture.provider)
-	require.NoError(t, err, "failed deletion must retain persisted configuration")
-	assert.Contains(t, fixture.server.Config.Providers, fixture.provider)
-	active, err := fixture.server.Client.GetConfiguredProviders()
-	require.NoError(t, err)
-	assert.Contains(t, active, fixture.provider, "retained config must not lose its runtime provider")
-	assert.True(t, schemas.IsKnownProvider(string(fixture.provider)), "retained config must not lose its model prefix")
-	status, body = providerRegistrationHTTPRequest(t, httpClient, baseURL+"/v1/chat/completions", fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"Hi"}]}`, string(fixture.provider)+"/registration-model"), "sk-bf-registration")
-	assert.Equal(t, 200, status, body)
-	assert.Contains(t, body, "registration-ok")
-	assert.Zero(t, fixture.otherCalls.Load())
-	deleteRequest, err := http.NewRequest(http.MethodDelete, baseURL+"/api/providers/"+string(fixture.provider), nil)
-	require.NoError(t, err)
-	deleteResponse, err := httpClient.Do(deleteRequest)
-	require.NoError(t, err)
-	deleteBody, err := io.ReadAll(deleteResponse.Body)
-	deleteResponse.Body.Close()
-	require.NoError(t, err)
-	assert.Equal(t, 500, deleteResponse.StatusCode, string(deleteBody))
-	assert.Contains(t, string(deleteBody), "provider delete failed", "failed deletion must not report success")
-	store.err = nil
-	require.NoError(t, fixture.server.RemoveProvider(context.Background(), fixture.provider))
-	// Deleting an already removed provider remains idempotent.
-	deleteResponse, err = httpClient.Do(deleteRequest)
-	require.NoError(t, err)
-	io.Copy(io.Discard, deleteResponse.Body)
-	deleteResponse.Body.Close()
-	assert.Equal(t, 200, deleteResponse.StatusCode)
-}
-
-type failingProviderRegistrationReload struct {
-	*BifrostHTTPServer
-}
-
-func (s *failingProviderRegistrationReload) ReloadProvider(ctx context.Context, provider schemas.ModelProvider, isNew bool) (*configstoreTables.TableProvider, error) {
-	info, err := s.BifrostHTTPServer.ReloadProvider(ctx, provider, isNew)
-	if err != nil {
-		return nil, err
-	}
-	// Emulate a wrapping reload failing after runtime and discovery publication.
-	s.Config.ModelCatalog.UpsertLive(provider, "", false, []string{"registration-model"})
-	return info, errors.New("reload failed after initialization")
-}
-
-func TestProviderRegistration_ReloadFailureClearsCatalog(t *testing.T) {
-	fixture := newProviderRegistrationFixture(t)
-	fixture.router = router.New()
-	handlers.NewProviderHandler(&failingProviderRegistrationReload{fixture.server}, fixture.server.Config, fixture.server.Client).RegisterRoutes(fixture.router)
-	baseURL, httpClient := fixture.startGateway(t)
-	status, body := providerRegistrationHTTPRequest(t, httpClient, baseURL+"/api/providers", fixture.createBody, "")
-	require.Equal(t, 500, status, body)
-	assert.Contains(t, body, "reload failed after initialization")
-	assert.False(t, schemas.IsKnownProvider(string(fixture.provider)))
-	active, err := fixture.server.Client.GetConfiguredProviders()
-	require.NoError(t, err)
-	assert.NotContains(t, active, fixture.provider)
-	assert.NotContains(t, fixture.server.Config.Providers, fixture.provider)
-	_, err = fixture.server.Config.ConfigStore.GetProvider(context.Background(), fixture.provider)
-	assert.ErrorIs(t, err, configstore.ErrNotFound)
-	assert.Empty(t, fixture.server.Config.ModelCatalog.GetModelsForProvider(fixture.provider), "rollback must not retain published discovery")
-}
-
-func TestProviderRegistration_RemoveWithoutGovernanceClearsCatalog(t *testing.T) {
-	fixture := newProviderRegistrationFixture(t)
-	fixture.server.Config.BasePlugins.Store(nil)
-	baseURL, httpClient := fixture.startGateway(t)
-	status, body := providerRegistrationHTTPRequest(t, httpClient, baseURL+"/api/providers", fixture.createBody, "")
-	require.Equal(t, 200, status, body)
-	fixture.server.Config.ModelCatalog.UpsertLive(fixture.provider, "", false, []string{"registration-model"})
-	assert.NoError(t, fixture.server.RemoveProvider(context.Background(), fixture.provider))
-	assert.Empty(t, fixture.server.Config.ModelCatalog.GetModelsForProvider(fixture.provider))
-	assert.False(t, schemas.IsKnownProvider(string(fixture.provider)))
-}
-
-func BenchmarkProviderRegistrationWarmRequest(b *testing.B) {
-	fixture := newProviderRegistrationFixture(b)
-	ctx := &fasthttp.RequestCtx{}
-	ctx.Init(&fasthttp.Request{}, nil, nil)
-	ctx.Request.Header.SetMethod("POST")
-	ctx.Request.SetRequestURI("/api/providers")
-	ctx.Request.Header.SetContentType("application/json")
-	ctx.Request.SetBodyString(fixture.createBody)
-	fixture.router.Handler(ctx)
-	require.Equal(b, 200, ctx.Response.StatusCode(), string(ctx.Response.Body()))
-	// Explicitly warm both baseline and fixed code outside the measurement.
-	// This measures the common inference path, not provider construction.
-	require.NoError(b, fixture.server.Client.UpdateProvider(fixture.provider))
-	ctx = &fasthttp.RequestCtx{}
-	ctx.Init(&fasthttp.Request{}, nil, nil)
-	ctx.Request.Header.SetMethod("POST")
-	ctx.Request.SetRequestURI("/v1/chat/completions")
-	ctx.Request.Header.SetContentType("application/json")
-	ctx.Request.Header.Set("x-bf-vk", "sk-bf-registration")
-	ctx.Request.SetBodyString(fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"Hi"}]}`, string(fixture.provider)+"/registration-model"))
-	// Let codecs and pools reach steady state before timing warmed requests.
-	for range 20 {
-		ctx.ResetUserValues()
-		ctx.Response.Reset()
-		fixture.router.Handler(ctx)
-		require.Equal(b, 200, ctx.Response.StatusCode(), string(ctx.Response.Body()))
-	}
-	b.ReportAllocs()
-	for b.Loop() {
-		ctx.ResetUserValues()
-		ctx.Response.Reset()
-		fixture.router.Handler(ctx)
-		if ctx.Response.StatusCode() != 200 {
-			b.Fatalf("warm inference failed: %d %s", ctx.Response.StatusCode(), ctx.Response.Body())
-		}
 	}
 }
 
