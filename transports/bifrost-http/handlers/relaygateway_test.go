@@ -128,6 +128,7 @@ func TestRelayGatewayHandlerExtractsVirtualKeyFromRelayAuthSlot(t *testing.T) {
 	var seenRawQuery string
 	var seenCallerHeaders map[string]string
 	var seenCtxReqHeaders map[string]string
+	var seenCtxReqQuery map[string]string
 	pipeline := &testRelayVKPipeline{onPre: func(ctx *schemas.BifrostContext, req *schemas.BifrostRelayRequest) {
 		seenVK, _ = ctx.Value(schemas.BifrostContextKeyVirtualKey).(string)
 		if ctx.Grant() != nil && ctx.Grant().Identity() != nil {
@@ -139,6 +140,7 @@ func TestRelayGatewayHandlerExtractsVirtualKeyFromRelayAuthSlot(t *testing.T) {
 		seenRawQuery = req.RawQuery
 		seenCallerHeaders = req.Headers
 		seenCtxReqHeaders, _ = ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
+		seenCtxReqQuery, _ = ctx.Value(schemas.BifrostContextKeyRequestQuery).(map[string]string)
 	}}
 	manager.SetPluginPipeline(func() relay.PluginPipeline { return pipeline }, func(relay.PluginPipeline) {})
 
@@ -210,6 +212,8 @@ func TestRelayGatewayHandlerExtractsVirtualKeyFromRelayAuthSlot(t *testing.T) {
 		assert.Equal(t, "sk-bf-maps-vk", seenVK)
 		assert.Equal(t, "sk-bf-maps-vk", seenGrantVK)
 		assert.Equal(t, "q=tokyo", seenRawQuery, "caller query credential is stripped before PreRelayHook runs")
+		assert.Empty(t, seenCtxReqQuery["appid"], "caller query credential is removed from BifrostContextKeyRequestQuery before PreRelayHook")
+		assert.Equal(t, "tokyo", seenCtxReqQuery["q"])
 		require.NotNil(t, got)
 		assert.Equal(t, "q=tokyo&appid=maps-upstream-secret", got.URL.RawQuery)
 	})

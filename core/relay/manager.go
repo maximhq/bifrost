@@ -396,6 +396,20 @@ func (m *Manager) Serve(ctx *schemas.BifrostContext, in Request) (*Result, *sche
 	if err != nil {
 		return nil, statusError(http.StatusBadRequest, err.Error())
 	}
+	if authQuery := e.authQuery(); authQuery != "" {
+		if queryParams, ok := ctx.Value(schemas.BifrostContextKeyRequestQuery).(map[string]string); ok {
+			authQueryLower := strings.ToLower(authQuery)
+			if _, exists := queryParams[authQueryLower]; exists {
+				sanitizedQuery := make(map[string]string, len(queryParams))
+				for key, value := range queryParams {
+					if key != authQueryLower {
+						sanitizedQuery[key] = value
+					}
+				}
+				ctx.SetValue(schemas.BifrostContextKeyRequestQuery, sanitizedQuery)
+			}
+		}
+	}
 	if authHdr := e.authHeaderLower; authHdr != "" && len(in.Headers) > 0 {
 		for k := range in.Headers {
 			if strings.EqualFold(k, authHdr) {

@@ -135,6 +135,7 @@ func (r *RelayGatewayHandler) handle(ctx *fasthttp.RequestCtx) {
 		}
 		if extraHeaders, ok := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
 			delete(extraHeaders, endpointAuthHeader)
+			delete(extraHeaders, strings.TrimPrefix(endpointAuthHeader, "x-bf-eh-"))
 		}
 	}
 	if vk, _ := bifrostCtx.Value(schemas.BifrostContextKeyVirtualKey).(string); vk == "" {
