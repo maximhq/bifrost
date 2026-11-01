@@ -347,3 +347,22 @@ func TestGetSSEDataReaderSize_RaisesMaxTokenSize(t *testing.T) {
 		t.Fatalf("sized reader got %d bytes, want %d", len(data), len(payload))
 	}
 }
+
+// A configured size above sseMaxBufSize must also raise the multi-line JSON
+// cutoff, so a pretty-printed error past 10MB comes back whole rather than cut
+// off before its closing brace.
+func TestGetSSEDataReaderSize_RaisesMultilineJSONCutoff(t *testing.T) {
+	message := strings.Repeat("x", sseMaxBufSize)
+	stream := "{\n" +
+		"  \"error\": {\"code\": 429, \"message\": \"" + message + "\"}\n" +
+		"}\n"
+	want := "{\n  \"error\": {\"code\": 429, \"message\": \"" + message + "\"}\n}"
+
+	payloads := drainSSEDataReader(t, GetSSEDataReaderSize(nil, strings.NewReader(stream), sseMaxBufSize+1024))
+	if len(payloads) != 1 {
+		t.Fatalf("expected 1 payload, got %d", len(payloads))
+	}
+	if payloads[0] != want {
+		t.Fatalf("got %d bytes, want the whole %d byte error body", len(payloads[0]), len(want))
+	}
+}

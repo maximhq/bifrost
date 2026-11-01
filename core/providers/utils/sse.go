@@ -133,6 +133,7 @@ var (
 // Handles Format A SSE streams (data-only: OpenAI, Gemini, Cohere, etc.).
 type defaultSSEDataReader struct {
 	scanner *bufio.Scanner
+	maxSize int    // the scanner's max token size, also the multi-line JSON cutoff
 	pending []byte // line carried over from an aborted multi-line JSON accumulation
 	sawDone bool   // stream ended on "data: [DONE]" rather than a bare body EOF
 	// endOnComment is armed once the caller has seen a finish_reason; sawComment
@@ -179,7 +180,7 @@ func newDefaultSSEDataReaderSize(ctx *schemas.BifrostContext, reader io.Reader, 
 	}
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, bufSize), maxSize)
-	return &defaultSSEDataReader{scanner: scanner, ctx: ctx}
+	return &defaultSSEDataReader{scanner: scanner, maxSize: maxSize, ctx: ctx}
 }
 
 func (r *defaultSSEDataReader) ReadDataLine() ([]byte, error) {
@@ -279,7 +280,8 @@ func (r *defaultSSEDataReader) nextLine() ([]byte, bool) {
 }
 
 // readMultilineJSON accumulates raw lines starting at open until they form
-// complete JSON, the stream ends, or the buffer hits sseMaxBufSize. An SSE
+// complete JSON, the stream ends, or the buffer hits the scanner's max token
+// size (sseMaxBufSize, or the configured size when larger). An SSE
 // "data:" line aborts accumulation (carried over to the next ReadDataLine)
 // so a live stream can never be swallowed. The validity check only runs once
 // the buffer can close a JSON value (last byte '}' or ']'); a partial buffer
@@ -299,7 +301,7 @@ func (r *defaultSSEDataReader) readMultilineJSON(open []byte) []byte {
 			sonic.Valid(buf) {
 			return buf
 		}
-		if len(buf) >= sseMaxBufSize {
+		if len(buf) >= r.maxSize {
 			return buf
 		}
 	}
