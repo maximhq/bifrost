@@ -475,7 +475,7 @@ func (h *MCPServerHandler) runTool(ctx context.Context, toolName string, declare
 	}
 
 	// Execute the tool via tool executor
-	toolMessage, err := h.toolManager.ExecuteChatMCPTool(withCallerCapabilities(ctx), &toolCall)
+	toolMessage, err := h.toolManager.ExecuteChatMCPTool(withInputResumption(withCallerCapabilities(ctx), request.Params.MultiRoundTripParams), &toolCall)
 	if err != nil {
 		logger.Debug("[mcp-server] tool handler error tool=%q error=%s", toolName, bifrost.GetErrorMessage(err))
 		if authReq := err.ExtraFields.MCPAuthRequired; authReq != nil {

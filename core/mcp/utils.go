@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
 	"regexp"
@@ -770,18 +771,109 @@ func isDeadSessionError(err error) bool {
 const unfulfilledInputPrefix = "multi round-trip: fulfilling input request "
 
 // relayedClientCapabilities are the client capabilities Bifrost can pass through to a gateway caller.
-// None yet; input request pass-through and MCP Apps each add theirs.
-var relayedClientCapabilities = mcp.ClientCapabilities{}
+var relayedClientCapabilities = mcp.ClientCapabilities{Elicitation: &mcp.ElicitationCapability{}}
 
-// UpstreamCallContext declares, on a 2026-07-28 upstream request made for a gateway caller, the
-// capabilities both that caller declared and Bifrost can relay. Without a gateway caller the client's
-// own capabilities apply. Exported for code mode's nested tool calls.
-func UpstreamCallContext(ctx context.Context) context.Context {
+// manualInputRoundTrips leaves an upstream's input_required to CallUpstreamTool instead of mcp-go's loop.
+var manualInputRoundTrips = client.WithManualInputRoundTrips()
+
+// maxRetryLaterRounds bounds how often Bifrost itself retries an upstream that answers "retry later"
+// (input_required with no input requests), as mcp-go's own round-trip loop does.
+const maxRetryLaterRounds = 3
+
+// upstreamContext declares, on a 2026-07-28 request made for a gateway caller, what that caller can
+// answer: with relay, the capabilities it declared that Bifrost can pass through; without, none. A
+// request with no gateway caller keeps the client's own capabilities. answerable is what was declared.
+func upstreamContext(ctx context.Context, relay bool) (_ context.Context, answerable mcp.ClientCapabilities, hasCaller bool) {
 	caller, _ := ctx.Value(schemas.BifrostContextKeyMCPCallerCapabilities).(*mcp.ClientCapabilities)
 	if caller == nil {
-		return ctx
+		return ctx, answerable, false
 	}
-	return client.WithRequestClientCapabilities(ctx, relayableCapabilities(*caller, relayedClientCapabilities))
+	if relay {
+		answerable = relayableCapabilities(*caller, relayedClientCapabilities)
+	}
+	return client.WithRequestClientCapabilities(ctx, answerable), answerable, true
+}
+
+// CallUpstreamTool sends call on conn. With relay, a gateway caller gets an upstream's input_required
+// result back unchanged when it can answer every request in it, or when the upstream only asks it to
+// retry later, and its retry's answers and requestState are sent upstream. Anyone else gets an
+// *UnservableInputError once Bifrost has retried a "retry later" answer itself. Exported for code
+// mode's nested tool calls, which cannot pass a request back mid-script.
+func CallUpstreamTool(ctx context.Context, conn *client.Client, call mcp.CallToolRequest, relay bool) (*mcp.CallToolResult, error) {
+	ctx, answerable, hasCaller := upstreamContext(ctx, relay)
+	relay = relay && hasCaller
+	if relay {
+		if resume, _ := ctx.Value(schemas.BifrostContextKeyMCPInputResumption).(*mcp.MultiRoundTripParams); resume != nil {
+			call.Params.MultiRoundTripParams = *resume
+		}
+	}
+	for round := 1; ; round++ {
+		result, err := CallToolWithin(ctx, conn, call)
+		if err != nil || !result.NeedsInput() {
+			return result, err
+		}
+		if relay && canAnswer(answerable, result.InputRequests) {
+			return result, nil
+		}
+		if len(result.InputRequests) > 0 || round >= maxRetryLaterRounds {
+			return nil, &UnservableInputError{Requests: result.InputRequests}
+		}
+		call.Params.InputResponses = nil
+		call.Params.RequestState = result.RequestState
+	}
+}
+
+// canAnswer reports whether a caller declaring answerable can answer every request. An empty set asks
+// only for a retry, which any caller can do.
+func canAnswer(answerable mcp.ClientCapabilities, requests mcp.InputRequests) bool {
+	for _, request := range requests {
+		switch request.Method {
+		case mcp.MethodElicitationCreate:
+			if !canElicit(answerable.Elicitation, request.Elicitation) {
+				return false
+			}
+		case mcp.MethodSamplingCreateMessage:
+			if answerable.Sampling == nil {
+				return false
+			}
+		case mcp.MethodListRoots:
+			if answerable.Roots == nil {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// canElicit reports whether a caller declaring capability can answer an elicitation in params' mode.
+// An empty capability declares form mode only.
+func canElicit(capability *mcp.ElicitationCapability, params *mcp.ElicitationParams) bool {
+	if capability == nil {
+		return false
+	}
+	if params != nil && params.Mode == mcp.ElicitationModeURL {
+		return capability.URL != nil
+	}
+	return capability.Form != nil || capability.URL == nil
+}
+
+// UnservableInputError is an upstream's input_required that Bifrost could not pass to its caller. No
+// requests means the upstream kept asking for a retry.
+type UnservableInputError struct {
+	Requests   mcp.InputRequests
+	ServerName string // when set, Error explains the requests in full
+}
+
+func (e *UnservableInputError) Error() string {
+	if e.ServerName != "" {
+		return describeInputRequests(e.Requests, e.ServerName)
+	}
+	if len(e.Requests) == 0 {
+		return "upstream kept asking to retry without completing the call"
+	}
+	return "upstream needs input the caller cannot provide"
 }
 
 // relayableCapabilities keeps the parts of caller that relayed also has, using the caller's values.
@@ -811,10 +903,14 @@ func relayableCapabilities(caller, relayed mcp.ClientCapabilities) mcp.ClientCap
 
 // unservableInputKinds maps mcp-go's wording for an input request it had no handler for (Bifrost
 // registers none, so declares no capability) to what the upstream was asking for.
-var unservableInputKinds = []struct{ marker, what string }{
-	{"no elicitation handler configured", "input from the user (elicitation)"},
-	{"no sampling handler configured", "an LLM completion (sampling)"},
-	{"no roots handler configured", "the client's filesystem roots (roots)"},
+var unservableInputKinds = []struct {
+	marker string
+	method mcp.MCPMethod
+	what   string
+}{
+	{"no elicitation handler configured", mcp.MethodElicitationCreate, "input from the user (elicitation)"},
+	{"no sampling handler configured", mcp.MethodSamplingCreateMessage, "an LLM completion (sampling)"},
+	{"no roots handler configured", mcp.MethodListRoots, "the client's filesystem roots (roots)"},
 }
 
 // DescribeUnservableInput explains a tool call that failed because the upstream needed something
@@ -824,7 +920,10 @@ var unservableInputKinds = []struct{ marker, what string }{
 func DescribeUnservableInput(err error, serverName string) (string, bool) {
 	var urlNeeded mcp.URLElicitationRequiredError
 	var capability mcp.MissingRequiredClientCapabilityError
+	var unservable *UnservableInputError
 	switch {
+	case errors.As(err, &unservable):
+		return describeInputRequests(unservable.Requests, serverName), true
 	case errors.As(err, &urlNeeded):
 		steps := make([]string, 0, len(urlNeeded.Elicitations))
 		for _, e := range urlNeeded.Elicitations {
@@ -846,6 +945,29 @@ func DescribeUnservableInput(err error, serverName string) (string, bool) {
 		}
 	}
 	return fmt.Sprintf("MCP server %q asked for input Bifrost cannot provide", serverName), true
+}
+
+// describeInputRequests explains an input_required result Bifrost could not pass on, in the words
+// DescribeUnservableInput uses for the same requests reported as errors.
+func describeInputRequests(requests mcp.InputRequests, serverName string) string {
+	if len(requests) == 0 {
+		return fmt.Sprintf("MCP server %q kept asking Bifrost to retry the call without completing it", serverName)
+	}
+	var steps []string
+	for _, id := range slices.Sorted(maps.Keys(requests)) {
+		request := requests[id]
+		if request.Method == mcp.MethodElicitationCreate && request.Elicitation != nil && request.Elicitation.Mode == "url" {
+			steps = append(steps, strings.TrimSpace(request.Elicitation.Message+" "+request.Elicitation.URL))
+			continue
+		}
+		for _, kind := range unservableInputKinds {
+			if kind.method == request.Method {
+				return fmt.Sprintf("MCP server %q asked for %s, which Bifrost cannot provide", serverName, kind.what)
+			}
+		}
+		return fmt.Sprintf("MCP server %q asked for input Bifrost cannot provide", serverName)
+	}
+	return fmt.Sprintf("MCP server %q needs a step completed in the browser before this tool can run: %s", serverName, strings.Join(steps, "; "))
 }
 
 // hasProtocolSession reports whether conn speaks a revision with protocol-level sessions, which

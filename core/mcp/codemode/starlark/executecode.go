@@ -421,7 +421,7 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 
 		// The socket wait is upstream time, as for a direct tool call; overlapping calls count once.
 		toolWait := schemas.BeginUpstreamWait(nestedCtx)
-		toolResponse, callErr := codemcp.CallToolWithin(codemcp.UpstreamCallContext(toolCtx), conn, callRequest)
+		toolResponse, callErr := codemcp.CallUpstreamTool(toolCtx, conn, callRequest, false)
 		toolWait.End()
 		if callErr != nil && toolCtx.Err() == context.DeadlineExceeded {
 			callErr = fmt.Errorf("MCP tool call timed out after %v: %s", toolExecutionTimeout, effectiveToolName)

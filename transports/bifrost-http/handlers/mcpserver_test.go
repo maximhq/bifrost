@@ -943,6 +943,73 @@ func TestMCPGateway_RecordsCallerCapabilities(t *testing.T) {
 	}
 }
 
+// inputRequiringToolManager answers gw-echo with an upstream's input_required, as core passes it to a
+// caller that can answer, until the caller retries with its answers.
+type inputRequiringToolManager struct {
+	echoToolManager
+	resumed atomic.Pointer[mcp.MultiRoundTripParams]
+}
+
+func (m *inputRequiringToolManager) ExecuteChatMCPTool(ctx context.Context, _ *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
+	if resume, _ := ctx.Value(schemas.BifrostContextKeyMCPInputResumption).(*mcp.MultiRoundTripParams); resume != nil {
+		m.resumed.Store(resume)
+		done := "deployed to staging"
+		return &schemas.ChatMessage{Content: &schemas.ChatMessageContent{ContentStr: &done}}, nil
+	}
+	result := &mcp.CallToolResult{
+		Result:               mcp.Result{ResultType: mcp.ResultTypeInputRequired},
+		MultiRoundTripResult: mcp.MultiRoundTripResult{RequestState: "s1", InputRequests: mcp.InputRequests{"env": {Method: mcp.MethodElicitationCreate, Elicitation: &mcp.ElicitationParams{Message: "Which environment?"}}}},
+	}
+	empty := ""
+	content := &schemas.ChatMessageContent{ContentStr: &empty}
+	message := &schemas.ChatMessage{Content: content, ChatToolMessage: &schemas.ChatToolMessage{}}
+	message.ChatToolMessage.SetMCPResult(result, content)
+	return message, nil
+}
+
+// A 2026-07-28 caller gets an upstream's input_required unchanged, and its retry's answers and
+// requestState reach core.
+func TestMCPGateway_PassesInputRequiredThrough(t *testing.T) {
+	tm := &inputRequiringToolManager{echoToolManager: echoToolManager{fakeInstructionsToolManager{}}}
+	h, err := NewMCPServerHandler(context.Background(), &lib.Config{ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil, nil)
+	require.NoError(t, err)
+	baseURL := startGateway(t, h)
+
+	ctx := context.Background()
+	tr, err := transport.NewStreamableHTTP(baseURL + "/mcp")
+	require.NoError(t, err)
+	c := client.NewClient(tr, client.WithProtocolVersion(mcp.ProtocolVersion20260728), client.WithManualInputRoundTrips(),
+		client.WithClientCapabilities(mcp.ClientCapabilities{Elicitation: &mcp.ElicitationCapability{}}))
+	require.NoError(t, c.Start(ctx))
+	t.Cleanup(func() { _ = c.Close() })
+	init := mcp.InitializeRequest{}
+	init.Params.ProtocolVersion = mcp.ProtocolVersion20260728
+	_, err = c.Initialize(ctx, init)
+	require.NoError(t, err)
+
+	call := mcp.CallToolRequest{}
+	call.Params.Name = "gw-echo"
+	result, err := c.CallTool(ctx, call)
+	require.NoError(t, err)
+	require.True(t, result.NeedsInput(), "the caller gets the upstream's input_required")
+	require.Contains(t, result.InputRequests, "env")
+	assert.Equal(t, "Which environment?", result.InputRequests["env"].Elicitation.Message)
+	assert.Equal(t, "s1", result.RequestState)
+	assert.Nil(t, tm.resumed.Load(), "a first call carries nothing to resume")
+
+	answer := mcp.ElicitationResult{ElicitationResponse: mcp.ElicitationResponse{Action: mcp.ElicitationResponseActionAccept, Content: map[string]any{"env": "staging"}}}
+	call.Params.InputResponses = mcp.InputResponses{"env": mcp.NewElicitationInputResponse(answer)}
+	call.Params.RequestState = result.RequestState
+	result, err = c.CallTool(ctx, call)
+	require.NoError(t, err)
+	require.False(t, result.NeedsInput())
+	assert.Equal(t, "deployed to staging", result.Content[0].(mcp.TextContent).Text)
+	resumed := tm.resumed.Load()
+	require.NotNil(t, resumed, "the retry's answers must reach core")
+	assert.Equal(t, "s1", resumed.RequestState)
+	require.Contains(t, resumed.InputResponses, "env")
+}
+
 // A caller narrowed away from the owning client lists none of its prompts or resources and gets
 // not-found for them.
 func TestMCPGateway_NarrowedCallerCannotReachPromptsOrResources(t *testing.T) {
