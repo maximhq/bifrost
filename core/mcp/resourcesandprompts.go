@@ -21,12 +21,25 @@ func (m *MCPManager) listResourcesAndPrompts(ctx context.Context, each time.Dura
 	attempted := 0
 	templatesAnswered := false
 	// each > 0 gives every list call its own budget, detached from ctx's deadline (which tools/list
-	// may have spent) but keeping its values.
+	// may have spent) but keeping its values and the manager's cancellation.
+	listParent := ctx
+	if each > 0 && (caps.Resources != nil || caps.Prompts != nil) {
+		listParent = context.WithoutCancel(ctx)
+		if m.ctx != nil {
+			var cancel context.CancelFunc
+			listParent, cancel = context.WithCancel(listParent)
+			stop := context.AfterFunc(m.ctx, cancel)
+			defer func() {
+				stop()
+				cancel()
+			}()
+		}
+	}
 	bounded := func() (context.Context, context.CancelFunc) {
 		if each <= 0 {
 			return ctx, func() {}
 		}
-		return context.WithTimeout(context.WithoutCancel(ctx), each)
+		return context.WithTimeout(listParent, each)
 	}
 	if previous == nil {
 		previous = &schemas.MCPDiscovery{}

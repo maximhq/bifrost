@@ -174,9 +174,19 @@ func TestUpstreamToolsListChanged_AckAfterConnectReachesChecker(t *testing.T) {
 // A watcher is bound to the connection it was registered on: once that connection is closed
 // (disable, needs_reauth) or the client is removed and added again under the same ID, it stops.
 func TestUpstreamToolsListChanged_WatcherEndsWithItsConnection(t *testing.T) {
-	ts := httptest.NewServer(server.NewStreamableHTTPServer(newMatrixUpstream(), server.WithStreamableHTTPProtocolVersions(mcpgo.ProtocolVersion20260728)))
+	upstream := server.NewStreamableHTTPServer(newMatrixUpstream(), server.WithStreamableHTTPProtocolVersions(mcpgo.ProtocolVersion20260728))
+	var activeStreams atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(mcpgo.HeaderMethod) == string(mcpgo.MethodSubscriptionsListen) {
+			activeStreams.Add(1)
+			defer activeStreams.Add(-1)
+		}
+		upstream.ServeHTTP(w, r)
+	}))
 	t.Cleanup(ts.Close)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	callerCtx, cancelCaller := context.WithCancel(context.Background())
+	t.Cleanup(cancelCaller)
+	m := NewMCPManager(callerCtx, schemas.MCPConfig{}, nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 	config := &schemas.MCPClientConfig{
 		ID: "watcher-bound", Name: "matrix", ConnectionType: schemas.MCPConnectionTypeHTTP,
@@ -191,10 +201,12 @@ func TestUpstreamToolsListChanged_WatcherEndsWithItsConnection(t *testing.T) {
 	first, ok := connect()
 	require.True(t, ok)
 	require.True(t, m.isCurrentConn(config.ID, first.Conn, first.ConnGeneration))
+	require.Eventually(t, func() bool { return activeStreams.Load() == 1 }, time.Second, 10*time.Millisecond)
 
 	t.Run("disabled", func(t *testing.T) {
 		require.NoError(t, m.DisableClient(config.ID))
 		assert.False(t, m.isCurrentConn(config.ID, first.Conn, first.ConnGeneration), "a closed connection's watcher must stop")
+		require.Eventually(t, func() bool { return activeStreams.Load() == 0 }, time.Second, 10*time.Millisecond, "disable must end the subscription request")
 	})
 
 	t.Run("removed and added again", func(t *testing.T) {
@@ -204,7 +216,135 @@ func TestUpstreamToolsListChanged_WatcherEndsWithItsConnection(t *testing.T) {
 		require.Equal(t, first.ConnGeneration, again.ConnGeneration, "a fresh entry reaches the old generation number")
 		assert.False(t, m.isCurrentConn(config.ID, first.Conn, first.ConnGeneration), "the old watcher must not pass for the new client")
 		assert.True(t, m.isCurrentConn(config.ID, again.Conn, again.ConnGeneration))
+		require.Eventually(t, func() bool { return activeStreams.Load() == 1 }, time.Second, 10*time.Millisecond)
 	})
+
+	t.Run("replacement owns its own stream", func(t *testing.T) {
+		before, ok := snapshotClientState(m, config.ID)
+		require.True(t, ok)
+		require.NoError(t, m.ReconnectClient(config.ID))
+		after, ok := snapshotClientState(m, config.ID)
+		require.True(t, ok)
+		require.NotSame(t, before.Conn, after.Conn)
+		require.Eventually(t, func() bool { return activeStreams.Load() == 1 }, time.Second, 10*time.Millisecond, "the old stream must end without canceling the replacement")
+	})
+
+	t.Run("cleanup leaves caller usable", func(t *testing.T) {
+		require.NoError(t, m.Cleanup())
+		assert.NoError(t, callerCtx.Err(), "cleanup must not cancel a shared caller context")
+		require.Eventually(t, func() bool { return activeStreams.Load() == 0 }, time.Second, 10*time.Millisecond, "cleanup must end the subscription request")
+		require.ErrorIs(t, m.connectToMCPClient(context.Background(), config), context.Canceled)
+		require.ErrorIs(t, m.AddClient(context.Background(), config), context.Canceled)
+	})
+}
+
+// Cleanup must cancel discovery even before the candidate has been installed in clientMap.
+func TestCleanupCancelsPendingMCPConnection(t *testing.T) {
+	for _, mode := range []string{"sticky", "per-call", "boot"} {
+		t.Run(mode, func(t *testing.T) {
+			upstream := server.NewStreamableHTTPServer(newMatrixUpstream(), server.WithStreamableHTTPProtocolVersions(mcpgo.ProtocolVersion20260728))
+			listed := make(chan struct{})
+			var pendingRequests atomic.Int32
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				r.Body = io.NopCloser(bytes.NewReader(body))
+				if bytes.Contains(body, []byte(`"tools/list"`)) {
+					pendingRequests.Add(1)
+					defer pendingRequests.Add(-1)
+					close(listed)
+					<-r.Context().Done()
+					return
+				}
+				upstream.ServeHTTP(w, r)
+			}))
+			t.Cleanup(ts.Close)
+			callerCtx, cancelCaller := context.WithCancel(context.Background())
+			requestCtx, cancelRequest := context.WithCancel(context.Background())
+			config := &schemas.MCPClientConfig{
+				ID: "pending-cleanup", Name: "matrix", ConnectionType: schemas.MCPConnectionTypeHTTP, AuthType: schemas.MCPAuthTypeHeaders,
+				ConnectionString: schemas.NewSecretVar(ts.URL), NeedsSessionStickiness: schemas.Ptr(mode != "per-call"), ToolsToExecute: []string{"*"},
+			}
+			m := NewMCPManager(callerCtx, schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{config}}, nil, &MockLogger{}, nil)
+			require.Equal(t, mode == "per-call", m.credStore.RequiresPerCallConnection(config), "fixture must take the intended connection path")
+			connected, done := make(chan error, 1), make(chan struct{})
+			t.Cleanup(func() {
+				cancelRequest()
+				cancelCaller()
+				<-done
+				_ = m.Cleanup()
+			})
+			go func() {
+				defer close(done)
+				if mode == "boot" {
+					m.ConnectConfiguredClients(requestCtx)
+					connected <- nil
+					return
+				}
+				connected <- m.AddClient(requestCtx, config)
+			}()
+			select {
+			case <-listed:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the candidate never started discovery")
+			}
+			require.NoError(t, m.Cleanup())
+			assert.NoError(t, callerCtx.Err(), "cleanup must not cancel a shared caller context")
+			assert.NoError(t, requestCtx.Err(), "cleanup must not cancel the request's context")
+			require.Eventually(t, func() bool { return pendingRequests.Load() == 0 }, time.Second, 10*time.Millisecond, "cleanup must cancel an uninstalled candidate")
+			select {
+			case err := <-connected:
+				if mode != "boot" {
+					require.Error(t, err, "a canceled candidate cannot become an installed connection")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("the candidate dial did not exit after cleanup")
+			}
+			_, exists := snapshotClientState(m, config.ID)
+			assert.False(t, exists, "a canceled candidate must not restore a client after cleanup")
+			assert.Nil(t, registeredChecker(m, config.ID), "a canceled candidate must not restart its checker")
+		})
+	}
+}
+
+// SSE startup has no request deadline, but it must still belong to the manager.
+func TestCleanupCancelsPendingSSEConnection(t *testing.T) {
+	started, release := make(chan struct{}), make(chan struct{})
+	var pendingRequests atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pendingRequests.Add(1)
+		defer pendingRequests.Add(-1)
+		close(started)
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	t.Cleanup(ts.Close)
+	callerCtx, cancelCaller := context.WithCancel(context.Background())
+	t.Cleanup(cancelCaller)
+	m := NewMCPManager(callerCtx, schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+	t.Cleanup(func() { close(release) })
+	config := &schemas.MCPClientConfig{
+		ID: "pending-sse-cleanup", Name: "matrix", ConnectionType: schemas.MCPConnectionTypeSSE,
+		ConnectionString: schemas.NewSecretVar(ts.URL), NeedsSessionStickiness: schemas.Ptr(true), ToolsToExecute: []string{"*"},
+	}
+	connected := make(chan error, 1)
+	go func() { connected <- m.connectToMCPClient(context.Background(), config) }()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the candidate never started its SSE stream")
+	}
+	require.NoError(t, m.Cleanup())
+	assert.NoError(t, callerCtx.Err(), "cleanup must not cancel a shared caller context")
+	require.Eventually(t, func() bool { return pendingRequests.Load() == 0 }, time.Second, 10*time.Millisecond, "cleanup must cancel SSE startup before installation")
+	select {
+	case err := <-connected:
+		require.Error(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("the SSE candidate did not exit after cleanup")
+	}
 }
 
 // A tool change announced while the connect's first tools/list is in flight is not lost: that list

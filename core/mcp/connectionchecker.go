@@ -122,6 +122,9 @@ func (c *ClientConnectionChecker) Start() {
 	if c.isRunning {
 		return
 	}
+	if c.manager.ctx != nil && c.manager.ctx.Err() != nil {
+		return
+	}
 
 	c.manager.mu.RLock()
 	clientState, exists := c.manager.clientMap[c.clientID]
@@ -137,8 +140,12 @@ func (c *ClientConnectionChecker) Start() {
 		firstInterval = UnstableConnectionCheckInterval
 	}
 
+	parentCtx := c.manager.ctx
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
 	c.isRunning = true
-	c.ctx, c.cancel = context.WithCancel(context.Background())
+	c.ctx, c.cancel = context.WithCancel(parentCtx)
 	c.timer = time.NewTimer(firstInterval)
 	c.onSteadyCadence = onSteady
 
@@ -658,6 +665,10 @@ func (m *ConnectionCheckerManager) updateInterval(clientID string, interval time
 // registry itself; only the (already lock-free) Start() call moves outside.
 func (m *ConnectionCheckerManager) StartChecking(checker *ClientConnectionChecker) {
 	m.mu.Lock()
+	if checker.manager.ctx != nil && checker.manager.ctx.Err() != nil {
+		m.mu.Unlock()
+		return
+	}
 	if existing, ok := m.checkers[checker.clientID]; ok {
 		existing.Stop()
 	}

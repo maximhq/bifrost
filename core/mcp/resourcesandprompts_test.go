@@ -358,6 +358,75 @@ func TestResourcesAndPrompts_PerListBudgetOutlivesSpentDeadline(t *testing.T) {
 	requireResourcesAndPrompts(t, discovery, "docs")
 }
 
+// TestCleanupCancelsPendingDiscoveryLists ensures fresh per-list budgets do not
+// keep ephemeral resource, template, or prompt requests alive after cleanup.
+func TestCleanupCancelsPendingDiscoveryLists(t *testing.T) {
+	for _, method := range []string{"resources/list", "resources/templates/list", "prompts/list"} {
+		t.Run(method, func(t *testing.T) {
+			upstream := server.NewStreamableHTTPServer(newResourcesPromptsUpstream())
+			started, stopped, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				r.Body = io.NopCloser(bytes.NewReader(body))
+				var request struct {
+					Method string `json:"method"`
+				}
+				_ = json.Unmarshal(body, &request)
+				if request.Method == method {
+					close(started)
+					select {
+					case <-r.Context().Done():
+						close(stopped)
+					case <-release:
+					}
+					return
+				}
+				upstream.ServeHTTP(w, r)
+			}))
+			t.Cleanup(ts.Close)
+			callerCtx, cancelCaller := context.WithCancel(context.Background())
+			requestCtx, cancelRequest := context.WithCancel(context.Background())
+			m := NewMCPManager(callerCtx, schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			config := &schemas.MCPClientConfig{
+				ID: "pending-discovery-list", Name: "docs", AuthType: schemas.MCPAuthTypeHeaders,
+				ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar(ts.URL),
+				NeedsSessionStickiness: schemas.Ptr(false),
+			}
+			done := make(chan struct{})
+			t.Cleanup(func() {
+				cancelRequest()
+				cancelCaller()
+				close(release)
+				<-done
+				_ = m.Cleanup()
+			})
+			go func() {
+				defer close(done)
+				_, _ = m.performAdminToolDiscovery(requestCtx, config, time.Minute)
+			}()
+			select {
+			case <-started:
+			case <-time.After(5 * time.Second):
+				t.Fatal("discovery never started the requested list")
+			}
+
+			require.NoError(t, m.Cleanup())
+			assert.NoError(t, callerCtx.Err(), "cleanup must not cancel the manager's caller")
+			assert.NoError(t, requestCtx.Err(), "cleanup must not cancel the discovery caller")
+			select {
+			case <-stopped:
+			case <-time.After(time.Second):
+				t.Fatal("cleanup must cancel the pending list before its per-list timeout")
+			}
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("discovery did not exit after cleanup")
+			}
+		})
+	}
+}
+
 // A server offering only prompts has no tools/list to probe, so its prompts list is the liveness check:
 // once the upstream dies, the checker marks the client unstable instead of keeping it healthy.
 func TestResourcesAndPrompts_PromptsOnlyServerLivenessFollowsPromptsList(t *testing.T) {
