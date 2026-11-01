@@ -183,13 +183,16 @@ sent to a client.
 | `outputSchema` | sent verbatim in tools/list: the schema the tool's `structuredContent` follows |
 | `annotations` | sent verbatim in tools/list, e.g. `{"readOnlyHint":true}` |
 | `reply` | the CallToolResult tools/call returns, verbatim: several content blocks, `structuredContent`, `isError`. An empty result is `{"content":[]}`; clients reject a missing `content`. |
+| `reply_error` | the JSON-RPC error tools/call answers with, `{"code","message","data"}` as given, e.g. `{"code":-32021,"message":"missing capability","data":{"capability":"elicitation"}}` |
 | `reply_env` | answer with this variable from the stdio bridge's registered environment |
 | `fault` | a fault set that replaces the server-wide one for calls to this tool (see below) |
 
-Without `reply` or `reply_env`, a call echoes `"<tool>:<arguments>"`. A
-definition that would misbehave quietly is rejected with 400: annotations, an
-output schema or a reply that is not an object, icons that are not a list, both
-`reply` and `reply_env`, or a tool fault field that cannot apply to one tool.
+Without `reply`, `reply_error` or `reply_env`, a call echoes
+`"<tool>:<arguments>"`. A definition that would misbehave quietly is rejected
+with 400: annotations, an output schema or a reply that is not an object, icons
+that are not a list, a `reply_error` without a non-zero code, more than one of
+`reply`, `reply_error` and `reply_env`, or a tool fault field that cannot apply
+to one tool.
 
 ## REST
 
