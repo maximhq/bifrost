@@ -9499,6 +9499,1506 @@ const AUTH47 = folder("AUTH-47 token_exchange create and config.json in OSS", `S
   noMockCalls("AUTH-47", "auth47"),
 ]);
 
+// ================================================================ PUD per-user discovery
+
+// A client with per_user_discovery on keeps no tools of its own: each caller's tools, prompts and resources are
+// discovered with that caller's own credential, and until a caller has a discovery they are offered one tool,
+// <client>-connect. Callers are virtual keys; a session-only or anonymous caller keeps no discovery.
+//
+// HDOOR(p) is fleet server p (echo_tool, add_tool), which takes each caller's identity from the X-Api-Key value,
+// with client p (id <p>-h) on it: per_user_headers, per_user_header_keys ["x-api-key"], verified at create with the
+// sample admin-key, per_user_discovery on, tools_to_execute ["*"]. ODOOR(p) is the per_user_oauth equivalent (id
+// <p>-u), verified by consenting as admin. VK-<L> is a virtual key granted every tool of p (and openai, for chats),
+// kept in <p>_<l> and <p>_<l>_id; it signs in to HDOOR with X-Api-Key key-<l>, or to ODOOR as the identity the case
+// names. gw-list is tools/list on /mcp with the caller's x-bf-vk.
+const PUD_SERVER_TEXT = (p, extra = "") => `fleet server ${p} (echo_tool, add_tool${extra}) takes the caller's identity from X-Api-Key`;
+const HDOOR_TEXT = (p, extra = "") => `HDOOR(${p}): ${PUD_SERVER_TEXT(p, extra)}; ${p}, a per_user_headers client on it (per_user_header_keys ["x-api-key"], sample admin-key, tools_to_execute ["*"]) with per_user_discovery on`;
+const pudServer = (id, p, tools = ["echo_tool", "add_tool"]) => [
+  ...freshServer(id, p, tools),
+  mockAuth(id, p, `setup: ${p} takes the caller's identity from X-Api-Key, any value`, { identity_header: "X-Api-Key", require_headers: { "X-Api-Key": "" } }),
+];
+const hdoorBody = (p, over = {}) => ({ client_id: `${p}-h`, name: p, connection_type: "http", connection_string: `${CHAOS}/s/${p}/mcp`, auth_type: "per_user_headers", per_user_header_keys: ["x-api-key"], user_headers: { "x-api-key": "admin-key" }, per_user_discovery: true, tools_to_execute: ["*"], ...over });
+// hdoor builds HDOOR(p); flag false leaves per_user_discovery unset.
+const hdoor = (id, p, { tools, flag = true, over = {} } = {}) => [
+  ...pudServer(id, p, tools),
+  createClient(id, hdoorBody(p, { ...(flag ? {} : { per_user_discovery: undefined }), ...over }), `setup: create ${p}, per_user_headers${flag ? " with per_user_discovery on" : ", per_user_discovery unset"}`),
+];
+const L = (l) => `VK-${l.toUpperCase()}`;
+const pudVK = (id, p, l, configs) => vkCreate(id, `setup: create ${L(l)}${configs ? `, mcp_configs ${lit(configs)}` : `, granted every tool of ${p}`}`, { name: `${id} ${L(l)}`, provider_configs: OPENAI_GRANT, mcp_configs: configs || [{ mcp_client_name: p, tools_to_execute: ["*"] }] }, `${p}_${l}`);
+const pudVKDelete = (id, p, l) => vkDelete(id, `teardown: delete ${L(l)}`, `${p}_${l}`);
+// pudVKGrant grants VK-<l> every tool of p again, as a new mcp_configs entry: deleting a client
+// removes the grants virtual keys held on it.
+const pudVKGrant = (id, p, l) => request(id, `grant ${L(l)} every tool of ${p} again`, "PUT", `/api/governance/virtual-keys/{{${p}_${l}_id}}`, {
+  body: { mcp_configs: [{ mcp_client_name: p, tools_to_execute: ["*"] }] }, asserts: [A.status(200)],
+});
+const vkOf = (p, l) => ({ key: "x-bf-vk", value: `{{${p}_${l}}}` });
+const SESS = (sid) => ({ key: "x-bf-mcp-session-id", value: sid });
+// FLOW_RE finds a sign-in link's flow id in a tool result's text.
+const FLOW_RE = "/\\/workspace\\/mcp-sessions\\/auth\\?flow=([^&#\\s]+)/";
+// execAs runs a tool through execute with the given headers; results read `content` (ES5 asserts).
+const execAs = (id, title, tool, headers, asserts, { extraTests = [], args = { text: "hi" } } = {}) => request(id, title, "POST", "/v1/mcp/tool/execute", {
+  noAuth: true, noCookies: true, headers, asserts, extraTests,
+  body: { id: "c1", type: "function", function: { name: tool, arguments: lit(args) } },
+});
+const contentMatches = (title, re) => A.custom(title, [`pm.expect(pm.response.json().content, 'body: ' + pm.response.text()).to.match(${re});`]);
+// H_SIGNIN matches the connect result of a caller with no header credential, exactly; its group is the flow id.
+const H_SIGNIN = (p) => `/^Authentication required for ${p}\\. Visit http:\\/\\/[^\\s]+\\/workspace\\/mcp-sessions\\/auth\\?flow=([^&#\\s]+)&kind=headers to submit the required headers\\.$/`;
+// H_SIGNIN_TT is the same text when temp-token auth is on: the link carries a #t= token and a notice follows.
+const H_SIGNIN_TT = (p) => `/^Authentication required for ${p}\\. Visit http:\\/\\/[^\\s]+\\/workspace\\/mcp-sessions\\/auth\\?flow=([^&#\\s]+)&kind=headers#t=[^\\s]+ to submit the required headers\\. IMPORTANT: this link includes a required fragment/`;
+const keepFlowFrom = (v, textExpr) => [`var fm = ${FLOW_RE}.exec(${textExpr} || '');`, `pm.collectionVariables.set(${lit(v)}, fm ? fm[1] : '');`];
+const sameFlowIn = (v, textExpr) => A.custom("the link names the same flow", [`var fm = ${FLOW_RE}.exec(${textExpr} || '');`, `pm.expect(fm && fm[1], 'text: ' + ${textExpr}).to.equal(pm.collectionVariables.get(${lit(v)}));`]);
+// connectH calls <p>-connect with VK-<l>, which has no header credential: the result is the sign-in text, whose flow
+// id is kept in <p>_<l>_flow.
+const connectH = (id, title, p, l, tt = false) => execAs(id, title, `${p}-connect`, [vkOf(p, l)], [A.status(200), contentMatches(`content is "Authentication required for ${p}. Visit <link${tt ? " with a #t= token" : ""}> to submit the required headers."${tt ? " and the fragment notice" : ""}`, tt ? H_SIGNIN_TT(p) : H_SIGNIN(p))], { extraTests: keepFlowFrom(`${p}_${l}_flow`, "pm.response.json().content") });
+const submitH = (id, title, p, l, key, asserts = [A.status(200)]) => hdrSubmit(id, title, `${p}_${l}_flow`, { "x-api-key": key }, asserts, [keepCredential(`${p}_${l}_cred`)]);
+// signInH signs VK-<l> in to HDOOR(p) with X-Api-Key key: connect opens the flow, the submit stores the credential.
+const signInH = (id, p, l, key = `key-${l}`, tt = false) => [
+  connectH(id, `setup: ${L(l)} calls ${p}-connect and gets the sign-in link`, p, l, tt),
+  submitH(id, `setup: ${L(l)} submits X-Api-Key ${key}`, p, l, key),
+];
+// signInFlowH signs VK-<l> in to an unflagged per_user_headers client: a call opens the flow, the submit stores it.
+const signInFlowH = (id, p, l, key = `key-${l}`, vp = p) => [
+  execAs(id, `setup: ${L(l)} calls ${p}-echo_tool and is sent to a header flow`, `${p}-echo_tool`, [vkOf(vp, l)], [A.status(400), headersFlow({ saveAs: `${p}_${l}_flow` })]),
+  submitH(id, `setup: ${L(l)} submits X-Api-Key ${key}`, p, l, key),
+];
+const connectedText = (p, n) => `Connected to ${p}: ${n} tools are available from your next turn.`;
+const alreadyText = (p) => `Already connected to ${p}; its tools are in your tool list.`;
+const connectExpect = (id, title, p, l, text) => execAs(id, title, `${p}-connect`, [vkOf(p, l)], [A.status(200), contentIs(text)]);
+// gw-list helpers: names are compared sorted.
+const gwNames = (names) => A.custom(`tools/list names are ${lit([...names].sort())}`, [
+  "var names = ((pm.response.json().result || {}).tools || []).map(function (t) { return t.name; }).sort();",
+  `pm.expect(names, 'body: ' + pm.response.text()).to.eql(${lit([...names].sort())});`,
+]);
+const gwNoneOf = (p) => A.custom(`no ${p}-* tool is listed`, [
+  "var names = ((pm.response.json().result || {}).tools || []).map(function (t) { return t.name; });",
+  `pm.expect(names.filter(function (n) { return n.indexOf(${lit(p + "-")}) === 0; }), 'body: ' + pm.response.text()).to.eql([]);`,
+]);
+const gwList = (id, title, headers, names, extra = []) => rpc(id, title, listMsg, { headers: [MCP_ACCEPT, ...headers], asserts: [A.status(200), gwNames(names), ...extra] });
+const gwListNone = (id, title, headers, p) => rpc(id, title, listMsg, { headers: [MCP_ACCEPT, ...headers], asserts: [A.status(200), gwNoneOf(p)] });
+const gwTextIs = (text) => gwText(`the result is not an error and its text is ${lit(text)}`, ["pm.expect(r.isError, 'body: ' + pm.response.text()).to.not.equal(true);", `pm.expect(text).to.equal(${lit(text)});`]);
+const gwCallAs = (id, title, tool, headers, asserts, args = { text: "hi" }) => rpc(id, title, call(tool, args), { headers: [MCP_ACCEPT, ...headers], asserts: [A.status(200), ...asserts] });
+const CONNECT_DESC = (p) => `Connect the user's account to ${p} to use its tools. If the user has not signed in to ${p} yet, this returns a link for them to open; give them the link exactly as returned. Otherwise it connects right away, and ${p}'s tools are available from your next turn.`;
+const connectToolShape = (p) => A.custom(`${p}-connect has the connect description and an empty object schema`, [
+  `var t = ((pm.response.json().result || {}).tools || []).filter(function (x) { return x.name === ${lit(p + "-connect")}; })[0];`,
+  "pm.expect(t, 'body: ' + pm.response.text()).to.be.an('object');",
+  `pm.expect(t.description).to.equal(${lit(CONNECT_DESC(p))});`,
+  "pm.expect(t.inputSchema).to.eql({ type: 'object', properties: {}, required: [] });",
+]);
+// Client-list helpers.
+const callersAre = (map) => A.custom(map ? `callers_by_tool is ${lit(map)}` : "there is no callers_by_tool", [map
+  ? `pm.expect(pm.response.json().clients[0].callers_by_tool, 'body: ' + pm.response.text()).to.eql(${lit(map)});`
+  : "pm.expect(pm.response.json().clients[0], 'body: ' + pm.response.text()).to.not.have.property('callers_by_tool');"]);
+const flagIs = (v) => configField("per_user_discovery", v);
+const noCredential = () => A.custom("there is no credential", ["pm.expect(pm.response.json().clients[0], 'body: ' + pm.response.text()).to.not.have.property('credential');"]);
+// Sessions helpers: rowOf finds VK-<l>'s credential row on clientId as `row`.
+const vkRowPred = (p, l) => `s.kind !== 'flow' && s.virtual_key && s.virtual_key.id === pm.collectionVariables.get(${lit(`${p}_${l}_id`)})`;
+const rowOf = (id, title, clientId, p, l, what, lines, extraTests = []) => request(id, title, "GET", SESSIONS, {
+  asserts: [A.status(200), A.custom(what, [sessionRows(clientId, vkRowPred(p, l)), "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(1);", "var row = found[0];", ...lines])],
+  extraTests: extraTests.length ? [sessionRows(clientId, vkRowPred(p, l)), "var row = found[0] || {};", ...extraTests] : [],
+});
+const NO_DISCOVERY = ["pm.expect(row, 'row: ' + JSON.stringify(row)).to.not.have.property('discovery');"];
+const DISCOVERY = (t, pr = 0, r = 0) => [
+  "pm.expect(row.discovery, 'row: ' + JSON.stringify(row)).to.be.an('object');",
+  `pm.expect([row.discovery.tool_count, row.discovery.prompt_count, row.discovery.resource_count], 'row: ' + JSON.stringify(row)).to.eql([${t}, ${pr}, ${r}]);`,
+];
+const ROW_STATUS = (s) => [`pm.expect(row.status, 'row: ' + JSON.stringify(row)).to.equal(${lit(s)});`];
+const keepRowId = (v) => [`pm.collectionVariables.set(${lit(v)}, row.id || '');`];
+const keepDiscoveredAt = (v) => [`pm.collectionVariables.set(${lit(v)}, (row.discovery || {}).discovered_at || '');`];
+// Mock helpers.
+const identityMethod = (identity, method, n) => A.custom(`${identity} sent ${method} ${n} time${n === 1 ? "" : "s"}`, [
+  `pm.expect(((pm.response.json().counters.methods_by_identity || {})[${lit(identity)}] || {})[${lit(method)}] || 0, 'counters: ' + JSON.stringify(pm.response.json().counters)).to.equal(${n});`,
+]);
+const methodsEmpty = () => A.custom("no MCP request reached the server", ["pm.expect(pm.response.json().counters.methods || {}, 'counters: ' + JSON.stringify(pm.response.json().counters)).to.eql({});"]);
+const overlay = (id, p, identity, tools, title) => mockPost(id, p, "tools/overlay", title || `setup: ${identity} sees ${tools.map((t) => t.name || t).join(", ")} on ${p}`, { identity, tools: tools.map((t) => (typeof t === "string" ? { name: t } : t)) });
+const identityFault = (id, p, identity, faults, title) => mockPost(id, p, "faults/identity", title || `setup: ${identity}'s requests to ${p} see ${lit(faults)}`, { identity, faults });
+const PUD_SCOPE_MSG = (auth, name) => `per_user_discovery is only valid for per-user auth types (per_user_oauth, per_user_headers, token_exchange), not '${auth}', in client '${name}'`;
+const odoorBody = (p, over = {}) => ({ ...puBody(p), per_user_discovery: true, ...over });
+const ODOOR_TEXT = (p, cfgText = "") => `${PU_TEXT(false)}; ODOOR(${p}): ${PU_SERVER_TEXT(p, cfgText)}, with per_user_discovery on, verified by consenting as admin`;
+// odoor builds ODOOR(p), verified by consenting as admin.
+const odoor = (id, p, cfg = {}, over = {}) => puConnect(id, p, cfg, { per_user_discovery: true, ...over });
+// connectO calls <p>-connect with VK-<l>, which has no token: the result is the sign-in text (no temp tokens), whose
+// flow id is kept in <p>_<l>_flow.
+const O_SIGNIN = (p) => `/^Authentication required for ${p}\\. Visit http:\\/\\/[^\\s]+\\/workspace\\/mcp-sessions\\/auth\\?flow=([^&#\\s]+) to connect your account\\.$/`;
+const connectO = (id, title, p, l) => execAs(id, title, `${p}-connect`, [vkOf(p, l)], [A.status(200), contentMatches(`content is "Authentication required for ${p}. Visit <link> to connect your account."`, O_SIGNIN(p))], { extraTests: keepFlowFrom(`${p}_${l}_flow`, "pm.response.json().content") });
+// signInO signs VK-<l> in to ODOOR(p) as identity: connect opens the flow, which is started, consented and called
+// back; landing is what the callback's Location must end with.
+const signInO = (id, p, l, identity, landing = PU_SUCCESS) => [
+  connectO(id, `setup: ${L(l)} calls ${p}-connect and gets the sign-in link`, p, l),
+  flowStart(id, `setup: start ${L(l)}'s flow`, `${p}_${l}_flow`),
+  consentAs(id, `setup: consent for ${L(l)} as ${identity}`, `${p}_${l}_flow`, identity),
+  followCallback(id, `setup: follow ${L(l)}'s callback`, `${p}_${l}_flow`, [A.status(302), locationEnds(landing)]),
+];
+// pudGrant runs a Bifrost OAuth grant (bf_mode vk) for VK-<l>: register, authorize, consent with the VK through the
+// temp token and exchange the code. The access token lands in <flow>_at.
+const pudGrant = (id, p, l, flow) => [
+  register(id, `${flow}_client`, LOOPBACK_CB, `${id} ${L(l)} grant`, REFRESHABLE),
+  authorize(id, `${flow}_client`, flow, `setup: authorize ${L(l)}'s grant`),
+  consent(id, flow, `setup: consent with ${L(l)} through the temp token`, "temp", { mode: "vk", value: `{{${p}_${l}}}` }, [A.status(200), codeIssued()], { extraTests: saveCode(flow) }),
+  tokenReq(id, `setup: exchange ${L(l)}'s code`, codeParams(flow, `${flow}_client`), [A.status(200), tokensIssued()], { extraTests: saveTokens(flow) }),
+];
+const tokenList = (id, title, flow, names) => request(id, title, "POST", "/mcp", { noAuth: true, raw: JSON.stringify(listMsg), headers: [MCP_ACCEPT, { key: "Authorization", value: `Bearer {{${flow}_at}}` }], asserts: [A.status(200), gwNames(names)] });
+// NOTIFY_NOTE: a discovery write also sends notifications/tools/list_changed to listening /mcp GET streams. Bifrost
+// keeps those streams open until the client hangs up, and a script request cannot hang up, so the harness checks
+// what a re-list returns instead.
+const NOTIFY_NOTE = "The tools/list_changed notification a discovery write sends to listening /mcp GET streams is not checked here: those streams stay open until the client hangs up, which a Newman request cannot do; what a re-list returns is checked instead.";
+// credentialFlip builds HDOOR(p) with per_user_discovery unset, signs the given callers in through header flows,
+// then turns per_user_discovery on: each caller then holds a credential and no discovery.
+const credentialFlip = (id, p, callers, { tools, over } = {}) => [
+  ...hdoor(id, p, { flag: false, tools, over }),
+  ...callers.flatMap((l) => [pudVK(id, p, l), ...signInFlowH(id, p, l)]),
+  clientPut(id, "setup: turn per_user_discovery on", `${p}-h`, { per_user_discovery: true }, [A.status(200)]),
+];
+const FLIP_TEXT = (p, callers) => `HDOOR(${p}) created with per_user_discovery unset (${PUD_SERVER_TEXT(p)}); ${callers.map((l) => `${L(l)} signed in with key-${l}`).join(", ")} through header flows; then per_user_discovery turned on, so each holds a credential and no discovery`;
+const O_SIGNIN_TT = (p) => `/^Authentication required for ${p}\\. Visit http:\\/\\/[^\\s]+\\/workspace\\/mcp-sessions\\/auth\\?flow=([^&#\\s]+)#t=[^\\s]+ to connect your account\\. IMPORTANT: this link includes a required fragment/`;
+const clearIdentityFault = (id, p, identity) => mockPost(id, p, "faults/identity", `setup: clear ${identity}'s faults on ${p}`, { identity, clear: true });
+const LIST_FAILED = (p) => `failed to list the tools of MCP client ${p}: failed to list tools`;
+const PUD18_VARIANTS = [
+  ["a", { list_fail: true }, "list_fail", [A.msgStartsWith(LIST_FAILED("pud18"))]],
+  ["c", { init_fail: true }, "init_fail", [A.msgEquals("failed to establish ephemeral MCP connection: internal error: initialize failed (injected)")]],
+  ["d", { malformed: true }, "malformed", [A.msgStartsWith(LIST_FAILED("pud18"))]],
+  ["e", { latency: "6s", methods: ["tools/list"] }, "tools/list delayed 6s", [A.msgStartsWith(LIST_FAILED("pud18")), responseTime(5000, 15000)]],
+];
+const toolDescIs = (name, desc) => A.custom(`${name}'s description is ${lit(desc)}`, [
+  `var t = ((pm.response.json().result || {}).tools || []).filter(function (x) { return x.name === ${lit(name)}; })[0];`,
+  `pm.expect(t && t.description, 'body: ' + pm.response.text()).to.equal(${lit(desc)});`,
+]);
+const followWithCookie = (id, title, v, asserts) => request(id, title, "GET", "", { base: `{{${v}_cb}}`, noAuth: true, noRedirect: true, noCookies: true, headers: [{ key: "Cookie", value: "token={{admin_cookie}}" }], asserts });
+const execAfterVK = (id, title, tool, p, l, ms, asserts) => request(id, title, "POST", "/v1/mcp/tool/execute", {
+  noAuth: true, noCookies: true, headers: [vkOf(p, l)], asserts, pre: [`setTimeout(function () {}, ${ms});`],
+  body: { id: "c1", type: "function", function: { name: tool, arguments: lit({ text: "hi" }) } },
+});
+// pollGwList re-sends tools/list with VK-<l> up to about 5s until cond (ES5 on names) holds, keeping the wait in v.
+const pollGwList = (p, l, cond, v) => [
+  "var t0 = Date.now(); var left = 25;",
+  "function poll() {",
+  `  pm.sendRequest({ url: pm.variables.get('base_url') + '/mcp', method: 'POST', header: { 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream', 'x-bf-vk': pm.variables.get(${lit(`${p}_${l}`)}) }, body: { mode: 'raw', raw: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) } }, function (err, res) {`,
+  "    var names = !err && res.code === 200 && res.json().result ? res.json().result.tools.map(function (t) { return t.name; }) : [];",
+  `    pm.collectionVariables.set(${lit(v)}, String(Date.now() - t0));`,
+  `    if ((${cond}) || --left <= 0) { return; }`,
+  "    setTimeout(poll, 200);",
+  "  });",
+  "}",
+  "poll();",
+];
+const NOT_FOUND_TOOL = (name) => rpcError(-32602, `tool '${name}' not found: tool not found`);
+const REFRESH_TOOLS_PUD = (p) => `mcp client ${p} keeps a discovery per caller, so it has no shared tool list to refresh; refresh a caller's tools from their session instead: tool refresh is not applicable for this client's current state`;
+const mockList = (id, p, verb, key, items, title) => mockPost(id, p, verb, title || `setup: ${p} serves ${verb.split("/")[0]} ${items.map((x) => x.name || x.uri || x.uriTemplate).join(", ")}`, { [key]: items });
+const kindOverlay = (id, p, kind, identity, items) => mockPost(id, p, `${kind}/overlay`, `setup: ${identity} sees ${kind} ${items.map((x) => x.name || x.uri || x.uriTemplate).join(", ") || "none"} on ${p}`, { identity, [kind]: items });
+const rpcMsg = (method, params) => ({ jsonrpc: "2.0", id: 1, method, ...(params ? { params } : {}) });
+const gwRpc = (id, title, method, params, headers, asserts, path) => rpc(id, title, rpcMsg(method, params), { path, headers: [MCP_ACCEPT, ...headers], asserts: [A.status(200), ...asserts] });
+const listedAre = (field, key, values) => A.custom(`result.${field} ${key}s are ${lit([...values].sort())}`, [
+  `var xs = ((pm.response.json().result || {})[${lit(field)}] || []).map(function (x) { return x[${lit(key)}]; }).sort();`,
+  `pm.expect(xs, 'body: ' + pm.response.text()).to.eql(${lit([...values].sort())});`,
+]);
+const listedNoneOf = (field, key, values) => A.custom(`result.${field} has none of ${lit(values)}`, [
+  `var xs = ((pm.response.json().result || {})[${lit(field)}] || []).map(function (x) { return x[${lit(key)}]; });`,
+  `${lit(values)}.forEach(function (v) { pm.expect(xs, 'body: ' + pm.response.text()).to.not.include(v); });`,
+]);
+const readTextIs = (text) => A.custom(`contents[0].text is ${lit(text)}`, [`pm.expect((((pm.response.json().result || {}).contents || [])[0] || {}).text, 'body: ' + pm.response.text()).to.equal(${lit(text)});`]);
+const promptTextIs = (text) => A.custom(`messages[0].content.text is ${lit(text)}`, [`pm.expect(((((pm.response.json().result || {}).messages || [])[0] || {}).content || {}).text, 'body: ' + pm.response.text()).to.equal(${lit(text)});`]);
+// keepError keeps a JSON-RPC error with `name` replaced by <name>; sameErrorAs checks a later one against it.
+const keepError = (v, name) => [`var e = pm.response.json().error || null;`, `pm.collectionVariables.set(${lit(v)}, e ? JSON.stringify({ code: e.code, message: String(e.message).split(${lit(name)}).join('<name>') }) : 'no error');`];
+// gwKeep sends a JSON-RPC request that must fail and keeps its error, with name replaced, in v.
+const gwKeep = (id, title, method, params, headers, v, name) => request(id, title, "POST", "/mcp", {
+  noAuth: true, raw: JSON.stringify(rpcMsg(method, params)), headers: [MCP_ACCEPT, ...headers],
+  asserts: [A.status(200), A.custom("a JSON-RPC error", ["pm.expect(pm.response.json().error, 'body: ' + pm.response.text()).to.be.an('object');"])],
+  extraTests: keepError(v, name),
+});
+const sameErrorAs = (v, name) => A.custom(`the error is the one an unknown name gets, with ${name} in place of it`, [
+  "var e = pm.response.json().error;",
+  "pm.expect(e, 'body: ' + pm.response.text()).to.be.an('object');",
+  `pm.expect(JSON.stringify({ code: e.code, message: String(e.message).split(${lit(name)}).join('<name>') })).to.equal(pm.collectionVariables.get(${lit(v)}));`,
+]);
+const gatesSet = (id, p, gate) => mockPost(id, p, "gates/set", `setup: gate ${gate.name} on ${p} holds ${gate.endpoint ? "the token endpoint" : `${gate.identity ? gate.identity + "'s " : ""}${gate.method}`}`, { gate: { timeout: "20s", ...gate } });
+const gatesClear = (id, p) => mockPost(id, p, "gates/clear", `teardown: clear ${p}'s gates`, {});
+const gateIs = (name, passed) => A.custom(`gate ${name}: open, nothing waiting, passed ${passed}, no timeouts`, [
+  `var g = (pm.response.json().gates || []).filter(function (x) { return x.name === ${lit(name)}; })[0];`,
+  "pm.expect(g, 'body: ' + pm.response.text()).to.be.an('object');",
+  `pm.expect([g.open, g.waiting, g.passed, g.timed_out], 'gate: ' + JSON.stringify(g)).to.eql([true, 0, ${passed}, 0]);`,
+]);
+// race runs, in the item's pre-request script: send `first`, wait until gate `gate` on fleet server p holds a
+// request, run `steps` in order, open the gate, then wait for `first` to answer. Each request is a spec {method,
+// url, header, body} whose strings may hold {{variables}}; a step is ES5 `function (next) {...}` calling next(result).
+// Results ({code, body}) are kept as JSON in <v>: {first, steps}. The item itself reads p's state for gateIs. A
+// redirect `first` answers is followed (a script request cannot stop it), so its code is the landing page's.
+const sendStep = (spec) => `function (next) { send(${lit(spec)}, next); }`;
+const deleteRowStep = (clientId, vkIdVar) => `function (next) { send({ method: 'GET', url: '{{base_url}}/api/mcp/sessions?limit=500', header: { Authorization: '{{admin_auth_header}}' } }, function (r) { var rows = []; try { rows = JSON.parse(r.body).sessions || []; } catch (e) {} var row = rows.filter(function (s) { return s.kind !== 'flow' && s.mcp_client && s.mcp_client.client_id === ${lit(clientId)} && s.virtual_key && s.virtual_key.id === pm.variables.get(${lit(vkIdVar)}); })[0]; if (!row) { next({ code: -1, body: 'no row: ' + r.body }); return; } send({ method: 'DELETE', url: '{{base_url}}/api/mcp/sessions/' + row.id, header: { Authorization: '{{admin_auth_header}}' } }, next); }); }`;
+const ADMIN_H = { Authorization: "{{admin_auth_header}}" };
+const JSON_H = { "Content-Type": "application/json" };
+const race = (id, title, p, gate, first, steps, v, asserts) => request(id, title, "GET", `/control/${p}`, {
+  base: CHAOS, noAuth: true, asserts: [A.status(200), gateIs(gate, 1), ...asserts],
+  pre: [
+    "function R(s) { return String(s).replace(/{{([^{}]+)}}/g, function (m, k) { return pm.variables.get(k); }); }",
+    "function send(spec, cb) { var h = []; Object.keys(spec.header || {}).forEach(function (k) { h.push({ key: k, value: R(spec.header[k]) }); }); pm.sendRequest({ url: R(spec.url), method: spec.method, header: h, body: spec.body !== undefined ? { mode: 'raw', raw: R(typeof spec.body === 'string' ? spec.body : JSON.stringify(spec.body)) } : undefined }, function (err, res) { cb({ code: err ? 0 : res.code, body: err ? String(err) : res.text() }); }); }",
+    "var out = { first: null, steps: [] }; var firstDone = false;",
+    `var FIRST = ${lit(first)};`,
+    `var STEPS = [${steps.join(", ")}];`,
+    `var CTL = pm.variables.get('chaos_url') + '/control/${p}';`,
+    "send(FIRST, function (r) { out.first = r; firstDone = true; });",
+    "var left = 150;",
+    `function waitGate() { pm.sendRequest({ url: CTL, method: 'GET' }, function (err, res) { var g = (!err && res.code === 200 ? (res.json().gates || []) : []).filter(function (x) { return x.name === ${lit(gate)}; })[0]; if ((g && g.waiting >= 1) || --left <= 0) { out.held = !!(g && g.waiting >= 1); runSteps(0); return; } setTimeout(waitGate, 100); }); }`,
+    "function runSteps(i) { if (i >= STEPS.length) { openGate(); return; } STEPS[i](function (r) { out.steps.push(r); runSteps(i + 1); }); }",
+    `function openGate() { pm.sendRequest({ url: CTL + '/gates/open', method: 'POST', header: [{ key: 'Content-Type', value: 'application/json' }], body: { mode: 'raw', raw: JSON.stringify({ name: ${lit(gate)} }) } }, function () { waitFirst(); }); }`,
+    "var wl = 400;",
+    `function waitFirst() { if (firstDone || --wl <= 0) { pm.collectionVariables.set(${lit(v)}, JSON.stringify(out)); return; } setTimeout(waitFirst, 100); }`,
+    "waitGate();",
+  ],
+});
+const RACE = (v) => `var race = JSON.parse(pm.collectionVariables.get(${lit(v)}) || '{}');`;
+const raceHeld = (v) => A.custom("the first request was held at the gate before the steps ran", [RACE(v), "pm.expect(race.held, 'race: ' + JSON.stringify(race)).to.equal(true);"]);
+const raceFirst = (v, title, lines) => A.custom(title, [RACE(v), "var first = race.first || {};", ...lines]);
+const raceStep = (v, i, code) => A.custom(`step ${i + 1} answered ${code}`, [RACE(v), `pm.expect((race.steps[${i}] || {}).code, 'race: ' + JSON.stringify(race)).to.equal(${code});`]);
+const PENDING_LANDING = (p) => `${PU_SUCCESS}?tools=pending&client=${p}`;
+const PUD38_A = [{ name: "echo_tool", description: "key-a's echo", inputSchema: { type: "object", properties: { text: { type: "string" } } } }, { name: "add_tool", description: "key-a's add", inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } } } }];
+const PUD38_C = [{ name: "echo_tool", description: "key-c's echo", inputSchema: { type: "object", properties: { msg: { type: "string" } } }, outputSchema: { type: "object", properties: { tool: { type: "string" }, arguments: { type: "object" } } } }];
+const toolShapes = (p, tools) => A.custom(`each tool has the caller's own description and schema`, [
+  "var got = {}; ((pm.response.json().result || {}).tools || []).forEach(function (t) { got[t.name] = t; });",
+  ...tools.flatMap((t) => [
+    `pm.expect(got[${lit(`${p}-${t.name}`)}], 'body: ' + pm.response.text()).to.be.an('object');`,
+    `pm.expect(got[${lit(`${p}-${t.name}`)}].description, 'body: ' + pm.response.text()).to.equal(${lit(t.description)});`,
+    `pm.expect(got[${lit(`${p}-${t.name}`)}].inputSchema.properties, 'body: ' + pm.response.text()).to.eql(${lit(t.inputSchema.properties)});`,
+    t.outputSchema ? `pm.expect([got[${lit(`${p}-${t.name}`)}].outputSchema.type, got[${lit(`${p}-${t.name}`)}].outputSchema.properties], 'outputSchema: ' + JSON.stringify(got[${lit(`${p}-${t.name}`)}].outputSchema)).to.eql([${lit(t.outputSchema.type)}, ${lit(t.outputSchema.properties)}]);` : `pm.expect(got[${lit(`${p}-${t.name}`)}]).to.not.have.property('outputSchema');`,
+  ]),
+]);
+// mcpInit initializes an /mcp session and keeps the Mcp-Session-Id the gateway hands out in v; MCPSESS sends it back.
+const mcpInit = (id, title, headers, v) => request(id, title, "POST", "/mcp", {
+  noAuth: true, raw: JSON.stringify(init("2025-03-26")), headers: [MCP_ACCEPT, ...headers],
+  asserts: [A.status(200), A.custom("an Mcp-Session-Id is issued", ["pm.expect(pm.response.headers.get('Mcp-Session-Id'), 'headers').to.be.a('string').and.not.empty;"])],
+  extraTests: [`pm.collectionVariables.set(${lit(v)}, pm.response.headers.get('Mcp-Session-Id') || '');`],
+});
+const MCPSESS = (v) => ({ key: "Mcp-Session-Id", value: `{{${v}}}` });
+// refreshRow refreshes the session row kept in v (POST /api/mcp/sessions/{id}/refresh, as the admin).
+const refreshRow = (id, title, v, asserts) => request(id, title, "POST", `/api/mcp/sessions/{{${v}}}/refresh`, { asserts });
+const refreshed = (t, pr = 0, r = 0) => [A.status(200), A.custom(`the body is exactly {status: success, tool_count: ${t}, prompt_count: ${pr}, resource_count: ${r}}`, [`pm.expect(pm.response.json(), 'body: ' + pm.response.text()).to.eql({ status: 'success', tool_count: ${t}, prompt_count: ${pr}, resource_count: ${r} });`])];
+const CAN_REFRESH = (v) => [`pm.expect(row.can_refresh, 'row: ' + JSON.stringify(row)).to.equal(${v});`];
+const SAME_AT = (v) => [`pm.expect(row.discovery.discovered_at, 'row: ' + JSON.stringify(row)).to.equal(pm.collectionVariables.get(${lit(v)}));`];
+const NEW_AT = (v) => [`pm.expect(row.discovery.discovered_at, 'row: ' + JSON.stringify(row)).to.not.equal(pm.collectionVariables.get(${lit(v)}));`];
+const REFRESH_CONFLICT = "The session was revoked or replaced while its tools were being refreshed";
+// resubmitStep reauths the header row kept in rowVar and submits headers on the flow it opens.
+const resubmitStep = (rowVar, headers) => `function (next) { send({ method: 'POST', url: '{{base_url}}/api/mcp/sessions/{{${rowVar}}}/reauth', header: { Authorization: '{{admin_auth_header}}' } }, function (r) { var flow = ''; try { flow = JSON.parse(r.body).session_id || ''; } catch (e) {} if (!flow) { next({ code: -1, body: 'no flow: ' + r.body }); return; } send({ method: 'PUT', url: '{{base_url}}/api/mcp/per-user-headers/flows/' + flow, header: { Authorization: '{{admin_auth_header}}', 'Content-Type': 'application/json' }, body: ${lit({ headers })} }, next); }); }`;
+const refreshRefused = (code, msg) => [A.status(code), A.msgEquals(msg)];
+
+// ---------------------------------------------------------------- A. Admin, config.json and turning the flag on or off
+
+const PUD01 = folder("PUD-01 Create validation", `Setup: ${PUD_SERVER_TEXT("pud01")}. Creates with per_user_discovery on for auth headers, auth none and an OpenAPI per_user_headers client, then a headers client with it off.`, [
+  ...pudServer("PUD-01", "pud01"),
+  createExpect("PUD-01", "per_user_discovery on with auth headers", httpClient("pud01-x", "pud01_x", "pud01", { auth_type: "headers", headers: { "X-Api-Key": "admin-key" }, per_user_discovery: true, tools_to_execute: ["*"] }), [A.status(400), A.msgEquals(PUD_SCOPE_MSG("headers", "pud01_x"))]),
+  createExpect("PUD-01", "per_user_discovery on with auth none", httpClient("pud01-x", "pud01_x", "pud01", { per_user_discovery: true, tools_to_execute: ["*"] }), [A.status(400), A.msgEquals(PUD_SCOPE_MSG("none", "pud01_x"))]),
+  createExpect("PUD-01", "per_user_discovery on for an OpenAPI per_user_headers client", { client_id: "pud01-o", name: "pud01_o", connection_type: "openapi", auth_type: "per_user_headers", per_user_header_keys: ["x-api-key"], per_user_discovery: true, tools_to_execute: ["*"], openapi_config: { spec: PETSTORE } }, [A.status(400), A.msgEquals("per_user_discovery does not apply to openapi clients, whose tools come from the OpenAPI document, in client 'pud01_o'")]),
+  notListed("PUD-01", "pud01-x"),
+  notListed("PUD-01", "pud01-o"),
+  createExpect("PUD-01", "per_user_discovery off with auth headers", httpClient("pud01-y", "pud01_y", "pud01", { auth_type: "headers", headers: { "X-Api-Key": "admin-key" }, per_user_discovery: false, tools_to_execute: ["*"] }), [A.status(200)]),
+  getClient("PUD-01", "pud01-y", "the headers client is healthy with its tools and the flag off", [clientState("healthy"), toolNamesAre(["add_tool", "echo_tool"]), A.custom("per_user_discovery is not on", ["pm.expect(pm.response.json().clients[0].config.per_user_discovery, 'body: ' + pm.response.text()).to.not.equal(true);"])]),
+  deleteClient("PUD-01", "pud01-y"),
+]);
+
+const PUD02 = folder("PUD-02 Flagged headers client keeps nothing", `Setup: ${PUD_SERVER_TEXT("pud02")}; client pud02 created on it as in HDOOR(pud02).`, [
+  ...pudServer("PUD-02", "pud02"),
+  createExpect("PUD-02", "create pud02, per_user_headers with per_user_discovery on", hdoorBody("pud02"), [A.status(200), A.custom("the body is exactly the registered-and-verified message", [
+    "pm.expect(pm.response.json(), 'body: ' + pm.response.text()).to.eql({ status: 'success', message: 'MCP client registered and verified. Each user will submit their own headers and discover their own tools on first tool use.' });",
+  ])]),
+  getClient("PUD-02", "pud02-h", "healthy, flag on, tools [], no credential, no callers_by_tool", [clientState("healthy"), flagIs(true), toolNamesAre([]), noCredential(), callersAre(null)]),
+  sessionsNone("PUD-02", "no sessions entry for pud02", "pud02-h"),
+  gwListNone("PUD-02", "anonymous gw-list has no pud02-* tool", [], "pud02"),
+  mockGet("PUD-02", "pud02", "the create verified with the sample: admin-key listed tools once", [identityMethod("admin-key", "tools/list", 1)]),
+  deleteClient("PUD-02", "pud02-h"),
+]);
+
+const PUD03 = folder("PUD-03 Flagged OAuth client keeps nothing", `Setup: ${PU_TEXT(false)}; ${PU_SERVER_TEXT("pud03")}, created with per_user_discovery on and verified by consenting as admin.`, [
+  ...puConfig("PUD-03", false),
+  ...asServer("PUD-03", "pud03"),
+  createOAuth("PUD-03", "create pud03, per_user_oauth with per_user_discovery on", odoorBody("pud03"), "pud03", [statusIs("pending_oauth")]),
+  consentAs("PUD-03", "consent as admin", "pud03", "admin"),
+  followCallback("PUD-03", "follow the callback", "pud03", callbackSuccess()),
+  completeOAuth("PUD-03", "complete", "pud03", [A.status(200), A.jsonEquals("tools_count", 2), A.jsonMessage("OAuth configuration verified successfully. 2 tools discovered. Each user will authenticate individually when using this MCP server.")]),
+  getClient("PUD-03", "pud03-u", "healthy, flag on, tools [], no credential, no callers_by_tool", [clientState("healthy"), flagIs(true), toolNamesAre([]), noCredential(), callersAre(null)]),
+  sessionsNone("PUD-03", "no sessions entry for pud03", "pud03-u"),
+  completeOAuth("PUD-03", "complete again", "pud03", [A.status(409)]),
+  deleteClient("PUD-03", "pud03-u"),
+  restoreConfig("PUD-03"),
+]);
+
+const PUD04 = folder("PUD-04 Admin refusals once verified", `Setup: ${HDOOR_TEXT("pud04")}; ${ODOOR_TEXT("pud04o")}. Both servers' counters are reset before the admin actions.`, [
+  ...hdoor("PUD-04", "pud04"),
+  ...puConfig("PUD-04", false),
+  ...odoor("PUD-04", "pud04o"),
+  resetCounters("PUD-04", "pud04"),
+  resetCounters("PUD-04", "pud04o"),
+  clientPost("PUD-04", "refresh-tools on pud04", "pud04-h", "refresh-tools", [A.status(400), A.msgEquals("mcp client pud04 keeps a discovery per caller, so it has no shared tool list to refresh; refresh a caller's tools from their session instead: tool refresh is not applicable for this client's current state")]),
+  verifyHeaders("PUD-04", "verify-headers on pud04", "pud04-h", { "x-api-key": "admin-key" }, [A.status(400), A.msgEquals("MCP client has per_user_discovery on and is already verified: it keeps no admin credential to re-verify")]),
+  clientPost("PUD-04", "reauthorize pud04", "pud04-h", "reauthorize", [A.status(400), A.msgEquals("reauthorize only applies to OAuth-based clients (oauth, per_user_oauth), got \"per_user_headers\"")]),
+  clientPost("PUD-04", "reconnect pud04", "pud04-h", "reconnect", [A.status(400), A.msgEquals("client uses per-call connections; there is no persistent connection to reconnect: reconnect is not applicable for this client type")]),
+  clientPost("PUD-04", "refresh-tools on pud04o", "pud04o-u", "refresh-tools", [A.status(400), A.msgEquals("mcp client pud04o keeps a discovery per caller, so it has no shared tool list to refresh; refresh a caller's tools from their session instead: tool refresh is not applicable for this client's current state")]),
+  verifyHeaders("PUD-04", "verify-headers on pud04o", "pud04o-u", { "x-api-key": "admin-key" }, [A.status(400), A.msgEquals("verify-headers only applies to auth_type='per_user_headers' clients, got \"per_user_oauth\"")]),
+  clientPost("PUD-04", "reauthorize pud04o", "pud04o-u", "reauthorize", [A.status(400), A.msgEquals("MCP client has per_user_discovery on and keeps no admin credential to refresh: each caller signs in with their own")]),
+  clientPost("PUD-04", "reconnect pud04o", "pud04o-u", "reconnect", [A.status(400), A.msgEquals("client uses per-call connections; there is no persistent connection to reconnect: reconnect is not applicable for this client type")]),
+  mockGet("PUD-04", "pud04", "pud04 received no MCP request", [methodsEmpty()]),
+  mockGet("PUD-04", "pud04o", "pud04o received no MCP request", [methodsEmpty()]),
+  deleteClient("PUD-04", "pud04-h"),
+  deleteClient("PUD-04", "pud04o-u"),
+  restoreConfig("PUD-04"),
+]);
+
+const PUD05 = folder("PUD-05 Update validation; an omitted flag is kept", `Setup: ${HDOOR_TEXT("pud05")}; a headers client pud05_c on pud05; an OpenAPI per_user_headers client pud05_o from the Petstore document.`, [
+  ...hdoor("PUD-05", "pud05"),
+  createClient("PUD-05", httpClient("pud05-c", "pud05_c", "pud05", { auth_type: "headers", headers: { "X-Api-Key": "admin-key" }, tools_to_execute: ["*"] }), "setup: create the headers client pud05_c"),
+  createClient("PUD-05", { client_id: "pud05-o", name: "pud05_o", connection_type: "openapi", auth_type: "per_user_headers", per_user_header_keys: ["x-api-key"], tools_to_execute: ["*"], openapi_config: { spec: PETSTORE } }, "setup: create the OpenAPI per_user_headers client pud05_o"),
+  clientPut("PUD-05", "PUT per_user_discovery true on the headers client", "pud05-c", { per_user_discovery: true }, [A.status(400), A.msgEquals(PUD_SCOPE_MSG("headers", "pud05_c"))]),
+  clientPut("PUD-05", "PUT per_user_discovery true on the OpenAPI client", "pud05-o", { per_user_discovery: true }, [A.status(400), A.msgEquals("per_user_discovery does not apply to openapi clients, whose tools come from the OpenAPI document, in client 'pud05_o'")]),
+  getClient("PUD-05", "pud05-c", "the headers client's flag is still off", [A.custom("per_user_discovery is not on", ["pm.expect(pm.response.json().clients[0].config.per_user_discovery, 'body: ' + pm.response.text()).to.not.equal(true);"])]),
+  clientPut("PUD-05", "PUT tools_to_execute [\"echo_tool\"] on pud05, omitting the flag", "pud05-h", { tools_to_execute: ["echo_tool"] }, [A.status(200)]),
+  getClient("PUD-05", "pud05-h", "the flag is still on and tools_to_execute is [\"echo_tool\"]", [flagIs(true), configField("tools_to_execute", ["echo_tool"])]),
+  deleteClient("PUD-05", "pud05-h"),
+  deleteClient("PUD-05", "pud05-c"),
+  deleteClient("PUD-05", "pud05-o"),
+]);
+
+const PUD06 = folder("PUD-06 Turning the flag on", `Setup: HDOOR(pud06) with per_user_discovery unset (${PUD_SERVER_TEXT("pud06")}), verified with verify-headers admin-key, so it keeps an admin credential; VK-A signed in with key-a through a header flow. Then per_user_discovery is turned on.`, [
+  ...hdoor("PUD-06", "pud06", { flag: false }),
+  verifyHeaders("PUD-06", "setup: verify-headers with admin-key", "pud06-h", { "x-api-key": "admin-key" }, [A.status(200)]),
+  pudVK("PUD-06", "pud06", "a"),
+  ...signInFlowH("PUD-06", "pud06", "a"),
+  getClient("PUD-06", "pud06-h", "control: the admin credential is active and the client lists 2 tools", [credKind("headers"), credStatus("active"), toolNamesAre(["add_tool", "echo_tool"])]),
+  clientPut("PUD-06", "PUT per_user_discovery true", "pud06-h", { per_user_discovery: true }, [A.status(200), A.jsonMessage("MCP client edited successfully")]),
+  getClient("PUD-06", "pud06-h", "healthy, flag on, no credential, tools [], no callers_by_tool", [clientState("healthy"), flagIs(true), noCredential(), toolNamesAre([]), callersAre(null)]),
+  rowOf("PUD-06", "VK-A's row is active and keeps no discovery", "pud06-h", "pud06", "a", "VK-A's header row: active, no discovery", [...ROW_STATUS("active"), ...NO_DISCOVERY]),
+  gwList("PUD-06", "VK-A's gw-list is [pud06-connect]", [vkOf("pud06", "a")], ["pud06-connect"]),
+  connectExpect("PUD-06", "VK-A calls pud06-connect", "pud06", "a", connectedText("pud06", 2)),
+  gwList("PUD-06", "VK-A's gw-list is pud06's two tools", [vkOf("pud06", "a")], ["pud06-add_tool", "pud06-echo_tool"]),
+  getClient("PUD-06", "pud06-h", "callers_by_tool counts VK-A once per tool", [callersAre({ add_tool: 1, echo_tool: 1 })]),
+  deleteClient("PUD-06", "pud06-h"),
+  pudVKDelete("PUD-06", "pud06", "a"),
+]);
+
+const PUD07 = folder("PUD-07 Turning it off (headers)", `Setup: ${HDOOR_TEXT("pud07")}; VK-A and VK-B signed in with key-a and key-b. Then per_user_discovery is turned off.`, [
+  ...hdoor("PUD-07", "pud07"),
+  pudVK("PUD-07", "pud07", "a"), pudVK("PUD-07", "pud07", "b"),
+  ...signInH("PUD-07", "pud07", "a"), ...signInH("PUD-07", "pud07", "b"),
+  getClient("PUD-07", "pud07-h", "control: callers_by_tool counts both callers", [callersAre({ add_tool: 2, echo_tool: 2 })]),
+  clientPut("PUD-07", "PUT per_user_discovery false", "pud07-h", { per_user_discovery: false }, [A.status(200)]),
+  getClient("PUD-07", "pud07-h", "pending_verification, tools [], no callers_by_tool", [clientState("pending_verification"), toolNamesAre([]), callersAre(null)]),
+  rowOf("PUD-07", "VK-A's row keeps no discovery", "pud07-h", "pud07", "a", "VK-A's header row: no discovery", NO_DISCOVERY),
+  rowOf("PUD-07", "VK-B's row keeps no discovery", "pud07-h", "pud07", "b", "VK-B's header row: no discovery", NO_DISCOVERY),
+  gwListNone("PUD-07", "VK-A's gw-list has no pud07-* tool", [vkOf("pud07", "a")], "pud07"),
+  verifyHeaders("PUD-07", "verify-headers with admin-key", "pud07-h", { "x-api-key": "admin-key" }, [A.status(200), A.jsonEquals("tools_count", 2), A.jsonMessage("MCP client verified. 2 tools discovered. Each user will submit their own header values on first tool use.")]),
+  getClient("PUD-07", "pud07-h", "healthy with the shared tools", [clientState("healthy"), toolNamesAre(["add_tool", "echo_tool"])]),
+  gwList("PUD-07", "VK-A's gw-list is the shared tools", [vkOf("pud07", "a")], ["pud07-add_tool", "pud07-echo_tool"]),
+  resetCounters("PUD-07", "pud07"),
+  execAs("PUD-07", "VK-A calls pud07-echo_tool", "pud07-echo_tool", [vkOf("pud07", "a")], [A.status(200), contentIs("echo_tool:{\"text\":\"hi\"}")]),
+  mockGet("PUD-07", "pud07", "the call ran under key-a", [identityCallsAre({ "key-a": 1 })]),
+  deleteClient("PUD-07", "pud07-h"),
+  pudVKDelete("PUD-07", "pud07", "a"), pudVKDelete("PUD-07", "pud07", "b"),
+]);
+
+const PUD08 = folder("PUD-08 Turning it off (OAuth)", `Setup: ${ODOOR_TEXT("pud08")}; VK-A signed in as alice. Then per_user_discovery is turned off and the admin reauthorizes.`, [
+  ...puConfig("PUD-08", false),
+  ...odoor("PUD-08", "pud08"),
+  pudVK("PUD-08", "pud08", "a"),
+  ...signInO("PUD-08", "pud08", "a", "alice"),
+  clientPut("PUD-08", "PUT per_user_discovery false", "pud08-u", { per_user_discovery: false }, [A.status(200)]),
+  getClient("PUD-08", "pud08-u", "no credential and tools []", [noCredential(), toolNamesAre([]), callersAre(null)]),
+  clientPost("PUD-08", "reauthorize as admin", "pud08-u", "reauthorize", [A.status(200)], { extraTests: ["pm.collectionVariables.set('pud08_au', pm.response.json().authorize_url);"] }),
+  consentAs("PUD-08", "consent as admin", "pud08", "admin"),
+  followCallback("PUD-08", "follow the callback", "pud08", callbackSuccess()),
+  completeOAuth("PUD-08", "complete", "pud08", [A.status(200), A.jsonMessage("Admin discovery credential repaired successfully. 2 tools discovered."), A.jsonEquals("tools_count", 2)]),
+  getClient("PUD-08", "pud08-u", "the client lists the shared tools", [toolNamesAre(["add_tool", "echo_tool"])]),
+  resetCounters("PUD-08", "pud08"),
+  execAs("PUD-08", "VK-A calls pud08-echo_tool", "pud08-echo_tool", [vkOf("pud08", "a")], [A.status(200)]),
+  mockGet("PUD-08", "pud08", "the call ran under alice", [identityCallsAre({ alice: 1 })]),
+  deleteClient("PUD-08", "pud08-u"),
+  pudVKDelete("PUD-08", "pud08", "a"),
+  restoreConfig("PUD-08"),
+]);
+
+const PUD09 = folder("PUD-09 Same-value PUT is not a flip", `Setup: ${HDOOR_TEXT("pud09")}; VK-A signed in with key-a. Then per_user_discovery true is PUT again.`, [
+  ...hdoor("PUD-09", "pud09"),
+  pudVK("PUD-09", "pud09", "a"),
+  ...signInH("PUD-09", "pud09", "a"),
+  rowOf("PUD-09", "setup: record VK-A's discovered_at", "pud09-h", "pud09", "a", "VK-A's row has a discovery", DISCOVERY(2), keepDiscoveredAt("pud09_at")),
+  clientPut("PUD-09", "PUT per_user_discovery true again", "pud09-h", { per_user_discovery: true }, [A.status(200)]),
+  getClient("PUD-09", "pud09-h", "callers_by_tool is unchanged", [flagIs(true), callersAre({ add_tool: 1, echo_tool: 1 })]),
+  rowOf("PUD-09", "VK-A's discovered_at is unchanged", "pud09-h", "pud09", "a", "VK-A's discovery is the same one", [...DISCOVERY(2), "pm.expect(row.discovery.discovered_at).to.equal(pm.collectionVariables.get('pud09_at'));"]),
+  gwList("PUD-09", "VK-A's gw-list is unchanged", [vkOf("pud09", "a")], ["pud09-add_tool", "pud09-echo_tool"]),
+  deleteClient("PUD-09", "pud09-h"),
+  pudVKDelete("PUD-09", "pud09", "a"),
+]);
+
+const PUD10 = folder("PUD-10 config.json at boot", `Setup: the runner's config.json declares pud10_h, a per_user_headers client on fleet server pud10 (per_user_header_keys ["x-api-key"], no sample) with per_user_discovery on, and pud10_x, a headers client on pud10 with per_user_discovery on, which is invalid; ${PUD_SERVER_TEXT("pud10")}; VK-A granted every tool of pud10_h.`, [
+  ...pudServer("PUD-10", "pud10"),
+  getClient("PUD-10", "pud10-h", "pud10_h booted pending verification, flag on, no credential", [clientState("pending_verification"), flagIs(true), noCredential()]),
+  notListed("PUD-10", "pud10-x"),
+  pudVK("PUD-10", "pud10_h", "a"),
+  gwListNone("PUD-10", "while pending, VK-A's gw-list has no pud10_h-* tool", [vkOf("pud10_h", "a")], "pud10_h"),
+  verifyHeaders("PUD-10", "verify-headers with admin-key", "pud10-h", { "x-api-key": "admin-key" }, [A.status(200), A.jsonMessage("MCP client verified. 2 tools discovered. Each user will submit their own header values on first tool use."), A.jsonEquals("tools_count", 2)]),
+  getClient("PUD-10", "pud10-h", "healthy, no credential, tools [], no callers_by_tool", [clientState("healthy"), noCredential(), toolNamesAre([]), callersAre(null)]),
+  verifyHeaders("PUD-10", "verify-headers again", "pud10-h", { "x-api-key": "admin-key" }, [A.status(400), A.msgEquals("MCP client has per_user_discovery on and is already verified: it keeps no admin credential to re-verify")]),
+  gwList("PUD-10", "VK-A's gw-list is [pud10_h-connect]", [vkOf("pud10_h", "a")], ["pud10_h-connect"]),
+  deleteClient("PUD-10", "pud10-h"),
+  pudVKDelete("PUD-10", "pud10_h", "a"),
+]);
+
+const PUD11 = folder("PUD-11 Disable then enable keeps verification", `Setup: ${HDOOR_TEXT("pud11")}; VK-A signed in with key-a. The runner's config.json declares pud11_p, a per_user_headers client on fleet server pud11p with per_user_discovery on, still pending verification. Each client is disabled, then enabled.`, [
+  ...hdoor("PUD-11", "pud11"),
+  pudVK("PUD-11", "pud11", "a"),
+  ...signInH("PUD-11", "pud11", "a"),
+  rowOf("PUD-11", "setup: record VK-A's discovered_at", "pud11-h", "pud11", "a", "VK-A's row has a discovery", DISCOVERY(2), keepDiscoveredAt("pud11_at")),
+  clientPut("PUD-11", "disable pud11", "pud11-h", { disabled: true }, [A.status(200)]),
+  gwListNone("PUD-11", "while disabled VK-A's gw-list has no pud11-* tool", [vkOf("pud11", "a")], "pud11"),
+  clientPut("PUD-11", "enable pud11", "pud11-h", { disabled: false }, [A.status(200)]),
+  getClient("PUD-11", "pud11-h", "healthy again, flag on, callers_by_tool unchanged", [clientState("healthy"), flagIs(true), callersAre({ add_tool: 1, echo_tool: 1 })]),
+  gwList("PUD-11", "VK-A's gw-list is its tools again", [vkOf("pud11", "a")], ["pud11-add_tool", "pud11-echo_tool"]),
+  rowOf("PUD-11", "VK-A's discovery is the same one", "pud11-h", "pud11", "a", "no new discovery: discovered_at is unchanged", [...DISCOVERY(2), "pm.expect(row.discovery.discovered_at).to.equal(pm.collectionVariables.get('pud11_at'));"]),
+  getClient("PUD-11", "pud11-p", "control: pud11_p is pending verification", [clientState("pending_verification")]),
+  clientPut("PUD-11", "disable pud11_p", "pud11-p", { disabled: true }, [A.status(200)]),
+  clientPut("PUD-11", "enable pud11_p", "pud11-p", { disabled: false }, [A.status(200)]),
+  getClient("PUD-11", "pud11-p", "pud11_p is still pending verification", [clientState("pending_verification"), flagIs(true)]),
+  deleteClient("PUD-11", "pud11-h"),
+  pudVKDelete("PUD-11", "pud11", "a"),
+]);
+
+const PUD12 = folder("PUD-12 callers_by_tool", `Setup: ${HDOOR_TEXT("pud12")}; key-c sees only echo_tool; VK-A, VK-B and VK-C signed in with key-a, key-b and key-c. Then VK-C is deleted, VK-B's credential revoked, then VK-A's.`, [
+  ...hdoor("PUD-12", "pud12"),
+  overlay("PUD-12", "pud12", "key-c", ["echo_tool"]),
+  ...["a", "b", "c"].flatMap((l) => [pudVK("PUD-12", "pud12", l), ...signInH("PUD-12", "pud12", l)]),
+  getClient("PUD-12", "pud12-h", "tools are names only; callers_by_tool {add_tool: 2, echo_tool: 3}", [toolNamesAre(["add_tool", "echo_tool"]), A.custom("each tool is only a name", ["(pm.response.json().clients[0].tools || []).forEach(function (t) { pm.expect(Object.keys(t), 'body: ' + pm.response.text()).to.eql(['name']); });"]), callersAre({ add_tool: 2, echo_tool: 3 })]),
+  pudVKDelete("PUD-12", "pud12", "c"),
+  getClient("PUD-12", "pud12-h", "after VK-C is deleted: {add_tool: 2, echo_tool: 2}", [callersAre({ add_tool: 2, echo_tool: 2 })]),
+  credentialDelete("PUD-12", "revoke VK-B's credential", "pud12_b_cred", [A.status(204)]),
+  getClient("PUD-12", "pud12-h", "after VK-B's revoke: {add_tool: 1, echo_tool: 1}", [callersAre({ add_tool: 1, echo_tool: 1 })]),
+  credentialDelete("PUD-12", "revoke VK-A's credential", "pud12_a_cred", [A.status(204)]),
+  getClient("PUD-12", "pud12-h", "after VK-A's revoke: no callers_by_tool and tools []", [callersAre(null), toolNamesAre([])]),
+  deleteClient("PUD-12", "pud12-h"),
+  pudVKDelete("PUD-12", "pud12", "a"), pudVKDelete("PUD-12", "pud12", "b"),
+]);
+
+// ---------------------------------------------------------------- B. The <client>-connect tool
+
+const PUD13 = folder("PUD-13 Offered until the caller has a discovery, on every route", `Setup: ${HDOOR_TEXT("pud13")}; VK-A without a credential; ${LLM_TEXT}; ${BOTH}, temp-token auth on, and a Bifrost OAuth grant (bf_mode vk) for VK-A. After the first round VK-A signs in with key-a.`, [
+  readConfig("PUD-13"), oauthConfig("PUD-13", "both"),
+  ...hdoor("PUD-13", "pud13"),
+  pudVK("PUD-13", "pud13", "a"),
+  ...pudGrant("PUD-13", "pud13", "a", "pud13_grant"),
+  gwList("PUD-13", "VK-A's gw-list is exactly [pud13-connect]", [vkOf("pud13", "a")], ["pud13-connect"], [connectToolShape("pud13")]),
+  tokenList("PUD-13", "the bf_mode vk token's gw-list is exactly [pud13-connect]", "pud13_grant", ["pud13-connect"]),
+  llmScript("PUD-13", "pud13a", TEXT_OK),
+  infChat("PUD-13", "chat with VK-A", "pud13a", [A.status(200)], { headers: [vkOf("pud13", "a")] }),
+  llmScript("PUD-13", "pud13r", TEXT_OK),
+  infResponses("PUD-13", "/v1/responses with VK-A", "pud13r", [A.status(200)], { headers: [vkOf("pud13", "a")] }),
+  llmCaptured("PUD-13", "the chat declared only pud13-connect", "pud13a", [reqCount(1), toolsAre(0, ["pud13-connect"])]),
+  llmCaptured("PUD-13", "the /v1/responses request declared only pud13-connect", "pud13r", [reqCount(1), toolsAre(0, ["pud13-connect"])]),
+  gwListNone("PUD-13", "a session-only caller's gw-list has no pud13-* tool", [SESS("pud13-sess")], "pud13"),
+  gwListNone("PUD-13", "an anonymous gw-list has no pud13-* tool", [], "pud13"),
+  ...signInH("PUD-13", "pud13", "a", "key-a", true),
+  gwList("PUD-13", "after sign-in VK-A's gw-list is pud13's tools, not connect", [vkOf("pud13", "a")], ["pud13-add_tool", "pud13-echo_tool"]),
+  tokenList("PUD-13", "after sign-in the token's gw-list is the same", "pud13_grant", ["pud13-add_tool", "pud13-echo_tool"]),
+  llmScript("PUD-13", "pud13b", TEXT_OK),
+  infChat("PUD-13", "chat with VK-A after sign-in", "pud13b", [A.status(200)], { headers: [vkOf("pud13", "a")] }),
+  llmScript("PUD-13", "pud13s", TEXT_OK),
+  infResponses("PUD-13", "/v1/responses with VK-A after sign-in", "pud13s", [A.status(200)], { headers: [vkOf("pud13", "a")] }),
+  llmCaptured("PUD-13", "the chat declared pud13's tools and not connect", "pud13b", [reqCount(1), toolsAre(0, ["pud13-add_tool", "pud13-echo_tool"])]),
+  llmCaptured("PUD-13", "the /v1/responses request declared pud13's tools and not connect", "pud13s", [reqCount(1), toolsAre(0, ["pud13-add_tool", "pud13-echo_tool"])]),
+  deleteClient("PUD-13", "pud13-h"),
+  pudVKDelete("PUD-13", "pud13", "a"),
+  restoreConfig("PUD-13"),
+]);
+
+const PUD14 = folder("PUD-14 Connect without a credential (headers)", `Setup: ${HDOOR_TEXT("pud14")}; VK-A without a credential; pud14's counters reset after the create.`, [
+  ...hdoor("PUD-14", "pud14"),
+  pudVK("PUD-14", "pud14", "a"),
+  resetCounters("PUD-14", "pud14"),
+  connectH("PUD-14", "VK-A calls pud14-connect", "pud14", "a"),
+  mockGet("PUD-14", "pud14", "nothing was dialed", [methodsEmpty()]),
+  execAs("PUD-14", "VK-A calls pud14-connect again", "pud14-connect", [vkOf("pud14", "a")], [A.status(200), contentMatches("the same sign-in text", H_SIGNIN("pud14")), sameFlowIn("pud14_a_flow", "pm.response.json().content")]),
+  gwCallAs("PUD-14", "VK-A calls pud14-connect over /mcp", "pud14-connect", [vkOf("pud14", "a")], [gwText("the result is not an error and links the same flow", ["pm.expect(r.isError, 'body: ' + pm.response.text()).to.not.equal(true);", `pm.expect(text).to.match(${H_SIGNIN("pud14")});`]), sameFlowIn("pud14_a_flow", "pm.response.json().result.content[0].text")], {}),
+  mockGet("PUD-14", "pud14", "still nothing was dialed", [methodsEmpty()]),
+  submitH("PUD-14", "VK-A submits X-Api-Key key-a", "pud14", "a", "key-a"),
+  gwList("PUD-14", "VK-A's gw-list is pud14's two tools", [vkOf("pud14", "a")], ["pud14-add_tool", "pud14-echo_tool"]),
+  execAs("PUD-14", "VK-A calls pud14-echo_tool", "pud14-echo_tool", [vkOf("pud14", "a")], [A.status(200), contentIs("echo_tool:{\"text\":\"hi\"}")]),
+  mockGet("PUD-14", "pud14", "the call ran under key-a", [identityCallsAre({ "key-a": 1 })]),
+  deleteClient("PUD-14", "pud14-h"),
+  pudVKDelete("PUD-14", "pud14", "a"),
+]);
+
+const PUD15 = folder("PUD-15 Connect without a credential (OAuth)", `Setup: ${ODOOR_TEXT("pud15")}; VK-A without a token; pud15's counters reset after the create. Temp-token auth is then turned on, and VK-A completes its flow as alice.`, [
+  ...puConfig("PUD-15", false),
+  ...odoor("PUD-15", "pud15"),
+  pudVK("PUD-15", "pud15", "a"),
+  resetCounters("PUD-15", "pud15"),
+  connectO("PUD-15", "VK-A calls pud15-connect: the exact sign-in text, no fragment notice", "pud15", "a"),
+  mockGet("PUD-15", "pud15", "nothing was dialed", [methodsEmpty()]),
+  putConfig("PUD-15", "setup: turn temp-token auth on", ["cc.mcp_enable_temp_token_auth = true;"], [A.status(200)]),
+  execAs("PUD-15", "VK-A calls pud15-connect again: the link carries a #t= token and the fragment notice", "pud15-connect", [vkOf("pud15", "a")], [A.status(200), contentMatches("the sign-in text with the temp token and the notice", O_SIGNIN_TT("pud15")), sameFlowIn("pud15_a_flow", "pm.response.json().content")]),
+  flowStart("PUD-15", "start VK-A's flow", "pud15_a_flow"),
+  consentAs("PUD-15", "consent as alice", "pud15_a_flow", "alice"),
+  followCallback("PUD-15", "the callback lands on auth-success", "pud15_a_flow", [A.status(302), locationEnds(PU_SUCCESS)]),
+  execAs("PUD-15", "VK-A calls pud15-echo_tool", "pud15-echo_tool", [vkOf("pud15", "a")], [A.status(200), contentIs("echo_tool:{\"text\":\"hi\"}")]),
+  mockGet("PUD-15", "pud15", "the call ran as alice", [identityCallsAre({ alice: 1 })]),
+  deleteClient("PUD-15", "pud15-u"),
+  pudVKDelete("PUD-15", "pud15", "a"),
+  restoreConfig("PUD-15"),
+]);
+
+const PUD16 = folder("PUD-16 Credential, no discovery; \"Already connected\"", `Setup: ${FLIP_TEXT("pud16", ["a"])}. ${NOTIFY_NOTE}`, [
+  ...credentialFlip("PUD-16", "pud16", ["a"]),
+  connectExpect("PUD-16", "VK-A calls pud16-connect", "pud16", "a", connectedText("pud16", 2)),
+  connectExpect("PUD-16", "VK-A calls pud16-connect again", "pud16", "a", alreadyText("pud16")),
+  gwCallAs("PUD-16", "VK-A calls pud16-connect over /mcp", "pud16-connect", [vkOf("pud16", "a")], [gwTextIs(alreadyText("pud16"))]),
+  deleteClient("PUD-16", "pud16-h"),
+  pudVKDelete("PUD-16", "pud16", "a"),
+]);
+
+const PUD17 = folder("PUD-17 Refusals, and when connect is offered", `Setup: ${HDOOR_TEXT("pud17")}; an auth-none client pud17n on fleet server pud17n (echo_tool); VK-A granted every tool of pud17, VK-E only pud17's echo_tool, VK-N only pud17n's tools; none of them has a credential.`, [
+  ...hdoor("PUD-17", "pud17"),
+  ...freshServer("PUD-17", "pud17n", ["echo_tool"]),
+  createClient("PUD-17", httpClient("pud17n-c", "pud17n", "pud17n", { tools_to_execute: ["*"] }), "setup: create the auth-none client pud17n"),
+  pudVK("PUD-17", "pud17", "a"),
+  pudVK("PUD-17", "pud17", "e", [{ mcp_client_name: "pud17", tools_to_execute: ["echo_tool"] }]),
+  pudVK("PUD-17", "pud17", "n", [{ mcp_client_name: "pud17n", tools_to_execute: ["*"] }]),
+  execAs("PUD-17", "a session-only caller calls pud17-connect", "pud17-connect", [SESS("pud17-sess")], [A.status(400), A.msgEquals("pud17 keeps tools per caller and needs a signed-in user or a virtual key to connect")]),
+  execAs("PUD-17", "VK-N calls pud17-connect", "pud17-connect", [vkOf("pud17", "n")], [A.status(403), A.custom("type mcp_tool_blocked", ["pm.expect(pm.response.json().type, 'body: ' + pm.response.text()).to.equal('mcp_tool_blocked');"]), A.msgEquals("MCP tool 'pud17-connect' is not allowed for virtual key 'PUD-17 VK-N'")]),
+  gwList("PUD-17", "VK-N's gw-list has only pud17n's tool", [vkOf("pud17", "n")], ["pud17n-echo_tool"]),
+  gwList("PUD-17", "VK-E's gw-list is [pud17-connect]", [vkOf("pud17", "e")], ["pud17-connect"]),
+  ...signInH("PUD-17", "pud17", "e"),
+  gwList("PUD-17", "after sign-in VK-E's gw-list is only pud17-echo_tool", [vkOf("pud17", "e")], ["pud17-echo_tool"]),
+  gwList("PUD-17", "VK-A with include-clients pud17 gets connect", [vkOf("pud17", "a"), inc("clients", "pud17")], ["pud17-connect"]),
+  gwList("PUD-17", "VK-A with include-clients pud17n gets nothing", [vkOf("pud17", "a"), inc("clients", "pud17n")], []),
+  gwList("PUD-17", "VK-A with include-tools pud17-echo_tool gets connect", [vkOf("pud17", "a"), inc("tools", "pud17-echo_tool")], ["pud17-connect"]),
+  gwList("PUD-17", "VK-A with include-tools pud17n-echo_tool gets nothing", [vkOf("pud17", "a"), inc("tools", "pud17n-echo_tool")], []),
+  clientPut("PUD-17", "disable pud17", "pud17-h", { disabled: true }, [A.status(200)]),
+  gwList("PUD-17", "while pud17 is disabled VK-A gets nothing", [vkOf("pud17", "a")], []),
+  clientPut("PUD-17", "enable pud17", "pud17-h", { disabled: false }, [A.status(200)]),
+  gwList("PUD-17", "once enabled VK-A gets connect again", [vkOf("pud17", "a")], ["pud17-connect"]),
+  clientPut("PUD-17", "PUT tools_to_execute []", "pud17-h", { tools_to_execute: [] }, [A.status(200)]),
+  gwList("PUD-17", "with tools_to_execute [] VK-A gets nothing", [vkOf("pud17", "a")], []),
+  deleteClient("PUD-17", "pud17-h"),
+  deleteClient("PUD-17", "pud17n-c"),
+  ...["a", "e", "n"].map((l) => pudVKDelete("PUD-17", "pud17", l)),
+]);
+
+const PUD18 = folder("PUD-18 One caller's discovery fails, others unaffected", `Setup: ${FLIP_TEXT("pud18", ["a", "b", "c", "d", "e"])}. Then one caller at a time sees a fault of its own: key-a list_fail, key-c init_fail, key-d malformed, key-e tools/list delayed 6s (past the 5s check timeout); each fault is cleared after that caller's failed connect.`, [
+  ...credentialFlip("PUD-18", "pud18", ["a", "b", "c", "d", "e"]),
+  ...PUD18_VARIANTS.flatMap(([l, faults, label, asserts], i) => [
+    identityFault("PUD-18", "pud18", `key-${l}`, faults),
+    execAs("PUD-18", `${L(l)}'s connect fails (${label})`, "pud18-connect", [vkOf("pud18", l)], [A.status(400), ...asserts]),
+    rowOf("PUD-18", `${L(l)}'s row keeps no discovery`, "pud18-h", "pud18", l, `${L(l)}'s row: active, no discovery`, [...ROW_STATUS("active"), ...NO_DISCOVERY]),
+    gwList("PUD-18", `${L(l)}'s gw-list is still [pud18-connect]`, [vkOf("pud18", l)], ["pud18-connect"]),
+    ...(i === 0 ? [connectExpect("PUD-18", "VK-B connects while key-a fails", "pud18", "b", connectedText("pud18", 2))] : []),
+    clearIdentityFault("PUD-18", "pud18", `key-${l}`),
+    connectExpect("PUD-18", `once the fault is cleared ${L(l)} connects`, "pud18", l, connectedText("pud18", 2)),
+  ]),
+  getClient("PUD-18", "pud18-h", "callers_by_tool counts all five callers", [callersAre({ add_tool: 5, echo_tool: 5 })]),
+  deleteClient("PUD-18", "pud18-h"),
+  ...["a", "b", "c", "d", "e"].map((l) => pudVKDelete("PUD-18", "pud18", l)),
+]);
+
+const PUD19 = folder("PUD-19 Partial discovery", `Setup: ${FLIP_TEXT("pud19", ["a"])}; pud19 also serves prompt greet and resource notes://1; then key-a's resources/list fails (list_fail scoped to resources/list).`, [
+  ...hdoor("PUD-19", "pud19", { flag: false }),
+  mockList("PUD-19", "pud19", "prompts/set", "prompts", [{ name: "greet", description: "greets" }]),
+  mockList("PUD-19", "pud19", "resources/set", "resources", [{ uri: "notes://1", name: "note one" }]),
+  pudVK("PUD-19", "pud19", "a"), ...signInFlowH("PUD-19", "pud19", "a"),
+  clientPut("PUD-19", "setup: turn per_user_discovery on", "pud19-h", { per_user_discovery: true }, [A.status(200)]),
+  identityFault("PUD-19", "pud19", "key-a", { list_fail: true, methods: ["resources/list"] }),
+  connectExpect("PUD-19", "VK-A calls pud19-connect", "pud19", "a", connectedText("pud19", 2)),
+  rowOf("PUD-19", "VK-A's row counts tools 2, prompts 1, resources 0", "pud19-h", "pud19", "a", "VK-A's discovery: 2 tools, 1 prompt, 0 resources", DISCOVERY(2, 1, 0)),
+  gwRpc("PUD-19", "VK-A's prompts/list shows the prompt", "prompts/list", null, [vkOf("pud19", "a")], [listedAre("prompts", "name", ["pud19-greet"])]),
+  gwRpc("PUD-19", "VK-A's resources/list does not show the resource", "resources/list", null, [vkOf("pud19", "a")], [listedNoneOf("resources", "uri", ["notes://1"])]),
+  clearIdentityFault("PUD-19", "pud19", "key-a"),
+  deleteClient("PUD-19", "pud19-h"),
+  pudVKDelete("PUD-19", "pud19", "a"),
+]);
+
+const PUD20 = folder("PUD-20 Upstream tool named connect", `Setup: ${HDOOR_TEXT("pud20")}; key-g sees echo_tool and a tool named connect; VK-G and VK-A without a credential. VK-G then signs in with key-g.`, [
+  ...hdoor("PUD-20", "pud20"),
+  overlay("PUD-20", "pud20", "key-g", ["echo_tool", "connect"]),
+  pudVK("PUD-20", "pud20", "g"), pudVK("PUD-20", "pud20", "a"),
+  gwList("PUD-20", "before sign-in VK-G's pud20-connect is Bifrost's", [vkOf("pud20", "g")], ["pud20-connect"], [connectToolShape("pud20")]),
+  ...signInH("PUD-20", "pud20", "g"),
+  gwList("PUD-20", "after sign-in VK-G's pud20-connect is the upstream's", [vkOf("pud20", "g")], ["pud20-connect", "pud20-echo_tool"], [toolDescIs("pud20-connect", "chaosmock tool connect")]),
+  execAs("PUD-20", "VK-G calls pud20-connect", "pud20-connect", [vkOf("pud20", "g"), reqId("pud20-g")], [A.status(200), contentIs("connect:{\"text\":\"hi\"}")]),
+  mockGet("PUD-20", "pud20", "the upstream ran connect under key-g", [callsIs("connect", 1), identityCallsAre({ "key-g": 1 })]),
+  logRow("PUD-20", "VK-G's call to the upstream connect is logged", "pud20-g", [rowIs("tool_name", "connect"), rowIs("server_label", "pud20")]),
+  gwList("PUD-20", "VK-A's pud20-connect is still Bifrost's", [vkOf("pud20", "a")], ["pud20-connect"], [connectToolShape("pud20")]),
+  deleteClient("PUD-20", "pud20-h"),
+  pudVKDelete("PUD-20", "pud20", "g"), pudVKDelete("PUD-20", "pud20", "a"),
+]);
+
+const PUD21 = folder("PUD-21 Agent mode", `Setup: ${FLIP_TEXT("pud21", ["a"])}; pud21 also has tools_to_auto_execute ["*"]; VK-B without a credential; ${LLM_TEXT}. VK-A's chat: turn 1 calls pud21-connect, turn 2 calls pud21-echo_tool, turn 3 answers "done". VK-B's chat: turn 1 calls pud21-connect, turn 2 answers "sign in first".`, [
+  ...credentialFlip("PUD-21", "pud21", ["a"], { over: { tools_to_auto_execute: ["*"] } }),
+  pudVK("PUD-21", "pud21", "b"),
+  llmScript("PUD-21", "pud21a", { turns: [{ tool_calls: [llmCall("t1", "pud21-connect", {})] }, { tool_calls: [llmCall("t2", "pud21-echo_tool")] }, { text: "done" }] }),
+  infPost("PUD-21", "VK-A's chat", "/v1/chat/completions", chatBody("pud21a"), [A.status(200), chatContent("done")], { headers: [vkOf("pud21", "a")] }),
+  llmCaptured("PUD-21", "turn 1 declared connect, turn 2 the tools and the connect result, turn 3 the echo", "pud21a", [reqCount(3), toolsAre(0, ["pud21-connect"]),
+    A.custom("turn 2 declares pud21's tools and not connect", [REQS, "pm.expect(reqs[1].tools.slice().sort(), 'body: ' + pm.response.text()).to.eql(['pud21-add_tool', 'pud21-echo_tool']);"]),
+    A.custom("turn 2 carries the connect result, turn 3 the echo", [REQS, TOOL_MSGS(1), `pm.expect(tm.t1, 'body: ' + pm.response.text()).to.equal(${lit(connectedText("pud21", 2))});`, TOOL_MSGS(2), "pm.expect(tm.t2).to.equal('echo_tool:{\"text\":\"hi\"}');"])]),
+  llmScript("PUD-21", "pud21b", { turns: [{ tool_calls: [llmCall("t1", "pud21-connect", {})] }, { text: "sign in first" }] }),
+  infPost("PUD-21", "VK-B's chat, with no credential", "/v1/chat/completions", chatBody("pud21b"), [A.status(200), chatContent("sign in first")], { headers: [vkOf("pud21", "b")] }),
+  llmCaptured("PUD-21", "turn 2 carries the sign-in text", "pud21b", [reqCount(2), toolsAre(0, ["pud21-connect"]), A.custom("the connect result is the sign-in text", [REQS, TOOL_MSGS(1), `pm.expect(tm.t1, 'body: ' + pm.response.text()).to.match(${H_SIGNIN("pud21")});`])]),
+  deleteClient("PUD-21", "pud21-h"),
+  pudVKDelete("PUD-21", "pud21", "a"), pudVKDelete("PUD-21", "pud21", "b"),
+]);
+
+const PUD22 = folder("PUD-22 Code-mode client", `Setup: ${HDOOR_TEXT("pud22")}, also a code-mode client; carol sees echo_tool and notes_tool; VK-A and VK-C without a credential. Then VK-A signs in with key-a and VK-C with carol; listToolFiles is read with mcp_code_mode_binding_level "tool", then the config is restored.`, [
+  ...hdoor("PUD-22", "pud22", { over: { is_code_mode_client: true } }),
+  overlay("PUD-22", "pud22", "carol", ["echo_tool", "notes_tool"]),
+  pudVK("PUD-22", "pud22", "a"), pudVK("PUD-22", "pud22", "c"),
+  gwList("PUD-22", "before sign-in VK-A's gw-list is pud22-connect, directly", [vkOf("pud22", "a")], ["pud22-connect"]),
+  ...signInH("PUD-22", "pud22", "a"),
+  ...signInH("PUD-22", "pud22", "c", "carol"),
+  gwList("PUD-22", "after sign-in VK-A's gw-list is the four code-mode tools, no pud22-* tool", [vkOf("pud22", "a")], CODE_MODE_TOOLS),
+  execBody("PUD-22", "VK-A reads servers/pud22.pyi", toolCall("readToolFile", { fileName: "servers/pud22.pyi" }), [A.status(200), A.custom("it declares add_tool and echo_tool", ["var c = pm.response.json().content;", "pm.expect(c, 'body: ' + pm.response.text()).to.include('add_tool');", "pm.expect(c).to.include('echo_tool');", "pm.expect(c).to.not.include('notes_tool');"])], { headers: [vkOf("pud22", "a")] }),
+  execBody("PUD-22", "VK-C reads servers/pud22.pyi", toolCall("readToolFile", { fileName: "servers/pud22.pyi" }), [A.status(200), A.custom("it declares echo_tool and notes_tool, not add_tool", ["var c = pm.response.json().content;", "pm.expect(c, 'body: ' + pm.response.text()).to.include('notes_tool');", "pm.expect(c).to.include('echo_tool');", "pm.expect(c).to.not.include('add_tool');"])], { headers: [vkOf("pud22", "c")] }),
+  readConfig("PUD-22"),
+  putConfig("PUD-22", "setup: set mcp_code_mode_binding_level \"tool\"", ["cc.mcp_code_mode_binding_level = 'tool';"], [A.status(200)]),
+  execBody("PUD-22", "VK-A's listToolFiles lists its own tools", toolCall("listToolFiles", {}), [A.status(200), A.custom("servers/pud22/ holds add_tool.pyi and echo_tool.pyi only", ["var c = pm.response.json().content;", "pm.expect(c, 'body: ' + pm.response.text()).to.include('servers/\\n  pud22/');", "pm.expect(c.split('\\n').filter(function (l) { return /\\.pyi$/.test(l); })).to.eql(['    add_tool.pyi', '    echo_tool.pyi']);"])], { headers: [vkOf("pud22", "a")] }),
+  execBody("PUD-22", "VK-C's listToolFiles lists its own tools", toolCall("listToolFiles", {}), [A.status(200), A.custom("servers/pud22/ holds echo_tool.pyi and notes_tool.pyi only", ["var c = pm.response.json().content;", "pm.expect(c, 'body: ' + pm.response.text()).to.include('servers/\\n  pud22/');", "pm.expect(c.split('\\n').filter(function (l) { return /\\.pyi$/.test(l); })).to.eql(['    echo_tool.pyi', '    notes_tool.pyi']);"])], { headers: [vkOf("pud22", "c")] }),
+  restoreConfig("PUD-22"),
+  resetCounters("PUD-22", "pud22"),
+  execBody("PUD-22", "VK-A runs code calling pud22.echo_tool", toolCall("executeToolCode", { code: "result = pud22.echo_tool(text=\"pud22\")" }), [A.status(200), noIsError()], { headers: [vkOf("pud22", "a")] }),
+  mockGet("PUD-22", "pud22", "the nested call ran under key-a", [identityCallsAre({ "key-a": 1 }), callsIs("echo_tool", 1)]),
+  deleteClient("PUD-22", "pud22-h"),
+  pudVKDelete("PUD-22", "pud22", "a"), pudVKDelete("PUD-22", "pud22", "c"),
+]);
+
+// ---------------------------------------------------------------- C. Discovery at sign-in
+
+const PUD23 = folder("PUD-23 Headers sign-in stores the discovery", `Setup: ${HDOOR_TEXT("pud23", ", prompt greet, resource notes://1, template notes://{id}")}; VK-A without a credential; pud23's counters reset after the create.`, [
+  ...hdoor("PUD-23", "pud23"),
+  mockList("PUD-23", "pud23", "prompts/set", "prompts", [{ name: "greet", description: "greets" }]),
+  mockList("PUD-23", "pud23", "resources/set", "resources", [{ uri: "notes://1", name: "note one" }]),
+  mockList("PUD-23", "pud23", "templates/set", "templates", [{ uriTemplate: "notes://{id}", name: "a note" }]),
+  pudVK("PUD-23", "pud23", "a"),
+  resetCounters("PUD-23", "pud23"),
+  connectH("PUD-23", "VK-A calls pud23-connect and gets the sign-in link", "pud23", "a"),
+  submitH("PUD-23", "VK-A submits X-Api-Key key-a", "pud23", "a", "key-a", [A.status(200), A.custom("the body is only status, credential_id and updated_at", ["var b = pm.response.json();", "pm.expect(Object.keys(b).sort(), 'body: ' + pm.response.text()).to.eql(['credential_id', 'status', 'updated_at']);", "pm.expect(b.status).to.equal('success');"])]),
+  execAs("PUD-23", "VK-A calls pud23-echo_tool with no connect", "pud23-echo_tool", [vkOf("pud23", "a")], [A.status(200), contentIs("echo_tool:{\"text\":\"hi\"}")]),
+  rowOf("PUD-23", "VK-A's row counts tools 2, prompts 1, resources 2", "pud23-h", "pud23", "a", "VK-A's discovery: 2 tools, 1 prompt, 2 resources (one resource, one template)", DISCOVERY(2, 1, 2)),
+  mockGet("PUD-23", "pud23", "key-a listed each kind exactly once", [identityMethod("key-a", "tools/list", 1), identityMethod("key-a", "prompts/list", 1), identityMethod("key-a", "resources/list", 1), identityMethod("key-a", "resources/templates/list", 1)]),
+  deleteClient("PUD-23", "pud23-h"),
+  pudVKDelete("PUD-23", "pud23", "a"),
+]);
+
+const PUD24 = folder("PUD-24 OAuth sign-in stores the discovery", `Setup: ${ODOOR_TEXT("pud24")}; VK-A and VK-B without a token; pud24's counters reset after the create. VK-A signs in as alice; VK-B as bob, its callback followed with the admin's dashboard session cookie.`, [
+  ...puConfig("PUD-24", false),
+  ...odoor("PUD-24", "pud24"),
+  pudVK("PUD-24", "pud24", "a"), pudVK("PUD-24", "pud24", "b"),
+  resetCounters("PUD-24", "pud24"),
+  ...signInO("PUD-24", "pud24", "a", "alice"),
+  rowOf("PUD-24", "VK-A's row has the discovery", "pud24-u", "pud24", "a", "VK-A's token row: active, 2 tools", [...ROW_STATUS("active"), ...DISCOVERY(2)]),
+  execAs("PUD-24", "VK-A calls pud24-echo_tool at once, with no connect", "pud24-echo_tool", [vkOf("pud24", "a")], [A.status(200), contentIs("echo_tool:{\"text\":\"hi\"}")]),
+  mockGet("PUD-24", "pud24", "alice listed tools exactly once", [identityMethod("alice", "tools/list", 1), identityCallsAre({ alice: 1 })]),
+  adminLogin("PUD-24"),
+  connectO("PUD-24", "VK-B calls pud24-connect and gets the sign-in link", "pud24", "b"),
+  flowStart("PUD-24", "start VK-B's flow", "pud24_b_flow"),
+  consentAs("PUD-24", "consent for VK-B as bob", "pud24_b_flow", "bob"),
+  followWithCookie("PUD-24", "follow VK-B's callback with the admin session cookie", "pud24_b_flow", [A.status(302), locationEnds("/workspace/mcp-sessions?completed=1")]),
+  rowOf("PUD-24", "VK-B's row has the discovery", "pud24-u", "pud24", "b", "VK-B's token row: active, 2 tools", [...ROW_STATUS("active"), ...DISCOVERY(2)]),
+  request("PUD-24", "no other pud24 row holds a discovery", "GET", SESSIONS, { asserts: [A.status(200), A.custom("only VK-A's and VK-B's rows, both virtual-key rows", [sessionRows("pud24-u", "true"), "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(2);", "found.forEach(function (s) { pm.expect(s.auth_mode).to.equal('vk'); });"])] }),
+  gwList("PUD-24", "VK-B's gw-list is pud24's tools", [vkOf("pud24", "b")], ["pud24-add_tool", "pud24-echo_tool"]),
+  adminLogout("PUD-24"),
+  deleteClient("PUD-24", "pud24-u"),
+  pudVKDelete("PUD-24", "pud24", "a"), pudVKDelete("PUD-24", "pud24", "b"),
+  restoreConfig("PUD-24"),
+]);
+
+const PUD25 = folder("PUD-25 Discovery fails at OAuth sign-in", `Setup: ${ODOOR_TEXT("pud25")}; alice's tools/list fails (list_fail scoped to tools/list); VK-A signs in as alice, VK-B as bob. Then alice's fault is cleared.`, [
+  ...puConfig("PUD-25", false),
+  ...odoor("PUD-25", "pud25"),
+  pudVK("PUD-25", "pud25", "a"), pudVK("PUD-25", "pud25", "b"),
+  identityFault("PUD-25", "pud25", "alice", { list_fail: true, methods: ["tools/list"] }),
+  ...signInO("PUD-25", "pud25", "a", "alice", PENDING_LANDING("pud25")),
+  rowOf("PUD-25", "VK-A's token is kept, with no discovery", "pud25-u", "pud25", "a", "VK-A's row: active, no discovery", [...ROW_STATUS("active"), ...NO_DISCOVERY]),
+  gwList("PUD-25", "VK-A's gw-list is [pud25-connect]", [vkOf("pud25", "a")], ["pud25-connect"]),
+  ...signInO("PUD-25", "pud25", "b", "bob"),
+  gwList("PUD-25", "bob is unaffected: VK-B's gw-list is pud25's tools", [vkOf("pud25", "b")], ["pud25-add_tool", "pud25-echo_tool"]),
+  clearIdentityFault("PUD-25", "pud25", "alice"),
+  connectExpect("PUD-25", "once the fault is cleared VK-A connects", "pud25", "a", connectedText("pud25", 2)),
+  gwList("PUD-25", "VK-A's gw-list is pud25's tools", [vkOf("pud25", "a")], ["pud25-add_tool", "pud25-echo_tool"]),
+  deleteClient("PUD-25", "pud25-u"),
+  pudVKDelete("PUD-25", "pud25", "a"), pudVKDelete("PUD-25", "pud25", "b"),
+  restoreConfig("PUD-25"),
+]);
+
+const PUD26 = folder("PUD-26 Discovery slower than 10s", `Setup: ${ODOOR_TEXT("pud26")}; alice's tools/list is delayed 12s; VK-A signs in as alice.`, [
+  ...puConfig("PUD-26", false),
+  ...odoor("PUD-26", "pud26"),
+  pudVK("PUD-26", "pud26", "a"),
+  identityFault("PUD-26", "pud26", "alice", { latency: "12s", methods: ["tools/list"] }),
+  connectO("PUD-26", "setup: VK-A calls pud26-connect and gets the sign-in link", "pud26", "a"),
+  flowStart("PUD-26", "setup: start VK-A's flow", "pud26_a_flow"),
+  consentAs("PUD-26", "setup: consent for VK-A as alice", "pud26_a_flow", "alice"),
+  followCallback("PUD-26", "the callback answers within 10-15s, tools pending", "pud26_a_flow", [A.status(302), locationEnds(PENDING_LANDING("pud26")), responseTime(10000, 15000)]),
+  rowOf("PUD-26", "VK-A's token is stored, with no discovery", "pud26-u", "pud26", "a", "VK-A's row: active, no discovery", [...ROW_STATUS("active"), ...NO_DISCOVERY]),
+  clearIdentityFault("PUD-26", "pud26", "alice"),
+  deleteClient("PUD-26", "pud26-u"),
+  pudVKDelete("PUD-26", "pud26", "a"),
+  restoreConfig("PUD-26"),
+]);
+
+const PUD27 = folder("PUD-27 Re-auth as another account whose discovery fails", `Setup: ${ODOOR_TEXT("pud27")}; dave sees echo_tool, add_tool and search; VK-A signed in as alice. Then dave's tools/list fails, and VK-A reauthorizes from its session row as dave; then dave's fault is cleared.`, [
+  ...puConfig("PUD-27", false),
+  ...odoor("PUD-27", "pud27"),
+  overlay("PUD-27", "pud27", "dave", ["echo_tool", "add_tool", "search"]),
+  pudVK("PUD-27", "pud27", "a"),
+  ...signInO("PUD-27", "pud27", "a", "alice"),
+  rowOf("PUD-27", "setup: find VK-A's session", "pud27-u", "pud27", "a", "VK-A's row has alice's discovery", DISCOVERY(2), keepRowId("pud27_a_row")),
+  identityFault("PUD-27", "pud27", "dave", { list_fail: true, methods: ["tools/list"] }),
+  request("PUD-27", "reauth VK-A's session", "POST", "/api/mcp/sessions/{{pud27_a_row}}/reauth", { asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('pud27_r', pm.response.json().session_id);"] }),
+  flowStart("PUD-27", "start the reauth flow", "pud27_r"),
+  consentAs("PUD-27", "consent as dave", "pud27_r", "dave"),
+  followCallback("PUD-27", "the callback lands with tools pending", "pud27_r", [A.status(302), locationEnds(PENDING_LANDING("pud27"))]),
+  rowOf("PUD-27", "the old discovery is gone", "pud27-u", "pud27", "a", "VK-A's row: active, no discovery", [...ROW_STATUS("active"), ...NO_DISCOVERY]),
+  gwList("PUD-27", "VK-A's gw-list is [pud27-connect]", [vkOf("pud27", "a")], ["pud27-connect"]),
+  clearIdentityFault("PUD-27", "pud27", "dave"),
+  connectExpect("PUD-27", "VK-A connects and gets dave's 3 tools", "pud27", "a", connectedText("pud27", 3)),
+  gwList("PUD-27", "VK-A's gw-list is dave's tools", [vkOf("pud27", "a")], ["pud27-add_tool", "pud27-echo_tool", "pud27-search"]),
+  deleteClient("PUD-27", "pud27-u"),
+  pudVKDelete("PUD-27", "pud27", "a"),
+  restoreConfig("PUD-27"),
+]);
+
+const PUD28 = folder("PUD-28 Upstream revokes during discovery", `Setup: ${ODOOR_TEXT("pud28")}; VK-A has consented as alice; a gate holds alice's tools/list. VK-A's callback is sent; while its sign-in discovery waits at the gate, the authorization server revokes alice's grant; then the gate opens.`, [
+  ...puConfig("PUD-28", false),
+  ...odoor("PUD-28", "pud28"),
+  pudVK("PUD-28", "pud28", "a"),
+  connectO("PUD-28", "setup: VK-A calls pud28-connect and gets the sign-in link", "pud28", "a"),
+  flowStart("PUD-28", "setup: start VK-A's flow", "pud28_a_flow"),
+  consentAs("PUD-28", "setup: consent for VK-A as alice", "pud28_a_flow", "alice"),
+  gatesSet("PUD-28", "pud28", { name: "g28", method: "tools/list", identity: "alice" }),
+  race("PUD-28", "the callback waits at the gate while alice's grant is revoked", "pud28", "g28", { method: "GET", url: "{{pud28_a_flow_cb}}" },
+    [sendStep({ method: "POST", url: "{{chaos_url}}/control/pud28/oauth/revoke", header: JSON_H, body: { identity: "alice" } })], "pud28_race",
+    [raceHeld("pud28_race"), raceStep("pud28_race", 0, 200), raceFirst("pud28_race", "the callback completed", ["pm.expect(first.code, 'race: ' + JSON.stringify(race)).to.equal(200);"])]),
+  rowOf("PUD-28", "VK-A's row keeps no discovery", "pud28-u", "pud28", "a", "VK-A's row: no discovery", NO_DISCOVERY),
+  connectO("PUD-28", "VK-A's connect gives the sign-in text", "pud28", "a"),
+  rowOf("PUD-28", "VK-A's row now needs reauth", "pud28-u", "pud28", "a", "VK-A's row: needs_reauth, no discovery", [...ROW_STATUS("needs_reauth"), ...NO_DISCOVERY]),
+  gatesClear("PUD-28", "pud28"),
+  deleteClient("PUD-28", "pud28-u"),
+  pudVKDelete("PUD-28", "pud28", "a"),
+  restoreConfig("PUD-28"),
+]);
+
+const PUD29 = folder("PUD-29 Control: unflagged clients keep nothing per caller", `Setup: HDOOR(pud29h) and ODOOR(pud29o) both with per_user_discovery unset (${PU_TEXT(false)}); alice's tools/list on pud29o fails. VK-A signs in to pud29h with key-a through a header flow, and to pud29o as alice; both servers' counters are reset first.`, [
+  ...hdoor("PUD-29", "pud29h", { flag: false }),
+  ...puConfig("PUD-29", false),
+  ...puConnect("PUD-29", "pud29o"),
+  pudVK("PUD-29", "pud29h", "a", [{ mcp_client_name: "pud29h", tools_to_execute: ["*"] }, { mcp_client_name: "pud29o", tools_to_execute: ["*"] }]),
+  resetCounters("PUD-29", "pud29o"),
+  identityFault("PUD-29", "pud29o", "alice", { list_fail: true, methods: ["tools/list"] }),
+  ...signInFlowH("PUD-29", "pud29h", "a"),
+  execAs("PUD-29", "setup: VK-A calls pud29o-echo_tool and is sent to an OAuth flow", "pud29o-echo_tool", [vkOf("pud29h", "a")], [A.status(400), keepFlow("pud29o_a_flow")]),
+  flowStart("PUD-29", "setup: start VK-A's flow on pud29o", "pud29o_a_flow"),
+  consentAs("PUD-29", "setup: consent on pud29o as alice", "pud29o_a_flow", "alice"),
+  followCallback("PUD-29", "the callback lands on auth-success with no tools=pending", "pud29o_a_flow", [A.status(302), locationEnds(PU_SUCCESS)]),
+  mockGet("PUD-29", "pud29o", "the sign-in dialed nothing as alice", [A.custom("no MCP request as alice", ["pm.expect(pm.response.json().counters.methods_by_identity || {}, 'counters: ' + JSON.stringify(pm.response.json().counters)).to.not.have.property('alice');"])]),
+  request("PUD-29", "no row of either client carries a discovery", "GET", SESSIONS, { asserts: [A.status(200), A.custom("VK-A has one row on each client, neither with a discovery", [sessionsOfClients(["pud29h-h", "pud29o-u"]), "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(2);", "found.forEach(function (s) { pm.expect(s, 'row: ' + JSON.stringify(s)).to.not.have.property('discovery'); pm.expect(s.can_refresh).to.equal(false); });"])] }),
+  getClient("PUD-29", "pud29h-h", "pud29h has no callers_by_tool", [callersAre(null)]),
+  getClient("PUD-29", "pud29o-u", "pud29o has no callers_by_tool", [callersAre(null)]),
+  clearIdentityFault("PUD-29", "pud29o", "alice"),
+  deleteClient("PUD-29", "pud29h-h"),
+  deleteClient("PUD-29", "pud29o-u"),
+  pudVKDelete("PUD-29", "pud29h", "a"),
+  restoreConfig("PUD-29"),
+]);
+
+// ---------------------------------------------------------------- D. A discovery is deleted with its credential
+
+const PUD30 = folder("PUD-30 Revoke a token session", `Setup: ${ODOOR_TEXT("pud30")}; VK-A signed in as alice, VK-B as bob. Then VK-A's session is deleted.`, [
+  ...puConfig("PUD-30", false),
+  ...odoor("PUD-30", "pud30"),
+  pudVK("PUD-30", "pud30", "a"), pudVK("PUD-30", "pud30", "b"),
+  ...signInO("PUD-30", "pud30", "a", "alice"),
+  ...signInO("PUD-30", "pud30", "b", "bob"),
+  rowOf("PUD-30", "setup: find VK-A's session", "pud30-u", "pud30", "a", "VK-A's row has a discovery", DISCOVERY(2), keepRowId("pud30_a_row")),
+  request("PUD-30", "delete VK-A's session", "DELETE", "/api/mcp/sessions/{{pud30_a_row}}", { asserts: [A.status(204)] }),
+  gwList("PUD-30", "VK-A's gw-list is [pud30-connect]", [vkOf("pud30", "a")], ["pud30-connect"]),
+  gwList("PUD-30", "VK-B's gw-list is unchanged", [vkOf("pud30", "b")], ["pud30-add_tool", "pud30-echo_tool"]),
+  rowOf("PUD-30", "VK-B's row keeps its discovery", "pud30-u", "pud30", "b", "VK-B's row: active, 2 tools", [...ROW_STATUS("active"), ...DISCOVERY(2)]),
+  request("PUD-30", "no needs_reauth row carries a discovery", "GET", SESSIONS, { asserts: [A.status(200), A.custom("every needs_reauth row of pud30 has no discovery", [sessionRows("pud30-u", "s.status === 'needs_reauth'"), "found.forEach(function (s) { pm.expect(s, 'row: ' + JSON.stringify(s)).to.not.have.property('discovery'); });"])] }),
+  getClient("PUD-30", "pud30-u", "callers_by_tool counts only VK-B", [callersAre({ add_tool: 1, echo_tool: 1 })]),
+  deleteClient("PUD-30", "pud30-u"),
+  pudVKDelete("PUD-30", "pud30", "a"), pudVKDelete("PUD-30", "pud30", "b"),
+  restoreConfig("PUD-30"),
+]);
+
+const PUD31 = folder("PUD-31 Revoke a header credential, both routes", `Setup: ${HDOOR_TEXT("pud31")}; VK-A and VK-B signed in with key-a and key-b. VK-A's credential is revoked through the per-user headers credential route, VK-B's through the sessions route.`, [
+  ...hdoor("PUD-31", "pud31"),
+  pudVK("PUD-31", "pud31", "a"), pudVK("PUD-31", "pud31", "b"),
+  ...signInH("PUD-31", "pud31", "a"), ...signInH("PUD-31", "pud31", "b"),
+  credentialDelete("PUD-31", "revoke VK-A's credential", "pud31_a_cred", [A.status(204)]),
+  gwList("PUD-31", "VK-A's gw-list is [pud31-connect]", [vkOf("pud31", "a")], ["pud31-connect"]),
+  gwList("PUD-31", "VK-B's gw-list is unchanged", [vkOf("pud31", "b")], ["pud31-add_tool", "pud31-echo_tool"]),
+  rowOf("PUD-31", "setup: find VK-B's session", "pud31-h", "pud31", "b", "VK-B's row has a discovery", DISCOVERY(2), keepRowId("pud31_b_row")),
+  request("PUD-31", "delete VK-B's session", "DELETE", "/api/mcp/sessions/{{pud31_b_row}}", { asserts: [A.status(204)] }),
+  gwList("PUD-31", "VK-B's gw-list is [pud31-connect]", [vkOf("pud31", "b")], ["pud31-connect"]),
+  getClient("PUD-31", "pud31-h", "no callers_by_tool", [callersAre(null), toolNamesAre([])]),
+  sessionsNone("PUD-31", "no sessions entry for pud31", "pud31-h"),
+  deleteClient("PUD-31", "pud31-h"),
+  pudVKDelete("PUD-31", "pud31", "a"), pudVKDelete("PUD-31", "pud31", "b"),
+]);
+
+const PUD32 = folder("PUD-32 Refresh rejected", `Setup: ${ODOOR_TEXT("pud32", " whose authorization server issues 5s access tokens")}; VK-A signed in as alice, VK-B as bob. Then the authorization server revokes alice's grant, and each call waits 6s first, so it finds an expired token.`, [
+  ...puConfig("PUD-32", false),
+  ...odoor("PUD-32", "pud32", { access_ttl: "5s" }),
+  pudVK("PUD-32", "pud32", "a"), pudVK("PUD-32", "pud32", "b"),
+  ...signInO("PUD-32", "pud32", "a", "alice"),
+  ...signInO("PUD-32", "pud32", "b", "bob"),
+  mockPost("PUD-32", "pud32", "oauth/revoke", "setup: the authorization server revokes alice's grant", { identity: "alice" }),
+  execAfterVK("PUD-32", "VK-A calls pud32-echo_tool 6s later", "pud32-echo_tool", "pud32", "a", 6000, [A.status(400), A.custom("extra_fields.mcp_auth_required names an oauth flow", ["var r = (pm.response.json().extra_fields || {}).mcp_auth_required;", "pm.expect(r && r.kind, 'body: ' + pm.response.text()).to.equal('oauth');"])]),
+  rowOf("PUD-32", "VK-A's row needs reauth and keeps no discovery", "pud32-u", "pud32", "a", "VK-A's row: needs_reauth, no discovery", [...ROW_STATUS("needs_reauth"), ...NO_DISCOVERY]),
+  execAs("PUD-32", "VK-B calls pud32-echo_tool", "pud32-echo_tool", [vkOf("pud32", "b")], [A.status(200)]),
+  mockGet("PUD-32", "pud32", "VK-B's call ran as bob", [identityCalls("bob", 1), noIdentity("alice")]),
+  rowOf("PUD-32", "VK-B's row is active with its discovery", "pud32-u", "pud32", "b", "VK-B's row: active, 2 tools", [...ROW_STATUS("active"), ...DISCOVERY(2)]),
+  deleteClient("PUD-32", "pud32-u"),
+  pudVKDelete("PUD-32", "pud32", "a"), pudVKDelete("PUD-32", "pud32", "b"),
+  restoreConfig("PUD-32"),
+]);
+
+const PUD33 = folder("PUD-33 Expiry without rejection keeps the discovery", `Setup: ${ODOOR_TEXT("pud33", " whose authorization server issues 5s access tokens")}; VK-A signed in as alice. Each call waits 6s first, so it finds an expired token. The second call's refresh is answered 503 once; the third call's three times, which exhausts its retries.`, [
+  ...puConfig("PUD-33", false),
+  ...odoor("PUD-33", "pud33", { access_ttl: "5s" }),
+  pudVK("PUD-33", "pud33", "a"),
+  ...signInO("PUD-33", "pud33", "a", "alice"),
+  rowOf("PUD-33", "setup: record VK-A's discovered_at", "pud33-u", "pud33", "a", "VK-A's row has a discovery", DISCOVERY(2), keepDiscoveredAt("pud33_at")),
+  saveOAuthCounts("PUD-33", "pud33", "pud33"),
+  execAfterVK("PUD-33", "VK-A calls pud33-echo_tool 6s later", "pud33-echo_tool", "pud33", "a", 6000, [A.status(200)]),
+  mockGet("PUD-33", "pud33", "the expired token was refreshed once", [A.custom("token_refresh +1", [refreshPlus("pud33", 1)])]),
+  rowOf("PUD-33", "VK-A's row is active and its discovered_at unchanged", "pud33-u", "pud33", "a", "VK-A's row: active, the same discovery", [...ROW_STATUS("active"), ...DISCOVERY(2), "pm.expect(row.discovery.discovered_at).to.equal(pm.collectionVariables.get('pud33_at'));"]),
+  resetCounters("PUD-33", "pud33"),
+  mockPost("PUD-33", "pud33", "oauth/fail", "setup: the token endpoint answers the next refresh with 503", { fail: { endpoint: "token", grant_type: "refresh_token", status: 503, count: 1 } }),
+  execAfterVK("PUD-33", "VK-A calls pud33-echo_tool 6s later, its first refresh answered 503", "pud33-echo_tool", "pud33", "a", 6000, [A.status(200)]),
+  mockGet("PUD-33", "pud33", "two refresh attempts, 503 then 200", [refreshStatuses([503, 200])]),
+  rowOf("PUD-33", "VK-A's row is active with the same discovery", "pud33-u", "pud33", "a", "VK-A's row: active, the same discovery", [...ROW_STATUS("active"), ...DISCOVERY(2), "pm.expect(row.discovery.discovered_at).to.equal(pm.collectionVariables.get('pud33_at'));"]),
+  resetCounters("PUD-33", "pud33"),
+  mockPostAfter("PUD-33", "pud33", "oauth/fail", "setup: 6s later, the token endpoint answers the next three refreshes with 503", { fail: { endpoint: "token", grant_type: "refresh_token", status: 503, count: 3 } }, ["setTimeout(function () {}, 6000);"]),
+  execAs("PUD-33", "VK-A calls pud33-echo_tool, every refresh answered 503", "pud33-echo_tool", [vkOf("pud33", "a")], [A.status(400), A.msgContains("token expired and refresh failed")]),
+  rowOf("PUD-33", "VK-A's row and discovery stay consistent", "pud33-u", "pud33", "a", "VK-A's row: active with the same discovery", [...ROW_STATUS("active"), ...DISCOVERY(2), "pm.expect(row.discovery.discovered_at).to.equal(pm.collectionVariables.get('pud33_at'));"]),
+  execAs("PUD-33", "VK-A calls pud33-echo_tool again: the refresh succeeds", "pud33-echo_tool", [vkOf("pud33", "a")], [A.status(200)]),
+  deleteClient("PUD-33", "pud33-u"),
+  pudVKDelete("PUD-33", "pud33", "a"),
+  restoreConfig("PUD-33"),
+]);
+
+const PUD34 = folder("PUD-34 Admin changes the header keys", `Setup: ${HDOOR_TEXT("pud34")}; VK-A and VK-B signed in with key-a and key-b. Then the admin adds header key x-extra.`, [
+  ...hdoor("PUD-34", "pud34"),
+  pudVK("PUD-34", "pud34", "a"), pudVK("PUD-34", "pud34", "b"),
+  ...signInH("PUD-34", "pud34", "a"), ...signInH("PUD-34", "pud34", "b"),
+  clientPut("PUD-34", "PUT per_user_header_keys [\"x-api-key\", \"x-extra\"]", "pud34-h", { per_user_header_keys: ["x-api-key", "x-extra"] }, [A.status(200)]),
+  rowOf("PUD-34", "VK-A's row needs an update and keeps no discovery", "pud34-h", "pud34", "a", "VK-A's row: needs_update, no discovery", [...ROW_STATUS("needs_update"), ...NO_DISCOVERY]),
+  rowOf("PUD-34", "VK-B's row needs an update and keeps no discovery", "pud34-h", "pud34", "b", "VK-B's row: needs_update, no discovery", [...ROW_STATUS("needs_update"), ...NO_DISCOVERY]),
+  getClient("PUD-34", "pud34-h", "no callers_by_tool", [callersAre(null)]),
+  gwList("PUD-34", "VK-A's gw-list is [pud34-connect]", [vkOf("pud34", "a")], ["pud34-connect"]),
+  connectH("PUD-34", "VK-A's connect gives the sign-in text", "pud34", "a"),
+  deleteClient("PUD-34", "pud34-h"),
+  pudVKDelete("PUD-34", "pud34", "a"), pudVKDelete("PUD-34", "pud34", "b"),
+]);
+
+const PUD35 = folder("PUD-35 Re-registering rotates and drops discoveries", `Setup: ${ODOOR_TEXT("pud35")}; VK-A signed in as alice. Then the client is reregistered and the admin completes sign-in on the new registration.`, [
+  ...puConfig("PUD-35", false),
+  ...odoor("PUD-35", "pud35"),
+  pudVK("PUD-35", "pud35", "a"),
+  ...signInO("PUD-35", "pud35", "a", "alice"),
+  clientPost("PUD-35", "reregister", "pud35-u", "reregister", [A.status(200)], { extraTests: ["pm.collectionVariables.set('pud35_au', pm.response.json().authorize_url);"] }),
+  rowOf("PUD-35", "VK-A's row needs reauth and keeps no discovery", "pud35-u", "pud35", "a", "VK-A's row: needs_reauth, no discovery", [...ROW_STATUS("needs_reauth"), ...NO_DISCOVERY]),
+  gwList("PUD-35", "VK-A's gw-list is [pud35-connect]", [vkOf("pud35", "a")], ["pud35-connect"]),
+  consentAs("PUD-35", "consent on the new registration as admin", "pud35", "admin"),
+  followCallback("PUD-35", "follow the callback", "pud35", callbackSuccess()),
+  completeOAuth("PUD-35", "complete", "pud35", [A.status(200), A.jsonMessage("Sign-in verified. The client keeps no admin credential: each caller signs in with their own."), A.jsonEquals("tools_count", 0)]),
+  getClient("PUD-35", "pud35-u", "no credential, tools []", [noCredential(), toolNamesAre([])]),
+  deleteClient("PUD-35", "pud35-u"),
+  pudVKDelete("PUD-35", "pud35", "a"),
+  restoreConfig("PUD-35"),
+]);
+
+const PUD36 = folder("PUD-36 A VK rotated, then a VK deleted", `Setup: ${HDOOR_TEXT("pud36")}; VK-A and VK-B signed in with key-a and key-b. Then VK-A is rotated and VK-B deleted.`, [
+  ...hdoor("PUD-36", "pud36"),
+  pudVK("PUD-36", "pud36", "a"), pudVK("PUD-36", "pud36", "b"),
+  ...signInH("PUD-36", "pud36", "a"), ...signInH("PUD-36", "pud36", "b"),
+  request("PUD-36", "rotate VK-A", "POST", "/api/governance/virtual-keys/{{pud36_a_id}}/rotate", { asserts: [A.status(200), A.custom("the same id with a new value", ["var v = pm.response.json().virtual_key;", "pm.expect(v.id, 'body: ' + pm.response.text()).to.equal(pm.collectionVariables.get('pud36_a_id'));", "pm.expect(v.value).to.not.equal(pm.collectionVariables.get('pud36_a'));"])], extraTests: ["pm.collectionVariables.set('pud36_a', pm.response.json().virtual_key.value);"] }),
+  gwList("PUD-36", "the rotated VK-A keeps its tools", [vkOf("pud36", "a")], ["pud36-add_tool", "pud36-echo_tool"]),
+  rowOf("PUD-36", "VK-A's row keeps its discovery", "pud36-h", "pud36", "a", "VK-A's row: active, 2 tools", [...ROW_STATUS("active"), ...DISCOVERY(2)]),
+  pudVKDelete("PUD-36", "pud36", "b"),
+  getClient("PUD-36", "pud36-h", "the deleted VK-B drops from callers_by_tool", [callersAre({ add_tool: 1, echo_tool: 1 })]),
+  deleteClient("PUD-36", "pud36-h"),
+  pudVKDelete("PUD-36", "pud36", "a"),
+]);
+
+const PUD37 = folder("PUD-37 Client deleted and re-created", `Setup: ${HDOOR_TEXT("pud37")}; VK-A signed in with key-a. Then the client is deleted, which removes VK-A's grant, created again with the same id and name, and VK-A is granted it again.`, [
+  ...hdoor("PUD-37", "pud37"),
+  pudVK("PUD-37", "pud37", "a"),
+  ...signInH("PUD-37", "pud37", "a"),
+  deleteClient("PUD-37", "pud37-h"),
+  createClient("PUD-37", hdoorBody("pud37"), "create pud37 again with the same id and name"),
+  getClient("PUD-37", "pud37-h", "no callers_by_tool, tools []", [callersAre(null), toolNamesAre([])]),
+  sessionsNone("PUD-37", "no sessions entry for pud37", "pud37-h"),
+  gwList("PUD-37", "VK-A's gw-list is empty: the delete removed its grant", [vkOf("pud37", "a")], []),
+  pudVKGrant("PUD-37", "pud37", "a"),
+  gwList("PUD-37", "VK-A's gw-list is [pud37-connect]: nothing of the old client's is kept", [vkOf("pud37", "a")], ["pud37-connect"]),
+  deleteClient("PUD-37", "pud37-h"),
+  pudVKDelete("PUD-37", "pud37", "a"),
+]);
+
+// ---------------------------------------------------------------- E. Per-caller serving on /mcp
+
+const PUD38 = folder("PUD-38 Each caller's own tools", `Setup: ${HDOOR_TEXT("pud38")}; key-a sees its own echo_tool and add_tool (own descriptions and schemas); key-c sees only its own echo_tool, with another schema and an output schema; VK-A and VK-C signed in, VK-F without a credential; ${BOTH}, temp-token auth on, and a Bifrost OAuth grant (bf_mode vk) for VK-A.`, [
+  readConfig("PUD-38"), oauthConfig("PUD-38", "both"),
+  ...hdoor("PUD-38", "pud38"),
+  overlay("PUD-38", "pud38", "key-a", PUD38_A, "setup: key-a sees its own echo_tool and add_tool"),
+  overlay("PUD-38", "pud38", "key-c", PUD38_C, "setup: key-c sees its own echo_tool, with an output schema"),
+  pudVK("PUD-38", "pud38", "a"), pudVK("PUD-38", "pud38", "c"), pudVK("PUD-38", "pud38", "f"),
+  ...signInH("PUD-38", "pud38", "a", "key-a", true), ...signInH("PUD-38", "pud38", "c", "key-c", true),
+  ...pudGrant("PUD-38", "pud38", "a", "pud38_grant"),
+  gwList("PUD-38", "VK-A's gw-list has key-a's descriptions and schemas", [vkOf("pud38", "a")], ["pud38-add_tool", "pud38-echo_tool"], [toolShapes("pud38", PUD38_A)]),
+  gwList("PUD-38", "VK-C's gw-list has key-c's description, schema and output schema", [vkOf("pud38", "c")], ["pud38-echo_tool"], [toolShapes("pud38", PUD38_C)]),
+  gwCallAs("PUD-38", "VK-C calls pud38-echo_tool", "pud38-echo_tool", [vkOf("pud38", "c")], [A.custom("structuredContent is the mock's {tool, arguments}", ["var r = pm.response.json().result;", "pm.expect(r && r.structuredContent, 'body: ' + pm.response.text()).to.eql({ tool: 'echo_tool', arguments: { msg: 'hi' } });"])], { msg: "hi" }),
+  gwList("PUD-38", "VK-F's gw-list is [pud38-connect]", [vkOf("pud38", "f")], ["pud38-connect"]),
+  request("PUD-38", "VK-A's bf_mode vk token lists the same tools as its header", "POST", "/mcp", { noAuth: true, raw: JSON.stringify(listMsg), headers: [MCP_ACCEPT, { key: "Authorization", value: "Bearer {{pud38_grant_at}}" }], asserts: [A.status(200), gwNames(["pud38-add_tool", "pud38-echo_tool"]), toolShapes("pud38", PUD38_A)] }),
+  deleteClient("PUD-38", "pud38-h"),
+  ...["a", "c", "f"].map((l) => pudVKDelete("PUD-38", "pud38", l)),
+  restoreConfig("PUD-38"),
+]);
+
+const PUD39 = folder("PUD-39 A name another caller holds looks unknown", `Setup: ${HDOOR_TEXT("pud39")}; key-a sees echo_tool and add_tool, prompt a_prompt and resource notes://a; key-c sees only echo_tool and no prompt or resource; VK-A and VK-C signed in; pud39's counters reset after the sign-ins.`, [
+  ...hdoor("PUD-39", "pud39"),
+  overlay("PUD-39", "pud39", "key-c", ["echo_tool"]),
+  kindOverlay("PUD-39", "pud39", "prompts", "key-a", [{ name: "a_prompt", description: "key-a's prompt" }]),
+  kindOverlay("PUD-39", "pud39", "prompts", "key-c", []),
+  kindOverlay("PUD-39", "pud39", "resources", "key-a", [{ uri: "notes://a", name: "key-a's note" }]),
+  kindOverlay("PUD-39", "pud39", "resources", "key-c", []),
+  pudVK("PUD-39", "pud39", "a"), pudVK("PUD-39", "pud39", "c"),
+  ...signInH("PUD-39", "pud39", "a"), ...signInH("PUD-39", "pud39", "c"),
+  resetCounters("PUD-39", "pud39"),
+  gwKeep("PUD-39", "control: VK-C calls pud39-zzz, a name nobody holds", "tools/call", { name: "pud39-zzz", arguments: { text: "hi" } }, [vkOf("pud39", "c")], "pud39_tool_err", "pud39-zzz"),
+  gwCallAs("PUD-39", "VK-C calls pud39-add_tool, which only key-a holds", "pud39-add_tool", [vkOf("pud39", "c")], [sameErrorAs("pud39_tool_err", "pud39-add_tool")]),
+  gwKeep("PUD-39", "control: VK-C gets prompt pud39-zzz", "prompts/get", { name: "pud39-zzz" }, [vkOf("pud39", "c")], "pud39_prompt_err", "pud39-zzz"),
+  gwRpc("PUD-39", "VK-C gets prompt pud39-a_prompt, which only key-a holds", "prompts/get", { name: "pud39-a_prompt" }, [vkOf("pud39", "c")], [sameErrorAs("pud39_prompt_err", "pud39-a_prompt")]),
+  gwKeep("PUD-39", "control: VK-C reads notes://zzz", "resources/read", { uri: "notes://zzz" }, [vkOf("pud39", "c")], "pud39_res_err", "notes://zzz"),
+  gwRpc("PUD-39", "VK-C reads notes://a, which only key-a holds", "resources/read", { uri: "notes://a" }, [vkOf("pud39", "c")], [sameErrorAs("pud39_res_err", "notes://a")]),
+  mockGet("PUD-39", "pud39", "nothing reached the upstream", [methodsEmpty()]),
+  gwCallAs("PUD-39", "control: VK-A calls pud39-add_tool", "pud39-add_tool", [vkOf("pud39", "a")], [gwTextIs("add_tool:{\"text\":\"hi\"}")]),
+  deleteClient("PUD-39", "pud39-h"),
+  pudVKDelete("PUD-39", "pud39", "a"), pudVKDelete("PUD-39", "pud39", "c"),
+]);
+
+const PUD40 = folder("PUD-40 Prompts, resources and templates per caller", `Setup: ${HDOOR_TEXT("pud40")}; key-a sees prompt pa (argument x), resource notes://a and template a://{id}; key-c sees prompt pc, resource notes://c and template c://{id}; each entry answers with text naming its holder; VK-A and VK-C signed in.`, [
+  ...hdoor("PUD-40", "pud40"),
+  kindOverlay("PUD-40", "pud40", "prompts", "key-a", [{ name: "pa", description: "key-a's prompt", arguments: [{ name: "x", description: "an x", required: false }], text: "key-a's pa {x}" }]),
+  kindOverlay("PUD-40", "pud40", "prompts", "key-c", [{ name: "pc", description: "key-c's prompt", text: "key-c's pc" }]),
+  kindOverlay("PUD-40", "pud40", "resources", "key-a", [{ uri: "notes://a", name: "key-a's note", text: "key-a's note a" }]),
+  kindOverlay("PUD-40", "pud40", "resources", "key-c", [{ uri: "notes://c", name: "key-c's note", text: "key-c's note c" }]),
+  kindOverlay("PUD-40", "pud40", "templates", "key-a", [{ uriTemplate: "a://{id}", name: "key-a's template", text: "key-a read {uri}" }]),
+  kindOverlay("PUD-40", "pud40", "templates", "key-c", [{ uriTemplate: "c://{id}", name: "key-c's template", text: "key-c read {uri}" }]),
+  pudVK("PUD-40", "pud40", "a"), pudVK("PUD-40", "pud40", "c"),
+  ...signInH("PUD-40", "pud40", "a"), ...signInH("PUD-40", "pud40", "c"),
+  gwRpc("PUD-40", "VK-A's prompts/list", "prompts/list", null, [vkOf("pud40", "a")], [listedAre("prompts", "name", ["pud40-pa"])]),
+  gwRpc("PUD-40", "VK-C's prompts/list", "prompts/list", null, [vkOf("pud40", "c")], [listedAre("prompts", "name", ["pud40-pc"])]),
+  gwRpc("PUD-40", "VK-A's resources/list", "resources/list", null, [vkOf("pud40", "a")], [listedAre("resources", "uri", ["notes://a"])]),
+  gwRpc("PUD-40", "VK-C's resources/list", "resources/list", null, [vkOf("pud40", "c")], [listedAre("resources", "uri", ["notes://c"])]),
+  gwRpc("PUD-40", "VK-A's resources/templates/list", "resources/templates/list", null, [vkOf("pud40", "a")], [listedAre("resourceTemplates", "uriTemplate", ["a://{id}"])]),
+  gwRpc("PUD-40", "VK-C's resources/templates/list", "resources/templates/list", null, [vkOf("pud40", "c")], [listedAre("resourceTemplates", "uriTemplate", ["c://{id}"])]),
+  gwRpc("PUD-40", "VK-A gets pud40-pa", "prompts/get", { name: "pud40-pa", arguments: { x: "1" } }, [vkOf("pud40", "a")], [promptTextIs("key-a's pa 1")]),
+  gwRpc("PUD-40", "VK-C gets pud40-pc", "prompts/get", { name: "pud40-pc" }, [vkOf("pud40", "c")], [promptTextIs("key-c's pc")]),
+  gwRpc("PUD-40", "VK-A reads notes://a", "resources/read", { uri: "notes://a" }, [vkOf("pud40", "a")], [readTextIs("key-a's note a")]),
+  gwRpc("PUD-40", "VK-A reads a://7 through its template", "resources/read", { uri: "a://7" }, [vkOf("pud40", "a")], [readTextIs("key-a read a://7")]),
+  gwRpc("PUD-40", "VK-C reads notes://c", "resources/read", { uri: "notes://c" }, [vkOf("pud40", "c")], [readTextIs("key-c's note c")]),
+  gwRpc("PUD-40", "a session-only caller's prompts/list has neither prompt", "prompts/list", null, [SESS("pud40-sess")], [listedNoneOf("prompts", "name", ["pud40-pa", "pud40-pc"])]),
+  gwRpc("PUD-40", "a session-only caller's resources/list has neither resource", "resources/list", null, [SESS("pud40-sess")], [listedNoneOf("resources", "uri", ["notes://a", "notes://c"])]),
+  gwRpc("PUD-40", "a session-only caller's resources/templates/list has neither template", "resources/templates/list", null, [SESS("pud40-sess")], [listedNoneOf("resourceTemplates", "uriTemplate", ["a://{id}", "c://{id}"])]),
+  deleteClient("PUD-40", "pud40-h"),
+  pudVKDelete("PUD-40", "pud40", "a"), pudVKDelete("PUD-40", "pud40", "c"),
+]);
+
+const PUD41 = folder("PUD-41 A brand-new name appears after a short delay", `Setup: ${HDOOR_TEXT("pud41")}; VK-A and VK-D signed in with key-a and key-d. Then key-d also sees search, a name no caller held, and VK-D signs in again (credential revoked, connect, submit). ${NOTIFY_NOTE}`, [
+  ...hdoor("PUD-41", "pud41"),
+  pudVK("PUD-41", "pud41", "a"), pudVK("PUD-41", "pud41", "d"),
+  ...signInH("PUD-41", "pud41", "a"), ...signInH("PUD-41", "pud41", "d"),
+  overlay("PUD-41", "pud41", "key-d", ["echo_tool", "add_tool", "search"]),
+  credentialDelete("PUD-41", "setup: revoke VK-D's credential", "pud41_d_cred", [A.status(204)]),
+  ...signInH("PUD-41", "pud41", "d"),
+  gwCallAs("PUD-41", "VK-D calls pud41-search over /mcp at once", "pud41-search", [vkOf("pud41", "d")], [gwTextIs("search:{\"text\":\"hi\"}")]),
+  request("PUD-41", "VK-D's gw-list shows pud41-search within 5s", "POST", "/mcp", { noAuth: true, raw: JSON.stringify(listMsg), headers: [MCP_ACCEPT, vkOf("pud41", "d")], pre: pollGwList("pud41", "d", "names.indexOf('pud41-search') !== -1", "pud41_wait"), asserts: [A.status(200), gwNames(["pud41-add_tool", "pud41-echo_tool", "pud41-search"]), A.custom("it appeared within 5s", ["pm.expect(Number(pm.collectionVariables.get('pud41_wait'))).to.be.at.most(5000);"])] }),
+  gwList("PUD-41", "VK-A never sees pud41-search", [vkOf("pud41", "a")], ["pud41-add_tool", "pud41-echo_tool"]),
+  gwCallAs("PUD-41", "VK-A calls pud41-search over /mcp", "pud41-search", [vkOf("pud41", "a")], [NOT_FOUND_TOOL("pud41-search")]),
+  gwCallAs("PUD-41", "control: VK-A calls pud41-zzz over /mcp", "pud41-zzz", [vkOf("pud41", "a")], [NOT_FOUND_TOOL("pud41-zzz")]),
+  mockGet("PUD-41", "pud41", "search ran once, under key-d", [callsIs("search", 1), identityCallsAre({ "key-d": 1 })]),
+  deleteClient("PUD-41", "pud41-h"),
+  pudVKDelete("PUD-41", "pud41", "a"), pudVKDelete("PUD-41", "pud41", "d"),
+]);
+
+const PUD42 = folder("PUD-42 Include headers, slug endpoint and Virtual MCP", `Setup: ${HDOOR_TEXT("pud42")}; VK-A signed in with key-a; VK-B without a credential; a virtual MCP "Pud42 Echo" over pud42's echo_tool, with VK-V (no mcp_configs) attached to it.`, [
+  ...hdoor("PUD-42", "pud42"),
+  pudVK("PUD-42", "pud42", "a"), pudVK("PUD-42", "pud42", "b"),
+  ...signInH("PUD-42", "pud42", "a"),
+  gwList("PUD-42", "VK-A with include-tools pud42-echo_tool", [vkOf("pud42", "a"), inc("tools", "pud42-echo_tool")], ["pud42-echo_tool"]),
+  gwList("PUD-42", "VK-A with include-clients pud42", [vkOf("pud42", "a"), inc("clients", "pud42")], ["pud42-add_tool", "pud42-echo_tool"]),
+  gwList("PUD-42", "VK-A with include-clients pud42zz gets nothing", [vkOf("pud42", "a"), inc("clients", "pud42zz")], []),
+  rpc("PUD-42", "VK-A on /mcp/pud42 gets its own tools", listMsg, { path: "/mcp/pud42", headers: [MCP_ACCEPT, vkOf("pud42", "a")], asserts: [A.status(200), gwNames(["pud42-add_tool", "pud42-echo_tool"])] }),
+  rpc("PUD-42", "VK-B on /mcp/pud42 gets [pud42-connect]", listMsg, { path: "/mcp/pud42", headers: [MCP_ACCEPT, vkOf("pud42", "b")], asserts: [A.status(200), gwNames(["pud42-connect"])] }),
+  request("PUD-42", "setup: create the virtual MCP Pud42 Echo over pud42's echo_tool", "POST", "/api/mcp/virtual-mcps", { body: { name: "Pud42 Echo", tools: [{ mcp_client_id: "pud42-h", tool_names: ["echo_tool"] }] }, asserts: [A.status(201)], extraTests: ["pm.collectionVariables.set('pud42_vmcp', pm.response.json().virtual_mcp.id);"] }),
+  vkCreate("PUD-42", "setup: create VK-V, with no mcp_configs", { name: "PUD-42 VK-V", provider_configs: OPENAI_GRANT }, "pud42_v"),
+  request("PUD-42", "setup: attach VK-V to the virtual MCP", "POST", "/api/mcp/virtual-mcps/{{pud42_vmcp}}/virtual-keys/{{pud42_v_id}}", { asserts: [A.status(200)] }),
+  rpc("PUD-42", "VK-V on /mcp/pud42-echo gets [pud42-connect] before sign-in", listMsg, { path: "/mcp/pud42-echo", headers: [MCP_ACCEPT, vkOf("pud42", "v")], asserts: [A.status(200), gwNames(["pud42-connect"])] }),
+  ...signInH("PUD-42", "pud42", "v"),
+  rpc("PUD-42", "VK-V on /mcp/pud42-echo gets only pud42-echo_tool after sign-in", listMsg, { path: "/mcp/pud42-echo", headers: [MCP_ACCEPT, vkOf("pud42", "v")], asserts: [A.status(200), gwNames(["pud42-echo_tool"])] }),
+  request("PUD-42", "teardown: delete the virtual MCP", "DELETE", "/api/mcp/virtual-mcps/{{pud42_vmcp}}", { asserts: [A.status(200)] }),
+  deleteClient("PUD-42", "pud42-h"),
+  pudVKDelete("PUD-42", "pud42", "a"), pudVKDelete("PUD-42", "pud42", "b"), pudVKDelete("PUD-42", "pud42", "v"),
+]);
+
+const PUD43 = folder("PUD-43 Instructions per caller", `Setup: ${HDOOR_TEXT("pud43")}; pud43 sends key-a the instructions "A notes" and key-c "C notes", and no server-wide text; VK-A and VK-C signed in, VK-F without a credential; ${LLM_TEXT}.`, [
+  ...hdoor("PUD-43", "pud43"),
+  mockPost("PUD-43", "pud43", "instructions", "setup: pud43 sends key-a \"A notes\"", { identity: "key-a", text: "A notes" }),
+  mockPost("PUD-43", "pud43", "instructions", "setup: pud43 sends key-c \"C notes\"", { identity: "key-c", text: "C notes" }),
+  pudVK("PUD-43", "pud43", "a"), pudVK("PUD-43", "pud43", "c"), pudVK("PUD-43", "pud43", "f"),
+  ...signInH("PUD-43", "pud43", "a"), ...signInH("PUD-43", "pud43", "c"),
+  initialize("PUD-43", "VK-A's initialize carries its own block", [instructionsEqual(block("pud43", "A notes"))], { headers: [MCP_ACCEPT, vkOf("pud43", "a")] }),
+  initialize("PUD-43", "VK-C's initialize carries its own block", [instructionsEqual(block("pud43", "C notes"))], { headers: [MCP_ACCEPT, vkOf("pud43", "c")] }),
+  initialize("PUD-43", "VK-F's initialize carries no pud43 block", [A.custom("no <mcp_server name=\"pud43\"> block", ["pm.expect(String((pm.response.json().result || {}).instructions || ''), 'body: ' + pm.response.text()).to.not.include('<mcp_server name=\"pud43\">');"])], { headers: [MCP_ACCEPT, vkOf("pud43", "f")] }),
+  llmScript("PUD-43", "pud43", TEXT_OK),
+  infChat("PUD-43", "chat with VK-A", "pud43", [A.status(200)], { headers: [vkOf("pud43", "a")] }),
+  llmCaptured("PUD-43", "the chat carries only key-a's block", "pud43", [reqCount(1), systemBlock(0, "pud43", "A notes"), A.custom("no C notes", [REQS, MCP_TEXT, "pm.expect(mcpText(reqs[0])).to.not.include('C notes');"])]),
+  deleteClient("PUD-43", "pud43-h"),
+  ...["a", "c", "f"].map((l) => pudVKDelete("PUD-43", "pud43", l)),
+]);
+
+const PUD44 = folder("PUD-44 Callers with the same discovery, then one changes", `Setup: ${HDOOR_TEXT("pud44")}; VK-A and VK-B signed in with key-a and key-b, so both hold the same two tools. Then key-b also sees extra, and VK-B signs in again (credential revoked, connect, submit).`, [
+  ...hdoor("PUD-44", "pud44"),
+  pudVK("PUD-44", "pud44", "a"), pudVK("PUD-44", "pud44", "b"),
+  ...signInH("PUD-44", "pud44", "a"), ...signInH("PUD-44", "pud44", "b"),
+  getClient("PUD-44", "pud44-h", "control: both callers hold the same tools", [callersAre({ add_tool: 2, echo_tool: 2 })]),
+  overlay("PUD-44", "pud44", "key-b", ["echo_tool", "add_tool", "extra"]),
+  credentialDelete("PUD-44", "setup: revoke VK-B's credential", "pud44_b_cred", [A.status(204)]),
+  ...signInH("PUD-44", "pud44", "b"),
+  gwList("PUD-44", "VK-B's gw-list has extra", [vkOf("pud44", "b")], ["pud44-add_tool", "pud44-echo_tool", "pud44-extra"]),
+  gwList("PUD-44", "VK-A's gw-list is unchanged", [vkOf("pud44", "a")], ["pud44-add_tool", "pud44-echo_tool"]),
+  getClient("PUD-44", "pud44-h", "callers_by_tool {add_tool: 2, echo_tool: 2, extra: 1}", [callersAre({ add_tool: 2, echo_tool: 2, extra: 1 })]),
+  deleteClient("PUD-44", "pud44-h"),
+  pudVKDelete("PUD-44", "pud44", "a"), pudVKDelete("PUD-44", "pud44", "b"),
+]);
+
+const PUD45 = folder("PUD-45 An upstream change reaches a caller through a refresh of their session", `Setup: ${HDOOR_TEXT("pud45")}; VK-A signed in with key-a. Then pud45 adds new_tool and pushes list_changed.`, [
+  ...hdoor("PUD-45", "pud45"),
+  pudVK("PUD-45", "pud45", "a"),
+  ...signInH("PUD-45", "pud45", "a"),
+  mockPost("PUD-45", "pud45", "tools/add", "pud45 adds new_tool", { tool: { name: "new_tool" } }),
+  mockPost("PUD-45", "pud45", "notify/tools-changed", "pud45 pushes list_changed", {}),
+  mockGet("PUD-45", "pud45", "pud45 has no open stream, so the push reached no one", [counterIs("open_streams", 0)]),
+  gwList("PUD-45", "VK-A's gw-list is unchanged", [vkOf("pud45", "a")], ["pud45-add_tool", "pud45-echo_tool"]),
+  connectExpect("PUD-45", "VK-A's connect says already connected", "pud45", "a", alreadyText("pud45")),
+  clientPost("PUD-45", "refresh-tools on the client is refused", "pud45-h", "refresh-tools", [A.status(400), A.msgEquals(REFRESH_TOOLS_PUD("pud45"))]),
+  rowOf("PUD-45", "setup: find VK-A's session", "pud45-h", "pud45", "a", "VK-A's row can be refreshed", ["pm.expect(row.can_refresh).to.equal(true);"], keepRowId("pud45_a_row")),
+  request("PUD-45", "refresh VK-A's session", "POST", "/api/mcp/sessions/{{pud45_a_row}}/refresh", { asserts: [A.status(200), A.custom("success with 3 tools, 0 prompts, 0 resources", ["pm.expect(pm.response.json(), 'body: ' + pm.response.text()).to.eql({ status: 'success', tool_count: 3, prompt_count: 0, resource_count: 0 });"])] }),
+  gwList("PUD-45", "VK-A's gw-list now has new_tool", [vkOf("pud45", "a")], ["pud45-add_tool", "pud45-echo_tool", "pud45-new_tool"]),
+  deleteClient("PUD-45", "pud45-h"),
+  pudVKDelete("PUD-45", "pud45", "a"),
+]);
+
+const PUD52 = folder("PUD-52 A caller's own list changing, seen on the same session", `Setup: ${HDOOR_TEXT("pud52")}; VK-A and VK-B signed in with key-a and key-b, so both hold the same names; VK-B initializes an /mcp session. Then VK-B's credential is revoked, and VK-B signs in again. ${NOTIFY_NOTE}`, [
+  ...hdoor("PUD-52", "pud52"),
+  pudVK("PUD-52", "pud52", "a"), pudVK("PUD-52", "pud52", "b"),
+  ...signInH("PUD-52", "pud52", "a"), ...signInH("PUD-52", "pud52", "b"),
+  mcpInit("PUD-52", "VK-B initializes an /mcp session", [vkOf("pud52", "b")], "pud52_sess"),
+  gwList("PUD-52", "VK-B lists on its session: pud52's tools", [vkOf("pud52", "b"), MCPSESS("pud52_sess")], ["pud52-add_tool", "pud52-echo_tool"]),
+  credentialDelete("PUD-52", "revoke VK-B's credential", "pud52_b_cred", [A.status(204)]),
+  gwList("PUD-52", "VK-B re-lists on the same session: [pud52-connect]", [vkOf("pud52", "b"), MCPSESS("pud52_sess")], ["pud52-connect"]),
+  gwList("PUD-52", "VK-A is unaffected", [vkOf("pud52", "a")], ["pud52-add_tool", "pud52-echo_tool"]),
+  ...signInH("PUD-52", "pud52", "b"),
+  gwList("PUD-52", "VK-B re-lists on the same session: key-b's tools again", [vkOf("pud52", "b"), MCPSESS("pud52_sess")], ["pud52-add_tool", "pud52-echo_tool"]),
+  deleteClient("PUD-52", "pud52-h"),
+  pudVKDelete("PUD-52", "pud52", "a"), pudVKDelete("PUD-52", "pud52", "b"),
+]);
+
+const PUD53 = folder("PUD-53 Connect after signing in, on a stale list", `Setup: ${HDOOR_TEXT("pud53")}; key-g sees echo_tool and other-connect; VK-G signed in with key-g; VK-F initializes an /mcp session and lists [pud53-connect] on it, then signs in with key-f. ${NOTIFY_NOTE}`, [
+  ...hdoor("PUD-53", "pud53"),
+  overlay("PUD-53", "pud53", "key-g", ["echo_tool", "other-connect"]),
+  pudVK("PUD-53", "pud53", "f"), pudVK("PUD-53", "pud53", "g"),
+  ...signInH("PUD-53", "pud53", "g"),
+  mcpInit("PUD-53", "VK-F initializes an /mcp session", [vkOf("pud53", "f")], "pud53_sess"),
+  gwList("PUD-53", "VK-F lists [pud53-connect] on its session", [vkOf("pud53", "f"), MCPSESS("pud53_sess")], ["pud53-connect"]),
+  ...signInH("PUD-53", "pud53", "f"),
+  gwCallAs("PUD-53", "VK-F calls pud53-connect on the same session", "pud53-connect", [vkOf("pud53", "f"), MCPSESS("pud53_sess")], [gwTextIs(alreadyText("pud53"))]),
+  execAs("PUD-53", "control: VK-F's connect on the execute route says the same", "pud53-connect", [vkOf("pud53", "f")], [A.status(200), contentIs(alreadyText("pud53"))]),
+  gwCallAs("PUD-53", "VK-F narrowed to another client calls pud53-connect", "pud53-connect", [vkOf("pud53", "f"), MCPSESS("pud53_sess"), inc("clients", "pud53zz")], [toolResultError("Tool execution failed: tool 'pud53-connect' is not available or not permitted", null)]),
+  gwKeep("PUD-53", "control: VK-F calls pud53-zzz", "tools/call", { name: "pud53-zzz", arguments: { text: "hi" } }, [vkOf("pud53", "f"), MCPSESS("pud53_sess")], "pud53_err", "pud53-zzz"),
+  gwCallAs("PUD-53", "VK-F calls pud53-other-connect, which only key-g holds", "pud53-other-connect", [vkOf("pud53", "f"), MCPSESS("pud53_sess")], [sameErrorAs("pud53_err", "pud53-other-connect")]),
+  deleteClient("PUD-53", "pud53-h"),
+  pudVKDelete("PUD-53", "pud53", "f"), pudVKDelete("PUD-53", "pud53", "g"),
+]);
+
+const PUD54 = folder("PUD-54 A read lands on another caller's entry", `Setup: ${HDOOR_TEXT("pud54")}; key-b holds the resource notes://123; key-c the template notes://{id}; key-d the template notes://{+path}; key-a none of them; VK-A to VK-D signed in.`, [
+  ...hdoor("PUD-54", "pud54"),
+  kindOverlay("PUD-54", "pud54", "resources", "key-b", [{ uri: "notes://123", name: "key-b's note", text: "key-b's note 123" }]),
+  kindOverlay("PUD-54", "pud54", "templates", "key-c", [{ uriTemplate: "notes://{id}", name: "key-c's notes", text: "key-c read {uri}" }]),
+  kindOverlay("PUD-54", "pud54", "templates", "key-d", [{ uriTemplate: "notes://{+path}", name: "key-d's notes", text: "key-d read {uri}" }]),
+  ...["a", "b", "c", "d"].flatMap((l) => [pudVK("PUD-54", "pud54", l), ...signInH("PUD-54", "pud54", l)]),
+  gwRpc("PUD-54", "control: VK-B reads notes://123", "resources/read", { uri: "notes://123" }, [vkOf("pud54", "b")], [readTextIs("key-b's note 123")]),
+  gwRpc("PUD-54", "VK-C reads notes://123 and gets its own template's content", "resources/read", { uri: "notes://123" }, [vkOf("pud54", "c")], [readTextIs("key-c read notes://123")]),
+  gwRpc("PUD-54", "VK-C reads notes://456 through its own template", "resources/read", { uri: "notes://456" }, [vkOf("pud54", "c")], [readTextIs("key-c read notes://456")]),
+  gwRpc("PUD-54", "VK-D reads notes://456 through its own template", "resources/read", { uri: "notes://456" }, [vkOf("pud54", "d")], [readTextIs("key-d read notes://456")]),
+  gwKeep("PUD-54", "control: VK-A reads notes://zzz", "resources/read", { uri: "notes://zzz" }, [vkOf("pud54", "a")], "pud54_err", "notes://zzz"),
+  gwRpc("PUD-54", "VK-A reads notes://123, holding neither entry", "resources/read", { uri: "notes://123" }, [vkOf("pud54", "a")], [sameErrorAs("pud54_err", "notes://123")]),
+  deleteClient("PUD-54", "pud54-h"),
+  ...["a", "b", "c", "d"].map((l) => pudVKDelete("PUD-54", "pud54", l)),
+]);
+
+// ---------------------------------------------------------------- F. Logging and the sessions API
+
+const PUD46 = folder("PUD-46 Sign-in prompts and connect calls are not logged", `Setup: ${HDOOR_TEXT("pud46")}; key-g sees echo_tool and a tool named connect; pud46u, a per_user_headers client on fleet server pud46u (as pud46, per_user_discovery unset); VK-A granted every tool of pud46 and pud46u, VK-G every tool of pud46; neither has a credential. Each call carries its own x-request-id.`, [
+  ...hdoor("PUD-46", "pud46"),
+  overlay("PUD-46", "pud46", "key-g", ["echo_tool", "connect"]),
+  ...hdoor("PUD-46", "pud46u", { flag: false }),
+  pudVK("PUD-46", "pud46", "a", [{ mcp_client_name: "pud46", tools_to_execute: ["*"] }, { mcp_client_name: "pud46u", tools_to_execute: ["*"] }]),
+  pudVK("PUD-46", "pud46", "g"),
+  execAs("PUD-46", "VK-A's connect without a credential", "pud46-connect", [vkOf("pud46", "a"), reqId("pud46-r1")], [A.status(200), contentMatches("the sign-in text", H_SIGNIN("pud46"))], { extraTests: keepFlowFrom("pud46_a_flow", "pm.response.json().content") }),
+  rpc("PUD-46", "VK-A's connect over /mcp without a credential", call("pud46-connect", {}), { headers: [MCP_ACCEPT, vkOf("pud46", "a"), reqId("pud46-r2")], asserts: [A.status(200)] }),
+  execAs("PUD-46", "VK-A's call to pud46u, a sign-in prompt", "pud46u-echo_tool", [vkOf("pud46", "a"), reqId("pud46-r3")], [A.status(400), headersFlow({})]),
+  submitH("PUD-46", "setup: VK-A submits X-Api-Key key-a", "pud46", "a", "key-a"),
+  execAs("PUD-46", "VK-A's connect after sign-in", "pud46-connect", [vkOf("pud46", "a"), reqId("pud46-r4")], [A.status(200), contentIs(alreadyText("pud46"))]),
+  execAs("PUD-46", "VK-A's normal call", "pud46-echo_tool", [vkOf("pud46", "a"), reqId("pud46-r5")], [A.status(200)]),
+  ...signInH("PUD-46", "pud46", "g"),
+  execAs("PUD-46", "VK-G's call to the upstream connect", "pud46-connect", [vkOf("pud46", "g"), reqId("pud46-r6")], [A.status(200), contentIs("connect:{\"text\":\"hi\"}")]),
+  logRow("PUD-46", "the normal call is logged", "pud46-r5", [rowIs("tool_name", "echo_tool"), rowIs("server_label", "pud46")]),
+  logRow("PUD-46", "the upstream connect is logged", "pud46-r6", [rowIs("tool_name", "connect"), rowIs("server_label", "pud46")]),
+  noRowYet("PUD-46", "no log entry for the connect without a credential", "pud46-r1"),
+  noRowYet("PUD-46", "no log entry for the connect over /mcp", "pud46-r2"),
+  noRowYet("PUD-46", "no log entry for the sign-in prompt", "pud46-r3"),
+  noRowYet("PUD-46", "no log entry for the connect after sign-in", "pud46-r4"),
+  deleteClient("PUD-46", "pud46-h"),
+  deleteClient("PUD-46", "pud46u-h"),
+  pudVKDelete("PUD-46", "pud46", "a"), pudVKDelete("PUD-46", "pud46", "g"),
+]);
+
+const PUD47 = folder("PUD-47 The sessions discovery field", `Setup: ${HDOOR_TEXT("pud47", ", prompt greet, resource notes://1, template notes://{id}")}; ${ODOOR_TEXT("pud47o")}, where dave's tools/list fails; pud47u, a per_user_headers client on fleet server pud47u with per_user_discovery unset. Rows: VK-A signed in to pud47; VK-B's pending flow on pud47; VK-C signed in to pud47o as carol; VK-D to pud47o as dave (tools pending); VK-E signed in to pud47o as erin, then the client reregistered (needs reauth) only after the other rows are read; VK-A signed in to pud47u; session pud47-sess signed in to pud47u.`, [
+  ...hdoor("PUD-47", "pud47"),
+  mockList("PUD-47", "pud47", "prompts/set", "prompts", [{ name: "greet", description: "greets" }]),
+  mockList("PUD-47", "pud47", "resources/set", "resources", [{ uri: "notes://1", name: "note one" }]),
+  mockList("PUD-47", "pud47", "templates/set", "templates", [{ uriTemplate: "notes://{id}", name: "a note" }]),
+  ...hdoor("PUD-47", "pud47u", { flag: false }),
+  ...puConfig("PUD-47", false),
+  ...odoor("PUD-47", "pud47o"),
+  identityFault("PUD-47", "pud47o", "dave", { list_fail: true, methods: ["tools/list"] }),
+  pudVK("PUD-47", "pud47", "a", [{ mcp_client_name: "pud47", tools_to_execute: ["*"] }, { mcp_client_name: "pud47u", tools_to_execute: ["*"] }]),
+  pudVK("PUD-47", "pud47", "b"),
+  ...["c", "d", "e"].map((l) => pudVK("PUD-47", "pud47o", l)),
+  ...signInH("PUD-47", "pud47", "a"),
+  connectH("PUD-47", "setup: VK-B calls pud47-connect, leaving its flow pending", "pud47", "b"),
+  ...signInO("PUD-47", "pud47o", "c", "carol"),
+  ...signInO("PUD-47", "pud47o", "d", "dave", PENDING_LANDING("pud47o")),
+  ...signInO("PUD-47", "pud47o", "e", "erin"),
+  ...signInFlowH("PUD-47", "pud47u", "a", "key-a", "pud47"),
+  execAs("PUD-47", "setup: session pud47-sess calls pud47u-echo_tool and is sent to a header flow", "pud47u-echo_tool", [SESS("pud47-sess")], [A.status(400), headersFlow({ saveAs: "pud47_s_flow" })]),
+  hdrSubmit("PUD-47", "setup: session pud47-sess submits X-Api-Key key-s", "pud47_s_flow", { "x-api-key": "key-s" }, [A.status(200)]),
+  rowOf("PUD-47", "VK-A's pud47 row: discovery 2 tools, 1 prompt, 2 resources (templates counted)", "pud47-h", "pud47", "a", "discovery {tool_count 2, prompt_count 1, resource_count 2} with a discovered_at", [...DISCOVERY(2, 1, 2), "pm.expect(row.discovery.discovered_at).to.match(/^\\d{4}-\\d{2}-\\d{2}T/);", "pm.expect(row.mcp_client.per_user_discovery).to.equal(true);"]),
+  request("PUD-47", "VK-B's pending flow on pud47 carries none", "GET", SESSIONS, { asserts: [A.status(200), A.custom("one pending flow row for VK-B, no discovery", [sessionRows("pud47-h", "s.kind === 'flow'"), "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(1);", "pm.expect(found[0].virtual_key.id).to.equal(pm.collectionVariables.get('pud47_b_id'));", "pm.expect(found[0]).to.not.have.property('discovery');"])] }),
+  rowOf("PUD-47", "VK-C's pud47o row: discovery 2 tools", "pud47o-u", "pud47o", "c", "discovery {tool_count 2, prompt_count 0, resource_count 0}", DISCOVERY(2, 0, 0)),
+  rowOf("PUD-47", "VK-D's tools-pending token carries none", "pud47o-u", "pud47o", "d", "VK-D's row: active, no discovery", [...ROW_STATUS("active"), ...NO_DISCOVERY]),
+  rowOf("PUD-47", "VK-A's row on unflagged pud47u carries none", "pud47u-h", "pud47", "a", "VK-A's pud47u row: no discovery, and the client is not flagged", [...NO_DISCOVERY, "pm.expect(row.mcp_client).to.not.have.property('per_user_discovery');"]),
+  request("PUD-47", "the session-mode row carries none", "GET", SESSIONS, { asserts: [A.status(200), A.custom("one session-mode row on pud47u, no discovery", [sessionRows("pud47u-h", "s.auth_mode === 'session'"), "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(1);", "pm.expect(found[0]).to.not.have.property('discovery');"])] }),
+  rowOf("PUD-47", "control: VK-E's row has its discovery", "pud47o-u", "pud47o", "e", "VK-E's row: active, 2 tools", [...ROW_STATUS("active"), ...DISCOVERY(2)]),
+  clientPost("PUD-47", "setup: reregister pud47o", "pud47o-u", "reregister", [A.status(200)]),
+  rowOf("PUD-47", "VK-E's needs_reauth row carries none", "pud47o-u", "pud47o", "e", "VK-E's row: needs_reauth, no discovery", [...ROW_STATUS("needs_reauth"), ...NO_DISCOVERY]),
+  clearIdentityFault("PUD-47", "pud47o", "dave"),
+  deleteClient("PUD-47", "pud47-h"), deleteClient("PUD-47", "pud47u-h"), deleteClient("PUD-47", "pud47o-u"),
+  pudVKDelete("PUD-47", "pud47", "a"), pudVKDelete("PUD-47", "pud47", "b"),
+  ...["c", "d", "e"].map((l) => pudVKDelete("PUD-47", "pud47o", l)),
+  restoreConfig("PUD-47"),
+]);
+
+// ---------------------------------------------------------------- G. Races
+
+const PUD48 = folder("PUD-48 Revoke during sign-in discovery", `Setup: ${ODOOR_TEXT("pud48")}; VK-A has consented as alice; a gate holds alice's tools/list. VK-A's callback is sent; while its sign-in discovery waits at the gate, VK-A's new token row is deleted; then the gate opens.`, [
+  ...puConfig("PUD-48", false),
+  ...odoor("PUD-48", "pud48"),
+  pudVK("PUD-48", "pud48", "a"),
+  connectO("PUD-48", "setup: VK-A calls pud48-connect and gets the sign-in link", "pud48", "a"),
+  flowStart("PUD-48", "setup: start VK-A's flow", "pud48_a_flow"),
+  consentAs("PUD-48", "setup: consent for VK-A as alice", "pud48_a_flow", "alice"),
+  gatesSet("PUD-48", "pud48", { name: "g48", method: "tools/list", identity: "alice" }),
+  race("PUD-48", "the callback waits at the gate while VK-A's new token is deleted", "pud48", "g48", { method: "GET", url: "{{pud48_a_flow_cb}}" },
+    [deleteRowStep("pud48-u", "pud48_a_id")], "pud48_race",
+    [raceHeld("pud48_race"), raceStep("pud48_race", 0, 204), raceFirst("pud48_race", "the callback completed", ["pm.expect(first.code, 'race: ' + JSON.stringify(race)).to.equal(200);"])]),
+  sessionsNone("PUD-48", "no sessions row for pud48", "pud48-u"),
+  gwList("PUD-48", "VK-A's gw-list is [pud48-connect]", [vkOf("pud48", "a")], ["pud48-connect"]),
+  getClient("PUD-48", "pud48-u", "no callers_by_tool", [callersAre(null)]),
+  gatesClear("PUD-48", "pud48"),
+  deleteClient("PUD-48", "pud48-u"),
+  pudVKDelete("PUD-48", "pud48", "a"),
+  restoreConfig("PUD-48"),
+]);
+
+const PUD49 = folder("PUD-49 Revoke during the OAuth code exchange", `Setup: ${ODOOR_TEXT("pud49")}; VK-A signed in as alice, then reauthorized from its session row and consented as alice again; a gate holds pud49's token endpoint. The reauth callback is sent; while its code exchange waits at the gate, VK-A's session is deleted; then the gate opens.`, [
+  ...puConfig("PUD-49", false),
+  ...odoor("PUD-49", "pud49"),
+  pudVK("PUD-49", "pud49", "a"),
+  ...signInO("PUD-49", "pud49", "a", "alice"),
+  rowOf("PUD-49", "setup: find VK-A's session", "pud49-u", "pud49", "a", "VK-A's row has a discovery", DISCOVERY(2), keepRowId("pud49_a_row")),
+  request("PUD-49", "setup: reauth VK-A's session", "POST", "/api/mcp/sessions/{{pud49_a_row}}/reauth", { asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('pud49_r', pm.response.json().session_id);"] }),
+  flowStart("PUD-49", "setup: start the reauth flow", "pud49_r"),
+  consentAs("PUD-49", "setup: consent as alice again", "pud49_r", "alice"),
+  mockGet("PUD-49", "pud49", "setup: record pud49's code exchanges", [], ["pm.collectionVariables.set('pud49_tc', pm.response.json().oauth.counters.token_code);"]),
+  gatesSet("PUD-49", "pud49", { name: "g49", endpoint: "token" }),
+  race("PUD-49", "the reauth callback's code exchange waits at the gate while VK-A's session is deleted", "pud49", "g49", { method: "GET", url: "{{pud49_r_cb}}" },
+    [sendStep({ method: "DELETE", url: "{{base_url}}/api/mcp/sessions/{{pud49_a_row}}", header: ADMIN_H })], "pud49_race",
+    [raceHeld("pud49_race"), raceStep("pud49_race", 0, 204), A.custom("the code was exchanged upstream once more", ["pm.expect(pm.response.json().oauth.counters.token_code, 'body: ' + pm.response.text()).to.equal(Number(pm.collectionVariables.get('pud49_tc')) + 1);"])]),
+  sessionsNone("PUD-49", "no token or flow row for pud49", "pud49-u"),
+  gwList("PUD-49", "VK-A's gw-list is [pud49-connect]", [vkOf("pud49", "a")], ["pud49-connect"]),
+  getClient("PUD-49", "pud49-u", "no callers_by_tool", [callersAre(null)]),
+  gatesClear("PUD-49", "pud49"),
+  deleteClient("PUD-49", "pud49-u"),
+  pudVKDelete("PUD-49", "pud49", "a"),
+  restoreConfig("PUD-49"),
+]);
+
+const PUD50 = folder("PUD-50 Revoke during the headers submit", `Setup: ${HDOOR_TEXT("pud50")}; VK-B has a pending header flow; a gate holds key-b's initialize. VK-B's submit is sent; while its verification waits at the gate, the flow is deleted; then the gate opens.`, [
+  ...hdoor("PUD-50", "pud50"),
+  pudVK("PUD-50", "pud50", "b"),
+  connectH("PUD-50", "setup: VK-B calls pud50-connect and gets the sign-in link", "pud50", "b"),
+  gatesSet("PUD-50", "pud50", { name: "g50", method: "initialize", identity: "key-b" }),
+  race("PUD-50", "the submit waits at the gate while VK-B's flow is deleted", "pud50", "g50", { method: "PUT", url: "{{base_url}}/api/mcp/per-user-headers/flows/{{pud50_b_flow}}", header: { ...ADMIN_H, ...JSON_H }, body: { headers: { "x-api-key": "key-b" } } },
+    [sendStep({ method: "DELETE", url: "{{base_url}}/api/mcp/sessions/{{pud50_b_flow}}", header: ADMIN_H })], "pud50_race",
+    [raceHeld("pud50_race"), raceStep("pud50_race", 0, 204), raceFirst("pud50_race", "the submit answered 404 \"Headers submission flow was revoked or expired...\"", ["pm.expect(first.code, 'race: ' + JSON.stringify(race)).to.equal(404);", "pm.expect(JSON.parse(first.body).error.message.indexOf('Headers submission flow was revoked or expired'), 'race: ' + JSON.stringify(race)).to.equal(0);"])]),
+  sessionsNone("PUD-50", "no sessions row for pud50", "pud50-h"),
+  gwList("PUD-50", "VK-B's gw-list is [pud50-connect]", [vkOf("pud50", "b")], ["pud50-connect"]),
+  getClient("PUD-50", "pud50-h", "no callers_by_tool", [callersAre(null)]),
+  gatesClear("PUD-50", "pud50"),
+  deleteClient("PUD-50", "pud50-h"),
+  pudVKDelete("PUD-50", "pud50", "b"),
+]);
+
+const PUD51 = folder("PUD-51 Client replaced during a call", `Setup: ${HDOOR_TEXT("pud51")}; VK-A signed in with key-a; a gate holds key-a's tools/call; pud51's counters reset. VK-A's call is sent; while it waits at the gate, the client is deleted (which removes VK-A's grant) and created again with the same id and name, and key-a's tools/call is set to answer 401; then the gate opens. Afterwards VK-A is granted the new client.`, [
+  ...hdoor("PUD-51", "pud51"),
+  pudVK("PUD-51", "pud51", "a"),
+  ...signInH("PUD-51", "pud51", "a"),
+  resetCounters("PUD-51", "pud51"),
+  gatesSet("PUD-51", "pud51", { name: "g51", method: "tools/call", identity: "key-a" }),
+  race("PUD-51", "VK-A's call waits at the gate while the client is replaced and key-a's calls answer 401", "pud51", "g51", { method: "POST", url: "{{base_url}}/v1/mcp/tool/execute", header: { "x-bf-vk": "{{pud51_a}}", ...JSON_H }, body: { id: "c1", type: "function", function: { name: "pud51-echo_tool", arguments: "{\"text\":\"hi\"}" } } },
+    [sendStep({ method: "DELETE", url: "{{base_url}}/api/mcp/client/pud51-h", header: ADMIN_H }),
+      sendStep({ method: "POST", url: "{{base_url}}/api/mcp/client", header: { ...ADMIN_H, ...JSON_H }, body: { ...hdoorBody("pud51"), connection_string: "{{chaos_url}}/s/pud51/mcp" } }),
+      sendStep({ method: "POST", url: "{{chaos_url}}/control/pud51/faults/identity", header: JSON_H, body: { identity: "key-a", faults: { status: 401, methods: ["tools/call"] } } })], "pud51_race",
+    [raceHeld("pud51_race"), raceStep("pud51_race", 0, 200), raceStep("pud51_race", 1, 200), raceStep("pud51_race", 2, 200),
+      raceFirst("pud51_race", "the call failed with no mcp_auth_required", ["pm.expect(first.code, 'race: ' + JSON.stringify(race)).to.equal(400);", "var b = JSON.parse(first.body);", "pm.expect(b.extra_fields || {}, 'race: ' + JSON.stringify(race)).to.not.have.property('mcp_auth_required');"]),
+      identityMethod("key-a", "tools/call", 1)]),
+  sessionsNone("PUD-51", "no sessions row for the new pud51", "pud51-h"),
+  gwList("PUD-51", "VK-A's gw-list is empty: the delete removed its grant", [vkOf("pud51", "a")], []),
+  pudVKGrant("PUD-51", "pud51", "a"),
+  gwList("PUD-51", "VK-A's gw-list is [pud51-connect]: nothing of the old client's is kept", [vkOf("pud51", "a")], ["pud51-connect"]),
+  clearIdentityFault("PUD-51", "pud51", "key-a"),
+  gatesClear("PUD-51", "pud51"),
+  deleteClient("PUD-51", "pud51-h"),
+  pudVKDelete("PUD-51", "pud51", "a"),
+]);
+
+// ---------------------------------------------------------------- H. Refreshing one caller's discovery from their session
+
+const PUD55 = folder("PUD-55 Refresh picks up what the upstream added", `Setup: ${HDOOR_TEXT("pud55")}; VK-A and VK-B signed in with key-a and key-b. Then key-a also sees new_tool, prompt greet, resource notes://a and template notes://{id}, and VK-A's session is refreshed.`, [
+  ...hdoor("PUD-55", "pud55"),
+  pudVK("PUD-55", "pud55", "a"), pudVK("PUD-55", "pud55", "b"),
+  ...signInH("PUD-55", "pud55", "a"), ...signInH("PUD-55", "pud55", "b"),
+  rowOf("PUD-55", "setup: find VK-A's session", "pud55-h", "pud55", "a", "VK-A's row can be refreshed", [...DISCOVERY(2), ...CAN_REFRESH(true)], [...keepRowId("pud55_a_row"), ...keepDiscoveredAt("pud55_at")]),
+  overlay("PUD-55", "pud55", "key-a", ["echo_tool", "add_tool", "new_tool"]),
+  kindOverlay("PUD-55", "pud55", "prompts", "key-a", [{ name: "greet", description: "greets" }]),
+  kindOverlay("PUD-55", "pud55", "resources", "key-a", [{ uri: "notes://a", name: "key-a's note" }]),
+  kindOverlay("PUD-55", "pud55", "templates", "key-a", [{ uriTemplate: "notes://{id}", name: "key-a's notes", text: "key-a read {uri}" }]),
+  gwList("PUD-55", "control: before the refresh VK-A's gw-list is unchanged", [vkOf("pud55", "a")], ["pud55-add_tool", "pud55-echo_tool"]),
+  refreshRow("PUD-55", "refresh VK-A's session", "pud55_a_row", refreshed(3, 1, 2)),
+  rowOf("PUD-55", "VK-A's row holds the new discovery", "pud55-h", "pud55", "a", "discovery {3, 1, 2} with a new discovered_at", [...DISCOVERY(3, 1, 2), ...NEW_AT("pud55_at")]),
+  gwList("PUD-55", "VK-A's gw-list has new_tool", [vkOf("pud55", "a")], ["pud55-add_tool", "pud55-echo_tool", "pud55-new_tool"]),
+  execAs("PUD-55", "VK-A calls pud55-new_tool", "pud55-new_tool", [vkOf("pud55", "a")], [A.status(200), contentIs("new_tool:{\"text\":\"hi\"}")]),
+  gwRpc("PUD-55", "VK-A's prompts/list has greet", "prompts/list", null, [vkOf("pud55", "a")], [listedAre("prompts", "name", ["pud55-greet"])]),
+  gwRpc("PUD-55", "VK-A reads notes://7 through its new template", "resources/read", { uri: "notes://7" }, [vkOf("pud55", "a")], [readTextIs("key-a read notes://7")]),
+  gwList("PUD-55", "VK-B's gw-list is unchanged", [vkOf("pud55", "b")], ["pud55-add_tool", "pud55-echo_tool"]),
+  execAs("PUD-55", "VK-B calls pud55-new_tool", "pud55-new_tool", [vkOf("pud55", "b")], [A.status(400), A.msgEquals("tool 'pud55-new_tool' is not available or not permitted")]),
+  getClient("PUD-55", "pud55-h", "callers_by_tool {add_tool: 2, echo_tool: 2, new_tool: 1}", [callersAre({ add_tool: 2, echo_tool: 2, new_tool: 1 })]),
+  mockGet("PUD-55", "pud55", "only key-a listed again", [identityMethod("key-a", "tools/list", 2), identityMethod("key-b", "tools/list", 1)]),
+  deleteClient("PUD-55", "pud55-h"),
+  pudVKDelete("PUD-55", "pud55", "a"), pudVKDelete("PUD-55", "pud55", "b"),
+]);
+
+const PUD56 = folder("PUD-56 Refresh an OAuth caller", `Setup: ${ODOOR_TEXT("pud56")}; VK-A signed in as alice. Then alice also sees search, and VK-A's session is refreshed.`, [
+  ...puConfig("PUD-56", false),
+  ...odoor("PUD-56", "pud56"),
+  pudVK("PUD-56", "pud56", "a"),
+  ...signInO("PUD-56", "pud56", "a", "alice"),
+  rowOf("PUD-56", "setup: find VK-A's session", "pud56-u", "pud56", "a", "VK-A's token row can be refreshed", [...DISCOVERY(2), ...CAN_REFRESH(true)], keepRowId("pud56_a_row")),
+  overlay("PUD-56", "pud56", "alice", ["echo_tool", "add_tool", "search"]),
+  refreshRow("PUD-56", "refresh VK-A's session", "pud56_a_row", refreshed(3)),
+  gwList("PUD-56", "VK-A's gw-list has search", [vkOf("pud56", "a")], ["pud56-add_tool", "pud56-echo_tool", "pud56-search"]),
+  gwCallAs("PUD-56", "VK-A calls pud56-search over /mcp", "pud56-search", [vkOf("pud56", "a")], [gwTextIs("search:{\"text\":\"hi\"}")]),
+  mockGet("PUD-56", "pud56", "alice listed tools twice and ran search once", [identityMethod("alice", "tools/list", 2), identityCallsAre({ alice: 1 })]),
+  deleteClient("PUD-56", "pud56-u"),
+  pudVKDelete("PUD-56", "pud56", "a"),
+  restoreConfig("PUD-56"),
+]);
+
+const PUD57 = folder("PUD-57 A refresh that cannot discover keeps the caller's tools", `Setup: ${HDOOR_TEXT("pud57")}; VK-A and VK-B signed in with key-a and key-b. Then key-a also sees new_tool, but key-a's tools/list fails (list_fail scoped to tools/list); VK-A's session is refreshed, then VK-B's; then the fault is cleared and VK-A's is refreshed again.`, [
+  ...hdoor("PUD-57", "pud57"),
+  pudVK("PUD-57", "pud57", "a"), pudVK("PUD-57", "pud57", "b"),
+  ...signInH("PUD-57", "pud57", "a"), ...signInH("PUD-57", "pud57", "b"),
+  rowOf("PUD-57", "setup: find VK-A's session", "pud57-h", "pud57", "a", "VK-A's row has a discovery", DISCOVERY(2), [...keepRowId("pud57_a_row"), ...keepDiscoveredAt("pud57_at")]),
+  rowOf("PUD-57", "setup: find VK-B's session", "pud57-h", "pud57", "b", "VK-B's row has a discovery", DISCOVERY(2), keepRowId("pud57_b_row")),
+  overlay("PUD-57", "pud57", "key-a", ["echo_tool", "add_tool", "new_tool"]),
+  identityFault("PUD-57", "pud57", "key-a", { list_fail: true, methods: ["tools/list"] }),
+  refreshRow("PUD-57", "refresh VK-A's session while its tools/list fails", "pud57_a_row", [A.status(502), A.msgStartsWith("Failed to discover the tools of MCP client pud57: ")]),
+  rowOf("PUD-57", "VK-A keeps its discovery", "pud57-h", "pud57", "a", "VK-A's row: active, the same discovery, still refreshable", [...ROW_STATUS("active"), ...DISCOVERY(2), ...SAME_AT("pud57_at"), ...CAN_REFRESH(true)]),
+  gwList("PUD-57", "VK-A's gw-list is unchanged", [vkOf("pud57", "a")], ["pud57-add_tool", "pud57-echo_tool"]),
+  execAs("PUD-57", "VK-A still calls pud57-echo_tool", "pud57-echo_tool", [vkOf("pud57", "a")], [A.status(200), contentIs("echo_tool:{\"text\":\"hi\"}")]),
+  refreshRow("PUD-57", "VK-B's refresh is unaffected", "pud57_b_row", refreshed(2)),
+  clearIdentityFault("PUD-57", "pud57", "key-a"),
+  refreshRow("PUD-57", "once the fault is cleared VK-A's refresh succeeds", "pud57_a_row", refreshed(3)),
+  gwList("PUD-57", "VK-A's gw-list has new_tool", [vkOf("pud57", "a")], ["pud57-add_tool", "pud57-echo_tool", "pud57-new_tool"]),
+  deleteClient("PUD-57", "pud57-h"),
+  pudVKDelete("PUD-57", "pud57", "a"), pudVKDelete("PUD-57", "pud57", "b"),
+]);
+
+const PUD58 = folder("PUD-58 A refresh revoked mid-discovery stores nothing", `Setup: ${HDOOR_TEXT("pud58")}; VK-A signed in with key-a; key-a then also sees new_tool; a gate holds key-a's tools/list. VK-A's session is refreshed; while its discovery waits at the gate, VK-A's credential is revoked; then the gate opens.`, [
+  ...hdoor("PUD-58", "pud58"),
+  pudVK("PUD-58", "pud58", "a"),
+  ...signInH("PUD-58", "pud58", "a"),
+  rowOf("PUD-58", "setup: find VK-A's session", "pud58-h", "pud58", "a", "VK-A's row has a discovery", DISCOVERY(2), keepRowId("pud58_a_row")),
+  overlay("PUD-58", "pud58", "key-a", ["echo_tool", "add_tool", "new_tool"]),
+  gatesSet("PUD-58", "pud58", { name: "g58", method: "tools/list", identity: "key-a" }),
+  race("PUD-58", "the refresh waits at the gate while VK-A's credential is revoked", "pud58", "g58", { method: "POST", url: "{{base_url}}/api/mcp/sessions/{{pud58_a_row}}/refresh", header: ADMIN_H },
+    [sendStep({ method: "DELETE", url: "{{base_url}}/api/mcp/per-user-headers/credential/{{pud58_a_cred}}", header: ADMIN_H })], "pud58_race",
+    [raceHeld("pud58_race"), raceStep("pud58_race", 0, 204), raceFirst("pud58_race", `the refresh answered 409 ${lit(REFRESH_CONFLICT)}`, ["pm.expect(first.code, 'race: ' + JSON.stringify(race)).to.equal(409);", `pm.expect(JSON.parse(first.body).error.message).to.equal(${lit(REFRESH_CONFLICT)});`])]),
+  sessionsNone("PUD-58", "no sessions row for pud58", "pud58-h"),
+  gwList("PUD-58", "VK-A's gw-list is [pud58-connect]", [vkOf("pud58", "a")], ["pud58-connect"]),
+  getClient("PUD-58", "pud58-h", "no callers_by_tool", [callersAre(null)]),
+  gatesClear("PUD-58", "pud58"),
+  deleteClient("PUD-58", "pud58-h"),
+  pudVKDelete("PUD-58", "pud58", "a"),
+]);
+
+const PUD59 = folder("PUD-59 A refresh that loses to a newer sign-in keeps the newer discovery", `Setup: ${HDOOR_TEXT("pud59")}; VK-A signed in with key-a; key-a then also sees stale_tool, and key-a2 sees echo_tool, add_tool and fresh_tool; a gate holds key-a's tools/list. VK-A's session is refreshed; while its discovery waits at the gate, VK-A reauthorizes from its session row and submits X-Api-Key key-a2; then the gate opens.`, [
+  ...hdoor("PUD-59", "pud59"),
+  pudVK("PUD-59", "pud59", "a"),
+  ...signInH("PUD-59", "pud59", "a"),
+  rowOf("PUD-59", "setup: find VK-A's session", "pud59-h", "pud59", "a", "VK-A's row has a discovery", DISCOVERY(2), keepRowId("pud59_a_row")),
+  overlay("PUD-59", "pud59", "key-a", ["echo_tool", "add_tool", "stale_tool"]),
+  overlay("PUD-59", "pud59", "key-a2", ["echo_tool", "add_tool", "fresh_tool"]),
+  gatesSet("PUD-59", "pud59", { name: "g59", method: "tools/list", identity: "key-a" }),
+  race("PUD-59", "the refresh waits at the gate while VK-A signs in again with key-a2", "pud59", "g59", { method: "POST", url: "{{base_url}}/api/mcp/sessions/{{pud59_a_row}}/refresh", header: ADMIN_H },
+    [resubmitStep("pud59_a_row", { "x-api-key": "key-a2" })], "pud59_race",
+    [raceHeld("pud59_race"), raceStep("pud59_race", 0, 200), raceFirst("pud59_race", `the refresh answered 409 ${lit(REFRESH_CONFLICT)}`, ["pm.expect(first.code, 'race: ' + JSON.stringify(race)).to.equal(409);", `pm.expect(JSON.parse(first.body).error.message).to.equal(${lit(REFRESH_CONFLICT)});`])]),
+  rowOf("PUD-59", "VK-A's row holds key-a2's discovery", "pud59-h", "pud59", "a", "VK-A's row: active, 3 tools", [...ROW_STATUS("active"), ...DISCOVERY(3)]),
+  gwList("PUD-59", "VK-A's gw-list is key-a2's tools, not the refresh's", [vkOf("pud59", "a")], ["pud59-add_tool", "pud59-echo_tool", "pud59-fresh_tool"]),
+  gatesClear("PUD-59", "pud59"),
+  deleteClient("PUD-59", "pud59-h"),
+  pudVKDelete("PUD-59", "pud59", "a"),
+]);
+
+const PUD60 = folder("PUD-60 can_refresh and refusals on header rows", `Setup: ${HDOOR_TEXT("pud60")} with VK-A signed in and VK-B's flow left pending; pud60u, as pud60 with per_user_discovery unset, VK-A signed in through a header flow; pud60s, the same unset client where session pud60-sess signed in, then per_user_discovery turned on; HDOOR(pud60k) with VK-C signed in, then header key x-extra added; HDOOR(pud60p) with VK-D signed in, then per_user_discovery turned off and on again, which leaves it awaiting verification.`, [
+  ...hdoor("PUD-60", "pud60"),
+  ...hdoor("PUD-60", "pud60u", { flag: false }),
+  ...hdoor("PUD-60", "pud60s", { flag: false }),
+  ...hdoor("PUD-60", "pud60k"),
+  ...hdoor("PUD-60", "pud60p"),
+  pudVK("PUD-60", "pud60", "a", ["pud60", "pud60u"].map((c) => ({ mcp_client_name: c, tools_to_execute: ["*"] }))),
+  pudVK("PUD-60", "pud60", "b"),
+  pudVK("PUD-60", "pud60k", "c"),
+  pudVK("PUD-60", "pud60p", "d"),
+  ...signInH("PUD-60", "pud60", "a"),
+  connectH("PUD-60", "setup: VK-B calls pud60-connect, leaving its flow pending", "pud60", "b"),
+  ...signInFlowH("PUD-60", "pud60u", "a", "key-a", "pud60"),
+  execAs("PUD-60", "setup: session pud60-sess calls pud60s-echo_tool and is sent to a header flow", "pud60s-echo_tool", [SESS("pud60-sess")], [A.status(400), headersFlow({ saveAs: "pud60s_flow" })]),
+  hdrSubmit("PUD-60", "setup: session pud60-sess submits X-Api-Key key-s", "pud60s_flow", { "x-api-key": "key-s" }, [A.status(200)]),
+  clientPut("PUD-60", "setup: turn per_user_discovery on for pud60s", "pud60s-h", { per_user_discovery: true }, [A.status(200)]),
+  ...signInH("PUD-60", "pud60k", "c"),
+  clientPut("PUD-60", "setup: add header key x-extra to pud60k", "pud60k-h", { per_user_header_keys: ["x-api-key", "x-extra"] }, [A.status(200)]),
+  ...signInH("PUD-60", "pud60p", "d"),
+  clientPut("PUD-60", "setup: turn per_user_discovery off for pud60p", "pud60p-h", { per_user_discovery: false }, [A.status(200)]),
+  clientPut("PUD-60", "setup: turn per_user_discovery on again for pud60p", "pud60p-h", { per_user_discovery: true }, [A.status(200)]),
+  getClient("PUD-60", "pud60p-h", "control: pud60p awaits verification with the flag on", [clientState("pending_verification"), flagIs(true)]),
+  rowOf("PUD-60", "VK-A's active row on pud60 can be refreshed", "pud60-h", "pud60", "a", "can_refresh true", CAN_REFRESH(true), keepRowId("pud60_a_row")),
+  request("PUD-60", "VK-B's pending flow on pud60 cannot", "GET", SESSIONS, { asserts: [A.status(200), A.custom("one flow row, can_refresh false", [sessionRows("pud60-h", "s.kind === 'flow'"), "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(1);", "pm.expect(found[0].can_refresh).to.equal(false);"])] }),
+  rowOf("PUD-60", "VK-A's row on unflagged pud60u cannot", "pud60u-h", "pud60", "a", "can_refresh false", CAN_REFRESH(false), keepRowId("pud60u_a_row")),
+  request("PUD-60", "the session-mode row on pud60s cannot", "GET", SESSIONS, { asserts: [A.status(200), A.custom("one session-mode row, can_refresh false", [sessionRows("pud60s-h", "s.auth_mode === 'session'"), "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(1);", "pm.expect(found[0].can_refresh).to.equal(false);"])], extraTests: [sessionRows("pud60s-h", "s.auth_mode === 'session'"), "pm.collectionVariables.set('pud60s_row', found.length ? found[0].id : '');"] }),
+  rowOf("PUD-60", "VK-C's needs_update row on pud60k cannot", "pud60k-h", "pud60k", "c", "needs_update, can_refresh false", [...ROW_STATUS("needs_update"), ...CAN_REFRESH(false)], keepRowId("pud60k_c_row")),
+  rowOf("PUD-60", "VK-D's row on pud60p, awaiting verification, cannot", "pud60p-h", "pud60p", "d", "active, can_refresh false", [...ROW_STATUS("active"), ...CAN_REFRESH(false)], keepRowId("pud60p_d_row")),
+  refreshRow("PUD-60", "refresh VK-A's pud60 row", "pud60_a_row", refreshed(2)),
+  refreshRow("PUD-60", "refresh VK-B's pending flow id", "pud60_b_flow", refreshRefused(404, "MCP session not found")),
+  refreshRow("PUD-60", "refresh VK-A's pud60u row", "pud60u_a_row", refreshRefused(400, "MCP client pud60u keeps one tool list for every caller; refresh it from the MCP registry instead")),
+  refreshRow("PUD-60", "refresh the session-mode row", "pud60s_row", refreshRefused(400, "A session-bound caller keeps no discovery to refresh")),
+  refreshRow("PUD-60", "refresh VK-C's needs_update row", "pud60k_c_row", refreshRefused(400, "Update this session's headers before refreshing its tools")),
+  refreshRow("PUD-60", "refresh VK-D's row while pud60p awaits verification", "pud60p_d_row", refreshRefused(400, "MCP client pud60p is awaiting admin verification, which serves no caller until it completes")),
+  request("PUD-60", "refresh an unknown id", "POST", "/api/mcp/sessions/7f3e2a10-0000-4000-8000-000000000060/refresh", { asserts: refreshRefused(404, "MCP session not found") }),
+  ...["pud60", "pud60u", "pud60s", "pud60k", "pud60p"].map((c) => deleteClient("PUD-60", `${c}-h`)),
+  pudVKDelete("PUD-60", "pud60", "a"), pudVKDelete("PUD-60", "pud60", "b"), pudVKDelete("PUD-60", "pud60k", "c"), pudVKDelete("PUD-60", "pud60p", "d"),
+]);
+
+const PUD61 = folder("PUD-61 can_refresh and refusals on OAuth rows", `Setup: ${ODOOR_TEXT("pud61")}, VK-A signed in as alice and VK-B's flow left pending; pud61u, a per_user_oauth client with per_user_discovery unset on fleet server pud61u, verified as admin, with VK-C signed in as carol. Then pud61 is reregistered, which leaves VK-A's row needing reauth.`, [
+  ...puConfig("PUD-61", false),
+  ...odoor("PUD-61", "pud61"),
+  ...puConnect("PUD-61", "pud61u"),
+  pudVK("PUD-61", "pud61", "a"), pudVK("PUD-61", "pud61", "b"),
+  pudVK("PUD-61", "pud61u", "c"),
+  ...signInO("PUD-61", "pud61", "a", "alice"),
+  connectO("PUD-61", "setup: VK-B calls pud61-connect, leaving its flow pending", "pud61", "b"),
+  execAs("PUD-61", "setup: VK-C calls pud61u-echo_tool and is sent to an OAuth flow", "pud61u-echo_tool", [vkOf("pud61u", "c")], [A.status(400), keepFlow("pud61u_c_flow")]),
+  flowStart("PUD-61", "setup: start VK-C's flow", "pud61u_c_flow"),
+  consentAs("PUD-61", "setup: consent for VK-C as carol", "pud61u_c_flow", "carol"),
+  followCallback("PUD-61", "setup: follow VK-C's callback", "pud61u_c_flow", [A.status(302), locationEnds(PU_SUCCESS)]),
+  rowOf("PUD-61", "VK-A's active token row can be refreshed", "pud61-u", "pud61", "a", "can_refresh true", CAN_REFRESH(true), keepRowId("pud61_a_row")),
+  request("PUD-61", "VK-B's pending flow cannot", "GET", SESSIONS, { asserts: [A.status(200), A.custom("one flow row, can_refresh false", [sessionRows("pud61-u", "s.kind === 'flow'"), "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(1);", "pm.expect(found[0].can_refresh).to.equal(false);"])] }),
+  rowOf("PUD-61", "VK-C's row on unflagged pud61u cannot", "pud61u-u", "pud61u", "c", "can_refresh false", CAN_REFRESH(false), keepRowId("pud61u_c_row")),
+  refreshRow("PUD-61", "refresh VK-A's row", "pud61_a_row", refreshed(2)),
+  refreshRow("PUD-61", "refresh VK-C's pud61u row", "pud61u_c_row", refreshRefused(400, "MCP client pud61u keeps one tool list for every caller; refresh it from the MCP registry instead")),
+  clientPost("PUD-61", "setup: reregister pud61", "pud61-u", "reregister", [A.status(200)]),
+  rowOf("PUD-61", "VK-A's needs_reauth row cannot", "pud61-u", "pud61", "a", "needs_reauth, can_refresh false", [...ROW_STATUS("needs_reauth"), ...CAN_REFRESH(false)]),
+  refreshRow("PUD-61", "refresh VK-A's needs_reauth row", "pud61_a_row", refreshRefused(400, "Reauthorize this session before refreshing its tools")),
+  deleteClient("PUD-61", "pud61-u"), deleteClient("PUD-61", "pud61u-u"),
+  pudVKDelete("PUD-61", "pud61", "a"), pudVKDelete("PUD-61", "pud61", "b"), pudVKDelete("PUD-61", "pud61u", "c"),
+  restoreConfig("PUD-61"),
+]);
+
+const PUD62 = folder("PUD-62 Client-level refresh-tools points at the session refresh", `Setup: ${HDOOR_TEXT("pud62")}; ${ODOOR_TEXT("pud62o")}; VK-A signed in to both (key-a, alice); both servers' counters reset. refresh-tools is called on each client, then VK-A's pud62 session is refreshed.`, [
+  ...hdoor("PUD-62", "pud62"),
+  ...puConfig("PUD-62", false),
+  ...odoor("PUD-62", "pud62o"),
+  pudVK("PUD-62", "pud62", "a", ["pud62", "pud62o"].map((c) => ({ mcp_client_name: c, tools_to_execute: ["*"] }))),
+  ...signInH("PUD-62", "pud62", "a"),
+  execAs("PUD-62", "setup: VK-A calls pud62o-connect and gets the sign-in link", "pud62o-connect", [vkOf("pud62", "a")], [A.status(200), contentMatches("the sign-in text", O_SIGNIN("pud62o"))], { extraTests: keepFlowFrom("pud62o_a_flow", "pm.response.json().content") }),
+  flowStart("PUD-62", "setup: start VK-A's pud62o flow", "pud62o_a_flow"),
+  consentAs("PUD-62", "setup: consent for VK-A as alice", "pud62o_a_flow", "alice"),
+  followCallback("PUD-62", "setup: follow VK-A's callback", "pud62o_a_flow", [A.status(302), locationEnds(PU_SUCCESS)]),
+  rowOf("PUD-62", "setup: record VK-A's pud62 discovery", "pud62-h", "pud62", "a", "VK-A's pud62 row has a discovery", DISCOVERY(2), [...keepRowId("pud62_a_row"), ...keepDiscoveredAt("pud62_at")]),
+  rowOf("PUD-62", "setup: record VK-A's pud62o discovery", "pud62o-u", "pud62", "a", "VK-A's pud62o row has a discovery", DISCOVERY(2), keepDiscoveredAt("pud62o_at")),
+  resetCounters("PUD-62", "pud62"), resetCounters("PUD-62", "pud62o"),
+  clientPost("PUD-62", "refresh-tools on pud62", "pud62-h", "refresh-tools", [A.status(400), A.msgEquals(REFRESH_TOOLS_PUD("pud62"))]),
+  clientPost("PUD-62", "refresh-tools on pud62o", "pud62o-u", "refresh-tools", [A.status(400), A.msgEquals(REFRESH_TOOLS_PUD("pud62o"))]),
+  mockGet("PUD-62", "pud62", "pud62 received no MCP request", [methodsEmpty()]),
+  mockGet("PUD-62", "pud62o", "pud62o received no MCP request", [methodsEmpty()]),
+  rowOf("PUD-62", "VK-A's pud62 discovery is untouched", "pud62-h", "pud62", "a", "the same discovery", [...DISCOVERY(2), ...SAME_AT("pud62_at")]),
+  rowOf("PUD-62", "VK-A's pud62o discovery is untouched", "pud62o-u", "pud62", "a", "the same discovery", [...DISCOVERY(2), ...SAME_AT("pud62o_at")]),
+  refreshRow("PUD-62", "refresh VK-A's pud62 session instead", "pud62_a_row", refreshed(2)),
+  mockGet("PUD-62", "pud62", "the session refresh listed key-a's tools once", [identityMethod("key-a", "tools/list", 1)]),
+  deleteClient("PUD-62", "pud62-h"), deleteClient("PUD-62", "pud62o-u"),
+  pudVKDelete("PUD-62", "pud62", "a"),
+  restoreConfig("PUD-62"),
+]);
+
+const PUD63 = folder("PUD-63 Revoke the pending reauth flow during its code exchange", `Setup: ${ODOOR_TEXT("pud63")}; VK-A signed in as alice, then reauthorized from its session row and consented as bob; a gate holds pud63's token endpoint. The reauth callback is sent; while its code exchange waits at the gate, the pending reauth flow itself is revoked from the sessions list; then the gate opens. The exchange still happens upstream, but no token is stored from it, so VK-A keeps alice's token and discovery.`, [
+  ...puConfig("PUD-63", false),
+  ...odoor("PUD-63", "pud63"),
+  pudVK("PUD-63", "pud63", "a"),
+  ...signInO("PUD-63", "pud63", "a", "alice"),
+  rowOf("PUD-63", "setup: find VK-A's session", "pud63-u", "pud63", "a", "VK-A's row has a discovery", DISCOVERY(2), keepRowId("pud63_a_row")),
+  request("PUD-63", "setup: reauth VK-A's session", "POST", "/api/mcp/sessions/{{pud63_a_row}}/reauth", { asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('pud63_r', pm.response.json().session_id);"] }),
+  flowStart("PUD-63", "setup: start the reauth flow", "pud63_r"),
+  consentAs("PUD-63", "setup: consent as bob", "pud63_r", "bob"),
+  mockGet("PUD-63", "pud63", "setup: record pud63's code exchanges", [], ["pm.collectionVariables.set('pud63_tc', pm.response.json().oauth.counters.token_code);"]),
+  gatesSet("PUD-63", "pud63", { name: "g63", endpoint: "token" }),
+  race("PUD-63", "the reauth callback's code exchange waits at the gate while the pending reauth flow is revoked", "pud63", "g63", { method: "GET", url: "{{pud63_r_cb}}" },
+    [sendStep({ method: "DELETE", url: "{{base_url}}/api/mcp/sessions/{{pud63_r}}", header: ADMIN_H })], "pud63_race",
+    [raceHeld("pud63_race"), raceStep("pud63_race", 0, 204), A.custom("the code was exchanged upstream once more", ["pm.expect(pm.response.json().oauth.counters.token_code, 'body: ' + pm.response.text()).to.equal(Number(pm.collectionVariables.get('pud63_tc')) + 1);"])]),
+  request("PUD-63", "no flow row is left for pud63", "GET", SESSIONS, { asserts: [A.status(200), A.custom("no flow row for pud63-u", [sessionRows("pud63-u", "s.kind === 'flow'"), "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(0);"])] }),
+  rowOf("PUD-63", "VK-A keeps its session and discovery", "pud63-u", "pud63", "a", "VK-A's one row is the same active token, with its discovery", [...ROW_STATUS("active"), ...DISCOVERY(2), "pm.expect(row.id, 'row: ' + JSON.stringify(row)).to.equal(pm.collectionVariables.get('pud63_a_row'));"]),
+  gwList("PUD-63", "VK-A's gw-list still has pud63's tools", [vkOf("pud63", "a")], ["pud63-add_tool", "pud63-echo_tool"]),
+  gwCallAs("PUD-63", "VK-A calls pud63-add_tool over /mcp", "pud63-add_tool", [vkOf("pud63", "a")], [gwTextIs("add_tool:{\"text\":\"hi\"}")]),
+  mockGet("PUD-63", "pud63", "the call ran with alice's token, not bob's", [identityCallsAre({ alice: 1 })]),
+  gatesClear("PUD-63", "pud63"),
+  deleteClient("PUD-63", "pud63-u"),
+  pudVKDelete("PUD-63", "pud63", "a"),
+  restoreConfig("PUD-63"),
+]);
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -9523,6 +11023,7 @@ const collection = {
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB12, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB27, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43, LOG49]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL01, FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL09, FAIL10, FAIL12, FAIL14, FAIL16, FAIL18, FAIL19, FAIL23, FAIL24, FAIL25, FAIL27, FAIL28]),
+    section("PUD Per-user discovery", "Per-user discovery tests.", [PUD01, PUD02, PUD03, PUD04, PUD05, PUD06, PUD07, PUD08, PUD09, PUD10, PUD11, PUD12, PUD13, PUD14, PUD15, PUD16, PUD17, PUD18, PUD19, PUD20, PUD21, PUD22, PUD23, PUD24, PUD25, PUD26, PUD27, PUD28, PUD29, PUD30, PUD31, PUD32, PUD33, PUD34, PUD35, PUD36, PUD37, PUD38, PUD39, PUD40, PUD41, PUD42, PUD43, PUD44, PUD45, PUD46, PUD47, PUD48, PUD49, PUD50, PUD51, PUD52, PUD53, PUD54, PUD55, PUD56, PUD57, PUD58, PUD59, PUD60, PUD61, PUD62, PUD63]),
   ],
 };
 
