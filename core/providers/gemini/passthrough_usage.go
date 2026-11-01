@@ -19,6 +19,51 @@ func IsInteractionsPassthroughPath(path string) bool {
 	return strings.Contains(path, "/interactions")
 }
 
+// interactionsPathRest returns what follows the /interactions segment of a passthrough path ("" for
+// the collection, "/{id}", "/{id}/cancel"), and false when the path does not address Interactions.
+func interactionsPathRest(path string) (string, bool) {
+	if idx := strings.IndexByte(path, '?'); idx >= 0 {
+		path = path[:idx]
+	}
+	path = strings.TrimRight(path, "/")
+	const segment = "/interactions"
+	idx := strings.LastIndex(path, segment)
+	if idx < 0 {
+		return "", false
+	}
+	rest := path[idx+len(segment):]
+	if rest != "" && rest[0] != '/' {
+		return "", false // e.g. "/interactionsFoo"
+	}
+	return rest, true
+}
+
+// IsInteractionsCreatePath reports whether a passthrough request creates an interaction: a POST to
+// the /interactions collection, whose body names the model or agent that runs.
+func IsInteractionsCreatePath(method, path string) bool {
+	rest, ok := interactionsPathRest(path)
+	return ok && rest == "" && method == "POST"
+}
+
+// IsInteractionsResourcePath reports whether a passthrough request reads, deletes or cancels an
+// existing interaction by id. These run nothing new: the model or agent was checked when the
+// interaction was created, and the request itself names none.
+func IsInteractionsResourcePath(method, path string) bool {
+	rest, ok := interactionsPathRest(path)
+	if !ok || len(rest) < 2 {
+		return false
+	}
+	id := rest[1:]
+	if strings.HasSuffix(id, "/cancel") || strings.HasSuffix(id, ":cancel") {
+		id = id[:len(id)-len("/cancel")]
+		return method == "POST" && id != "" && !strings.Contains(id, "/")
+	}
+	if strings.Contains(id, "/") {
+		return false
+	}
+	return method == "GET" || method == "DELETE"
+}
+
 // ClassifyPassthroughPath maps a Gemini/Vertex passthrough path to the Bifrost request type its
 // :action suffix addresses. :generateContent and :streamGenerateContent are Responses-shaped
 // (Bifrost routes GenAI generation through the Responses schema), :predict is Imagen and

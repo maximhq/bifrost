@@ -253,6 +253,36 @@ func TestIsInteractionsPassthroughPath(t *testing.T) {
 	}
 }
 
+func TestInteractionsPassthroughPathKinds(t *testing.T) {
+	tests := []struct {
+		method, path     string
+		create, resource bool
+	}{
+		{"POST", "/interactions", true, false},
+		{"POST", "/projects/p/locations/global/interactions", true, false},
+		{"POST", "/interactions?alt=sse", true, false},
+		{"GET", "/interactions", false, false},
+		{"GET", "/interactions/int_1", false, true},
+		{"GET", "/interactions/int_1?stream=true&last_event_id=e1", false, true},
+		{"DELETE", "/interactions/int_1", false, true},
+		{"POST", "/interactions/int_1/cancel", false, true},
+		{"POST", "/interactions/int_1:cancel", false, true},
+		{"POST", "/interactions/int_1", false, false},
+		{"GET", "/interactions/int_1/cancel", false, false},
+		{"GET", "/interactions/int_1/other", false, false},
+		{"POST", "/interactionsfoo", false, false},
+		{"POST", "/models/gemini-2.5-flash:generateContent", false, false},
+	}
+	for _, tt := range tests {
+		if got := gemini.IsInteractionsCreatePath(tt.method, tt.path); got != tt.create {
+			t.Errorf("IsInteractionsCreatePath(%s %s) = %v, want %v", tt.method, tt.path, got, tt.create)
+		}
+		if got := gemini.IsInteractionsResourcePath(tt.method, tt.path); got != tt.resource {
+			t.Errorf("IsInteractionsResourcePath(%s %s) = %v, want %v", tt.method, tt.path, got, tt.resource)
+		}
+	}
+}
+
 // TestExtractGeminiPassthroughUsage_EmbeddingPredictBilling pins that a Vertex embedding model on
 // :predict is billed from its predict response (token statistics) whatever the path classifies as,
 // and that an Imagen :predict is still billed per image.

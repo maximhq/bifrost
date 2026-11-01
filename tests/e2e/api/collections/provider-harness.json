@@ -303258,6 +303258,466 @@
           }
         }
       ]
+    },
+    {
+      "name": "304. Gemini Interactions agent runs on /genai_passthrough (interactions agent governance) [SERIAL]",
+      "description": "Google's Interactions API runs server-side agents such as Deep Research. The create names an agent (deep-research-preview-04-2026) instead of a model, runs in the background, and is followed by GET /interactions/{id} polls until it completes. Bifrost read only \"model\" from passthrough bodies, so agent runs logged no model, were never priced, and were never checked against a virtual key's allowed models (a restricted key refused them for naming no model; an open one ran any agent). Polls name no model at all, so a restricted key refused them too.\n\nThe genai passthrough router now reads \"agent\" as the model on an Interactions create and marks polls, cancels and deletes model-free.\n\nThe cases use a virtual key restricted to {{genaiModel}} and the deep-research-preview-04-2026 agent. The refused agent create and the malformed agent body never reach a paid model, and the allowed agent create sends a body Google rejects before any run starts. The billed create uses {{genaiModel}} with a one-word reply.",
+      "item": [
+        {
+          "name": "gemini interactions agent governance setup: create a virtual key that allows the genai model and one agent - interactions agent governance",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Sweep keys an earlier run left behind. The folder is [SERIAL], so every run-tagged key that exists now is a leftover.",
+                  "(function () {",
+                  "  var BASE = pm.variables.get('baseUrl');",
+                  "  var PREFIX = 'harness-iag-vk-run-';",
+                  "  pm.sendRequest({ url: BASE + '/api/governance/virtual-keys?search=' + encodeURIComponent(PREFIX) + '&limit=100', method: 'GET' }, function (err, res) {",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    ((json && json.virtual_keys) || []).filter(function (v) { return String(v.name || '').indexOf(PREFIX) === 0; }).forEach(function (v) {",
+                  "      pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + v.id, method: 'DELETE' }, function () {});",
+                  "    });",
+                  "  });",
+                  "})();",
+                  "pm.collectionVariables.set('iagVK', 'missing');",
+                  "pm.collectionVariables.unset('iagVKID');",
+                  "pm.collectionVariables.unset('iagInteractionId');",
+                  "pm.collectionVariables.unset('iagCreateRequestId');",
+                  "pm.collectionVariables.set('iagBody', JSON.stringify({",
+                  "  name: 'harness-iag-vk-run-' + Date.now(),",
+                  "  provider_configs: [{ provider: 'gemini', allowed_models: [pm.variables.get('genaiModel'), 'deep-research-preview-04-2026'], key_ids: ['*'], weight: 1 }]",
+                  "}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('interactions agent governance: virtual key created', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var vk = {}; try { vk = (pm.response.json() || {}).virtual_key || {}; } catch (e) { vk = {}; }",
+                  "var value = (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value;",
+                  "pm.test('interactions agent governance: the virtual key has a value and an id', function () {",
+                  "  pm.expect(value, pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "  pm.expect(vk.id, pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "if (value && vk.id) { pm.collectionVariables.set('iagVK', value); pm.collectionVariables.set('iagVKID', vk.id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{iagBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] gemini deep-research-max-preview-04-2026 interactions create via /genai_passthrough/v1beta: an agent the key does not allow is refused with model_blocked - interactions agent governance",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// Before: the body named no \"model\", so governance saw no model and the refusal said the request names none.",
+                  "// After: the agent is the request's model and is refused by name. No agent run is ever started.",
+                  "pm.test('gemini interactions agent create: refused with 403', function () {",
+                  "  pm.expect(pm.response.code, 'want 403 model_blocked: ' + txt.slice(0, 600)).to.eql(403);",
+                  "});",
+                  "pm.test('gemini interactions agent create: the refusal is model_blocked and names the agent', function () {",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.include('model_blocked');",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.include('deep-research-max-preview-04-2026');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{iagVK}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"agent\": \"deep-research-max-preview-04-2026\",\n  \"input\": \"Reply with exactly: OK\",\n  \"background\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta/interactions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta",
+                "interactions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] gemini interactions create via /genai_passthrough/v1beta: a non-string agent is refused by the gateway - interactions agent governance",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The agent is what governance checks, so a body whose agent cannot be read is refused before it reaches Google.",
+                  "pm.test('gemini interactions malformed agent: refused with 400', function () {",
+                  "  pm.expect(pm.response.code, 'want 400: ' + txt.slice(0, 600)).to.eql(400);",
+                  "});",
+                  "pm.test('gemini interactions malformed agent: refused by the gateway, not upstream', function () {",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.include('passthrough request body agent must be a string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{iagVK}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"agent\": 5,\n  \"input\": \"Reply with exactly: OK\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta/interactions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta",
+                "interactions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] gemini deep-research-preview-04-2026 interactions create via /genai_passthrough/v1beta: an agent the key allows is forwarded to Google - interactions agent governance",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The key allows this agent, so the gateway must forward the create to Google. The body is one Google",
+                  "// rejects before any run starts ('input' must be content), which proves forwarding without a paid run.",
+                  "// Before: the body named no \"model\", so a key with an allowed-models list refused it with 403.",
+                  "pm.test('gemini interactions allowlisted agent: Google answers, not the gateway', function () {",
+                  "  pm.expect(pm.response.code, 'want Google\\'s 400, not the gateway\\'s 403: ' + txt.slice(0, 600)).to.eql(400);",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.not.include('model_blocked');",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.include('input');",
+                  "});",
+                  "pm.test('gemini interactions allowlisted agent: the request reached the Gemini upstream', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), 'x-bifrost-provider').to.eql('gemini');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-upstream-latency-ms'), 'x-bifrost-upstream-latency-ms is set only after an upstream call').to.be.a('string').and.not.empty;",
+                  "});",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + encodeURIComponent(reqId), method: 'GET' }, function (err, res) {",
+                  "    var row = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (row && row.status && row.status !== 'processing') {",
+                  "      pm.test('gemini interactions allowlisted agent: the log row names the agent', function () {",
+                  "        pm.expect(row.model, JSON.stringify(row).slice(0, 600)).to.eql('deep-research-preview-04-2026');",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('gemini interactions allowlisted agent: log row written', function () { pm.expect.fail('log ' + reqId + ' not written after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{iagVK}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"agent\": \"deep-research-preview-04-2026\",\n  \"input\": 5,\n  \"background\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta/interactions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta",
+                "interactions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini genai-model interactions create via /genai_passthrough/v1beta: the allowed model runs, is logged and billed - interactions agent governance",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('gemini interactions create: 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "pm.test('gemini interactions create: a stored interaction id and a completed run come back', function () {",
+                  "  pm.expect(j.id, txt.slice(0, 600)).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.status, txt.slice(0, 600)).to.eql('completed');",
+                  "});",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('gemini interactions create: x-bifrost-request-id echoed', function () {",
+                  "  pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (j.id) { pm.collectionVariables.set('iagInteractionId', j.id); }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + encodeURIComponent(reqId), method: 'GET' }, function (err, res) {",
+                  "    var row = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (row && row.status && row.status !== 'processing') {",
+                  "      pm.test('gemini interactions create: the log row names the model and carries a cost', function () {",
+                  "        pm.expect(row.model, JSON.stringify(row).slice(0, 600)).to.eql(pm.variables.get('genaiModel'));",
+                  "        pm.expect(row.cost, JSON.stringify(row).slice(0, 600)).to.be.a('number').and.above(0);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('gemini interactions create: log row written', function () { pm.expect.fail('log ' + reqId + ' not written after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{iagVK}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{genaiModel}}\",\n  \"input\": \"Reply with exactly: OK\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta/interactions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta",
+                "interactions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini genai-model interactions poll via /genai_passthrough/v1beta: a restricted key can read the run - interactions agent governance",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// Before: a poll names no model, so a key with an allowed-models list refused it with 403.",
+                  "pm.test('gemini interactions poll: 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "pm.test('gemini interactions poll: the same completed run comes back with its usage', function () {",
+                  "  pm.expect(j.id, txt.slice(0, 600)).to.eql(pm.collectionVariables.get('iagInteractionId'));",
+                  "  pm.expect(j.status, txt.slice(0, 600)).to.eql('completed');",
+                  "  pm.expect(j.usage, txt.slice(0, 600)).to.be.an('object');",
+                  "});",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{iagVK}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta/interactions/{{iagInteractionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta",
+                "interactions",
+                "{{iagInteractionId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini interactions agent governance cleanup: delete the stored interaction with the restricted key - interactions agent governance",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A delete names no model either, so the restricted key must be able to clean up its own run.",
+                  "pm.test('gemini interactions delete: accepted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.be.within(200, 299);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{iagVK}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta/interactions/{{iagInteractionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta",
+                "interactions",
+                "{{iagInteractionId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini interactions agent governance cleanup: delete the virtual key - interactions agent governance",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('interactions agent governance: virtual key deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys/{{iagVKID}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{iagVKID}}"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

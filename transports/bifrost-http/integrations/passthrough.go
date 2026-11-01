@@ -7,6 +7,7 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/providers/sagemaker"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
@@ -185,6 +186,24 @@ func NewGenAIPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handler
 	return NewPassthroughRouter(client, handlerStore, accessResolver, logger, &PassthroughConfig{
 		Provider:         schemas.Gemini,
 		ProviderDetector: detectProviderFromGenAIRequest,
+		// An Interactions create names an agent (Deep Research) instead of a model; the agent is
+		// what runs, so it is what key selection, model allowlists and pricing see.
+		BodyModelKey: func(method, path string) string {
+			if gemini.IsInteractionsCreatePath(method, path) {
+				return "agent"
+			}
+			return ""
+		},
+		// Polling, deleting or cancelling an interaction runs nothing new: the model or agent was
+		// checked when it was created, and the request names none.
+		ModelFreePath: gemini.IsInteractionsResourcePath,
+		// An Interactions path names no model, only a project, location and run id. A project named
+		// "models" or "deployments" would otherwise read as a model segment.
+		NoPathModel: func(method, path string) bool {
+			// The substring gate keeps model calls to one scan; the exact checks run only on Interactions paths.
+			return gemini.IsInteractionsPassthroughPath(path) &&
+				(gemini.IsInteractionsCreatePath(method, path) || gemini.IsInteractionsResourcePath(method, path))
+		},
 		StripPrefix: []string{
 			"/genai_passthrough/v1beta1",
 			"/genai_passthrough/v1beta",
