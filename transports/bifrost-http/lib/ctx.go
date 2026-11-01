@@ -710,10 +710,12 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 				return true
 			}
 		}
-		// Handle MCP extra headers
-		if mcpHeaderCombinedAllowlist.IsAllowed(keyStr) {
+		// Capture MCP extra headers without ending this header's handling: a "*"
+		// list matches every header, and ending it here meant Bifrost's own
+		// control headers below were never acted on. Bifrost's x-bf-* headers
+		// and the security denylist are never forwarded to an MCP server.
+		if mcpHeaderCombinedAllowlist.IsAllowed(keyStr) && !strings.HasPrefix(keyStr, "x-bf-") && !securityDenylist[keyStr] {
 			mcpExtraHeaders[keyStr] = append(mcpExtraHeaders[keyStr], string(value))
-			return true
 		}
 		// Raw capture headers — all three support "true"/"false" to fully override the
 		// provider-level config for this request.
