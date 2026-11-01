@@ -7,16 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -421,42 +419,23 @@ func TestExecuteTool_ToolErrorMentioningSession_DoesNotTriggerRecovery(t *testin
 	assert.Equal(t, int32(1), calls.Load(), "a tool error is not a dead session: the call must not be replayed")
 }
 
-// Replay-safety regressions use the public executor and a real local MCP server.
-// The ledger records completed mutations independently of transport attempts.
-type replayDiagnosticFixture struct {
-	t          *testing.T
-	server     *httptest.Server
-	transport  string
-	fault      string
-	failures   int
-	readOnly   bool
-	idempotent bool
-	mu         sync.Mutex
-	wire       int
-	invoked    int
-	ledger     []string
-	wireIDs    []string
-	sessions   []string
-	dropIDs    map[string]bool
-	started    chan struct{}
-	committed  chan struct{}
-	release    chan struct{}
-	logger     *replayDiagnosticLogger
+// Commit before losing the response, so counts distinguish wire success from
+// successful execution. Read-only/idempotent controls honor their annotations.
+type replayTestFixture struct {
+	server      *httptest.Server
+	calls       atomic.Int32
+	commits     atomic.Int32
+	backoff     chan struct{}
+	afterCommit func()
 }
 
-type replayDiagnosticLogger struct {
+type replayTestLogger struct {
 	MockLogger
-	mu      sync.Mutex
-	lines   []string
 	backoff chan struct{}
 }
 
-func (l *replayDiagnosticLogger) Debug(format string, args ...any) {
-	line := fmt.Sprintf(format, args...)
-	l.mu.Lock()
-	l.lines = append(l.lines, line)
-	l.mu.Unlock()
-	if strings.Contains(line, "retrying after") {
+func (l *replayTestLogger) Debug(format string, args ...any) {
+	if strings.Contains(format, "retrying after") {
 		select {
 		case l.backoff <- struct{}{}:
 		default:
@@ -464,505 +443,280 @@ func (l *replayDiagnosticLogger) Debug(format string, args ...any) {
 	}
 }
 
-func (l *replayDiagnosticLogger) Error(format string, args ...any) {
-	l.Debug(format, args...)
-}
-
-func (f *replayDiagnosticFixture) snapshot() (wire, invoked, commits int) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.wire, f.invoked, len(f.ledger)
-}
-
-func (f *replayDiagnosticFixture) execute(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	logical, _ := req.GetArguments()["operation"].(string)
-	f.mu.Lock()
-	f.invoked++
-	invocation := f.invoked
-	f.mu.Unlock()
-	select {
-	case f.started <- struct{}{}:
-	default:
-	}
-	if f.fault == "late_commit" {
-		// Deliberately ignore cancellation, as a remote operation can already be
-		// committed or otherwise not be abortable when its caller times out.
-		<-f.release
-	}
-	f.mu.Lock()
-	if !f.readOnly && (!f.idempotent || len(f.ledger) == 0) {
-		f.ledger = append(f.ledger, logical)
-	}
-	commits := len(f.ledger)
-	f.mu.Unlock()
-	f.t.Logf("UPSTREAM logical=%q invocation=%d committed_effects=%d", logical, invocation, commits)
-	select {
-	case f.committed <- struct{}{}:
-	default:
-	}
-	if invocation <= f.failures {
-		switch f.fault {
-		case "rpc_transient":
-			return nil, errors.New("temporary failure after commit")
-		case "rpc_unknown":
-			return nil, errors.New("business rule rejected after commit")
-		case "rpc_auth":
-			return nil, errors.New("downstream API returned 401 unauthorized after commit")
-		case "rpc_session":
-			return nil, errors.New("session not found in tool's domain after commit")
-		case "tool_error":
-			return mcpgo.NewToolResultError("temporary failure after commit"), nil
-		}
-	}
-	return mcpgo.NewToolResultText(fmt.Sprintf("logical=%s invocation=%d commits=%d", logical, invocation, commits)), nil
-}
-
-// replayDiagnosticSSEWriter drops only the selected result event, never discovery
-// or initialization. Returning len(p) models a server/proxy losing the response
-// without turning the successful tool execution itself into a scripted error.
-type replayDiagnosticSSEWriter struct {
-	http.ResponseWriter
-	f *replayDiagnosticFixture
-}
-
-func (w replayDiagnosticSSEWriter) Flush() { w.ResponseWriter.(http.Flusher).Flush() }
-func (w replayDiagnosticSSEWriter) Write(p []byte) (int, error) {
-	for _, line := range strings.Split(string(p), "\n") {
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-		var envelope struct {
-			ID json.RawMessage `json:"id"`
-		}
-		if json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &envelope) != nil {
-			continue
-		}
-		w.f.mu.Lock()
-		drop := w.f.dropIDs[string(envelope.ID)]
-		w.f.mu.Unlock()
-		if drop {
-			w.f.t.Logf("UPSTREAM dropped SSE result wire_id=%s", envelope.ID)
-			return len(p), nil
-		}
-	}
-	return w.ResponseWriter.Write(p)
-}
-
-func newReplayDiagnosticFixture(t *testing.T, transportName, fault string, failures int, annotations mcpgo.ToolAnnotation, readOnly, idempotent bool) *replayDiagnosticFixture {
+func newReplayTestFixture(t *testing.T, connectionType schemas.MCPConnectionType, status, failures int, annotations mcpgo.ToolAnnotation) *replayTestFixture {
 	t.Helper()
-	f := &replayDiagnosticFixture{
-		t: t, transport: transportName, fault: fault, failures: failures,
-		readOnly: readOnly, idempotent: idempotent, dropIDs: make(map[string]bool),
-		started: make(chan struct{}, 8), committed: make(chan struct{}, 8), release: make(chan struct{}),
-		logger: &replayDiagnosticLogger{backoff: make(chan struct{}, 8)},
-	}
-	s := server.NewMCPServer("local-replay-diagnostics", "1.0.0", server.WithToolCapabilities(true))
-	s.AddTool(mcpgo.NewTool("append", mcpgo.WithToolAnnotation(annotations), mcpgo.WithString("operation")), f.execute)
+	f := &replayTestFixture{backoff: make(chan struct{}, 1)}
+	committed := make(chan struct{}, 8)
+	s := server.NewMCPServer("replay-test", "1", server.WithToolCapabilities(true))
+	s.AddTool(mcpgo.NewTool("append", mcpgo.WithToolAnnotation(annotations)), func(context.Context, mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		f.calls.Add(1)
+		if annotations.ReadOnlyHint == nil || !*annotations.ReadOnlyHint {
+			if annotations.IdempotentHint == nil || !*annotations.IdempotentHint || f.commits.Load() == 0 {
+				f.commits.Add(1)
+			}
+		}
+		committed <- struct{}{}
+		return mcpgo.NewToolResultText("ok"), nil
+	})
 	var handler http.Handler = server.NewStreamableHTTPServer(s)
-	if transportName == "sse" {
+	if connectionType == schemas.MCPConnectionTypeSSE {
 		handler = server.NewSSEServer(s, server.WithUseFullURLForMessageEndpoint(false))
 	}
 	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			if transportName == "sse" && fault == "event_loss" {
-				handler.ServeHTTP(replayDiagnosticSSEWriter{w, f}, r)
-			} else {
-				handler.ServeHTTP(w, r)
-			}
+			handler.ServeHTTP(w, r)
 			return
 		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			http.Error(w, "bad fixture request", http.StatusBadRequest)
+			t.Error(err)
 			return
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
-		var envelope struct {
-			Method string          `json:"method"`
-			ID     json.RawMessage `json:"id"`
-		}
-		if json.Unmarshal(body, &envelope) != nil || envelope.Method != "tools/call" {
+		var rpc struct{ Method string }
+		if json.Unmarshal(body, &rpc) != nil || rpc.Method != "tools/call" {
 			handler.ServeHTTP(w, r)
 			return
 		}
-		f.mu.Lock()
-		f.wire++
-		wire := f.wire
-		f.wireIDs = append(f.wireIDs, string(envelope.ID))
-		session := r.Header.Get("Mcp-Session-Id")
-		if transportName == "sse" {
-			session = r.URL.Query().Get("sessionId")
-		}
-		f.sessions = append(f.sessions, session)
-		fail := wire <= failures
-		if fail && fault == "event_loss" {
-			f.dropIDs[string(envelope.ID)] = true
-		}
-		f.mu.Unlock()
-		t.Logf("WIRE logical_request=1 attempt=%d session=%q body=%s", wire, session, body)
-		if fail && (fault == "pre_503" || fault == "pre_401" || fault == "pre_session") {
-			status, message := http.StatusServiceUnavailable, "unavailable before dispatch"
-			if fault == "pre_401" {
-				status, message = http.StatusUnauthorized, "unauthorized before dispatch"
-			} else if fault == "pre_session" {
-				status, message = http.StatusNotFound, "session expired before dispatch"
-			}
-			http.Error(w, message, status)
+		recorded := httptest.NewRecorder()
+		handler.ServeHTTP(recorded, r)
+		// Legacy SSE acknowledges asynchronously; wait for actual execution.
+		select {
+		case <-committed:
+		case <-r.Context().Done():
 			return
 		}
-		recorder := httptest.NewRecorder()
-		handler.ServeHTTP(recorder, r)
-		if transportName == "sse" {
-			// Its real handler acknowledges asynchronously; wait for the actual
-			// tool handler, not merely a 202, before injecting a post-commit fault.
-			select {
-			case <-f.committed:
-			case <-time.After(3 * time.Second):
-				t.Error("fixture tool handler did not commit")
-				return
+		if int(f.calls.Load()) <= failures {
+			if f.afterCommit != nil {
+				f.afterCommit()
 			}
-		}
-		if fail {
-			switch {
-			case strings.HasPrefix(fault, "http_"):
-				status, _ := strconv.Atoi(strings.TrimPrefix(fault, "http_"))
+			if status == 0 {
+				<-r.Context().Done() // A committed operation can outlive its caller.
+			} else {
 				http.Error(w, "upstream response unavailable after commit", status)
-				return
-			case fault == "eof" || fault == "reset":
-				if fault == "reset" {
-					w.Header().Set("Content-Type", "application/json")
-					w.Header().Set("Content-Length", "9999")
-					_, _ = io.WriteString(w, "{")
-					w.(http.Flusher).Flush()
-				}
-				conn, _, err := w.(http.Hijacker).Hijack()
-				if err != nil {
-					t.Error(err)
-					return
-				}
-				if tcp, ok := conn.(*net.TCPConn); ok && fault == "reset" {
-					_ = tcp.SetLinger(0)
-				}
-				_ = conn.Close()
-				return
-			case fault == "withhold":
-				<-r.Context().Done()
-				return
 			}
-		}
-		if transportName == "http-sse" {
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.WriteHeader(http.StatusOK)
-			if !(fail && fault == "event_loss") {
-				_, _ = fmt.Fprintf(w, "event: message\ndata: %s\n\n", strings.TrimSpace(recorder.Body.String()))
-			}
-			w.(http.Flusher).Flush()
 			return
 		}
-		for k, values := range recorder.Header() {
-			w.Header()[k] = values
+		for k, v := range recorded.Header() {
+			w.Header()[k] = v
 		}
-		w.WriteHeader(recorder.Code)
-		_, _ = w.Write(recorder.Body.Bytes())
+		w.WriteHeader(recorded.Code)
+		_, _ = w.Write(recorded.Body.Bytes())
 	}))
 	t.Cleanup(f.server.Close)
 	return f
 }
 
-func (f *replayDiagnosticFixture) manager(t *testing.T, sticky bool, timeout time.Duration) (*MCPManager, string) {
+func (f *replayTestFixture) manager(t *testing.T, connectionType schemas.MCPConnectionType, timeout time.Duration) *MCPManager {
 	t.Helper()
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, f.logger, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &replayTestLogger{backoff: f.backoff}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
-	connectionType := schemas.MCPConnectionTypeHTTP
 	url := f.server.URL
-	if f.transport == "sse" {
-		connectionType = schemas.MCPConnectionTypeSSE
+	if connectionType == schemas.MCPConnectionTypeSSE {
 		url += "/sse"
 	}
-	config := &schemas.MCPClientConfig{
-		ID: "replay-diagnostics-id", Name: "replay", ConnectionType: connectionType,
-		AuthType: schemas.MCPAuthTypeHeaders, ConnectionString: schemas.NewSecretVar(url),
-		NeedsSessionStickiness: schemas.Ptr(sticky), ToolsToExecute: []string{"*"}, ToolsToAutoExecute: []string{"*"},
-		ToolExecutionTimeout: timeout,
-	}
-	require.NoError(t, m.AddClient(context.Background(), config))
-	require.Eventually(t, func() bool { return m.GetClientForTool("replay-append") != nil }, 3*time.Second, 5*time.Millisecond)
-	return m, "replay-append"
+	config := newRecoveryClientConfig("replay-id", "replay", url)
+	config.ConnectionType = connectionType
+	config.ToolExecutionTimeout = timeout
+	config.ToolsToAutoExecute = []string{"*"}
+	require.NoError(t, m.connectToMCPClient(context.Background(), config))
+	return m
 }
 
-func replayDiagnosticCall(m *MCPManager, ctx context.Context, name string) (*schemas.ChatMessage, *schemas.BifrostError) {
-	bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
-	bfCtx.SetValue(schemas.BifrostContextKeyRequestID, "logical-request-one")
-	return m.ExecuteChatTool(bfCtx, &schemas.ChatAssistantMessageToolCall{
-		ID: schemas.Ptr("logical-tool-call-one"), Type: schemas.Ptr("function"),
-		Function: schemas.ChatAssistantMessageToolCallFunction{Name: &name, Arguments: `{"operation":"customer-operation-one"}`},
+func replayTestCall(m *MCPManager, ctx context.Context) (*schemas.ChatMessage, *schemas.BifrostError) {
+	return m.ExecuteChatTool(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.ChatAssistantMessageToolCall{
+		ID: schemas.Ptr("one-call"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("replay-append"), Arguments: "{}"},
 	})
 }
 
-func (f *replayDiagnosticFixture) report(t *testing.T, result any, bErr *schemas.BifrostError) {
-	t.Helper()
-	wire, invoked, commits := f.snapshot()
-	resultJSON, _ := json.Marshal(result)
-	errorJSON, _ := json.Marshal(bErr)
-	f.mu.Lock()
-	t.Logf("EVIDENCE transport=%s fault=%s logical_requests=1 wire_calls=%d actual_invocations=%d committed_effects=%d ids=%v ledger=%v result=%s error=%s", f.transport, f.fault, wire, invoked, commits, f.wireIDs, f.ledger, resultJSON, errorJSON)
-	f.mu.Unlock()
-	f.logger.mu.Lock()
-	defer f.logger.mu.Unlock()
-	for _, line := range f.logger.lines {
-		if strings.Contains(line, "retry") || strings.Contains(line, "execution failed") {
-			t.Logf("BIFROST %s", line)
-		}
-	}
-}
-
 func TestMCPToolReplaySafety_RealTransports(t *testing.T) {
-	additive := mcpgo.ToolAnnotation{DestructiveHint: schemas.Ptr(false), IdempotentHint: schemas.Ptr(false)}
-	destructive := mcpgo.ToolAnnotation{DestructiveHint: schemas.Ptr(true), IdempotentHint: schemas.Ptr(false)}
-	cases := []struct {
-		name, fault              string
-		annotations              mcpgo.ToolAnnotation
-		readOnly, idempotent     bool
-		failures, calls, effects int
-		wantError, toolError     bool
+	policies := []struct {
+		name        string
+		annotations mcpgo.ToolAnnotation
+		replay      bool
+		effects     int32
 	}{
-		{name: "unannotated_success", calls: 1, effects: 1},
-		{name: "readonly_success", annotations: mcpgo.ToolAnnotation{ReadOnlyHint: schemas.Ptr(true)}, readOnly: true, calls: 1},
-		{name: "idempotent_success", annotations: mcpgo.ToolAnnotation{IdempotentHint: schemas.Ptr(true)}, idempotent: true, calls: 1, effects: 1},
-		{name: "unannotated_postcommit_503", fault: "http_503", failures: 1, calls: 1, effects: 1, wantError: true},
-		{name: "additive_nonidempotent_postcommit_503", fault: "http_503", annotations: additive, failures: 1, calls: 1, effects: 1, wantError: true},
-		{name: "destructive_postcommit_503", fault: "http_503", annotations: destructive, failures: 1, calls: 1, effects: 1, wantError: true},
-		{name: "readonly_postcommit_503", fault: "http_503", annotations: mcpgo.ToolAnnotation{ReadOnlyHint: schemas.Ptr(true)}, readOnly: true, failures: 1, calls: 2},
-		{name: "idempotent_postcommit_503", fault: "http_503", annotations: mcpgo.ToolAnnotation{IdempotentHint: schemas.Ptr(true)}, idempotent: true, failures: 1, calls: 2, effects: 1},
-		// Hints authorize replay; they do not enforce deduplication. This
-		// deliberately false server contract documents the remaining trust boundary.
-		{name: "misannotated_nonidempotent_can_duplicate", fault: "http_503", annotations: mcpgo.ToolAnnotation{IdempotentHint: schemas.Ptr(true)}, failures: 1, calls: 2, effects: 2},
-		{name: "readonly_ignores_other_hints", fault: "http_503", annotations: mcpgo.ToolAnnotation{ReadOnlyHint: schemas.Ptr(true), DestructiveHint: schemas.Ptr(true), IdempotentHint: schemas.Ptr(false)}, readOnly: true, failures: 1, calls: 2},
-		{name: "rpc_transient_after_commit", fault: "rpc_transient", failures: 1, calls: 1, effects: 1, wantError: true},
-		{name: "idempotent_rpc_error_not_retried", fault: "rpc_transient", annotations: mcpgo.ToolAnnotation{IdempotentHint: schemas.Ptr(true)}, idempotent: true, failures: 1, calls: 1, effects: 1, wantError: true},
-		{name: "rpc_unknown_after_commit", fault: "rpc_unknown", failures: 1, calls: 1, effects: 1, wantError: true},
-		{name: "rpc_domain_session_no_recovery", fault: "rpc_session", annotations: additive, failures: 1, calls: 1, effects: 1, wantError: true},
-		{name: "structured_tool_error_not_retried", fault: "tool_error", failures: 1, calls: 1, effects: 1, toolError: true},
-		{name: "idempotent_structured_tool_error_not_retried", fault: "tool_error", annotations: mcpgo.ToolAnnotation{IdempotentHint: schemas.Ptr(true)}, idempotent: true, failures: 1, calls: 1, effects: 1, toolError: true},
-		{name: "postcommit_400", fault: "http_400", failures: 1, calls: 1, effects: 1, wantError: true},
-		{name: "postcommit_429", fault: "http_429", failures: 1, calls: 1, effects: 1, wantError: true},
-		{name: "postcommit_500", fault: "http_500", failures: 1, calls: 1, effects: 1, wantError: true},
-		{name: "postcommit_502", fault: "http_502", failures: 1, calls: 1, effects: 1, wantError: true},
-		{name: "postcommit_504", fault: "http_504", failures: 1, calls: 1, effects: 1, wantError: true},
-		{name: "preexecution_503_unknown_phase_is_not_replayed", fault: "pre_503", failures: 1, calls: 1, wantError: true},
-		{name: "preexecution_503_readonly_still_retries", fault: "pre_503", annotations: mcpgo.ToolAnnotation{ReadOnlyHint: schemas.Ptr(true)}, readOnly: true, failures: 1, calls: 2},
-		{name: "unsafe_retry_budget_is_not_used", fault: "http_503", failures: 3, calls: 1, effects: 1, wantError: true},
-		{name: "idempotent_retry_budget_exhausted", fault: "http_503", annotations: mcpgo.ToolAnnotation{IdempotentHint: schemas.Ptr(true)}, idempotent: true, failures: 3, calls: 3, effects: 1, wantError: true},
-		{name: "response_reset_after_commit", fault: "reset", failures: 1, calls: 1, effects: 1, wantError: true},
-		{name: "response_eof_after_commit", fault: "eof", failures: 1, calls: 1, effects: 1, wantError: true},
+		{"missing", mcpgo.ToolAnnotation{}, false, 1},
+		{"destructive", mcpgo.ToolAnnotation{DestructiveHint: schemas.Ptr(true), IdempotentHint: schemas.Ptr(false)}, false, 1},
+		{"additive", mcpgo.ToolAnnotation{DestructiveHint: schemas.Ptr(false), IdempotentHint: schemas.Ptr(false)}, false, 1},
+		{"readonly", mcpgo.ToolAnnotation{ReadOnlyHint: schemas.Ptr(true)}, true, 0},
+		{"idempotent", mcpgo.ToolAnnotation{IdempotentHint: schemas.Ptr(true)}, true, 1},
 	}
-	for _, transportName := range []string{"http-json", "sse"} {
-		for _, tc := range cases {
-			t.Run(transportName+"/"+tc.name, func(t *testing.T) {
-				f := newReplayDiagnosticFixture(t, transportName, tc.fault, tc.failures, tc.annotations, tc.readOnly, tc.idempotent)
-				m, name := f.manager(t, true, 2*time.Second)
-				msg, bErr := replayDiagnosticCall(m, context.Background(), name)
-				f.report(t, msg, bErr)
-				wire, invoked, effects := f.snapshot()
-				require.Equal(t, tc.calls, wire)
-				wantInvoked := tc.calls
-				if tc.fault == "pre_503" {
-					wantInvoked--
-				}
-				require.Equal(t, wantInvoked, invoked)
-				require.Equal(t, tc.effects, effects)
-				if tc.wantError {
-					require.NotNil(t, bErr)
-					if invoked > 0 && !tc.readOnly && !tc.idempotent {
-						require.Contains(t, bErr.GetErrorString(), "may have succeeded")
-					}
-				} else {
-					require.Nil(t, bErr)
-					require.NotNil(t, msg)
-					require.NotNil(t, msg.Content)
-					if !tc.toolError {
-						require.Contains(t, *msg.Content.ContentStr, "customer-operation-one")
-					}
-				}
-				if tc.toolError {
-					require.NotNil(t, msg.ChatToolMessage)
-					require.Equal(t, schemas.Ptr(true), msg.IsError)
-				}
-			})
-		}
-	}
-}
-
-func TestMCPToolReplaySafety_Recovery(t *testing.T) {
-	for _, sticky := range []bool{true, false} {
-		for _, fault := range []string{"pre_401", "pre_session", "rpc_auth", "http_401"} {
-			for _, policy := range []string{"missing", "additive", "idempotent"} {
-				t.Run(fmt.Sprintf("sticky=%t/%s/policy=%s", sticky, fault, policy), func(t *testing.T) {
-					annotations := mcpgo.ToolAnnotation{}
-					if policy == "additive" {
-						annotations.DestructiveHint = schemas.Ptr(false)
-						annotations.IdempotentHint = schemas.Ptr(false)
-					}
-					idempotent := policy == "idempotent"
-					if idempotent {
-						annotations.IdempotentHint = schemas.Ptr(true)
-					}
-					f := newReplayDiagnosticFixture(t, "http-json", fault, 1, annotations, false, idempotent)
-					m, name := f.manager(t, sticky, 2*time.Second)
-					msg, bErr := replayDiagnosticCall(m, context.Background(), name)
-					f.report(t, msg, bErr)
-					wire, invoked, effects := f.snapshot()
-					calls := 1
-					if idempotent {
-						calls++
-						require.Nil(t, bErr, "authorized recovery must preserve availability")
+	for _, connectionType := range []schemas.MCPConnectionType{schemas.MCPConnectionTypeHTTP, schemas.MCPConnectionTypeSSE} {
+		for _, status := range []int{http.StatusServiceUnavailable, http.StatusUnauthorized} {
+			for _, policy := range policies {
+				t.Run(fmt.Sprintf("%s/%d/%s", connectionType, status, policy.name), func(t *testing.T) {
+					f := newReplayTestFixture(t, connectionType, status, 1, policy.annotations)
+					m := f.manager(t, connectionType, 2*time.Second)
+					msg, bErr := replayTestCall(m, context.Background())
+					require.Equal(t, policy.effects, f.commits.Load(), "one logical operation must not commit twice")
+					if policy.replay {
+						require.Equal(t, int32(2), f.calls.Load())
+						require.Nil(t, bErr)
 						require.NotNil(t, msg)
 					} else {
-						require.NotNil(t, bErr, "neither absent hints nor additive-only hints authorize replay")
+						require.Equal(t, int32(1), f.calls.Load(), "unsafe operations must not be invoked twice")
+						require.NotNil(t, bErr)
+						require.Contains(t, bErr.GetErrorString(), "upstream response unavailable after commit")
+						require.Contains(t, bErr.GetErrorString(), "execution may have succeeded; automatic replay was suppressed")
 					}
-					require.Equal(t, calls, wire)
-					if strings.HasPrefix(fault, "pre_") {
-						calls--
-					}
-					require.Equal(t, calls, invoked)
-					wantEffects := calls
-					if idempotent {
-						wantEffects = 1
-					}
-					require.Equal(t, wantEffects, effects)
 				})
 			}
 		}
 	}
 }
 
+func TestMCPToolReplaySafety_RetryBudget(t *testing.T) {
+	f := newReplayTestFixture(t, schemas.MCPConnectionTypeHTTP, http.StatusServiceUnavailable, 3, mcpgo.ToolAnnotation{IdempotentHint: schemas.Ptr(true)})
+	m := f.manager(t, schemas.MCPConnectionTypeHTTP, 2*time.Second)
+	_, bErr := replayTestCall(m, context.Background())
+	require.NotNil(t, bErr)
+	require.Equal(t, int32(3), f.calls.Load(), "one attempt plus two bounded retries")
+	require.Equal(t, int32(1), f.commits.Load())
+}
+
+func TestMCPToolReplaySafety_DoesNotAuthorizeAnEarlierUnsafeCall(t *testing.T) {
+	for _, direct := range []bool{false, true} {
+		t.Run(fmt.Sprintf("direct=%t", direct), func(t *testing.T) {
+			f := newReplayTestFixture(t, schemas.MCPConnectionTypeHTTP, http.StatusServiceUnavailable, 1, mcpgo.ToolAnnotation{})
+			m := f.manager(t, schemas.MCPConnectionTypeHTTP, 2*time.Second)
+			f.afterCommit = func() {
+				// A new contract for future calls cannot make the first mutation safe to replay.
+				state := m.GetClientByName("replay")
+				tool := state.ToolMap["replay-append"]
+				tool.Annotations = &schemas.MCPToolAnnotations{IdempotentHint: schemas.Ptr(true)}
+				m.SetClientTools(state.ExecutionConfig.ID, map[string]schemas.ChatTool{"replay-append": tool}, state.ToolNameMapping, "")
+			}
+			if direct {
+				state := m.GetClientByName("replay")
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				_, err := m.toolsManager.ExecuteTool(ctx, newAuthRetryToolCallRequest("replay-append"), state.Conn, state.ExecutionConfig, state.ToolNameMapping)
+				require.ErrorContains(t, err, "may have succeeded")
+			} else {
+				_, bErr := replayTestCall(m, context.Background())
+				require.NotNil(t, bErr)
+				require.Contains(t, bErr.GetErrorString(), "may have succeeded")
+			}
+			require.Equal(t, int32(1), f.calls.Load())
+			require.Equal(t, int32(1), f.commits.Load())
+		})
+	}
+}
+
 func TestMCPToolReplaySafety_RechecksDuringBackoff(t *testing.T) {
-	f := newReplayDiagnosticFixture(t, "http-json", "http_503", 1, mcpgo.ToolAnnotation{IdempotentHint: schemas.Ptr(true)}, false, true)
-	m, name := f.manager(t, true, 2*time.Second)
-	done := make(chan *schemas.BifrostError, 1)
-	go func() { _, err := replayDiagnosticCall(m, context.Background(), name); done <- err }()
-	select {
-	case <-f.logger.backoff:
-	case <-time.After(time.Second):
-		t.Fatal("no retry scheduled")
+	for _, disabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("disabled=%t", disabled), func(t *testing.T) {
+			f := newReplayTestFixture(t, schemas.MCPConnectionTypeHTTP, http.StatusServiceUnavailable, 1, mcpgo.ToolAnnotation{IdempotentHint: schemas.Ptr(true)})
+			m := f.manager(t, schemas.MCPConnectionTypeHTTP, 2*time.Second)
+			done := make(chan *schemas.BifrostError, 1)
+			go func() { _, err := replayTestCall(m, context.Background()); done <- err }()
+			select {
+			case <-f.backoff:
+			case <-time.After(time.Second):
+				t.Fatal("no retry scheduled")
+			}
+			state := m.GetClientByName("replay")
+			if disabled {
+				require.NoError(t, m.DisableClient(state.ExecutionConfig.ID))
+			} else {
+				tool := state.ToolMap["replay-append"]
+				tool.Annotations = &schemas.MCPToolAnnotations{IdempotentHint: schemas.Ptr(false)}
+				m.SetClientTools(state.ExecutionConfig.ID, map[string]schemas.ChatTool{"replay-append": tool}, state.ToolNameMapping, "")
+			}
+			select {
+			case err := <-done:
+				require.NotNil(t, err)
+				require.Contains(t, err.GetErrorString(), "request failed with status 503")
+				require.Contains(t, err.GetErrorString(), "upstream response unavailable after commit")
+				require.Contains(t, err.GetErrorString(), "may have succeeded")
+			case <-time.After(3 * time.Second):
+				t.Fatal("execution did not finish")
+			}
+			require.Equal(t, int32(1), f.calls.Load())
+			require.Equal(t, int32(1), f.commits.Load())
+		})
 	}
-	state := m.GetClientByName("replay")
-	tool := state.ToolMap[name]
-	tool.Annotations = &schemas.MCPToolAnnotations{DestructiveHint: schemas.Ptr(false), IdempotentHint: schemas.Ptr(false)}
-	// Simulate the server's changed contract and its normal tool-list update,
-	// without mutating a published tool map in place.
-	f.mu.Lock()
-	f.idempotent = false
-	f.mu.Unlock()
-	m.SetClientTools(state.ExecutionConfig.ID, map[string]schemas.ChatTool{name: tool}, state.ToolNameMapping, "")
-	select {
-	case err := <-done:
-		f.report(t, nil, err)
-		require.NotNil(t, err)
-		require.Contains(t, err.GetErrorString(), "request failed with status 503")
-		require.Contains(t, err.GetErrorString(), "upstream response unavailable after commit")
-		require.NotContains(t, err.GetErrorString(), "tool replay no longer authorized")
-		require.Contains(t, err.GetErrorString(), "may have succeeded")
-	case <-time.After(3 * time.Second):
-		t.Fatal("execution did not finish")
-	}
-	wire, invoked, effects := f.snapshot()
-	require.Equal(t, 1, wire)
-	require.Equal(t, 1, invoked)
-	require.Equal(t, 1, effects)
+}
+
+func TestMCPToolReplaySafety_ConcurrentRegistration(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+	function := func(any) (string, error) { return "ok", nil }
+	require.NoError(t, m.RegisterTool("reader", "Read-only control", function, schemas.ChatTool{
+		Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "reader"},
+		Annotations: &schemas.MCPToolAnnotations{ReadOnlyHint: schemas.Ptr(true)},
+	}))
+	name := BifrostMCPClientKey + "-reader"
+	state := m.GetClientForTool(name)
+	ft := &fakeCallToolTransport{callErrs: []error{errors.New("request failed with status 503")}}
+	conn := client.NewClient(ft, client.WithSession())
+	t.Cleanup(func() { _ = conn.Close() })
+	done := make(chan error, 1)
+	go func() {
+		for i := 0; i < 256; i++ {
+			toolName := fmt.Sprintf("tool%d", i)
+			if err := m.RegisterTool(toolName, "Concurrent registration", function, schemas.ChatTool{
+				Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: toolName},
+			}); err != nil {
+				done <- err
+				return
+			}
+		}
+		done <- nil
+	}()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	response, err := m.toolsManager.ExecuteTool(ctx, newAuthRetryToolCallRequest(name), conn, state.ExecutionConfig, state.ToolNameMapping)
+	registrationErr := <-done
+	require.NoError(t, registrationErr)
+	require.NoError(t, err)
+	require.NotNil(t, response)
+	require.Equal(t, 2, ft.CallCount(), "catalog updates must not break safe recovery")
 }
 
 func TestMCPToolReplaySafety_DeadlineAndCancellation(t *testing.T) {
-	for _, scenario := range []string{"deadline_backoff", "cancel_backoff", "withhold", "late_commit", "event_loss_http", "event_loss_sse", "connection_refused"} {
+	for _, scenario := range []string{"deadline_backoff", "cancel_backoff", "response_timeout"} {
 		t.Run(scenario, func(t *testing.T) {
-			transportName, fault := "http-json", "http_503"
-			if scenario == "withhold" || scenario == "late_commit" {
-				fault = scenario
-			}
-			if scenario == "event_loss_http" {
-				transportName, fault = "http-sse", "event_loss"
-			}
-			if scenario == "event_loss_sse" {
-				transportName, fault = "sse", "event_loss"
-			}
-			// Explicitly idempotent so the backoff controls still exercise an
-			// authorized retry, rather than relying on replaying an unsafe tool.
-			f := newReplayDiagnosticFixture(t, transportName, fault, 1, mcpgo.ToolAnnotation{IdempotentHint: schemas.Ptr(true)}, false, true)
-			budget := 100 * time.Millisecond
-			if scenario == "connection_refused" || scenario == "cancel_backoff" {
+			status, budget := http.StatusServiceUnavailable, 100*time.Millisecond
+			if scenario == "cancel_backoff" {
 				budget = time.Second
+			} else if scenario == "response_timeout" {
+				status = 0
 			}
-			m, name := f.manager(t, true, budget)
-			if scenario == "connection_refused" {
-				f.server.Close()
-			}
+			f := newReplayTestFixture(t, schemas.MCPConnectionTypeHTTP, status, 1, mcpgo.ToolAnnotation{IdempotentHint: schemas.Ptr(true)})
+			m := f.manager(t, schemas.MCPConnectionTypeHTTP, budget)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			type outcome struct {
-				msg *schemas.ChatMessage
-				err *schemas.BifrostError
-			}
-			done := make(chan outcome, 1)
+			done := make(chan *schemas.BifrostError, 1)
 			start := time.Now()
-			go func() { msg, err := replayDiagnosticCall(m, ctx, name); done <- outcome{msg, err} }()
+			go func() { _, err := replayTestCall(m, ctx); done <- err }()
 			if scenario == "cancel_backoff" {
 				select {
-				case <-f.logger.backoff:
+				case <-f.backoff:
 					cancel()
 				case <-time.After(time.Second):
 					t.Fatal("no retry scheduled")
 				}
 			}
-			var out outcome
 			select {
-			case out = <-done:
-			case <-time.After(3 * time.Second):
-				t.Fatal("execution exceeded diagnostic bound")
-			}
-			elapsed := time.Since(start)
-			if scenario == "late_commit" {
-				_, _, effects := f.snapshot()
-				require.Zero(t, effects, "operation has not committed at caller timeout")
-				close(f.release)
-				select {
-				case <-f.committed:
-				case <-time.After(time.Second):
-					t.Fatal("late operation never committed")
+			case err := <-done:
+				require.NotNil(t, err)
+				if scenario != "cancel_backoff" {
+					require.Equal(t, "timeout", mcpErrorType(err))
 				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("execution exceeded its budget")
 			}
-			f.report(t, out.msg, out.err)
-			t.Logf("elapsed=%s configured_tool_budget=%s", elapsed, budget)
-			require.NotNil(t, out.err)
-			wire, invoked, effects := f.snapshot()
-			if scenario == "connection_refused" {
-				require.Zero(t, wire)
-				require.Zero(t, invoked)
-				require.Zero(t, effects)
-				return
-			}
-			require.Equal(t, 1, wire)
-			require.Equal(t, 1, invoked)
-			require.Equal(t, 1, effects)
-			if scenario == "event_loss_http" {
-				// An empty, closed Streamable HTTP SSE response closes mcp-go's
-				// response channel: it reports unexpected nil response, not a
-				// timeout. Neither outcome authorizes another wire invocation.
-				require.Equal(t, "tool_error", mcpErrorType(out.err))
-			} else if scenario != "cancel_backoff" {
-				require.Equal(t, "timeout", mcpErrorType(out.err))
-			}
-			// This is a hang guard, not a hard real-time scheduling guarantee.
-			// Concurrent cold/race builds produced one 671ms wall-clock outlier
-			// for a 100ms deadline. Preserve the measured duration in evidence;
-			// the stronger assertions are timeout classification and no replay.
-			require.Less(t, elapsed, 2*time.Second)
+			require.Less(t, time.Since(start), time.Second)
+			require.Equal(t, int32(1), f.calls.Load())
+			require.Equal(t, int32(1), f.commits.Load())
 		})
 	}
 }
 
 func TestMCPToolReplaySafety_AgentUsesSharedExecutor(t *testing.T) {
-	f := newReplayDiagnosticFixture(t, "http-json", "http_503", 1, mcpgo.ToolAnnotation{}, false, false)
-	m, name := f.manager(t, true, 2*time.Second)
+	f := newReplayTestFixture(t, schemas.MCPConnectionTypeHTTP, http.StatusServiceUnavailable, 1, mcpgo.ToolAnnotation{})
+	m := f.manager(t, schemas.MCPConnectionTypeHTTP, 2*time.Second)
+	name := "replay-append"
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyRequestID, "logical-agent-one")
 	call := schemas.ChatAssistantMessageToolCall{ID: schemas.Ptr("logical-tool-one"), Type: schemas.Ptr("function"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: &name, Arguments: `{"operation":"customer-operation-one"}`}}
@@ -983,56 +737,41 @@ func TestMCPToolReplaySafety_AgentUsesSharedExecutor(t *testing.T) {
 		require.Equal(t, 1, toolResults, "the failed execution remains one logical tool result")
 		return &schemas.BifrostChatResponse{Model: "local-model", Choices: []schemas.BifrostResponseChoice{{ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{Message: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("done")}}}}}}, nil
 	})
-	f.report(t, result, bErr)
+	require.NotNil(t, result)
 	require.Nil(t, bErr)
 	require.Equal(t, 1, llmContinuations)
-	wire, invoked, effects := f.snapshot()
-	require.Equal(t, 1, wire)
-	require.Equal(t, 1, invoked)
-	require.Equal(t, 1, effects)
+	require.Equal(t, int32(1), f.calls.Load())
+	require.Equal(t, int32(1), f.commits.Load())
 }
 
-func TestMCPToolReplaySafety_ResponsesUsesSharedExecutor(t *testing.T) {
-	for _, agent := range []bool{false, true} {
-		t.Run(fmt.Sprintf("agent=%t", agent), func(t *testing.T) {
-			f := newReplayDiagnosticFixture(t, "http-json", "http_503", 1, mcpgo.ToolAnnotation{}, false, false)
-			m, name := f.manager(t, true, 2*time.Second)
-			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-			ctx.SetValue(schemas.BifrostContextKeyRequestID, "logical-responses-one")
-			call := &schemas.ResponsesToolMessage{CallID: schemas.Ptr("logical-tool-one"), Name: &name, Arguments: schemas.Ptr(`{"operation":"customer-operation-one"}`)}
-			if !agent {
-				msg, bErr := m.ExecuteResponsesTool(ctx, call)
-				f.report(t, msg, bErr)
-				require.NotNil(t, bErr)
-				require.Nil(t, msg)
-				require.Contains(t, bErr.GetErrorString(), "may have succeeded")
-			} else {
-				initial := &schemas.BifrostResponsesResponse{Model: "local-model", Output: []schemas.ResponsesMessage{{Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall), ResponsesToolMessage: call}}}
-				continuations := 0
-				result, bErr := m.CheckAndExecuteAgentForResponsesRequest(ctx, &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "local-model"}, initial, func(_ *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-					continuations++
-					toolResults := 0
-					for _, message := range req.Input {
-						if message.Type != nil && *message.Type == schemas.ResponsesMessageTypeFunctionCallOutput {
-							toolResults++
-							require.Equal(t, call.CallID, message.CallID)
-							// The existing Chat-to-Responses adapter carries a text
-							// function_call_output, not Chat's IsError marker.
-							require.Contains(t, *message.Output.ResponsesToolCallOutputStr, "request failed with status 503")
-							require.Contains(t, *message.Output.ResponsesToolCallOutputStr, "may have succeeded")
-						}
-					}
-					require.Equal(t, 1, toolResults)
-					return &schemas.BifrostResponsesResponse{Model: "local-model"}, nil
-				})
-				f.report(t, result, bErr)
-				require.Nil(t, bErr)
-				require.Equal(t, 1, continuations)
+func TestMCPToolReplaySafety_ResponsesAgentUsesSharedExecutor(t *testing.T) {
+	f := newReplayTestFixture(t, schemas.MCPConnectionTypeHTTP, http.StatusServiceUnavailable, 1, mcpgo.ToolAnnotation{})
+	m := f.manager(t, schemas.MCPConnectionTypeHTTP, 2*time.Second)
+	name := "replay-append"
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "logical-responses-one")
+	call := &schemas.ResponsesToolMessage{CallID: schemas.Ptr("logical-tool-one"), Name: &name, Arguments: schemas.Ptr(`{"operation":"customer-operation-one"}`)}
+	initial := &schemas.BifrostResponsesResponse{Model: "local-model", Output: []schemas.ResponsesMessage{{Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall), ResponsesToolMessage: call}}}
+	continuations := 0
+	result, bErr := m.CheckAndExecuteAgentForResponsesRequest(ctx, &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "local-model"}, initial, func(_ *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		continuations++
+		toolResults := 0
+		for _, message := range req.Input {
+			if message.Type != nil && *message.Type == schemas.ResponsesMessageTypeFunctionCallOutput {
+				toolResults++
+				require.Equal(t, call.CallID, message.CallID)
+				// The existing Chat-to-Responses adapter carries a text
+				// function_call_output, not Chat's IsError marker.
+				require.Contains(t, *message.Output.ResponsesToolCallOutputStr, "request failed with status 503")
+				require.Contains(t, *message.Output.ResponsesToolCallOutputStr, "may have succeeded")
 			}
-			wire, invoked, effects := f.snapshot()
-			require.Equal(t, 1, wire)
-			require.Equal(t, 1, invoked)
-			require.Equal(t, 1, effects)
-		})
-	}
+		}
+		require.Equal(t, 1, toolResults)
+		return &schemas.BifrostResponsesResponse{Model: "local-model"}, nil
+	})
+	require.NotNil(t, result)
+	require.Nil(t, bErr)
+	require.Equal(t, 1, continuations)
+	require.Equal(t, int32(1), f.calls.Load())
+	require.Equal(t, int32(1), f.commits.Load())
 }

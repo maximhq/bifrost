@@ -30,7 +30,7 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// Exercise both HTTP request shapes through the real handler, Bifrost SDK,
+// Exercise both HTTP request shapes through the handler, Bifrost SDK,
 // plugin gate, MCP manager and local upstream. A successful retry of an
 // idempotent tool is the availability control for unsafe replay suppression.
 func TestMCPInferenceReplaySafety(t *testing.T) {
@@ -87,29 +87,24 @@ func TestMCPInferenceReplaySafety(t *testing.T) {
 				require.NoError(t, client.MCPManager.AddClient(t.Context(), &schemas.MCPClientConfig{ID: "replay-http-control", Name: "replay", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar(upstream.URL), AuthType: schemas.MCPAuthTypeHeaders, NeedsSessionStickiness: schemas.Ptr(true), ToolsToExecute: []string{"*"}, ToolExecutionTimeout: 2 * time.Second}))
 				r := router.New()
 				NewMCPInferenceHandler(client, config).RegisterRoutes(r)
-				gateway := &fasthttp.Server{Handler: r.Handler}
-				ln, err := net.Listen("tcp", "127.0.0.1:0")
-				require.NoError(t, err)
-				go func() { _ = gateway.Serve(ln) }()
-				t.Cleanup(func() { _ = gateway.Shutdown(); _ = ln.Close() })
 				body := `{"id":"one-call","type":"function","function":{"name":"replay-append","arguments":"{\"operation\":\"one-operation\"}"}}`
 				if format == "responses" {
 					body = `{"call_id":"one-call","name":"replay-append","arguments":"{\"operation\":\"one-operation\"}"}`
 				}
-				httpClient := &http.Client{Timeout: 5 * time.Second}
-				resp, err := httpClient.Post("http://"+ln.Addr().String()+"/v1/mcp/tool/execute?format="+format, "application/json", bytes.NewBufferString(body))
-				require.NoError(t, err)
-				defer resp.Body.Close()
-				response, err := io.ReadAll(resp.Body)
-				require.NoError(t, err)
-				t.Logf("format=%s logical_calls=1 upstream_calls=%d commits=%d HTTP=%d body=%s", format, calls.Load(), commits.Load(), resp.StatusCode, response)
+				ctx := &fasthttp.RequestCtx{}
+				ctx.Request.SetRequestURI("/v1/mcp/tool/execute?format=" + format)
+				ctx.Request.Header.SetMethod(http.MethodPost)
+				ctx.Request.Header.SetContentType("application/json")
+				ctx.Request.SetBodyString(body)
+				r.Handler(ctx)
+				response := ctx.Response.Body()
 				require.Equal(t, int32(1), commits.Load())
 				if idempotent {
-					require.Equal(t, http.StatusOK, resp.StatusCode, string(response))
+					require.Equal(t, http.StatusOK, ctx.Response.StatusCode(), string(response))
 					require.Equal(t, int32(2), calls.Load())
 					require.Contains(t, string(response), "one-operation")
 				} else {
-					require.Equal(t, http.StatusBadRequest, resp.StatusCode, string(response))
+					require.Equal(t, http.StatusBadRequest, ctx.Response.StatusCode(), string(response))
 					require.Equal(t, int32(1), calls.Load())
 					var failure schemas.BifrostError
 					require.NoError(t, json.Unmarshal(response, &failure))

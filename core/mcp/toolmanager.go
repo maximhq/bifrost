@@ -665,8 +665,8 @@ func (m *ToolsManager) ExecuteTool(
 	return m.executeTool(ctx, request, clientConn, executionConfig, toolNameMapping, nil)
 }
 
-// executeTool accepts the state already resolved by the plugin gate. Public
-// ExecuteTool callers can omit it; the fallback lookup is only needed on failure.
+// executeTool accepts the gate's original snapshot. ExecuteTool keeps its public
+// signature and captures its own snapshot before dispatch.
 func (m *ToolsManager) executeTool(
 	ctx *schemas.BifrostContext,
 	request *schemas.BifrostMCPRequest,
@@ -814,69 +814,53 @@ func (m *ToolsManager) executeToolInternal(
 		},
 	}
 
-	// Classifying a failure as transient does not prove the first invocation
-	// did not execute. Resolve replay authorization only on failure, so normal
-	// successful calls do not pay for another tool/state lookup.
-	policyResolved, replayAllowed := false, false
-	resolveReplayPolicy := func() {
-		if policyResolved {
-			return
-		}
-		if clientState == nil && m.clientManager != nil {
-			clientState = m.clientManager.GetClientForTool(toolName)
-		}
-		replayAllowed = toolCallReplayAllowed(clientState, executionConfig, toolName)
-		policyResolved = true
+	// The gate supplies the original snapshot. Capture it here for lower-level
+	// ExecuteTool calls, before an in-flight tool-list update can authorize replay.
+	if clientState == nil && m.clientManager != nil {
+		clientState = m.clientManager.GetClientByName(executionConfig.Name)
 	}
+	// A transient error does not prove non-execution. Recheck current hints
+	// only on failure, retaining the original contract throughout recovery.
+	canReplay := func() bool {
+		if !toolCallReplayAllowed(clientState, executionConfig, toolName) || m.clientManager == nil {
+			return false
+		}
+		return toolCallReplayAllowed(m.clientManager.GetClientByName(executionConfig.Name), executionConfig, toolName)
+	}
+	replayAllowed := false
 	retryConfig := ToolCallRetryConfig
 	classify := retryConfig.IsRetryable
 	if classify == nil {
-		classify = isTransientToolCallError
+		classify = isTransientError
 	}
 	retryConfig.IsRetryable = func(err error) bool {
-		if !classify(err) {
-			return false
-		}
-		resolveReplayPolicy()
-		return replayAllowed
+		replayAllowed = canReplay()
+		return replayAllowed && classify(err)
 	}
 	toolCallStart := time.Now()
 	var toolResponse *mcp.CallToolResult
-	attempted := false
 	var lastCallErr error
 	callErr := ExecuteWithRetry(
 		toolCtx,
 		func() error {
-			if attempted {
-				// Eligibility can be revoked while the retry sleeps. Re-resolve
-				// the original client, never global tool-name routing, before
-				// dispatching another invocation on the held connection.
-				var current *schemas.MCPClientState
-				if m.clientManager != nil {
-					current = m.clientManager.GetClientByName(executionConfig.Name)
-				}
-				replayAllowed = toolCallReplayAllowed(current, executionConfig, toolName)
+			if lastCallErr != nil {
+				replayAllowed = canReplay()
 				if !replayAllowed {
-					// Preserve the real failure; the retry predicate sees the
-					// revoked authorization and stops without another call.
-					return lastCallErr
+					return lastCallErr // Keep the upstream cause when replay is revoked.
 				}
 			}
-			attempted = true
-			var err error
-			toolResponse, err = clientConn.CallTool(toolCtx, callRequest)
-			lastCallErr = err
-			return err
+			toolResponse, lastCallErr = clientConn.CallTool(toolCtx, callRequest)
+			return lastCallErr
 		},
 		retryConfig,
 		m.logger,
 	)
 	schemas.AddUpstreamLatency(ctx, time.Since(toolCallStart))
 	if callErr != nil {
-		resolveReplayPolicy()
+		const replaySuppressedNote = "; execution may have succeeded; automatic replay was suppressed"
 		outcomeNote := ""
-		if attempted && !replayAllowed {
-			outcomeNote = "; execution may have succeeded; automatic replay was suppressed"
+		if lastCallErr != nil && !replayAllowed {
+			outcomeNote = replaySuppressedNote
 		}
 		// Set by the recovery below when it gave up because the tool budget ran
 		// out, as opposed to because the reconnect or the retry failed on its
@@ -918,7 +902,7 @@ func (m *ToolsManager) executeToolInternal(
 			// The background reconnect stays independent of it either way:
 			// triggerBackgroundReconnect runs on context.Background().
 			recoveryCtx := schemas.NewBifrostContext(toolCtx, schemas.NoDeadline)
-			retryResponse, recovered, budgetExhausted := m.attemptCallFailureRecovery(recoveryCtx, toolName, callRequest, executionConfig, toolExecutionTimeout, clientState, replayAllowed)
+			retryResponse, recovered, budgetExhausted := m.attemptCallFailureRecovery(recoveryCtx, toolName, callRequest, executionConfig, toolExecutionTimeout, replayAllowed)
 			recoveryExhaustedBudget = budgetExhausted
 			if recovered {
 				responseText := extractTextFromMCPResponse(retryResponse, toolName)
@@ -929,6 +913,9 @@ func (m *ToolsManager) executeToolInternal(
 				// because the retry itself succeeded at the transport level.
 				retryIsToolError := retryResponse != nil && retryResponse.IsError
 				return createToolResponseMessage(*toolCall, responseText, retryIsToolError), executionConfig.Name, sanitizedToolName, nil
+			}
+			if !canReplay() {
+				outcomeNote = replaySuppressedNote
 			}
 		}
 
@@ -959,14 +946,11 @@ func (m *ToolsManager) executeToolInternal(
 	return createToolResponseMessage(*toolCall, responseText, isToolError), executionConfig.Name, sanitizedToolName, nil
 }
 
-// toolCallReplayAllowed is the common authorization for ordinary retries and
-// recovery. Missing state/hints fail closed; additive does not mean idempotent.
-// The hints remain server-provided contracts, not verified behavior: operators
-// must trust the server before relying on read-only/idempotent annotations.
+// toolCallReplayAllowed gates both retries and recovery. Non-destructive
+// does not mean idempotent; missing state or explicit safe hints fail closed.
 func toolCallReplayAllowed(state *schemas.MCPClientState, config *schemas.MCPClientConfig, toolName string) bool {
 	if state == nil || state.ExecutionConfig == nil || config == nil ||
-		state.ExecutionConfig.ID != config.ID || state.ExecutionConfig.Name != config.Name ||
-		state.State == schemas.MCPConnectionStateDisabled || state.ExecutionConfig.Disabled || config.Disabled {
+		state.ExecutionConfig.ID != config.ID || state.State == schemas.MCPConnectionStateDisabled {
 		return false
 	}
 	tool, ok := state.ToolMap[toolName]
@@ -1017,20 +1001,10 @@ func (m *ToolsManager) attemptCallFailureRecovery(
 	callRequest mcp.CallToolRequest,
 	executionConfig *schemas.MCPClientConfig,
 	toolExecutionTimeout time.Duration,
-	state *schemas.MCPClientState,
 	replayAllowed bool,
 ) (*mcp.CallToolResult, bool, bool) {
-	if !replayAllowed {
-		m.logger.Debug("%s Suppressing automatic replay for tool without read-only/idempotent hints: %s", MCPLogPrefix, toolName)
-	}
-
 	if !m.credStore.RequiresPerCallConnection(executionConfig) {
 		return m.recoverSharedConnection(ctx, toolName, callRequest, executionConfig, toolExecutionTimeout, !replayAllowed)
-	}
-
-	if state == nil {
-		// No client state means no connection to re-acquire — nothing to retry.
-		return nil, false, false
 	}
 
 	if err := m.credStore.ForceRefresh(ctx, executionConfig); err != nil {
@@ -1047,7 +1021,7 @@ func (m *ToolsManager) attemptCallFailureRecovery(
 		// Heal the credential for a future call without dispatching this one again.
 		return nil, false, false
 	}
-	state = m.clientManager.GetClientByName(executionConfig.Name)
+	state := m.clientManager.GetClientByName(executionConfig.Name)
 	if !toolCallReplayAllowed(state, executionConfig, toolName) {
 		return nil, false, false
 	}
@@ -1159,9 +1133,6 @@ func (m *ToolsManager) recoverSharedConnection(
 	// so it must be re-resolved after the reconnect to pick up the fresh
 	// connection.
 	state := m.clientManager.GetClientByName(executionConfig.Name)
-	if state == nil || state.ExecutionConfig == nil || state.ExecutionConfig.ID != executionConfig.ID {
-		return nil, false, false
-	}
 	if !toolCallReplayAllowed(state, executionConfig, toolName) {
 		return nil, false, false
 	}

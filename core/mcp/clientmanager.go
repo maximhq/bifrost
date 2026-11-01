@@ -929,10 +929,12 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 			// OAuth and per-user headers — since both populate DiscoveredTools at
 			// admin-test time and never hold a persistent client.Conn.
 			if len(config.DiscoveredTools) > 0 {
+				tools := maps.Clone(client.ToolMap)
 				for toolName, tool := range config.DiscoveredTools {
 					_ = tool.EnsureSerialized() // cache serialized JSON at the source (see precomputeToolSerialization)
-					client.ToolMap[toolName] = tool
+					tools[toolName] = tool
 				}
+				client.ToolMap = tools
 				client.ToolNameMapping = config.DiscoveredToolNameMapping
 				// Restored from the DB for the same reason the tools are: a per-call
 				// client holds no connection to re-run initialize against.
@@ -2598,7 +2600,10 @@ func (m *MCPManager) RegisterTool(name, description string, toolFunction MCPTool
 	// Update the tool schema to use the prefixed name
 	toolSchema.Function.Name = prefixedToolName
 	_ = toolSchema.EnsureSerialized() // cache serialized JSON after the final name is set
-	internalClient.ToolMap[prefixedToolName] = toolSchema
+	// In-flight executions retain the previous tool map; never mutate it.
+	tools := maps.Clone(internalClient.ToolMap)
+	tools[prefixedToolName] = toolSchema
+	internalClient.ToolMap = tools
 
 	return nil
 }

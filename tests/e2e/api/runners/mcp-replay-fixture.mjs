@@ -53,11 +53,10 @@ const server = http.createServer(async (req, res) => {
 				const key = `${name}:${args.operation}`;
 				if (!operations.has(key)) {
 					if (operations.size >= 128) return json(res, 429, { error: "fixture full; DELETE /stats before a run" });
-					operations.set(key, { tool: name, operation: args.operation, invocations: 0, commits: 0, request_ids: [] });
+					operations.set(key, { tool: name, operation: args.operation, invocations: 0, commits: 0 });
 				}
 				const entry = operations.get(key);
 				entry.invocations++;
-				entry.request_ids.push(rpc.id);
 				if (name !== "readonly" && (name !== "idempotent" || entry.commits === 0)) entry.commits++;
 				console.log(JSON.stringify(entry));
 				if (entry.invocations === 1) {

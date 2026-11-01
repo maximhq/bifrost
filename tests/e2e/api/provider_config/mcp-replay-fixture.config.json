@@ -13,7 +13,6 @@
   "mcp": {
     "client_configs": [
       {
-        "id": "local-replay-fixture",
         "name": "replay_fixture",
         "connection_type": "http",
         "connection_string": "http://127.0.0.1:8793/mcp",

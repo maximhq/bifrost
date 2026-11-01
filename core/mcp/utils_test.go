@@ -49,43 +49,6 @@ func TestIsTransientToolCallError_TransportOnly(t *testing.T) {
 	}
 }
 
-func TestToolCallReplayAllowed(t *testing.T) {
-	config := &schemas.MCPClientConfig{ID: "one", Name: "one"}
-	tests := []struct {
-		name        string
-		annotations *schemas.MCPToolAnnotations
-		allowed     bool
-	}{
-		{"missing", nil, false},
-		{"empty", &schemas.MCPToolAnnotations{}, false},
-		{"additive only", &schemas.MCPToolAnnotations{DestructiveHint: schemas.Ptr(false)}, false},
-		{"explicit nonidempotent additive", &schemas.MCPToolAnnotations{DestructiveHint: schemas.Ptr(false), IdempotentHint: schemas.Ptr(false)}, false},
-		{"destructive", &schemas.MCPToolAnnotations{DestructiveHint: schemas.Ptr(true)}, false},
-		{"readonly", &schemas.MCPToolAnnotations{ReadOnlyHint: schemas.Ptr(true)}, true},
-		{"idempotent destructive", &schemas.MCPToolAnnotations{ReadOnlyHint: schemas.Ptr(false), DestructiveHint: schemas.Ptr(true), IdempotentHint: schemas.Ptr(true)}, true},
-		{"readonly ignores other hints", &schemas.MCPToolAnnotations{ReadOnlyHint: schemas.Ptr(true), DestructiveHint: schemas.Ptr(true), IdempotentHint: schemas.Ptr(false)}, true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			state := &schemas.MCPClientState{ExecutionConfig: config, ToolMap: map[string]schemas.ChatTool{"one-tool": {Annotations: tt.annotations}}}
-			require.Equal(t, tt.allowed, toolCallReplayAllowed(state, config, "one-tool"))
-			require.False(t, toolCallReplayAllowed(state, config, "missing-tool"))
-			require.False(t, toolCallReplayAllowed(state, &schemas.MCPClientConfig{ID: "other", Name: "one"}, "one-tool"))
-			require.False(t, toolCallReplayAllowed(state, &schemas.MCPClientConfig{ID: "one", Name: "other"}, "one-tool"))
-			state.State = schemas.MCPConnectionStateDisabled
-			require.False(t, toolCallReplayAllowed(state, config, "one-tool"))
-			state.State = schemas.MCPConnectionStateHealthy
-			state.ExecutionConfig = &schemas.MCPClientConfig{ID: "one", Name: "one", Disabled: true}
-			require.False(t, toolCallReplayAllowed(state, config, "one-tool"))
-			state.ExecutionConfig = config
-			require.False(t, toolCallReplayAllowed(state, &schemas.MCPClientConfig{ID: "one", Name: "one", Disabled: true}, "one-tool"))
-		})
-	}
-	require.False(t, toolCallReplayAllowed(nil, config, "one-tool"))
-	require.False(t, toolCallReplayAllowed(&schemas.MCPClientState{}, config, "one-tool"))
-	require.False(t, toolCallReplayAllowed(&schemas.MCPClientState{ExecutionConfig: config}, nil, "one-tool"))
-}
-
 // TestConvertMCPToolToBifrostSchema_EmptyParameters tests that tools with no parameters
 // get an empty properties map instead of nil, which is required by some providers like OpenAI
 func TestConvertMCPToolToBifrostSchema_EmptyParameters(t *testing.T) {

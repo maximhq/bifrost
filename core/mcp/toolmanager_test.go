@@ -15,17 +15,14 @@ import (
 )
 
 func BenchmarkMCPToolExecutionReplayPolicy(b *testing.B) {
-	for _, policy := range []string{"unannotated", "readonly", "idempotent"} {
-		b.Run(policy, func(b *testing.B) {
-			annotations := mcpgo.ToolAnnotation{}
-			if policy == "readonly" {
-				annotations.ReadOnlyHint = schemas.Ptr(true)
-			}
-			if policy == "idempotent" {
-				annotations.IdempotentHint = schemas.Ptr(true)
-			}
+	for _, direct := range []bool{false, true} {
+		name := "unannotated"
+		if direct {
+			name += "/direct"
+		}
+		b.Run(name, func(b *testing.B) {
 			s := server.NewMCPServer("replay-policy-benchmark", "1.0.0", server.WithToolCapabilities(true))
-			s.AddTool(mcpgo.NewTool("echo", mcpgo.WithToolAnnotation(annotations)), func(context.Context, mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+			s.AddTool(mcpgo.NewTool("echo", mcpgo.WithToolAnnotation(mcpgo.ToolAnnotation{})), func(context.Context, mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 				return mcpgo.NewToolResultText("ok"), nil
 			})
 			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
@@ -35,14 +32,55 @@ func BenchmarkMCPToolExecutionReplayPolicy(b *testing.B) {
 			}
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 			call := &schemas.ChatAssistantMessageToolCall{ID: schemas.Ptr("bench-call"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("bench-echo"), Arguments: "{}"}}
+			state := m.GetClientByName("bench")
+			request := &schemas.BifrostMCPRequest{RequestType: schemas.MCPRequestTypeChatToolCall, ChatAssistantMessageToolCall: call}
 			b.ReportAllocs()
 			for b.Loop() {
-				if _, err := m.ExecuteChatTool(ctx, call); err != nil {
-					b.Fatal(err)
+				if direct {
+					if _, err := m.toolsManager.ExecuteTool(ctx, request, state.Conn, state.ExecutionConfig, state.ToolNameMapping); err != nil {
+						b.Fatal(err)
+					}
+				} else {
+					_, bErr := m.ExecuteChatTool(ctx, call)
+					if bErr != nil {
+						b.Fatal(bErr)
+					}
 				}
 			}
 		})
 	}
+}
+
+func TestToolCallReplayAllowed(t *testing.T) {
+	config := &schemas.MCPClientConfig{ID: "one", Name: "one"}
+	tests := []struct {
+		name        string
+		annotations *schemas.MCPToolAnnotations
+		allowed     bool
+	}{
+		{"missing", nil, false},
+		{"empty", &schemas.MCPToolAnnotations{}, false},
+		{"additive only", &schemas.MCPToolAnnotations{DestructiveHint: schemas.Ptr(false)}, false},
+		{"explicit nonidempotent additive", &schemas.MCPToolAnnotations{DestructiveHint: schemas.Ptr(false), IdempotentHint: schemas.Ptr(false)}, false},
+		{"destructive", &schemas.MCPToolAnnotations{DestructiveHint: schemas.Ptr(true)}, false},
+		{"readonly", &schemas.MCPToolAnnotations{ReadOnlyHint: schemas.Ptr(true)}, true},
+		{"idempotent destructive", &schemas.MCPToolAnnotations{ReadOnlyHint: schemas.Ptr(false), DestructiveHint: schemas.Ptr(true), IdempotentHint: schemas.Ptr(true)}, true},
+		{"readonly ignores other hints", &schemas.MCPToolAnnotations{ReadOnlyHint: schemas.Ptr(true), DestructiveHint: schemas.Ptr(true), IdempotentHint: schemas.Ptr(false)}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := &schemas.MCPClientState{ExecutionConfig: config, ToolMap: map[string]schemas.ChatTool{"one-tool": {Annotations: tt.annotations}}}
+			require.Equal(t, tt.allowed, toolCallReplayAllowed(state, config, "one-tool"))
+		})
+	}
+	state := &schemas.MCPClientState{ExecutionConfig: config, ToolMap: map[string]schemas.ChatTool{"one-tool": {Annotations: &schemas.MCPToolAnnotations{IdempotentHint: schemas.Ptr(true)}}}}
+	require.False(t, toolCallReplayAllowed(state, config, "missing-tool"))
+	require.False(t, toolCallReplayAllowed(state, &schemas.MCPClientConfig{ID: "other", Name: "one"}, "one-tool"))
+	state.State = schemas.MCPConnectionStateDisabled
+	require.False(t, toolCallReplayAllowed(state, config, "one-tool"))
+	require.False(t, toolCallReplayAllowed(nil, config, "one-tool"))
+	require.False(t, toolCallReplayAllowed(&schemas.MCPClientState{}, config, "one-tool"))
+	require.False(t, toolCallReplayAllowed(&schemas.MCPClientState{ExecutionConfig: config}, nil, "one-tool"))
 }
 
 // =============================================================================
