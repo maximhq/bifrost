@@ -59,6 +59,7 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeyRequestedProvider:       {},
 	BifrostContextKeyRequestedModel:          {},
 	BifrostContextKeyProviderProxyConfig:     {},
+	BifrostContextKeyMaxRemoteFileSizeBytes:  {},
 	BifrostContextKeyMCPInboundBearer:        {},
 	BifrostContextKeyOpencodeSession:         {},
 	BifrostContextKeyAuthCredential:          {},
@@ -206,8 +207,10 @@ func (bc *BifrostContext) WithValue(key any, value any) *BifrostContext {
 //
 //	func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req ...) (...) {
 //	    rootCtx := ctx.Root() // capture before the scope is released
+//	    ch := make(chan *schemas.BifrostStreamChunk)
 //	    go func() {
-//	        // ... long-running work that produces stream chunks ...
+//	        defer close(ch)
+//	        // ... produce chunks, selecting on rootCtx.Done() while waiting or sending ...
 //	        rootCtx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 //	    }()
 //	    return req, &schemas.LLMPluginShortCircuit{Stream: ch}, nil
@@ -715,6 +718,17 @@ func (bc *BifrostContext) SetRoutingInfoSnapshot(ri RoutingInfo) {
 // SetFallbackPinnedAPIKeyID pins a fallback's provider key, bypassing the restricted-writes guard (set by core - DO NOT SET THIS MANUALLY).
 func (bc *BifrostContext) SetFallbackPinnedAPIKeyID(keyID string) {
 	bc.setReservedValue(BifrostContextKeyAPIKeyID, keyID)
+}
+
+// SetRemoteFileSizeLimit publishes the per-attempt limit despite overlapping
+// post-hooks' restricted-writes guard. Zero clears the override
+// (set by core - DO NOT SET THIS MANUALLY).
+func (bc *BifrostContext) SetRemoteFileSizeLimit(limit int64) {
+	var value any
+	if limit != 0 {
+		value = limit
+	}
+	bc.setReservedValue(BifrostContextKeyMaxRemoteFileSizeBytes, value)
 }
 
 // ClearValue clears a value from the internal userValues map.

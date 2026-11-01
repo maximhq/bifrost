@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
@@ -22,6 +23,8 @@ import (
 	"github.com/maximhq/bifrost/core/internal/memtest"
 	"github.com/maximhq/bifrost/core/keyselectors"
 	"github.com/maximhq/bifrost/core/mcp"
+	"github.com/maximhq/bifrost/core/network/proxytest"
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	mistralprovider "github.com/maximhq/bifrost/core/providers/mistral"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -4422,6 +4425,8 @@ func TestReleaseChannelMessage_ClearsPooledReferences_Streaming(t *testing.T) {
 	if msg.ResponseStream == nil {
 		t.Fatal("getChannelMessage should allocate ResponseStream for stream request types")
 	}
+	msg.streamForwarding = &sdkStreamForwarding{BifrostContext: msg.Context}
+	msg.fallbackPrimary = &schemas.Route{Provider: schemas.Anthropic, Model: "primary-model"}
 
 	// Simulate an undelivered stream handoff sitting in the channel.
 	streamCh := msg.ResponseStream
@@ -4437,6 +4442,9 @@ func TestReleaseChannelMessage_ClearsPooledReferences_Streaming(t *testing.T) {
 	}
 	if msg.ResponseStream != nil {
 		t.Error("releaseChannelMessage should clear the ResponseStream reference")
+	}
+	if msg.streamForwarding != nil || msg.fallbackPrimary != nil {
+		t.Error("releaseChannelMessage should clear the stream's forwarding state and fallback primary")
 	}
 	select {
 	case <-streamCh:
@@ -4916,6 +4924,1740 @@ func TestApplyProviderProxySignal_RewritesPerAttempt(t *testing.T) {
 	ctx.UnblockRestrictedWrites()
 	if got, _ := ctx.Value(schemas.BifrostContextKeyProviderProxyConfig).(*schemas.ProxyConfig); got != nil {
 		t.Fatal("a plugin write must not be able to redirect provider fetches through another proxy")
+	}
+}
+
+// Pin #9384 through real Vertex dispatch in both Responses modes, without cloud
+// credentials or changes to a running gateway. The configured proxy serves the PDF locally.
+func TestVertexResponsesRemoteFileLimit(t *testing.T) {
+	var downloads atomic.Int32
+	proxy := proxytest.ForwardProxy(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Host != "203.0.113.10" || r.URL.Path != "/document.pdf" {
+			t.Errorf("unexpected upstream request: %s", r.URL)
+			http.Error(w, "unexpected upstream", http.StatusBadGateway)
+			return
+		}
+		downloads.Add(1)
+		w.Header().Set("Content-Type", "application/pdf")
+		_, _ = io.WriteString(w, "%PDF"+strings.Repeat("x", 28))
+	})
+	account := NewMockAccount()
+	account.AddProvider(schemas.Vertex, 1, 1)
+	account.configs[schemas.Vertex].NetworkConfig.MaxRemoteFileSizeBytes = 16
+	account.configs[schemas.Vertex].NetworkConfig.MaxRetries = 0
+	account.configs[schemas.Vertex].ProxyConfig = &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(proxy.URL)}
+	account.SetKeysForProvider(schemas.Vertex, []schemas.Key{{
+		ID: "vertex-download-fixture", Models: schemas.WhiteList{"*"}, Weight: 1,
+		VertexKeyConfig: &schemas.VertexKeyConfig{
+			ProjectID: *schemas.NewSecretVar("fixture"), Region: *schemas.NewSecretVar("us-central1"),
+			// If the cap stops working, fail locally before any token exchange.
+			AuthCredentials: *schemas.NewSecretVar(`{"type":"unsupported_test_credential"}`),
+		},
+	}})
+	client := newStreamTestClient(t, account)
+	for _, streaming := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream_%t", streaming), func(t *testing.T) {
+			var request schemas.BifrostResponsesRequest
+			if err := json.Unmarshal([]byte(`{"provider":"vertex","model":"gemini-2.5-flash","input":[{"role":"user","content":[{"type":"input_file","file_url":"http://203.0.113.10/document.pdf"}]}]}`), &request); err != nil {
+				t.Fatal(err)
+			}
+			ctx := schemas.NewBifrostContext(t.Context(), time.Now().Add(5*time.Second))
+			var bifrostErr *schemas.BifrostError
+			if streaming {
+				_, bifrostErr = client.ResponsesStreamRequest(ctx, &request)
+			} else {
+				_, bifrostErr = client.ResponsesRequest(ctx, &request)
+			}
+			if bifrostErr == nil || !strings.Contains(bifrostErr.String(), "exceeds 16-byte limit") {
+				t.Fatalf("expected the configured Vertex download limit before inference, got %v", bifrostErr)
+			}
+		})
+	}
+	if got := downloads.Load(); got != 2 {
+		t.Fatalf("got %d downloads, want one per Responses mode", got)
+	}
+}
+
+// Pause inside the provider, after core publishes its per-attempt signals but
+// before the real downloader reads them. This makes cross-request leakage deterministic.
+type remoteLimitBarrierProvider struct {
+	schemas.Provider
+	entered chan *schemas.BifrostContext
+	release <-chan struct{}
+}
+
+// download waits for overlapping requests before fetching the local fixture and returning its result as an error.
+func (p *remoteLimitBarrierProvider) download(ctx *schemas.BifrostContext) *schemas.BifrostError {
+	p.entered <- ctx
+	select {
+	case <-p.release:
+	case <-ctx.Done():
+		return createBifrostError(ctx.Err().Error(), schemas.Ptr(400), nil, false)
+	}
+	_, _, err := providerUtils.FetchAndEncodeURL(ctx, "http://203.0.113.10/document.pdf?provider="+string(p.GetProviderKey()))
+	message := "download succeeded"
+	if err != nil {
+		message = err.Error()
+	}
+	// Always terminate locally; no inference or credentials leave the test.
+	return createBifrostError(message, schemas.Ptr(400), nil, false)
+}
+
+// ChatCompletion exercises the shared downloader through chat dispatch without calling an inference service.
+func (p *remoteLimitBarrierProvider) ChatCompletion(ctx *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	return nil, p.download(ctx)
+}
+
+// Responses exercises the shared downloader through Responses dispatch without calling an inference service.
+func (p *remoteLimitBarrierProvider) Responses(ctx *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	return nil, p.download(ctx)
+}
+
+// ChatCompletionStream exercises download validation before a chat stream can start.
+func (p *remoteLimitBarrierProvider) ChatCompletionStream(ctx *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	return nil, p.download(ctx)
+}
+
+// ResponsesStream exercises download validation before a Responses stream can start.
+func (p *remoteLimitBarrierProvider) ResponsesStream(ctx *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	return nil, p.download(ctx)
+}
+
+// Embedding exercises the common unary dispatch path using the download fixture.
+func (p *remoteLimitBarrierProvider) Embedding(ctx *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+	return nil, p.download(ctx)
+}
+
+// TestNilContextRemoteFileLimitIsolation checks concurrent nil-context calls use their own limits and proxies and release their contexts.
+func TestNilContextRemoteFileLimitIsolation(t *testing.T) {
+	for _, api := range []string{"chat", "responses", "chat_stream", "responses_stream", "embedding"} {
+		for _, tc := range []struct {
+			largeLimit int64
+			fileSize   int
+			wantLarge  string
+		}{
+			{64, 32, "download succeeded"},
+			{0, 32, "download succeeded"},
+			{64, 65, "exceeds 64-byte limit"},
+			{0, 65, "download succeeded"},
+		} {
+			t.Run(fmt.Sprintf("%s/large_%d/bytes_%d", api, tc.largeLimit, tc.fileSize), func(t *testing.T) {
+				account := NewMockAccount()
+				client := newStreamTestClient(t, account)
+				release := make(chan struct{})
+				unblock := sync.OnceFunc(func() { close(release) })
+				t.Cleanup(unblock)
+				var providers []schemas.Provider
+				entered := make([]chan *schemas.BifrostContext, 2)
+				keys := []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic}
+				downloads := make([]atomic.Int32, len(keys))
+				for i, key := range keys {
+					proxy := proxytest.ForwardProxy(t, func(w http.ResponseWriter, r *http.Request) {
+						downloads[i].Add(1)
+						if r.URL.Host != "203.0.113.10" || r.URL.Path != "/document.pdf" || r.URL.Query().Get("provider") != string(key) {
+							t.Errorf("%s proxy received unexpected fetch %s", key, r.URL)
+							http.Error(w, "unexpected fetch", http.StatusBadGateway)
+							return
+						}
+						_, _ = io.WriteString(w, strings.Repeat("x", tc.fileSize))
+					})
+					account.AddProvider(key, 1, 1)
+					account.keys[key][0].Models = schemas.WhiteList{"*"}
+					config := account.configs[key]
+					config.NetworkConfig.MaxRetries = 0
+					config.NetworkConfig.MaxRemoteFileSizeBytes = []int64{16, tc.largeLimit}[i]
+					config.ProxyConfig = &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(proxy.URL)}
+					base, err := client.createBaseProvider(key, config)
+					if err != nil {
+						t.Fatal(err)
+					}
+					entered[i] = make(chan *schemas.BifrostContext, 1)
+					provider := &remoteLimitBarrierProvider{Provider: base, entered: entered[i], release: release}
+					providers = append(providers, provider)
+					queue := &ProviderQueue{queue: make(chan *ChannelMessage, 1), done: make(chan struct{})}
+					client.requestQueues.Store(key, queue)
+					wg := &sync.WaitGroup{}
+					client.waitGroups.Store(key, wg)
+					wg.Add(1)
+					go client.requestWorker(provider, config, queue, wg)
+				}
+				client.providers.Store(&providers)
+				results := make([]chan *schemas.BifrostError, 2)
+				contexts := make([]*schemas.BifrostContext, 2)
+				for i, key := range keys {
+					results[i] = make(chan *schemas.BifrostError, 1)
+					go func() {
+						chat := &schemas.BifrostChatRequest{Provider: key, Model: "test-model", Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("test")}}}}
+						responses := responsesReqWithText("test")
+						responses.Provider, responses.Model = key, "test-model"
+						var err *schemas.BifrostError
+						switch api {
+						case "chat":
+							_, err = client.ChatCompletionRequest(nil, chat)
+						case "responses":
+							_, err = client.ResponsesRequest(nil, responses)
+						case "chat_stream":
+							_, err = client.ChatCompletionStreamRequest(nil, chat)
+						case "responses_stream":
+							_, err = client.ResponsesStreamRequest(nil, responses)
+						case "embedding":
+							_, err = client.EmbeddingRequest(nil, &schemas.BifrostEmbeddingRequest{Provider: key, Model: "test-model", Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("test")}}}}})
+						}
+						results[i] <- err
+					}()
+					select {
+					case contexts[i] = <-entered[i]:
+					case err := <-results[i]:
+						t.Fatalf("request failed before downloader: %v", err)
+					case <-time.After(5 * time.Second):
+						t.Fatal("provider did not start")
+					}
+				}
+				unblock()
+				for i := range keys {
+					select {
+					case err := <-results[i]:
+						want := tc.wantLarge
+						if i == 0 {
+							want = "exceeds 16-byte limit"
+						}
+						if err == nil || !strings.Contains(err.GetErrorString(), want) {
+							t.Errorf("provider %s: want %q, got %v", keys[i], want, err)
+						}
+					case <-time.After(5 * time.Second):
+						t.Fatal("request did not complete")
+					}
+					require.Equal(t, int32(1), downloads[i].Load(), "%s proxy must receive exactly its own download", keys[i])
+				}
+				if contexts[0] == contexts[1] || contexts[0] == client.ctx || contexts[1] == client.ctx {
+					t.Error("requests reused the shared context")
+				}
+				if client.ctx.Value(schemas.BifrostContextKeyMaxRemoteFileSizeBytes) != nil || client.ctx.Value(schemas.BifrostContextKeyProviderProxyConfig) != nil {
+					t.Error("provider signals leaked to instance context")
+				}
+				for _, ctx := range contexts {
+					select {
+					case <-ctx.Done():
+					case <-time.After(time.Second):
+						t.Error("owned request context was not released")
+					}
+				}
+			})
+		}
+	}
+}
+
+type requestContextRecorder struct {
+	streamHookRecorder
+	seen chan *schemas.BifrostContext
+}
+
+// PreLLMHook records the request root so stream tests can verify context ownership and lifetime.
+func (p *requestContextRecorder) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	p.seen <- ctx.Root()
+	return req, nil, nil
+}
+
+// TestNilContextStreamLifetime checks that an owned context follows stream production, even if the caller pauses reading.
+func TestNilContextStreamLifetime(t *testing.T) {
+	for _, mode := range []string{"complete", "paused_reader", "shutdown", "caller_context"} {
+		t.Run(mode, func(t *testing.T) {
+			release := make(chan struct{})
+			unblock := sync.OnceFunc(func() { close(release) })
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprint(w, "data: {\"id\":\"nil-context\",\"object\":\"chat.completion.chunk\",\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"}}]}\n\n")
+				w.(http.Flusher).Flush()
+				select {
+				case <-release:
+				case <-r.Context().Done():
+					return
+				}
+				if mode == "paused_reader" {
+					fmt.Fprint(w, "data: {\"id\":\"nil-context\",\"object\":\"chat.completion.chunk\",\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" world\"}}]}\n\n")
+				}
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			t.Cleanup(server.Close)
+			account := NewMockAccount()
+			account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
+			account.keys[schemas.OpenAI][0].Models = schemas.WhiteList{"*"}
+			account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+			plugin := &requestContextRecorder{seen: make(chan *schemas.BifrostContext, 1)}
+			client := newStreamTestClient(t, account, plugin)
+			t.Cleanup(unblock)
+			var callerCtx *schemas.BifrostContext
+			if mode == "caller_context" {
+				callerCtx = schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+				defer callerCtx.Cancel()
+			}
+			stream, err := client.ChatCompletionStreamRequest(callerCtx, &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI, Model: "test-model",
+				Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("test")}}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var ctx *schemas.BifrostContext
+			select {
+			case ctx = <-plugin.seen:
+				require.NotNil(t, ctx, "requestContextRecorder.PreLLMHook recorded a nil context")
+			case <-time.After(time.Second):
+				t.Fatal("requestContextRecorder.PreLLMHook did not record the request context")
+			}
+			if ctx.Err() != nil {
+				t.Fatal("context cancelled before stream consumption")
+			}
+			if callerCtx != nil && ctx != callerCtx {
+				t.Fatal("caller-owned context replaced")
+			}
+			select {
+			case chunk, ok := <-stream:
+				if !ok || chunk == nil || chunk.BifrostError != nil {
+					t.Fatalf("lost first chunk: %v", chunk)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("first chunk not delivered")
+			}
+			if mode == "shutdown" {
+				client.ctx.Cancel()
+			} else {
+				unblock()
+			}
+			if mode == "paused_reader" {
+				// The provider can finish within its existing buffer. The caller
+				// reads nothing further until the owned context is released.
+				select {
+				case <-ctx.Done():
+				case <-time.After(time.Second):
+					t.Fatal("finished stream retained its context while the caller stopped reading")
+				}
+			}
+			drained := make(chan struct{})
+			var remaining string
+			var streamErrors []string
+			go func() {
+				remaining, streamErrors = drainChatStream(stream)
+				close(drained)
+			}()
+			select {
+			case <-drained:
+			case <-time.After(5 * time.Second):
+				t.Fatal("stream did not close")
+			}
+			if mode == "paused_reader" {
+				require.Equal(t, " world", remaining, "buffered data must survive context cleanup")
+			}
+			if mode == "shutdown" {
+				require.Len(t, streamErrors, 1, "shutdown after partial data must deliver one terminal error")
+			} else {
+				require.Empty(t, streamErrors, "normal completion must end without a terminal error")
+			}
+			if callerCtx != nil {
+				if callerCtx.Err() != nil {
+					t.Fatal("caller-owned context cancelled")
+				}
+			} else {
+				select {
+				case <-ctx.Done():
+				case <-time.After(time.Second):
+					t.Fatal("stream context was not released")
+				}
+			}
+		})
+	}
+}
+
+// TestNilContextStreamShutdownAtEOF checks which event ends a relay waiting after the last successful send.
+func TestNilContextStreamShutdownAtEOF(t *testing.T) {
+	for _, eofFirst := range []bool{true, false} {
+		t.Run(fmt.Sprintf("eof_first=%t", eofFirst), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				instance, shutdown := context.WithCancel(t.Context())
+				defer shutdown()
+				ctx := schemas.NewBifrostContext(instance, schemas.NoDeadline)
+				source := make(chan *schemas.BifrostStreamChunk)
+				closeSource := sync.OnceFunc(func() { close(source) })
+				defer closeSource()
+				stream := streamWithContextCleanup(ctx, source, &sdkStreamForwarding{BifrostContext: ctx})
+				last := &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "last"}}
+				source <- last
+				require.Same(t, last, <-stream)
+				synctest.Wait() // The last chunk was delivered and the relay is waiting on its source.
+
+				if eofFirst {
+					closeSource()
+					shutdown()
+				} else {
+					shutdown()
+					<-ctx.Done()
+					closeSource()
+					chunk, ok := <-stream
+					require.True(t, ok)
+					require.NotNil(t, chunk)
+					require.NotNil(t, chunk.BifrostError)
+					require.NotNil(t, chunk.BifrostError.Error)
+					require.Equal(t, new(schemas.RequestCancelled), chunk.BifrostError.Error.Type)
+				}
+				chunk, ok := <-stream
+				require.False(t, ok, "expected EOF, got %+v", chunk)
+			})
+		})
+	}
+}
+
+// TestNilContextStreamShutdownWithClosedSource checks whether the last buffered send completed before shutdown.
+func TestNilContextStreamShutdownWithClosedSource(t *testing.T) {
+	for _, delivered := range []bool{true, false} {
+		t.Run(fmt.Sprintf("last_delivered=%t", delivered), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				instance, shutdown := context.WithCancel(t.Context())
+				defer shutdown()
+				ctx := schemas.NewBifrostContext(instance, schemas.NoDeadline)
+				source := make(chan *schemas.BifrostStreamChunk, 1)
+				closeSource := sync.OnceFunc(func() { close(source) })
+				defer closeSource()
+				first := &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "first"}}
+				final := &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "last"}}
+				source <- first
+				forwarding := &sdkStreamForwarding{BifrostContext: ctx}
+				wrapped, drained := checkedProviderRelay(t, forwarding, source, false)
+				stream := streamWithContextCleanup(ctx, wrapped, forwarding)
+				source <- final
+				synctest.Wait()
+				require.Empty(t, wrapped, "the SDK relay must hold the final chunk")
+				require.Len(t, stream, cap(stream), "the first chunk must fill the output")
+				closeSource()
+				<-drained // Both upstream sends succeeded and the provider reported EOF.
+				if delivered {
+					require.Same(t, first, <-stream) // Frees the slot for the waiting send.
+					require.Len(t, stream, 1, "the final chunk must occupy the slot before shutdown")
+				}
+				shutdown()
+				synctest.Wait()
+
+				last, ok := <-stream
+				require.True(t, ok)
+				require.NotNil(t, last)
+				if delivered {
+					require.Same(t, final, last)
+				} else {
+					require.NotNil(t, last.BifrostError)
+					require.NotNil(t, last.BifrostError.Error)
+					require.Equal(t, new(schemas.RequestCancelled), last.BifrostError.Error.Type)
+				}
+				_, ok = <-stream
+				require.False(t, ok)
+			})
+		})
+	}
+}
+
+// geminiBlockedStreamChunk returns the actual Responses event Gemini emits for a blocked prompt.
+func geminiBlockedStreamChunk(t *testing.T) *schemas.BifrostStreamChunk {
+	t.Helper()
+	state := gemini.AcquireGeminiResponsesStreamState()
+	t.Cleanup(func() { gemini.ReleaseGeminiResponsesStreamState(state) })
+	response := gemini.GenerateContentResponse{PromptFeedback: &gemini.GenerateContentResponsePromptFeedback{
+		BlockReason: "SAFETY", BlockReasonMessage: "The prompt is blocked due to safety",
+	}}
+	events, err := response.ToBifrostResponsesStream(0, state)
+	require.Nil(t, err)
+	require.NotEmpty(t, events)
+	failed := events[len(events)-1]
+	require.NotNil(t, failed)
+	require.Equal(t, schemas.ResponsesStreamResponseTypeFailed, failed.Type)
+	require.NotNil(t, failed.Response)
+	require.Equal(t, &schemas.ResponsesResponseError{Code: "invalid_prompt", Message: response.PromptFeedback.BlockReasonMessage}, failed.Response.Error)
+	return &schemas.BifrostStreamChunk{BifrostResponsesStreamResponse: failed}
+}
+
+// checkedProviderRelay starts the production ordinary or preamble forwarder for a test stream.
+func checkedProviderRelay(t *testing.T, ctx context.Context, source chan *schemas.BifrostStreamChunk, preamble bool) (chan *schemas.BifrostStreamChunk, <-chan struct{}) {
+	t.Helper()
+	var wrapped chan *schemas.BifrostStreamChunk
+	var drained <-chan struct{}
+	var err *schemas.BifrostError
+	if preamble {
+		wrapped, drained, err = providerUtils.CheckStreamPreambleForError(ctx, t.Name(), source, nil)
+	} else {
+		wrapped, drained, err = providerUtils.CheckFirstStreamChunkForError(ctx, source)
+	}
+	require.Nil(t, err)
+	require.NotNil(t, wrapped, "nonempty input must produce a stream")
+	require.NotNil(t, drained, "the provider relay must expose its completion channel")
+	return wrapped, drained
+}
+
+// TestNilContextStreamShutdownThroughProviderRelay exercises the provider and SDK relays in series.
+func TestNilContextStreamShutdownThroughProviderRelay(t *testing.T) {
+	blocked := geminiBlockedStreamChunk(t)
+	for _, preamble := range []bool{false, true} {
+		for _, ending := range []string{"eof", "interrupted", "response.failed"} {
+			t.Run(fmt.Sprintf("preamble=%t/%s", preamble, ending), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					sdk := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+					defer sdk.Cancel()
+					upstream, stopUpstream := schemas.NewBifrostContextWithCancel(sdk)
+					defer stopUpstream()
+					forwarding := &sdkStreamForwarding{BifrostContext: upstream}
+					source := make(chan *schemas.BifrostStreamChunk, 1)
+					closeSource := sync.OnceFunc(func() { close(source) })
+					defer closeSource()
+					data := &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "partial"}}
+					tail := &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "last"}}
+					source <- data
+					wrapped, done := checkedProviderRelay(t, forwarding, source, preamble)
+					stream := streamWithContextCleanup(sdk, wrapped, forwarding)
+					require.Same(t, data, <-stream)
+
+					// One chunk fills each output and each relay holds one blocked send.
+					for range 3 {
+						source <- data
+					}
+					if ending == "response.failed" {
+						source <- blocked
+					} else {
+						source <- tail
+					}
+					closeSource()
+					synctest.Wait()
+					require.Empty(t, source)
+					require.Len(t, wrapped, 1)
+					require.Len(t, stream, 1)
+					if ending == "eof" {
+						for range 3 {
+							require.Same(t, data, <-stream)
+						}
+						<-done
+						synctest.Wait() // The last chunk is in the SDK's output.
+						sdk.Cancel()
+						require.Same(t, tail, <-stream)
+						_, ok := <-stream
+						require.False(t, ok)
+						return
+					}
+					// Cancel only the upstream. The SDK must learn why it closed
+					// from the forwarding result, even while its own context is live.
+					stopUpstream()
+					<-done
+					var received []*schemas.BifrostStreamChunk
+					for chunk := range stream {
+						received = append(received, chunk)
+					}
+					require.NotEmpty(t, received)
+					last := received[len(received)-1]
+					require.NotNil(t, last)
+					for _, chunk := range received[:len(received)-1] {
+						require.Same(t, data, chunk)
+					}
+					if ending == "response.failed" {
+						require.Same(t, blocked, last)
+						return
+					}
+					require.NotNil(t, last.BifrostError, "interrupted upstream forwarding must not end in clean EOF")
+					require.NotNil(t, last.BifrostError.Error)
+					require.Equal(t, new(499), last.BifrostError.StatusCode)
+					require.Equal(t, new(schemas.RequestCancelled), last.BifrostError.Error.Type)
+					require.ErrorIs(t, last.BifrostError.Error.Error, context.Canceled)
+				})
+			})
+		}
+	}
+}
+
+// pausedProviderRelay pauses one handoff while the SDK observes cancellation on the same context.
+type pausedProviderRelay struct {
+	*sdkStreamForwarding
+	phase  string
+	armed  atomic.Bool
+	paused chan struct{}
+	resume chan struct{}
+}
+
+// pauseAt blocks the selected handoff once, after the test has armed it.
+func (f *pausedProviderRelay) pauseAt(phase string) {
+	if f.phase == phase && f.armed.Swap(false) {
+		close(f.paused)
+		<-f.resume
+	}
+}
+
+// Done pauses evaluation of the send select after the relay has taken the raw event.
+func (f *pausedProviderRelay) Done() <-chan struct{} {
+	f.pauseAt("received")
+	return f.sdkStreamForwarding.Done()
+}
+
+// StreamChunkDropped pauses publication of a failed send.
+func (f *pausedProviderRelay) StreamChunkDropped(chunk *schemas.BifrostStreamChunk) {
+	f.pauseAt("dropped")
+	f.sdkStreamForwarding.StreamChunkDropped(chunk)
+}
+
+// EndStreamForwarding pauses after the raw EOF and before it reaches the SDK.
+func (f *pausedProviderRelay) EndStreamForwarding(eof bool) {
+	if eof {
+		f.pauseAt("eof")
+	}
+	f.sdkStreamForwarding.EndStreamForwarding(eof)
+}
+
+// TestNilContextStreamShutdownSharedContext orders shutdown against each provider handoff.
+func TestNilContextStreamShutdownSharedContext(t *testing.T) {
+	failed := geminiBlockedStreamChunk(t)
+	for _, preamble := range []bool{false, true} {
+		for _, phase := range []string{"received", "dropped", "eof", "idle"} {
+			t.Run(fmt.Sprintf("preamble=%t/%s", preamble, phase), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+					defer ctx.Cancel()
+					forwarding := &sdkStreamForwarding{
+						BifrostContext: ctx,
+						requestType:    schemas.ResponsesStreamRequest,
+						routingInfo:    schemas.RoutingInfo{Provider: schemas.Gemini, Model: "served-model"},
+					}
+					observer := &pausedProviderRelay{sdkStreamForwarding: forwarding, phase: phase, paused: make(chan struct{}), resume: make(chan struct{})}
+					release := sync.OnceFunc(func() { close(observer.resume) })
+					defer release()
+					raw := make(chan *schemas.BifrostStreamChunk, 1)
+					closeRaw := sync.OnceFunc(func() { close(raw) })
+					defer closeRaw()
+					data := &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "partial"}}
+					raw <- data
+					wrapped, drained := checkedProviderRelay(t, observer, raw, preamble)
+					stream := streamWithContextCleanup(ctx, wrapped, forwarding)
+					require.Same(t, data, <-stream)
+					synctest.Wait() // The provider is waiting for the next input.
+					observer.armed.Store(true)
+
+					switch phase {
+					case "received":
+						raw <- failed
+						<-observer.paused
+						require.Empty(t, raw, "the provider relay must already own the failure")
+					case "dropped":
+						for range 3 {
+							raw <- data
+						}
+						raw <- failed
+						synctest.Wait()
+						require.Empty(t, raw)
+						require.Len(t, wrapped, cap(wrapped))
+						require.Len(t, stream, cap(stream))
+					case "eof":
+						closeRaw()
+						<-observer.paused
+					}
+
+					ctx.Cancel()
+					synctest.Wait()
+					if phase == "dropped" {
+						<-observer.paused
+					}
+					release()
+					synctest.Wait()
+
+					if phase != "eof" {
+						select {
+						case last, ok := <-stream:
+							require.True(t, ok)
+							require.NotNil(t, last)
+							if phase == "idle" {
+								require.NotNil(t, last.BifrostError)
+								require.Equal(t, new(499), last.BifrostError.StatusCode)
+								require.Equal(t, forwarding.requestType, last.BifrostError.ExtraFields.RequestType)
+								require.Equal(t, forwarding.routingInfo, last.BifrostError.ExtraFields.RoutingInfo)
+							} else {
+								require.Same(t, failed, last, "shutdown must preserve the original Gemini event and failure reason")
+							}
+						default:
+							t.Fatal("SDK waited for the raw producer to close")
+						}
+					}
+					select {
+					case _, ok := <-stream:
+						require.False(t, ok, "expected EOF after the last delivered chunk")
+					default:
+						t.Fatal("SDK output is still open")
+					}
+					if phase != "eof" {
+						select {
+						case <-drained:
+							t.Fatal("cleanup finished with the raw producer still open")
+						default:
+						}
+						closeRaw()
+					}
+					<-drained
+				})
+			})
+		}
+	}
+}
+
+// TestNilContextStreamShutdownDuringPreambleReplay preserves the event that committed the stream.
+func TestNilContextStreamShutdownDuringPreambleReplay(t *testing.T) {
+	failed := geminiBlockedStreamChunk(t)
+	synctest.Test(t, func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+		defer ctx.Cancel()
+		forwarding := &sdkStreamForwarding{BifrostContext: ctx}
+		raw := make(chan *schemas.BifrostStreamChunk)
+		stopProducer := make(chan struct{})
+		defer close(stopProducer)
+		metadata := &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "metadata"}}
+		go func() {
+			defer close(raw)
+			for _, event := range []*schemas.BifrostStreamChunk{metadata, metadata, failed} {
+				select {
+				case raw <- event:
+				case <-stopProducer:
+					return
+				}
+			}
+			// The SDK must finish while the raw producer is still open.
+			<-stopProducer
+		}()
+		wrapped, _, err := providerUtils.CheckStreamPreambleForError(forwarding, t.Name(), raw, func(chunk *schemas.BifrostStreamChunk) bool {
+			return chunk == metadata
+		})
+		require.Nil(t, err)
+		require.NotNil(t, wrapped, "the committing failure must produce a stream")
+		synctest.Wait()
+		require.Len(t, wrapped, 1, "the second preamble send must be blocked ahead of the failure")
+		ctx.Cancel()
+		synctest.Wait()
+		stream := streamWithContextCleanup(ctx, wrapped, forwarding)
+		synctest.Wait()
+		var last *schemas.BifrostStreamChunk
+		var failures int
+		for chunk := range stream {
+			last = chunk
+			if isSDKStreamError(chunk) {
+				failures++
+			}
+		}
+		require.Same(t, failed, last)
+		require.Equal(t, 1, failures)
+	})
+}
+
+// pendingPluginResult short-circuits a request and can pause error recovery in its post-hook.
+type pendingPluginResult struct {
+	streamHookRecorder
+	raw          chan *schemas.BifrostStreamChunk
+	immediateErr *schemas.BifrostError
+	entered      chan struct{}
+	resume       chan struct{}
+}
+
+// PreLLMHook supplies the plugin's stream or its immediate error.
+func (p *pendingPluginResult) PreLLMHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return nil, &schemas.LLMPluginShortCircuit{Stream: p.raw, Error: p.immediateErr}, nil
+}
+
+// PostLLMHook holds a recoverable error until the test has observed SDK shutdown.
+func (p *pendingPluginResult) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if err != nil && p.entered != nil {
+		close(p.entered)
+		<-p.resume
+		return &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{ID: "recovered"}}, nil, nil
+	}
+	return resp, err, nil
+}
+
+// TestNilContextPluginStreamClosure holds the SDK's next read until the plugin has closed its output.
+func TestNilContextPluginStreamClosure(t *testing.T) {
+	t.Run("closed_before_next_receive", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+		defer ctx.Cancel()
+		forwarding := &sdkStreamForwarding{BifrostContext: ctx}
+		source := make(chan *schemas.BifrostStreamChunk, 1)
+		last := &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "last"}}
+		source <- last
+		chunk, ok := forwarding.receivePluginChunk(source)
+		require.True(t, ok)
+		require.Same(t, last, chunk)
+		close(source)
+		ctx.Cancel()
+		_, ok = forwarding.receivePluginChunk(source)
+		require.False(t, ok)
+		require.Nil(t, forwarding.stop(true), "a ready plugin EOF must survive shutdown between receives")
+	})
+	for _, ending := range []string{"cancelled", "normal", "upstream_error"} {
+		t.Run(ending, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				sdk := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+				defer sdk.Cancel()
+				ctx, cancelPlugin := schemas.NewBifrostContextWithCancel(sdk)
+				defer cancelPlugin()
+				forwarding := &sdkStreamForwarding{BifrostContext: ctx}
+				plugin := &pendingPluginResult{raw: make(chan *schemas.BifrostStreamChunk, 2)}
+				account := NewMockAccount()
+				account.AddProvider(schemas.OpenAI, 1, 1)
+				client := newStreamTestClient(t, account, plugin)
+				head := &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "partial"}}
+				tail := &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "next"}}
+				if ending == "upstream_error" {
+					tail = &schemas.BifrostStreamChunk{BifrostError: createBifrostError("upstream unavailable", new(503), nil, false)}
+				}
+				plugin.raw <- head
+				plugin.raw <- tail
+				finish := make(chan struct{})
+				go func() {
+					// On normal completion, close the source and cancel immediately, before
+					// the relay that was waiting for the next event needs to run again.
+					defer cancelPlugin()
+					defer close(plugin.raw)
+					select {
+					case <-ctx.Done():
+					case <-finish:
+					}
+				}()
+				wrapped, err := client.tryStreamRequest(ctx, &schemas.BifrostRequest{
+					RequestType: schemas.ChatCompletionStreamRequest,
+					ChatRequest: &schemas.BifrostChatRequest{
+						Provider: schemas.OpenAI, Model: "test-model",
+						Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("test")}}},
+					},
+				}, 0, forwarding, nil)
+				require.Nil(t, err)
+				require.NotNil(t, wrapped)
+				stream := streamWithContextCleanup(sdk, wrapped, forwarding)
+				synctest.Wait()
+				require.Len(t, stream, 1, "the partial chunk must fill the SDK output")
+
+				// Keep the SDK blocked sending the second chunk. It can learn why the
+				// plugin ended only from the relay's already-closed output on its next read.
+				if ending == "normal" {
+					close(finish)
+				} else {
+					cancelPlugin()
+				}
+				synctest.Wait()
+				select {
+				case _, open := <-wrapped:
+					require.False(t, open, "the plugin relay must have finished both sends")
+				default:
+					t.Fatal("plugin relay did not close its output")
+				}
+				first, ok := <-stream
+				require.True(t, ok)
+				require.NotNil(t, first)
+				require.Same(t, head.BifrostChatResponse, first.BifrostChatResponse)
+				synctest.Wait() // A terminal error may replace the unread second data chunk.
+				require.Len(t, stream, 1, "the SDK must have queued its final chunk")
+				last, ok := <-stream
+				require.True(t, ok)
+				require.NotNil(t, last)
+				switch ending {
+				case "normal":
+					require.Same(t, tail.BifrostChatResponse, last.BifrostChatResponse)
+				case "upstream_error":
+					require.Same(t, tail.BifrostError, last.BifrostError)
+				default:
+					require.NotNil(t, last.BifrostError, "plugin cancellation must reach the SDK before EOF")
+					require.NotNil(t, last.BifrostError.Error)
+					require.Equal(t, new(499), last.BifrostError.StatusCode)
+					require.Equal(t, new(schemas.RequestCancelled), last.BifrostError.Error.Type)
+					require.ErrorIs(t, last.BifrostError.Error.Error, context.Canceled)
+					require.Equal(t, first.BifrostChatResponse.ExtraFields.RoutingInfo, last.BifrostError.ExtraFields.RoutingInfo)
+					require.Equal(t, schemas.ChatCompletionStreamRequest, last.BifrostError.ExtraFields.RequestType)
+				}
+				select {
+				case _, ok = <-stream:
+					require.False(t, ok, "expected EOF after the final chunk")
+				default:
+					t.Fatal("SDK output remained open after the plugin relay closed")
+				}
+			})
+		})
+	}
+}
+
+// TestNilContextStreamShutdownDuringPluginHook checks cancellation before a plugin publishes a result.
+func TestNilContextStreamShutdownDuringPluginHook(t *testing.T) {
+	for _, serving := range []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic} {
+		t.Run(string(serving), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				plugin := &pendingPluginResult{raw: make(chan *schemas.BifrostStreamChunk), entered: make(chan struct{}), resume: make(chan struct{})}
+				defer close(plugin.raw)
+				defer close(plugin.resume)
+				account := NewMockAccount()
+				account.AddProvider(schemas.OpenAI, 1, 1)
+				req := &schemas.BifrostChatRequest{
+					Provider: schemas.OpenAI, Model: "test-model",
+					Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("test")}}},
+				}
+				wantRoute := schemas.RoutingInfo{Provider: serving, Model: "plugin-model", RequestedProvider: req.Provider, RequestedModel: req.Model}
+				var plugins []schemas.LLMPlugin
+				wantOriginal := wantRoute.Model
+				if serving != req.Provider {
+					account.AddProvider(serving, 1, 1)
+					req.Fallbacks = []schemas.Fallback{{Provider: serving, Model: "fallback-model"}}
+					plugins = append(plugins, &primaryRefusingPlugin{refuses: req.Provider})
+					wantRoute.IsFallback = true
+					wantRoute.PrimaryProvider, wantRoute.PrimaryModel = new(req.Provider), new(req.Model)
+					wantOriginal = req.Model
+				}
+				plugins = append(plugins, &fallbackModelRewritingPlugin{provider: serving, model: wantRoute.Model}, plugin)
+				client := newStreamTestClient(t, account, plugins...)
+				stream, err := client.ChatCompletionStreamRequest(nil, req)
+				require.Nil(t, err)
+				plugin.raw <- &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "partial"}}
+				first, ok := <-stream
+				require.True(t, ok)
+				require.NotNil(t, first)
+				require.NotNil(t, first.BifrostChatResponse)
+				require.Equal(t, "partial", first.BifrostChatResponse.ID)
+				fields := first.BifrostChatResponse.ExtraFields
+				require.Equal(t, schemas.ChatCompletionStreamRequest, fields.RequestType)
+				require.Equal(t, wantRoute, fields.RoutingInfo)
+				require.Equal(t, serving, fields.Provider)
+				require.Equal(t, wantOriginal, fields.OriginalModelRequested)
+				require.Equal(t, wantRoute.Model, fields.ResolvedModelUsed)
+				plugin.raw <- &schemas.BifrostStreamChunk{BifrostError: createBifrostError("unprocessed", new(503), nil, false)}
+				<-plugin.entered
+				client.ctx.Cancel()
+				synctest.Wait()
+				select {
+				case last, ok := <-stream:
+					require.True(t, ok, "shutdown must deliver a terminal chunk before EOF")
+					require.NotNil(t, last)
+					require.NotNil(t, last.BifrostError)
+					require.Equal(t, new(499), last.BifrostError.StatusCode)
+					require.NotNil(t, last.BifrostError.Error)
+					require.Equal(t, new(schemas.RequestCancelled), last.BifrostError.Error.Type)
+					require.ErrorIs(t, last.BifrostError.Error.Error, context.Canceled)
+					require.Equal(t, fields.RequestType, last.BifrostError.ExtraFields.RequestType)
+					require.Equal(t, fields.RoutingInfo, last.BifrostError.ExtraFields.RoutingInfo)
+					require.Equal(t, fields.Provider, last.BifrostError.ExtraFields.Provider)
+					require.Equal(t, fields.OriginalModelRequested, last.BifrostError.ExtraFields.OriginalModelRequested)
+					require.Equal(t, fields.ResolvedModelUsed, last.BifrostError.ExtraFields.ResolvedModelUsed)
+				default:
+					t.Fatal("SDK waited for the plugin post-hook")
+				}
+				_, ok = <-stream
+				require.False(t, ok)
+			})
+		})
+	}
+}
+
+// copyingStreamModelRewriter returns a new chat request while leaving its input unchanged.
+type copyingStreamModelRewriter struct{ fallbackModelRewritingPlugin }
+
+func (p *copyingStreamModelRewriter) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	chat := *req.ChatRequest
+	return p.fallbackModelRewritingPlugin.PreLLMHook(ctx, &schemas.BifrostRequest{RequestType: req.RequestType, ChatRequest: &chat})
+}
+
+// TestPluginStreamPreservesUpstreamError checks how a rewritten plugin route fills missing error attribution.
+func TestPluginStreamPreservesUpstreamError(t *testing.T) {
+	for _, mode := range []string{"upstream", "legacy", "type_only", "direct_type_only"} {
+		t.Run(mode, func(t *testing.T) {
+			account := NewMockAccount()
+			account.AddProvider(schemas.OpenAI, 1, 1)
+			plugin := &responseRouteRecorder{}
+			upstream := createBifrostError("upstream unavailable", new(503), new("upstream_unavailable"), false)
+			upstream.ExtraFields.RequestType = schemas.ResponsesStreamRequest
+			switch mode {
+			case "legacy":
+				upstream.ExtraFields.RequestType = ""
+				upstream.ExtraFields.OriginalModelRequested = "upstream-model"
+			case "upstream":
+				upstream.PopulateRoutingInfo(schemas.RoutingInfo{Provider: schemas.Gemini, Model: "upstream-model"})
+			}
+			want := upstream.ExtraFields
+			if mode == "type_only" || mode == "direct_type_only" {
+				want.RoutingInfo = schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "plugin-model", RequestedProvider: schemas.OpenAI, RequestedModel: "test-model"}
+				want.Provider, want.OriginalModelRequested, want.ResolvedModelUsed = schemas.OpenAI, "plugin-model", "plugin-model"
+			}
+			if mode == "direct_type_only" {
+				plugin.immediateErr = upstream
+			} else {
+				plugin.raw = make(chan *schemas.BifrostStreamChunk, 2)
+				plugin.raw <- &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "partial"}}
+				plugin.raw <- &schemas.BifrostStreamChunk{BifrostError: upstream}
+				close(plugin.raw)
+			}
+			client := newStreamTestClient(t, account, &copyingStreamModelRewriter{fallbackModelRewritingPlugin{provider: schemas.OpenAI, model: "plugin-model"}}, plugin)
+			ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+			defer ctx.Cancel()
+			stream, err := client.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI, Model: "test-model",
+				Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("test")}}},
+			})
+			if mode == "direct_type_only" {
+				require.Nil(t, stream)
+			} else {
+				require.Nil(t, err)
+				require.NotNil(t, stream)
+				chunk, ok := <-stream
+				require.True(t, ok)
+				require.NotNil(t, chunk)
+				require.NotNil(t, chunk.BifrostChatResponse)
+				require.Equal(t, "plugin-model", chunk.BifrostChatResponse.ExtraFields.RoutingInfo.Model)
+				chunk, ok = <-stream
+				require.True(t, ok)
+				require.NotNil(t, chunk)
+				err = chunk.BifrostError
+				_, ok = <-stream
+				require.False(t, ok)
+			}
+			require.Same(t, upstream, err)
+			require.Equal(t, want, plugin.errorFields)
+			require.Equal(t, want, err.ExtraFields)
+		})
+	}
+}
+
+// responseRouteRecorder captures the metadata the post-hook sees before the client receives the event.
+type responseRouteRecorder struct {
+	pendingPluginResult
+	seen        schemas.BifrostResponseExtraFields
+	errorFields schemas.BifrostErrorExtraFields
+}
+
+// PostLLMHook snapshots the fields before the SDK can stamp the result again.
+func (p *responseRouteRecorder) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if resp != nil && resp.ResponsesStreamResponse != nil {
+		p.seen = resp.ResponsesStreamResponse.ExtraFields
+	}
+	if err != nil {
+		p.errorFields = err.ExtraFields
+	}
+	return resp, err, nil
+}
+
+// TestPluginStreamResponsesFailureRouting covers terminal Responses events forwarded by a plugin.
+func TestPluginStreamResponsesFailureRouting(t *testing.T) {
+	for _, tc := range []struct {
+		event       schemas.ResponsesStreamResponseType
+		attribution string
+	}{
+		{schemas.ResponsesStreamResponseTypeFailed, "upstream"},
+		{schemas.ResponsesStreamResponseTypeFailed, "legacy"},
+		{schemas.ResponsesStreamResponseTypeFailed, "none"},
+		{schemas.ResponsesStreamResponseTypeError, "upstream"},
+		{schemas.ResponsesStreamResponseTypeError, "none"},
+		{schemas.ResponsesStreamResponseTypeCreated, "upstream"},
+	} {
+		t.Run(string(tc.event)+"/"+tc.attribution, func(t *testing.T) {
+			account := NewMockAccount()
+			account.AddProvider(schemas.OpenAI, 1, 1)
+			event := &schemas.BifrostResponsesStreamResponse{Type: tc.event}
+			switch tc.event {
+			case schemas.ResponsesStreamResponseTypeFailed:
+				event = geminiBlockedStreamChunk(t).BifrostResponsesStreamResponse
+			case schemas.ResponsesStreamResponseTypeError:
+				event.Message = new("upstream overloaded")
+			}
+			switch tc.attribution {
+			case "upstream":
+				route := schemas.RoutingInfo{Provider: schemas.Gemini, Model: "upstream-model", Key: "upstream-key"}
+				event.ExtraFields = route.ToExtraFields(schemas.ResponsesStreamRequest)
+			case "legacy":
+				event.ExtraFields = schemas.BifrostResponseExtraFields{OriginalModelRequested: "upstream-model"}
+			default:
+				event.ExtraFields = schemas.BifrostResponseExtraFields{RequestType: schemas.ResponsesStreamRequest}
+			}
+			original := event.ExtraFields
+			plugin := &responseRouteRecorder{pendingPluginResult: pendingPluginResult{raw: make(chan *schemas.BifrostStreamChunk, 1)}}
+			plugin.raw <- &schemas.BifrostStreamChunk{BifrostResponsesStreamResponse: event}
+			close(plugin.raw)
+			client := newStreamTestClient(t, account, &fallbackModelRewritingPlugin{provider: schemas.OpenAI, model: "plugin-model"}, plugin)
+			stream, err := client.ResponsesStreamRequest(nil, &schemas.BifrostResponsesRequest{
+				Provider: schemas.OpenAI, Model: "requested",
+				Input: []schemas.ResponsesMessage{{Role: new(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: new("test")}}},
+			})
+			require.Nil(t, err)
+			require.NotNil(t, stream)
+			chunk, ok := <-stream
+			require.True(t, ok)
+			require.NotNil(t, chunk)
+			require.Same(t, event, chunk.BifrostResponsesStreamResponse)
+			require.Equal(t, plugin.seen, chunk.BifrostResponsesStreamResponse.ExtraFields)
+			if tc.attribution != "none" && tc.event != schemas.ResponsesStreamResponseTypeCreated {
+				require.Equal(t, original, chunk.BifrostResponsesStreamResponse.ExtraFields)
+			} else {
+				fields := chunk.BifrostResponsesStreamResponse.ExtraFields
+				require.Equal(t, schemas.OpenAI, fields.RoutingInfo.Provider)
+				require.Equal(t, "plugin-model", fields.RoutingInfo.Model)
+				require.Equal(t, "requested", fields.RoutingInfo.RequestedModel)
+				require.Equal(t, "plugin-model", fields.ResolvedModelUsed)
+			}
+			_, ok = <-stream
+			require.False(t, ok)
+		})
+	}
+}
+
+// fixedStreamResponse supplies a single response from a pre-hook.
+type fixedStreamResponse struct {
+	fakeRoutingPlugin
+	response *schemas.BifrostResponse
+}
+
+// PreLLMHook answers the request before dispatch to a provider worker.
+func (p *fixedStreamResponse) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, &schemas.LLMPluginShortCircuit{Response: p.response}, nil
+}
+
+// TestPluginStreamPassthroughPayload covers the single-response and channel forms of a passthrough short circuit.
+func TestPluginStreamPassthroughPayload(t *testing.T) {
+	for _, channel := range []bool{false, true} {
+		t.Run(fmt.Sprintf("channel=%t", channel), func(t *testing.T) {
+			data := &schemas.BifrostPassthroughResponse{ServedModel: "served-model"}
+			var plugin schemas.LLMPlugin = &fixedStreamResponse{fakeRoutingPlugin: fakeRoutingPlugin{name: "passthrough"}, response: &schemas.BifrostResponse{PassthroughResponse: data}}
+			if channel {
+				source := make(chan *schemas.BifrostStreamChunk, 1)
+				source <- &schemas.BifrostStreamChunk{BifrostPassthroughResponse: data}
+				close(source)
+				plugin = &pendingPluginResult{raw: source}
+			}
+			account := NewMockAccount()
+			account.AddProvider(schemas.OpenAI, 1, 1)
+			client := newStreamTestClient(t, account, plugin)
+			stream, err := client.PassthroughStream(nil, schemas.OpenAI, &schemas.BifrostPassthroughRequest{Method: http.MethodGet, Path: "/events", Model: "test-model"})
+			require.Nil(t, err)
+			require.NotNil(t, stream)
+			chunk, ok := <-stream
+			require.True(t, ok)
+			require.NotNil(t, chunk)
+			require.Same(t, data, chunk.BifrostPassthroughResponse)
+			_, ok = <-stream
+			require.False(t, ok)
+		})
+	}
+}
+
+// emptyStreamPostHook drops its input unless the test supplies a recovery response.
+type emptyStreamPostHook struct {
+	fakeRoutingPlugin
+	inputErr *schemas.BifrostError
+	recovery *schemas.BifrostResponse
+}
+
+// PostLLMHook records the original error and returns the configured recovery outcome.
+func (p *emptyStreamPostHook) PostLLMHook(_ *schemas.BifrostContext, _ *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	p.inputErr = err
+	if p.recovery != nil {
+		return p.recovery, nil, nil
+	}
+	return nil, nil, io.ErrUnexpectedEOF
+}
+
+// TestPluginStreamShortCircuitPostHookResult exercises each outcome of a single-response short circuit.
+func TestPluginStreamShortCircuitPostHookResult(t *testing.T) {
+	for _, direct := range []bool{true, false} {
+		t.Run(fmt.Sprintf("image/direct=%t", direct), func(t *testing.T) {
+			image := &schemas.BifrostImageGenerationStreamResponse{
+				ID: "image", B64JSON: "aW1hZ2U=",
+				ExtraFields: schemas.BifrostResponseExtraFields{RawRequest: "request", RawResponse: "stored response"},
+			}
+			resp := &schemas.BifrostResponse{ImageGenerationStreamResponse: image}
+			plugins := []schemas.LLMPlugin{&fixedStreamResponse{fakeRoutingPlugin: fakeRoutingPlugin{name: "image-answer"}, response: resp}}
+			if !direct {
+				plugins = []schemas.LLMPlugin{
+					&emptyStreamPostHook{fakeRoutingPlugin: fakeRoutingPlugin{name: "image-recovery"}, recovery: resp},
+					&primaryRefusingPlugin{refuses: schemas.OpenAI},
+				}
+			}
+			account := NewMockAccount()
+			account.AddProvider(schemas.OpenAI, 1, 1)
+			client := newStreamTestClient(t, account, plugins...)
+			ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+			defer ctx.Cancel()
+			applyRawCaptureSignals(ctx, &schemas.ProviderConfig{StoreRawRequestResponse: true, SendBackRawRequest: true})
+			stream, err := client.ImageGenerationStreamRequest(ctx, &schemas.BifrostImageGenerationRequest{
+				Provider: schemas.OpenAI, Model: "image-model", Input: &schemas.ImageGenerationInput{Prompt: "test"},
+			})
+			require.Nil(t, err)
+			require.NotNil(t, stream)
+			require.Equal(t, 1, cap(stream))
+			chunk, ok := <-stream
+			require.True(t, ok)
+			require.NotNil(t, chunk)
+			got := chunk.BifrostImageGenerationStreamResponse
+			require.NotNil(t, got)
+			require.Equal(t, image.ID, got.ID)
+			require.Equal(t, image.B64JSON, got.B64JSON)
+			require.Equal(t, schemas.ImageGenerationStreamRequest, got.ExtraFields.RequestType)
+			require.Equal(t, "request", got.ExtraFields.RawRequest)
+			require.Nil(t, got.ExtraFields.RawResponse)
+			require.Equal(t, "stored response", image.ExtraFields.RawResponse)
+			_, ok = <-stream
+			require.False(t, ok)
+		})
+	}
+	for _, outcome := range []string{"removed_response", "unrecovered_error", "recovered_response"} {
+		t.Run(outcome, func(t *testing.T) {
+			account := NewMockAccount()
+			account.AddProvider(schemas.OpenAI, 1, 1)
+			hook := &emptyStreamPostHook{fakeRoutingPlugin: fakeRoutingPlugin{name: "post-hook-result"}}
+			var answer schemas.LLMPlugin = &primaryRefusingPlugin{refuses: schemas.OpenAI}
+			switch outcome {
+			case "removed_response":
+				answer = &fallbackAnsweringPlugin{answers: schemas.OpenAI}
+			case "recovered_response":
+				hook.recovery = &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{ID: "recovered"}}
+			}
+			client := newStreamTestClient(t, account, hook, answer)
+			var stream chan *schemas.BifrostStreamChunk
+			var err *schemas.BifrostError
+			require.NotPanics(t, func() {
+				stream, err = client.ChatCompletionStreamRequest(nil, &schemas.BifrostChatRequest{
+					Provider: schemas.OpenAI, Model: "test-model",
+					Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("test")}}},
+				})
+			})
+			if hook.recovery != nil {
+				require.Nil(t, err)
+				require.NotNil(t, stream)
+				chunk, ok := <-stream
+				require.True(t, ok)
+				require.NotNil(t, chunk)
+				require.Same(t, hook.recovery.ChatResponse, chunk.BifrostChatResponse)
+				_, ok = <-stream
+				require.False(t, ok)
+				return
+			}
+			require.Nil(t, stream)
+			require.NotNil(t, err)
+			if outcome == "unrecovered_error" {
+				require.Same(t, hook.inputErr, err)
+				require.Equal(t, new(http.StatusForbidden), err.StatusCode)
+			} else {
+				require.Equal(t, new(http.StatusInternalServerError), err.StatusCode)
+				require.NotNil(t, err.Error)
+				require.Contains(t, err.Error.Message, "neither a response nor an error")
+			}
+			require.Equal(t, schemas.ChatCompletionStreamRequest, err.ExtraFields.RequestType)
+			require.Equal(t, schemas.OpenAI, err.ExtraFields.RoutingInfo.Provider)
+			require.Equal(t, "test-model", err.ExtraFields.RoutingInfo.Model)
+		})
+	}
+}
+
+// TestNilContextStreamShutdown checks which error reaches an SDK caller who stops reading before shutdown.
+func TestNilContextStreamShutdown(t *testing.T) {
+	data := &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "partial"}}
+	providerError := &schemas.BifrostStreamChunk{BifrostError: createBifrostError("upstream overloaded", new(503), new("overloaded_error"), false)}
+	providerError.BifrostError.ExtraFields.RequestType = schemas.ResponsesStreamRequest
+	providerError.BifrostError.PopulateRoutingInfo(schemas.RoutingInfo{Provider: schemas.Gemini, Model: "upstream-model"})
+	statusOnly := &schemas.BifrostStreamChunk{BifrostError: &schemas.BifrostError{StatusCode: new(504)}}
+	upstreamCancelled := &schemas.BifrostStreamChunk{BifrostError: createBifrostError("cancelled upstream", new(499), new(schemas.RequestCancelled), false)}
+	blocked := geminiBlockedStreamChunk(t)
+	eventError := &schemas.BifrostStreamChunk{BifrostResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeError, Message: new("too many requests"),
+	}}
+	emptyError := &schemas.BifrostStreamChunk{BifrostError: &schemas.BifrostError{Error: &schemas.ErrorField{}}}
+	for _, tc := range []struct {
+		name              string
+		outputTail, held  *schemas.BifrostStreamChunk
+		queued, wantError *schemas.BifrostStreamChunk
+	}{
+		{"queued_error", data, data, providerError, providerError},
+		{"queued_status_only", data, data, statusOnly, statusOnly},
+		{"queued_upstream_cancel", data, data, upstreamCancelled, upstreamCancelled},
+		{"in_flight_error", data, providerError, nil, providerError},
+		{"forwarded_error", providerError, nil, nil, providerError},
+		{"in_flight_response_failed", data, blocked, nil, blocked},
+		{"queued_response_failed", data, data, blocked, blocked},
+		{"forwarded_response_failed", blocked, nil, nil, blocked},
+		{"in_flight_response_error", data, eventError, nil, eventError},
+		{"no_error", data, data, nil, nil},
+		{"empty_error", data, emptyError, nil, nil},
+		{"idle", nil, nil, nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				var originalFields schemas.BifrostErrorExtraFields
+				if tc.wantError != nil && tc.wantError.BifrostError != nil {
+					originalFields = tc.wantError.BifrostError.ExtraFields
+				}
+				instance, shutdown := context.WithCancel(t.Context())
+				defer shutdown()
+				ctx := schemas.NewBifrostContext(instance, schemas.NoDeadline)
+				source := make(chan *schemas.BifrostStreamChunk, 2)
+				defer close(source) // The SDK must close its output before the producer exits.
+				stream := streamWithContextCleanup(ctx, source, &sdkStreamForwarding{
+					BifrostContext: ctx,
+					requestType:    schemas.ChatCompletionStreamRequest,
+					routingInfo:    schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "sdk-model"},
+				})
+				source <- data
+				require.Same(t, data, <-stream)
+				if tc.outputTail != nil {
+					source <- data
+					source <- tc.outputTail
+					synctest.Wait()
+					require.Len(t, stream, cap(stream))
+				}
+				if tc.held != nil {
+					source <- tc.held
+					synctest.Wait()
+					require.Empty(t, source, "the relay must already hold the blocked chunk")
+				}
+				if tc.queued != nil {
+					source <- data
+					source <- tc.queued
+				}
+
+				shutdown()
+				synctest.Wait()
+				var received []*schemas.BifrostStreamChunk
+				for range len(stream) {
+					received = append(received, <-stream)
+				}
+				select {
+				case _, ok := <-stream:
+					require.False(t, ok, "shutdown must complete before the caller resumes reading")
+				default:
+					t.Fatal("SDK stream is still open after shutdown")
+				}
+				require.NotEmpty(t, received)
+				last := received[len(received)-1]
+				for _, chunk := range received[:len(received)-1] {
+					require.Same(t, data, chunk, "only the last chunk may report an error")
+				}
+				if tc.wantError == nil {
+					require.NotNil(t, last.BifrostError)
+					require.NotNil(t, last.BifrostError.Error)
+					require.Equal(t, new(schemas.RequestCancelled), last.BifrostError.Error.Type)
+					require.Equal(t, new(499), last.BifrostError.StatusCode)
+					require.ErrorIs(t, last.BifrostError.Error.Error, context.Canceled)
+				} else {
+					require.Same(t, tc.wantError, last, "preserve the original chunk and all its metadata")
+					if last.BifrostError != nil {
+						require.Equal(t, originalFields, last.BifrostError.ExtraFields)
+					}
+				}
+			})
+		})
+	}
+}
+
+type bufferedSDKStreamProvider struct {
+	schemas.Provider
+	finished chan<- *schemas.BifrostContext
+	rejected chan<- string
+}
+
+func (p *bufferedSDKStreamProvider) ChatCompletionStream(ctx *schemas.BifrostContext, runner schemas.PostHookRunner, finalize func(context.Context), _ schemas.Key, req *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if p.rejected != nil {
+		p.rejected <- req.Model
+		return nil, createBifrostError("primary unavailable", new(503), nil, false)
+	}
+	source := make(chan *schemas.BifrostStreamChunk, 2)
+	go func() {
+		defer func() {
+			close(source)
+			p.finished <- ctx
+		}()
+		defer finalize(ctx)
+		// The provider can finish before the first read, with more chunks pending
+		// than fit into the returned two-slot channel.
+		for i := range 5 {
+			resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{ID: fmt.Sprint(i)}}
+			providerUtils.ProcessAndSendResponse(ctx, runner, resp, source, finalize)
+		}
+	}()
+	return source, nil
+}
+
+// TestNilContextStreamLifetimeWithFullBuffer checks resumed delivery and attributed terminal errors.
+func TestNilContextStreamLifetimeWithFullBuffer(t *testing.T) {
+	for _, tc := range []struct {
+		ending  string
+		primary string
+	}{
+		{"resume", "serving"},
+		{"timeout", "serving"},
+		{"timeout", "unconfigured"},
+		{"shutdown", "unconfigured"},
+		{"timeout", "rewritten"},
+		{"shutdown", "rewritten"},
+	} {
+		t.Run(tc.ending+"/"+tc.primary, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				account := NewMockAccount()
+				client := newStreamTestClient(t, account, &fallbackModelRewritingPlugin{provider: schemas.Anthropic, model: "rewritten-primary"})
+				finished := make(chan *schemas.BifrostContext, 1)
+				rejected := make(chan string, 1)
+				names := []schemas.ModelProvider{schemas.OpenAI}
+				if tc.primary == "rewritten" {
+					names = append(names, schemas.Anthropic)
+				}
+				var providers []schemas.Provider
+				for _, name := range names {
+					account.AddProvider(name, 1, 1)
+					account.keys[name][0].Models = schemas.WhiteList{"*"}
+					config := account.configs[name]
+					config.NetworkConfig.MaxRetries = 0
+					base, err := client.createBaseProvider(name, config)
+					require.NoError(t, err)
+					upstream := &bufferedSDKStreamProvider{Provider: base, finished: finished}
+					if name == schemas.Anthropic {
+						upstream.rejected = rejected
+					}
+					providers = append(providers, upstream)
+					queue := &ProviderQueue{queue: make(chan *ChannelMessage, 1), done: make(chan struct{})}
+					wg := &sync.WaitGroup{}
+					client.requestQueues.Store(name, queue)
+					client.waitGroups.Store(name, wg)
+					wg.Add(1)
+					go client.requestWorker(upstream, config, queue, wg)
+				}
+				client.providers.Store(&providers)
+				account.keys[schemas.OpenAI][0].Aliases = schemas.KeyAliases{"fallback-model": {ModelID: "wire-model"}}
+
+				request := &schemas.BifrostChatRequest{
+					Provider: schemas.OpenAI, Model: "test-model",
+					Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("test")}}},
+				}
+				fallback := tc.primary != "serving"
+				if fallback {
+					request.Provider, request.Model = schemas.Anthropic, "primary-model"
+					request.Fallbacks = []schemas.Fallback{{Provider: schemas.OpenAI, Model: "fallback-model"}}
+				}
+				stream, streamErr := client.ChatCompletionStreamRequest(nil, request)
+				require.Nil(t, streamErr)
+				if tc.primary == "rewritten" {
+					select {
+					case model := <-rejected:
+						require.Equal(t, "rewritten-primary", model)
+					default:
+						t.Fatal("the primary provider must reject the rewritten model")
+					}
+				}
+				// Let the provider close before reading even the first chunk.
+				var ctx *schemas.BifrostContext
+				select {
+				case ctx = <-finished:
+				case <-time.After(time.Second):
+					t.Fatal("provider did not finish before the first read")
+				}
+				first, ok := <-stream
+				require.True(t, ok, "the serving provider must deliver a chunk before EOF")
+				require.NotNil(t, first)
+				require.NotNil(t, first.BifrostChatResponse)
+				require.Equal(t, "0", first.BifrostChatResponse.ID)
+				if fallback {
+					primaryModel := first.BifrostChatResponse.ExtraFields.RoutingInfo.PrimaryModel
+					require.NotNil(t, primaryModel)
+					require.Equal(t, "primary-model", *primaryModel)
+				}
+				synctest.Wait()
+				require.Equal(t, cap(stream), len(stream), "the returned buffer must be full after one read")
+				require.NoError(t, ctx.Err(), "a full buffer alone must not end the stream")
+
+				if tc.ending != "resume" {
+					// Changes to the context after handoff must not change the stream's error attribution.
+					ctx.SetRoutingInfoSnapshot(schemas.RoutingInfo{Provider: schemas.Gemini, Model: "later-model"})
+					if tc.ending == "shutdown" {
+						client.ctx.Cancel()
+					} else {
+						time.Sleep(2*time.Minute - time.Second)
+						require.NoError(t, ctx.Err(), "the caller gets the full grace period")
+					}
+					select {
+					case <-ctx.Done():
+					case <-time.After(2 * time.Second):
+						t.Fatal("completed provider stream retained its context while the returned buffer was full")
+					}
+					synctest.Wait()
+					var terminal *schemas.BifrostStreamChunk
+					var failures int
+					for chunk := range stream {
+						require.NotNil(t, chunk)
+						if isSDKStreamError(chunk) {
+							failures++
+						}
+						terminal = chunk
+					}
+					require.Equal(t, 1, failures, "the stream must deliver exactly one terminal error")
+					require.NotNil(t, terminal)
+					require.NotNil(t, terminal.BifrostError)
+					require.NotNil(t, terminal.BifrostError.Error)
+					require.NotNil(t, terminal.BifrostError.Error.Type)
+					if tc.ending == "timeout" {
+						require.NoError(t, client.ctx.Err(), "cleanup must not cancel the instance")
+						require.Equal(t, new(504), terminal.BifrostError.StatusCode)
+						require.Equal(t, schemas.RequestTimedOut, *terminal.BifrostError.Error.Type)
+						require.Contains(t, terminal.BifrostError.GetErrorString(), "stream consumer stopped reading")
+					} else {
+						require.Equal(t, new(499), terminal.BifrostError.StatusCode)
+						require.Equal(t, schemas.RequestCancelled, *terminal.BifrostError.Error.Type)
+					}
+					fields := terminal.BifrostError.ExtraFields
+					require.Equal(t, schemas.ChatCompletionStreamRequest, fields.RequestType)
+					require.Equal(t, schemas.OpenAI, fields.Provider)
+					require.Equal(t, schemas.OpenAI, fields.RoutingInfo.Provider)
+					require.Equal(t, fallback, fields.RoutingInfo.IsFallback)
+					require.Equal(t, first.BifrostChatResponse.ExtraFields.RoutingInfo, fields.RoutingInfo)
+					if fallback {
+						require.Equal(t, new(schemas.Anthropic), fields.RoutingInfo.PrimaryProvider)
+						require.Equal(t, "fallback-model", fields.RoutingInfo.Model)
+						require.NotNil(t, fields.RoutingInfo.ResolvedKeyAlias)
+						require.Equal(t, "wire-model", fields.RoutingInfo.ResolvedKeyAlias.ModelID)
+						require.Equal(t, "primary-model", fields.OriginalModelRequested)
+						require.Equal(t, "wire-model", fields.ResolvedModelUsed)
+					} else {
+						require.Equal(t, "test-model", fields.RoutingInfo.Model)
+						require.Equal(t, "test-model", fields.ResolvedModelUsed)
+					}
+					return
+				}
+
+				time.Sleep(time.Minute)
+				var remaining []string
+				for chunk := range stream {
+					require.Nil(t, chunk.BifrostError)
+					remaining = append(remaining, chunk.BifrostChatResponse.ID)
+				}
+				require.Equal(t, []string{"1", "2", "3", "4"}, remaining)
+				select {
+				case <-ctx.Done():
+				case <-time.After(time.Second):
+					t.Fatal("context was retained after the resumed reader drained the stream")
+				}
+			})
+		})
+	}
+}
+
+// An invalid request stops before dispatch, isolating the entrypoint's context cost.
+func BenchmarkNilContextEntrypoints(b *testing.B) {
+	client := &Bifrost{ctx: schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)}
+	defer client.ctx.Cancel()
+	callerCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer callerCtx.Cancel()
+	for _, api := range []string{"chat", "responses"} {
+		for _, nilContext := range []bool{false, true} {
+			b.Run(fmt.Sprintf("%s/nil_%t", api, nilContext), func(b *testing.B) {
+				ctx := callerCtx
+				if nilContext {
+					ctx = nil
+				}
+				b.ReportAllocs()
+				for b.Loop() {
+					if api == "chat" {
+						_, _ = client.ChatCompletionRequest(ctx, nil)
+					} else {
+						_, _ = client.ResponsesRequest(ctx, nil)
+					}
+				}
+			})
+		}
+	}
+}
+
+// BenchmarkPluginStreamRouting measures a 16-chunk stream supplied after a plugin rewrites its target.
+func BenchmarkPluginStreamRouting(b *testing.B) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	plugin := &pendingPluginResult{}
+	client, err := Init(b.Context(), schemas.BifrostConfig{
+		Account: account, Logger: NewNoOpLogger(),
+		LLMPlugins: []schemas.LLMPlugin{&fallbackModelRewritingPlugin{provider: schemas.OpenAI, model: "served"}, plugin},
+	})
+	require.NoError(b, err)
+	b.Cleanup(client.Shutdown)
+	input := []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("test")}}}
+	b.ReportAllocs()
+	for b.Loop() {
+		plugin.raw = make(chan *schemas.BifrostStreamChunk, 16)
+		for range cap(plugin.raw) {
+			plugin.raw <- &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "chunk"}}
+		}
+		close(plugin.raw)
+		stream, streamErr := client.ChatCompletionStreamRequest(nil, &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "requested", Input: input})
+		if streamErr != nil || stream == nil {
+			b.Fatalf("stream startup returned channel %v and error %v", stream, streamErr)
+		}
+		count := 0
+		for chunk := range stream {
+			if chunk == nil || chunk.BifrostChatResponse == nil {
+				b.Fatal("missing plugin data chunk")
+			}
+			count++
+		}
+		if count != cap(plugin.raw) {
+			b.Fatalf("received %d plugin chunks, want %d", count, cap(plugin.raw))
+		}
+	}
+}
+
+// BenchmarkPluginStreamShortCircuitResponse measures the single response handed back after post-hooks.
+func BenchmarkPluginStreamShortCircuitResponse(b *testing.B) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	client, err := Init(b.Context(), schemas.BifrostConfig{
+		Account: account, Logger: NewNoOpLogger(), LLMPlugins: []schemas.LLMPlugin{&fallbackAnsweringPlugin{answers: schemas.OpenAI}},
+	})
+	require.NoError(b, err)
+	b.Cleanup(client.Shutdown)
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI, Model: "test-model",
+		Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("test")}}},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		stream, streamErr := client.ChatCompletionStreamRequest(nil, req)
+		if streamErr != nil || stream == nil {
+			b.Fatalf("stream startup returned channel %v and error %v", stream, streamErr)
+		}
+		if chunk, ok := <-stream; !ok || chunk == nil || chunk.BifrostChatResponse == nil {
+			b.Fatal("missing short-circuit response")
+		}
+		if _, ok := <-stream; ok {
+			b.Fatal("expected EOF after the short-circuit response")
+		}
+	}
+}
+
+// BenchmarkNilContextProviderStreamForwarding measures 64 chunks through both SDK-owned forwarding stages.
+func BenchmarkNilContextProviderStreamForwarding(b *testing.B) {
+	parent := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer parent.Cancel()
+	chunk := &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "chunk"}}
+	metadata := &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "metadata"}}
+	isPreamble := func(chunk *schemas.BifrostStreamChunk) bool { return chunk == metadata }
+	for _, preamble := range []bool{false, true} {
+		b.Run(fmt.Sprintf("preamble=%t", preamble), func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+				forwarding := &sdkStreamForwarding{BifrostContext: ctx}
+				source := make(chan *schemas.BifrostStreamChunk, 64)
+				if preamble {
+					source <- metadata
+				}
+				for len(source) < cap(source) {
+					source <- chunk
+				}
+				close(source)
+				var wrapped chan *schemas.BifrostStreamChunk
+				var startupErr *schemas.BifrostError
+				if preamble {
+					wrapped, _, startupErr = providerUtils.CheckStreamPreambleForError(forwarding, "bench", source, isPreamble)
+				} else {
+					wrapped, _, startupErr = providerUtils.CheckFirstStreamChunkForError(forwarding, source)
+				}
+				if startupErr != nil || wrapped == nil {
+					ctx.Cancel()
+					b.Fatalf("stream startup returned channel %v and error %v", wrapped, startupErr)
+				}
+				for range streamWithContextCleanup(ctx, wrapped, forwarding) {
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkNilContextStreamDelivery measures delivery of a completed one-chunk stream.
+func BenchmarkNilContextStreamDelivery(b *testing.B) {
+	parent := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer parent.Cancel()
+	chunk := &schemas.BifrostStreamChunk{}
+	for _, owned := range []bool{false, true} {
+		b.Run(fmt.Sprintf("owned_%t", owned), func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				stream := make(chan *schemas.BifrostStreamChunk, 1)
+				stream <- chunk
+				close(stream)
+				if owned {
+					ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+					stream = streamWithContextCleanup(ctx, stream, &sdkStreamForwarding{BifrostContext: ctx})
+				}
+				for range stream {
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkApplyProviderProxySignal measures per-attempt context writes for default and configured download limits.
+func BenchmarkApplyProviderProxySignal(b *testing.B) {
+	for _, limit := range []int64{0, 64 << 20} {
+		b.Run(fmt.Sprintf("limit_%d", limit), func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{MaxRemoteFileSizeBytes: limit}}
+			applyProviderProxySignal(ctx, config)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				applyProviderProxySignal(ctx, config)
+			}
+		})
+	}
+}
+
+// TestApplyProviderProxySignal_RemoteFileLimitSnapshot checks each attempt stores an immutable limit snapshot rather than shared configuration.
+func TestApplyProviderProxySignal_RemoteFileLimitSnapshot(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{MaxRemoteFileSizeBytes: 64 << 20}}
+	applyProviderProxySignal(ctx, config)
+	ctx.BlockRestrictedWrites()
+	// A hook may read a reserved value even though SetValue is blocked.
+	// Mutating anything exposed by that read must not change shared configuration.
+	if exposed, ok := ctx.Value(schemas.BifrostContextKeyMaxRemoteFileSizeBytes).(*schemas.NetworkConfig); ok {
+		exposed.MaxRemoteFileSizeBytes = 16
+	}
+	if config.NetworkConfig.MaxRemoteFileSizeBytes != 64<<20 {
+		t.Fatal("a context read exposed mutable provider configuration")
+	}
+	config.NetworkConfig.MaxRemoteFileSizeBytes = 32 << 20
+	if got := ctx.Value(schemas.BifrostContextKeyMaxRemoteFileSizeBytes); got != int64(64<<20) {
+		t.Fatalf("attempt must retain its scalar snapshot after a config change, got %v", got)
+	}
+}
+
+// TestApplyProviderProxySignal_RemoteFileLimitPerAttempt checks fallback limits replace or clear earlier snapshots even while post-hooks block reserved writes.
+func TestApplyProviderProxySignal_RemoteFileLimitPerAttempt(t *testing.T) {
+	for _, blocked := range []bool{false, true} {
+		t.Run(fmt.Sprintf("blocked_%t", blocked), func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			defer ctx.Cancel()
+			large := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{MaxRemoteFileSizeBytes: 64 << 20}}
+			small := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{MaxRemoteFileSizeBytes: 16}}
+			applyProviderProxySignal(ctx, large)
+			if blocked {
+				ctx.BlockRestrictedWrites()
+				defer ctx.UnblockRestrictedWrites()
+			}
+			for _, config := range []*schemas.ProviderConfig{large, small, {}, large, nil} {
+				applyProviderProxySignal(ctx, config)
+				got := ctx.Value(schemas.BifrostContextKeyMaxRemoteFileSizeBytes)
+				if config == nil || config.NetworkConfig.MaxRemoteFileSizeBytes == 0 {
+					if got != nil {
+						t.Fatal("default fallback inherited the prior limit")
+					}
+				} else if got != config.NetworkConfig.MaxRemoteFileSizeBytes {
+					t.Fatalf("attempt limit = %v, want %d", got, config.NetworkConfig.MaxRemoteFileSizeBytes)
+				}
+			}
+			ctx.BlockRestrictedWrites()
+			ctx.SetValue(schemas.BifrostContextKeyMaxRemoteFileSizeBytes, large.NetworkConfig.MaxRemoteFileSizeBytes)
+			if ctx.Value(schemas.BifrostContextKeyMaxRemoteFileSizeBytes) != nil {
+				t.Fatal("plugin changed the operator's limit")
+			}
+		})
+	}
+}
+
+// TestCreateBaseProvider_RejectsInvalidRemoteFileLimit checks invalid Go SDK limits fail before provider construction.
+func TestCreateBaseProvider_RejectsInvalidRemoteFileLimit(t *testing.T) {
+	client := &Bifrost{}
+	for _, limit := range []int64{-1, schemas.MaxRemoteFileSizeBytesUpperBound + 1} {
+		_, err := client.createBaseProvider(schemas.OpenAI, &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{MaxRemoteFileSizeBytes: limit}})
+		if err == nil || !strings.Contains(err.Error(), "max_remote_file_size_bytes") {
+			t.Fatalf("invalid SDK config: %v", err)
+		}
 	}
 }
 

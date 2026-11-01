@@ -247,70 +247,159 @@ func (c *StreamStartupState) ObserveResult(ctx context.Context, resp *schemas.Bi
 	return true
 }
 
-// replayStreamPreamble transfers buffer ownership to the forwarding goroutine.
-// first is the unbuffered chunk that committed the stream, or nil at EOF.
-func replayStreamPreamble(
-	ctx context.Context,
-	key streamPreambleKey,
-	buffer *streamPreambleBuffer,
-	first *schemas.BifrostStreamChunk,
-) (chan *schemas.BifrostStreamChunk, <-chan struct{}) {
-	wrapped := make(chan *schemas.BifrostStreamChunk, max(cap(key.source), 1))
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		defer close(wrapped)
-		defer func() {
-			buffer.chunks = nil
-			buffer.bytes = 0
-			streamPreambles.CompareAndDelete(key, buffer)
-			// Unblock the producer if cancellation interrupted forwarding.
-			for range key.source {
-			}
-		}()
+// streamForwardingObserver lets the SDK wait for a committed provider relay to
+// publish everything it has received, independently of the raw producer's drain.
+type streamForwardingObserver interface {
+	StartStreamForwarding()
+	StreamChunkDropped(*schemas.BifrostStreamChunk)
+	EndStreamForwarding(eof bool)
+}
 
-		send := func(chunk *schemas.BifrostStreamChunk) bool {
-			if ctx.Err() != nil {
-				return false
-			}
-			select {
-			case wrapped <- chunk:
-				return true
-			case <-ctx.Done():
-				return false
-			}
+// forwardCommittedStream transfers the checked first chunk and any preamble to
+// the caller. The second channel closes after the raw producer finishes draining.
+func forwardCommittedStream(ctx context.Context, key streamPreambleKey, preamble *streamPreambleBuffer, first *schemas.BifrostStreamChunk) (chan *schemas.BifrostStreamChunk, <-chan struct{}) {
+	wrapped := make(chan *schemas.BifrostStreamChunk, max(cap(key.source), 1))
+	drained := make(chan struct{})
+	observer, _ := ctx.(streamForwardingObserver)
+	if observer != nil {
+		// Register before the SDK can receive the wrapped channel, including
+		// when the very first event is a failure waiting behind a preamble.
+		observer.StartStreamForwarding()
+	}
+	if preamble == nil {
+		if !schemas.IsStreamCommitMarker(first) {
+			wrapped <- first
 		}
-		for i, chunk := range buffer.chunks {
-			if !send(chunk) {
-				return
-			}
-			buffer.chunks[i] = nil
-		}
-		buffer.chunks = nil
-		buffer.bytes = 0
-		if first != nil && !send(first) {
-			return
+		if observer == nil {
+			go forwardCallerStream(ctx, key.source, wrapped, drained)
+			return wrapped, drained
 		}
 		first = nil
+	}
+	go runCommittedStream(ctx, key, preamble, first, wrapped, drained, observer)
+	return wrapped, drained
+}
 
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case chunk, ok := <-key.source:
-				if !ok {
-					return
-				}
-				if schemas.IsStreamCommitMarker(chunk) {
-					continue
-				}
-				if !send(chunk) {
-					return
-				}
-			}
+// forwardCallerStream forwards an ordinary caller-owned stream without SDK bookkeeping.
+func forwardCallerStream(ctx context.Context, source <-chan *schemas.BifrostStreamChunk, wrapped chan *schemas.BifrostStreamChunk, drained chan struct{}) {
+	defer close(drained)
+	defer close(wrapped)
+	cancelled := ctx.Done()
+	for chunk := range source {
+		if schemas.IsStreamCommitMarker(chunk) {
+			continue
 		}
-	}()
-	return wrapped, done
+		select {
+		case wrapped <- chunk:
+		case <-cancelled:
+			for range source {
+			}
+			return
+		}
+	}
+}
+
+// runCommittedStream publishes the forwarding outcome before waiting for the producer to exit.
+func runCommittedStream(ctx context.Context, key streamPreambleKey, preamble *streamPreambleBuffer, first *schemas.BifrostStreamChunk, wrapped chan *schemas.BifrostStreamChunk, drained chan struct{}, observer streamForwardingObserver) {
+	defer close(drained)
+	eof := forwardProviderChunks(ctx, key.source, wrapped, preamble, first, observer)
+	if preamble != nil {
+		preamble.chunks = nil
+		preamble.bytes = 0
+		streamPreambles.CompareAndDelete(key, preamble)
+	}
+	if observer != nil {
+		observer.EndStreamForwarding(eof)
+		close(wrapped)
+	}
+	if !eof {
+		for range key.source {
+		}
+	}
+	if observer == nil {
+		close(wrapped)
+	}
+}
+
+// forwardProviderChunks returns true when every chunk reached the output before EOF.
+func forwardProviderChunks(ctx context.Context, source <-chan *schemas.BifrostStreamChunk, wrapped chan<- *schemas.BifrostStreamChunk, preamble *streamPreambleBuffer, first *schemas.BifrostStreamChunk, observer streamForwardingObserver) bool {
+	cancelled := ctx.Done()
+	send := func(chunk *schemas.BifrostStreamChunk) bool {
+		if preamble != nil && ctx.Err() != nil {
+			return false
+		}
+		select {
+		case wrapped <- chunk:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+	if preamble != nil {
+		for i, chunk := range preamble.chunks {
+			if !send(chunk) {
+				if observer != nil {
+					for _, held := range preamble.chunks[i:] {
+						observer.StreamChunkDropped(held)
+					}
+					if first != nil {
+						observer.StreamChunkDropped(first)
+					}
+				}
+				return false
+			}
+			preamble.chunks[i] = nil
+		}
+		preamble.chunks = nil
+		preamble.bytes = 0
+		if first != nil && !send(first) {
+			if observer != nil {
+				observer.StreamChunkDropped(first)
+			}
+			return false
+		}
+	}
+	for {
+		select {
+		case chunk, ok := <-source:
+			if !ok {
+				return true
+			}
+			if schemas.IsStreamCommitMarker(chunk) {
+				continue
+			}
+			if !send(chunk) {
+				if observer != nil {
+					observer.StreamChunkDropped(chunk)
+				}
+				return false
+			}
+		case <-cancelled:
+			return observer != nil && finishCancelledReceive(source, observer)
+		}
+	}
+}
+
+// finishCancelledReceive distinguishes a ready EOF from an interrupted read. Skip
+// queued commit markers, but never wait for or chase a still-producing source.
+func finishCancelledReceive(source <-chan *schemas.BifrostStreamChunk, observer streamForwardingObserver) bool {
+	for range min(len(source), schemas.DefaultStreamBufferSize) + 1 {
+		select {
+		case chunk, ok := <-source:
+			if !ok {
+				return true
+			}
+			if schemas.IsStreamCommitMarker(chunk) {
+				continue
+			}
+			observer.StreamChunkDropped(chunk)
+			return false
+		default:
+		}
+		break
+	}
+	observer.StreamChunkDropped(nil)
+	return false
 }
 
 // CheckStreamPreambleForError checks for errors before meaningful output.
@@ -375,7 +464,7 @@ func CheckStreamPreambleForError(
 					close(done)
 					return nil, done, nil
 				}
-				wrapped, done := replayStreamPreamble(ctx, key, buffer, nil)
+				wrapped, done := forwardCommittedStream(ctx, key, buffer, nil)
 				return wrapped, done, nil
 			}
 			if chunk == nil {
@@ -387,7 +476,7 @@ func CheckStreamPreambleForError(
 				if !abort.Disarm() {
 					return nil, drain(), NewFirstTokenTimeoutError(abort.Timeout())
 				}
-				wrapped, done := replayStreamPreamble(ctx, key, buffer, nil)
+				wrapped, done := forwardCommittedStream(ctx, key, buffer, nil)
 				return wrapped, done, nil
 			}
 			if isStreamStartupError(chunk.BifrostError) {
@@ -413,7 +502,7 @@ func CheckStreamPreambleForError(
 				// The deadline fired while this chunk was in flight.
 				return nil, drain(), NewFirstTokenTimeoutError(abort.Timeout())
 			}
-			wrapped, done := replayStreamPreamble(ctx, key, buffer, chunk)
+			wrapped, done := forwardCommittedStream(ctx, key, buffer, chunk)
 			return wrapped, done, nil
 		}
 	}
@@ -532,28 +621,6 @@ func CheckFirstStreamChunkForError(
 	// First chunk is valid data — wrap channel to re-inject it. A commit marker means a
 	// plugin holds valid output (see schemas.StreamCommitMarker); it is consumed here and
 	// never re-injected, nor forwarded if a late copy follows a real chunk.
-	done := make(chan struct{})
-	wrapped := make(chan *schemas.BifrostStreamChunk, max(cap(stream), 1))
-	if !schemas.IsStreamCommitMarker(firstChunk) {
-		wrapped <- firstChunk
-	}
-	go func() {
-		defer close(done)
-		defer close(wrapped)
-		for chunk := range stream {
-			if schemas.IsStreamCommitMarker(chunk) {
-				continue
-			}
-			select {
-			case wrapped <- chunk:
-			case <-ctx.Done():
-				// Consumer abandoned the wrapped channel. Drain the source so the
-				// provider's blocked send unblocks and its goroutine can exit.
-				for range stream {
-				}
-				return
-			}
-		}
-	}()
-	return wrapped, done, nil
+	wrapped, drained := forwardCommittedStream(ctx, streamPreambleKey{source: stream}, nil, firstChunk)
+	return wrapped, drained, nil
 }

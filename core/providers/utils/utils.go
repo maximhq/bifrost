@@ -3882,6 +3882,15 @@ func GateSendChunk(ctx *schemas.BifrostContext, chunk *schemas.BifrostStreamChun
 	case responseChan <- chunk:
 		return true
 	case <-ctx.Done():
+		// Providers publish their cancellation error after Done closes. Keep
+		// it when a reader or buffer slot is ready, even if Done won the select.
+		if chunk != nil && chunk.BifrostError != nil {
+			select {
+			case responseChan <- chunk:
+				return true
+			default:
+			}
+		}
 		return false
 	}
 }
