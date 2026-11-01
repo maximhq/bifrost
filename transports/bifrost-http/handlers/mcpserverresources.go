@@ -83,8 +83,18 @@ func (h *MCPServerHandler) syncResourcesAndPrompts(ctx context.Context, perCalle
 	logger.Debug("Synced MCP server with %d prompts, %d resources, %d resource templates", len(prompts), len(resources), len(templates))
 }
 
+// withCallerCapabilities records on ctx what the downstream client declared on this request, so core
+// declares upstream only what that caller can answer. Only 2026-07-28 requests declare capabilities.
+func withCallerCapabilities(ctx context.Context) context.Context {
+	info := server.RequestProtocolInfoFromContext(ctx)
+	if info == nil || info.ClientCapabilities == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, schemas.BifrostContextKeyMCPCallerCapabilities, info.ClientCapabilities)
+}
+
 func (h *MCPServerHandler) getPrompt(ctx context.Context, request mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
-	result, bErr := h.served.GetMCPPrompt(ctx, request.Params.Name, request.Params.Arguments)
+	result, bErr := h.served.GetMCPPrompt(withCallerCapabilities(ctx), request.Params.Name, request.Params.Arguments)
 	if bErr != nil {
 		return nil, upstreamError(bErr, mcp.INVALID_PARAMS)
 	}
@@ -92,7 +102,7 @@ func (h *MCPServerHandler) getPrompt(ctx context.Context, request mcp.GetPromptR
 }
 
 func (h *MCPServerHandler) readResource(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-	result, bErr := h.served.ReadMCPResource(ctx, request.Params.URI)
+	result, bErr := h.served.ReadMCPResource(withCallerCapabilities(ctx), request.Params.URI)
 	if bErr != nil {
 		code := mcp.RESOURCE_NOT_FOUND
 		if mcp.IsModernProtocol(server.RequestProtocolVersion(ctx)) {
@@ -114,7 +124,7 @@ func (h *MCPServerHandler) CompleteResourceArgument(ctx context.Context, uri str
 }
 
 func (h *MCPServerHandler) complete(ctx context.Context, params mcp.CompleteParams) (*mcp.Completion, error) {
-	result, bErr := h.served.CompleteMCPArgument(ctx, params)
+	result, bErr := h.served.CompleteMCPArgument(withCallerCapabilities(ctx), params)
 	if bErr != nil {
 		return nil, upstreamError(bErr, mcp.INVALID_PARAMS)
 	}

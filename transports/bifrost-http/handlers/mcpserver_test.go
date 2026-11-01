@@ -850,6 +850,99 @@ func TestMCPGateway_ServesPromptsAndResources(t *testing.T) {
 	}
 }
 
+// capabilityRecordingToolManager records the caller capabilities each upstream-bound request carried.
+type capabilityRecordingToolManager struct {
+	servingToolManager
+	mu   sync.Mutex
+	seen map[string]*mcp.ClientCapabilities
+}
+
+func (r *capabilityRecordingToolManager) record(ctx context.Context, method string) {
+	caps, _ := ctx.Value(schemas.BifrostContextKeyMCPCallerCapabilities).(*mcp.ClientCapabilities)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.seen[method] = caps
+}
+
+func (r *capabilityRecordingToolManager) ExecuteChatMCPTool(ctx context.Context, call *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
+	r.record(ctx, string(mcp.MethodToolsCall))
+	return r.servingToolManager.ExecuteChatMCPTool(ctx, call)
+}
+
+func (r *capabilityRecordingToolManager) GetMCPPrompt(ctx context.Context, name string, arguments map[string]string) (*mcp.GetPromptResult, *schemas.BifrostError) {
+	r.record(ctx, string(mcp.MethodPromptsGet))
+	return r.servingToolManager.GetMCPPrompt(ctx, name, arguments)
+}
+
+func (r *capabilityRecordingToolManager) ReadMCPResource(ctx context.Context, uri string) (*mcp.ReadResourceResult, *schemas.BifrostError) {
+	r.record(ctx, string(mcp.MethodResourcesRead))
+	return r.servingToolManager.ReadMCPResource(ctx, uri)
+}
+
+func (r *capabilityRecordingToolManager) CompleteMCPArgument(ctx context.Context, params mcp.CompleteParams) (*mcp.CompleteResult, *schemas.BifrostError) {
+	r.record(ctx, "completion/complete")
+	return r.servingToolManager.CompleteMCPArgument(ctx, params)
+}
+
+// Every gateway request that reaches an upstream carries the capabilities its caller declared, so core
+// can declare them upstream. Only 2026-07-28 requests declare capabilities per request.
+func TestMCPGateway_RecordsCallerCapabilities(t *testing.T) {
+	declared := mcp.ClientCapabilities{Elicitation: &mcp.ElicitationCapability{}}
+	for _, version := range []string{mcp.ProtocolVersion20250618, mcp.ProtocolVersion20251125, mcp.ProtocolVersion20260728} {
+		t.Run(version, func(t *testing.T) {
+			tm := &capabilityRecordingToolManager{
+				servingToolManager: servingToolManager{echoToolManager{fakeInstructionsToolManager{}}},
+				seen:               map[string]*mcp.ClientCapabilities{},
+			}
+			h, err := NewMCPServerHandler(context.Background(), &lib.Config{ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil, nil)
+			require.NoError(t, err)
+			baseURL := startGateway(t, h)
+
+			ctx := context.Background()
+			tr, err := transport.NewStreamableHTTP(baseURL + "/mcp")
+			require.NoError(t, err)
+			c := client.NewClient(tr, client.WithProtocolVersion(version), client.WithClientCapabilities(declared))
+			require.NoError(t, c.Start(ctx))
+			t.Cleanup(func() { _ = c.Close() })
+			init := mcp.InitializeRequest{}
+			init.Params.ProtocolVersion = version
+			_, err = c.Initialize(ctx, init)
+			require.NoError(t, err)
+
+			call := mcp.CallToolRequest{}
+			call.Params.Name = "gw-echo"
+			_, err = c.CallTool(ctx, call)
+			require.NoError(t, err)
+			get := mcp.GetPromptRequest{}
+			get.Params.Name = "gw-review"
+			_, err = c.GetPrompt(ctx, get)
+			require.NoError(t, err)
+			read := mcp.ReadResourceRequest{}
+			read.Params.URI = "file:///gw.md"
+			_, err = c.ReadResource(ctx, read)
+			require.NoError(t, err)
+			complete := mcp.CompleteRequest{}
+			complete.Params.Ref = mcp.PromptReference{Type: "ref/prompt", Name: "gw-review"}
+			complete.Params.Argument = mcp.CompleteArgument{Name: "diff", Value: "+"}
+			_, err = c.Complete(ctx, complete)
+			require.NoError(t, err)
+
+			tm.mu.Lock()
+			defer tm.mu.Unlock()
+			for _, method := range []string{"tools/call", "prompts/get", "resources/read", "completion/complete"} {
+				caps, reached := tm.seen[method]
+				require.True(t, reached, "%s did not reach Bifrost", method)
+				if version != mcp.ProtocolVersion20260728 {
+					assert.Nil(t, caps, "%s: a legacy request declares capabilities only at initialize", method)
+					continue
+				}
+				require.NotNil(t, caps, "%s: the caller's capabilities must reach Bifrost", method)
+				assert.Equal(t, declared, *caps, method)
+			}
+		})
+	}
+}
+
 // A caller narrowed away from the owning client lists none of its prompts or resources and gets
 // not-found for them.
 func TestMCPGateway_NarrowedCallerCannotReachPromptsOrResources(t *testing.T) {

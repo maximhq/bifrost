@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -1574,5 +1575,63 @@ func BenchmarkParseAndAddToolsToRequest_PerUserClients(b *testing.B) {
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-bench")
 		req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{}}
 		_ = m.toolsManager.ParseAndAddToolsToRequest(ctx, req)
+	}
+}
+
+// A 2026-07-28 upstream called for a gateway caller is told what that caller declared, narrowed to what
+// Bifrost can relay, on persistent and per-call connections alike. A call with no gateway caller keeps
+// the client's own capabilities.
+func TestExecuteTool_DeclaresRelayableCallerCapabilitiesUpstream(t *testing.T) {
+	relayed := relayedClientCapabilities
+	relayedClientCapabilities = mcpgo.ClientCapabilities{Elicitation: &mcpgo.ElicitationCapability{}}
+	t.Cleanup(func() { relayedClientCapabilities = relayed })
+
+	var seen atomic.Pointer[mcpgo.ClientCapabilities]
+	s := server.NewMCPServer("caps-upstream", "1.0.0", server.WithToolCapabilities(true))
+	s.AddTool(mcpgo.NewTool("record"), func(ctx context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		if info := server.RequestProtocolInfoFromContext(ctx); info != nil {
+			seen.Store(info.ClientCapabilities)
+		}
+		return mcpgo.NewToolResultText("ok"), nil
+	})
+	ts := httptest.NewServer(server.NewStreamableHTTPServer(s))
+	t.Cleanup(ts.Close)
+
+	for _, sticky := range []bool{true, false} {
+		m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+		t.Cleanup(func() { _ = m.Cleanup() })
+		require.NoError(t, m.connectToMCPClient(context.Background(), &schemas.MCPClientConfig{
+			ID: fmt.Sprintf("caps-%t", sticky), Name: "upstream", ConnectionType: schemas.MCPConnectionTypeHTTP,
+			ConnectionString: schemas.NewSecretVar(ts.URL), NeedsSessionStickiness: schemas.Ptr(sticky), ToolsToExecute: []string{"*"},
+		}))
+		cases := []struct {
+			name   string
+			caller *mcpgo.ClientCapabilities
+			want   mcpgo.ClientCapabilities
+		}{
+			{"no gateway caller", nil, mcpgo.ClientCapabilities{}},
+			{"caller declares a relayed capability", &mcpgo.ClientCapabilities{Elicitation: &mcpgo.ElicitationCapability{}, Sampling: &mcpgo.SamplingCapability{}},
+				mcpgo.ClientCapabilities{Elicitation: &mcpgo.ElicitationCapability{}}},
+			{"caller declares none", &mcpgo.ClientCapabilities{}, mcpgo.ClientCapabilities{}},
+		}
+		for _, tc := range cases {
+			t.Run(fmt.Sprintf("sticky=%t/%s", sticky, tc.name), func(t *testing.T) {
+				seen.Store(nil)
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+				if tc.caller != nil {
+					bfCtx.SetValue(schemas.BifrostContextKeyMCPCallerCapabilities, tc.caller)
+				}
+				toolName := "upstream-record"
+				_, bErr := m.ExecuteChatTool(bfCtx, &schemas.ChatAssistantMessageToolCall{
+					Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolName, Arguments: "{}"},
+				})
+				require.Nil(t, bErr)
+				got := seen.Load()
+				require.NotNil(t, got, "the upstream must receive per-request capabilities")
+				assert.Equal(t, tc.want, *got)
+			})
+		}
 	}
 }

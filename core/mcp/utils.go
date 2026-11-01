@@ -769,6 +769,46 @@ func isDeadSessionError(err error) bool {
 // error that merely mentions "multi round-trip:" is not one.
 const unfulfilledInputPrefix = "multi round-trip: fulfilling input request "
 
+// relayedClientCapabilities are the client capabilities Bifrost can pass through to a gateway caller.
+// None yet; input request pass-through and MCP Apps each add theirs.
+var relayedClientCapabilities = mcp.ClientCapabilities{}
+
+// UpstreamCallContext declares, on a 2026-07-28 upstream request made for a gateway caller, the
+// capabilities both that caller declared and Bifrost can relay. Without a gateway caller the client's
+// own capabilities apply. Exported for code mode's nested tool calls.
+func UpstreamCallContext(ctx context.Context) context.Context {
+	caller, _ := ctx.Value(schemas.BifrostContextKeyMCPCallerCapabilities).(*mcp.ClientCapabilities)
+	if caller == nil {
+		return ctx
+	}
+	return client.WithRequestClientCapabilities(ctx, relayableCapabilities(*caller, relayedClientCapabilities))
+}
+
+// relayableCapabilities keeps the parts of caller that relayed also has, using the caller's values.
+// Experimental and task capabilities are never relayed.
+func relayableCapabilities(caller, relayed mcp.ClientCapabilities) mcp.ClientCapabilities {
+	var out mcp.ClientCapabilities
+	if relayed.Elicitation != nil {
+		out.Elicitation = caller.Elicitation
+	}
+	if relayed.Sampling != nil {
+		out.Sampling = caller.Sampling
+	}
+	if relayed.Roots != nil {
+		out.Roots = caller.Roots
+	}
+	for name, value := range caller.Extensions {
+		if _, ok := relayed.Extensions[name]; !ok {
+			continue
+		}
+		if out.Extensions == nil {
+			out.Extensions = make(map[string]any, len(relayed.Extensions))
+		}
+		out.Extensions[name] = value
+	}
+	return out
+}
+
 // unservableInputKinds maps mcp-go's wording for an input request it had no handler for (Bifrost
 // registers none, so declares no capability) to what the upstream was asking for.
 var unservableInputKinds = []struct{ marker, what string }{
