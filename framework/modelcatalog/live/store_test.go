@@ -1,12 +1,77 @@
 package live
 
 import (
+	"fmt"
 	"slices"
 	"sync"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// BenchmarkLiveModelCacheUpsert measures refresh-time copying and generation bookkeeping without provider or database latency.
+func BenchmarkLiveModelCacheUpsert(b *testing.B) {
+	for _, count := range []int{1, 100, 1000} {
+		b.Run(fmt.Sprintf("models=%d", count), func(b *testing.B) {
+			store := New(nil)
+			models := make([]string, count)
+			for i := range models {
+				models[i] = fmt.Sprintf("model-%d", i)
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				store.Upsert(schemas.OpenAI, "key", false, models, nil)
+			}
+		})
+	}
+}
+
+// TestReplaceIfCurrent fences a stale database read without replacing another key or provider.
+func TestReplaceIfCurrent(t *testing.T) {
+	for _, mutation := range []string{"none", "write", "invalidate", "other provider"} {
+		t.Run(mutation, func(t *testing.T) {
+			s := New(nil)
+			s.Upsert(openai, "one", false, []string{"old"}, nil)
+			s.Upsert(openai, "one", true, []string{"old-raw"}, nil)
+			s.Upsert(openai, "two", false, []string{"other-key"}, nil)
+			s.Upsert(anthropic, "one", false, []string{"other-provider"}, nil)
+			version := s.Version(openai)
+			switch mutation {
+			case "write":
+				s.Upsert(openai, "one", false, []string{"newer"}, nil)
+			case "invalidate":
+				s.Invalidate(openai, "one")
+			case "other provider":
+				s.Upsert(anthropic, "one", false, []string{"other-provider"}, nil)
+			}
+			before := s.WriteGen()
+			keyID := "one"
+			replaced := s.ReplaceIfCurrent(openai, &keyID, map[Key]Entry{
+				{Provider: openai, KeyID: keyID}: {Models: []string{"loaded"}, Created: map[string]int64{"loaded": 42}},
+			}, version)
+			want := mutation == "none" || mutation == "other provider"
+			if replaced != want {
+				t.Fatalf("replacement = %t, want %t", replaced, want)
+			}
+			if replaced {
+				if got := s.ModelsForProvider(openai); !slices.Equal(got, []string{"loaded", "other-key"}) {
+					t.Fatalf("scoped replacement = %v", got)
+				}
+				if len(s.UnfilteredModelsForProvider(openai)) != 0 || s.CreatedForProvider(openai, false)["loaded"] != 42 {
+					t.Fatal("replacement did not replace both modes and creation times")
+				}
+				if s.WriteGen() <= before {
+					t.Fatal("replacement did not invalidate composed model lookups")
+				}
+			} else if s.WriteGen() != before {
+				t.Fatal("rejected stale replacement changed the cache")
+			}
+			if got := s.ModelsForProvider(anthropic); !slices.Equal(got, []string{"other-provider"}) {
+				t.Fatalf("another provider changed: %v", got)
+			}
+		})
+	}
+}
 
 const (
 	openai    = schemas.OpenAI

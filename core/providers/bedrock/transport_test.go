@@ -10,6 +10,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -88,6 +89,58 @@ func newTestProviderWithServer(t *testing.T, ts *httptest.Server) *BedrockProvid
 	// AWS endpoint.
 	provider.streamingClient = &http.Client{Transport: redirect}
 	return provider
+}
+
+// TestBedrockListModelsPartialMantle preserves best-effort results without treating them as a complete discovery.
+func TestBedrockListModelsPartialMantle(t *testing.T) {
+	for _, failure := range []string{"", "unavailable", "malformed", "connection closed"} {
+		for _, unfiltered := range []bool{false, true} {
+			t.Run(fmt.Sprintf("failure=%s/unfiltered=%t", failure, unfiltered), func(t *testing.T) {
+				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					if r.URL.Path == "/foundation-models" {
+						_, _ = io.WriteString(w, `{"modelSummaries":[{"modelId":"amazon.nova-lite-v1:0"}]}`)
+						return
+					}
+					switch failure {
+					case "unavailable":
+						w.WriteHeader(http.StatusServiceUnavailable)
+					case "malformed":
+						_, _ = io.WriteString(w, `{`)
+					case "connection closed":
+						conn, _, err := w.(http.Hijacker).Hijack()
+						if err == nil {
+							_ = conn.Close()
+						}
+					default:
+						_, _ = io.WriteString(w, `{"data":[{"id":"openai.gpt-5.4"}]}`)
+					}
+				}))
+				t.Cleanup(upstream.Close)
+				provider := newTestProviderWithServer(t, upstream)
+				key := testBedrockKey()
+				key.ID, key.Models = "key", schemas.WhiteList{"*"}
+				ctx := testBedrockCtx()
+				defer ctx.Cancel()
+				response, bfErr := provider.ListModels(ctx, []schemas.Key{key}, &schemas.BifrostListModelsRequest{
+					Provider: schemas.Bedrock, KeyID: &key.ID, Unfiltered: unfiltered,
+				})
+				require.Nil(t, bfErr, "foundation models must remain available to best-effort callers")
+				require.NotNil(t, response)
+				ids := make([]string, 0, len(response.Data))
+				for _, model := range response.Data {
+					ids = append(ids, model.ID)
+				}
+				want := []string{"bedrock/amazon.nova-lite-v1:0"}
+				if failure == "" {
+					want = append(want, "bedrock/openai.gpt-5.4")
+				}
+				require.ElementsMatch(t, want, ids)
+				require.Equal(t, failure != "", response.IsPartial)
+				require.Nil(t, response.HasMore, "a discovery failure is not a pagination cursor")
+			})
+		}
+	}
 }
 
 // testBedrockKey returns a minimal Key with a bearer value so makeStreamingRequest
@@ -265,7 +318,6 @@ func TestChatCompletionStream_NetOpError_ChunkIsRetryable(t *testing.T) {
 		"net.OpError during EventStream decoding must use ErrProviderNetworkError message")
 }
 
-
 // newMidStreamResetServer returns a server that answers 200, writes a truncated
 // EventStream prelude (not a valid frame), then resets the TCP connection, which
 // produces a *net.OpError on the client's read side.
@@ -339,10 +391,10 @@ func TestStream_MidStreamDrop_IsUpstreamError(t *testing.T) {
 			require.NotNil(t, streamErr.StatusCode)
 			assert.Equal(t, http.StatusBadGateway, *streamErr.StatusCode)
 			assert.Equal(t, "api_error", anthropic.ToAnthropicChatCompletionError(streamErr).Error.Type)
-	})
+		})
 	}
 }
-       
+
 // TestRequest_ConnectionFailure_IsUpstreamError verifies that a connection the server
 // closes before responding reaches clients as a 502 upstream failure. Without a
 // status the error resolves to 400, which reads as a malformed request.

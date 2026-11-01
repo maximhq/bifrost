@@ -9,6 +9,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestListModelsPartialIsInternal keeps discovery completeness out of client responses and input.
+func TestListModelsPartialIsInternal(t *testing.T) {
+	response := BifrostListModelsResponse{Data: []Model{{ID: "openai/model"}}}
+	complete, err := MarshalSorted(response)
+	require.NoError(t, err)
+	response.IsPartial = true
+	partial, err := MarshalSorted(response)
+	require.NoError(t, err)
+	require.Equal(t, string(complete), string(partial))
+	var decoded BifrostListModelsResponse
+	require.NoError(t, json.Unmarshal([]byte(`{"data":[],"IsPartial":true,"is_partial":true}`), &decoded))
+	require.False(t, decoded.IsPartial)
+}
+
 // Raw types that mirror the real KeyStatus → BifrostError → ExtraFields → KeyStatus
 // chain but without any custom MarshalJSON. Used to reproduce the cycle error
 // that would occur without the fix.
@@ -93,7 +107,7 @@ func TestKeyStatusMarshalJSON_PreservesErrorFields(t *testing.T) {
 		StatusCode:     &statusCode,
 		Error:          &ErrorField{Message: "unauthorized"},
 		ExtraFields: BifrostErrorExtraFields{
-			Provider:       "openai",
+			Provider:               "openai",
 			OriginalModelRequested: "gpt-4",
 		},
 	}

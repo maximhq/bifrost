@@ -77,6 +77,9 @@ type BifrostListModelsResponse struct {
 	// Key-level status tracking for multi-key providers
 	KeyStatuses []KeyStatus `json:"key_statuses,omitempty"`
 
+	// IsPartial marks best-effort discovery that omitted failed subrequests; it must not replace a complete saved catalog.
+	IsPartial bool `json:"-"`
+
 	// Anthropic specific fields
 	FirstID *string `json:"-"`
 	LastID  *string `json:"-"`

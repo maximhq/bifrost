@@ -585,6 +585,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_relays_tables"}, run: migrationAddRelaysTables},
 	{IDs: []string{"add_video_token_pricing_column"}, run: migrationAddVideoTokenPricingColumn},
 	{IDs: []string{"add_voice_live_pricing_columns"}, run: migrationAddVoiceLivePricingColumns},
+	{IDs: []string{"add_live_model_listings"}, run: migrationAddLiveModelListings},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -600,6 +601,7 @@ var warpLogEmbeddingColumns = []string{
 	"retired_log_vector_store_namespaces",
 }
 
+// migrationAddWarpLogEmbeddingColumns applies its schema change through the existing migration runner.
 func migrationAddWarpLogEmbeddingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_warp_log_embedding_columns"
 	logger.Info("[configstore] starting migration %s", migrationName)
@@ -772,6 +774,7 @@ var videoResolutionPricingColumns = []string{
 	"output_cost_per_video_per_second_4k",
 }
 
+// migrationAddVideoResolutionPricingColumns applies its schema change through the existing migration runner.
 func migrationAddVideoResolutionPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_video_resolution_pricing_columns"
 	logger.Info("[configstore] starting migration %s", migrationName)
@@ -1052,6 +1055,7 @@ func rollbackWarpAPIKeyIDColumn(context.Context, *gorm.DB, schemas.Logger) error
 	return fmt.Errorf("add_warp_api_key_id_column is non-rollbackable: the forward migration clears the api_key credential it replaced, so dropping api_key_id would leave Warp with no usable credential and no reference to one; the column is additive and older binaries safely ignore it")
 }
 
+// migrationAddWarpConfigTable applies its schema change through the existing migration runner.
 func migrationAddWarpConfigTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_warp_config_table"
 	logger.Info("[configstore] starting migration %s", migrationName)
@@ -1168,6 +1172,7 @@ func providerObjectsObjectIDIndexMigration(ctx context.Context, migrationName st
 	}
 }
 
+// migrationAddNotificationsTable applies its schema change through the existing migration runner.
 func migrationAddNotificationsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_notifications_table"
 	logger.Info("[configstore] starting migration %s", migrationName)
@@ -1193,6 +1198,7 @@ func migrationAddRSSFeedsTable(ctx context.Context, db *gorm.DB, logger schemas.
 	return RunSingleMigration(ctx, nil, db, logger, rssFeedsTableMigration(ctx, migrationName))
 }
 
+// rssFeedsTableMigration constructs the RSS feed table migration.
 func rssFeedsTableMigration(ctx context.Context, migrationName string) *migrator.Migration {
 	return &migrator.Migration{
 		ID: migrationName,
@@ -1218,6 +1224,7 @@ func migrationAddRSSFeedsIconURLColumn(ctx context.Context, db *gorm.DB, logger 
 	return RunSingleMigration(ctx, nil, db, logger, rssFeedsIconURLColumnMigration(ctx, logger, migrationName))
 }
 
+// rssFeedsIconURLColumnMigration constructs the RSS icon column migration.
 func rssFeedsIconURLColumnMigration(ctx context.Context, logger schemas.Logger, migrationName string) *migrator.Migration {
 	return &migrator.Migration{
 		ID: migrationName,
@@ -1245,10 +1252,12 @@ func migrationAddRelaysTables(ctx context.Context, db *gorm.DB, logger schemas.L
 	})
 }
 
+// rollbackAgentGatewayTables preserves shared agent data during rollback.
 func rollbackAgentGatewayTables(*gorm.DB) error {
 	return fmt.Errorf("add_agent_gateway_tables is non-rollbackable: dropping Agent Gateway tables or configuration would permanently delete registrations, credentials, push configuration, or queued deliveries")
 }
 
+// migrationAddAgentGatewayTables applies its schema change through the existing migration runner.
 func migrationAddAgentGatewayTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_agent_gateway_tables"
 	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
@@ -1420,6 +1429,7 @@ func dropColumnSQL(tx *gorm.DB, table, column string) string {
 	return fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", table, column)
 }
 
+// dropLegacyBudgetColumn removes a retired budget foreign-key column safely.
 func dropLegacyBudgetColumn(tx *gorm.DB, tableName string) error {
 	mg := tx.Migrator()
 	if !mg.HasColumn(tableName, "budget_id") {
@@ -1580,6 +1590,7 @@ func migrationAddFeatureFlagsTable(ctx context.Context, db *gorm.DB, logger sche
 	return nil
 }
 
+// migrationAddStoreRawRequestResponseColumn applies its schema change through the existing migration runner.
 func migrationAddStoreRawRequestResponseColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_store_raw_request_response_column"
 	logger.Info("[configstore] starting migration %s", migrationName)
@@ -2066,6 +2077,7 @@ func migrationAddBedrockProjectIDColumns(ctx context.Context, db *gorm.DB, logge
 	return nil
 }
 
+// migrationAddAllowedOriginsJSONColumn applies its schema change through the existing migration runner.
 func migrationAddAllowedOriginsJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_allowed_origins_json_column"
 	logger.Info("[configstore] starting migration %s", migrationName)
@@ -3062,6 +3074,7 @@ func migrationAddVertexDeploymentsJSONColumn(ctx context.Context, db *gorm.DB, l
 	return nil
 }
 
+// migrationMissingProviderColumnInKeyTable applies its schema change through the existing migration runner.
 func migrationMissingProviderColumnInKeyTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_and_fill_provider_column_in_key_table"
 	logger.Info("[configstore] starting migration %s", migrationName)
@@ -3309,6 +3322,7 @@ func migrationAddBatchAndCachePricingColumns(ctx context.Context, db *gorm.DB, l
 	return m.Migrate()
 }
 
+// migrationAddMCPAgentDepthAndMCPToolExecutionTimeoutColumns applies its schema change through the existing migration runner.
 func migrationAddMCPAgentDepthAndMCPToolExecutionTimeoutColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_mcp_agent_depth_and_mcp_tool_execution_timeout_columns"
 	logger.Info("[configstore] starting migration %s", migrationName)
@@ -3676,6 +3690,7 @@ func migrationAddPluginVersionColumn(ctx context.Context, db *gorm.DB, logger sc
 	return nil
 }
 
+// migrationAddSendBackRawRequestColumns applies its schema change through the existing migration runner.
 func migrationAddSendBackRawRequestColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_send_back_raw_request_columns"
 	logger.Info("[configstore] starting migration %s", migrationName)
@@ -4424,6 +4439,7 @@ func migrationAddAzureClientIDAndClientSecretAndTenantIDColumns(ctx context.Cont
 	return nil
 }
 
+// migrationAddToolPricingJSONColumn applies its schema change through the existing migration runner.
 func migrationAddToolPricingJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_tool_pricing_json_column"
 	logger.Info("[configstore] starting migration %s", migrationName)
@@ -6679,6 +6695,7 @@ func migrationAddDualCredentialConflictBehaviorColumn(ctx context.Context, db *g
 	return nil
 }
 
+// migrationReconcilePricingOverridesTable applies its schema change through the existing migration runner.
 func migrationReconcilePricingOverridesTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "reconcile_pricing_overrides_table"
 	logger.Info("[configstore] starting migration %s", migrationName)
@@ -7349,6 +7366,7 @@ type legacyRoutingRuleColumns struct {
 	Model    string `gorm:"column:model;type:varchar(255)"`
 }
 
+// TableName identifies the legacy routing table for migration queries.
 func (legacyRoutingRuleColumns) TableName() string { return "routing_rules" }
 
 // migrationAddRoutingTargetsTable creates the routing_targets table and seeds one target row per
@@ -9719,6 +9737,7 @@ func migrateCalendarAlignedToBudgetsAndRateLimitsTable(ctx context.Context, db *
 	return nil
 }
 
+// migrationAddOCRPricingColumns applies its schema change through the existing migration runner.
 func migrationAddOCRPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_ocr_pricing_columns"
 	logger.Info("[configstore] starting migration %s", migrationName)
@@ -9758,6 +9777,7 @@ func migrationAddOCRPricingColumns(ctx context.Context, db *gorm.DB, logger sche
 	return nil
 }
 
+// migrationAddCostPerRequestPricingColumn applies its schema change through the existing migration runner.
 func migrationAddCostPerRequestPricingColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_cost_per_request_pricing_column"
 	logger.Info("[configstore] starting migration %s", migrationName)
@@ -9785,6 +9805,7 @@ func migrationAddCostPerRequestPricingColumn(ctx context.Context, db *gorm.DB, l
 	return nil
 }
 
+// migrationAddMCPExternalBaseURLColumn applies its schema change through the existing migration runner.
 func migrationAddMCPExternalBaseURLColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_mcp_external_base_url_column"
 	logger.Info("[configstore] starting migration %s", migrationName)
@@ -9821,6 +9842,7 @@ func migrationAddMCPExternalBaseURLColumn(ctx context.Context, db *gorm.DB, logg
 	return nil
 }
 
+// migrationSplitMCPExternalBaseURL applies its schema change through the existing migration runner.
 func migrationSplitMCPExternalBaseURL(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "split_mcp_external_base_url_into_server_client"
 	logger.Info("[configstore] starting migration %s", migrationName)
@@ -11950,6 +11972,7 @@ func migrationAddCustomerNameUniqueConstraint(ctx context.Context, db *gorm.DB, 
 	})
 }
 
+// migrationAddOAuth2ServerTables applies its schema change through the existing migration runner.
 func migrationAddOAuth2ServerTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_oauth2_server_tables"
 	logger.Info("[configstore] starting migration %s", migrationName)
@@ -11995,6 +12018,7 @@ func migrationAddOAuth2ServerTables(ctx context.Context, db *gorm.DB, logger sch
 	return nil
 }
 
+// migrationAddOAuth2IssuanceTables applies its schema change through the existing migration runner.
 func migrationAddOAuth2IssuanceTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_oauth2_issuance_tables"
 	logger.Info("[configstore] starting migration %s", migrationName)
@@ -12101,6 +12125,7 @@ func migrationWidenOAuth2ClientControlledColumns(ctx context.Context, db *gorm.D
 	return nil
 }
 
+// migrationAddMCPClientToolExecutionTimeoutColumn applies its schema change through the existing migration runner.
 func migrationAddMCPClientToolExecutionTimeoutColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_mcp_client_tool_execution_timeout_column"
 	logger.Info("[configstore] starting migration %s", migrationName)
@@ -12224,6 +12249,7 @@ func migrationAddVKRotationCooldownColumns(ctx context.Context, db *gorm.DB, log
 	return nil
 }
 
+// migrationAddVirtualKeyExpiresAtColumn applies its schema change through the existing migration runner.
 func migrationAddVirtualKeyExpiresAtColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_virtual_key_expires_at_column"
 	logger.Info("[configstore] starting migration %s", migrationName)
@@ -13666,6 +13692,7 @@ func migrationBackfillDefaultComplexityExemplars(ctx context.Context, db *gorm.D
 	return nil
 }
 
+// appendMissingDefaultComplexityExemplars fills missing default exemplars without replacing configured ones.
 func appendMissingDefaultComplexityExemplars(config *ComplexityAnalyzerConfig, defaults ComplexityEditableKeywordConfig) int {
 	type tierPhrases struct {
 		values   *[]string
@@ -13699,6 +13726,7 @@ func appendMissingDefaultComplexityExemplars(config *ComplexityAnalyzerConfig, d
 	return added
 }
 
+// normalizeComplexityExemplarKey canonicalizes exemplar keys for duplicate detection.
 func normalizeComplexityExemplarKey(phrase string) string {
 	return strings.ToLower(strings.Join(strings.Fields(phrase), " "))
 }
@@ -14059,6 +14087,7 @@ var providerJobIndexSwap = []struct {
 	},
 }
 
+// migrationSwapProviderJobIndexes applies its schema change through the existing migration runner.
 func migrationSwapProviderJobIndexes(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "swap_provider_job_indexes"
 	logger.Info("[configstore] starting migration %s", migrationName)
@@ -15152,6 +15181,7 @@ func migrationAddMCPClientOpenAPISpecColumn(ctx context.Context, db *gorm.DB, lo
 	return nil
 }
 
+// rollbackMCPClientOpenAPISpecColumn preserves persisted OpenAPI specifications during rollback.
 func rollbackMCPClientOpenAPISpecColumn(*gorm.DB) error {
 	return fmt.Errorf("add_mcp_client_openapi_spec_column is non-rollbackable: dropping openapi_spec would permanently delete the only stored copy of every openapi client's document; the column is additive and older binaries safely ignore it")
 }
@@ -15179,6 +15209,7 @@ func migrationAddMCPClientOpenAPIConfigJSONColumn(ctx context.Context, db *gorm.
 	return nil
 }
 
+// rollbackMCPClientOpenAPIConfigJSONColumn preserves persisted OpenAPI configuration during rollback.
 func rollbackMCPClientOpenAPIConfigJSONColumn(*gorm.DB) error {
 	return fmt.Errorf("add_mcp_client_openapi_config_json_column is non-rollbackable: dropping openapi_config_json would permanently delete every openapi client's base URL and stored credentials; the column is additive and older binaries safely ignore it")
 }

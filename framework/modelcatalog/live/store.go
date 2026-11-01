@@ -11,8 +11,8 @@
 // every provider on the configured live_models_sync_interval unless that
 // interval is 0, which disables the refresher.
 //
-// Entries are per process and are never persisted, so every node refreshes its
-// own copy rather than electing one refresher.
+// This store remains passive; the composer can persist and reload successful
+// listings while callers supply synchronization eligibility.
 package live
 
 import (
@@ -50,8 +50,9 @@ type Store struct {
 	// Never pruned. Dropping a provider's counter on delete would reset it to
 	// 0, and a fetch still holding a pre-delete generation of 0 would then
 	// look current again after the provider was re-added.
-	gen    map[schemas.ModelProvider]uint64
-	logger schemas.Logger
+	gen     map[schemas.ModelProvider]uint64
+	version map[schemas.ModelProvider]uint64 // changes on both writes and invalidations, fencing DB reloads
+	logger  schemas.Logger
 
 	// writeGen counts entry mutations across all providers; the composer's
 	// model→provider memo stamps it to detect staleness. Distinct from gen,
@@ -59,6 +60,7 @@ type Store struct {
 	writeGen atomic.Uint64
 }
 
+// New constructs an empty, non-expiring cache.
 func New(logger schemas.Logger) *Store {
 	if logger == nil {
 		logger = bifrost.NewNoOpLogger()
@@ -66,6 +68,7 @@ func New(logger schemas.Logger) *Store {
 	return &Store{
 		entries: make(map[Key]Entry),
 		gen:     make(map[schemas.ModelProvider]uint64),
+		version: make(map[schemas.ModelProvider]uint64),
 		logger:  logger,
 	}
 }
@@ -81,6 +84,7 @@ func (s *Store) Upsert(provider schemas.ModelProvider, keyID string, unfiltered 
 	k := Key{Provider: provider, KeyID: keyID, Unfiltered: unfiltered}
 	s.mu.Lock()
 	s.entries[k] = Entry{Models: cp, Created: created}
+	s.version[provider]++
 	s.mu.Unlock()
 	s.writeGen.Add(1)
 }
@@ -118,6 +122,7 @@ func (s *Store) UpsertIfCurrent(provider schemas.ModelProvider, keyID string, un
 		return false
 	}
 	s.entries[k] = Entry{Models: cp, Created: created}
+	s.version[provider]++
 	s.writeGen.Add(1)
 	return true
 }
@@ -130,6 +135,7 @@ func (s *Store) UpsertIfCurrent(provider schemas.ModelProvider, keyID string, un
 // nothing cached yet, and that is the write this has to stop.
 func (s *Store) bumpLocked(provider schemas.ModelProvider) {
 	s.gen[provider]++
+	s.version[provider]++
 	s.writeGen.Add(1)
 }
 
@@ -256,4 +262,32 @@ func (s *Store) unionForProvider(provider schemas.ModelProvider, unfiltered bool
 	}
 	slices.Sort(out)
 	return out
+}
+
+// Version captures every mutation to one provider, not just configuration invalidations.
+func (s *Store) Version(provider schemas.ModelProvider) uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.version[provider]
+}
+
+// ReplaceIfCurrent applies a provider or key DB snapshot only if no local write outlived its read.
+// Entries are already independently owned by the caller and are transferred to this store.
+func (s *Store) ReplaceIfCurrent(provider schemas.ModelProvider, keyID *string, entries map[Key]Entry, version uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.version[provider] != version {
+		return false
+	}
+	for key := range s.entries {
+		if key.Provider == provider && (keyID == nil || key.KeyID == *keyID) {
+			delete(s.entries, key)
+		}
+	}
+	for key, entry := range entries {
+		s.entries[key] = entry
+	}
+	s.version[provider]++
+	s.writeGen.Add(1)
+	return true
 }
