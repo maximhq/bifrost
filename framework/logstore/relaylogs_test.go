@@ -138,6 +138,26 @@ func TestRelayLogsMigrationIsIdempotent(t *testing.T) {
 	require.NoError(t, migrationCreateRelayLogsTable(ctx, db, testLogger{}), "a rerun over an existing table and its indexes succeeds")
 }
 
+// TestRelayLogObjectColumnsMigration pins relay_logs_add_object_columns: a database that ran
+// add_relay_logs_table before the object columns existed gets them, and a rerun is a no-op.
+func TestRelayLogObjectColumnsMigration(t *testing.T) {
+	ctx := context.Background()
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "relay-object.db")}, testLogger{})
+	require.NoError(t, err)
+	db := store.db
+	for _, column := range []string{"payload_reference", "has_object"} {
+		assert.True(t, db.Migrator().HasColumn(&RelayLog{}, column), "%s is created", column)
+		require.NoError(t, db.Migrator().DropColumn(&RelayLog{}, column))
+	}
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "relay_logs_add_object_columns").Error)
+	require.NoError(t, migrationAddRelayLogObjectColumns(ctx, db, testLogger{}))
+	for _, column := range []string{"payload_reference", "has_object"} {
+		assert.True(t, db.Migrator().HasColumn(&RelayLog{}, column), "%s is added to an existing table", column)
+	}
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "relay_logs_add_object_columns").Error)
+	require.NoError(t, migrationAddRelayLogObjectColumns(ctx, db, testLogger{}), "a rerun over existing columns succeeds")
+}
+
 // TestRelayHistogramCountsCancelled pins the cancelled count the Relay Logs chart draws, as the LLM
 // logs histogram does.
 func TestRelayHistogramCountsCancelled(t *testing.T) {

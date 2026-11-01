@@ -5947,11 +5947,53 @@ func TestRelayLogContentPolicy(t *testing.T) {
 		require.False(t, entry.ContentHidden)
 		require.Equal(t, `{"query":"x"}`, *entry.RequestBody)
 	})
-	t.Run("retention in object storage is not honoured on relay rows", func(t *testing.T) {
+	t.Run("retention in object storage keeps the bodies hidden for offload", func(t *testing.T) {
 		entry := run(t, policyTestPlugin(boolPtr(true), boolPtr(true), true), nil)
-		require.True(t, entry.ContentHidden)
-		require.Nil(t, entry.RequestBody, "nothing is kept to reveal, so the row is marked hidden with no payload")
+		require.True(t, entry.ContentHidden, "the row is never revealed")
+		require.Equal(t, `{"query":"x"}`, *entry.RequestBody, "the hybrid store offloads the bodies and keeps none on the row")
+		require.Equal(t, `{"ok":true}`, *entry.ResponseBody)
+		require.Equal(t, "/search", entry.Path, "query values are caller content")
 	})
+	t.Run("retention without object storage keeps nothing", func(t *testing.T) {
+		entry := run(t, policyTestPlugin(boolPtr(true), boolPtr(true), false), nil)
+		require.True(t, entry.ContentHidden)
+		require.Nil(t, entry.RequestBody)
+		require.Nil(t, entry.ResponseBody)
+	})
+}
+
+// TestTextBodyKeepsTextCutMidRune pins that a text body whose capture ended inside a multi-byte
+// character (a stream cut at the capture bound, or a caller that disconnected) keeps the text before
+// that character, while a binary body is still dropped.
+func TestTextBodyKeepsTextCutMidRune(t *testing.T) {
+	cut := append([]byte("data: héllo wörld "), []byte("é")[:1]...)
+	got := textBody(cut)
+	require.NotNil(t, got, "a text capture cut mid-character is kept")
+	require.Equal(t, "data: héllo wörld ", *got)
+	require.Nil(t, textBody([]byte{0xff, 0xfb, 0x90, 0x00, 0xc3}), "a binary body is not kept")
+	whole := textBody([]byte(`{"ok":true}`))
+	require.NotNil(t, whole)
+	require.Equal(t, `{"ok":true}`, *whole)
+}
+
+// TestRelayLogKeepsWholeBody pins that a relay row keeps each text body in full, as LLM, MCP and
+// A2A rows do, and drops only a binary body.
+func TestRelayLogKeepsWholeBody(t *testing.T) {
+	plugin := policyTestPlugin(nil, nil, false)
+	plugin.writeQueue = make(chan *writeQueueEntry, 1)
+	ctx := policyCtx(false, nil)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-whole-body")
+	request := `{"text":"` + strings.Repeat("a", 100*1024) + `"}`
+	_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{
+		RelayName: "tts", Method: "POST", Path: "/speak", Headers: map[string]string{"content-type": "application/json"}, Body: []byte(request),
+	})
+	require.NoError(t, err)
+	_, _, err = plugin.PostRelayHook(ctx, &schemas.BifrostRelayResponse{StatusCode: 200, Headers: map[string]string{"content-type": "audio/mpeg"}, Body: []byte{0xff, 0xfb, 0x90, 0x00, 0xc3}}, nil)
+	require.NoError(t, err)
+	entry := (<-plugin.writeQueue).endpointLog
+	require.NotNil(t, entry.RequestBody)
+	require.Equal(t, len(request), len(*entry.RequestBody), "a text body over 64 KB is kept whole")
+	require.Nil(t, entry.ResponseBody, "a binary body is not kept")
 }
 
 // A streamed relay reply has no body to log until core/relay buffers it as it forwards bytes, so
@@ -5979,6 +6021,27 @@ func TestRelayLogStampsContentCaptureSignal(t *testing.T) {
 		capture, _ := ctx.Value(schemas.BifrostContextKeyRelayContentLoggingEnabledByDefault).(bool)
 		require.False(t, capture)
 	})
+	for _, tc := range []struct {
+		name                 string
+		retain               *bool
+		objectStorageEnabled bool
+		want                 bool
+	}{
+		{"retention with object storage keeps hidden content", boolPtr(true), true, true},
+		{"retention without object storage keeps nothing", boolPtr(true), false, false},
+		{"no retention keeps nothing", nil, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plugin := policyTestPlugin(boolPtr(true), tc.retain, tc.objectStorageEnabled)
+			plugin.writeQueue = make(chan *writeQueueEntry, 1)
+			ctx := policyCtx(false, nil)
+			ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-capture-retained")
+			_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search"})
+			require.NoError(t, err)
+			retained, _ := ctx.Value(schemas.BifrostContextKeyRelayContentRetainedWhenDisabled).(bool)
+			require.Equal(t, tc.want, retained)
+		})
+	}
 }
 
 // BenchmarkRelayLogHooks measures the logging cost of one relay call on the request path: the

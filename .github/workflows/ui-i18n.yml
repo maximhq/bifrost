@@ -1,0 +1,44 @@
+name: UI i18n
+
+on:
+  pull_request:
+    paths:
+      - "ui/**"
+      - ".github/workflows/ui-i18n.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  i18n-check:
+    name: Hardcoded strings and locale catalogs
+    runs-on: builder-8-32
+    timeout-minutes: 10
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            nodejs.org:443
+            registry.npmjs.org:443
+            release-assets.githubusercontent.com:443
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "25"
+
+      # The check only needs the typescript package, but npm ci keeps it pinned to the lockfile.
+      - name: Install UI dependencies
+        working-directory: ./ui
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Run i18n check
+        working-directory: ./ui
+        run: npm run i18n:check

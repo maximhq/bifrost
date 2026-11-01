@@ -14,7 +14,7 @@ import {
 	LATENCY_COLORS,
 	OTHER_SERIES_COLOR,
 	OTHER_SERIES_KEY,
-	OTHER_SERIES_LABEL,
+	getOtherSeriesLabel,
 	THROUGHPUT_COLOR,
 	formatTokensPerSecond,
 	getModelColor,
@@ -26,6 +26,8 @@ import { ProviderFilterSelect } from "./charts/providerFilterSelect";
 import { ProviderLatencyChart } from "./charts/providerLatencyChart";
 import { ProviderThroughputChart } from "./charts/providerThroughputChart";
 import { ProviderTokenChart } from "./charts/providerTokenChart";
+import { useTranslation } from "react-i18next";
+import { getLocale } from "@/lib/i18n";
 
 export interface ProviderUsageTabProps {
 	// Data
@@ -109,6 +111,7 @@ function ProviderUsageTabImpl({
 	onProviderLatencyProviderChange,
 	onProviderThroughputProviderChange,
 }: ProviderUsageTabProps) {
+	const { t } = useTranslation("observability");
 	const providerCostTotal = useMemo(() => {
 		if (!providerCostData?.buckets) return null;
 		if (providerCostProvider === "all") {
@@ -169,10 +172,10 @@ function ProviderUsageTabImpl({
 		<div className="grid grid-cols-1 gap-2 lg:grid-cols-2 2xl:grid-cols-3">
 			{/* Provider Cost Chart */}
 			<ChartCard
-				title="Provider Cost"
+				title={t("dashboard.charts.providerCost")}
 				loading={loadingProviderCost}
 				testId="chart-provider-cost"
-				totalLabel="Total"
+				totalLabel={t("labels.total")}
 				total={
 					providerCostTotal !== null ? (
 						<NumberFlow value={providerCostTotal} format={{ ...COMPACT_NUMBER_FORMAT, style: "currency", currency: "USD" }} />
@@ -180,7 +183,7 @@ function ProviderUsageTabImpl({
 				}
 				totalTooltip={
 					providerCostTotal !== null
-						? providerCostTotal.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 6 })
+						? providerCostTotal.toLocaleString(getLocale(), { style: "currency", currency: "USD", maximumFractionDigits: 6 })
 						: undefined
 				}
 				legend={
@@ -205,7 +208,7 @@ function ProviderUsageTabImpl({
 													data-testid="provider-cost-legend-more-trigger"
 													className="text-muted-foreground cursor-default"
 												>
-													+{providerCostProviders.length - 1} more
+													{t("dashboard.charts.moreCount", { count: providerCostProviders.length - 1 })}
 												</button>
 											</TooltipTrigger>
 											<TooltipContent>
@@ -216,7 +219,7 @@ function ProviderUsageTabImpl({
 																className="h-2 w-2 shrink-0 rounded-full"
 																style={{ backgroundColor: provider === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx + 1) }}
 															/>
-															{provider === OTHER_SERIES_KEY ? OTHER_SERIES_LABEL : provider}
+															{provider === OTHER_SERIES_KEY ? getOtherSeriesLabel() : provider}
 														</span>
 													))}
 												</div>
@@ -265,12 +268,12 @@ function ProviderUsageTabImpl({
 
 			{/* Provider Token Usage Chart */}
 			<ChartCard
-				title="Provider Token Usage"
+				title={t("dashboard.charts.providerTokenUsage")}
 				loading={loadingProviderTokens}
 				testId="chart-provider-tokens"
-				totalLabel="Total"
+				totalLabel={t("labels.total")}
 				total={providerTokenTotal !== null ? <NumberFlow value={providerTokenTotal} format={COMPACT_NUMBER_FORMAT} /> : undefined}
-				totalTooltip={providerTokenTotal !== null ? providerTokenTotal.toLocaleString("en-US") : undefined}
+				totalTooltip={providerTokenTotal !== null ? providerTokenTotal.toLocaleString(getLocale()) : undefined}
 				legend={
 					<div className={CHART_HEADER_LEGEND_CLASS}>
 						{providerTokenProvider === "all" ? (
@@ -293,7 +296,7 @@ function ProviderUsageTabImpl({
 													data-testid="provider-token-legend-more-trigger"
 													className="text-muted-foreground cursor-default"
 												>
-													+{providerTokenProviders.length - 1} more
+													{t("dashboard.charts.moreCount", { count: providerTokenProviders.length - 1 })}
 												</button>
 											</TooltipTrigger>
 											<TooltipContent>
@@ -304,7 +307,7 @@ function ProviderUsageTabImpl({
 																className="h-2 w-2 shrink-0 rounded-full"
 																style={{ backgroundColor: provider === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx + 1) }}
 															/>
-															{provider === OTHER_SERIES_KEY ? OTHER_SERIES_LABEL : provider}
+															{provider === OTHER_SERIES_KEY ? getOtherSeriesLabel() : provider}
 														</span>
 													))}
 												</div>
@@ -317,11 +320,11 @@ function ProviderUsageTabImpl({
 							<>
 								<span className="flex items-center gap-1">
 									<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: CHART_COLORS.promptTokens }} />
-									<span className="text-muted-foreground">Input</span>
+									<span className="text-muted-foreground">{t("labels.input")}</span>
 								</span>
 								<span className="flex items-center gap-1">
 									<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: CHART_COLORS.completionTokens }} />
-									<span className="text-muted-foreground">Output</span>
+									<span className="text-muted-foreground">{t("labels.output")}</span>
 								</span>
 							</>
 						)}
@@ -354,7 +357,7 @@ function ProviderUsageTabImpl({
 
 			{/* Provider Latency Chart */}
 			<ChartCard
-				title="Provider Latency"
+				title={t("dashboard.charts.providerLatency")}
 				loading={loadingProviderLatency}
 				testId="chart-provider-latency"
 				totalLabel="Avg"
@@ -364,7 +367,7 @@ function ProviderUsageTabImpl({
 					) : undefined
 				}
 				totalTooltip={
-					providerLatencyAvg !== null ? `${providerLatencyAvg.toLocaleString("en-US", { maximumFractionDigits: 6 })}ms` : undefined
+					providerLatencyAvg !== null ? `${providerLatencyAvg.toLocaleString(getLocale(), { maximumFractionDigits: 6 })}ms` : undefined
 				}
 				legend={
 					<div className={CHART_HEADER_LEGEND_CLASS}>
@@ -388,7 +391,7 @@ function ProviderUsageTabImpl({
 													data-testid="provider-latency-legend-more-trigger"
 													className="text-muted-foreground cursor-default"
 												>
-													+{providerLatencyProviders.length - 1} more
+													{t("dashboard.charts.moreCount", { count: providerLatencyProviders.length - 1 })}
 												</button>
 											</TooltipTrigger>
 											<TooltipContent>
@@ -409,7 +412,7 @@ function ProviderUsageTabImpl({
 							<>
 								<span className="flex items-center gap-1">
 									<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.avg }} />
-									<span className="text-muted-foreground">Avg</span>
+									<span className="text-muted-foreground">{t("labels.avg")}</span>
 								</span>
 								<span className="flex items-center gap-1">
 									<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.p90 }} />
@@ -454,7 +457,7 @@ function ProviderUsageTabImpl({
 
 			{/* Provider Throughput (tokens/sec) Chart */}
 			<ChartCard
-				title="Provider Throughput"
+				title={t("dashboard.charts.providerThroughput")}
 				loading={loadingProviderThroughput}
 				testId="chart-provider-throughput"
 				totalLabel="Avg"
@@ -465,7 +468,9 @@ function ProviderUsageTabImpl({
 				}
 				totalTooltip={
 					providerThroughputAvg !== null
-						? `${providerThroughputAvg.toLocaleString("en-US", { maximumFractionDigits: 2 })} tokens/sec`
+						? t("dashboard.charts.tokensPerSecValue", {
+								value: providerThroughputAvg.toLocaleString(getLocale(), { maximumFractionDigits: 2 }),
+							})
 						: undefined
 				}
 				legend={
@@ -490,7 +495,7 @@ function ProviderUsageTabImpl({
 													data-testid="provider-throughput-legend-more-trigger"
 													className="text-muted-foreground cursor-default"
 												>
-													+{providerThroughputProviders.length - 1} more
+													{t("dashboard.charts.moreCount", { count: providerThroughputProviders.length - 1 })}
 												</button>
 											</TooltipTrigger>
 											<TooltipContent>

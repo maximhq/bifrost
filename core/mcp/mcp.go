@@ -138,9 +138,8 @@ func (m *MCPManager) discoveryChanged(clientState *schemas.MCPClientState, clien
 // installedDiscovery is clientState's current discovery. Callers hold m.mu.
 func installedDiscovery(clientState *schemas.MCPClientState) *schemas.MCPDiscovery {
 	return &schemas.MCPDiscovery{
-		Tools:           clientState.ToolMap,
-		ToolNameMapping: clientState.ToolNameMapping,
-		Instructions:    clientState.ServerInstructions,
+		Tools:        clientState.ToolMap,
+		Instructions: clientState.ServerInstructions,
 
 		Resources:         clientState.Resources,
 		ResourceTemplates: clientState.ResourceTemplates,
@@ -296,7 +295,6 @@ func (m *MCPManager) connectConfiguredClients(ctx context.Context) {
 						ExecutionConfig: clientConfig,
 						State:           schemas.MCPConnectionStateUnstable,
 						ToolMap:         make(map[string]schemas.ChatTool),
-						ToolNameMapping: make(map[string]string),
 						ConnectionInfo: &schemas.MCPClientConnectionInfo{
 							Type: clientConfig.ConnectionType,
 						},
