@@ -9,6 +9,7 @@ import { CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
 import { SecretVar } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 const secretVarEquals = (a?: SecretVar, b?: SecretVar) =>
@@ -17,6 +18,8 @@ const secretVarEquals = (a?: SecretVar, b?: SecretVar) =>
 const stringListEquals = (a?: string[], b?: string[]) => (a ?? []).join("\n") === (b ?? []).join("\n");
 
 export default function AgentGatewayView() {
+	const { t } = useTranslation("config");
+	const { t: tCommon } = useTranslation("common");
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
 	const { data: bifrostConfig, isLoading: isConfigLoading, error: configError, refetch } = useGetCoreConfigQuery({ fromDB: true });
 	const config = bifrostConfig?.client_config;
@@ -59,7 +62,7 @@ export default function AgentGatewayView() {
 		const savedRevision = draftRevision.current;
 		try {
 			if (!bifrostConfig) {
-				toast.error("Configuration not loaded. Please refresh and try again.");
+				toast.error(t("configNotLoadedRefresh"));
 				return;
 			}
 			await updateCoreConfig({
@@ -72,11 +75,11 @@ export default function AgentGatewayView() {
 				},
 			}).unwrap();
 			syncedRevision.current = savedRevision;
-			toast.success("Agent Gateway settings updated successfully.");
+			toast.success(t("agentGateway.toastSaved"));
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
-	}, [bifrostConfig, localConfig, updateCoreConfig]);
+	}, [bifrostConfig, localConfig, updateCoreConfig, t]);
 
 	if (isConfigLoading && !bifrostConfig) {
 		return <FullPageLoader />;
@@ -85,13 +88,13 @@ export default function AgentGatewayView() {
 	if (configError && !bifrostConfig) {
 		return (
 			<div className="mx-auto w-full max-w-7xl space-y-4 px-4 py-6" data-testid="agent-gateway-settings-load-error">
-				<PageTitle title="Agent Gateway Settings">Configure Agent Gateway (A2A) settings.</PageTitle>
+				<PageTitle title={t("agentGateway.title")}>{t("agentGateway.description")}</PageTitle>
 				<div className="border-destructive/30 bg-destructive/5 flex flex-col gap-3 rounded-sm border p-4">
-					<p className="text-destructive text-sm font-medium">Failed to load Agent Gateway settings.</p>
+					<p className="text-destructive text-sm font-medium">{t("agentGateway.loadFailed")}</p>
 					<p className="text-muted-foreground text-sm">{getErrorMessage(configError)}</p>
 					<div>
 						<Button variant="outline" size="sm" onClick={() => void refetch()}>
-							Retry
+							{tCommon("retry")}
 						</Button>
 					</div>
 				</div>
@@ -101,16 +104,14 @@ export default function AgentGatewayView() {
 
 	return (
 		<div className="mx-auto w-full max-w-7xl space-y-4 px-4 py-6" data-testid="agent-gateway-settings-view">
-			<PageTitle title="Agent Gateway Settings">Configure Agent Gateway (A2A) settings.</PageTitle>
+			<PageTitle title={t("agentGateway.title")}>{t("agentGateway.description")}</PageTitle>
 			<div className="space-y-4">
 				<div className="space-y-2 rounded-sm border p-4">
 					<label htmlFor="a2a-external-client-url" className="text-sm font-medium">
-						External Client URL
+						{t("agentGateway.externalClientUrl")}
 					</label>
 					<p className="text-muted-foreground text-sm">
-						Bifrost&apos;s public base URL, used for served agent cards and push-notification callback URLs. If left blank, all agent
-						protocol endpoints are disabled. Agent management remains available. Supports env var syntax (e.g.{" "}
-						<code className="text-xs">env.BIFROST_EXTERNAL_URL</code>).
+						<Trans t={t} i18nKey="agentGateway.externalClientUrlHelp" components={{ code: <code className="text-xs" /> }} />
 					</p>
 					<SecretVarInput
 						id="a2a-external-client-url"
@@ -124,17 +125,13 @@ export default function AgentGatewayView() {
 			</div>
 			<div className="space-y-2 rounded-sm border p-4">
 				<label htmlFor="a2a-private-allowlist" className="text-sm font-medium">
-					Private Network Allowlist
+					{t("agentGateway.privateAllowlist")}
 				</label>
-				<p className="text-muted-foreground text-sm">
-					Hosts, IP addresses, or CIDR ranges without a scheme or port that Agent Gateway discovery, OAuth, and runtime requests may
-					reach when they resolve to a private or loopback address.
-					Link-local and cloud metadata addresses are always blocked.
-				</p>
+				<p className="text-muted-foreground text-sm">{t("agentGateway.privateAllowlistHelp")}</p>
 				<TagInput
 					id="a2a-private-allowlist"
 					data-testid="a2a-private-allowlist-input"
-					placeholder="Add host, IP, or CIDR (Enter or comma)"
+					placeholder={t("agentGateway.privateAllowlistPlaceholder")}
 					value={localConfig.a2a_private_allowlist ?? []}
 					readOnly={!config || !hasSettingsUpdateAccess}
 					onValueChange={(value) => {
@@ -153,12 +150,9 @@ export default function AgentGatewayView() {
 			<div className="flex items-center justify-between gap-4 rounded-sm border p-4">
 				<div className="space-y-1">
 					<label htmlFor="a2a-raw-capture" className="text-sm font-medium">
-						Capture Raw Request and Response
+						{t("agentGateway.captureRaw")}
 					</label>
-					<p className="text-muted-foreground text-sm">
-						Persist raw request and response payloads in log records. Raw capture is disabled for gRPC because it uses binary protobuf
-						messages; a size-limited capture can cut through a message and cannot be reliably decoded or inspected.
-					</p>
+					<p className="text-muted-foreground text-sm">{t("agentGateway.captureRawHelp")}</p>
 				</div>
 				<Switch
 					id="a2a-raw-capture"
@@ -184,7 +178,7 @@ export default function AgentGatewayView() {
 					disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}
 					data-testid="agent-gateway-settings-save-btn"
 				>
-					{isLoading ? "Saving..." : "Save Changes"}
+					{isLoading ? t("saving") : t("saveChanges")}
 				</Button>
 			</div>
 		</div>

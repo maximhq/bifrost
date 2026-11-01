@@ -247,7 +247,10 @@
             "gemini-3.1-flash-lite",
             "gemini-3.1-flash-lite-preview",
             "gemini-3.1-pro-preview",
-            "gemini-3-flash-preview"
+            "gemini-3-flash-preview",
+            "gemini-4-argon",
+            "claude-opus-5-5",
+            "claude-sonnet-5-5"
           ]
         },
         {
@@ -263,7 +266,9 @@
             "claude-opus-4-8",
             "moonshotai/kimi-k2-thinking-maas",
             "minimaxai/minimax-m2-maas",
-            "claude-fable-5-1"
+            "claude-fable-5-1",
+            "claude-opus-5-5",
+            "claude-sonnet-5-5"
           ]
         },
         {
@@ -282,7 +287,8 @@
             "gemini-3.1-flash-lite",
             "gemini-3.1-flash-lite-preview",
             "gemini-3.1-pro-preview",
-            "gemini-3-flash-preview"
+            "gemini-3-flash-preview",
+            "gemini-4-argon"
           ]
         }
       ],
@@ -586,7 +592,7 @@
           "name": "Databricks PAT",
           "value": "env.DATABRICKS_TOKEN",
           "weight": 1,
-          "models": ["ai_decide"],
+          "models": ["*"],
           "databricks_key_config": {
             "workspace_url": "env.DATABRICKS_WORKSPACE_URL"
           }
@@ -607,7 +613,18 @@
           },
           "weight": 1,
           "models": ["*"],
-          "use_for_batch_api": true
+          "use_for_batch_api": true,
+          "blacklisted_models": ["stability.stable-image-core-v1:1"]
+        },
+        {
+          "name": "Bedrock us-west-2 (Stability)",
+          "bedrock_key_config": {
+            "access_key": "env.AWS_ACCESS_KEY_ID",
+            "secret_key": "env.AWS_SECRET_ACCESS_KEY",
+            "region": "us-west-2"
+          },
+          "weight": 1,
+          "models": ["stability.stable-image-core-v1:1"]
         }
       ],
       "network_config": {

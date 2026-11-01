@@ -133,7 +133,7 @@ describe("request type groups", () => {
 	// GPT Live bills voice time per second, so its overrides use the audio fields.
 	it("offers live under the audio group with per-second pricing", () => {
 		expect(REQUEST_TYPE_OPTIONS).toContain("live");
-		expect(getRequestTypeGroup("live")).toBe("Audio");
+		expect(getRequestTypeGroup("live")).toBe("customPricing.groupAudio");
 		const perSecond = PRICING_FIELDS.find((f) => f.key === "input_cost_per_second");
 		expect(perSecond?.requestTypeGroups).toContain("audio");
 	});
@@ -143,7 +143,7 @@ describe("request type groups", () => {
 	// decisions offers exactly those two fields.
 	it("offers decisions with its input and output decision token fields", () => {
 		expect(REQUEST_TYPE_OPTIONS).toContain("decisions");
-		expect(getRequestTypeGroup("decisions")).toBe("Decisions");
+		expect(getRequestTypeGroup("decisions")).toBe("customPricing.groupDecisions");
 		const decisionFields = PRICING_FIELDS.filter((f) => (f.requestTypeGroups as readonly string[]).includes("decisions")).map((f) => f.key);
 		expect(decisionFields).toEqual(["input_cost_per_token_decisions", "output_cost_per_token_decisions"]);
 	});

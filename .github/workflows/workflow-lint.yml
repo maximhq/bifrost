@@ -22,7 +22,7 @@ jobs:
     # the run through Review deployments. Everyone else lands on ci-trusted-branch,
     # an environment with no protection rules that only gives the job a name.
     environment: ${{ github.event_name == 'pull_request' && (github.event.pull_request.head.repo.fork || !contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association)) && 'pr-testing' || 'ci-trusted-branch' }}
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     timeout-minutes: 5
     steps:
       - name: Harden Runner
@@ -65,3 +65,9 @@ jobs:
 
       - name: Check Docker Compose installer
         run: bash ./.github/workflows/scripts/install-docker-compose.test.sh
+
+      - name: Check arm64 runner dependency installer
+        run: bash ./.github/workflows/scripts/install-arm64-runner-deps.test.sh
+
+      - name: Check apt HTTPS source rewriter
+        run: bash ./.github/workflows/scripts/apt-sources-https.test.sh

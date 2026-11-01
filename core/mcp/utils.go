@@ -30,10 +30,6 @@ func computeDiscoveryHash(discovery *schemas.MCPDiscovery) string {
 	if data, err := json.Marshal(discovery.Tools); err == nil {
 		h.Write(data)
 	}
-	h.Write([]byte{0}) // separator so {"a":"b"} tools + {} mapping can't collide with {} tools + {"a":"b"} mapping
-	if data, err := json.Marshal(discovery.ToolNameMapping); err == nil {
-		h.Write(data)
-	}
 	h.Write([]byte{0})
 	// ChatTool's JSON leaves annotations and metadata out.
 	if data, err := json.Marshal(schemas.ToolDetails(discovery.Tools)); err == nil {
@@ -807,10 +803,9 @@ func ExecuteWithRetry(
 // listToolsResult captures the full outcome of retrieveExternalToolsDetailed so the
 // plugin gate can expose RawToolCount and SkippedTools to plugins.
 type listToolsResult struct {
-	tools           map[string]schemas.ChatTool
-	toolNameMapping map[string]string
-	rawCount        int
-	skipped         []schemas.SkippedMCPTool
+	tools    map[string]schemas.ChatTool
+	rawCount int
+	skipped  []schemas.SkippedMCPTool
 }
 
 // retrieveExternalToolsDetailed retrieves and filters tools from an external MCP server
@@ -822,7 +817,7 @@ type listToolsResult struct {
 func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, clientName string, logger schemas.Logger, warned *sync.Map) (*listToolsResult, error) {
 	// A server offering only prompts or resources has no tools/list to call.
 	if caps := client.GetServerCapabilities(); caps.Tools == nil && (caps.Prompts != nil || caps.Resources != nil) {
-		return &listToolsResult{tools: map[string]schemas.ChatTool{}, toolNameMapping: map[string]string{}}, nil
+		return &listToolsResult{tools: map[string]schemas.ChatTool{}}, nil
 	}
 	// Get available tools from external server with retry logic
 	listRequest := mcp.ListToolsRequest{
@@ -851,13 +846,11 @@ func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, c
 
 	if toolsResponse == nil {
 		return &listToolsResult{
-			tools:           make(map[string]schemas.ChatTool),
-			toolNameMapping: make(map[string]string),
+			tools: make(map[string]schemas.ChatTool),
 		}, nil
 	}
 
 	tools := make(map[string]schemas.ChatTool)
-	toolNameMapping := make(map[string]string) // Maps sanitized_name -> original_mcp_name
 	var skipped []schemas.SkippedMCPTool
 	invalid := make(map[string]struct{})
 
@@ -891,9 +884,6 @@ func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, c
 		}
 		// Store the tool with the prefixed name
 		tools[prefixedToolName] = bifrostTool
-		// Store the mapping from sanitized name to original MCP name for later lookup during execution
-		sanitizedToolName := strings.ReplaceAll(mcpTool.Name, "-", "_")
-		toolNameMapping[sanitizedToolName] = mcpTool.Name
 	}
 
 	// Keep only the invalid tools this sync returned, so names that come and go cannot
@@ -901,10 +891,9 @@ func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, c
 	pruneSkippedToolWarnings(warned, clientName, invalid)
 
 	return &listToolsResult{
-		tools:           tools,
-		toolNameMapping: toolNameMapping,
-		rawCount:        len(toolsResponse.Tools),
-		skipped:         skipped,
+		tools:    tools,
+		rawCount: len(toolsResponse.Tools),
+		skipped:  skipped,
 	}, nil
 }
 
@@ -1199,6 +1188,11 @@ func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
 	case schemas.MCPConnectionTypeSTDIO:
 		if config.StdioConfig == nil {
 			return fmt.Errorf("StdioConfig is required for STDIO connection type in client '%s'", config.Name)
+		}
+		// mcp-go starts no process for an empty command and leaves its stdout nil, which its
+		// reader goroutine then dereferences.
+		if strings.TrimSpace(config.StdioConfig.Command) == "" {
+			return fmt.Errorf("a stdio command is required for STDIO connection type in client '%s'", config.Name)
 		}
 	case schemas.MCPConnectionTypeInProcess:
 		// InProcess can be provided programmatically or created automatically.
@@ -1498,29 +1492,6 @@ func stripClientPrefix(prefixedToolName, clientName string) string {
 	}
 	// If prefix doesn't match, return as-is (shouldn't happen, but be safe)
 	return prefixedToolName
-}
-
-// getOriginalToolName retrieves the original MCP tool name from the sanitized name using the mapping.
-// This function is used to restore the original tool name (with hyphens) that the MCP server expects.
-//
-// Parameters:
-//   - sanitizedToolName: Sanitized tool name (e.g., "notion_search")
-//   - toolNameMapping: Map of sanitized tool names to original MCP tool names
-//
-// Returns:
-//   - string: Original MCP tool name (e.g., "notion-search"), or sanitizedToolName if not found in mapping
-func getOriginalToolName(sanitizedToolName string, toolNameMapping map[string]string) string {
-	if toolNameMapping == nil {
-		return sanitizedToolName
-	}
-
-	// Look up the original MCP name in the mapping
-	if originalName, exists := toolNameMapping[sanitizedToolName]; exists {
-		return originalName
-	}
-
-	// If not in mapping, return as-is (might not need mapping if names are the same)
-	return sanitizedToolName
 }
 
 // FixArraySchemas recursively fixes array schemas by ensuring they have an 'items' field.

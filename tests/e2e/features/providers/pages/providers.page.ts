@@ -319,7 +319,7 @@ export class ProvidersPage extends BasePage {
     await this.addKeyBtn.click()
     await expect(this.keyForm).toBeVisible()
 
-    await this.page.getByLabel('Name').fill(config.name)
+    await this.page.getByLabel('Name', { exact: true }).fill(config.name)
     await this.page.getByTestId('apikey-sagemaker-explicit-credentials-tab').click()
     await this.page.getByTestId('apikey-sagemaker-access-key-input').fill(config.accessKey)
     await this.page.getByTestId('apikey-sagemaker-secret-key-input').fill(config.secretKey)

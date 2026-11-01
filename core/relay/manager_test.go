@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -397,8 +398,75 @@ func TestServeStreamOmitsResponseBodyByDefault(t *testing.T) {
 	assert.Nil(t, pipeline.post[0].Body, "capture is opt-in; the default path never buffers the body")
 }
 
+// TestServeStreamCapturesWholeReply pins that a streamed reply's body reaches the post-hooks in full,
+// as a buffered reply's does, rather than cut at a log-row size.
+func TestServeStreamCapturesWholeReply(t *testing.T) {
+	body := strings.Repeat("data: {\"chunk\":\"xxxxxxxx\"}\n\n", 4096) // ~120 KB
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, body)
+	}))
+	defer upstream.Close()
+	cfg := bearerConfig("llm", upstream.URL)
+	cfg.Routes = []schemas.RelayRouteConfig{{Method: "POST", Path: "/chat", Stream: schemas.Ptr(true)}}
+	m, pipeline := newTestManager(t, cfg)
+
+	ctx := testCtx(t)
+	ctx.SetValue(schemas.BifrostContextKeyRelayContentLoggingEnabledByDefault, true)
+	res, bErr := m.Serve(ctx, Request{Endpoint: "llm", Method: "POST", Path: "/chat", Headers: map[string]string{}})
+	require.Nil(t, bErr)
+	_, err := io.ReadAll(res.Stream)
+	require.NoError(t, err)
+	require.NoError(t, res.Stream.Close())
+
+	require.Len(t, pipeline.post, 1)
+	assert.Equal(t, len(body), len(pipeline.post[0].Body), "the whole streamed reply is captured")
+	assert.True(t, string(pipeline.post[0].Body) == body, "the captured bytes are the reply's bytes")
+}
+
+// TestServeStreamCapturesRetainedHiddenContent pins that a stream is captured when content logging
+// is off but the logging plugin retains hidden content in object storage, so a streamed reply is
+// retained like a buffered one.
+func TestServeStreamCapturesRetainedHiddenContent(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"secret\":true}\n\n")
+	}))
+	defer upstream.Close()
+	cfg := bearerConfig("llm", upstream.URL)
+	cfg.Routes = []schemas.RelayRouteConfig{{Method: "POST", Path: "/chat", Stream: schemas.Ptr(true)}}
+
+	for _, tc := range []struct {
+		name     string
+		retained bool
+		want     string
+	}{
+		{"retained hidden content is captured", true, "data: {\"secret\":true}\n\n"},
+		{"content off without retention is not captured", false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, pipeline := newTestManager(t, cfg)
+			ctx := testCtx(t)
+			ctx.SetValue(schemas.BifrostContextKeyRelayContentLoggingEnabledByDefault, false)
+			if tc.retained {
+				ctx.SetValue(schemas.BifrostContextKeyRelayContentRetainedWhenDisabled, true)
+			}
+			res, bErr := m.Serve(ctx, Request{Endpoint: "llm", Method: "POST", Path: "/chat", Headers: map[string]string{}})
+			require.Nil(t, bErr)
+			_, err := io.ReadAll(res.Stream)
+			require.NoError(t, err)
+			require.NoError(t, res.Stream.Close())
+			require.Len(t, pipeline.post, 1)
+			assert.Equal(t, tc.want, string(pipeline.post[0].Body))
+		})
+	}
+}
+
 func TestServeStreamCapturedBodyIsBoundedAtCap(t *testing.T) {
-	oversized := strings.Repeat("x", maxStreamBodyCaptureLen+1024)
+	previous := maxBufferedResponseBytes
+	maxBufferedResponseBytes = 4096
+	t.Cleanup(func() { maxBufferedResponseBytes = previous })
+	oversized := strings.Repeat("x", int(maxBufferedResponseBytes)+1024)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, oversized)
@@ -417,7 +485,7 @@ func TestServeStreamCapturedBodyIsBoundedAtCap(t *testing.T) {
 	require.NoError(t, res.Stream.Close())
 
 	require.Len(t, pipeline.post, 1)
-	assert.Len(t, pipeline.post[0].Body, maxStreamBodyCaptureLen, "capture never grows past the bound, however large the reply")
+	assert.Equal(t, int(maxBufferedResponseBytes), len(pipeline.post[0].Body), "capture never grows past the buffered-reply bound, however large the reply")
 }
 
 func TestServeJobRouteHandsBackJob(t *testing.T) {
@@ -663,4 +731,24 @@ func BenchmarkServeStreamBodyCapture(b *testing.B) {
 
 	b.Run("CaptureDisabled", func(b *testing.B) { run(b, false) })
 	b.Run("CaptureEnabled", func(b *testing.B) { run(b, true) })
+}
+
+// TestGlobalProxyErrorRefusesEndpoint pins that an endpoint with no proxy_config of its own
+// is refused when the global proxy it would inherit cannot be read, instead of going direct
+// around a proxy the admin turned on. An endpoint with its own proxy_config is unaffected.
+func TestGlobalProxyErrorRefusesEndpoint(t *testing.T) {
+	m := NewManager(nil, nil)
+	m.SetGlobalProxy(func() (*schemas.ProxyConfig, error) { return nil, errors.New("proxy URL names no host") })
+
+	err := m.Upsert(bearerConfig("tavily", "https://search.example.com"))
+	assert.ErrorIs(t, err, ErrInvalidConfig)
+	assert.ErrorContains(t, err, "global proxy")
+	assert.Empty(t, m.Names(), "an endpoint that would go direct must not go live")
+
+	assert.ErrorContains(t, m.Replace([]*schemas.RelayConfig{bearerConfig("tavily", "https://search.example.com")}), "global proxy")
+	assert.Empty(t, m.Names())
+
+	own := bearerConfig("own", "https://search.example.com")
+	own.ProxyConfig = &schemas.ProxyConfig{Type: schemas.EnvProxy}
+	require.NoError(t, m.Upsert(own), "an endpoint with its own proxy_config never reads the global proxy")
 }

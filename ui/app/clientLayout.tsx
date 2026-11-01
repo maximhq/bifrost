@@ -8,12 +8,14 @@ import { ThemeProvider } from "@/components/themeProvider";
 import Topbar from "@/components/topbar";
 import TrialExpiryBanner from "@/components/trialExpiryBanner";
 import { Button } from "@/components/ui/button";
+import { CommandPaletteProvider } from "@/components/commandPalette/commandPaletteProvider";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { useNotificationSync } from "@/hooks/useNotificationSync";
 import { useStoreSync } from "@/hooks/useStoreSync";
 import { WarpProvider } from "@/lib/contexts/warpContext";
 import { TopbarProvider } from "@/lib/contexts/topbarContext";
 import { WebSocketProvider } from "@/hooks/useWebSocket";
+import i18n from "@/lib/i18n";
 import { getErrorMessage, ReduxProvider, useGetCoreConfigQuery, useIsAuthEnabledQuery } from "@/lib/store";
 import { BifrostConfig } from "@/lib/types/config";
 import { RbacProvider, useRbacContext } from "@enterprise/lib/contexts/rbacContext";
@@ -22,6 +24,7 @@ import { RefreshCw, WifiOff } from "lucide-react";
 import { NuqsAdapter } from "nuqs/adapters/tanstack-router";
 import { lazy, Suspense, useEffect } from "react";
 import { CookiesProvider } from "react-cookie";
+import { I18nextProvider, useTranslation } from "react-i18next";
 import { toast, Toaster } from "sonner";
 
 // Lazy import — only loaded in development, completely excluded from prod bundle
@@ -113,43 +116,45 @@ function AppContent({ children }: { children: React.ReactNode }) {
 				<TopbarProvider>
 					<WarpProvider>
 						<SidebarProvider>
-							<Sidebar />
-							{/* Content column: a fixed-height flex stack so the topbar takes its
+							<CommandPaletteProvider>
+								<Sidebar />
+								{/* Content column: a fixed-height flex stack so the topbar takes its
 							    52px and the content card absorbs the remainder. The topbar has no
 							    background of its own, so it reads as the same surface as the
 							    sidebar (both show the page body background). */}
-							<div className="flex h-dvh w-full min-w-0 flex-col">
-								<Topbar />
-								{/* Warp docks beside the content, never beside the topbar. The topbar
+								<div className="flex h-dvh w-full min-w-0 flex-col">
+									<Topbar />
+									{/* Warp docks beside the content, never beside the topbar. The topbar
 								    keeps its full width when the dock opens, so its title, its
 								    description portal and its menu anchors are not remeasured - and
 								    the page keeps a fixed frame while only the region below it
 								    splits. */}
-								<WarpDock>
-									{/* No w-full: in a column flex container the cross axis is width, and
+									<WarpDock>
+										{/* No w-full: in a column flex container the cross axis is width, and
 							    an explicit 100% would sit *outside* the right margin, pushing it
 							    off-screen. Default align-items:stretch already fills the column
 							    minus margins. No top margin either: the card butts against the
 							    60px topbar so its top edge lands on the same line as the sidebar's
 							    search input, and --app-content-viewport compensates so full-height
 							    pages still measure to the card's inner height. */}
-									<div className="dark:bg-card custom-scrollbar content-container mx-0 min-h-0 min-w-0 flex-1 overflow-auto border border-gray-200 bg-white md:mr-3 md:mb-3 md:rounded-md dark:border-zinc-800">
-										<TrialExpiryBanner />
-										{/* The page scrolls inside main, so the side padding lives here rather than on the
+										<div className="dark:bg-card custom-scrollbar content-container mx-0 min-h-0 min-w-0 flex-1 overflow-auto border border-gray-200 bg-white md:mr-3 md:mb-3 md:rounded-md dark:border-zinc-800">
+											<TrialExpiryBanner />
+											{/* The page scrolls inside main, so the side padding lives here rather than on the
 										    card: padding outside the scroller would inset the scrollbar from the card's edge. */}
-										<main className="custom-scrollbar content-container-inner relative mx-auto flex h-full min-h-0 flex-col overflow-y-hidden md:px-14 md:py-4">
-											{isLoading ? (
-												<FullPageLoader />
-											) : (
-												<FullPage config={bifrostConfig} hasError={!!error} isRetrying={isFetching} onRetry={refetch}>
-													{children}
-												</FullPage>
-											)}
-										</main>
-										{bifrostConfig?.is_db_connected && <OnboardingWidget />}
-									</div>
-								</WarpDock>
-							</div>
+											<main className="custom-scrollbar content-container-inner relative mx-auto flex h-full min-h-0 flex-col overflow-y-hidden md:px-14 md:py-4">
+												{isLoading ? (
+													<FullPageLoader />
+												) : (
+													<FullPage config={bifrostConfig} hasError={!!error} isRetrying={isFetching} onRetry={refetch}>
+														{children}
+													</FullPage>
+												)}
+											</main>
+											{bifrostConfig?.is_db_connected && <OnboardingWidget />}
+										</div>
+									</WarpDock>
+								</div>
+							</CommandPaletteProvider>
 						</SidebarProvider>
 					</WarpProvider>
 				</TopbarProvider>
@@ -199,6 +204,7 @@ function FullPage({
 }
 
 function ConfigUnreachable({ isRetrying, onRetry }: { isRetrying: boolean; onRetry: () => void }) {
+	const { t } = useTranslation("shell");
 	return (
 		<div className="h-base flex items-center justify-center p-4 sm:p-6" data-testid="config-unreachable">
 			<section className="bg-card w-full max-w-lg rounded-sm border p-6 sm:p-8" aria-labelledby="config-unreachable-title">
@@ -206,17 +212,15 @@ function ConfigUnreachable({ isRetrying, onRetry }: { isRetrying: boolean; onRet
 					<WifiOff className="size-5" aria-hidden="true" />
 				</div>
 				<h1 id="config-unreachable-title" className="text-foreground mt-5 text-xl font-semibold tracking-tight">
-					We can&apos;t reach the dashboard
+					{t("error.unreachableTitle")}
 				</h1>
-				<p className="text-muted-foreground mt-2 max-w-md text-sm leading-6">
-					Bifrost didn&apos;t return its configuration. This is usually a brief interruption, especially while Bifrost is being upgraded.
-				</p>
+				<p className="text-muted-foreground mt-2 max-w-md text-sm leading-6">{t("error.unreachableDescription")}</p>
 				<div className="mt-6 flex items-center gap-3 border-t pt-5">
 					<Button size="sm" isLoading={isRetrying} disabled={isRetrying} data-testid="config-retry-btn" onClick={onRetry}>
 						{!isRetrying && <RefreshCw aria-hidden="true" />}
-						{isRetrying ? "Trying again…" : "Try again"}
+						{isRetrying ? t("error.retrying") : t("error.retry")}
 					</Button>
-					<p className="text-muted-foreground text-xs">Your settings and data are unaffected.</p>
+					<p className="text-muted-foreground text-xs">{t("error.dataUnaffected")}</p>
 				</div>
 			</section>
 		</div>
@@ -226,17 +230,19 @@ function ConfigUnreachable({ isRetrying, onRetry }: { isRetrying: boolean; onRet
 export function ClientLayout({ children }: { children: React.ReactNode }) {
 	return (
 		<ProgressProvider>
-			<ThemeProvider attribute="class" defaultTheme="system" enableSystem>
-				<Toaster closeButton />
-				<ReduxProvider>
-					<NuqsAdapter>
-						<RbacProvider>
-							<AppContent>{children}</AppContent>
-							{process.env.NODE_ENV === "development" && !process.env.BIFROST_DISABLE_PROFILER && <DevProfiler />}
-						</RbacProvider>
-					</NuqsAdapter>
-				</ReduxProvider>
-			</ThemeProvider>
+			<I18nextProvider i18n={i18n}>
+				<ThemeProvider attribute="class" defaultTheme="system" enableSystem>
+					<Toaster closeButton />
+					<ReduxProvider>
+						<NuqsAdapter>
+							<RbacProvider>
+								<AppContent>{children}</AppContent>
+								{process.env.NODE_ENV === "development" && !process.env.BIFROST_DISABLE_PROFILER && <DevProfiler />}
+							</RbacProvider>
+						</NuqsAdapter>
+					</ReduxProvider>
+				</ThemeProvider>
+			</I18nextProvider>
 		</ProgressProvider>
 	);
 }
