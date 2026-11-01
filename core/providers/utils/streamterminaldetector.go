@@ -9,15 +9,6 @@ import (
 
 const maxTerminalDetectorBufferBytes = 256 * 1024
 
-// Existing terminal wire tokens, shared by the absence guard and predicates.
-const (
-	terminalFinishReasonKey      = "finishReason"
-	terminalFinishReasonSnakeKey = "finish_reason"
-	terminalMessageStopType      = "message_stop"
-	terminalErrorMarker          = "error"
-	terminalBlockReasonKey       = "blockReason"
-)
-
 var (
 	sseFrameDelimiterLF   = []byte("\n\n")
 	sseFrameDelimiterCRLF = []byte("\r\n\r\n")
@@ -157,15 +148,14 @@ func hasSSEDataLinePrefix(frame []byte) bool {
 }
 
 func hasFinishReasonMarker(payload []byte) bool {
-	// Without a marker or an escape that could hide its spelling, the decoded
-	// object cannot be terminal. A byte match only permits decoding; it never
-	// establishes completion. Keep the original decoder for all uncertain cases.
+	// Marker-free payloads cannot be terminal unless a JSON escape hides the spelling.
+	// A match still needs the existing JSON decoding and structural checks.
 	if bytes.IndexByte(payload, '\\') < 0 &&
-		!bytes.Contains(payload, []byte(terminalFinishReasonKey)) &&
-		!bytes.Contains(payload, []byte(terminalFinishReasonSnakeKey)) &&
-		!bytes.Contains(payload, []byte(terminalMessageStopType)) &&
-		!bytes.Contains(payload, []byte(terminalErrorMarker)) &&
-		!bytes.Contains(payload, []byte(terminalBlockReasonKey)) {
+		!bytes.Contains(payload, []byte("finishReason")) &&
+		!bytes.Contains(payload, []byte("finish_reason")) &&
+		!bytes.Contains(payload, []byte("message_stop")) &&
+		!bytes.Contains(payload, []byte("error")) &&
+		!bytes.Contains(payload, []byte("blockReason")) {
 		return false
 	}
 
@@ -200,7 +190,7 @@ func hasTerminalMarkerInTopLevelObject(root map[string]any) bool {
 	// finishReason. message_delta is deliberately not terminal: it holds the final usage.
 	if eventType, ok := root["type"].(string); ok {
 		switch eventType {
-		case terminalMessageStopType, terminalErrorMarker:
+		case "message_stop", "error":
 			return true
 		}
 	}
@@ -232,7 +222,7 @@ func hasTerminalMarkerInTopLevelObject(root map[string]any) bool {
 	}
 	if promptFeedback, ok := root["promptFeedback"]; ok {
 		if feedbackMap, ok := promptFeedback.(map[string]any); ok {
-			if reason, ok := feedbackMap[terminalBlockReasonKey].(string); ok && strings.TrimSpace(reason) != "" {
+			if reason, ok := feedbackMap["blockReason"].(string); ok && strings.TrimSpace(reason) != "" {
 				return true
 			}
 		}
@@ -257,7 +247,7 @@ func allCandidatesFinished(candidates []any) bool {
 }
 
 func hasValidFinishReasonValue(node map[string]any) bool {
-	for _, key := range []string{terminalFinishReasonKey, terminalFinishReasonSnakeKey} {
+	for _, key := range []string{"finishReason", "finish_reason"} {
 		value, ok := node[key]
 		if !ok {
 			continue
@@ -313,7 +303,7 @@ func containsSSEFrameDelimiter(data []byte) bool {
 // requires code or status alongside a message so a benign "error" string field in a normal
 // event is not mistaken for a terminal error.
 func hasGoogleErrorObject(root map[string]any) bool {
-	errValue, ok := root[terminalErrorMarker]
+	errValue, ok := root["error"]
 	if !ok {
 		return false
 	}
