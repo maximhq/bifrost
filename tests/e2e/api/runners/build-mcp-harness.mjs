@@ -4903,6 +4903,27 @@ const AUTH38 = folder("AUTH-38 Per-user refresh token revoked", `Setup: ${PU_TEX
   restoreConfig("AUTH-38"),
 ]);
 
+const AUTH58 = folder("AUTH-58 Per-user token revoked before it expires", `Setup: ${PU_TEXT(false)}; ${PU_SERVER_TEXT("auth58")}, verified as admin; auth58-sess1 completes as alice and makes one call. Then the authorization server revokes alice's grant while her access token is still within its lifetime, so the upstream rejects it at the handshake.`, [
+  ...puConfig("AUTH-58", false),
+  ...puConnect("AUTH-58", "auth58"),
+  execTool("AUTH-58", "setup: execute as auth58-sess1 opens a flow", "auth58-echo_tool", [A.status(400), keepFlow("auth58_f")], { session: "auth58-sess1" }),
+  ...puFinish("AUTH-58", "auth58_f", "alice", "the flow"),
+  execTool("AUTH-58", "setup: execute as auth58-sess1", "auth58-echo_tool", [A.status(200)], { session: "auth58-sess1" }),
+  mockPost("AUTH-58", "auth58", "oauth/revoke", "setup: the authorization server revokes alice's grant", { identity: "alice" }),
+  execTool("AUTH-58", "execute as auth58-sess1 asks it to sign in again", "auth58-echo_tool", [A.status(400), authFlow("auth58", {}), keepFlow("auth58_f2", "auth58_f")], { session: "auth58-sess1" }),
+  mockGet("AUTH-58", "auth58", "one refresh, refused invalid_grant, and the revoked token reached no tool", [A.custom("one refresh_token request, answered 400 invalid_grant", [
+    "var r = pm.response.json().oauth.log.filter(function (e) { return e.grant_type === 'refresh_token'; });",
+    "pm.expect(r.length, 'log: ' + JSON.stringify(pm.response.json().oauth.log)).to.equal(1);",
+    "pm.expect([r[0].status, r[0].error]).to.eql([400, 'invalid_grant']);",
+  ]), identityCalls("alice", 1)]),
+  sessionsHas("AUTH-58", "auth58-sess1's session needs reauth", "auth58-u", `${sessionPred("auth58-sess1")} && s.status === 'needs_reauth'`, "auth58-sess1's entry has status needs_reauth"),
+  ...puFinish("AUTH-58", "auth58_f2", "alice", "the new flow"),
+  execTool("AUTH-58", "execute as auth58-sess1 after signing in again", "auth58-echo_tool", [A.status(200)], { session: "auth58-sess1" }),
+  mockGet("AUTH-58", "auth58", "alice's second call ran", [identityCalls("alice", 2)]),
+  deleteClient("AUTH-58", "auth58-u"),
+  restoreConfig("AUTH-58"),
+]);
+
 const gwFlow = (id, title, tool, vk, v, withToken) => request(id, title, "POST", "/mcp", {
   noAuth: true, raw: JSON.stringify(call(tool, { text: "hi" })), headers: [MCP_ACCEPT, { key: "x-bf-vk", value: `{{${vk}}}` }],
   asserts: [A.status(200), A.custom(`isError true and the text links a flow${withToken ? " with a #t= temp token" : ""}`, [
@@ -10999,6 +11020,24 @@ const PUD63 = folder("PUD-63 Revoke the pending reauth flow during its code exch
   restoreConfig("PUD-63"),
 ]);
 
+const PUD64 = folder("PUD-64 Connect refreshes a token the upstream ended early", `Setup: ${ODOOR_TEXT("pud64")}; alice's tools/list fails (list_fail scoped to tools/list) while VK-A signs in as alice, so VK-A keeps alice's token with no discovery; then the fault is cleared and the authorization server ends alice's access token before the expiry Bifrost stored. VK-A then calls pud64-connect, whose handshake the upstream rejects with 401.`, [
+  ...puConfig("PUD-64", false),
+  ...odoor("PUD-64", "pud64"),
+  pudVK("PUD-64", "pud64", "a"),
+  identityFault("PUD-64", "pud64", "alice", { list_fail: true, methods: ["tools/list"] }),
+  ...signInO("PUD-64", "pud64", "a", "alice", PENDING_LANDING("pud64")),
+  rowOf("PUD-64", "setup: VK-A's token is kept, with no discovery", "pud64-u", "pud64", "a", "VK-A's row: active, no discovery", [...ROW_STATUS("active"), ...NO_DISCOVERY]),
+  clearIdentityFault("PUD-64", "pud64", "alice"),
+  mockPost("PUD-64", "pud64", "oauth/expire", "setup: end alice's access token upstream", { identity: "alice" }),
+  connectExpect("PUD-64", "VK-A connects: the rejected token is refreshed once and the discovery runs", "pud64", "a", connectedText("pud64", 2)),
+  mockGet("PUD-64", "pud64", "one refresh_token grant for alice, answered 200", [refreshGrants("alice", 1, 200)]),
+  rowOf("PUD-64", "VK-A's row now has the discovery", "pud64-u", "pud64", "a", "VK-A's row: active, 2 tools", [...ROW_STATUS("active"), ...DISCOVERY(2)]),
+  gwList("PUD-64", "VK-A's gw-list is pud64's tools", [vkOf("pud64", "a")], ["pud64-add_tool", "pud64-echo_tool"]),
+  deleteClient("PUD-64", "pud64-u"),
+  pudVKDelete("PUD-64", "pud64", "a"),
+  restoreConfig("PUD-64"),
+]);
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -11013,7 +11052,7 @@ const collection = {
   ],
   item: [
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM26, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM84, ADM85, ADM86, ADM87]),
-    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH47, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57]),
+    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH47, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57, AUTH58]),
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, GO18, CONN23, CONN24, CONN25, CONN27, CONN28, CONN29, GO34, GO36]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, GO01, GO02, GO03, GO06, GO07, GO08, GO09, GO10, GO11, GO12, GO13, GO14, GO33, GO35]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43]),
@@ -11023,7 +11062,7 @@ const collection = {
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB12, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB27, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43, LOG49]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL01, FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL09, FAIL10, FAIL12, FAIL14, FAIL16, FAIL18, FAIL19, FAIL23, FAIL24, FAIL25, FAIL27, FAIL28]),
-    section("PUD Per-user discovery", "Per-user discovery tests.", [PUD01, PUD02, PUD03, PUD04, PUD05, PUD06, PUD07, PUD08, PUD09, PUD10, PUD11, PUD12, PUD13, PUD14, PUD15, PUD16, PUD17, PUD18, PUD19, PUD20, PUD21, PUD22, PUD23, PUD24, PUD25, PUD26, PUD27, PUD28, PUD29, PUD30, PUD31, PUD32, PUD33, PUD34, PUD35, PUD36, PUD37, PUD38, PUD39, PUD40, PUD41, PUD42, PUD43, PUD44, PUD45, PUD46, PUD47, PUD48, PUD49, PUD50, PUD51, PUD52, PUD53, PUD54, PUD55, PUD56, PUD57, PUD58, PUD59, PUD60, PUD61, PUD62, PUD63]),
+    section("PUD Per-user discovery", "Per-user discovery tests.", [PUD01, PUD02, PUD03, PUD04, PUD05, PUD06, PUD07, PUD08, PUD09, PUD10, PUD11, PUD12, PUD13, PUD14, PUD15, PUD16, PUD17, PUD18, PUD19, PUD20, PUD21, PUD22, PUD23, PUD24, PUD25, PUD26, PUD27, PUD28, PUD29, PUD30, PUD31, PUD32, PUD33, PUD34, PUD35, PUD36, PUD37, PUD38, PUD39, PUD40, PUD41, PUD42, PUD43, PUD44, PUD45, PUD46, PUD47, PUD48, PUD49, PUD50, PUD51, PUD52, PUD53, PUD54, PUD55, PUD56, PUD57, PUD58, PUD59, PUD60, PUD61, PUD62, PUD63, PUD64]),
   ],
 };
 

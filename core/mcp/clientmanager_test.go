@@ -135,6 +135,103 @@ func TestAcquireClientConn_DropsTheDiscoveryOfACallerWhoMustSignInAgain(t *testi
 	})
 }
 
+// TestAcquireClientConn_ATokenTheUpstreamRejectsIsRefreshedOnce: a per-call
+// connection opens with initialize, so an upstream that rejects a token
+// Bifrost still holds as valid rejects the handshake, before any tool call
+// could see it. For an auth type with a credential to refresh, the connection
+// forces one refresh and dials once more: a grant the provider ended asks the
+// caller to sign in again, a refreshed token is used at once, and anything
+// else surfaces the upstream's rejection. A credential with nothing to refresh
+// is not dialed again.
+func TestAcquireClientConn_ATokenTheUpstreamRejectsIsRefreshedOnce(t *testing.T) {
+	grantEnded := func(tokens map[string]string, identity string) error {
+		delete(tokens, identity)
+		return fmt.Errorf("refresh token rejected by upstream OAuth server, re-authentication required: %w", schemas.ErrOAuth2TokenExpired)
+	}
+	rotated := func(tokens map[string]string, identity string) error {
+		tokens[identity] = "alice-new"
+		return nil
+	}
+	t.Run("connect after the grant ended gives the sign-in link", func(t *testing.T) {
+		upstream, _, _ := buildConnectUpstreamAccepting(t, []string{}, "search")
+		creds := &connectCredStore{tokens: map[string]string{"alice": "alice-old"}, refresh: grantEnded}
+		m, perUser, notes := newConnectTestManager(t, creds, upstream.URL, schemas.MCPConfig{})
+
+		result, bErr := m.ExecuteChatTool(userContext("alice"), connectToolCall("notes-connect"))
+		require.Nil(t, bErr, "the sign-in link is a result the model relays, not an error")
+		require.NotNil(t, result)
+		assert.Equal(t, connectSignInMessage, *result.Content.ContentStr)
+		assert.Equal(t, 1, creds.refreshCount())
+		assert.Nil(t, perUser.GetDiscovery(userContext("alice"), notes))
+	})
+
+	t.Run("a tool call after the grant ended asks the caller to sign in", func(t *testing.T) {
+		upstream, _, _ := buildConnectUpstreamAccepting(t, []string{}, "search")
+		creds := &connectCredStore{tokens: map[string]string{"alice": "alice-old"}, refresh: grantEnded}
+		m, _, notes := newConnectTestManager(t, creds, upstream.URL, schemas.MCPConfig{})
+		notes.PerUserDiscovery = schemas.Ptr(false)
+		require.NoError(t, m.discoveryStore.SetDiscovery(context.Background(), notes, discoveryOf("notes", "search")))
+
+		_, bErr := m.ExecuteChatTool(userContext("alice"), connectToolCall("notes-search"))
+		require.NotNil(t, bErr)
+		require.NotNil(t, bErr.ExtraFields.MCPAuthRequired, "error: %+v", bErr.Error)
+		assert.Equal(t, connectSignInMessage, bErr.ExtraFields.MCPAuthRequired.Message)
+		assert.Equal(t, 1, creds.refreshCount())
+	})
+
+	t.Run("a refreshed token is used at once", func(t *testing.T) {
+		upstream, rec, _ := buildConnectUpstreamAccepting(t, []string{"alice-new"}, "search")
+		creds := &connectCredStore{tokens: map[string]string{"alice": "alice-old"}, refresh: rotated}
+		m, perUser, notes := newConnectTestManager(t, creds, upstream.URL, schemas.MCPConfig{})
+
+		result, bErr := m.ExecuteChatTool(userContext("alice"), connectToolCall("notes-connect"))
+		require.Nil(t, bErr)
+		assert.Equal(t, "Connected to notes: 1 tools are available from your next turn.", *result.Content.ContentStr)
+		assert.NotNil(t, perUser.GetDiscovery(userContext("alice"), notes))
+		assert.Equal(t, 1, creds.refreshCount())
+		headers := rec.headerValues("Authorization")
+		assert.Equal(t, "Bearer alice-new", headers[len(headers)-1])
+	})
+
+	t.Run("a refresh that changes nothing dials once more, then surfaces the rejection", func(t *testing.T) {
+		upstream, _, rejected := buildConnectUpstreamAccepting(t, []string{}, "search")
+		creds := &connectCredStore{tokens: map[string]string{"alice": "alice-old"}}
+		m, _, _ := newConnectTestManager(t, creds, upstream.URL, schemas.MCPConfig{})
+
+		_, bErr := m.ExecuteChatTool(userContext("alice"), connectToolCall("notes-connect"))
+		require.NotNil(t, bErr)
+		assert.Contains(t, bErr.Error.Message, "authorization required")
+		assert.Equal(t, 1, creds.refreshCount(), "one refresh per connection, never a loop")
+		assert.Equal(t, 2, rejected.count("alice-old"), "the first dial and the one after the refresh")
+	})
+
+	t.Run("a credential with nothing to refresh is not dialed again", func(t *testing.T) {
+		upstream, _, rejected := buildConnectUpstreamAccepting(t, []string{}, "search")
+		creds := &connectCredStore{tokens: map[string]string{"alice": "alice-key"}}
+		m, _, notes := newConnectTestManager(t, creds, upstream.URL, schemas.MCPConfig{})
+		notes.AuthType = schemas.MCPAuthTypePerUserHeaders
+
+		_, bErr := m.ExecuteChatTool(userContext("alice"), connectToolCall("notes-connect"))
+		require.NotNil(t, bErr)
+		assert.Contains(t, bErr.Error.Message, "authorization required")
+		assert.Zero(t, creds.refreshCount())
+		assert.Equal(t, 1, rejected.count("alice-key"))
+	})
+
+	t.Run("a refreshed token the upstream also rejects surfaces the rejection", func(t *testing.T) {
+		upstream, _, rejected := buildConnectUpstreamAccepting(t, []string{}, "search")
+		creds := &connectCredStore{tokens: map[string]string{"alice": "alice-old"}, refresh: rotated}
+		m, _, _ := newConnectTestManager(t, creds, upstream.URL, schemas.MCPConfig{})
+
+		_, bErr := m.ExecuteChatTool(userContext("alice"), connectToolCall("notes-connect"))
+		require.NotNil(t, bErr)
+		assert.Contains(t, bErr.Error.Message, "authorization required")
+		assert.Equal(t, 1, creds.refreshCount(), "one refresh per connection, never a loop")
+		assert.Equal(t, 1, rejected.count("alice-old"))
+		assert.Equal(t, 1, rejected.count("alice-new"), "the refreshed token gets one handshake")
+	})
+}
+
 // TestCloseAndMarkNeedsReauth_ClosesLiveConnectionAndFlipsState covers the
 // core behavior this method exists for: after OAuth credential rotation, a
 // shared client's live connection (still bound to the now-invalidated

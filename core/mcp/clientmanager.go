@@ -57,14 +57,22 @@ const mcpDialTimeout = 10 * time.Second
 // which the second resolution reports as such.
 func (m *MCPManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schemas.MCPClientState) (*client.Client, func(), error) {
 	conn, release, _, err := m.acquireClientConn(ctx, state)
+	return conn, release, err
+}
+
+// acquireClientConn is AcquireClientConn that also returns the instructions the
+// upstream's initialize answered with on a per-call connection, which a caller's
+// discovery keeps; "" on a shared connection. A caller's connect discovers
+// through it too, so a credential its upstream rejects is refreshed there as well.
+func (m *MCPManager) acquireClientConn(ctx *schemas.BifrostContext, state *schemas.MCPClientState) (*client.Client, func(), string, error) {
+	conn, release, instructions, err := m.dialClientConn(ctx, state)
 	if err == nil || !isAuthRequiredError(err) || !refreshesOnConnectRejection(m.credStore, state.ExecutionConfig) {
-		return conn, release, err
+		return conn, release, instructions, err
 	}
 	if refreshErr := m.credStore.ForceRefresh(ctx, state.ExecutionConfig); refreshErr != nil {
 		m.logger.Debug("%s Refreshing the credential of MCP client %s after its connection was rejected failed: %v", MCPLogPrefix, state.ExecutionConfig.Name, refreshErr)
 	}
-	conn, release, _, err = m.acquireClientConn(ctx, state)
-	return conn, release, err
+	return m.dialClientConn(ctx, state)
 }
 
 // refreshesOnConnectRejection reports whether a per-call connection rejected with
@@ -81,11 +89,9 @@ func refreshesOnConnectRejection(credStore schemas.MCPCredentialStore, config *s
 	return false
 }
 
-// acquireClientConn is AcquireClientConn without the refresh-and-redial on a
-// rejected per-call connection, and also returns the instructions the upstream's
-// initialize answered with on a per-call connection, which a caller's discovery
-// keeps; "" on a shared connection.
-func (m *MCPManager) acquireClientConn(ctx *schemas.BifrostContext, state *schemas.MCPClientState) (*client.Client, func(), string, error) {
+// dialClientConn is acquireClientConn without the refresh-and-redial on a
+// rejected per-call connection.
+func (m *MCPManager) dialClientConn(ctx *schemas.BifrostContext, state *schemas.MCPClientState) (*client.Client, func(), string, error) {
 	if state == nil || state.ExecutionConfig == nil {
 		return nil, nil, "", fmt.Errorf("client state is required")
 	}
@@ -303,7 +309,7 @@ func (m *MCPManager) acquireClientConn(ctx *schemas.BifrostContext, state *schem
 		}
 		if gateErr.Error != nil {
 			// The dial's own error when no plugin rewrote it, so its type survives: an
-			// upstream 401 is what AcquireClientConn refreshes the credential for.
+			// upstream 401 is what acquireClientConn refreshes the credential for.
 			if gateErr.Error.Error != nil && gateErr.Error.Message == gateErr.Error.Error.Error() {
 				return nil, nil, "", gateErr.Error.Error
 			}
