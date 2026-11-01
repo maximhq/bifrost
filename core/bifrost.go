@@ -1069,9 +1069,10 @@ func (bifrost *Bifrost) makeChatCompletionRequest(ctx *schemas.BifrostContext, r
 
 // ChatCompletionRequest sends a chat completion request to the specified provider.
 func (bifrost *Bifrost) ChatCompletionRequest(ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	// If ctx is nil, use the bifrost context (defensive check for mcp agent mode)
+	// Keep provider signals local to this call, including subsequent MCP turns.
 	if ctx == nil {
-		ctx = bifrost.ctx
+		ctx = schemas.NewBifrostContext(bifrost.ctx, schemas.NoDeadline)
+		defer ctx.Cancel()
 	}
 
 	response, err := bifrost.makeChatCompletionRequest(ctx, req)
@@ -1171,9 +1172,10 @@ func (bifrost *Bifrost) makeResponsesRequest(ctx *schemas.BifrostContext, req *s
 
 // ResponsesRequest sends a responses request to the specified provider.
 func (bifrost *Bifrost) ResponsesRequest(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	// If ctx is nil, use the bifrost context (defensive check for mcp agent mode)
+	// Keep provider signals local to this call, including subsequent MCP turns.
 	if ctx == nil {
-		ctx = bifrost.ctx
+		ctx = schemas.NewBifrostContext(bifrost.ctx, schemas.NoDeadline)
+		defer ctx.Cancel()
 	}
 
 	response, err := bifrost.makeResponsesRequest(ctx, req)
@@ -5225,6 +5227,9 @@ func (bifrost *Bifrost) UpdateMCPMaxProtocolVersion(version string) error {
 
 // createBaseProvider creates a provider based on the base provider type
 func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, config *schemas.ProviderConfig) (schemas.Provider, error) {
+	if err := config.NetworkConfig.ValidateRemoteFileSizeLimit(); err != nil {
+		return nil, err
+	}
 	// Determine which provider type to create
 	targetProviderKey := providerKey
 
@@ -5333,6 +5338,9 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 // It initializes the request queue and starts worker goroutines for processing requests.
 // Note: This function assumes the caller has already acquired the appropriate mutex for the provider.
 func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, config *schemas.ProviderConfig) error {
+	if err := config.NetworkConfig.ValidateRemoteFileSizeLimit(); err != nil {
+		return err
+	}
 	// Create ProviderQueue with lifecycle management
 	pq := &ProviderQueue{
 		queue:      make(chan *ChannelMessage, config.ConcurrencyAndBufferSize.BufferSize),
@@ -6075,9 +6083,11 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	defer bifrost.releaseBifrostRequest(req)
 	provider, model, fallbacks := req.GetRequestFields()
 
-	// Handle nil context early to prevent blocking
-	if ctx == nil {
-		ctx = bifrost.ctx
+	// Some entrypoints substitute the instance context before dispatch. Never
+	// publish per-request or per-provider state onto that shared context.
+	if ctx == nil || ctx == bifrost.ctx {
+		ctx = schemas.NewBifrostContext(bifrost.ctx, schemas.NoDeadline)
+		defer ctx.Cancel()
 	}
 
 	// What the caller asked for, before any hook rewrites it: the name under which a session
@@ -6100,7 +6110,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		stampRequestedRoute(ctx, requested)
 	}
 
-	// Reset first: bifrost.ctx is shared across every nil-ctx caller. A later agent turn
+	// Reset first: a caller may reuse its context. A later agent turn
 	// keeps turn 1's totals so earlier turns' provider time is not counted as overhead.
 	if continuation == nil {
 		ctx.ResetUpstreamLatency()
@@ -6322,6 +6332,34 @@ func (bifrost *Bifrost) continueOnServedRoute(ctx *schemas.BifrostContext, req *
 	return result, bifrostErr
 }
 
+// streamWithContextCleanup releases an internally created context after delivery.
+// Only nil-context callers take this path; ordinary streams keep their original channel.
+func streamWithContextCleanup(ctx *schemas.BifrostContext, source chan *schemas.BifrostStreamChunk) chan *schemas.BifrostStreamChunk {
+	output := make(chan *schemas.BifrostStreamChunk)
+	go func() {
+		defer close(output)
+		defer ctx.Cancel()
+		for {
+			select {
+			case <-ctx.Done():
+				drainAbandonedStream(source)
+				return
+			case chunk, ok := <-source:
+				if !ok {
+					return
+				}
+				select {
+				case output <- chunk:
+				case <-ctx.Done():
+					drainAbandonedStream(source)
+					return
+				}
+			}
+		}
+	}()
+	return output
+}
+
 // handleStreamRequest handles the stream request to the provider based on the request type
 // It handles plugin hooks, request validation, response processing, and fallback providers.
 // If the primary provider fails, it will try each fallback provider in order until one succeeds.
@@ -6330,9 +6368,17 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	defer bifrost.releaseBifrostRequest(req)
 	provider, model, fallbacks := req.GetRequestFields()
 
-	// Handle nil context early to prevent blocking
-	if ctx == nil {
-		ctx = bifrost.ctx
+	// A nil-context stream owns its context until the stream closes, not merely
+	// until this method returns the channel. Caller-owned contexts stay untouched.
+	if ctx == nil || ctx == bifrost.ctx {
+		ctx = schemas.NewBifrostContext(bifrost.ctx, schemas.NoDeadline)
+		defer func() {
+			if stream == nil {
+				ctx.Cancel()
+			} else {
+				stream = streamWithContextCleanup(ctx, stream)
+			}
+		}()
 	}
 
 	// What the caller asked for, before any hook rewrites it: the name under which a session
@@ -8190,12 +8236,21 @@ func applyRawCaptureSignals(ctx *schemas.BifrostContext, config *schemas.Provide
 // document URLs, via providerUtils.FetchAndEncodeURL) leave through the same proxy
 // as its inference traffic. Written on every attempt, nil included: a fallback to a
 // provider with a different proxy, or none, must never inherit the previous one.
+// The same attempt boundary also publishes or clears the remote-file size override.
 func applyProviderProxySignal(ctx *schemas.BifrostContext, config *schemas.ProviderConfig) {
 	var proxyConfig *schemas.ProxyConfig
 	if config != nil {
 		proxyConfig = config.ProxyConfig
 	}
 	ctx.SetValue(schemas.BifrostContextKeyProviderProxyConfig, proxyConfig)
+	// Snapshot only the limit: hooks must not gain a mutable alias to shared config.
+	// The common case carries no extra state.
+	if config != nil && config.NetworkConfig.MaxRemoteFileSizeBytes != 0 {
+		ctx.SetRemoteFileSizeLimit(config.NetworkConfig.MaxRemoteFileSizeBytes)
+	} else if ctx.Value(schemas.BifrostContextKeyMaxRemoteFileSizeBytes) != nil {
+		// Fallbacks must clear an earlier provider's override, including nil config.
+		ctx.SetRemoteFileSizeLimit(0)
+	}
 }
 
 // requestWorker handles incoming requests from the queue for a specific provider.

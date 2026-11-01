@@ -1,3 +1,5 @@
+[feat]: expose max_remote_file_size_bytes in provider configuration and the Network settings UI [@Constantine3](https://github.com/Constantine3)
+
 ## ✨ Features
 
 - **Kimchi Provider** - New `kimchi` provider for chat, Responses, embeddings and list models
