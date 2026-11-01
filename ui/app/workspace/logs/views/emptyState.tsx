@@ -7,6 +7,7 @@ import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { getExampleBaseUrl } from "@/lib/utils/port";
 import { AlertTriangle, Copy } from "lucide-react";
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 type Provider = "openai" | "anthropic" | "genai" | "litellm" | "langchain";
 type Language = "python" | "typescript";
@@ -40,6 +41,7 @@ interface CodeBlockProps {
 }
 
 function CodeBlock({ code, language, onLanguageChange, showLanguageSelect = false, readonly = true }: CodeBlockProps) {
+	const { t } = useTranslation("observability");
 	const { copy: copyToClipboard } = useCopyToClipboard();
 
 	return (
@@ -47,20 +49,22 @@ function CodeBlock({ code, language, onLanguageChange, showLanguageSelect = fals
 			<div className="absolute top-4 right-4 z-10 flex items-center gap-2">
 				{showLanguageSelect && onLanguageChange && (
 					<Select value={language} onValueChange={onLanguageChange}>
-						<SelectTrigger className="h-8 w-fit text-xs" aria-label="Code language">
+						<SelectTrigger className="h-8 w-fit text-xs" aria-label={t("logs.empty.codeLanguage")}>
 							<SelectValue />
 						</SelectTrigger>
 						<SelectContent>
 							<SelectItem className="text-xs" value="python">
+								{/* i18n-ignore: language name */}
 								Python
 							</SelectItem>
 							<SelectItem className="text-xs" value="typescript">
+								{/* i18n-ignore: language name */}
 								TypeScript
 							</SelectItem>
 						</SelectContent>
 					</Select>
 				)}
-				<Button variant="ghost" size="icon" aria-label="Copy code" onClick={() => copyToClipboard(code)}>
+				<Button variant="ghost" size="icon" aria-label={t("logs.empty.copyCode")} onClick={() => copyToClipboard(code)}>
 					<Copy className="size-4" aria-hidden="true" />
 				</Button>
 			</div>
@@ -74,6 +78,7 @@ interface EmptyStateProps {
 }
 
 export function EmptyState({ error }: EmptyStateProps) {
+	const { t } = useTranslation("observability");
 	const [language, setLanguage] = useState<Language>("python");
 
 	// Generate examples dynamically using the port utility
@@ -237,35 +242,33 @@ const result = await chain.invoke({ input: "What is LangChain?" });`,
 		};
 	}, []);
 
-	const isUnexpectedError = error && error.includes("An unexpected error occurred");
+	const isUnexpectedError = error && error.includes(t("logs.empty.unexpectedError"));
 
 	return (
 		<div className="dark:bg-card flex w-full flex-col items-center justify-center space-y-8 bg-white">
 			{error && (
 				<Alert>
 					<AlertTriangle className="h-4 w-4" />
-					<AlertDescription>
-						{isUnexpectedError ? "Looks like you haven't configured the log store in your config file." : error}
-					</AlertDescription>
+					<AlertDescription>{isUnexpectedError ? t("logs.empty.logStoreNotConfigured") : error}</AlertDescription>
 				</Alert>
 			)}
 
 			<div className="w-full space-y-6 p-4">
 				<div className="flex flex-row items-center gap-2">
 					<div>
-						<h3 className="text-lg font-semibold">Integrate under 60 seconds</h3>
-						<p className="text-muted-foreground text-sm">Send your first request to get started</p>
+						<h3 className="text-lg font-semibold">{t("logs.empty.title")}</h3>
+						<p className="text-muted-foreground text-sm">{t("logs.empty.subtitle")}</p>
 					</div>
 				</div>
 
 				<Tabs defaultValue="curl" className="w-full rounded-lg border">
 					<TabsList className="flex h-10 w-full justify-start rounded-t-lg rounded-b-none">
-						<TabsTrigger value="curl">cURL</TabsTrigger>
-						<TabsTrigger value="openai">OpenAI SDK</TabsTrigger>
-						<TabsTrigger value="anthropic">Anthropic SDK</TabsTrigger>
-						<TabsTrigger value="genai">Google GenAI SDK</TabsTrigger>
-						<TabsTrigger value="litellm">LiteLLM SDK</TabsTrigger>
-						<TabsTrigger value="langchain">LangChain SDK</TabsTrigger>
+						<TabsTrigger value="curl">{t("logs.empty.curl")}</TabsTrigger>
+						<TabsTrigger value="openai">{t("logs.empty.openaiSdk")}</TabsTrigger>
+						<TabsTrigger value="anthropic">{t("logs.empty.anthropicSdk")}</TabsTrigger>
+						<TabsTrigger value="genai">{t("logs.empty.genaiSdk")}</TabsTrigger>
+						<TabsTrigger value="litellm">{t("logs.empty.litellmSdk")}</TabsTrigger>
+						<TabsTrigger value="langchain">{t("logs.empty.langchainSdk")}</TabsTrigger>
 					</TabsList>
 
 					<TabsContent value="curl" className="px-4">

@@ -10,15 +10,19 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/mcp_headers"
 	"github.com/maximhq/bifrost/framework/oauth2"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
@@ -439,13 +443,15 @@ func TestAddMCPClient_OAuthOnLoopbackFollowsPrivateAllowlist(t *testing.T) {
 
 	for _, tc := range []struct {
 		name         string
+		authType     string
 		allow        []string
 		authBypassed bool
 		wantStatus   int
 		wantBody     string
 	}{
 		{name: "authenticated, loopback allowlisted", allow: []string{"127.0.0.1"}, wantStatus: fasthttp.StatusOK, wantBody: "authorize_url"},
-		{name: "authenticated, no allowlist", wantStatus: fasthttp.StatusInternalServerError, wantBody: "blocked connection to non-public address"},
+		{name: "authenticated, no allowlist", wantStatus: fasthttp.StatusBadRequest, wantBody: "blocked connection to non-public address"},
+		{name: "authenticated, no allowlist, per-user OAuth", authType: "per_user_oauth", wantStatus: fasthttp.StatusBadRequest, wantBody: "blocked connection to non-public address"},
 		{name: "auth bypassed, loopback allowlisted", allow: []string{"127.0.0.1"}, authBypassed: true, wantStatus: fasthttp.StatusForbidden, wantBody: "unauthenticated callers cannot register MCP clients"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -461,7 +467,11 @@ func TestAddMCPClient_OAuthOnLoopbackFollowsPrivateAllowlist(t *testing.T) {
 			req.Header.SetMethod(fasthttp.MethodPost)
 			req.Header.SetContentType("application/json")
 			req.Header.SetHost("bifrost.example.com")
-			req.SetBodyString(`{"name":"local_oauth","connection_type":"http","connection_string":"` + server.URL + `/mcp","auth_type":"oauth","oauth_config":{}}`)
+			authType := tc.authType
+			if authType == "" {
+				authType = "oauth"
+			}
+			req.SetBodyString(`{"name":"local_oauth","connection_type":"http","connection_string":"` + server.URL + `/mcp","auth_type":"` + authType + `","oauth_config":{}}`)
 			ctx := initCtx(&req)
 			if tc.authBypassed {
 				ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
@@ -580,6 +590,86 @@ func TestDeleteMCPClient_UnknownIDIsNotFound(t *testing.T) {
 	assert.Equal(t, []string{"mcp-delete-known"}, manager.removed)
 	_, err := store.GetMCPClientByID(context.Background(), "mcp-delete-known")
 	assert.ErrorIs(t, err, configstore.ErrNotFound)
+}
+
+// TestDeleteMCPClient_ReloadsTheKeysThatGrantedIt pins that deleting a client reloads every virtual key
+// that granted it. The delete cascades over those grants in the store, but the keys cached in memory
+// kept them, so a client created again under the same client_id was granted to them once more.
+func TestDeleteMCPClient_ReloadsTheKeysThatGrantedIt(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := newRealOAuth2Store(t)
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID:               "mcp-delete-granted",
+		Name:             "delete_granted",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://example.invalid/mcp"),
+	}))
+	row, err := store.GetMCPClientByID(ctx, "mcp-delete-granted")
+	require.NoError(t, err)
+	active := true
+	for _, id := range []string{"vk-grant-a", "vk-grant-b", "vk-no-grant"} {
+		require.NoError(t, store.CreateVirtualKey(ctx, &configtables.TableVirtualKey{ID: id, Name: id, Value: *schemas.NewSecretVar("sk-bf-" + id), IsActive: &active}))
+	}
+	for _, id := range []string{"vk-grant-a", "vk-grant-b"} {
+		require.NoError(t, store.CreateVirtualKeyMCPConfig(ctx, &configtables.TableVirtualKeyMCPConfig{VirtualKeyID: id, MCPClientID: row.ID, ToolsToExecute: []string{"*"}}))
+	}
+
+	governance := &reloadCountingGovernanceManager{}
+	h := &MCPHandler{store: &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}, mcpManager: &removeRecordingMCPManager{}, governanceManager: governance}
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodDelete)
+	reqCtx := initCtx(&req)
+	reqCtx.SetUserValue("id", "mcp-delete-granted")
+	h.deleteMCPClient(reqCtx)
+	require.Equal(t, fasthttp.StatusOK, reqCtx.Response.StatusCode(), string(reqCtx.Response.Body()))
+
+	var reloaded []string
+	for _, batch := range governance.reloadedBatches {
+		reloaded = append(reloaded, batch...)
+	}
+	reloaded = append(reloaded, governance.reloaded...)
+	sort.Strings(reloaded)
+	assert.Equal(t, []string{"vk-grant-a", "vk-grant-b"}, reloaded, "exactly the keys that granted the client are reloaded")
+	remaining, err := store.GetVirtualKeyMCPConfigsByMCPClientID(ctx, row.ID)
+	require.NoError(t, err)
+	assert.Empty(t, remaining, "the grants are gone from the store, so the reload drops them from memory")
+}
+
+// grantReadFailingStore is a config store whose read of a client's virtual key grants fails.
+type grantReadFailingStore struct{ configstore.ConfigStore }
+
+// GetVirtualKeyMCPConfigsByMCPClientID always fails.
+func (grantReadFailingStore) GetVirtualKeyMCPConfigsByMCPClientID(context.Context, uint) ([]configtables.TableVirtualKeyMCPConfig, error) {
+	return nil, errors.New("database unavailable")
+}
+
+// TestDeleteMCPClient_RefusesWhenItsGrantsCannotBeRead pins that a delete whose granting keys cannot
+// be read deletes nothing. It used to go ahead with no keys to reload: the grants left the store but
+// stayed cached on the keys, where they applied again to a client created later under the same id.
+func TestDeleteMCPClient_RefusesWhenItsGrantsCannotBeRead(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := newRealOAuth2Store(t)
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID:               "mcp-delete-unread",
+		Name:             "delete_unread",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://example.invalid/mcp"),
+	}))
+	mgr := &removeRecordingMCPManager{}
+	h := &MCPHandler{store: &lib.Config{ConfigStore: grantReadFailingStore{store}, ClientConfig: &configstore.ClientConfig{}}, mcpManager: mgr, governanceManager: &reloadCountingGovernanceManager{}}
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodDelete)
+	reqCtx := initCtx(&req)
+	reqCtx.SetUserValue("id", "mcp-delete-unread")
+	h.deleteMCPClient(reqCtx)
+
+	assert.Equal(t, fasthttp.StatusInternalServerError, reqCtx.Response.StatusCode(), string(reqCtx.Response.Body()))
+	assert.Contains(t, string(reqCtx.Response.Body()), "nothing was deleted")
+	_, err := store.GetMCPClientByID(ctx, "mcp-delete-unread")
+	assert.NoError(t, err, "the client is still stored")
+	assert.Empty(t, mgr.removed, "the runtime client is untouched")
 }
 
 // =============================================================================
@@ -760,6 +850,7 @@ func TestUseClientMetadataDocument_ReachesTheProvider(t *testing.T) {
 func TestOAuthBootstrapErrorStatus(t *testing.T) {
 	assert.Equal(t, fasthttp.StatusBadRequest, oauthBootstrapErrorStatus(fmt.Errorf("x: %w", oauth2.ErrClientMetadataDocumentWithClientID)))
 	assert.Equal(t, fasthttp.StatusBadRequest, oauthBootstrapErrorStatus(fmt.Errorf("x: %w", oauth2.ErrClientMetadataDocumentUnavailable)))
+	assert.Equal(t, fasthttp.StatusBadRequest, oauthBootstrapErrorStatus(fmt.Errorf("x: %w", &network.PrivateTargetNotAllowedError{Host: "127.0.0.1", IP: net.ParseIP("127.0.0.1")})))
 	assert.Equal(t, fasthttp.StatusInternalServerError, oauthBootstrapErrorStatus(errors.New("discovery failed")))
 }
 
@@ -1170,4 +1261,583 @@ func TestMCPClientResponse_ResourcesAndPromptsAreAlwaysArrays(t *testing.T) {
 	assert.Contains(t, string(data), `"uri":"file:///handbook.md"`)
 	assert.Contains(t, string(data), `"name":"docs-review"`)
 	assert.Contains(t, string(data), `"resource_templates":[]`)
+}
+
+// decodeSyncInterval runs a raw JSON value through the request field exactly
+// as a handler would, so these tests exercise the real decode path rather than
+// a restatement of it.
+func decodeSyncInterval(t *testing.T, raw string) (*MCPSyncInterval, error) {
+	t.Helper()
+	var body struct {
+		ToolSyncInterval *MCPSyncInterval `json:"tool_sync_interval,omitempty"`
+	}
+	err := json.Unmarshal([]byte(`{"tool_sync_interval":`+raw+`}`), &body)
+	return body.ToolSyncInterval, err
+}
+
+func TestSyncIntervalAcceptsDurationStrings(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want time.Duration
+	}{
+		{`"1s"`, time.Second},
+		{`"30s"`, 30 * time.Second},
+		{`"5m"`, 5 * time.Minute},
+		{`"1h30m"`, 90 * time.Minute},
+		{`"90s"`, 90 * time.Second},
+		{`"10m"`, 10 * time.Minute},
+	} {
+		got, err := decodeSyncInterval(t, tc.raw)
+		if err != nil {
+			t.Errorf("tool_sync_interval=%s should decode, got %v", tc.raw, err)
+			continue
+		}
+		if got.Duration != tc.want {
+			t.Errorf("tool_sync_interval=%s: expected %v, got %v", tc.raw, tc.want, got.Duration)
+		}
+		if err := got.Validate(); err != nil {
+			t.Errorf("tool_sync_interval=%s should validate, got %v", tc.raw, err)
+		}
+	}
+}
+
+// TestSyncIntervalBareNumberStillMeansMinutes is the compatibility guarantee.
+// Every deployment already sending a plain number means minutes by it, and
+// reinterpreting those values would change how often each of them checks its
+// MCP servers without anyone asking for it.
+func TestSyncIntervalBareNumberStillMeansMinutes(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want time.Duration
+	}{
+		{`0`, 0},
+		{`1`, time.Minute},
+		{`10`, 10 * time.Minute},
+		{`60`, time.Hour},
+		{`1440`, 24 * time.Hour},
+	} {
+		got, err := decodeSyncInterval(t, tc.raw)
+		if err != nil {
+			t.Errorf("tool_sync_interval=%s should decode, got %v", tc.raw, err)
+			continue
+		}
+		if got.Duration != tc.want {
+			t.Errorf("tool_sync_interval=%s: expected %v, got %v", tc.raw, tc.want, got.Duration)
+		}
+	}
+}
+
+// TestSyncIntervalRejectsFractionalSeconds covers the trap the string form
+// introduces, across its whole range rather than just the tail. The column
+// stores whole seconds, so "500ms" truncates to 0 and means "follow the global
+// setting", the opposite of what a caller asking for a short interval wants,
+// while "90500ms" keeps its seconds and silently drops the rest. Both are the
+// same loss.
+func TestSyncIntervalRejectsFractionalSeconds(t *testing.T) {
+	for _, raw := range []string{`"1ms"`, `"500ms"`, `"999ms"`, `"1ns"`, `"1500ms"`, `"90500ms"`} {
+		got, err := decodeSyncInterval(t, raw)
+		if err != nil {
+			continue // rejected at decode is equally acceptable
+		}
+		if err := got.Validate(); err == nil {
+			t.Errorf("tool_sync_interval=%s loses precision on persistence and must be rejected", raw)
+		}
+	}
+}
+
+func TestSyncIntervalRejectsNegatives(t *testing.T) {
+	for _, raw := range []string{`-1`, `-10`, `"-5m"`, `"-1s"`} {
+		got, err := decodeSyncInterval(t, raw)
+		if err != nil {
+			continue
+		}
+		if err := got.Validate(); err == nil {
+			t.Errorf("tool_sync_interval=%s is negative and must be rejected", raw)
+		}
+	}
+}
+
+// TestSyncIntervalRejectsNanosecondEchoes keeps the protection that predates
+// the string form: a caller echoing back a nanosecond count as a bare number
+// must still be refused, since it would otherwise be read as that many minutes
+// and park tool sync centuries out.
+func TestSyncIntervalRejectsNanosecondEchoes(t *testing.T) {
+	for _, override := range []time.Duration{time.Minute, 10 * time.Minute, time.Hour} {
+		nanos := int64(override) // what an older GET response carried for this override
+		got, err := decodeSyncInterval(t, jsonInt(nanos))
+		if err != nil {
+			continue
+		}
+		if err := got.Validate(); err == nil {
+			t.Errorf("tool_sync_interval=%d (nanoseconds for a %v override) must be rejected as a bare number", nanos, override)
+		}
+	}
+}
+
+// TestSyncIntervalRejectsFractionalBareNumbers pins that a fractional number is
+// an error rather than being truncated, so "5.5" cannot quietly become five
+// minutes.
+func TestSyncIntervalRejectsFractionalBareNumbers(t *testing.T) {
+	for _, raw := range []string{`5.5`, `0.5`, `1e3`} {
+		if _, err := decodeSyncInterval(t, raw); err == nil {
+			t.Errorf("tool_sync_interval=%s must be rejected; a bare number has to be whole minutes", raw)
+		}
+	}
+}
+
+func TestSyncIntervalRejectsUnparseableStrings(t *testing.T) {
+	for _, raw := range []string{`"soon"`, `"5 minutes"`, `"m5"`, `"5x"`} {
+		if _, err := decodeSyncInterval(t, raw); err == nil {
+			t.Errorf("tool_sync_interval=%s must be rejected as an invalid duration", raw)
+		}
+	}
+}
+
+// TestSyncIntervalSurvivesPersistence asserts an accepted value round-trips
+// through the seconds column it is stored in, which is the conversion that
+// makes sub-second values meaningless in the first place.
+func TestSyncIntervalSurvivesPersistence(t *testing.T) {
+	for _, raw := range []string{`"1s"`, `"30s"`, `"5m"`, `10`, `1440`} {
+		got, err := decodeSyncInterval(t, raw)
+		if err != nil {
+			t.Fatalf("tool_sync_interval=%s should decode, got %v", raw, err)
+		}
+		if err := got.Validate(); err != nil {
+			t.Fatalf("tool_sync_interval=%s should validate, got %v", raw, err)
+		}
+		seconds := int(got.Duration / time.Second)
+		if restored := time.Duration(seconds) * time.Second; restored != got.Duration {
+			t.Errorf("tool_sync_interval=%s does not round-trip through the seconds column: %v became %v",
+				raw, got.Duration, restored)
+		}
+	}
+}
+
+// TestResolveSyncIntervalKeepsExistingWhenAbsent pins the PATCH semantics the
+// update endpoint documents: a field the caller did not send must not change.
+// It also pins that Resolve is nil-safe, since an absent field is exactly a
+// nil pointer and every call site relies on not having to check for it.
+func TestResolveSyncIntervalKeepsExistingWhenAbsent(t *testing.T) {
+	existing := 7 * time.Minute
+	var absent *MCPSyncInterval
+	got, err := absent.Resolve(existing)
+	if err != nil {
+		t.Fatalf("absent field should resolve cleanly, got %v", err)
+	}
+	if got != existing {
+		t.Errorf("expected the existing %v to survive an absent field, got %v", existing, got)
+	}
+
+	// Zero is a value, not an absence: it hands the client back to the global
+	// setting and must override an existing override.
+	sent := &MCPSyncInterval{Duration: 0}
+	got, err = sent.Resolve(existing)
+	if err != nil {
+		t.Fatalf("zero should resolve cleanly, got %v", err)
+	}
+	if got != 0 {
+		t.Errorf("expected an explicit 0 to clear the override, got %v", got)
+	}
+}
+
+func TestSyncIntervalMarshalsAsDurationString(t *testing.T) {
+	out, err := json.Marshal(MCPSyncInterval{Duration: 90 * time.Second})
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if string(out) != `"1m30s"` {
+		t.Errorf(`expected "1m30s", got %s`, out)
+	}
+}
+
+// jsonInt renders an int64 as a JSON number literal.
+func jsonInt(v int64) string {
+	b, _ := json.Marshal(v)
+	return string(b)
+}
+
+// TestCreateRequestShadowedFieldReceivesTheValue is the one that matters for
+// the create path. MCPClientRequest embeds TableMCPClient, which carries its
+// own tool_sync_interval column field, and the request field shadows it. Go
+// resolves the shallower field, so the value must land on the request field
+// and the embedded column field must stay untouched. Getting that backwards
+// would silently drop the caller's interval on every create.
+func TestCreateRequestShadowedFieldReceivesTheValue(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want time.Duration
+	}{
+		{`"30s"`, 30 * time.Second},
+		{`"5m"`, 5 * time.Minute},
+		{`10`, 10 * time.Minute},
+	} {
+		var req MCPClientRequest
+		body := `{"name":"c","connection_type":"http","tool_sync_interval":` + tc.raw + `}`
+		if err := json.Unmarshal([]byte(body), &req); err != nil {
+			t.Fatalf("%s should decode, got %v", body, err)
+		}
+		if req.ToolSyncInterval == nil {
+			t.Fatalf("%s: the request field is nil, so the value was lost", body)
+		}
+		if req.ToolSyncInterval.Duration != tc.want {
+			t.Errorf("%s: expected %v, got %v", body, tc.want, req.ToolSyncInterval.Duration)
+		}
+		// The embedded column field is written from the resolved duration at
+		// the persistence boundary, not by the decoder, so it stays zero here.
+		if req.TableMCPClient.ToolSyncInterval != 0 {
+			t.Errorf("%s: the embedded column field should stay untouched, got %d",
+				body, req.TableMCPClient.ToolSyncInterval)
+		}
+		// The value the handler resolves is what a create would persist.
+		got, err := req.ToolSyncInterval.Resolve(0)
+		if err != nil {
+			t.Fatalf("%s should resolve, got %v", body, err)
+		}
+		if got != tc.want {
+			t.Errorf("%s: resolved to %v, expected %v", body, got, tc.want)
+		}
+	}
+}
+
+// TestCreateRequestAbsentFieldResolvesToZero pins that omitting the field
+// still means "use the global setting", which is what the create path relied
+// on when the embedded int defaulted to 0.
+func TestCreateRequestAbsentFieldResolvesToZero(t *testing.T) {
+	var req MCPClientRequest
+	if err := json.Unmarshal([]byte(`{"name":"c","connection_type":"http"}`), &req); err != nil {
+		t.Fatalf("should decode, got %v", err)
+	}
+	if req.ToolSyncInterval != nil {
+		t.Fatalf("expected an absent field to stay nil, got %+v", req.ToolSyncInterval)
+	}
+	got, err := req.ToolSyncInterval.Resolve(0)
+	if err != nil || got != 0 {
+		t.Errorf("expected an absent field to resolve to 0, got %v (%v)", got, err)
+	}
+}
+
+// TestUpdateRequestDecodesBothForms covers the update struct, whose field was
+// a plain *int before and where a nil pointer still has to mean "unchanged".
+func TestUpdateRequestDecodesBothForms(t *testing.T) {
+	var withValue MCPClientUpdateRequest
+	if err := json.Unmarshal([]byte(`{"tool_sync_interval":"45s"}`), &withValue); err != nil {
+		t.Fatalf("should decode, got %v", err)
+	}
+	got, err := withValue.ToolSyncInterval.Resolve(9 * time.Minute)
+	if err != nil {
+		t.Fatalf("should resolve, got %v", err)
+	}
+	if got != 45*time.Second {
+		t.Errorf("expected 45s to override the existing value, got %v", got)
+	}
+
+	var absent MCPClientUpdateRequest
+	if err := json.Unmarshal([]byte(`{"name":"n"}`), &absent); err != nil {
+		t.Fatalf("should decode, got %v", err)
+	}
+	got, err = absent.ToolSyncInterval.Resolve(9 * time.Minute)
+	if err != nil {
+		t.Fatalf("should resolve, got %v", err)
+	}
+	if got != 9*time.Minute {
+		t.Errorf("expected an absent field to keep the existing 9m, got %v", got)
+	}
+}
+
+func TestSyncIntervalHTTPValidationErrors(t *testing.T) {
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	existing := &schemas.MCPClientConfig{ID: "interval-client", Name: "interval-client", ToolSyncInterval: 7 * time.Minute}
+	cfg.MCPConfig = &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{existing}}
+	h := &MCPHandler{store: cfg}
+	for _, tc := range []struct{ raw, want string }{
+		{`""`, "tool_sync_interval must not be blank"},
+		{`"   "`, "tool_sync_interval must not be blank"},
+		{`"soon"`, "expected a duration"},
+		{`5.5`, "whole number of minutes"},
+		{jsonInt(maxToolSyncIntervalMinutes + 1), "must be at most"},
+		{`true`, "duration string or a number of minutes"},
+	} {
+		for _, update := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/update=%t", tc.raw, update), func(t *testing.T) {
+				ctx := &fasthttp.RequestCtx{}
+				ctx.Request.SetBodyString(`{"name":"interval-client","connection_type":"http","connection_string":"https://example.com/mcp","tool_sync_interval":` + tc.raw + `}`)
+				if update {
+					ctx.SetUserValue("id", existing.ID)
+					h.updateMCPClient(ctx)
+				} else {
+					h.addMCPClient(ctx)
+				}
+				require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+				assert.Contains(t, string(ctx.Response.Body()), "tool_sync_interval")
+				assert.Contains(t, string(ctx.Response.Body()), tc.want)
+				assert.Equal(t, 7*time.Minute, existing.ToolSyncInterval)
+			})
+		}
+	}
+	// Unrelated decoder errors must retain the generic response.
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBodyString(`{"name":true}`)
+	h.addMCPClient(ctx)
+	assert.Contains(t, string(ctx.Response.Body()), "Invalid request payload")
+}
+
+func TestSyncIntervalBlankUpdateKeepsOverride(t *testing.T) {
+	for _, raw := range []string{`""`, `"   "`} {
+		field, err := decodeSyncInterval(t, raw)
+		if err == nil {
+			resolved, resolveErr := field.Resolve(7 * time.Minute)
+			t.Fatalf("blank update must fail decoding; got interval %v, error %v", resolved, resolveErr)
+		}
+	}
+}
+
+func TestParseRequestDurationUnits(t *testing.T) {
+	for _, tc := range []struct {
+		field, label string
+		unit         time.Duration
+	}{
+		{"sync_interval", "minutes", time.Minute},
+		{"execution_timeout", "seconds", time.Second},
+		{"retry_backoff", "milliseconds", time.Millisecond},
+	} {
+		t.Run(tc.field, func(t *testing.T) {
+			got, err := parseRequestDuration([]byte(`2`), tc.field, tc.unit, tc.label)
+			require.NoError(t, err)
+			assert.Equal(t, 2*tc.unit, got)
+			got, err = parseRequestDuration([]byte(`"1500ms"`), tc.field, tc.unit, tc.label)
+			require.NoError(t, err)
+			assert.Equal(t, 1500*time.Millisecond, got) // Precision is field-specific.
+			max := int64(1<<63-1) / int64(tc.unit)
+			got, err = parseRequestDuration([]byte(jsonInt(max)), tc.field, tc.unit, tc.label)
+			require.NoError(t, err)
+			assert.Equal(t, time.Duration(max)*tc.unit, got)
+			for _, raw := range []string{`""`, `"  "`, `"soon"`, `-1`, `"-1s"`, `1.5`, `1e3`, `true`, jsonInt(max + 1)} {
+				_, err := parseRequestDuration([]byte(raw), tc.field, tc.unit, tc.label)
+				require.Error(t, err, raw)
+				assert.Contains(t, requestDurationDecodeError(err), tc.field)
+			}
+			for _, raw := range []string{`0`, `"0s"`, `null`} {
+				got, err := parseRequestDuration([]byte(raw), tc.field, tc.unit, tc.label)
+				require.NoError(t, err)
+				assert.Zero(t, got)
+			}
+		})
+	}
+}
+
+// TestAddMCPClient_PerUserHeadersKeepsAdminCredential: creating a per_user_headers
+// client keeps the admin's sample values as its admin credential, the one periodic
+// tool discovery connects with, just as verify-headers keeps them. Without it the
+// client's first discovery check finds no credential and marks it unstable.
+func TestAddMCPClient_PerUserHeadersKeepsAdminCredential(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	h.store.MCPHeadersProvider = mcp_headers.NewProvider(h.store.ConfigStore, &mockLogger{})
+
+	body, err := json.Marshal(map[string]any{
+		"name": "acme_h", "connection_type": "http", "connection_string": "http://127.0.0.1:1/mcp",
+		"auth_type": "per_user_headers", "per_user_header_keys": []string{"X-Api-Key"},
+		"user_headers": map[string]string{"X-Api-Key": "sample-key"}, "tools_to_execute": []string{"*"},
+	})
+	require.NoError(t, err)
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(body), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	require.Len(t, mgr.added, 1)
+
+	cred, err := h.store.MCPHeadersProvider.GetCredentialByMode(context.Background(), schemas.MCPAuthModeAdmin, "", mgr.added[0].ID)
+	require.NoError(t, err, "the create call keeps an admin credential")
+	require.NotNil(t, cred)
+	assert.Equal(t, map[string]string{"x-api-key": "sample-key"}, cred.Headers, "the sample value, under its canonical key")
+	assert.Equal(t, schemas.MCPHeadersUserCredentialStatusActive, cred.Status)
+}
+
+// failingHeaderCredentialStore is a config store whose header credential writes fail.
+type failingHeaderCredentialStore struct{ configstore.ConfigStore }
+
+// UpsertMCPPerUserHeaderCredential always fails.
+func (failingHeaderCredentialStore) UpsertMCPPerUserHeaderCredential(context.Context, *configtables.TableMCPPerUserHeaderCredential) error {
+	return errors.New("credential table unavailable")
+}
+
+// TestAddMCPClient_PerUserHeadersCreatesWhenTheCredentialCannotBeKept: keeping the
+// sample values is best effort, so a failed credential write leaves the verified
+// client created and registered; verify-headers can store the credential later.
+func TestAddMCPClient_PerUserHeadersCreatesWhenTheCredentialCannotBeKept(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	h.store.MCPHeadersProvider = mcp_headers.NewProvider(failingHeaderCredentialStore{h.store.ConfigStore}, &mockLogger{})
+
+	body, err := json.Marshal(map[string]any{
+		"name": "acme_h", "connection_type": "http", "connection_string": "http://127.0.0.1:1/mcp",
+		"auth_type": "per_user_headers", "per_user_header_keys": []string{"X-Api-Key"},
+		"user_headers": map[string]string{"X-Api-Key": "sample-key"}, "tools_to_execute": []string{"*"},
+	})
+	require.NoError(t, err)
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(body), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	require.Len(t, mgr.added, 1, "the client is registered without the credential")
+	_, err = h.store.MCPHeadersProvider.GetCredentialByMode(context.Background(), schemas.MCPAuthModeAdmin, "", mgr.added[0].ID)
+	assert.Error(t, err, "no admin credential was kept")
+}
+
+// TestAddMCPClient_MissingConnectionTargetIs400 pins that a client created without
+// the target its connection type needs is a caller error: 400 with the reason, and
+// nothing is stored or handed to the runtime. It was a 500 after a create and a
+// rollback.
+func TestAddMCPClient_MissingConnectionTargetIs400(t *testing.T) {
+	for _, tc := range []struct {
+		body, name, want string
+	}{
+		{body: `{"name":"no_url","connection_type":"http","auth_type":"none"}`, name: "no_url", want: "connection_string is required for http connection type"},
+		{body: `{"name":"no_command","connection_type":"stdio","auth_type":"none"}`, name: "no_command", want: "stdio_config is required for stdio connection type"},
+		{body: `{"name":"empty_command","connection_type":"stdio","auth_type":"none","stdio_config":{"command":""}}`, name: "empty_command", want: "stdio_config.command is required for stdio connection type"},
+		{body: `{"name":"blank_command","connection_type":"stdio","auth_type":"none","stdio_config":{"command":"  "}}`, name: "blank_command", want: "stdio_config.command is required for stdio connection type"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, mgr := newOpenAPITestHandler(t)
+			status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, tc.body, "", false)
+			require.Equal(t, fasthttp.StatusBadRequest, status, respBody)
+			assert.Contains(t, respBody, tc.want)
+			assert.Empty(t, mgr.added, "the runtime is not asked to connect")
+			_, err := h.store.ConfigStore.GetMCPClientByName(context.Background(), tc.name)
+			assert.ErrorIs(t, err, configstore.ErrNotFound, "no row is stored")
+		})
+	}
+}
+
+// TestUpdateMCPClient_RenameToATakenNameIs409 pins that renaming a client to
+// another client's name answers 409, like creating one with that name, and
+// applies nothing. It was a 500.
+func TestUpdateMCPClient_RenameToATakenNameIs409(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	for _, name := range []string{"petstore", "petstore_b"} {
+		createBody, _ := json.Marshal(map[string]any{
+			"name": name, "connection_type": "openapi", "auth_type": "none",
+			"tools_to_execute": []string{"listPets"},
+			"openapi_config":   map[string]any{"spec": petstoreSpecJSON, "base_url": "https://petstore.example.com/v1/"},
+		})
+		status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(createBody), "", false)
+		require.Equal(t, fasthttp.StatusOK, status, respBody)
+	}
+	h.store.MCPConfig.ClientConfigs = mgr.added
+	second := mgr.added[1]
+
+	status, respBody := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"name":"petstore"}`, second.ID, false)
+	require.Equal(t, fasthttp.StatusConflict, status, respBody)
+	assert.Contains(t, respBody, "An MCP client with this name already exists")
+	assert.Empty(t, mgr.updated, "the runtime client is not touched")
+	stored, err := h.store.ConfigStore.GetMCPClientByID(context.Background(), second.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "petstore_b", stored.Name, "the stored row keeps its name")
+}
+
+// reconnectRecordingMCPManager records reconnect calls and answers them as the
+// server does for an id it has no config for.
+type reconnectRecordingMCPManager struct {
+	MCPManager
+	reconnected []string
+}
+
+// ReconnectMCPClient records the id and reports it unknown.
+func (m *reconnectRecordingMCPManager) ReconnectMCPClient(_ context.Context, id string) error {
+	m.reconnected = append(m.reconnected, id)
+	return fmt.Errorf("MCP client '%s' not found", id)
+}
+
+// TestReconnectMCPClient_UnknownIDIsNotFound pins that reconnecting an id no
+// client has answers 404, like refreshing its tools, without reaching the
+// runtime. It was a 500.
+func TestReconnectMCPClient_UnknownIDIsNotFound(t *testing.T) {
+	SetLogger(&mockLogger{})
+	mgr := &reconnectRecordingMCPManager{}
+	h := &MCPHandler{
+		store:      &lib.Config{ConfigStore: newRealOAuth2Store(t), ClientConfig: &configstore.ClientConfig{}, MCPConfig: &schemas.MCPConfig{}},
+		mcpManager: mgr,
+	}
+	status, respBody := doMCPRequest(t, h.reconnectMCPClient, fasthttp.MethodPost, "", "no-such-client", false)
+	require.Equal(t, fasthttp.StatusNotFound, status, respBody)
+	assert.Contains(t, respBody, "mcp client not found")
+	assert.Empty(t, mgr.reconnected)
+}
+
+// newLoopbackOAuthMCPHandler returns an MCP handler whose OAuth creates discover
+// against a loopback authorization server the private allowlist permits.
+func newLoopbackOAuthMCPHandler(t *testing.T) (*MCPHandler, *oauth2.OAuth2Provider, *httptest.Server) {
+	t.Helper()
+	SetLogger(&mockLogger{})
+	oauth2.SetDiscoveryDialContextForTests(nil)
+	t.Cleanup(func() {
+		oauth2.SetDiscoveryDialContextForTests((&net.Dialer{}).DialContext)
+		require.NoError(t, lib.ApplyMCPOAuthPrivateAllowlist(nil))
+	})
+	require.NoError(t, lib.ApplyMCPOAuthPrivateAllowlist([]string{"127.0.0.1"}))
+	server := newLoopbackOAuthMCPServer(t)
+	store := newRealOAuth2Store(t)
+	provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	cfg := &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, OAuthProvider: provider, MCPConfig: &schemas.MCPConfig{}}
+	return &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg)}, provider, server
+}
+
+// TestAddMCPClient_OAuthRefusesATakenNameOrSlugBeforeAuthorizing pins that an
+// OAuth create whose name or endpoint slug is already taken answers 409 at
+// create, before anyone is sent to consent. The conflict used to surface only
+// when the flow was completed.
+func TestAddMCPClient_OAuthRefusesATakenNameOrSlugBeforeAuthorizing(t *testing.T) {
+	for _, tc := range []struct {
+		name, authType, body, want string
+	}{
+		{name: "oauth, same name", authType: "oauth", body: `"name":"taken"`, want: "An MCP endpoint with this slug already exists"},
+		{name: "per-user OAuth, same name", authType: "per_user_oauth", body: `"name":"taken"`, want: "An MCP endpoint with this slug already exists"},
+		{name: "oauth, another name with the taken slug", authType: "oauth", body: `"name":"other","endpoint_slug":"taken"`, want: "An MCP endpoint with this slug already exists"},
+		{name: "oauth, same name with another slug", authType: "oauth", body: `"name":"taken","endpoint_slug":"other"`, want: "An MCP client with this name already exists"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _, server := newLoopbackOAuthMCPHandler(t)
+			require.NoError(t, h.store.ConfigStore.CreateMCPClientConfig(context.Background(), &schemas.MCPClientConfig{
+				ID: "taken-id", Name: "taken", ConnectionType: schemas.MCPConnectionTypeHTTP,
+				ConnectionString: schemas.NewSecretVar("https://taken.example.com/mcp"), AuthType: schemas.MCPAuthTypeNone,
+			}))
+			body := `{` + tc.body + `,"connection_type":"http","connection_string":"` + server.URL + `/mcp","auth_type":"` + tc.authType + `","oauth_config":{}}`
+			status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, body, "", false)
+			require.Equal(t, fasthttp.StatusConflict, status, respBody)
+			assert.Contains(t, respBody, tc.want)
+			assert.NotContains(t, respBody, "authorize_url")
+		})
+	}
+}
+
+// TestAddMCPClient_OAuthKeepsTheEndpointSlug pins that an OAuth create's
+// endpoint_slug is kept for the client its completion creates. It was dropped,
+// so the client got the slug derived from its name.
+func TestAddMCPClient_OAuthKeepsTheEndpointSlug(t *testing.T) {
+	for _, authType := range []string{"oauth", "per_user_oauth"} {
+		t.Run(authType, func(t *testing.T) {
+			h, provider, server := newLoopbackOAuthMCPHandler(t)
+			body := `{"name":"slugged","endpoint_slug":"custom-slug","connection_type":"http","connection_string":"` + server.URL + `/mcp","auth_type":"` + authType + `","oauth_config":{}}`
+			status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, body, "", false)
+			require.Equal(t, fasthttp.StatusOK, status, respBody)
+			var resp struct {
+				OauthConfigID string `json:"oauth_config_id"`
+			}
+			require.NoError(t, json.Unmarshal([]byte(respBody), &resp))
+			pending, err := provider.GetPendingMCPClient(resp.OauthConfigID)
+			require.NoError(t, err)
+			require.NotNil(t, pending)
+			assert.Equal(t, "custom-slug", pending.EndpointSlug)
+		})
+	}
+}
+
+// TestRevokeOAuthConfig_UnknownIDIsNotFound pins that deleting an OAuth config
+// id that does not exist answers 404. It was a 500 reading
+// "oauth config not found: %!w(<nil>)".
+func TestRevokeOAuthConfig_UnknownIDIsNotFound(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	cfg := &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, OAuthProvider: provider}
+	h := NewOAuthHandler(provider, nil, cfg)
+	status, respBody := doMCPRequest(t, h.revokeOAuthConfig, fasthttp.MethodDelete, "", "no-such-config", false)
+	require.Equal(t, fasthttp.StatusNotFound, status, respBody)
+	assert.Contains(t, respBody, "oauth config not found")
+	assert.NotContains(t, respBody, "%!w")
 }
