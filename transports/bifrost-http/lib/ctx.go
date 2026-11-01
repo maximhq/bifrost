@@ -865,10 +865,12 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 	bifrostCtx.SetValue(schemas.BifrostContextKeyRequestHeaders, allHeaders)
 
 	// Same order as enterprise audit logs: the forwarding headers first, then the TCP peer.
-	if clientIP := ClientForwardedIP(ctx); clientIP != "" {
-		bifrostCtx.SetValue(schemas.BifrostContextKeyClientIP, clientIP)
-	} else if ip := ctx.RemoteIP(); ip != nil && !ip.IsUnspecified() {
-		bifrostCtx.SetValue(schemas.BifrostContextKeyClientIP, ip.String())
+	if store != nil && store.ShouldCaptureClientIP() {
+		if clientIP := ClientForwardedIP(ctx); clientIP != "" {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyClientIP, clientIP)
+		} else if ip := ctx.RemoteIP(); ip != nil && !ip.IsUnspecified() {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyClientIP, ip.String())
+		}
 	}
 
 	// Session stickiness: an explicit x-bf-session-id wins, otherwise the

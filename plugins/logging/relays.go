@@ -58,7 +58,7 @@ func (p *LoggerPlugin) PreRelayHook(ctx *schemas.BifrostContext, req *schemas.Bi
 			entry.App = &app
 		}
 	}
-	entry.ClientIP = optionalString(clientIPFromContext(ctx))
+	entry.ClientIP = optionalString(p.clientIPFromContext(ctx))
 	// The same metadata LLM and MCP rows carry: the configured logging headers, every x-bf-lh-*
 	// label, the x-bf-dim-* dimensions, and the virtual key's metadata on top.
 	entry.MetadataParsed = mergeVirtualKeyMetadata(p.captureLoggingHeaders(ctx), ctx)

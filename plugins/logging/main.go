@@ -1243,7 +1243,8 @@ type Config struct {
 	RetainContentInObjectStorage *bool                  `json:"retain_content_in_object_storage"` // Pointer to live config value; when true, content-disabled requests are offloaded to object storage as hidden instead of dropped
 	LoggingHeaders               *[]string              `json:"logging_headers"`                  // Pointer to live config slice; changes are reflected immediately without restart
 	Writer                       *logstore.WriterConfig `json:"writer,omitempty"`
-	ObjectStorageEnabled         bool                   `json:"-"` // Set by the server from the logstore config; required for retain_content_in_object_storage to take effect
+	ObjectStorageEnabled         bool                   `json:"-"`                 // Set by the server from the logstore config; required for retain_content_in_object_storage to take effect
+	CaptureClientIP              bool                   `json:"capture_client_ip"` // Set from logs_store.capture_client_ip; off leaves client_ip NULL
 }
 
 func validateWriterConfig(config logstore.WriterConfig) error {
@@ -1295,6 +1296,7 @@ type LoggerPlugin struct {
 	disableContentLogging        *bool
 	retainContentInObjectStorage *bool     // Pointer to live config value; when true, content-disabled requests are stored hidden instead of dropped
 	objectStorageEnabled         bool      // Log store offloads payloads to object storage; required for retain_content_in_object_storage
+	captureClientIP              bool      // logs_store.capture_client_ip; off leaves client_ip NULL
 	retainWarnOnce               sync.Once // Warns once when retention is configured without object storage
 	loggingHeaders               *[]string // Pointer to live config slice for headers to capture in metadata
 	pricingManager               *modelcatalog.ModelCatalog
@@ -1386,6 +1388,7 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 		disableContentLogging:        config.DisableContentLogging,
 		retainContentInObjectStorage: config.RetainContentInObjectStorage,
 		objectStorageEnabled:         config.ObjectStorageEnabled,
+		captureClientIP:              config.CaptureClientIP,
 		loggingHeaders:               config.LoggingHeaders,
 		done:                         make(chan struct{}),
 		logger:                       logger,
@@ -1809,8 +1812,11 @@ func userAgentFromContext(ctx *schemas.BifrostContext) string {
 	return ua
 }
 
-// clientIPFromContext returns the caller IP the transport set, clamped to the client_ip column.
-func clientIPFromContext(ctx *schemas.BifrostContext) string {
+// clientIPFromContext returns the caller IP the transport set, clamped to the client_ip column, or "" when capture is off.
+func (p *LoggerPlugin) clientIPFromContext(ctx *schemas.BifrostContext) string {
+	if !p.captureClientIP {
+		return ""
+	}
 	clientIP, _ := ctx.Value(schemas.BifrostContextKeyClientIP).(string)
 	return clampString(clientIP, maxPersistedClientIPLen)
 }
@@ -1954,7 +1960,7 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	// Capture the raw User-Agent of the calling client (stored verbatim; the UI
 	// maps it to a client app such as Claude Code, Codex, or Cursor).
 	initialData.UserAgent = userAgentFromContext(ctx)
-	initialData.ClientIP = clientIPFromContext(ctx)
+	initialData.ClientIP = p.clientIPFromContext(ctx)
 	initialData.AgentCorrelationID = requestHeaderFromContext(ctx, "x-bf-agent-correlation-id")
 	initialData.App = p.detectAppFromUserAgent(initialData.UserAgent)
 	if appKey := schemas.AppKeyFromName(initialData.App); appKey != "" {
@@ -2193,7 +2199,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 					entry.App = &app
 				}
 			}
-			entry.ClientIP = optionalString(clientIPFromContext(ctx))
+			entry.ClientIP = optionalString(p.clientIPFromContext(ctx))
 			entry.MetadataParsed = mergeVirtualKeyMetadata(mergeLoadBalancerMetadata(mergeRealtimeMetadata(p.captureLoggingHeaders(ctx), ctx), ctx), ctx)
 			if isAsync, ok := ctx.Value(schemas.BifrostIsAsyncRequest).(bool); ok && isAsync {
 				if entry.MetadataParsed == nil {
@@ -3629,7 +3635,7 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 			entry.App = &app
 		}
 	}
-	entry.ClientIP = optionalString(clientIPFromContext(ctx))
+	entry.ClientIP = optionalString(p.clientIPFromContext(ctx))
 
 	// Set arguments if content logging is enabled. Governance's PreMCPHook runs after ours, so a
 	// request that presents a virtual key or names a project governance has not stamped yet has no
