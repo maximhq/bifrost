@@ -2,9 +2,13 @@ import { usePromptContext } from "../context";
 import { FolderSheet } from "../sheets/folderSheet";
 import { PromptSheet } from "../sheets/promptSheet";
 import { CommitVersionSheet } from "../sheets/commitVersionSheet";
+import { useActionParam } from "@/hooks/useActionParam";
 
 export function PromptSheets() {
-	const { folderSheet, setFolderSheet, promptSheet, setPromptSheet, commitSheet, setCommitSheet, setUrlState } = usePromptContext();
+	const { folderSheet, setFolderSheet, promptSheet, setPromptSheet, commitSheet, setCommitSheet, setUrlState, canCreate } =
+		usePromptContext();
+	useActionParam("create", () => setPromptSheet({ open: true }), { isOpen: promptSheet.open, enabled: canCreate });
+	useActionParam("create-folder", () => setFolderSheet({ open: true }), { isOpen: folderSheet.open, enabled: canCreate });
 
 	return (
 		<>

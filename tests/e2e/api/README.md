@@ -116,6 +116,95 @@ make run-provider-harness-test PROVIDER=openai FEATURE="content-length truncatio
 
 Stop the fixture and isolated gateway with Ctrl+C after testing.
 
+## Sonnet 5.5 caller request surface
+
+These fourteen deterministic cases use a local synthetic Anthropic endpoint and an
+isolated gateway. They make no live provider calls, need no key, no quota and no
+subscription entitlement, and they assert **what Bifrost forwards** — a passing
+case is not evidence that the live Claude API accepts any of these request shapes.
+Run the following commands from the repository root.
+
+Start the fixture in one terminal:
+
+```bash
+node tests/e2e/api/runners/anthropic-request-surface-fixture.mjs
+```
+
+Start a separate gateway in another terminal:
+
+```bash
+surface_fixture_dir=$(mktemp -d)
+cp tests/e2e/api/provider_config/anthropic-request-surface.config.json "$surface_fixture_dir/config.json"
+go run ./transports/bifrost-http -app-dir "$surface_fixture_dir" -host 127.0.0.1 -port 8792
+```
+
+Run the cases in a third terminal:
+
+```bash
+newman run tests/e2e/api/collections/provider-harness.json \
+  --folder "288. Sonnet 5.5 caller request surface (sonnet-5-5-surface)" \
+  --env-var baseUrl=http://127.0.0.1:8792 \
+  --env-var anthropicRequestSurfaceFixture=1
+```
+
+Each request carries its case name in the user message. The fixture looks the case
+up in `runners/lib/anthropic-request-surface.mjs`, compares the reasoning and
+sampling surface it received — `thinking` and its `budget_tokens`,
+`output_config.effort`, `temperature`, `top_p`, `top_k`, and the
+`interleaved-thinking-2025-05-14` beta header — against the request the caller
+sent, and answers 200 only on an exact match. Otherwise it answers 400 naming
+every field that drifted, so a wrong forwarded request fails loudly instead of
+passing on an uninspected 200.
+
+Four cases are red before the caller-request-surface fix and green after:
+`between_tools` thinking carrying a sibling `thinking.display`; `enabled` +
+`budget_tokens` on both the typed path and the `claude-cli` raw path; and a
+caller-sent effort. Ten are invariance controls that must pass on both trees:
+bare `between_tools` on unary, streaming and `count_tokens`, the raw path's
+already-correct sampling tuple, the three typed sampling cases, and
+`claude-sonnet-5` keeping its adaptive rewrite, its raw-path asymmetry and its
+dropped count sampling. `count_tokens` still deletes `temperature` for every
+model on both paths; the count cases pin that deletion rather than change it.
+
+The three typed sampling cases are controls rather than fixes: this model family
+is adaptive-only, and the typed converter drops `temperature`/`top_p` and deletes
+`top_k` for it because the provider is recorded as rejecting the three. This
+change therefore leaves sampling stripped and expects the same wire stock
+produces. The `sampling-raw` control still forwards all three, so the typed/raw
+divergence stays visible in the table rather than being resolved in the direction
+that could only add provider rejections.
+
+The three bare `between_tools` cases are controls rather than fixes because
+upstream PR #7665 landed while this change was in review: it carries
+`thinking.type` through the neutral reasoning parameters, so that shape is
+already forwarded. What those parameters still cannot carry is a sibling
+`thinking.display`, which stock's typed path drops and its raw path forwards —
+that is the one `between_tools` case still counted as a fix above: red on the
+stock tree, green on this one. The `stock` column in
+`runners/lib/anthropic-request-surface.mjs` records both baselines so this
+distinction is checked rather than described.
+
+Folder `118. Claude Sonnet 5.5 between_tools thinking type (between-tools)`
+already covers bare `between_tools` against live providers through
+`x-bf-send-back-raw-request`, and this folder does not duplicate it: its three
+bare `between_tools` cases are the controls described above, and the eleven
+others pin shapes folder 118 does not send — a sibling `thinking.display`, the
+legacy `enabled` + `budget_tokens` form, a caller-sent effort beside a restored
+thinking, and the `temperature`/`top_p`/`top_k` tuple. The two folders also
+carry different feature keywords (`between-tools` and `sonnet-5-5-surface`), so
+a scoped run selects one or the other.
+
+The cases are skipped unless `anthropicRequestSurfaceFixture=1`.
+
+The fixture's verdict logic is pure and covered offline by
+`runners/lib/anthropic-request-surface.test.mjs` (`make test-harness-runner-lib`),
+which drives every case three ways: the request the caller sent is accepted, each
+single-field drift off it is rejected, and the body upstream forwards today is
+rejected for exactly the four cases above. The same file drives the fixture's
+HTTP handler directly, with no port bound, so an unknown or malformed request
+target is answered 404 rather than thrown on — a throw there rejects the async
+listener's promise, answers nothing, and takes the fixture down mid-folder.
+
 ## Extra-content-only stream deltas
 
 Folder 266 pins that OpenAI-compatible chat streams forward chunks whose delta carries only
@@ -740,46 +829,6 @@ Run locally (from this directory):
 ```bash
 ./runners/individual/run-newman-auth-matrix-tests.sh --binary /path/to/bifrost-http
 # options: --port <port> (default 8090), --html, --json, --verbose, --bail
-```
-
-### MCP Auth Tests
-
-| Path | Description |
-|------|-------------|
-| `collections/bifrost-v1-mcp-auth.postman_collection.json` | Asserts inbound `/mcp` authentication across the three server auth modes (`headers` / `both` / `oauth`): discovery gating, the credential connect matrix, the full issuance flow, refresh rotation + family revocation, the revocation window, and the runtime `headers`→`both` upgrade. |
-| `runners/individual/run-newman-mcp-auth-tests.sh` | Builds + starts the upstream MCP server, then boots a fresh server per `client.mcp_server_auth_mode` and runs the collection against each. |
-
-Like the auth-matrix runner, this one **boots its own servers** — each mode needs a
-different boot config. It also builds and starts the upstream MCP server
-(`examples/mcps/http-no-ping-server`) so `/mcp` exposes real tools, and pre-seeds it
-as an MCP client plus two virtual keys (one active, one inactive). It requires a
-built `bifrost-http` binary.
-
-The collection's test scripts branch on the `auth_mode` env-var, so a single
-collection encodes the full matrix. Per mode it asserts:
-
-- **`headers` (default):** discovery endpoints 404; every virtual-key credential
-  (`x-bf-vk`, `Authorization: Bearer <vk>`, `x-api-key`) connects exactly as before;
-  anonymous connects when auth is not enforced; an inactive key never connects. The
-  OAuth surface is invisible.
-- **`both`:** every header-credential outcome is identical to `headers`, and only
-  *adds* JWT acceptance + live discovery; an invalid JWT is rejected with
-  `WWW-Authenticate`.
-- **`oauth`:** header credentials and anonymous are rejected (401 +
-  `WWW-Authenticate`); only issued JWTs connect.
-
-In `both`/`oauth` it also runs the end-to-end issuance flow (dynamic client
-registration, PKCE-S256 authorize, consent bound to a virtual key or to a
-server-minted session, token exchange, JWT connect), then refresh rotation with
-stolen-token family revocation, the revocation window (a revoked grant stops refresh
-while its already-issued access token keeps working until expiry), and — from the
-`headers` boot — the runtime `headers`→`both` upgrade.
-
-Run locally (from this directory):
-
-```bash
-./runners/individual/run-newman-mcp-auth-tests.sh --binary /path/to/bifrost-http
-# options: --port <port> (default 8090), --mcp-port <port> (default 3001), --html, --json, --verbose, --bail
 ```
 
 ### Warp Tests

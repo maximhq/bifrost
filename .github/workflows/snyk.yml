@@ -12,7 +12,7 @@ permissions:
 jobs:
   snyk-open-source:
     name: Snyk Open Source (deps)
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
@@ -85,7 +85,7 @@ jobs:
 
   snyk-code:
     name: Snyk Code (SAST)
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1

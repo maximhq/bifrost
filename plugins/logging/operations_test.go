@@ -3151,6 +3151,87 @@ func TestInject_OverheadTieBrokenByID(t *testing.T) {
 	}
 }
 
+// TestInject_SequentialAttemptsEachCarryOwnLatency pins per-row accounting for a trace
+// that logged two attempts (an MCP agent loop's turns): each row carries only its own
+// upstream, the first row reaches back to the request start, the last row reaches the
+// request end, and upstream spent between the rows (a tool call) lands on neither.
+func TestInject_SequentialAttemptsEachCarryOwnLatency(t *testing.T) {
+	plugin := &LoggerPlugin{logger: testLogger{}, writeQueue: make(chan *writeQueueEntry, 2)}
+	traceID := "trace-agent-turns"
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+	ctx.ResetUpstreamLatency()
+
+	rootStart := time.Now()
+	time.Sleep(10 * time.Millisecond) // transport parse and routing before turn 1
+	ctx.MarkAttemptStart()
+	time.Sleep(40 * time.Millisecond)
+	schemas.AddUpstreamLatency(ctx, 30*time.Millisecond)
+	turn1 := &logstore.Log{ID: "turn-1", Timestamp: time.Now().UTC()}
+	// Bracket each call that sets a row's window edge, so the latency bounds come from
+	// measured instants rather than from how long the sleeps happened to run.
+	turn1EndMin := time.Now()
+	plugin.storeOrEnqueueEntry(ctx, turn1, nil)
+	turn1EndMax := time.Now()
+
+	time.Sleep(20 * time.Millisecond) // tool execution between turns
+	schemas.AddUpstreamLatency(ctx, 15*time.Millisecond)
+
+	turn2StartMin := time.Now()
+	ctx.MarkAttemptStart()
+	turn2StartMax := time.Now()
+	time.Sleep(60 * time.Millisecond)
+	schemas.AddUpstreamLatency(ctx, 50*time.Millisecond)
+	turn2 := &logstore.Log{ID: "turn-2", Timestamp: time.Now().UTC()}
+	plugin.storeOrEnqueueEntry(ctx, turn2, nil)
+	time.Sleep(10 * time.Millisecond) // response write
+	rootEnd := time.Now()
+
+	trace := &schemas.Trace{
+		TraceID: traceID,
+		RootSpan: &schemas.Span{
+			StartTime: rootStart,
+			EndTime:   rootEnd,
+			Attributes: map[string]any{
+				schemas.AttrBifrostUpstreamDurationMs: 95.0,
+				schemas.AttrBifrostOverheadDurationMs: durationMs(rootEnd.Sub(rootStart)) - 95.0,
+			},
+		},
+	}
+	if err := plugin.Inject(context.Background(), trace); err != nil {
+		t.Fatalf("Inject() error = %v", err)
+	}
+	got := map[string]*logstore.Log{}
+	for len(plugin.writeQueue) > 0 {
+		qe := <-plugin.writeQueue
+		got[qe.log.ID] = qe.log
+	}
+
+	checkRow := func(id string, wantUpstream, minLatency, maxLatency float64) {
+		t.Helper()
+		e := got[id]
+		if e == nil {
+			t.Fatalf("row %s was not written", id)
+		}
+		if e.UpstreamLatency == nil || e.OverheadLatency == nil || e.Latency == nil {
+			t.Fatalf("row %s: upstream=%v overhead=%v latency=%v, want all three set", id, e.UpstreamLatency, e.OverheadLatency, e.Latency)
+		}
+		if *e.UpstreamLatency != wantUpstream {
+			t.Errorf("row %s upstream = %vms, want %vms (its own turn only)", id, *e.UpstreamLatency, wantUpstream)
+		}
+		if *e.Latency < minLatency-0.001 || *e.Latency > maxLatency+0.001 {
+			t.Errorf("row %s latency = %vms, want within [%v, %v]ms", id, *e.Latency, minLatency, maxLatency)
+		}
+		if sum := *e.UpstreamLatency + *e.OverheadLatency; sum < *e.Latency-0.001 || sum > *e.Latency+0.001 {
+			t.Errorf("row %s upstream + overhead = %vms, want latency %vms", id, sum, *e.Latency)
+		}
+	}
+	// Turn 1 runs from the request start to its store; turn 2 from its mark to the request
+	// end. The 15ms tool call between them is in neither.
+	checkRow("turn-1", 30, durationMs(turn1EndMin.Sub(rootStart)), durationMs(turn1EndMax.Sub(rootStart)))
+	checkRow("turn-2", 50, durationMs(rootEnd.Sub(turn2StartMax)), durationMs(rootEnd.Sub(turn2StartMin)))
+}
+
 func TestConvertToProcessedStreamResponseUsesResponsesStreamTypeForWebSocketResponses(t *testing.T) {
 	result := &schemas.StreamAccumulatorResult{
 		RequestID:      "req-ws-3000",
@@ -5866,11 +5947,53 @@ func TestRelayLogContentPolicy(t *testing.T) {
 		require.False(t, entry.ContentHidden)
 		require.Equal(t, `{"query":"x"}`, *entry.RequestBody)
 	})
-	t.Run("retention in object storage is not honoured on relay rows", func(t *testing.T) {
+	t.Run("retention in object storage keeps the bodies hidden for offload", func(t *testing.T) {
 		entry := run(t, policyTestPlugin(boolPtr(true), boolPtr(true), true), nil)
-		require.True(t, entry.ContentHidden)
-		require.Nil(t, entry.RequestBody, "nothing is kept to reveal, so the row is marked hidden with no payload")
+		require.True(t, entry.ContentHidden, "the row is never revealed")
+		require.Equal(t, `{"query":"x"}`, *entry.RequestBody, "the hybrid store offloads the bodies and keeps none on the row")
+		require.Equal(t, `{"ok":true}`, *entry.ResponseBody)
+		require.Equal(t, "/search", entry.Path, "query values are caller content")
 	})
+	t.Run("retention without object storage keeps nothing", func(t *testing.T) {
+		entry := run(t, policyTestPlugin(boolPtr(true), boolPtr(true), false), nil)
+		require.True(t, entry.ContentHidden)
+		require.Nil(t, entry.RequestBody)
+		require.Nil(t, entry.ResponseBody)
+	})
+}
+
+// TestTextBodyKeepsTextCutMidRune pins that a text body whose capture ended inside a multi-byte
+// character (a stream cut at the capture bound, or a caller that disconnected) keeps the text before
+// that character, while a binary body is still dropped.
+func TestTextBodyKeepsTextCutMidRune(t *testing.T) {
+	cut := append([]byte("data: héllo wörld "), []byte("é")[:1]...)
+	got := textBody(cut)
+	require.NotNil(t, got, "a text capture cut mid-character is kept")
+	require.Equal(t, "data: héllo wörld ", *got)
+	require.Nil(t, textBody([]byte{0xff, 0xfb, 0x90, 0x00, 0xc3}), "a binary body is not kept")
+	whole := textBody([]byte(`{"ok":true}`))
+	require.NotNil(t, whole)
+	require.Equal(t, `{"ok":true}`, *whole)
+}
+
+// TestRelayLogKeepsWholeBody pins that a relay row keeps each text body in full, as LLM, MCP and
+// A2A rows do, and drops only a binary body.
+func TestRelayLogKeepsWholeBody(t *testing.T) {
+	plugin := policyTestPlugin(nil, nil, false)
+	plugin.writeQueue = make(chan *writeQueueEntry, 1)
+	ctx := policyCtx(false, nil)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-whole-body")
+	request := `{"text":"` + strings.Repeat("a", 100*1024) + `"}`
+	_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{
+		RelayName: "tts", Method: "POST", Path: "/speak", Headers: map[string]string{"content-type": "application/json"}, Body: []byte(request),
+	})
+	require.NoError(t, err)
+	_, _, err = plugin.PostRelayHook(ctx, &schemas.BifrostRelayResponse{StatusCode: 200, Headers: map[string]string{"content-type": "audio/mpeg"}, Body: []byte{0xff, 0xfb, 0x90, 0x00, 0xc3}}, nil)
+	require.NoError(t, err)
+	entry := (<-plugin.writeQueue).endpointLog
+	require.NotNil(t, entry.RequestBody)
+	require.Equal(t, len(request), len(*entry.RequestBody), "a text body over 64 KB is kept whole")
+	require.Nil(t, entry.ResponseBody, "a binary body is not kept")
 }
 
 // A streamed relay reply has no body to log until core/relay buffers it as it forwards bytes, so
@@ -5898,6 +6021,27 @@ func TestRelayLogStampsContentCaptureSignal(t *testing.T) {
 		capture, _ := ctx.Value(schemas.BifrostContextKeyRelayContentLoggingEnabledByDefault).(bool)
 		require.False(t, capture)
 	})
+	for _, tc := range []struct {
+		name                 string
+		retain               *bool
+		objectStorageEnabled bool
+		want                 bool
+	}{
+		{"retention with object storage keeps hidden content", boolPtr(true), true, true},
+		{"retention without object storage keeps nothing", boolPtr(true), false, false},
+		{"no retention keeps nothing", nil, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plugin := policyTestPlugin(boolPtr(true), tc.retain, tc.objectStorageEnabled)
+			plugin.writeQueue = make(chan *writeQueueEntry, 1)
+			ctx := policyCtx(false, nil)
+			ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-capture-retained")
+			_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search"})
+			require.NoError(t, err)
+			retained, _ := ctx.Value(schemas.BifrostContextKeyRelayContentRetainedWhenDisabled).(bool)
+			require.Equal(t, tc.want, retained)
+		})
+	}
 }
 
 // BenchmarkRelayLogHooks measures the logging cost of one relay call on the request path: the

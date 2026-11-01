@@ -5,7 +5,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 function RouteComponent() {
 	const hasClusterAccess = useRbac(RbacResource.Cluster, RbacOperation.View);
 	if (!hasClusterAccess) {
-		return <NoPermissionView entity="cluster" />;
+		return <NoPermissionView entity="cluster configuration" />;
 	}
 	return <Outlet />;
 }

@@ -506,10 +506,21 @@ func (p *RoutingPlugin) generateEmbeddings(ctx *schemas.BifrostContext, semantic
 				ErrEmbeddingTimeout,
 			)
 		}
+		// Single-input models (Bedrock Titan and Nova) refuse a multi-input request
+		// as invalid before sending it. That says nothing about one input, so mark
+		// it batch-unsupported and let warmup retry one text per call. Rate limits
+		// and outages are left alone so a fallback never multiplies their calls.
+		var cause error
+		if len(texts) > 1 && bifrostErr.StatusCode != nil {
+			switch *bifrostErr.StatusCode {
+			case 400, 413, 422:
+				cause = complexity.ErrBatchEmbeddingsUnsupported
+			}
+		}
 		return nil, 0, newSemanticEmbeddingFailure(
 			embeddingProviderFailureReason(bifrostErr),
 			fmt.Sprintf("failed to generate embedding: %v", bifrostErr),
-			nil,
+			cause,
 		)
 	}
 

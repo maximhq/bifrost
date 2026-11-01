@@ -38,6 +38,9 @@ const (
 	// terminalStatusUpdateTimeout bounds the detached needs_reauth status
 	// write after a permanent OAuth rejection (see refreshAccessTokenLocked).
 	terminalStatusUpdateTimeout = 10 * time.Second
+	// unrenewableTokenReason is the needs_reauth reason for an expired access token the provider
+	// issued no refresh token for.
+	unrenewableTokenReason = "access token expired and the provider issued no refresh token"
 
 	// maxTokenEndpointResponseBytes caps how much of an OAuth token endpoint
 	// response callTokenEndpoint reads. A legitimate response is a small
@@ -199,6 +202,21 @@ func (p *OAuth2Provider) GetAccessToken(ctx context.Context, oauthConfigID strin
 	return p.resolveAccessToken(ctx, token)
 }
 
+// markUnrenewableNeedsReauth marks an expired credential the provider gave no refresh token for
+// as needs_reauth, as a rejected refresh is, so the registry asks for re-authorization instead of
+// reporting a transient failure. Returns the expired error either way.
+func (p *OAuth2Provider) markUnrenewableNeedsReauth(token *tables.TableMCPOauthToken) error {
+	statusCtx, cancel := context.WithTimeout(context.Background(), terminalStatusUpdateTimeout)
+	defer cancel()
+	marked, err := p.configStore.MarkOauthTokenNeedsReauthIfUnrenewable(statusCtx, token.ID, unrenewableTokenReason)
+	if err != nil {
+		logger.Warn("failed to mark an expired oauth token with no refresh token as needs_reauth: token_id=%s err=%v", token.ID, err)
+	} else if marked {
+		p.tokenWritten(statusCtx, token.ID)
+	}
+	return fmt.Errorf("token expired and no refresh token is available; re-authorization required: %w", schemas.ErrOAuth2TokenExpired)
+}
+
 // resolveAccessToken takes an already-loaded MCP OAuth token row, refreshes
 // it if needed, and returns a usable access token. Factored out of
 // GetAccessToken so GetAdminAccessToken (same status/refresh/expiry/sanitize
@@ -230,6 +248,9 @@ func (p *OAuth2Provider) resolveAccessToken(ctx context.Context, token *tables.T
 		}
 	}
 	if token.ExpiresAt != nil && time.Now().After(*token.ExpiresAt) {
+		if strings.TrimSpace(token.RefreshToken) == "" && !isExchangeBackedTokenRow(token) {
+			return "", p.markUnrenewableNeedsReauth(token)
+		}
 		return "", fmt.Errorf("token expired and no refresh token is available; re-authorization required: %w", schemas.ErrOAuth2TokenExpired)
 	}
 
@@ -316,6 +337,9 @@ func (p *OAuth2Provider) refreshAccessTokenLocked(ctx context.Context, tokenID s
 	}
 
 	if strings.TrimSpace(token.RefreshToken) == "" {
+		if token.ExpiresAt != nil && time.Now().After(*token.ExpiresAt) {
+			return p.markUnrenewableNeedsReauth(token)
+		}
 		return fmt.Errorf("no refresh token available")
 	}
 

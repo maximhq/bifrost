@@ -674,14 +674,16 @@ const (
 )
 
 // TestAzureWhisperTranscriptionReportsDurationUsage pins Whisper billing on Azure, which returns no
-// usage block: json is fetched as verbose_json and returned as text only, verbose_json is returned
-// whole, and both carry the duration rounded up to the second. text carries no duration and is
-// left as is, and other transcription models keep the format the caller asked for.
+// usage block: the seconds in Azure's Csp-Billing-Usage header are the usage for every format, and
+// without the header json is fetched as verbose_json and returned as text only, verbose_json is
+// returned whole, and both carry the duration rounded up to the second. text without the header
+// carries no duration and is left unbilled, and other transcription models keep the format asked for.
 func TestAzureWhisperTranscriptionReportsDurationUsage(t *testing.T) {
 	const text = "Hello, this is a sample test. Respond with hello for my Bifrost."
 	cases := []struct {
 		name, model  string
 		format       *string
+		billing      string
 		wantUpstream string
 		wantSeconds  *float64
 		wantVerbose  bool
@@ -690,6 +692,9 @@ func TestAzureWhisperTranscriptionReportsDurationUsage(t *testing.T) {
 		{name: "json", model: "whisper", format: new("json"), wantUpstream: "verbose_json", wantSeconds: new(5.0)},
 		{name: "verbose_json", model: "whisper", format: new("verbose_json"), wantUpstream: "verbose_json", wantSeconds: new(5.0), wantVerbose: true},
 		{name: "text", model: "whisper", format: new("text"), wantUpstream: "text"},
+		{name: "text billed from the header", model: "whisper", format: new("text"), billing: "CognitiveServices.OpenAI.Whisper=5", wantUpstream: "text", wantSeconds: new(5.0)},
+		{name: "header wins over the duration", model: "whisper", format: new("verbose_json"), billing: "CognitiveServices.OpenAI.Whisper=7", wantUpstream: "verbose_json", wantSeconds: new(7.0), wantVerbose: true},
+		{name: "infinite header falls back to the duration", model: "whisper", format: new("verbose_json"), billing: "CognitiveServices.OpenAI.Whisper=+Inf", wantUpstream: "verbose_json", wantSeconds: new(5.0), wantVerbose: true},
 		{name: "other model", model: "gpt-4o-transcribe", wantUpstream: ""},
 	}
 	for _, tc := range cases {
@@ -700,6 +705,9 @@ func TestAzureWhisperTranscriptionReportsDurationUsage(t *testing.T) {
 				_ = r.ParseMultipartForm(1 << 20)
 				format := r.FormValue("response_format")
 				captured <- capturedRequest{path: r.URL.Path, format: format}
+				if tc.billing != "" {
+					w.Header().Set("Csp-Billing-Usage", tc.billing)
+				}
 				switch format {
 				case "verbose_json":
 					w.Header().Set("Content-Type", "application/json")
@@ -801,6 +809,38 @@ func TestAzureWhisperLargePayloadKeepsVerboseFields(t *testing.T) {
 	}
 	if resp.Usage == nil || resp.Usage.Seconds == nil || *resp.Usage.Seconds != 5 {
 		t.Errorf("usage = %+v, want 5 duration seconds", resp.Usage)
+	}
+}
+
+// TestAzureWhisperLargePayloadBilledFromHeader pins a large json upload, whose reply carries no
+// duration: it is billed from the seconds in Azure's Csp-Billing-Usage header.
+func TestAzureWhisperLargePayloadBilledFromHeader(t *testing.T) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	_ = writer.WriteField("model", "whisper")
+	part, _ := writer.CreateFormFile("file", "sample.mp3")
+	_, _ = part.Write([]byte("ID3 audio"))
+	_ = writer.Close()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Csp-Billing-Usage", "CognitiveServices.OpenAI.Whisper=5")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, azureWhisperJSONBody)
+	}))
+	defer server.Close()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadReader, io.Reader(bytes.NewReader(body.Bytes())))
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentType, writer.FormDataContentType())
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentLength, body.Len())
+	request := &schemas.BifrostTranscriptionRequest{Provider: schemas.Azure, Model: "whisper"}
+	resp, bifrostErr := newAzureDecisionProvider(t).Transcription(ctx, newAzureDecisionKey(server.URL), request)
+	if bifrostErr != nil {
+		t.Fatalf("Transcription: %+v", bifrostErr.Error)
+	}
+	if resp.Usage == nil || resp.Usage.Type != "duration" || resp.Usage.Seconds == nil || *resp.Usage.Seconds != 5 {
+		t.Errorf("usage = %+v, want 5 duration seconds from the billing header", resp.Usage)
 	}
 }
 

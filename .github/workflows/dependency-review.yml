@@ -19,7 +19,7 @@ jobs:
     # the run through Review deployments. Everyone else lands on ci-trusted-branch,
     # an environment with no protection rules that only gives the job a name.
     environment: ${{ github.event_name == 'pull_request' && (github.event.pull_request.head.repo.fork || !contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association)) && 'pr-testing' || 'ci-trusted-branch' }}
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1

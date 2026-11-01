@@ -99,7 +99,7 @@ func TestToVLLMDecisionRequest_Rejections(t *testing.T) {
 	t.Parallel()
 	for name, input := range map[string]schemas.DecisionInput{
 		"asset image": {Messages: []schemas.DecisionInputMessage{
-			vllmUserMessage(vllmTextPart("see r1"), schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("r1"), Data: []byte{0x89, 0x50}}),
+			vllmUserMessage(vllmTextPart("see r1"), schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("r1"), Data: schemas.DecisionData{File: []byte{0x89, 0x50}}}),
 		}},
 		"empty input": {},
 		"image without url": {Messages: []schemas.DecisionInputMessage{

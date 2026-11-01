@@ -13,7 +13,11 @@
 : "${REPO_ROOT:?REPO_ROOT must be set before sourcing harness-gateway.sh}"
 
 HARNESS_BIFROST_PID=""
-HARNESS_BINARY="$REPO_ROOT/tmp/bifrost-http"
+# The sg process a group-confined gateway was launched through, reaped on stop.
+HARNESS_SG_PID=""
+# Overridable so a caller can boot a binary it built itself (bifrost-enterprise's
+# licensed build) with SKIP_GATEWAY_BUILD=1.
+HARNESS_BINARY="${HARNESS_BINARY:-$REPO_ROOT/tmp/bifrost-http}"
 # Every harness config derives from the same source of truth the local
 # `make dev` app dir uses, so CI and laptop runs exercise identical wiring.
 HARNESS_SOURCE_CONFIG="$REPO_ROOT/tests/integrations/python/config.json"
@@ -58,13 +62,47 @@ harness_seed_app_dir() {
 }
 
 # harness_start_gateway <app_dir> <port> <log_file>
+#
+# Optional, for callers that need to shape the gateway process alone:
+#   HARNESS_GATEWAY_ENV    space-separated KEY=VALUE words set only in the gateway's
+#                          environment (e.g. HTTPS_PROXY), never in the caller's, so
+#                          newman and make keep their own.
+#   HARNESS_GATEWAY_GROUP  run the gateway with this primary group (via sg), so an
+#                          iptables --gid-owner rule can confine its egress.
 harness_start_gateway() {
   local app_dir="$1" port="$2" log_file="$3"
   local base_url="http://localhost:$port"
+  local cmd=("$HARNESS_BINARY" --app-dir "$app_dir" --port "$port" --log-level info)
+  if [ -n "${HARNESS_GATEWAY_ENV:-}" ]; then
+    # shellcheck disable=SC2206 # KEY=VALUE words, split on purpose
+    cmd=(env $HARNESS_GATEWAY_ENV "${cmd[@]}")
+  fi
 
   echo "🚀 Starting bifrost-http on port $port..."
-  "$HARNESS_BINARY" --app-dir "$app_dir" --port "$port" --log-level info > "$log_file" 2>&1 &
-  HARNESS_BIFROST_PID=$!
+  if [ -n "${HARNESS_GATEWAY_GROUP:-}" ]; then
+    # sg forks and waits for the command when SYSLOG_SG_ENAB is on (the Ubuntu
+    # default), so $! would be sg and signalling it leaves the gateway running. The
+    # command records its own PID before exec'ing the gateway in place, and that PID
+    # is what the helper tracks.
+    local pid_file="$log_file.pid"
+    rm -f "$pid_file"
+    sg "$HARNESS_GATEWAY_GROUP" -c "echo \$\$ > $(printf '%q' "$pid_file"); exec $(printf '%q ' "${cmd[@]}")" > "$log_file" 2>&1 &
+    HARNESS_SG_PID=$!
+    local waited=0
+    while [ ! -s "$pid_file" ] && [ $waited -lt 50 ]; do
+      sleep 0.2
+      waited=$((waited + 1))
+    done
+    if [ ! -s "$pid_file" ]; then
+      echo "❌ the gateway launched through sg never reported its PID"
+      cat "$log_file"
+      return 1
+    fi
+    HARNESS_BIFROST_PID="$(cat "$pid_file")"
+  else
+    "${cmd[@]}" > "$log_file" 2>&1 &
+    HARNESS_BIFROST_PID=$!
+  fi
 
   local max_wait=120 elapsed=0
   while [ $elapsed -lt $max_wait ]; do
@@ -87,10 +125,24 @@ harness_start_gateway() {
 }
 
 harness_stop_gateway() {
-  if [ -n "${HARNESS_BIFROST_PID:-}" ] && kill -0 "$HARNESS_BIFROST_PID" 2>/dev/null; then
-    echo "🧹 Stopping bifrost (PID $HARNESS_BIFROST_PID)..."
-    kill "$HARNESS_BIFROST_PID" 2>/dev/null || true
-    wait "$HARNESS_BIFROST_PID" 2>/dev/null || true
+  local pid="${HARNESS_BIFROST_PID:-}"
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    echo "🧹 Stopping bifrost (PID $pid)..."
+    kill "$pid" 2>/dev/null || true
+    # A gateway launched through sg is not this shell's child, so `wait` cannot
+    # block on it: poll until it is gone, so the next start never finds the port
+    # still held, and force it after 10s.
+    local waited=0
+    while kill -0 "$pid" 2>/dev/null && [ $waited -lt 50 ]; do
+      sleep 0.2
+      waited=$((waited + 1))
+    done
+    kill -9 "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  fi
+  if [ -n "${HARNESS_SG_PID:-}" ]; then
+    wait "$HARNESS_SG_PID" 2>/dev/null || true
   fi
   HARNESS_BIFROST_PID=""
+  HARNESS_SG_PID=""
 }

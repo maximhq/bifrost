@@ -12,6 +12,8 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { AlertTriangle, Plus, Trash2 } from "lucide-react";
 import { useEffect } from "react";
+import { Trans, useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { useFieldArray, useForm, type Resolver, type UseFormReturn } from "react-hook-form";
 import { toast } from "sonner";
 import { buildProviderUpdatePayload } from "../views/utils";
@@ -36,14 +38,14 @@ const PATH_PLACEHOLDERS: Record<string, string> = {
 	[GENAI_PASSTHROUGH_PREFIX]: "/v1beta/**",
 };
 
-function modeDescription(mode: PassthroughMode, isCustom: boolean): string {
+function modeDescription(mode: PassthroughMode, isCustom: boolean, t: TFunction<"models">): string {
 	switch (mode) {
 		case "all":
-			return "Every route is forwarded.";
+			return t("providers.passthrough.modeAllDescription");
 		case "custom":
-			return "Only routes that match a rule are forwarded.";
+			return t("providers.passthrough.modeCustomDescription");
 		case "off":
-			return isCustom ? "Passthrough requests that name this provider are refused." : "Passthrough requests to this provider are refused.";
+			return isCustom ? t("providers.passthrough.modeOffDescriptionCustom") : t("providers.passthrough.modeOffDescription");
 	}
 }
 
@@ -60,6 +62,7 @@ interface PassthroughRuleRowProps {
 }
 
 function PassthroughRuleRow({ form, index, locked, pathPlaceholder, onRemove }: PassthroughRuleRowProps) {
+	const { t } = useTranslation("models");
 	const testId = `provider-passthrough-row-${index}`;
 
 	return (
@@ -76,7 +79,7 @@ function PassthroughRuleRow({ form, index, locked, pathPlaceholder, onRemove }: 
 									options={METHOD_OPTIONS}
 									defaultValue={field.value}
 									onValueChange={(methods) => field.onChange(methods as PassthroughMethod[])}
-									placeholder="Any method"
+									placeholder={t("providers.passthrough.anyMethod")}
 									hideSelectAll
 									searchable={false}
 									maxCount={PASSTHROUGH_METHODS.length}
@@ -100,7 +103,7 @@ function PassthroughRuleRow({ form, index, locked, pathPlaceholder, onRemove }: 
 									placeholder={pathPlaceholder}
 									className="h-8 font-mono text-xs"
 									disabled={locked}
-									aria-label="Route path"
+									aria-label={t("providers.passthrough.routePath")}
 									data-testid={`${testId}-path-input`}
 								/>
 							</FormControl>
@@ -117,7 +120,7 @@ function PassthroughRuleRow({ form, index, locked, pathPlaceholder, onRemove }: 
 					className="h-8 w-8"
 					disabled={locked}
 					onClick={onRemove}
-					aria-label="Remove rule"
+					aria-label={t("providers.passthrough.removeRule")}
 					data-testid={`${testId}-remove-btn`}
 				>
 					<Trash2 className="h-3.5 w-3.5" />
@@ -128,6 +131,7 @@ function PassthroughRuleRow({ form, index, locked, pathPlaceholder, onRemove }: 
 }
 
 export function PassthroughFormFragment({ provider }: PassthroughFormFragmentProps) {
+	const { t } = useTranslation("models");
 	const dispatch = useAppDispatch();
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	const [updateProvider, { isLoading: isUpdatingProvider }] = useUpdateProviderMutation();
@@ -168,29 +172,25 @@ export function PassthroughFormFragment({ provider }: PassthroughFormFragmentPro
 		updateProvider(buildProviderUpdatePayload(provider, passthroughUpdates(data, isCustom, provider.custom_provider_config)))
 			.unwrap()
 			.then(() => {
-				toast.success("Passthrough routes updated");
+				toast.success(t("providers.passthrough.updated"));
 				form.reset(data);
 			})
 			.catch((err) => {
-				toast.error("Failed to update passthrough routes", { description: getErrorMessage(err) });
+				toast.error(t("providers.passthrough.updateFailed"), { description: getErrorMessage(err) });
 			});
 	};
 
 	return (
 		<Form {...form}>
 			<form onSubmit={form.handleSubmit(save)} className="space-y-4 px-4 md:px-6" data-testid="provider-config-passthrough-content">
-				<p className="text-muted-foreground text-xs">
-					Routes the raw passthrough endpoint forwards to this provider, using a key held by Bifrost.
-				</p>
+				<p className="text-muted-foreground text-xs">{t("providers.passthrough.intro")}</p>
 				<div className="bg-muted/50 rounded-sm border p-3 text-xs" data-testid="provider-passthrough-endpoint-hint">
-					Clients call <code className="font-mono">{`${prefix}/<path>`}</code>
-					{isCustom && (
-						<>
-							{" "}
-							with the header <code className="font-mono">{`x-model-provider: ${provider.name}`}</code>
-						</>
-					)}
-					.
+					<Trans
+						i18nKey={isCustom ? "providers.passthrough.endpointHintWithHeader" : "providers.passthrough.endpointHint"}
+						ns="models"
+						values={{ path: `${prefix}/<path>`, header: `x-model-provider: ${provider.name}` }}
+						components={{ code: <code className="font-mono" /> }}
+					/>
 				</div>
 
 				<FormField
@@ -198,7 +198,7 @@ export function PassthroughFormFragment({ provider }: PassthroughFormFragmentPro
 					name="mode"
 					render={({ field }) => (
 						<FormItem>
-							<FormLabel>Allowed routes</FormLabel>
+							<FormLabel>{t("providers.passthrough.allowedRoutes")}</FormLabel>
 							<Select
 								value={field.value}
 								onValueChange={(value) => {
@@ -219,13 +219,13 @@ export function PassthroughFormFragment({ provider }: PassthroughFormFragmentPro
 								<SelectContent>
 									{passthroughModeOptions(isCustom).map((option) => (
 										<SelectItem key={option.value} value={option.value} data-testid={`provider-passthrough-mode-option-${option.value}`}>
-											{option.label}
+											{t(option.labelKey)}
 										</SelectItem>
 									))}
 								</SelectContent>
 							</Select>
 							<FormDescription data-testid="provider-passthrough-mode-description">
-								{modeDescription(field.value, isCustom)}
+								{modeDescription(field.value, isCustom, t)}
 							</FormDescription>
 						</FormItem>
 					)}
@@ -234,28 +234,30 @@ export function PassthroughFormFragment({ provider }: PassthroughFormFragmentPro
 				{values.mode === "all" && !isCustom && (
 					<Alert variant="warning" data-testid="provider-passthrough-all-routes-warning">
 						<AlertTriangle />
-						<AlertDescription>
-							Every provider endpoint, including management APIs such as files, batches and fine-tuning, is reachable with any virtual key.
-						</AlertDescription>
+						<AlertDescription>{t("providers.passthrough.allRoutesWarning")}</AlertDescription>
 					</Alert>
 				)}
 
 				{values.mode === "custom" && (
 					<div className="space-y-3">
 						<p className="text-muted-foreground text-xs">
-							Paths match what follows the route prefix{prefix === GENAI_PASSTHROUGH_PREFIX ? ", starting with the API version" : ""}.{" "}
-							<code className="font-mono">*</code> matches within one segment, and a final <code className="font-mono">/**</code> matches
-							that path and everything below it. No methods means any method.
+							<Trans
+								i18nKey={
+									prefix === GENAI_PASSTHROUGH_PREFIX ? "providers.passthrough.pathsHelpVersioned" : "providers.passthrough.pathsHelp"
+								}
+								ns="models"
+								components={{ code: <code className="font-mono" /> }}
+							/>
 						</p>
 						{fields.length > 0 ? (
 							<div className="overflow-x-auto rounded-md border">
 								<table className="w-full text-sm" data-testid="provider-passthrough-table">
 									<thead>
 										<tr className="border-b">
-											<th className="px-3 py-2 text-left font-medium">Methods</th>
-											<th className="px-3 py-2 text-left font-medium">Path</th>
+											<th className="px-3 py-2 text-left font-medium">{t("providers.passthrough.methods")}</th>
+											<th className="px-3 py-2 text-left font-medium">{t("providers.passthrough.path")}</th>
 											<th className="w-10 px-1 py-2">
-												<span className="sr-only">Remove</span>
+												<span className="sr-only">{t("providers.passthrough.remove")}</span>
 											</th>
 										</tr>
 									</thead>
@@ -278,7 +280,7 @@ export function PassthroughFormFragment({ provider }: PassthroughFormFragmentPro
 								className="text-muted-foreground rounded-md border border-dashed px-3 py-6 text-center text-xs"
 								data-testid="provider-passthrough-empty"
 							>
-								No rules.
+								{t("providers.passthrough.noRules")}
 							</p>
 						)}
 						{rulesError && (
@@ -295,14 +297,14 @@ export function PassthroughFormFragment({ provider }: PassthroughFormFragmentPro
 							data-testid="provider-passthrough-add-btn"
 						>
 							<Plus className="mr-1 h-3.5 w-3.5" />
-							Add rule
+							{t("providers.passthrough.addRule")}
 						</Button>
 					</div>
 				)}
 
 				{enablesRequests && (
 					<p className="text-muted-foreground text-xs" data-testid="provider-passthrough-allowed-requests-note">
-						Passthrough and Passthrough Stream are off in this provider&apos;s allowed request types. Saving turns them on.
+						{t("providers.passthrough.allowedRequestsNote")}
 					</p>
 				)}
 
@@ -313,7 +315,7 @@ export function PassthroughFormFragment({ provider }: PassthroughFormFragmentPro
 						disabled={!(changed || enablesRequests) || !form.formState.isValid || locked}
 						isLoading={isUpdatingProvider}
 					>
-						Save Passthrough
+						{t("providers.passthrough.save")}
 					</Button>
 				</div>
 			</form>

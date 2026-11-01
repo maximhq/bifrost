@@ -693,5 +693,43 @@ test("a serial filter that fails fails the run instead of skipping the serial pa
   assert.notEqual(serialFilterStepExit(), "0", "the serial pass was skipped and NEWMAN_EXIT stayed 0");
 });
 
+// ----- provider partitions ---------------------------------------------------------------------
+
+// An Azure GPT Live create names gpt- and /openai, so the openai keywords would claim it too and
+// an openai run would bill a second Azure session. It belongs to azure alone, whether the model or
+// the Azure OpenAI SDK user agent names Azure, matched as the gateway matches it (any "AzureOpenAI");
+// Azure rows on other routes keep both partitions.
+test("Azure live session rows run only in the azure partition", () => {
+  const live = (name, url, model) => ({
+    name,
+    request: { method: "POST", url, body: { mode: "raw", raw: JSON.stringify({ session: { model }, transport: { type: "webrtc", sdp: "v=0" } }) } },
+  });
+  const source = join(WORK, "source-providers.json");
+  writeFileSync(
+    source,
+    JSON.stringify({
+      info: { name: "providers" },
+      item: [
+        {
+          name: "live folder",
+          item: [
+            live("azure-live-native", "http://localhost:8080/v1/live/sessions", "azure/gpt-live-1"),
+            live("azure-live-openai-route", "http://localhost:8080/openai/v1/live/sessions", "azure/gpt-live-1"),
+            live("openai-live", "http://localhost:8080/v1/live/sessions", "openai/gpt-live-1"),
+            { ...live("azure-sdk-live", "http://localhost:8080/openai/v1/live/sessions", "gpt-live-1"), request: { ...live("", "http://localhost:8080/openai/v1/live/sessions", "gpt-live-1").request, header: [{ key: "User-Agent", value: "AzureOpenAI/Python 1.109.1" }] } },
+            { ...live("azure-sdk-bare-ua-live", "http://localhost:8080/openai/v1/live/sessions", "gpt-live-1"), request: { ...live("", "http://localhost:8080/openai/v1/live/sessions", "gpt-live-1").request, header: [{ key: "User-Agent", value: "AzureOpenAI" }] } },
+            {
+              name: "azure-chat-openai-route",
+              request: { method: "POST", url: "http://localhost:8080/openai/v1/chat/completions", body: { mode: "raw", raw: JSON.stringify({ model: "azure/gpt-4o", messages: [] }) } },
+            },
+          ],
+        },
+      ],
+    }),
+  );
+  assert.deepEqual(runFilter(["--provider", "openai"], { source }), ["openai-live", "azure-chat-openai-route"]);
+  assert.deepEqual(runFilter(["--provider", "azure"], { source }), ["azure-live-native", "azure-live-openai-route", "azure-sdk-live", "azure-sdk-bare-ua-live", "azure-chat-openai-route"]);
+});
+
 rmSync(WORK, { recursive: true, force: true });
 console.log(`\n${passed} passed`);

@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n";
 import { getModelLimitScope } from "@/lib/registries/modelLimitScopes";
 
 /**
@@ -13,9 +14,9 @@ export function getScopeLabel(scope: string): string {
 		return entry.label;
 	}
 	const legacy: Record<string, string> = {
-		team: "Team",
-		customer: "Customer",
-		user: "User",
+		team: i18n.t("routing.team", { ns: "models" }),
+		customer: i18n.t("routing.customer", { ns: "models" }),
+		user: i18n.t("routing.user", { ns: "models" }),
 	};
 	return legacy[scope] || scope;
 }

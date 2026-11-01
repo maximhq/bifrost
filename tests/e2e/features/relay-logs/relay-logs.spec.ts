@@ -227,8 +227,12 @@ test.describe("Relay Logs", () => {
     await expect(rowsOnPage).toHaveCount(5);
     await expect(page.pagination).toContainText("1-5 of 5");
 
-    const search = rowsOnPage.filter({ hasText: "/v1/search?q=1" });
-    await expect(search).toContainText("POST /v1/search?q=1");
+    // Three calls hit /v1/search; the table shows the path alone, so the granted one is found by id.
+    const search = page.rowById(searchRow().id);
+    await expect(search).toContainText("POST");
+    await expect(search).toContainText("/v1/search");
+    // The query string is listed in the detail sheet, not the table.
+    await expect(search).not.toContainText("?q=1");
     await expect(search).toContainText(costText(SEARCH_COST));
     // The table shows the outcome as a status bar, as the LLM logs table does; the code is in the sheet.
     await expect(search.locator('[title="success"]')).toHaveCount(1);
@@ -242,10 +246,10 @@ test.describe("Relay Logs", () => {
     await expect(extract).toContainText(costText(EXTRACT_COST));
 
     const status = rowsOnPage.filter({ hasText: "/v1/status" });
-    await expect(status).toContainText("GET /v1/status");
+    await expect(status).toContainText("GET");
     await expect(status).toContainText("not billable");
 
-    await expect(rowsOnPage.filter({ hasText: hiddenKeyName })).toContainText("POST /v1/search");
+    await expect(rowsOnPage.filter({ hasText: hiddenKeyName })).toContainText("/v1/search");
     await expect(rowsOnPage.filter({ hasText: "-ungranted" }).locator('[title="error"]')).toHaveCount(1);
 
     // The stat cards aggregate the same filtered rows.
@@ -286,7 +290,7 @@ test.describe("Relay Logs", () => {
     // Time is the default (desc) sort, so one click flips it to ascending.
     await page.sortButton("Time").click();
     await page.expectUrlParam("order", "asc");
-    await expect(page.rowsFor(relayName).first()).toContainText("/v1/search?q=1");
+    await expect(page.rowsFor(relayName).first()).toHaveAttribute("data-log-id", searchRow().id);
 
     await page.sortButton("Latency").click();
     await page.expectUrlParam("sort_by", "latency");
@@ -383,7 +387,7 @@ test.describe("Relay Logs", () => {
     await expect(page.filterResetBtn).toHaveCount(0);
   });
 
-  test("filters by relay name and clears the section", async ({ relayLogsPage: page }) => {
+  test("filters by relay name and clears it by unticking", async ({ relayLogsPage: page }) => {
     await page.goto();
     // The Relay section is open by default; narrow its list to our relay before picking it.
     await page.filterSearch("relay-filter").fill(relayName);
@@ -393,10 +397,9 @@ test.describe("Relay Logs", () => {
     await expect.poll(() => page.urlParams("relay_names")).toEqual([relayName]);
     await expect(page.rowsFor(relayName)).toHaveCount(5);
 
-    await expect(page.clearSection("relay_names")).toContainText("1 selected");
-    await page.clearSection("relay_names").click();
+    // Unticking clears the section, as on the LLM logs sidebar; there is no per-section clear row.
+    await checkbox.click();
     await page.expectUrlParam("relay_names", null);
-    await expect(page.clearSection("relay_names")).toHaveCount(0);
   });
 
   test("filters by method, billing and kind", async ({ relayLogsPage: page }) => {
@@ -406,18 +409,18 @@ test.describe("Relay Logs", () => {
     await page.filterCheckbox("relay-method-filter", "GET").click();
     await expect.poll(() => page.urlParams("methods")).toEqual(["GET"]);
     await expect(page.rowsFor(relayName)).toHaveCount(1);
-    await expect(page.rowsFor(relayName)).toContainText("GET /v1/status");
-    await page.clearSection("methods").click();
+    await expect(page.rowsFor(relayName)).toContainText("/v1/status");
+    await page.filterCheckbox("relay-method-filter", "GET").click();
     await page.expectUrlParam("methods", null);
 
     await page.openSection("relay-billing-filter-toggle");
     await page.page.getByTestId("relay-billing-filter-checkbox-not-billable").click();
     await page.expectUrlParam("billable", "false");
     await expect(page.rowsFor(relayName).filter({ hasText: "/v1/status" })).toHaveCount(1);
-    await expect(page.rowsFor(relayName).filter({ hasText: "/v1/search?q=1" })).toHaveCount(0);
+    await expect(page.rowById(searchRow().id)).toHaveCount(0);
     await page.page.getByTestId("relay-billing-filter-checkbox-billable").click();
     await page.expectUrlParam("billable", "true");
-    await expect(page.rowsFor(relayName).filter({ hasText: "/v1/search?q=1" })).toHaveCount(1);
+    await expect(page.rowById(searchRow().id)).toHaveCount(1);
     await expect(page.rowsFor(relayName).filter({ hasText: "/v1/status" })).toHaveCount(0);
     await page.page.getByTestId("relay-billing-filter-checkbox-billable").click();
     await page.expectUrlParam("billable", null);
@@ -455,9 +458,12 @@ test.describe("Relay Logs", () => {
     await page.expectUrlParam("max_cost", "0.0325");
     await expect(page.noResultsRow).toBeVisible();
 
-    await expect(page.clearSection("cost")).toBeVisible();
-    await page.clearSection("cost").click();
+    // Emptying a bound clears it.
+    await min.fill("");
+    await min.press("Enter");
     await page.expectUrlParam("min_cost", null);
+    await max.fill("");
+    await max.blur();
     await page.expectUrlParam("max_cost", null);
     await expect(min).toHaveValue("");
     await expect(max).toHaveValue("");
@@ -476,16 +482,16 @@ test.describe("Relay Logs", () => {
     await expect.poll(() => page.urlParams("virtual_key_ids")).toEqual([grantedKeyId]);
     await expect(page.rowsFor(relayName).filter({ hasText: hiddenKeyName })).toHaveCount(0);
     await expect(page.rowsFor(relayName).filter({ hasText: "-ungranted" })).toHaveCount(0);
-    await expect(page.rowsFor(relayName).filter({ hasText: "/v1/search?q=1" })).toHaveCount(1);
-    await page.clearSection("virtual_key_ids").click();
+    await expect(page.rowById(searchRow().id)).toHaveCount(1);
+    await page.filterCheckbox("relay-vk-filter", grantedKeyId).click();
     await page.expectUrlParam("virtual_key_ids", null);
 
     await page.openSection("relay-teams-filter-toggle");
     await page.filterCheckbox("relay-teams-filter", teamId).click();
     await expect.poll(() => page.urlParams("team_ids")).toEqual([teamId]);
-    await expect(page.rowsFor(relayName).filter({ hasText: "/v1/search?q=1" })).toHaveCount(1);
+    await expect(page.rowById(searchRow().id)).toHaveCount(1);
     await expect(page.rowsFor(relayName).filter({ hasText: hiddenKeyName })).toHaveCount(0);
-    await page.clearSection("team_ids").click();
+    await page.filterCheckbox("relay-teams-filter", teamId).click();
     await page.expectUrlParam("team_ids", null);
     await expect(page.rowsFor(relayName)).toHaveCount(5);
   });
@@ -502,7 +508,7 @@ test.describe("Relay Logs", () => {
     await expect.poll(() => page.urlParams("user_ids")).toEqual(["e2e-missing-user"]);
     await expect(page.noResultsRow).toBeVisible();
     await expect(page.filterCheckbox("relay-user-filter", "e2e-missing-user")).toBeVisible();
-    await page.clearSection("user_ids").click();
+    await page.filterCheckbox("relay-user-filter", "e2e-missing-user").click();
     await page.expectUrlParam("user_ids", null);
     await expect(page.rowsFor(relayName)).toHaveCount(5);
 
@@ -514,7 +520,7 @@ test.describe("Relay Logs", () => {
     await page.filterSearch("relay-customers-filter").fill("e2e-missing-customer");
     await page.filterAddCustom("relay-customers-filter").click();
     await expect.poll(() => page.urlParams("customer_ids")).toEqual(["e2e-missing-customer"]);
-    await page.clearSection("customer_ids").click();
+    await page.filterCheckbox("relay-customers-filter", "e2e-missing-customer").click();
     await page.expectUrlParam("customer_ids", null);
 
     await page.openSection("relay-business-units-filter-toggle");
@@ -522,7 +528,7 @@ test.describe("Relay Logs", () => {
     await page.filterSearch("relay-business-units-filter").fill("e2e-missing-bu");
     await page.filterAddCustom("relay-business-units-filter").click();
     await expect.poll(() => page.urlParams("business_unit_ids")).toEqual(["e2e-missing-bu"]);
-    await page.clearSection("business_unit_ids").click();
+    await page.filterCheckbox("relay-business-units-filter", "e2e-missing-bu").click();
     await page.expectUrlParam("business_unit_ids", null);
 
     await page.openSection("relay-projects-filter-toggle");
@@ -530,7 +536,7 @@ test.describe("Relay Logs", () => {
     await page.filterSearch("relay-projects-filter").fill("e2e-missing-project");
     await page.filterAddCustom("relay-projects-filter").click();
     await expect.poll(() => page.urlParams("project_ids")).toEqual(["e2e-missing-project"]);
-    await page.clearSection("project_ids").click();
+    await page.filterCheckbox("relay-projects-filter", "e2e-missing-project").click();
     await page.expectUrlParam("project_ids", null);
     await expect(page.rowsFor(relayName)).toHaveCount(5);
   });
@@ -567,7 +573,7 @@ test.describe("Relay Logs", () => {
     relayLogsPage: page,
   }) => {
     await page.goto({ relay_names: relayName });
-    await page.openRow(relayName, "/v1/search?q=1");
+    await page.openRow(relayName, { logId: searchRow().id });
     const row = searchRow();
     await page.expectUrlParam("selected_log", row.id);
 
@@ -611,7 +617,12 @@ test.describe("Relay Logs", () => {
     await expect(page.sheetMoreDetails).toContainText("Request Details");
     await expect(page.sheetMoreDetails).toContainText(/Method/i);
     await expect(page.sheetMoreDetails).toContainText(/Path/i);
-    await expect(page.sheetMoreDetails).toContainText("q=1");
+    // The query gets its own section, one field per parameter, like Matched Headers.
+    const query = page.sheetMoreDetails.getByTestId("relay-log-query");
+    await expect(query).toContainText(/Query Parameters/i);
+    // Parameter names are case-sensitive, so they are shown as sent rather than upper-cased.
+    await expect(query.getByText("q", { exact: true })).toBeVisible();
+    await expect(query).toContainText("1");
     await expect(page.sheetMoreDetails).toContainText(/Matched route/i);
     await expect(page.sheetMoreDetails).toContainText(/Billable/i);
     // Only headers a route matched on are kept, and this relay's routes match on none.
@@ -697,7 +708,7 @@ test.describe("Relay Logs", () => {
     await page.goto({ relay_names: relayName });
     // Rows are matched by key name, and the Virtual Key column is hidden by default.
     await page.toggleColumn("virtual_key");
-    await page.openRow(relayName, "/v1/search?q=1");
+    await page.openRow(relayName, { logId: searchRow().id });
     await page.openMoreDetails();
 
     const teamLink = page.page.getByTestId("relay-log-team_ids-link");
@@ -705,10 +716,10 @@ test.describe("Relay Logs", () => {
     await teamLink.click();
     await expect.poll(() => page.urlParams("team_ids")).toEqual([teamId]);
     await expect(page.sheet).toBeHidden();
-    await expect(page.rowsFor(relayName).filter({ hasText: "/v1/search?q=1" })).toHaveCount(1);
+    await expect(page.rowById(searchRow().id)).toHaveCount(1);
     await expect(page.rowsFor(relayName).filter({ hasText: hiddenKeyName })).toHaveCount(0);
 
-    await page.openRow(relayName, "/v1/search?q=1");
+    await page.openRow(relayName, { logId: searchRow().id });
     await page.openMoreDetails();
     await expect(page.sheetVirtualKeyLink).toContainText(grantedKeyName);
     await page.sheetVirtualKeyLink.click();
@@ -750,7 +761,7 @@ test.describe("Relay Logs", () => {
     await expect(page.sheetMoreDetails).not.toContainText("Request Headers");
     await page.closeSheet();
 
-    await page.openRow(relayName, "/v1/search?q=1");
+    await page.openRow(relayName, { logId: searchRow().id });
     await expect(page.sheetContentHidden).toHaveCount(0);
     await expect(page.sheetRequestBody).toContainText(SEARCH_QUERY_MARKER);
     await expect(page.sheetResponseBody).toContainText("credits");

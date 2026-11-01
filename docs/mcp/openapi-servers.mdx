@@ -76,13 +76,13 @@ The header is forwarded to the API under that name, unchanged, and is added to t
 3. Supply the document: **Paste** it or **Upload** a file and it is parsed as soon as you stop typing, or give its **URL** and click **Fetch spec**. Parse errors show under the editor, with **Parse again** to retry.
 
 <Frame>
-  <img src="/media/ui-mcp-openapi-source.png" alt="OpenAPI document source in the New MCP Server sheet" />
+  <img src="/media/mcp/mcp-openapi-config.png" alt="OpenAPI document source in the New MCP Server sheet" />
 </Frame>
 
 4. Review the preview: the document's title and version, the **Base URL**, credential inputs for its security schemes, and the operations. Untick anything the server should not expose. Unsupported operations are shown disabled with the reason.
 
 <Frame>
-  <img src="/media/ui-mcp-openapi-preview.png" alt="Parsed operations, base URL and credentials" />
+  <img src="/media/mcp/mcp-openapi-parsed-operations.png" alt="Parsed operations, base URL and credentials" />
 </Frame>
 
 5. Set the server's name, auth type, static headers and the other options as for any server, then click **Create**.
@@ -90,7 +90,7 @@ The header is forwarded to the API under that name, unchanged, and is added to t
 To swap the document later, open the server, and on the **General** tab click **Replace spec**. Each operation is matched by method and path, so a selected operation stays selected, and its auto-execute setting and tool price follow it, even if its tool name changes. Settings of operations the new document drops are removed. The server is rebuilt from the new document when you save.
 
 <Frame>
-  <img src="/media/ui-mcp-openapi-edit-summary.png" alt="Stored document summary and Replace spec on the edit sheet" />
+  <img src="/media/mcp/mcp-openapi-replace-spec.png" alt="Stored document summary and Replace spec on the edit sheet" />
 </Frame>
 
 </Tab>
@@ -176,6 +176,31 @@ When dashboard authentication is disabled or unconfigured, `spec_url` and `base_
 ```
 
 `openapi_config` needs at least one document source, used in this order of precedence: `spec` (inline text), `spec_file` (a path relative to the config directory, read at load), then `spec_url` (fetched at every connect when neither of the others is set). Next to `spec`, `spec_url` records where the document came from and resolves its relative servers, so keep it when the document uses them. Editing the document, base URL or credentials in `config.json` is picked up on the next restart like any other client change.
+
+</Tab>
+<Tab title="Helm">
+
+```yaml
+bifrost:
+  mcp:
+    enabled: true
+    clientConfigs:
+      - name: "petstore"
+        connectionType: "openapi"
+        authType: "headers"
+        headers:
+          X-Tenant: "acme"
+        toolsToExecute: ["getInventory", "getPetById"]
+        openapiConfig:
+          specUrl: "https://petstore3.swagger.io/api/v3/openapi.json"
+          baseUrl: "https://petstore3.swagger.io/api/v3"
+          securityCredentials:
+            api_key:
+              value: "env.PETSTORE_API_KEY"
+          includeDeprecated: false
+```
+
+`openapiConfig` renders into `openapi_config`, and takes the same document sources: `spec`, `specFile` or `specUrl`. `specFile` is read relative to `bifrost.appDir`, so mount the document into the pod with `volumes` and `volumeMounts`; `specUrl` or an inline `spec` needs no mount. Supply `env.` references through `extraEnv` or `bifrost.providerSecrets`.
 
 </Tab>
 </Tabs>

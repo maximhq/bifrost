@@ -45,6 +45,11 @@ func ParseVirtualKeyFromFastHTTPRequest(req *fasthttp.RequestCtx) *string {
 	if azureAPIKey != "" && strings.HasPrefix(strings.ToLower(azureAPIKey), VirtualKeyPrefix) {
 		return bifrost.Ptr(azureAPIKey)
 	}
+	// Azure AI Speech clients send their key as Ocp-Apim-Subscription-Key.
+	speechAPIKey := string(req.Request.Header.Peek("Ocp-Apim-Subscription-Key"))
+	if speechAPIKey != "" && strings.HasPrefix(strings.ToLower(speechAPIKey), VirtualKeyPrefix) {
+		return bifrost.Ptr(speechAPIKey)
+	}
 	return nil
 }
 

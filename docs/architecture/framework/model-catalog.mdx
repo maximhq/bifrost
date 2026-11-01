@@ -210,11 +210,24 @@ type PricingEntry struct {
     OutputCostPerVideoPerSecond *float64 `json:"output_cost_per_video_per_second,omitempty"`
     OutputCostPerSecond         *float64 `json:"output_cost_per_second,omitempty"`
 
+    // Azure Voice Live rates, used on Voice Live turns in place of the matching rates above when set
+    InputCostPerTokenVoiceLive                     *float64 `json:"input_cost_per_token_voice_live,omitempty"`
+    OutputCostPerTokenVoiceLive                    *float64 `json:"output_cost_per_token_voice_live,omitempty"`
+    CacheReadInputTokenCostVoiceLive               *float64 `json:"cache_read_input_token_cost_voice_live,omitempty"`
+    InputCostPerAudioTokenVoiceLive                *float64 `json:"input_cost_per_audio_token_voice_live,omitempty"`
+    OutputCostPerAudioTokenVoiceLive               *float64 `json:"output_cost_per_audio_token_voice_live,omitempty"`
+    InputCostPerStandardSpeechAudioTokenVoiceLive  *float64 `json:"input_cost_per_standard_speech_audio_token_voice_live,omitempty"`
+    OutputCostPerStandardSpeechAudioTokenVoiceLive *float64 `json:"output_cost_per_standard_speech_audio_token_voice_live,omitempty"`
+    InputCostPerCustomSpeechAudioTokenVoiceLive    *float64 `json:"input_cost_per_custom_speech_audio_token_voice_live,omitempty"`
+    OutputCostPerCustomSpeechAudioTokenVoiceLive   *float64 `json:"output_cost_per_custom_speech_audio_token_voice_live,omitempty"`
+
     OutputCostPerVideoPerSecond480p  *float64 `json:"output_cost_per_video_per_second_480p,omitempty"`
     OutputCostPerVideoPerSecond720p  *float64 `json:"output_cost_per_video_per_second_720p,omitempty"`
     OutputCostPerVideoPerSecond1024p *float64 `json:"output_cost_per_video_per_second_1024p,omitempty"`
     OutputCostPerVideoPerSecond1080p *float64 `json:"output_cost_per_video_per_second_1080p,omitempty"`
     OutputCostPerVideoPerSecond4k    *float64 `json:"output_cost_per_video_per_second_4k,omitempty"`
+
+    OutputCostPerVideoToken *float64 `json:"output_cost_per_video_token,omitempty"`
 
     // Costs - Other
     SearchContextCostPerQuery     *float64 `json:"search_context_cost_per_query,omitempty"`

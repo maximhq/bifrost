@@ -61,7 +61,7 @@ func TestDatabricks(t *testing.T) {
 			CompleteEnd2End:       true,
 			Embedding:             true,
 			Reasoning:             true,
-			// listModelsByKey intentionally returns nothing; the datasheet is the catalog.
+			// listModelsByKey returns only configured models and aliases; the datasheet is the catalog.
 			ListModels: false,
 			// Text completions are not exposed by either Databricks surface.
 			TextCompletion:       false,
@@ -1386,6 +1386,66 @@ func TestDatabricksListModelsIgnoresWorkspaceErrors(t *testing.T) {
 	}
 	if len(response.Data) != 0 {
 		t.Fatalf("ListModels returned live models instead of deferring to the datasheet: %#v", response.Data)
+	}
+}
+
+// TestDatabricksListModelsReturnsConfiguredAliases verifies that a key's aliases and explicit
+// models are listed, without calling any Databricks inventory API.
+func TestDatabricksListModelsReturnsConfiguredAliases(t *testing.T) {
+	t.Parallel()
+
+	provider, server := newStubProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("Databricks model inventory API was called")
+	})
+
+	tests := []struct {
+		name    string
+		models  schemas.WhiteList
+		wantIDs []string
+	}{
+		{
+			name:    "wildcard lists aliases only",
+			models:  schemas.WhiteList{"*"},
+			wantIDs: []string{"databricks/my-claude", "databricks/my-gpt"},
+		},
+		{
+			name:    "explicit list adds its entries",
+			models:  schemas.WhiteList{"my-claude", "databricks-gte-large-en"},
+			wantIDs: []string{"databricks/databricks-gte-large-en", "databricks/my-claude"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			keys := []schemas.Key{{
+				Models: tt.models,
+				Aliases: schemas.KeyAliases{
+					"my-claude": {ModelID: "databricks-claude-sonnet-4-5"},
+					"my-gpt":    {ModelID: "system.ai.gpt-oss-120b"},
+				},
+				Value: *schemas.NewSecretVar("dapi-test"),
+				DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
+					WorkspaceURL: *schemas.NewSecretVar(serverHost(t, server)),
+				},
+			}}
+			ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			response, bErr := provider.ListModels(ctx, keys, &schemas.BifrostListModelsRequest{Provider: schemas.Databricks})
+			if bErr != nil {
+				t.Fatalf("ListModels returned an error: %v", bErr)
+			}
+			ids := make([]string, 0, len(response.Data))
+			for _, model := range response.Data {
+				ids = append(ids, model.ID)
+			}
+			slices.Sort(ids)
+			if !slices.Equal(ids, tt.wantIDs) {
+				t.Fatalf("ListModels IDs = %v, want %v", ids, tt.wantIDs)
+			}
+		})
 	}
 }
 

@@ -39,6 +39,11 @@ type AzureListModelsResponse struct {
 	Data   []AzureModel `json:"data"`
 }
 
+// AzureSpeechVoice is one entry of the Azure AI Speech voices list; only the name is read.
+type AzureSpeechVoice struct {
+	ShortName string `json:"ShortName"` // "en-US-AvaNeural", or "en-US-Ava:DragonHDLatestNeural" for a voice with a model suffix
+}
+
 // AzureSpeechTranscriptionDefinition is the "definition" form part of a fast transcription request.
 type AzureSpeechTranscriptionDefinition struct {
 	Locales             []string                 `json:"locales,omitempty"`

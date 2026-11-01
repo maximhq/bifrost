@@ -21,9 +21,9 @@ import {
 import { MetricSegment, MetricStripCard, MetricTooltipBody, MetricTooltipRow, MetricTrailing, MetricUnit } from "@/components/metricStrip";
 import type { RelayHistogramResponse, RelayLogStatsResponse } from "@/lib/types/relays";
 import { COMPACT_NUMBER_FORMAT, formatCurrencyNumber } from "@/lib/utils/numbers";
-import { formatBytes } from "@/lib/utils/strings";
 import NumberFlow from "@number-flow/react";
 import { useMemo } from "react";
+import { useTranslation } from "react-i18next";
 
 interface RelayMetricStripProps {
 	stats?: RelayLogStatsResponse;
@@ -40,6 +40,7 @@ interface RelayMetricStripProps {
  * sparklines cost no request beyond the one the volume chart already makes.
  */
 export function RelayMetricStrip({ stats, histogram, loading, error }: RelayMetricStripProps) {
+	const { t } = useTranslation("observability");
 	const state = metricsState(stats, loading ?? false, error);
 	const buckets = useMemo(() => histogram?.buckets ?? [], [histogram]);
 	const bucketSizeSeconds = histogram?.bucket_size_seconds;
@@ -60,21 +61,11 @@ export function RelayMetricStrip({ stats, histogram, loading, error }: RelayMetr
 		() => buildSparkPoints(buckets.map<SeriesPoint>((b) => ({ timestamp: b.timestamp, value: b.cost }))),
 		[buckets],
 	);
-	const unitPoints = useMemo(
-		() => buildSparkPoints(buckets.map<SeriesPoint>((b) => ({ timestamp: b.timestamp, value: b.units ?? 0 }))),
-		[buckets],
-	);
-	const bytesPoints = useMemo(
-		() => buildSparkPoints(buckets.map<SeriesPoint>((b) => ({ timestamp: b.timestamp, value: b.bytes_out ?? 0 }))),
-		[buckets],
-	);
 
 	const previous = stats?.has_previous_period ? stats.previous : undefined;
 	const totalRequests = stats?.total_requests ?? 0;
 	const successRate = stats?.success_rate ?? 0;
 	const totalCost = stats?.total_cost ?? 0;
-	const totalUnits = stats?.total_units ?? 0;
-	const totalBytesOut = stats?.total_bytes_out ?? 0;
 	const costPerRequest = totalRequests > 0 ? totalCost / totalRequests : 0;
 	// success_rate is measured over succeeded plus failed calls, so the counts come from the
 	// server's own figures and cancellations are shown on their own rather than folded in.
@@ -87,27 +78,14 @@ export function RelayMetricStrip({ stats, histogram, loading, error }: RelayMetr
 	const requestsSignal = requestsChange?.text ? requestsChange : windowTrend(requestPoints.map((point) => point.value));
 	const successChange = previous ? formatPointDelta(successRate, previous.success_rate) : undefined;
 	const latencyChange = previous ? formatPctChange(stats?.average_latency ?? 0, previous.average_latency, "lower-is-better") : undefined;
-	// Cost is lower-is-better; units and bytes are volume, so they read like requests.
 	const costChange = previous ? formatPctChange(totalCost, previous.total_cost, "lower-is-better") : undefined;
-	const unitsChange = previous ? formatPctChange(totalUnits, previous.total_units) : undefined;
-	const unitsSignal = unitsChange?.text ? unitsChange : windowTrend(unitPoints.map((point) => point.value));
-	const bytesChange = previous ? formatPctChange(totalBytesOut, previous.total_bytes_out ?? 0) : undefined;
-	const bytesSignal = bytesChange?.text ? bytesChange : windowTrend(bytesPoints.map((point) => point.value));
-
-	// formatBytes picks the unit; the strip shows the figure in mono and the unit small, as
-	// the other tiles do, so "1.2 MB" lines up with "68.27 %".
-	const [bytesFigure, bytesUnit] = formatBytes(totalBytesOut).split(" ");
 
 	return (
 		<div className="@container/metric-strip shrink-0">
-			<MetricStripCard
-				className="grid-cols-2 @2xl/metric-strip:grid-cols-3 @5xl/metric-strip:grid-cols-6"
-				loading={loading}
-				testId="relay-logs-metric-strip"
-			>
+			<MetricStripCard className="grid-cols-2 @5xl/metric-strip:grid-cols-4" loading={loading} testId="relay-logs-metric-strip">
 				<MetricSegment
 					state={state}
-					title="Total Requests"
+					title={t("logs.stats.totalRequests")}
 					testId="relay-logs-stat-requests"
 					footer={
 						<>
@@ -117,9 +95,9 @@ export function RelayMetricStrip({ stats, histogram, loading, error }: RelayMetr
 								className={toneClass[requestsSignal.tone]}
 								rows={(point, index) => (
 									<>
-										<MetricTooltipRow name="Requests">{averaged(point, formatCount(point.value))}</MetricTooltipRow>
+										<MetricTooltipRow name={t("logs.stats.requests")}>{averaged(point, formatCount(point.value))}</MetricTooltipRow>
 										{errorPoints[index] && errorPoints[index].value > 0 && (
-											<MetricTooltipRow name="Failed" className={negative}>
+											<MetricTooltipRow name={t("logs.stats.failed")} className={negative}>
 												{averaged(point, formatCount(errorPoints[index].value))}
 											</MetricTooltipRow>
 										)}
@@ -139,23 +117,23 @@ export function RelayMetricStrip({ stats, histogram, loading, error }: RelayMetr
 
 				<MetricSegment
 					state={state}
-					title="Success Rate"
+					title={t("logs.stats.successRate")}
 					testId="relay-logs-stat-success"
 					footer={
 						<>
 							<RatioBar
 								percent={successRate}
 								tooltip={
-									<MetricTooltipBody heading="Of all relay calls in this window">
-										<MetricTooltipRow name="Succeeded" className={positive}>
+									<MetricTooltipBody heading={t("relayLogs.stats.ofAllCalls")}>
+										<MetricTooltipRow name={t("logs.stats.succeeded")} className={positive}>
 											{formatCount(succeeded)}
 										</MetricTooltipRow>
-										<MetricTooltipRow name="Failed" className={negative}>
+										<MetricTooltipRow name={t("logs.stats.failed")} className={negative}>
 											{formatCount(failed)}
 										</MetricTooltipRow>
-										{cancelled > 0 && <MetricTooltipRow name="Cancelled">{formatCount(cancelled)}</MetricTooltipRow>}
-										<MetricTooltipRow name="Total">{formatCount(totalRequests)}</MetricTooltipRow>
-										{previous && <MetricTooltipRow name="Previous period">{`${previous.success_rate.toFixed(2)}%`}</MetricTooltipRow>}
+										{cancelled > 0 && <MetricTooltipRow name={t("labels.cancelled")}>{formatCount(cancelled)}</MetricTooltipRow>}
+										<MetricTooltipRow name={t("labels.total")}>{formatCount(totalRequests)}</MetricTooltipRow>
+										{previous && <MetricTooltipRow name={t("logs.stats.previousPeriod")}>{`${previous.success_rate.toFixed(2)}%`}</MetricTooltipRow>}
 									</MetricTooltipBody>
 								}
 							/>
@@ -173,7 +151,7 @@ export function RelayMetricStrip({ stats, histogram, loading, error }: RelayMetr
 
 				<MetricSegment
 					state={state}
-					title="Avg Latency"
+					title={t("logs.stats.avgLatency")}
 					testId="relay-logs-stat-latency"
 					footer={
 						<>
@@ -181,7 +159,7 @@ export function RelayMetricStrip({ stats, histogram, loading, error }: RelayMetr
 								points={latencyPoints}
 								bucketSizeSeconds={bucketSizeSeconds}
 								className={warning}
-								rows={(point) => <MetricTooltipRow name="Average">{averaged(point, formatMs(point.value))}</MetricTooltipRow>}
+								rows={(point) => <MetricTooltipRow name={t("logs.stats.tooltipAverage")}>{averaged(point, formatMs(point.value))}</MetricTooltipRow>}
 							/>
 							{latencyChange?.text && (
 								<MetricTrailing testId="relay-logs-metric-trailing" className={toneClass[latencyChange.tone]}>
@@ -197,7 +175,7 @@ export function RelayMetricStrip({ stats, histogram, loading, error }: RelayMetr
 
 				<MetricSegment
 					state={state}
-					title="Total Cost"
+					title={t("logs.stats.totalCost")}
 					testId="relay-logs-stat-cost"
 					footer={
 						<>
@@ -205,7 +183,7 @@ export function RelayMetricStrip({ stats, histogram, loading, error }: RelayMetr
 								points={costPoints}
 								bucketSizeSeconds={bucketSizeSeconds}
 								className={costChange ? toneClass[costChange.tone] : muted}
-								rows={(point) => <MetricTooltipRow name="Cost">{averaged(point, formatCurrencyNumber(point.value))}</MetricTooltipRow>}
+								rows={(point) => <MetricTooltipRow name={t("labels.cost")}>{averaged(point, formatCurrencyNumber(point.value))}</MetricTooltipRow>}
 							/>
 							{costChange?.text ? (
 								<MetricTrailing testId="relay-logs-metric-trailing" className={toneClass[costChange.tone]}>
@@ -214,7 +192,7 @@ export function RelayMetricStrip({ stats, histogram, loading, error }: RelayMetr
 							) : (
 								costPerRequest > 0 && (
 									<MetricTrailing testId="relay-logs-metric-trailing" className={muted}>
-										{formatCurrencyNumber(costPerRequest)}/req
+										{t("relayLogs.stats.perRequest", { value: formatCurrencyNumber(costPerRequest) })}
 									</MetricTrailing>
 								)
 							)}
@@ -222,53 +200,6 @@ export function RelayMetricStrip({ stats, histogram, loading, error }: RelayMetr
 					}
 				>
 					<NumberFlow value={totalCost} format={{ ...COMPACT_NUMBER_FORMAT, style: "currency", currency: "USD" }} />
-				</MetricSegment>
-
-				<MetricSegment
-					state={state}
-					title="Units Billed"
-					testId="relay-logs-stat-units"
-					footer={
-						<>
-							<Sparkline
-								points={unitPoints}
-								bucketSizeSeconds={bucketSizeSeconds}
-								className={toneClass[unitsSignal.tone]}
-								rows={(point) => <MetricTooltipRow name="Units">{averaged(point, formatCount(point.value))}</MetricTooltipRow>}
-							/>
-							{unitsSignal.text && (
-								<MetricTrailing testId="relay-logs-metric-trailing" className={toneClass[unitsSignal.tone]}>
-									{unitsSignal.text}
-								</MetricTrailing>
-							)}
-						</>
-					}
-				>
-					<NumberFlow value={totalUnits} format={COMPACT_NUMBER_FORMAT} />
-				</MetricSegment>
-
-				<MetricSegment
-					state={state}
-					title="Bytes Out"
-					testId="relay-logs-stat-bytes"
-					footer={
-						<>
-							<Sparkline
-								points={bytesPoints}
-								bucketSizeSeconds={bucketSizeSeconds}
-								className={toneClass[bytesSignal.tone]}
-								rows={(point) => <MetricTooltipRow name="Bytes out">{averaged(point, formatBytes(point.value))}</MetricTooltipRow>}
-							/>
-							{bytesSignal.text && (
-								<MetricTrailing testId="relay-logs-metric-trailing" className={toneClass[bytesSignal.tone]}>
-									{bytesSignal.text}
-								</MetricTrailing>
-							)}
-						</>
-					}
-				>
-					<NumberFlow value={Number(bytesFigure)} format={{ maximumFractionDigits: 1 }} />
-					<MetricUnit>{bytesUnit}</MetricUnit>
 				</MetricSegment>
 			</MetricStripCard>
 		</div>

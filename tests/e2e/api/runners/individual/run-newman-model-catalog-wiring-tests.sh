@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Bifrost Model Catalog Wiring Test Runner
 # Drives the model-catalog wiring collection against a running Bifrost instance.

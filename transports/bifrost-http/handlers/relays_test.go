@@ -3,14 +3,20 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/relay"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/stretchr/testify/assert"
@@ -213,3 +219,191 @@ func TestRelaysHandlerDelegatesMutationsAndReloads(t *testing.T) {
 	peerHandler.RemoveRelay("docs")
 	assert.NotContains(t, peer.Names(), "docs", "a deleted relay stops being served on the peer")
 }
+
+// TestRelaysHandlerRequiresGenuineAuthForDialChanges: a caller let through the fail-open bypass
+// (dashboard auth disabled or unconfigured) cannot choose where a relay sends its credential or
+// which gateway secret it sends, the relay counterpart of the provider, provider-key, plugin and
+// webhook gates. Repointing base_url while sending back the redacted credential would hand the
+// stored secret to the new host; an env. reference would send the gateway's own environment.
+// Edits that keep every such setting still pass, and an authenticated admin is never refused.
+func TestRelaysHandlerRequiresGenuineAuthForDialChanges(t *testing.T) {
+	t.Setenv("RELAY_GATE_TEST_SECRET", "gateway-env-secret")
+	h, store, manager := newRelaysTestHandler(t)
+	tlsServer := httptest.NewTLSServer(http.NotFoundHandler())
+	t.Cleanup(tlsServer.Close)
+	caPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: tlsServer.Certificate().Raw}))
+	const createBody = `{"name":"tavily","base_url":"https://search.example.com","auth":{"type":"bearer"},"credential":{"value":"tvly-secret-123456789"},"extra_headers":{"X-Tenant":"acme"}}`
+	created := pteRequest(fasthttp.MethodPost, createBody, "")
+	h.create(created)
+	require.Equal(t, fasthttp.StatusCreated, created.Response.StatusCode(), string(created.Response.Body()))
+
+	// The body the UI would send back: what GET returned, credential redacted.
+	readView := func(t *testing.T) map[string]any {
+		t.Helper()
+		get := pteRequest(fasthttp.MethodGet, "", "tavily")
+		h.get(get)
+		require.Equal(t, fasthttp.StatusOK, get.Response.StatusCode(), string(get.Response.Body()))
+		var view map[string]any
+		require.NoError(t, json.Unmarshal(get.Response.Body(), &view))
+		return view
+	}
+	bypassed := func(method string, body any, name string) *fasthttp.RequestCtx {
+		raw, ok := body.(string)
+		if !ok {
+			data, err := json.Marshal(body)
+			require.NoError(t, err)
+			raw = string(data)
+		}
+		ctx := pteRequest(method, raw, name)
+		ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+		return ctx
+	}
+	assertUnchanged := func(t *testing.T) {
+		t.Helper()
+		stored, err := store.GetRelay(context.Background(), "tavily")
+		require.NoError(t, err)
+		assert.Equal(t, "https://search.example.com", stored.BaseURL)
+		assert.Equal(t, "tvly-secret-123456789", stored.Credential.Value.GetValue())
+		assert.Nil(t, stored.ProxyConfig)
+		assert.Nil(t, stored.Network)
+		tenant := stored.ExtraHeaders["X-Tenant"]
+		assert.Equal(t, "acme", tenant.GetValue())
+	}
+
+	t.Run("create is refused", func(t *testing.T) {
+		ctx := bypassed(fasthttp.MethodPost, `{"name":"exfil","base_url":"https://attacker.example.com","auth":{"type":"bearer"},"credential":{"value":"env.RELAY_GATE_TEST_SECRET"}}`, "")
+		h.create(ctx)
+		assert.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		assert.Contains(t, string(ctx.Response.Body()), "base_url")
+		assert.Contains(t, string(ctx.Response.Body()), "credential.value")
+		assert.Equal(t, []string{"tavily"}, manager.Names(), "the refused relay is not served")
+	})
+
+	refused := map[string]func(view map[string]any){
+		"base_url": func(view map[string]any) { view["base_url"] = "https://attacker.example.com" },
+		"credential.value": func(view map[string]any) {
+			view["credential"] = map[string]any{"value": "env.RELAY_GATE_TEST_SECRET"}
+		},
+		"extra_headers.X-Tenant": func(view map[string]any) {
+			view["extra_headers"] = map[string]any{"X-Tenant": "env.RELAY_GATE_TEST_SECRET"}
+		},
+		"network.insecure_skip_verify": func(view map[string]any) {
+			view["network"] = map[string]any{"insecure_skip_verify": true}
+		},
+		"network.ca_cert_pem": func(view map[string]any) {
+			view["network"] = map[string]any{"ca_cert_pem": caPEM}
+		},
+		"proxy_config.url": func(view map[string]any) {
+			view["proxy_config"] = map[string]any{"type": "http", "url": "http://attacker.example.com:3128"}
+		},
+	}
+	for path, mutate := range refused {
+		t.Run("update of "+path+" is refused", func(t *testing.T) {
+			view := readView(t)
+			mutate(view)
+			ctx := bypassed(fasthttp.MethodPut, view, "tavily")
+			h.update(ctx)
+			assert.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			assert.Contains(t, string(ctx.Response.Body()), path)
+			assertUnchanged(t)
+		})
+	}
+
+	t.Run("update that keeps every dial setting passes", func(t *testing.T) {
+		view := readView(t)
+		view["description"] = "edited while auth is off"
+		ctx := bypassed(fasthttp.MethodPut, view, "tavily")
+		h.update(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		stored, err := store.GetRelay(context.Background(), "tavily")
+		require.NoError(t, err)
+		assert.Equal(t, "edited while auth is off", stored.Description)
+		assertUnchanged(t)
+	})
+
+	t.Run("authenticated admin may repoint the relay", func(t *testing.T) {
+		view := readView(t)
+		view["base_url"] = "https://search-eu.example.com"
+		data, err := json.Marshal(view)
+		require.NoError(t, err)
+		ctx := pteRequest(fasthttp.MethodPut, string(data), "tavily")
+		h.update(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		stored, err := store.GetRelay(context.Background(), "tavily")
+		require.NoError(t, err)
+		assert.Equal(t, "https://search-eu.example.com", stored.BaseURL)
+	})
+}
+
+// TestRelaysHandlerFetchOpenAPISpec: the route import's URL source returns the document text as
+// served (YAML stays YAML, nothing is parsed) with the URL it was read from after redirects, and
+// refuses what the MCP preview refuses: a non-http(s) URL, an unreachable document, and loopback
+// for an unauthenticated caller.
+func TestRelaysHandlerFetchOpenAPISpec(t *testing.T) {
+	h, _, _ := newRelaysTestHandler(t)
+	const yamlSpec = "openapi: 3.0.0\ninfo: {title: Search, version: '1'}\npaths:\n  /search:\n    post: {responses: {'200': {description: ok}}}\n"
+	specServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/openapi.yaml":
+			http.Redirect(w, r, "/v2/openapi.yaml", http.StatusFound)
+		case "/v2/openapi.yaml":
+			w.Header().Set("Content-Type", "application/yaml")
+			_, _ = w.Write([]byte(yamlSpec))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(specServer.Close)
+
+	body, _ := json.Marshal(relayOpenAPISpecRequest{SpecURL: specServer.URL + "/openapi.yaml"})
+	status, respBody := doMCPRequest(t, h.fetchOpenAPISpec, fasthttp.MethodPost, string(body), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	var resp relayOpenAPISpecResponse
+	require.NoError(t, json.Unmarshal([]byte(respBody), &resp), respBody)
+	assert.Equal(t, yamlSpec, resp.Spec, "the document comes back as served, for the browser to parse")
+	assert.Equal(t, specServer.URL+"/v2/openapi.yaml", resp.SpecURL, "the URL after redirects, for resolving relative servers")
+
+	status, respBody = doMCPRequest(t, h.fetchOpenAPISpec, fasthttp.MethodPost, string(body), "", true)
+	assert.Equal(t, fasthttp.StatusForbidden, status, respBody)
+	assert.Contains(t, respBody, "loopback")
+
+	missing, _ := json.Marshal(relayOpenAPISpecRequest{SpecURL: specServer.URL + "/missing.json"})
+	status, respBody = doMCPRequest(t, h.fetchOpenAPISpec, fasthttp.MethodPost, string(missing), "", false)
+	assert.Equal(t, fasthttp.StatusBadRequest, status, respBody)
+	assert.Contains(t, respBody, "could not load spec_url")
+
+	for _, bad := range []string{`{}`, `{"spec_url":"  "}`, `{"spec_url":"ftp://example.com/openapi.json"}`, `{"spec_url":"/openapi.json"}`} {
+		status, respBody = doMCPRequest(t, h.fetchOpenAPISpec, fasthttp.MethodPost, bad, "", false)
+		assert.Equal(t, fasthttp.StatusBadRequest, status, bad)
+		assert.Contains(t, respBody, "spec_url must be an absolute http(s) URL", bad)
+	}
+	status, _ = doMCPRequest(t, h.fetchOpenAPISpec, fasthttp.MethodPost, `not json`, "", false)
+	assert.Equal(t, fasthttp.StatusBadRequest, status)
+}
+
+// TestOpenAPISpecFetchClientsByCaller: an unauthenticated caller's spec URL is fetched with the strict
+// SSRF-safe client (core/network pins what strict refuses on the proxied path); an authenticated one
+// may reach the operator's private network.
+func TestOpenAPISpecFetchClientsByCaller(t *testing.T) {
+	assert.Equal(t, reflect.ValueOf(network.NewStrictSSRFSafeHTTPClient).Pointer(), reflect.ValueOf(newUnauthenticatedSpecClient).Pointer())
+	assert.Equal(t, reflect.ValueOf(network.NewPrivateNetworkHTTPClient).Pointer(), reflect.ValueOf(newAuthenticatedSpecClient).Pointer())
+
+	h, _, _ := newRelaysTestHandler(t)
+	var used []string
+	strict, private := newUnauthenticatedSpecClient, newAuthenticatedSpecClient
+	t.Cleanup(func() { newUnauthenticatedSpecClient, newAuthenticatedSpecClient = strict, private })
+	// The stand-in clients fail at once, so nothing leaves the test.
+	refuse := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) { return nil, errors.New("not dialed in tests") })}
+	newUnauthenticatedSpecClient = func(time.Duration) *http.Client { used = append(used, "strict"); return refuse }
+	newAuthenticatedSpecClient = func(time.Duration) *http.Client { used = append(used, "private"); return refuse }
+
+	// A public IP literal passes the up-front private-target check without a DNS lookup.
+	body := `{"spec_url":"https://1.1.1.1/openapi.json"}`
+	doMCPRequest(t, h.fetchOpenAPISpec, fasthttp.MethodPost, body, "", true)
+	doMCPRequest(t, h.fetchOpenAPISpec, fasthttp.MethodPost, body, "", false)
+	assert.Equal(t, []string{"strict", "private"}, used)
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

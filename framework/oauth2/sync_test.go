@@ -156,6 +156,20 @@ func (s *testConfigStore) MarkOauthUserTokenNeedsReauthByID(_ context.Context, t
 	return nil
 }
 
+// MarkOauthTokenNeedsReauthIfUnrenewable is the test-double equivalent of the real store's
+// conditional flip: only an active row with no refresh token and an expired access token.
+func (s *testConfigStore) MarkOauthTokenNeedsReauthIfUnrenewable(_ context.Context, tokenID string, reason string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	token := s.oauthTokens[tokenID]
+	if token == nil || token.Status != "active" || token.RefreshToken != "" || token.ExpiresAt == nil || !time.Now().After(*token.ExpiresAt) {
+		return false, nil
+	}
+	token.Status = "needs_reauth"
+	token.StatusReason = reason
+	return true, nil
+}
+
 // MarkTokensNeedsReauthByConfigID is the test-double equivalent of the real
 // store's bulk, auth_mode-agnostic cascade used by OAuth credential rotation.
 func (s *testConfigStore) MarkTokensNeedsReauthByConfigID(_ context.Context, oauthConfigID string, _ string, _ ...*gorm.DB) error {

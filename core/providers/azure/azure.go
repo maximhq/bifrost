@@ -12,6 +12,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -227,6 +228,26 @@ func (provider *AzureProvider) listModelsByKey(ctx *schemas.BifrostContext, key 
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
 
+	// Azure AI Speech models are not in the model list. The voices list is large and slow, so it runs
+	// beside the model list and stops before the key's deadline; a slow or failed one drops only the voice suffixes.
+	var speechVoices chan []AzureSpeechVoice
+	if key.AzureKeyConfig != nil && key.AzureKeyConfig.UseSpeechEndpoints {
+		speechVoices = make(chan []AzureSpeechVoice, 1)
+		go func() {
+			var voicesDeadline time.Time
+			if deadline, ok := ctx.Deadline(); ok {
+				voicesDeadline = deadline.Add(-azureSpeechVoicesDeadlineMargin)
+			}
+			voicesCtx := schemas.NewBifrostContext(ctx, voicesDeadline)
+			defer voicesCtx.Cancel()
+			voices, voicesErr := provider.listSpeechVoices(voicesCtx, key)
+			if voicesErr != nil {
+				provider.logger.Warn("azure list models: voices list failed for key %s, listing speech models without voice suffixes: %v", key.ID, voicesErr.Error.Message)
+			}
+			speechVoices <- voices
+		}()
+	}
+
 	// Create the request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -278,6 +299,10 @@ func (provider *AzureProvider) listModelsByKey(ctx *schemas.BifrostContext, key 
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, azureResponse, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
 		return nil, bifrostErr
+	}
+
+	if speechVoices != nil {
+		azureResponse.Data = append(azureResponse.Data, azureSpeechModels(<-speechVoices)...)
 	}
 
 	// Convert to Bifrost response
@@ -1194,7 +1219,10 @@ func (provider *AzureProvider) Transcription(ctx *schemas.BifrostContext, key sc
 	}
 
 	if whisper {
-		if response.Usage == nil && response.Duration != nil {
+		// Azure's billing header covers every format; the duration is the fallback without it.
+		if seconds, ok := azureWhisperBilledSeconds(ctx); ok && response.Usage == nil {
+			response.Usage = &schemas.TranscriptionUsage{Type: "duration", Seconds: new(seconds)}
+		} else if response.Usage == nil && response.Duration != nil {
 			response.Usage = &schemas.TranscriptionUsage{Type: "duration", Seconds: new(math.Ceil(*response.Duration))}
 		}
 		// A json caller gets the text alone, as OpenAI's json response carries.
@@ -1203,6 +1231,32 @@ func (provider *AzureProvider) Transcription(ctx *schemas.BifrostContext, key sc
 		}
 	}
 	return response, err
+}
+
+// azureWhisperBillingMeter names the Whisper meter in Azure's Csp-Billing-Usage reply header.
+const azureWhisperBillingMeter = "CognitiveServices.OpenAI.Whisper"
+
+// azureWhisperBilledSeconds reads the seconds Azure bills a Whisper call for from the reply's
+// Csp-Billing-Usage header, such as "CognitiveServices.OpenAI.Whisper=5".
+func azureWhisperBilledSeconds(ctx *schemas.BifrostContext) (float64, bool) {
+	headers, _ := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string)
+	for name, value := range headers {
+		if !strings.EqualFold(name, "Csp-Billing-Usage") {
+			continue
+		}
+		for value != "" {
+			var meter string
+			meter, value, _ = strings.Cut(value, ",")
+			meterName, quantity, ok := strings.Cut(strings.TrimSpace(meter), "=")
+			if !ok || !strings.EqualFold(meterName, azureWhisperBillingMeter) {
+				continue
+			}
+			if seconds, err := strconv.ParseFloat(quantity, 64); err == nil && seconds > 0 && !math.IsInf(seconds, 0) {
+				return seconds, true
+			}
+		}
+	}
+	return 0, false
 }
 
 // TranscriptionStream is not supported by the Azure provider.

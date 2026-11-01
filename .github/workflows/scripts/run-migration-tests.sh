@@ -5984,7 +5984,7 @@ compare_postgres_snapshots() {
   # Tables to skip entirely (system/tracking tables that change during migration)
   # governance_model_pricing, governance_model_parameters: synced from remote model catalog URL
   # during startup (see framework/modelcatalog/sync.go) - row count grows from seed-only to full catalog
-  local skip_tables="gorp_migrations schema_migrations migrations governance_config governance_model_pricing governance_model_parameters"
+  local skip_tables="gorp_migrations schema_migrations migrations governance_config governance_model_pricing governance_model_parameters matview_refresh_state"
 
   # Tables whose row count is allowed to GROW during migration (rows added by design) but
   # whose pre-existing seeded rows must still be value-compared. Unlike skip_tables (which

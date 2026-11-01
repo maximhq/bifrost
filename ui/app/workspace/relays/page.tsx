@@ -7,22 +7,26 @@ import { useGetRelaysQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { showLoadError } from "@/lib/utils/loadError";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { ArrowLeft, PlusIcon, Waypoints } from "lucide-react";
+import { ArrowLeft, PlusIcon } from "lucide-react";
 import { useQueryState } from "nuqs";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { DeleteEndpointDialog } from "./dialogs/deleteEndpointDialog";
 import { AddEndpointSheet } from "./sheets/addEndpointSheet";
 import { EndpointsEmptyState } from "./views/endpointsEmptyState";
 import { EndpointView } from "./views/endpointView";
+import { useActionParam } from "@/hooks/useActionParam";
 
 /** Relays, laid out like the providers page: the endpoints on the left, the selected one on the right. */
 export default function RelaysPage() {
+	const { t } = useTranslation("config");
 	const isMobile = useIsMobile();
 	const canCreate = useRbac(RbacResource.Relays, RbacOperation.Create);
 	const { data, isLoading, isFetching, error, refetch } = useGetRelaysQuery();
 	const endpoints = data?.relays;
 	const [selected, setSelected] = useQueryState("relay");
 	const [showAddSheet, setShowAddSheet] = useState(false);
+	useActionParam("create", () => setShowAddSheet(true), { isOpen: showAddSheet, enabled: canCreate });
 	const [showDeleteDialog, setShowDeleteDialog] = useState(false);
 	const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
 
@@ -52,7 +56,7 @@ export default function RelaysPage() {
 
 	const current = endpoints?.find((e) => e.name === selected);
 	return (
-		<div className="flex w-full flex-col gap-4 md:flex-row">
+		<div className="flex w-full flex-col gap-4 md:h-[calc(var(--app-content-viewport)_-_55px)] md:flex-row">
 			{addSheet}
 			{current && (
 				<DeleteEndpointDialog
@@ -73,7 +77,7 @@ export default function RelaysPage() {
 				)}
 			>
 				<div className="flex min-h-0 flex-1 flex-col rounded-md bg-zinc-50/50 md:p-4 md:pb-0 dark:bg-zinc-800/20">
-					<div className="text-muted-foreground mb-2 shrink-0 text-xs font-medium">Relays</div>
+					<div className="text-muted-foreground mb-2 shrink-0 text-xs font-medium">{t("relays.page.title")}</div>
 					<div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto">
 						{endpoints?.map((endpoint) => (
 							<div
@@ -98,7 +102,6 @@ export default function RelaysPage() {
 									}
 								}}
 							>
-								<Waypoints className="text-muted-foreground h-4 w-4 shrink-0" />
 								<TruncatedLabel className="flex-1 text-sm">{endpoint.name}</TruncatedLabel>
 							</div>
 						))}
@@ -112,17 +115,18 @@ export default function RelaysPage() {
 									data-testid="relays-create-button"
 								>
 									<PlusIcon className="h-4 w-4" />
-									Add Relay
+									{t("relays.page.addRelay")}
 								</Button>
 							</div>
 						)}
 					</div>
 				</div>
 			</div>
-			<div className={cn("min-w-0 w-full", mobileDetailOpen ? "block" : "hidden md:block")}>
+			{/* Scrolls on its own so the relay list stays in view beside a long route table. */}
+			<div className={cn("custom-scrollbar min-w-0 w-full md:h-full", mobileDetailOpen ? "block" : "hidden md:block")}>
 				<Button variant="ghost" size="sm" className="mb-3 -ml-2 md:hidden" onClick={() => setMobileDetailOpen(false)}>
 					<ArrowLeft className="size-4" />
-					Endpoints
+					{t("relays.page.back")}
 				</Button>
 				{current && <EndpointView key={current.name} endpoint={current} onRequestDelete={() => setShowDeleteDialog(true)} />}
 			</div>

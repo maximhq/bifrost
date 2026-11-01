@@ -10,6 +10,7 @@ import {
 	validateSkillName,
 	validateVersion,
 } from "@/lib/validators/skills";
+import { getLocale } from "@/lib/i18n";
 import { useEffect, useState } from "react";
 
 // ---------- Constants ----------
@@ -19,11 +20,11 @@ export const PAGE_SIZE = 25;
 // ---------- Helpers ----------
 
 export function formatDate(dateStr: string) {
-	return new Date(dateStr).toLocaleString();
+	return new Date(dateStr).toLocaleString(getLocale());
 }
 
 export function formatDateShort(dateStr: string) {
-	return new Date(dateStr).toLocaleDateString();
+	return new Date(dateStr).toLocaleDateString(getLocale());
 }
 
 export function formatFileSize(bytes: number): string {

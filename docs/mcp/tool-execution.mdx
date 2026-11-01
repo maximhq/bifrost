@@ -404,6 +404,16 @@ if err != nil {
 }
 ```
 
+### Tools that ask for input
+
+Some MCP servers stop mid-call to ask for something: a question for the user (elicitation), a model completion (sampling), or the client's filesystem roots. Bifrost does not support these requests. It does not declare them to servers, and it cannot pass them to the MCP client or model that made the call.
+
+A tool that needs one fails. On a `2026-07-28` connection, the error names the server and what it asked for, and Bifrost does not retry the call. This applies to every path, including MCP clients connected through Bifrost's gateway, even if the client could answer the request itself.
+
+If the server needs a step completed in the browser, such as connecting an account, the error includes the step and its URL. Complete it and call the tool again.
+
+To use such a tool, connect the MCP client directly to the server.
+
 ### Auth failure recovery
 
 <Info>Inline auth-failure retry is available in **Bifrost v2.0.0 and above**.</Info>

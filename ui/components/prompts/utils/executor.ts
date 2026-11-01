@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n";
 import { Message, type CompletionUsage, type ToolCall, type VariableMap, replaceVariablesInMessages } from "@/lib/message";
 import { getErrorMessage } from "@/lib/store";
 import type { ModelParams } from "@/lib/types/prompts";
@@ -118,7 +119,7 @@ export async function executePrompt(
 			}
 		} else {
 			const reader = response.body?.getReader();
-			if (!reader) throw new Error("No response body");
+			if (!reader) throw new Error(i18n.t("promptRepo.noResponseBody", { ns: "config" }));
 
 			const decoder = new TextDecoder();
 			let assistantContent = "";
@@ -248,7 +249,7 @@ export async function executeToolCall(toolCall: ToolCall, config: Pick<Execution
 			if (authRequired) {
 				throw new MCPAuthRequiredError({
 					kind: authRequired.kind,
-					mcpClientName: authRequired.mcp_client_name || "MCP server",
+					mcpClientName: authRequired.mcp_client_name || i18n.t("promptRepo.mcpServerFallback", { ns: "config" }),
 					authorizeUrl: authRequired.authorize_url || authRequired.submit_url || "",
 					message: authRequired.message || errorMessage,
 				});

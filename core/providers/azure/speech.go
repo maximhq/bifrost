@@ -34,6 +34,7 @@ const (
 	azureSpeechFastModel           = "fast-transcription"
 	azureSpeechLLMModel            = "llm-speech"
 	azureSpeechSynthesisPath       = "/tts/cognitiveservices/v1"
+	azureSpeechVoicesPath          = "/tts/cognitiveservices/voices/list"
 	azureSpeechTranscriptionPath   = "/speechtotext/transcriptions:transcribe"
 	azureSpeechAPIVersion          = "2025-10-15"
 	azureSpeechDefaultOutputFormat = "audio-24khz-48kbitrate-mono-mp3"
@@ -49,6 +50,12 @@ const (
 
 // azureSpeechRecognitionModes are the short audio endpoints. The mode is a path segment, so no other value is sent.
 var azureSpeechRecognitionModes = map[string]bool{"conversation": true, "interactive": true, "dictation": true}
+
+// azureSpeechTranscriptionModels are the speech to text models listed for a speech key; Azure has no endpoint that lists them.
+var azureSpeechTranscriptionModels = []string{azureSpeechFastModel, azureSpeechLLMModel, azureSpeechShortAudioModel, "MAI-Transcribe-2"}
+
+// azureSpeechVoicesDeadlineMargin is how long before a list models deadline the voices list gives up.
+const azureSpeechVoicesDeadlineMargin = time.Second
 
 // azureSpeechOutputFormats maps OpenAI response formats to Azure output formats. aac and flac
 // have no Azure equivalent and fall back to mp3; any other value is sent as an Azure format name.
@@ -74,7 +81,7 @@ func ToAzureSpeechSSML(model string, request *schemas.BifrostSpeechRequest) (str
 		return "", errors.New("speech input is not provided")
 	}
 	input := request.Input.Input
-	if trimmed := strings.TrimSpace(input); strings.HasPrefix(trimmed, "<speak") || strings.HasPrefix(trimmed, "<?xml") {
+	if isAzureSSML(input) {
 		return input, nil
 	}
 	params := request.Params
@@ -133,6 +140,21 @@ func azureSpeechOutputFormat(responseFormat string) string {
 		return format
 	}
 	return responseFormat
+}
+
+// isAzureSSML reports whether a text to speech input is already SSML.
+func isAzureSSML(input string) bool {
+	trimmed := strings.TrimSpace(input)
+	return strings.HasPrefix(trimmed, "<speak") || strings.HasPrefix(trimmed, "<?xml")
+}
+
+// azureSpeechServedModel returns the voice's suffix when it differs from the requested model, so
+// "en-US-Ava:DragonHDLatestNeural" sent as "neural" is priced as the HD voice Azure synthesizes.
+func azureSpeechServedModel(requested, voice string) *string {
+	if _, suffix, ok := strings.Cut(voice, ":"); ok && suffix != "" && !strings.EqualFold(suffix, requested) {
+		return new(suffix)
+	}
+	return nil
 }
 
 // azureSpeechBillableChars counts characters the way Azure bills text to speech: the whole SSML
@@ -374,9 +396,8 @@ func (provider *AzureProvider) getAzureSpeechAuthHeaders(ctx *schemas.BifrostCon
 	return authHeader, nil
 }
 
-// prepareSpeechSynthesisRequest writes an Azure AI Speech text to speech call onto req and
-// returns the SSML body it carries.
-func (provider *AzureProvider) prepareSpeechSynthesisRequest(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest, req *fasthttp.Request) ([]byte, *schemas.BifrostError) {
+// listSpeechVoices returns the text to speech voices the key's Azure AI Speech region serves.
+func (provider *AzureProvider) listSpeechVoices(ctx *schemas.BifrostContext, key schemas.Key) ([]AzureSpeechVoice, *schemas.BifrostError) {
 	endpoint := resolveAzureEndpoint(ctx, key)
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
@@ -384,6 +405,50 @@ func (provider *AzureProvider) prepareSpeechSynthesisRequest(ctx *schemas.Bifros
 	authHeader, bifrostErr := provider.getAzureSpeechAuthHeaders(ctx, key)
 	if bifrostErr != nil {
 		return nil, bifrostErr
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(endpoint + azureSpeechVoicesPath)
+	req.Header.SetMethod(http.MethodGet)
+	for k, v := range authHeader {
+		req.Header.Set(k, v)
+	}
+
+	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, parseAzureSpeechError(resp)
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+	}
+	var voices []AzureSpeechVoice
+	if err := sonic.Unmarshal(body, &voices); err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
+	}
+	return voices, nil
+}
+
+// prepareSpeechSynthesisRequest writes an Azure AI Speech text to speech call onto req and
+// returns the SSML body it carries and the model Azure serves when it differs from the requested one.
+func (provider *AzureProvider) prepareSpeechSynthesisRequest(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest, req *fasthttp.Request) ([]byte, *string, *schemas.BifrostError) {
+	endpoint := resolveAzureEndpoint(ctx, key)
+	if endpoint == "" {
+		return nil, nil, providerUtils.NewConfigurationError("endpoint not set")
+	}
+	authHeader, bifrostErr := provider.getAzureSpeechAuthHeaders(ctx, key)
+	if bifrostErr != nil {
+		return nil, nil, bifrostErr
 	}
 
 	body, ok := providerUtils.CheckAndGetRawRequestBody(ctx, request)
@@ -398,9 +463,16 @@ func (provider *AzureProvider) prepareSpeechSynthesisRequest(ctx *schemas.Bifros
 			}
 		}
 		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, err)
+			return nil, nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, err)
 		}
 		body = []byte(ssml)
+	}
+	// The voice Azure synthesizes is the request's own; only SSML the caller sent is parsed for it.
+	var voice string
+	if !ok && !isAzureSSML(request.Input.Input) {
+		voice = *request.Params.VoiceConfig.Voice
+	} else {
+		_, voice = azureSSMLLanguageAndVoice(string(body))
 	}
 	responseFormat := ""
 	if request.Params != nil {
@@ -417,7 +489,7 @@ func (provider *AzureProvider) prepareSpeechSynthesisRequest(ctx *schemas.Bifros
 		req.Header.Set(k, v)
 	}
 	req.SetBody(body)
-	return body, nil
+	return body, azureSpeechServedModel(request.Model, voice), nil
 }
 
 // speechSynthesis serves text to speech on Azure AI Speech: the input goes out as SSML and the
@@ -428,7 +500,7 @@ func (provider *AzureProvider) speechSynthesis(ctx *schemas.BifrostContext, key 
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	body, bifrostErr := provider.prepareSpeechSynthesisRequest(ctx, key, request, req)
+	body, servedModel, bifrostErr := provider.prepareSpeechSynthesisRequest(ctx, key, request, req)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -471,6 +543,7 @@ func (provider *AzureProvider) speechSynthesis(ctx *schemas.BifrostContext, key 
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency:                 latency.Milliseconds(),
 			ProviderResponseHeaders: providerUtils.ExtractProviderResponseHeaders(resp),
+			RoutingInfo:             schemas.RoutingInfo{ServerSideFallbackModel: servedModel},
 		},
 	}
 	if sendBackRawRequest {
@@ -487,7 +560,7 @@ func (provider *AzureProvider) speechSynthesisStream(ctx *schemas.BifrostContext
 	resp.StreamBody = true
 	defer fasthttp.ReleaseRequest(req)
 
-	body, bifrostErr := provider.prepareSpeechSynthesisRequest(ctx, key, request, req)
+	body, servedModel, bifrostErr := provider.prepareSpeechSynthesisRequest(ctx, key, request, req)
 	if bifrostErr != nil {
 		fasthttp.ReleaseResponse(resp)
 		return nil, bifrostErr
@@ -597,8 +670,9 @@ func (provider *AzureProvider) speechSynthesisStream(ctx *schemas.BifrostContext
 			Audio: []byte{},
 			Usage: &schemas.SpeechUsage{InputChars: azureSpeechBillableChars(string(body))},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				ChunkIndex: chunkIndex + 1,
-				Latency:    time.Since(startTime).Milliseconds(),
+				ChunkIndex:  chunkIndex + 1,
+				Latency:     time.Since(startTime).Milliseconds(),
+				RoutingInfo: schemas.RoutingInfo{ServerSideFallbackModel: servedModel},
 			},
 		}
 		if sendBackRawRequest {

@@ -24,7 +24,7 @@ dependencies = [
     # AI/ML SDK dependencies
     "openai>=1.30.0",
     "anthropic>=0.25.0",
-    "litellm==1.88.6",
+    "litellm==1.100.4",
     "langchain-openai==1.1.14",
     "langchain-core>=1.3.3",
     "langchain-anthropic==1.7.1",
@@ -154,5 +154,5 @@ package = false
 # Preserve the existing cutoff for unrelated dependencies.
 exclude-newer = "2026-09-09T00:00:00Z"
 # Admit security fixes and the already-pinned typesafe-sdk release without lifting the global cutoff.
-exclude-newer-package = { pyjwt = "2026-10-02T00:00:00Z", urllib3 = "2026-10-02T00:00:00Z", typesafe-sdk = "2026-09-23T00:00:00Z", langgraph-sdk = "2026-10-07T00:00:00Z", multidict = "2026-10-07T00:00:00Z", pydantic-ai = "2026-10-03T00:00:00Z", pydantic-ai-slim = "2026-10-03T00:00:00Z", pydantic-graph = "2026-10-03T00:00:00Z", pydantic-evals = "2026-10-03T00:00:00Z", genai-prices = "2026-10-03T00:00:00Z", anthropic = "2026-10-03T00:00:00Z", aiohttp = "2026-10-06T00:00:00Z", yarl = "2026-09-16T00:00:00Z", pillow = "2026-10-17T00:00:00Z", certifi = "2026-10-21T00:00:00Z", black = "2026-10-11T00:00:00Z", opentelemetry-api = "2026-10-07T00:00:00Z", opentelemetry-semantic-conventions = "2026-10-07T00:00:00Z", filelock = "2026-10-19T00:00:00Z" }
-constraint-dependencies = ["pyjwt==2.15.0", "urllib3==2.8.0", "langgraph-sdk==0.4.4", "multidict==6.9.1", "pydantic-ai-slim==2.53.0", "aiohttp==3.14.4", "yarl==1.25.1", "pillow==13.0.0", "certifi==2026.10.19", "black==26.10.1", "opentelemetry-api==1.45.1", "opentelemetry-semantic-conventions==0.66b1", "filelock==4.2.2"]
+exclude-newer-package = { litellm = "2026-09-30T00:00:00Z", pyjwt = "2026-10-02T00:00:00Z", urllib3 = "2026-10-02T00:00:00Z", typesafe-sdk = "2026-09-23T00:00:00Z", langgraph-sdk = "2026-10-07T00:00:00Z", multidict = "2026-10-07T00:00:00Z", pydantic-ai = "2026-10-03T00:00:00Z", pydantic-ai-slim = "2026-10-03T00:00:00Z", pydantic-graph = "2026-10-03T00:00:00Z", pydantic-evals = "2026-10-03T00:00:00Z", genai-prices = "2026-10-03T00:00:00Z", anthropic = "2026-10-03T00:00:00Z", aiohttp = "2026-10-06T00:00:00Z", yarl = "2026-09-16T00:00:00Z", pillow = "2026-10-17T00:00:00Z", certifi = "2026-10-21T00:00:00Z", black = "2026-10-11T00:00:00Z", opentelemetry-api = "2026-10-07T00:00:00Z", opentelemetry-semantic-conventions = "2026-10-07T00:00:00Z", filelock = "2026-10-19T00:00:00Z", langgraph = "2026-10-07T00:00:00Z" }
+constraint-dependencies = ["pyjwt==2.15.0", "urllib3==2.8.0", "langgraph-sdk==0.4.6", "multidict==6.9.1", "pydantic-ai-slim==2.53.0", "aiohttp==3.14.4", "yarl==1.25.1", "pillow==13.0.0", "certifi==2026.10.19", "black==26.10.1", "opentelemetry-api==1.45.1", "opentelemetry-semantic-conventions==0.66b1", "filelock==4.2.2", "langgraph==1.2.14"]

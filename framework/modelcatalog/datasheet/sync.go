@@ -1,6 +1,7 @@
 package datasheet
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,8 +9,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
+	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/network"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -25,6 +29,16 @@ var (
 	pricingFetchTimeout = DefaultPricingTimeout
 	paramsFetchTimeout  = DefaultModelParametersTimeout
 )
+
+// NewHTTPClient builds the client for every catalog feed download (pricing,
+// model parameters, MCP library). It is a var, not a direct call to
+// network.NewPrivateNetworkHTTPClient, only so tests can wrap the transport:
+// the guarded client builds its own *http.Transport, so swapping
+// http.DefaultTransport no longer intercepts these fetches. Without this hook
+// every LoadConfig in transports/bifrost-http/lib tests downloads the full
+// public datasheets (~29MB), which took that package from minutes to ~35 min
+// under -race in CI. Production code must not reassign it.
+var NewHTTPClient = network.NewPrivateNetworkHTTPClient
 
 // SyncFromURL fetches the upstream pricing datasheet, persists it to the DB
 // (when configStore != nil), and refreshes the in-memory cache + derived
@@ -59,20 +73,10 @@ func (s *Store) SyncFromURL(ctx context.Context) error {
 	}
 
 	if s.configStore != nil {
-		// Dedup by (model, provider, mode) before the write: the batched upsert
+		// One row per (model, provider, mode) before the write: the batched upsert
 		// below issues multi-row ON CONFLICT statements, and PostgreSQL rejects a
 		// statement whose VALUES list hits the same conflict target twice.
-		records := make([]configstoreTables.TableModelPricing, 0, len(pricingData))
-		seen := make(map[string]struct{}, len(pricingData))
-		for modelKey, entry := range pricingData {
-			pricing := convertEntryToTablePricing(modelKey, entry)
-			key := makeKey(pricing.Model, pricing.Provider, pricing.Mode)
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			seen[key] = struct{}{}
-			records = append(records, pricing)
-		}
+		records := s.resolvePricingRows(pricingData)
 		if err := s.configStore.UpsertModelPricesBatch(ctx, records); err != nil {
 			return fmt.Errorf("failed to sync pricing data to database: %w", err)
 		}
@@ -89,6 +93,116 @@ func (s *Store) SyncFromURL(ctx context.Context) error {
 		s.logger.Debug("successfully synced %d pricing records", len(pricingData))
 	}
 	return nil
+}
+
+// pricingCandidate is one datasheet row competing for a stored key. Only the datasheet key is
+// kept: the full row is converted once, for the winner, so a sync does not copy every large row.
+type pricingCandidate struct {
+	modelKey string
+	exact    bool // the row's own provider is already the stored provider, nothing was folded
+}
+
+// beats reports whether c should replace other as the stored row for their shared key. The answer
+// depends only on the two rows, never on the order they are visited in.
+func (c pricingCandidate) beats(other pricingCandidate) bool {
+	if c.exact != other.exact {
+		return c.exact
+	}
+	return c.modelKey < other.modelKey
+}
+
+// samePricing reports whether two rows carry identical prices on every cost field, not just the
+// base token rates. Options is all pointer fields, so == would compare addresses; its encoding
+// compares the values instead (struct fields encode in declaration order, nil ones are omitted), and
+// new cost fields are covered without maintenance here. Only rows that fold pay for this.
+func samePricing(a, b Entry) bool {
+	ea, errA := sonic.Marshal(a.Options)
+	eb, errB := sonic.Marshal(b.Options)
+	return errA == nil && errB == nil && bytes.Equal(ea, eb)
+}
+
+// resolvePricingRows turns the parsed datasheet into one stored row per (model, provider, mode).
+// Several datasheet rows can fold onto one key: extractModelName drops the "bedrock_mantle/" prefix
+// and normalizeProvider maps both providers to "bedrock". The survivor is chosen by rule so every
+// sync of the same datasheet stores the same price: a row whose own provider already is the stored
+// provider beats a folded-in one, then the smaller datasheet key wins. Rows come back in key order.
+//
+// A fold that drops a row with different pricing is logged. When the exact-provider rule picked the
+// survivor it is the intended outcome and goes to Debug; when only key order separated the rows the
+// choice is arbitrary, so it is a Warn worth looking at.
+func (s *Store) resolvePricingRows(pricingData map[string]Entry) []configstoreTables.TableModelPricing {
+	winners := make(map[string]pricingCandidate, len(pricingData))
+	var losers map[string][]pricingCandidate // stored key -> rows that lost it; empty unless rows fold
+	for modelKey, entry := range pricingData {
+		// Same identity convertEntryToTablePricing stores the row under.
+		provider := normalizeProvider(entry.Provider)
+		key := makeKey(extractModelName(modelKey), provider, entry.Mode)
+		cand := pricingCandidate{modelKey: modelKey, exact: entry.Provider == provider}
+		cur, taken := winners[key]
+		lost := cand
+		switch {
+		case !taken:
+			winners[key] = cand
+			continue
+		case cand.beats(cur):
+			winners[key] = cand
+			lost = cur
+		}
+		if losers == nil {
+			losers = make(map[string][]pricingCandidate)
+		}
+		losers[key] = append(losers[key], lost)
+	}
+
+	keys := make([]string, 0, len(winners))
+	for key := range winners {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	records := make([]configstoreTables.TableModelPricing, 0, len(keys))
+	var byKeyOrder, byRule []string
+	for _, key := range keys {
+		win := winners[key]
+		records = append(records, convertEntryToTablePricing(win.modelKey, pricingData[win.modelKey]))
+		var dropped []string
+		arbitrary := false
+		for _, lost := range losers[key] {
+			if samePricing(pricingData[win.modelKey], pricingData[lost.modelKey]) {
+				continue
+			}
+			dropped = append(dropped, lost.modelKey)
+			arbitrary = arbitrary || lost.exact == win.exact
+		}
+		if len(dropped) == 0 {
+			continue
+		}
+		sort.Strings(dropped)
+		conflict := fmt.Sprintf("%s kept over %s", win.modelKey, strings.Join(dropped, ", "))
+		if arbitrary {
+			byKeyOrder = append(byKeyOrder, conflict)
+		} else {
+			byRule = append(byRule, conflict)
+		}
+	}
+	if s.logger != nil {
+		if len(byKeyOrder) > 0 {
+			s.logger.Warn("pricing datasheet has %d stored keys where rows with different prices fold onto one key and only datasheet key order chose the kept row (e.g. %s)", len(byKeyOrder), foldExamples(byKeyOrder))
+		}
+		if len(byRule) > 0 {
+			s.logger.Debug("pricing datasheet has %d stored keys where a folded-in row with different prices lost to the row whose provider matches (e.g. %s)", len(byRule), foldExamples(byRule))
+		}
+	}
+	return records
+}
+
+// foldExamples joins the first few fold conflicts for a log line.
+func foldExamples(conflicts []string) string {
+	const shown = 5
+	if len(conflicts) > shown {
+		conflicts = conflicts[:shown]
+	}
+	return strings.Join(conflicts, "; ")
 }
 
 // LoadFromDB reloads the in-memory pricing cache + datasheet view from the
@@ -135,12 +249,11 @@ func (s *Store) LoadFromURLIntoMemory(ctx context.Context) error {
 // from a freshly-parsed URL payload. Used by the LoadFromURLIntoMemory
 // path and the no-configstore SyncFromURL fallback.
 func (s *Store) applyPricingData(pricingData map[string]Entry) {
+	records := s.resolvePricingRows(pricingData)
 	s.mu.Lock()
-	s.pricingData = make(map[string]configstoreTables.TableModelPricing, len(pricingData))
-	for modelKey, entry := range pricingData {
-		pricing := convertEntryToTablePricing(modelKey, entry)
-		key := makeKey(pricing.Model, pricing.Provider, pricing.Mode)
-		s.pricingData[key] = pricing
+	s.pricingData = make(map[string]configstoreTables.TableModelPricing, len(records))
+	for _, pricing := range records {
+		s.pricingData[makeKey(pricing.Model, pricing.Provider, pricing.Mode)] = pricing
 	}
 	s.rebuildDatasheetViewUnsafe()
 	s.mu.Unlock()
@@ -196,7 +309,7 @@ func (s *Store) loadPricingFromURL(ctx context.Context) (map[string]Entry, error
 		}
 		// ValidateExternalURL screens the configured host once; the guarded
 		// client holds every connection and redirect hop to the same policy.
-		client := network.NewPrivateNetworkHTTPClient(DefaultPricingTimeout)
+		client := NewHTTPClient(DefaultPricingTimeout)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.URL(), nil)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create HTTP request: %w", err)

@@ -1146,6 +1146,9 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 			CachedReadTokens:        cu.PromptTokensDetails.CachedReadTokens,
 			CachedWriteTokens:       cu.PromptTokensDetails.CachedWriteTokens,
 			CachedWriteTokenDetails: cu.PromptTokensDetails.CachedWriteTokenDetails,
+
+			StandardSpeechAudioTokens: cu.PromptTokensDetails.StandardSpeechAudioTokens,
+			CustomSpeechAudioTokens:   cu.PromptTokensDetails.CustomSpeechAudioTokens,
 		}
 	}
 	if cu.CompletionTokensDetails != nil {
@@ -1157,6 +1160,9 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 			RejectedPredictionTokens: cu.CompletionTokensDetails.RejectedPredictionTokens,
 			CitationTokens:           cu.CompletionTokensDetails.CitationTokens,
 			NumSearchQueries:         cu.CompletionTokensDetails.NumSearchQueries,
+
+			StandardSpeechAudioTokens: cu.CompletionTokensDetails.StandardSpeechAudioTokens,
+			CustomSpeechAudioTokens:   cu.CompletionTokensDetails.CustomSpeechAudioTokens,
 		}
 	}
 	usage.ToolUsage = cu.ToolUsage.DeepCopy()
@@ -1186,6 +1192,9 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 			CachedReadTokens:        ru.InputTokensDetails.CachedReadTokens,
 			CachedWriteTokens:       ru.InputTokensDetails.CachedWriteTokens,
 			CachedWriteTokenDetails: ru.InputTokensDetails.CachedWriteTokenDetails,
+
+			StandardSpeechAudioTokens: ru.InputTokensDetails.StandardSpeechAudioTokens,
+			CustomSpeechAudioTokens:   ru.InputTokensDetails.CustomSpeechAudioTokens,
 		}
 	}
 	if ru.OutputTokensDetails != nil {
@@ -1198,6 +1207,9 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 			RejectedPredictionTokens: ru.OutputTokensDetails.RejectedPredictionTokens,
 			CitationTokens:           ru.OutputTokensDetails.CitationTokens,
 			NumSearchQueries:         ru.OutputTokensDetails.NumSearchQueries,
+
+			StandardSpeechAudioTokens: ru.OutputTokensDetails.StandardSpeechAudioTokens,
+			CustomSpeechAudioTokens:   ru.OutputTokensDetails.CustomSpeechAudioTokens,
 		}
 	}
 	usage.ToolUsage = ru.ToolUsage.DeepCopy()

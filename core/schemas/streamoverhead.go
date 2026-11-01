@@ -31,6 +31,44 @@ type streamOverhead struct {
 	parseNs        atomic.Int64 // per-event SSE JSON decode CPU
 	convertNs      atomic.Int64 // per-event provider->Bifrost struct mapping CPU
 	backpressureNs atomic.Int64 // time blocked handing a chunk to the transport (downstream/client backpressure)
+
+	// Totals when the current stream attempt began, so a fallback's row excludes earlier attempts' work.
+	attemptParseNs        atomic.Int64
+	attemptConvertNs      atomic.Int64
+	attemptBackpressureNs atomic.Int64
+}
+
+// StreamTotals is a snapshot of a request's stream overhead counters.
+type StreamTotals struct {
+	Parse        time.Duration
+	Convert      time.Duration
+	Backpressure time.Duration
+}
+
+// MarkStreamAttemptStart snapshots the stream counters as a new stream attempt begins.
+// No-op without a stream accumulator.
+func (bc *BifrostContext) MarkStreamAttemptStart() {
+	acc := streamOverheadFrom(bc)
+	if acc == nil {
+		return
+	}
+	acc.attemptParseNs.Store(acc.parseNs.Load())
+	acc.attemptConvertNs.Store(acc.convertNs.Load())
+	acc.attemptBackpressureNs.Store(acc.backpressureNs.Load())
+}
+
+// GetStreamAttemptStart returns the stream counters as they stood when the current
+// attempt began: the work earlier attempts of this request already recorded.
+func GetStreamAttemptStart(ctx context.Context) (StreamTotals, bool) {
+	acc := streamOverheadFrom(ctx)
+	if acc == nil {
+		return StreamTotals{}, false
+	}
+	return StreamTotals{
+		Parse:        time.Duration(acc.attemptParseNs.Load()),
+		Convert:      time.Duration(acc.attemptConvertNs.Load()),
+		Backpressure: time.Duration(acc.attemptBackpressureNs.Load()),
+	}, true
 }
 
 // ResetStreamOverhead installs a fresh accumulator on ctx. Call once at stream

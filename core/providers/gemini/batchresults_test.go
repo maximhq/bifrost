@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -442,4 +443,38 @@ func TestGeminiBatchResponsesWithoutMetadataDoNotPanic(t *testing.T) {
 	require.Len(t, listed.Data, 2)
 	assert.Equal(t, "batches/a", listed.Data[0].ID)
 	assert.Equal(t, schemas.BatchStatusCompleted, listed.Data[1].Status)
+}
+
+// A raw GenAI batch carries generationConfig per inline request, and the model only in
+// the URL. Each item's thinkingBudget has to be translated for gemini-4 before the batch
+// is submitted, or Google rejects the whole job.
+func TestGeminiBatchCreateRewritesInlineThinkingBudgetForGemini4(t *testing.T) {
+	t.Parallel()
+
+	var gotBody []byte
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"name":"batches/x","metadata":{"name":"batches/x","state":"BATCH_STATE_PENDING","createTime":"2026-07-01T00:00:00Z"}}`))
+	}))
+	defer ts.Close()
+
+	provider := NewGeminiProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: ts.URL + "/v1beta"},
+	}, testNoopLogger{})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+	raw := `{"batch":{"displayName":"argon","inputConfig":{"requests":{"requests":[` +
+		`{"request":{"contents":[{"parts":[{"text":"a"}]}],"generationConfig":{"thinkingConfig":{"includeThoughts":true,"thinkingBudget":4096}}},"metadata":{"key":"1"}},` +
+		`{"request":{"contents":[{"parts":[{"text":"b"}]}]},"metadata":{"key":"2"}}]}}}}`
+	_, _ = provider.BatchCreate(ctx, schemas.Key{Value: *schemas.NewSecretVar("dummy-key")}, &schemas.BifrostBatchCreateRequest{
+		Provider:       schemas.Gemini,
+		Model:          schemas.Ptr("gemini-4-argon"),
+		RawRequestBody: []byte(raw),
+	})
+
+	want := `{"batch":{"displayName":"argon","inputConfig":{"requests":{"requests":[` +
+		`{"request":{"contents":[{"parts":[{"text":"a"}]}],"generationConfig":{"thinkingConfig":{"includeThoughts":true,"thinkingLevel":"medium"}}},"metadata":{"key":"1"}},` +
+		`{"request":{"contents":[{"parts":[{"text":"b"}]}]},"metadata":{"key":"2"}}]}}}}`
+	assert.Equal(t, want, string(gotBody))
 }

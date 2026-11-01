@@ -387,13 +387,15 @@ func (h *MCPServerHandler) setInstructions(ctx context.Context, field *string) {
 // buildServer builds the one server every caller is served from, with no tools yet.
 func (h *MCPServerHandler) buildServer() *server.MCPServer {
 	hooks := &server.Hooks{}
+	hooks.AddAfterListTools(h.narrowListedTools)
 	hooks.AddAfterInitialize(h.forwardServerInstructions)
 	hooks.AddAfterDiscover(h.forwardDiscoverInstructions)
 
+	// No WithToolFilter: mcp-go also applies a tool filter to tools/call and answers "not found" before
+	// Bifrost runs, which skips the MCP pre-hooks (governance, logging). tools/list is narrowed by
+	// narrowListedTools instead, and tools/call is decided by Bifrost.
 	options := []server.ServerOption{
 		server.WithToolCapabilities(true),
-		// Per-request tool filter so tools/list answers with what this request may see.
-		server.WithToolFilter(h.makeIncludeClientsFilter()),
 	}
 	if h.served != nil {
 		options = append(options, h.resourcesAndPromptsOptions(hooks)...)
@@ -569,22 +571,20 @@ func derefOr(value *string, fallback string) string {
 	return *value
 }
 
-// makeIncludeClientsFilter returns a ToolFilterFunc that narrows tools/list to what the request's
-// context permits: the include lists the caller sent (x-bf-mcp-include-clients,
-// x-bf-mcp-include-tools) and the tool list the request was admitted with, which admit stamps on the
-// same key. When the context carries neither the filter is a no-op.
-func (h *MCPServerHandler) makeIncludeClientsFilter() server.ToolFilterFunc {
-	return func(ctx context.Context, tools []mcp.Tool) []mcp.Tool {
-		if !requestNarrowed(ctx) {
-			return tools
-		}
-		return keepAllowed(tools, func(t mcp.Tool) string { return t.Name }, h.toolManager.GetAvailableMCPTools(ctx), func(t schemas.ChatTool) string {
-			if t.Function == nil {
-				return ""
-			}
-			return t.Function.Name
-		})
+// narrowListedTools narrows a tools/list answer to what the request's context permits: the include
+// lists the caller sent (x-bf-mcp-include-clients, x-bf-mcp-include-tools) and the tool list the
+// request was admitted with, which admit stamps on the same key. A no-op when the context carries
+// neither. It edits the page mcp-go built, so the server must not paginate tools/list.
+func (h *MCPServerHandler) narrowListedTools(ctx context.Context, _ any, _ *mcp.ListToolsRequest, result *mcp.ListToolsResult) {
+	if result == nil || !requestNarrowed(ctx) {
+		return
 	}
+	result.Tools = keepAllowed(result.Tools, func(t mcp.Tool) string { return t.Name }, h.toolManager.GetAvailableMCPTools(ctx), func(t schemas.ChatTool) string {
+		if t.Function == nil {
+			return ""
+		}
+		return t.Function.Name
+	})
 }
 
 // Admission

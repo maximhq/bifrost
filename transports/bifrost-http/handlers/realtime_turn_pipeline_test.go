@@ -181,3 +181,56 @@ func TestMapRealtimeWireErrorFields(t *testing.T) {
 		})
 	}
 }
+
+// TestUpdateRealtimeSessionTracksVoiceType pins that the session keeps the voice's type beside its
+// name, so Voice Live pricing can tell an Azure voice from the model's own.
+func TestUpdateRealtimeSessionTracksVoiceType(t *testing.T) {
+	session := bfws.NewSession(nil)
+	for _, tc := range []struct {
+		name, raw, wantVoice, wantType string
+	}{
+		{"object voice", `{"type":"session.update","session":{"voice":{"name":"en-US-AvaNeural","type":"azure-standard"}}}`, "en-US-AvaNeural", "azure-standard"},
+		{"nested object voice", `{"type":"session.updated","session":{"audio":{"output":{"voice":{"name":"en-US-Ava","type":"azure-custom"}}}}}`, "en-US-Ava", "azure-custom"},
+		{"string voice clears the type", `{"type":"session.update","session":{"voice":"alloy"}}`, "alloy", ""},
+	} {
+		event, err := schemas.ParseRealtimeEvent([]byte(tc.raw))
+		assert.NoError(t, err, tc.name)
+		updateRealtimeSessionFromEvent(session, event)
+		assert.Equal(t, tc.wantVoice, session.RealtimeVoice(), tc.name)
+		assert.Equal(t, tc.wantType, session.RealtimeVoiceType(), tc.name)
+	}
+}
+
+// TestApplyVoiceLivePricing pins how a Voice Live turn's audio is split for pricing: output audio from
+// an Azure standard voice is Standard Speech, from a custom or personal voice Custom Speech, and from
+// the model's own voice LLM audio. Input audio is Standard Speech for a model that does not hear
+// audio natively (Azure speech to text transcribes it) and LLM audio for a realtime model.
+func TestApplyVoiceLivePricing(t *testing.T) {
+	for _, tc := range []struct {
+		name, model, voiceType         string
+		wantInputStandard              int
+		wantOutputStandard, wantCustom int
+	}{
+		{name: "realtime model with an Azure standard voice", model: "gpt-realtime", voiceType: "azure-standard", wantOutputStandard: 52},
+		{name: "realtime model with its own voice", model: "gpt-realtime-mini", voiceType: "openai"},
+		{name: "realtime model with a custom voice", model: "gpt-realtime", voiceType: "azure-custom", wantCustom: 52},
+		{name: "realtime model with a personal voice", model: "gpt-realtime", voiceType: "azure-personal", wantCustom: 52},
+		{name: "azure-realtime native voice", model: "azure-realtime", voiceType: "azure-realtime-native"},
+		{name: "text model with an Azure standard voice", model: "gpt-4.1", voiceType: "azure-standard", wantInputStandard: 50, wantOutputStandard: 52},
+		{name: "text model without a voice type speaks through Azure", model: "gpt-5", wantInputStandard: 50, wantOutputStandard: 52},
+	} {
+		resp := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{Usage: &schemas.ResponsesResponseUsage{
+			InputTokens:         70,
+			OutputTokens:        66,
+			InputTokensDetails:  &schemas.ResponsesResponseInputTokens{TextTokens: 20, AudioTokens: 50},
+			OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{TextTokens: 14, AudioTokens: 52},
+		}}}
+		applyVoiceLivePricing(resp, tc.voiceType, tc.model)
+		r := resp.ResponsesResponse
+		assert.Equal(t, schemas.PricingSurfaceVoiceLive, r.ExtraFields.PricingSurface, tc.name)
+		assert.Equal(t, tc.wantInputStandard, r.Usage.InputTokensDetails.StandardSpeechAudioTokens, tc.name)
+		assert.Zero(t, r.Usage.InputTokensDetails.CustomSpeechAudioTokens, tc.name)
+		assert.Equal(t, tc.wantOutputStandard, r.Usage.OutputTokensDetails.StandardSpeechAudioTokens, tc.name)
+		assert.Equal(t, tc.wantCustom, r.Usage.OutputTokensDetails.CustomSpeechAudioTokens, tc.name)
+	}
+}

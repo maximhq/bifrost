@@ -53,6 +53,10 @@ type VideoPricingDimensions struct {
 	// (Runware does). It wins over every rate below.
 	ProviderCost *float64 `json:"provider_cost,omitempty"`
 
+	// OutputTokens is the provider's metered output for the job (Seedance's
+	// completion_tokens). Only the terminal response reports it.
+	OutputTokens int `json:"output_tokens,omitempty"`
+
 	// Extra carries request knobs that are not modeled above yet. It is the
 	// research hatch: capture a provider-specific parameter here as soon as it
 	// looks price-relevant, and promote it to a typed field once its rate is
@@ -102,6 +106,9 @@ func (d VideoPricingDimensions) MergedWith(observed VideoPricingDimensions) Vide
 	}
 	if observed.ProviderCost != nil {
 		out.ProviderCost = observed.ProviderCost
+	}
+	if observed.OutputTokens > 0 {
+		out.OutputTokens = observed.OutputTokens
 	}
 	for key, value := range observed.Extra {
 		if out.Extra == nil {
@@ -155,7 +162,11 @@ func (s *Store) CalculateVideoCostDetails(dims VideoPricingDimensions, provider 
 	// bill on factor or megapixels instead, and no rate for those is published to
 	// the catalog yet — so they resolve to unpriced rather than being silently
 	// billed as if they were a per-second generation of the same length.
-	breakdown := computeVideoCost(pricing, nil, dims.Seconds, dims.Size, dims.OutputCount, serviceTier{})
+	var usage *schemas.BifrostLLMUsage
+	if dims.OutputTokens > 0 {
+		usage = &schemas.BifrostLLMUsage{CompletionTokens: dims.OutputTokens}
+	}
+	breakdown := computeVideoCost(pricing, usage, dims.Seconds, dims.Size, dims.OutputCount, serviceTier{})
 	if breakdown == nil || breakdown.TotalCost <= 0 {
 		return VideoCostDetails{}
 	}
@@ -191,9 +202,12 @@ func VideoDimensionsFromResponse(resp *schemas.BifrostVideoGenerationResponse) V
 			dims.Seconds = &seconds
 		}
 	}
-	if resp.Usage != nil && resp.Usage.Cost != nil && resp.Usage.Cost.TotalCost > 0 {
-		total := resp.Usage.Cost.TotalCost
-		dims.ProviderCost = &total
+	if resp.Usage != nil {
+		if resp.Usage.Cost != nil && resp.Usage.Cost.TotalCost > 0 {
+			total := resp.Usage.Cost.TotalCost
+			dims.ProviderCost = &total
+		}
+		dims.OutputTokens = resp.Usage.OutputTokens
 	}
 	return dims
 }

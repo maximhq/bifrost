@@ -51,6 +51,7 @@ transports/bifrost-http/v1.5.x
 # Test reports
 test-reports
 tests/e2e/api/newman-reports
+tests/e2e/api/collections/mcp-harness.json
 
 # AI Agent specific
 settings.local.json

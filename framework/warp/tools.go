@@ -1009,11 +1009,23 @@ func truncateText(text string, limit int) string {
 	count := 0
 	for i := range text {
 		if count == limit {
-			return text[:i] + "... [truncated]"
+			return text[:i] + truncationMarker
 		}
 		count++
 	}
-	return text + "... [truncated]"
+	return text + truncationMarker
+}
+
+// truncationMarker is what truncateText appends to a value it cut.
+const truncationMarker = "... [truncated]"
+
+// fitText cuts text like truncateText, but so the result, marker included, is
+// at most limit characters.
+func fitText(text string, limit int) string {
+	if utf8.RuneCountInString(text) <= limit {
+		return text
+	}
+	return truncateText(text, max(limit-utf8.RuneCountInString(truncationMarker), 0))
 }
 
 // logRow is the projection query_logs returns. The full logstore.Log carries
@@ -1098,7 +1110,7 @@ func projectLog(entry *logstore.Log, includeContent bool, contentLimit int) logR
 		}
 	}
 	if includeContent {
-		row.Content = truncateText(logContent(entry), contentLimit)
+		row.Content = logContent(entry, contentLimit)
 	}
 	return row
 }
@@ -1111,41 +1123,76 @@ func derefFloat(value *float64) float64 {
 	return *value
 }
 
-// logContent renders a compact text view of a request.
+// logContent renders what a request was about within limit characters: the
+// person's first turn, their latest one, and the reply.
 //
 // ContentHidden is the hard gate. It means content logging was disabled for that
 // request, so the payload must never be served back through any API — a promise
 // the deployment made to whoever's data this is. Warp is an API like any other,
 // and a model is the last place a hidden payload should resurface.
 //
-// Otherwise it prefers ContentSummary, the stored last-user-message preview,
-// which is already bounded. Reconstructing the full message history would
-// reintroduce exactly the size problem this projection exists to solve.
-func logContent(entry *logstore.Log) string {
+// It reads the person's own turns, with a coding agent's envelopes taken out,
+// rather than ContentSummary. The plain store's summary is every message joined
+// from the top, and a coding agent's request opens with its system prompt and
+// the project's AGENTS.md, so a preview cut from the front showed only the
+// agent's setup and never the task. The summary is the fallback for a row that
+// carries no history, such as a non-chat request, or only a list row's last
+// element with no user turn in it.
+//
+// The first turn is usually the task and the latest says where it went, so
+// the two share most of the budget; whatever a short section leaves unused
+// passes to the ones after it.
+func logContent(entry *logstore.Log, limit int) string {
 	if entry.ContentHidden {
 		return ""
 	}
-	if entry.ContentSummary != "" {
-		return entry.ContentSummary
+	opening, last := conversationUserTexts(entry)
+	assistant := strings.Join(strings.Fields(logAssistantText(entry)), " ")
+	hasHistory := len(entry.InputHistoryParsed) > 0 || len(entry.ResponsesInputHistoryParsed) > 0
+	if !hasHistory && assistant == "" {
+		return fitText(summaryTurnText(entry.ContentSummary, isCodexLog(entry)), limit)
 	}
-	// ChatMessage.Content is a pointer and is routinely nil - a tool-call turn
-	// carries none, and an offloaded payload leaves the parsed history empty.
-	// Every access below is guarded because this walks logged traffic, which is
-	// the least predictable data in the system.
-	var builder strings.Builder
-	for _, message := range entry.InputHistoryParsed {
-		if message.Content != nil && message.Content.ContentStr != nil {
-			builder.WriteString(string(message.Role))
-			builder.WriteString(": ")
-			builder.WriteString(*message.Content.ContentStr)
-			builder.WriteString("\n")
+	lastLabel := "user"
+	if opening != "" {
+		lastLabel = "user (latest turn)"
+	}
+	sections := [...]struct {
+		label, text string
+		share       int
+	}{
+		{"user (first turn)", opening, 2},
+		{lastLabel, last, 2},
+		{"assistant", assistant, 1},
+	}
+	// The labels and the newlines between sections come out of the limit
+	// first, so what is shared out is only what the text can use.
+	shares, remaining := 0, limit
+	for _, section := range sections {
+		if section.text != "" {
+			if shares > 0 {
+				remaining--
+			}
+			shares += section.share
+			remaining -= utf8.RuneCountInString(section.label) + len(": ")
 		}
 	}
-	if entry.OutputMessageParsed != nil && entry.OutputMessageParsed.Content != nil && entry.OutputMessageParsed.Content.ContentStr != nil {
-		builder.WriteString("assistant: ")
-		builder.WriteString(*entry.OutputMessageParsed.Content.ContentStr)
+	remaining = max(remaining, 0)
+	var builder strings.Builder
+	for _, section := range sections {
+		if section.text == "" {
+			continue
+		}
+		text := fitText(section.text, remaining*section.share/shares)
+		shares -= section.share
+		remaining -= utf8.RuneCountInString(text)
+		if builder.Len() > 0 {
+			builder.WriteByte('\n')
+		}
+		builder.WriteString(section.label)
+		builder.WriteString(": ")
+		builder.WriteString(text)
 	}
-	return strings.TrimSpace(builder.String())
+	return builder.String()
 }
 
 // bucketSize picks the bucket width, reusing the same helper the dashboard

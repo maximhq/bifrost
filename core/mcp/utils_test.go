@@ -381,6 +381,53 @@ func TestGetInjectedTool(t *testing.T) {
 	assert.ErrorContains(t, err, "disabled")
 }
 
+// fakeCodeMode serves one code-mode tool, executeToolCode.
+type fakeCodeMode struct{ CodeMode }
+
+func (fakeCodeMode) IsCodeModeTool(toolName string) bool { return toolName == "executeToolCode" }
+
+// A code-mode tool is listed only when the request can reach a code-mode client, so calling it
+// by name must be refused under the same rule.
+func TestPrepareToolExecution_CodeModeToolNeedsAReachableCodeModeClient(t *testing.T) {
+	m := newManagerWithInstructions(t)
+	addCodeModeClient(t, m, "codey")
+	m.toolsManager.SetCodeMode(fakeCodeMode{})
+	name := "executeToolCode"
+	request := &schemas.BifrostMCPRequest{
+		RequestType:                  schemas.MCPRequestTypeChatToolCall,
+		ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{Function: schemas.ChatAssistantMessageToolCallFunction{Name: &name}},
+	}
+	for _, tc := range []struct {
+		name    string
+		include []string
+		wantErr bool
+	}{
+		{"not narrowed", nil, false},
+		{"narrowed to the code-mode client", []string{"codey"}, false},
+		{"narrowed away from the code-mode client", []string{"alpha"}, true},
+		{"no code-mode client at all, not narrowed", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if tc.include != nil {
+				ctx.SetValue(schemas.MCPContextKeyIncludeClients, tc.include)
+			}
+			if tc.name == "no code-mode client at all, not narrowed" {
+				m.mu.Lock()
+				delete(m.clientMap, "codey-id")
+				m.mu.Unlock()
+			}
+			_, _, release, err := m.prepareToolExecution(ctx, request)
+			if tc.wantErr {
+				assert.ErrorContains(t, err, "not permitted")
+				return
+			}
+			require.NoError(t, err)
+			release()
+		})
+	}
+}
+
 func TestCheckToolExecutionPermitted_InjectedToolBypassesFilters(t *testing.T) {
 	m := injectedToolTestManager(schemas.MCPConnectionStateHealthy)
 	state := m.clientMap["id-tavily"]

@@ -123,13 +123,21 @@ func (h *MCPHandler) getMCPClientOpenAPISpec(ctx *fasthttp.RequestCtx) {
 	ctx.SetBodyString(spec)
 }
 
+// The clients spec downloads use, by caller. An unauthenticated caller chose the URL, so its fetch
+// uses the strict client, which also refuses a proxied destination the local resolver cannot answer
+// instead of leaving it to the proxy (a redirect could otherwise reach a private address through it).
+var (
+	newUnauthenticatedSpecClient = network.NewStrictSSRFSafeHTTPClient
+	newAuthenticatedSpecClient   = network.NewPrivateNetworkHTTPClient
+)
+
 // fetchOpenAPISpecForCaller downloads spec_url on the caller's behalf with the
 // same network posture connection_string gets: a caller let through with no
 // credential check (auth bypassed) may only reach public addresses, and the
-// download itself goes through the SSRF-safe client; an authenticated admin may
-// point at private hosts. Returns the document's final URL after redirects
-// (what relative servers resolve against) and, on error, the HTTP status to
-// answer with.
+// download itself goes through the strict SSRF-safe client; an authenticated
+// admin may point at private hosts. Returns the document's final URL after
+// redirects (what relative servers resolve against) and, on error, the HTTP
+// status to answer with.
 func fetchOpenAPISpecForCaller(ctx *fasthttp.RequestCtx, specURL string) ([]byte, string, int, error) {
 	authBypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool)
 	var client *http.Client
@@ -137,9 +145,9 @@ func fetchOpenAPISpecForCaller(ctx *fasthttp.RequestCtx, specURL string) ([]byte
 		if msg, refused := privateTargetRefusal(specURL); refused {
 			return nil, "", fasthttp.StatusForbidden, errors.New(msg)
 		}
-		client = network.NewSSRFSafeHTTPClient(openAPISpecFetchTimeout)
+		client = newUnauthenticatedSpecClient(openAPISpecFetchTimeout)
 	} else {
-		client = network.NewPrivateNetworkHTTPClient(openAPISpecFetchTimeout)
+		client = newAuthenticatedSpecClient(openAPISpecFetchTimeout)
 	}
 	fetchCtx, cancel := context.WithTimeout(context.Background(), openAPISpecFetchTimeout)
 	defer cancel()

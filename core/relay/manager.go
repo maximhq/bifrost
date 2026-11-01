@@ -58,7 +58,7 @@ type Manager struct {
 	releasePipeline func(PluginPipeline)
 
 	// globalProxy returns the proxy an endpoint without its own inherits, nil for none.
-	globalProxy func() *schemas.ProxyConfig
+	globalProxy func() (*schemas.ProxyConfig, error)
 	logger      schemas.Logger
 }
 
@@ -80,8 +80,9 @@ func (m *Manager) SetPluginPipeline(acquire func() PluginPipeline, release func(
 }
 
 // SetGlobalProxy sets the source of the proxy inherited by endpoints with no proxy_config. It takes
-// effect on the next Upsert of each endpoint.
-func (m *Manager) SetGlobalProxy(fn func() *schemas.ProxyConfig) {
+// effect on the next Upsert of each endpoint. An error from it refuses those endpoints rather than
+// letting them go direct around a proxy that is on but cannot be read.
+func (m *Manager) SetGlobalProxy(fn func() (*schemas.ProxyConfig, error)) {
 	m.writeMu.Lock()
 	defer m.writeMu.Unlock()
 	m.globalProxy = fn
@@ -96,7 +97,10 @@ func (m *Manager) Upsert(cfg *schemas.RelayConfig) error {
 	}
 	proxy := cfg.ProxyConfig
 	if proxy == nil && m.globalProxy != nil {
-		proxy = m.globalProxy()
+		var err error
+		if proxy, err = m.globalProxy(); err != nil {
+			return fmt.Errorf("%w: global proxy: %w", ErrInvalidConfig, err)
+		}
 	}
 	e, err := newEndpoint(cfg, proxy)
 	if err != nil {
@@ -143,7 +147,11 @@ func (m *Manager) Replace(cfgs []*schemas.RelayConfig) error {
 		}
 		proxy := cfg.ProxyConfig
 		if proxy == nil && m.globalProxy != nil {
-			proxy = m.globalProxy()
+			var err error
+			if proxy, err = m.globalProxy(); err != nil {
+				errs = append(errs, fmt.Sprintf("%s: global proxy: %v", cfg.Name, err))
+				continue
+			}
 		}
 		e, err := newEndpoint(cfg, proxy)
 		if err != nil {

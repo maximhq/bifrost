@@ -5552,3 +5552,70 @@ func TestMigrationAddMCPClientExposeListsColumns_RollbackRefuses(t *testing.T) {
 	require.Error(t, err, "dropping the allow-lists would serve everything they restrict")
 	require.Contains(t, err.Error(), "non-rollbackable")
 }
+
+func TestMigrationAddVoiceLivePricingColumns(t *testing.T) {
+	s := setupRDBTestStore(t)
+	db := s.DB()
+	ctx := context.Background()
+
+	// A pre-upgrade pricing table: no Voice Live columns.
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS governance_model_pricing (
+		id TEXT PRIMARY KEY, model TEXT, provider TEXT, mode TEXT,
+		input_cost_per_token REAL
+	)`).Error)
+	for _, column := range voiceLivePricingColumns {
+		require.False(t, db.Migrator().HasColumn("governance_model_pricing", column), "column %s should not exist yet", column)
+	}
+
+	require.NoError(t, migrationAddVoiceLivePricingColumns(ctx, db, testMigrationLogger))
+	for _, column := range voiceLivePricingColumns {
+		require.True(t, db.Migrator().HasColumn("governance_model_pricing", column), "column %s missing after migration", column)
+	}
+
+	// Rolling deploys re-run migrations; a second pass must be a no-op.
+	require.NoError(t, migrationAddVoiceLivePricingColumns(ctx, db, testMigrationLogger))
+}
+
+// TestMigrationAddVoiceLivePricingColumns_RollbackRefuses pins the down path: the columns hold
+// operator-set Voice Live rates, so a rollback must refuse instead of dropping them, leaving the
+// schema intact (the same contract as add_video_token_pricing_column).
+func TestMigrationAddVoiceLivePricingColumns_RollbackRefuses(t *testing.T) {
+	s := setupRDBTestStore(t)
+	db := s.DB()
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableModelPricing{}))
+	require.NoError(t, migrationAddVoiceLivePricingColumns(ctx, db, testMigrationLogger))
+
+	err := rollbackVoiceLivePricingColumns(ctx, db, testMigrationLogger)
+	require.Error(t, err, "rollback must refuse: dropping the columns deletes stored Voice Live rates")
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	for _, column := range voiceLivePricingColumns {
+		assert.True(t, db.Migrator().HasColumn("governance_model_pricing", column), "a refused rollback must leave column %s intact", column)
+	}
+}
+
+// TestMigrationAddVoiceLivePricingColumns_RunsOnContext pins that the migrator itself runs on ctx (its
+// migration-record insert carries the caller's ctx, not only the column adds) and that the outer
+// error keeps its cause wrapped.
+func TestMigrationAddVoiceLivePricingColumns_RunsOnContext(t *testing.T) {
+	type probeKey struct{}
+	ctx := context.WithValue(context.Background(), probeKey{}, "boot")
+
+	db := setupRDBTestStore(t).DB()
+	require.NoError(t, db.AutoMigrate(&tables.TableModelPricing{}))
+	var recordCtx any
+	require.NoError(t, db.Callback().Create().Before("gorm:create").Register("test:record_ctx", func(tx *gorm.DB) {
+		if tx.Statement.Table == "migrations" {
+			recordCtx = tx.Statement.Context.Value(probeKey{})
+		}
+	}))
+	require.NoError(t, migrationAddVoiceLivePricingColumns(ctx, db, testMigrationLogger))
+	assert.Equal(t, "boot", recordCtx, "the migration record must be written on the caller's ctx")
+
+	failing := setupRDBTestStore(t).DB()
+	errProbe := errors.New("probe failure")
+	require.NoError(t, failing.Callback().Raw().Before("gorm:raw").Register("test:fail_exec", func(tx *gorm.DB) {
+		tx.AddError(errProbe)
+	}))
+	require.ErrorIs(t, migrationAddVoiceLivePricingColumns(ctx, failing, testMigrationLogger), errProbe)
+}

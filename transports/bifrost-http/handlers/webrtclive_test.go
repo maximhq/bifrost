@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -231,6 +232,75 @@ func TestLiveWebRTCServerEventPermissionsApplyToGatewayErrors(t *testing.T) {
 			assert.Contains(t, string(frames[0].payload), "private policy failure")
 		})
 	}
+}
+
+// The refusal is OpenAI's own, live-probed 2026-10-28; Azure rejects session.client, so the
+// gateway is the only enforcement there.
+func TestLiveWebRTCClientEventPermissions(t *testing.T) {
+	t.Parallel()
+	const refusal = `{"type":"error","error":{"type":"invalid_request_error","code":"event_not_allowed","message":"This event is not allowed on the frontend data channel.","client_event_id":"evt_1"}}`
+	for _, tc := range []struct {
+		name, value string
+		allowed     []string
+		invalid     bool
+	}{
+		{name: "omitted", allowed: []string{"session.input_audio.mute", "session.commentary.append", "session.future", ""}},
+		{name: "all", value: `"all"`, allowed: []string{"session.input_audio.mute", "session.commentary.append", "session.future", ""}},
+		{name: "none", value: `[]`},
+		{name: "mute only", value: `["session.input_audio.mute"]`, allowed: []string{"session.input_audio.mute"}},
+		{name: "future event", value: `["session.future"]`, allowed: []string{"session.future"}},
+		{name: "null", value: `null`, invalid: true},
+		{name: "wrong string", value: `"none"`, invalid: true},
+		{name: "object", value: `{}`, invalid: true},
+		{name: "selector object", value: `[{"type":"session.close"}]`, invalid: true},
+		{name: "numeric entry", value: `[1]`, invalid: true},
+		{name: "empty entry", value: `[""]`, invalid: true},
+		{name: "long entry", value: `["` + strings.Repeat("x", 257) + `"]`, invalid: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session := `{"model":"gpt-live-1"}`
+			if tc.value != "" {
+				session = `{"model":"gpt-live-1","client":{"data_channel":{"allowed_client_events":` + tc.value + `}}}`
+			}
+			filter, bifrostErr := liveWebRTCClientEvents([]byte(`{"session":` + session + `,"transport":{"type":"webrtc","sdp":"offer"}}`))
+			if tc.invalid {
+				require.NotNil(t, bifrostErr)
+				assert.Equal(t, 400, *bifrostErr.StatusCode)
+				assert.Contains(t, bifrostErr.Error.Message, "session.client.data_channel.allowed_client_events")
+				return
+			}
+			require.Nil(t, bifrostErr)
+			for _, kind := range []string{"session.input_audio.mute", "session.commentary.append", "session.future", ""} {
+				messages := &liveWebRTCMessages{relay: &webrtcRelay{}, clientEvents: filter}
+				messages.liveSessionController = &liveSessionController{io: messages}
+				message := `{"type":"` + kind + `","event_id":"evt_1"}`
+				messages.fromBrowser(messages.relay, webrtc.DataChannelMessage{IsString: true, Data: []byte(message)})
+				if slices.Contains(tc.allowed, kind) {
+					require.Len(t, messages.relay.pendingToUpstream, 1)
+					assert.Equal(t, message, string(messages.relay.pendingToUpstream[0].payload))
+					assert.Empty(t, messages.relay.pendingToDownstream)
+					continue
+				}
+				assert.Empty(t, messages.relay.pendingToUpstream, "a refused event must not reach the provider: %s", message)
+				require.Len(t, messages.relay.pendingToDownstream, 1)
+				assert.Equal(t, refusal, string(messages.relay.pendingToDownstream[0].payload))
+			}
+		})
+	}
+}
+
+// The gateway's own close is not a frontend event, so a list without session.close cannot keep a
+// departed browser's session open.
+func TestLiveWebRTCClientEventPermissionsSkipGatewayClose(t *testing.T) {
+	t.Parallel()
+	filter, bifrostErr := liveWebRTCClientEvents([]byte(`{"session":{"client":{"data_channel":{"allowed_client_events":[]}}}}`))
+	require.Nil(t, bifrostErr)
+	messages := &liveWebRTCMessages{relay: &webrtcRelay{}, clientEvents: filter}
+	messages.liveSessionController = &liveSessionController{io: messages, upstreamDone: make(chan struct{}), drainTimeout: time.Hour}
+	messages.browserGone(messages.relay)
+	t.Cleanup(messages.stopDrainTimer)
+	require.Len(t, messages.relay.pendingToUpstream, 1)
+	assert.Equal(t, `{"type":"session.close"}`, string(messages.relay.pendingToUpstream[0].payload))
 }
 
 // webrtcTestPeer is one end of a pion connection with its data channel's messages collected.
@@ -696,6 +766,30 @@ func TestLiveWebRTCSetupFailureSettlesCreatedSession(t *testing.T) {
 			assert.Nil(t, setupErr.ExtraFields.BilledUsage, "settlement does not mutate the caller's error")
 			if tc.refuse {
 				assert.Nil(t, last.err.ExtraFields.BilledUsage, "an upstream refusal incurred no usage")
+			}
+		})
+	}
+}
+
+// BenchmarkLiveWebRTCFromBrowser is the per-event cost of a browser data-channel message, with
+// and without the frontend's client event permissions.
+func BenchmarkLiveWebRTCFromBrowser(b *testing.B) {
+	message := webrtc.DataChannelMessage{IsString: true, Data: []byte(`{"type":"session.input_audio.mute","event_id":"evt_1"}`)}
+	for _, tc := range []struct{ name, body string }{
+		{name: "unrestricted", body: `{"session":{}}`},
+		{name: "allowed", body: `{"session":{"client":{"data_channel":{"allowed_client_events":["session.input_audio.mute"]}}}}`},
+		{name: "refused", body: `{"session":{"client":{"data_channel":{"allowed_client_events":["session.close"]}}}}`},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			filter, bifrostErr := liveWebRTCClientEvents([]byte(tc.body))
+			require.Nil(b, bifrostErr)
+			messages := &liveWebRTCMessages{relay: &webrtcRelay{}, clientEvents: filter}
+			messages.liveSessionController = &liveSessionController{io: messages}
+			b.ReportAllocs()
+			for b.Loop() {
+				messages.fromBrowser(messages.relay, message)
+				messages.relay.pendingToUpstream = messages.relay.pendingToUpstream[:0]
+				messages.relay.pendingToDownstream = messages.relay.pendingToDownstream[:0]
 			}
 		})
 	}

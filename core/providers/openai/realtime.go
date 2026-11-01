@@ -1094,3 +1094,16 @@ func ExtractNestedVoice(audioRaw json.RawMessage) string {
 	}
 	return ""
 }
+
+// ExtractNestedVoiceType returns the type of the session.audio.output.voice object, or empty.
+func ExtractNestedVoiceType(audioRaw json.RawMessage) string {
+	var audio struct {
+		Output struct {
+			Voice schemas.RealtimeVoice `json:"voice"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(audioRaw, &audio); err == nil {
+		return audio.Output.Voice.GetType()
+	}
+	return ""
+}

@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Pause, Play, Download } from "lucide-react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 
 interface AudioPlayerProps {
 	src: string;
@@ -8,6 +9,7 @@ interface AudioPlayerProps {
 }
 
 const AudioPlayer = ({ src, format }: AudioPlayerProps) => {
+	const { t } = useTranslation("observability");
 	const [isPlaying, setIsPlaying] = useState(false);
 	const [audio] = useState<HTMLAudioElement | null>(typeof window !== "undefined" ? new Audio() : null);
 	const [error, setError] = useState<string | null>(null);
@@ -86,7 +88,7 @@ const AudioPlayer = ({ src, format }: AudioPlayerProps) => {
 			});
 		} catch (err) {
 			console.error("Failed to decode audio data:", err);
-			setError("Failed to decode audio data. The audio file may be corrupted.");
+			setError(t("logs.media.decodeAudioFailed"));
 			return null;
 		}
 	};
@@ -105,7 +107,7 @@ const AudioPlayer = ({ src, format }: AudioPlayerProps) => {
 			audio.src = audioUrl;
 			audio.play().catch((err) => {
 				console.error("Failed to play audio:", err);
-				setError("Failed to play audio. Please try again.");
+				setError(t("logs.media.playAudioFailed"));
 				setIsPlaying(false);
 			});
 			setIsPlaying(true);
@@ -151,12 +153,12 @@ const AudioPlayer = ({ src, format }: AudioPlayerProps) => {
 			<div className="flex items-center gap-2">
 				<Button onClick={handlePlayPause} variant="outline" size="sm" className="flex items-center gap-2" disabled={!!error}>
 					{isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-					{isPlaying ? "Pause" : "Play"}
+					{isPlaying ? t("logs.media.pause") : t("logs.media.play")}
 				</Button>
 
 				<Button onClick={handleDownload} variant="outline" size="sm" className="flex items-center gap-2" disabled={!!error}>
 					<Download className="h-4 w-4" />
-					Download
+					{t("logs.detail.download")}
 				</Button>
 			</div>
 			{error && <div className="text-sm text-red-500">{error}</div>}

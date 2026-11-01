@@ -626,17 +626,26 @@ type postHookSpanTracer struct {
 }
 
 func (t *postHookSpanTracer) StartSpan(ctx context.Context, name string, kind schemas.SpanKind) (context.Context, schemas.SpanHandle) {
+	t.record(name)
+	return t.NoOpTracer.StartSpan(ctx, name, kind)
+}
+
+func (t *postHookSpanTracer) StartSpanID(ctx context.Context, name string, kind schemas.SpanKind) (string, schemas.SpanHandle) {
+	t.record(name)
+	return t.NoOpTracer.StartSpanID(ctx, name, kind)
+}
+
+func (t *postHookSpanTracer) record(name string) {
 	if strings.HasSuffix(name, ".posthook") {
 		t.mu.Lock()
 		t.spans = append(t.spans, name)
 		t.mu.Unlock()
 	}
-	return t.NoOpTracer.StartSpan(ctx, name, kind)
 }
 
-// Stream post-hooks only accumulate timing; spans come from finalizing the
-// pipeline. The worker's final error hooks for a held-back error must finalize
-// theirs, or a request whose retries all fail traces no post-hook span.
+// A stream opens each plugin's post-hook span on its first hook and finalizing ends
+// it. The worker's final error hooks for a held-back error must do the same, or a
+// request whose retries all fail traces no post-hook span.
 func TestStreamRetriesExhaustedTraceErrorPostHooks(t *testing.T) {
 	server := httptest.NewServer(sseHandler(streamRateLimitEvent))
 	defer server.Close()
