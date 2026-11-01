@@ -60,7 +60,7 @@ func TestNormalizeRawGenerateContentRequestForCompatibility(t *testing.T) {
 	t.Run("keeps valid audio and logprobs, removes penalties", func(t *testing.T) {
 		raw := []byte(`{"contents":[{"parts":[{"text":"Transcribe"},{"inlineData":{"mimeType":"audio/wav","data":"UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA="}}]}],"generationConfig":{"responseLogprobs":true,"logprobs":3,"presencePenalty":0.5,"frequencyPenalty":0.5,"temperature":0.2}}`)
 
-		got := NormalizeRawGenerateContentRequestForCompatibility(raw)
+		got := NormalizeRawGenerateContentRequestForCompatibility(nil, raw, schemas.Gemini, "")
 
 		assert.Equal(t, `{"contents":[{"parts":[{"text":"Transcribe"},{"inlineData":{"mimeType":"audio/wav","data":"UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA="}}]}],"generationConfig":{"responseLogprobs":true,"logprobs":3,"temperature":0.2}}`, string(got))
 	})
@@ -68,7 +68,7 @@ func TestNormalizeRawGenerateContentRequestForCompatibility(t *testing.T) {
 	t.Run("accepts url safe base64 audio", func(t *testing.T) {
 		raw := []byte(`{"contents":[{"parts":[{"inlineData":{"mimeType":"audio/wav","data":"AA-_"}}]}]}`)
 
-		got := NormalizeRawGenerateContentRequestForCompatibility(raw)
+		got := NormalizeRawGenerateContentRequestForCompatibility(nil, raw, schemas.Gemini, "")
 
 		assert.Equal(t, string(raw), string(got))
 	})
@@ -76,7 +76,7 @@ func TestNormalizeRawGenerateContentRequestForCompatibility(t *testing.T) {
 	t.Run("removes invalid audio-only content entries", func(t *testing.T) {
 		raw := []byte(`{"contents":[{"parts":[{"inlineData":{"mimeType":"audio/wav","data":"***"}}]},{"parts":[{"text":"keep"}]}]}`)
 
-		got := NormalizeRawGenerateContentRequestForCompatibility(raw)
+		got := NormalizeRawGenerateContentRequestForCompatibility(nil, raw, schemas.Gemini, "")
 
 		assert.Equal(t, `{"contents":[{"parts":[{"text":"keep"}]}]}`, string(got))
 	})
@@ -254,4 +254,76 @@ func TestToBifrostCountTokensResponseCachedContent(t *testing.T) {
 		assert.Equal(t, 100, got.InputTokensDetails.TextTokens)
 		assert.Zero(t, got.InputTokensDetails.AudioTokens)
 	})
+}
+
+// BenchmarkNormalizeRawGenerateContentRequestForCompatibility measures the raw /genai
+// normalizer on the request path: a body without a thinking budget (the common case,
+// which must only pay the field probes), a Gemini 3 budget that is kept, and a Gemini 4
+// budget that is rewritten to a level.
+func BenchmarkNormalizeRawGenerateContentRequestForCompatibility(b *testing.B) {
+	const contents = `"contents":[{"role":"user","parts":[{"text":"Summarise the attached design notes in three bullet points."}]},` +
+		`{"role":"model","parts":[{"text":"Here are the three points you asked for."}]},` +
+		`{"role":"user","parts":[{"text":"Now list the open questions."}]}]`
+	cases := []struct {
+		name  string
+		model string
+		body  []byte
+	}{
+		{"no thinking budget", "gemini-4-argon", []byte(`{` + contents + `,"generationConfig":{"temperature":1,"maxOutputTokens":8192}}`)},
+		{"gemini 3 budget kept", "gemini-3.8-flash", []byte(`{` + contents + `,"generationConfig":{"temperature":1,"thinkingConfig":{"includeThoughts":true,"thinkingBudget":4096},"maxOutputTokens":8192}}`)},
+		{"gemini 4 budget rewritten", "gemini-4-argon", []byte(`{` + contents + `,"generationConfig":{"temperature":1,"thinkingConfig":{"includeThoughts":true,"thinkingBudget":4096},"maxOutputTokens":8192}}`)},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = NormalizeRawGenerateContentRequestForCompatibility(nil, tc.body, schemas.Gemini, tc.model)
+			}
+		})
+	}
+}
+
+// A batch whose items need no rewrite must cost what it cost before the batch rewrite
+// existed: an empty model skips the rewrite entirely, so it is the baseline.
+func TestRawBatchThinkingRewriteAllocatesNothingWhenUnchanged(t *testing.T) {
+	cases := []struct {
+		name  string
+		model string
+		body  []byte
+	}{
+		{"gemini 4 batch without a budget", "gemini-4-argon", []byte(`{"batch":{"displayName":"b","inputConfig":{"requests":{"requests":[` +
+			`{"request":{"contents":[{"parts":[{"text":"a"}]}],"generationConfig":{"temperature":1}},"metadata":{"key":"1"}},` +
+			`{"request":{"contents":[{"parts":[{"text":"b"}]}]},"metadata":{"key":"2"}}]}}}}`)},
+		{"gemini 3 batch keeps its budget", "gemini-3.8-flash", []byte(`{"batch":{"displayName":"b","inputConfig":{"requests":{"requests":[` +
+			`{"request":{"contents":[{"parts":[{"text":"a"}]}],"generationConfig":{"thinkingConfig":{"thinkingBudget":4096}}},"metadata":{"key":"1"}},` +
+			`{"request":{"contents":[{"parts":[{"text":"b"}]}]},"metadata":{"key":"2"}}]}}}}`)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			baseline := testing.AllocsPerRun(200, func() {
+				_ = NormalizeRawGenerateContentRequestForCompatibility(nil, tc.body, schemas.Gemini, "")
+			})
+			got := testing.AllocsPerRun(200, func() {
+				_ = NormalizeRawGenerateContentRequestForCompatibility(nil, tc.body, schemas.Gemini, tc.model)
+			})
+			assert.Equal(t, baseline, got, "an unchanged batch must not allocate for the thinking rewrite")
+			assert.Equal(t, string(tc.body), string(NormalizeRawGenerateContentRequestForCompatibility(nil, tc.body, schemas.Gemini, tc.model)))
+		})
+	}
+}
+
+// The items before the first rewritten one are carried over as one slice of the body,
+// so the commas and the untouched items around a rewritten item must survive byte for byte.
+func TestRawBatchThinkingRewriteKeepsItemsAroundARewrittenOne(t *testing.T) {
+	body := []byte(`{"batch":{"inputConfig":{"requests":{"requests":[` +
+		`{"request":{"contents":[{"parts":[{"text":"a"}]}]},"metadata":{"key":"1"}}, ` +
+		`{"request":{"contents":[{"parts":[{"text":"b"}]}],"generationConfig":{"thinkingConfig":{"thinkingBudget":20000}}},"metadata":{"key":"2"}},` +
+		`{"request":{"contents":[{"parts":[{"text":"c"}]}],"generationConfig":{"temperature":1}},"metadata":{"key":"3"}}]}}}}`)
+	want := `{"batch":{"inputConfig":{"requests":{"requests":[` +
+		`{"request":{"contents":[{"parts":[{"text":"a"}]}]},"metadata":{"key":"1"}}, ` +
+		`{"request":{"contents":[{"parts":[{"text":"b"}]}],"generationConfig":{"thinkingConfig":{"thinkingLevel":"high"}}},"metadata":{"key":"2"}},` +
+		`{"request":{"contents":[{"parts":[{"text":"c"}]}],"generationConfig":{"temperature":1}},"metadata":{"key":"3"}}]}}}}`
+	got := NormalizeRawGenerateContentRequestForCompatibility(nil, body, schemas.Gemini, "gemini-4-argon")
+	assert.Equal(t, want, string(got))
+	require.True(t, json.Valid(got))
 }

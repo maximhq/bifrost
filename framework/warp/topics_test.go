@@ -205,15 +205,19 @@ func TestWarpSystemPromptSaysWhatTopicsCannotAnswer(t *testing.T) {
 		`"this week against last week" is one call`,
 		"The requests behind a topic are reached with topic_ids",
 		"never guess one",
-		"sessions are sessions, not people",
+		"Sessions are sessions, not people",
 		"list_topics with group_by theme",
 		"the themes are the answer and the topics the detail",
-		"is not available yet",
+		"call query_usage_by with dimension user, topic_ids set to that id",
+		"count the rows other than unassigned",
+		"do not offer the feature-request link for it",
+		"unassigned and other take rows of the 20 like any user",
+		`say "at least" that count, never "at least 20"`,
 		"Do not rebuild a topic breakdown",
 	} {
 		require.Contains(t, content, line)
 	}
-	for _, gone := range []string{"Topics are a snapshot", "a different time range", "Call list_topics once"} {
+	for _, gone := range []string{"Topics are a snapshot", "a different time range", "Call list_topics once", "the rest is not available yet", `"at least 20" when 20 rows came back`} {
 		require.NotContains(t, content, gone)
 	}
 	require.Contains(t, content, "link each topic's name to its own link")
@@ -1648,7 +1652,7 @@ func TestWarpListTopicsToolReturnsSortedTopics(t *testing.T) {
 	big := topics[0]
 	require.Equal(t, "Refund requests", big.Label)
 	require.EqualValues(t, 9, big.Requests)
-	require.InDelta(t, 9.0/14, big.Share, 1e-9, "a share of every request in the window, the unmatched ones included")
+	require.InDelta(t, 9.0/14, big.Share, 1e-4, "a share of every request in the window, the unmatched ones included, rounded to what an answer quotes")
 	require.EqualValues(t, 5, big.Sessions)
 	require.EqualValues(t, 1, big.Errors)
 	require.InDelta(t, 4.5, big.Cost, 1e-9)
@@ -1691,8 +1695,11 @@ func TestWarpListTopicsToolReturnsSortedTopics(t *testing.T) {
 	require.Contains(t, out["counts"], "count requests")
 	require.Contains(t, out["trend"], "previous_window")
 	require.Contains(t, out["requests"], "topic_ids")
-	require.NotContains(t, out["cannot_answer"], "every request in a topic")
-	require.NotContains(t, out["cannot_answer"], "time range")
+	_, declines := out["cannot_answer"]
+	require.False(t, declines, "nothing a topic question asks is declined any more")
+	require.Contains(t, out["people"], "query_usage_by with dimension user, topic_ids")
+	require.Contains(t, out["people"], "other than unassigned and other")
+	require.Contains(t, out["people"], `never "at least 20"`, "unassigned and other fill rows of the limit, so a full ranking is not 20 users")
 
 	// Each row links to its own requests, over the window the count ran on,
 	// so a name that says nine opens nine.
@@ -1852,7 +1859,7 @@ func TestWarpListTopicsToolGroupsByTheme(t *testing.T) {
 	out := result.(map[string]any)
 	_, flat := out["topics"]
 	require.False(t, flat, "grouped, the topics come inside their themes")
-	themes := out["themes"].([]TopicTheme)
+	themes := out["themes"].([]listedTheme)
 	require.Len(t, themes, 2)
 	require.Equal(t, 2, out["total_themes"])
 	require.Equal(t, 2, out["returned"])
@@ -1861,16 +1868,22 @@ func TestWarpListTopicsToolGroupsByTheme(t *testing.T) {
 	require.EqualValues(t, 11, billing.Requests, "6 refunds, 3 invoices, 2 under the topic merged into invoices")
 	require.EqualValues(t, 3, billing.Sessions)
 	require.InDelta(t, 11, billing.Cost, 1e-9)
-	require.InDelta(t, 11.0/23, billing.Share, 1e-9, "of every request in the window")
+	require.InDelta(t, 11.0/23, billing.Share, 1e-4, "of every request in the window")
 	require.True(t, billing.Trend.HasPreviousPeriod)
 	require.EqualValues(t, 2, billing.Trend.PreviousRequests)
 	require.InDelta(t, 450, billing.Trend.RequestsTrend, 1e-9)
 	require.Contains(t, billing.Link, "topic_ids=money")
 	require.Len(t, billing.Topics, 2)
+	require.Equal(t, 2, billing.TopicCount)
 	require.Equal(t, "Refund requests", billing.Topics[0].Label)
-	require.Equal(t, "Billing", billing.Topics[0].Theme)
-	require.Equal(t, "money", billing.Topics[0].ThemeID)
 	require.Contains(t, billing.Topics[0].Link, "topic_ids=refunds")
+	// Inside a theme a topic is named, sized and linked only: its full counts
+	// and examples are one group_by topic call away, and repeating them for
+	// every topic is what pushed the answer past MaxToolResultBytes.
+	encodedThemes, err := sonic.MarshalString(themes)
+	require.NoError(t, err)
+	require.NotContains(t, encodedThemes, "example_links")
+	require.Contains(t, encodedThemes, `"topics":[{"id":"refunds","label":"Refund requests","requests":6,`)
 	require.EqualValues(t, 5, billing.Topics[1].Requests, "3 of its own and 2 merged in")
 	var inSeries int64
 	for _, point := range billing.Series {
@@ -1891,7 +1904,7 @@ func TestWarpListTopicsToolGroupsByTheme(t *testing.T) {
 	require.Contains(t, ungrouped[0].Link, "topic_ids=weather")
 	require.Equal(t, int64(23), out["total_requests"])
 	require.Contains(t, out["links"], "theme's link")
-	require.NotContains(t, out["cannot_answer"], "themes")
+	require.Contains(t, out["people"], "topic or theme")
 	_, hasHint := out["hint"]
 	require.False(t, hasHint)
 
@@ -1925,6 +1938,84 @@ func TestWarpListTopicsToolGroupsByTheme(t *testing.T) {
 	require.Contains(t, out["hint"], "not grouped into themes")
 }
 
+// The concrete failure this pins: at the Warp e2e deployment's size (31
+// topics in 6 themes, UUID ids, 4 examples each) list_topics with no limit
+// serialized past MaxToolResultBytes, so boundToolResult discarded it and told
+// the model to lower the limit. It retried at 15, 8, 2, 1 - one question, up to
+// seven calls - on the overview, time-range, trend and themes questions alike.
+// The defaults have to fit, or "one call answers it" is never true.
+func TestWarpListTopicsToolDefaultsFitTheResultBudget(t *testing.T) {
+	store := topicTestLogStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	labels := []string{
+		"Train Travel Time Calculations", "Password Reset Emails", "Shipping Delay Customer Updates", "NDA Confidentiality Clause",
+		"Resume Bullet Improvement", "Assistant Time Zone Questions", "Subscription Renewal Translations", "Customer Feedback Analysis",
+		"Lighthouse Keeper Mystery Story", "Refund Policy Explanations", "Invoice Dispute Replies", "SQL Query Optimisation",
+		"Kubernetes Pod Crash Debugging", "Python Type Error Fixes", "Marketing Email Subject Lines", "Product Description Rewrites",
+		"Meeting Notes Summaries", "Quarterly Report Drafting", "Recipe Scaling Conversions", "Travel Itinerary Planning",
+		"Contract Termination Clauses", "GDPR Data Request Replies", "Onboarding Checklist Drafts", "API Rate Limit Errors",
+		"React Hook Dependency Bugs", "Interview Question Prep", "Cover Letter Drafting", "Budget Spreadsheet Formulas",
+		"Social Media Captions", "Bug Report Triage", "Release Notes Writing",
+	}
+	var topics []logstore.WarpTopic
+	var themeIDs []string
+	for index := range 6 {
+		id := uuid.NewString()
+		themeIDs = append(themeIDs, id)
+		topics = append(topics, logstore.WarpTopic{ID: id, Label: fmt.Sprintf("Broad Area Number %d", index), Kind: logstore.WarpTopicKindTheme, EmbeddingSignature: topicTestSignature()})
+	}
+	var rows []logstore.WarpTopicAssignment
+	for index, label := range labels {
+		id := uuid.NewString()
+		examples := []string{uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()}
+		encoded, err := sonic.MarshalString(examples)
+		require.NoError(t, err)
+		topics = append(topics, logstore.WarpTopic{
+			ID: id, Label: label, ParentID: themeIDs[index%len(themeIDs)], Cohesion: 0.71234,
+			ExampleLogIDsJSON: encoded, EmbeddingSignature: topicTestSignature(), CreatedAt: now.Add(-20 * 24 * time.Hour),
+		})
+		for _, logID := range examples {
+			rows = append(rows, logstore.WarpTopicAssignment{LogID: logID, TopicID: id, Timestamp: now.Add(-time.Duration(index+1) * time.Hour), SessionID: uuid.NewString(), Cost: 0.0123, TotalTokens: 1234, Latency: 2345})
+		}
+		rows = append(rows, logstore.WarpTopicAssignment{LogID: uuid.NewString(), TopicID: id, Timestamp: now.Add(-10 * 24 * time.Hour), Cost: 0.0123, TotalTokens: 1234, Latency: 2345})
+	}
+	require.NoError(t, store.UpsertWarpTopics(ctx, topics))
+	require.NoError(t, store.UpsertWarpTopicAssignments(ctx, rows))
+
+	for _, args := range []map[string]any{
+		{"filters": map[string]any{"start_time": "-7d", "scope": "all"}},
+		{"filters": map[string]any{"start_time": "-24h", "scope": "all"}},
+		{"filters": map[string]any{"start_time": "-7d", "scope": "all"}, "group_by": "theme"},
+	} {
+		result, err := runTool(t, "list_topics", topicToolDeps(store, now), args)
+		require.NoError(t, err)
+		bound := boundToolResult(result)
+		require.NotContains(t, bound, "result too large", "args %v: the default answer must reach the model", args)
+		out := result.(map[string]any)
+		_, trimmed := out["trimmed"]
+		require.False(t, trimmed, "args %v: the defaults fit whole, not by cutting rows", args)
+		if themes, ok := out["themes"].([]listedTheme); ok {
+			require.Len(t, themes, 6, "every theme, each with its topics")
+		} else {
+			require.Len(t, out["topics"], 15, "the default limit")
+		}
+	}
+
+	// Past what fits, the smallest rows are cut and the answer says so, rather
+	// than the whole answer being discarded.
+	result, err := runTool(t, "list_topics", topicToolDeps(store, now), map[string]any{"filters": map[string]any{"start_time": "-7d", "scope": "all"}, "limit": float64(31)})
+	require.NoError(t, err)
+	out := result.(map[string]any)
+	require.NotContains(t, boundToolResult(result), "result too large")
+	topicsListed := out["topics"].([]Topic)
+	require.Less(t, len(topicsListed), 31)
+	require.Greater(t, len(topicsListed), 15)
+	require.Equal(t, len(topicsListed), out["returned"])
+	require.Equal(t, 31, out["total_topics"])
+	require.Contains(t, out["trimmed"], "did not fit in one answer")
+}
+
 func TestWarpListTopicsToolHintsWhenNothingComputed(t *testing.T) {
 	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
 	store := topicTestLogStore(t)
@@ -1944,6 +2035,178 @@ func TestWarpListTopicsToolHintsWhenNothingComputed(t *testing.T) {
 	require.Empty(t, out["topics"])
 	require.Contains(t, out["hint"], "no request in this window")
 	require.Equal(t, int64(0), out["total_requests"])
+}
+
+// realisticTopicLister answers with topics shaped like a real deployment's:
+// uuid ids, four examples each, a long label, unrounded floats, and every
+// topic in a theme. Built to reproduce the e2e failure where a default
+// list_topics call serialized past MaxToolResultBytes, was replaced by "result
+// too large", and the model retried or switched tools.
+type realisticTopicLister struct {
+	themes, topicsPerTheme int
+	// seriesStart is where an asked-for series begins: one point per bucket
+	// from there to the window's end, traffic in every one.
+	seriesStart time.Time
+}
+
+func (l realisticTopicLister) series(query TopicQuery) []TopicPoint {
+	if query.BucketSeconds <= 0 {
+		return nil
+	}
+	var points []TopicPoint
+	bucket := time.Duration(query.BucketSeconds) * time.Second
+	for at := l.seriesStart.Truncate(bucket); at.Before(*query.Filter.EndTime); at = at.Add(bucket) {
+		points = append(points, TopicPoint{Bucket: at, Requests: 25, Errors: 1, Cost: 0.123456789012, Tokens: 12345})
+	}
+	return points
+}
+
+func (l realisticTopicLister) topic(theme, index int) Topic {
+	var ids, links []string
+	for example := range topicsLabelSamples {
+		id := fmt.Sprintf("0b1c2d3e-4f50-4617-8293-%06d%06d", theme*100+index, example)
+		ids = append(ids, id)
+		links = append(links, logDetailLink(id))
+	}
+	trend := 12.345678901234
+	return Topic{
+		ID: fmt.Sprintf("8f3c2a1e-4b5d-4c6e-9f70-%012d", theme*100+index), Label: "Debugging Kubernetes Deployment Rollouts",
+		ThemeID: fmt.Sprintf("aa3c2a1e-4b5d-4c6e-9f70-%012d", theme), Theme: "Infrastructure and DevOps",
+		Requests: int64(5000 - theme*100 - index), Share: 0.081234567890123, Sessions: 87, Errors: 3, Cost: 12.345678901234,
+		Tokens: 1234567, AvgLatency: 2345.678901234, Cohesion: 0.812345678901, FirstSeen: time.Date(2026, 9, 1, 3, 4, 5, 678901234, time.UTC),
+		Trend:        TopicTrend{HasPreviousPeriod: true, PreviousRequests: 1000, RequestsTrend: 23.456789012345, TokensTrend: &trend, CostTrend: &trend},
+		SampleLogIDs: ids, SampleLinks: links,
+	}
+}
+
+func (l realisticTopicLister) ListTopics(_ context.Context, query TopicQuery) (*TopicList, error) {
+	total := l.themes * l.topicsPerTheme
+	list := &TopicList{Known: total, Matched: total, MatchedThemes: l.themes, TotalRequests: 400000}
+	if query.ByTheme {
+		for theme := range min(query.Limit, l.themes) {
+			grouped := TopicTheme{ID: fmt.Sprintf("aa3c2a1e-4b5d-4c6e-9f70-%012d", theme), Label: "Infrastructure and DevOps", Requests: 20000, Share: 0.0512345678901, Series: l.series(query)}
+			for index := range l.topicsPerTheme {
+				grouped.Topics = append(grouped.Topics, l.topic(theme, index))
+			}
+			list.Themes = append(list.Themes, grouped)
+		}
+		return list, nil
+	}
+	for index := range min(query.Limit, total) {
+		topic := l.topic(index/l.topicsPerTheme, index%l.topicsPerTheme)
+		topic.Series = l.series(query)
+		list.Topics = append(list.Topics, topic)
+	}
+	return list, nil
+}
+
+// A list_topics answer has to reach the model. Over the budget the agent loop
+// replaces it with "result too large", which the model reads as a failed call
+// and retries - every topic question then costs two or three calls. The tool
+// sizes its own answer instead: the default call fits whole, and a larger one
+// keeps the largest rows and says how many it left out.
+func TestWarpListTopicsToolFitsTheToolResultBudget(t *testing.T) {
+	deps := func() *ToolDeps {
+		return &ToolDeps{
+			logManager: &fakeLogReader{}, clock: time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC),
+			topics: realisticTopicLister{themes: 12, topicsPerTheme: 5},
+			scope:  Scope{HasIdentity: true, UserID: "admin", Unrestricted: true},
+		}
+	}
+	fits := func(result any) map[string]any {
+		t.Helper()
+		bound := boundToolResult(result)
+		require.NotContains(t, bound, "result too large")
+		require.LessOrEqual(t, len(bound), MaxToolResultBytes)
+		return result.(map[string]any)
+	}
+
+	// The default: fifteen topics, every one of them returned.
+	result, err := runTool(t, "list_topics", deps(), map[string]any{})
+	require.NoError(t, err)
+	out := fits(result)
+	require.Equal(t, 15, out["returned"], "the default call fits whole")
+	require.Equal(t, 60, out["total_topics"])
+	_, trimmed := out["trimmed"]
+	require.False(t, trimmed)
+	_, merged := out["merged"]
+	require.False(t, merged, "no interval, no series to merge")
+	encoded, err := sonic.MarshalString(out)
+	require.NoError(t, err)
+	require.Contains(t, encoded, `"example_links":["`, "examples are still offered")
+	require.NotContains(t, encoded, "example_log_ids", "the links carry the ids already")
+	require.Contains(t, encoded, `"link":"/workspace/logs?`)
+
+	// The most the model can ask for: the largest that fit, and a word on the rest.
+	result, err = runTool(t, "list_topics", deps(), map[string]any{"limit": float64(50)})
+	require.NoError(t, err)
+	out = fits(result)
+	returned := out["returned"].(int)
+	require.Less(t, returned, 50)
+	require.GreaterOrEqual(t, returned, 15)
+	require.Len(t, out["topics"], returned)
+	require.Equal(t, int64(5000), out["topics"].([]Topic)[0].Requests, "the largest are the ones kept")
+	require.Contains(t, out["trimmed"], fmt.Sprintf("%d of the 50", returned))
+
+	// Themes: every theme, each with its topics as names, counts and links.
+	result, err = runTool(t, "list_topics", deps(), map[string]any{"group_by": "theme"})
+	require.NoError(t, err)
+	out = fits(result)
+	require.Equal(t, 12, out["returned"], "every theme fits")
+	require.Equal(t, 12, out["total_themes"])
+	for _, theme := range out["themes"].([]listedTheme) {
+		require.Equal(t, 5, theme.TopicCount, "a theme says how many topics it has even when it lists fewer")
+		require.NotEmpty(t, theme.Topics)
+	}
+	require.Contains(t, out["trimmed"], "topic_count is how many it has", "the topics inside the themes went first, and the answer says so")
+	require.NotContains(t, out["trimmed"], "themes asked for", "no theme was dropped")
+	encoded, err = sonic.MarshalString(out)
+	require.NoError(t, err)
+	require.Contains(t, encoded, `"label":"Debugging Kubernetes Deployment Rollouts"`)
+	require.Contains(t, encoded, "topic_ids=8f3c2a1e-4b5d-4c6e-9f70-000000000000", "a theme's topics still link to their requests")
+
+	// A series can outgrow the budget on its own: 199 hourly points, traffic
+	// in every one, is ~17KB for a single row, so dropping rows cannot fit it.
+	// The series is merged into wider buckets instead, nothing in it lost.
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	for _, groupBy := range []string{"topic", "theme"} {
+		hourly := deps()
+		hourly.topics = realisticTopicLister{themes: 12, topicsPerTheme: 5, seriesStart: now.Add(-199 * time.Hour)}
+		result, err = runTool(t, "list_topics", hourly, map[string]any{"group_by": groupBy, "interval": "hour", "filters": map[string]any{"start_time": "-199h"}})
+		require.NoError(t, err, groupBy)
+		out = fits(result)
+		var series []TopicPoint
+		if groupBy == "theme" {
+			series = out["themes"].([]listedTheme)[0].Series
+		} else {
+			series = out["topics"].([]Topic)[0].Series
+		}
+		require.NotEmpty(t, series, groupBy)
+		require.Less(t, len(series), 199, "%s: merged into wider buckets", groupBy)
+		var requests int64
+		for index, point := range series {
+			requests += point.Requests
+			if index > 0 {
+				require.True(t, point.Bucket.After(series[index-1].Bucket), groupBy)
+			}
+		}
+		require.EqualValues(t, 199*25, requests, "%s: merging keeps every request", groupBy)
+		require.Contains(t, out["merged"], "merged into", groupBy)
+		require.Contains(t, out["merged"], "-hour buckets", groupBy)
+	}
+
+	// One row over the budget on its own: there is no row left to drop, so the
+	// series alone is merged, only as far as it has to be.
+	single := deps()
+	single.topics = realisticTopicLister{themes: 12, topicsPerTheme: 5, seriesStart: now.Add(-199 * time.Hour)}
+	result, err = runTool(t, "list_topics", single, map[string]any{"limit": float64(1), "interval": "hour", "filters": map[string]any{"start_time": "-199h"}})
+	require.NoError(t, err)
+	out = fits(result)
+	require.Equal(t, 1, out["returned"])
+	_, trimmed = out["trimmed"]
+	require.False(t, trimmed, "nothing to drop")
+	require.Contains(t, out["merged"], "2-hour buckets", "one doubling is enough for one row")
+	require.Len(t, out["topics"].([]Topic)[0].Series, 100)
 }
 
 // The list is the active topics of the embedding model Warp is configured
@@ -2037,7 +2300,7 @@ func TestWarpListTopicsServesARestrictedCallerThroughAStoreThatScopesItsReads(t 
 	require.Len(t, topics, 1)
 	require.Equal(t, "Refund requests", topics[0].Label)
 	require.EqualValues(t, 1, topics[0].Requests)
-	require.Equal(t, []string{"ours-1"}, topics[0].SampleLogIDs)
+	require.Equal(t, []string{logDetailLink("ours-1")}, topics[0].SampleLinks)
 	require.Equal(t, int64(1), out["total_requests"])
 }
 
@@ -2105,9 +2368,9 @@ func TestWarpListTopicsAnswersARestrictedCallerFromTheirOwnRequests(t *testing.T
 	require.Len(t, topics, 1)
 	require.Equal(t, "Refund requests", topics[0].Label)
 	require.EqualValues(t, 2, topics[0].Requests)
-	require.InDelta(t, 2.0/3, topics[0].Share, 1e-9, "of the three requests they may see")
-	require.Equal(t, []string{"ours-1"}, topics[0].SampleLogIDs, "the example from another team is not offered")
-	require.Equal(t, []string{logDetailLink("ours-1")}, topics[0].SampleLinks)
+	require.InDelta(t, 2.0/3, topics[0].Share, 1e-4, "of the three requests they may see")
+	require.Equal(t, []string{logDetailLink("ours-1")}, topics[0].SampleLinks, "the example from another team is not offered")
+	require.Nil(t, topics[0].SampleLogIDs, "the ids travel inside example_links")
 	require.Equal(t, int64(3), out["total_requests"])
 	require.Equal(t, int64(1), out["unmatched_requests"])
 	require.Equal(t, "all", out["scope"])

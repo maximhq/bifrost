@@ -347,6 +347,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_warp_vector_deletes_table"}, run: migrationAddWarpVectorDeletesTable},
 	{IDs: []string{"mcp_tool_logs_add_method_column"}, run: migrationAddMethodColumnToMCPToolLogs},
 	{IDs: []string{"add_relay_logs_table"}, run: migrationCreateRelayLogsTable},
+	{IDs: []string{"relay_logs_add_object_columns"}, run: migrationAddRelayLogObjectColumns},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -5993,4 +5994,31 @@ func migrationCreateRelayLogsTable(ctx context.Context, db *gorm.DB, logger sche
 		return fmt.Errorf("error while running %s migration: %s", migrationName, err.Error())
 	}
 	return nil
+}
+
+// migrationAddRelayLogObjectColumns adds the columns the hybrid store uses to keep a Relay
+// Logs row's full bodies in object storage, as agent_logs_add_raw_payload_columns does for
+// Agent logs: a separate step, so a database that already ran add_relay_logs_table gets them.
+func migrationAddRelayLogObjectColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "relay_logs_add_object_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			for _, field := range []string{"PayloadReference", "HasObject"} {
+				if err := addColumnIfNotExists(tx, logger, &RelayLog{}, field); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("relay_logs_add_object_columns is non-rollbackable: dropping the object columns would orphan the bodies already offloaded")
+		},
+	}})
+	return m.Migrate()
 }

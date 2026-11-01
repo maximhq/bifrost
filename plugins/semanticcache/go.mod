@@ -6,9 +6,9 @@ require (
 	github.com/bytedance/sonic v1.15.3-0.20260730064818-2a36d6da63e2
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/google/uuid v1.6.0
-	github.com/maximhq/bifrost/core v1.13.1
-	github.com/maximhq/bifrost/framework v1.10.1
-	github.com/maximhq/bifrost/plugins/mocker v1.6.12
+	github.com/maximhq/bifrost/core v1.14.1
+	github.com/maximhq/bifrost/framework v1.11.1
+	github.com/maximhq/bifrost/plugins/mocker v1.6.14
 )
 
 require (
@@ -44,7 +44,6 @@ require (
 	github.com/canonical/starlark v0.0.0-20260428155828-9a81051fac39 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
-	github.com/dlclark/regexp2 v1.11.4 // indirect
 	github.com/fasthttp/websocket v1.5.12 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect

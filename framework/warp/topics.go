@@ -101,6 +101,10 @@ const (
 	// silently, which is also why the backfill pages at the same size.
 	topicsHydrationBatch = backfillBatchSize
 	topicsMaxListed      = 200
+	// topicsExamplesListed is how many of a topic's examples list_topics
+	// offers. Enough for "examples: 1, 2, 3"; each one more is ~65 bytes per
+	// topic against MaxToolResultBytes.
+	topicsExamplesListed = 3
 	// topicsWriteBatch is how many assignments are written in one call, which
 	// is also how often a run that is writing reports progress.
 	topicsWriteBatch = 5000
@@ -142,6 +146,7 @@ type Topic struct {
 	// Series is the window bucket by bucket, when the caller asked for one.
 	Series       []TopicPoint `json:"series,omitempty"`
 	SampleLogIDs []string     `json:"example_log_ids,omitempty"`
+
 	// SampleLinks each open one of the requests nearest the topic's
 	// centre. Named as examples on the wire, because a link on a row is
 	// otherwise read as "the requests behind this row".
@@ -853,7 +858,7 @@ func listTopicsTool() Tool {
 			"The window defaults to the last 7 days; filters narrow it to a team, customer, user, virtual key, model, provider, app, status or session, like the other tools. " +
 			"Each topic carries requests, share, distinct sessions, errors, cost, tokens, average latency, a trend block against the period of equal length before the window (has_previous_period, requests_trend, tokens_trend, cost_trend), when it was first seen (new_in_window marks one that appeared inside the window), " +
 			"and example_links that each open one example request. With interval, each topic also carries its series, bucket by bucket. " +
-			"With group_by theme, the answer is the themes the topics are grouped into - broad subjects such as Billing over the topics Refund Requests and Invoice Questions - each with the same counts added up over its topics, and the topics inside it; the call for 'what broad areas', 'what kinds of things', or a deployment with too many topics to list. " +
+			"With group_by theme, the answer is the themes the topics are grouped into - broad subjects such as Billing over the topics Refund Requests and Invoice Questions - each with the same counts added up over its topics, and the topics inside it by name, requests, share and link (group_by topic carries a topic's full counts); the call for 'what broad areas', 'what kinds of things', or a deployment with too many topics to list. " +
 			"Requests, shares and sessions count requests and sessions, not people: every model call is one request, so a five-turn chat is five.",
 		schemaJSON: `{
   "type": "object",
@@ -912,9 +917,12 @@ func listTopicsTool() Tool {
 				narrowed.TopicIDs = []string{id}
 				return logsViewLink(&narrowed)
 			}
+			// The example ids already travel inside example_links; sending both
+			// cost a fifth of every row against MaxToolResultBytes.
 			linkTopics := func(topics []Topic) {
 				for index := range topics {
 					topics[index].Link = linkTo(topics[index].ID)
+					topics[index].SampleLogIDs = nil
 				}
 			}
 			linkTopics(list.Topics)
@@ -923,6 +931,8 @@ func listTopicsTool() Tool {
 				list.Themes[index].Link = linkTo(list.Themes[index].ID)
 				linkTopics(list.Themes[index].Topics)
 			}
+			compactTopics(list.Topics)
+			compactTopics(list.Ungrouped)
 			out := map[string]any{
 				"total_requests":     list.TotalRequests,
 				"unmatched_requests": list.Unmatched,
@@ -931,7 +941,7 @@ func listTopicsTool() Tool {
 				"scope":              scopeNote(filters, deps.scope),
 			}
 			if query.ByTheme {
-				out["themes"] = list.Themes
+				out["themes"] = listedThemes(list.Themes)
 				out["returned"] = len(list.Themes)
 				out["total_themes"] = list.MatchedThemes
 				out["ungrouped_topics"] = list.Ungrouped
@@ -957,12 +967,232 @@ func listTopicsTool() Tool {
 				out["links"] = "Each topic's and theme's link opens its requests in the Logs view, over this window and these filters: link the name to it. " +
 					"Each entry of example_links opens one example request from the topic; offer those as examples, after the name."
 				out["requests"] = "For the requests behind a topic or theme - a list, a count, a breakdown, who sent them - call query_logs, count_logs or query_usage_by with topic_ids set to its id and the same window and filters."
-				out["cannot_answer"] = "Not available yet: how many people asked about a topic (sessions are sessions, not people; a query_usage_by user ranking with topic_ids counts the users with a request in it). " +
-					"Asked for that, answer what the topics do show, then say it is not available yet."
+				out["people"] = "sessions are sessions, not people. For how many users had a request in a topic or theme, call query_usage_by with dimension user, topic_ids set to its id, " +
+					"the same window and filters, and limit 20, and count the rows other than unassigned and other - each is one user. " +
+					"unassigned and other take rows of the 20 too, so when 20 rows came back more users may be past the limit: say \"at least\" that count, never \"at least 20\"."
 			}
+			fitTopicResult(out, query.ByTheme, *filters.StartTime, query.BucketSeconds)
 			return out, nil
 		},
 	}
+}
+
+// listedThemeTopic is a topic as it appears inside a theme: the theme carries
+// the counts, trend and series, and its topics are the detail, so each is
+// named, sized and linked and nothing more. Every inner topic in full
+// multiplied a deployment's topics into the answer and pushed it past
+// MaxToolResultBytes; group_by topic carries each topic's full counts.
+type listedThemeTopic struct {
+	ID       string  `json:"id"`
+	Label    string  `json:"label"`
+	Requests int64   `json:"requests"`
+	Share    float64 `json:"share"`
+	New      bool    `json:"new_in_window,omitempty"`
+	Link     string  `json:"link,omitempty"`
+}
+
+// listedTheme is a TopicTheme as list_topics returns it. TopicCount is how many
+// topics the theme holds, which Topics may be fewer than once fitted.
+type listedTheme struct {
+	TopicTheme
+	Topics     []listedThemeTopic `json:"topics"`
+	TopicCount int                `json:"topic_count"`
+}
+
+func listedThemes(themes []TopicTheme) []listedTheme {
+	out := make([]listedTheme, 0, len(themes))
+	for _, theme := range themes {
+		topics := make([]listedThemeTopic, 0, len(theme.Topics))
+		for _, topic := range theme.Topics {
+			topics = append(topics, listedThemeTopic{ID: topic.ID, Label: topic.Label, Requests: topic.Requests, Share: roundTo(topic.Share, 4), New: topic.New, Link: topic.Link})
+		}
+		theme.Topics = nil
+		theme.Share = roundTo(theme.Share, 4)
+		theme.Cost = roundTo(theme.Cost, 6)
+		theme.AvgLatency = roundTo(theme.AvgLatency, 1)
+		theme.Trend = roundTopicTrend(theme.Trend)
+		out = append(out, listedTheme{TopicTheme: theme, Topics: topics, TopicCount: len(topics)})
+	}
+	return out
+}
+
+// compactTopics trims what a topic row spends on digits and repeats: floats
+// rounded to what an answer quotes, and examples cut to topicsExamplesListed.
+func compactTopics(topics []Topic) {
+	for index := range topics {
+		topic := &topics[index]
+		topic.Share = roundTo(topic.Share, 4)
+		topic.Cost = roundTo(topic.Cost, 6)
+		topic.AvgLatency = roundTo(topic.AvgLatency, 1)
+		topic.Cohesion = roundTo(topic.Cohesion, 3)
+		topic.Trend = roundTopicTrend(topic.Trend)
+		topic.SampleLinks = topic.SampleLinks[:min(len(topic.SampleLinks), topicsExamplesListed)]
+	}
+}
+
+func roundTopicTrend(trend TopicTrend) TopicTrend {
+	trend.RequestsTrend = roundTo(trend.RequestsTrend, 1)
+	if trend.TokensTrend != nil {
+		trend.TokensTrend = new(roundTo(*trend.TokensTrend, 1))
+	}
+	if trend.CostTrend != nil {
+		trend.CostTrend = new(roundTo(*trend.CostTrend, 1))
+	}
+	return trend
+}
+
+// fitTopicResult shrinks a list_topics answer until it fits
+// MaxToolResultBytes, and says what it changed.
+//
+// Over the budget, boundToolResult would replace the whole answer with "too
+// large", which the model reads as a failed call: it retries with a lower
+// limit or turns to another tool, so a topic question costs two or three
+// calls. The rows are ranked largest first, so cutting the tail and stating
+// returned against the count asked for is an honest partial answer, not the
+// silently truncated document boundToolResult refuses to send.
+//
+// With themes the topics inside them go first, a rank at a time across every
+// theme, since the themes are the answer and their topics the detail; then
+// the ungrouped topics; then the smallest themes. Each pass re-encodes the
+// answer, which is a tool call's cost, never a gateway request's.
+//
+// A series is a row's largest part - 200 hourly points with traffic in each
+// outgrow the budget in one row - so with an interval the series are merged
+// into wider buckets first, down to about CoarseBuckets points, which still
+// carry the shape of a trend; then rows are dropped; and a single row still
+// over the budget has its series merged further.
+func fitTopicResult(out map[string]any, byTheme bool, start time.Time, bucketSeconds int64) {
+	if fitsToolResult(out) {
+		return
+	}
+	factor := 1
+	if bucketSeconds > 0 {
+		factor = mergeSeriesToFit(out, start, bucketSeconds, factor, CoarseBuckets)
+	}
+	fitTopicRows(out, byTheme)
+	if bucketSeconds > 0 {
+		mergeSeriesToFit(out, start, bucketSeconds, factor, 1)
+	}
+}
+
+// fitTopicRows drops the smallest rows, in the order fitTopicResult gives,
+// until the answer fits or one row is left.
+func fitTopicRows(out map[string]any, byTheme bool) {
+	if fitsToolResult(out) {
+		return
+	}
+	if !byTheme {
+		topics, _ := out["topics"].([]Topic)
+		asked := len(topics)
+		for len(topics) > 1 && !fitsToolResult(out) {
+			topics = topics[:len(topics)-1]
+			out["topics"] = topics
+			out["returned"] = len(topics)
+			out["trimmed"] = fmt.Sprintf("Only the largest %d of the %d topics asked for are here; the rest did not fit in one answer, and total_topics counts them all. "+
+				"Answer from these and say the list is the largest %d. Do not call again to page through the rest.", len(topics), asked, len(topics))
+		}
+		return
+	}
+	themes, _ := out["themes"].([]listedTheme)
+	ungrouped, _ := out["ungrouped_topics"].([]Topic)
+	asked, askedUngrouped := len(themes), len(ungrouped)
+	perTheme := 0
+	for _, theme := range themes {
+		perTheme = max(perTheme, len(theme.Topics))
+	}
+	for !fitsToolResult(out) {
+		switch {
+		case perTheme > 1:
+			perTheme--
+			for index := range themes {
+				themes[index].Topics = themes[index].Topics[:min(len(themes[index].Topics), perTheme)]
+			}
+		case len(ungrouped) > 0:
+			ungrouped = ungrouped[:len(ungrouped)-1]
+			out["ungrouped_topics"] = ungrouped
+		case len(themes) > 1:
+			themes = themes[:len(themes)-1]
+			out["themes"] = themes
+			out["returned"] = len(themes)
+		default:
+			return
+		}
+		cut := []string{fmt.Sprintf("each theme lists only its largest %d topics (topic_count is how many it has)", perTheme)}
+		if len(ungrouped) < askedUngrouped {
+			cut = append(cut, fmt.Sprintf("ungrouped_topics only the largest %d of %d", len(ungrouped), askedUngrouped))
+		}
+		if len(themes) < asked {
+			cut = append(cut, fmt.Sprintf("only the largest %d of the %d themes asked for are returned", len(themes), asked))
+		}
+		out["trimmed"] = "To fit one result, " + strings.Join(cut, "; ") + ". " +
+			"Answer from these and do not call again to page through the rest; the full rows of a theme's topics are list_topics without group_by."
+	}
+}
+
+// mergeSeriesToFit doubles the width of every series' buckets in the answer
+// until it fits or the longest series is down to floor points, and returns
+// the factor it reached. Buckets are aligned to the window's start truncated to
+// the asked bucket, so doubled widths nest and each pass merges whole buckets
+// of the last; no request is lost, only the resolution.
+func mergeSeriesToFit(out map[string]any, start time.Time, bucketSeconds int64, factor, floor int) int {
+	bucket := time.Duration(bucketSeconds) * time.Second
+	origin := start.UTC().Truncate(bucket)
+	for !fitsToolResult(out) {
+		longest := 0
+		forEachTopicSeries(out, func(series *[]TopicPoint) { longest = max(longest, len(*series)) })
+		if longest <= floor {
+			break
+		}
+		factor *= 2
+		width := time.Duration(factor) * bucket
+		forEachTopicSeries(out, func(series *[]TopicPoint) { *series = mergeTopicSeries(*series, origin, width) })
+		unit, count := "hour", factor*int(bucketSeconds/3600)
+		if bucketSeconds >= 86400 {
+			unit, count = "day", factor*int(bucketSeconds/86400)
+		}
+		out["merged"] = fmt.Sprintf("Each series is merged into %d-%s buckets to fit one result; every request is still counted. "+
+			"Read the trend from these and do not call again for finer buckets.", count, unit)
+	}
+	return factor
+}
+
+// forEachTopicSeries visits every series a list_topics answer carries: each
+// topic's, each ungrouped topic's and each theme's.
+func forEachTopicSeries(out map[string]any, visit func(*[]TopicPoint)) {
+	for _, key := range []string{"topics", "ungrouped_topics"} {
+		topics, _ := out[key].([]Topic)
+		for index := range topics {
+			visit(&topics[index].Series)
+		}
+	}
+	themes, _ := out["themes"].([]listedTheme)
+	for index := range themes {
+		visit(&themes[index].Series)
+	}
+}
+
+// mergeTopicSeries sums a series' points into buckets of width aligned to
+// origin. The series is in time order, so equal buckets are adjacent.
+func mergeTopicSeries(series []TopicPoint, origin time.Time, width time.Duration) []TopicPoint {
+	merged := series[:0]
+	for _, point := range series {
+		at := origin.Add(point.Bucket.Sub(origin) / width * width)
+		if n := len(merged); n > 0 && merged[n-1].Bucket.Equal(at) {
+			merged[n-1].Requests += point.Requests
+			merged[n-1].Errors += point.Errors
+			merged[n-1].Cost += point.Cost
+			merged[n-1].Tokens += point.Tokens
+			continue
+		}
+		point.Bucket = at
+		merged = append(merged, point)
+	}
+	return merged
+}
+
+func fitsToolResult(result any) bool {
+	encoded, err := sonic.MarshalString(result)
+	return err == nil && len(encoded) <= MaxToolResultBytes
 }
 
 // RegisterTopics binds the clustering, discovery and upkeep jobs to the shared
