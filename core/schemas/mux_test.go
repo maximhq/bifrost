@@ -161,6 +161,38 @@ func TestToChatMessages_KeepsReasoningThatClosesTheTurn(t *testing.T) {
 	}
 }
 
+func TestToChatMessages_MergesClosingReasoningIntoExistingReasoning(t *testing.T) {
+	reasoning := func(text, signature string) ResponsesMessage {
+		return ResponsesMessage{
+			Type: Ptr(ResponsesMessageTypeReasoning),
+			Role: Ptr(ResponsesInputMessageRoleAssistant),
+			Content: &ResponsesMessageContent{
+				ContentBlocks: []ResponsesMessageContentBlock{
+					{Type: ResponsesOutputMessageContentTypeReasoning, Text: &text, Signature: &signature},
+				},
+			},
+		}
+	}
+
+	chatMessages := ToChatMessages([]ResponsesMessage{
+		{Role: Ptr(ResponsesInputMessageRoleUser), Content: &ResponsesMessageContent{ContentStr: Ptr("hi")}},
+		reasoning("opening ", "sig_a"),
+		{Role: Ptr(ResponsesInputMessageRoleAssistant), Content: &ResponsesMessageContent{ContentStr: Ptr("Hello!")}},
+		reasoning("closing", "sig_b"),
+	})
+
+	if len(chatMessages) != 2 {
+		t.Fatalf("expected user + assistant, got %d messages", len(chatMessages))
+	}
+	assistant := chatMessages[1].ChatAssistantMessage
+	if assistant == nil || assistant.Reasoning == nil || *assistant.Reasoning != "opening closing" {
+		t.Fatalf("closing reasoning missing from Reasoning: %#v", assistant)
+	}
+	if len(assistant.ReasoningDetails) != 2 {
+		t.Fatalf("expected both reasoning runs in ReasoningDetails, got %#v", assistant.ReasoningDetails)
+	}
+}
+
 func TestToChatMessages_AttachesReasoningToToolCallAssistantMessage(t *testing.T) {
 	reasoningText := "I need to call the search tool."
 

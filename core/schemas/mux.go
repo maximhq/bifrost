@@ -1118,6 +1118,10 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 			if last.ChatAssistantMessage == nil {
 				last.ChatAssistantMessage = &ChatAssistantMessage{}
 			}
+			if last.ChatAssistantMessage.Reasoning != nil && pendingReasoning.Len() > 0 {
+				merged := *last.ChatAssistantMessage.Reasoning + pendingReasoning.String()
+				last.ChatAssistantMessage.Reasoning = &merged
+			}
 			attachPendingReasoning(last.ChatAssistantMessage)
 		}
 	}
