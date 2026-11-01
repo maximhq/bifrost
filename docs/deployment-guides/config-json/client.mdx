@@ -196,7 +196,7 @@ Compatibility flags that let Bifrost silently adapt request/response shapes for 
 
 Configure these public base URLs independently. Neither feature derives its public URL from request headers.
 
-Public base URLs for MCP, Agent Gateway, and Skills must use HTTP or HTTPS and must not contain userinfo, query strings, or fragments. Ports and path prefixes are supported. API updates reject invalid URLs without echoing their values. Config loading ignores invalid overrides: Agent Gateway and skills marketplace serving stay disabled, while MCP retains its request-derived callback fallback.
+Public base URLs for MCP, Agent Gateway, and Skills must use HTTP or HTTPS and must not contain userinfo, query strings, or fragments. Ports and path prefixes are supported. When Bifrost is served under a path prefix ([`server.base_path`](/deployment-guides/config-json/schema-reference#server)), include the prefix in these URLs: Bifrost does not add it to URLs you set explicitly. API updates reject invalid URLs without echoing their values. Config loading ignores invalid overrides: Agent Gateway and skills marketplace serving stay disabled, while MCP retains its request-derived callback fallback.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |

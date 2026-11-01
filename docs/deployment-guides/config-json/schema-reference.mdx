@@ -37,6 +37,7 @@ This page is a concise reference for every top-level key in `config.json`. Click
 | `framework` | object | Model pricing catalog URL and sync interval | [Framework](#framework) |
 | `mcp` | object | MCP server and tool configuration | [MCP](#mcp) |
 | `websocket` | object | WebSocket / Realtime API connection pool tuning | [WebSocket](#websocket) |
+| `server` | object | HTTP server settings read at startup: header buffer size, URL path prefix, body buffer pooling, plugin download allowlist, Agent Gateway gRPC | [Server](#server) |
 | `proxy_config` | object | Global outbound proxy and which components use it (SCIM directory sync, inference, API) | [Client](/deployment-guides/config-json/client#global-proxy) |
 | `warp` | object | Warp settings: models, behaviour and limits, log search, and topics | [Warp](/features/warp#configure-warp) |
 | `auth_config` | object | **Deprecated** - use `governance.auth_config` | [Client](/deployment-guides/config-json/client#authentication) |
@@ -568,6 +569,41 @@ Optional tuning for the WebSocket gateway (Responses API WebSocket mode, Realtim
 | `pool.max_total_connections` | `1000` | Max total idle upstream connections |
 | `pool.idle_timeout_seconds` | `600` | Evict idle connections after this many seconds |
 | `pool.max_connection_lifetime_seconds` | `7200` | Max lifetime of any upstream connection |
+
+---
+
+## `server`
+
+HTTP server settings. Every field is deploy-time only: Bifrost reads them once at startup, so a change needs a restart.
+
+```json
+{
+  "server": {
+    "read_buffer_size": 65536,
+    "base_path": "/bifrost",
+    "body_buffer_pool_limit_bytes": 4194304,
+    "plugin_download_private_allowlist": ["artifacts.internal.corp", "10.0.0.0/8"]
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `read_buffer_size` | integer | `65536` | Buffer size in bytes for reading HTTP request headers. Requests whose headers do not fit are rejected with `431`. |
+| `base_path` | string | unset (domain root) | URL path prefix Bifrost is served under behind a reverse proxy, for example `/bifrost` for `https://example.com/bifrost/`. Nested prefixes such as `/tools/llm-gw` work. The `-base-path` flag and the `BIFROST_BASE_PATH` environment variable take precedence. See [Serving under a path prefix](/deployment-guides/how-to/nginx-reverse-proxy#serving-under-a-path-prefix). |
+| `body_buffer_pool_limit_bytes` | integer | `4194304` (4 MiB) | Largest request-body buffer a keep-alive connection keeps for reuse. Larger buffers are released after each request; larger bodies are still accepted. `0` keeps every buffer. Also applies to outbound request buffers. |
+| `plugin_download_private_allowlist` | array of strings | unset | Hostnames, IP addresses or CIDR ranges that custom plugin (`.so`) downloads may reach even when they resolve to a private, loopback, link-local or CGNAT address. Blocked by default to prevent SSRF. Not settable through the plugin API. |
+| `a2a_grpc_base_domain` | string | unset | Base domain for the Agent Gateway's shared gRPC listener. Needs a wildcard DNS record for `*.<base-domain>`. See [Enable gRPC](/features/agent-gateway/configuration#enable-grpc). |
+| `a2a_grpc_port` | integer | unset | Public port advertised for that gRPC listener. gRPC stays off while this or `a2a_grpc_base_domain` is unset. `BIFROST_A2A_GRPC_LISTEN_PORT` overrides the local bind port. |
+| `a2a_allow_private_push_callbacks` | boolean | `false` | Allows Agent push delivery to loopback and private network addresses. For development and test environments only. |
+
+`base_path` rules:
+
+- It must start with `/`. A single trailing `/` is removed, and `""` or `"/"` means the domain root.
+- Segments may only use the characters `A-Z a-z 0-9 - . _ ~`, and may not be `.` or `..`. Surrounding whitespace is rejected, not trimmed.
+- The first segment must not match a Bifrost route (such as `api`, `v1`, `openai` or `health`) or a top-level dashboard path (such as `assets` or `images`). Bifrost refuses to start otherwise.
+- Requests are accepted with or without the prefix, so health checks and probes can stay on `/health`.
+- Public URLs you set explicitly, such as `client.mcp_external_client_url`, `client.a2a_external_client_url` and `client.skills_external_client_url`, must include the prefix themselves.
 
 ---
 
