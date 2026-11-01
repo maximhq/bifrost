@@ -37,6 +37,7 @@
 		"dumpErrorsHelp": "Wenn aktiviert, werden vollständige Fehlerdetails in den Server-Konsoleprotokollen geschrieben. Nutzbar für Debugging, aber kann im Produktivumgebung lautlos sein.",
 		"asyncJobTtl": "Async-Aufgaben Ergebnis TTL (Sekunden)",
 		"asyncJobTtlHelp": "Standardzeit zum Automatischen Löschen von async-Aufgabenergebnissen in Sekunden. Ergebnisse werden nach Expire-Zeit automatisch gelöscht.",
+		"languageHelp": "Anzeigesprache des Dashboards. Wird in diesem Browser gespeichert und sofort angewendet.",
 		"headerForwarding": "Header-Übertragung",
 		"headerForwardingHelp": "Stelle fest, welche zusätzlichen Headers an LLM-Anbieter übertragen werden sollen.",
 		"aboutHeaderForwarding": "Über den Header-Übertragung",

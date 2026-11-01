@@ -37,6 +37,7 @@
 		"dumpErrorsHelp": "启用后，完整错误详情会写入服务器控制台日志。便于调试，但在生产环境可能噪音较大。",
 		"asyncJobTtl": "异步任务结果 TTL（秒）",
 		"asyncJobTtlHelp": "异步任务结果的默认存活时间（秒）。过期后结果会自动清理。",
+		"languageHelp": "控制台的显示语言。保存在此浏览器中，并立即生效。",
 		"headerForwarding": "请求头转发",
 		"headerForwardingHelp": "控制哪些额外请求头会转发到 LLM 提供商。",
 		"aboutHeaderForwarding": "关于请求头转发",

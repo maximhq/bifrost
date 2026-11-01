@@ -37,6 +37,7 @@
 		"dumpErrorsHelp": "啟用後，完整錯誤詳情會寫入伺服器控制台日誌。便於除錯，但在生產環境可能噪音較大。",
 		"asyncJobTtl": "非同步任務結果 TTL（秒）",
 		"asyncJobTtlHelp": "非同步任務結果的預設存活時間（秒）。過期後結果會自動清理。",
+		"languageHelp": "控制台的顯示語言。儲存在此瀏覽器中，並立即生效。",
 		"headerForwarding": "請求頭轉發",
 		"headerForwardingHelp": "控制哪些額外請求頭會轉發到 LLM 供應商。",
 		"aboutHeaderForwarding": "關於請求頭轉發",

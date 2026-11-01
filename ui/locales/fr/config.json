@@ -37,6 +37,7 @@
 		"dumpErrorsHelp": "Si cette option est activée, les détails complets des erreurs sont écrits dans les journaux console du serveur. Utile pour le débogage, mais peut être bruyant en production.",
 		"asyncJobTtl": "TTL des résultats de tâches asynchrones (secondes)",
 		"asyncJobTtlHelp": "Durée de vie par défaut des résultats de tâches asynchrones, en secondes. Les résultats sont automatiquement nettoyés à expiration.",
+		"languageHelp": "Langue d'affichage du tableau de bord. Enregistrée dans ce navigateur et appliquée immédiatement.",
 		"headerForwarding": "Transfert d’en-têtes",
 		"headerForwardingHelp": "Contrôlez quels en-têtes supplémentaires sont transférés aux fournisseurs LLM.",
 		"aboutHeaderForwarding": "À propos du transfert d’en-têtes",

@@ -1237,7 +1237,10 @@ func TestBuildTLSHTTPClientUsesGlobalProxy(t *testing.T) {
 	// MCP allows private networks (local MCP servers) but never instance metadata.
 	set.Reset()
 	req, _ = http.NewRequestWithContext(ctx, http.MethodGet, "https://169.254.169.254/sse", nil)
-	_, err = httpClient.Do(req)
+	resp, err := httpClient.Do(req)
+	if err == nil {
+		resp.Body.Close()
+	}
 	require.Error(t, err, "a metadata address must be refused")
 	proxytest.AssertRoute(t, set, proxytest.Direct, "", nil)
 }

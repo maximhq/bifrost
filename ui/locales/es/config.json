@@ -37,6 +37,7 @@
 		"dumpErrorsHelp": "Si está habilitado, los detalles completos de error se escriben en los registros de consolas del servidor. Útil para depurar, pero puede ser ruidoso en la producción.",
 		"asyncJobTtl": "Resultado del trabajo de Async TTL (segundos)",
 		"asyncJobTtlHelp": "Tiempo a vida predeterminado para resultados de trabajo asinc en segundos. Los resultados se limpian automáticamente después de la expiración.",
+		"languageHelp": "Idioma de visualización del panel. Se guarda en este navegador y se aplica al instante.",
 		"headerForwarding": "Reenvío de cabeceras",
 		"headerForwardingHelp": "Controlar los encabezados adicionales se envían a los proveedores de LLM.",
 		"aboutHeaderForwarding": "Acerca de la cabecera de reenvío",

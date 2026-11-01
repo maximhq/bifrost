@@ -37,6 +37,7 @@
 		"dumpErrorsHelp": "활성화되면 전체 오류 세부 정보가 서버 콘솔 로그에 기록돼요. 디버깅에는 유용하지만 프로덕션 환경에서는 노이즈가 발생할 수 있어요.",
 		"asyncJobTtl": "비동기 작업 결과 TTL(초)",
 		"asyncJobTtlHelp": "비동기 작업의 기본 수명은 초 단위이에요. 결과는 만료 후 자동으로 정리돼요.",
+		"languageHelp": "대시보드 표시 언어예요. 이 브라우저에 저장되고 바로 적용돼요.",
 		"headerForwarding": "헤더 전달",
 		"headerForwardingHelp": "LLM 제공업체에 전달되는 추가 헤더를 제어해요.",
 		"aboutHeaderForwarding": "헤더 전달 정보",

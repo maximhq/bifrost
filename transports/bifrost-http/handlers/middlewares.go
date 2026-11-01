@@ -178,9 +178,118 @@ func panicSummary(r any) string {
 	return fmt.Sprintf("%T", r)
 }
 
-// ServerRootHandler wraps the router with the server-level middlewares.
+// ServerRootHandler wraps the router with the server-level middlewares. The
+// base-path middleware is added outermost only when server.base_path is
+// configured, so the default chain is unchanged.
 func ServerRootHandler(cors *CorsMiddleware, config *lib.Config, router fasthttp.RequestHandler) fasthttp.RequestHandler {
-	return SecurityHeadersMiddleware()(cors.Middleware()(RecoveryMiddleware(cors)(RequestDecompressionMiddleware(config)(router))))
+	return BasePathRootHandler(config, SecurityHeadersMiddleware()(cors.Middleware()(RecoveryMiddleware(cors)(RequestDecompressionMiddleware(config)(router)))))
+}
+
+// BasePathRootHandler wraps a server's root handler with the base-path strip
+// when server.base_path is configured, and returns next unchanged otherwise.
+// ServerRootHandler applies it; a build that assembles its own root chain
+// instead of calling ServerRootHandler wraps that chain with it, once and
+// outermost. Wrapping a chain that already went through ServerRootHandler
+// would strip the prefix twice.
+func BasePathRootHandler(config *lib.Config, next fasthttp.RequestHandler) fasthttp.RequestHandler {
+	if config == nil || config.ServerConfig == nil || config.ServerConfig.BasePath == "" {
+		return next
+	}
+	return basePathMiddleware(config.ServerConfig.BasePath)(next)
+}
+
+// basePathMiddleware strips basePath (normalized, e.g. "/bifrost") from the
+// request URI so every route, auth whitelist entry and path check downstream
+// sees the root-relative path. Requests that do not carry the prefix pass
+// through untouched, so proxies that already strip it, and unprefixed probes
+// such as /health, keep working. The match is on whole segments: "/bifrostx"
+// is not stripped. It is unexported so ServerRootHandler stays the only place
+// it is wired; a second wiring would strip the prefix twice.
+//
+// A same-origin Location on the response to a prefixed request gets the prefix
+// back (see prefixLocation): the router builds its trailing-slash and
+// fixed-path redirects from the stripped path, which would otherwise send the
+// browser out from under the proxy prefix.
+func basePathMiddleware(basePath string) schemas.BifrostHTTPMiddleware {
+	prefix := []byte(basePath)
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			if !stripBasePath(ctx, prefix) {
+				next(ctx)
+				return
+			}
+			next(ctx)
+			prefixLocation(ctx, prefix)
+		}
+	}
+}
+
+// stripBasePath rewrites the raw request URI without the prefix and reports
+// whether it did. The URI is re-set, not just the path, so Path() and
+// PathOriginal() agree afterwards.
+func stripBasePath(ctx *fasthttp.RequestCtx, prefix []byte) bool {
+	uri := ctx.Request.URI()
+	rawPath := uri.PathOriginal()
+	if !bytes.HasPrefix(rawPath, prefix) {
+		return false
+	}
+	rest := rawPath[len(prefix):]
+	if len(rest) > 0 && rest[0] != '/' {
+		return false
+	}
+	var stack [512]byte
+	buf := stack[:0]
+	if len(rest) == 0 {
+		buf = append(buf, '/')
+	} else {
+		buf = append(buf, rest...)
+	}
+	if query := uri.QueryString(); len(query) > 0 {
+		buf = append(buf, '?')
+		buf = append(buf, query...)
+	}
+	ctx.Request.SetRequestURIBytes(buf)
+	return true
+}
+
+// prefixLocation puts prefix in front of the path of the response's Location
+// header when it points at this origin (a root-relative path, or an absolute
+// URL whose host is the request's Host) and is not already under prefix.
+// Protocol-relative and other-origin URLs are left alone.
+func prefixLocation(ctx *fasthttp.RequestCtx, prefix []byte) {
+	loc := ctx.Response.Header.Peek(fasthttp.HeaderLocation)
+	if len(loc) == 0 {
+		return
+	}
+	var pathStart int
+	if loc[0] == '/' {
+		if len(loc) > 1 && (loc[1] == '/' || loc[1] == '\\') {
+			return
+		}
+	} else {
+		sep := bytes.Index(loc, []byte("://"))
+		if sep <= 0 {
+			return
+		}
+		authorityStart := sep + len("://")
+		authority := loc[authorityStart:]
+		if end := bytes.IndexAny(authority, "/?#"); end >= 0 {
+			authority = authority[:end]
+		}
+		if !bytes.EqualFold(authority, ctx.Host()) {
+			return
+		}
+		pathStart = authorityStart + len(authority)
+	}
+	path := loc[pathStart:]
+	if bytes.HasPrefix(path, prefix) && (len(path) == len(prefix) || bytes.IndexByte([]byte("/?#"), path[len(prefix)]) >= 0) {
+		return
+	}
+	out := make([]byte, 0, len(loc)+len(prefix))
+	out = append(out, loc[:pathStart]...)
+	out = append(out, prefix...)
+	out = append(out, path...)
+	ctx.Response.Header.SetBytesV(fasthttp.HeaderLocation, out)
 }
 
 // InferenceOuterMiddlewares returns the middlewares that wrap every inference route

@@ -37,6 +37,7 @@
 		"dumpErrorsHelp": "有効にすると、詳細なエラーがサーバーのコンソールログに書き込まれます。デバッグに便利ですが、本番ではノイズが多くなることがあります。",
 		"asyncJobTtl": "非同期ジョブ結果の TTL（秒）",
 		"asyncJobTtlHelp": "非同期ジョブ結果のデフォルト有効期間（秒）。期限後に結果は自動削除されます。",
+		"languageHelp": "ダッシュボードの表示言語。このブラウザに保存され、すぐに適用されます。",
 		"headerForwarding": "ヘッダー転送",
 		"headerForwardingHelp": "LLM プロバイダーへ転送する追加ヘッダーを制御します。",
 		"aboutHeaderForwarding": "ヘッダー転送について",

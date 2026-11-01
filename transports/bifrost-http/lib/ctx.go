@@ -917,6 +917,8 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 // When externalBaseURL is non-empty (set via config/UI/API), it takes priority so that
 // deployments behind a reverse proxy advertise the proxy's public URL rather than the
 // internal Host header seen by Bifrost.
+// Otherwise it is derived from the request's scheme and Host, plus server.base_path,
+// since the browser reached Bifrost under that prefix even when the proxy strips it.
 func BuildBaseURL(ctx *fasthttp.RequestCtx, externalBaseURL string) string {
 	if override := strings.TrimRight(strings.TrimSpace(externalBaseURL), "/"); override != "" {
 		if configstore.ValidatePublicBaseURL(override) == nil {
@@ -941,7 +943,7 @@ func BuildBaseURL(ctx *fasthttp.RequestCtx, externalBaseURL string) string {
 	if host == "" {
 		return ""
 	}
-	return fmt.Sprintf("%s://%s", scheme, host)
+	return scheme + "://" + host + BasePath()
 }
 
 // BuildHTTPRequestFromFastHTTP creates an HTTPRequest from fasthttp context for streaming handlers.

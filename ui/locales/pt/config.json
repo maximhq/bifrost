@@ -37,6 +37,7 @@
 		"dumpErrorsHelp": "Se ativado, os detalhes completos dos erros são escritos nos registos da consola do servidor. Útil para depuração, mas pode ser ruidoso em produção.",
 		"asyncJobTtl": "TTL do resultado de tarefas assíncronas (segundos)",
 		"asyncJobTtlHelp": "Tempo de vida predefinido dos resultados de tarefas assíncronas, em segundos. Os resultados são limpos automaticamente após expirarem.",
+		"languageHelp": "Idioma de apresentação do painel. Guardado neste navegador e aplicado de imediato.",
 		"headerForwarding": "Reencaminhamento de cabeçalhos",
 		"headerForwardingHelp": "Controle quais cabeçalhos extra são reencaminhados para os fornecedores LLM.",
 		"aboutHeaderForwarding": "Sobre o reencaminhamento de cabeçalhos",
