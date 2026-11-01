@@ -4746,6 +4746,50 @@ func TestApplyProviderProxySignal_RewritesPerAttempt(t *testing.T) {
 	}
 }
 
+func BenchmarkApplyProviderProxySignal(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	config := &schemas.ProviderConfig{}
+	applyProviderProxySignal(ctx, config)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		applyProviderProxySignal(ctx, config)
+	}
+}
+
+func TestApplyProviderProxySignal_RemoteFileLimitPerAttempt(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	large := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{MaxRemoteFileSizeBytes: 64 << 20}}
+	small := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{MaxRemoteFileSizeBytes: 16}}
+	for _, config := range []*schemas.ProviderConfig{large, small, {}, large, nil} {
+		applyProviderProxySignal(ctx, config)
+		got, _ := ctx.Value(schemas.BifrostContextKeyProviderNetworkConfig).(*schemas.NetworkConfig)
+		if config == nil || config.NetworkConfig.MaxRemoteFileSizeBytes == 0 {
+			if got != nil {
+				t.Fatal("default fallback inherited the prior limit")
+			}
+		} else if got != &config.NetworkConfig {
+			t.Fatal("attempt did not carry its own config")
+		}
+	}
+	ctx.BlockRestrictedWrites()
+	ctx.SetValue(schemas.BifrostContextKeyProviderNetworkConfig, &large.NetworkConfig)
+	ctx.UnblockRestrictedWrites()
+	if ctx.Value(schemas.BifrostContextKeyProviderNetworkConfig) != nil {
+		t.Fatal("plugin changed the operator's limit")
+	}
+}
+
+func TestCreateBaseProvider_RejectsInvalidRemoteFileLimit(t *testing.T) {
+	client := &Bifrost{}
+	for _, limit := range []int64{-1, schemas.MaxRemoteFileSizeBytesUpperBound + 1} {
+		_, err := client.createBaseProvider(schemas.OpenAI, &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{MaxRemoteFileSizeBytes: limit}})
+		if err == nil || !strings.Contains(err.Error(), "max_remote_file_size_bytes") {
+			t.Fatalf("invalid SDK config: %v", err)
+		}
+	}
+}
+
 // https://github.com/maximhq/bifrost/issues/6966: prepareFallbackRequest enumerates sub-request
 // types by hand, and the shallow copy shares any pointer it does not re-target with the
 // original request. A type it forgets therefore keeps the primary provider and model, so the

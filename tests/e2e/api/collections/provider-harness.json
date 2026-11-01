@@ -298482,6 +298482,233 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "297. Configurable remote file limit (remote-file-limit) (#9384) [SERIAL]",
+      "description": "Regression for #9384 on Vertex /openai/responses, unary and streaming. On a test deployment, saves provider settings, temporarily sets a 16-byte download cap, asserts the size error using a public PDF, then restores the saved settings. Run this SERIAL folder in full; if interrupted, restore remoteFileLimitOriginalConfig manually. Requires a configured Vertex provider and setupToken. Go tests cover files above 25 MiB, boundaries, fallback and concurrent limit isolation in the shared downloader.",
+      "item": [
+        {
+          "name": "[EXPECT-200] vertex remote-file-limit saves original provider configuration - #9384",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('remoteFileLimitOriginalConfig');",
+                  "pm.collectionVariables.unset('remoteFileLimitSmallConfig');",
+                  "pm.collectionVariables.unset('remoteFileLimitApplied');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Vertex configuration can be saved before the temporary change', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var p = pm.response.json();",
+                  "  pm.expect(p.name, pm.response.text()).to.equal('vertex');",
+                  "  var original = { network_config: p.network_config, concurrency_and_buffer_size: p.concurrency_and_buffer_size, proxy_config: p.proxy_config, send_back_raw_request: p.send_back_raw_request, send_back_raw_response: p.send_back_raw_response, store_raw_request_response: p.store_raw_request_response, ignore_provider_cost: p.ignore_provider_cost, custom_provider_config: p.custom_provider_config, openai_config: p.openai_config, prompt_cache: p.prompt_cache, injected_tools: p.injected_tools, passthrough: p.passthrough };",
+                  "  pm.collectionVariables.set('remoteFileLimitOriginalConfig', JSON.stringify(original));",
+                  "  original.network_config.max_remote_file_size_bytes = 16;",
+                  "  pm.collectionVariables.set('remoteFileLimitSmallConfig', JSON.stringify(original));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Bifrost-Setup-Token",
+                "value": "{{setupToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers/vertex"
+          }
+        },
+        {
+          "name": "[EXPECT-200] vertex remote-file-limit temporarily sets a 16-byte cap - #9384",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the operator cap survives a provider update', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().network_config.max_remote_file_size_bytes, pm.response.text()).to.equal(16);",
+                  "  pm.collectionVariables.set('remoteFileLimitApplied', true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Bifrost-Setup-Token",
+                "value": "{{setupToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers/vertex",
+            "body": {
+              "mode": "raw",
+              "raw": "{{remoteFileLimitSmallConfig}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-500] vertex gemini-2.5-flash remote-file-limit /openai/responses unary - #9384",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('remoteFileLimitApplied')) { throw new Error('remote-file-limit setup did not run'); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the provider attempt applies its configured download limit before inference', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(500);",
+                  "  pm.expect(pm.response.text()).to.include('exceeds 16-byte limit');",
+                  "  pm.expect(pm.response.text()).not.to.include('26214400-byte limit');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/openai/responses",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"stream\": false,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"file_url\": \"https://storage.googleapis.com/cloud-samples-data/generative-ai/pdf/1706.03762v7.pdf\"\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Summarize this PDF in one sentence.\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 32\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-500] vertex gemini-2.5-flash remote-file-limit /openai/responses stream - #9384",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('remoteFileLimitApplied')) { throw new Error('remote-file-limit setup did not run'); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the provider attempt applies its configured download limit before inference', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(500);",
+                  "  pm.expect(pm.response.text()).to.include('exceeds 16-byte limit');",
+                  "  pm.expect(pm.response.text()).not.to.include('26214400-byte limit');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/openai/responses",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"stream\": true,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"file_url\": \"https://storage.googleapis.com/cloud-samples-data/generative-ai/pdf/1706.03762v7.pdf\"\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Summarize this PDF in one sentence.\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 32\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] vertex remote-file-limit restores original provider configuration - #9384",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the original download cap is restored', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var original = JSON.parse(pm.collectionVariables.get('remoteFileLimitOriginalConfig'));",
+                  "  pm.expect(pm.response.json().network_config.max_remote_file_size_bytes || 0, pm.response.text()).to.equal(original.network_config.max_remote_file_size_bytes || 0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Bifrost-Setup-Token",
+                "value": "{{setupToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers/vertex",
+            "body": {
+              "mode": "raw",
+              "raw": "{{remoteFileLimitOriginalConfig}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
     }
   ]
 }

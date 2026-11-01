@@ -5176,6 +5176,9 @@ func (bifrost *Bifrost) UpdateMCPMaxProtocolVersion(version string) error {
 
 // createBaseProvider creates a provider based on the base provider type
 func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, config *schemas.ProviderConfig) (schemas.Provider, error) {
+	if err := config.NetworkConfig.ValidateRemoteFileSizeLimit(); err != nil {
+		return nil, err
+	}
 	// Determine which provider type to create
 	targetProviderKey := providerKey
 
@@ -5280,6 +5283,9 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 // It initializes the request queue and starts worker goroutines for processing requests.
 // Note: This function assumes the caller has already acquired the appropriate mutex for the provider.
 func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, config *schemas.ProviderConfig) error {
+	if err := config.NetworkConfig.ValidateRemoteFileSizeLimit(); err != nil {
+		return err
+	}
 	// Create ProviderQueue with lifecycle management
 	pq := &ProviderQueue{
 		queue:      make(chan *ChannelMessage, config.ConcurrencyAndBufferSize.BufferSize),
@@ -8160,12 +8166,21 @@ func applyRawCaptureSignals(ctx *schemas.BifrostContext, config *schemas.Provide
 // document URLs, via providerUtils.FetchAndEncodeURL) leave through the same proxy
 // as its inference traffic. Written on every attempt, nil included: a fallback to a
 // provider with a different proxy, or none, must never inherit the previous one.
+// The same attempt boundary also publishes or clears the remote-file size override.
 func applyProviderProxySignal(ctx *schemas.BifrostContext, config *schemas.ProviderConfig) {
 	var proxyConfig *schemas.ProxyConfig
 	if config != nil {
 		proxyConfig = config.ProxyConfig
 	}
 	ctx.SetValue(schemas.BifrostContextKeyProviderProxyConfig, proxyConfig)
+	// The common case carries no extra state. Keep a pointer to the immutable
+	// provider config, avoiding per-request boxing of a nonzero int64 limit.
+	if config != nil && config.NetworkConfig.MaxRemoteFileSizeBytes != 0 {
+		ctx.SetValue(schemas.BifrostContextKeyProviderNetworkConfig, &config.NetworkConfig)
+	} else if ctx.Value(schemas.BifrostContextKeyProviderNetworkConfig) != nil {
+		// Fallbacks must clear an earlier provider's override, including nil config.
+		ctx.SetValue(schemas.BifrostContextKeyProviderNetworkConfig, nil)
+	}
 }
 
 // requestWorker handles incoming requests from the queue for a specific provider.

@@ -50,6 +50,7 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeyRequestedProvider:       {},
 	BifrostContextKeyRequestedModel:          {},
 	BifrostContextKeyProviderProxyConfig:     {},
+	BifrostContextKeyProviderNetworkConfig:   {},
 	BifrostContextKeyMCPInboundBearer:        {},
 	BifrostContextKeyAuthCredential:          {},
 	BifrostContextKeyMCPAgentServedRoute:     {},
