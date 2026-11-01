@@ -797,7 +797,7 @@ func TestReleaseStreamingResponse_NoBodyDoesNotClaimConnection(t *testing.T) {
 func TestReleaseStreamingResponse_SemanticCompletionAbandonsOnce(t *testing.T) {
 	for _, name := range []string{"parked", "unknown-body"} {
 		t.Run(name, func(t *testing.T) {
-			ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 			defer ctx.Cancel()
 			if name == "parked" {
 				ctx.SetValue(schemas.BifrostContextKeyStreamParkedAfterFinish, true)
@@ -883,7 +883,7 @@ func TestSetupStreamCancellation_DisarmedDeadlineStillHonoursCtx(t *testing.T) {
 func TestReleaseStreamingResponseSemanticCompletionClosesOwnedBodyOnce(t *testing.T) {
 	for _, connectionClose := range []bool{false, true} {
 		t.Run(fmt.Sprintf("connectionClose=%t", connectionClose), func(t *testing.T) {
-			ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 			defer ctx.Cancel()
 			conn, peer := net.Pipe()
 			defer conn.Close()

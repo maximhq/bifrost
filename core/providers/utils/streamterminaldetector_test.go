@@ -2,6 +2,7 @@ package utils
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"strings"
 	"testing"
@@ -103,7 +104,7 @@ func TestPassthroughTerminalStreamPreservesBytesAndUsage(t *testing.T) {
 				"data: " + `{"usageMetadata":{"totalTokenCount":6}}` + delimiter +
 				"data: " + `{"finishReason":"STOP",}` + delimiter +
 				"data: " + `{"candidates":[{"finish\u0052eason":"STOP"}]}` + delimiter
-			ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 			defer ctx.Cancel()
 			// Extra bytes distinguish semantic completion from reaching EOF.
 			reader := iotest.OneByteReader(strings.NewReader(body + "unexpected data"))
@@ -182,7 +183,7 @@ func BenchmarkPassthroughTerminalStream(b *testing.B) {
 	b.SetBytes(int64(len(data)))
 	b.ReportAllocs()
 	for b.Loop() {
-		ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		stream := StreamPassthroughHTTP(ctx, passthroughTestHooks, nil,
 			io.NopCloser(bytes.NewReader(data)), PassthroughStreamParams{
 				StatusCode: 200, StartTime: time.Now(), UseTerminalDetector: true,
