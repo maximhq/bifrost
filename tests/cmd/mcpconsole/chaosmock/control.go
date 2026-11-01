@@ -52,6 +52,19 @@ type State struct {
 	Resources         []Resource         `json:"resources,omitempty"`
 	ResourceTemplates []ResourceTemplate `json:"resource_templates,omitempty"`
 	Reads             []ReadEntry        `json:"reads,omitempty"`
+
+	// Views, PromptViews, ResourceViews and TemplateViews are the
+	// per-identity overlays, keyed by identity.
+	Views         map[string][]Tool             `json:"views,omitempty"`
+	PromptViews   map[string][]Prompt           `json:"prompt_views,omitempty"`
+	ResourceViews map[string][]Resource         `json:"resource_views,omitempty"`
+	TemplateViews map[string][]ResourceTemplate `json:"template_views,omitempty"`
+	// IdentityInstructions and IdentityFaults replace the server-wide
+	// instructions and faults for one caller.
+	IdentityInstructions map[string]string `json:"identity_instructions,omitempty"`
+	IdentityFaults       map[string]Faults `json:"identity_faults,omitempty"`
+	// Gates are the barriers set on this server, sorted by name.
+	Gates []GateState `json:"gates,omitempty"`
 }
 
 // State captures a server's current state.
@@ -61,6 +74,7 @@ func (s *Server) State() State {
 		oauth = s.oauth.snapshot()
 	}
 	prompts, resources, templates, reads := s.prompts.snapshot()
+	promptViews, resourceViews, templateViews := s.prompts.views()
 	return State{
 		Prompts:           prompts,
 		Resources:         resources,
@@ -81,6 +95,15 @@ func (s *Server) State() State {
 		OAuth:             oauth,
 		REST:              s.rest.snapshot(),
 		LLM:               s.llm.snapshot(),
+
+		Views:         s.tools.views(),
+		PromptViews:   promptViews,
+		ResourceViews: resourceViews,
+		TemplateViews: templateViews,
+
+		IdentityInstructions: s.IdentityInstructions(),
+		IdentityFaults:       s.faults.identities(),
+		Gates:                s.gates.snapshot(),
 	}
 }
 
@@ -201,12 +224,15 @@ type controlBody struct {
 	Turns    []LLMTurn `json:"turns,omitempty"`
 	Then     *LLMTurn  `json:"then,omitempty"`
 	Models   []string  `json:"models,omitempty"`
-	// Prompts, Resources and Templates drive the prompts/set and resources/set verbs.
+	// Prompts, Resources and Templates drive the prompts/*, resources/* and
+	// templates/* verbs.
 	Prompts   []Prompt           `json:"prompts,omitempty"`
 	Resources []Resource         `json:"resources,omitempty"`
 	Templates []ResourceTemplate `json:"templates,omitempty"`
 	// Versions drives the versions verb.
 	Versions []string `json:"versions,omitempty"`
+	// Gate is the gate gates/set adds; gates/open and gates/clear take Name.
+	Gate *Gate `json:"gate,omitempty"`
 }
 
 // applyControl applies one per-server control verb, refusing an unknown verb or a body it cannot use.
@@ -259,8 +285,15 @@ func (s *Server) applyControl(verb string, r *http.Request) error {
 	case "instructions":
 		// An empty body is refused rather than read as "clear", since a
 		// scenario that misspelled the text field would otherwise silently
-		// serve no instructions.
+		// serve no instructions. With an identity the verb sets or clears
+		// that identity's own text, and clearing text it never had is refused.
 		switch {
+		case body.Identity != "" && body.Clear:
+			if !s.ClearIdentityInstructions(body.Identity) {
+				return errBadRequest(fmt.Sprintf("%q has no instructions of its own to clear", body.Identity))
+			}
+		case body.Identity != "" && body.Text != "":
+			s.SetIdentityInstructions(body.Identity, body.Text)
 		case body.Clear:
 			s.SetInstructions("")
 		case body.Text != "":
@@ -273,6 +306,35 @@ func (s *Server) applyControl(verb string, r *http.Request) error {
 			return errBadRequest("faults body is required")
 		}
 		s.faults.set(*body.Faults)
+	case "faults/identity":
+		switch {
+		case body.Identity == "":
+			return errBadRequest("faults/identity needs an identity")
+		case body.Clear:
+			if !s.faults.clearIdentity(body.Identity) {
+				return errBadRequest(fmt.Sprintf("%q has no faults of its own to clear", body.Identity))
+			}
+		case body.Faults == nil:
+			return errBadRequest("faults/identity takes faults, or clear to remove them")
+		default:
+			s.faults.setIdentity(body.Identity, *body.Faults)
+		}
+	case "gates/set":
+		if body.Gate == nil {
+			return errBadRequest("gate body is required")
+		}
+		if err := body.Gate.Validate(); err != nil {
+			return errBadRequest(err.Error())
+		}
+		s.gates.set(*body.Gate)
+	case "gates/open":
+		if err := s.gates.openGate(body.Name); err != nil {
+			return errBadRequest(err.Error())
+		}
+	case "gates/clear":
+		if err := s.gates.remove(body.Name); err != nil {
+			return errBadRequest(err.Error())
+		}
 	case "faults/clear":
 		s.faults.clear()
 		s.oauth.clearFails()
@@ -307,14 +369,26 @@ func (s *Server) applyControl(verb string, r *http.Request) error {
 		if err := s.KillStdio(); err != nil {
 			return errBadRequest(err.Error())
 		}
-	case "prompts/set":
-		if err := s.prompts.setPrompts(body.Prompts); err != nil {
+	case "prompts/set", "resources/set", "templates/set":
+		// The set verbs replace the base lists; an identity gets its own with <kind>/overlay.
+		kind := strings.TrimSuffix(strings.TrimSuffix(verb, "/"), "/set")
+		if body.Identity != "" || body.Clear {
+			return errBadRequest(kind + "/set replaces the base list; give one identity its own with " + kind + "/overlay")
+		}
+		var err error
+		switch kind {
+		case "prompts":
+			err = s.prompts.setPrompts(body.Prompts)
+		case "resources":
+			err = s.prompts.setResources(body.Resources, body.Templates)
+		default:
+			err = s.prompts.setTemplates(body.Templates)
+		}
+		if err != nil {
 			return errBadRequest(err.Error())
 		}
-	case "resources/set":
-		if err := s.prompts.setResources(body.Resources, body.Templates); err != nil {
-			return errBadRequest(err.Error())
-		}
+	case "prompts/overlay", "resources/overlay", "templates/overlay":
+		return s.prompts.applyOverlay(strings.TrimSuffix(strings.TrimSuffix(verb, "/"), "/overlay"), body)
 	case "versions":
 		if err := s.versions.set(body.Versions); err != nil {
 			return errBadRequest(err.Error())
