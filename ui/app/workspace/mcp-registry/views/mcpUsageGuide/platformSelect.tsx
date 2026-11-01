@@ -9,9 +9,9 @@ interface PlatformSelectProps {
 
 export function PlatformSelect({ platform, onPlatformChange }: PlatformSelectProps) {
 	const platforms: Array<{ value: HarnessPlatform; label: string; icon: string }> = [
-		{ value: "macos", label: "macOS", icon: "/images/platforms/mac.svg" },
-		{ value: "windows", label: "Windows", icon: "/images/platforms/windows.svg" },
-		{ value: "linux", label: "Linux", icon: "/images/platforms/linux.svg" },
+		{ value: "macos", label: "macOS", icon: "/images/platforms/mac.svg" }, // i18n-ignore: OS name
+		{ value: "windows", label: "Windows", icon: "/images/platforms/windows.svg" }, // i18n-ignore: OS name
+		{ value: "linux", label: "Linux", icon: "/images/platforms/linux.svg" }, // i18n-ignore: OS name
 	];
 
 	return (

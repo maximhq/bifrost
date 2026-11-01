@@ -8943,11 +8943,73 @@
         },
         "connectionType": {
           "type": "string",
-          "enum": ["stdio", "websocket", "http", "sse"]
+          "enum": ["stdio", "websocket", "http", "sse", "openapi"],
+          "description": "Connection type. 'openapi' synthesizes an in-process MCP server from an OpenAPI/Swagger document (see openapiConfig); its tools proxy HTTP calls to the described API."
         },
         "connectionString": {
           "type": "string",
           "description": "HTTP or SSE URL (required for HTTP or SSE connections)"
+        },
+        "openapiConfig": {
+          "type": "object",
+          "description": "Configuration for connectionType 'openapi'. At least one of spec, specFile or specUrl supplies the document, in that order of precedence. Supports Swagger 2.0 and OpenAPI 3.0, 3.1 and 3.2. Renders into openapi_config.",
+          "properties": {
+            "spec": {
+              "type": "string",
+              "description": "Inline OpenAPI/Swagger document (JSON or YAML text). Renders into spec."
+            },
+            "specFile": {
+              "type": "string",
+              "description": "Path to the document, relative to the config.json directory (bifrost.appDir) or absolute. Mount the file into the pod with volumes/volumeMounts. Read once at load. Renders into spec_file."
+            },
+            "specUrl": {
+              "type": "string",
+              "format": "uri",
+              "pattern": "^https?://[^@/?#\\s]+(?:[/?#].*)?$",
+              "description": "http(s) URL of the document, fetched at connect time when spec and specFile are not given. Renders into spec_url."
+            },
+            "baseUrl": {
+              "type": "string",
+              "format": "uri",
+              "pattern": "^https?://[^@/?#\\s]+(?:[/?#].*)?$",
+              "description": "Upstream API base URL. Defaults to the document's first server entry; required when the document declares none or only relative ones. Renders into base_url."
+            },
+            "securityCredentials": {
+              "type": "object",
+              "description": "Credentials keyed by the document's securitySchemes name. apiKey and http-bearer schemes take value; http-basic takes username and password. Values support env.VAR and vault.path references. Renders into security_credentials.",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  },
+                  "username": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "includeDeprecated": {
+              "type": "boolean",
+              "default": false,
+              "description": "Expose operations the document marks deprecated. Renders into include_deprecated."
+            },
+            "maxResponseBytes": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Cap on the upstream response body returned to the model (0 = default 64 KiB). Renders into max_response_bytes."
+            }
+          },
+          "anyOf": [
+            { "required": ["spec"] },
+            { "required": ["specFile"] },
+            { "required": ["specUrl"] }
+          ],
+          "additionalProperties": false
         },
         "secretRef": {
           "type": "object",
@@ -9361,6 +9423,28 @@
           },
           "then": {
             "required": ["connectionString"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "connectionType": {
+                "const": "openapi"
+              }
+            }
+          },
+          "then": {
+            "required": ["openapiConfig"],
+            "properties": {
+              "authType": {
+                "enum": ["none", "headers", "per_user_headers"]
+              }
+            }
+          },
+          "else": {
+            "not": {
+              "required": ["openapiConfig"]
+            }
           }
         },
         {

@@ -201,7 +201,13 @@ func auditProxyConfig(cfg *configstoreTables.GlobalProxyConfig) json.RawMessage 
 	c := *cfg
 	c.Password = ""
 	if c.URL != "" {
-		c.URL = lib.RedactURLCredentials(c.URL)
+		// RedactURLCredentials returns a URL it cannot parse unchanged, and a disabled
+		// proxy is saved unvalidated, so fall back to masking the userinfo password as text.
+		redacted := lib.RedactURLCredentials(c.URL)
+		if redacted == c.URL {
+			redacted = lib.RedactProxyURLPassword(c.URL)
+		}
+		c.URL = redacted
 	}
 	return lib.AuditSnapshot(c, "password")
 }

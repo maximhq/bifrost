@@ -779,6 +779,26 @@ func (s *ClickHouseLogStore) UpdateAgentLog(ctx context.Context, id string, entr
 	return s.chReinsert(ctx, &existing)
 }
 
+// UpdateRelayLog applies an update to a Relay Logs row via read-modify-write.
+func (s *ClickHouseLogStore) UpdateRelayLog(ctx context.Context, id string, updates map[string]any) error {
+	st, err := chParseSchema(s.db, &RelayLog{})
+	if err != nil {
+		return err
+	}
+	defer s.lockRMW("relay_logs", id)()
+	var existing RelayLog
+	if err := s.db.WithContext(ctx).Where("id = ?", id).First(&existing).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if err := chApplyUpdateMap(ctx, st, reflect.ValueOf(&existing).Elem(), updates); err != nil {
+		return err
+	}
+	return s.chReinsert(ctx, &existing)
+}
+
 // UpdateMCPToolLog applies an update to an MCP tool log row via read-modify-write.
 func (s *ClickHouseLogStore) UpdateMCPToolLog(ctx context.Context, id string, entry any) error {
 	st, err := chParseSchema(s.db, &MCPToolLog{})

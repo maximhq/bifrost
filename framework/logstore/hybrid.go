@@ -37,6 +37,7 @@ const (
 	// uploadKindLogMerge overlays the payload onto the object the row already
 	// has (BatchUpdate's reconcile of a late completion) instead of replacing it.
 	uploadKindLogMerge
+	uploadKindRelay
 )
 
 // uploadWork represents an async S3 upload job.
@@ -212,6 +213,15 @@ func (h *HybridLogStore) processUpload(work *uploadWork) {
 		if work.status != "" && current.Status != work.status {
 			return
 		}
+	case uploadKindRelay:
+		// A row deleted while its upload waited in the queue uploads nothing.
+		if _, err := h.inner.FindRelayLog(ctx, work.logID); err != nil {
+			if !errors.Is(err, ErrNotFound) {
+				h.logger.Warn("objectstore: failed to check relay log %s before upload: %v", work.logID, err)
+				h.droppedUploads.Add(1)
+			}
+			return
+		}
 	}
 
 	realtimeCorrection := work.kind == uploadKindLogMerge && gjson.GetBytes(work.payload, realtimeInputCorrectionField).Exists()
@@ -257,11 +267,21 @@ func (h *HybridLogStore) processUpload(work *uploadWork) {
 			err = h.inner.UpdateMCPToolLog(dbCtx, work.logID, map[string]interface{}{"has_object": true})
 		case uploadKindAgent:
 			err = h.inner.UpdateAgentLog(dbCtx, work.logID, map[string]interface{}{"has_object": true})
+		case uploadKindRelay:
+			err = h.inner.UpdateRelayLog(dbCtx, work.logID, map[string]any{"has_object": true})
 		default:
 			err = h.inner.Update(dbCtx, work.logID, map[string]interface{}{"has_object": true})
 		}
 		dbCancel()
 		if err == nil {
+			return
+		}
+		if work.kind == uploadKindRelay && errors.Is(err, ErrNotFound) {
+			// The row was deleted while its body was uploading, and DeleteRelayLogs found no
+			// object to remove yet, so remove it here instead of leaving it orphaned.
+			if delErr := h.objects.Delete(ctx, work.key); delErr != nil {
+				h.logger.Warn("objectstore: failed to delete object %s of deleted relay log %s: %v", work.key, work.logID, delErr)
+			}
 			return
 		}
 		h.logger.Warn("objectstore: failed to set has_object for log %s (attempt %d/3): %v", work.logID, attempt+1, err)
@@ -376,6 +396,10 @@ func (h *HybridLogStore) mcpToolKey(timestamp time.Time, logID string) string {
 
 func (h *HybridLogStore) agentLogKey(timestamp time.Time, logID string) string {
 	return objectKey(h.prefix, "agent-logs", timestamp, logID, h.objectExt)
+}
+
+func (h *HybridLogStore) relayLogKey(timestamp time.Time, logID string) string {
+	return objectKey(h.prefix, "relay-logs", timestamp, logID, h.objectExt)
 }
 
 // alternateKey returns the same object path in the other format (.parquet
@@ -2587,15 +2611,104 @@ func (h *HybridLogStore) ListLogsForWarpTopics(ctx context.Context, logIDs []str
 	return h.inner.ListLogsForWarpTopics(ctx, logIDs, from, to)
 }
 
-// Relay Logs keep every column in the database: bodies are bounded by the content-logging
-// settings and are shown on the detail sheet, so the hybrid store delegates every call.
+// Relay Logs offload their bodies as Agent logs do: the database row keeps a preview and a
+// reference, the object holds the full bodies, and FindRelayLog reads them back for the detail
+// sheet. Lists, stats and charts read the database alone.
 
+// BatchCreateRelayLogsIfNotExists inserts the rows with their bodies cut to a preview and
+// uploads the full bodies of the rows it inserted, so a duplicate never overwrites an object.
 func (h *HybridLogStore) BatchCreateRelayLogsIfNotExists(ctx context.Context, entries []*RelayLog) ([]string, error) {
-	return h.inner.BatchCreateRelayLogsIfNotExists(ctx, entries)
+	type pendingUpload struct {
+		id        string
+		timestamp time.Time
+		key       string
+		payload   []byte
+		tags      map[string]string
+	}
+	dbEntries := make([]*RelayLog, 0, len(entries))
+	uploads := make([]pendingUpload, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		if entry == nil {
+			continue
+		}
+		if _, ok := seen[entry.ID]; ok {
+			continue
+		}
+		seen[entry.ID] = struct{}{}
+		dbEntry := *entry
+		if RelayLogHasPayload(entry) {
+			key := h.relayLogKey(entry.Timestamp, entry.ID)
+			payload, err := MarshalRelayLogPayload(entry)
+			if err != nil {
+				return nil, fmt.Errorf("logstore: serialize relay log before offload: %w", err)
+			}
+			PrepareRelayLogDBEntry(&dbEntry, key)
+			uploads = append(uploads, pendingUpload{
+				id: entry.ID, timestamp: entry.Timestamp,
+				key: key, payload: payload, tags: BuildRelayLogTags(entry),
+			})
+		}
+		dbEntries = append(dbEntries, &dbEntry)
+	}
+	if len(dbEntries) == 0 {
+		return nil, nil
+	}
+	insertedIDs, err := h.inner.BatchCreateRelayLogsIfNotExists(ctx, dbEntries)
+	if err != nil {
+		return nil, err
+	}
+	inserted := make(map[string]struct{}, len(insertedIDs))
+	for _, id := range insertedIDs {
+		inserted[id] = struct{}{}
+	}
+	for _, upload := range uploads {
+		if _, ok := inserted[upload.id]; !ok {
+			continue
+		}
+		h.enqueueRawUpload(upload.id, upload.timestamp, upload.key, uploadKindRelay, "", upload.payload, upload.tags)
+	}
+	return insertedIDs, nil
 }
 
 func (h *HybridLogStore) FindRelayLog(ctx context.Context, id string) (*RelayLog, error) {
-	return h.inner.FindRelayLog(ctx, id)
+	entry, err := h.inner.FindRelayLog(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	h.hydrateRelayLog(ctx, entry)
+	return entry, nil
+}
+
+// hydrateRelayLog replaces the row's body previews with the full bodies from its object. A row
+// whose content is hidden keeps nothing to show, and a failed read leaves the previews.
+func (h *HybridLogStore) hydrateRelayLog(ctx context.Context, entry *RelayLog) {
+	if entry == nil || !entry.HasObject || entry.ContentHidden {
+		return
+	}
+	data, _, err := h.getPayload(ctx, h.relayObjectKey(entry))
+	if err != nil {
+		h.logger.Warn("objectstore: failed to hydrate relay log %s: %v", entry.ID, err)
+		return
+	}
+	if err := MergeRelayLogPayloadFromJSON(entry, data); err != nil {
+		h.logger.Warn("objectstore: failed to merge relay log %s: %v", entry.ID, err)
+	}
+}
+
+func (h *HybridLogStore) relayObjectKey(entry *RelayLog) string {
+	if entry.PayloadReference != nil && *entry.PayloadReference != "" {
+		return *entry.PayloadReference
+	}
+	return h.relayLogKey(entry.Timestamp, entry.ID)
+}
+
+func (h *HybridLogStore) FindRelayLogsForDeletion(ctx context.Context, ids []string) ([]*RelayLog, error) {
+	return h.inner.FindRelayLogsForDeletion(ctx, ids)
+}
+
+func (h *HybridLogStore) UpdateRelayLog(ctx context.Context, id string, updates map[string]any) error {
+	return h.inner.UpdateRelayLog(ctx, id, updates)
 }
 
 func (h *HybridLogStore) SearchRelayLogs(ctx context.Context, filters RelayLogFilters, pagination PaginationOptions) (*RelayLogSearchResult, error) {
@@ -2622,8 +2735,28 @@ func (h *HybridLogStore) HasRelayLogs(ctx context.Context) (bool, error) {
 	return h.inner.HasRelayLogs(ctx)
 }
 
+// DeleteRelayLogs deletes the identified rows, the job rows that settle them, and every
+// offloaded object belonging to those rows.
 func (h *HybridLogStore) DeleteRelayLogs(ctx context.Context, ids []string) error {
-	return h.inner.DeleteRelayLogs(ctx, ids)
+	entries, err := h.inner.FindRelayLogsForDeletion(ctx, ids)
+	if err != nil {
+		return err
+	}
+	keys := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.HasObject {
+			keys = append(keys, h.withAlternateKeys(h.relayObjectKey(entry))...)
+		}
+	}
+	if err := h.inner.DeleteRelayLogs(ctx, ids); err != nil {
+		return err
+	}
+	if len(keys) > 0 {
+		if delErr := h.objects.DeleteBatch(ctx, keys); delErr != nil {
+			h.logger.Warn("objectstore: failed to batch delete %d relay log objects: %v", len(keys), delErr)
+		}
+	}
+	return nil
 }
 
 func (h *HybridLogStore) DeleteRelayLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
