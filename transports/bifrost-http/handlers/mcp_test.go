@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1840,4 +1841,56 @@ func TestRevokeOAuthConfig_UnknownIDIsNotFound(t *testing.T) {
 	require.Equal(t, fasthttp.StatusNotFound, status, respBody)
 	assert.Contains(t, respBody, "oauth config not found")
 	assert.NotContains(t, respBody, "%!w")
+}
+
+// TestAddMCPClient_OAuthURLsCarryBasePath pins that the complete_url and status_url
+// handed back from an OAuth bootstrap are prefixed with server.base_path: an API
+// client behind a prefix-routing proxy follows them as given, so a root-relative
+// path would land outside the prefix and 404. At the domain root they are unchanged.
+func TestAddMCPClient_OAuthURLsCarryBasePath(t *testing.T) {
+	oauth2.SetDiscoveryDialContextForTests(nil)
+	t.Cleanup(func() {
+		oauth2.SetDiscoveryDialContextForTests((&net.Dialer{}).DialContext)
+		require.NoError(t, lib.ApplyMCPOAuthPrivateAllowlist(nil))
+	})
+	require.NoError(t, lib.ApplyMCPOAuthPrivateAllowlist([]string{"127.0.0.1"}))
+
+	for _, tc := range []struct {
+		basePath, wantPrefix string
+	}{
+		{basePath: "", wantPrefix: ""},
+		{basePath: "/bifrost", wantPrefix: "/bifrost"},
+	} {
+		t.Run("base_path="+tc.basePath, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			lib.SetBasePath(tc.basePath)
+			t.Cleanup(func() { lib.SetBasePath("") })
+			server, _ := newLoopbackOAuthMCPServerWithCIMD(t, true)
+			store := newRealOAuth2Store(t)
+			provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+			cfg := &lib.Config{ConfigStore: store, OAuthProvider: provider, ClientConfig: &configstore.ClientConfig{
+				MCPExternalClientURL: schemas.NewSecretVar("https://bifrost.example.com" + tc.basePath),
+			}}
+			h := &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg)}
+
+			var req fasthttp.Request
+			req.Header.SetMethod(fasthttp.MethodPost)
+			req.Header.SetContentType("application/json")
+			req.Header.SetHost("bifrost.example.com")
+			req.SetBodyString(`{"name":"bp_oauth","connection_type":"http","connection_string":"` + server.URL + `/mcp","auth_type":"oauth","oauth_config":{}}`)
+			ctx := initCtx(&req)
+			h.addMCPClient(ctx)
+
+			body := string(ctx.Response.Body())
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), body)
+			var resp struct {
+				OAuthConfigID string `json:"oauth_config_id"`
+				CompleteURL   string `json:"complete_url"`
+				StatusURL     string `json:"status_url"`
+			}
+			require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+			assert.Equal(t, tc.wantPrefix+"/api/mcp/client/"+resp.OAuthConfigID+"/complete-oauth", resp.CompleteURL)
+			assert.True(t, strings.HasPrefix(resp.StatusURL, tc.wantPrefix+"/api/oauth/config/"+resp.OAuthConfigID+"/status"), resp.StatusURL)
+		})
+	}
 }
