@@ -4277,9 +4277,10 @@ func (provider *GeminiProvider) Passthrough(
 
 	var passthroughUsage *schemas.BifrostPassthroughUsage
 	var servedModel string
+	var providerJob *schemas.BifrostPassthroughJob
 	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
 		if IsInteractionsPassthroughPath(req.Path) {
-			passthroughUsage, servedModel = InteractionsPassthroughUsage(body)
+			passthroughUsage, servedModel, providerJob = InteractionsPassthroughResult(req, body)
 		} else {
 			passthroughUsage = ExtractGeminiPassthroughUsage(req.Path, req.Body, body)
 		}
@@ -4296,6 +4297,7 @@ func (provider *GeminiProvider) Passthrough(
 		},
 		PassthroughUsage: passthroughUsage,
 		ServedModel:      servedModel,
+		ProviderJob:      providerJob,
 	}
 
 	return bifrostResponse, nil
@@ -4389,7 +4391,8 @@ func (provider *GeminiProvider) PassthroughStream(
 		},
 	}
 	if IsInteractionsPassthroughPath(req.Path) {
-		observer := NewInteractionsStreamObserver()
+		observer := NewInteractionsStreamObserver(req)
+		params.HasUsage = HasInteractionsStreamInfo
 		params.Observe = observer.Observe
 		params.Finalize = observer.Finalize
 	}
