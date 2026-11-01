@@ -240,7 +240,9 @@ write_config() {
     { "client_id": "adm68-h", "name": "adm68_h", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm68/mcp", "auth_type": "per_user_headers", "per_user_header_keys": ["x-key"], "tools_to_execute": ["*"] },
     { "client_id": "adm86-h", "name": "adm86_h", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm86h/mcp", "auth_type": "per_user_headers", "per_user_header_keys": ["x-key"], "tool_sync_interval": "5s", "tools_to_execute": ["*"] },
     { "client_id": "adm86-o", "name": "adm86_o", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm86o/mcp", "auth_type": "per_user_oauth", "tool_sync_interval": "5s", "tools_to_execute": ["*"] },
-    { "client_id": "adm86-c", "name": "adm86_c", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm86h/mcp", "auth_type": "headers", "headers": { "x-key": "good" }, "tool_sync_interval": "5s", "tools_to_execute": ["*"] }
+    { "client_id": "adm86-c", "name": "adm86_c", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm86h/mcp", "auth_type": "headers", "headers": { "x-key": "good" }, "tool_sync_interval": "5s", "tools_to_execute": ["*"] },
+    { "client_id": "adm85-h", "name": "adm85_h", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm85/mcp", "auth_type": "per_user_headers", "per_user_header_keys": ["x-key"], "tools_to_execute": ["*"] },
+    { "client_id": "auth47-t", "name": "auth47_t", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/auth47/mcp", "auth_type": "token_exchange", "token_exchange": { "audience": "auth47" }, "tools_to_execute": ["*"] }
   ] },
   "providers": {
     "openai": { "keys": [{ "name": "openai-mock", "value": "sk-mock", "models": ["*"], "weight": 1 }],

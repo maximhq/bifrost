@@ -150,6 +150,12 @@ func TestTruncateInstructionsCutsOnRuneBoundary(t *testing.T) {
 	assert.True(t, utf8.ValidString(got))
 	assert.Equal(t, 50, len(got))
 	assert.Equal(t, 150, omitted)
+
+	// A three-byte rune that straddles a ten-byte cap is dropped whole.
+	got, omitted = truncateInstructions(strings.Repeat("世", 4), 10)
+	assert.True(t, utf8.ValidString(got))
+	assert.Equal(t, strings.Repeat("世", 3), got)
+	assert.Equal(t, 3, omitted)
 }
 
 func TestTruncateInstructionsKeepsShortTextIntact(t *testing.T) {

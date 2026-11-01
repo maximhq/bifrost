@@ -7,6 +7,7 @@ import (
 	"time"
 
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/oauth2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -152,4 +153,24 @@ func TestRevokeMCPSession_PendingOAuthFlow(t *testing.T) {
 	status, body = doMCPRequest(t, sessions.revoke, fasthttp.MethodDelete, "", "no-such-row", false)
 	require.Equal(t, fasthttp.StatusNotFound, status, body)
 	assert.Contains(t, body, "MCP session not found")
+}
+
+// TestFlowStart_ExpiredOAuthFlowIsGone: starting an OAuth flow past its expiry answers 410, so the
+// user restarts authentication, rather than an error that reads as an outage.
+func TestFlowStart_ExpiredOAuthFlowIsGone(t *testing.T) {
+	h, _ := newOpenAPITestHandler(t)
+	ctx := context.Background()
+	vk := "vk-1"
+	expired := time.Now().Add(-time.Minute)
+	require.NoError(t, h.store.ConfigStore.CreateOauthUserSession(ctx, &configtables.TableMCPOauthFlow{
+		ID: "flow-expired", MCPClientID: "client-1", OauthConfigID: "oauth-config-1", State: "state-expired",
+		VirtualKeyID: &vk, FlowMode: "vk", Status: "pending",
+		ExpiresAt: expired, CreatedAt: expired.Add(-15 * time.Minute), UpdatedAt: expired,
+	}))
+	h.store.OAuthProvider = oauth2.NewOAuth2Provider(h.store.ConfigStore, &mockLogger{})
+	sessions := NewMCPSessionsHandler(h.store, nil)
+
+	status, body := doMCPRequest(t, sessions.flowStart, fasthttp.MethodGet, "", "flow-expired", false)
+	assert.Equal(t, fasthttp.StatusGone, status, body)
+	assert.Contains(t, body, "OAuth flow is no longer pending; restart authentication")
 }
