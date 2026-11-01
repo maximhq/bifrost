@@ -2236,3 +2236,26 @@ func TestGeminiContinuationRequestRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+// The /anthropic ingress routed to gemini-4: Claude Code style thinking.budget_tokens
+// must reach Google as thinkingLevel, because gemini-4 rejects thinkingBudget.
+// Source: https://ai.google.dev/gemini-api/docs/thinking
+func TestAnthropicThinkingBudgetReachesGemini4AsLevel(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &anthropic.AnthropicMessageRequest{
+		Model:     "gemini/gemini-4-argon",
+		MaxTokens: 16000,
+		Messages: []anthropic.AnthropicMessage{
+			{Role: anthropic.AnthropicMessageRoleUser, Content: anthropic.AnthropicContent{ContentStr: schemas.Ptr("hi")}},
+		},
+		Thinking: &anthropic.AnthropicThinking{Type: "enabled", BudgetTokens: schemas.Ptr(4096)},
+	}
+	normalized := req.ToBifrostResponsesRequest(ctx)
+	out, err := ToGeminiResponsesRequest(ctx, normalized)
+	require.NoError(t, err)
+	got := out.GenerationConfig.ThinkingConfig
+	require.NotNil(t, got)
+	assert.Nil(t, got.ThinkingBudget, "gemini-4 rejects thinkingBudget with a 400")
+	require.NotNil(t, got.ThinkingLevel)
+	assert.Equal(t, "medium", *got.ThinkingLevel)
+}

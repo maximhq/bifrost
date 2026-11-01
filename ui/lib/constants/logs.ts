@@ -1,3 +1,5 @@
+import type { TFunction } from "i18next";
+import i18n from "@/lib/i18n";
 // Known provider names array - centralized definition
 export const KnownProvidersNames = [
 	"anthropic",
@@ -274,6 +276,8 @@ export const logAppDisplayName = (app: ClientApp, userAgent?: string | null): st
 	if ((app.name === "Unknown" || app.name === "Other") && userAgent?.trim()) {
 		return userAgent.trim();
 	}
+	if (app.name === "Unknown") return i18n.t("logs.detail.unknown", { ns: "observability" });
+	if (app.name === "Other") return i18n.t("labels.other", { ns: "observability" });
 	return app.name;
 };
 
@@ -384,6 +388,11 @@ export const RequestTypeLabels = {
 	live_sideband: "Live Sideband",
 } as const;
 
+export function getRequestTypeLabel(type: string, t: TFunction<"observability">): string {
+	const label = RequestTypeLabels[type as keyof typeof RequestTypeLabels];
+	return label ? t(`requestTypes.${type.replaceAll(".", "_")}`, { defaultValue: label }) : type;
+}
+
 export const RequestTypeColors = {
 	"chat.completion": "bg-blue-100 text-blue-800",
 	response: "bg-teal-100 text-teal-800",
@@ -488,6 +497,11 @@ export const RoutingEngineUsedLabels = {
 	"session-affinity": "Session",
 	core: "Core",
 } as const;
+
+export function getRoutingEngineLabel(engine: string, t: TFunction<"observability">): string {
+	const label = RoutingEngineUsedLabels[engine as keyof typeof RoutingEngineUsedLabels];
+	return label ? t(`routingEngineLabels.${engine.replaceAll("-", "_")}`, { defaultValue: label }) : engine;
+}
 
 export const RoutingEngineUsedColors = {
 	"routing-rule": "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300",

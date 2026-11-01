@@ -11,7 +11,7 @@ permissions:
 jobs:
   # Check if pipeline should be skipped based on first line of commit message
   check-skip:
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     outputs:
       should-skip: ${{ steps.check.outputs.should-skip }}
     steps:
@@ -38,7 +38,7 @@ jobs:
     needs: [check-skip]
     if: needs.check-skip.outputs.should-skip != 'true'
     name: Post Test Instructions
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1

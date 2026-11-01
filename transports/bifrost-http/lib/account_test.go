@@ -2,12 +2,15 @@ package lib
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/network"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/valyala/fasthttp"
 )
 
 func enabledGlobalProxy() *configstoreTables.GlobalProxyConfig {
@@ -100,7 +103,10 @@ func TestInheritGlobalProxy(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, ok := inheritGlobalProxy(tt.own, tt.global)
+			got, ok, err := inheritGlobalProxy(tt.own, tt.global)
+			if err != nil {
+				t.Fatalf("inheritGlobalProxy: %v", err)
+			}
 			if ok != tt.wantOK {
 				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
 			}
@@ -116,6 +122,53 @@ func TestInheritGlobalProxy(t *testing.T) {
 				t.Errorf("proxy.SkipTLSVerify = %v, want %v", got.proxy.SkipTLSVerify, tt.wantSkip)
 			}
 		})
+	}
+}
+
+// TestInheritGlobalProxy_BareAddressKeepsTheProxy: the settings page accepts a bare
+// host:port and takes its scheme from the type. Providers parse the URL to add credentials,
+// and a bare address does not parse, so the inherited URL must carry the scheme or the
+// provider client is left without a proxy and inference goes direct.
+func TestInheritGlobalProxy_BareAddressKeepsTheProxy(t *testing.T) {
+	cases := []struct {
+		proxyType network.GlobalProxyType
+		url       string
+		want      string
+	}{
+		{network.GlobalProxyTypeSOCKS5, "10.0.0.9:1080", "socks5://10.0.0.9:1080"},
+		{network.GlobalProxyTypeHTTP, "10.0.0.9:3128", "http://10.0.0.9:3128"},
+		{network.GlobalProxyTypeSOCKS5, "proxy.corp:1080", "socks5://proxy.corp:1080"},
+		// Stored before the scheme had to match the type (config.json did not check it). The
+		// dialer follows the URL's scheme, so this proxy worked and must keep working.
+		{network.GlobalProxyTypeHTTP, "socks5://10.0.0.9:1080", "socks5://10.0.0.9:1080"},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.proxyType)+" "+tc.url, func(t *testing.T) {
+			global := enabledGlobalProxy()
+			global.Type = tc.proxyType
+			global.URL = tc.url
+			got, ok, err := inheritGlobalProxy(nil, global)
+			if err != nil {
+				t.Fatalf("inheritGlobalProxy: %v", err)
+			}
+			if !ok {
+				t.Fatal("nothing inherited")
+			}
+			if got.proxy.URL.GetValue() != tc.want {
+				t.Errorf("url = %q, want %q", got.proxy.URL.GetValue(), tc.want)
+			}
+			client := providerUtils.ConfigureProxy(&fasthttp.Client{}, got.proxy, nil)
+			if client.Dial == nil {
+				t.Errorf("the provider client got no proxy dialer for %q with credentials: inference would go direct", tc.url)
+			}
+		})
+	}
+
+	invalid := enabledGlobalProxy()
+	invalid.Type = network.GlobalProxyTypeSOCKS5
+	invalid.URL = "socks5://10.0.0.9:bad"
+	if _, ok, err := inheritGlobalProxy(nil, invalid); ok || err == nil {
+		t.Errorf("an unparseable global proxy url (which the API and config.json both refuse) must be an error, not inherited or dropped: ok=%v err=%v", ok, err)
 	}
 }
 
@@ -310,5 +363,32 @@ func TestGetConfigForProvider_CarriesPassthrough(t *testing.T) {
 	}
 	if config.Passthrough != nil {
 		t.Errorf("a provider without a policy must reach core without one; got %+v", config.Passthrough)
+	}
+}
+
+// TestGetConfigForProvider_UnreadableGlobalProxyFailsClosed pins that a global proxy enabled
+// for inference whose URL cannot be read stops the provider from being configured. Dropping
+// it would send inference direct, around the proxy the admin turned on; a stored URL can
+// predate the validator. The error names the URL with its password masked.
+func TestGetConfigForProvider_UnreadableGlobalProxyFailsClosed(t *testing.T) {
+	for _, raw := range []string{"http://proxy.example:bad", "http://svc:s3cret@proxy.example:bad", "http://:3128", "socks5://proxy.example:0"} {
+		t.Run(raw, func(t *testing.T) {
+			global := enabledGlobalProxy()
+			global.URL = raw
+			if strings.HasPrefix(raw, "socks5://") {
+				global.Type = network.GlobalProxyTypeSOCKS5
+			}
+			store := &Config{
+				Providers:   map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Vertex: {}},
+				ProxyConfig: global,
+			}
+			config, err := NewBaseAccount(store).GetConfigForProvider(schemas.Vertex)
+			if err == nil {
+				t.Fatalf("an unreadable global proxy was dropped, so inference would go direct (proxy_config %+v)", config.ProxyConfig)
+			}
+			if strings.Contains(err.Error(), "s3cret") {
+				t.Errorf("the error carries the proxy password: %v", err)
+			}
+		})
 	}
 }

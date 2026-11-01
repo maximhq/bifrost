@@ -223,6 +223,20 @@ func TestConsentFlowSubmit_VK(t *testing.T) {
 		assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
 	})
 
+	t.Run("an expired VK is rejected though still active", func(t *testing.T) {
+		past := time.Now().UTC().Add(-time.Second)
+		expiredVK := &configtables.TableVirtualKey{ID: "vk-row-4", Value: *schemas.NewSecretVar("sk-bf-expired"), IsActive: new(true), ExpiresAt: &past}
+		store := newConsentStore()
+		store.vksByValue["sk-bf-expired"] = expiredVK
+		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
+		h := newConsentHandler(store, nil, false)
+		ctx := consentCtx("flow-1", `{"mode":"vk","value":"sk-bf-expired"}`)
+		h.flowSubmit(ctx)
+		assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		assert.Contains(t, string(ctx.Response.Body()), "virtual key has expired")
+		assert.NotEqual(t, configtables.OAuth2AuthorizeRequestStatusConsented, store.authReqs["flow-1"].Status, "no grant may be minted for an expired key")
+	})
+
 	t.Run("unknown VK is rejected", func(t *testing.T) {
 		store := newConsentStore()
 		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
