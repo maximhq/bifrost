@@ -83,6 +83,10 @@ LogEntry:
       type: string
       description: Raw opaque Bifrost session ID resolved at ingress for key stickiness and request correlation.
       nullable: true
+    client_ip:
+      type: string
+      description: The caller's IP, taken from the leftmost `X-Forwarded-For` entry, else `X-Real-IP`, else the TCP peer address. The headers are sent by the caller and not verified.
+      nullable: true
     child_count:
       type: integer
       description: Rows nesting under this one (fallback attempts, and settled async cost rows). Present only on roots_only responses.
@@ -290,6 +294,10 @@ MCPToolLogEntry:
     virtual_key_name:
       type: string
       description: Name of the virtual key used for this tool execution
+    client_ip:
+      type: string
+      description: The caller's IP, taken from the leftmost `X-Forwarded-For` entry, else `X-Real-IP`, else the TCP peer address. The headers are sent by the caller and not verified.
+      nullable: true
     arguments:
       type: object
       additionalProperties: true

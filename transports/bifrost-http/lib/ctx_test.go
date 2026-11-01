@@ -109,6 +109,41 @@ func TestConvertToBifrostContext_ReusesSharedContext(t *testing.T) {
 	}
 }
 
+// TestConvertToBifrostContext_ClientIP pins the order enterprise audit logs use: leftmost X-Forwarded-For, else X-Real-IP,
+// else the TCP peer. No separate forwarded-for value is recorded.
+func TestConvertToBifrostContext_ClientIP(t *testing.T) {
+	tests := []struct {
+		name         string
+		remote       net.Addr
+		headers      map[string]string
+		wantClientIP string
+	}{
+		{name: "peer only", remote: &net.TCPAddr{IP: net.ParseIP("10.1.2.3"), Port: 5000}, wantClientIP: "10.1.2.3"},
+		{name: "ipv6 peer", remote: &net.TCPAddr{IP: net.ParseIP("2001:db8::1"), Port: 5000}, wantClientIP: "2001:db8::1"},
+		{name: "xff leftmost wins", remote: &net.TCPAddr{IP: net.ParseIP("10.0.0.9")}, headers: map[string]string{"X-Forwarded-For": " 203.0.113.7 , 10.0.0.1", "X-Real-IP": "198.51.100.2"}, wantClientIP: "203.0.113.7"},
+		{name: "x-real-ip fallback", remote: &net.TCPAddr{IP: net.ParseIP("10.0.0.9")}, headers: map[string]string{"X-Real-IP": "198.51.100.2"}, wantClientIP: "198.51.100.2"},
+		{name: "blank headers fall back to peer", remote: &net.TCPAddr{IP: net.ParseIP("10.0.0.9")}, headers: map[string]string{"X-Forwarded-For": "  ", "X-Real-IP": " "}, wantClientIP: "10.0.0.9"},
+		{name: "header without a peer", headers: map[string]string{"X-Forwarded-For": "203.0.113.7"}, wantClientIP: "203.0.113.7"},
+		{name: "no remote addr", wantClientIP: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			if tt.remote != nil {
+				ctx.SetRemoteAddr(tt.remote)
+			}
+			for k, v := range tt.headers {
+				ctx.Request.Header.Set(k, v)
+			}
+			bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+			defer cancel()
+			if got, _ := bifrostCtx.Value(schemas.BifrostContextKeyClientIP).(string); got != tt.wantClientIP {
+				t.Errorf("client ip = %q, want %q", got, tt.wantClientIP)
+			}
+		})
+	}
+}
+
 func TestConvertToBifrostContext_SecondCallReturnsSameSharedContext(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 
@@ -973,6 +1008,22 @@ func BenchmarkConvertToBifrostContextVirtualKeyHeader(b *testing.B) {
 	for b.Loop() {
 		_, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
 		cancel()
+	}
+}
+
+// BenchmarkConvertToBifrostContextClientIP measures a request from a real peer behind a proxy, the path that records client_ip and forwarded_for.
+func BenchmarkConvertToBifrostContextClientIP(b *testing.B) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetRemoteAddr(&net.TCPAddr{IP: net.ParseIP("10.1.2.3"), Port: 5000})
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	ctx.Request.Header.Set("User-Agent", "OpenAI/Python 2.8.1")
+	ctx.Request.Header.Set("X-Forwarded-For", "203.0.113.7, 10.0.0.1")
+	b.ReportAllocs()
+	for b.Loop() {
+		_, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+		cancel()
+		// Drop the context cached on ctx so every iteration builds a fresh one, as a new request does.
+		ctx.ResetUserValues()
 	}
 }
 

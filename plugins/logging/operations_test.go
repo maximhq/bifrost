@@ -5979,6 +5979,7 @@ func TestRelayLogRow(t *testing.T) {
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyName, "prod")
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceBudgetIDs, []string{"budget-1"})
 	ctx.SetValue(schemas.BifrostContextKeyUserAgent, "claude-code/1.0.0")
+	ctx.SetValue(schemas.BifrostContextKeyClientIP, "10.0.0.5")
 
 	_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{
 		RelayName: "tavily", Method: "POST", Path: "/search", RawQuery: "q=1", RoutePath: "/search", Billable: true,
@@ -6007,6 +6008,7 @@ func TestRelayLogRow(t *testing.T) {
 	require.Equal(t, 20.0, *entry.OverheadLatency)
 	require.NotNil(t, entry.UserAgent, "the calling client is recorded as on LLM and MCP rows")
 	require.Equal(t, "claude-code/1.0.0", *entry.UserAgent)
+	require.Equal(t, "10.0.0.5", *entry.ClientIP)
 	require.Equal(t, `{"query":"x"}`, *entry.RequestBody)
 	require.Nil(t, entry.RequestHeadersParsed, "headers are kept only when the logging headers or the route's matchers name them")
 
@@ -6397,4 +6399,89 @@ func TestRelayJobRowDedupesIdempotentStarts(t *testing.T) {
 	store.fail = errors.New("database is down")
 	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-5", RequestID: "req-5", RelayName: "textract"}, &schemas.RelayJobHandle{ID: "j-2", Params: `{"job":{}}`})
 	require.Len(t, store.jobs, 2, "a lookup error records nothing rather than risk a duplicate row")
+}
+
+func clientIPTestContext(requestID string) *schemas.BifrostContext {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
+	ctx.SetValue(schemas.BifrostContextKeyClientIP, "2001:db8::1")
+	return ctx
+}
+
+func clientIPTestError() *schemas.BifrostError {
+	statusCode := 500
+	return &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &statusCode,
+		Error:          &schemas.ErrorField{Message: "provider failed"},
+		ExtraFields:    schemas.BifrostErrorExtraFields{RequestType: schemas.ChatCompletionRequest, Provider: schemas.OpenAI, OriginalModelRequested: "gpt-4o"},
+	}
+}
+
+func requireClientIP(t *testing.T, clientIP *string) {
+	t.Helper()
+	require.NotNil(t, clientIP)
+	require.Equal(t, "2001:db8::1", *clientIP)
+}
+
+// TestLLMLogsPersistClientIP drives PreLLMHook/PostLLMHook and the no-pending error path; both rows carry the caller IP.
+func TestLLMLogsPersistClientIP(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	require.NoError(t, err)
+
+	ctx := clientIPTestContext("req-client-ip")
+	_, _, err = plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o", Params: &schemas.ChatParameters{}},
+	})
+	require.NoError(t, err)
+	_, _, err = plugin.PostLLMHook(ctx, nil, clientIPTestError())
+	require.NoError(t, err)
+
+	_, _, err = plugin.PostLLMHook(clientIPTestContext("req-client-ip-no-pending"), nil, clientIPTestError())
+	require.NoError(t, err)
+	require.NoError(t, plugin.Cleanup())
+
+	for _, id := range []string{"req-client-ip", "req-client-ip-no-pending"} {
+		entry, err := store.FindByID(context.Background(), id)
+		require.NoError(t, err, id)
+		requireClientIP(t, entry.ClientIP)
+	}
+}
+
+// TestMCPLogsPersistClientIP drives PreMCPHook/PostMCPHook; the row carries the caller IP.
+func TestMCPLogsPersistClientIP(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	require.NoError(t, err)
+
+	ctx := clientIPTestContext("req-mcp-client-ip")
+	ctx.SetValue(schemas.BifrostContextKeyMCPLogID, "mcp-client-ip")
+	toolName := "docs-search"
+	_, _, err = plugin.PreMCPHook(ctx, &schemas.BifrostMCPRequest{
+		RequestType:                  schemas.MCPRequestTypeChatToolCall,
+		ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolName, Arguments: `{}`}},
+	})
+	require.NoError(t, err)
+	result := `{"ok":true}`
+	_, _, err = plugin.PostMCPHook(ctx, &schemas.BifrostMCPResponse{
+		ChatMessage: &schemas.ChatMessage{Role: schemas.ChatMessageRoleTool, Content: &schemas.ChatMessageContent{ContentStr: &result}},
+		ExtraFields: schemas.BifrostMCPResponseExtraFields{MCPRequestType: schemas.MCPRequestTypeChatToolCall, ClientName: "docs", ToolName: "search"},
+	}, nil)
+	require.NoError(t, err)
+	require.NoError(t, plugin.Cleanup())
+
+	entry, err := store.FindMCPToolLog(context.Background(), "mcp-client-ip")
+	require.NoError(t, err)
+	requireClientIP(t, entry.ClientIP)
+}
+
+// TestClientIPFromContextClampsToColumns keeps an oversized forwarded header, which is caller-supplied, from failing the insert.
+func TestClientIPFromContextClampsToColumns(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	require.Empty(t, clientIPFromContext(ctx))
+	require.Nil(t, optionalString(clientIPFromContext(ctx)), "an absent IP stays NULL")
+	ctx.SetValue(schemas.BifrostContextKeyClientIP, strings.Repeat("9", maxPersistedClientIPLen+10))
+	require.Len(t, clientIPFromContext(ctx), maxPersistedClientIPLen)
 }
