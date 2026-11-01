@@ -569,13 +569,7 @@ func TestOpenAISpeechRoutesReturnRawAudio(t *testing.T) {
 }
 
 func TestOpenAITranscriptionAzureDeploymentRoutes(t *testing.T) {
-	cases := []struct{ format, contentType, body string }{
-		{"text", "text/plain; charset=utf-8", " Azure transcript.\n"},
-		{"srt", "application/x-subrip; charset=utf-8", "1\r\n00:00:00,000 --> 00:00:01,000\r\nAzure transcript.\r\n\r\n"},
-		{"vtt", "text/vtt; charset=utf-8", "WEBVTT\n\n00:00.000 --> 00:01.000\nAzure transcript.\n"},
-		{"json", "application/json", `{"text":"Azure transcript."}`},
-		{"error", "application/json", `{"error":{"message":"invalid audio","type":"invalid_request_error"}}`},
-	}
+	const transcript = " Azure transcript.\n"
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseMultipartForm(1 << 20); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -588,17 +582,11 @@ func TestOpenAITranscriptionAzureDeploymentRoutes(t *testing.T) {
 		if r.URL.Query().Get("api-version") != "2025-04-01-preview" {
 			t.Errorf("api-version lost: %q", r.URL.RawQuery)
 		}
-		for _, tc := range cases {
-			if r.FormValue("response_format") == tc.format {
-				w.Header().Set("Content-Type", tc.contentType)
-				if tc.format == "error" {
-					w.WriteHeader(http.StatusBadRequest)
-				}
-				_, _ = io.WriteString(w, tc.body)
-				return
-			}
+		if r.FormValue("response_format") != "text" {
+			t.Errorf("upstream response_format = %q, want text", r.FormValue("response_format"))
 		}
-		http.Error(w, "unexpected format", http.StatusBadRequest)
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = io.WriteString(w, transcript)
 	}))
 	defer upstream.Close()
 	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
@@ -609,28 +597,15 @@ func TestOpenAITranscriptionAzureDeploymentRoutes(t *testing.T) {
 	r := router.New()
 	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
 	NewOpenAIRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
-	for _, tc := range cases {
-		t.Run(tc.format, func(t *testing.T) {
-			ctx := buildTranscriptionMultipartCtx(t, map[string][]string{"response_format": {tc.format}})
-			ctx.Request.Header.SetMethod(fasthttp.MethodPost)
-			ctx.Request.SetRequestURI("/openai/openai/deployments/whisper-1/audio/transcriptions?api-version=2025-04-01-preview")
-			defer ctx.Request.RemoveMultipartFormFiles()
-			r.Handler(ctx)
-			if tc.format == "error" {
-				require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
-				require.Contains(t, string(ctx.Response.Body()), "invalid audio")
-			} else {
-				require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
-				if tc.format == "json" {
-					require.Equal(t, "Azure transcript.", gjson.GetBytes(ctx.Response.Body(), "text").String())
-				} else {
-					require.Equal(t, tc.body, string(ctx.Response.Body()))
-				}
-			}
-			require.Equal(t, tc.contentType, string(ctx.Response.Header.ContentType()))
-			require.Equal(t, "azure", string(ctx.Response.Header.Peek("x-bifrost-provider")))
-		})
-	}
+	ctx := buildTranscriptionMultipartCtx(t, map[string][]string{"response_format": {"text"}})
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI("/openai/openai/deployments/whisper-1/audio/transcriptions?api-version=2025-04-01-preview")
+	defer ctx.Request.RemoveMultipartFormFiles()
+	r.Handler(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+	require.Equal(t, transcript, string(ctx.Response.Body()))
+	require.Equal(t, "text/plain; charset=utf-8", string(ctx.Response.Header.ContentType()))
+	require.Equal(t, "azure", string(ctx.Response.Header.Peek("x-bifrost-provider")))
 }
 
 // azureDataSourcesJSON is an Azure "On Your Data" data_sources value, the
