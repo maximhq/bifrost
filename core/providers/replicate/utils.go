@@ -328,7 +328,7 @@ func replicateNextPageCursor(next string) (string, error) {
 // carried the full next link; such a link is still accepted when it points at the
 // configured base URL and the file-list path, and refused otherwise so the request can
 // never leave that endpoint.
-func replicateFileListPageCursor(baseURL, stored string) (string, error) {
+func replicateFileListPageCursor(baseURL *schemas.SecretVar, stored string) (string, error) {
 	if !strings.Contains(stored, "://") {
 		return stored, nil
 	}
@@ -336,8 +336,13 @@ func replicateFileListPageCursor(baseURL, stored string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("cursor link is not a valid URL: %w", err)
 	}
-	base, err := url.Parse(baseURL)
+	base, err := url.Parse(baseURL.GetValue())
 	if err != nil {
+		// url.Parse puts its input in the error, so a reference-resolved base URL
+		// would reach the warning log through %w. Name the reference instead.
+		if baseURL.IsFromSecret() {
+			return "", fmt.Errorf("base URL resolved from %s is not a valid URL", baseURL.GetRawRef())
+		}
 		return "", fmt.Errorf("configured base URL is not a valid URL: %w", err)
 	}
 	wantPath := strings.TrimRight(base.Path, "/") + "/v1/files"

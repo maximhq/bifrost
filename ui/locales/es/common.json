@@ -399,6 +399,7 @@
 		"http2PingIntervalMustBeAtMost3600Seconds": "El intervalo de ping de HTTP/2 debe ser de 3600 segundos como máximo, es decir, 60 minutos",
 		"retryBackoffInitialMustBeRetryBackoffMax": "retry_backoff_initial debe ser <= retry_backoff_max",
 		"mustBeAValidHttpOrHttpsUrl": "Debe ser una URL HTTP o HTTPS válida",
+		"validBaseUrlOrSecretReference": "Debe ser una URL HTTP o HTTPS válida, o una referencia env.VAR_NAME / vault.path",
 		"timeoutMustBeANumber": "El tiempo de espera debe ser un número",
 		"timeoutMustBeLessThan172800SecondsIE48": "El tiempo de espera debe ser menor que 172800 segundos, es decir, 48 horas",
 		"maxRetriesMustBeANumber": "El máximo de reintentos debe ser un número",

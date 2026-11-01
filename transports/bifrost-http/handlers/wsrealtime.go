@@ -16,6 +16,7 @@ import (
 	"github.com/fasthttp/router"
 	ws "github.com/fasthttp/websocket"
 	bifrost "github.com/maximhq/bifrost/core"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
@@ -580,8 +581,12 @@ func (h *WSRealtimeHandler) openRealtimeUpstream(
 		return nil, nil, headerErr
 	}
 	var proxyConfig *schemas.ProxyConfig
+	var baseURL *schemas.SecretVar
 	if providerCfg, cfgErr := h.config.GetProviderConfigRaw(providerKey); cfgErr == nil && providerCfg != nil {
 		proxyConfig = providerCfg.ProxyConfig
+		if providerCfg.NetworkConfig != nil {
+			baseURL = providerCfg.NetworkConfig.BaseURL
+		}
 	}
 	upstream, err := h.pool.Get(bfws.PoolKey{
 		Provider: providerKey,
@@ -589,7 +594,9 @@ func (h *WSRealtimeHandler) openRealtimeUpstream(
 		Endpoint: wsURL,
 	}, mapToHTTPHeader(realtimeHeaders), proxyConfig)
 	if err != nil {
-		return nil, nil, newRealtimeWireBifrostError(502, "server_error", err.Error())
+		// The dial error quotes the endpoint, which must not reach the client when it
+		// was resolved from an env./vault. base_url.
+		return nil, nil, newRealtimeWireBifrostError(502, "server_error", providerUtils.RedactBaseURL(baseURL, err.Error()))
 	}
 	return upstream, func() { h.pool.Discard(upstream) }, nil
 }

@@ -4,11 +4,14 @@ import (
 	"context"
 	"io"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	bfws "github.com/maximhq/bifrost/transports/v2/bifrost-http/websocket"
 	"github.com/valyala/fasthttp"
 )
@@ -55,6 +58,54 @@ func TestOpenRealtimeUpstreamPrefersProviderConnector(t *testing.T) {
 	release()
 	if !provider.upstream.closed {
 		t.Fatal("release must close the provider connection")
+	}
+}
+
+// dialRealtimeProvider is a pooled websocket provider whose endpoint is wsURL.
+type dialRealtimeProvider struct {
+	schemas.RealtimeProvider
+	wsURL string
+}
+
+func (p *dialRealtimeProvider) RealtimeWebSocketURL(*schemas.BifrostContext, schemas.Key, string, string) (string, *schemas.BifrostError) {
+	return p.wsURL, nil
+}
+
+func (p *dialRealtimeProvider) RealtimeHeaders(*schemas.BifrostContext, schemas.Key) (map[string]string, *schemas.BifrostError) {
+	return nil, nil
+}
+
+// TestOpenRealtimeUpstreamRedactsSecretBaseURL pins that a failed dial does not hand the
+// client an endpoint resolved from an env. base_url: the pool's error quotes the URL it
+// dialed, so the client gets the reference instead.
+func TestOpenRealtimeUpstreamRedactsSecretBaseURL(t *testing.T) {
+	const ref = "env.BIFROST_TEST_REALTIME_BASE_URL"
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+	t.Setenv("BIFROST_TEST_REALTIME_BASE_URL", "http://"+addr)
+
+	pool := bfws.NewPool(nil)
+	defer pool.Close()
+	h := &WSRealtimeHandler{
+		config: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.OpenAI: {NetworkConfig: &schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(ref)}},
+		}},
+		pool: pool,
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+
+	provider := &dialRealtimeProvider{wsURL: "ws://" + addr + "/v1/realtime?model=gpt-realtime"}
+	_, _, bifrostErr := h.openRealtimeUpstream(ctx, provider, schemas.OpenAI, schemas.Key{ID: "k"}, "gpt-realtime", "")
+	if bifrostErr == nil || bifrostErr.Error == nil {
+		t.Fatal("expected a dial error")
+	}
+	if msg := bifrostErr.Error.Message; strings.Contains(msg, addr) || !strings.Contains(msg, ref) {
+		t.Fatalf("the dial error should name %s, not the resolved address %s: %q", ref, addr, msg)
 	}
 }
 

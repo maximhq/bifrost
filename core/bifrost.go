@@ -8623,6 +8623,10 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			}
 		}
 
+		// A connection error quotes the host it dialed. When base_url came from an
+		// env./vault. reference, that host must not reach the caller or the post-hooks.
+		providerUtils.RedactBaseURLError(bifrostError, config.NetworkConfig.BaseURL)
+
 		// For streaming with an error, route release through the LAST attempt's
 		// finalizer (wrapped in sync.Once) so we don't double-Put into the pool
 		// or race the provider goroutine's deferred FinalizeStreamingPostHookSpans

@@ -1195,7 +1195,7 @@ func (a passthroughTestAccount) GetKeysForProvider(_ context.Context, p schemas.
 
 func (a passthroughTestAccount) GetConfigForProvider(p schemas.ModelProvider) (*schemas.ProviderConfig, error) {
 	nc := schemas.DefaultNetworkConfig
-	nc.BaseURL = a.baseURL
+	nc.BaseURL = schemas.NewSecretVar(a.baseURL)
 	config := &schemas.ProviderConfig{
 		NetworkConfig:            nc,
 		ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
@@ -1550,9 +1550,9 @@ func (a directKeyTestAccount) GetConfigForProvider(p schemas.ModelProvider) (*sc
 	nc := schemas.DefaultNetworkConfig
 	switch p {
 	case schemas.OpenAI:
-		nc.BaseURL = a.openAIURL
+		nc.BaseURL = schemas.NewSecretVar(a.openAIURL)
 	case schemas.Anthropic:
-		nc.BaseURL = a.anthropicURL
+		nc.BaseURL = schemas.NewSecretVar(a.anthropicURL)
 	default:
 		return nil, fmt.Errorf("unsupported provider %s", p)
 	}
@@ -2486,9 +2486,9 @@ func (a heldDeadlineAccount) GetConfigForProvider(p schemas.ModelProvider) (*sch
 	nc := schemas.DefaultNetworkConfig
 	switch p {
 	case schemas.OpenAI:
-		nc.BaseURL = a.primaryURL
+		nc.BaseURL = schemas.NewSecretVar(a.primaryURL)
 	case schemas.Anthropic:
-		nc.BaseURL = a.fallbackURL
+		nc.BaseURL = schemas.NewSecretVar(a.fallbackURL)
 	default:
 		return nil, fmt.Errorf("unsupported provider %s", p)
 	}

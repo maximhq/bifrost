@@ -347,7 +347,7 @@ func TestScenarioFailureClassLadder(t *testing.T) {
 				provB: {scenarioKey("b1", 1)},
 			})
 			if tc.deadURL {
-				account.configs[provA].NetworkConfig.BaseURL = "http://127.0.0.1:1"
+				account.configs[provA].NetworkConfig.BaseURL = schemas.NewSecretVar("http://127.0.0.1:1")
 			}
 			if tc.timeout {
 				account.configs[provA].NetworkConfig.DefaultRequestTimeoutInSeconds = 1

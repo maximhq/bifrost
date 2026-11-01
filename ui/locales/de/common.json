@@ -399,6 +399,7 @@
 		"http2PingIntervalMustBeAtMost3600Seconds": "Das HTTP/2-Ping-Intervall darf höchstens 3600 Sekunden betragen, also 60 Minuten",
 		"retryBackoffInitialMustBeRetryBackoffMax": "retry_backoff_initial muss <= retry_backoff_max sein",
 		"mustBeAValidHttpOrHttpsUrl": "Muss eine gültige HTTP- oder HTTPS-URL sein",
+		"validBaseUrlOrSecretReference": "Muss eine gültige HTTP- oder HTTPS-URL oder eine env.VAR_NAME- / vault.path-Referenz sein",
 		"timeoutMustBeANumber": "Das Timeout muss eine Zahl sein",
 		"timeoutMustBeLessThan172800SecondsIE48": "Das Timeout muss kleiner als 172800 Sekunden sein, also 48 Stunden",
 		"maxRetriesMustBeANumber": "Die maximale Anzahl an Wiederholungen muss eine Zahl sein",

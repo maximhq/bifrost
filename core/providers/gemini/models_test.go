@@ -120,7 +120,7 @@ func TestModelRetrieve(t *testing.T) {
 	defer server.Close()
 
 	provider := NewGeminiProvider(&schemas.ProviderConfig{
-		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+		NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(server.URL)},
 	}, testNoopLogger{})
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)

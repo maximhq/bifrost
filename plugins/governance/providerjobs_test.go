@@ -1205,11 +1205,11 @@ func TestPreLLMHookBindsObjectsAcrossProviderAliases(t *testing.T) {
 	plugin.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
 		// The standard provider names its default endpoint explicitly and the custom one leaves it
 		// unset: both reach api.openai.com, so they are still one upstream.
-		schemas.OpenAI: {NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com/"}},
+		schemas.OpenAI: {NetworkConfig: &schemas.NetworkConfig{BaseURL: schemas.NewSecretVar("https://api.openai.com/")}},
 		"my-openai":    {CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI}},
 		"other-service": {
 			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI},
-			NetworkConfig:        &schemas.NetworkConfig{BaseURL: "https://inference.other-service.example/v1"},
+			NetworkConfig:        &schemas.NetworkConfig{BaseURL: schemas.NewSecretVar("https://inference.other-service.example/v1")},
 		},
 		schemas.Anthropic: {},
 	}}

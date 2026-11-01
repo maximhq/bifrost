@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { BaseProviderNames } from "../types/config";
-import { getPasswordPolicyFailures, isRedacted, isRequestTypeDisabled, isValidVertexAuthCredentials } from "./validation";
+import {
+	getPasswordPolicyFailures,
+	isSecretReference,
+	isValidBaseURL,
+	isRedacted,
+	isRequestTypeDisabled,
+	isValidVertexAuthCredentials,
+} from "./validation";
 
 describe("isRedacted", () => {
 	it.each(["<redacted>", "<REDACTED>", "[redacted]", "[REDACTED]"])("recognizes the backend sentinel %s", (value) => {
@@ -101,5 +108,30 @@ describe("isRequestTypeDisabled", () => {
 		}
 		expect(isRequestTypeDisabled("cohere", "passthrough")).toBe(true);
 		expect(isRequestTypeDisabled("bedrock", "passthrough_stream")).toBe(true);
+	});
+});
+describe("isSecretReference", () => {
+	it.each(["env.UPSTREAM_URL", "vault.bifrost/upstream/url"])("accepts %s", (value) => {
+		expect(isSecretReference(value)).toBe(true);
+	});
+
+	it.each(["", "env.", "vault.", "env. spaced", "environment", "https://env.example.com"])("rejects %s", (value) => {
+		expect(isSecretReference(value)).toBe(false);
+	});
+});
+
+describe("isValidBaseURL", () => {
+	it.each([
+		"https://api.example.com",
+		"http://localhost:8000",
+		"https://vllm-endpoint:8000/v1",
+		"env.UPSTREAM_URL",
+		"vault.bifrost/upstream/url",
+	])("accepts %s", (value) => {
+		expect(isValidBaseURL(value)).toBe(true);
+	});
+
+	it.each(["", "api.example.com", "ftp://files.example.com", "env.", "not a url", "https://"])("rejects %s", (value) => {
+		expect(isValidBaseURL(value)).toBe(false);
 	});
 });

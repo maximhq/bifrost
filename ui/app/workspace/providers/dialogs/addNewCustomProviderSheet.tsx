@@ -1,6 +1,6 @@
 import { BaseProviderSelector } from "@/components/ui/baseProviderSelector";
 import { Button } from "@/components/ui/button";
-import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
@@ -8,7 +8,7 @@ import { DefaultNetworkConfig } from "@/lib/constants/config";
 import i18n from "@/lib/i18n";
 import { getErrorMessage, useCreateProviderMutation } from "@/lib/store";
 import { BaseProvider, ModelProviderName } from "@/lib/types/config";
-import { allowedRequestsSchema } from "@/lib/types/schemas";
+import { allowedRequestsSchema, baseURLSchema } from "@/lib/types/schemas";
 import { cleanPathOverrides } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -17,7 +17,7 @@ import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
 import { AllowedRequestsFields } from "../fragments/allowedRequestsFields";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 
 const formSchema = z.object({
 	name: z.string().min(1),
@@ -25,7 +25,7 @@ const formSchema = z.object({
 	base_url: z
 		.string()
 		.min(1, { error: () => i18n.t("providers.customBaseUrlRequired", { ns: "models" }) })
-		.url({ error: () => i18n.t("validation.validUrl") }),
+		.pipe(baseURLSchema),
 	allowed_requests: allowedRequestsSchema,
 	request_path_overrides: z.record(z.string(), z.string().optional()).optional(),
 	is_key_less: z.boolean().optional(),
@@ -232,6 +232,9 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 												value={field.value || ""}
 											/>
 										</FormControl>
+										<FormDescription>
+											<Trans t={t} i18nKey="providers.network.baseUrlHelp" components={{ code: <code /> }} />
+										</FormDescription>
 										<FormMessage />
 									</div>
 								</FormItem>

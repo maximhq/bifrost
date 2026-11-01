@@ -418,7 +418,7 @@ func TestGeminiBatchResponsesWithoutMetadataDoNotPanic(t *testing.T) {
 	defer ts.Close()
 
 	provider := NewGeminiProvider(&schemas.ProviderConfig{
-		NetworkConfig: schemas.NetworkConfig{BaseURL: ts.URL + "/v1beta"},
+		NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(ts.URL + "/v1beta")},
 	}, testNoopLogger{})
 	keys := []schemas.Key{{Value: *schemas.NewSecretVar("dummy-key")}}
 	newCtx := func() *schemas.BifrostContext {
@@ -460,7 +460,7 @@ func TestGeminiBatchCreateRewritesInlineThinkingBudgetForGemini4(t *testing.T) {
 	defer ts.Close()
 
 	provider := NewGeminiProvider(&schemas.ProviderConfig{
-		NetworkConfig: schemas.NetworkConfig{BaseURL: ts.URL + "/v1beta"},
+		NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(ts.URL + "/v1beta")},
 	}, testNoopLogger{})
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)

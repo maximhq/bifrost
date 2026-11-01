@@ -1197,7 +1197,7 @@ func newTypesafeFixture(t *testing.T, handler func(w http.ResponseWriter, r *htt
 	}))
 	t.Cleanup(f.Close)
 	provider, err := NewTypesafeProvider(&schemas.ProviderConfig{
-		NetworkConfig: schemas.NetworkConfig{BaseURL: f.URL, DefaultRequestTimeoutInSeconds: 10},
+		NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(f.URL), DefaultRequestTimeoutInSeconds: 10},
 	}, noopLogger{})
 	if err != nil {
 		t.Fatalf("NewTypesafeProvider: %v", err)
@@ -1381,7 +1381,7 @@ func newCustomTypesafeFixture(t *testing.T, custom schemas.CustomProviderConfig,
 	custom.CustomProviderKey = string(customTypesafeProviderName)
 	custom.BaseProviderType = schemas.Typesafe
 	provider, err := NewTypesafeProvider(&schemas.ProviderConfig{
-		NetworkConfig:        schemas.NetworkConfig{BaseURL: f.URL, DefaultRequestTimeoutInSeconds: 10},
+		NetworkConfig:        schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(f.URL), DefaultRequestTimeoutInSeconds: 10},
 		CustomProviderConfig: &custom,
 	}, noopLogger{})
 	if err != nil {
@@ -2351,7 +2351,7 @@ func TestTypesafeImagesHeaderOverride(t *testing.T) {
 			}))
 			defer server.Close()
 			provider, err := NewTypesafeProvider(&schemas.ProviderConfig{
-				NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 10, BetaHeaderOverrides: tc.overrides},
+				NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(server.URL), DefaultRequestTimeoutInSeconds: 10, BetaHeaderOverrides: tc.overrides},
 			}, noopLogger{})
 			if err != nil {
 				t.Fatalf("NewTypesafeProvider: %v", err)

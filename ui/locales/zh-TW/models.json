@@ -164,6 +164,7 @@
 			"http2PingInterval": "HTTP/2 Ping 間隔（秒）",
 			"http2PingHelp": "客戶端發起 HTTP/2 keepalive PING 前的空閒秒數。可防止中間裝置切斷安靜流和長生成。0 表示停用；需要啟用強制 HTTP/2。",
 			"allowPrivateHelp": "允許連線私有 IP（例如 <code>10.x</code>、<code>192.168.x</code>）。區域網、k8s pod 網路或私有 VPC 上的供應商需要此項。雲中繼資料地址（169.254.x.x）始終會被阻止。",
+			"baseUrlHelp": "URL，或在伺服器端解析的 <code>env.VAR_NAME</code> / <code>vault.path</code> 參照。",
 			"tlsCertificate": "TLS / 證書",
 			"skipTls": "跳過 TLS 驗證",
 			"skipTlsHelp": "停用供應商連線的 TLS 證書驗證。這會繞過伺服器證書校驗，僅應在無法配置受信任 CA 鏈時作為最後手段。自簽名或私有 CA 部署請優先使用 ca_cert_pem。",

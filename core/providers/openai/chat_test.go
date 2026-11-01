@@ -2673,7 +2673,7 @@ func oauthTokenStub(t testing.TB) (*httptest.Server, *atomic.Int64) {
 func oauthTestProvider(t testing.TB) *OpenAIProvider {
 	t.Helper()
 	return NewOpenAIProvider(&schemas.ProviderConfig{
-		NetworkConfig: schemas.NetworkConfig{BaseURL: "https://llm.example", DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
+		NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar("https://llm.example"), DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
 	}, nil)
 }
 
@@ -2699,7 +2699,7 @@ func TestFileListCursorSelectsTheKeyByPosition(t *testing.T) {
 	}))
 	t.Cleanup(files.Close)
 	provider := NewOpenAIProvider(&schemas.ProviderConfig{
-		NetworkConfig: schemas.NetworkConfig{BaseURL: files.URL, DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
+		NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(files.URL), DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
 	}, nil)
 	keys := []schemas.Key{
 		oauthKey("down", "http://127.0.0.1:1/token"),
@@ -2740,7 +2740,7 @@ func TestDecisionMintsOAuthBearer(t *testing.T) {
 	}))
 	t.Cleanup(decisions.Close)
 	provider := NewOpenAIProvider(&schemas.ProviderConfig{
-		NetworkConfig: schemas.NetworkConfig{BaseURL: decisions.URL, DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
+		NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(decisions.URL), DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
 	}, nil)
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)

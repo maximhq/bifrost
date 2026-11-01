@@ -416,7 +416,7 @@ func (a wsTwoKeyAccount) GetConfigForProvider(p schemas.ModelProvider) (*schemas
 		return nil, fmt.Errorf("unsupported provider %s", p)
 	}
 	networkConfig := schemas.DefaultNetworkConfig
-	networkConfig.BaseURL = a.baseURL
+	networkConfig.BaseURL = schemas.NewSecretVar(a.baseURL)
 	return &schemas.ProviderConfig{
 		NetworkConfig:            networkConfig,
 		ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,

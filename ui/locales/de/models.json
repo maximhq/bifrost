@@ -164,6 +164,7 @@
 			"http2PingInterval": "HTTP/2-Ping-Intervall (Sekunden)",
 			"http2PingHelp": "Inaktive Sekunden vor einem vom Client initiierten HTTP/2-Keepalive-PING. Verhindert, dass Zwischenstationen inaktive Streams und lange Generierungen trennen. 0 deaktiviert dies; erfordert „HTTP/2 erzwingen“.",
 			"allowPrivateHelp": "Verbindungen zu privaten IPs erlauben (z. B. <code>10.x</code>, <code>192.168.x</code>). Erforderlich für Anbieter in einem LAN, k8s-Pod-Netzwerk oder privaten VPC. Cloud-Metadatenadressen (169.254.x.x) sind immer blockiert.",
+			"baseUrlHelp": "Eine URL oder eine <code>env.VAR_NAME</code>- / <code>vault.path</code>-Referenz, die auf dem Server aufgelöst wird.",
 			"tlsCertificate": "TLS / Zertifikat",
 			"skipTls": "TLS-Verifizierung überspringen",
 			"skipTlsHelp": "TLS-Zertifikatsüberprüfung für Anbieter-Verbindungen deaktivieren. Dies umgeht die Validierung des Serverzertifikats und sollte nur als letzter Ausweg verwendet werden, wenn keine vertrauenswürdige CA-Kette konfiguriert werden kann. Verwende für selbstsignierte oder private CA-Bereitstellungen bevorzugt ca_cert_pem.",

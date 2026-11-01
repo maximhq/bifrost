@@ -236,6 +236,9 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 												disabled={!hasUpdateProviderAccess}
 											/>
 										</FormControl>
+										<FormDescription>
+											<Trans t={t} i18nKey="providers.network.baseUrlHelp" components={{ code: <code /> }} />
+										</FormDescription>
 										<FormMessage />
 									</FormItem>
 								)}

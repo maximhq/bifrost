@@ -2,7 +2,7 @@ import { KnownProvidersNames } from "@/lib/constants/logs";
 import { MCP_MAX_PROTOCOL_VERSIONS } from "@/lib/constants/mcp";
 import i18n from "@/lib/i18n";
 import { msg } from "@/lib/i18n/validationMessage";
-import { isRedacted } from "@/lib/utils/validation";
+import { isRedacted, isValidBaseURL } from "@/lib/utils/validation";
 import { z } from "zod";
 
 // Global error map - turns Zod's default messages into readable, human-friendly ones.
@@ -849,10 +849,14 @@ export const modelProviderKeySchema = z
 		},
 	);
 
+// Provider base URL: an http(s) URL or an env./vault. reference (the server-side field is a
+// SecretVar, so "env.MY_UPSTREAM_URL" resolves at load time and round-trips as the reference).
+export const baseURLSchema = z.string().trim().refine(isValidBaseURL, msg("validation.validBaseUrlOrSecretReference"));
+
 // Network config schema
 export const networkConfigSchema = z
 	.object({
-		base_url: z.union([z.string().url(msg("validation.validUrl")), z.string().length(0)]).optional(),
+		base_url: z.union([baseURLSchema, z.string().length(0)]).optional(),
 		extra_headers: z.record(z.string(), z.string()).optional(),
 		default_request_timeout_in_seconds: z
 			.number()
@@ -898,17 +902,7 @@ export const networkConfigSchema = z
 // Network form schema - more lenient for form inputs
 export const networkFormConfigSchema = z
 	.object({
-		base_url: z
-			.union([
-				z
-					.string()
-					.url(msg("validation.validUrl"))
-					.refine((url) => url.startsWith("https://") || url.startsWith("http://"), {
-						error: () => i18n.t("validation.mustBeAValidHttpOrHttpsUrl"),
-					}),
-				z.string().length(0),
-			])
-			.optional(),
+		base_url: z.union([baseURLSchema, z.string().length(0)]).optional(),
 		extra_headers: z.record(z.string(), secretVarSchema).optional(),
 		default_request_timeout_in_seconds: z.coerce
 			.number(msg("validation.timeoutMustBeANumber"))

@@ -399,6 +399,7 @@
 		"http2PingIntervalMustBeAtMost3600Seconds": "HTTP/2 ping 間隔は 3600 秒 (60 分) 以下にしてください",
 		"retryBackoffInitialMustBeRetryBackoffMax": "retry_backoff_initial は retry_backoff_max 以下にしてください",
 		"mustBeAValidHttpOrHttpsUrl": "有効な HTTP または HTTPS の URL にしてください",
+		"validBaseUrlOrSecretReference": "有効な HTTP または HTTPS の URL、または env.VAR_NAME / vault.path 形式の参照にしてください",
 		"timeoutMustBeANumber": "タイムアウトは数値で指定してください",
 		"timeoutMustBeLessThan172800SecondsIE48": "タイムアウトは 172800 秒 (48 時間) 未満にしてください",
 		"maxRetriesMustBeANumber": "最大再試行回数は数値で指定してください",

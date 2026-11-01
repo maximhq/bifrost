@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -46,10 +45,7 @@ func NewRunwayProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 
 	// Set default BaseURL if not provided
-	if config.NetworkConfig.BaseURL == "" {
-		config.NetworkConfig.BaseURL = "https://api.dev.runwayml.com"
-	}
-	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
+	providerUtils.NormalizeBaseURL(&config.NetworkConfig, "https://api.dev.runwayml.com")
 
 	return &RunwayProvider{
 		logger:              logger,
@@ -173,7 +169,7 @@ func (provider *RunwayProvider) HandleRunwayImageTask(ctx *schemas.BifrostContex
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/text_to_image"))
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + providerUtils.GetPathFromContext(ctx, "/v1/text_to_image"))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	req.Header.Set("X-Runway-Version", "2024-11-06")
@@ -286,7 +282,7 @@ func (provider *RunwayProvider) retrieveRunwayTask(ctx *schemas.BifrostContext, 
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/tasks/"+escapedTaskID))
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + providerUtils.GetPathFromContext(ctx, "/v1/tasks/"+escapedTaskID))
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.Set("X-Runway-Version", "2024-11-06")
 	if key.Value.GetValue() != "" {
@@ -389,7 +385,7 @@ func (provider *RunwayProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Set request URI and headers
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, endpoint))
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + providerUtils.GetPathFromContext(ctx, endpoint))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	req.Header.Set("X-Runway-Version", "2024-11-06")
@@ -475,7 +471,7 @@ func (provider *RunwayProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Set request URI and headers
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/tasks/"+escapedTaskID))
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + providerUtils.GetPathFromContext(ctx, "/v1/tasks/"+escapedTaskID))
 	req.Header.SetMethod("GET")
 	req.Header.Set("X-Runway-Version", "2024-11-06")
 	if key.Value.GetValue() != "" {
@@ -631,7 +627,7 @@ func (provider *RunwayProvider) VideoDelete(ctx *schemas.BifrostContext, key sch
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/tasks/"+escapedTaskID))
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + providerUtils.GetPathFromContext(ctx, "/v1/tasks/"+escapedTaskID))
 	req.Header.SetMethod(http.MethodDelete)
 	req.Header.Set("X-Runway-Version", "2024-11-06")
 	if key.Value.GetValue() != "" {

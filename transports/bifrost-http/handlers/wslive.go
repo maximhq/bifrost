@@ -11,6 +11,7 @@ import (
 	"github.com/fasthttp/router"
 	ws "github.com/fasthttp/websocket"
 	bifrost "github.com/maximhq/bifrost/core"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
@@ -253,13 +254,18 @@ func (h *WSLiveHandler) dial(ctx *schemas.BifrostContext, provider schemas.LiveP
 		return nil, bifrostErr
 	}
 	var proxyConfig *schemas.ProxyConfig
+	var baseURL *schemas.SecretVar
 	if providerCfg, cfgErr := h.config.GetProviderConfigRaw(providerKey); cfgErr == nil && providerCfg != nil {
 		proxyConfig = providerCfg.ProxyConfig
+		if providerCfg.NetworkConfig != nil {
+			baseURL = providerCfg.NetworkConfig.BaseURL
+		}
 	}
 	upstream, err := h.pool.Get(bfws.PoolKey{Provider: providerKey, KeyID: key.ID, Endpoint: wsURL}, mapToHTTPHeader(headers), proxyConfig)
 	if err != nil {
-		// Only the status reaches the client; the URL and body stay in the server log.
-		logger.Warn("live %s dial failed: %v", kind, err)
+		// Only the status reaches the client; the URL and body stay in the server log,
+		// with a base_url resolved from an env./vault. reference shown as the reference.
+		logger.Warn("live %s dial failed: %s", kind, providerUtils.RedactBaseURL(baseURL, err.Error()))
 		var handshake *bfws.HandshakeError
 		if errors.As(err, &handshake) && handshake.StatusCode == fasthttp.StatusNotFound {
 			return nil, newRealtimeWireBifrostError(404, "invalid_request_error", "live session not found, or it does not accept this connection (a sideband needs a WebRTC or SIP session)")

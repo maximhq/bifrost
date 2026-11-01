@@ -53,7 +53,7 @@ func TestExtractRunwarePassthroughUsage(t *testing.T) {
 // such as /v1beta/x shares the prefix without being that segment and must be forwarded intact
 // rather than turned into the unrooted beta/x and refused.
 func TestBuildPassthroughURLStripsVersionAtSegmentBoundary(t *testing.T) {
-	provider := &RunwareProvider{networkConfig: schemas.NetworkConfig{BaseURL: "https://api.runware.ai/v1"}}
+	provider := &RunwareProvider{networkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar("https://api.runware.ai/v1")}}
 	cases := map[string]string{
 		"":              "https://api.runware.ai/v1",
 		"/v1":           "https://api.runware.ai/v1",

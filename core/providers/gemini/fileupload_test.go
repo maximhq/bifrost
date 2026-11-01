@@ -102,7 +102,7 @@ func TestFileUploadSendsContentTypeToGemini(t *testing.T) {
 	defer ts.Close()
 
 	provider := NewGeminiProvider(&schemas.ProviderConfig{
-		NetworkConfig: schemas.NetworkConfig{BaseURL: ts.URL + "/v1beta"},
+		NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(ts.URL + "/v1beta")},
 	}, testNoopLogger{})
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)

@@ -2,7 +2,7 @@ import { KnownProvidersNames } from "@/lib/constants/logs";
 import i18n from "@/lib/i18n";
 import { msg } from "@/lib/i18n/validationMessage";
 import { aliasConfigSchema, oauthKeyConfigComplete, oauthKeyConfigSchema, secretVarSchema } from "@/lib/types/schemas";
-import { isValidAliases, isValidVertexAuthCredentials } from "@/lib/utils/validation";
+import { isValidBaseURL, isValidAliases, isValidVertexAuthCredentials } from "@/lib/utils/validation";
 import { z } from "zod";
 
 // Base schemas for reusable types
@@ -330,10 +330,10 @@ export const ProviderFormSchema = z
 				});
 			}
 
-			if (data.networkConfig?.base_url && !/^https?:\/\/.+/.test(data.networkConfig.base_url)) {
+			if (data.networkConfig?.base_url && !isValidBaseURL(data.networkConfig.base_url)) {
 				ctx.addIssue({
 					code: z.ZodIssueCode.custom,
-					message: i18n.t("validation.baseUrlMustStartWithHttpOrHttps"),
+					message: i18n.t("validation.validBaseUrlOrSecretReference"),
 					path: ["networkConfig", "base_url"],
 				});
 			}

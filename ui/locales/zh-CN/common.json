@@ -399,6 +399,7 @@
 		"http2PingIntervalMustBeAtMost3600Seconds": "HTTP/2 ping 间隔不得超过 3600 秒，即 60 分钟",
 		"retryBackoffInitialMustBeRetryBackoffMax": "retry_backoff_initial 必须 <= retry_backoff_max",
 		"mustBeAValidHttpOrHttpsUrl": "必须是有效的 HTTP 或 HTTPS URL",
+		"validBaseUrlOrSecretReference": "必须是有效的 HTTP 或 HTTPS URL，或 env.VAR_NAME / vault.path 引用",
 		"timeoutMustBeANumber": "超时必须是数字",
 		"timeoutMustBeLessThan172800SecondsIE48": "超时必须小于 172800 秒，即 48 小时",
 		"maxRetriesMustBeANumber": "最大重试次数必须是数字",

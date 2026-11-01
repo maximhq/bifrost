@@ -417,6 +417,7 @@
 		"http2PingIntervalMustBeAtMost3600Seconds": "Интервал ping HTTP/2 должен составлять не более 3600 секунд, то есть 60 минут",
 		"retryBackoffInitialMustBeRetryBackoffMax": "retry_backoff_initial должен быть меньше или равен retry_backoff_max",
 		"mustBeAValidHttpOrHttpsUrl": "Укажите корректный URL с HTTP или HTTPS",
+		"validBaseUrlOrSecretReference": "Укажите корректный URL с HTTP или HTTPS либо ссылку env.VAR_NAME / vault.path",
 		"timeoutMustBeANumber": "Тайм-аут должен быть числом",
 		"timeoutMustBeLessThan172800SecondsIE48": "Тайм-аут должен быть меньше 172800 секунд, то есть 48 часов",
 		"maxRetriesMustBeANumber": "Число повторных попыток должно быть числом",

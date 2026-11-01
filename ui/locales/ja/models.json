@@ -164,6 +164,7 @@
 			"http2PingInterval": "HTTP/2 ピング間隔（秒）",
 			"http2PingHelp": "クライアントが開始する HTTP/2 キープアライブ PING の前のアイドル秒数。中間者が静かなストリームや長い生成を切断するのを防ぎます。0 は無効; HTTP/2 の強制が必要です。",
 			"allowPrivateHelp": "プライベートIPへの接続を許可します（例：<code>10.x</code>、<code>192.168.x</code>）。LAN上のプロバイダー、k8sポッドネットワーク、またはプライベートVPCで必要です。クラウドメタデータアドレス（169.254.x.x）は常にブロックされます。",
+			"baseUrlHelp": "URL、またはサーバー側で解決される <code>env.VAR_NAME</code> / <code>vault.path</code> 形式の参照。",
 			"tlsCertificate": "TLS / 証明書",
 			"skipTls": "TLS検証をスキップ",
 			"skipTlsHelp": "プロバイダー接続に対して TLS 証明書の検証を無効にします。これはサーバー証明書の検証を回避するもので、信頼できる CA チェーンを構成できない場合の最終手段としてのみ使用すべきです。自己署名またはプライベート CA の配置には ca_cert_pem を使用することを推奨します。",

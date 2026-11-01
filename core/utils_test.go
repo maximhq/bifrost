@@ -972,7 +972,7 @@ func anthropicStreamUsageCtx() *schemas.BifrostContext {
 func runAnthropicStreamUsageTurn(t *testing.T, ctx *schemas.BifrostContext, baseURL string) int {
 	t.Helper()
 	provider := anthropic.NewAnthropicProvider(&schemas.ProviderConfig{
-		NetworkConfig: schemas.NetworkConfig{BaseURL: baseURL},
+		NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(baseURL)},
 	}, NewDefaultLogger(schemas.LogLevelError))
 
 	stream, bifrostErr := provider.ResponsesStream(ctx,

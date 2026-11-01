@@ -1339,6 +1339,108 @@ func createTLSConfigWithCA(caCertPEM string) (*tls.Config, error) {
 	}, nil
 }
 
+// NormalizeBaseURL prepares networkConfig.BaseURL for a provider constructor: when no
+// base URL is configured it applies defaultURL (pass "" for providers whose base URL is
+// optional, e.g. when every key carries its own URL), and it trims trailing slashes from
+// the resolved value. The SecretVar is cloned before it is mutated so a config-store
+// copy sharing the pointer is never edited in place, and its env./vault. reference is
+// retained so serializing the config emits the reference, never the resolved URL.
+func NormalizeBaseURL(networkConfig *schemas.NetworkConfig, defaultURL string) {
+	if networkConfig == nil {
+		return
+	}
+	if !networkConfig.BaseURL.IsSet() {
+		if defaultURL == "" {
+			return
+		}
+		networkConfig.BaseURL = schemas.NewSecretVar(defaultURL)
+	}
+	baseURL := networkConfig.BaseURL.Clone()
+	baseURL.Val = strings.TrimRight(baseURL.Val, "/")
+	networkConfig.BaseURL = baseURL
+}
+
+// LoggableURL returns fullURL in a form safe for logs. When the provider's base_url
+// came from an env./vault. reference, everything the reference resolved to is replaced
+// with the reference itself (e.g. "env.UPSTREAM_URL/batches/123"), so the resolved
+// endpoint never reaches the logs; a literal base_url is logged as-is.
+func LoggableURL(baseURL *schemas.SecretVar, fullURL string) string {
+	if !baseURL.IsFromSecret() {
+		return fullURL
+	}
+	ref := baseURL.GetRawRef()
+	parsed, err := url.Parse(fullURL)
+	if err != nil || parsed.Host == "" {
+		return ref
+	}
+	// The usual case: the request URL was built by appending to the resolved base_url.
+	// A reference can resolve to a path and query, not just a scheme and host, so the
+	// whole resolved prefix has to come off - leaving only the request-specific suffix.
+	if resolved := strings.TrimRight(baseURL.GetValue(), "/"); resolved != "" && strings.HasPrefix(fullURL, resolved) {
+		return ref + fullURL[len(resolved):]
+	}
+	// The resolved value is not a prefix, so the URL was rewritten rather than simply
+	// appended to - Gemini's download endpoint splices "/download" in front of the
+	// version segment, for instance. The rest of the path can then still contain parts
+	// of the resolved base (a tenant segment ahead of the version, say) with no way to
+	// tell which, so the reference alone is the only safe rendering.
+	return ref
+}
+
+// RedactBaseURL returns text with everything a base_url resolved from an env./vault.
+// reference resolved to replaced by the reference itself. It is LoggableURL for free
+// text that may quote the endpoint without it being a prefix - a dial error names the
+// wss:// form of the URL, a DNS error only its host - so every form is replaced: the
+// resolved URL, the URL without its scheme, the host with and without its port. A
+// literal base_url is operator-visible configuration and is returned as-is.
+func RedactBaseURL(baseURL *schemas.SecretVar, text string) string {
+	if !baseURL.IsFromSecret() {
+		return text
+	}
+	resolved := strings.TrimRight(strings.TrimSpace(baseURL.GetValue()), "/")
+	if resolved == "" {
+		return text
+	}
+	ref := baseURL.GetRawRef()
+	// Longest form first: the replacer tries its pairs in order at each position and never
+	// rescans replaced text, so a shorter form cannot split a longer match or the reference.
+	pairs := []string{resolved, ref}
+	if parsed, err := url.Parse(resolved); err == nil && parsed.Host != "" {
+		for _, form := range []string{strings.TrimRight(parsed.Host+parsed.EscapedPath(), "/"), parsed.Host, parsed.Hostname()} {
+			if form != "" {
+				pairs = append(pairs, form, ref)
+			}
+		}
+	}
+	return strings.NewReplacer(pairs...).Replace(text)
+}
+
+// redactedError carries an error whose text had a secret-backed base URL redacted. It
+// unwraps to the original, so errors.Is and errors.As (timeouts, net errors) still work.
+type redactedError struct {
+	text string
+	err  error
+}
+
+func (e *redactedError) Error() string { return e.text }
+func (e *redactedError) Unwrap() error { return e.err }
+
+// RedactBaseURLError applies RedactBaseURL to bifrostErr's message and to the text of
+// the error it carries, in place. Connection errors quote the host they dialed (see
+// MakeRequestWithContext and DoStreamingRequest), and ErrorField.MarshalJSON sends that
+// text to the caller.
+func RedactBaseURLError(bifrostErr *schemas.BifrostError, baseURL *schemas.SecretVar) {
+	if bifrostErr == nil || bifrostErr.Error == nil || !baseURL.IsFromSecret() {
+		return
+	}
+	bifrostErr.Error.Message = RedactBaseURL(baseURL, bifrostErr.Error.Message)
+	if err := bifrostErr.Error.Error; err != nil {
+		if text := RedactBaseURL(baseURL, err.Error()); text != err.Error() {
+			bifrostErr.Error.Error = &redactedError{text: text, err: err}
+		}
+	}
+}
+
 // ConfigureTLS applies TLS settings from NetworkConfig to the fasthttp client.
 // It merges with any existing TLSConfig (e.g., from ConfigureProxy).
 func ConfigureTLS(client *fasthttp.Client, networkConfig schemas.NetworkConfig, logger schemas.Logger) *fasthttp.Client {
@@ -1845,6 +1947,20 @@ var passthroughPathDelimiters = strings.NewReplacer("%", "%25", "?", "%3F", "#",
 // appended to a bare origin would otherwise turn the base host into userinfo or a
 // scheme-relative authority and send the operator's credential to a caller-chosen host. The
 // transport validates the path before dispatch; this is the last check before the dial.
+// BuildPassthroughURLFromSecret is BuildPassthroughURL for a base_url held as a
+// SecretVar. The errors BuildPassthroughURL returns can quote the base URL, and the
+// passthrough routes hand them to the caller as a 400 -- fine for a literal, which
+// is operator-visible configuration, but a base_url resolved from an env./vault.
+// reference is not. Such an error names the reference in place of the resolved
+// value, and keeps the rest of its text, so a rejected caller path still says so.
+func BuildPassthroughURLFromSecret(baseURL *schemas.SecretVar, path, rawQuery string) (string, error) {
+	requestURL, err := BuildPassthroughURL(baseURL.GetValue(), path, rawQuery)
+	if err != nil && baseURL.IsFromSecret() {
+		return "", errors.New(RedactBaseURL(baseURL, err.Error()))
+	}
+	return requestURL, err
+}
+
 func BuildPassthroughURL(baseURL, path, rawQuery string) (string, error) {
 	base := strings.TrimRight(baseURL, "/")
 	baseParsed, err := url.Parse(base)

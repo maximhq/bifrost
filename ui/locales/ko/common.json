@@ -399,6 +399,7 @@
 		"http2PingIntervalMustBeAtMost3600Seconds": "HTTP/2 ping 간격은 3600초(60분) 이하여야 해요",
 		"retryBackoffInitialMustBeRetryBackoffMax": "retry_backoff_initial은 retry_backoff_max 이하여야 해요",
 		"mustBeAValidHttpOrHttpsUrl": "올바른 HTTP 또는 HTTPS URL이어야 해요",
+		"validBaseUrlOrSecretReference": "올바른 HTTP 또는 HTTPS URL이거나 env.VAR_NAME / vault.path 참조여야 해요",
 		"timeoutMustBeANumber": "타임아웃은 숫자여야 해요",
 		"timeoutMustBeLessThan172800SecondsIE48": "타임아웃은 172800초(48시간)보다 작아야 해요",
 		"maxRetriesMustBeANumber": "최대 재시도 횟수는 숫자여야 해요",
