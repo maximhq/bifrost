@@ -670,9 +670,16 @@ Test new features with limited user groups:
 
 Use your custom provider name in requests:
 
-After `POST /api/providers` succeeds, the configured name is recognized as a model
-prefix without a warm-up request or successful model discovery. Credential checks
-and routing rules still apply.
+After `POST /api/providers` succeeds, the configured name is registered without a
+warm-up request or successful model discovery. Credential checks and routing rules
+still apply.
+
+Provider names containing `/` are accepted and registered, but `ParseModelString`
+splits only at the first `/`. With both `team` and `team/edge` registered,
+`team/edge/gpt` selects `team` with model `edge/gpt`, not `team/edge` with model
+`gpt`. Select slash-bearing names explicitly, such as through the Go SDK's
+`Provider` field. No escaping contract is defined for model-prefix routing; use
+slash-free provider names for `provider/model` requests.
 
 ```bash
 # Request to custom provider
