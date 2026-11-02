@@ -625,9 +625,9 @@ const ADM42 = folder("ADM-42 Reconnect a sticky client", "Setup: a client on alp
   mockGet("ADM-42", "alpha", "setup: record alpha's session count", [], ["pm.collectionVariables.set('adm42_sessions', pm.response.json().counters.sessions);"]),
   mockPost("ADM-42", "alpha", "sessions/kill", "setup: kill alpha's sessions"),
   request("ADM-42", "reconnect the sticky client", "POST", "/api/mcp/client/adm42-s/reconnect", { asserts: [A.status(200), A.jsonMessage("MCP client reconnected successfully")] }),
-  mockGet("ADM-42", "alpha", "alpha opened one more session", [A.custom("sessions is one more than before", [
+  mockGet("ADM-42", "alpha", "alpha opened two more sessions: one for calls and one for the list_changed stream", [A.custom("sessions is two more than before", [
     "var before = Number(pm.collectionVariables.get('adm42_sessions'));",
-    "pm.expect(pm.response.json().counters.sessions, 'body: ' + pm.response.text()).to.equal(before + 1);",
+    "pm.expect(pm.response.json().counters.sessions, 'body: ' + pm.response.text()).to.equal(before + 2);",
   ])]),
   deleteClient("ADM-42", "adm42-s"),
 ]);
@@ -717,16 +717,19 @@ const EP28 = folder("EP-28 Client notifications and responses", "Setup: none; in
   rpc("EP-28", "a bare result", { jsonrpc: "2.0", id: 7, result: {} }, { asserts: empty202() }),
 ]);
 
-const EP29 = folder("EP-29 Unsupported methods", `Setup: ${FLEET}.`, [
+const EP29 = folder("EP-29 Methods with nothing to serve", `Setup: ${FLEET}; neither server exposes prompts or resources.`, [
   ...fleetSetup("EP-29"),
   ...[
-    ["resources/list", "resources not supported", {}],
-    ["resources/read", "resources not supported", { uri: "x" }],
-    ["resources/templates/list", "resources not supported", {}],
-    ["prompts/list", "prompts not supported", {}],
-    ["prompts/get", "prompts not supported", { name: "x" }],
+    ["resources/list", { resources: [] }],
+    ["resources/templates/list", { resourceTemplates: [] }],
+    ["prompts/list", { prompts: [] }],
+  ].map(([method, result]) =>
+    rpc("EP-29", `${method} is empty`, { jsonrpc: "2.0", id: 1, method, params: {} }, { asserts: [A.status(200), rpcResultEquals(result)] })),
+  rpc("EP-29", "resources/read of an unknown uri", { jsonrpc: "2.0", id: 1, method: "resources/read", params: { uri: "x" } }, { asserts: [A.status(200), rpcError(-32002, "handler not found for resource URI 'x': resource not found")] }),
+  rpc("EP-29", "prompts/get of an unknown prompt", { jsonrpc: "2.0", id: 1, method: "prompts/get", params: { name: "x" } }, { asserts: [A.status(200), rpcError(-32602, "prompt 'x' not found: prompt not found")] }),
+  rpc("EP-29", "completion/complete for an unknown prompt is empty", { jsonrpc: "2.0", id: 1, method: "completion/complete", params: { ref: { type: "ref/prompt", name: "x" }, argument: { name: "a", value: "" } } }, { asserts: [A.status(200), rpcResultEquals({ completion: { values: [] } })] }),
+  ...[
     ["logging/setLevel", "logging not supported", { level: "info" }],
-    ["completion/complete", "Method completion/complete not found", {}],
     ["foo/bar", "Method foo/bar not found", {}],
   ].map(([method, message, params]) =>
     rpc("EP-29", `${method} is unsupported`, { jsonrpc: "2.0", id: 1, method, params }, { asserts: [A.status(200), rpcError(-32601, message)] })),
@@ -742,29 +745,34 @@ const jsonNotSSE = () => [A.status(200), A.custom("the reply is a JSON-RPC body,
 const listMsg = { jsonrpc: "2.0", id: 1, method: "tools/list" };
 const EP31 = folder("EP-31 Content negotiation", `Setup: ${FLEET}.`, [
   ...fleetSetup("EP-31"),
-  rpc("EP-31", "a text/plain body", listMsg, { headers: [{ key: "Content-Type", value: "text/plain" }, MCP_ACCEPT], asserts: jsonNotSSE() }),
+  rpc("EP-31", "a text/plain body", listMsg, { headers: [{ key: "Content-Type", value: "text/plain" }, MCP_ACCEPT], asserts: [A.status(400), A.custom("the plain-text body is \"Invalid content type: must be 'application/json'\"", [
+    "pm.expect(pm.response.text().trim(), 'body').to.equal(\"Invalid content type: must be 'application/json'\");",
+  ])] }),
   rpc("EP-31", "Accept text/event-stream only", listMsg, { headers: [{ key: "Accept", value: "text/event-stream" }], asserts: jsonNotSSE() }),
   rpc("EP-31", "no Accept header", listMsg, { headers: [], noAccept: true, asserts: jsonNotSSE() }),
   ...fleetTeardown("EP-31"),
 ]);
 
 const rpcResult = () => A.custom("a JSON-RPC result and no error", ["var b = pm.response.json();", "pm.expect(b, 'body: ' + pm.response.text()).to.have.property('result');", "pm.expect(b).to.not.have.property('error');"]);
-const EP32 = folder("EP-32 No session id is used", `Setup: ${FLEET}.`, [
+const EP32 = folder("EP-32 A session id is issued but never required", `Setup: ${FLEET}.`, [
   ...fleetSetup("EP-32"),
   rpc("EP-32", "tools/call before initialize", { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "alpha-echo", arguments: { text: "hi" } } }, { asserts: [A.status(200), rpcResult()] }),
   rpc("EP-32", "initialize", { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "mcp-harness", version: "1.0.0" } } }, {
-    asserts: [A.status(200), A.custom("there is no Mcp-Session-Id header", ["pm.expect(pm.response.headers.has('Mcp-Session-Id'), 'Mcp-Session-Id: ' + pm.response.headers.get('Mcp-Session-Id')).to.equal(false);"])],
+    asserts: [A.status(200), A.custom("there is an Mcp-Session-Id header", ["pm.expect(pm.response.headers.get('Mcp-Session-Id'), 'Mcp-Session-Id').to.be.a('string').and.not.empty;"])],
+    extraTests: ["pm.collectionVariables.set('ep32_sid', pm.response.headers.get('Mcp-Session-Id') || '');"],
   }),
   rpc("EP-32", "tools/list without a session id", listMsg, { asserts: [A.status(200), rpcResult()] }),
   rpc("EP-32", "tools/list with a bogus session id", listMsg, { headers: [MCP_ACCEPT, { key: "Mcp-Session-Id", value: "bogus" }], asserts: [A.status(200), rpcResult()] }),
+  request("EP-32", "DELETE /mcp with the issued session id", "DELETE", "/mcp", { noAuth: true, headers: [{ key: "Mcp-Session-Id", value: "{{ep32_sid}}" }], asserts: [A.status(200)] }),
+  rpc("EP-32", "tools/list with the deleted session id", listMsg, { headers: [MCP_ACCEPT, { key: "Mcp-Session-Id", value: "{{ep32_sid}}" }], asserts: [A.status(200), rpcResult()] }),
   ...fleetTeardown("EP-32"),
 ]);
 
-const method405 = () => [A.status(405), A.custom("Allow is \"GET, OPTIONS, POST\"", ["pm.expect(pm.response.headers.get('Allow'), 'Allow').to.equal('GET, OPTIONS, POST');"])];
-const EP33 = folder("EP-33 Unsupported HTTP methods", "Setup: none; DELETE and PUT on /mcp, DELETE on /mcp/alpha.", [
-  request("EP-33", "DELETE /mcp", "DELETE", "/mcp", { noAuth: true, asserts: method405() }),
+const method405 = () => [A.status(405), A.custom("Allow is \"DELETE, GET, OPTIONS, POST\"", ["pm.expect(pm.response.headers.get('Allow'), 'Allow').to.equal('DELETE, GET, OPTIONS, POST');"])];
+const EP33 = folder("EP-33 Unsupported HTTP methods", "Setup: none; PUT on /mcp and on /mcp/alpha, PATCH on /mcp.", [
   request("EP-33", "PUT /mcp", "PUT", "/mcp", { noAuth: true, raw: "{}", asserts: method405() }),
-  request("EP-33", "DELETE /mcp/alpha", "DELETE", "/mcp/alpha", { noAuth: true, asserts: method405() }),
+  request("EP-33", "PUT /mcp/alpha", "PUT", "/mcp/alpha", { noAuth: true, raw: "{}", asserts: method405() }),
+  request("EP-33", "PATCH /mcp", "PATCH", "/mcp", { noAuth: true, raw: "{}", asserts: method405() }),
 ]);
 
 // ================================================================ ADM tests on the fleet
@@ -1009,13 +1017,13 @@ const EP01 = folder("EP-01 initialize (2025-03-26)", `Setup: ${FLEET}; mcp_serve
   ...fleetSetup("EP-01"),
   request("EP-01", "setup: read GET /api/version", "GET", "/api/version", { asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('ep01_version', JSON.stringify(pm.response.json()));"] }),
   rpc("EP-01", "initialize with 2025-03-26", init("2025-03-26"), {
-    asserts: [A.status(200), A.custom("JSON reply; serverInfo bifrost at the server version; capabilities exactly tools.listChanged; no Mcp-Session-Id", [
+    asserts: [A.status(200), A.custom("JSON reply; serverInfo bifrost at the server version; capabilities tools, prompts and resources with listChanged, and completions; an Mcp-Session-Id", [
       "pm.expect(pm.response.headers.get('Content-Type')).to.include('application/json');",
       "var r = pm.response.json().result;",
       "pm.expect(r.serverInfo.name, 'body: ' + pm.response.text()).to.equal('bifrost');",
       "pm.expect(r.serverInfo.version).to.equal(JSON.parse(pm.collectionVariables.get('ep01_version')));",
-      "pm.expect(r.capabilities).to.eql({ tools: { listChanged: true } });",
-      "pm.expect(pm.response.headers.has('Mcp-Session-Id')).to.equal(false);",
+      "pm.expect(r.capabilities).to.eql({ tools: { listChanged: true }, prompts: { listChanged: true }, resources: { listChanged: true }, completions: {} });",
+      "pm.expect(pm.response.headers.get('Mcp-Session-Id'), 'Mcp-Session-Id').to.be.a('string').and.not.empty;",
     ])],
   }),
   ...fleetTeardown("EP-01"),
@@ -1024,7 +1032,7 @@ const EP01 = folder("EP-01 initialize (2025-03-26)", `Setup: ${FLEET}; mcp_serve
 
 const EP02 = folder("EP-02 Protocol version negotiation", `Setup: ${FLEET}.`, [
   ...fleetSetup("EP-02"),
-  ...[["2024-11-05", "2024-11-05"], ["2025-06-18", "2025-06-18"], ["1999-01-01", "2025-06-18"], [null, "2025-03-26"]].map(([asked, got]) =>
+  ...[["2024-11-05", "2024-11-05"], ["2025-06-18", "2025-06-18"], ["1999-01-01", "2025-11-25"], [null, "2025-03-26"]].map(([asked, got]) =>
     rpc("EP-02", `initialize asking ${asked || "no version"}`, init(asked), {
       asserts: [A.status(200), A.custom(`protocolVersion is ${got}`, [`pm.expect(pm.response.json().result.protocolVersion, 'body: ' + pm.response.text()).to.equal(${lit(got)});`])],
     })),
@@ -1784,9 +1792,9 @@ const ADM53 = folder("ADM-53 Flip needs_session_stickiness live", "Setup: alpha 
   request("ADM-53", "set needs_session_stickiness true", "PUT", "/api/mcp/client/adm53-c", { body: { needs_session_stickiness: true }, asserts: [A.status(200), A.custom("message contains \"now maintains a persistent shared connection\"", [
     "pm.expect(pm.response.json().message, 'body: ' + pm.response.text()).to.include('now maintains a persistent shared connection');",
   ])] }),
-  mockGet("ADM-53", "alpha", "alpha opened one more session", [A.custom("sessions is one more than before", [
+  mockGet("ADM-53", "alpha", "alpha opened two more sessions: one for calls and one for the list_changed stream", [A.custom("sessions is two more than before", [
     "var before = Number(pm.collectionVariables.get('adm53_sessions'));",
-    "pm.expect(pm.response.json().counters.sessions, 'body: ' + pm.response.text()).to.equal(before + 1);",
+    "pm.expect(pm.response.json().counters.sessions, 'body: ' + pm.response.text()).to.equal(before + 2);",
   ])]),
   request("ADM-53", "set needs_session_stickiness false", "PUT", "/api/mcp/client/adm53-c", { body: { needs_session_stickiness: false }, asserts: [A.status(200), A.custom("message contains \"now connects per call\"", [
     "pm.expect(pm.response.json().message, 'body: ' + pm.response.text()).to.include('now connects per call');",
@@ -2012,7 +2020,7 @@ const AUTH02 = folder("AUTH-02 headers auth, sticky", `Setup: ${T1_TEXT("alpha")
   ...requiresT1("AUTH-02", "alpha"),
   createExpect("AUTH-02", "create the sticky client", t1Client("auth02-c", "auth02_c", { needs_session_stickiness: true }), [A.status(200)]),
   ...[1, 2, 3].map((i) => execTool("AUTH-02", `execute ${i} of 3`, "auth02_c-echo_tool", [A.status(200)])),
-  mockGet("AUTH-02", "alpha", "one session, one initialize, three calls under id1", [counterIs("sessions", 1), counterIs("initializes", 1), identityCalls("id1", 3)]),
+  mockGet("AUTH-02", "alpha", "two sessions and two initializes (calls and the list_changed stream), three calls under id1", [counterIs("sessions", 2), counterIs("initializes", 2), identityCalls("id1", 3)]),
   deleteClient("AUTH-02", "auth02-c"),
 ]);
 
@@ -2032,7 +2040,7 @@ const AUTH05 = folder("AUTH-05 Token revoked after connect", `Setup: ${T1_TEXT("
   ...requiresT1("AUTH-05", "alpha"),
   createClient("AUTH-05", t1Client("auth05-c", "auth05_c", { needs_session_stickiness: true }), "setup: create the sticky client"),
   mockPost("AUTH-05", "alpha", "auth/revoke", "setup: revoke T1", { token: T1 }),
-  execTool("AUTH-05", "execute after the revoke", "auth05_c-echo_tool", [A.status(400), A.msgContains("MCP tool call failed for"), A.msgContains("401")]),
+  execTool("AUTH-05", "execute after the revoke", "auth05_c-echo_tool", [A.status(400), A.msgContains("MCP tool call failed for"), A.msgContains("authorization required")]),
   gwCall("AUTH-05", "/mcp tools/call after the revoke", "auth05_c-echo_tool", [toolResultError("Tool execution failed:", null)]),
   getClient("AUTH-05", "auth05-c", "the client list shows unstable, last_failure.stage connect", [clientState("unstable"), clientField("last_failure.stage", "connect")],
     { pre: waitForClient("auth05-c", "c.state === 'unstable'") }),
@@ -2050,13 +2058,13 @@ const AUTH06 = folder("AUTH-06 Masked round trip and rejected rotation", `Setup:
   saveSessions("AUTH-06", "alpha", "auth06_s1"),
   request("AUTH-06", "setup: reconnect, so the next call uses the stored header", "POST", "/api/mcp/client/auth06-c/reconnect", { asserts: [A.status(200)] }),
   execTool("AUTH-06", "execute after the masked PUT", "auth06_c-echo_tool", [A.status(200)]),
-  mockGet("AUTH-06", "alpha", "the call ran as id1 on a new session", [identityCallsAre({ id1: 1 }), sessionsPlus("auth06_s1", 1)]),
+  mockGet("AUTH-06", "alpha", "the call ran as id1 after the reconnect opened two sessions", [identityCallsAre({ id1: 1 }), sessionsPlus("auth06_s1", 2)]),
   request("AUTH-06", "PUT Authorization: Bearer BAD", "PUT", "/api/mcp/client/auth06-c", { body: { headers: { Authorization: "Bearer BAD" } },
     asserts: [A.status(422), A.msgContains("The new headers were rejected by the MCP server, so nothing was changed")] }),
   saveSessions("AUTH-06", "alpha", "auth06_s2"),
   request("AUTH-06", "setup: reconnect again, so the next call uses the stored header", "POST", "/api/mcp/client/auth06-c/reconnect", { asserts: [A.status(200)] }),
   execTool("AUTH-06", "execute after the rejected PUT", "auth06_c-echo_tool", [A.status(200)]),
-  mockGet("AUTH-06", "alpha", "the call still ran as id1 on a new session", [identityCallsAre({ id1: 2 }), sessionsPlus("auth06_s2", 1)]),
+  mockGet("AUTH-06", "alpha", "the call still ran as id1 after the reconnect opened two sessions", [identityCallsAre({ id1: 2 }), sessionsPlus("auth06_s2", 2)]),
   deleteClient("AUTH-06", "auth06-c"),
 ]);
 
@@ -2244,7 +2252,8 @@ const CONN18 = folder("CONN-18 SSE stream dropped", "Setup: alpha (echo_tool, ad
   ...freshServer("CONN-18", "alpha", ["echo_tool", "add_tool"]),
   createClient("CONN-18", sseClient("conn18-c", "conn18_c", "alpha", { tool_execution_timeout: 3, tools_to_execute: ["*"] }), "setup: create the SSE client with a 3s tool timeout"),
   mockPost("CONN-18", "alpha", "streams/drop", "setup: drop alpha's SSE streams"),
-  getClient("CONN-18", "conn18-c", "the client list still shows healthy", [clientState("healthy")]),
+  getClient("CONN-18", "conn18-c", "the client list shows unstable, last_failure.stage transport_lost", [clientState("unstable"), clientField("last_failure.stage", "transport_lost")],
+    { pre: waitForClient("conn18-c", "c.state === 'unstable'") }),
   execTool("CONN-18", "execute on the dropped stream", "conn18_c-echo_tool", [A.status(400)]),
   saveSessions("CONN-18", "alpha", "conn18_s1"),
   request("CONN-18", "reconnect", "POST", "/api/mcp/client/conn18-c/reconnect", { asserts: [A.status(200)] }),
@@ -3902,12 +3911,12 @@ const CONN12 = folder("CONN-12 Dead session (sticky)", "Setup: alpha (echo_ro an
   saveSessions("CONN-12", "alpha", "conn12_s1"),
   mockPost("CONN-12", "alpha", "sessions/kill", "setup: kill alpha's sessions"),
   execTool("CONN-12", "execute the read-only tool", "conn12-echo_ro", [A.status(200)]),
-  mockGet("CONN-12", "alpha", "the read-only call opened one new session", [sessionsPlus("conn12_s1", 1)]),
+  mockGet("CONN-12", "alpha", "the read-only call's reconnect opened two sessions", [sessionsPlus("conn12_s1", 2)]),
   mockPost("CONN-12", "alpha", "sessions/kill", "setup: kill alpha's sessions again"),
   saveSessions("CONN-12", "alpha", "conn12_s2"),
   execTool("CONN-12", "first execute call of the unannotated tool", "conn12-echo_tool", [A.status(400), A.msgContains("session terminated")]),
   execToolAfter("CONN-12", "second execute call of the unannotated tool, once the background reconnect has opened a session", "conn12-echo_tool", [A.status(200)],
-    waitForMock("alpha", "s.counters.sessions > Number(pm.collectionVariables.get('conn12_s2'))")),
+    waitForMock("alpha", "s.counters.sessions >= Number(pm.collectionVariables.get('conn12_s2')) + 2")),
   deleteClient("CONN-12", "conn12-c"),
 ]);
 
@@ -3932,16 +3941,16 @@ const methodsPlus = (prefix, init, toolsCall) => A.custom(`initialize +${init}${
   ...(toolsCall !== undefined ? [`pm.expect(${toolsCallMethods}, 'body: ' + pm.response.text()).to.equal(Number(pm.collectionVariables.get(${lit(prefix + "_call")})) + ${toolsCall});`] : []),
 ]);
 
-const FAIL04 = folder("FAIL-04 503 on the per-call connect", "Setup: alpha (echo_tool, add_tool) as client alpha, per call, tools_to_execute [\"*\"]; alpha answers with 503 once, then always. Counts are alpha's per-method request counts, read just before each step.", [
+const FAIL04 = folder("FAIL-04 503 on the per-call connect", "Setup: alpha (echo_tool, add_tool) as client alpha, per call, tools_to_execute [\"*\"]; alpha answers initialize with 503 once, then always. Counts are alpha's per-method request counts, read just before each step.", [
   ...setClient("FAIL-04", {}),
   saveMethods("FAIL-04", "alpha", "fail04_a"),
-  mockPost("FAIL-04", "alpha", "faults", "setup: alpha answers the next request with 503", { faults: { status: 503, status_once: true } }),
+  mockPost("FAIL-04", "alpha", "faults", "setup: alpha answers the next initialize with 503", { faults: { status: 503, status_once: true, methods: ["initialize"] } }),
   setExec("FAIL-04", "execute echo_tool after a 503 once", "echo_tool", [A.status(200)]),
   mockGet("FAIL-04", "alpha", "initialize +2", [methodsPlus("fail04_a", 2)]),
   saveMethods("FAIL-04", "alpha", "fail04_b"),
-  mockPost("FAIL-04", "alpha", "faults", "setup: alpha answers every request with 503", { faults: { status: 503 } }),
+  mockPost("FAIL-04", "alpha", "faults", "setup: alpha answers every initialize with 503", { faults: { status: 503, methods: ["initialize"] } }),
   setExec("FAIL-04", "execute echo_tool under a 503 always", "echo_tool", [A.status(400), A.msgContains("failed to establish ephemeral MCP connection"), A.msgContains("503")]),
-  mockGet("FAIL-04", "alpha", "initialize +4, tools/call +0", [methodsPlus("fail04_b", 4, 0)]),
+  mockGet("FAIL-04", "alpha", "initialize +5, tools/call +0", [methodsPlus("fail04_b", 5, 0)]),
   mockPost("FAIL-04", "alpha", "faults/clear", "teardown: clear alpha's faults"),
   deleteClient("FAIL-04", "fail-04-a"),
 ]);
@@ -3970,7 +3979,7 @@ const FAIL05 = folder("FAIL-05 401 with WWW-Authenticate on an unannotated tool"
   ...setClient("FAIL-05", { needs_session_stickiness: true }),
   saveMethods("FAIL-05", "alpha", "fail05"),
   mockPost("FAIL-05", "alpha", "faults", "setup: alpha answers 401 with WWW-Authenticate", { faults: { status: 401, www_auth: "Bearer realm=\"chaosmock\"" } }),
-  setExec("FAIL-05", "execute echo_tool", "echo_tool", [A.status(400), A.msgContains("status 401")]),
+  setExec("FAIL-05", "execute echo_tool", "echo_tool", [A.status(400), A.msgContains("authorization required")]),
   getClient("FAIL-05", "fail-05-a", "within 5s the client is unstable at stage connect, and never needs_reauth", [
     clientState("unstable"),
     A.custom("last_failure.stage is \"connect\"", ["pm.expect((pm.response.json().clients[0].last_failure || {}).stage, 'body: ' + pm.response.text()).to.equal('connect');"]),
@@ -3993,11 +4002,11 @@ const FAIL06 = folder("FAIL-06 401 once on a read-only tool", "Setup: alpha (ech
   ]),
   mockPost("FAIL-06", "alpha", "faults", "setup: alpha answers the next request with 401", { faults: { status: 401, status_once: true } }),
   setExec("FAIL-06", "execute echo_ro", "echo_ro", [A.status(200)]),
-  mockGet("FAIL-06", "alpha", "calls[echo_ro] +1, tools/call +2, sessions +1", [A.custom("calls[echo_ro] +1, tools/call +2, sessions +1 since the recorded counts", [
+  mockGet("FAIL-06", "alpha", "calls[echo_ro] +1, tools/call +2, sessions +2", [A.custom("calls[echo_ro] +1, tools/call +2, sessions +2 since the recorded counts", [
     "var c = pm.response.json().counters;",
     "pm.expect((c.calls || {}).echo_ro || 0, 'body: ' + pm.response.text()).to.equal(Number(pm.collectionVariables.get('fail06_ro')) + 1);",
     `pm.expect(${toolsCallMethods}, 'body: ' + pm.response.text()).to.equal(Number(pm.collectionVariables.get('fail06_call')) + 2);`,
-    "pm.expect(c.sessions, 'body: ' + pm.response.text()).to.equal(Number(pm.collectionVariables.get('fail06_s')) + 1);",
+    "pm.expect(c.sessions, 'body: ' + pm.response.text()).to.equal(Number(pm.collectionVariables.get('fail06_s')) + 2);",
   ])]),
   mockPost("FAIL-06", "alpha", "faults/clear", "teardown: clear alpha's faults"),
   deleteClient("FAIL-06", "fail-06-a"),
@@ -4007,7 +4016,7 @@ const FAIL07 = folder("FAIL-07 401 at create is not retried", "Setup: alpha (ech
   ...freshServer("FAIL-07", "alpha", ["echo_tool", "add_tool"]),
   saveMethods("FAIL-07", "alpha", "fail07"),
   mockPost("FAIL-07", "alpha", "faults", "setup: alpha answers every request with 401", { faults: { status: 401 } }),
-  createExpect("FAIL-07", "create the sticky client", httpClient("fail-07-a", "alpha", "alpha", { needs_session_stickiness: true, tools_to_execute: ["*"] }), [A.status(500), A.msgContains("401"), responseTime(null, 5000)]),
+  createExpect("FAIL-07", "create the sticky client", httpClient("fail-07-a", "alpha", "alpha", { needs_session_stickiness: true, tools_to_execute: ["*"] }), [A.status(500), A.msgContains("authorization required"), responseTime(null, 5000)]),
   mockGet("FAIL-07", "alpha", "initialize +1", [methodsPlus("fail07", 1)]),
   mockPost("FAIL-07", "alpha", "faults/clear", "teardown: clear alpha's faults"),
 ]);
@@ -4105,14 +4114,17 @@ const AUTH11 = folder("AUTH-11 OAuth create with discovery and DCR", `Setup: ${A
 ]);
 
 const R1 = "https://r1.mcp-harness.example/mcp";
-const AUTH12 = folder("AUTH-12 Discovery fallbacks", `Setup: ${ALLOWLIST_TEXT}; a fleet server auth12 (echo_tool, add_tool) as an OAuth protected resource whose 401 is a bare Bearer challenge, with its metadata only at the path-inserted URL, publishing resource ${R1}; an OAuth client created on it with oauth_config {}.`, [
+// AUTH12_RESOURCE is a path-segment prefix of auth12's server URL, so it identifies the server without equalling it.
+const AUTH12_RESOURCE = `${CHAOS}/s/auth12`;
+const AUTH12_RESOURCE_JS = "pm.variables.get('chaos_url') + '/s/auth12'";
+const AUTH12 = folder("AUTH-12 Discovery fallbacks", `Setup: ${ALLOWLIST_TEXT}; a fleet server auth12 (echo_tool, add_tool) as an OAuth protected resource whose 401 is a bare Bearer challenge, with its metadata only at the path-inserted URL, publishing resource <chaos>/s/auth12 (a path prefix of its URL); an OAuth client created on it with oauth_config {}.`, [
   ...allowlistOn("AUTH-12"),
-  ...asServer("AUTH-12", "auth12", { challenge: "bare", resource: R1 }),
+  ...asServer("AUTH-12", "auth12", { challenge: "bare", resource: AUTH12_RESOURCE }),
   request("AUTH-12", "control: the 401 challenge is bare", "GET", "/s/auth12/mcp", { base: CHAOS, noAuth: true, asserts: [A.status(401), A.custom("WWW-Authenticate is Bearer realm=\"chaosmock\"", ["pm.expect(pm.response.headers.get('WWW-Authenticate')).to.equal('Bearer realm=\"chaosmock\"');"])] }),
   request("AUTH-12", "control: there is no root resource metadata", "GET", "/.well-known/oauth-protected-resource", { base: CHAOS, noAuth: true, asserts: [A.status(404)] }),
-  request("AUTH-12", `control: the path-inserted resource metadata publishes ${R1}`, "GET", "/.well-known/oauth-protected-resource/s/auth12/mcp", { base: CHAOS, noAuth: true, asserts: [A.status(200), A.custom(`resource is ${R1}`, [`pm.expect(pm.response.json().resource).to.equal(${lit(R1)});`])] }),
+  request("AUTH-12", "control: the path-inserted resource metadata publishes <chaos>/s/auth12", "GET", "/.well-known/oauth-protected-resource/s/auth12/mcp", { base: CHAOS, noAuth: true, asserts: [A.status(200), A.custom("resource is <chaos>/s/auth12", [`pm.expect(pm.response.json().resource).to.equal(${AUTH12_RESOURCE_JS});`])] }),
   createOAuth("AUTH-12", "create the OAuth client", oauthBody("auth12-c", "auth12", "auth12"), "auth12", [statusIs("pending_oauth"),
-    A.custom(`authorize_url includes resource=${R1}`, [QS_FN, `pm.expect(qs(pm.response.json().authorize_url).resource, 'body: ' + pm.response.text()).to.equal(${lit(R1)});`])]),
+    A.custom("authorize_url includes resource=<chaos>/s/auth12", [QS_FN, `pm.expect(qs(pm.response.json().authorize_url).resource, 'body: ' + pm.response.text()).to.equal(${AUTH12_RESOURCE_JS});`])]),
   restoreConfig("AUTH-12"),
 ]);
 
@@ -4132,7 +4144,7 @@ const AUTH14 = folder("AUTH-14 Pre-registered client skips discovery", `Setup: $
   createOAuth("AUTH-14", "create the OAuth client", oauthBody("auth14-c", "auth14", "auth14", { oauth_config: { client_id: "C1", client_secret: "S1", authorize_url: `${CHAOS}/s/auth14/as/authorize`, token_url: `${CHAOS}/s/auth14/as/token`, scopes: ["a", "b"], resource: R2 } }), "auth14", [
     A.custom(`authorize_url has client_id C1, scope "a b" and resource ${R2}`, [QS_FN, "var q = qs(pm.response.json().authorize_url);", "pm.expect(q.client_id, 'query').to.equal('C1');", "pm.expect(q.scope, 'query').to.equal('a b');", `pm.expect(q.resource, 'query').to.equal(${lit(R2)});`]),
   ]),
-  oauthCounters("AUTH-14", "auth14", "no registration and no metadata fetch", { register: 0, metadata: 0, prm: 0 }),
+  oauthCounters("AUTH-14", "auth14", "no registration; the resource and server metadata are read once for the issuer", { register: 0, metadata: 1, prm: 1 }),
   consentAs("AUTH-14", "consent", "auth14", null),
   followCallback("AUTH-14", "follow the callback", "auth14", callbackSuccess()),
   mockGet("AUTH-14", "auth14", `the token request carried client_secret S1, resource ${R2} and a code_verifier`, [A.custom(`one authorization_code request with client_secret S1, resource ${R2} and a verified code_verifier`, [
@@ -4143,7 +4155,7 @@ const AUTH14 = folder("AUTH-14 Pre-registered client skips discovery", `Setup: $
     `pm.expect(t[0].resource).to.equal(${lit(R2)});`,
     "pm.expect(t[0].pkce).to.equal('ok');",
   ])]),
-  oauthCounters("AUTH-14", "auth14", "still no registration and no metadata fetch after the exchange", { register: 0, metadata: 0, prm: 0 }),
+  oauthCounters("AUTH-14", "auth14", "still no registration and no further metadata read after the exchange", { register: 0, metadata: 1, prm: 1 }),
   restoreConfig("AUTH-14"),
 ]);
 
@@ -4220,14 +4232,14 @@ const AUTH19 = folder("AUTH-19 Sticky: upstream rejects an unexpired token", `Se
   saveOAuthCounts("AUTH-19", "auth19", "auth19a"),
   mockPost("AUTH-19", "auth19", "oauth/expire", "setup: expire id1's access token", { identity: "id1" }),
   execTool("AUTH-19", "execute the read-only tool", "auth19-echo_ro", [A.status(200)]),
-  mockGet("AUTH-19", "auth19", "one refresh and one new session", [A.custom("refresh +1, sessions +1", [refreshPlus("auth19a", 1), sessionsPlusP("auth19a", 1)])]),
+  mockGet("AUTH-19", "auth19", "one refresh and a reconnect of two sessions", [A.custom("refresh +1, sessions +2", [refreshPlus("auth19a", 1), sessionsPlusP("auth19a", 2)])]),
   saveOAuthCounts("AUTH-19", "auth19", "auth19b"),
   mockPost("AUTH-19", "auth19", "oauth/expire", "setup: expire id1's access token again", { identity: "id1" }),
-  execTool("AUTH-19", "first execute call of the unannotated tool", "auth19-echo_tool", [A.status(400), A.msgContains("401")]),
+  execTool("AUTH-19", "first execute call of the unannotated tool", "auth19-echo_tool", [A.status(400), A.msgContains("authorization required")]),
   mockGetAfter("AUTH-19", "auth19", "one refresh after the first unannotated call, once the detached refresh has run", [A.custom("refresh +1", [refreshPlus("auth19b", 1)])],
     waitForMock("auth19", "s.oauth.counters.token_refresh > Number(pm.collectionVariables.get('auth19b_rf'))")),
   execToolAfter("AUTH-19", "second execute call of the unannotated tool, once the background reconnect has opened a session", "auth19-echo_tool", [A.status(200)],
-    waitForMock("auth19", "s.counters.sessions > Number(pm.collectionVariables.get('auth19b_ss'))")),
+    waitForMock("auth19", "s.counters.sessions >= Number(pm.collectionVariables.get('auth19b_ss')) + 2")),
   deleteClient("AUTH-19", "auth19-c"),
   restoreConfig("AUTH-19"),
 ]);
@@ -6307,7 +6319,7 @@ const ADM37 = folder("ADM-37 oauth_config rotation guards", `Setup: admin creden
   createClient("ADM-37", httpClient("adm37-n", "adm37_n", "alpha"), "setup: create the none client"),
   clientPut("ADM-37", "oauth_config on the none client", "adm37-n", { oauth_config: { client_id: "adm37-new" } }, [A.status(400), A.msgEquals("oauth_config can only be updated for MCP clients using auth_type 'oauth' or 'per_user_oauth'")]),
   clientPut("ADM-37", "oauth_config on the pending client", "adm37-p", { oauth_config: { client_id: "adm37-new" } }, [A.status(409), A.msgContains("cannot be updated before this MCP client's OAuth verification is completed")]),
-  clientPut("ADM-37", "token_url change without client_secret", "adm37-o", { oauth_config: { token_url: "http://127.0.0.1:9/adm37/token" } }, [A.status(400), A.msgContains("client_secret must be resent explicitly")]),
+  clientPut("ADM-37", "token_url change without client_secret on the public client", "adm37-o", { oauth_config: { token_url: "http://127.0.0.1:9/adm37/token" } }, [A.status(200), A.jsonMessage("MCP client edited successfully")]),
   clientPut("ADM-37", "rotation plus disabled true", "adm37-o", { oauth_config: { client_id: "adm37-new" }, disabled: true }, [A.status(400), A.msgContains("cannot be rotated while disabling")]),
   deleteClient("ADM-37", "adm37-o"),
   deleteClient("ADM-37", "adm37-n"),
@@ -6781,7 +6793,7 @@ const CONN05 = folder("CONN-05 Execute validation", "Setup: alpha (echo_tool, ad
 
 const contentIs = (v) => A.custom(`content is ${lit(v)}`, [`pm.expect(pm.response.json().content, 'body: ' + pm.response.text()).to.equal(${lit(v)});`]);
 const PNG_REPLY = { content: [{ type: "image", data: "QUJD", mimeType: "image/png" }] };
-const CONN07 = folder("CONN-07 Result content types on execute", "Setup: alpha serves texts (two text blocks \"a\" and \"b\"), image (a PNG), structured (structuredContent {\"v\": 1} and no content) and empty (content []); a client conn07_c on alpha, auth none, tools_to_execute [\"*\"]. Joining text blocks with a separator and returning structuredContent alone are a known issue, so those checks are skipped.", [
+const CONN07 = folder("CONN-07 Result content types on execute", "Setup: alpha serves texts (two text blocks \"a\" and \"b\"), image (a PNG), structured (structuredContent {\"v\": 1} and no content) and empty (content []); a client conn07_c on alpha, auth none, tools_to_execute [\"*\"]. Joining text blocks with a separator is a known issue, so that check is skipped.", [
   request("CONN-07", "setup: fresh mcpchaos server alpha", "POST", "/control", { base: CHAOS, noAuth: true, body: { add: "alpha" }, asserts: [A.status(200)] }),
   mockPost("CONN-07", "alpha", "tools/set", "setup: alpha serves texts, image, structured and empty", { tools: [
     { name: "texts", reply: { content: [{ type: "text", text: "a" }, { type: "text", text: "b" }] } },
@@ -6791,8 +6803,10 @@ const CONN07 = folder("CONN-07 Result content types on execute", "Setup: alpha s
   ] }),
   createClient("CONN-07", httpClient("conn07-c", "conn07_c", "alpha", { tools_to_execute: ["*"] }), "setup: create the client"),
   execTool("CONN-07", "texts", "conn07_c-texts", [A.status(200), A.skip(A.custom("the two blocks are joined with a separator", ["var c = pm.response.json().content;", "pm.expect(c, 'body: ' + pm.response.text()).to.match(/^a[\\s\\S]+b$/);"]))]),
-  execTool("CONN-07", "image", "conn07_c-image", [A.status(200), contentIs("[Image Response: QUJD, MIME: image/png]")]),
-  execTool("CONN-07", "structured", "conn07_c-structured", [A.status(200), A.skip(A.custom("the structuredContent comes back", ["pm.expect(pm.response.json().content, 'body: ' + pm.response.text()).to.include('\"v\"');"]))]),
+  execTool("CONN-07", "image", "conn07_c-image", [A.status(200), A.custom("content is one image_url block with the PNG as a data URL", [
+    "pm.expect(pm.response.json().content, 'body: ' + pm.response.text()).to.eql([{ type: 'image_url', image_url: { url: 'data:image/png;base64,QUJD' } }]);",
+  ])]),
+  execTool("CONN-07", "structured", "conn07_c-structured", [A.status(200), contentIs("{\"v\":1}")]),
   execTool("CONN-07", "empty", "conn07_c-empty", [A.status(200), contentIs("MCP tool 'conn07_c-empty' executed successfully")]),
   deleteClient("CONN-07", "conn07-c"),
 ]);
@@ -6834,9 +6848,9 @@ const CONN16 = folder("CONN-16 Tool list changes", "Setup: alpha (echo_tool, add
   ...freshServer("CONN-16", "alpha", ["echo_tool", "add_tool"]),
   createClient("CONN-16", httpClient("conn16-c", "conn16_c", "alpha", { needs_session_stickiness: true, tools_to_execute: ["*"] }), "setup: create the sticky client"),
   mockPost("CONN-16", "alpha", "tools/add", "alpha adds new_tool", { tool: { name: "new_tool" } }),
-  mockPost("CONN-16", "alpha", "notify/tools-changed", "alpha pushes list_changed", {}),
-  getClient("CONN-16", "conn16-c", "the client's tools are unchanged", [toolNamesAre(["add_tool", "echo_tool"])]),
-  mockGet("CONN-16", "alpha", "alpha has no open stream", [counterIs("open_streams", 0)]),
+  request("CONN-16", "alpha pushes list_changed", "POST", "/control/alpha/notify/tools-changed", { base: CHAOS, noAuth: true, body: {}, asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('conn16_t0', Date.now());"] }),
+  getClient("CONN-16", "conn16-c", "within 5s the client lists new_tool without a refresh", [toolNamesAre(["add_tool", "echo_tool", "new_tool"]), seenWithin("conn16-c", 5)], { pre: pollClientTools("conn16-c", 3, 5, "conn16_t0") }),
+  mockGet("CONN-16", "alpha", "alpha has one open stream", [counterIs("open_streams", 1)]),
   clientPost("CONN-16", "refresh-tools", "conn16-c", "refresh-tools", [A.status(200), A.jsonEquals("tool_count", 3)]),
   execTool("CONN-16", "execute conn16_c-new_tool", "conn16_c-new_tool", [A.status(200)]),
   mockPost("CONN-16", "alpha", "tools/remove", "alpha removes echo_tool", { name: "echo_tool" }),
@@ -6860,26 +6874,26 @@ const EP21 = folder("EP-21 Tool call timeout", `Setup: ${FLEET}; client alpha ha
   deleteVK("EP-21", "full"), ...fleetTeardown("EP-21"),
 ]);
 
-const EP22 = folder("EP-22 Non-text and empty results", `Setup: ${FLEET}, with alpha's echo replying (a) two text blocks "a" and "b", a PNG image block and structuredContent {"v": 1}, then (b) content []; the full-access VK. Passing the content blocks through is a known issue, so those checks are skipped.`, [
+const EP22 = folder("EP-22 Non-text and empty results", `Setup: ${FLEET}, with alpha's echo replying (a) two text blocks "a" and "b", a PNG image block and structuredContent {"v": 1}, then (b) content []; the full-access VK.`, [
   ...fleetSetup("EP-22"), createVK("EP-22", "full"),
   mockPost("EP-22", "alpha", "tools/set", "setup: alpha's echo replies two text blocks, an image and structuredContent", { tools: [{ name: "echo", reply: { content: [{ type: "text", text: "a" }, { type: "text", text: "b" }, { type: "image", data: "QUJD", mimeType: "image/png" }], structuredContent: { v: 1 } } }, { name: "add" }] }),
   request("EP-22", "setup: refresh alpha's tools", "POST", "/api/mcp/client/ep-22-alpha/refresh-tools", { asserts: [A.status(200)] }),
-  gwCall("EP-22", "tools/call alpha-echo, mixed content", "alpha-echo", [A.skip(A.custom("two text blocks, the image block and structuredContent pass through", [
+  gwCall("EP-22", "tools/call alpha-echo, mixed content", "alpha-echo", [A.custom("two text blocks, the image block and structuredContent pass through", [
     "var r = pm.response.json().result;",
     "pm.expect(r.content, 'body: ' + pm.response.text()).to.eql([{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }, { type: 'image', data: 'QUJD', mimeType: 'image/png' }]);",
     "pm.expect(r.structuredContent).to.eql({ v: 1 });",
-  ]))], [fullVK("EP-22")]),
+  ])], [fullVK("EP-22")]),
   mockPost("EP-22", "alpha", "tools/set", "setup: alpha's echo replies content []", { tools: [{ name: "echo", reply: { content: [] } }, { name: "add" }] }),
-  gwCall("EP-22", "tools/call alpha-echo, empty content", "alpha-echo", [gwText("the text is \"MCP tool 'alpha-echo' executed successfully\"", ["pm.expect(text, 'body: ' + pm.response.text()).to.equal(\"MCP tool 'alpha-echo' executed successfully\");"])], [fullVK("EP-22")]),
+  gwCall("EP-22", "tools/call alpha-echo, empty content", "alpha-echo", [rpcResultEquals({ content: [] })], [fullVK("EP-22")]),
   deleteVK("EP-22", "full"), ...fleetTeardown("EP-22"),
 ]);
 
 const EP30 = folder("EP-30 Malformed JSON-RPC and batches", `Setup: ${FLEET}; no credential (enforce_auth_on_inference off). A batch of two tools/list requests gets -32700.`, [
   ...fleetSetup("EP-30"),
-  rpc("EP-30", "body \"{\"", "{", { asserts: [A.status(200), rpcError(-32700, "Failed to parse message"), A.custom("id is null", ["pm.expect(pm.response.json().id, 'body: ' + pm.response.text()).to.equal(null);"])] }),
-  rpc("EP-30", "an empty body", "", { asserts: [A.status(200), rpcError(-32700, "Failed to parse message"), A.custom("id is null", ["pm.expect(pm.response.json().id, 'body: ' + pm.response.text()).to.equal(null);"])] }),
+  rpc("EP-30", "body \"{\"", "{", { asserts: [A.status(400), rpcError(-32700, "request body is not valid json"), A.custom("id is null", ["pm.expect(pm.response.json().id, 'body: ' + pm.response.text()).to.equal(null);"])] }),
+  rpc("EP-30", "an empty body", "", { asserts: [A.status(400), rpcError(-32700, "request body is not valid json"), A.custom("id is null", ["pm.expect(pm.response.json().id, 'body: ' + pm.response.text()).to.equal(null);"])] }),
   rpc("EP-30", "jsonrpc \"1.0\"", { jsonrpc: "1.0", id: 1, method: "tools/list" }, { asserts: [A.status(200), rpcError(-32600, "Invalid JSON-RPC version")] }),
-  rpc("EP-30", "a batch of two tools/list requests", JSON.stringify([listMsg, { ...listMsg, id: 2 }]), { asserts: [A.status(200), rpcError(-32700)] }),
+  rpc("EP-30", "a batch of two tools/list requests", JSON.stringify([listMsg, { ...listMsg, id: 2 }]), { asserts: [A.status(400), rpcError(-32700)] }),
   ...fleetTeardown("EP-30"),
 ]);
 
@@ -7586,7 +7600,7 @@ const AUTH07 = folder("AUTH-07 Rotation applies to the live connection", `Setup:
   createClient("AUTH-07", t1Client("auth07-c", "auth07_c", { needs_session_stickiness: true }), "setup: create the sticky client"),
   saveSessions("AUTH-07", "alpha", "auth07_s"),
   request("AUTH-07", "PUT Authorization: Bearer T2", "PUT", "/api/mcp/client/auth07-c", { body: { headers: { Authorization: `Bearer ${T2}` } }, asserts: [A.status(200)] }),
-  mockGet("AUTH-07", "alpha", "two more sessions: the new header is verified on its own connection, then the client reconnects", [sessionsPlus("auth07_s", 2)]),
+  mockGet("AUTH-07", "alpha", "three more sessions: the new header is verified on its own connection, then the reconnect opens two", [sessionsPlus("auth07_s", 3)]),
   execTool("AUTH-07", "execute after the rotation", "auth07_c-echo_tool", [A.status(200)]),
   mockGet("AUTH-07", "alpha", "the call was counted under id2", [identityCallsAre({ id2: 1 })]),
   deleteClient("AUTH-07", "auth07-c"),
@@ -7600,7 +7614,7 @@ const CONN01 = folder("CONN-01 HTTP sticky round trip", "Setup: alpha (echo_tool
   ...[1, 2, 3].map((i) => execTool("CONN-01", `execute ${i} of 3`, "conn01-echo_tool", [A.status(200), A.custom("the body is {role \"tool\", content \"hi\", tool_call_id \"c1\"}", [
     "pm.expect(pm.response.json(), 'body: ' + pm.response.text()).to.eql({ role: 'tool', content: 'hi', tool_call_id: 'c1' });",
   ])])),
-  mockGet("CONN-01", "alpha", "one session, three calls to echo_tool", [counterIs("sessions", 1), callsIs("echo_tool", 3)]),
+  mockGet("CONN-01", "alpha", "two sessions (calls and the list_changed stream), one open stream, three calls to echo_tool", [counterIs("sessions", 2), counterIs("open_streams", 1), callsIs("echo_tool", 3)]),
   deleteClient("CONN-01", "conn01-c"),
 ]);
 
