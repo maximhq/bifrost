@@ -9,7 +9,6 @@ import (
 	"context"
 	"fmt"
 	"regexp"
-	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -22,61 +21,6 @@ const (
 	// in prose are left alone. See instructionTagPattern.
 	instructionTagPrefix = "mcp_server"
 )
-
-// GetServerInstructions returns the initialize `instructions` of every MCP client this
-// request may see, labeled with the client they came from and ordered deterministically.
-//
-// Visibility follows GetToolPerClient, so a narrowed caller never reads the guidance of a server it
-// was not granted.
-//
-// The text is read from the caller's discovery for each client, the same one its visible
-// tools came from, so a client with per_user_discovery on serves each caller its own
-// instructions with no extra wiring.
-//
-// Code mode clients are excluded: their tools are never sent, so their guidance rides in the
-// stub instead. See InstructionsCommentBlock.
-func (m *MCPManager) GetServerInstructions(ctx context.Context) []schemas.MCPServerInstructions {
-	visible := m.GetToolPerClient(ctx)
-
-	// Snapshot the clients under the lock, then read each one's text from the caller's
-	// discovery outside it: the same per-caller discovery that made the client visible, and
-	// a ctx-aware store may read through to slower backing, which must not run under m.mu.
-	type candidate struct {
-		config    *schemas.MCPClientConfig
-		maxLength int
-	}
-	m.mu.RLock()
-	candidates := make(map[string]candidate, len(m.clientMap))
-	for _, client := range m.clientMap {
-		config := client.ExecutionConfig
-		if config == nil || config.IsCodeModeClient {
-			continue
-		}
-		candidates[client.ExecutionConfig.Name] = candidate{config: client.ExecutionConfig, maxLength: client.ExecutionConfig.MaxInstructionsLength}
-	}
-	m.mu.RUnlock()
-
-	result := make([]schemas.MCPServerInstructions, 0, len(visible))
-	for clientName, tools := range visible {
-		c, ok := candidates[clientName]
-		if !ok || len(tools) == 0 {
-			continue
-		}
-		instructions := m.discoveryStore.GetDiscovery(ctx, c.config).GetInstructions()
-		if instructions == "" {
-			continue
-		}
-		result = append(result, schemas.MCPServerInstructions{
-			ClientName:   clientName,
-			Instructions: instructions,
-			MaxLength:    c.maxLength,
-		})
-	}
-	slices.SortFunc(result, func(a, b schemas.MCPServerInstructions) int {
-		return strings.Compare(a.ClientName, b.ClientName)
-	})
-	return result
-}
 
 // InstructionCaps bounds forwarded instructions in bytes. A zero field takes the built-in
 // default, so callers that do not care can pass the zero value.
@@ -251,8 +195,21 @@ func (m *MCPManager) InstructionCaps() InstructionCaps {
 	return m.toolsManager.instructionCaps()
 }
 
-// GetAggregatedServerInstructions renders the instructions of every client visible to ctx
-// into a single labeled, size-bounded block. See GetServerInstructions for the scoping rule.
+// GetAggregatedServerInstructions renders the initialize `instructions` of every MCP client
+// visible to ctx into a single labeled, size-bounded block: the Instructions of the caller's
+// CallerDiscovery, ordered by client name.
+//
+// The scoping rule, which CallerDiscovery applies: visibility is not decided for instructions on
+// their own, it rides entirely on the client's visible tools, which already apply the
+// disabled check, the caller's include-clients/include-tools lists, and the client's own
+// ToolsToExecute allow-list. A client contributing no visible tool is a client this caller
+// cannot reach at all, so its instructions are withheld too — this is what keeps a narrowed
+// caller (x-bf-mcp-include-clients, or a /mcp/<slug> Virtual MCP) from reading the guidance
+// of a server it was never granted. The text is read from the caller's discovery for each
+// client, in the same read as its tools, so a client with per_user_discovery on serves each
+// caller its own instructions with no extra wiring. Code mode clients are excluded: their
+// tools are never sent, so their guidance rides in the stub instead. See
+// InstructionsCommentBlock.
 func (m *MCPManager) GetAggregatedServerInstructions(ctx context.Context) string {
-	return AggregateServerInstructions(m.GetServerInstructions(ctx), m.toolsManager.instructionCaps())
+	return AggregateServerInstructions(m.resolveCallerDiscovery(ctx, false, true).Instructions, m.toolsManager.instructionCaps())
 }
