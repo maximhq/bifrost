@@ -303,8 +303,8 @@ bifrost:
   # on every startup. Leave unset to manage the proxy from the dashboard.
   # proxyConfig:
   #   enabled: true
-  #   type: "http"                       # only http is supported
-  #   url: "http://proxy.example.com:8080"
+  #   type: "http"                       # http or socks5
+  #   url: "http://proxy.example.com:8080"  # http:// or https:// for type http; socks5:// or socks5h:// for type socks5. A bare host:port takes its scheme from type
   #   username: "env.PROXY_USERNAME"     # optional; env.VAR_NAME supported
   #   password: "env.PROXY_PASSWORD"     # optional; env.VAR_NAME supported
   #   noProxy: "localhost,.internal.example.com"
