@@ -211,7 +211,7 @@ bifrost:
 ## Supported Content and Limitations
 
 - **Latest turn only:** Noma evaluates the newest user message and everything after it. Earlier turns are context and are not re-evaluated, and Noma does not re-report items it already scanned in the same session. A value masked on one turn is therefore not masked again when the client replays it in later turns.
-- **Tool calls and tool results:** Noma evaluates tool-call arguments and tool results, and Bifrost can block or mask them. MCP tool executions are evaluated together with the call that produced them.
+- **Tool calls and tool results:** Noma evaluates tool-call arguments and tool results, and Bifrost can block or mask them. The rules above cover model traffic; to guard MCP tool executions, attach the Noma profile to a separate rule with the `mcp` target (see [MCP Guardrails](/enterprise/guardrails#mcp-guardrails)).
 - **System prompts and images:** Noma does not evaluate system prompts or image content.
 - **Fallbacks:** When a request falls back to another provider, Bifrost reapplies the first attempt's Noma decision instead of scanning the same content again.
 
