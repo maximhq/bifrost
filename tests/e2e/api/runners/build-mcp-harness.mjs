@@ -9196,6 +9196,231 @@ const GOV36 = folder("GOV-36 Cross-surface parity matrix", `Setup: ${LLM_TEXT}; 
   ...G36_SERVERS.map((s) => deleteClient("GOV-36", `gov36-${s}`)),
 ]);
 
+// ================================================================ GO a real MCP SDK client and raw streams on /mcp
+
+// The mock drives an mcp-go client, or a raw GET stream, against Bifrost; each request below talks to
+// the mock, which talks to Bifrost at base_url.
+const SDK_TEXT = "an mcp-go client driven by the mock against Bifrost";
+const sdkPath = (name, verb) => `/client/${name}${verb ? "/" + verb : ""}`;
+const sdkOpen = (id, name, title, { path = "/mcp", headers = {}, version = "", listen = false } = {}, asserts) => request(id, title, "POST", sdkPath(name, "open"), {
+  base: CHAOS, noAuth: true, body: { url: `{{base_url}}${path}`, headers, protocol_version: version, listen }, asserts,
+});
+const sdkTools = (id, name, title, asserts) => request(id, title, "GET", sdkPath(name, "tools"), { base: CHAOS, noAuth: true, asserts });
+const sdkCall = (id, name, title, tool, args, asserts) => request(id, title, "POST", sdkPath(name, "call"), { base: CHAOS, noAuth: true, body: { tool, arguments: args }, asserts });
+const sdkLog = (id, name, title, asserts) => request(id, title, "GET", sdkPath(name), { base: CHAOS, noAuth: true, asserts });
+const sdkClose = (id, name) => request(id, `teardown: close the client ${name}`, "DELETE", sdkPath(name), { base: CHAOS, noAuth: true, asserts: [A.status(200)] });
+const probeStream = (id, title, { path = "/mcp", headers = {}, hold = "3s" } = {}, asserts) => request(id, title, "POST", sdkPath(id.toLowerCase(), "stream"), {
+  base: CHAOS, noAuth: true, body: { url: `{{base_url}}${path}`, headers, hold }, asserts: [A.status(200), ...asserts],
+});
+const sdkJSON = (title, lines) => A.custom(title, ["var b = pm.response.json();", ...lines.map((l) => l.replace("BODY", "'body: ' + pm.response.text()"))]);
+const sdkToolNames = (names) => sdkJSON(`the tools are exactly ${lit(names)}, each with an object input schema`, [
+  `pm.expect((b.tools || []).map(function (t) { return t.name; }), BODY).to.eql(${lit(names)});`,
+  "(b.tools || []).forEach(function (t) { pm.expect(t.input_schema_type, t.name).to.equal('object'); });",
+]);
+const sdkResult = (text) => sdkJSON(`is_error false and the text is ${lit(text)}`, ["pm.expect(b.is_error, BODY).to.equal(false);", `pm.expect(b.text).to.equal(${lit(text)});`]);
+// sdkRefused is a handshake the server refused: the SDK's error, and every request it made answered status.
+const sdkRefused = (status, errorPart) => [A.status(502), sdkJSON(`the handshake failed${errorPart ? " with " + lit(errorPart) : ""} and every request the SDK made was answered ${status}`, [
+  "pm.expect(b.error, BODY).to.include('handshake: ');",
+  ...(errorPart ? [`pm.expect(b.error).to.include(${lit(errorPart)});`] : []),
+  "var rs = b.requests || [];",
+  "pm.expect(rs.length, BODY).to.be.above(0);",
+  `rs.forEach(function (r) { pm.expect(r.status, JSON.stringify(rs)).to.equal(${status}); });`,
+])];
+const MODERN_V = "2026-07-28";
+const LEGACY_V = "2025-11-25";
+
+const GO01 = folder("GO-01 Hold GET /mcp open", `Setup: ${FLEET}; no credential (enforce_auth_on_inference off). A raw GET on /mcp asking for text/event-stream, with no session id, held for 3s (Bifrost writes one heartbeat up front, then every 15s).`, [
+  ...fleetSetup("GO-01"),
+  probeStream("GO-01", "hold the GET stream for 3s", {}, [sdkJSON("200, an event stream with no-cache that starts with a \": heartbeat\" comment and is still open after 3s", [
+    "pm.expect(b.status, BODY).to.equal(200);",
+    "pm.expect(b.headers['Content-Type'] || '').to.match(/^text\\/event-stream/);",
+    "pm.expect(b.headers['Cache-Control']).to.equal('no-cache');",
+    "pm.expect(b.body.indexOf(': heartbeat')).to.equal(0);",
+    "pm.expect(b.open).to.equal(true);",
+  ])]),
+  ...fleetTeardown("GO-01"),
+]);
+
+const GO02 = folder("GO-02 GET stream without a credential under enforced auth", `Setup: ${FLEET}; enforce_auth_on_inference on; a raw GET on /mcp with no credential.`, [
+  readConfig("GO-02"),
+  ...fleetSetup("GO-02"),
+  putConfig("GO-02", "setup: enforce_auth_on_inference on", ["cc.enforce_auth_on_inference = true;"], [A.status(200)]),
+  probeStream("GO-02", "GET /mcp with no credential", { hold: "1s" }, [sdkJSON("401 \"virtual key required to access mcp server\", not an event stream, and closed", [
+    "pm.expect(b.status, BODY).to.equal(401);",
+    "pm.expect(b.body).to.include('virtual key required to access mcp server');",
+    "pm.expect(b.headers['Content-Type'] || '').to.not.match(/^text\\/event-stream/);",
+    "pm.expect(b.open).to.equal(false);",
+  ])]),
+  restoreConfig("GO-02"),
+  ...fleetTeardown("GO-02"),
+]);
+
+const GO03 = folder("GO-03 GET stream on an unknown slug", `Setup: ${FLEET}; no credential; a raw GET on /mcp/nosuch.`, [
+  ...fleetSetup("GO-03"),
+  probeStream("GO-03", "GET /mcp/nosuch", { path: "/mcp/nosuch", hold: "1s" }, [sdkJSON("403 access_denied, not an event stream, and closed", [
+    "pm.expect(b.status, BODY).to.equal(403);",
+    "pm.expect(b.body).to.include('access_denied');",
+    "pm.expect(b.headers['Content-Type'] || '').to.not.match(/^text\\/event-stream/);",
+    "pm.expect(b.open).to.equal(false);",
+  ])]),
+  ...fleetTeardown("GO-03"),
+]);
+
+const GO06 = folder("GO-06 SDK Initialize on /mcp", `Setup: ${FLEET}; no credential; ${SDK_TEXT}, once on ${MODERN_V} (the SDK's default) and once pinned to ${LEGACY_V}.`, [
+  ...fleetSetup("GO-06"),
+  sdkOpen("GO-06", "go06m", `handshake on ${MODERN_V}`, {}, [A.status(200), sdkJSON(`${MODERN_V}; server bifrost; tools listChanged; no session id`, [
+    `pm.expect(b.protocol_version, BODY).to.equal(${lit(MODERN_V)});`,
+    "pm.expect(b.server_name).to.equal('bifrost');",
+    "pm.expect(b.tools_list_changed).to.equal(true);",
+    "pm.expect(b.session_id).to.equal('');",
+  ])]),
+  sdkOpen("GO-06", "go06l", `handshake pinned to ${LEGACY_V}`, { version: LEGACY_V }, [A.status(200), sdkJSON(`${LEGACY_V}; server bifrost; tools listChanged; a session id`, [
+    `pm.expect(b.protocol_version, BODY).to.equal(${lit(LEGACY_V)});`,
+    "pm.expect(b.server_name).to.equal('bifrost');",
+    "pm.expect(b.tools_list_changed).to.equal(true);",
+    "pm.expect(b.session_id).to.be.a('string').and.not.empty;",
+  ])]),
+  sdkClose("GO-06", "go06m"), sdkClose("GO-06", "go06l"),
+  ...fleetTeardown("GO-06"),
+]);
+
+const GO07 = folder("GO-07 SDK ListTools", `Setup: ${FLEET}; no credential; ${SDK_TEXT} on each protocol era.`, [
+  ...fleetSetup("GO-07"),
+  ...[["go07m", "", MODERN_V], ["go07l", LEGACY_V, LEGACY_V]].flatMap(([name, version, label]) => [
+    sdkOpen("GO-07", name, `setup: handshake on ${label}`, { version }, [A.status(200)]),
+    sdkTools("GO-07", name, `ListTools on ${label}`, [A.status(200), sdkToolNames(ALL_TOOLS)]),
+    sdkClose("GO-07", name),
+  ]),
+  ...fleetTeardown("GO-07"),
+]);
+
+const GO08 = folder("GO-08 SDK CallTool", `Setup: ${FLEET}; no credential; ${SDK_TEXT} on each protocol era calls alpha-echo with {"text": "go08"}.`, [
+  ...fleetSetup("GO-08"),
+  sdkOpen("GO-08", "go08l", `setup: handshake pinned to ${LEGACY_V}`, { version: LEGACY_V }, [A.status(200)]),
+  sdkCall("GO-08", "go08l", `CallTool alpha-echo on ${LEGACY_V}`, "alpha-echo", { text: "go08" }, [A.status(200), sdkResult(ECHO_RESULT("go08"))]),
+  sdkLog("GO-08", "go08l", `the ${LEGACY_V} client's notifications/initialized was answered 202`, [A.status(200), sdkJSON("one POST /mcp answered 202", [
+    "var accepted = (b.requests || []).filter(function (r) { return r.method === 'POST' && r.path === '/mcp' && r.status === 202; });",
+    "pm.expect(accepted.length, BODY).to.equal(1);",
+  ])]),
+  sdkOpen("GO-08", "go08m", `setup: handshake on ${MODERN_V}`, {}, [A.status(200)]),
+  sdkCall("GO-08", "go08m", `CallTool alpha-echo on ${MODERN_V}`, "alpha-echo", { text: "go08" }, [A.status(200), sdkResult(ECHO_RESULT("go08"))]),
+  mockGet("GO-08", "alpha", "alpha ran echo twice", [callsIs("echo", 2)]),
+  sdkClose("GO-08", "go08l"), sdkClose("GO-08", "go08m"),
+  ...fleetTeardown("GO-08"),
+]);
+
+const GO09 = folder("GO-09 SDK CallTool when upstream fails", `Setup: ${FLEET}; no credential; alpha's tools/call fails with a JSON-RPC error (err_kind protocol); ${SDK_TEXT} calls alpha-echo.`, [
+  ...fleetSetup("GO-09"),
+  mockPost("GO-09", "alpha", "faults", "setup: alpha's tools/call fails with a JSON-RPC error", { faults: { err_rate: 1, err_kind: "protocol", methods: ["tools/call"] } }),
+  sdkOpen("GO-09", "go09", "setup: handshake", {}, [A.status(200)]),
+  sdkCall("GO-09", "go09", "CallTool alpha-echo", "alpha-echo", { text: "hi" }, [A.status(200), sdkJSON("is_error true; the text starts \"Tool execution failed: \" and names \"MCP tool call failed for\"", [
+    "pm.expect(b.is_error, BODY).to.equal(true);",
+    "pm.expect(b.text.indexOf('Tool execution failed: ')).to.equal(0);",
+    "pm.expect(b.text).to.include('MCP tool call failed for');",
+  ])]),
+  mockPost("GO-09", "alpha", "faults/clear", "teardown: clear alpha's faults", {}),
+  sdkClose("GO-09", "go09"),
+  ...fleetTeardown("GO-09"),
+]);
+
+const GO10 = folder("GO-10 SDK CallTool of an unregistered name", `Setup: ${FLEET}; no credential; ${SDK_TEXT} calls alpha-nope.`, [
+  ...fleetSetup("GO-10"),
+  sdkOpen("GO-10", "go10", "setup: handshake", {}, [A.status(200)]),
+  sdkCall("GO-10", "go10", "CallTool alpha-nope", "alpha-nope", { text: "hi" }, [A.status(502), sdkJSON("the SDK reports invalid params: tool 'alpha-nope' not found", ["pm.expect(b.error, BODY).to.equal(\"tools/call: invalid params: tool 'alpha-nope' not found: tool not found\");"])]),
+  noMockCalls("GO-10", "alpha"),
+  sdkClose("GO-10", "go10"),
+  ...fleetTeardown("GO-10"),
+]);
+
+const GO11 = folder("GO-11 SDK on /mcp/{client slug}", `Setup: ${FLEET}; no credential; ${SDK_TEXT} on /mcp/alpha.`, [
+  ...fleetSetup("GO-11"),
+  sdkOpen("GO-11", "go11", "setup: handshake on /mcp/alpha", { path: "/mcp/alpha" }, [A.status(200)]),
+  sdkTools("GO-11", "go11", "ListTools shows only alpha's tools", [A.status(200), sdkToolNames(["alpha-add", "alpha-echo"])]),
+  sdkCall("GO-11", "go11", "CallTool beta-echo through /mcp/alpha", "beta-echo", { text: "hi" }, [A.status(200), sdkJSON("is_error true, not permitted (filtered by request context)", ["pm.expect(b.is_error, BODY).to.equal(true);", "pm.expect(b.text).to.equal(\"Tool execution failed: tool 'beta-echo' is not permitted (filtered by request context)\");"])]),
+  noMockCalls("GO-11", "beta"),
+  sdkClose("GO-11", "go11"),
+  ...fleetTeardown("GO-11"),
+]);
+
+const GO12 = folder("GO-12 SDK on /mcp/{virtual MCP slug}", `Setup: ${FLEET}; virtual keys VK1 and VK2 with no mcp_configs; a virtual MCP "GO-12 V" over alpha's echo, attached to VK1 only; ${SDK_TEXT} on /mcp/go-12-v with each key.`, [
+  ...fleetSetup("GO-12"),
+  vkCreate("GO-12", "setup: create VK1", { name: "GO-12 VK1" }, "go12_vk1"),
+  vkCreate("GO-12", "setup: create VK2", { name: "GO-12 VK2" }, "go12_vk2"),
+  request("GO-12", "setup: create the virtual MCP GO-12 V over alpha's echo", "POST", "/api/mcp/virtual-mcps", { body: { name: "GO-12 V", tools: [{ mcp_client_id: "go-12-alpha", tool_names: ["echo"] }] }, asserts: [A.status(201)], extraTests: ["pm.collectionVariables.set('go12_vmcp', pm.response.json().virtual_mcp.id);"] }),
+  request("GO-12", "setup: attach VK1", "POST", "/api/mcp/virtual-mcps/{{go12_vmcp}}/virtual-keys/{{go12_vk1_id}}", { asserts: [A.status(200)] }),
+  sdkOpen("GO-12", "go12a", "handshake on /mcp/go-12-v with VK1", { path: "/mcp/go-12-v", headers: { "x-bf-vk": "{{go12_vk1}}" } }, [A.status(200)]),
+  sdkTools("GO-12", "go12a", "VK1 lists the virtual MCP's tools", [A.status(200), sdkToolNames(["alpha-echo"])]),
+  sdkCall("GO-12", "go12a", "VK1 calls alpha-echo", "alpha-echo", { text: "go12" }, [A.status(200), sdkResult(ECHO_RESULT("go12"))]),
+  sdkOpen("GO-12", "go12b", "handshake on /mcp/go-12-v with VK2", { path: "/mcp/go-12-v", headers: { "x-bf-vk": "{{go12_vk2}}" } }, sdkRefused(403)),
+  sdkClose("GO-12", "go12a"),
+  request("GO-12", "teardown: delete the virtual MCP", "DELETE", "/api/mcp/virtual-mcps/{{go12_vmcp}}", { asserts: [A.status(200)] }),
+  vkDelete("GO-12", "teardown: delete VK1", "go12_vk1"), vkDelete("GO-12", "teardown: delete VK2", "go12_vk2"),
+  ...fleetTeardown("GO-12"),
+]);
+
+const GO13 = folder("GO-13 SDK auth under enforced auth", `Setup: ${FLEET}; the full-access VK (${VKS.full.text}); enforce_auth_on_inference on; ${SDK_TEXT} with and without x-bf-vk.`, [
+  readConfig("GO-13"),
+  ...fleetSetup("GO-13"),
+  createVK("GO-13", "full"),
+  putConfig("GO-13", "setup: enforce_auth_on_inference on", ["cc.enforce_auth_on_inference = true;"], [A.status(200)]),
+  sdkOpen("GO-13", "go13a", "handshake with the full-access VK", { headers: { "x-bf-vk": "{{go-13_full}}" } }, [A.status(200)]),
+  sdkTools("GO-13", "go13a", "ListTools with the VK", [A.status(200), sdkToolNames(ALL_TOOLS)]),
+  sdkCall("GO-13", "go13a", "CallTool alpha-echo with the VK", "alpha-echo", { text: "go13" }, [A.status(200), sdkResult(ECHO_RESULT("go13"))]),
+  sdkOpen("GO-13", "go13b", "handshake with no VK", {}, sdkRefused(401, "authorization required")),
+  sdkClose("GO-13", "go13a"),
+  restoreConfig("GO-13"),
+  deleteVK("GO-13", "full"),
+  ...fleetTeardown("GO-13"),
+]);
+
+// waitNotified polls a driven client's notifications, 250ms apart, until tools/list_changed arrives or seconds pass.
+const waitNotified = (name, seconds) => [
+  `var deadline = Date.now() + ${seconds * 1000};`,
+  "function poll() {",
+  `  pm.sendRequest({ url: pm.variables.get('chaos_url') + '/client/${name}/notifications', method: 'GET' }, function (err, res) {`,
+  "    var got = !err && res.code === 200 ? (res.json().notifications || []) : [];",
+  "    if (got.indexOf('notifications/tools/list_changed') >= 0 || Date.now() >= deadline) { return; }",
+  "    setTimeout(poll, 250);",
+  "  });",
+  "}",
+  "poll();",
+];
+// waitListening polls two driven clients, 250ms apart for up to 10s, until the modern one has its
+// subscriptions/acknowledged and the legacy one's GET stream has answered 200. Both streams are then
+// registered with Bifrost, which replays nothing sent before a stream opens.
+const waitListening = (modern, legacy) => [
+  "var deadline = Date.now() + 10000, chaos = pm.variables.get('chaos_url');",
+  "function ready(cb) {",
+  `  pm.sendRequest({ url: chaos + '/client/${modern}/notifications', method: 'GET' }, function (e1, r1) {`,
+  `    pm.sendRequest({ url: chaos + '/client/${legacy}', method: 'GET' }, function (e2, r2) {`,
+  "      var acked = !e1 && r1.code === 200 && (r1.json().notifications || []).indexOf('notifications/subscriptions/acknowledged') >= 0;",
+  "      var streaming = !e2 && r2.code === 200 && (r2.json().requests || []).some(function (q) { return q.method === 'GET' && q.status === 200; });",
+  "      cb(acked && streaming);",
+  "    });",
+  "  });",
+  "}",
+  "function poll() { ready(function (ok) { if (ok || Date.now() >= deadline) { return; } setTimeout(poll, 250); }); }",
+  "poll();",
+];
+const GO14 = folder("GO-14 SDK continuous listening", `Setup: ${FLEET}; no credential; ${SDK_TEXT} listening on each era (subscriptions/listen on ${MODERN_V}, the GET stream on ${LEGACY_V}); then alpha adds new_tool and alpha's tools are refreshed.`, [
+  ...fleetSetup("GO-14"),
+  sdkOpen("GO-14", "go14m", `setup: handshake on ${MODERN_V}, listening`, { listen: true }, [A.status(200)]),
+  sdkOpen("GO-14", "go14l", `setup: handshake pinned to ${LEGACY_V}, listening`, { version: LEGACY_V, listen: true }, [A.status(200)]),
+  request("GO-14", `setup: the ${MODERN_V} client's subscription is acknowledged`, "GET", sdkPath("go14m", "notifications"), {
+    base: CHAOS, noAuth: true, pre: waitListening("go14m", "go14l"), asserts: [A.status(200), sdkJSON("notifications include notifications/subscriptions/acknowledged", ["pm.expect(b.notifications, BODY).to.include('notifications/subscriptions/acknowledged');"])],
+  }),
+  request("GO-14", `setup: the ${LEGACY_V} client's GET stream is open`, "GET", sdkPath("go14l"), {
+    base: CHAOS, noAuth: true, asserts: [A.status(200), sdkJSON("a GET answered 200", ["pm.expect(b.requests.some(function (q) { return q.method === 'GET' && q.status === 200; }), BODY).to.equal(true);"])],
+  }),
+  mockPost("GO-14", "alpha", "tools/add", "setup: alpha adds new_tool", { tool: { name: "new_tool" } }),
+  request("GO-14", "setup: refresh alpha's tools", "POST", "/api/mcp/client/go-14-alpha/refresh-tools", { asserts: [A.status(200)] }),
+  ...["go14m", "go14l"].map((name) => request("GO-14", `the ${name === "go14m" ? MODERN_V : LEGACY_V} client receives tools/list_changed within 10s`, "GET", sdkPath(name, "notifications"), {
+    base: CHAOS, noAuth: true, pre: waitNotified(name, 10), asserts: [A.status(200), sdkJSON("notifications include notifications/tools/list_changed", ["pm.expect(b.notifications, BODY).to.include('notifications/tools/list_changed');"])],
+  })),
+  sdkClose("GO-14", "go14m"), sdkClose("GO-14", "go14l"),
+  ...fleetTeardown("GO-14"),
+]);
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -9212,7 +9437,7 @@ const collection = {
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM86, ADM87]),
     section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57]),
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, GO18, CONN23, CONN24, CONN25, CONN27, CONN28, CONN29, GO34, GO36]),
-    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, GO33, GO35]),
+    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, GO01, GO02, GO03, GO06, GO07, GO08, GO09, GO10, GO11, GO12, GO13, GO14, GO33, GO35]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET26, SET27, SET28, SET29, SET30, SET31, SET32, SET04, SET05, SET10, SET11, SET15, SET23]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV36, GOV37, GOV38, GOV39]),
