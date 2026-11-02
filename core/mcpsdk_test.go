@@ -172,7 +172,7 @@ func connectedAlpha(t *testing.T, a *alphaServer, edit func(*schemas.MCPClientCo
 		edit(client)
 	}
 	b := newSDKClient(t, schemas.BifrostConfig{MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{client}}})
-	b.ConnectConfiguredMCPClients(context.Background())
+	b.ConnectConfiguredMCPClients(context.Background(), nil)
 	return b
 }
 
@@ -267,7 +267,7 @@ func testSDKSTDIORespawn(t *testing.T) {
 		ToolsToExecute:   schemas.WhiteList{"*"},
 		ToolSyncInterval: 2 * time.Second,
 	}}}})
-	b.ConnectConfiguredMCPClients(context.Background())
+	b.ConnectConfiguredMCPClients(context.Background(), nil)
 	if got := clientNamed(t, b, "stdioalpha").State; got != schemas.MCPConnectionStateHealthy {
 		t.Fatalf("state after connect = %q, want healthy", got)
 	}
@@ -306,7 +306,7 @@ func testSDKConnectGating(t *testing.T) {
 	if len(clients) != 0 {
 		t.Fatalf("before connect: %d clients, want none", len(clients))
 	}
-	b.ConnectConfiguredMCPClients(context.Background())
+	b.ConnectConfiguredMCPClients(context.Background(), nil)
 	alpha := clientNamed(t, b, "alpha")
 	if alpha.State != schemas.MCPConnectionStateHealthy {
 		t.Fatalf("state = %q, want healthy", alpha.State)
@@ -464,7 +464,7 @@ func testSDKPluginShortCircuit(t *testing.T) {
 		MCPPlugins: []schemas.MCPPlugin{plugin},
 		MCPConfig:  &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{alphaClient(a.url)}},
 	})
-	b.ConnectConfiguredMCPClients(context.Background())
+	b.ConnectConfiguredMCPClients(context.Background(), nil)
 	if alpha := clientNamed(t, b, "alpha"); alpha.State != schemas.MCPConnectionStateHealthy || !slices.Contains(toolNames(alpha), "echo_tool") {
 		t.Fatalf("control: alpha is %q with tools %v, want healthy with echo_tool", alpha.State, toolNames(alpha))
 	}
@@ -553,7 +553,7 @@ func testSDKInProcessClient(t *testing.T) {
 		alphaClient(a.url),
 		{ID: "inproc-id", Name: "inproc", ConnectionType: schemas.MCPConnectionTypeInProcess, InProcessServer: inproc, ToolsToExecute: schemas.WhiteList{"*"}},
 	}}})
-	b.ConnectConfiguredMCPClients(context.Background())
+	b.ConnectConfiguredMCPClients(context.Background(), nil)
 	if got := clientNamed(t, b, "inproc").State; got != schemas.MCPConnectionStateHealthy {
 		t.Fatalf("in-process state = %q, want healthy", got)
 	}
@@ -746,7 +746,7 @@ func testSDKInProcessResults(t *testing.T) {
 		ID: "results-id", Name: "results", ConnectionType: schemas.MCPConnectionTypeInProcess, InProcessServer: s,
 		ToolsToExecute: schemas.WhiteList{"*"}, ToolExecutionTimeout: time.Second,
 	}}}})
-	b.ConnectConfiguredMCPClients(context.Background())
+	b.ConnectConfiguredMCPClients(context.Background(), nil)
 	if msg, bErr := execChat(b, "results-echo", `{"text":"round trip"}`); bErr != nil || contentOf(msg) != "round trip" {
 		t.Fatalf("results-echo = %q, %q; want \"round trip\"", contentOf(msg), errorText(bErr))
 	}
