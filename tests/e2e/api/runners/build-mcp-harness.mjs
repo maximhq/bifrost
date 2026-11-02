@@ -4611,8 +4611,8 @@ const puConfig = (id, tempTokens) => [readConfig(id), putConfig(id, `setup: ${PU
 const PU_SERVER_TEXT = (p, cfgText = "") => `a fleet server ${p} (echo_tool, add_tool) as an OAuth protected resource with dynamic registration${cfgText}; a per_user_oauth client ${p} on it with tools_to_execute ["*"]`;
 const puBody = (p) => oauthBody(`${p}-u`, p, p, { auth_type: "per_user_oauth" });
 // puConnect creates a per_user_oauth client (with over merged into its config) and verifies it by consenting as admin.
-const puConnect = (id, p, cfg = {}, over = {}) => [
-  ...asServer(id, p, cfg),
+const puConnect = (id, p, cfg = {}, over = {}, tools) => [
+  ...asServer(id, p, cfg, tools),
   createOAuth(id, "setup: create the per-user OAuth client", { ...puBody(p), ...over }, p),
   consentAs(id, "setup: consent for the per-user OAuth client as admin", p, "admin"),
   followCallback(id, "setup: follow the callback for the per-user OAuth client", p, callbackSuccess()),
@@ -4854,6 +4854,45 @@ const AUTH36 = folder("AUTH-36 Per-user lazy refresh", `Setup: ${PU_TEXT(false)}
   ]), identityCalls("alice", 2)]),
   deleteClient("AUTH-36", "auth36-u"),
   restoreConfig("AUTH-36"),
+]);
+
+// refreshGrants asserts identity's refresh_token grants on the authorization server: n of them, all answered with status.
+// A refused grant is logged without an identity, so it counts only grants the server accepted.
+const refreshGrants = (identity, n, status) => A.custom(`${n} refresh_token request${n === 1 ? "" : "s"} for ${identity}, all ${status}`, [
+  `var r = pm.response.json().oauth.log.filter(function (e) { return e.grant_type === 'refresh_token' && e.identity === ${lit(identity)}; });`,
+  `pm.expect(r.length, 'log: ' + JSON.stringify(pm.response.json().oauth.log)).to.equal(${n});`,
+  `r.forEach(function (e) { pm.expect(e.status).to.equal(${status}); });`,
+]);
+const AUTH37_TOOLS = { list: [{ name: "echo_tool" }, { name: "add_tool" }, READ_ONLY_TOOL], title: "echo_tool, add_tool and echo_ro (readOnlyHint true)" };
+const AUTH37 = folder("AUTH-37 Per-user token revoked upstream", `Setup: ${PU_TEXT(false)}; a fleet server auth37 (echo_tool, add_tool, and echo_ro annotated readOnlyHint true) as an OAuth protected resource with dynamic registration; a per_user_oauth client auth37 on it with tools_to_execute ["*"], verified as admin; auth37-sess1 completes as alice. Before each call the authorization server expires alice's access token, keeping her refresh token, while Bifrost still holds it as unexpired.`, [
+  ...puConfig("AUTH-37", false),
+  ...puConnect("AUTH-37", "auth37", {}, {}, AUTH37_TOOLS),
+  execTool("AUTH-37", "setup: execute as auth37-sess1 opens a flow", "auth37-echo_tool", [A.status(400), keepFlow("auth37_f")], { session: "auth37-sess1" }),
+  ...puFinish("AUTH-37", "auth37_f", "alice", "the flow"),
+  mockPost("AUTH-37", "auth37", "oauth/expire", "setup: expire alice's access token", { identity: "alice" }),
+  execTool("AUTH-37", "execute the read-only echo_ro", "auth37-echo_ro", [A.status(200)], { session: "auth37-sess1" }),
+  mockPost("AUTH-37", "auth37", "oauth/expire", "setup: expire alice's access token again", { identity: "alice" }),
+  execTool("AUTH-37", "execute the unannotated echo_tool", "auth37-echo_tool", [A.status(200)], { session: "auth37-sess1" }),
+  mockGet("AUTH-37", "auth37", "one refresh per call, both 200, and both calls ran as alice", [refreshGrants("alice", 2, 200), identityCalls("alice", 2)]),
+  deleteClient("AUTH-37", "auth37-u"),
+  restoreConfig("AUTH-37"),
+]);
+
+const AUTH38 = folder("AUTH-38 Per-user refresh token revoked", `Setup: ${PU_TEXT(false)}; ${PU_SERVER_TEXT("auth38")}, verified as admin; auth38-sess1 completes as alice and makes one call; then the authorization server revokes alice's grant, her access and refresh tokens alike (case b).`, [
+  ...puConfig("AUTH-38", false),
+  ...puConnect("AUTH-38", "auth38"),
+  execTool("AUTH-38", "setup: execute as auth38-sess1 opens a flow", "auth38-echo_tool", [A.status(400), keepFlow("auth38_f")], { session: "auth38-sess1" }),
+  ...puFinish("AUTH-38", "auth38_f", "alice", "the flow"),
+  execTool("AUTH-38", "setup: execute as auth38-sess1", "auth38-echo_tool", [A.status(200)], { session: "auth38-sess1" }),
+  mockPost("AUTH-38", "auth38", "oauth/revoke", "setup: revoke alice's grant", { identity: "alice" }),
+  execTool("AUTH-38", "execute as auth38-sess1 after the revoke", "auth38-echo_tool", [A.status(400), keepFlow("auth38_f2", "auth38_f")], { session: "auth38-sess1" }),
+  mockGet("AUTH-38", "auth38", "the one refresh attempt was refused", [A.custom("1 refresh_token request, refused with invalid_grant", [
+    "var r = pm.response.json().oauth.log.filter(function (e) { return e.grant_type === 'refresh_token'; });",
+    "pm.expect(r.length, 'log: ' + JSON.stringify(pm.response.json().oauth.log)).to.equal(1);",
+    "pm.expect(r[0].status).to.equal(400);", "pm.expect(r[0].error).to.equal('invalid_grant');",
+  ]), identityCalls("alice", 1)]),
+  deleteClient("AUTH-38", "auth38-u"),
+  restoreConfig("AUTH-38"),
 ]);
 
 const gwFlow = (id, title, tool, vk, v, withToken) => request(id, title, "POST", "/mcp", {
@@ -7831,7 +7870,7 @@ const collection = {
   ],
   item: [
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM86, ADM87]),
-    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH48, AUTH49, AUTH50, AUTH51]),
+    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH48, AUTH49, AUTH50, AUTH51]),
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, CONN23, CONN24, CONN25, CONN27]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS40, OAS42]),
