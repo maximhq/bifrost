@@ -34,6 +34,10 @@ func TestIsAuthFailureErrorText(t *testing.T) {
 		{"lowercase forbidden text, no numeric code", "access forbidden for this resource", true},
 		{"mixed case still matches", "Upstream returned Unauthorized", true},
 		{"unrelated connectivity error", "connection refused", false},
+		{"status 401 inside a sentence", "request failed with status 401: invalid token", true},
+		{"a port that merely contains 401", "dial tcp 10.0.0.5:4010: connect: connection refused", false},
+		{"a port that merely contains 403", "dial tcp 10.0.0.5:4030: i/o timeout", false},
+		{"an id in the URL that merely contains 401", `Post "http://mcp.internal/tenants/84013/mcp": EOF`, false},
 		{"unrelated bad request", "400 bad request", false},
 		{"timeout text alone does not match", "context deadline exceeded", false},
 		{"empty string", "", false},
@@ -45,6 +49,18 @@ func TestIsAuthFailureErrorText(t *testing.T) {
 				t.Errorf("isAuthFailureErrorText(%q) = %v, want %v", tc.errStr, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestToolCallConnectionFailureOnAnAuthLikePortStaysTransient: a connection refused by an upstream
+// whose port contains 401 is a transport blip, retried as one, not an auth rejection.
+func TestToolCallConnectionFailureOnAnAuthLikePortStaysTransient(t *testing.T) {
+	refused := &transport.Error{Err: errors.New(`Post "http://10.0.0.5:4010/mcp": dial tcp 10.0.0.5:4010: connect: connection refused`)}
+	if isAuthFailure(refused) {
+		t.Errorf("isAuthFailure(%q) = true, want false", refused)
+	}
+	if !isTransientToolCallError(refused) {
+		t.Errorf("isTransientToolCallError(%q) = false, want true", refused)
 	}
 }
 
@@ -63,7 +79,9 @@ func TestIsAuthFailureErrorText_OpposesIsTransientErrorOnAuthText(t *testing.T) 
 	}
 }
 
-// isAuthFailure matches mcp-go's typed 401 through any wrapping, and falls back to the text.
+// isAuthFailure matches mcp-go's typed 401 through any wrapping, and auth-shaped text inside the
+// transport's error frame. A JSON-RPC error, which mcp-go hands back as plain text, is the tool's own
+// answer and never matches, whatever it says.
 func TestIsAuthFailure(t *testing.T) {
 	tests := []struct {
 		name string
@@ -74,8 +92,11 @@ func TestIsAuthFailure(t *testing.T) {
 		{"typed oauth 401", &transport.OAuthAuthorizationRequiredError{}, true},
 		{"transport-wrapped 401", transport.NewError(&transport.AuthorizationRequiredError{}), true},
 		{"fmt-wrapped 401", fmt.Errorf("call failed: %w", transport.NewError(&transport.AuthorizationRequiredError{})), true},
-		{"text only, chain lost", fmt.Errorf("call failed: %v", transport.NewError(&transport.AuthorizationRequiredError{})), true},
-		{"status text", errors.New("tool call failed: 401 Unauthorized"), true},
+		{"transport 403", transport.NewError(errors.New("request failed with status 403: Forbidden")), true},
+		{"fmt-wrapped transport 403", fmt.Errorf("call failed: %w", transport.NewError(errors.New("request failed with status 403: Forbidden"))), true},
+		{"a tool's own error saying forbidden", errors.New("forbidden: this caller may not use echo_tool"), false},
+		{"a tool's own error saying 401", errors.New("tool call failed: 401 Unauthorized"), false},
+		{"text only, chain lost", fmt.Errorf("call failed: %v", transport.NewError(&transport.AuthorizationRequiredError{})), false},
 		{"unrelated", errors.New("connection refused"), false},
 		{"nil", nil, false},
 	}

@@ -797,9 +797,8 @@ func (m *ToolsManager) executeToolInternal(
 	// unlike a bare connect, this call may not be idempotent, so it only gets
 	// a couple of quick, latency-conscious attempts. isTransientToolCallError
 	// (ToolCallRetryConfig's configured classifier) already treats
-	// 401/403/unauthorized/forbidden as non-retryable — those fail
-	// immediately here with zero retries and fall through to the
-	// isAuthFailureErrorText handling below unchanged.
+	// auth-shaped failures as non-retryable. Those fail immediately here
+	// with zero retries and reach the isAuthFailure check below unchanged.
 	toolWait := schemas.BeginUpstreamWait(ctx)
 	var toolResponse *mcp.CallToolResult
 	callErr := ExecuteWithRetry(
@@ -887,9 +886,9 @@ func (m *ToolsManager) executeToolInternal(
 }
 
 // attemptCallFailureRecovery reacts to a live tool call that failed for a
-// reason a fresh connection repairs: a clean upstream auth rejection
-// (401/403/unauthorized/forbidden), or a session the upstream has abandoned
-// (isDeadSessionError). Both land here because the remedy is identical;
+// reason a fresh connection repairs: a clean upstream auth rejection (a 401
+// or 403 from the upstream's transport), or a session the upstream has
+// abandoned (isDeadSessionError). Both land here because the remedy is identical;
 // the credential force-refresh below is simply redundant, not harmful, for the
 // session case, and a dead session and a rotated credential often arrive
 // together anyway. The mechanics differ by auth type:

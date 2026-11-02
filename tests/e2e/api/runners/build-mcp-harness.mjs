@@ -6349,6 +6349,19 @@ const AUTH39 = folder("AUTH-39 No-token caller on every surface", `Setup: ${PU_T
 
 const FAIL19_TEXT = "echo is broken upstream";
 const FAIL19_TIMEOUT = "Error executing tool alpha-slow_tool: tool execution failed: MCP tool call timed out after 2s";
+const FAIL25_MSG = "forbidden: this caller may not use echo_tool";
+const FAIL25 = folder("FAIL-25 A tool's own \"forbidden\" error is not an auth failure", `Setup: alpha (echo_tool, add_tool) as client alpha, sticky, tools_to_execute ["*"], healthy; then alpha fails every tools/call with a JSON-RPC error "${FAIL25_MSG}". Counts are read 3s after the call, so a reconnect it started would show.`, [
+  ...setClient("FAIL-25", { needs_session_stickiness: true }),
+  saveMethods("FAIL-25", "alpha", "fail25"),
+  saveSessions("FAIL-25", "alpha", "fail25_s"),
+  mockPost("FAIL-25", "alpha", "faults", "setup: alpha fails every tools/call with a JSON-RPC error saying forbidden", { faults: { err_rate: 1, err_kind: "protocol", message: FAIL25_MSG } }),
+  setExec("FAIL-25", "execute echo_tool", "echo_tool", [A.status(400), A.msgContains(FAIL25_MSG)]),
+  mockGetAfter("FAIL-25", "alpha", "3s later: tools/call +1, initialize +0, sessions +0", [methodsPlus("fail25", 0, 1), sessionsPlus("fail25_s", 0)], ["setTimeout(function () {}, 3000);"]),
+  getClient("FAIL-25", "fail-25-a", "the client is still healthy", [clientState("healthy")]),
+  mockPost("FAIL-25", "alpha", "faults/clear", "teardown: clear alpha's faults"),
+  deleteClient("FAIL-25", "fail-25-a"),
+]);
+
 const FAIL19 = folder("FAIL-19 Agent mode with a tool-level error and a timeout", `Setup: ${LLM_TEXT}; alpha (echo, slow_tool), with echo answering every call with an isError result (err_kind tool) whose text is ${lit(FAIL19_TEXT)} and slow_tool hanging for 10s, registered as client alpha, per call, tools_to_execute ["*"], tools_to_auto_execute ["*"], tool_execution_timeout 2; each chat's turn 1 calls one tool and turn 2 answers "final".`, [
   request("FAIL-19", "setup: fresh mcpchaos server alpha", "POST", "/control", { base: CHAOS, noAuth: true, body: { add: "alpha" }, asserts: [A.status(200)] }),
   mockPost("FAIL-19", "alpha", "tools/set", "setup: alpha serves echo (an isError result every call) and slow_tool (hanging 10s)", { tools: [{ name: "echo", fault: { err_rate: 1, err_kind: "tool", message: FAIL19_TEXT } }, { name: "slow_tool", fault: { hang: "10s" } }] }),
@@ -7783,7 +7796,7 @@ const collection = {
     section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43]),
-    section("FAIL Failure handling", "Failure handling tests.", [FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL14, FAIL16, FAIL18, FAIL19]),
+    section("FAIL Failure handling", "Failure handling tests.", [FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL14, FAIL16, FAIL18, FAIL19, FAIL25]),
   ],
 };
 
