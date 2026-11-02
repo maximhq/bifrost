@@ -302199,6 +302199,192 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "299. Claude Haiku 5.5 effort and sampling params (haiku55-effort)",
+      "description": "Claude Haiku 5.5 takes the Sonnet 5+ request surface: thinking is adaptive-only (thinking.type enabled with budget_tokens is a 400), output_config.effort sets depth (low to max, default medium), and any non-default temperature/top_p/top_k is a 400. The name-based capability fallbacks did not know Haiku 5, so reasoning.effort fell through to the budget_tokens branch (or was dropped, then rewritten to adaptive at the default effort, when a datasheet row applied in the re-strip) and the sampling params were forwarded into the upstream 400. Cases assert the OUTBOUND body via x-bf-send-back-raw-request.",
+      "item": [
+        {
+          "name": "Anthropic /v1/chat/completions - reasoning_effort becomes adaptive thinking plus effort, temperature dropped (anthropic/claude-haiku-5-5) - haiku55-effort",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('effort becomes adaptive thinking plus output_config.effort, sampling dropped', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.exist;",
+                  "  pm.expect(raw.thinking, 'thinking dropped').to.exist;",
+                  "  pm.expect(raw.thinking.type, 'Haiku 5.5 rejects enabled thinking').to.eql('adaptive');",
+                  "  pm.expect(raw.thinking, 'Haiku 5.5 rejects budget_tokens').to.not.have.property('budget_tokens');",
+                  "  pm.expect(raw.output_config, 'output_config dropped').to.exist;",
+                  "  pm.expect(raw.output_config.effort, 'caller effort must not be lost').to.eql('low');",
+                  "  pm.expect(raw, 'Haiku 5.5 rejects a non-default temperature').to.not.have.property('temperature');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{anthropicKey}}"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-5-5\",\n  \"max_completion_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"reasoning\": {\n    \"effort\": \"low\"\n  },\n  \"temperature\": 0\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic /v1/responses - reasoning.effort becomes adaptive thinking plus effort, temperature dropped (anthropic/claude-haiku-5-5) - haiku55-effort",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('effort becomes adaptive thinking plus output_config.effort, sampling dropped', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.exist;",
+                  "  pm.expect(raw.thinking, 'thinking dropped').to.exist;",
+                  "  pm.expect(raw.thinking.type, 'Haiku 5.5 rejects enabled thinking').to.eql('adaptive');",
+                  "  pm.expect(raw.thinking, 'Haiku 5.5 rejects budget_tokens').to.not.have.property('budget_tokens');",
+                  "  pm.expect(raw.output_config, 'output_config dropped').to.exist;",
+                  "  pm.expect(raw.output_config.effort, 'caller effort must not be lost').to.eql('medium');",
+                  "  pm.expect(raw, 'Haiku 5.5 rejects a non-default temperature').to.not.have.property('temperature');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{anthropicKey}}"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-5-5\",\n  \"max_output_tokens\": 64,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"reasoning\": {\n    \"effort\": \"medium\"\n  },\n  \"temperature\": 0\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic /v1/messages - output_config.effort without thinking is forwarded (claude-haiku-5-5) - haiku55-effort",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('effort without thinking is forwarded, no thinking invented', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.exist;",
+                  "  pm.expect(raw.output_config, 'output_config dropped').to.exist;",
+                  "  pm.expect(raw.output_config.effort, 'caller effort must not be lost').to.eql('low');",
+                  "  pm.expect(raw, 'caller sent no thinking parameter').to.not.have.property('thinking');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-5-5\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"output_config\": {\n    \"effort\": \"low\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

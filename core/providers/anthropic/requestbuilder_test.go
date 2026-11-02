@@ -1381,6 +1381,59 @@ func TestClaudeCodeBodyRetargetedToHaiku(t *testing.T) {
 	}
 }
 
+// A custom provider with an Anthropic base resolves capabilities under its own
+// name, which no datasheet row carries, so ToAnthropicChatRequest decides on the
+// name fallbacks; the builder's re-strip runs under cfg.Provider, where a row can
+// apply. For Haiku 5.5 the fallbacks did not know the model: the converter built
+// enabled thinking with a budget, dropped the effort and kept temperature. With a
+// row the re-strip turned the thinking back into adaptive, so the upstream ran at
+// its default effort and rejected temperature; without one, budget_tokens went out
+// as well, which Haiku 5.5 also rejects. Pinned both ways.
+func TestBuildAnthropicChatRequestBody_Haiku55OnCustomProvider(t *testing.T) {
+	const model = "claude-haiku-5-5"
+	yes, no := true, false
+	for _, withRow := range []bool{false, true} {
+		t.Run(fmt.Sprintf("datasheet_row=%v", withRow), func(t *testing.T) {
+			if withRow {
+				// The published row is keyed to provider "anthropic", so only the re-strip sees it.
+				providerUtils.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+					if p == schemas.Anthropic && m == model {
+						return &schemas.ModelCapabilities{SupportsNativeEffort: &yes, SupportsAdaptiveThinking: &yes, SupportsSamplingParams: &no}
+					}
+					return nil
+				})
+				t.Cleanup(func() { providerUtils.SetCapabilityResolver(nil) })
+			}
+			for _, effort := range []string{"low", "max"} {
+				temp := 0.0
+				ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+				out, err := BuildAnthropicChatRequestBody(ctx, &schemas.BifrostChatRequest{
+					Provider: schemas.ModelProvider("my-claude"),
+					Model:    model,
+					Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}},
+					Params: &schemas.ChatParameters{
+						MaxCompletionTokens: new(8000),
+						Temperature:         &temp,
+						Reasoning:           &schemas.ChatReasoning{Effort: new(effort)},
+					},
+				}, AnthropicRequestBuildConfig{Provider: schemas.Anthropic})
+				if err != nil {
+					t.Fatalf("effort %q: build: %v", effort, err)
+				}
+				if got := providerUtils.GetJSONField(out, "thinking").Raw; got != `{"type":"adaptive","display":"summarized"}` {
+					t.Errorf("effort %q: thinking = %s, want adaptive with summarized display; body: %s", effort, got, out)
+				}
+				if got := providerUtils.GetJSONField(out, "output_config.effort").String(); got != effort {
+					t.Errorf("effort %q: output_config.effort = %q; body: %s", effort, got, out)
+				}
+				if providerUtils.JSONFieldExists(out, "temperature") {
+					t.Errorf("effort %q: temperature forwarded to a model that rejects it; body: %s", effort, out)
+				}
+			}
+		})
+	}
+}
+
 // Enabled thinking needs budget_tokens < max_tokens. When the clamp lowers
 // max_tokens (128000 -> 64000 on Haiku 4.5) below the caller's explicit budget,
 // the budget is refit from effort (default "high") like an unfitting adaptive

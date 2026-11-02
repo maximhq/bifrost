@@ -3657,3 +3657,37 @@ func BenchmarkGroupedConversion_ToolUseBlocks(b *testing.B) {
 		_ = convertAnthropicContentBlocksToResponsesMessagesGrouped(blocks, &assistant, true)
 	}
 }
+
+// The neutral /v1/responses route reaches the same model gates as chat: on Haiku
+// 5.5 reasoning.effort becomes adaptive thinking plus output_config.effort, and
+// temperature/top_p are dropped rather than forwarded into a 400.
+func TestToAnthropicResponsesRequest_Haiku55_EffortAndSampling(t *testing.T) {
+	temp, topP := 0.0, 0.9
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	out, err := ToAnthropicResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-haiku-5-5",
+		Input:    makeSimpleInput("think"),
+		Params: &schemas.ResponsesParameters{
+			MaxOutputTokens: new(8192),
+			Temperature:     &temp,
+			TopP:            &topP,
+			Reasoning:       &schemas.ResponsesParametersReasoning{Effort: new("xhigh")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if out.Thinking == nil || out.Thinking.Type != "adaptive" || out.Thinking.BudgetTokens != nil {
+		t.Errorf("thinking = %+v, want adaptive without budget_tokens", out.Thinking)
+	}
+	if out.OutputConfig == nil || out.OutputConfig.Effort == nil || *out.OutputConfig.Effort != "xhigh" {
+		t.Errorf("output_config = %+v, want effort \"xhigh\"", out.OutputConfig)
+	}
+	if out.Temperature != nil || out.TopP != nil {
+		t.Errorf("sampling forwarded: temperature=%v top_p=%v", out.Temperature, out.TopP)
+	}
+}

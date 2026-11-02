@@ -1370,6 +1370,113 @@ func TestToAnthropicChatRequest_NonOpus47_NoDefaultDisplay(t *testing.T) {
 	}
 }
 
+// Haiku 5.5 takes the Sonnet 5+ request surface: reasoning.effort becomes
+// adaptive thinking plus output_config.effort, and temperature/top_p/top_k are
+// dropped, since any non-default value is a 400 on this model. Unrecognised, the
+// effort fell through to the budget_tokens branch and the sampling knobs were
+// forwarded. Haiku 4.5 keeps its extended-thinking surface.
+func TestToAnthropicChatRequest_Haiku55_ReasoningEffort_AdaptiveWithEffort(t *testing.T) {
+	for _, effort := range []string{"low", "medium", "high", "xhigh", "max"} {
+		t.Run(effort, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostChatRequest{
+				Provider: schemas.Anthropic,
+				Model:    "claude-haiku-5-5",
+				Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("think")}},
+				},
+				Params: &schemas.ChatParameters{
+					MaxCompletionTokens: new(8192),
+					Reasoning:           &schemas.ChatReasoning{Effort: &effort},
+				},
+			}
+
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if result.Thinking == nil || result.Thinking.Type != "adaptive" {
+				t.Fatalf("expected adaptive thinking for Haiku 5.5, got %+v", result.Thinking)
+			}
+			if result.Thinking.BudgetTokens != nil {
+				t.Errorf("expected no budget_tokens for Haiku 5.5, got %v", *result.Thinking.BudgetTokens)
+			}
+			if result.Thinking.Display == nil || *result.Thinking.Display != "summarized" {
+				t.Errorf("expected Display to default to 'summarized' for Haiku 5.5, got %v", result.Thinking.Display)
+			}
+			if result.OutputConfig == nil || result.OutputConfig.Effort == nil || *result.OutputConfig.Effort != effort {
+				t.Errorf("expected output_config.effort %q, got %+v", effort, result.OutputConfig)
+			}
+		})
+	}
+
+	t.Run("haiku 4.5 keeps budget_tokens", func(t *testing.T) {
+		effort := "low"
+		bifrostReq := &schemas.BifrostChatRequest{
+			Provider: schemas.Anthropic,
+			Model:    "claude-haiku-4-5-20251001",
+			Input: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("think")}},
+			},
+			Params: &schemas.ChatParameters{
+				MaxCompletionTokens: new(8192),
+				Reasoning:           &schemas.ChatReasoning{Effort: &effort},
+			},
+		}
+
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+		result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if result.Thinking == nil || result.Thinking.Type != "enabled" || result.Thinking.BudgetTokens == nil {
+			t.Errorf("expected enabled thinking with a budget for Haiku 4.5, got %+v", result.Thinking)
+		}
+		if result.OutputConfig != nil && result.OutputConfig.Effort != nil {
+			t.Errorf("expected no output_config.effort for Haiku 4.5, got %q", *result.OutputConfig.Effort)
+		}
+	})
+}
+
+func TestToAnthropicChatRequest_Haiku55_StripsTemperatureTopPTopK(t *testing.T) {
+	temp := 0.0
+	topP := 0.9
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-haiku-5-5",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}},
+		},
+		Params: &schemas.ChatParameters{
+			Temperature: &temp,
+			TopP:        &topP,
+			ExtraParams: map[string]interface{}{"top_k": 40},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Temperature != nil {
+		t.Errorf("expected Temperature to be nil for Haiku 5.5, got %v", *result.Temperature)
+	}
+	if result.TopP != nil {
+		t.Errorf("expected TopP to be nil for Haiku 5.5, got %v", *result.TopP)
+	}
+	if result.TopK != nil {
+		t.Errorf("expected TopK to be nil for Haiku 5.5, got %v", *result.TopK)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Structured output (response_format: json_schema) round-trip tests
 // ---------------------------------------------------------------------------
