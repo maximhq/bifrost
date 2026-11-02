@@ -331,10 +331,25 @@ func (f *Fleet) Handler() http.Handler {
 	mux.HandleFunc("/s/", f.routeServer)
 	mux.HandleFunc(wellKnownResource, f.routeWellKnown)
 	mux.HandleFunc(wellKnownAuthServer, f.routeWellKnown)
-	mux.HandleFunc("/control", f.routeFleetControl)
-	mux.HandleFunc("/control/", f.routeControl)
-	mux.HandleFunc("/client/", f.routeClient)
+	mux.HandleFunc("/control", refuseBrowserRequests(f.routeFleetControl))
+	mux.HandleFunc("/control/", refuseBrowserRequests(f.routeControl))
+	mux.HandleFunc("/client/", refuseBrowserRequests(f.routeClient))
 	return mux
+}
+
+// refuseBrowserRequests answers 403 to a request that carries an Origin
+// header. Browsers set Origin on every cross-origin request and on every
+// POST, and nothing that drives the mock does, so a web page open while the
+// mock runs cannot use the control surfaces: register a process id for
+// stdio/kill, change servers, or make the fleet's client dial out.
+func refuseBrowserRequests(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Origin") != "" {
+			http.Error(w, "the control API refuses browser requests", http.StatusForbidden)
+			return
+		}
+		next(w, r)
+	}
 }
 
 // routeServer dispatches /s/<name>/<transport> to the named server.

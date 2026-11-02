@@ -140,6 +140,13 @@ scenario step is self-documenting in a transcript. Unknown verbs and unknown
 JSON fields are rejected with 400: a typo that silently did nothing would look
 exactly like the system under test behaving correctly.
 
+The control API and the SDK client routes answer 403 to any request carrying
+an `Origin` header. Browsers send one on every cross-origin request and every
+POST, and nothing that drives the mock does, so a web page open during a run
+cannot register a process for `stdio/kill` or reconfigure the fleet. Verbs that
+change a server take POST only (405 otherwise), so a link or an image cannot
+trigger one either.
+
 | Verb | Body | Effect |
 |---|---|---|
 | `GET /control` | | every server's state, plus fleet connection stats, and the TLS listener's `tls_url` and `tls_cert_pem` when one is open |

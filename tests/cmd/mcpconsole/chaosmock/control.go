@@ -182,6 +182,13 @@ func (f *Fleet) routeControl(w http.ResponseWriter, r *http.Request) {
 		s.serveLLMRequests(w, r)
 		return
 	}
+	// Every other verb changes the mock, so it takes POST only: a link or an
+	// image makes a GET with no Origin header, which refuseBrowserRequests
+	// cannot see.
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	if err := s.applyControl(verb, r); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
