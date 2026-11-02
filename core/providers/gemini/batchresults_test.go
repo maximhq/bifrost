@@ -684,7 +684,9 @@ func TestGeminiBatchResultsEndpoint(t *testing.T) {
 
 	assert.Equal(t, schemas.BatchEndpointEmbeddings, geminiBatchResultsEndpoint([]schemas.BatchResultItem{embedding}))
 	assert.Equal(t, schemas.BatchEndpointChatCompletions, geminiBatchResultsEndpoint([]schemas.BatchResultItem{chat}))
-	assert.Equal(t, schemas.BatchEndpointChatCompletions, geminiBatchResultsEndpoint(nil))
+	// No successful result says nothing about the endpoint, so settlement keeps the persisted one.
+	assert.Equal(t, schemas.BatchEndpoint(""), geminiBatchResultsEndpoint(nil))
+	assert.Equal(t, schemas.BatchEndpoint(""), geminiBatchResultsEndpoint([]schemas.BatchResultItem{{CustomID: "e0", Error: &schemas.BatchResultError{Code: "400", Message: "bad"}}}))
 }
 
 func BenchmarkGeminiInlinedResponseUnmarshal(b *testing.B) {
@@ -740,6 +742,35 @@ func TestGeminiBatchCreateEmbeddingsRejectsEmptyNativeContentAsBadRequest(t *tes
 	assert.Equal(t, 400, *err.StatusCode)
 	assert.Contains(t, err.Error.Message, "embedding content is empty")
 	assert.Empty(t, *gotPath, "no request should reach Gemini")
+}
+
+func TestGeminiBatchCreateEmbeddingsRejectsBadInputShapesAsBadRequest(t *testing.T) {
+	t.Parallel()
+	text := map[string]interface{}{"text": "hi"}
+	for name, body := range map[string]map[string]interface{}{
+		"native multiple parts": {"content": map[string]interface{}{"parts": []interface{}{text, text}}},
+		"native part no text":   {"content": map[string]interface{}{"parts": []interface{}{map[string]interface{}{"inlineData": map[string]interface{}{"mimeType": "image/png", "data": "AA=="}}}}},
+		"multiple inputs":       {"input": []interface{}{"a", "b"}},
+		"non-string input":      {"input": []interface{}{float64(1)}},
+		"missing input":         {"dimensions": float64(8)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			provider, gotPath, _ := newEmbedBatchTestProvider(t)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+			_, err := provider.BatchCreate(ctx, schemas.Key{Value: *schemas.NewSecretVar("dummy-key")}, &schemas.BifrostBatchCreateRequest{
+				Provider: schemas.Gemini,
+				Model:    schemas.Ptr("gemini-embedding-2"),
+				Endpoint: schemas.BatchEndpointEmbeddings,
+				Requests: []schemas.BatchRequestItem{{CustomID: "p0", Body: body}},
+			})
+			require.NotNil(t, err)
+			require.NotNil(t, err.StatusCode)
+			assert.Equal(t, 400, *err.StatusCode)
+			assert.Empty(t, *gotPath, "no request should reach Gemini")
+		})
+	}
 }
 
 func TestGeminiEmbeddingBatchUsageFallsBackToPromptTokens(t *testing.T) {

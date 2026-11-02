@@ -565,6 +565,9 @@ func ToGeminiBatchEmbeddingRequest(body map[string]interface{}) (GeminiEmbedding
 		if req.Content == nil || len(req.Content.Parts) == 0 {
 			return req, providerUtils.InvalidRequestErrorf("embedding content is empty")
 		}
+		if len(req.Content.Parts) != 1 || req.Content.Parts[0] == nil || req.Content.Parts[0].Text == "" {
+			return req, providerUtils.InvalidRequestErrorf("embedding batch requests take exactly one non-empty text part per line")
+		}
 		return req, nil
 	}
 
@@ -587,15 +590,15 @@ func ToGeminiBatchEmbeddingRequest(body map[string]interface{}) (GeminiEmbedding
 		text = input
 	case []interface{}:
 		if len(input) != 1 {
-			return req, fmt.Errorf("embedding batch requests take exactly one input per line, got %d", len(input))
+			return req, providerUtils.InvalidRequestErrorf("embedding batch requests take exactly one input per line, got %d", len(input))
 		}
 		first, ok := input[0].(string)
 		if !ok {
-			return req, fmt.Errorf("embedding batch input must be a string")
+			return req, providerUtils.InvalidRequestErrorf("embedding batch input must be a string")
 		}
 		text = first
 	default:
-		return req, fmt.Errorf("embedding batch request is missing a string input")
+		return req, providerUtils.InvalidRequestErrorf("embedding batch request is missing a string input")
 	}
 	req.Content = &Content{Parts: []*Part{{Text: text}}}
 	if openAI.Dimensions != nil && *openAI.Dimensions > 0 {
@@ -711,8 +714,11 @@ func buildGeminiEmbeddingBatchBody(request *schemas.BifrostBatchCreateRequest, m
 
 // geminiBatchResultsEndpoint tells accounting which endpoint a finished job served.
 // Results carry no endpoint of their own, so embeddings are recognized by their
-// OpenAI-style body; anything else is priced as chat, as before.
+// OpenAI-style body; other successful results are priced as chat, as before. A job
+// with no successful result says nothing about its endpoint, so it returns "" and
+// settlement keeps the endpoint persisted at creation.
 func geminiBatchResultsEndpoint(results []schemas.BatchResultItem) schemas.BatchEndpoint {
+	endpoint := schemas.BatchEndpoint("")
 	for _, item := range results {
 		if item.Response == nil {
 			continue
@@ -720,6 +726,7 @@ func geminiBatchResultsEndpoint(results []schemas.BatchResultItem) schemas.Batch
 		if _, ok := item.Response.Body["data"].([]map[string]interface{}); ok && item.Response.Body["object"] == "list" {
 			return schemas.BatchEndpointEmbeddings
 		}
+		endpoint = schemas.BatchEndpointChatCompletions
 	}
-	return schemas.BatchEndpointChatCompletions
+	return endpoint
 }
