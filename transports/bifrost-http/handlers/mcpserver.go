@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -92,7 +93,9 @@ type MCPServerHandler struct {
 	mcpServer *server.MCPServer
 	// transport speaks the Streamable HTTP rules of every protocol revision on top of mcpServer.
 	transport *server.StreamableHTTPServer
-	served    MCPResourcesAndPromptsServer // nil serves tools only
+	served    MCPResourcesAndPromptsServer     // nil serves tools only
+	perCaller atomic.Pointer[perCallerEntries] // placeholders for clients with per_user_discovery on; nil when none (see mcpserverpercaller.go)
+	syncMu    sync.Mutex                       // orders syncs, so the newest read of the server's lists is the one installed
 	// tokenValidator, when set, may refuse a verified Bifrost-issued token.
 	tokenValidator MCPTokenValidator
 }
@@ -344,15 +347,36 @@ func runMCPStreamCompleter(completerSlot *atomic.Value) []schemas.PluginLogEntry
 //
 // The lists are read without the trigger's identity: some syncs run on an admin's request,
 // and a client with per_user_discovery on would otherwise publish that admin's own discovery to
-// every caller.
+// every caller. Such a client is served through placeholders instead (see mcpserverpercaller.go).
 func (h *MCPServerHandler) SyncMCPServer(_ context.Context) error {
-	availableTools := h.toolManager.GetAvailableMCPTools(context.Background())
-	h.mcpServer.SetTools(h.serverTools(availableTools)...)
-	logger.Debug("Synced MCP server with %d tools", len(availableTools))
-	if h.served != nil {
-		h.syncResourcesAndPrompts(context.Background())
+	ctx := context.Background()
+	h.syncMu.Lock()
+	defer h.syncMu.Unlock()
+	perCaller, err := h.loadPerCallerEntries(ctx)
+	if err != nil {
+		// The shared tools still refresh; the placeholders already installed stay until a read succeeds.
+		logger.Warn("[mcp-server] %v; keeping the per-caller names already installed", err)
+		perCaller = perCaller.union(h.perCaller.Load())
 	}
+	h.install(perCaller)
 	return nil
+}
+
+// install replaces the server's lists with what is available now and perCaller's placeholders.
+// While they are replaced, the list hooks know the placeholders of both the old and the new set, so
+// no placeholder is ever listed as it is. Callers hold syncMu.
+func (h *MCPServerHandler) install(perCaller *perCallerEntries) {
+	ctx := context.Background()
+	h.perCaller.Store(h.perCaller.Load().union(perCaller))
+	availableTools := h.toolManager.GetAvailableMCPTools(ctx)
+	tools := h.serverTools(availableTools)
+	tools = append(tools, h.perCallerServerTools(perCaller, tools)...)
+	h.mcpServer.SetTools(tools...)
+	logger.Debug("Synced MCP server with %d tools", len(tools))
+	if h.served != nil {
+		h.syncResourcesAndPrompts(ctx, perCaller)
+	}
+	h.perCaller.Store(perCaller)
 }
 
 // server returns the server requests are served from.
@@ -423,69 +447,79 @@ func (h *MCPServerHandler) serverTools(availableTools []schemas.ChatTool) []serv
 		declaresOutputSchema := tool.MCP != nil && len(tool.MCP.OutputSchema) > 0
 
 		handler := func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			logger.Debug("[mcp-server] tool handler start tool=%q arg_count=%d", toolName, len(request.GetArguments()))
-			// Convert to Bifrost tool call format
-			toolCallType := "function"
-			toolCallID := fmt.Sprintf("mcp-%s", toolName)
-			argsJSON, jsonErr := sonic.Marshal(request.GetArguments())
-			if jsonErr != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("Failed to marshal tool arguments: %v", jsonErr)), nil
-			}
-			toolCall := schemas.ChatAssistantMessageToolCall{
-				ID:   &toolCallID,
-				Type: &toolCallType,
-				Function: schemas.ChatAssistantMessageToolCallFunction{
-					Name:      &toolName,
-					Arguments: string(argsJSON),
-				},
-			}
-
-			// Execute the tool via tool executor
-			toolMessage, err := h.toolManager.ExecuteChatMCPTool(ctx, &toolCall)
-			if err != nil {
-				logger.Debug("[mcp-server] tool handler error tool=%q error=%s", toolName, bifrost.GetErrorMessage(err))
-				if authReq := err.ExtraFields.MCPAuthRequired; authReq != nil {
-					return mcp.NewToolResultError(mcpAuthRequiredToolResult(authReq)), nil
-				}
-				return mcp.NewToolResultError(fmt.Sprintf("Tool execution failed: %v", bifrost.GetErrorMessage(err))), nil
-			}
-			logger.Debug("[mcp-server] tool handler success tool=%q", toolName)
-
-			return gatewayToolResult(toolMessage, declaresOutputSchema), nil
+			return h.runTool(ctx, toolName, declaresOutputSchema, request), nil
 		}
-
-		// Convert description from *string to string
-		description := ""
-		if tool.Function.Description != nil {
-			description = *tool.Function.Description
-		}
-
-		inputSchema := convertToolFunctionParametersToMCPInputSchema(tool.Function.Parameters)
-
-		// Map Bifrost annotations back to MCP tool annotations
-		var toolAnnotation mcp.ToolAnnotation
-		if tool.Annotations != nil {
-			toolAnnotation = mcp.ToolAnnotation{
-				Title:           tool.Annotations.Title,
-				ReadOnlyHint:    tool.Annotations.ReadOnlyHint,
-				DestructiveHint: tool.Annotations.DestructiveHint,
-				IdempotentHint:  tool.Annotations.IdempotentHint,
-				OpenWorldHint:   tool.Annotations.OpenWorldHint,
-			}
-		}
-
-		serverTool := mcp.Tool{
-			Name:        toolName,
-			Description: description,
-			InputSchema: inputSchema,
-			Annotations: toolAnnotation,
-		}
-		if tool.MCP != nil {
-			serverTool.Title, serverTool.Icons, serverTool.RawOutputSchema = tool.MCP.Title, tool.MCP.Icons, tool.MCP.OutputSchema
-		}
-		tools = append(tools, server.ServerTool{Tool: serverTool, Handler: handler})
+		tools = append(tools, server.ServerTool{Tool: gatewayTool(tool), Handler: handler})
 	}
 	return tools
+}
+
+// runTool executes toolName through Bifrost as the caller on ctx and answers with its result. A
+// failure is a tool result too, the sign-in prompt included.
+func (h *MCPServerHandler) runTool(ctx context.Context, toolName string, declaresOutputSchema bool, request mcp.CallToolRequest) *mcp.CallToolResult {
+	logger.Debug("[mcp-server] tool handler start tool=%q arg_count=%d", toolName, len(request.GetArguments()))
+	// Convert to Bifrost tool call format
+	toolCallType := "function"
+	toolCallID := fmt.Sprintf("mcp-%s", toolName)
+	argsJSON, jsonErr := sonic.Marshal(request.GetArguments())
+	if jsonErr != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to marshal tool arguments: %v", jsonErr))
+	}
+	toolCall := schemas.ChatAssistantMessageToolCall{
+		ID:   &toolCallID,
+		Type: &toolCallType,
+		Function: schemas.ChatAssistantMessageToolCallFunction{
+			Name:      &toolName,
+			Arguments: string(argsJSON),
+		},
+	}
+
+	// Execute the tool via tool executor
+	toolMessage, err := h.toolManager.ExecuteChatMCPTool(ctx, &toolCall)
+	if err != nil {
+		logger.Debug("[mcp-server] tool handler error tool=%q error=%s", toolName, bifrost.GetErrorMessage(err))
+		if authReq := err.ExtraFields.MCPAuthRequired; authReq != nil {
+			return mcp.NewToolResultError(mcpAuthRequiredToolResult(authReq))
+		}
+		return mcp.NewToolResultError(fmt.Sprintf("Tool execution failed: %v", bifrost.GetErrorMessage(err)))
+	}
+	logger.Debug("[mcp-server] tool handler success tool=%q", toolName)
+
+	return gatewayToolResult(toolMessage, declaresOutputSchema)
+}
+
+// gatewayTool is the MCP form of a Bifrost tool, as tools/list sends it.
+func gatewayTool(tool schemas.ChatTool) mcp.Tool {
+	// Convert description from *string to string
+	description := ""
+	if tool.Function.Description != nil {
+		description = *tool.Function.Description
+	}
+
+	inputSchema := convertToolFunctionParametersToMCPInputSchema(tool.Function.Parameters)
+
+	// Map Bifrost annotations back to MCP tool annotations
+	var toolAnnotation mcp.ToolAnnotation
+	if tool.Annotations != nil {
+		toolAnnotation = mcp.ToolAnnotation{
+			Title:           tool.Annotations.Title,
+			ReadOnlyHint:    tool.Annotations.ReadOnlyHint,
+			DestructiveHint: tool.Annotations.DestructiveHint,
+			IdempotentHint:  tool.Annotations.IdempotentHint,
+			OpenWorldHint:   tool.Annotations.OpenWorldHint,
+		}
+	}
+
+	serverTool := mcp.Tool{
+		Name:        tool.Function.Name,
+		Description: description,
+		InputSchema: inputSchema,
+		Annotations: toolAnnotation,
+	}
+	if tool.MCP != nil {
+		serverTool.Title, serverTool.Icons, serverTool.RawOutputSchema = tool.MCP.Title, tool.MCP.Icons, tool.MCP.OutputSchema
+	}
+	return serverTool
 }
 
 // gatewayToolResult is what /mcp answers for a tool message: the upstream's own result while no plugin
@@ -577,18 +611,40 @@ func derefOr(value *string, fallback string) string {
 
 // narrowListedTools narrows a tools/list answer to what the request's context permits: the include
 // lists the caller sent (x-bf-mcp-include-clients, x-bf-mcp-include-tools) and the tool list the
-// request was admitted with, which admit stamps on the same key. A no-op when the context carries
-// neither. It edits the page mcp-go built, so the server must not paginate tools/list.
+// request was admitted with, which admit stamps on the same key. A per-caller placeholder becomes
+// the caller's own tool, with its own description and schemas, or is left out. A no-op when the
+// context carries no include list and no client has per_user_discovery on. It edits the page
+// mcp-go built, so the server must not paginate tools/list.
 func (h *MCPServerHandler) narrowListedTools(ctx context.Context, _ any, _ *mcp.ListToolsRequest, result *mcp.ListToolsResult) {
-	if result == nil || !requestNarrowed(ctx) {
+	if result == nil {
 		return
 	}
-	result.Tools = keepAllowed(result.Tools, func(t mcp.Tool) string { return t.Name }, h.toolManager.GetAvailableMCPTools(ctx), func(t schemas.ChatTool) string {
-		if t.Function == nil {
-			return ""
+	perCaller := h.perCaller.Load()
+	narrowed := requestNarrowed(ctx)
+	if !narrowed && perCaller == nil {
+		return
+	}
+	available := h.toolManager.GetAvailableMCPTools(ctx)
+	// By index: a ChatTool is too large for a map to hold inline.
+	callers := make(map[string]int, len(available))
+	for i, tool := range available {
+		if tool.Function != nil {
+			callers[tool.Function.Name] = i
 		}
-		return t.Function.Name
-	})
+	}
+	kept := make([]mcp.Tool, 0, len(result.Tools))
+	for _, tool := range result.Tools {
+		own, ok := callers[tool.Name]
+		switch {
+		case perCaller.holdsTool(tool.Name):
+			if ok {
+				kept = append(kept, gatewayTool(available[own]))
+			}
+		case ok || !narrowed:
+			kept = append(kept, tool)
+		}
+	}
+	result.Tools = kept
 }
 
 // Admission
