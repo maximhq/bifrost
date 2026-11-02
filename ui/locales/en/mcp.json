@@ -511,6 +511,8 @@
 			"noneAutoExecute": "none auto-execute",
 			"virtualKeyCount_one": "{{count}} virtual key",
 			"virtualKeyCount_other": "{{count}} virtual keys",
+			"keyCount_one": "{{count}} key",
+			"keyCount_other": "{{count}} keys",
 			"virtualMcpCount_one": "{{count}} Virtual MCP",
 			"virtualMcpCount_other": "{{count}} Virtual MCPs",
 			"andAlso": "and {{items}}",
