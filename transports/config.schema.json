@@ -9990,6 +9990,33 @@
       "additionalProperties": false,
       "allOf": [
         {
+          "$comment": "The per-user auth types open a new streamable HTTP connection for each call, which an SSE stream or a STDIO subprocess cannot serve, so SSE and STDIO take the shared auth types only. Bifrost skips such a client at boot with an error naming it.",
+          "if": {
+            "properties": {
+              "connection_type": {
+                "enum": [
+                  "sse",
+                  "stdio"
+                ]
+              }
+            },
+            "required": [
+              "connection_type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "auth_type": {
+                "enum": [
+                  "none",
+                  "headers",
+                  "oauth"
+                ]
+              }
+            }
+          }
+        },
+        {
           "$comment": "per_user_headers requires the admin to declare which header names users must submit. OAuth-based types have no required input \u2014 the connection_string drives RFC 8414 discovery + RFC 7591 dynamic client registration when oauth_config is omitted or its inner fields are blank.",
           "if": {
             "properties": {

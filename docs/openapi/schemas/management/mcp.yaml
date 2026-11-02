@@ -438,6 +438,12 @@ MCPClientCreateRequestSSE:
         connection_string:
           type: string
           description: SSE URL (required for SSE connection type)
+        auth_type:
+          type: string
+          enum: [none, headers, oauth]
+          description: |
+            The per-user auth types open a new connection for each call, which an
+            SSE stream does not allow, so SSE takes the shared auth types only.
 
 MCPClientCreateRequestSTDIO:
   allOf:
@@ -452,6 +458,12 @@ MCPClientCreateRequestSTDIO:
         stdio_config:
           $ref: '#/MCPStdioConfig'
           description: STDIO configuration (required for STDIO connection type)
+        auth_type:
+          type: string
+          enum: [none, headers, oauth]
+          description: |
+            A STDIO subprocess is one connection for every caller, so STDIO takes
+            the shared auth types only.
 
 MCPClientCreateRequestOpenAPI:
   allOf:

@@ -21,7 +21,7 @@ Bifrost supports four connection types:
 | **OpenAPI** (beta) | Synthesizes an MCP server from an OpenAPI/Swagger document; each supported operation becomes a tool. In the UI this is the **Generate from an OpenAPI spec** server source | REST APIs that have no MCP server |
 
 <Info>
-Authentication is configured separately from the connection protocol. STDIO inherits its environment from the spawned subprocess and has no per-call auth. HTTP and SSE support five auth modes: `none`, `headers`, `oauth`, `per_user_oauth`, `per_user_headers`. See [Authentication →](./auth/overview).
+Authentication is configured separately from the connection protocol. STDIO inherits its environment from the spawned subprocess and has no per-call auth. HTTP supports five auth modes: `none`, `headers`, `oauth`, `per_user_oauth`, `per_user_headers`. SSE supports `none`, `headers` and `oauth`: the per-user modes open a new connection for each call, which an SSE stream does not allow. See [Authentication →](./auth/overview).
 </Info>
 
 ### STDIO Connections
@@ -129,7 +129,7 @@ Omit the field to get the default (per-call). Existing clients can flip it via `
 
 ### SSE Connections
 
-Server-Sent Events (SSE) connections provide a persistent transport to MCP servers that stream events. Supports the same auth options as HTTP.
+Server-Sent Events (SSE) connections provide a persistent transport to MCP servers that stream events. Supports `none`, `headers` and `oauth`; the per-user modes are refused, because each of their calls opens its own connection.
 
 ```json
 {
