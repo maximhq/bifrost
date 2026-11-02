@@ -336,6 +336,26 @@ tokens presented and issued. A grant's earlier access tokens stay valid until
 they expire, as with a real server. Changing the configuration keeps clients
 and grants, and `faults/clear` drops queued failures.
 
+## SDK clients
+
+The fleet can also drive a real `mcp-go` OAuth client against an outside MCP
+server, so a test sees that server the way an SDK client meets it: discovery
+from the protected resource metadata, dynamic registration, authorization with
+PKCE, the code exchange and every refresh after it. Consent is the test's to
+give, through whatever the server offers, so the flow is split where a browser
+would take over.
+
+| Request | Does |
+|---|---|
+| `POST /client/<c>/connect {"url", "redirect_uri", "client_name"}` | starts client `<c>` against `url`; it discovers and registers, then answers `authorize_url` and `client_id` |
+| `POST /client/<c>/authorized {"code", "state"}` | exchanges the code, completes the handshake and answers `protocol_version` and the `tools` it lists |
+| `POST /client/<c>/call {"tool", "arguments"}` | one `tools/call`, refreshing an expired token first; answers `is_error` and the `text` |
+| `GET /client/<c>` | every HTTP request the client made: `method`, `path`, `status`, and `grant_type` for a token request |
+| `DELETE /client/<c>` | closes the client |
+
+A step the client cannot complete answers 502 with the SDK's error. Without a
+token the client sends no MCP request at all: it goes straight to discovery.
+
 ## Faults
 
 Grouped by the layer they break at, because that grouping is what a client

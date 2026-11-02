@@ -27,6 +27,7 @@ import (
 //	/s/<name>/llm/...    that server's LLM surface (see llm.go)
 //	/control/<name>/...  that server's control API
 //	/control             fleet-wide control API
+//	/client/<name>/...   a real SDK client the fleet drives (see sdkclient.go)
 //
 // plus the path-inserted OAuth metadata documents described in oauth.go.
 type Fleet struct {
@@ -46,11 +47,13 @@ type Fleet struct {
 	tlsCertPEM string
 
 	conns *connTracker
+	// clients are the SDK clients the fleet drives against outside servers.
+	clients *sdkClients
 }
 
 // NewFleet creates an empty fleet with no listener. Call Start to bind one.
 func NewFleet() *Fleet {
-	return &Fleet{servers: map[string]*Server{}, seeds: map[string]Seed{}, conns: newConnTracker()}
+	return &Fleet{servers: map[string]*Server{}, seeds: map[string]Seed{}, conns: newConnTracker(), clients: newSDKClients()}
 }
 
 // Connections reports the fleet's TCP-level accounting, which is the leak and
@@ -232,6 +235,7 @@ func (f *Fleet) Stop() {
 		s.DropStreams()
 	}
 	f.mu.RUnlock()
+	f.clients.closeAll()
 	if f.ts != nil {
 		f.ts.Close()
 	}
@@ -269,6 +273,7 @@ func (f *Fleet) Handler() http.Handler {
 	mux.HandleFunc(wellKnownAuthServer, f.routeWellKnown)
 	mux.HandleFunc("/control", f.routeFleetControl)
 	mux.HandleFunc("/control/", f.routeControl)
+	mux.HandleFunc("/client/", f.routeClient)
 	return mux
 }
 
