@@ -52,6 +52,7 @@ type openAPIRecordingManager struct {
 	added     []*schemas.MCPClientConfig
 	updated   []*schemas.MCPClientConfig
 	refreshed []string
+	updateErr error // when set, UpdateMCPClient fails with it and records nothing
 }
 
 func (m *openAPIRecordingManager) RefreshMCPClientTools(_ context.Context, id string) (int, error) {
@@ -65,6 +66,9 @@ func (m *openAPIRecordingManager) AddMCPClient(_ context.Context, c *schemas.MCP
 }
 
 func (m *openAPIRecordingManager) UpdateMCPClient(_ context.Context, _ string, c *schemas.MCPClientConfig) error {
+	if m.updateErr != nil {
+		return m.updateErr
+	}
 	m.updated = append(m.updated, c)
 	return nil
 }
@@ -691,7 +695,7 @@ func TestFlowSubmit_OpenAPIPerUserHeadersSavesWithoutMCPHandshake(t *testing.T) 
 	}
 	require.NoError(t, h.store.ConfigStore.CreateMCPPerUserHeaderFlow(context.Background(), flow))
 
-	headersHandler := NewMCPPerUserHeadersHandler(mgr, h.store, nil)
+	headersHandler := NewMCPPerUserHeadersHandler(mgr, nil, h.store, nil)
 	status, respBody := doMCPRequest(t, headersHandler.flowSubmit, fasthttp.MethodPost, `{"headers":{"x-user-token":"abc"}}`, flow.ID, false)
 	require.Equal(t, fasthttp.StatusOK, status, respBody)
 	cred, err := h.store.MCPHeadersProvider.GetCredentialByMode(context.Background(), schemas.MCPAuthModeSession, "session-1", client.ID)
@@ -714,7 +718,7 @@ func TestFlowSubmit_ExpiredFlowIsGone(t *testing.T) {
 	}
 	require.NoError(t, h.store.ConfigStore.CreateMCPPerUserHeaderFlow(context.Background(), flow))
 
-	headersHandler := NewMCPPerUserHeadersHandler(mgr, h.store, nil)
+	headersHandler := NewMCPPerUserHeadersHandler(mgr, nil, h.store, nil)
 	status, respBody := doMCPRequest(t, headersHandler.flowSubmit, fasthttp.MethodPost, `{"headers":{"x-user-token":"abc"}}`, flow.ID, false)
 	assert.Equal(t, fasthttp.StatusGone, status, respBody)
 	assert.Contains(t, respBody, "Headers submission flow has expired; restart from the API error link")

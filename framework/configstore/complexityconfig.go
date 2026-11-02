@@ -600,6 +600,11 @@ type ComplexityDecisionConfig struct {
 	// the current human request. Assistant messages are excluded.
 	PreviousMessageCount *int          `json:"previous_message_count,omitempty"`
 	Timeout              time.Duration `json:"timeout,omitempty"`
+	// MinConfidence is the confidence an answer must reach to publish its tier.
+	// 0 keeps every answer. The gateway applies it, so it works for any decision
+	// model. A missing confidence is derived from the tier probabilities; an
+	// answer with neither is kept.
+	MinConfidence float64 `json:"min_confidence,omitempty"`
 	// Criteria overrides per-tier definitions, signals, and examples, keyed by
 	// tier name. Any tier or field left unset sends the shipped default.
 	Criteria map[string]ComplexityDecisionTierCriteria `json:"criteria,omitempty"`
@@ -613,7 +618,7 @@ func (c *ComplexityDecisionConfig) UnmarshalJSON(data []byte) error {
 	}
 	for field := range fields {
 		switch field {
-		case "provider", "model", "previous_message_count", "timeout", "criteria":
+		case "provider", "model", "previous_message_count", "timeout", "min_confidence", "criteria":
 		default:
 			return fmt.Errorf("unknown decision complexity field %q", field)
 		}
@@ -670,10 +675,11 @@ func (c *ComplexityDecisionConfig) normalized() *ComplexityDecisionConfig {
 		return nil
 	}
 	out := &ComplexityDecisionConfig{
-		Provider: normalizeComplexityProvider(c.Provider),
-		Model:    strings.TrimSpace(c.Model),
-		Timeout:  c.Timeout,
-		Criteria: normalizeComplexityDecisionCriteria(c.Criteria),
+		Provider:      normalizeComplexityProvider(c.Provider),
+		Model:         strings.TrimSpace(c.Model),
+		Timeout:       c.Timeout,
+		MinConfidence: c.MinConfidence,
+		Criteria:      normalizeComplexityDecisionCriteria(c.Criteria),
 	}
 	if out.Provider == "" && out.Model == "" {
 		out.Provider = DefaultComplexityDecisionProvider
@@ -692,7 +698,7 @@ func (c *ComplexityDecisionConfig) normalized() *ComplexityDecisionConfig {
 	return out
 }
 
-// Validate checks the decision-model selection, request history, and timeout bounds.
+// Validate checks the decision-model selection, request history, timeout, and confidence bounds.
 func (c *ComplexityDecisionConfig) Validate() error {
 	if c == nil {
 		return nil
@@ -705,6 +711,9 @@ func (c *ComplexityDecisionConfig) Validate() error {
 	}
 	if c.PreviousMessageCount != nil && (*c.PreviousMessageCount < 0 || *c.PreviousMessageCount > MaxComplexityDecisionPreviousMessageCount) {
 		return fmt.Errorf("decision previous_message_count must be between 0 and %d, got %d", MaxComplexityDecisionPreviousMessageCount, *c.PreviousMessageCount)
+	}
+	if math.IsNaN(c.MinConfidence) || c.MinConfidence < 0 || c.MinConfidence > 1 {
+		return fmt.Errorf("decision min_confidence must be between 0 and 1, got %v", c.MinConfidence)
 	}
 	return validateComplexityDecisionGuidance(c)
 }
@@ -912,15 +921,22 @@ type persistedComplexityTierBoundaries struct {
 // semantic settings: an exemplar is only meaningful to the classifier that
 // embeds it, and keeping it here is what stops a Bifrost predating the semantic
 // router from rewriting it as though it were a lexical keyword.
+//
+// DecisionMinConfidence is decision.min_confidence, stored beside the block
+// because released binaries decode that block strictly: a new field inside it
+// makes the whole row unreadable after a rollback, and the router drops to
+// defaults. This record ignores unknown keys, so a rolled-back binary runs with
+// the gate off instead.
 type complexitySemanticConfigRecord struct {
-	Keywords             ComplexityEditableKeywordConfig `json:"keywords"`
-	Classifier           string                          `json:"classifier,omitempty"`
-	Semantic             *ComplexitySemanticConfig       `json:"semantic,omitempty"`
-	Decision             *ComplexityDecisionConfig       `json:"decision,omitempty"`
-	LLM                  *ComplexityLLMConfig            `json:"llm,omitempty"`
-	Session              *ComplexitySessionConfig        `json:"session,omitempty"`
-	ConfigHashes         complexitySemanticRowHashes     `json:"_config_hashes,omitempty"`
-	EmbeddingFingerprint string                          `json:"_embedding_fingerprint,omitempty"`
+	Keywords              ComplexityEditableKeywordConfig `json:"keywords"`
+	Classifier            string                          `json:"classifier,omitempty"`
+	Semantic              *ComplexitySemanticConfig       `json:"semantic,omitempty"`
+	Decision              *ComplexityDecisionConfig       `json:"decision,omitempty"`
+	DecisionMinConfidence float64                         `json:"decision_min_confidence,omitempty"`
+	LLM                   *ComplexityLLMConfig            `json:"llm,omitempty"`
+	Session               *ComplexitySessionConfig        `json:"session,omitempty"`
+	ConfigHashes          complexitySemanticRowHashes     `json:"_config_hashes,omitempty"`
+	EmbeddingFingerprint  string                          `json:"_embedding_fingerprint,omitempty"`
 }
 
 // complexitySemanticRowHashes carries the section hashes for everything the
@@ -1322,13 +1338,20 @@ func decodeComplexitySemanticConfigRow(data []byte) (*complexitySemanticConfigRe
 
 // encodeComplexitySemanticConfigRow writes the semantic row.
 func encodeComplexitySemanticConfigRow(config ComplexityAnalyzerConfig) ([]byte, error) {
+	decision, minConfidence := config.Decision, 0.0
+	if decision != nil {
+		stripped := *decision
+		minConfidence, stripped.MinConfidence = stripped.MinConfidence, 0
+		decision = &stripped
+	}
 	record := complexitySemanticConfigRecord{
-		Keywords:   config.Keywords,
-		Classifier: config.Classifier,
-		Semantic:   config.Semantic,
-		Decision:   config.Decision,
-		LLM:        config.LLM,
-		Session:    config.Session,
+		Keywords:              config.Keywords,
+		Classifier:            config.Classifier,
+		Semantic:              config.Semantic,
+		Decision:              decision,
+		DecisionMinConfidence: minConfidence,
+		LLM:                   config.LLM,
+		Session:               config.Session,
 		ConfigHashes: complexitySemanticRowHashes{
 			SimpleKeywords:     config.ConfigHashes.SimpleKeywords,
 			MediumKeywords:     config.ConfigHashes.MediumKeywords,
@@ -1359,6 +1382,11 @@ func applyComplexitySemanticConfigRow(base *ComplexityAnalyzerConfig, row *compl
 	combined.Classifier = row.Classifier
 	combined.Semantic = row.Semantic
 	combined.Decision = row.Decision
+	if row.Decision != nil {
+		decision := *row.Decision
+		decision.MinConfidence = row.DecisionMinConfidence
+		combined.Decision = &decision
+	}
 	combined.LLM = row.LLM
 	combined.Session = row.Session
 	combined.ConfigHashes.SimpleKeywords = row.ConfigHashes.SimpleKeywords

@@ -404,6 +404,7 @@
                       "integrations/guardrails/checkpoint",
                       "integrations/guardrails/repello-argus",
                       "integrations/guardrails/singulr-ai",
+                      "integrations/guardrails/noma-security",
                       "integrations/guardrails/a10"
                     ]
                   }
@@ -675,6 +676,7 @@
               "integrations/guardrails/checkpoint",
               "integrations/guardrails/repello-argus",
               "integrations/guardrails/singulr-ai",
+              "integrations/guardrails/noma-security",
               "integrations/guardrails/a10"
             ]
           },

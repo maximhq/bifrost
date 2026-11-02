@@ -1911,6 +1911,23 @@ func (m *MockConfigStore) MarkMCPPerUserHeaderCredentialsNeedsUpdate(ctx context
 func (m *MockConfigStore) DeleteOrphanedMCPPerUserHeaderCredentials(ctx context.Context, olderThan time.Duration) (int64, error) {
 	return 0, nil
 }
+
+func (m *MockConfigStore) GetMCPPerUserDiscoveryByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPPerUserDiscovery, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) UpsertMCPPerUserDiscovery(ctx context.Context, discovery *tables.TableMCPPerUserDiscovery) error {
+	return nil
+}
+
+func (m *MockConfigStore) DeleteMCPPerUserDiscovery(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) error {
+	return nil
+}
+
+func (m *MockConfigStore) DeleteMCPPerUserDiscoveriesByClient(ctx context.Context, mcpClientID string) error {
+	return nil
+}
+
 func (m *MockConfigStore) CreateMCPPerUserHeaderFlow(ctx context.Context, flow *tables.TableMCPPerUserHeaderFlow) error {
 	return nil
 }
@@ -24130,6 +24147,269 @@ func TestLoadMCPConfig_FileReloadKeepsSavedMaxProtocolVersion(t *testing.T) {
 	}
 }
 
+// TestLoadMCPConfig_PerUserDiscoveryFollowsSourceOfTruth: an entry that omits
+// per_user_discovery keeps the stored value under split, where the file only
+// adds and edits, and turns it off under config.json, where the file is the
+// whole configuration. An explicit value wins in both.
+func TestLoadMCPConfig_PerUserDiscoveryFollowsSourceOfTruth(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+
+	fileMCP := func(perUserDiscovery *bool) *schemas.MCPConfig {
+		return &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{
+			Name:              "notes",
+			ConnectionType:    schemas.MCPConnectionTypeHTTP,
+			ConnectionString:  schemas.NewSecretVar("http://localhost:3001/mcp"),
+			AuthType:          schemas.MCPAuthTypePerUserHeaders,
+			PerUserHeaderKeys: []string{"x-api-key"},
+			ToolsToExecute:    schemas.WhiteList{"*"},
+			PerUserDiscovery:  perUserDiscovery,
+		}}}
+	}
+	on := func(flag *bool) bool { return flag != nil && *flag }
+
+	cases := []struct {
+		name   string
+		sot    string
+		second *bool
+		want   bool
+	}{
+		{name: "split, omitted keeps the stored value", sot: SourceOfTruthSplit, want: true},
+		{name: "split, explicit false turns it off", sot: SourceOfTruthSplit, second: schemas.Ptr(false), want: false},
+		{name: "config.json, omitted turns it off", sot: SourceOfTruthConfigJSON, want: false},
+		{name: "config.json, explicit true keeps it on", sot: SourceOfTruthConfigJSON, second: schemas.Ptr(true), want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := createTestSQLiteConfigStore(t, createTempDir(t))
+
+			first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+			loadMCPConfig(ctx, first, &ConfigData{SourceOfTruth: tc.sot, MCP: fileMCP(schemas.Ptr(true))})
+			require.Len(t, first.MCPConfig.ClientConfigs, 1)
+			require.True(t, on(first.MCPConfig.ClientConfigs[0].PerUserDiscovery), "fixture check: the first boot turns the flag on")
+
+			second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+			loadMCPConfig(ctx, second, &ConfigData{SourceOfTruth: tc.sot, MCP: fileMCP(tc.second)})
+			require.Len(t, second.MCPConfig.ClientConfigs, 1)
+			runtime := second.MCPConfig.ClientConfigs[0]
+			assert.Equal(t, tc.want, on(runtime.PerUserDiscovery), "runtime config")
+			stored, err := store.GetMCPClientConfigByID(ctx, runtime.ID)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, on(stored.PerUserDiscovery), "stored config")
+		})
+	}
+}
+
+// TestLoadMCPConfig_ConfigJSONKeepsTheStoredIDOfANameMatch: under config.json
+// a declaration is matched to a stored client by name first. When it also
+// declares the ID of a different stored client (a copied block, say), the
+// runtime client must keep the ID of the client it was matched to: credentials
+// are keyed by client ID, so taking the other ID would send that client's
+// per-user credentials to this client's URL. The client whose ID was borrowed
+// is no longer declared, so it is pruned.
+func TestLoadMCPConfig_ConfigJSONKeepsTheStoredIDOfANameMatch(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	client := func(id, name, url string) *schemas.MCPClientConfig {
+		return &schemas.MCPClientConfig{
+			ID:               id,
+			Name:             name,
+			ConnectionType:   schemas.MCPConnectionTypeHTTP,
+			ConnectionString: schemas.NewSecretVar(url),
+			ToolsToExecute:   schemas.WhiteList{"*"},
+		}
+	}
+	store := createTestSQLiteConfigStore(t, createTempDir(t))
+
+	first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	loadMCPConfig(ctx, first, &ConfigData{SourceOfTruth: SourceOfTruthConfigJSON, MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+		client("id-alpha", "alpha", "http://alpha.example/mcp"),
+		client("id-beta", "beta", "http://beta.example/mcp"),
+	}}})
+	require.Len(t, first.MCPConfig.ClientConfigs, 2)
+
+	second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	loadMCPConfig(ctx, second, &ConfigData{SourceOfTruth: SourceOfTruthConfigJSON, MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+		client("id-beta", "alpha", "http://alpha.example/mcp"),
+	}}})
+
+	require.Len(t, second.MCPConfig.ClientConfigs, 1)
+	runtime := second.MCPConfig.ClientConfigs[0]
+	assert.Equal(t, "id-alpha", runtime.ID, "the runtime client keeps the ID of the stored client it was matched to by name")
+	assert.Equal(t, "http://alpha.example/mcp", runtime.ConnectionString.GetValue())
+	_, err := store.GetMCPClientConfigByID(ctx, "id-alpha")
+	require.NoError(t, err)
+	_, err = store.GetMCPClientConfigByID(ctx, "id-beta")
+	assert.ErrorIs(t, err, configstore.ErrNotFound, "beta is no longer declared, so it is pruned")
+}
+
+// TestMCPClientStartsPendingVerification: a client declared in config.json
+// starts pending its admin step exactly when its auth type has one and there is
+// an upstream to run it against.
+func TestMCPClientStartsPendingVerification(t *testing.T) {
+	for authType, want := range map[schemas.MCPAuthType]bool{
+		schemas.MCPAuthTypeOauth:          true,
+		schemas.MCPAuthTypePerUserOauth:   true,
+		schemas.MCPAuthTypePerUserHeaders: true,
+		schemas.MCPAuthTypeTokenExchange:  true,
+		schemas.MCPAuthTypeHeaders:        false,
+		schemas.MCPAuthTypeNone:           false,
+	} {
+		http := &schemas.MCPClientConfig{AuthType: authType, ConnectionType: schemas.MCPConnectionTypeHTTP}
+		assert.Equal(t, want, mcpClientStartsPendingVerification(http), authType)
+		openAPI := &schemas.MCPClientConfig{AuthType: authType, ConnectionType: schemas.MCPConnectionTypeOpenAPI}
+		assert.False(t, mcpClientStartsPendingVerification(openAPI), "%s over openapi has nothing upstream to verify", authType)
+	}
+}
+
+// TestLoadMCPConfig_NewClientsStartPendingTheirAdminStep: a client config.json
+// adds starts pending its admin step when its auth type has one, and a reload
+// that edits the client keeps the stored record rather than resetting it from
+// the file.
+func TestLoadMCPConfig_NewClientsStartPendingTheirAdminStep(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	fileMCP := func(tools schemas.WhiteList) *schemas.MCPConfig {
+		return &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+			{Name: "signin", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://localhost:3001/mcp"), AuthType: schemas.MCPAuthTypeOauth, ToolsToExecute: tools},
+			{Name: "notes", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://localhost:3002/mcp"), AuthType: schemas.MCPAuthTypePerUserHeaders, PerUserHeaderKeys: []string{"x-api-key"}, ToolsToExecute: tools},
+			{Name: "wiki", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://localhost:3003/mcp"), ToolsToExecute: tools},
+		}}
+	}
+	pending := func(cfg *Config) map[string]bool {
+		got := map[string]bool{}
+		for _, c := range cfg.MCPConfig.ClientConfigs {
+			got[c.Name] = c.PendingVerification
+		}
+		return got
+	}
+	store := createTestSQLiteConfigStore(t, createTempDir(t))
+
+	first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	loadMCPConfig(ctx, first, &ConfigData{MCP: fileMCP(schemas.WhiteList{"*"})})
+	assert.Equal(t, map[string]bool{"signin": true, "notes": true, "wiki": false}, pending(first))
+
+	var notesID string
+	for _, c := range first.MCPConfig.ClientConfigs {
+		if c.Name == "notes" {
+			notesID = c.ID
+		}
+	}
+	// Verified as verify-headers does it: the tools found, then the record.
+	require.NoError(t, store.UpdateMCPClientDiscovery(ctx, notesID, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}}))
+	require.NoError(t, store.ClearMCPClientPendingVerification(ctx, notesID))
+
+	second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	loadMCPConfig(ctx, second, &ConfigData{MCP: fileMCP(schemas.WhiteList{"search"})})
+	assert.Equal(t, map[string]bool{"signin": true, "notes": false, "wiki": false}, pending(second), "the stored record wins over the edited file")
+	stored, err := store.GetMCPClientConfigByID(ctx, notesID)
+	require.NoError(t, err)
+	assert.False(t, stored.PendingVerification)
+}
+
+// TestLoadMCPConfig_TurningPerUserDiscoveryOnOrOffInTheFile: config.json turning
+// per_user_discovery on or off has the same effects as the API, and the client
+// handed to the runtime carries what the store reset: on, a verified client
+// stays verified with no tools; off (here by omission, under source_of_truth
+// config.json), it goes back to its admin step. The flag on a client it cannot
+// apply to is refused, and the stored client is kept.
+func TestLoadMCPConfig_TurningPerUserDiscoveryOnOrOffInTheFile(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	fileMCP := func(perUser *bool) *schemas.MCPConfig {
+		return &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+			{Name: "notes", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://localhost:3002/mcp"), AuthType: schemas.MCPAuthTypePerUserHeaders, PerUserHeaderKeys: []string{"x-api-key"}, ToolsToExecute: schemas.WhiteList{"*"}, PerUserDiscovery: perUser},
+			{Name: "wiki", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://localhost:3003/mcp"), ToolsToExecute: schemas.WhiteList{"*"}, PerUserDiscovery: perUser},
+		}}
+	}
+	runtimeClient := func(t *testing.T, cfg *Config, name string) *schemas.MCPClientConfig {
+		t.Helper()
+		for _, c := range cfg.MCPConfig.ClientConfigs {
+			if c.Name == name {
+				return c
+			}
+		}
+		t.Fatalf("client %q is not loaded", name)
+		return nil
+	}
+	store := createTestSQLiteConfigStore(t, createTempDir(t))
+
+	first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	loadMCPConfig(ctx, first, &ConfigData{MCP: fileMCP(nil)})
+	notesID := runtimeClient(t, first, "notes").ID
+	// Verified as verify-headers does it, keeping the admin's sample headers.
+	tools := map[string]schemas.ChatTool{"notes-search": {Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "notes-search"}}}
+	require.NoError(t, store.UpdateMCPClientDiscovery(ctx, notesID, &schemas.MCPDiscovery{Tools: tools}))
+	require.NoError(t, store.ClearMCPClientPendingVerification(ctx, notesID))
+	require.NoError(t, store.UpsertMCPPerUserHeaderCredential(ctx, &tables.TableMCPPerUserHeaderCredential{MCPClientID: notesID, AuthMode: "admin", Status: "active", HeadersJSON: `{"x-api-key":"sample"}`}))
+
+	second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	loadMCPConfig(ctx, second, &ConfigData{MCP: fileMCP(schemas.Ptr(true))})
+	notes := runtimeClient(t, second, "notes")
+	assert.Equal(t, schemas.Ptr(true), notes.PerUserDiscovery)
+	assert.False(t, notes.PendingVerification, "still verified")
+	assert.Nil(t, notes.DiscoveredTools, "the admin's tools are not kept")
+	admin, err := store.GetAdminMCPPerUserHeaderCredentialsByClientIDs(ctx, []string{notesID})
+	require.NoError(t, err)
+	assert.Empty(t, admin, "nor is the admin's credential")
+	wiki, err := store.GetMCPClientConfigByID(ctx, runtimeClient(t, second, "wiki").ID)
+	require.NoError(t, err)
+	assert.NotEqual(t, schemas.Ptr(true), wiki.PerUserDiscovery, "refused for a shared auth type, and the stored client kept")
+
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, &tables.TableMCPPerUserDiscovery{
+		MCPClientID: notesID, AuthMode: string(schemas.MCPAuthModeUser), UserID: schemas.Ptr("alice"), Tools: tools, DiscoveryHash: "hash-alice", DiscoveredAt: time.Now(),
+	}))
+	third := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	loadMCPConfig(ctx, third, &ConfigData{MCP: fileMCP(nil), SourceOfTruth: SourceOfTruthConfigJSON})
+	notes = runtimeClient(t, third, "notes")
+	assert.Equal(t, schemas.Ptr(false), notes.PerUserDiscovery, "omitted under source_of_truth config.json: off")
+	assert.True(t, notes.PendingVerification, "back to its admin step")
+	discovery, err := store.GetMCPPerUserDiscoveryByMode(ctx, schemas.MCPAuthModeUser, "alice", notesID)
+	require.NoError(t, err)
+	assert.Nil(t, discovery, "callers' discoveries are deleted")
+}
+
+// TestLoadMCPConfig_RefusesPerUserDiscoveryOnTheStoredAuthType: config.json
+// cannot change an existing client's auth type, so per_user_discovery is held to
+// the stored one. A block that declares a per-user type for a stored shared
+// client, with the flag on, is refused before anything is written: the client
+// keeps its stored configuration and tools, rather than storing the flag where
+// it cannot apply and failing to load at every boot after.
+func TestLoadMCPConfig_RefusesPerUserDiscoveryOnTheStoredAuthType(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	for _, sot := range []string{SourceOfTruthSplit, SourceOfTruthConfigJSON} {
+		t.Run(sot, func(t *testing.T) {
+			wiki := func(authType schemas.MCPAuthType, perUser *bool) *schemas.MCPConfig {
+				client := &schemas.MCPClientConfig{Name: "wiki", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://localhost:3003/mcp"), AuthType: authType, ToolsToExecute: schemas.WhiteList{"*"}, PerUserDiscovery: perUser}
+				if authType == schemas.MCPAuthTypePerUserHeaders {
+					client.PerUserHeaderKeys = []string{"x-api-key"}
+				}
+				return &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{client}}
+			}
+			store := createTestSQLiteConfigStore(t, createTempDir(t))
+
+			first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+			loadMCPConfig(ctx, first, &ConfigData{SourceOfTruth: sot, MCP: wiki(schemas.MCPAuthTypeHeaders, nil)})
+			require.Len(t, first.MCPConfig.ClientConfigs, 1)
+			wikiID := first.MCPConfig.ClientConfigs[0].ID
+			tools := map[string]schemas.ChatTool{"wiki-search": {Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "wiki-search"}}}
+			require.NoError(t, store.UpdateMCPClientDiscovery(ctx, wikiID, &schemas.MCPDiscovery{Tools: tools}))
+
+			second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+			loadMCPConfig(ctx, second, &ConfigData{SourceOfTruth: sot, MCP: wiki(schemas.MCPAuthTypePerUserHeaders, schemas.Ptr(true))})
+			require.Len(t, second.MCPConfig.ClientConfigs, 1)
+			runtime := second.MCPConfig.ClientConfigs[0]
+			assert.Equal(t, schemas.MCPAuthTypeHeaders, runtime.AuthType)
+			assert.NotEqual(t, schemas.Ptr(true), runtime.PerUserDiscovery, "the runtime is handed the stored client")
+			stored, err := store.GetMCPClientConfigByID(ctx, wikiID)
+			require.NoError(t, err)
+			assert.NotEqual(t, schemas.Ptr(true), stored.PerUserDiscovery, "the flag is not stored on a shared client")
+			assert.Contains(t, stored.DiscoveredTools, "wiki-search", "and nothing turning it on deletes is deleted")
+		})
+	}
+}
+
 // TestReconcileVirtualMCPsConfig covers the config.json → store reconciliation for
 // mcp.virtual_mcps: create (with explicit slug + name-resolved tool client + VK attach),
 // idempotent no-op on unchanged hash, update on change, and prune of absent entries.
@@ -26158,6 +26438,20 @@ func TestRemoveMCPClient_DropsItsCatalogPricing(t *testing.T) {
 	assert.False(t, priced, "the deleted client's price is gone")
 	_, priced = catalog.GetPricingData("other", "listPets")
 	assert.True(t, priced, "another client's price stays")
+}
+
+// TestUpdateMCPClient_UnsetPerUserDiscoveryKeepsStored: an update that leaves
+// per_user_discovery unset keeps the stored value, matching the database and
+// the runtime, instead of clearing the management copy.
+func TestUpdateMCPClient_UnsetPerUserDiscoveryKeepsStored(t *testing.T) {
+	cfg, stored := newOpenAPIUpdateTestConfig(t, false)
+	stored.PerUserDiscovery = schemas.Ptr(false)
+	update := *stored
+	update.PerUserDiscovery = nil
+	require.NoError(t, cfg.UpdateMCPClient(context.Background(), stored.ID, &update))
+	got := cfg.MCPConfig.ClientConfigs[0].PerUserDiscovery
+	require.NotNil(t, got)
+	assert.False(t, *got)
 }
 
 // TestGetMCPClientOpenAPISpec_ReadsUnderLock: the stored document is copied out
