@@ -111,7 +111,7 @@ exactly like the system under test behaving correctly.
 
 | Verb | Body | Effect |
 |---|---|---|
-| `GET /control` | | every server's state, plus fleet connection stats |
+| `GET /control` | | every server's state, plus fleet connection stats, and the TLS listener's `tls_url` and `tls_cert_pem` when one is open |
 | `POST /control` | `{"add":"name"}` / `{"remove":"name"}` | add (empty) or remove a server |
 | `POST /control` | `{"reset":"name"}` | rebuild a seeded server from its seed; 404 for an unseeded one |
 | `GET /control/<s>` | | that server's state |
@@ -242,6 +242,16 @@ unmarked requests). `llm/script` clears that scenario's entries, `counters/reset
 clears the whole log and keeps the scripts. The model listings answer
 `mock-model` until `llm/models` or a seed's `llm_models` says otherwise.
 Unscoped server faults apply here as on REST.
+
+### The TLS listener
+
+`-tls-addr <addr>` also serves the fleet over HTTPS, including `/s/<name>/mcp`.
+It creates a self-signed loopback certificate at startup. `GET /control` reports
+`tls_url` and `tls_cert_pem`; tests can trust that certificate as a custom CA.
+
+```sh
+./tmp/mcpchaos -servers alpha -tls-addr 127.0.0.1:8401
+```
 
 ## OAuth
 
