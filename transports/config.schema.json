@@ -729,6 +729,9 @@
         "byteplus": {
           "$ref": "#/$defs/provider"
         },
+        "machgen": {
+          "$ref": "#/$defs/provider"
+        },
         "cloudflare": {
           "$ref": "#/$defs/provider_with_cloudflare_config"
         },

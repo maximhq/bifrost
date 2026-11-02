@@ -1,0 +1,182 @@
+---
+title: "MachGen"
+description: "MachGen API conversion guide - text-to-video, image-to-video, reference-to-video, and image generation"
+icon: "film"
+---
+
+## Overview
+
+[MachGen](https://www.machgen.ai) serves video and image models (MiniMax H3, Kling, Seedance, Wan, FLUX and more) behind one task-based API. Every request is a task: Bifrost submits it to `POST /api/v0/generate`, then reads its status and output through the task and asset endpoints.
+
+### Supported Operations
+
+| Operation | Supported | Endpoint |
+|-----------|-----------|----------|
+| Video Generation | ✅ | `/api/v0/generate` (`T2V`, `I2V`, `R2V`) |
+| Video Retrieve | ✅ | `/api/v0/tasks/{task_id}` |
+| Video Download | ✅ | `/api/v0/assets/{task_id}` |
+| Image Generation | ✅ | `/api/v0/generate` (`T2I`, `I2I`) |
+| Image Edit | ✅ | `/api/v0/generate` (`I2I`) |
+| Video Delete | ❌ | - |
+| Video List | ❌ | - |
+| Video Remix | ❌ | - |
+
+Model IDs are MachGen's own, for example `machgen/MiniMax-H3` or `machgen/Kling-v3`. See [MachGen models](https://www.machgen.ai/docs/models) for the full list and what each model accepts.
+
+---
+
+# 1. Video Generation
+
+## Generate (`POST /v1/videos`)
+
+**Request Parameters**
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `model` | string | ✅ | MachGen model ID |
+| `prompt` | string | ✅ | Text description of the video |
+| `input_reference` | string | ❌ | Start frame for image-to-video. Must be a public `http(s)` URL |
+| `video_uri` | string | ❌ | Reference video for reference-to-video. Must be a public `http(s)` URL |
+| `seconds` | string | ❌ | Duration in whole seconds -> `video_config.duration_secs` |
+| `size` | string | ❌ | `WxH`, e.g. `1280x720` -> `video_config.height` + `aspect_ratio` (`720`, `16:9`) |
+| `seed` | int | ❌ | Generation seed |
+| `audio` | bool | ❌ | Generate audio, on models that support it |
+| `negative_prompt` | string | ❌ | What to avoid |
+
+The width in `size` must match one of MachGen's aspect ratios (`16:9`, `9:16`, `1:1`, `4:3`, `3:4`, `4:5`, `3:2`, `2:3`, `21:9`), give or take a pixel of rounding. Most models need a height, so send `size` unless you set `video_config` yourself. Allowed durations and sizes differ per model; a value the model does not support is rejected with a `400` that names the allowed values.
+
+**Extra Params**
+
+These MachGen fields have no unified equivalent, so Bifrost reads them from extra params:
+
+| Key | Type | Notes |
+|-----|------|-------|
+| `task_type` | string | Overrides the inferred task type |
+| `src_image_urls` | array | Reference images. Added after `input_reference` |
+| `src_video_urls` | array | Reference videos. Replaces `video_uri` |
+| `src_audio_urls` | array | Reference audio |
+| `subject_to_image_ids` | object | Names a reference image for `@name` mentions in the prompt, e.g. `{"alice": [0]}` |
+| `subject_to_video_ids` | object | Same for reference videos |
+| `subject_to_audio_ids` | object | Same for reference audio |
+| `enhance_prompt` | bool | Turns prompt enhancement on or off |
+
+Any other MachGen field (for example `video_config.fps` or `reference_video_operation`) is forwarded when extra-params passthrough is enabled.
+
+**Generation Modes** (auto-detected from inputs)
+
+- **Text-to-video (`T2V`)**: `prompt` only
+- **Image-to-video (`I2V`)**: `prompt` + `input_reference` (or `src_image_urls`: a start frame and optional end frame)
+- **Reference-to-video (`R2V`)**: any reference video or audio, or any `subject_to_*_ids` map
+
+```bash
+curl http://localhost:8080/v1/videos \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "machgen/MiniMax-H3",
+    "prompt": "@alice waves to @bob across a busy street",
+    "seconds": "5",
+    "size": "1366x768",
+    "src_image_urls": ["https://example.com/alice.png", "https://example.com/bob.png"],
+    "subject_to_image_ids": {"alice": [0], "bob": [1]}
+  }'
+```
+
+**Response**: [`BifrostVideoGenerationResponse`](https://github.com/maximhq/bifrost/blob/main/core/schemas/videos.go) with `id`, `status`, `videos[]`
+
+**Bifrost statuses** (normalized): `queued` -> `in_progress` -> `completed` / `failed`
+
+MachGen's native statuses are `PENDING`, `RUNNING`, `COMPLETED` and `FAILED`. A failed task carries MachGen's `error_msg` in `error.message`.
+
+## Retrieve / Download
+
+| Operation | Endpoint | Notes |
+|-----------|----------|-------|
+| Get status | `GET /v1/videos/{id}` | Poll until `status: completed` |
+| Download content | `GET /v1/videos/{id}/content` | Returns the MP4 bytes |
+
+MachGen asset URLs need your MachGen API key, so download through Bifrost rather than from `videos[].url` directly.
+
+---
+
+# 2. Image Generation and Edit
+
+`POST /v1/images/generations` runs a `T2I` task, or `I2I` when `input_images` are given. `POST /v1/images/edits` runs `I2I`.
+
+| Parameter | Notes |
+|-----------|-------|
+| `size` | `WxH` -> `image_config.height` + `aspect_ratio` |
+| `aspect_ratio` | Overrides the ratio taken from `size` |
+| `num_inference_steps` | -> `image_config.infer_steps` |
+| `seed` | Generation seed |
+| `n` | Must be `1`; each task makes one image |
+
+Images for `I2I` must be public `http(s)` URLs; uploaded image bytes are rejected.
+
+Bifrost waits for the task to finish and returns the image as `b64_json`. The wait is bounded by the provider's request timeout, so raise `network_config.default_request_timeout_in_seconds` for slower models.
+
+---
+
+## Setup & Configuration
+
+Get an API key (it starts with `MGA_`) from your [MachGen profile](https://www.machgen.ai/profile/api-keys).
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. Look for **MachGen** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **MachGen**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.MACHGEN_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "machgen": {
+      "keys": [
+        {
+          "name": "machgen-key-1",
+          "value": "env.MACHGEN_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.MachGen:
+    return []schemas.Key{{
+        Name:   "machgen-key-1",
+        Value:  *schemas.NewSecretVar("env.MACHGEN_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Reference Links
+
+- [MachGen API Documentation](https://www.machgen.ai/docs/rest_api)
+- [MachGen Models](https://www.machgen.ai/docs/models)
