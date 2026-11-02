@@ -3,6 +3,7 @@ package chaosmock_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"sort"
@@ -353,6 +354,25 @@ func TestRealClientParsesScriptedReplies(t *testing.T) {
 	}
 	if failing := call("failing_tool"); !failing.IsError {
 		t.Errorf("expected the scripted isError to reach the client")
+	}
+}
+
+// TestRealClientReadsAScriptedJSONRPCError checks that reply_error reaches a real client as the
+// JSON-RPC error it names, data included, which is how mcp-go recognises codes such as -32021.
+func TestRealClientReadsAScriptedJSONRPCError(t *testing.T) {
+	fleet, srv := newFleetWithTools(t, chaosmock.Tool{Name: "needs_capability",
+		ReplyError: json.RawMessage(`{"code":-32021,"message":"missing required client capability","data":{"capability":"elicitation"}}`)})
+	c, ctx := connect(t, fleet.ServerURL("alpha"))
+
+	var req mcp.CallToolRequest
+	req.Params.Name = "needs_capability"
+	_, err := c.CallTool(ctx, req)
+	var missing mcp.MissingRequiredClientCapabilityError
+	if !errors.As(err, &missing) || missing.Capability != "elicitation" {
+		t.Fatalf("expected a missing capability error naming elicitation, got %v", err)
+	}
+	if got := srv.Counters().Snapshot().Calls["needs_capability"]; got != 1 {
+		t.Errorf("expected the call to be counted once, got %d", got)
 	}
 }
 

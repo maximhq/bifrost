@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net"
@@ -14,12 +15,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/network"
+	"github.com/maximhq/bifrost/core/network/proxytest"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -757,7 +760,7 @@ func TestUpdateConfig_MCPOAuthPrivateAllowlistRemovalSurvivesFailedReload(t *tes
 // TestUpdateConfig_EmptyDatasheetURLsResetToDefaults pins the regression where
 // PUT /api/config rejected an empty pricing_url with "URL cannot be empty".
 // The custom pricing page sends "" when the user clears the field; an empty
-// pricing_url or model_parameters_url means "use the built-in datasheet URL".
+// pricing_url, model_parameters_url or mcp_library_url means "use the built-in URL".
 func TestUpdateConfig_EmptyDatasheetURLsResetToDefaults(t *testing.T) {
 	// The datasheet server below is loopback-bound; the accessibility check refuses loopback
 	// by default, so route its dial through a plain dialer for this test only.
@@ -773,28 +776,31 @@ func TestUpdateConfig_EmptyDatasheetURLsResetToDefaults(t *testing.T) {
 	// are refused over the API (TestUpdateConfig_RejectsFileURLsOverAPI).
 	customURL := newDatasheetServer(t).URL
 
-	save := func(t *testing.T, pricingURL, modelParamsURL string) {
+	save := func(t *testing.T, pricingURL, modelParamsURL, mcpLibraryURL string) {
 		t.Helper()
-		ctx := putConfigCtx(`{"client_config":{"log_retention_days":7},"framework_config":{"pricing_url":"` + pricingURL + `","model_parameters_url":"` + modelParamsURL + `"}}`)
+		ctx := putConfigCtx(`{"client_config":{"log_retention_days":7},"framework_config":{"pricing_url":"` + pricingURL + `","model_parameters_url":"` + modelParamsURL + `","mcp_library_url":"` + mcpLibraryURL + `"}}`)
 		h.updateConfig(ctx)
 		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
 	}
 
-	save(t, customURL, customURL)
+	save(t, customURL, customURL, customURL)
 	persisted, err := store.GetFrameworkConfig(bgCtx())
 	require.NoError(t, err)
 	require.NotNil(t, persisted)
 	assert.Equal(t, customURL, *persisted.PricingURL)
 	assert.Equal(t, customURL, *persisted.ModelParametersURL)
+	assert.Equal(t, customURL, *persisted.MCPLibraryURL)
 
-	save(t, "", "")
+	save(t, "", "", "")
 	persisted, err = store.GetFrameworkConfig(bgCtx())
 	require.NoError(t, err)
 	require.NotNil(t, persisted)
 	assert.Equal(t, modelcatalog.DefaultPricingURL, *persisted.PricingURL, "empty pricing_url must reset to the default")
 	assert.Equal(t, modelcatalog.DefaultModelParametersURL, *persisted.ModelParametersURL, "empty model_parameters_url must reset to the default")
+	assert.Equal(t, modelcatalog.DefaultMCPLibraryURL, *persisted.MCPLibraryURL, "empty mcp_library_url must reset to the default")
 	assert.Equal(t, modelcatalog.DefaultPricingURL, *cfg.FrameworkConfig.Pricing.PricingURL)
 	assert.Equal(t, modelcatalog.DefaultModelParametersURL, *cfg.FrameworkConfig.Pricing.ModelParametersURL)
+	assert.Equal(t, modelcatalog.DefaultMCPLibraryURL, *cfg.FrameworkConfig.Pricing.MCPLibraryURL)
 }
 
 // failingFrameworkConfigStore makes the framework config write fail while every
@@ -836,6 +842,10 @@ func TestUpdateConfig_FrameworkConfigStoreFailureLeavesRuntimeUnchanged(t *testi
 func TestUpdateProxyConfig_InterceptionGuardWhenAuthBypassed(t *testing.T) {
 	SetLogger(&mockLogger{})
 	const storedURL = "http://10.0.0.5:3128"
+	caServer := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	caServer.Close()
+	caJSON, err := sonic.Marshal(string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caServer.Certificate().Raw})))
+	require.NoError(t, err)
 	cases := []struct {
 		name    string
 		stored  *configtables.GlobalProxyConfig // nil: an http proxy at storedURL
@@ -861,6 +871,9 @@ func TestUpdateProxyConfig_InterceptionGuardWhenAuthBypassed(t *testing.T) {
 			body:    `{"enabled":true,"type":"http","url":"10.0.0.5:1080","timeout":30,"enable_for_inference":true}`,
 			want403: false,
 		},
+		// The proxy CA is trusted for targets reached through the proxy, so adding one lets
+		// the proxy sign provider certificates: as sensitive as changing the URL.
+		{name: "ca_cert_pem added, same url", body: `{"enabled":true,"type":"http","url":"` + storedURL + `","timeout":10,"enable_for_inference":true,"ca_cert_pem":` + string(caJSON) + `}`, want403: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -887,6 +900,7 @@ func TestUpdateProxyConfig_InterceptionGuardWhenAuthBypassed(t *testing.T) {
 				assert.Equal(t, seed.URL, stored.URL)
 				assert.Equal(t, seed.Type, stored.Type)
 				assert.False(t, stored.SkipTLSVerify)
+				assert.Empty(t, stored.CACertPEM)
 				assert.Equal(t, 10, stored.Timeout)
 			} else {
 				require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body=%s", ctx.Response.Body())
@@ -957,6 +971,35 @@ func TestCheckURLAccessibility_ReachesConfiguredPrivateProxy(t *testing.T) {
 	}
 	if got, _ := seen.Load().(string); got != "203.0.113.10" {
 		t.Fatalf("proxy saw target %q, want 203.0.113.10", got)
+	}
+}
+
+// TestCheckURLAccessibility_TrustsGlobalProxyCA pins that the URL check reaches an
+// https:// API proxy whose certificate only the global proxy's ca_cert_pem trusts, the
+// same proxy the sync after a successful check goes through. Without the CA the proxy
+// hop is refused.
+func TestCheckURLAccessibility_TrustsGlobalProxyCA(t *testing.T) {
+	SetLogger(&mockLogger{})
+	proxy := proxytest.NewHTTPSRecorder(t, "url-check-https-proxy")
+	config := &network.GlobalProxyConfig{
+		Enabled: true, Type: network.GlobalProxyTypeHTTP, URL: "https://127.0.0.1:" + proxy.Port(), EnableForAPI: true,
+	}
+	factory := network.NewHTTPClientFactory(config, nil)
+	network.SetDefaultHTTPClientFactory(factory)
+	t.Cleanup(func() { network.SetDefaultHTTPClientFactory(nil) })
+
+	if err := checkURLAccessibility("http://203.0.113.10/pricing.json"); err == nil {
+		t.Fatal("an https proxy no configured CA trusts must be refused")
+	}
+
+	withCA := *config
+	withCA.CACertPEM = proxy.CAPEM
+	factory.UpdateProxyConfig(&withCA)
+	if err := checkURLAccessibility("http://203.0.113.10/pricing.json"); err != nil {
+		t.Fatalf("the global proxy CA must be trusted for the https proxy, got %v", err)
+	}
+	if hits := proxy.Seen(); len(hits) == 0 || hits[len(hits)-1].Target != "203.0.113.10:80" {
+		t.Fatalf("proxy hits %+v, want a tunnel to 203.0.113.10:80", hits)
 	}
 }
 
@@ -1605,6 +1648,11 @@ func (r *proxyReloadRecorder) ReloadProxyConfig(_ context.Context, cfg *configta
 // "not yet supported" only hid a working feature. tcp has no dialer and stays refused.
 func TestUpdateProxyConfig_ProxyTypes(t *testing.T) {
 	SetLogger(&mockLogger{})
+	caServer := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	caServer.Close()
+	caPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caServer.Certificate().Raw}))
+	caJSON, err := sonic.Marshal(caPEM)
+	require.NoError(t, err)
 	for _, tc := range []struct {
 		name     string
 		body     string
@@ -1630,6 +1678,10 @@ func TestUpdateProxyConfig_ProxyTypes(t *testing.T) {
 		{"http with an ftp url", `{"enabled":true,"type":"http","url":"ftp://10.0.0.5:3128"}`, fasthttp.StatusBadRequest, "", ""},
 		{"http with a socks5 url", `{"enabled":true,"type":"http","url":"socks5://10.0.0.5:1080"}`, fasthttp.StatusBadRequest, "", ""},
 		{"tcp", `{"enabled":true,"type":"tcp","url":"tcp://10.0.0.5:9000"}`, fasthttp.StatusBadRequest, "", ""},
+		// The proxy CA is stored as sent; one that is not a PEM certificate is refused
+		// rather than silently ignored by every client that would have trusted it.
+		{"https with a proxy CA", `{"enabled":true,"type":"http","url":"https://10.0.0.5:3129","ca_cert_pem":` + string(caJSON) + `}`, fasthttp.StatusOK, "http", "https://10.0.0.5:3129"},
+		{"proxy CA that is not PEM", `{"enabled":true,"type":"http","url":"https://10.0.0.5:3129","ca_cert_pem":"not a certificate"}`, fasthttp.StatusBadRequest, "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store := newRealOAuth2Store(t)
@@ -1650,6 +1702,10 @@ func TestUpdateProxyConfig_ProxyTypes(t *testing.T) {
 			assert.Equal(t, tc.wantType, string(stored.Type), "the proxy type must be persisted")
 			assert.Equal(t, tc.wantType, string(manager.reloaded.Type), "the proxy type must reach the runtime")
 			assert.Equal(t, tc.wantURL, stored.URL, "the proxy URL must be persisted trimmed")
+			if strings.Contains(tc.body, "ca_cert_pem") {
+				assert.Equal(t, caPEM, stored.CACertPEM, "the proxy CA must be persisted")
+				assert.Equal(t, caPEM, manager.reloaded.CACertPEM, "the proxy CA must reach the runtime")
+			}
 		})
 	}
 }

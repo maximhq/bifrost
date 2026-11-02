@@ -4758,11 +4758,14 @@ func (bifrost *Bifrost) GetMCPServerInstructions(ctx *schemas.BifrostContext) st
 //
 // ConnectConfiguredMCPClients dials the MCP clients supplied to Init. Construction
 // no longer auto-connects, so callers invoke this after all plugins are registered
-// (so every PreMCPConnectionHook participates in the connection). No-op if MCP is
-// not configured.
-func (bifrost *Bifrost) ConnectConfiguredMCPClients(ctx context.Context) {
+// (so every PreMCPConnectionHook participates in the connection). It returns once
+// every client has been attempted; onClientDone, when not nil, is called as each
+// attempt finishes, one call at a time, so a caller running the dial in the
+// background can act on each client as soon as it is ready. No-op if MCP is not
+// configured.
+func (bifrost *Bifrost) ConnectConfiguredMCPClients(ctx context.Context, onClientDone func(clientID string)) {
 	if bifrost.MCPManager != nil {
-		bifrost.MCPManager.ConnectConfiguredClients(ctx)
+		bifrost.MCPManager.ConnectConfiguredClients(ctx, onClientDone)
 	}
 }
 

@@ -14,6 +14,10 @@ The magic happens with a single line change: update your `base_url` to point to 
 
 Bifrost provides **100% compatible endpoints** for popular AI SDKs by acting as a protocol adapter. Your existing SDK code continues to work unchanged, but now benefits from Bifrost's multi-provider support, automatic failovers, semantic caching, and governance features.
 
+<Note>
+  If Bifrost is served under a path prefix (`server.base_path`), include it in `base_url`, for example `https://example.com/bifrost/openai`. See [Serving under a path prefix](/deployment-guides/how-to/nginx-reverse-proxy#serving-under-a-path-prefix).
+</Note>
+
 <Tabs group="drop-in-replacement">
 
 <Tab title="OpenAI SDK">

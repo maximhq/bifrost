@@ -281,6 +281,7 @@ module "eks" {
   image             = var.image
   container_port    = var.container_port
   health_check_path = var.health_check_path
+  ingress_path      = var.ingress_path
 
   # Infrastructure
   name_prefix = var.name_prefix

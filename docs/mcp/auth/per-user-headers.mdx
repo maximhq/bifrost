@@ -13,7 +13,7 @@ icon: "user-pen"
 
 Use this when the upstream MCP server authenticates with per-user API keys, signed tokens, or any other static-shape credential — but does **not** offer OAuth (which would call for [Per-User OAuth](./per-user-oauth)).
 
-This auth type is only valid for **HTTP** and **SSE** connections.
+This auth type is valid for **HTTP** and **OpenAPI** connections. It is refused on an SSE or STDIO client, because each call opens its own connection: the API answers 400, and a `config.json` client is skipped at boot with an error naming it.
 
 | | Headers (`headers`) | Per-User Headers (`per_user_headers`) |
 | --- | --- | --- |
@@ -60,7 +60,7 @@ The admin configures the MCP client once, declaring the schema (header names) en
 
 1. Navigate to **MCP Gateway** in the sidebar
 2. Click **New MCP Server**
-3. Pick **HTTP** or **SSE** as the connection type, fill in the **Connection URL**
+3. Pick **HTTP** as the connection type, fill in the **Connection URL**
 4. Set **Auth Type** to **Per-User Headers**
 5. Fill in **Required Headers** — comma-separated list of header names each caller must supply (e.g. `X-API-Key, X-Tenant-ID`). Values are submitted per-user — never stored on this MCP config.
 6. (Optional) Fill in **Static Headers** — admin-set headers that accompany every per-user request (e.g. a fixed tenant ID). These are visible to plugins; the per-user values aren't.
@@ -265,12 +265,12 @@ The admin's sample values are retained as a client-level **admin discovery crede
 - **Tool-list refresh only.** The periodic tool syncer uses it for a one-shot connect, `tools/list`, disconnect cycle on the client's [tool sync interval](#periodic-tool-sync), and an on-demand refresh (`POST /api/mcp/client/{id}/refresh-tools`) runs the same cycle with it. It is **never** used for end-user tool calls; those always run under the caller's own submitted values.
 - **Invisible on the sessions page.** Admin credentials are excluded from [MCP Sessions](../sessions); they are managed from the client sheet instead.
 
-If the credential falls into `needs_update` (typically because `per_user_header_keys` changed), the client list projects a **`needs_reauth`** badge next to the client's **View sessions** link. This is a display-level state: end-user credentials and tool calls keep working, only tool-list refresh pauses until an admin repairs it. A client created with inline `user_headers` on an earlier version has no admin row: its periodic sync fails and the client shows as `unstable` until an admin stores the credential with **Update headers** (below) or a `verify-headers` call.
+If the credential falls into `needs_update` (typically because `per_user_header_keys` changed), the client list projects a **`needs_reauth`** badge next to the client's **View sessions** link. This is a display-level state: end-user credentials and tool calls keep working, only tool-list refresh pauses until an admin repairs it. A client created with inline `user_headers` on an earlier version has no admin row: its periodic sync fails and the client shows as `unstable` until an admin stores the credential with **Refresh admin credential** (below) or a `verify-headers` call.
 
-To repair it, open the client sheet and click **Update headers**: the same sample-values dialog re-runs the upstream verify, re-discovers tools, and flips the credential back to `active`. The scriptable equivalent is another `POST /api/mcp/client/{id}/verify-headers` call with fresh sample values.
+To repair it, open the server's actions menu (**⋯**) in the MCP Server Catalog and choose **Refresh admin credential**: the same sample-values dialog re-runs the upstream verify, re-discovers tools, and flips the credential back to `active`. The scriptable equivalent is another `POST /api/mcp/client/{id}/verify-headers` call with fresh sample values.
 
 <Frame>
-  <img src="/media/ui-mcp-per-user-headers-admin-repair.png" alt="Per-user headers client sheet showing the needs_reauth badge next to View sessions and the Update headers button" />
+  <img src="/media/ui-mcp-per-user-headers-admin-repair.png" alt="MCP Server Catalog with a per-user headers client in Needs Reauth state and Refresh admin credential highlighted in its actions menu" />
 </Frame>
 
 ### Periodic tool sync

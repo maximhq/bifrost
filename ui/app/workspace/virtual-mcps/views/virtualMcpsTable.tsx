@@ -34,6 +34,7 @@ import { Check, ChevronLeft, ChevronRight, Copy, Loader2, MoreHorizontal, Pencil
 import { useMemo, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { getLocale } from "@/lib/i18n";
+import { withBasePath } from "@/lib/utils/basePath";
 
 interface VirtualMCPsTableProps {
 	virtualMcps: VirtualMCP[];
@@ -309,7 +310,7 @@ function EndpointCell({ slug, baseUrl }: { slug: string; baseUrl: string }) {
 			aria-label={t("registry.sheet.copyEndpointAria")}
 			data-testid={`virtual-mcp-endpoint-copy-${slug}`}
 		>
-			/mcp/{slug}
+			{withBasePath(`/mcp/${slug}`)}
 			<span className="opacity-0 transition-opacity group-hover:opacity-100">
 				{copied ? <Check className="size-3.5 shrink-0" /> : <Copy className="size-3.5 shrink-0" />}
 			</span>

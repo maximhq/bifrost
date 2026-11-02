@@ -44,6 +44,8 @@ import React from "react";
 import { useEffect, useMemo, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import i18n from "@/lib/i18n";
+import { getCurrentAppPath } from "@/lib/utils/basePath";
+import { buildLoginHref } from "@/lib/utils/loginGoto";
 
 // Mirrors handlers.TempTokenRejectedCode: a presented token was refused.
 const TEMP_TOKEN_REJECTED_CODE = "temp_token_rejected";
@@ -61,6 +63,7 @@ export default function MCPSessionsAuthPage() {
 	return <OAuthAuthView />;
 }
 
+/** Landing page for an MCP OAuth flow: starts the provider authorization for the `flow` query param. */
 function OAuthAuthView() {
 	const { t } = useTranslation("mcp");
 	const { toast } = useToast();
@@ -72,14 +75,14 @@ function OAuthAuthView() {
 	const [usingTempToken] = useState(() => getActiveTempToken() !== null);
 	const loginGoto = useMemo(() => {
 		if (typeof window !== "undefined") {
-			return `${window.location.pathname}${window.location.search}`;
+			return getCurrentAppPath();
 		}
 		if (flowId) {
 			return `/workspace/mcp-sessions/auth?flow=${encodeURIComponent(flowId)}`;
 		}
 		return "/workspace/mcp-sessions/auth";
 	}, [flowId]);
-	const loginHref = useMemo(() => `/login?goto=${encodeURIComponent(loginGoto)}`, [loginGoto]);
+	const loginHref = useMemo(() => buildLoginHref(loginGoto), [loginGoto]);
 	const signedOut = authState?.is_auth_enabled === true && authState.has_valid_token === false;
 	const showLoginOption = usingTempToken && signedOut;
 	const showTempTokenSSOWarning = showLoginOption && authState.auth_type === "sso";
@@ -251,7 +254,7 @@ function HeadersAuthView({ flowId }: { flowId: string }) {
 			const signedOut = authState?.is_auth_enabled === true && authState.has_valid_token === false;
 			if (getErrorCode(error) !== TEMP_TOKEN_REJECTED_CODE && signedOut) {
 				const returnPath = `/workspace/mcp-sessions/auth?flow=${encodeURIComponent(flowId)}&kind=headers`;
-				return <RedirectToSignIn loginHref={`/login?goto=${encodeURIComponent(returnPath)}`} />;
+				return <RedirectToSignIn loginHref={buildLoginHref(returnPath)} />;
 			}
 			return <InvalidLinkView />;
 		}

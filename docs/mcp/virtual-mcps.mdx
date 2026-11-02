@@ -27,7 +27,7 @@ Virtual MCPs were previously called **MCP Tool Groups**. The feature is now part
 
 A Virtual MCP bundles tools you choose from one or more of your MCP servers. For each server you add, you either expose all of its tools or pick a specific subset. One vMCP can pull from several servers, so a single endpoint can span them.
 
-Each vMCP is served at its own URL, `/mcp/<slug>`, and is reachable only through the virtual keys it's attached to. On enterprise, [access profiles](/enterprise/virtual-mcps) can also grant a vMCP (reachable through the profile's auto-allocated keys).
+Each vMCP is served at its own URL, `/mcp/<slug>` (`/<prefix>/mcp/<slug>` under a `server.base_path`; the dashboard's copy button gives the full address), and is reachable only through the virtual keys it's attached to. On enterprise, [access profiles](/enterprise/virtual-mcps) can also grant a vMCP (reachable through the profile's auto-allocated keys).
 
 ### The endpoint slug
 

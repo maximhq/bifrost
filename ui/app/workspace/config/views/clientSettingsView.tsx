@@ -1,3 +1,5 @@
+import BetaBadge from "@/components/betaBadge";
+import { LanguageSelect } from "@/components/language-switcher";
 import PageTitle from "@/components/pageTitle";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
@@ -69,6 +71,7 @@ function largePayloadConfigEqual(a: LargePayloadConfig, b: LargePayloadConfig): 
 
 export default function ClientSettingsView() {
 	const { t } = useTranslation("config");
+	const { t: tCommon } = useTranslation("common");
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
 	const [droppedRequests, setDroppedRequests] = useState<number>(0);
 	const { data: droppedRequestsData } = useGetDroppedRequestsQuery();
@@ -307,6 +310,18 @@ export default function ClientSettingsView() {
 			<PageTitle title={t("clientSettings.title")}>{t("clientSettings.description")}</PageTitle>
 
 			<div className="space-y-4">
+				{/* Language: per-browser preference, applied immediately (not part of Save) */}
+				<div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
+					<div className="space-y-0.5">
+						<label htmlFor="client-settings-language" className="flex items-center gap-2 text-sm font-medium">
+							{tCommon("language")}
+							<BetaBadge />
+						</label>
+						<p className="text-muted-foreground text-sm">{t("clientSettings.languageHelp")}</p>
+					</div>
+					<LanguageSelect id="client-settings-language" />
+				</div>
+
 				{/* Drop Excess Requests */}
 				<div className="flex items-center justify-between space-x-2">
 					<div className="space-y-0.5">

@@ -58,6 +58,7 @@ NC='\033[0m'
 BIFROST_BINARY=""
 PORT="8093"
 CHAOS_PORT="8494"
+CHAOS_TLS_PORT=""
 FOLDER=""
 REPORTERS="cli"
 VERBOSE=""
@@ -72,6 +73,7 @@ while [[ $# -gt 0 ]]; do
         --binary) BIFROST_BINARY="$2"; shift 2 ;;
         --port) PORT="$2"; shift 2 ;;
         --chaos-port) CHAOS_PORT="$2"; shift 2 ;;
+        --chaos-tls-port) CHAOS_TLS_PORT="$2"; shift 2 ;;
         --folder) FOLDER="$2"; shift 2 ;;
         --html) REPORTERS="${REPORTERS},html"; shift ;;
         --json) REPORTERS="${REPORTERS},json"; shift ;;
@@ -84,6 +86,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --binary <path>   Path to a built bifrost-http binary (required)"
             echo "  --port <port>     Port to boot the server on (default: 8093)"
             echo "  --chaos-port <p>  Port for the mcpchaos fleet (default: 8494)"
+            echo "  --chaos-tls-port <p>  HTTPS fleet port (default: fleet port + 1)"
             echo "  --folder <name>   Run only this collection folder (e.g. \"ADM\" or \"ADM-05 ...\")"
             echo "  --html            Generate HTML report"
             echo "  --json            Generate JSON report"
@@ -151,6 +154,12 @@ if port_in_use "$CHAOS_PORT"; then
     exit 1
 fi
 
+CHAOS_TLS_PORT="${CHAOS_TLS_PORT:-$((CHAOS_PORT + 1))}"
+if port_in_use "$CHAOS_TLS_PORT"; then
+    echo "Error: TLS port $CHAOS_TLS_PORT is already in use; pass --chaos-tls-port"
+    exit 1
+fi
+
 # write_chaos_seed writes the fleet mcpchaos boots with: alpha and beta, which
 # are only placeholders, since every test re-adds the servers it uses (resetting
 # their tools, faults, auth and counters); and library, which serves the boot
@@ -191,17 +200,17 @@ start_chaos() {
         echo -e "${RED}Error: failed to build mcpchaos${NC}"; exit 1; }
     local log="$API_DIR/$REPORT_DIR/mcpchaos.log"
     write_chaos_seed "$CHAOS_DIR/seed.json"
-    "$CHAOS_DIR/mcpchaos" -addr "127.0.0.1:$CHAOS_PORT" -seed "$CHAOS_DIR/seed.json" > "$log" 2>&1 &
+    "$CHAOS_DIR/mcpchaos" -addr "127.0.0.1:$CHAOS_PORT" -seed "$CHAOS_DIR/seed.json" -tls-addr "127.0.0.1:$CHAOS_TLS_PORT" > "$log" 2>&1 &
     CHAOS_PID=$!
     local waited=0
     while [ $waited -lt 40 ]; do
-        port_in_use "$CHAOS_PORT" && break
+        port_in_use "$CHAOS_PORT" && port_in_use "$CHAOS_TLS_PORT" && break
         if ! kill -0 "$CHAOS_PID" 2>/dev/null; then
             echo -e "${RED}mcpchaos exited during startup${NC}"; cat "$log"; exit 1
         fi
         sleep 0.5; waited=$((waited + 1))
     done
-    if ! port_in_use "$CHAOS_PORT"; then
+    if ! port_in_use "$CHAOS_PORT" || ! port_in_use "$CHAOS_TLS_PORT"; then
         echo -e "${RED}mcpchaos did not become ready${NC}"; cat "$log"; exit 1
     fi
     echo -e "${GREEN}mcpchaos ready on :$CHAOS_PORT${NC}"
@@ -231,7 +240,9 @@ write_config() {
     { "client_id": "adm68-h", "name": "adm68_h", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm68/mcp", "auth_type": "per_user_headers", "per_user_header_keys": ["x-key"], "tools_to_execute": ["*"] },
     { "client_id": "adm86-h", "name": "adm86_h", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm86h/mcp", "auth_type": "per_user_headers", "per_user_header_keys": ["x-key"], "tool_sync_interval": "5s", "tools_to_execute": ["*"] },
     { "client_id": "adm86-o", "name": "adm86_o", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm86o/mcp", "auth_type": "per_user_oauth", "tool_sync_interval": "5s", "tools_to_execute": ["*"] },
-    { "client_id": "adm86-c", "name": "adm86_c", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm86h/mcp", "auth_type": "headers", "headers": { "x-key": "good" }, "tool_sync_interval": "5s", "tools_to_execute": ["*"] }
+    { "client_id": "adm86-c", "name": "adm86_c", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm86h/mcp", "auth_type": "headers", "headers": { "x-key": "good" }, "tool_sync_interval": "5s", "tools_to_execute": ["*"] },
+    { "client_id": "adm85-h", "name": "adm85_h", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm85/mcp", "auth_type": "per_user_headers", "per_user_header_keys": ["x-key"], "tools_to_execute": ["*"] },
+    { "client_id": "auth47-t", "name": "auth47_t", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/auth47/mcp", "auth_type": "token_exchange", "token_exchange": { "audience": "auth47" }, "tools_to_execute": ["*"] }
   ] },
   "providers": {
     "openai": { "keys": [{ "name": "openai-mock", "value": "sk-mock", "models": ["*"], "weight": 1 }],
@@ -255,7 +266,8 @@ start_bifrost() {
     write_config "$SERVER_DIR"
     local log="$SERVER_DIR/server.log"
     # The setup token is what lets enable_dashboard_auth create the first admin account.
-    BIFROST_SETUP_TOKEN="$SETUP_TOKEN" "$BIFROST_BINARY" --app-dir "$SERVER_DIR" --port "$PORT" --log-level info > "$log" 2>&1 &
+    # SET-23 reads a header value from this variable; MCP_E2E_UNSET_KEY stays unset.
+    MCP_E2E_HEADER_KEY="mcp-e2e-header-key" BIFROST_SETUP_TOKEN="$SETUP_TOKEN" "$BIFROST_BINARY" --app-dir "$SERVER_DIR" --port "$PORT" --log-level info > "$log" 2>&1 &
     SERVER_PID=$!
     local elapsed=0
     while [ $elapsed -lt 60 ]; do
