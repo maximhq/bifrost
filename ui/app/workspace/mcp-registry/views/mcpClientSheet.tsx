@@ -94,6 +94,7 @@ import {
 	tokenExchangeProfileFormValues,
 	tokenExchangeProfilePayload,
 } from "./tokenExchangeFields";
+import { withBasePath } from "@/lib/utils/basePath";
 
 interface MCPClientSheetProps {
 	mcpClient: MCPClient;
@@ -1293,7 +1294,7 @@ export default function MCPClientSheet({
 												<div className="flex flex-col gap-2">
 													<div className="text-sm font-medium">{t("registry.columns.endpoint")}</div>
 													<div className="bg-muted/40 text-muted-foreground flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-sm">
-														<span className="font-mono break-all">/mcp/{mcpClient.config.endpoint_slug}</span>
+														<span className="font-mono break-all">{withBasePath(`/mcp/${mcpClient.config.endpoint_slug}`)}</span>
 														<button
 															type="button"
 															onClick={() => copyEndpoint(`${baseUrl}/mcp/${mcpClient.config.endpoint_slug}`)}
@@ -2497,7 +2498,9 @@ export default function MCPClientSheet({
 																			)}
 																		</div>
 																	</TableCell>
-																	<TableCell className="text-muted-foreground font-mono text-xs">/mcp/{vmcp.endpoint_slug}</TableCell>
+																	<TableCell className="text-muted-foreground font-mono text-xs">
+																		{withBasePath(`/mcp/${vmcp.endpoint_slug}`)}
+																	</TableCell>
 																	<TableCell className="text-muted-foreground text-sm">
 																		{toolNames.includes("*")
 																			? t("registry.sheet.allTools")
