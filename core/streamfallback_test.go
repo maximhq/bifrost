@@ -105,6 +105,82 @@ func newStreamTestClient(t *testing.T, account *MockAccount, plugins ...schemas.
 	return client
 }
 
+// TestChatStreamThroughResponsesPreservesParallelToolCalls exercises conversion through the core client.
+func TestChatStreamThroughResponsesPreservesParallelToolCalls(t *testing.T) {
+	paths := make(chan string, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths <- r.URL.Path
+		sseHandler(
+			`{"type":"response.created","response":{"id":"resp_1","model":"gpt-6-luna","status":"in_progress","output":[]}}`,
+			`{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_0","call_id":"call_0","name":"read","arguments":""}}`,
+			`{"type":"response.function_call_arguments.done","output_index":0,"item_id":"fc_0","arguments":"{\"filePath\":\"/tmp/demo.txt\"}"}`,
+			`{"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_0","call_id":"call_0","name":"read","arguments":"{\"filePath\":\"/tmp/demo.txt\"}"}}`,
+			`{"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"glob","arguments":""}}`,
+			`{"type":"response.function_call_arguments.done","output_index":1,"item_id":"fc_1","arguments":"{\"pattern\":\"*.go\"}"}`,
+			`{"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"glob","arguments":"{\"pattern\":\"*.go\"}"}}`,
+			`{"type":"response.completed","response":{"id":"resp_1","model":"gpt-6-luna","status":"completed","output":[{"type":"function_call","call_id":"call_0","name":"read","arguments":"{\"filePath\":\"/tmp/demo.txt\"}"},{"type":"function_call","call_id":"call_1","name":"glob","arguments":"{\"pattern\":\"*.go\"}"}]}}`,
+		)(w, r)
+	}))
+	defer upstream.Close()
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, upstream.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{
+		ID: "key", Value: *schemas.NewSecretVar("test-key"), Models: schemas.WhiteList{"*"}, Weight: 100,
+	}})
+	client := newStreamTestClient(t, account)
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(5*time.Second))
+	stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-6-luna",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Call the tools.")}}},
+		Params:   &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Mode: schemas.Ptr("pro")}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("chat stream failed: %+v", bifrostErr)
+	}
+	if stream == nil {
+		t.Fatal("chat stream is nil")
+	}
+	type toolCall struct{ id, name, arguments string }
+	calls := map[uint16]toolCall{}
+	for chunk := range stream {
+		if chunk.BifrostError != nil {
+			t.Fatalf("stream returned an error: %+v", chunk.BifrostError)
+		}
+		if chunk.BifrostChatResponse == nil {
+			continue
+		}
+		for _, choice := range chunk.BifrostChatResponse.Choices {
+			if choice.Delta == nil {
+				continue
+			}
+			for _, part := range choice.Delta.ToolCalls {
+				call := calls[part.Index]
+				if part.ID != nil {
+					call.id = *part.ID
+				}
+				if part.Function.Name != nil {
+					call.name = *part.Function.Name
+				}
+				call.arguments += part.Function.Arguments
+				calls[part.Index] = call
+			}
+		}
+	}
+	select {
+	case got := <-paths:
+		if got != "/v1/responses" {
+			t.Fatalf("upstream path = %q, want /v1/responses", got)
+		}
+	default:
+		t.Fatal("no upstream request was recorded")
+	}
+	if len(calls) != 2 || calls[0] != (toolCall{"call_0", "read", `{"filePath":"/tmp/demo.txt"}`}) || calls[1] != (toolCall{"call_1", "glob", `{"pattern":"*.go"}`}) {
+		t.Fatalf("converted calls = %+v", calls)
+	}
+}
+
 func TestAzureSpeechErrorAfterPreamble(t *testing.T) {
 	primary := httptest.NewServer(sseHandler(
 		`{"type":"speech.audio.delta","audio":""}`,
