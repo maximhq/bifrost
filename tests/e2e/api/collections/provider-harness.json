@@ -303137,6 +303137,127 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "303. Logs metadata filter matches any of several values per key (metadata multi-select) (BF-2783)",
+      "description": "BF-2783: the Logs page's Metadata filter held one value per key, so checking a second value replaced the first. The filter now holds several values per key: a row matches when it holds any of them, and separate keys must all match. On the wire, /api/logs (and the stats, histogram and filter-data routes that share parseMetadataFilters) read metadata_<key> as a plain value (unchanged, commas included), a JSON array of values (what the dashboard sends for two or more), or the param repeated. One self-contained row, like the vk-metadata-logs case: the main request is chat a carrying x-bf-lh-harness_mselect=a-<run>; the test script sends chats b and c with their own values, then polls /api/logs with the JSON array [a, b] (expects exactly a and b), the repeated param a&c (expects a and c) and the plain value c (expects c), and deletes the three rows. Red before the change: the JSON array was read as one literal value, so it matched nothing, and a repeated param kept only its last value, so it found c alone. Values carry the run id, so a parallel shard's rows never match. The SQL for each dialect (OR within a key, AND across keys) is covered by TestSearchLogs_MetadataFilter_StringMatching_SQLite/_Postgres, the param parsing by TestParseMetadataFilters.",
+      "item": [
+        {
+          "name": "openai gpt-4o-mini metadata multi-select: several values for one metadata key match any of them on /api/logs - BF-2783",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A fresh run id per request: collection variables outlive a run in Postman, and the logs",
+                  "// filter must only ever see this run's rows. The random suffix keeps two shards apart.",
+                  "pm.collectionVariables.set('metadataMultiSelectRun', 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var run = pm.collectionVariables.get('metadataMultiSelectRun');",
+                  "var KEY = 'harness_mselect';",
+                  "// x-bifrost-request-id is the id the row is logged under; x-request-id is replaced by OpenAI's own req_ id once it answers.",
+                  "var ids = { a: pm.response.headers.get('x-bifrost-request-id') };",
+                  "pm.test('metadata multi-select: chat a succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(ids.a, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "function call(method, path, body, headers, cb) {",
+                  "  var h = { 'Content-Type': 'application/json' };",
+                  "  Object.keys(headers || {}).forEach(function (k) { h[k] = headers[k]; });",
+                  "  var req = { url: BASE + path, method: method, header: h };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var j = null; try { j = res.json(); } catch (e) { j = null; }",
+                  "    cb(res, j);",
+                  "  });",
+                  "}",
+                  "function cleanup() {",
+                  "  var rows = [ids.a, ids.b, ids.c].filter(function (id) { return !!id; });",
+                  "  if (rows.length === 0) { return; }",
+                  "  call('DELETE', '/api/logs', { ids: rows }, null, function (res) {",
+                  "    pm.test('cleanup: log rows deleted', function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  });",
+                  "}",
+                  "function chat(label, cb) {",
+                  "  var headers = {}; headers['x-bf-lh-' + KEY] = label + '-' + run;",
+                  "  call('POST', '/v1/chat/completions', { model: 'openai/gpt-4o-mini', messages: [{ role: 'user', content: 'Reply with OK.' }], max_tokens: 5 }, headers, function (res) {",
+                  "    var id = res ? res.headers.get('x-bifrost-request-id') : null;",
+                  "    pm.test('metadata multi-select: chat ' + label + ' succeeds', function () {",
+                  "      pm.expect(res && res.code, 'chat ' + label + ': ' + (res ? res.text() : 'no response')).to.eql(200);",
+                  "      pm.expect(id, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "    });",
+                  "    ids[label] = id;",
+                  "    cb(!!(res && res.code === 200 && id));",
+                  "  });",
+                  "}",
+                  "// The log writer batches, so each read polls until the expected rows are visible. Bounded: ten reads 1.5s apart.",
+                  "function expectRows(title, query, want, attempt, next) {",
+                  "  call('GET', '/api/logs?' + query + '&limit=10', null, null, function (res, j) {",
+                  "    var got = ((j && j.logs) || []).map(function (l) { return l.id; }).sort();",
+                  "    var expected = want.map(function (k) { return ids[k]; }).sort();",
+                  "    if ((!res || res.code !== 200 || JSON.stringify(got) !== JSON.stringify(expected)) && attempt < 10) {",
+                  "      setTimeout(function () { expectRows(title, query, want, attempt + 1, next); }, 1500); return;",
+                  "    }",
+                  "    pm.test('metadata multi-select: ' + title, function () {",
+                  "      pm.expect(res && res.code, 'logs list: ' + (res ? res.text() : 'no response')).to.eql(200);",
+                  "      pm.expect(got, 'rows for ' + query + ': ' + (res ? res.text() : '')).to.eql(expected);",
+                  "    });",
+                  "    next();",
+                  "  });",
+                  "}",
+                  "function v(label) { return label + '-' + run; }",
+                  "if (pm.response.code !== 200 || !ids.a) { cleanup(); return; }",
+                  "chat('b', function (okB) {",
+                  "  chat('c', function (okC) {",
+                  "    if (!okB || !okC) { cleanup(); return; }",
+                  "    var arrayParam = 'metadata_' + KEY + '=' + encodeURIComponent(JSON.stringify([v('a'), v('b')]));",
+                  "    expectRows('a JSON array of two values finds both rows and not the third', arrayParam, ['a', 'b'], 0, function () {",
+                  "      var repeated = 'metadata_' + KEY + '=' + encodeURIComponent(v('a')) + '&metadata_' + KEY + '=' + encodeURIComponent(v('c'));",
+                  "      expectRows('a repeated param ORs its values', repeated, ['a', 'c'], 0, function () {",
+                  "        expectRows('a single plain value still matches only its row', 'metadata_' + KEY + '=' + encodeURIComponent(v('c')), ['c'], 0, cleanup);",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-lh-harness_mselect",
+                "value": "a-{{metadataMultiSelectRun}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with OK.\"}],\"max_tokens\":5}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        }
+      ]
     }
   ]
 }
