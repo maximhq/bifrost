@@ -3180,6 +3180,19 @@ const INF57 = folder("INF-57 Nested call transport failure", `Setup: ${CM_TEXT};
   cmTeardown("INF-57"),
 ]);
 
+const INF59 = folder("INF-59 Per-client timeout inside code mode", `Setup: ${CM_TEXT}, tool_execution_timeout 1; the global tool execution timeout stays 30s; cm then answers every tools/call after 5s. Then the client's timeout is raised to 10 and the global lowered to 2: the script's own deadline still ends the nested call.`, [
+  ...cmSetup("INF-59", ["echo", "add"], { tool_execution_timeout: 1 }),
+  mockPost("INF-59", "cm", "faults", "setup: cm answers every tools/call after 5s", { faults: { latency: "5s", methods: ["tools/call"] } }),
+  code("INF-59", "call cm.echo", "r = cm.echo(text='hi')\nresult = r", [A.status(200), isError(), contentHas("timed out after 1s"), responseTime(null, 4000)]),
+  readConfig("INF-59"),
+  request("INF-59", "setup: raise cm's tool_execution_timeout to 10", "PUT", "/api/mcp/client/inf-59-cm", { body: { tool_execution_timeout: 10 }, asserts: [A.status(200)] }),
+  putConfig("INF-59", "setup: mcp_tool_execution_timeout 2", ["cc.mcp_tool_execution_timeout = 2;"], [A.status(200)]),
+  code("INF-59", "a 10s client timeout does not outlast the 2s script", "r = cm.echo(text='hi')\nresult = r", [A.status(200), isError(), responseTime(1500, 4000)]),
+  restoreConfig("INF-59"),
+  mockPost("INF-59", "cm", "faults/clear", "teardown: clear cm's faults"),
+  cmTeardown("INF-59"),
+]);
+
 // INF-58 counts log entries before and after. MCP log entries are written in 5s batches, so the baseline waits 7s
 // for earlier folders' log entries to land, and the after-count polls until the two nested log entries arrive.
 const logCountReq = (id, title, query, varName, pre = [], asserts = []) => request(id, title, "GET", `/api/mcp-logs?${query}`, {
@@ -7824,7 +7837,7 @@ const collection = {
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS40, OAS42]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET21, SET22, SET26]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV37, GOV38]),
-    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
+    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL14, FAIL16, FAIL18, FAIL19, FAIL25]),
