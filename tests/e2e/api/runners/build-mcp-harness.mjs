@@ -5442,6 +5442,17 @@ const LIB26 = folder("LIB-26 Catalog returns HTTP 500", "Setup: library answers 
   resetLibrary("LIB-26"),
 ]);
 
+const LIB27 = folder("LIB-27 Catalog returns malformed JSON", "Setup: library serves the body \"{\" for /catalog.json; its request log is cleared first.", [
+  mockPost("LIB-27", "library", "counters/reset", "setup: clear library's request log", {}),
+  request("LIB-27", "setup: library serves \"{\"", "POST", "/control/library/routes/add", { base: CHAOS, noAuth: true, body: { route: { method: "GET", path: "/catalog.json", body: "{" } }, asserts: [A.status(200)] }),
+  request("LIB-27", "force-sync", "POST", `${LIBRARY}/force-sync`, { asserts: [A.status(500), A.msgContains("failed to unmarshal MCP library data")] }),
+  mockGet("LIB-27", "library", "the catalog was hit once", [A.custom("1 request for /catalog.json", [
+    "var calls = ((pm.response.json().rest || {}).calls || []).filter(function (c) { return c.path === '/catalog.json'; });",
+    "pm.expect(calls.length, 'body: ' + pm.response.text()).to.equal(1);",
+  ])]),
+  resetLibrary("LIB-27"),
+]);
+
 const LIB34 = folder("LIB-34 Loopback URL over the API", "Setup: PUT /api/config with framework_config.mcp_library_url set to the mock catalog's URL spelled with a query (?lib34=1), so it differs from the stored URL; library's request log is cleared first.", [
   readConfig("LIB-34"),
   request("LIB-34", "control: the URL answers 200", "GET", "/s/library/rest/catalog.json?lib34=1", { base: CHAOS, noAuth: true, asserts: [A.status(200)] }),
@@ -7901,7 +7912,7 @@ const collection = {
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET21, SET22, SET26]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV37, GOV38]),
     section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
-    section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB32, LIB33, LIB34, LIB36, LIB37]),
+    section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB27, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL14, FAIL16, FAIL18, FAIL19, FAIL25]),
   ],

@@ -5056,34 +5056,14 @@ func (h *MCPHandler) createMCPLibraryEntry(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Validate connection type and the matching connection field.
-	switch req.ConnectionType {
-	case schemas.MCPConnectionTypeHTTP, schemas.MCPConnectionTypeSSE:
-		if strings.TrimSpace(req.ConnectionURL) == "" {
-			SendError(ctx, fasthttp.StatusBadRequest, "connection_url is required for http/sse connection types")
-			return
-		}
-	case schemas.MCPConnectionTypeSTDIO:
-		if req.StdioConfig == nil || strings.TrimSpace(req.StdioConfig.Command) == "" {
-			SendError(ctx, fasthttp.StatusBadRequest, "stdio_config.command is required for stdio connection type")
-			return
-		}
-	default:
-		SendError(ctx, fasthttp.StatusBadRequest, "connection_type must be one of: http, stdio, sse")
+	// Validate the connection and auth fields with the checks the catalog sync
+	// also applies, then default the auth type.
+	if err := modelcatalog.ValidateMCPLibraryEntry(req.ConnectionType, req.ConnectionURL, req.StdioConfig, req.AuthType); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
-
-	// Default and validate auth type.
 	if req.AuthType == "" {
 		req.AuthType = schemas.MCPAuthTypeNone
-	}
-	switch req.AuthType {
-	case schemas.MCPAuthTypeNone, schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypeOauth,
-		schemas.MCPAuthTypePerUserOauth, schemas.MCPAuthTypePerUserHeaders,
-		schemas.MCPAuthTypeTokenExchange:
-	default:
-		SendError(ctx, fasthttp.StatusBadRequest, "invalid auth_type")
-		return
 	}
 
 	slug := modelcatalog.Slugify(req.Name)
