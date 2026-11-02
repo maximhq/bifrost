@@ -1382,7 +1382,7 @@ func shouldSkipToolForConfig(toolName string, config *schemas.MCPClientConfig) b
 		// Strip client prefix from tool name before checking
 		// Tool names in config are stored without prefix (e.g., "add")
 		// but tool names in ToolMap are stored with prefix (e.g., "calculator/add")
-		unprefixedToolName := stripClientPrefix(toolName, config.Name)
+		unprefixedToolName := StripClientPrefix(toolName, config.Name)
 
 		// Check if specific tool is in the allowed list
 		return !config.ToolsToExecute.Contains(unprefixedToolName) // Tool not in allowed list
@@ -1414,7 +1414,7 @@ func CanAutoExecuteTool(toolName string, config *schemas.MCPClientConfig) bool {
 		// Strip client prefix from tool name before checking
 		// Tool names in config are stored without prefix (e.g., "add")
 		// but tool names in ToolMap are stored with prefix (e.g., "calculator/add")
-		unprefixedToolName := stripClientPrefix(toolName, config.Name)
+		unprefixedToolName := StripClientPrefix(toolName, config.Name)
 
 		// Check if specific tool is in the auto-execute list
 		return config.ToolsToAutoExecute.Contains(unprefixedToolName)
@@ -1946,7 +1946,7 @@ func hasToolCallsForResponsesResponse(response *schemas.BifrostResponsesResponse
 	return false
 }
 
-// stripClientPrefix removes the client name prefix from a tool name.
+// StripClientPrefix removes the client name prefix from a tool name.
 // Tool names are stored with format "{clientName}-{toolName}", but when calling
 // the MCP server, we need the original tool name without the prefix.
 //
@@ -1956,7 +1956,7 @@ func hasToolCallsForResponsesResponse(response *schemas.BifrostResponsesResponse
 //
 // Returns:
 //   - string: Sanitized tool name without prefix (e.g., "add")
-func stripClientPrefix(prefixedToolName, clientName string) string {
+func StripClientPrefix(prefixedToolName, clientName string) string {
 	prefix := clientName + "-"
 	if strings.HasPrefix(prefixedToolName, prefix) {
 		return strings.TrimPrefix(prefixedToolName, prefix)

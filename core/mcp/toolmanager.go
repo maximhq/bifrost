@@ -892,7 +892,7 @@ func (m *ToolsManager) executeToolInternal(
 
 	// Strip the client name prefix from tool name before calling MCP server. Tools are listed and
 	// resolved by their exact upstream names, so what remains is the name the server expects.
-	originalMCPToolName := stripClientPrefix(toolName, executionConfig.Name)
+	originalMCPToolName := StripClientPrefix(toolName, executionConfig.Name)
 
 	// Create timeout context for tool execution.
 	// Per-server timeout (executionConfig.ToolExecutionTimeout) takes precedence over the global.
