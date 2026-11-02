@@ -799,12 +799,16 @@
 			"updateValues": "Werte aktualisieren",
 			"editValues": "Werte bearbeiten"
 		},
+		"revokeFlowTitle": "Diesen ausstehenden Ablauf widerrufen?",
+		"revokeFlowDescription": "Bifrost löscht diesen ausstehenden Ablauf. Sein Link funktioniert danach nicht mehr. Bereits für diese Zuordnung gespeicherte Anmeldedaten bleiben erhalten; widerrufen Sie deren eigene Zeile, um sie zu entfernen.",
 		"revokeHeaderTitle": "Diese gespeicherten Header-Werte widerrufen?",
 		"revokeHeaderDescription": "Bifrost entfernt die gespeicherten Anmeldedaten für diese Bindung. Es gibt kein Upstream-Token, das widerrufen werden muss; der Benutzer muss seine Header-Werte erneut übermitteln, um dieses MCP wieder zu verwenden.",
 		"revokeSessionTitle": "Diese MCP-Sitzung widerrufen?",
 		"revokeSessionDescription": "Bifrost entfernt die gespeicherten Anmeldedaten für diese Bindung. Das Upstream-OAuth-Token wird beim Anbieter nicht widerrufen; es bleibt getrennt und läuft normal ab. Jeder, der diese Bindung verwendet, muss sich erneut authentifizieren, um ein neues Token zu erhalten.",
 		"toast": {
 			"reauthFailed": "Erneute Authentifizierung fehlgeschlagen",
+			"flowRevoked": "Ausstehender Ablauf widerrufen",
+			"flowRevokeFailed": "Ausstehender Ablauf konnte nicht widerrufen werden",
 			"headerRevoked": "Header-Werte widerrufen",
 			"sessionRevoked": "Sitzung widerrufen",
 			"headerRevokeFailed": "Header-Werte konnten nicht widerrufen werden",
