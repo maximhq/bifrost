@@ -14,7 +14,7 @@ Noma owns the detection policy. Detectors, sensitivity, and the action for each 
 |---------------|------------------|
 | **Allow** | The request or response continues unchanged. |
 | **Alert** | The content continues unchanged; the detection is recorded in Bifrost guardrail logs and in Noma. |
-| **Mask** | Bifrost replaces each value Noma flagged using the profile's redaction strategy and mode, for example `[CREDIT_CARD]`. |
+| **Mask** | Bifrost replaces each value Noma flagged using the profile's redaction strategy and mode, for example `[CREDIT_CARD]`. With `redaction_mode: logs_only`, the request and response stay unchanged and only stored logs are masked. |
 | **Block** or **Ask** | Bifrost returns a guardrail intervention. `ask` is treated as a block because a gateway cannot prompt the end user. |
 
 <Note>
@@ -50,11 +50,11 @@ Bifrost attributes each scan to the configured application, the Bifrost request 
 
 ### Streaming Responses
 
-When Noma is the only provider enforcing a rule's output, Bifrost streams Chat Completions and Text Completions responses progressively. It sends Noma the response generated so far at sentence boundaries and releases text as soon as Noma clears it.
+When Noma is the only provider enforcing a rule's output, Bifrost streams responses progressively. It sends Noma the response generated so far at sentence boundaries and releases text as soon as Noma clears it.
 
 - A **block** ends the stream after the text already delivered.
 - A **mask** is applied to text that has not been delivered yet. If a mask would change text the client already received, the stream ends instead.
-- If Noma cannot be reached mid-stream, the stream ends rather than releasing unchecked text.
+- If Noma cannot be reached mid-stream, the stream ends rather than releasing unchecked text, because text already delivered cannot be recalled. Outside progressive streaming, a Noma error follows the standard guardrail behavior: the error is reported and the request continues.
 
 Bifrost holds the complete response and evaluates it once when another provider also enforces the output, for Responses API streams, for requests that declare tools, and for requests that ask for more than one choice.
 
@@ -67,13 +67,17 @@ Bifrost holds the complete response and evaluates it once when another provider 
 | `application_id` | string | Yes | - | Noma application whose Runtime Protection profile decides each action. |
 | `base_url` | string | No | `https://api.noma.security` | Noma API root: `https://api.us2.noma.security` (Azure), `https://api.eu.noma.security`, `https://api.ap.noma.security`, `https://api.ap5.noma.security`, or your Noma broker URL. Changing it on a saved profile requires re-entering `client_secret`. |
 | `redaction_strategy` | string | No | `replace` | How masked values are rendered: `replace`, `mask`, or `hash`. |
-| `redaction_mode` | string | No | `runtime` | Where masking applies: `runtime`, `logs_only`, or `runtime_reversible`. See [Guardrail Redaction](/enterprise/guardrails/redaction). |
+| `redaction_mode` | string | No | `runtime` | Where masking applies: `runtime` and `runtime_reversible` mask the request and response, while `logs_only` leaves them unchanged and masks only stored logs. See [Guardrail Redaction](/enterprise/guardrails/redaction). |
 | `timeout` | integer | No | `30` | Provider execution timeout in seconds. |
 
 ## Configure Bifrost
 
 <Tabs group="noma-security-config">
 <Tab title="Web UI">
+
+<Frame>
+  <img src="/media/guardrails/noma-security-configuration.png" alt="Noma Security configuration in the Bifrost Guardrails Providers screen" />
+</Frame>
 
 1. Go to **Guardrails** > **Providers**.
 2. Select **Noma Security** and click **Add Configuration**.
@@ -121,7 +125,7 @@ curl -X POST http://localhost:8080/api/guardrails/rules \
     "name": "noma-all-traffic",
     "description": "Apply Noma AI-DR to prompts and completions",
     "enabled": true,
-    "celExpression": "provider == \"openai\"",
+    "celExpression": "true",
     "applyTo": "both",
     "samplingRate": 100,
     "timeout": 60,
@@ -158,7 +162,7 @@ curl -X POST http://localhost:8080/api/guardrails/rules \
         "name": "noma-all-traffic",
         "description": "Apply Noma AI-DR to prompts and completions",
         "enabled": true,
-        "cel_expression": "provider == 'openai'",
+        "cel_expression": "true",
         "apply_to": "both",
         "sampling_rate": 100,
         "timeout": 60,
@@ -194,7 +198,7 @@ bifrost:
         name: "noma-all-traffic"
         description: "Apply Noma AI-DR to prompts and completions"
         enabled: true
-        cel_expression: "provider == 'openai'"
+        cel_expression: "true"
         apply_to: "both"
         sampling_rate: 100
         timeout: 60
@@ -206,7 +210,7 @@ bifrost:
 
 ## Supported Content and Limitations
 
-- **Latest turn only:** Noma evaluates the newest user message and everything after it. Earlier turns are context and are not re-evaluated, and Noma does not re-report items it already scanned in the same session. A value masked on one turn is therefore not masked again when the client replays it in later turns. To have every turn evaluated on each request, set the rule's evaluation mode to per-turn.
+- **Latest turn only:** Noma evaluates the newest user message and everything after it. Earlier turns are context and are not re-evaluated, and Noma does not re-report items it already scanned in the same session. A value masked on one turn is therefore not masked again when the client replays it in later turns.
 - **Tool calls and tool results:** Noma evaluates tool-call arguments and tool results, and Bifrost can block or mask them. MCP tool executions are evaluated together with the call that produced them.
 - **System prompts and images:** Noma does not evaluate system prompts or image content.
 - **Fallbacks:** When a request falls back to another provider, Bifrost reapplies the first attempt's Noma decision instead of scanning the same content again.

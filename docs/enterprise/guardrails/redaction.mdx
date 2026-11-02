@@ -18,7 +18,7 @@ Bifrost applies span-based runtime redaction for:
 - [Singulr AI](/integrations/guardrails/singulr-ai)
 - [Noma Security](/integrations/guardrails/noma-security)
 
-Providers return findings with ranges and entity types such as `EMAIL`, `PHONE_NUMBER`, `AWS_ACCESS_TOKEN`, or a custom regex `entity_type`. For providers with Bifrost redaction controls, Bifrost applies the configured action, strategy, and mode. Singulr chooses the action in its own policy configuration; Bifrost applies its valid redaction spans with fixed runtime replacement. Noma chooses when to mask in its Runtime Protection profile; Bifrost applies the configured strategy and mode to the values Noma flags.
+Providers return findings with ranges and entity types such as `EMAIL`, `PHONE_NUMBER`, `AWS_ACCESS_TOKEN`, or a custom regex `entity_type`. For providers with Bifrost redaction controls, Bifrost applies the configured action, strategy, and mode. Singulr chooses the action in its own policy configuration; Bifrost applies its valid redaction spans with fixed runtime replacement. Noma chooses when to mask in its Runtime Protection profile. Instead of ranges, it reports the flagged values, and Bifrost applies the configured strategy and mode to every verbatim occurrence of each value.
 
 <Note>
 Redaction only applies to text that a guardrail provider detects. If a provider does not detect a value, Bifrost cannot redact that value in runtime payloads, logs, or connector exports.
