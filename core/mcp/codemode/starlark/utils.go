@@ -3,6 +3,7 @@
 package starlark
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"regexp"
@@ -20,9 +21,10 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// serverInstructionsComment renders the client's upstream instructions, or "" if it advertises
-// none. Shared by readToolFile and getToolDocs: every stub documenting a server carries them.
-func (s *StarlarkCodeMode) serverInstructionsComment(clientName string) string {
+// serverInstructionsComment renders the client's upstream instructions as the caller on ctx sees
+// them, or "" if it advertises none. Shared by readToolFile and getToolDocs: every stub
+// documenting a server carries them.
+func (s *StarlarkCodeMode) serverInstructionsComment(ctx context.Context, clientName string) string {
 	client := s.clientManager.GetClientByName(clientName)
 	if client == nil || client.ExecutionConfig == nil {
 		return ""
@@ -33,7 +35,7 @@ func (s *StarlarkCodeMode) serverInstructionsComment(clientName string) string {
 	if limit <= 0 {
 		limit = s.clientManager.InstructionCaps().PerClient
 	}
-	return codemcp.InstructionsCommentBlock(client.ServerInstructions, limit)
+	return codemcp.InstructionsCommentBlock(s.clientManager.GetInstructionsForClient(ctx, client.ExecutionConfig.ID), limit)
 }
 
 // jsonModuleShadowed reports whether a code mode server is bound as "json", which keeps the

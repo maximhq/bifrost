@@ -743,7 +743,7 @@ func TestUpdateConfig_MCPOAuthPrivateAllowlistRemovalSurvivesFailedReload(t *tes
 	server := newLoopbackOAuthMCPServer(t)
 	provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 	mcpCfg := &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, OAuthProvider: provider}
-	mh := &MCPHandler{store: mcpCfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, mcpCfg)}
+	mh := &MCPHandler{store: mcpCfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, mcpCfg, nil)}
 	var req fasthttp.Request
 	req.Header.SetMethod(fasthttp.MethodPost)
 	req.Header.SetContentType("application/json")
@@ -760,7 +760,7 @@ func TestUpdateConfig_MCPOAuthPrivateAllowlistRemovalSurvivesFailedReload(t *tes
 // TestUpdateConfig_EmptyDatasheetURLsResetToDefaults pins the regression where
 // PUT /api/config rejected an empty pricing_url with "URL cannot be empty".
 // The custom pricing page sends "" when the user clears the field; an empty
-// pricing_url or model_parameters_url means "use the built-in datasheet URL".
+// pricing_url, model_parameters_url or mcp_library_url means "use the built-in URL".
 func TestUpdateConfig_EmptyDatasheetURLsResetToDefaults(t *testing.T) {
 	// The datasheet server below is loopback-bound; the accessibility check refuses loopback
 	// by default, so route its dial through a plain dialer for this test only.
@@ -776,28 +776,31 @@ func TestUpdateConfig_EmptyDatasheetURLsResetToDefaults(t *testing.T) {
 	// are refused over the API (TestUpdateConfig_RejectsFileURLsOverAPI).
 	customURL := newDatasheetServer(t).URL
 
-	save := func(t *testing.T, pricingURL, modelParamsURL string) {
+	save := func(t *testing.T, pricingURL, modelParamsURL, mcpLibraryURL string) {
 		t.Helper()
-		ctx := putConfigCtx(`{"client_config":{"log_retention_days":7},"framework_config":{"pricing_url":"` + pricingURL + `","model_parameters_url":"` + modelParamsURL + `"}}`)
+		ctx := putConfigCtx(`{"client_config":{"log_retention_days":7},"framework_config":{"pricing_url":"` + pricingURL + `","model_parameters_url":"` + modelParamsURL + `","mcp_library_url":"` + mcpLibraryURL + `"}}`)
 		h.updateConfig(ctx)
 		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
 	}
 
-	save(t, customURL, customURL)
+	save(t, customURL, customURL, customURL)
 	persisted, err := store.GetFrameworkConfig(bgCtx())
 	require.NoError(t, err)
 	require.NotNil(t, persisted)
 	assert.Equal(t, customURL, *persisted.PricingURL)
 	assert.Equal(t, customURL, *persisted.ModelParametersURL)
+	assert.Equal(t, customURL, *persisted.MCPLibraryURL)
 
-	save(t, "", "")
+	save(t, "", "", "")
 	persisted, err = store.GetFrameworkConfig(bgCtx())
 	require.NoError(t, err)
 	require.NotNil(t, persisted)
 	assert.Equal(t, modelcatalog.DefaultPricingURL, *persisted.PricingURL, "empty pricing_url must reset to the default")
 	assert.Equal(t, modelcatalog.DefaultModelParametersURL, *persisted.ModelParametersURL, "empty model_parameters_url must reset to the default")
+	assert.Equal(t, modelcatalog.DefaultMCPLibraryURL, *persisted.MCPLibraryURL, "empty mcp_library_url must reset to the default")
 	assert.Equal(t, modelcatalog.DefaultPricingURL, *cfg.FrameworkConfig.Pricing.PricingURL)
 	assert.Equal(t, modelcatalog.DefaultModelParametersURL, *cfg.FrameworkConfig.Pricing.ModelParametersURL)
+	assert.Equal(t, modelcatalog.DefaultMCPLibraryURL, *cfg.FrameworkConfig.Pricing.MCPLibraryURL)
 }
 
 // failingFrameworkConfigStore makes the framework config write fail while every
