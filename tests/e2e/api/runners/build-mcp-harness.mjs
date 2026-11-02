@@ -3445,9 +3445,30 @@ const LIB37 = folder("LIB-37 Valid interval", "Setup: PUT /api/config with frame
   frameworkPut("LIB-37", "teardown: restore mcp_library_sync_interval", "mcp_library_sync_interval", "JSON.parse(pm.collectionVariables.get('lib37_interval'))", [A.status(200)]),
 ]);
 
+const FAIL01 = folder("FAIL-01 Per-call create while the upstream is down", "Setup: alpha (echo_tool, add_tool), then removed from the mock; a per-call client fail-01-a on alpha's URL, tools_to_execute [\"*\"]; then alpha comes back with the same tools.", [
+  ...freshServer("FAIL-01", "alpha", ["echo_tool", "add_tool"]),
+  request("FAIL-01", "setup: remove alpha", "POST", "/control", { base: CHAOS, noAuth: true, body: { remove: "alpha" }, asserts: [A.status(200)] }),
+  createClient("FAIL-01", httpClient("fail-01-a", "alpha", "alpha", { tools_to_execute: ["*"] }), "create the per-call client while alpha is down"),
+  getClient("FAIL-01", "fail-01-a", "the client is unstable at stage tool_discovery, with no tools", [clientState("unstable"), clientField("last_failure.stage", "tool_discovery"), toolNamesAre([])]),
+  ...freshServer("FAIL-01", "alpha", ["echo_tool", "add_tool"]),
+  request("FAIL-01", "refresh-tools once alpha is back", "POST", "/api/mcp/client/fail-01-a/refresh-tools", { asserts: [A.status(200), A.jsonEquals("tool_count", 2)] }),
+  getClient("FAIL-01", "fail-01-a", "the client is healthy with both tools", [clientState("healthy"), toolNamesAre(["add_tool", "echo_tool"])],
+    { pre: waitForClient("fail-01-a", "c.state === 'healthy'", 80) }),
+  deleteClient("FAIL-01", "fail-01-a"),
+]);
+
 const FAIL02 = folder("FAIL-02 SSE create against a closed port", "Setup: an SSE client named alpha at 127.0.0.1:9, where nothing listens.", [
   createExpect("FAIL-02", "create the SSE client", { client_id: "fail02-a", name: "alpha", connection_type: "sse", connection_string: "http://127.0.0.1:9/s/alpha/sse", auth_type: "none", tools_to_execute: ["*"] },
     [A.status(500), A.msgContains("failed to start MCP client transport: "), responseTime(30000, 40000)]),
+]);
+
+const FAIL12 = folder("FAIL-12 tools/list failure at create, per call", "Setup: alpha (echo_tool, add_tool) failing every tools/list; a per-call client fail-12-b on alpha, tools_to_execute [\"*\"].", [
+  ...freshServer("FAIL-12", "alpha", ["echo_tool", "add_tool"]),
+  mockPost("FAIL-12", "alpha", "faults", "setup: alpha fails every tools/list", { faults: { list_fail: true } }),
+  createClient("FAIL-12", httpClient("fail-12-b", "alpha", "alpha", { tools_to_execute: ["*"] }), "create the per-call client"),
+  getClient("FAIL-12", "fail-12-b", "the client is unstable at stage tool_discovery, with no tools", [clientState("unstable"), clientField("last_failure.stage", "tool_discovery"), toolNamesAre([])]),
+  mockPost("FAIL-12", "alpha", "faults/clear", "teardown: clear alpha's faults"),
+  deleteClient("FAIL-12", "fail-12-b"),
 ]);
 
 const FAIL14 = folder("FAIL-14 refresh-tools during a list failure", "Setup: alpha (echo_tool, add_tool) as client alpha, sticky, tools_to_execute [\"*\"]; then alpha fails tools/list.", [
@@ -7918,7 +7939,7 @@ const collection = {
     section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB27, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43]),
-    section("FAIL Failure handling", "Failure handling tests.", [FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL14, FAIL16, FAIL18, FAIL19, FAIL25]),
+    section("FAIL Failure handling", "Failure handling tests.", [FAIL01, FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL12, FAIL14, FAIL16, FAIL18, FAIL19, FAIL25]),
   ],
 };
 
