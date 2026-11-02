@@ -4222,7 +4222,7 @@ const R1 = "https://r1.mcp-harness.example/mcp";
 // AUTH12_RESOURCE is a path-segment prefix of auth12's server URL, so it identifies the server without equalling it.
 const AUTH12_RESOURCE = `${CHAOS}/s/auth12`;
 const AUTH12_RESOURCE_JS = "pm.variables.get('chaos_url') + '/s/auth12'";
-const AUTH12 = folder("AUTH-12 Discovery fallbacks", `Setup: ${ALLOWLIST_TEXT}; a fleet server auth12 (echo_tool, add_tool) as an OAuth protected resource whose 401 is a bare Bearer challenge, with its metadata only at the path-inserted URL, publishing resource <chaos>/s/auth12 (a path prefix of its URL); an OAuth client created on it with oauth_config {}.`, [
+const AUTH12 = folder("AUTH-12 Discovery fallbacks", `Setup: ${ALLOWLIST_TEXT}; a fleet server auth12 (echo_tool, add_tool) as an OAuth protected resource whose 401 is a bare Bearer challenge, with its metadata only at the path-inserted URL, publishing resource <chaos>/s/auth12 (a path prefix of its URL); an OAuth client created on it with oauth_config {}. Then a fleet server auth12f set up the same way but publishing resource <chaos>/s/elsewhere, which names another server, while the mock's origin publishes no authorization server metadata.`, [
   ...allowlistOn("AUTH-12"),
   ...asServer("AUTH-12", "auth12", { challenge: "bare", resource: AUTH12_RESOURCE }),
   request("AUTH-12", "control: the 401 challenge is bare", "GET", "/s/auth12/mcp", { base: CHAOS, noAuth: true, asserts: [A.status(401), A.custom("WWW-Authenticate is Bearer realm=\"chaosmock\"", ["pm.expect(pm.response.headers.get('WWW-Authenticate')).to.equal('Bearer realm=\"chaosmock\"');"])] }),
@@ -4230,6 +4230,10 @@ const AUTH12 = folder("AUTH-12 Discovery fallbacks", `Setup: ${ALLOWLIST_TEXT}; 
   request("AUTH-12", "control: the path-inserted resource metadata publishes <chaos>/s/auth12", "GET", "/.well-known/oauth-protected-resource/s/auth12/mcp", { base: CHAOS, noAuth: true, asserts: [A.status(200), A.custom("resource is <chaos>/s/auth12", [`pm.expect(pm.response.json().resource).to.equal(${AUTH12_RESOURCE_JS});`])] }),
   createOAuth("AUTH-12", "create the OAuth client", oauthBody("auth12-c", "auth12", "auth12"), "auth12", [statusIs("pending_oauth"),
     A.custom("authorize_url includes resource=<chaos>/s/auth12", [QS_FN, `pm.expect(qs(pm.response.json().authorize_url).resource, 'body: ' + pm.response.text()).to.equal(${AUTH12_RESOURCE_JS});`])]),
+  ...asServer("AUTH-12", "auth12f", { challenge: "bare", resource: `${CHAOS}/s/elsewhere` }),
+  request("AUTH-12", "control: the mock's origin publishes no authorization server metadata", "GET", "/.well-known/oauth-authorization-server", { base: CHAOS, noAuth: true, asserts: [A.status(404)] }),
+  createExpect("AUTH-12", "create an OAuth client on auth12f", oauthBody("auth12f-c", "auth12f", "auth12f"), [A.status(400), A.msgContains("no valid metadata found for issuer")]),
+  request("AUTH-12", "no client auth12f-c was created", "GET", "/api/mcp/clients?server=auth12f-c", { asserts: [A.status(200), A.custom("no client is returned", ["pm.expect(pm.response.json().clients, 'body: ' + pm.response.text()).to.eql([]);"])] }),
   restoreConfig("AUTH-12"),
 ]);
 
