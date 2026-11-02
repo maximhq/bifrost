@@ -31,6 +31,8 @@ const (
 	// Beta headers for various Anthropic features
 	// AnthropicFilesAPIBetaHeader is the required beta header for the Files API.
 	AnthropicFilesAPIBetaHeader = "files-api-2025-04-14"
+	// AnthropicOAuthBetaHeader must accompany every request authenticated with an OAuth bearer.
+	AnthropicOAuthBetaHeader = "oauth-2025-04-20"
 	// AnthropicStructuredOutputsBetaHeader is required for strict tool validation and output_format.
 	AnthropicStructuredOutputsBetaHeader = "structured-outputs-2025-11-13"
 	// AnthropicAdvancedToolUseBetaHeader now gates only allowed_callers (programmatic

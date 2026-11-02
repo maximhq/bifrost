@@ -2103,6 +2103,7 @@ func mergeProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbKeys 
 					SGLKeyConfig:           dbKey.SGLKeyConfig,
 					DatabricksKeyConfig:    dbKey.DatabricksKeyConfig,
 					CloudflareKeyConfig:    dbKey.CloudflareKeyConfig,
+					AnthropicKeyConfig:     dbKey.AnthropicKeyConfig,
 					OAuthKeyConfig:         dbKey.OAuthKeyConfig,
 					Enabled:                dbKey.Enabled,
 					UseForBatchAPI:         dbKey.UseForBatchAPI,
@@ -2196,6 +2197,7 @@ func reconcileProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbK
 					SGLKeyConfig:           dbKey.SGLKeyConfig,
 					DatabricksKeyConfig:    dbKey.DatabricksKeyConfig,
 					CloudflareKeyConfig:    dbKey.CloudflareKeyConfig,
+					AnthropicKeyConfig:     dbKey.AnthropicKeyConfig,
 					OAuthKeyConfig:         dbKey.OAuthKeyConfig,
 					Enabled:                dbKey.Enabled,
 					UseForBatchAPI:         dbKey.UseForBatchAPI,
@@ -9276,6 +9278,10 @@ func (c *Config) GetAllKeys() ([]configstoreTables.TableKey, error) {
 				// The account ID is an identifier, not a credential — surface it in plaintext.
 				cfg.AccountID = *cfg.AccountID.RedactedIfSecret()
 				configStoreKey.CloudflareKeyConfig = &cfg
+			}
+			if key.AnthropicKeyConfig != nil {
+				// Identifiers readable unless secret-backed; the identity token always masked.
+				configStoreKey.AnthropicKeyConfig = key.AnthropicKeyConfig.Redacted()
 			}
 			if key.OAuthKeyConfig != nil {
 				// Token URL readable, credentials and every extra_params value masked.
