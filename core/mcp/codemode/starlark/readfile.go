@@ -189,7 +189,7 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 	}
 
 	// Generate compact Python signatures
-	fileContent := generateCompactSignatures(matchedClientName, matchedTools, isToolLevel, s.serverInstructionsComment(matchedClientName), !s.jsonModuleShadowed(availableToolsPerClient))
+	fileContent := generateCompactSignatures(matchedClientName, matchedTools, isToolLevel, s.serverInstructionsComment(ctx, matchedClientName), !s.jsonModuleShadowed(availableToolsPerClient))
 	lines := strings.Split(fileContent, "\n")
 	totalLines := len(lines)
 

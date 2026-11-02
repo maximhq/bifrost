@@ -67,6 +67,7 @@ type RelayLog struct {
 	ProjectName      *string `gorm:"type:varchar(255)" json:"project_name,omitempty"`
 	UserAgent        *string `gorm:"type:varchar(512);index:idx_relay_logs_user_agent" json:"user_agent,omitempty"` // Raw HTTP User-Agent of the calling client
 	App              *string `gorm:"type:varchar(128);index:idx_relay_logs_app" json:"app,omitempty"`               // Backend-detected client app derived from user_agent
+	ClientIP         *string `gorm:"type:varchar(45)" json:"client_ip,omitempty"`                                   // Caller IP: leftmost X-Forwarded-For, else X-Real-IP, else the TCP peer
 	// Every team, customer and business unit the call settled, as on logs and mcp_tool_logs: the
 	// scalar columns keep the first, these keep them all, and the dimension filters read both.
 	TeamIDs                 *string               `gorm:"type:text" json:"-"` // JSON serialized []string

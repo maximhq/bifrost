@@ -863,6 +863,8 @@ paths:
     $ref: "./paths/management/mcp.yaml#/session-by-id"
   /api/mcp/sessions/{id}/reauth:
     $ref: "./paths/management/mcp.yaml#/session-reauth"
+  /api/mcp/sessions/{id}/refresh:
+    $ref: "./paths/management/mcp.yaml#/session-refresh"
 
   # MCP — per-user-headers submission flow
   /api/mcp/per-user-headers/flows/{id}:

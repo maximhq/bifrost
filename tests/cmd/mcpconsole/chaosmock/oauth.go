@@ -928,6 +928,12 @@ func (s *Server) serveToken(w http.ResponseWriter, r *http.Request, cfg *OAuthCo
 	}
 	s.oauth.mu.Unlock()
 
+	// Held after it is counted and before anything answers it, so a queued
+	// failure, a revocation or a rotation that lands while it is held decides
+	// how it ends.
+	if !s.gates.holdEndpoint(r.Context(), GateEndpointToken) {
+		return
+	}
 	if s.failOAuth(w, "token", entry.GrantType, entry) {
 		return
 	}
