@@ -89,7 +89,7 @@ func connectCaller(ctx context.Context) bool {
 // otherwise leave connect, and so every one of them, out of reach.
 func connectAccessible(ctx context.Context, state *schemas.MCPClientState, logger schemas.Logger) bool {
 	config := state.ExecutionConfig
-	if state.State == schemas.MCPConnectionStateDisabled {
+	if withheldFromCallers(state.State, config) {
 		return false
 	}
 	includeClients, _ := ctx.Value(schemas.MCPContextKeyIncludeClients).([]string)
