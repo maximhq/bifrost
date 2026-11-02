@@ -210,4 +210,60 @@ test.describe("MCP Registry - Authentication", () => {
       expect(exists).toBe(true);
     });
   });
+
+  test.describe("MCP Per-User Tool Discovery", () => {
+    test("should offer Per-Caller Discovery only for per-user auth types", async ({
+      mcpRegistryPage,
+    }) => {
+      await mcpRegistryPage.createBtn.click();
+      await expect(mcpRegistryPage.sheet).toBeVisible();
+
+      await mcpRegistryPage.selectAuthType("oauth");
+      await expect(mcpRegistryPage.perUserDiscoverySwitch).toBeHidden();
+      await mcpRegistryPage.selectAuthType("per_user_oauth");
+      await expect(mcpRegistryPage.perUserDiscoverySwitch).toBeVisible();
+      // The per-user scope carries over, so headers here is per-user headers.
+      await mcpRegistryPage.selectAuthType("headers");
+      await expect(mcpRegistryPage.perUserDiscoverySwitch).toBeVisible();
+      await mcpRegistryPage.selectAuthScope("shared");
+      await expect(mcpRegistryPage.perUserDiscoverySwitch).toBeHidden();
+
+      await mcpRegistryPage.cancelCreation();
+    });
+
+    test("should create a Per-User OAuth 2.0 client with per-caller discovery", async ({
+      mcpRegistryPage,
+    }) => {
+      const clientData = createPerUserOAuthClientData({ perUserDiscovery: true });
+      createdClients.push(clientData.name);
+
+      const flow = await mcpRegistryPage.createOAuthClient(clientData);
+      await completeOAuthFlow(mcpRegistryPage.page, flow);
+      await mcpRegistryPage.goto();
+      expect(await mcpRegistryPage.clientExists(clientData.name)).toBe(true);
+
+      // It keeps no admin credential and no tool list of its own, so nothing refreshes either.
+      const actions = await mcpRegistryPage.getClientActionLabels(clientData.name);
+      expect(actions).not.toContain("Refresh admin credential");
+      expect(actions).not.toContain("Refresh tools");
+
+      await mcpRegistryPage.viewClientDetails(clientData.name);
+      const sheet = mcpRegistryPage.detailSheet;
+      const discoverySwitch = sheet.getByTestId("mcpclient-per-user-discovery-switch");
+      await expect(discoverySwitch).toHaveAttribute("data-state", "checked");
+      await expect(sheet.getByTestId("mcpclient-tool-sync-interval-input")).toBeDisabled();
+
+      // Turning it off says what saving would delete, before anything is saved.
+      await discoverySwitch.click();
+      await expect(sheet.getByTestId("mcpclient-per-user-discovery-warning")).toContainText("Refresh admin credential");
+      await discoverySwitch.click();
+      await expect(sheet.getByTestId("mcpclient-per-user-discovery-warning")).toBeHidden();
+
+      // No caller has connected yet, so no tool names have been seen.
+      await sheet.getByTestId("mcpclient-tab-tools").click();
+      await expect(sheet.getByText("No caller has connected yet")).toBeVisible();
+
+      await mcpRegistryPage.closeDetailSheet();
+    });
+  });
 });

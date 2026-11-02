@@ -60,6 +60,8 @@ export interface MCPClientConfig {
   openapiCredentials?: Record<string, string>
   /** Custom base URL typed into the preview panel */
   openapiBaseUrl?: string
+  /** "Per-Caller Discovery" switch; only rendered for per-user auth types */
+  perUserDiscovery?: boolean
 }
 
 /**
@@ -79,6 +81,7 @@ export class MCPRegistryPage extends BasePage {
   readonly connectionUrlInput: Locator
   readonly codeModeSwitch: Locator
   readonly pingAvailableSwitch: Locator
+  readonly perUserDiscoverySwitch: Locator
   // STDIO inputs
   readonly commandInput: Locator
   readonly argsInput: Locator
@@ -123,6 +126,7 @@ export class MCPRegistryPage extends BasePage {
     // Switches (Radix UI switches)
     this.codeModeSwitch = page.locator('[data-testid="code-mode-switch"]')
     this.pingAvailableSwitch = this.sheet.locator('#ping-available')
+    this.perUserDiscoverySwitch = this.sheet.locator('[data-testid="mcp-per-user-discovery"]')
 
     // STDIO inputs
     this.commandInput = page.locator('[data-testid="stdio-command-input"]')
@@ -464,6 +468,14 @@ export class MCPRegistryPage extends BasePage {
           await this.oauthScopesInput.fill(config.oauthScopes)
         }
       }
+
+      if (config.perUserDiscovery !== undefined) {
+        await expect(this.perUserDiscoverySwitch).toBeVisible({ timeout: 5000 })
+        const checked = (await this.perUserDiscoverySwitch.getAttribute('data-state')) === 'checked'
+        if (checked !== config.perUserDiscovery) {
+          await this.perUserDiscoverySwitch.click()
+        }
+      }
     } else if (config.connectionType === 'openapi') {
       await this.parseOpenAPISpec({ supply: () => this.fillOpenAPISource(config) })
       for (const tool of config.openapiDeselectTools ?? []) {
@@ -800,6 +812,19 @@ export class MCPRegistryPage extends BasePage {
     }
 
     return body
+  }
+
+  /**
+   * The labels of the items in a client's actions menu, read with the menu
+   * open and closed again afterwards.
+   */
+  async getClientActionLabels(name: string): Promise<string[]> {
+    await this.openClientActions(name)
+    const items = this.page.getByRole('menuitem')
+    await expect(items.first()).toBeVisible({ timeout: 5000 })
+    const labels = (await items.allTextContents()).map((label) => label.trim())
+    await this.page.keyboard.press('Escape')
+    return labels
   }
 
   /**
