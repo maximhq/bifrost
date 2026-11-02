@@ -282,8 +282,9 @@ It creates a self-signed loopback certificate at startup. `GET /control` reports
 `POST /control/<s>/auth {"auth":{"oauth":{...}}}` makes a server an OAuth 2.1
 protected resource with its own authorization server, so a client's whole
 upstream OAuth path runs for real: discovery (RFC 9728, RFC 8414), dynamic
-registration (RFC 7591), authorization with PKCE S256 (RFC 7636), code exchange
-and refresh (RFC 6749, with RFC 8707 resource indicators).
+registration (RFC 7591) or Client ID Metadata Documents, authorization with
+PKCE S256 (RFC 7636), code exchange and refresh (RFC 6749, with RFC 8707
+resource indicators).
 
 | Path | Serves |
 |---|---|
@@ -311,6 +312,14 @@ default `user`). That identity is what calls are attributed to, so
 | `deny` | every authorization ends in `access_denied` |
 | `access_ttl` | access token lifetime (default `1h`) |
 | `rotate_refresh` | a refresh issues a new refresh token and retires the old one |
+| `metadata_documents` | `"advertised"` or `"accepted"`: an https `client_id` is a Client ID Metadata Document, fetched at its first authorization; `"advertised"` also sets `client_id_metadata_document_supported` in the metadata |
+| `metadata_documents_via` | the base URL documents are fetched through, sending the document's own host and scheme as `Host` and `X-Forwarded-Proto` (default: the document URL itself) |
+
+A document client is a public client: the document must name its own URL as
+`client_id`, list `redirect_uris` and use `token_endpoint_auth_method` `none`.
+It is fetched once, at the client's first authorization request, and known from
+then on; a refused document is logged under `metadata_document` with the reason,
+and the request is answered as for an unknown client.
 
 With OAuth on, POST and GET on the MCP endpoint need an access token from this
 server, or a static `bearer` token. A refusal is 401 with a plain-text body
@@ -320,7 +329,8 @@ session needs only its id, and mcp-go sends it without credentials.
 
 `GET /control/<s>` gains `oauth`: clients, grants with their current tokens,
 counters (`prm`, `metadata`, `register`, `authorize`, `token_code`,
-`token_refresh`, `token_errors`, `rejected`), queued failures, and a log of the
+`token_refresh`, `token_errors`, `rejected`, `metadata_document_fetches`),
+queued failures, and a log of the
 last 500 requests with the raw secrets, verifier result (`pkce`), resource and
 tokens presented and issued. A grant's earlier access tokens stay valid until
 they expire, as with a real server. Changing the configuration keeps clients
