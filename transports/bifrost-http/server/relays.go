@@ -41,7 +41,7 @@ func (s *BifrostHTTPServer) InitializeRelays(ctx context.Context, relayManager h
 			},
 		)
 	}
-	manager.SetGlobalProxy(func() *schemas.ProxyConfig { return lib.InheritedGlobalProxy(s.Config.GetGlobalProxyConfig()) })
+	manager.SetGlobalProxy(func() (*schemas.ProxyConfig, error) { return lib.InheritedGlobalProxy(s.Config.GetGlobalProxyConfig()) })
 	if err := manager.Reload(ctx); err != nil {
 		logger.Warn("failed to load relays: %v", err)
 	}

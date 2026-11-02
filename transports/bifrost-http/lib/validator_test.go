@@ -147,6 +147,30 @@ func TestValidateConfigSchema_AgentOAuthRejectsUnknownFields(t *testing.T) {
 
 // TestValidateConfigSchema_WarpSection: the warp section takes every Warp settings field, topics
 // included, and refuses values the settings page would refuse.
+// TestValidateConfigSchema_GlobalProxyTypes: the file accepts the global proxy types the
+// settings endpoint accepts (http, socks5) and still refuses tcp, which has no dialer.
+func TestValidateConfigSchema_GlobalProxyTypes(t *testing.T) {
+	for _, tc := range []struct {
+		proxyType string
+		valid     bool
+	}{
+		{"http", true},
+		{"socks5", true},
+		{"tcp", false},
+	} {
+		t.Run(tc.proxyType, func(t *testing.T) {
+			config := `{"proxy_config": {"enabled": true, "type": "` + tc.proxyType + `", "url": "socks5://10.0.0.5:1080", "enable_for_inference": true}}`
+			err := ValidateConfigSchema([]byte(config), loadLocalSchema(t))
+			if tc.valid && err != nil {
+				t.Fatalf("expected proxy_config.type %q to pass validation: %v", tc.proxyType, err)
+			}
+			if !tc.valid && err == nil {
+				t.Fatalf("expected proxy_config.type %q to fail validation", tc.proxyType)
+			}
+		})
+	}
+}
+
 func TestValidateConfigSchema_WarpSection(t *testing.T) {
 	validConfig := `{
 		"warp": {
@@ -4118,6 +4142,70 @@ func TestSchemaOAuthKeyConfig(t *testing.T) {
 	}
 }
 
+// TestSchemaAnthropicKeyConfig pins that anthropic_key_config.workload_identity is accepted on
+// anthropic and anthropic-based custom provider keys, and that the schema demands the same
+// shape as AnthropicWorkloadIdentityConfig.Validate: the three IDs and exactly one token source.
+func TestSchemaAnthropicKeyConfig(t *testing.T) {
+	compiled := compileSchema(t)
+
+	providers := func(keyBody string) string {
+		return fmt.Sprintf(`{
+		"providers": {
+			"anthropic": {
+				"keys": [{%s}]
+			},
+			"acme": {
+				"keys": [{%s}],
+				"custom_provider_config": {"base_provider_type": "anthropic"},
+				"network_config": {"base_url": "https://llm.acme.example"}
+			}
+		}
+	}`, keyBody, keyBody)
+	}
+	const key = `"name": "k", "models": ["*"], "weight": 1.0, `
+	const ids = `"federation_rule_id": "fdrl_01abc", "organization_id": "env.ANTHROPIC_ORG_ID", "service_account_id": "svac_01def"`
+
+	valid := []struct {
+		name   string
+		config string
+	}{
+		{"token file", providers(key + `"anthropic_key_config": {"workload_identity": {` + ids + `, "identity_source": {"type": "file", "path": "/var/run/secrets/anthropic/token"}}}`)},
+		{"env token with workspace", providers(key + `"anthropic_key_config": {"workload_identity": {` + ids + `, "workspace_id": "wrkspc_01ghi", "identity_source": {"type": "inline", "token": "env.ANTHROPIC_IDENTITY_TOKEN"}}}`)},
+		{"alongside a value", providers(key + `"value": "sk-ant", "anthropic_key_config": {"workload_identity": {` + ids + `, "identity_source": {"type": "file", "path": "/f"}}}`)},
+		{"empty section", providers(key + `"value": "sk-ant", "anthropic_key_config": {}`)},
+	}
+	for _, tt := range valid {
+		t.Run("valid "+tt.name, func(t *testing.T) {
+			if err := validateConfig(t, compiled, tt.config); err != nil {
+				t.Fatalf("config should be valid: %v", err)
+			}
+		})
+	}
+
+	invalid := []struct {
+		name   string
+		config string
+	}{
+		{"a file source carrying a token", providers(key + `"anthropic_key_config": {"workload_identity": {` + ids + `, "identity_source": {"type": "file", "path": "/f", "token": "t"}}}`)},
+		{"an inline source carrying a path", providers(key + `"anthropic_key_config": {"workload_identity": {` + ids + `, "identity_source": {"type": "inline", "token": "t", "path": "/f"}}}`)},
+		{"a file source without a path", providers(key + `"anthropic_key_config": {"workload_identity": {` + ids + `, "identity_source": {"type": "file"}}}`)},
+		{"an unknown source type", providers(key + `"anthropic_key_config": {"workload_identity": {` + ids + `, "identity_source": {"type": "gcp_metadata"}}}`)},
+		{"no identity source", providers(key + `"anthropic_key_config": {"workload_identity": {` + ids + `}}`)},
+		{"the flat identity_token_file field", providers(key + `"anthropic_key_config": {"workload_identity": {` + ids + `, "identity_token_file": "/f"}}`)},
+		{"missing service account", providers(key + `"anthropic_key_config": {"workload_identity": {"federation_rule_id": "fdrl_01abc", "organization_id": "org", "identity_source": {"type": "file", "path": "/f"}}}`)},
+		{"blank federation rule", providers(key + `"anthropic_key_config": {"workload_identity": {"federation_rule_id": "", "organization_id": "org", "service_account_id": "svac_01def", "identity_source": {"type": "file", "path": "/f"}}}`)},
+		{"unknown field", providers(key + `"anthropic_key_config": {"workload_identity": {` + ids + `, "identity_source": {"type": "file", "path": "/f"}, "token_path": "/g"}}`)},
+		{"unknown section field", providers(key + `"anthropic_key_config": {"workload_identity_federation": {}}`)},
+	}
+	for _, tt := range invalid {
+		t.Run("invalid "+tt.name, func(t *testing.T) {
+			if err := validateConfig(t, compiled, tt.config); err == nil {
+				t.Fatal("config should be invalid")
+			}
+		})
+	}
+}
+
 // TestSchemaGithubCopilotCredentialRequired pins that the schema demands a token, as
 // core/utils.go does: every way to authenticate, including Sign in with GitHub, ends with one.
 func TestSchemaGithubCopilotCredentialRequired(t *testing.T) {
@@ -4509,6 +4597,41 @@ func TestValidateConfigSchema_MCPOpenAPIClient(t *testing.T) {
 		{"token exchange refused", `{"name":"petstore","connection_type":"openapi","auth_type":"token_exchange","token_exchange":{"audience":"a"},"openapi_config":{"spec":"x"}}`, true},
 		{"openapi_config on http client", `{"name":"remote","connection_type":"http","connection_string":"https://mcp.example.com","openapi_config":{"spec":"x"}}`, true},
 		{"http client unaffected", `{"name":"remote","connection_type":"http","connection_string":"https://mcp.example.com"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateConfigSchema([]byte(mcpConfig(tc.client)), schema)
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected %s to fail schema validation", tc.name)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected %s to pass schema validation, got: %v", tc.name, err)
+			}
+		})
+	}
+}
+
+// TestValidateConfigSchema_MCPPerUserAuthTypeNeedsHTTP pins the config.schema.json
+// rule matching the boot check: the per-user auth types are refused on SSE and STDIO
+// clients, and the shared auth types stay allowed there.
+func TestValidateConfigSchema_MCPPerUserAuthTypeNeedsHTTP(t *testing.T) {
+	schema := loadLocalSchema(t)
+	mcpConfig := func(client string) string {
+		return `{"mcp": {"client_configs": [` + client + `]}}`
+	}
+	for _, tc := range []struct {
+		name    string
+		client  string
+		wantErr bool
+	}{
+		{"per_user_headers on http", `{"name":"remote","connection_type":"http","connection_string":"https://mcp.example.com","auth_type":"per_user_headers","per_user_header_keys":["x-key"]}`, false},
+		{"per_user_headers on sse", `{"name":"remote","connection_type":"sse","connection_string":"https://mcp.example.com/sse","auth_type":"per_user_headers","per_user_header_keys":["x-key"]}`, true},
+		{"per_user_oauth on sse", `{"name":"remote","connection_type":"sse","connection_string":"https://mcp.example.com/sse","auth_type":"per_user_oauth"}`, true},
+		{"token_exchange on http", `{"name":"remote","connection_type":"http","connection_string":"https://mcp.example.com","auth_type":"token_exchange","token_exchange":{"audience":"a","use_idp_credentials":true}}`, false},
+		{"token_exchange on sse", `{"name":"remote","connection_type":"sse","connection_string":"https://mcp.example.com/sse","auth_type":"token_exchange","token_exchange":{"audience":"a","use_idp_credentials":true}}`, true},
+		{"per_user_headers on stdio", `{"name":"local","connection_type":"stdio","stdio_config":{"command":"npx"},"auth_type":"per_user_headers","per_user_header_keys":["x-key"]}`, true},
+		{"oauth on sse", `{"name":"remote","connection_type":"sse","connection_string":"https://mcp.example.com/sse","auth_type":"oauth"}`, false},
+		{"headers on stdio", `{"name":"local","connection_type":"stdio","stdio_config":{"command":"npx"},"auth_type":"headers"}`, false},
+		{"sse without auth_type", `{"name":"remote","connection_type":"sse","connection_string":"https://mcp.example.com/sse"}`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := ValidateConfigSchema([]byte(mcpConfig(tc.client)), schema)

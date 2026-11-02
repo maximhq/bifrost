@@ -23,8 +23,10 @@ import type { ModelProvider } from "@/lib/types/config";
 import { cn } from "@/lib/utils";
 import { clefModelFromProvider, isDecisionProvider } from "@/lib/utils/decisionModelProviders";
 import { Link } from "@tanstack/react-router";
+import type { ParseKeys } from "i18next";
 import { ArrowRight, Check, ChevronRight, Info, LoaderCircle, Pencil, RotateCcw, Scale, TriangleAlert, Waypoints } from "lucide-react";
 import { useCallback, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import {
 	Controller,
 	useWatch,
@@ -54,11 +56,19 @@ const PHRASE_LIST_HEIGHT = 300;
 // list's height and a card stays about as tall as a phrase card.
 const DECISION_LIST_HEIGHT = 140;
 
-const DECISION_TIER_LABELS: Record<DecisionTier, string> = {
-	SIMPLE: "Simple",
-	MEDIUM: "Medium",
-	COMPLEX: "Complex",
-};
+type ComplexityKey = ParseKeys<"models", {}, "routing.complexityUi">;
+
+const DECISION_TIER_LABEL_KEYS = {
+	SIMPLE: "tierSimple",
+	MEDIUM: "tierMedium",
+	COMPLEX: "tierComplex",
+} as const satisfies Record<DecisionTier, ComplexityKey>;
+
+const PHRASE_TIER_KEYS = {
+	simple_keywords: { label: "tierSimple", description: "tierSimpleDesc" },
+	medium_keywords: { label: "tierMedium", description: "tierMediumDesc" },
+	complex_keywords: { label: "tierComplex", description: "tierComplexDesc" },
+} as const satisfies Record<KeywordListKey, { label: ComplexityKey; description: ComplexityKey }>;
 
 function testIdPart(value: string) {
 	return value.replace(/_/g, "-");
@@ -72,14 +82,12 @@ interface PhraseTierGridProps {
 // PhraseTierGrid is the semantic classifier's work surface: one editable list
 // of reference phrases per tier.
 export function PhraseTierGrid({ control, errors }: PhraseTierGridProps) {
+	const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" });
 	return (
 		<div className="space-y-3">
 			<Alert variant="info" data-testid="complexity-router-phrase-defaults-callout">
 				<Info className="h-4 w-4" />
-				<AlertDescription>
-					The added reference phrases are examples to help you get started. We recommend auditing, refining and adding your own reference
-					phrases.
-				</AlertDescription>
+				<AlertDescription>{tcpx("phraseDefaultsCallout")}</AlertDescription>
 			</Alert>
 
 			{/* Root-level phrase issues such as cross-tier duplicates have no single
@@ -94,7 +102,9 @@ export function PhraseTierGrid({ control, errors }: PhraseTierGridProps) {
 			    each other, and equal-width columns keep a phrase's tier obvious
 			    from its position. */}
 			<div className="grid items-stretch gap-3 md:grid-cols-3">
-				{TIER_PHRASE_LIST_DEFINITIONS.map(({ key, label, description }) => {
+				{TIER_PHRASE_LIST_DEFINITIONS.map(({ key }) => {
+					const label = tcpx(PHRASE_TIER_KEYS[key].label);
+					const description = tcpx(PHRASE_TIER_KEYS[key].description);
 					const fieldError = errors?.[key as KeywordListKey];
 					const errorId = `keywords-${key}-error`;
 					return (
@@ -103,14 +113,14 @@ export function PhraseTierGrid({ control, errors }: PhraseTierGridProps) {
 								control={control}
 								name={`keywords.${key}` as const}
 								rules={{
-									validate: (value) => (value.length > 0 ? true : `${label} phrases cannot be empty`),
+									validate: (value) => (value.length > 0 ? true : tcpx("phrasesEmpty", { tier: label })),
 								}}
 								render={({ field }) => (
 									<div className="flex flex-1 flex-col space-y-2 p-4 pl-5">
 										<div className="flex items-center justify-between">
 											<span className="text-xs font-medium">{label}</span>
 											<span className="text-muted-foreground font-mono text-[11px] tabular-nums">
-												{field.value.length} {field.value.length === 1 ? "phrase" : "phrases"}
+												{tcpx("phraseCount", { count: field.value.length })}
 											</span>
 										</div>
 										<p className="text-muted-foreground grow text-xs leading-relaxed">{description}</p>
@@ -120,7 +130,7 @@ export function PhraseTierGrid({ control, errors }: PhraseTierGridProps) {
 											onValueChange={field.onChange}
 											listHeight={PHRASE_LIST_HEIGHT}
 											submitOnComma={false}
-											placeholder="Type a reference phrase and press Enter"
+											placeholder={tcpx("phrasePlaceholder")}
 											aria-invalid={fieldError ? true : undefined}
 											aria-describedby={fieldError ? errorId : undefined}
 											className={cn(fieldError && "border-destructive")}
@@ -158,11 +168,12 @@ interface LLMPromptSectionProps {
 // rather than in the sheet with the fallback's other settings, and only shows
 // while the llm fallback is on, because that is the only time it runs.
 export function LLMPromptSection({ control, error, canUpdate, defaultPrompt, livePrompt, onEdit, onReset }: LLMPromptSectionProps) {
+	const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" });
 	return (
 		<div className="space-y-3">
 			<SectionHeading
-				title="Fallback Classification Prompt"
-				description="Customize the classification model's system prompt; a default is provided when no phrase matches."
+				title={tcpx("fallbackPromptTitle")}
+				description={tcpx("fallbackPromptDescription")}
 				aside={
 					<Button
 						type="button"
@@ -173,7 +184,7 @@ export function LLMPromptSection({ control, error, canUpdate, defaultPrompt, liv
 						data-testid="complexity-router-llm-prompt-reset-button"
 					>
 						<RotateCcw className="h-3.5 w-3.5" />
-						Reset to default
+						{tcpx("resetToDefault")}
 					</Button>
 				}
 			/>
@@ -202,8 +213,7 @@ export function LLMPromptSection({ control, error, canUpdate, defaultPrompt, liv
 				<p className="text-destructive text-xs">{error.message}</p>
 			) : (
 				<p className="text-muted-foreground text-xs leading-relaxed">
-					Leave blank to use default guidance. Bifrost always appends a fixed response-format section (the tier names and the JSON answer
-					contract), so edits here refine what the tiers mean but cannot break routing.{" "}
+					{tcpx("fallbackPromptHelp")}{" "}
 					<span className="font-mono tabular-nums">
 						{livePrompt.length}/{MAX_LLM_PROMPT_CHARACTERS}
 					</span>
@@ -222,14 +232,12 @@ interface SessionRoutingCardProps {
 // SessionRoutingCard toggles session-aware routing, which works the same on
 // top of either classifier.
 export function SessionRoutingCard({ control, errors, canUpdate }: SessionRoutingCardProps) {
+	const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" });
 	return (
 		<div className="bg-card flex items-center justify-between gap-6 rounded-sm border p-4">
 			<div className="space-y-1">
-				<FieldLabel htmlFor="complexity-router-session-enabled">Session-aware routing</FieldLabel>
-				<p className="text-muted-foreground max-w-3xl text-xs leading-relaxed">
-					Keep each session at its highest complexity tier for 24 hours of inactivity. Harder turns can move up; easier turns stay put to
-					reduce model changes. Requests without a session ID route independently.
-				</p>
+				<FieldLabel htmlFor="complexity-router-session-enabled">{tcpx("sessionTitle")}</FieldLabel>
+				<p className="text-muted-foreground max-w-3xl text-xs leading-relaxed">{tcpx("sessionHelp")}</p>
 				{errors?.enabled && (
 					<p id="complexity-router-session-enabled-error" className="text-destructive text-xs">
 						{errors.enabled.message}
@@ -276,6 +284,8 @@ interface DecisionFieldsProps {
 // both places render this. The provider and model controls are the shared
 // decision-model pickers, which decide what each provider offers.
 export function DecisionFields({ control, register, setValue, errors, canUpdate, providers, providerKeyIds }: DecisionFieldsProps) {
+	const { t } = useTranslation("models");
+	const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" });
 	const providerName = useWatch({ control, name: "decision.provider" });
 	const model = useWatch({ control, name: "decision.model" });
 	// Stable, since the model picker selects a self-hosted provider's first listed model from an effect.
@@ -289,8 +299,8 @@ export function DecisionFields({ control, register, setValue, errors, canUpdate,
 	return (
 		<div className="grid gap-4 sm:grid-cols-2" data-testid="complexity-router-decision-fields">
 			<div className="space-y-2">
-				<FieldLabel htmlFor="decision-provider" tooltip="The provider that runs the decision model.">
-					Provider
+				<FieldLabel htmlFor="decision-provider" tooltip={tcpx("decisionProviderTip")}>
+					{t("modelCatalog.provider")}
 				</FieldLabel>
 				<Controller
 					control={control}
@@ -311,18 +321,18 @@ export function DecisionFields({ control, register, setValue, errors, canUpdate,
 				/>
 				{!providers.some(isDecisionProvider) && (
 					<p className="text-muted-foreground text-xs" data-testid="complexity-router-decision-no-provider">
-						No provider serves decision models yet.{" "}
-						<Link to="/workspace/providers" className="text-primary underline-offset-2 hover:underline">
-							Add one
-						</Link>
-						.
+						<Trans
+							t={tcpx}
+							i18nKey="noDecisionProvider"
+							components={{ link: <Link to="/workspace/providers" className="text-primary underline-offset-2 hover:underline" /> }}
+						/>
 					</p>
 				)}
 				{errors?.provider && <p className="text-destructive text-xs">{errors.provider.message}</p>}
 			</div>
 			<div className="space-y-2">
-				<FieldLabel htmlFor="decision-model" tooltip="The model the provider runs for each classification.">
-					Model
+				<FieldLabel htmlFor="decision-model" tooltip={tcpx("decisionModelTip")}>
+					{t("modelCatalog.model")}
 				</FieldLabel>
 				<Controller
 					control={control}
@@ -341,26 +351,15 @@ export function DecisionFields({ control, register, setValue, errors, canUpdate,
 						/>
 					)}
 				/>
-				{servesClef && <p className="text-muted-foreground text-xs">Set by this provider&rsquo;s Cloudflare URL.</p>}
+				{servesClef && <p className="text-muted-foreground text-xs">{tcpx("clefUrlNote")}</p>}
 				{LAYA_MODELS.includes(model) && (
-					<p className="text-muted-foreground text-xs">
-						Laya reads 512 tokens per request ({model === "english" ? "use multilingual for 1,024" : "keep tier guidance short"}).
-					</p>
+					<p className="text-muted-foreground text-xs">{model === "english" ? tcpx("layaNoteEnglish") : tcpx("layaNoteOther")}</p>
 				)}
 				{errors?.model && <p className="text-destructive text-xs">{errors.model.message}</p>}
 			</div>
 			<div className="space-y-2">
-				<FieldLabel
-					htmlFor="decision-previous-message-count"
-					tooltip={
-						<>
-							User messages sent to the decision model in addition to the current request, oldest to newest. Widening this lets a short
-							follow-up like &ldquo;and make it faster&rdquo; inherit earlier intent, but sends more input tokens per request. Assistant
-							replies are never sent. Defaults to 1.
-						</>
-					}
-				>
-					Max messages to send
+				<FieldLabel htmlFor="decision-previous-message-count" tooltip={tcpx("decisionMaxMessagesTip")}>
+					{tcpx("maxMessagesSend")}
 				</FieldLabel>
 				<Input
 					id="decision-previous-message-count"
@@ -377,11 +376,8 @@ export function DecisionFields({ control, register, setValue, errors, canUpdate,
 				{errors?.previous_message_count && <p className="text-destructive text-xs">{errors.previous_message_count.message}</p>}
 			</div>
 			<div className="space-y-2">
-				<FieldLabel
-					htmlFor="decision-timeout"
-					tooltip="Maximum wait for the decision model's API call. If the limit is exceeded, we skip and fall back to the original request model. Typesafe Jev typically responds in about 600 - 800 ms."
-				>
-					Classification timeout (ms)
+				<FieldLabel htmlFor="decision-timeout" tooltip={tcpx("decisionTimeoutTip")}>
+					{tcpx("classificationTimeout")}
 				</FieldLabel>
 				<Controller
 					control={control}
@@ -410,33 +406,18 @@ export function DecisionFields({ control, register, setValue, errors, canUpdate,
 	);
 }
 
-// The recommendation matches the semantic phrase callout, so both classifiers
-// open the same way. The line under it says where the cards' content goes.
-const DECISION_GUIDANCE_NOTE = "We recommend starting with these defaults, then refining them to match what each tier means for you.";
-const DECISION_GUIDANCE_USAGE = "Each tier's definition, signals and examples are sent to the decision model with every request.";
-
 type DecisionListField = "signals" | "examples";
 
 // Signals are traits to look for; examples are requests that have them. The
 // tooltips say so because the two lists otherwise read as interchangeable.
 const DECISION_LIST_FIELDS: Array<{
 	field: DecisionListField;
-	label: string;
-	placeholder: string;
-	tooltip: string;
+	label: ComplexityKey;
+	placeholder: ComplexityKey;
+	tooltip: ComplexityKey;
 }> = [
-	{
-		field: "signals",
-		label: "Signals",
-		placeholder: "Type a signal and press Enter",
-		tooltip: "What makes a request belong in this tier: the knowledge, reasoning, or kind of work it needs.",
-	},
-	{
-		field: "examples",
-		label: "Examples",
-		placeholder: "Type an example and press Enter",
-		tooltip: "Sample requests that belong in this tier, showing what the signals look like in practice. Write them as concrete tasks.",
-	},
+	{ field: "signals", label: "signalsLabel", placeholder: "signalsPlaceholder", tooltip: "signalsTip" },
+	{ field: "examples", label: "examplesLabel", placeholder: "examplesPlaceholder", tooltip: "examplesTip" },
 ];
 
 // sameList compares lists by value and order, matching the gateway's check
@@ -459,6 +440,8 @@ interface DecisionDefinitionFieldProps {
 // semantic cards' tier descriptions, and turns into a textarea only while it
 // is being edited. An invalid definition stays open so its error is visible.
 function DecisionDefinitionField({ tier, control, error, canUpdate, edited, onReset }: DecisionDefinitionFieldProps) {
+	const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" });
+	const tierLabel = tcpx(DECISION_TIER_LABEL_KEYS[tier]);
 	const [editing, setEditing] = useState(false);
 	const open = editing || Boolean(error);
 	const id = `decision-${tier.toLowerCase()}-definition`;
@@ -470,7 +453,7 @@ function DecisionDefinitionField({ tier, control, error, canUpdate, edited, onRe
 				<div className="flex flex-1 flex-col space-y-1.5">
 					<div className="flex h-6 items-center justify-between">
 						<label htmlFor={id} className="text-xs font-medium">
-							{DECISION_TIER_LABELS[tier]}
+							{tierLabel}
 						</label>
 						<div className="flex items-center gap-1">
 							{canUpdate && !open && (
@@ -481,17 +464,14 @@ function DecisionDefinitionField({ tier, control, error, canUpdate, edited, onRe
 											variant="ghost"
 											size="icon"
 											className="size-6"
-											aria-label={`Edit ${tier.toLowerCase()} definition`}
+											aria-label={tcpx("definitionEditAria", { tier: tierLabel.toLowerCase() })}
 											onClick={() => setEditing(true)}
 											data-testid={`complexity-router-decision-${tier.toLowerCase()}-definition-edit-button`}
 										>
 											<Pencil className="size-3" />
 										</Button>
 									</TooltipTrigger>
-									<TooltipContent className="max-w-xs leading-relaxed">
-										Describe what makes a request {DECISION_TIER_LABELS[tier]}. The decision model uses this to decide which requests belong
-										in this tier.
-									</TooltipContent>
+									<TooltipContent className="max-w-xs leading-relaxed">{tcpx("definitionTooltip", { tier: tierLabel })}</TooltipContent>
 								</Tooltip>
 							)}
 							{edited && (
@@ -502,7 +482,7 @@ function DecisionDefinitionField({ tier, control, error, canUpdate, edited, onRe
 											variant="ghost"
 											size="icon"
 											className="size-6"
-											aria-label={`Reset ${tier.toLowerCase()} definition to default`}
+											aria-label={tcpx("definitionResetAria", { tier: tierLabel.toLowerCase() })}
 											onClick={onReset}
 											disabled={!canUpdate}
 											data-testid={`complexity-router-decision-${tier.toLowerCase()}-definition-reset-button`}
@@ -510,7 +490,7 @@ function DecisionDefinitionField({ tier, control, error, canUpdate, edited, onRe
 											<RotateCcw className="size-3" />
 										</Button>
 									</TooltipTrigger>
-									<TooltipContent className="max-w-xs leading-relaxed">Reset to the default definition</TooltipContent>
+									<TooltipContent className="max-w-xs leading-relaxed">{tcpx("definitionResetTooltip")}</TooltipContent>
 								</Tooltip>
 							)}
 						</div>
@@ -577,6 +557,7 @@ export function DecisionGuidanceSection({
 	defaultsLoading,
 	variant,
 }: DecisionGuidanceSectionProps) {
+	const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" });
 	const criteria = useWatch({ control, name: "decision.criteria" });
 	const [fallbackOpen, setFallbackOpen] = useState(false);
 
@@ -613,9 +594,9 @@ export function DecisionGuidanceSection({
 		<>
 			<Alert variant="info" data-testid="complexity-router-decision-guidance-defaults-callout">
 				<Info className="h-4 w-4" />
-				<AlertDescription>{DECISION_GUIDANCE_NOTE}</AlertDescription>
+				<AlertDescription>{tcpx("guidanceNote")}</AlertDescription>
 			</Alert>
-			<p className="text-muted-foreground text-xs leading-relaxed">{DECISION_GUIDANCE_USAGE}</p>
+			<p className="text-muted-foreground text-xs leading-relaxed">{tcpx("guidanceUsage")}</p>
 			{defaults ? (
 				<div className="grid items-stretch gap-3 md:grid-cols-3">
 					{COMPLEXITY_TIER_VALUES.map((tier) => (
@@ -633,7 +614,9 @@ export function DecisionGuidanceSection({
 									edited={!isDefaultDefinition(tier)}
 									onReset={() => resetDefinition(tier)}
 								/>
-								{DECISION_LIST_FIELDS.map(({ field: listField, label, placeholder, tooltip }) => {
+								{DECISION_LIST_FIELDS.map(({ field: listField, label: labelKey, placeholder: placeholderKey, tooltip: tooltipKey }) => {
+									const label = tcpx(labelKey);
+									const tierLabel = tcpx(DECISION_TIER_LABEL_KEYS[tier]);
 									const fieldError = errors?.criteria?.[tier]?.[listField];
 									const errorId = `decision-${tier.toLowerCase()}-${listField}-error`;
 									const count = criteria?.[tier]?.[listField]?.length ?? 0;
@@ -650,7 +633,7 @@ export function DecisionGuidanceSection({
 													<div className="flex h-6 items-center justify-between">
 														<div className="flex items-center gap-1.5">
 															<span className="text-muted-foreground text-xs">{label}</span>
-															<InfoTip label={`About ${label.toLowerCase()}`}>{tooltip}</InfoTip>
+															<InfoTip label={tcpx("listAbout", { list: label.toLowerCase() })}>{tcpx(tooltipKey)}</InfoTip>
 														</div>
 														<div className="flex items-center gap-1">
 															<span
@@ -665,7 +648,7 @@ export function DecisionGuidanceSection({
 																	variant="ghost"
 																	size="icon"
 																	className="size-6"
-																	aria-label={`Reset ${tier.toLowerCase()} ${listField} to default`}
+																	aria-label={tcpx("listResetAria", { tier: tierLabel.toLowerCase(), list: label.toLowerCase() })}
 																	onClick={() => resetList(tier, listField)}
 																	disabled={!canUpdate}
 																	data-testid={`complexity-router-decision-${tier.toLowerCase()}-${listField}-reset-button`}
@@ -681,10 +664,10 @@ export function DecisionGuidanceSection({
 														onValueChange={field.onChange}
 														listHeight={DECISION_LIST_HEIGHT}
 														submitOnComma={false}
-														placeholder={atLimit ? `Limit of ${MAX_DECISION_CRITERIA_ITEMS} reached` : placeholder}
+														placeholder={atLimit ? tcpx("listLimitReached", { max: MAX_DECISION_CRITERIA_ITEMS }) : tcpx(placeholderKey)}
 														readOnly={!canUpdate}
 														disabled={!canUpdate || atLimit}
-														aria-label={`${DECISION_TIER_LABELS[tier]} ${label.toLowerCase()}`}
+														aria-label={tcpx("listAria", { tier: tierLabel, list: label.toLowerCase() })}
 														aria-invalid={fieldError ? true : undefined}
 														aria-describedby={fieldError ? errorId : undefined}
 														className={cn(fieldError && "border-destructive")}
@@ -711,13 +694,12 @@ export function DecisionGuidanceSection({
 					{defaultsLoading ? (
 						<>
 							<LoaderCircle className="size-3.5 animate-spin" />
-							Loading the default guidance…
+							{tcpx("guidanceLoading")}
 						</>
 					) : (
 						<>
 							<TriangleAlert className="size-3.5" />
-							This gateway did not return its default guidance, so it cannot be edited here. The decision model keeps using the saved or
-							shipped guidance.
+							{tcpx("guidanceUnavailable")}
 						</>
 					)}
 				</div>
@@ -756,8 +738,8 @@ export function DecisionGuidanceSection({
 					>
 						<ChevronRight className={cn("text-muted-foreground mt-0.5 size-4 shrink-0 transition-transform", open && "rotate-90")} />
 						<span className="space-y-1">
-							<span className="block text-sm font-semibold">Fallback Tier Guidance</span>
-							<span className="text-muted-foreground block text-xs">Used by the decision model when no reference phrase matches.</span>
+							<span className="block text-sm font-semibold">{tcpx("fallbackGuidanceTitle")}</span>
+							<span className="text-muted-foreground block text-xs">{tcpx("fallbackGuidanceDescription")}</span>
 						</span>
 					</button>
 				</CollapsibleTrigger>
@@ -771,7 +753,7 @@ export function DecisionGuidanceSection({
 						data-testid="complexity-router-decision-guidance-reset-button"
 					>
 						<RotateCcw className="h-3.5 w-3.5" />
-						Reset all
+						{tcpx("resetAll")}
 					</Button>
 				)}
 			</div>
@@ -780,38 +762,27 @@ export function DecisionGuidanceSection({
 	);
 }
 
-const DECISION_PROVIDER_PROBLEMS: Record<
-	Exclude<DecisionProviderState, "configured">,
-	(provider: string) => { message: string; action: string }
-> = {
-	missing: (provider) => ({
-		message: `The decision model runs through the ${provider} provider, and it is not set up yet.`,
-		action: `Set up ${provider}`,
-	}),
-	failing: (provider) => ({
-		message: `The ${provider} provider is failing its checks, so decision-model calls will fail. Check its key and settings.`,
-		action: `Review ${provider} provider`,
-	}),
-	"no-enabled-key": (provider) => ({
-		message: `The ${provider} provider has no enabled key, so decision-model calls will fail.`,
-		action: `Review ${provider} keys`,
-	}),
-};
+const DECISION_PROVIDER_PROBLEM_KEYS = {
+	missing: { message: "providerMissing", action: "providerMissingAction" },
+	failing: { message: "providerFailing", action: "providerFailingAction" },
+	"no-enabled-key": { message: "providerNoKey", action: "providerNoKeyAction" },
+} as const satisfies Record<Exclude<DecisionProviderState, "configured">, { message: ComplexityKey; action: ComplexityKey }>;
 
 // DecisionProviderAlert explains why the decision model cannot run, and links
 // straight to its provider's page. That page opens a blank setup form when the
 // provider does not exist yet, so one click lands on the fix either way.
 export function DecisionProviderAlert({ state, provider }: { state: DecisionProviderState; provider: string }) {
+	const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" });
 	if (state === "configured" || !provider) return null;
-	const problem = DECISION_PROVIDER_PROBLEMS[state](provider);
+	const problem = DECISION_PROVIDER_PROBLEM_KEYS[state];
 	return (
 		<Alert variant="warning" data-testid="complexity-router-decision-provider-alert">
 			<TriangleAlert className="h-4 w-4" />
 			<AlertDescription className="gap-2">
-				<span>{problem.message}</span>
+				<span>{tcpx(problem.message, { provider })}</span>
 				<Button asChild variant="outline" size="sm" data-testid="complexity-router-decision-provider-link">
 					<Link to="/workspace/providers" search={{ provider }}>
-						{problem.action}
+						{tcpx(problem.action, { provider })}
 						<ArrowRight className="size-3.5" />
 					</Link>
 				</Button>
@@ -824,29 +795,20 @@ type Classifier = AnalyzerFormValues["classifier"];
 
 const CLASSIFIER_OPTIONS: {
 	value: Classifier;
-	title: string;
-	description: string;
+	title: ComplexityKey;
+	description: ComplexityKey;
 }[] = [
-	{
-		value: "decision",
-		title: "Decision model",
-		description:
-			"A decision model judges the complexity of each request and picks the tier whose definition, signals, and examples fit it best. Use Typesafe Jev, OpenAI's decision models, Cloudflare Clef, or another provider that serves decision models. No phrases to write or maintain.",
-	},
-	{
-		value: "semantic",
-		title: "Semantic",
-		description:
-			"Matches each request against reference phrases you write for each tier, through an embedding model you choose. You decide exactly what each tier means.",
-	},
+	{ value: "decision", title: "classifierNameDecision", description: "classifierDecisionCardDesc" },
+	{ value: "semantic", title: "classifierNameSemantic", description: "classifierSemanticCardDesc" },
 ];
 
 // ClassifierChoice is the one decision everything else depends on, so each
 // option is an explained card rather than an entry in a dropdown. Anything a
 // choice still needs is reported once, below the cards, after it is picked.
 export function ClassifierChoice({ value, onChange }: { value: Classifier | undefined; onChange: (value: Classifier) => void }) {
+	const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" });
 	return (
-		<div role="radiogroup" aria-label="Classifier" className="grid gap-3 sm:grid-cols-2">
+		<div role="radiogroup" aria-label={tcpx("stepClassifier")} className="grid gap-3 sm:grid-cols-2">
 			{CLASSIFIER_OPTIONS.map((option) => {
 				const selected = option.value === value;
 				return (
@@ -868,10 +830,10 @@ export function ClassifierChoice({ value, onChange }: { value: Classifier | unde
 							) : (
 								<Waypoints className="text-muted-foreground size-4" />
 							)}
-							<span className="text-sm font-medium">{option.title}</span>
+							<span className="text-sm font-medium">{tcpx(option.title)}</span>
 							{selected && <Check className="ml-auto size-4 text-green-600" />}
 						</div>
-						<p className="text-muted-foreground text-xs leading-relaxed">{option.description}</p>
+						<p className="text-muted-foreground text-xs leading-relaxed">{tcpx(option.description)}</p>
 					</button>
 				);
 			})}
@@ -889,8 +851,9 @@ interface StepRailProps {
 // nav, and is narrower still: two short labels need little width, and every
 // pixel it gives back goes to the phrase lists.
 export function StepRail({ steps, currentIndex, onSelect }: StepRailProps) {
+	const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" });
 	return (
-		<nav className="flex w-full shrink-0 gap-1 overflow-x-auto md:block md:w-44" aria-label="Complexity Router steps">
+		<nav className="flex w-full shrink-0 gap-1 overflow-x-auto md:block md:w-44" aria-label={tcpx("stepsAria")}>
 			{steps.map((step, index) => {
 				const current = index === currentIndex;
 				return (

@@ -790,7 +790,8 @@ Error: key "email" not in dict
 
 - Default: 30 seconds per tool call
 - Configure via `tool_execution_timeout` in `tool_manager_config`
-- Long-running operations are interrupted with timeout error
+- A client's own `tool_execution_timeout` applies to that client's tools, as it does for a direct call, but it cannot outlast the script: the whole `executeToolCode` run ends at the global timeout, so a longer client timeout does not extend a nested call
+- A call that runs out of time returns a timeout error. Bifrost stops waiting, but the server (or an in-process tool) may still finish the work, so the outcome of a timed-out call is unknown
 
 ---
 

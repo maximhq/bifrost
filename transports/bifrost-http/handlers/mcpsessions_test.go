@@ -1,9 +1,14 @@
 package handlers
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
+	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
 
@@ -105,4 +110,46 @@ func TestMCPSessionsListQuery_KindAllowed(t *testing.T) {
 	if q.kindAllowed("flow") {
 		t.Fatalf("flow should not match {token, header}")
 	}
+}
+
+// TestRevokeMCPSession_PendingOAuthFlow pins that a pending OAuth flow, which the
+// sessions list shows as kind "flow" with auth_kind "oauth", can be revoked like the
+// other rows: 204, and the flow row is gone, so a callback that has not yet claimed
+// it finds nothing to claim and can no longer mint a token, while a credential
+// already stored for the same binding is kept. It was a 404 "MCP session not found".
+// An unknown id stays a 404.
+func TestRevokeMCPSession_PendingOAuthFlow(t *testing.T) {
+	h, _ := newOpenAPITestHandler(t)
+	ctx := context.Background()
+	vk := "vk-1"
+	now := time.Now()
+	require.NoError(t, h.store.ConfigStore.CreateOauthUserSession(ctx, &configtables.TableMCPOauthFlow{
+		ID: "flow-1", MCPClientID: "client-1", OauthConfigID: "oauth-config-1", State: "state-1",
+		VirtualKeyID: &vk, FlowMode: "vk", Status: "pending",
+		ExpiresAt: now.Add(15 * time.Minute), CreatedAt: now, UpdatedAt: now,
+	}))
+	// A re-authentication pending on a stored credential: the flow sits beside the
+	// binding's token, and revoking the flow must leave that token in place.
+	require.NoError(t, h.store.ConfigStore.CreateOauthToken(ctx, &configtables.TableMCPOauthToken{
+		ID: "token-1", AuthMode: "vk", VirtualKeyID: &vk, MCPClientID: "client-1", OauthConfigID: "oauth-config-1",
+		Status: "active", AccessToken: "secret", TokenType: "Bearer", Scopes: "null", CreatedAt: now, UpdatedAt: now,
+	}))
+	sessions := NewMCPSessionsHandler(h.store, nil)
+
+	status, body := doMCPRequest(t, sessions.revoke, fasthttp.MethodDelete, "", "flow-1", false)
+	require.Equal(t, fasthttp.StatusNoContent, status, body)
+	flow, err := h.store.ConfigStore.GetOauthUserSessionByID(ctx, "flow-1")
+	require.NoError(t, err)
+	assert.Nil(t, flow, "the flow row is deleted")
+	token, err := h.store.ConfigStore.GetOauthUserTokenByID(ctx, "token-1")
+	require.NoError(t, err)
+	require.NotNil(t, token, "a credential already stored for the binding is kept")
+	assert.Equal(t, "active", token.Status)
+	claimed, err := h.store.ConfigStore.ClaimOauthUserSessionByState(ctx, "state-1")
+	require.NoError(t, err)
+	assert.Nil(t, claimed, "a later callback carrying the flow's state has nothing to claim")
+
+	status, body = doMCPRequest(t, sessions.revoke, fasthttp.MethodDelete, "", "no-such-row", false)
+	require.Equal(t, fasthttp.StatusNotFound, status, body)
+	assert.Contains(t, body, "MCP session not found")
 }

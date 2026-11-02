@@ -1,10 +1,13 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,7 +37,6 @@ func newSyncTestClientState(clientID, clientName string, authType schemas.MCPAut
 		ExecutionConfig: config,
 		Conn:            nil, // every test here exercises the conn==nil branch
 		ToolMap:         tools,
-		ToolNameMapping: map[string]string{},
 	}
 	return state, config
 }
@@ -351,4 +353,183 @@ func TestClientConnectionChecker_KickChecksAheadOfTheTimer(t *testing.T) {
 	assert.LessOrEqual(t, counter.count("tools/list")-before, 2, "20 kicks collapse into one check and one follow-up")
 
 	m.checkerManager.Kick("no-such-client") // no checker: nothing happens
+}
+
+// TestClientConnectionCheckerStart_DoesNotDeadlockAgainstAStop: RemoveClient and
+// DisableClient hold MCPManager.mu while StopChecking waits for the checker's own
+// lock, so Start must not hold that lock while it waits for MCPManager.mu, or the
+// two wait on each other forever. A checker stopped before it got going does not
+// start afterwards, whether its client was removed or only disabled, since nothing
+// could stop it again.
+func TestClientConnectionCheckerStart_DoesNotDeadlockAgainstAStop(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		stop func(m *MCPManager, id string) // runs with MCPManager.mu held, as in RemoveClient or DisableClient
+	}{
+		{"removed", func(m *MCPManager, id string) { delete(m.clientMap, id) }},
+		{"disabled", func(m *MCPManager, id string) { m.clientMap[id].State = schemas.MCPConnectionStateDisabled }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			defer m.checkerManager.StopAll()
+			config := newVerifiedClientConfig("client", schemas.MCPAuthTypePerUserHeaders, map[string]schemas.ChatTool{})
+			m.mu.Lock()
+			m.clientMap[config.ID] = &schemas.MCPClientState{
+				Name:            config.Name,
+				ExecutionConfig: config,
+				State:           schemas.MCPConnectionStateHealthy,
+				ToolMap:         map[string]schemas.ChatTool{},
+				ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
+			}
+			m.mu.Unlock()
+			checker := NewClientConnectionChecker(m, config.ID, time.Hour, true, m.logger)
+
+			m.mu.Lock()
+			started := make(chan struct{})
+			go func() { m.checkerManager.StartChecking(checker); close(started) }()
+			time.Sleep(100 * time.Millisecond) // Start is now waiting for MCPManager.mu
+			tc.stop(m, config.ID)
+			stopped := make(chan struct{})
+			go func() { m.checkerManager.StopChecking(config.ID); close(stopped) }()
+			select {
+			case <-stopped:
+				m.mu.Unlock()
+			case <-time.After(2 * time.Second):
+				m.mu.Unlock() // let both goroutines finish before failing
+				<-stopped
+				<-started
+				t.Fatal("StopChecking under MCPManager.mu deadlocked against a starting checker")
+			}
+			<-started
+			assert.False(t, checkerRunning(checker), "a checker stopped before it started stays stopped")
+		})
+	}
+}
+
+// TestUpdateClient_PingEditReachesTheRunningChecker: an is_ping_available edit
+// reaches the client's running checker, so its next check stops pinging. The
+// checker used to keep the value it was built with until a reconnect replaced
+// it. The client is capped at 2025-06-18, a revision whose check still pings.
+func TestUpdateClient_PingEditReachesTheRunningChecker(t *testing.T) {
+	var pings, lists atomic.Int32
+	upstream := server.NewStreamableHTTPServer(server.NewMCPServer("ping-edit", "1.0.0", server.WithToolCapabilities(true)))
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		if bytes.Contains(body, []byte(`"method":"ping"`)) {
+			pings.Add(1)
+		}
+		if bytes.Contains(body, []byte(`"method":"tools/list"`)) {
+			lists.Add(1)
+		}
+		upstream.ServeHTTP(w, r)
+	}))
+	t.Cleanup(ts.Close)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+	config := &schemas.MCPClientConfig{
+		ID:                     "ping-edit",
+		Name:                   "ping_edit",
+		ConnectionType:         schemas.MCPConnectionTypeHTTP,
+		ConnectionString:       schemas.NewSecretVar(ts.URL),
+		AuthType:               schemas.MCPAuthTypeNone,
+		NeedsSessionStickiness: schemas.Ptr(true),
+		MaxProtocolVersion:     "2025-06-18",
+	}
+	require.NoError(t, m.AddClient(context.Background(), config))
+
+	// checkNow kicks one check and reports how many pings it sent.
+	checkNow := func() int32 {
+		listsBefore, pingsBefore := lists.Load(), pings.Load()
+		m.checkerManager.Kick(config.ID)
+		require.Eventually(t, func() bool { return lists.Load() > listsBefore }, 5*time.Second, 20*time.Millisecond, "the kicked check never listed tools")
+		return pings.Load() - pingsBefore
+	}
+	require.Equal(t, int32(1), checkNow(), "a check pings while is_ping_available is on")
+
+	edited := *config
+	edited.IsPingAvailable = schemas.Ptr(false)
+	require.NoError(t, m.UpdateClient(config.ID, &edited))
+	assert.Equal(t, int32(0), checkNow(), "the next check sends no ping")
+}
+
+// TestReconnectClient_FailedReconnectChecksAgainSoon: a manual reconnect that
+// fails keeps the client's old, still working connection and marks it
+// unstable, and the checker moves onto the unstable cadence: the next check
+// runs within UnstableConnectionCheckInterval, finds the old connection
+// working and marks the client healthy. It used to wait out the full steady
+// interval, ten minutes by default, still showing the failed reconnect. The
+// client is capped at 2025-06-18 so its requests carry a session the upstream
+// can tell apart from a new connection's.
+func TestReconnectClient_FailedReconnectChecksAgainSoon(t *testing.T) {
+	upstream := server.NewStreamableHTTPServer(server.NewMCPServer("failed-reconnect", "1.0.0", server.WithToolCapabilities(true)))
+	var refuseNewConnections atomic.Bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if refuseNewConnections.Load() && r.Header.Get("Mcp-Session-Id") == "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		upstream.ServeHTTP(w, r)
+	}))
+	t.Cleanup(ts.Close)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+	config := &schemas.MCPClientConfig{
+		ID:                     "failed-reconnect",
+		Name:                   "failed_reconnect",
+		ConnectionType:         schemas.MCPConnectionTypeHTTP,
+		ConnectionString:       schemas.NewSecretVar(ts.URL),
+		AuthType:               schemas.MCPAuthTypeNone,
+		NeedsSessionStickiness: schemas.Ptr(true),
+		MaxProtocolVersion:     "2025-06-18",
+	}
+	require.NoError(t, m.AddClient(context.Background(), config))
+
+	refuseNewConnections.Store(true)
+	require.Error(t, m.ReconnectClient(config.ID))
+	state, ok := snapshotAddClientState(m, config.ID)
+	require.True(t, ok)
+	require.Equal(t, schemas.MCPConnectionStateUnstable, state.State)
+	require.NotNil(t, state.LastFailure)
+	require.Equal(t, schemas.MCPConnectionFailureStageConnect, state.LastFailure.Stage)
+
+	assert.Eventually(t, func() bool {
+		state, _ := snapshotAddClientState(m, config.ID)
+		return state.State == schemas.MCPConnectionStateHealthy
+	}, UnstableConnectionCheckInterval+5*time.Second, 100*time.Millisecond, "the next check runs on the unstable cadence and finds the old connection working")
+}
+
+// TestHandleSSEConnectionLost_MovesTheCheckerOntoTheUnstableCadence: a dropped
+// SSE stream marks the client unstable and moves its checker off the steady
+// cadence, so the reconnect the next check starts comes within
+// UnstableConnectionCheckInterval rather than a full steady interval later.
+func TestHandleSSEConnectionLost_MovesTheCheckerOntoTheUnstableCadence(t *testing.T) {
+	ts := httptest.NewServer(server.NewSSEServer(server.NewMCPServer("sse-lost", "1.0.0", server.WithToolCapabilities(true))))
+	t.Cleanup(ts.Close)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+	config := &schemas.MCPClientConfig{
+		ID:               "sse-lost",
+		Name:             "sse_lost",
+		ConnectionType:   schemas.MCPConnectionTypeSSE,
+		ConnectionString: schemas.NewSecretVar(ts.URL + "/sse"),
+		AuthType:         schemas.MCPAuthTypeNone,
+	}
+	require.NoError(t, m.AddClient(context.Background(), config))
+	m.checkerManager.mu.RLock()
+	checker := m.checkerManager.checkers[config.ID]
+	m.checkerManager.mu.RUnlock()
+	require.NotNil(t, checker)
+	onSteady := func() bool {
+		checker.mu.Lock()
+		defer checker.mu.Unlock()
+		return checker.onSteadyCadence
+	}
+	require.True(t, onSteady(), "a healthy client's checker starts on the steady cadence")
+
+	state, _ := snapshotAddClientState(m, config.ID)
+	m.handleSSEConnectionLost(config.ID, config.Name, state.ConnGeneration, errors.New("stream dropped"))
+	state, _ = snapshotAddClientState(m, config.ID)
+	require.Equal(t, schemas.MCPConnectionStateUnstable, state.State)
+	assert.False(t, onSteady(), "the checker is on the unstable cadence")
 }

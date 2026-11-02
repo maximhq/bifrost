@@ -3,12 +3,14 @@ package network
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -874,9 +876,14 @@ type ProxyAwareTransport struct {
 	// Proxy decides the route: nil means direct. It is the operator's proxy
 	// configuration (http.ProxyFromEnvironment), not a policy check; the
 	// destination policy for the proxied path runs in ViaProxy.Proxy.
-	Proxy    func(*http.Request) (*url.URL, error)
-	Direct   *http.Transport
+	Proxy  func(*http.Request) (*url.URL, error)
+	Direct *http.Transport
+	// ViaProxy is used as is unless the global proxy is on for API traffic; then
+	// requests run on a copy that trusts the global proxy's TLS (see proxiedTransport).
 	ViaProxy *http.Transport
+
+	viaOnce sync.Once
+	via     *proxiedTransport
 }
 
 // RoundTrip implements http.RoundTripper.
@@ -887,7 +894,7 @@ func (t *ProxyAwareTransport) RoundTrip(req *http.Request) (*http.Response, erro
 			return nil, err
 		}
 		if proxyURL != nil {
-			return t.ViaProxy.RoundTrip(req)
+			return t.proxied().transport().RoundTrip(req)
 		}
 	}
 	return t.Direct.RoundTrip(req)
@@ -896,5 +903,84 @@ func (t *ProxyAwareTransport) RoundTrip(req *http.Request) (*http.Response, erro
 // CloseIdleConnections closes idle connections on both transports.
 func (t *ProxyAwareTransport) CloseIdleConnections() {
 	t.Direct.CloseIdleConnections()
-	t.ViaProxy.CloseIdleConnections()
+	t.proxied().closeIdleConnections()
+}
+
+func (t *ProxyAwareTransport) proxied() *proxiedTransport {
+	t.viaOnce.Do(func() { t.via = &proxiedTransport{base: t.ViaProxy} })
+	return t.via
+}
+
+// proxiedTransport gives the proxied side of a ProxyAwareTransport the global proxy's
+// TLS settings while the global proxy is on for API traffic: its CA is added to the
+// target roots (a TLS-inspecting proxy re-signs targets with it), and an https:// proxy
+// is dialed with the hop TLS (the CA, and skip_tls_verify, which never reaches a
+// target). The settings are read from the registered factory on every request, and a
+// copy of base is built once per proxy config, so a CA saved later reaches clients
+// built before it. Otherwise base is used as is: an environment proxy never trusts the
+// global CA.
+type proxiedTransport struct {
+	base *http.Transport
+
+	mu      sync.Mutex
+	config  *GlobalProxyConfig // the factory config current was built for
+	current *http.Transport
+}
+
+// transport returns the transport for the factory's current proxy config.
+func (p *proxiedTransport) transport() *http.Transport {
+	var config *GlobalProxyConfig
+	var roots *x509.CertPool
+	if factory := defaultFactory.Load(); factory != nil {
+		factory.mu.RLock()
+		if factory.proxyURLForPurpose(ClientPurposeAPI) != nil {
+			config, roots = factory.proxyConfig, factory.proxyRoots
+		}
+		factory.mu.RUnlock()
+	}
+	if config == nil {
+		return p.base
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.current != nil && p.config == config {
+		return p.current
+	}
+	previous := p.current
+	p.current, p.config = withGlobalProxyTLS(p.base, config, roots), config
+	if previous != nil {
+		previous.CloseIdleConnections()
+	}
+	return p.current
+}
+
+func (p *proxiedTransport) closeIdleConnections() {
+	p.base.CloseIdleConnections()
+	p.mu.Lock()
+	current := p.current
+	p.mu.Unlock()
+	if current != nil {
+		current.CloseIdleConnections()
+	}
+}
+
+// withGlobalProxyTLS returns a copy of base that trusts the global proxy's CA for its
+// targets, on top of base's own roots, and dials an https:// proxy with the proxy's hop
+// TLS. base is not modified.
+func withGlobalProxyTLS(base *http.Transport, config *GlobalProxyConfig, roots *x509.CertPool) *http.Transport {
+	transport := base.Clone()
+	if roots != nil {
+		if transport.TLSClientConfig == nil {
+			transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		}
+		if transport.TLSClientConfig.RootCAs == nil {
+			transport.TLSClientConfig.RootCAs = roots
+		} else {
+			merged := transport.TLSClientConfig.RootCAs.Clone()
+			merged.AppendCertsFromPEM([]byte(config.CACertPEM))
+			transport.TLSClientConfig.RootCAs = merged
+		}
+	}
+	DialHTTPSProxyWithHopTLS(transport, config.proxyTLS(roots))
+	return transport
 }
