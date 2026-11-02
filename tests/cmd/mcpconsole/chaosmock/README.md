@@ -40,13 +40,27 @@ Paths are derivable from a server's name, so a driver can compute a URL without
 asking the fleet: `/s/<name>/mcp` for streamable HTTP, `/s/<name>/sse` for the
 legacy transport, `/control/<name>/...` to mutate.
 
-`-seed <file.json>` builds a fleet with per-identity tool views, auth,
-instructions, REST routes, LLM model listings (`llm_models`) and starting faults
-in one step, for scenarios that need more than names:
+`-seed <file.json>` builds a fleet in one step, for scenarios that need more
+than names:
 
 ```json
 {"servers": {"alpha": {"tools": [{"name": "echo_tool"}], "routes": [{"path": "/catalog.json", "json": {"servers": []}}]}}}
 ```
+
+Every seed field takes what the matching control verb takes, and a seed that
+verb would refuse fails at startup:
+
+| Seed field | Same as |
+|---|---|
+| `tools`, `views` | `tools/set`; `views` maps an identity to its `tools/overlay` list |
+| `prompts`, `prompt_views` | `prompts/set`; `prompt_views` maps an identity to its `prompts/overlay` list |
+| `resources`, `resource_views` | `resources/set`; `resource_views` maps an identity to its `resources/overlay` list |
+| `resource_templates`, `template_views` | `templates/set` (or `resources/set`); `template_views` maps an identity to its `templates/overlay` list |
+| `auth` | `auth` |
+| `faults`, `identity_faults` | `faults`; `identity_faults` maps an identity to its `faults/identity` set |
+| `instructions`, `identity_instructions` | `instructions`; `identity_instructions` maps an identity to its own text |
+| `routes` | `routes/set` |
+| `llm_models` | `llm/models` |
 
 Each server's seed is kept, so `POST /control {"reset":"<name>"}` puts it back
 exactly as booted (servers from `-servers` are seeded with the `-tools` list).
@@ -138,13 +152,22 @@ exactly like the system under test behaving correctly.
 | `POST /control/<s>/tools/rename` | `{"from":"...","to":"..."}` | rename, preserving schema and description |
 | `POST /control/<s>/tools/describe` | `{"name":"...","text":"..."}` | change only the description |
 | `POST /control/<s>/tools/schema` | `{"name":"...","schema":{...}}` | change only the input schema |
-| `POST /control/<s>/tools/overlay` | `{"identity":"...","tools":[...]}` | give one identity its own tool list |
+| `POST /control/<s>/tools/overlay` | `{"identity":"...","tools":[...]}` / `{"identity":"...","clear":true}` | give one identity its own tool list, or return it to the base list |
+| `POST /control/<s>/prompts/overlay` | `{"identity":"...","prompts":[...]}` / `{"identity":"...","clear":true}` | give one identity its own prompt list, or return it to the base list |
+| `POST /control/<s>/resources/overlay` | `{"identity":"...","resources":[...]}` / `{"identity":"...","clear":true}` | give one identity its own resource list, or return it to the base list |
+| `POST /control/<s>/templates/set` | `{"templates":[...]}` | replace the base resource template list |
+| `POST /control/<s>/templates/overlay` | `{"identity":"...","templates":[...]}` / `{"identity":"...","clear":true}` | give one identity its own template list, or return it to the base list |
 | `POST /control/<s>/instructions` | `{"text":"..."}` / `{"clear":true}` | set or remove the instructions served in the initialize result |
 | `POST /control/<s>/prompts/set` | `{"prompts":[{"name":"greet","arguments":[{"name":"name","required":true}],"text":"Hello, {name}","completions":{"name":["Ada"]}}]}` | replace the prompts served by `prompts/list`, `prompts/get` and `completion/complete`; the server advertises prompts and completions only while it has some, and the state's `reads` lists each `prompts/get`, `resources/read` and `completion/complete` it answered |
 | `POST /control/<s>/resources/set` | `{"resources":[{"uri":"file:///x","text":"..."}],"templates":[{"uriTemplate":"file:///docs/{name}","text":"doc {uri}"}]}` | replace the resources and templates served by `resources/list`, `resources/templates/list` and `resources/read`; the server advertises resources only while it has some |
 | `POST /control/<s>/versions` | `{"versions":["2026-07-28","2025-11-25","2025-06-18"]}` | the protocol versions the server speaks (see Protocol versions); the state lists them newest first as `protocol_versions` |
+| `POST /control/<s>/instructions` | `{"identity":"...","text":"..."}` / `{"identity":"...","clear":true}` | set or remove one identity's own instructions |
 | `POST /control/<s>/faults` | `{"faults":{...}}` | set the fault state |
-| `POST /control/<s>/faults/clear` | | return to healthy |
+| `POST /control/<s>/faults/identity` | `{"identity":"...","faults":{...}}` / `{"identity":"...","clear":true}` | give one identity its own fault set, or return it to the server-wide one |
+| `POST /control/<s>/faults/clear` | | return every caller to healthy, and drop queued OAuth failures |
+| `POST /control/<s>/gates/set` | `{"gate":{"name","method","identity","endpoint","timeout"}}` | add a closed gate, replacing and releasing one with the same name |
+| `POST /control/<s>/gates/open` | `{"name":"..."}` / `{}` | open one gate, or every closed gate |
+| `POST /control/<s>/gates/clear` | `{"name":"..."}` / `{}` | remove one gate, or every gate, releasing what it holds |
 | `POST /control/<s>/auth` | `{"auth":{...}}` | set auth requirements |
 | `POST /control/<s>/auth/grant` | `{"token":"...","identity":"..."}` | add a bearer token |
 | `POST /control/<s>/auth/revoke` | `{"token":"..."}` | revoke one token, leaving others working |
@@ -167,7 +190,18 @@ exactly like the system under test behaving correctly.
 | `GET /control/<s>/llm/requests` | `?scenario=k&since=N` | the logged LLM requests, oldest first |
 
 Clients read instructions during the handshake, so changing them reaches only
-clients that initialize afterwards.
+clients that initialize afterwards. An identity with instructions of its own is
+served those in place of the server-wide text; one without gets the
+server-wide text, or none.
+
+A verb that would do nothing is refused with 400 rather than accepted: clearing
+an overlay, an identity's faults or its instructions when it has none, an
+overlay with no identity, `<kind>/set` given an identity or `clear` (which
+belong to `<kind>/overlay`), opening a gate that is unknown or already open.
+
+`GET /control/<s>` shows, besides the base lists, the per-identity overlays
+(`views`, `prompt_views`, `resource_views`, `template_views`, each keyed by
+identity), `identity_instructions`, `identity_faults` and `gates`.
 
 ### Tools
 
@@ -182,6 +216,7 @@ sent to a client.
 | `icons` | sent verbatim in tools/list, a list of `{"src","mimeType","sizes","theme"}` |
 | `outputSchema` | sent verbatim in tools/list: the schema the tool's `structuredContent` follows |
 | `annotations` | sent verbatim in tools/list, e.g. `{"readOnlyHint":true}` |
+| `outputSchema` | sent verbatim in tools/list. Without `reply`, a call answers `structuredContent` `{"tool":"<name>","arguments":{...}}` (the arguments as sent, `{}` when none) and one text block holding the same JSON, as MCP asks of a server |
 | `reply` | the CallToolResult tools/call returns, verbatim: several content blocks, `structuredContent`, `isError`. An empty result is `{"content":[]}`; clients reject a missing `content`. |
 | `reply_error` | the JSON-RPC error tools/call answers with, `{"code","message","data"}` as given, e.g. `{"code":-32021,"message":"missing capability","data":{"capability":"elicitation"}}` |
 | `reply_env` | answer with this variable from the stdio bridge's registered environment |
@@ -193,6 +228,28 @@ with 400: annotations, an output schema or a reply that is not an object, icons
 that are not a list, a `reply_error` without a non-zero code, more than one of
 `reply`, `reply_error` and `reply_env`, or a tool fault field that cannot apply
 to one tool.
+
+### Prompts, resources and templates
+
+Prompt text, completion values and what a resource or template reads as are
+set with `prompts/set` and `resources/set` above. They are served the way tools
+are: a base list every caller sees, and per-identity views (`<kind>/overlay`)
+that replace one kind's list wholesale for one caller. A view with an empty or
+omitted list shows that identity nothing of that kind; `clear` returns it to
+the base list. `templates/set` replaces the templates alone, while
+`resources/set` replaces resources and templates together.
+
+`initialize` advertises `"prompts":{}` and `"completions":{}` when any prompt is
+held, in the base list or any view, and `"resources":{}` when any resource or
+template is. That is decided per server and never per caller: a caller whose
+own view of an advertised kind is empty gets an empty list.
+
+`prompts/list`, `resources/list` and `resources/templates/list` answer the
+calling identity's view, and `prompts/get`, `resources/read` and
+`completion/complete` look the name or uri up in it, so one outside the
+caller's view is not found. A view can give an entry its own `text`, which is
+how a test proves from a response alone whose view answered. The list methods
+honour `list_fail` and `malformed` like `tools/list`.
 
 ## REST
 
@@ -374,6 +431,18 @@ No SDK exposes a raw stream, so one is probed directly:
 |---|---|
 | `POST /client/<c>/stream {"url", "headers", "hold"}` | a GET asking for `text/event-stream`, held for `hold`; answers its `status`, the `headers` a stream is judged by, the `body` received and whether it was still `open` when `hold` ended |
 
+## Who the caller is
+
+Per-identity tool, prompt, resource and template views, faults, instructions,
+gates and `methods_by_identity` all key on one identity, resolved for each
+request before anything answers it. A request on a known session is the
+session's identity, fixed when the session began (at initialize under
+streamable HTTP, when the stream opened under SSE); initialize, and a request
+with no session, is whoever its credential names: a `bearer` token's mapping,
+the `identity_header`, or the `login_hint` that approved an OAuth access token.
+An unknown or rejected credential resolves to no one, and a request from no one
+sees the base lists and the server-wide faults and instructions.
+
 ## Faults
 
 Grouped by the layer they break at, because that grouping is what a client
@@ -386,9 +455,9 @@ upstream actually looks like.
 |---|---|
 | Transport | `refuse`, `reset`, `drop_sse` |
 | HTTP | `status`, `status_once`, `retry_after`, `www_auth` |
-| Protocol | `init_fail`, `bad_version`, `no_ping`, `ping_fail`, `list_fail`, `kill_session` |
+| Protocol | `init_fail`, `bad_version`, `no_ping`, `ping_fail`, `list_fail` (every list method), `kill_session` |
 | Timing | `hang`, `latency`, `jitter` (duration strings, e.g. `"1500ms"`) |
-| Call | `err_rate`, `err_kind`, `malformed` |
+| Call | `err_rate`, `err_kind`, `malformed` (tools/call and every list method) |
 | Scope | `methods`, `message` |
 
 `methods` limits the whole set to the listed JSON-RPC methods. Every other
@@ -406,11 +475,26 @@ successful exchange reporting a failed tool, `protocol` is a failed exchange,
 and `http` is a bare 500 with no JSON-RPC body. A client that conflates them
 looks correct under one and wrong under another.
 
+The list methods are `tools/list`, `prompts/list`, `resources/list` and
+`resources/templates/list`. `list_fail` answers each with a JSON-RPC error
+naming the method, and `malformed` with a body that is not JSON-RPC, so a
+discovery that lists all four fails the same way on each.
+
+`faults/identity` gives one identity a set that replaces the server-wide set
+entirely for that identity's MCP requests, scope included: an identity whose
+set does not cover a method sees a healthy server for it, not the server-wide
+faults. Its one-shot status is its own. It reaches every MCP request from that
+identity (POST, the listening GET, DELETE and the SSE stream); the REST and LLM
+surfaces carry no identity and always see the server-wide set. Every field is
+accepted, and `faults/clear` clears identity sets too.
+
 A tool's `fault` replaces the server-wide set entirely for calls to that tool,
 so one broken tool on an otherwise healthy server is expressible. It applies
 once the call is known to reach the tool, after credentials and session
 checks, and honours the transport, HTTP, timing and call fields. Its one-shot
-status is spent without changing the tool-set revision. Fields that act on
+status is spent without changing the tool-set revision. It also replaces the
+caller's own identity set, so a tool's fault is the most specific of the three.
+Fields that act on
 something other than one call (`methods`, `init_fail`, `bad_version`,
 `no_ping`, `ping_fail`, `list_fail`, `kill_session`, `drop_sse`) are rejected.
 
@@ -423,6 +507,7 @@ something other than one call (`methods`, `init_fail`, `bad_version`,
 | `sessions` | the reconnect signal for HTTP (see below) |
 | `open_streams` / `max_streams` | stream-level leak detection |
 | `methods` | every JSON-RPC request received, counted as it arrives, before any fault, credential or session check can answer it. A call answered with an injected status, a 401 or a 404 still counts, so retries are countable. Unimplemented methods count too, so a surprise surfaces. |
+| `methods_by_identity` | the same count split by the identity that sent each request, identity first (`{"alice":{"tools/list":1}}`), so a test can prove which credential a discovery used. A request from no identity is only in `methods`. |
 | `faulted` | how many responses were injected failures rather than real ones |
 | `handshakes` | every `initialize` and `server/discover` the server answered, in order, with the version the client `requested` and the one it was answered with (`negotiated`), which is how a client's version cap is checked |
 
@@ -435,6 +520,42 @@ it. Fleet-level connection stats are still tracked, for genuine fleet-wide leaks
 and for scenarios that deliberately disable pooling. `connections_test.go` pins
 both behaviours so a change to how clients are built surfaces there rather than
 silently invalidating an assertion that rests on it.
+
+## Gates
+
+A gate is a barrier for races: it holds every request it matches until a
+scenario opens it, which is how a test puts two requests in a known order, such
+as one caller's discovery landing while another's token refresh is still in
+flight, instead of hoping the scheduler does.
+
+| `gate` field | Effect |
+|---|---|
+| `name` | required; `gates/open` and `gates/clear` take it |
+| `method` | an MCP method, e.g. `tools/list`, held over every transport |
+| `identity` | narrows a method gate to that caller (see "Who the caller is") |
+| `endpoint` | `token`: the OAuth token endpoint, every grant type |
+| `timeout` | safety timeout, default `20s` |
+
+Exactly one of `method` and `endpoint` is set; `identity` goes with `method`
+only. A held request has already arrived: it is counted (in `methods`, or the
+OAuth `token_code`/`token_refresh`) before the gate and answered after it,
+against the server as it is when it is let go, so a credential revoked or a
+fault set while it is held decides how it ends. A legacy SSE message is the
+exception for credentials: it carries none of its own and rides the session its
+stream authenticated, so revoking the credential while it is held does not
+reject it, though a fault set meanwhile still applies. Opening a gate releases what it
+holds and lets every later match straight through. A request still held when
+its gate's timeout runs out is let through anyway, and a request whose client
+hangs up while held is dropped unanswered. A request matching several gates
+passes them in name order. Setting a gate again under its name starts a new,
+closed gate and releases what the old one held, and the fleet releases every
+gate of a server it stops, resets or removes.
+
+Each gate in the state reads `{"name",...,"open","waiting","passed",
+"timed_out","abandoned"}`: `waiting` is held now, `passed` let through because
+the gate was or became open, `timed_out` let through by the timeout, and
+`abandoned` dropped because the client gave up. A test waits for `waiting` to
+reach the count it expects before it does the thing the gate makes room for.
 
 ## Push notifications
 
