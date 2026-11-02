@@ -378,8 +378,48 @@ func TestPreRequestHook_SessionContinuationReusesOrClassifiesRecoveredTask(t *te
 	require.Nil(t, continuationCtx.Value(schemas.BifrostContextKeyGovernanceComplexityScore))
 }
 
+// newTieredComplexityRuleFixture gives each tier its own target, so a test can tell from the routed
+// model which tier's rule selected the request.
+func newTieredComplexityRuleFixture(t *testing.T) *routing.RoutingPlugin {
+	t.Helper()
+	store, err := kvstore.New(kvstore.Config{CleanupInterval: time.Hour})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+
+	logger := rules.NewMockLogger()
+	ruleStore, err := rules.NewLocalStore(context.Background(), logger, nil)
+	require.NoError(t, err)
+	tierTargets := []struct {
+		tier  string
+		model string
+	}{
+		{tier: complexity.TierSimple, model: "tier-simple-model"},
+		{tier: complexity.TierMedium, model: "tier-medium-model"},
+		{tier: complexity.TierComplex, model: "tier-complex-model"},
+	}
+	for priority, target := range tierTargets {
+		provider, model := "openai", target.model
+		require.NoError(t, ruleStore.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+			ID:            "rule-" + strings.ToLower(target.tier),
+			Name:          "Complexity " + target.tier,
+			CelExpression: `complexity_tier == "` + target.tier + `"`,
+			Targets: []configstoreTables.TableRoutingTarget{
+				{Provider: &provider, Model: &model, Weight: 1.0},
+			},
+			Enabled:  schemas.Ptr(true),
+			Scope:    "global",
+			Priority: priority,
+		}))
+	}
+
+	plugin, err := routing.InitFromStore(context.Background(), &routing.Config{KVStore: store}, logger, nil, ruleStore, routing.NewMockGovernance())
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+	return plugin
+}
+
 func TestPreRequestHook_SubagentComplexityIsClassifiedIndependently(t *testing.T) {
-	plugin := newSessionComplexityRuleFixture(t)
+	plugin := newTieredComplexityRuleFixture(t)
 	plugin.SetEmbeddingRequestExecutor(testEmbeddingExecutor)
 	require.NoError(t, plugin.ReloadComplexityAnalyzerConfig(sessionAnalyzerConfig()))
 	waitForSemanticClassifier(t, plugin)
@@ -389,24 +429,28 @@ func TestPreRequestHook_SubagentComplexityIsClassifiedIndependently(t *testing.T
 		agentID     string
 		requestText string
 		wantTier    string
+		wantModel   string
 	}{
-		{agentID: "", requestText: "a medium request", wantTier: complexity.TierMedium},
+		{agentID: "", requestText: "a medium request", wantTier: complexity.TierMedium, wantModel: "tier-medium-model"},
 		// A subagent starts from its own prompt, not the parent's tier.
-		{agentID: "agent-a", requestText: "a simple request", wantTier: complexity.TierSimple},
-		{agentID: "agent-b", requestText: "a complex request", wantTier: complexity.TierComplex},
+		{agentID: "agent-a", requestText: "a simple request", wantTier: complexity.TierSimple, wantModel: "tier-simple-model"},
+		{agentID: "agent-b", requestText: "a complex request", wantTier: complexity.TierComplex, wantModel: "tier-complex-model"},
 		// Neither the parent nor a sibling is escalated by agent-b.
-		{agentID: "", requestText: "a simple request", wantTier: complexity.TierMedium},
-		{agentID: "agent-a", requestText: "a simple request", wantTier: complexity.TierSimple},
+		{agentID: "", requestText: "a simple request", wantTier: complexity.TierMedium, wantModel: "tier-medium-model"},
+		{agentID: "agent-a", requestText: "a simple request", wantTier: complexity.TierSimple, wantModel: "tier-simple-model"},
 		// Each agent still keeps its own monotonic tier.
-		{agentID: "agent-b", requestText: "a simple request", wantTier: complexity.TierComplex},
+		{agentID: "agent-b", requestText: "a simple request", wantTier: complexity.TierComplex, wantModel: "tier-complex-model"},
 	}
 	for _, step := range steps {
 		ctx := complexitySessionContext("shared-session")
 		if step.agentID != "" {
 			ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{"x-claude-code-agent-id": step.agentID})
 		}
-		require.NoError(t, plugin.PreRequestHook(ctx, chatRequest(step.requestText)))
+		req := chatRequest(step.requestText)
+		require.NoError(t, plugin.PreRequestHook(ctx, req))
 		require.Equal(t, step.wantTier, ctx.Value(schemas.BifrostContextKeyGovernanceComplexityTier), "agent=%q request=%q", step.agentID, step.requestText)
+		// The routed target must be the one configured for the tier, not just the right tier label.
+		require.Equal(t, step.wantModel, req.ChatRequest.Model, "agent=%q request=%q", step.agentID, step.requestText)
 	}
 }
 
