@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { MCPSessionFilters, MCPSessionsFilterSidebar } from "./views/mcpSessionsFilterSidebar";
 import SessionsTable from "./views/sessionsTable";
+import { ToolsPendingNotice } from "./views/toolsPendingNotice";
 
 // Page size larger than the governance default (25) since session rows are
 // denser than VK rows and the page is the only screen of MCP-auth content.
@@ -28,6 +29,17 @@ export default function MCPSessionsPage() {
 		},
 		{ history: "push" },
 	);
+	// Set by the OAuth callback when sign-in stored the token but could not load
+	// the client's tools with it. Dismissing the notice drops both.
+	const [pending, setPending] = useQueryStates({ tools: parseAsString, client: parseAsString });
+	const pendingNotice =
+		pending.tools === "pending" && pending.client ? (
+			<ToolsPendingNotice
+				clientName={pending.client}
+				className="mb-3 shrink-0"
+				onDismiss={() => void setPending({ tools: null, client: null })}
+			/>
+		) : null;
 
 	const debouncedSearch = useDebouncedValue(urlState.q, 300);
 	const normalizedIdentity = urlState.identity.trim();
@@ -88,6 +100,7 @@ export default function MCPSessionsPage() {
 	if (isError) {
 		return (
 			<div className="mx-auto w-full max-w-7xl">
+				{pendingNotice}
 				<div className="border-destructive bg-destructive/10 text-destructive rounded-lg border p-6 text-sm">
 					{t("sessions.loadFailed", { message: getErrorMessage(error) })}
 				</div>
@@ -108,17 +121,20 @@ export default function MCPSessionsPage() {
 	const handleOffsetChange = (offset: number) => setUrlState({ offset });
 
 	const table = (
-		<SessionsTable
-			sessions={data?.sessions ?? []}
-			totalCount={totalCount}
-			isFetching={isFetching}
-			search={urlState.q}
-			onSearchChange={handleSearchChange}
-			hasActiveFilters={hasActiveFilters}
-			offset={urlState.offset}
-			limit={PAGE_SIZE}
-			onOffsetChange={handleOffsetChange}
-		/>
+		<>
+			{pendingNotice}
+			<SessionsTable
+				sessions={data?.sessions ?? []}
+				totalCount={totalCount}
+				isFetching={isFetching}
+				search={urlState.q}
+				onSearchChange={handleSearchChange}
+				hasActiveFilters={hasActiveFilters}
+				offset={urlState.offset}
+				limit={PAGE_SIZE}
+				onOffsetChange={handleOffsetChange}
+			/>
+		</>
 	);
 
 	// No sessions at all and no active filters/search: render full-width

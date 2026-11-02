@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -447,5 +449,119 @@ func TestOAuthVerbsNeedOAuthAndAValidConfig(t *testing.T) {
 	res.Body.Close()
 	if res.StatusCode != http.StatusNotFound {
 		t.Errorf("expected 404 for metadata with oauth off, got %d", res.StatusCode)
+	}
+}
+
+// TestAuthorizationServerTakesClientMetadataDocuments: an https client_id is fetched as a Client
+// ID Metadata Document through metadata_documents_via, with the document's own host and scheme in
+// Host and X-Forwarded-Proto, once per client, and the client then redeems its code with no
+// secret. A document naming another URL is refused, and its redirect URIs bind the client like a
+// registered one's. "accepted" takes documents without announcing them; with the field off such a
+// client_id is unknown and nothing is fetched.
+func TestAuthorizationServerTakesClientMetadataDocuments(t *testing.T) {
+	const docURL = "https://docs.example.test/client.json"
+	var mu sync.Mutex
+	var seen []string
+	docs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.Host+" "+r.Header.Get("X-Forwarded-Proto")+" "+r.URL.Path)
+		mu.Unlock()
+		clientID := "https://" + r.Host + r.URL.Path
+		if r.URL.Path == "/wrong.json" {
+			clientID = "https://docs.example.test/other.json"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"client_id": clientID, "client_name": "docs", "redirect_uris": []string{testRedirect}, "token_endpoint_auth_method": "none"})
+	}))
+	t.Cleanup(docs.Close)
+
+	fleet, srv := oauthFleet(t, map[string]any{"metadata_documents": "advertised", "metadata_documents_via": docs.URL})
+	advertised := func() any {
+		resp, err := http.Get(fleet.URL() + "/.well-known/oauth-authorization-server/s/alpha/as")
+		if err != nil {
+			t.Fatalf("metadata request failed: %v", err)
+		}
+		defer resp.Body.Close()
+		var meta map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
+			t.Fatalf("metadata is not JSON: %v", err)
+		}
+		return meta["client_id_metadata_document_supported"]
+	}
+	verifier, err := client.GenerateCodeVerifier()
+	if err != nil {
+		t.Fatalf("verifier: %v", err)
+	}
+	authURL := func(clientID, redirect string) string {
+		return fleet.URL() + "/s/alpha/as/authorize?" + url.Values{
+			"response_type": {"code"}, "client_id": {clientID}, "redirect_uri": {redirect}, "state": {"st"},
+			"code_challenge": {client.GenerateCodeChallenge(verifier)}, "code_challenge_method": {"S256"},
+		}.Encode()
+	}
+	refused := func(what, clientID, redirect string) {
+		t.Helper()
+		resp, err := noRedirect.Get(authURL(clientID, redirect))
+		if err != nil {
+			t.Fatalf("%s: authorize request failed: %v", what, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: authorize returned %d, want 400", what, resp.StatusCode)
+		}
+	}
+	fetches := func() int64 { return srv.State().OAuth.Counters.MetadataDocumentFetches }
+
+	if advertised() != true {
+		t.Errorf("advertised: metadata must carry client_id_metadata_document_supported true")
+	}
+	back := authorize(t, authURL(docURL, testRedirect))
+	status, out := token(t, fleet, url.Values{
+		"grant_type": {"authorization_code"}, "code": {back.Get("code")}, "code_verifier": {verifier},
+		"client_id": {docURL}, "redirect_uri": {testRedirect},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("code exchange with no secret returned %d: %v", status, out)
+	}
+	authorize(t, authURL(docURL, testRedirect))
+	if got := fetches(); got != 1 {
+		t.Errorf("a known document client must not be fetched again: %d fetches", got)
+	}
+	mu.Lock()
+	if len(seen) != 1 || seen[0] != "docs.example.test https /client.json" {
+		t.Errorf("the fetch must reach the via base with the document's host and scheme, saw %q", seen)
+	}
+	mu.Unlock()
+
+	refused("a document naming another URL", "https://docs.example.test/wrong.json", testRedirect)
+	refused("a redirect_uri the document does not list", "https://docs.example.test/second.json", "http://127.0.0.1:2/elsewhere")
+	if got := fetches(); got != 3 {
+		t.Errorf("each new document is fetched once: %d fetches, want 3", got)
+	}
+	found := false
+	for _, e := range srv.State().OAuth.Log {
+		if e.Endpoint == "metadata_document" && e.ClientID == "https://docs.example.test/wrong.json" {
+			found = e.Status == http.StatusBadRequest && strings.Contains(e.Error, "does not match its URL")
+		}
+	}
+	if !found {
+		t.Errorf("the refused document must be logged with its reason, log %+v", srv.State().OAuth.Log)
+	}
+
+	post(t, fleet.URL()+"/control/alpha/auth", map[string]any{"auth": map[string]any{"oauth": map[string]any{"metadata_documents": "accepted", "metadata_documents_via": docs.URL}}})
+	if advertised() != nil {
+		t.Errorf("accepted: metadata must not announce documents")
+	}
+	authorize(t, authURL("https://docs.example.test/third.json", testRedirect))
+
+	post(t, fleet.URL()+"/control/alpha/auth", map[string]any{"auth": map[string]any{"oauth": map[string]any{}}})
+	refused("documents off", "https://docs.example.test/fourth.json", testRedirect)
+	if got := fetches(); got != 4 {
+		t.Errorf("with documents off nothing is fetched: %d fetches, want 4", got)
+	}
+
+	for _, bad := range []map[string]any{{"metadata_documents": "sometimes"}, {"metadata_documents": "advertised", "metadata_documents_via": "ftp://docs"}} {
+		if resp, _ := post(t, fleet.URL()+"/control/alpha/auth", map[string]any{"auth": map[string]any{"oauth": bad}}); resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%v: status %d, want 400", bad, resp.StatusCode)
+		}
 	}
 }

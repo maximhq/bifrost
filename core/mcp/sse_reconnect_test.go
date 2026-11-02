@@ -28,6 +28,8 @@ import (
 // httptest's CloseClientConnections drops the established stream while the
 // server keeps accepting new ones, which is exactly the recoverable shape: an
 // idle timeout or a proxy hang-up rather than a server that has gone away.
+// Until the checker runs, a call over the dropped stream fails rather than
+// waiting out the tool execution timeout.
 func TestSSEStreamDropped_CheckerReconnects(t *testing.T) {
 	s := server.NewMCPServer("test-sse-reconnect", "1.0.0", server.WithToolCapabilities(true))
 	s.AddTool(
@@ -41,12 +43,13 @@ func TestSSEStreamDropped_CheckerReconnects(t *testing.T) {
 
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{
-		ID:               "client-sse-reconnect",
-		Name:             "sse-client",
-		AuthType:         schemas.MCPAuthTypeNone,
-		ConnectionType:   schemas.MCPConnectionTypeSSE,
-		ConnectionString: schemas.NewSecretVar(ts.URL + "/sse"),
-		ToolsToExecute:   []string{"*"},
+		ID:                   "client-sse-reconnect",
+		Name:                 "sse-client",
+		AuthType:             schemas.MCPAuthTypeNone,
+		ConnectionType:       schemas.MCPConnectionTypeSSE,
+		ConnectionString:     schemas.NewSecretVar(ts.URL + "/sse"),
+		ToolsToExecute:       []string{"*"},
+		ToolExecutionTimeout: 3 * time.Second,
 	}
 	require.NoError(t, m.connectToMCPClient(context.Background(), config))
 	// Registered after ts.Close above so it runs BEFORE it (t.Cleanup is LIFO):
@@ -87,6 +90,11 @@ func TestSSEStreamDropped_CheckerReconnects(t *testing.T) {
 			st.Conn == before.Conn
 	}, 5*time.Second, 50*time.Millisecond, "a dropped SSE stream is flagged by the loss hook without detaching the connection")
 
+	callStarted := time.Now()
+	_, bErr := executeEchoTool(m, config.Name+"-echo")
+	require.NotNil(t, bErr, "a call over the dropped stream fails")
+	assert.Less(t, time.Since(callStarted), config.ToolExecutionTimeout, "without waiting out the tool execution timeout")
+
 	// Why the post-reconnect tool assertion is not vacuous: right now the entry
 	// still carries the pre-drop list, and cannot possibly carry the tool that
 	// was registered after it. Asserting the original echo tool at the end would
@@ -97,7 +105,9 @@ func TestSSEStreamDropped_CheckerReconnects(t *testing.T) {
 	require.NotContains(t, stale.ToolMap, config.Name+"-reconnected", "and cannot contain a tool registered after the drop until rediscovery runs")
 
 	checker := NewClientConnectionChecker(m, config.ID, time.Minute, false, &MockLogger{})
-	checker.performCheck()
+	next, onSteady := checker.performCheck()
+	assert.Equal(t, UnstableConnectionCheckInterval, next, "the failed check keeps the unstable cadence")
+	assert.False(t, onSteady)
 
 	require.Eventually(t, func() bool {
 		after, exists := snapshotClientState(m, config.ID)

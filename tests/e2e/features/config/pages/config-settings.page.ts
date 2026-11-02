@@ -64,6 +64,7 @@ export class ConfigSettingsPage extends BasePage {
   readonly proxyUrlInput: Locator
   readonly proxyUsernameInput: Locator
   readonly proxyPasswordInput: Locator
+  readonly proxyCaCertInput: Locator
   readonly proxyEnableInferenceSwitch: Locator
   readonly proxyEnableApiSwitch: Locator
   readonly proxySaveBtn: Locator
@@ -112,6 +113,7 @@ export class ConfigSettingsPage extends BasePage {
     this.proxyUrlInput = page.getByTestId('proxy-url-input')
     this.proxyUsernameInput = page.getByTestId('proxy-username-input')
     this.proxyPasswordInput = page.getByTestId('proxy-password-input')
+    this.proxyCaCertInput = page.getByTestId('proxy-ca-cert-input')
     this.proxyEnableInferenceSwitch = page.getByTestId('proxy-enable-inference-switch')
     this.proxyEnableApiSwitch = page.getByTestId('proxy-enable-api-switch')
     this.proxySaveBtn = page.getByTestId('proxy-save-button')
