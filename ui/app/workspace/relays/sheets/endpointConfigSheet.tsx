@@ -21,18 +21,13 @@ import { useEffect, useRef, useState } from "react";
 import { useForm, type Control, type FieldValues } from "react-hook-form";
 import { secondsToHumanReadable } from "@/lib/utils/strings";
 import { toast } from "sonner";
+import { useTranslation } from "react-i18next";
 import { CredentialFields } from "../fragments/credentialFields";
 import { HeaderPairsTable } from "../fragments/headerPairsTable";
 import { InfoLabel } from "../fragments/infoLabel";
 import { UsageFields } from "../fragments/usageFields";
 
-const TABS = [
-	{ id: "general", label: "General" },
-	{ id: "authentication", label: "Authentication" },
-	{ id: "advanced", label: "Advanced" },
-	{ id: "network", label: "Network" },
-	{ id: "proxy", label: "Proxy" },
-] as const;
+const TAB_IDS = ["general", "authentication", "advanced", "network", "proxy"] as const;
 
 // Which tab a validation error belongs to, so a refused save opens the tab that needs fixing.
 const FIELD_TAB: Record<string, string> = {
@@ -82,6 +77,15 @@ function SwitchField({
 
 /** The endpoint's configuration, in the same tabbed sheet shape as a provider's configuration. */
 export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolean; onCancel: () => void; endpoint: Relay }) {
+	const { t } = useTranslation("config");
+	const tabLabels = {
+		general: t("relays.endpointConfig.tabs.general"),
+		authentication: t("relays.endpointConfig.tabs.authentication"),
+		advanced: t("relays.endpointConfig.tabs.advanced"),
+		network: t("relays.endpointConfig.tabs.network"),
+		proxy: t("relays.endpointConfig.tabs.proxy"),
+	};
+
 	const canUpdate = useRbac(RbacResource.Relays, RbacOperation.Update);
 	const [updateEndpoint, { isLoading }] = useUpdateRelayMutation();
 	const [tab, setTab] = useState<string>("general");
@@ -111,9 +115,9 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 		try {
 			const saved = await updateEndpoint({ name: endpoint.name, data: toRelayConfig(values) }).unwrap();
 			form.reset(toRelayForm(saved));
-			toast.success("Relay configuration updated successfully");
+			toast.success(t("relays.endpointConfig.toastUpdated"));
 		} catch (e) {
-			toast.error("Failed to update relay configuration", { description: getErrorMessage(e) });
+			toast.error(t("relays.endpointConfig.toastFailed"), { description: getErrorMessage(e) });
 		}
 	};
 	const onInvalid = (errors: Record<string, unknown>) => {
@@ -124,18 +128,18 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 			return;
 		}
 		// A field this sheet has no input for (routes are edited elsewhere): say so instead of refusing silently.
-		toast.error("Relay configuration is invalid", { description: `Fix the "${first}" field before saving.` });
+		toast.error(t("relays.endpointConfig.toastInvalid"), { description: t("relays.endpointConfig.fixField", { field: first }) });
 	};
 
-	const saveButton = (label: string) => (
+	const saveButton = (id: "general" | "authentication" | "advanced" | "network") => (
 		<div className="bg-card sticky bottom-0 z-10 -mx-4 flex justify-end space-x-2 rounded-b-sm border-t px-4 py-4 md:-mx-6 md:px-6">
 			<Button
 				type="submit"
 				disabled={!form.formState.isDirty || !canUpdate || isLoading}
 				isLoading={isLoading}
-				data-testid={`relay-save-${label.toLowerCase()}`}
+				data-testid={`relay-save-${id}`}
 			>
-				Save {label} Configuration
+				{t("relays.endpointConfig.saveTab", { tab: tabLabels[id] })}
 			</Button>
 		</div>
 	);
@@ -148,7 +152,7 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 					<SheetTitle>
 						<div className="font-lg flex items-center gap-2">
 							<Waypoints className="h-5 w-5" />
-							Relay configuration
+								{t("relays.endpointConfig.title")}
 						</div>
 					</SheetTitle>
 				</SheetHeader>
@@ -159,9 +163,9 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 								<Tabs value={tab} onValueChange={setTab}>
 									<div className="mb-4 w-full">
 										<TabsList className="h-10 w-max min-w-full justify-start rounded-tl-sm rounded-tr-sm rounded-br-none rounded-bl-none">
-											{TABS.map((t) => (
-												<TabsTrigger key={t.id} value={t.id} data-testid={`relay-tab-${t.id}`} className="flex-none px-3 whitespace-nowrap">
-													{t.label}
+											{TAB_IDS.map((id) => (
+												<TabsTrigger key={id} value={id} data-testid={`relay-tab-${id}`} className="flex-none px-3 whitespace-nowrap">
+													{tabLabels[id]}
 												</TabsTrigger>
 											))}
 										</TabsList>
@@ -174,8 +178,8 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 											render={({ field }) => (
 												<FormItem>
 													<InfoLabel
-														label="Base URL (Required)"
-														info="Every request is pinned under this origin and path; callers cannot reach another host."
+														label={t("relays.fields.baseUrlLabel")}
+														info={t("relays.fields.baseUrlInfo")}
 													/>
 													<FormControl>
 														<Input placeholder="https://api.example.com" disabled={!canUpdate} data-testid="relay-base-url" {...field} />
@@ -189,7 +193,7 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 											name="description"
 											render={({ field }) => (
 												<FormItem>
-													<InfoLabel label="Description (Optional)" info="Shown in the relay list; for your team only." />
+													<InfoLabel label={t("relays.endpointConfig.descriptionLabel")} info={t("relays.endpointConfig.descriptionInfo")} />
 													<FormControl>
 														<Textarea rows={2} disabled={!canUpdate} {...field} value={field.value ?? ""} />
 													</FormControl>
@@ -200,8 +204,8 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 										<SwitchField
 											control={form.control}
 											name="skip_route_check"
-											label="Relay Any Path"
-											description="Relay requests that match no route instead of refusing them with 404. Unrouted POSTs use the relay pricing."
+											label={t("relays.endpointConfig.anyPathLabel")}
+											description={t("relays.endpointConfig.anyPathInfo")}
 											disabled={!canUpdate}
 											testId="relay-skip-route-check"
 										/>
@@ -209,16 +213,15 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 											<Alert variant="warning" data-testid="relay-all-routes-warning">
 												<AlertTriangle className="h-4 w-4" />
 												<AlertDescription>
-													Every path on the upstream is reachable with this relay&apos;s credential. Prefer listing routes.
+													{t("relays.endpointConfig.anyPathWarning")}
 												</AlertDescription>
 											</Alert>
 										)}
 										<Separator />
 										<div className="space-y-1">
-											<div className="text-sm font-medium">Pricing</div>
+											<div className="text-sm font-medium">{t("relays.endpointConfig.pricingTitle")}</div>
 											<p className="text-muted-foreground text-sm">
-												The default price of a counted call. Routes can override any field. The cost is charged to the caller&apos;s virtual
-												key, team and customer budgets.
+												{t("relays.endpointConfig.pricingInfo")}
 											</p>
 										</div>
 										<UsageFields
@@ -229,24 +232,24 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 											ignoreUpstreamCost={form.watch("ignore_upstream_cost")}
 											testIdPrefix="relay-usage"
 										/>
-										{saveButton("General")}
+										{saveButton("general")}
 									</TabsContent>
 
 									<TabsContent value="authentication" className="space-y-6 px-4 md:px-6">
 										<CredentialFields form={form} disabled={!canUpdate} />
-										{saveButton("Authentication")}
+										{saveButton("authentication")}
 									</TabsContent>
 
 									<TabsContent value="advanced" className="space-y-6 px-4 md:px-6">
-										<div className="text-sm font-medium">Streaming</div>
+										<div className="text-sm font-medium">{t("relays.endpointConfig.streamingTitle")}</div>
 										<FormField
 											control={form.control}
 											name="streaming.paths"
 											render={({ field }) => (
 												<FormItem>
 													<InfoLabel
-														label="Always-Stream Paths (Optional)"
-														info="One route glob per line; matching paths are always relayed as streams. Otherwise an event-stream reply from the upstream is streamed and anything else is read and priced."
+														label={t("relays.endpointConfig.streamPathsLabel")}
+														info={t("relays.endpointConfig.streamPathsInfo")}
 													/>
 													<FormControl>
 														<Textarea
@@ -265,17 +268,17 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 											)}
 										/>
 										<Separator />
-										<div className="text-sm font-medium">Usage Extraction</div>
+										<div className="text-sm font-medium">{t("relays.endpointConfig.usageTitle")}</div>
 										<div className="flex w-full flex-row items-start gap-4">
 											{(
 												[
 													[
 														"cost_path",
-														"Reported Cost Path (Optional)",
-														"usage.cost",
-														"A USD cost the upstream reports; added to the formula.",
+														t("relays.endpointConfig.costPathLabel"),
+											"usage.cost",
+											t("relays.endpointConfig.costPathInfo"),
 													],
-													["model_path", "Model Path (Optional)", "model", "Where the model is read from, for the logs."],
+													["model_path", t("relays.endpointConfig.modelPathLabel"), "model", t("relays.endpointConfig.modelPathInfo")],
 												] as const
 											).map(([key, label, placeholder, description]) => (
 												<FormField
@@ -305,8 +308,8 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 												render={({ field }) => (
 													<FormItem className="w-40">
 														<InfoLabel
-															label="Model Source"
-															info="Whether Model Path names a field of the request body (the default) or a query parameter, as Deepgram's ?model=."
+															label={t("relays.endpointConfig.modelSourceLabel")}
+															info={t("relays.endpointConfig.modelSourceInfo")}
 														/>
 														<Select onValueChange={field.onChange} value={field.value ?? "body"} disabled={!canUpdate}>
 															<FormControl>
@@ -315,8 +318,8 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 																</SelectTrigger>
 															</FormControl>
 															<SelectContent>
-																<SelectItem value="body">Body</SelectItem>
-																<SelectItem value="query">Query</SelectItem>
+																<SelectItem value="body">{t("relays.endpointConfig.sourceBody")}</SelectItem>
+																<SelectItem value="query">{t("relays.endpointConfig.sourceQuery")}</SelectItem>
 															</SelectContent>
 														</Select>
 														<FormMessage />
@@ -327,17 +330,17 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 										<SwitchField
 											control={form.control}
 											name="ignore_upstream_cost"
-											label="Ignore Reported Cost"
-											description="Charge only your fee and unit pricing, never the cost the upstream reports."
+											label={t("relays.endpointConfig.ignoreCostLabel")}
+											description={t("relays.endpointConfig.ignoreCostInfo")}
 											disabled={!canUpdate}
 											testId="relay-ignore-upstream-cost"
 										/>
 										<div className="flex w-full flex-row items-start gap-4">
 											{(
 												[
-													["input_tokens_path", "Input Tokens Path"],
-													["output_tokens_path", "Output Tokens Path"],
-													["total_tokens_path", "Total Tokens Path"],
+													["input_tokens_path", t("relays.endpointConfig.inputTokensPath")],
+													["output_tokens_path", t("relays.endpointConfig.outputTokensPath")],
+													["total_tokens_path", t("relays.endpointConfig.totalTokensPath")],
 												] as const
 											).map(([key, label]) => (
 												<FormField
@@ -346,7 +349,7 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 													name={`usage.${key}`}
 													render={({ field }) => (
 														<FormItem className="flex-1">
-															<InfoLabel label={label} info="Recorded on Relay Logs, never priced." />
+															<InfoLabel label={label} info={t("relays.endpointConfig.tokensPathInfo")} />
 															<FormControl>
 																<Input
 																	placeholder="usage.prompt_tokens"
@@ -364,8 +367,8 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 										<Separator />
 										<div className="space-y-2">
 											<InfoLabel
-												label="Extra Headers (Optional)"
-												info="Sent on every request; a caller's copy of the same header is dropped."
+												label={t("relays.endpointConfig.extraHeadersLabel")}
+												info={t("relays.endpointConfig.extraHeadersInfo")}
 												inForm={false}
 											/>
 											<HeaderPairsTable
@@ -373,21 +376,20 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 												onChange={(pairs) => form.setValue("extra_headers", pairs, { shouldDirty: true, shouldValidate: true })}
 												errors={form.formState.errors.extra_headers}
 												keyPlaceholder="X-Tenant"
-												valuePlaceholder="value or env.HEADER_VALUE"
+												valuePlaceholder={t("relays.endpointConfig.extraHeaderValuePlaceholder")}
 												disabled={!canUpdate}
 												useSecretVarInput
 												testIdPrefix="relay-extra-header"
 											/>
 										</div>
-										{saveButton("Advanced")}
+										{saveButton("advanced")}
 									</TabsContent>
 
 									<TabsContent value="network" className="space-y-6 px-4 md:px-6">
 										<Alert>
 											<Info className="h-4 w-4" />
 											<AlertDescription>
-												How Bifrost talks to the upstream directly: request and stream timeouts, the connection pool and TLS trust. To send
-												the traffic through a forward proxy instead, use the Proxy tab.
+												{t("relays.endpointConfig.networkInfo")}
 											</AlertDescription>
 										</Alert>
 										{/* Laid out as the provider config's Network tab: plain labels, the help text under each input. */}
@@ -397,7 +399,7 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 												name="network.timeout_seconds"
 												render={({ field }) => (
 													<FormItem className="flex-1">
-														<FormLabel>Timeout (seconds)</FormLabel>
+														<FormLabel>{t("relays.endpointConfig.timeoutLabel")}</FormLabel>
 														<FormControl>
 															<Input
 																placeholder="60"
@@ -415,7 +417,8 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 															/>
 														</FormControl>
 														<FormDescription>
-															{field.value ? `${secondsToHumanReadable(field.value)}. ` : ""}Longest a buffered call may take, end to end.
+															{field.value ? `${secondsToHumanReadable(field.value)}. ` : ""}
+														{t("relays.endpointConfig.timeoutHelp")}
 														</FormDescription>
 														<FormMessage />
 													</FormItem>
@@ -426,7 +429,7 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 												name="network.stream_idle_timeout_in_seconds"
 												render={({ field }) => (
 													<FormItem className="flex-1">
-														<FormLabel>Stream Idle Timeout (seconds)</FormLabel>
+														<FormLabel>{t("relays.endpointConfig.streamIdleLabel")}</FormLabel>
 														<FormControl>
 															<Input
 																placeholder="60"
@@ -444,8 +447,8 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 															/>
 														</FormControl>
 														<FormDescription>
-															{field.value ? `${secondsToHumanReadable(field.value)}. ` : ""}A stream is closed when no data arrives for
-															this long.
+															{field.value ? `${secondsToHumanReadable(field.value)}. ` : ""}
+														{t("relays.endpointConfig.streamIdleHelp")}
 														</FormDescription>
 														<FormMessage />
 													</FormItem>
@@ -456,7 +459,7 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 												name="network.max_conns_per_host"
 												render={({ field }) => (
 													<FormItem className="flex-1">
-														<FormLabel>Max Connections per Host</FormLabel>
+														<FormLabel>{t("relays.endpointConfig.maxConnsLabel")}</FormLabel>
 														<FormControl>
 															<Input
 																placeholder="5000"
@@ -473,7 +476,7 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 																}}
 															/>
 														</FormControl>
-														<FormDescription>Upper bound on open connections to the upstream.</FormDescription>
+														<FormDescription>{t("relays.endpointConfig.maxConnsHelp")}</FormDescription>
 														<FormMessage />
 													</FormItem>
 												)}
@@ -482,8 +485,8 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 										<SwitchField
 											control={form.control}
 											name="network.insecure_skip_verify"
-											label="Insecure Skip Verify"
-											description="Skip TLS verification of the upstream. Only for self-signed certificates."
+											label={t("relays.endpointConfig.insecureLabel")}
+											description={t("relays.endpointConfig.insecureInfo")}
 											disabled={!canUpdate}
 											testId="relay-insecure-skip-verify"
 										/>
@@ -493,8 +496,8 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 											render={({ field }) => (
 												<FormItem>
 													<InfoLabel
-														label="CA Certificate (PEM) (Optional)"
-														info="A CA bundle to trust when the upstream uses a private or self-signed certificate."
+														label={t("relays.endpointConfig.caCertLabel")}
+														info={t("relays.endpointConfig.caCertInfo")}
 													/>
 													<FormControl>
 														<Textarea
@@ -510,15 +513,14 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 												</FormItem>
 											)}
 										/>
-										{saveButton("Network")}
+										{saveButton("network")}
 									</TabsContent>
 
 									<TabsContent value="proxy" className="space-y-6 px-4 md:px-6">
 										<Alert>
 											<Info className="h-4 w-4" />
 											<AlertDescription>
-												Sends this relay&apos;s outbound traffic through a forward proxy (HTTP, SOCKS5, or the HTTP_PROXY environment). With
-												no proxy set, the global proxy is used when it is enabled for inference. Timeouts and TLS live on the Network tab.
+												{t("relays.endpointConfig.proxyInfo")}
 											</AlertDescription>
 										</Alert>
 										<FormField
@@ -527,8 +529,8 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 											render={({ field }) => (
 												<FormItem>
 													<InfoLabel
-														label="Proxy Type"
-														info="HTTP or SOCKS5 sends traffic through the proxy below; Environment uses HTTP_PROXY, HTTPS_PROXY and NO_PROXY."
+														label={t("relays.endpointConfig.proxyTypeLabel")}
+														info={t("relays.endpointConfig.proxyTypeInfo")}
 													/>
 													<Select
 														onValueChange={field.onChange}
@@ -537,14 +539,14 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 													>
 														<FormControl>
 															<SelectTrigger className="w-48" data-testid="relay-proxy-type">
-																<SelectValue placeholder="Global proxy" />
+																<SelectValue placeholder={t("relays.endpointConfig.globalProxy")} />
 															</SelectTrigger>
 														</FormControl>
 														<SelectContent>
-															<SelectItem value="none">None (direct)</SelectItem>
+															<SelectItem value="none">{t("relays.endpointConfig.proxyNone")}</SelectItem>
 															<SelectItem value="http">HTTP</SelectItem>
 															<SelectItem value="socks5">SOCKS5</SelectItem>
-															<SelectItem value="environment">Environment</SelectItem>
+															<SelectItem value="environment">{t("relays.endpointConfig.proxyEnvironment")}</SelectItem>
 														</SelectContent>
 													</Select>
 													<FormMessage />
@@ -562,7 +564,7 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 												name="proxy.url"
 												render={({ field }) => (
 													<FormItem>
-														<InfoLabel label="Proxy URL" info="The proxy address, or an env. reference to it." />
+														<InfoLabel label={t("relays.endpointConfig.proxyUrlLabel")} info={t("relays.endpointConfig.proxyUrlInfo")} />
 														<FormControl>
 															<SecretVarInput
 																placeholder="http://proxy.example.com or env.PROXY_URL"
@@ -582,10 +584,10 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 													name="proxy.username"
 													render={({ field }) => (
 														<FormItem>
-															<FormLabel>Username</FormLabel>
+															<FormLabel>{t("relays.endpointConfig.proxyUsername")}</FormLabel>
 															<FormControl>
 																<SecretVarInput
-																	placeholder="Proxy username or env.PROXY_USERNAME"
+																	placeholder={t("relays.endpointConfig.proxyUsernamePlaceholder")}
 																	disabled={!canUpdate}
 																	{...field}
 																	value={field.value}
@@ -600,11 +602,11 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 													name="proxy.password"
 													render={({ field }) => (
 														<FormItem>
-															<FormLabel>Password</FormLabel>
+															<FormLabel>{t("relays.endpointConfig.proxyPassword")}</FormLabel>
 															<FormControl>
 																<SecretVarInput
 																	type="password"
-																	placeholder="Proxy password or env.PROXY_PASSWORD"
+																	placeholder={t("relays.endpointConfig.proxyPasswordPlaceholder")}
 																	hideValueWhenEnv
 																	redactNonEnvValue
 																	disabled={!canUpdate}
@@ -623,15 +625,15 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 												render={({ field }) => (
 													<FormItem>
 														<InfoLabel
-															label="CA Certificate (PEM) (Optional)"
-															info="A PEM-encoded CA certificate to trust for TLS connections through an SSL-intercepting proxy, or an env. reference to it."
+															label={t("relays.endpointConfig.caCertLabel")}
+															info={t("relays.endpointConfig.proxyCaCertInfo")}
 														/>
 														<FormControl>
 															<SecretVarInput
 																variant="textarea"
 																rows={6}
 																className="font-mono text-xs"
-																placeholder={"-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE----- or env.PROXY_CA_CERT_PEM"}
+																placeholder={t("relays.endpointConfig.proxyCaCertPlaceholder")}
 																hideValueWhenEnv
 																redactNonEnvValue
 																disabled={!canUpdate}
@@ -655,7 +657,9 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 													void form.handleSubmit(onSubmit, onInvalid)();
 												}}
 											>
-												Remove configuration
+												
+													{t("relays.endpointConfig.removeConfig")}
+
 											</Button>
 											<Button
 												type="submit"
@@ -663,7 +667,9 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 												isLoading={isLoading}
 												data-testid="relay-save-proxy"
 											>
-												Save Proxy Configuration
+												
+													{t("relays.endpointConfig.saveProxy")}
+
 											</Button>
 										</div>
 									</TabsContent>

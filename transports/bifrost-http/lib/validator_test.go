@@ -147,6 +147,30 @@ func TestValidateConfigSchema_AgentOAuthRejectsUnknownFields(t *testing.T) {
 
 // TestValidateConfigSchema_WarpSection: the warp section takes every Warp settings field, topics
 // included, and refuses values the settings page would refuse.
+// TestValidateConfigSchema_GlobalProxyTypes: the file accepts the global proxy types the
+// settings endpoint accepts (http, socks5) and still refuses tcp, which has no dialer.
+func TestValidateConfigSchema_GlobalProxyTypes(t *testing.T) {
+	for _, tc := range []struct {
+		proxyType string
+		valid     bool
+	}{
+		{"http", true},
+		{"socks5", true},
+		{"tcp", false},
+	} {
+		t.Run(tc.proxyType, func(t *testing.T) {
+			config := `{"proxy_config": {"enabled": true, "type": "` + tc.proxyType + `", "url": "socks5://10.0.0.5:1080", "enable_for_inference": true}}`
+			err := ValidateConfigSchema([]byte(config), loadLocalSchema(t))
+			if tc.valid && err != nil {
+				t.Fatalf("expected proxy_config.type %q to pass validation: %v", tc.proxyType, err)
+			}
+			if !tc.valid && err == nil {
+				t.Fatalf("expected proxy_config.type %q to fail validation", tc.proxyType)
+			}
+		})
+	}
+}
+
 func TestValidateConfigSchema_WarpSection(t *testing.T) {
 	validConfig := `{
 		"warp": {

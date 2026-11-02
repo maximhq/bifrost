@@ -1067,6 +1067,11 @@
               "description": "Read buffer size in bytes. This controls the size of the buffer used for reading HTTP headers.",
               "default": 65536
             },
+            "basePath": {
+              "type": "string",
+              "pattern": "^(/([A-Za-z0-9._~-]*[A-Za-z0-9_~-][A-Za-z0-9._~-]*|\\.{3,}))*/?$",
+              "description": "URL path prefix Bifrost is served under behind an ingress or reverse proxy, e.g. \"/bifrost\". Requests are accepted with or without the prefix. Segments may not be \".\" or \"..\", and surrounding whitespace is not allowed. The first segment must not match a Bifrost route (such as api, v1, or openai) or a top-level UI path (such as assets or images). Renders into server.base_path."
+            },
             "bodyBufferPoolLimitBytes": {
               "type": "integer",
               "minimum": 0,

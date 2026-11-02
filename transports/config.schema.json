@@ -18,6 +18,14 @@
           "description": "Read buffer size in bytes. This controls the size of the buffer used for reading HTTP headers.",
           "default": 65536
         },
+        "base_path": {
+          "type": "string",
+          "pattern": "^(/([A-Za-z0-9._~-]*[A-Za-z0-9_~-][A-Za-z0-9._~-]*|\\.{3,}))*/?$",
+          "description": "URL path prefix Bifrost is served under behind a reverse proxy, e.g. \"/bifrost\" for https://abc.com/bifrost. Requests are accepted with or without the prefix, so proxies that strip it work too. The UI, redirects, and OAuth callback URLs use the prefix. Segments may not be \".\" or \"..\", and surrounding whitespace is not allowed. The first segment must not match a Bifrost route (such as api, v1, or openai) or a top-level UI path (such as assets or images). Overridden by the -base-path flag or BIFROST_BASE_PATH env var. Deploy-time only. Empty (default) serves at the domain root.",
+          "examples": [
+            "/bifrost"
+          ]
+        },
         "body_buffer_pool_limit_bytes": {
           "type": "integer",
           "minimum": 0,
@@ -574,7 +582,7 @@
                   "additionalProperties": false
                 }
               ],
-              "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. Required whenever mcp_server_auth_mode is 'both' or 'oauth' (config load and PUT /api/config reject an unset value in those modes); the issuer is never derived from the request Host header while OAuth is enabled. Supports env var syntax: \"env.MY_VAR\"."
+              "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. A trailing slash is ignored. Required whenever mcp_server_auth_mode is 'both' or 'oauth' (config load and PUT /api/config reject an unset value in those modes); the issuer is never derived from the request Host header while OAuth is enabled. Supports env var syntax: \"env.MY_VAR\"."
             },
             "auth_code_ttl": {
               "type": "integer",
@@ -6072,10 +6080,11 @@
         "type": {
           "type": "string",
           "enum": [
-            "http"
+            "http",
+            "socks5"
           ],
           "default": "http",
-          "description": "Proxy type. Only http is supported."
+          "description": "Proxy type: http (an http:// or https:// proxy URL) or socks5 (a socks5:// or socks5h:// proxy URL). A bare host:port takes its scheme from the type."
         },
         "url": {
           "type": "string",

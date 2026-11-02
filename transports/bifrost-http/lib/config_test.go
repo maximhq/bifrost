@@ -965,7 +965,6 @@ func (m *MockConfigStore) UpdateMCPClientDiscovery(ctx context.Context, clientID
 		for _, cfg := range m.mcpConfig.ClientConfigs {
 			if cfg.ID == clientID {
 				cfg.DiscoveredTools = discovery.Tools
-				cfg.DiscoveredToolNameMapping = discovery.ToolNameMapping
 				cfg.DiscoveredInstructions = discovery.Instructions
 				cfg.DiscoveredResources = discovery.Resources
 				cfg.DiscoveredResourceTemplates = discovery.ResourceTemplates

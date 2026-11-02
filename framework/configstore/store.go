@@ -308,6 +308,9 @@ type ConfigStore interface {
 	GetMCPClientByID(ctx context.Context, id string) (*tables.TableMCPClient, error)
 	GetMCPClientConfigByID(ctx context.Context, id string) (*schemas.MCPClientConfig, error)
 	GetMCPClientByName(ctx context.Context, name string) (*tables.TableMCPClient, error)
+	// MCPEndpointSlugTaken reports whether a Virtual MCP or MCP client already
+	// serves /mcp/<slug>.
+	MCPEndpointSlugTaken(ctx context.Context, slug string) (bool, error)
 	GetMCPClientByOauthConfigID(ctx context.Context, oauthConfigID string) (*tables.TableMCPClient, error)
 	UpdateMCPClientOAuthConfigID(ctx context.Context, clientID string, oauthConfigID *string) error
 	ClearMCPClientPendingOAuthConfig(ctx context.Context, clientID string) error
@@ -1139,6 +1142,9 @@ type ConfigStore interface {
 	// OAuth2 authorize requests
 	CreateOAuth2AuthorizeRequest(ctx context.Context, req *tables.TableOAuth2AuthorizeRequest) error
 	GetOAuth2AuthorizeRequestByID(ctx context.Context, id string) (*tables.TableOAuth2AuthorizeRequest, error)
+	// GetOAuth2AuthorizeRequestByCodeHash returns the request an auth code was
+	// minted for while it is consented or already exchanged (code_issued), so the
+	// token endpoint can tell a replayed code from an unknown one.
 	GetOAuth2AuthorizeRequestByCodeHash(ctx context.Context, codeHash string) (*tables.TableOAuth2AuthorizeRequest, error)
 	// ConsentOAuth2AuthorizeRequest atomically transitions a still-pending request
 	// to consented (recording the code hash and resolved identity) — returns

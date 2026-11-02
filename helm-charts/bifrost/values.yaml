@@ -425,6 +425,10 @@ bifrost:
   # Server configuration
   server:
     readBufferSize: 65536 # Read buffer size in bytes for reading HTTP headers (default: 64 KiB)
+    # URL path prefix Bifrost is served under behind an ingress/reverse proxy, e.g. https://abc.com/bifrost.
+    # Requests are accepted with or without the prefix, so the ingress may forward or strip it, and probes stay on /health.
+    # Point ingress.hosts[].paths[].path at the same prefix (e.g. path: /bifrost, pathType: Prefix).
+    # basePath: "/bifrost"
     # Largest request-body buffer a keep-alive connection keeps for reuse. Larger buffers are freed
     # after each request (the body is still served). Unset = 4 MiB default, 0 = unlimited (previous behaviour).
     # bodyBufferPoolLimitBytes: 4194304

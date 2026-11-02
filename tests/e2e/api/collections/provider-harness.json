@@ -298484,7 +298484,135 @@
       ]
     },
     {
-      "name": "297. Anthropic Responses drops empty text blocks (empty text blocks) (#9318)",
+      "name": "297. Forwarded-proto scheme decisions: HSTS follows x-bf-forwarded-proto (forwarded-proto hsts; runs under the openai fork) (PR #9442)",
+      "description": "lib.RequestIsHTTPS is the single scheme rule behind HSTS, cookie Secure, trace attributes and public URLs. Pinned here on the wire through Strict-Transport-Security on GET /health, which needs no provider: X-Forwarded-Proto alone still works, x-bf-forwarded-proto alone works (an edge behind an LB that overwrites the standard header), and when both are present x-bf-forwarded-proto decides, so an edge reporting http behind a chain reporting https yields no HSTS. Expects a plain-http BASE_URL; a TLS listener sets HSTS unconditionally.",
+      "item": [
+        {
+          "name": "GET /health with X-Forwarded-Proto: https sets HSTS (openai fork)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var LABEL = 'forwarded-proto hsts (x-forwarded-proto https)';",
+                  "pm.test(LABEL + ': /health answers 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "pm.test(LABEL + ': Strict-Transport-Security is set', function () { pm.expect(pm.response.headers.get('Strict-Transport-Security'), 'headers: ' + JSON.stringify(pm.response.headers.toJSON())).to.eql('max-age=31536000; includeSubDomains'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /health with x-bf-forwarded-proto: https behind X-Forwarded-Proto: http sets HSTS (openai fork)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var LABEL = 'forwarded-proto hsts (x-bf overrides lb http)';",
+                  "pm.test(LABEL + ': /health answers 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "pm.test(LABEL + ': Strict-Transport-Security is set', function () { pm.expect(pm.response.headers.get('Strict-Transport-Security'), 'headers: ' + JSON.stringify(pm.response.headers.toJSON())).to.eql('max-age=31536000; includeSubDomains'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "http"
+              },
+              {
+                "key": "x-bf-forwarded-proto",
+                "value": "https"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /health with x-bf-forwarded-proto: http behind X-Forwarded-Proto: https, http sends no HSTS (openai fork)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var LABEL = 'forwarded-proto hsts (x-bf http overrides lb https)';",
+                  "pm.test(LABEL + ': /health answers 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "pm.test(LABEL + ': Strict-Transport-Security is absent', function () { pm.expect(pm.response.headers.has('Strict-Transport-Security'), 'headers: ' + JSON.stringify(pm.response.headers.toJSON())).to.eql(false); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https, http"
+              },
+              {
+                "key": "x-bf-forwarded-proto",
+                "value": "http"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "298. Anthropic Responses drops empty text blocks (empty text blocks) (#9318)",
       "description": "Pins that an empty text item in a /v1/responses request routed to Anthropic is dropped before egress instead of reaching the provider as {\"type\":\"text\",\"text\":\"\"}, which Anthropic rejects with 400 'messages: text content blocks must be non-empty' (or the same for system). OpenAI accepts empty input_text, so OpenAI Responses clients such as Codex send it; the Chat Completions converter already skipped empty text, the Responses converter did not. Case 1 sends an empty input_text block in its own user message (non-streaming). Case 2 is the streaming variant of the same request, the shape Codex sends. Case 3 sends an empty string content on a leading developer message (system path), an empty output_text on an assistant message, and an empty block beside a non-empty one. Each case asserts 200, the absence of the provider's rejection message, and a successful answer: a completed response with output_text for the unary cases, and output_text deltas with a response.completed terminal and no error event for the stream.",
       "item": [
         {
