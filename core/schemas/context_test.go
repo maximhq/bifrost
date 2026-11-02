@@ -679,6 +679,19 @@ func TestReservedKey_AuthCredentialIsProtected(t *testing.T) {
 	}
 }
 
+func TestReservedKey_DisableStaleConnectionRetriesIsProtected(t *testing.T) {
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	defer ctx.Cancel()
+
+	ctx.SetValue(BifrostContextKeyDisableStaleConnectionRetries, true)
+	ctx.BlockRestrictedWrites()
+	ctx.SetValue(BifrostContextKeyDisableStaleConnectionRetries, false)
+
+	if v := ctx.Value(BifrostContextKeyDisableStaleConnectionRetries); v != true {
+		t.Fatalf("reserved key overwritten under BlockRestrictedWrites: got %v, want true", v)
+	}
+}
+
 // TestReservedKey_NonComparableKeyDoesNotPanic guards the reserved-write path against
 // non-comparable keys. isReservedKey indexes reservedKeys, which panics on a slice/map/
 // func key unless the type is asserted first, and ClearValue reaches that guard even
