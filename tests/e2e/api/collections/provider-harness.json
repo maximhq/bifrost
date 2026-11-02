@@ -302201,11 +302201,11 @@
       ]
     },
     {
-      "name": "299. Claude Haiku 5.5 effort and sampling params (haiku55-effort)",
+      "name": "299. Claude Haiku 5.5 effort and sampling params (haiku55-effort) (#9490 / PR #9491)",
       "description": "Claude Haiku 5.5 takes the Sonnet 5+ request surface: thinking is adaptive-only (thinking.type enabled with budget_tokens is a 400), output_config.effort sets depth (low to max, default medium), and any non-default temperature/top_p/top_k is a 400. The name-based capability fallbacks did not know Haiku 5, so reasoning.effort fell through to the budget_tokens branch (or was dropped, then rewritten to adaptive at the default effort, when a datasheet row applied in the re-strip) and the sampling params were forwarded into the upstream 400. Cases assert the OUTBOUND body via x-bf-send-back-raw-request.",
       "item": [
         {
-          "name": "Anthropic /v1/chat/completions - reasoning_effort becomes adaptive thinking plus effort, temperature dropped (anthropic/claude-haiku-5-5) - haiku55-effort",
+          "name": "Anthropic /v1/chat/completions - reasoning_effort becomes adaptive thinking plus effort, temperature dropped (anthropic/claude-haiku-5-5) - haiku55-effort - #9490",
           "event": [
             {
               "listen": "test",
@@ -302265,7 +302265,7 @@
           }
         },
         {
-          "name": "Anthropic /v1/responses - reasoning.effort becomes adaptive thinking plus effort, temperature dropped (anthropic/claude-haiku-5-5) - haiku55-effort",
+          "name": "Anthropic /v1/responses - reasoning.effort becomes adaptive thinking plus effort, temperature dropped (anthropic/claude-haiku-5-5) - haiku55-effort - #9490",
           "event": [
             {
               "listen": "test",
@@ -302324,7 +302324,7 @@
           }
         },
         {
-          "name": "Anthropic /v1/messages - output_config.effort without thinking is forwarded (claude-haiku-5-5) - haiku55-effort",
+          "name": "Anthropic /v1/messages - output_config.effort without thinking is forwarded (claude-haiku-5-5) - haiku55-effort - #9490",
           "event": [
             {
               "listen": "test",
