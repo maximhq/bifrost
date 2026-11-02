@@ -1730,7 +1730,8 @@ func TestExecuteTool_DeclaresRelayableCallerCapabilitiesUpstream(t *testing.T) {
 	}
 }
 
-// App-only tools are listed and callable only for gateway callers that declared MCP Apps.
+// App-only tools are listed and callable only on a single-server /mcp/<slug> for callers that declared
+// MCP Apps; aggregate /mcp sees ui:// resources namespaced by client.
 func TestGetToolPerClient_AppOnlyToolsReachOnlySlugAppsCallers(t *testing.T) {
 	var seen, listedWith atomic.Pointer[mcpgo.ClientCapabilities]
 	hooks := &server.Hooks{}
@@ -1739,11 +1740,21 @@ func TestGetToolPerClient_AppOnlyToolsReachOnlySlugAppsCallers(t *testing.T) {
 			listedWith.Store(info.ClientCapabilities)
 		}
 	})
-	s := server.NewMCPServer("apps-upstream", "1.0.0", server.WithToolCapabilities(true), server.WithHooks(hooks))
+	s := server.NewMCPServer("apps-upstream", "1.0.0", server.WithToolCapabilities(true), server.WithResourceCapabilities(false, false), server.WithHooks(hooks))
+	var readURI atomic.Value
+	var readWith atomic.Pointer[mcpgo.ClientCapabilities]
+	s.AddResource(mcpgo.NewResource("ui://dash/view", "view", mcpgo.WithMIMEType(schemas.MCPAppsMimeType)),
+		func(ctx context.Context, req mcpgo.ReadResourceRequest) ([]mcpgo.ResourceContents, error) {
+			readURI.Store(req.Params.URI)
+			if info := server.RequestProtocolInfoFromContext(ctx); info != nil {
+				readWith.Store(info.ClientCapabilities)
+			}
+			return []mcpgo.ResourceContents{mcpgo.TextResourceContents{URI: req.Params.URI, MIMEType: schemas.MCPAppsMimeType, Text: "<html></html>"}}, nil
+		})
 	view := mcpgo.NewTool("view")
-	view.Meta = &mcpgo.Meta{AdditionalFields: map[string]any{"ui": map[string]any{"resourceUri": "ui://apps/view"}}}
+	view.Meta = &mcpgo.Meta{AdditionalFields: map[string]any{"ui": map[string]any{"resourceUri": "ui://dash/view"}}}
 	refresh := mcpgo.NewTool("refresh")
-	refresh.Meta = &mcpgo.Meta{AdditionalFields: map[string]any{"ui": map[string]any{"resourceUri": "ui://apps/view", "visibility": []any{"app"}}}}
+	refresh.Meta = &mcpgo.Meta{AdditionalFields: map[string]any{"ui": map[string]any{"resourceUri": "ui://dash/view", "visibility": []any{"app"}}}}
 	ok := func(context.Context, mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 		return mcpgo.NewToolResultText("ok"), nil
 	}
@@ -1766,10 +1777,14 @@ func TestGetToolPerClient_AppOnlyToolsReachOnlySlugAppsCallers(t *testing.T) {
 	}))
 
 	appsCaller := &mcpgo.ClientCapabilities{Extensions: map[string]any{schemas.MCPAppsExtension: map[string]any{}}}
-	newCtx := func(gateway bool, caller *mcpgo.ClientCapabilities) *schemas.BifrostContext {
+	// client is the /mcp/<slug> server; "" is aggregate /mcp.
+	newCtx := func(gateway bool, client string, caller *mcpgo.ClientCapabilities) *schemas.BifrostContext {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		if gateway {
 			ctx.SetValue(schemas.BifrostContextKeyIsMCPGateway, true)
+		}
+		if client != "" {
+			ctx.SetValue(schemas.BifrostContextKeyMCPGatewayClient, client)
 		}
 		if caller != nil {
 			ctx.SetValue(schemas.BifrostContextKeyMCPCallerCapabilities, caller)
@@ -1789,11 +1804,13 @@ func TestGetToolPerClient_AppOnlyToolsReachOnlySlugAppsCallers(t *testing.T) {
 		ctx      context.Context
 		appsSees bool
 	}{
-		{"model request", newCtx(false, nil), false},
-		{"model request claiming apps", newCtx(false, appsCaller), false},
-		{"gateway caller without apps", newCtx(true, &mcpgo.ClientCapabilities{}), false},
-		{"gateway caller hosting apps", newCtx(true, appsCaller), true},
-		{"code mode under an apps caller", WithModelToolsOnly(newCtx(true, appsCaller)), false},
+		{"model request", newCtx(false, "", nil), false},
+		{"model request claiming apps", newCtx(false, "", appsCaller), false},
+		{"slug caller without apps", newCtx(true, "apps", &mcpgo.ClientCapabilities{}), false},
+		{"aggregate caller hosting apps", newCtx(true, "", appsCaller), false},
+		{"slug caller hosting apps", newCtx(true, "apps", appsCaller), true},
+		{"code mode under a slug apps caller", WithModelToolsOnly(newCtx(true, "apps", appsCaller)), false},
+		{"gateway sync", WithAllTools(context.Background()), true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1809,33 +1826,35 @@ func TestGetToolPerClient_AppOnlyToolsReachOnlySlugAppsCallers(t *testing.T) {
 		})
 		return bErr
 	}
-	bErr := call(newCtx(false, nil), "apps-refresh")
+	bErr := call(newCtx(false, "", nil), "apps-refresh")
 	require.NotNil(t, bErr, "a model must not call an app-only tool")
 	assert.Contains(t, bErr.GetErrorString(), "only callable from an MCP App")
-	require.NotNil(t, call(newCtx(true, &mcpgo.ClientCapabilities{}), "apps-refresh"))
-	require.Nil(t, call(newCtx(true, appsCaller), "apps-refresh"))
-	require.Nil(t, call(newCtx(false, nil), "apps-view"))
+	require.NotNil(t, call(newCtx(true, "apps", &mcpgo.ClientCapabilities{}), "apps-refresh"))
+	require.NotNil(t, call(newCtx(true, "", appsCaller), "apps-refresh"), "aggregate /mcp never calls app-only tools")
+	require.NotNil(t, call(schemas.NewBifrostContext(WithAllTools(context.Background()), schemas.NoDeadline), "apps-refresh"), "AllTools only lists")
+	require.Nil(t, call(newCtx(true, "apps", appsCaller), "apps-refresh"))
+	require.Nil(t, call(newCtx(false, "", nil), "apps-view"))
 
 	var viewTool *schemas.ChatTool
-	for _, tool := range m.GetToolPerClient(newCtx(false, nil))["apps"] {
+	for _, tool := range m.GetToolPerClient(newCtx(false, "", nil))["apps"] {
 		if tool.Function.Name == "apps-view" {
 			viewTool = &tool
 		}
 	}
 	require.NotNil(t, viewTool)
 	require.NotNil(t, viewTool.MCP)
-	assert.Equal(t, "ui://apps/view", viewTool.MCP.UIResourceURI)
+	assert.Equal(t, "ui://dash/view", viewTool.MCP.UIResourceURI)
 
 	require.NotNil(t, listedWith.Load())
 	assert.Contains(t, listedWith.Load().Extensions, schemas.MCPAppsExtension, "discovery declares MCP Apps so servers list their app tools")
 
-	require.Nil(t, call(newCtx(true, appsCaller), "apps-caps"))
+	require.Nil(t, call(newCtx(true, "apps", appsCaller), "apps-caps"))
 	got := seen.Load()
 	require.NotNil(t, got)
 	assert.Contains(t, got.Extensions, schemas.MCPAppsExtension, "an apps caller's extension is relayed upstream")
 
 	seen.Store(nil)
-	require.Nil(t, call(newCtx(false, nil), "apps-caps"))
+	require.Nil(t, call(newCtx(false, "", nil), "apps-caps"))
 	require.NotNil(t, seen.Load())
 	assert.NotContains(t, seen.Load().Extensions, schemas.MCPAppsExtension, "a model's call must not claim an MCP Apps host")
 
@@ -1845,6 +1864,29 @@ func TestGetToolPerClient_AppOnlyToolsReachOnlySlugAppsCallers(t *testing.T) {
 	injected, err := m.GetInjectedTool(context.Background(), "apps", "view")
 	require.NoError(t, err)
 	assert.Equal(t, "apps-view", injected.Function.Name)
+
+	resourceURIs := func(ctx context.Context) []string {
+		var uris []string
+		for _, r := range m.GetAvailableResources(ctx) {
+			uris = append(uris, r.URI)
+		}
+		return uris
+	}
+	assert.Equal(t, []string{"ui://dash/view"}, resourceURIs(newCtx(true, "apps", appsCaller)), "a slug keeps the server's URIs")
+	assert.Equal(t, []string{"ui://apps/dash/view"}, resourceURIs(newCtx(true, "", appsCaller)), "aggregate /mcp namespaces ui:// by client")
+
+	read, bErr := m.ReadResource(newCtx(true, "", appsCaller), "ui://apps/dash/view")
+	require.Nil(t, bErr)
+	assert.Equal(t, "ui://dash/view", readURI.Load(), "the upstream is asked for its own URI")
+	require.Len(t, read.Contents, 1)
+	assert.Equal(t, "ui://apps/dash/view", read.Contents[0].(mcpgo.TextResourceContents).URI, "the caller gets the URI it asked for")
+	require.NotNil(t, readWith.Load())
+	assert.Contains(t, readWith.Load().Extensions, schemas.MCPAppsExtension, "an apps caller's read declares MCP Apps upstream")
+
+	_, bErr = m.ReadResource(newCtx(true, "", appsCaller), "ui://dash/view")
+	require.NotNil(t, bErr, "aggregate /mcp does not serve a ui:// resource under its unnamespaced URI")
+	_, bErr = m.ReadResource(newCtx(true, "apps", appsCaller), "ui://dash/view")
+	require.Nil(t, bErr)
 }
 
 // A per-user-discovery client's app-only tool, read from the caller's own discovery, is kept from a
