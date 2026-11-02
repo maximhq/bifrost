@@ -359,6 +359,21 @@ would take over.
 A step the client cannot complete answers 502 with the SDK's error. Without a
 token the client sends no MCP request at all: it goes straight to discovery.
 
+A plain client, with static headers and no OAuth, meets a server the way an SDK
+caller holding a key does. `call`, `GET` and `DELETE` above work on it too.
+
+| Request | Does |
+|---|---|
+| `POST /client/<c>/open {"url", "headers", "protocol_version", "listen"}` | starts client `<c>` with `headers` on every request and completes the handshake, pinned to `protocol_version` when set; with `listen` it then opens the notification stream (the GET stream before 2026-07-28, `subscriptions/listen` from it). Answers `protocol_version`, `server_name`, `server_version`, `tools_list_changed`, `session_id` and `instructions`; a refused handshake answers 502 with the error and the `requests` the client made |
+| `GET /client/<c>/tools` | one `tools/list`: each tool's `name` and `input_schema_type` |
+| `GET /client/<c>/notifications` | the method of every notification the client received |
+
+No SDK exposes a raw stream, so one is probed directly:
+
+| Request | Does |
+|---|---|
+| `POST /client/<c>/stream {"url", "headers", "hold"}` | a GET asking for `text/event-stream`, held for `hold`; answers its `status`, the `headers` a stream is judged by, the `body` received and whether it was still `open` when `hold` ended |
+
 ## Faults
 
 Grouped by the layer they break at, because that grouping is what a client

@@ -117,13 +117,17 @@ func (s *Server) serveModern(w http.ResponseWriter, r *http.Request, req *reques
 	s.writeHandled(w, s.Handle(req, "", identity, f), f, true)
 }
 
-// discoverResult is the payload of server/discover.
+// discoverResult is the payload of server/discover. 2026-07-28 carries the server's name and
+// version in _meta under metaKeyServerInfo, where a client reads them.
 type discoverResult struct {
-	SupportedVersions []string     `json:"supportedVersions"`
-	Capabilities      capabilities `json:"capabilities"`
-	ServerInfo        serverInfo   `json:"serverInfo"`
-	Instructions      string       `json:"instructions,omitempty"`
+	SupportedVersions []string              `json:"supportedVersions"`
+	Capabilities      capabilities          `json:"capabilities"`
+	Instructions      string                `json:"instructions,omitempty"`
+	Meta              map[string]serverInfo `json:"_meta"`
 }
+
+// metaKeyServerInfo is the _meta key a server/discover result names the server under.
+const metaKeyServerInfo = "io.modelcontextprotocol/serverInfo"
 
 // handleDiscover answers server/discover, the sessionless core's handshake. init_fail fails it as
 // it fails initialize, and bad_version advertises that one version instead of the real list.
@@ -147,8 +151,8 @@ func (s *Server) handleDiscover(req *request, version string, f Faults) *respons
 	return newResult(req.ID, discoverResult{
 		SupportedVersions: supported,
 		Capabilities:      s.capabilities(),
-		ServerInfo:        serverInfo{Name: s.name, Version: s.version},
 		Instructions:      s.Instructions(),
+		Meta:              map[string]serverInfo{metaKeyServerInfo: {Name: s.name, Version: s.version}},
 	})
 }
 
