@@ -78,6 +78,14 @@ func TestToOpenAIChatRequest_CustomProviderCanKeepStructuredToolOutputMedia(t *t
 	if converted.Messages[0].Content.ContentBlocks[0].Type != schemas.ChatContentBlockTypeImage {
 		t.Fatalf("expected image block to survive, got %q", converted.Messages[0].Content.ContentBlocks[0].Type)
 	}
+
+	wire, err := schemas.MarshalSorted(converted)
+	if err != nil {
+		t.Fatalf("marshal converted request: %v", err)
+	}
+	if !strings.Contains(string(wire), `"image_url"`) || !strings.Contains(string(wire), *data) {
+		t.Fatalf("serialized request must preserve the tool-result image block, got: %s", wire)
+	}
 }
 
 // TestToolResultIsErrorSurvivesAnthropicToOpenAIResponsesRoundTrip walks a
