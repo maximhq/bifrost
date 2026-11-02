@@ -8026,6 +8026,83 @@ const LOG49 = folder("LOG-49 Reads are logged and counted", "Setup: as GOV-39; o
   ...readsTeardown("LOG-49"),
 ]);
 
+// ================================================================ /mcp on protocol 2026-07-28
+
+// A 2026-07-28 request names its method, and for a call or a read its target, in headers as well as the body, and
+// carries the client's protocol version, capabilities and info in params._meta. There is no initialize and no session.
+const MODERN = "2026-07-28";
+const MODERN_META = { "io.modelcontextprotocol/protocolVersion": MODERN, "io.modelcontextprotocol/clientCapabilities": {}, "io.modelcontextprotocol/clientInfo": { name: "harness", version: "0" } };
+const modernMsg = (method, params = {}, version = MODERN) => ({ jsonrpc: "2.0", id: 1, method, params: { ...params, _meta: { ...MODERN_META, "io.modelcontextprotocol/protocolVersion": version } } });
+const modernHeaders = (method, name, extra = [], version = MODERN) => [MCP_ACCEPT, { key: "MCP-Protocol-Version", value: version }, { key: "Mcp-Method", value: method }, ...(name ? [{ key: "Mcp-Name", value: name }] : []), ...extra];
+const modernRpc = (id, title, method, params, asserts, { name, headers = [] } = {}) => rpc(id, title, modernMsg(method, params), { headers: modernHeaders(method, name, headers), asserts });
+const noSessionHeader = A.custom("no Mcp-Session-Id header", ["pm.expect(pm.response.headers.has('Mcp-Session-Id'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(false);"]);
+const echoHiResult = A.custom("the result's text is echo:{\"text\":\"hi\"}", ["var r = pm.response.json().result || {};", "pm.expect(r.isError, 'body: ' + pm.response.text()).to.not.equal(true);", "pm.expect(r.content[0].text).to.equal('echo:{\"text\":\"hi\"}');"]);
+
+const EP59 = folder("EP-59 Modern discovery", `Setup: ${FLEET}; requests on protocol ${MODERN}.`, [
+  ...fleetSetup("EP-59"),
+  modernRpc("EP-59", "server/discover", "server/discover", {}, [A.status(200), A.custom("versions, capabilities and server info", [
+    "var r = pm.response.json().result;",
+    `pm.expect(r.supportedVersions[0], 'body: ' + pm.response.text()).to.equal(${lit(MODERN)});`,
+    "pm.expect(r.supportedVersions).to.include.members(['2025-11-25', '2025-06-18']);",
+    "pm.expect(r.capabilities.tools.listChanged).to.equal(true);",
+    "pm.expect(r.capabilities.prompts.listChanged).to.equal(true);",
+    "pm.expect(r.capabilities.resources.listChanged).to.equal(true);",
+    "pm.expect(r.capabilities).to.have.property('completions');",
+    "pm.expect(r._meta['io.modelcontextprotocol/serverInfo'].name).to.equal('bifrost');",
+  ])]),
+  modernRpc("EP-59", `initialize on ${MODERN}`, "initialize", { protocolVersion: MODERN, capabilities: {}, clientInfo: { name: "harness", version: "0" } },
+    [A.status(404), rpcError(-32601, `"initialize" was removed in protocol version ${MODERN}`)]),
+  ...fleetTeardown("EP-59"),
+]);
+
+const EP60 = folder("EP-60 Modern tools without a session", `Setup: ${FLEET}; anonymous; requests on protocol ${MODERN}.`, [
+  ...fleetSetup("EP-60"),
+  modernRpc("EP-60", "tools/list", "tools/list", {}, [A.status(200), toolNamesInList(ALL_TOOLS), noSessionHeader]),
+  modernRpc("EP-60", "tools/call alpha-echo", "tools/call", { name: "alpha-echo", arguments: { text: "hi" } }, [A.status(200), echoHiResult, noSessionHeader], { name: "alpha-echo" }),
+  mockGet("EP-60", "alpha", "alpha ran echo once", [callsIs("echo", 1)]),
+  ...fleetTeardown("EP-60"),
+]);
+
+const EP61 = folder("EP-61 Modern VK scoping", `Setup: ${FLEET}; the echo-only VK (${VKS.echo.text}); requests on protocol ${MODERN}.`, [
+  ...fleetSetup("EP-61"), createVK("EP-61", "echo"),
+  modernRpc("EP-61", "tools/list with the VK", "tools/list", {}, [A.status(200), toolNamesInList(["alpha-echo"])], { headers: [vkHeader("EP-61", "echo")] }),
+  modernRpc("EP-61", "tools/call alpha-add with the VK", "tools/call", { name: "alpha-add", arguments: {} }, [A.status(200), A.custom("an isError result naming the VK", [
+    "var r = pm.response.json().result || {};",
+    "pm.expect(r.isError, 'body: ' + pm.response.text()).to.equal(true);",
+    "pm.expect(r.content[0].text).to.equal(\"Tool execution failed: MCP tool 'alpha-add' is not allowed for virtual key 'EP-61 echo-only VK'\");",
+  ])], { name: "alpha-add", headers: [vkHeader("EP-61", "echo")] }),
+  mockGet("EP-61", "alpha", "alpha never ran add", [callsIs("add", 0)]),
+  modernRpc("EP-61", "tools/list with an unknown VK", "tools/list", {}, [A.status(401), A.custom("type access_not_found", ["pm.expect(pm.response.json().type, 'body: ' + pm.response.text()).to.equal('access_not_found');"])],
+    { headers: [{ key: "x-bf-vk", value: "sk-bf-ep61-unknown" }] }),
+  request("EP-61", "teardown: delete the VK", "DELETE", "/api/governance/virtual-keys/{{ep-61_echo_id}}", { asserts: [A.status(200)] }),
+  ...fleetTeardown("EP-61"),
+]);
+
+const EP62 = folder("EP-62 Modern OAuth", `Setup: ${FLEET}; the full-access VK (${VKS.full.text}); mcp_server_auth_mode oauth, enforce_auth_on_inference on; a token from a grant consented with that VK; requests on protocol ${MODERN}.`, [
+  readConfig("EP-62"), ...fleetSetup("EP-62"), createVK("EP-62", "full"), authMode("EP-62", "O", true),
+  register("EP-62", "ep62_client"),
+  ...grantFor("EP-62", "ep62_client", "ep62_g", "full"),
+  modernRpc("EP-62", "tools/list with no credential", "tools/list", {}, [A.status(401), A.msgEquals(OAUTH_MODE_MSG), A.custom("WWW-Authenticate names /.well-known/oauth-protected-resource/mcp", [
+    "pm.expect(pm.response.headers.get('WWW-Authenticate') || '', 'body: ' + pm.response.text()).to.include('/.well-known/oauth-protected-resource/mcp');",
+  ])]),
+  modernRpc("EP-62", "tools/list with the token", "tools/list", {}, [A.status(200), toolNamesInList(ALL_TOOLS)], { headers: [bearer("{{ep62_g_at}}")] }),
+  modernRpc("EP-62", "tools/call alpha-echo with the token", "tools/call", { name: "alpha-echo", arguments: { text: "hi" } }, [A.status(200), echoHiResult], { name: "alpha-echo", headers: [bearer("{{ep62_g_at}}")] }),
+  restoreConfig("EP-62"),
+  request("EP-62", "teardown: delete the VK", "DELETE", "/api/governance/virtual-keys/{{ep-62_full_id}}", { asserts: [A.status(200)] }),
+  ...fleetTeardown("EP-62"),
+]);
+
+const EP63 = folder("EP-63 Modern transport rules and read errors", `Setup: ${FLEET}; no server offers resources or prompts; requests on protocol ${MODERN}.`, [
+  ...fleetSetup("EP-63"),
+  modernRpc("EP-63", "resources/read without Mcp-Name", "resources/read", { uri: "file:///nope" }, [A.status(400), rpcError(-32020, 'header mismatch: Mcp-Name: missing required header for method "resources/read"')]),
+  rpc("EP-63", "an Mcp-Method that disagrees with the body", modernMsg("tools/list"), { headers: modernHeaders("tools/call", "alpha-echo"), asserts: [A.status(400), rpcError(-32020)] }),
+  rpc("EP-63", "protocol version 2099-01-01", modernMsg("tools/list", {}, "2099-01-01"), { headers: modernHeaders("tools/list", undefined, [], "2099-01-01"), asserts: [A.status(400), rpcError(-32022)] }),
+  request("EP-63", `GET /mcp on ${MODERN}`, "GET", "/mcp", { noAuth: true, headers: [{ key: "Accept", value: "text/event-stream" }, { key: "MCP-Protocol-Version", value: MODERN }], asserts: [A.status(405)] }),
+  modernRpc("EP-63", "resources/read of an unknown URI", "resources/read", { uri: "file:///nope" }, [A.status(400), rpcError(-32602, "handler not found for resource URI 'file:///nope': resource not found")], { name: "file:///nope" }),
+  modernRpc("EP-63", "prompts/get of an unknown prompt", "prompts/get", { name: "alpha-nope" }, [A.status(400), rpcError(-32602, "prompt 'alpha-nope' not found: prompt not found")], { name: "alpha-nope" }),
+  ...fleetTeardown("EP-63"),
+]);
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -8042,7 +8119,7 @@ const collection = {
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM86, ADM87]),
     section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH48, AUTH49, AUTH50, AUTH51]),
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, CONN23, CONN24, CONN25, CONN27]),
-    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58]),
+    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS40, OAS42]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET21, SET22, SET26]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV37, GOV38, GOV39]),
