@@ -24,10 +24,10 @@ import (
 )
 
 const (
-	// defaultCacheCapacity bounds the discovery cache to this many (mode,
-	// identity, client) bindings; least-recently-used entries are dropped
-	// past it and read again on their next use. An entry holds that caller's
-	// tool list for the client.
+	// defaultCacheCapacity bounds the discovery cache to this many distinct
+	// discoveries, one per (client, hash) however many callers hold it;
+	// least-recently-used entries are dropped past it and read again on their
+	// next use.
 	defaultCacheCapacity = 4096
 
 	// membershipRefreshInterval is how old a client's set may get before its
@@ -50,15 +50,20 @@ var (
 	// row is gone; it is never cached.
 	errNoDiscovery = errors.New("no per-user discovery")
 
+	// errHashMoved ends a fill for a hash whose reader's row no longer holds
+	// it; it is never cached. See discoveryOf.
+	errHashMoved = errors.New("per-user discovery no longer has the hash read for")
+
 	// errLoadPanicked is the result a load ends with when its query panics.
 	errLoadPanicked = errors.New("per-user discovery membership query panicked")
 )
 
-// cachedDiscovery is the value cached per binding.
+// cachedDiscovery is one distinct discovery of a client, cached under its hash
+// and served to every caller holding it.
 type cachedDiscovery struct {
 	discovery  *schemas.MCPDiscovery // tools prefixed with clientName
 	clientName string                // the client name the tools were prefixed with
-	hash       string                // the row's discovery_hash
+	hash       string                // the discovery_hash it is cached under
 }
 
 // member is one caller holding a discovery on a client.
@@ -124,13 +129,16 @@ var _ schemas.MCPDiscoveryStore = (*PerUserStore)(nil)
 //
 // Each process keeps two things per client: the set of callers that hold a
 // discovery on it, with each one's discovery hash, loaded from the database
-// the first time the client is read; and a bounded cache of those callers'
-// discoveries. A caller outside the set has no discovery and costs no
-// database read, and a cached discovery is served only while its hash
-// matches the set's. The set changes on this process's own writes and
-// deletes, on another process's (delivered through EvictDiscovery), and is
-// reloaded from the database once it is older than membershipRefreshInterval,
-// which corrects a process that missed one.
+// the first time the client is read; and a bounded cache of the distinct
+// discoveries those callers hold, keyed by (client, hash), so callers holding
+// the same discovery share one copy. A caller outside the set has no
+// discovery and costs no database read, and a member is served the copy
+// cached under the hash the set records for it. The set changes on this
+// process's own writes and deletes, on another process's (delivered through
+// EvictDiscovery), and is reloaded from the database once it is older than
+// membershipRefreshInterval, which corrects a process that missed one. A
+// cached copy no member's hash names any more is never served again, and ages
+// out of the cache.
 //
 // All methods are safe on a nil receiver: reads miss and writes are refused.
 type PerUserStore struct {
@@ -161,11 +169,11 @@ func NewPerUserStore(configStore configstore.ConfigStore, logger schemas.Logger)
 	}
 }
 
-// cacheKey builds the cache key for a (mode, identity, client) binding.
-// identity has no charset restriction, so the parts are length-prefixed
-// (lrucache.EncodeKey) rather than joined with a separator.
-func cacheKey(mode schemas.MCPAuthMode, identity, mcpClientID string) string {
-	return lrucache.EncodeKey(string(mode), identity, mcpClientID)
+// contentKey builds the cache key for one distinct discovery of a client. The
+// parts are length-prefixed (lrucache.EncodeKey) rather than joined with a
+// separator, so a client ID cannot run into the hash.
+func contentKey(mcpClientID, hash string) string {
+	return lrucache.EncodeKey(mcpClientID, hash)
 }
 
 // callerIdentity returns the caller a per-user discovery is kept for: the mode
@@ -192,10 +200,9 @@ func callerIdentity(ctx context.Context) (schemas.MCPAuthMode, string, bool) {
 
 // GetDiscovery returns the caller's discovery for client, with tool names
 // prefixed by the client's current name. A caller outside the client's set
-// gets nil without a database read. A cached discovery whose hash is not the
-// set's, or built under another name (the client was renamed), is read
-// again. A read error is logged and answered with nil, so the caller sees no
-// tools rather than someone else's.
+// gets nil without a database read. Callers holding the same discovery are
+// served one cached copy of it (see discoveryOf). A read error is logged and
+// answered with nil, so the caller sees no tools rather than someone else's.
 func (s *PerUserStore) GetDiscovery(ctx context.Context, client *schemas.MCPClientConfig) *schemas.MCPDiscovery {
 	if s == nil || s.configStore == nil || client == nil {
 		return nil
@@ -209,33 +216,107 @@ func (s *PerUserStore) GetDiscovery(ctx context.Context, client *schemas.MCPClie
 	if !ok || !isMember {
 		return nil
 	}
-	key := cacheKey(mode, identity, client.ID)
-	if cached, hit := s.cache.Get(key); hit && cached.clientName == client.Name && (hash == "" || cached.hash == hash) {
-		return cached.discovery
-	}
-	clientName := client.Name
-	cached, err := s.cache.Fill(ctx, key, func() (cachedDiscovery, string, error) {
-		row, err := s.configStore.GetMCPPerUserDiscoveryByMode(ctx, mode, identity, client.ID)
-		if err != nil {
-			return cachedDiscovery{}, "", err
-		}
-		if row == nil {
-			return cachedDiscovery{}, "", errNoDiscovery
-		}
-		return cachedDiscovery{discovery: discoveryFromRow(row, clientName), clientName: clientName, hash: row.DiscoveryHash}, "", nil
-	})
+	cached, err := s.discoveryOf(ctx, mode, identity, client, hash)
 	if errors.Is(err, errNoDiscovery) {
 		s.dropMember(client.ID, m, version)
 		return nil
 	}
 	if err != nil {
-		s.logger.Warn("failed to read the per-user discovery of MCP client %s: %v", clientName, err)
+		s.logger.Warn("failed to read the per-user discovery of MCP client %s: %v", client.Name, err)
 		return nil
 	}
 	if cached.hash != hash {
 		s.learnHash(client.ID, m, version, cached.hash)
 	}
 	return cached.discovery
+}
+
+// discoveryOf returns the discovery of a member whose set entry holds hash
+// ("" when this process does not know it). The copy cached under that hash
+// and the client's current name is served as it is. Otherwise the caller's
+// own row is read and its discovery cached under the row's hash. Members
+// missing the same hash at once share one fill, which reads its leader's row:
+// equal hashes are equal discoveries, so that row serves them all. If the
+// leader's row no longer holds the hash (the set was stale), or the leader's
+// request ends before its read does, the fill fails for the others, and each
+// still waiting reads its own row instead.
+func (s *PerUserStore) discoveryOf(ctx context.Context, mode schemas.MCPAuthMode, identity string, client *schemas.MCPClientConfig, hash string) (cachedDiscovery, error) {
+	clientName := client.Name
+	if hash != "" {
+		key := contentKey(client.ID, hash)
+		if cached, hit := s.cache.Get(key); hit && cached.clientName == clientName {
+			return cached, nil
+		}
+		// The loader runs on this goroutine when it leads the fill, so these
+		// are only ever set by it.
+		var (
+			led    bool
+			own    *tables.TableMCPPerUserDiscovery
+			ownErr error
+		)
+		cached, err := s.cache.Fill(ctx, key, func() (cachedDiscovery, string, error) {
+			led = true
+			own, ownErr = s.configStore.GetMCPPerUserDiscoveryByMode(ctx, mode, identity, client.ID)
+			if ownErr != nil {
+				return cachedDiscovery{}, "", ownErr
+			}
+			if own == nil || own.DiscoveryHash != hash {
+				return cachedDiscovery{}, "", errHashMoved
+			}
+			return newCachedDiscovery(own, clientName), "", nil
+		})
+		switch {
+		case err == nil:
+			return cached, nil
+		case led && ownErr != nil:
+			return cachedDiscovery{}, ownErr
+		case led:
+			return s.cacheRow(ctx, client.ID, clientName, own)
+		case ctx.Err() != nil:
+			return cachedDiscovery{}, ctx.Err()
+		case !errors.Is(err, errHashMoved) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded):
+			return cachedDiscovery{}, err
+		}
+		// The fill this read waited on found its leader's row moved, or ended
+		// with its leader's request; neither says anything of this caller's
+		// row: read that.
+	}
+	row, err := s.configStore.GetMCPPerUserDiscoveryByMode(ctx, mode, identity, client.ID)
+	if err != nil {
+		return cachedDiscovery{}, err
+	}
+	return s.cacheRow(ctx, client.ID, clientName, row)
+}
+
+// cacheRow returns the discovery row holds, cached under the row's hash. A
+// copy another caller holding the same discovery already made is served
+// instead of building another. A nil row is errNoDiscovery.
+func (s *PerUserStore) cacheRow(ctx context.Context, clientID, clientName string, row *tables.TableMCPPerUserDiscovery) (cachedDiscovery, error) {
+	if row == nil {
+		return cachedDiscovery{}, errNoDiscovery
+	}
+	key := contentKey(clientID, row.DiscoveryHash)
+	if cached, hit := s.cache.Get(key); hit && cached.clientName == clientName {
+		return cached, nil
+	}
+	cached, err := s.cache.Fill(ctx, key, func() (cachedDiscovery, string, error) {
+		return newCachedDiscovery(row, clientName), "", nil
+	})
+	if err != nil {
+		// This call waited on another fill of the hash, which failed or which
+		// this request stopped waiting for; the row in hand is still good.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return cachedDiscovery{}, ctxErr
+		}
+		return newCachedDiscovery(row, clientName), nil
+	}
+	return cached, nil
+}
+
+// newCachedDiscovery builds the cached copy of row's discovery, prefixed with
+// clientName.
+func newCachedDiscovery(row *tables.TableMCPPerUserDiscovery, clientName string) cachedDiscovery {
+	return cachedDiscovery{discovery: discoveryFromRow(row, clientName), clientName: clientName, hash: row.DiscoveryHash}
 }
 
 // membership looks m up in clientID's set, returning its hash and the set's
@@ -333,9 +414,9 @@ func (s *PerUserStore) load(clientID string, cm *clientMembers) {
 // install ends a load of clientID's set with its result. A member changed
 // while the query ran keeps what this process knows of it (its hash, or "" to
 // check the database), since the query may predate the change. Members the
-// database no longer lists have their cached discoveries dropped.
+// database no longer lists leave the set; the cached copies of their
+// discoveries stay for any other member holding them.
 func (s *PerUserStore) install(clientID string, cm *clientMembers, rows []tables.TableMCPPerUserDiscovery, err error) {
-	var dropped []member
 	s.mu.Lock()
 	if err == nil && s.clients[clientID] == cm {
 		members := make(map[member]string, len(rows)+len(cm.touched))
@@ -347,11 +428,6 @@ func (s *PerUserStore) install(clientID string, cm *clientMembers, rows []tables
 		for m := range cm.touched {
 			members[m] = cm.members[m] // "" when this process no longer lists it: check the database
 		}
-		for m := range cm.members {
-			if _, ok := members[m]; !ok {
-				dropped = append(dropped, m)
-			}
-		}
 		cm.members = members
 		cm.scheduleRefresh()
 		cm.version++
@@ -361,14 +437,8 @@ func (s *PerUserStore) install(clientID string, cm *clientMembers, rows []tables
 	cm.loading = nil
 	s.mu.Unlock()
 
-	if err != nil {
-		if err != errLoadPanicked { // a panic is reported where it is recovered
-			s.logger.Warn("failed to load who holds a per-user discovery of MCP client %s: %v", clientID, err)
-		}
-		return
-	}
-	for _, m := range dropped {
-		s.cache.Evict(cacheKey(m.mode, m.identity, clientID))
+	if err != nil && err != errLoadPanicked { // a panic is reported where it is recovered
+		s.logger.Warn("failed to load who holds a per-user discovery of MCP client %s: %v", clientID, err)
 	}
 }
 
@@ -477,28 +547,29 @@ func (s *PerUserStore) SetOnDiscoveryWritten(cb func(ctx context.Context, mode s
 	s.onWritten.Store(&cb)
 }
 
-// written drops a binding's cached discovery after this store wrote or deleted
-// it, then runs the SetOnDiscoveryWritten callback. EvictDiscovery is not
-// called here, so a process applying another's change never announces it.
+// written runs the SetOnDiscoveryWritten callback after this store wrote or
+// deleted a binding's discovery. No cached copy is dropped: copies are keyed
+// by content, and the caller's set entry already names the one it holds now.
+// EvictDiscovery is not called here, so a process applying another's change
+// never announces it.
 func (s *PerUserStore) written(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) {
-	s.cache.Evict(cacheKey(mode, identity, mcpClientID))
 	if cb := s.onWritten.Load(); cb != nil {
 		(*cb)(ctx, mode, identity, mcpClientID)
 	}
 }
 
 // EvictDiscovery applies another process's write or delete of one binding:
-// the cached discovery is dropped and the caller is kept in the client's set
-// with no hash, so its next read checks the database. Deletes are not taken
-// out of the set directly: messages from two processes can arrive in another
-// order than their writes landed, and a delete applied after a later write
-// would hide a discovery the database has until the next refresh.
+// the caller is kept in the client's set with no hash, so its next read checks
+// the database. Deletes are not taken out of the set directly: messages from
+// two processes can arrive in another order than their writes landed, and a
+// delete applied after a later write would hide a discovery the database has
+// until the next refresh. Cached copies stay for the other callers holding
+// them.
 func (s *PerUserStore) EvictDiscovery(mode schemas.MCPAuthMode, identity, mcpClientID string) {
 	if s == nil {
 		return
 	}
 	s.setMember(mcpClientID, member{mode: mode, identity: identity}, "", true)
-	s.cache.Evict(cacheKey(mode, identity, mcpClientID))
 }
 
 // EvictDiscoveriesByMCPClient forgets one client: its set and every cached
@@ -511,31 +582,44 @@ func (s *PerUserStore) EvictDiscoveriesByMCPClient(mcpClientID string) {
 	s.mu.Lock()
 	delete(s.clients, mcpClientID)
 	s.mu.Unlock()
-	s.evictWhere(func(_, _, clientID string) bool { return clientID == mcpClientID })
+	s.cache.EvictWhere(func(key string) bool {
+		parts, ok := lrucache.DecodeKey(key, 2)
+		return ok && parts[0] == mcpClientID
+	})
 }
 
-// EvictDiscoveriesByVirtualKey drops every cached vk-mode discovery of one
-// virtual key, across clients. The key stays a member wherever it is one, so
-// its next read checks the database: a deleted key's rows are gone, and a key
-// that only changed keeps its discoveries.
+// EvictDiscoveriesByVirtualKey makes every vk-mode discovery of one virtual
+// key, across clients, read again: its next read of each checks the database.
+// A deleted key's rows are gone, and a key that only changed keeps its
+// discoveries. See forgetHashes.
 func (s *PerUserStore) EvictDiscoveriesByVirtualKey(virtualKeyID string) {
 	if s == nil || virtualKeyID == "" {
 		return
 	}
-	s.evictWhere(func(mode, identity, _ string) bool {
-		return mode == string(schemas.MCPAuthModeVK) && identity == virtualKeyID
-	})
+	s.forgetHashes(member{mode: schemas.MCPAuthModeVK, identity: virtualKeyID})
 }
 
-// EvictDiscoveriesByUser drops every cached user-mode discovery of one user,
-// across clients, the same way as EvictDiscoveriesByVirtualKey.
+// EvictDiscoveriesByUser makes every user-mode discovery of one user, across
+// clients, read again, the same way as EvictDiscoveriesByVirtualKey.
 func (s *PerUserStore) EvictDiscoveriesByUser(userID string) {
 	if s == nil || userID == "" {
 		return
 	}
-	s.evictWhere(func(mode, identity, _ string) bool {
-		return mode == string(schemas.MCPAuthModeUser) && identity == userID
-	})
+	s.forgetHashes(member{mode: schemas.MCPAuthModeUser, identity: userID})
+}
+
+// forgetHashes keeps m in every loaded set it is in, with no hash, so its next
+// read of each client checks the database. A set whose load is running counts
+// m as changed too, since the query may have read a row that is gone. Cached
+// copies stay for the other callers holding them.
+func (s *PerUserStore) forgetHashes(m member) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, cm := range s.clients {
+		if _, isMember := cm.members[m]; isMember || cm.loading != nil {
+			cm.setLocked(m, "", true)
+		}
+	}
 }
 
 // FlushDiscoveryCache forgets every client and every cached discovery.
@@ -547,15 +631,6 @@ func (s *PerUserStore) FlushDiscoveryCache() {
 	s.clients = make(map[string]*clientMembers)
 	s.mu.Unlock()
 	s.cache.Flush()
-}
-
-// evictWhere drops every cached binding the predicate matches. A linear sweep:
-// these are rare admin operations and the cache is bounded.
-func (s *PerUserStore) evictWhere(match func(mode, identity, mcpClientID string) bool) {
-	s.cache.EvictWhere(func(key string) bool {
-		parts, ok := lrucache.DecodeKey(key, 3)
-		return ok && match(parts[0], parts[1], parts[2])
-	})
 }
 
 // discoveryFromRow builds the discovery a row describes, its tools and prompts
