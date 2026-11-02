@@ -3662,6 +3662,17 @@ const LOG22 = folder("LOG-22 Cost survives a rename", `Setup: as LOG-21 (${ALPHA
   clearPrice("LOG-22", "log-22-a"), deleteClient("LOG-22", "log-22-a"),
 ]);
 
+const LOG23 = folder("LOG-23 Delete and recreate a priced client", `Setup: ${ALPHA_TOOLS_TEXT}; echo_tool priced 0.25 with PUT and called once; then alpha is deleted and created again under the same name without tool_pricing.`, [
+  ...setClient("LOG-23", {}), priceEcho("LOG-23", "log-23-a"),
+  execR("LOG-23", "setup: a call while priced", "log23-priced", "alpha-echo_tool", {}, [A.status(200)]),
+  logRow("LOG-23", "setup: the priced call costs 0.25", "log23-priced", [rowIs("cost", 0.25)]),
+  request("LOG-23", "setup: delete client alpha", "DELETE", "/api/mcp/client/log-23-a", { asserts: [A.status(200)] }),
+  createClient("LOG-23", httpClient("log-23-b", "alpha", "alpha", { tools_to_execute: ["*"] }), "setup: create client alpha again, without tool_pricing"),
+  execR("LOG-23", "execute alpha-echo_tool on the new client", "log23-new", "alpha-echo_tool", {}, [A.status(200)]),
+  logRow("LOG-23", "the new client's log entry has no cost", "log23-new", [rowLacks("cost")]),
+  deleteClient("LOG-23", "log-23-b"),
+]);
+
 const LOG31 = folder("LOG-31 Filter data", `Setup: ${ALPHA_TOOLS_TEXT}; a VK "LOG-31 vk" granting alpha; one call with User-Agent "${CLAUDE_UA}" (as LOG-01) and one with the VK (as LOG-20).`, [
   ...setClient("LOG-31", {}), logVK("LOG-31", "log31_vk"),
   execR("LOG-31", "setup: a call with the Claude Code user agent", "log31-ua", "alpha-echo_tool", {}, [A.status(200)], { headers: [UA_H] }),
@@ -6579,6 +6590,21 @@ const ADM86 = folder("ADM-86 Verifying a pending client starts its tool sync", `
   restoreConfig("ADM-86"),
 ]);
 
+// noToolPricing passes when a getClient response's config carries no tool prices.
+const noToolPricing = A.custom("config has no tool_pricing", [
+  "var p = pm.response.json().clients[0].config.tool_pricing;",
+  "pm.expect(p === undefined || p === null || Object.keys(p).length === 0, 'body: ' + pm.response.text()).to.be.true;",
+]);
+const ADM87 = folder("ADM-87 Create does not take tool_pricing", `Setup: ${ALPHA_TOOLS_TEXT}, created with tool_pricing {"echo_tool": 0.25} in the POST body; then renamed alpha2.`, [
+  ...setClient("ADM-87", { tool_pricing: { echo_tool: 0.25 } }),
+  getClient("ADM-87", "adm-87-a", "the client reads back without tool_pricing", [noToolPricing]),
+  request("ADM-87", "rename alpha to alpha2", "PUT", "/api/mcp/client/adm-87-a", { body: { name: "alpha2" }, asserts: [A.status(200)] }),
+  getClient("ADM-87", "adm-87-a", "after the rename the client still has no tool_pricing", [noToolPricing]),
+  execR("ADM-87", "execute alpha2-echo_tool", "adm87-call", "alpha2-echo_tool", {}, [A.status(200)]),
+  logRow("ADM-87", "the log entry has no cost", "adm87-call", [rowLacks("cost")]),
+  deleteClient("ADM-87", "adm-87-a"),
+]);
+
 // AUTH-46: a per_user_headers client created over the API keeps the admin's sample values as its admin credential, which
 // periodic discovery uses to pick up a tool the server adds later.
 const AUTH46_TOOLS = ["add_tool", "echo_tool", "extra_tool"];
@@ -7701,7 +7727,7 @@ const collection = {
     { key: "admin_auth_header", value: "" },
   ],
   item: [
-    section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM86]),
+    section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM86, ADM87]),
     section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH48, AUTH49, AUTH50]),
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN22, CONN23, CONN24, CONN25, CONN27]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54]),
@@ -7710,7 +7736,7 @@ const collection = {
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV37, GOV38]),
     section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB32, LIB33, LIB34, LIB36, LIB37]),
-    section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43]),
+    section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL14, FAIL16, FAIL18, FAIL19]),
   ],
 };
