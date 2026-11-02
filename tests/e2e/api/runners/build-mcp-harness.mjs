@@ -834,6 +834,11 @@ const ADM01 = folder("ADM-01 Every MCP admin route without a credential",
 
 const createExpect = (id, title, cfg, asserts) => request(id, title, "POST", "/api/mcp/client", { body: cfg, asserts });
 const clientField = (path, v) => A.custom(`${path} is ${lit(v)}`, [`pm.expect(pm.response.json().clients[0].${path}, 'body: ' + pm.response.text()).to.eql(${lit(v)});`]);
+// responseTime asserts how long the response took, in ms: at least min (null for no floor) and under max.
+const responseTime = (min, max) => A.custom(`the response took ${min !== null ? `at least ${min / 1000}s and ` : ""}under ${max / 1000}s`, [
+  ...(min !== null ? [`pm.expect(pm.response.responseTime, 'ms').to.be.at.least(${min});`] : []),
+  `pm.expect(pm.response.responseTime, 'ms').to.be.below(${max});`,
+]);
 const ALPHA = `${CHAOS}/s/alpha/mcp`;
 
 const ADM07 = folder("ADM-07 Endpoint slug derivation and override", "Setup: admin credentials; alpha (echo_tool, add_tool) for the clients that are created.", [
@@ -2278,14 +2283,16 @@ const CONN03 = folder("CONN-03 Per-call only for HTTP", "Setup: alpha (echo_tool
 
 // CONN-04 creates can take about 31s each: permanent connect errors are retried today.
 const CONN04_FAULTS = [["refuse", { refuse: true }], ["init", { init_fail: true }], ["list", { list_fail: true }], ["version", { bad_version: "1999-01-01" }]];
-const CONN04 = folder("CONN-04 Upstream failing at create (sticky)", "Setup: alpha (echo_tool, add_tool) with one fault at a time: refuse, init_fail, list_fail, bad_version 1999-01-01. Each create is an HTTP client on alpha, auth none, needs_session_stickiness true, tools_to_execute [\"*\"], and may take about 35s.", [
+const CONN04 = folder("CONN-04 Upstream failing at create (sticky)", "Setup: alpha (echo_tool, add_tool) with one fault at a time: refuse, init_fail, list_fail, bad_version 1999-01-01. Each create is an HTTP client on alpha, auth none, needs_session_stickiness true, tools_to_execute [\"*\"]; the refuse, init_fail and list_fail creates may take about 35s.", [
   ...freshServer("CONN-04", "alpha", ["echo_tool", "add_tool"]),
   ...CONN04_FAULTS.flatMap(([label, faults]) => {
     const fault = Object.keys(faults)[0];
     return [
       mockPost("CONN-04", "alpha", "faults", `setup: alpha fault ${fault}`, { faults }),
       createExpect("CONN-04", `create while alpha has ${fault}`, httpClient(`conn04-${label}`, `conn04_${label}`, "alpha", { needs_session_stickiness: true, tools_to_execute: ["*"] }),
-        [A.status(500), A.msgStartsWith("Failed to connect MCP client:"), ...(label === "list" ? [A.msgContains("failed to retrieve tools from MCP client")] : [])]),
+        [A.status(500), A.msgStartsWith("Failed to connect MCP client:"), ...(label === "list" ? [A.msgContains("failed to retrieve tools from MCP client")] : []),
+          // An unsupported protocol version is permanent, so it is not retried.
+          ...(label === "version" ? [A.msgContains("unsupported protocol version"), responseTime(null, 5000)] : [])]),
       request("CONN-04", `conn04-${label} is not listed`, "GET", `/api/mcp/clients?server=conn04-${label}`, { asserts: [A.status(200), A.custom("no client is returned", [
         "pm.expect(pm.response.json().clients, 'body: ' + pm.response.text()).to.eql([]);",
       ])] }),
@@ -2325,6 +2332,18 @@ const CONN18 = folder("CONN-18 SSE stream dropped", "Setup: alpha (echo_tool, ad
   execTool("CONN-18", "execute after the reconnect", "conn18_c-echo_tool", [A.status(200)]),
   mockGet("CONN-18", "alpha", "the reconnect opened one session", [sessionsPlus("conn18_s1", 1)]),
   deleteClient("CONN-18", "conn18-c"),
+]);
+
+const CONN21_STDIO = stdioClient("conn21-x", "conn21_x", "alpha").stdio_config;
+const CONN21 = folder("CONN-21 STDIO create guards", "Setup: STDIO clients bridging to alpha: one created with no credential while /api/mcp/client is in whitelisted_routes, then with admin credentials one listing the unset environment variable MISSING_X in envs, and one with the command \"no-such-binary\".", [
+  readConfig("CONN-21"), whitelist("CONN-21", ["/api/mcp/client"]),
+  unauthReq("CONN-21", "create with no credential", "POST", "/api/mcp/client", stdioClient("conn21-anon", "conn21_anon", "alpha"),
+    [A.status(403), A.msgStartsWith("Registering a stdio MCP client requires an authenticated admin session")]),
+  restoreConfig("CONN-21"),
+  createExpect("CONN-21", "create with the unset MISSING_X", stdioClient("conn21-env", "conn21_env", "alpha", { stdio_config: { ...CONN21_STDIO, envs: ["MISSING_X"] } }),
+    [A.status(500), A.msgContains("environment variable MISSING_X is not set for MCP client"), responseTime(null, 5000)]),
+  createExpect("CONN-21", "create with the command no-such-binary", stdioClient("conn21-bin", "conn21_bin", "alpha", { stdio_config: { command: "no-such-binary", args: [], envs: [] } }),
+    [A.status(500), A.msgContains("executable file not found"), responseTime(null, 5000)]),
 ]);
 
 const CONN22 = folder("CONN-22 STDIO child exit", "Setup: alpha (echo_tool, add_tool); a STDIO client bridging to alpha, auth none, tools_to_execute [\"*\"].", [
@@ -3413,10 +3432,6 @@ const LIB37 = folder("LIB-37 Valid interval", "Setup: PUT /api/config with frame
   frameworkPut("LIB-37", "teardown: restore mcp_library_sync_interval", "mcp_library_sync_interval", "JSON.parse(pm.collectionVariables.get('lib37_interval'))", [A.status(200)]),
 ]);
 
-const responseTime = (min, max) => A.custom(`the response took ${min !== null ? `at least ${min / 1000}s and ` : ""}under ${max / 1000}s`, [
-  ...(min !== null ? [`pm.expect(pm.response.responseTime, 'ms').to.be.at.least(${min});`] : []),
-  `pm.expect(pm.response.responseTime, 'ms').to.be.below(${max});`,
-]);
 const FAIL02 = folder("FAIL-02 SSE create against a closed port", "Setup: an SSE client named alpha at 127.0.0.1:9, where nothing listens.", [
   createExpect("FAIL-02", "create the SSE client", { client_id: "fail02-a", name: "alpha", connection_type: "sse", connection_string: "http://127.0.0.1:9/s/alpha/sse", auth_type: "none", tools_to_execute: ["*"] },
     [A.status(500), A.msgContains("failed to start MCP client transport after 5 retries"), responseTime(30000, 40000)]),
@@ -7760,7 +7775,7 @@ const collection = {
   item: [
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM86, ADM87]),
     section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH48, AUTH49, AUTH50, AUTH51]),
-    section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN22, CONN23, CONN24, CONN25, CONN27]),
+    section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, CONN23, CONN24, CONN25, CONN27]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS40, OAS42]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET21, SET22]),

@@ -3,6 +3,8 @@ package mcp
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -279,6 +281,53 @@ func (m *MCPManager) GetMaxAgentDepth() int {
 	return int(m.toolsManager.maxAgentDepth.Load())
 }
 
+// misconfiguredError marks a connect failure caused by the client's own
+// configuration: the same configuration fails the same way on every attempt,
+// so the connect classifiers never retry it. Its text is the wrapped error's.
+type misconfiguredError struct{ err error }
+
+// Error returns the wrapped error's text unchanged.
+func (e misconfiguredError) Error() string { return e.err.Error() }
+
+// Unwrap exposes the wrapped error to errors.Is and errors.As.
+func (e misconfiguredError) Unwrap() error { return e.err }
+
+// isPermanentConnectError reports connect failures that no retry can fix: a
+// misconfigured client, an upstream speaking only protocol versions this client
+// does not support, and a server certificate this client does not trust. Each
+// is matched by type, so it holds through any wrapping that keeps the chain.
+func isPermanentConnectError(err error) bool {
+	if _, ok := errors.AsType[misconfiguredError](err); ok {
+		return true
+	}
+	if _, ok := errors.AsType[mcp.UnsupportedProtocolVersionError](err); ok {
+		return true
+	}
+	if _, ok := errors.AsType[*tls.CertificateVerificationError](err); ok {
+		return true
+	}
+	return false
+}
+
+// validateMCPTLSConfig refuses a ca_cert_pem that does not parse, the check
+// every dial makes, so the client is refused when it is added or edited
+// instead of failing each connection afterwards. The certificate is ignored
+// when insecure_skip_verify is set, so it is not checked then either.
+func validateMCPTLSConfig(config *schemas.MCPClientConfig) error {
+	tlsCfg := config.TLSConfig
+	if tlsCfg == nil || tlsCfg.InsecureSkipVerify || tlsCfg.CACertPEM == nil {
+		return nil
+	}
+	caPEM := tlsCfg.CACertPEM.GetValue()
+	if caPEM == "" {
+		return nil
+	}
+	if !x509.NewCertPool().AppendCertsFromPEM([]byte(caPEM)) {
+		return fmt.Errorf("tls_config.ca_cert_pem is not a valid PEM certificate in client '%s'", config.Name)
+	}
+	return nil
+}
+
 // isTransientError determines if an error is transient and should be retried.
 // Permanent errors (auth failures, config errors, context deadline, etc.) return false.
 // Transient errors (network issues, temporary timeouts, etc.) return true.
@@ -288,7 +337,7 @@ func isTransientError(err error) bool {
 	}
 
 	errStr := err.Error()
-	if errors.Is(err, ErrMCPProtocolVersionAboveMax) || isAuthRequiredError(err) {
+	if errors.Is(err, ErrMCPProtocolVersionAboveMax) || isAuthRequiredError(err) || isPermanentConnectError(err) {
 		return false
 	}
 
@@ -675,7 +724,7 @@ func isTransientProbeError(err error) bool {
 		return false
 	}
 	errStr := strings.ToLower(err.Error())
-	if isDeadSessionErrorText(errStr) || errors.Is(err, ErrMCPProtocolVersionAboveMax) || isAuthRequiredError(err) {
+	if isDeadSessionErrorText(errStr) || errors.Is(err, ErrMCPProtocolVersionAboveMax) || isAuthRequiredError(err) || isPermanentConnectError(err) {
 		return false
 	}
 	// Checked before the timeout rule, not after: an error carrying any
@@ -1173,6 +1222,9 @@ func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
 		}
 	default:
 		return fmt.Errorf("unknown connection type '%s' in client '%s'", config.ConnectionType, config.Name)
+	}
+	if err := validateMCPTLSConfig(config); err != nil {
+		return err
 	}
 	if config.AuthType == schemas.MCPAuthTypePerUserHeaders {
 		if len(config.PerUserHeaderKeys) == 0 {
