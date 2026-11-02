@@ -175,6 +175,7 @@
                   "providers/supported-providers/replicate",
                   "providers/supported-providers/runware",
                   "providers/supported-providers/runway",
+                  "providers/supported-providers/sagemaker",
                   "providers/supported-providers/sarvam",
                   "providers/supported-providers/sgl",
                   "providers/supported-providers/typesafe",
