@@ -7916,6 +7916,116 @@ const ADM02 = folder("ADM-02 Setup-lock gating of `POST /api/mcp/client`", `Setu
   deleteClient("ADM-02", "adm02-c"),
 ]);
 
+// ================================================================ upstream prompts, resources and completion on /mcp
+
+// A mock server offers prompts and resources once given some, and lists each prompts/get, resources/read and
+// completion/complete it answered in its state's reads. Each folder gives its servers prompts and resources before
+// registering the client, since a client lists them when it connects.
+const GREET = { name: "greet", arguments: [{ name: "name", required: true }], text: "Hello, {name}", completions: { name: ["Ada", "Alan", "Grace"] } };
+const promptsSet = (id, server, prompts) => mockPost(id, server, "prompts/set", `setup: ${server} serves prompts ${prompts.map((p) => p.name).join(", ")}`, { prompts });
+const resourcesSet = (id, server, resources, templates = []) => mockPost(id, server, "resources/set",
+  `setup: ${server} serves resources ${resources.map((r) => r.uri).concat(templates.map((t) => t.uriTemplate)).join(", ")}`, { resources, templates });
+const readsAre = (reads) => A.custom(`reads are ${lit(reads)}`, [`pm.expect(pm.response.json().reads || [], 'body: ' + pm.response.text()).to.eql(${lit(reads)});`]);
+const mcpMsg = (method, params = {}) => ({ jsonrpc: "2.0", id: 1, method, params });
+const resultNames = (field, key, names) => A.custom(`result.${field} ${key}s are ${lit(names)}`, [
+  `pm.expect((pm.response.json().result || {})[${lit(field)}].map(function (x) { return x[${lit(key)}]; }), 'body: ' + pm.response.text()).to.eql(${lit(names)});`,
+]);
+const firstText = (path, text) => A.custom(`${path} text is ${lit(text)}`, [`var r = pm.response.json().result || {};`, `pm.expect(r.${path}, 'body: ' + pm.response.text()).to.equal(${lit(text)});`]);
+const NOTES = { uri: "file:///notes.txt", text: "hello" };
+const DOCS = { uriTemplate: "file:///docs/{name}", text: "doc {uri}" };
+
+const EP55 = folder("EP-55 Upstream prompts on /mcp", "Setup: alpha (echo) serving prompt greet (argument name, required; text \"Hello, {name}\"); client alpha, auth none, tools_to_execute [\"*\"].", [
+  ...freshServer("EP-55", "alpha", ["echo"]),
+  promptsSet("EP-55", "alpha", [GREET]),
+  createClient("EP-55", httpClient("ep-55-alpha", "alpha", "alpha", { tools_to_execute: ["*"] }), "setup: register client alpha"),
+  rpc("EP-55", "prompts/list", mcpMsg("prompts/list"), { asserts: [A.status(200), resultNames("prompts", "name", ["alpha-greet"]), A.custom("alpha-greet takes the required argument name", [
+    "var p = pm.response.json().result.prompts[0];",
+    "pm.expect(p.arguments, 'body: ' + pm.response.text()).to.eql([{ name: 'name', required: true }]);",
+  ])] }),
+  rpc("EP-55", "prompts/get alpha-greet with name Ada", mcpMsg("prompts/get", { name: "alpha-greet", arguments: { name: "Ada" } }), { asserts: [A.status(200), firstText("messages[0].content.text", "Hello, Ada"), firstText("messages[0].role", "user")] }),
+  mockGet("EP-55", "alpha", "alpha saw prompts/get greet with name Ada", [readsAre([{ method: "prompts/get", name: "greet", arguments: { name: "Ada" } }])]),
+  rpc("EP-55", "prompts/get of an unknown prompt", mcpMsg("prompts/get", { name: "alpha-nope" }), { asserts: [A.status(200), rpcError(-32602)] }),
+  deleteClient("EP-55", "ep-55-alpha"),
+]);
+
+const EP56 = folder("EP-56 Upstream resources and templates on /mcp", "Setup: alpha (echo) serving resource file:///notes.txt (text \"hello\") and template file:///docs/{name} (text \"doc {uri}\"); client alpha, auth none, tools_to_execute [\"*\"].", [
+  ...freshServer("EP-56", "alpha", ["echo"]),
+  resourcesSet("EP-56", "alpha", [NOTES], [DOCS]),
+  createClient("EP-56", httpClient("ep-56-alpha", "alpha", "alpha", { tools_to_execute: ["*"] }), "setup: register client alpha"),
+  rpc("EP-56", "resources/list", mcpMsg("resources/list"), { asserts: [A.status(200), resultNames("resources", "uri", ["file:///notes.txt"])] }),
+  rpc("EP-56", "resources/read file:///notes.txt", mcpMsg("resources/read", { uri: "file:///notes.txt" }), { asserts: [A.status(200), firstText("contents[0].text", "hello")] }),
+  rpc("EP-56", "resources/templates/list", mcpMsg("resources/templates/list"), { asserts: [A.status(200), resultNames("resourceTemplates", "uriTemplate", ["file:///docs/{name}"])] }),
+  rpc("EP-56", "resources/read file:///docs/a", mcpMsg("resources/read", { uri: "file:///docs/a" }), { asserts: [A.status(200), firstText("contents[0].text", "doc file:///docs/a")] }),
+  mockGet("EP-56", "alpha", "alpha saw both reads", [readsAre([{ method: "resources/read", uri: "file:///notes.txt" }, { method: "resources/read", uri: "file:///docs/a" }])]),
+  rpc("EP-56", "resources/read of an unknown URI", mcpMsg("resources/read", { uri: "file:///nope" }), { asserts: [A.status(200), rpcError(-32002)] }),
+  deleteClient("EP-56", "ep-56-alpha"),
+]);
+
+const EP57 = folder("EP-57 Completion on /mcp", "Setup: as EP-55; alpha completes argument name with Ada, Alan and Grace.", [
+  ...freshServer("EP-57", "alpha", ["echo"]),
+  promptsSet("EP-57", "alpha", [GREET]),
+  createClient("EP-57", httpClient("ep-57-alpha", "alpha", "alpha", { tools_to_execute: ["*"] }), "setup: register client alpha"),
+  rpc("EP-57", "completion/complete for alpha-greet's name, typed A", mcpMsg("completion/complete", { ref: { type: "ref/prompt", name: "alpha-greet" }, argument: { name: "name", value: "A" } }),
+    { asserts: [A.status(200), A.custom("values are Ada and Alan", ["pm.expect(pm.response.json().result.completion.values, 'body: ' + pm.response.text()).to.eql(['Ada', 'Alan']);"])] }),
+  mockGet("EP-57", "alpha", "alpha saw the unprefixed prompt name", [readsAre([{ method: "completion/complete", name: "greet", argument: "name", value: "A" }])]),
+  deleteClient("EP-57", "ep-57-alpha"),
+]);
+
+const EP58 = folder("EP-58 prompts_to_expose and resources_to_expose", "Setup: alpha (echo) serving prompts greet and farewell and resources file:///notes.txt and file:///secret.txt; client alpha, auth none, tools_to_execute [\"*\"], prompts_to_expose [\"greet\"], resources_to_expose [\"file:///notes.txt\"].", [
+  ...freshServer("EP-58", "alpha", ["echo"]),
+  promptsSet("EP-58", "alpha", [GREET, { name: "farewell", text: "Bye" }]),
+  resourcesSet("EP-58", "alpha", [NOTES, { uri: "file:///secret.txt", text: "secret" }]),
+  createClient("EP-58", httpClient("ep-58-alpha", "alpha", "alpha", { tools_to_execute: ["*"], prompts_to_expose: ["greet"], resources_to_expose: ["file:///notes.txt"] }), "setup: register client alpha"),
+  rpc("EP-58", "prompts/list", mcpMsg("prompts/list"), { asserts: [A.status(200), resultNames("prompts", "name", ["alpha-greet"])] }),
+  rpc("EP-58", "resources/list", mcpMsg("resources/list"), { asserts: [A.status(200), resultNames("resources", "uri", ["file:///notes.txt"])] }),
+  rpc("EP-58", "prompts/get of the hidden alpha-farewell", mcpMsg("prompts/get", { name: "alpha-farewell" }), { asserts: [A.status(200), rpcError(-32602)] }),
+  rpc("EP-58", "resources/read of the hidden file:///secret.txt", mcpMsg("resources/read", { uri: "file:///secret.txt" }), { asserts: [A.status(200), rpcError(-32002)] }),
+  mockGet("EP-58", "alpha", "alpha was not asked for either", [readsAre([])]),
+  deleteClient("EP-58", "ep-58-alpha"),
+]);
+
+// GOV-39 and LOG-49 share their setup: alpha and beta each serve a prompt and a resource, and a VK grants alpha only.
+const readsSetup = (id) => {
+  const p = id.toLowerCase().replace("-", "");
+  return [
+    ...freshServer(id, "alpha", ["echo"]),
+    ...freshServer(id, "beta", ["echo"]),
+    promptsSet(id, "alpha", [GREET]),
+    resourcesSet(id, "alpha", [NOTES]),
+    promptsSet(id, "beta", [{ name: "summary", text: "Summary" }]),
+    resourcesSet(id, "beta", [{ uri: "file:///beta.txt", text: "beta" }]),
+    createClient(id, httpClient(`${p}-alpha`, "alpha", "alpha", { tools_to_execute: ["*"], allow_by_default: false }), "setup: register client alpha"),
+    createClient(id, httpClient(`${p}-beta`, "beta", "beta", { tools_to_execute: ["*"], allow_by_default: false }), "setup: register client beta"),
+    vkCreate(id, "setup: create a VK granting alpha only", { name: `${id} vk`, mcp_configs: ALPHA_ALL, rate_limit: { request_max_limit: 100, request_reset_duration: "1h" } }, `${p}_vk`),
+  ];
+};
+const readsTeardown = (id) => {
+  const p = id.toLowerCase().replace("-", "");
+  return [vkDelete(id, "teardown: delete the VK", `${p}_vk`), deleteClient(id, `${p}-alpha`), deleteClient(id, `${p}-beta`)];
+};
+const readsVK = (id) => [MCP_ACCEPT, { key: "x-bf-vk", value: `{{${id.toLowerCase().replace("-", "")}_vk}}` }];
+
+const GOV39 = folder("GOV-39 A VK's reads stay on its granted servers", "Setup: alpha (echo) serving prompt greet and file:///notes.txt; beta (echo) serving prompt summary and file:///beta.txt; clients alpha and beta, auth none, allow_by_default false; a VK granting alpha [\"*\"].", [
+  ...readsSetup("GOV-39"),
+  rpc("GOV-39", "prompts/list with the VK", mcpMsg("prompts/list"), { headers: readsVK("GOV-39"), asserts: [A.status(200), resultNames("prompts", "name", ["alpha-greet"])] }),
+  rpc("GOV-39", "resources/list with the VK", mcpMsg("resources/list"), { headers: readsVK("GOV-39"), asserts: [A.status(200), resultNames("resources", "uri", ["file:///notes.txt"])] }),
+  rpc("GOV-39", "prompts/get beta-summary with the VK", mcpMsg("prompts/get", { name: "beta-summary" }), { headers: readsVK("GOV-39"), asserts: [A.status(200), rpcError(-32602)] }),
+  rpc("GOV-39", "resources/read file:///beta.txt with the VK", mcpMsg("resources/read", { uri: "file:///beta.txt" }), { headers: readsVK("GOV-39"), asserts: [A.status(200), rpcError(-32002)] }),
+  mockGet("GOV-39", "beta", "beta was never asked", [readsAre([])]),
+  ...readsTeardown("GOV-39"),
+]);
+
+const LOG49 = folder("LOG-49 Reads are logged and counted", "Setup: as GOV-39; one prompts/get (x-request-id log49-p) and one resources/read (x-request-id log49-r) with the VK.", [
+  ...readsSetup("LOG-49"),
+  vkMemory("LOG-49", "setup: record the VK's requests", "log49_vk", [], keepRequests("log49_r0")),
+  rpc("LOG-49", "prompts/get alpha-greet with the VK", mcpMsg("prompts/get", { name: "alpha-greet", arguments: { name: "Ada" } }), { headers: [...readsVK("LOG-49"), reqId("log49-p")], asserts: [A.status(200), firstText("messages[0].content.text", "Hello, Ada")] }),
+  rpc("LOG-49", "resources/read file:///notes.txt with the VK", mcpMsg("resources/read", { uri: "file:///notes.txt" }), { headers: [...readsVK("LOG-49"), reqId("log49-r")], asserts: [A.status(200), firstText("contents[0].text", "hello")] }),
+  logRow("LOG-49", "the prompt read's log entry", "log49-p", [rowIs("server_label", "alpha"), rowIs("status", "success"), rowIs("tool_name", "greet"), rowIs("arguments", { name: "Ada" }), A.custom("virtual_key_id is the VK's", ["pm.expect(pm.response.json().virtual_key_id, 'body: ' + pm.response.text()).to.equal(pm.collectionVariables.get('log49_vk_id'));"])]),
+  logRow("LOG-49", "the resource read's log entry", "log49-r", [rowIs("server_label", "alpha"), rowIs("status", "success"), rowIs("tool_name", "file:///notes.txt"), rowIs("arguments", { uri: "file:///notes.txt" }), A.custom("virtual_key_id is the VK's", ["pm.expect(pm.response.json().virtual_key_id, 'body: ' + pm.response.text()).to.equal(pm.collectionVariables.get('log49_vk_id'));"])]),
+  vkMemory("LOG-49", "the VK's requests rose by 2", "log49_vk", [requestsPlus("log49_r0", 2)]),
+  ...readsTeardown("LOG-49"),
+]);
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -7932,13 +8042,13 @@ const collection = {
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM86, ADM87]),
     section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH48, AUTH49, AUTH50, AUTH51]),
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, CONN23, CONN24, CONN25, CONN27]),
-    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54]),
+    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS40, OAS42]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET21, SET22, SET26]),
-    section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV37, GOV38]),
+    section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV37, GOV38, GOV39]),
     section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB27, LIB32, LIB33, LIB34, LIB36, LIB37]),
-    section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43]),
+    section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43, LOG49]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL01, FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL12, FAIL14, FAIL16, FAIL18, FAIL19, FAIL25]),
   ],
 };
