@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	mcputils "github.com/maximhq/bifrost/core/mcp/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
@@ -176,9 +178,11 @@ type flowSubmitRequest struct {
 }
 
 // flowSubmit consumes a pending headers-submission flow row: verifies the
-// caller's values against the upstream, upserts the credential keyed by the
-// flow row's (mode, identity), then deletes the flow row and the temp token
-// bound to it. Mirrors the OAuth callback's "complete the flow" semantics.
+// caller's values against the upstream, then deletes the flow row and upserts
+// the credential keyed by its (mode, identity) in one write, and deletes the
+// temp token bound to it. A flow deleted meanwhile (revoked or expired) gets
+// a 404 and stores nothing. Mirrors the OAuth callback's "complete the flow"
+// semantics.
 func (h *MCPPerUserHeadersHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 	if h.store.MCPHeadersProvider == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "per-user headers credential provider is not configured")
@@ -288,8 +292,15 @@ func (h *MCPPerUserHeadersHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if upsertErr := h.store.MCPHeadersProvider.UpsertCredential(ctx, cred); upsertErr != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to store credential: %v", upsertErr))
+	// The credential is stored in the same write that consumes the flow row,
+	// and only while that row still exists: a revoke that ran while the values
+	// were being verified has deleted it, and must not be undone by this submit.
+	if completeErr := h.store.MCPHeadersProvider.CompleteFlow(ctx, flow.ID, cred); completeErr != nil {
+		if errors.Is(completeErr, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusNotFound, "Headers submission flow was revoked or expired before it completed; restart from the API error link")
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to store credential: %v", completeErr))
 		return
 	}
 	var discoveryErr error
@@ -297,12 +308,9 @@ func (h *MCPPerUserHeadersHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 		discoveryErr = h.storeSubmittedDiscovery(ctx, config, flow, discovery)
 	}
 
-	// Best-effort: delete the consumed flow row and the temp token bound to
-	// its ID. Failure to clean up is not fatal — the sweep worker will
-	// collect both on the next pass. We log but don't surface to the caller.
-	if delErr := h.store.ConfigStore.DeleteMCPPerUserHeaderFlow(ctx, flow.ID); delErr != nil {
-		logger.Warn("[mcp/per-user-headers] failed to delete flow %s after successful submit: %v", flow.ID, delErr)
-	}
+	// Best-effort: delete the temp token bound to the consumed flow's ID.
+	// Failure to clean up is not fatal — the sweep worker will collect it on
+	// the next pass. We log but don't surface to the caller.
 	if h.tempTokens != nil {
 		if _, delErr := h.tempTokens.DeleteByResourceID(ctx, temptoken.MCPHeadersAuthScopeName, flow.ID); delErr != nil {
 			logger.Warn("[mcp/per-user-headers] failed to delete temp token for flow %s: %v", flow.ID, delErr)
