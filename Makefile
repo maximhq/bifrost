@@ -2197,6 +2197,16 @@ install-newman: ## Install newman + htmlextra reporter if not already installed 
 	@$(USE_NODE); npm list -g newman-reporter-htmlextra > /dev/null 2>&1 || ([ -n "$$CI" ] || $(ECHO) "$(YELLOW)Installing newman-reporter-htmlextra@$(NEWMAN_HTMLEXTRA_VERSION)...$(NC)"; npm install -g newman-reporter-htmlextra@$(NEWMAN_HTMLEXTRA_VERSION))
 	@[ -n "$$CI" ] || $(ECHO) "$(GREEN)Newman + htmlextra are ready$(NC)"
 
+.PHONY: setup-ripgrep-test run-ripgrep-test
+setup-ripgrep-test: ## Prepare an opt-in config with an absolute ripgrep fixture root (requires rg)
+	@$(USE_NODE); node tests/e2e/api/runners/prepare-ripgrep-test.mjs
+
+run-ripgrep-test: install-newman ## Run local ripgrep HTTP tests against an explicitly configured gateway; no LLM calls
+	@command -v rg >/dev/null 2>&1 || { $(ECHO) "Install ripgrep (rg) and add it to the gateway PATH first."; exit 1; }
+	@$(USE_NODE); newman run tests/e2e/api/collections/ripgrep-sandbox.postman_collection.json \
+		--env-var "baseUrl=$(if $(BASE_URL),$(BASE_URL),http://localhost:8081)" \
+		--reporters cli --timeout-request 15000
+
 run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost provider-harness Postman collection. HELP=1 prints full parameter docs. Filter via PROVIDER=openai|anthropic|bedrock|gemini|vertex|azure|passthrough|openrouter|huggingface, FEATURE="<kw>" or FEATURE="<kw1>,<kw2>" (AND across substrings; matches request name/URL/body), RERUN_FAILED=1 (re-run only items that failed last run). INCLUDE_PREVIEW=1 to run [PREVIEW]-tagged account/region-scoped cases. SKIP_STREAM_CANCEL=1 skips stream cancellation probes. USE_INFISICAL=1 to source from Infisical (Usage: make run-provider-harness-test [HELP=1] [PROVIDER=anthropic] [FEATURE="web search"] [FEATURE="cross-cut,structured output"] [RERUN_FAILED=1] [INCLUDE_PREVIEW=1] [BASE_URL=...] [FOLDER="..."] [ENV_FILE=...] [VIEWER_PORT=8090] [CI=1])
 	@if [ -n "$(HELP)" ]; then \
 		printf '\n%s\n' "$(CYAN)run-provider-harness-test - Bifrost provider harness runner$(NC)"; \

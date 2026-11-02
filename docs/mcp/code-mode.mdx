@@ -838,10 +838,28 @@ Inside `executeToolCode`:
 result = ripgrep("connection timeout", path="logs", max_results=20, ignore_case=True)
 ```
 
-`path` is a file or directory relative to the configured root and defaults to `"."`. Patterns use ripgrep's default regular-expression syntax. Each match contains `path`, a 1-based `line`, and the matching line's `text`. `truncated` is true when additional matching lines were omitted by `max_results` (default and maximum: 100). No matches returns an empty list and `truncated=False`. A connected server named `ripgrep` retains its name and takes precedence over the builtin.
+`path` is a file or directory relative to the configured root and defaults to `"."`. Patterns use ripgrep's default regular-expression syntax. Each match contains `path`, a 1-based `line`, and the matching line's `text`. `truncated` is true when additional matching lines were omitted by `max_results` (default and maximum: 100). No matches returns an object with `matches=[]` and `truncated=False`. A connected server named `ripgrep` retains its name and takes precedence over the builtin.
 
 Search includes hidden files and does not apply ignore files. Symlinks encountered during directory enumeration, special files, NUL-containing files, and invalid UTF-8 files are skipped. Paths cannot escape the configured root. File contents are passed to `rg` over stdin without a shell, arbitrary flags, or host paths.
 
 Ripgrep runs with one worker and 1 MiB limits on compiled regex and DFA size. Each search allows at most 32 regular files, 8 MiB of input, 1 MiB per file, 256 directory traversal operations, 256 KiB each of process stdout/stderr, and 64 KiB of match data. Traversal counts both enumerated and visited entries. Exceeding these budgets raises an error rather than returning incomplete search results. A file that grows during reading also raises an error. Each execution allows four searches, each with a five-second timeout or the remaining execution deadline, whichever is shorter. Interpreter memory/value limits apply in addition to these bounds. Filesystem reads use normal host OS operations; they are not an OS-enforced I/O sandbox.
 
 Missing `rg`, invalid patterns, denied paths, or process failures stop the script with an execution error. No files are modified and no search state persists between executions.
+
+
+### Testing ripgrep locally
+
+The ripgrep HTTP cases live in a separate collection because they require an explicitly enabled search root. They are not included in the default provider harness sweep. Install `rg` on the gateway's PATH, then run these commands from the repository root:
+
+```sh
+make setup-ripgrep-test
+NODE_OPTIONS="--dns-result-order=ipv4first" make dev PORT=8081 APP_DIR="$(pwd)/tmp/ripgrep-test"
+```
+
+The setup target creates a local config with the absolute fixture directory and a random setup token. It refuses to overwrite an existing config with a different search root. Keep the gateway running, then in another terminal run:
+
+```sh
+make run-ripgrep-test
+```
+
+For a different gateway port, pass `BASE_URL=http://localhost:<port>` to the test target. The three requests exercise matching/truncation, no matches, and denied traversal. They do not call an LLM provider. Other server configurations must explicitly enable the same fixture root before running this collection.

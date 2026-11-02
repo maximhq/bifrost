@@ -33,6 +33,7 @@ const (
 	ripgrepMaxCalls       = 4
 )
 
+// storeRipgrepRoot publishes a copy of an absolute root; nil preserves the current configuration.
 func (s *StarlarkCodeMode) storeRipgrepRoot(root *string) {
 	if root == nil {
 		return
@@ -280,6 +281,7 @@ type ripgrepBuffer struct {
 	exceeded bool
 }
 
+// Write bounds process output without exposing bytes.Buffer methods that bypass the limit.
 func (b *ripgrepBuffer) Write(p []byte) (int, error) {
 	if len(p) > ripgrepMaxOutputBytes-b.buffer.Len() {
 		b.exceeded = true

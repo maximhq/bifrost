@@ -17,6 +17,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// ripgrepTestMode creates an isolated search root and a Code Mode instance backed by the real rg executable.
 func ripgrepTestMode(t *testing.T) (*StarlarkCodeMode, string) {
 	t.Helper()
 	if _, err := exec.LookPath("rg"); err != nil {
@@ -27,15 +28,21 @@ func ripgrepTestMode(t *testing.T) (*StarlarkCodeMode, string) {
 	mode.SetDependencies(&mcp.CodeModeDependencies{ClientManager: &testClientManager{}})
 	return mode, root
 }
+
+// writeRipgrepFile creates a private text or binary fixture for a search test.
 func writeRipgrepFile(t *testing.T, name, content string) {
 	t.Helper()
 	if err := os.WriteFile(name, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
 }
+
+// runRipgrep executes a script with the same entry point used by executeToolCode.
 func runRipgrep(mode *StarlarkCodeMode, code string) ExecutionResult {
 	return mode.executeCode(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), code)
 }
+
+// TestRipgrep checks structured results, regex behavior, argument validation, and call limits.
 func TestRipgrep(t *testing.T) {
 	mode, root := ripgrepTestMode(t)
 	writeRipgrepFile(t, filepath.Join(root, "a.txt"), "first\nTimeout α\ntimeout β\n--version\n$(touch should-not-exist)\n")
@@ -91,6 +98,8 @@ result = [len(r["matches"]), r["truncated"]]`, []interface{}{int64(1), false}},
 		})
 	}
 }
+
+// TestRipgrepConfinementAndLimits rejects root escapes and bounds scanned bytes, files, and output.
 func TestRipgrepConfinementAndLimits(t *testing.T) {
 	t.Run("symlink escape", func(t *testing.T) {
 		mode, root := ripgrepTestMode(t)
@@ -142,6 +151,8 @@ func TestRipgrepConfinementAndLimits(t *testing.T) {
 		}
 	})
 }
+
+// TestRipgrepConfiguration verifies opt-in configuration, updates, and missing-executable errors.
 func TestRipgrepConfiguration(t *testing.T) {
 	mode, root := ripgrepTestMode(t)
 	empty := ""
@@ -169,6 +180,8 @@ func TestRipgrepConfiguration(t *testing.T) {
 		t.Fatalf("got result %#v, error %+v", r.Result, r.Errors)
 	}
 }
+
+// TestRipgrepCancellation verifies cancellation before execution and while a child process is running.
 func TestRipgrepCancellation(t *testing.T) {
 	mode, root := ripgrepTestMode(t)
 	writeRipgrepFile(t, filepath.Join(root, "a"), "x")
@@ -199,6 +212,7 @@ func TestRipgrepCancellation(t *testing.T) {
 	}
 }
 
+// TestRipgrepEntryAndValueBudgets exercises directory, result, and interpreter budgets and binding precedence.
 func TestRipgrepEntryAndValueBudgets(t *testing.T) {
 	t.Run("directory entries", func(t *testing.T) {
 		mode, root := ripgrepTestMode(t)
@@ -249,6 +263,7 @@ func TestRipgrepEntryAndValueBudgets(t *testing.T) {
 	})
 }
 
+// BenchmarkRipgrep measures complete Starlark search execution, including process startup and result conversion.
 func BenchmarkRipgrep(b *testing.B) {
 	if _, err := exec.LookPath("rg"); err != nil {
 		b.Skip("rg required")
