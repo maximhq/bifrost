@@ -348,7 +348,7 @@ func (c *ClientConnectionChecker) performCheck() (time.Duration, bool) {
 		// reactive per-request path, beat this tick to it) is expected and
 		// fine to ignore; whichever attempt finishes is authoritative.
 		go func() {
-			if err := c.manager.ReconnectClient(c.clientID); err != nil {
+			if err := c.manager.reconnectFromChecker(c.clientID); err != nil {
 				c.logger.Debug("%s Connection checker's reconnect attempt for %s did not complete: %v", MCPLogPrefix, clientName, err)
 			}
 		}()
@@ -382,7 +382,7 @@ func (c *ClientConnectionChecker) reconnectAfterFailedCheck(clientName string, c
 		return
 	}
 	go func() {
-		if err := c.manager.ReconnectClient(c.clientID); err != nil {
+		if err := c.manager.reconnectFromChecker(c.clientID); err != nil {
 			c.logger.Debug("%s Connection checker's reconnect attempt for %s did not complete: %v", MCPLogPrefix, clientName, err)
 		}
 	}()
