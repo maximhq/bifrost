@@ -64,7 +64,7 @@ func newSandboxThread(ctx context.Context, limits schemas.MCPCodeModeLimits) *st
 // runSandbox evaluates in-process under limits, which must already have defaults applied. Interpreter operations and Go conversions at
 // tool boundaries share a budget. This is cooperative accounting, not an
 // OS-enforced process memory limit.
-func runSandbox(ctx context.Context, limits schemas.MCPCodeModeLimits, code string, bindings map[string][]string, call sandboxToolCaller) ExecutionResult {
+func runSandbox(ctx context.Context, limits schemas.MCPCodeModeLimits, code string, bindings map[string][]string, call sandboxToolCaller, extras ...starlark.StringDict) ExecutionResult {
 	if len(code) > limits.MaxSourceBytes {
 		return sandboxFailure("code exceeds source limit")
 	}
@@ -166,6 +166,14 @@ func runSandbox(ctx context.Context, limits schemas.MCPCodeModeLimits, code stri
 			predeclared[name] = module
 		}
 	}
+	for _, extra := range extras {
+		for name, value := range extra {
+			if _, taken := predeclared[name]; !taken {
+				predeclared[name] = value
+			}
+		}
+	}
+
 	sort.Strings(servers)
 	opts := &syntax.FileOptions{TopLevelControl: true, While: true, Set: true, GlobalReassign: true, Recursion: true}
 	// Globals never leave this invocation. Avoid ExecFile's unconditional,

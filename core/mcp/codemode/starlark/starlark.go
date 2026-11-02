@@ -22,6 +22,7 @@ type StarlarkCodeMode struct {
 	bindingLevel         atomic.Value // schemas.CodeModeBindingLevel
 	toolExecutionTimeout atomic.Value // time.Duration
 	limits               atomic.Pointer[schemas.MCPCodeModeLimits]
+	ripgrepRoot          atomic.Pointer[string]
 
 	// Dependencies
 	clientManager         mcp.ClientManager
@@ -71,6 +72,7 @@ func NewStarlarkCodeMode(config *mcp.CodeModeConfig, logger schemas.Logger) *Sta
 	s.bindingLevel.Store(config.BindingLevel)
 	s.toolExecutionTimeout.Store(config.ToolExecutionTimeout)
 	s.storeLimits(config.Limits)
+	s.storeRipgrepRoot(config.RipgrepRoot)
 
 	s.logger.Info("%s Starlark code mode initialized with binding level: %s, timeout: %v",
 		mcp.CodeModeLogPrefix, config.BindingLevel, config.ToolExecutionTimeout)
@@ -158,6 +160,8 @@ func (s *StarlarkCodeMode) UpdateConfig(config *mcp.CodeModeConfig) {
 	if config.ToolExecutionTimeout > 0 {
 		s.toolExecutionTimeout.Store(config.ToolExecutionTimeout)
 	}
+
+	s.storeRipgrepRoot(config.RipgrepRoot)
 
 	if config.Limits != nil {
 		s.storeLimits(config.Limits)

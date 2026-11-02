@@ -298482,6 +298482,150 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "Code Mode ripgrep sandbox",
+      "description": "Local executeToolCode coverage; no LLM calls. Requires rg on the server PATH and mcp.tool_manager_config.code_mode_ripgrep_root set to the absolute tests/e2e/api/fixtures/ripgrep directory. Pins structured matches and truncation, no-match semantics, and path denial. Before the feature, the success cases fail because ripgrep is undefined.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai ripgrep-sandbox matching lines and truncation",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('ripgrep sandbox '+\"matching lines and truncation\", function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error === true, pm.response.text()).to.equal(false);",
+                  "  pm.expect(pm.response.text()).to.include(\"ripgrep-ok\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"ripgrep-sandbox-0\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"r = ripgrep(\\\\\\\"timeout\\\\\\\", path=\\\\\\\"logs.txt\\\\\\\", max_results=1)\\\\nif len(r[\\\\\\\"matches\\\\\\\"]) != 1 or not r[\\\\\\\"truncated\\\\\\\"]:\\\\n    fail(\\\\\\\"missing bounded match\\\\\\\")\\\\nm = r[\\\\\\\"matches\\\\\\\"][0]\\\\nif m[\\\\\\\"path\\\\\\\"] != \\\\\\\"logs.txt\\\\\\\" or m[\\\\\\\"line\\\\\\\"] != 2 or m[\\\\\\\"text\\\\\\\"] != \\\\\\\"connection timeout\\\\\\\":\\\\n    fail(\\\\\\\"wrong structured match\\\\\\\")\\\\nresult = \\\\\\\"ripgrep-ok\\\\\\\"\\\"}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai ripgrep-sandbox no matches",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('ripgrep sandbox '+\"no matches\", function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error === true, pm.response.text()).to.equal(false);",
+                  "  pm.expect(pm.response.text()).to.include(\"ripgrep-ok\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"ripgrep-sandbox-1\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"r = ripgrep(\\\\\\\"absent\\\\\\\", path=\\\\\\\"logs.txt\\\\\\\")\\\\nif r[\\\\\\\"matches\\\\\\\"] != [] or r[\\\\\\\"truncated\\\\\\\"]:\\\\n    fail(\\\\\\\"incorrect no-match result\\\\\\\")\\\\nresult = \\\\\\\"ripgrep-ok\\\\\\\"\\\"}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai ripgrep-sandbox traversal denied",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('ripgrep sandbox '+\"traversal denied\", function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error === true, pm.response.text()).to.equal(true);",
+                  "  pm.expect(pm.response.text()).to.include(\"relative\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"ripgrep-sandbox-2\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"result = ripgrep(\\\\\\\"secret\\\\\\\", path=\\\\\\\"../secret\\\\\\\")\\\"}\"\n  }\n}"
+            }
+          }
+        }
+      ]
     }
   ]
 }

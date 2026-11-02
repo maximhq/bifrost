@@ -379,6 +379,7 @@ type MCPToolManagerConfig struct {
 	MaxInstructionsPerClient int `json:"max_instructions_per_client,omitempty"`
 	// MaxInstructionsTotal bounds the whole aggregate, in bytes. 0 is the default.
 	MaxInstructionsTotal  int                `json:"max_instructions_total,omitempty"`
+	CodeModeRipgrepRoot   *string            `json:"code_mode_ripgrep_root,omitempty"`  // Opt-in host directory readable by all Code Mode executions; empty disables ripgrep
 	CodeModeLimits        *MCPCodeModeLimits `json:"code_mode_limits,omitempty"`        // Per-execution code mode budgets; nil keeps the defaults
 	OAuthPrivateAllowlist []string           `json:"oauth_private_allowlist,omitempty"` // Private hosts, IPs and CIDRs the MCP OAuth chain may reach for clients registered with admin auth
 }
