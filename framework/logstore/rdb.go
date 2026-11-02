@@ -660,17 +660,6 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	return baseQuery
 }
 
-// Guardrail outcome values accepted by SearchFilters.GuardrailOutcomes.
-const (
-	GuardrailOutcomeBlocked  = "blocked"
-	GuardrailOutcomeDetected = "detected"
-)
-
-// guardrailInterventionErrorType is the error type the guardrails plugin
-// returns when it blocks a request. Matching it keeps blocks logged before
-// interventions were recorded in guardrail_debug visible to the filter.
-const guardrailInterventionErrorType = "guardrail_intervention"
-
 // applyGuardrailOutcomeFilter keeps rows a guardrail blocked or flagged. Only
 // known outcomes reach the SQL; an unsupported dialect or an all-unknown list
 // matches nothing rather than silently returning every log.
