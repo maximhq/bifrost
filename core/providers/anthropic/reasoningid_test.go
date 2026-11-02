@@ -681,12 +681,11 @@ func TestResponsesRoundTripKeepsInterleavedThinkingOrder(t *testing.T) {
 }
 
 // Vertex and Bedrock InvokeModel decode the provider body into the same
-// AnthropicMessageResponse and call the same converter, so the wire model id they report
-// decides the gate. All of them keep the turn in wire order; a non-Claude model id behind
-// an Anthropic-compatible endpoint keeps the previous grouping on purpose.
+// AnthropicMessageResponse and call the same converter. The response is converted in wire
+// order whatever model id it reports: the backend already produced that order, and a
+// missing model id must not be treated as a third-party backend.
 func TestToBifrostResponsesResponseThinkingOrderByModelID(t *testing.T) {
 	wireOrder := []string{"reasoning", "message", "function_call", "reasoning", "reasoning", "message", "function_call", "reasoning", "function_call"}
-	grouped := []string{"reasoning", "reasoning", "message", "function_call", "reasoning", "message", "function_call", "function_call"}
 	cases := []struct {
 		name  string
 		model string
@@ -695,8 +694,8 @@ func TestToBifrostResponsesResponseThinkingOrderByModelID(t *testing.T) {
 		{"anthropic", "claude-opus-5-5", wireOrder},
 		{"vertex", "claude-opus-5-5@20261001", wireOrder},
 		{"bedrock invoke", "anthropic.claude-opus-5-5-v1:0", wireOrder},
-		{"compatible third party", "glm-5", grouped},
-		{"empty model", "", grouped},
+		{"compatible third party", "glm-5", wireOrder},
+		{"empty model", "", wireOrder},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -710,9 +709,10 @@ func TestToBifrostResponsesResponseThinkingOrderByModelID(t *testing.T) {
 }
 
 // The Responses->Chat fallback buffers each reasoning item and attaches it to the next
-// assistant message, so with the wire-ordered output every thinking run lands on the
-// message that follows it, with its signature.
-func TestInterleavedThinkingOutputToChatMessagesAttachesRunsInOrder(t *testing.T) {
+// assistant message it flushes. Placement is per Chat message, not per run: the tool call
+// that precedes a run is still buffered when the run arrives, so the run rides on the
+// message containing that tool call (a limit of the Chat shape, out of scope here).
+func TestInterleavedThinkingOutputToChatMessagesAttachesRunsToFlushingMessage(t *testing.T) {
 	resp := &AnthropicMessageResponse{ID: "msg_1", Type: "message", Role: "assistant", Model: "claude-opus-5-5", Content: interleavedThinkingTurn()}
 	chat := schemas.ToChatMessages(resp.ToBifrostResponsesResponse(&schemas.BifrostContext{}).Output)
 

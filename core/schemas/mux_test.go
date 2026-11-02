@@ -176,7 +176,7 @@ func TestToChatMessages_MergesClosingReasoningIntoExistingReasoning(t *testing.T
 
 	chatMessages := ToChatMessages([]ResponsesMessage{
 		{Role: Ptr(ResponsesInputMessageRoleUser), Content: &ResponsesMessageContent{ContentStr: Ptr("hi")}},
-		reasoning("opening ", "sig_a"),
+		reasoning("opening", "sig_a"),
 		{Role: Ptr(ResponsesInputMessageRoleAssistant), Content: &ResponsesMessageContent{ContentStr: Ptr("Hello!")}},
 		reasoning("closing", "sig_b"),
 	})
@@ -185,7 +185,7 @@ func TestToChatMessages_MergesClosingReasoningIntoExistingReasoning(t *testing.T
 		t.Fatalf("expected user + assistant, got %d messages", len(chatMessages))
 	}
 	assistant := chatMessages[1].ChatAssistantMessage
-	if assistant == nil || assistant.Reasoning == nil || *assistant.Reasoning != "opening closing" {
+	if assistant == nil || assistant.Reasoning == nil || *assistant.Reasoning != "opening\nclosing" {
 		t.Fatalf("closing reasoning missing from Reasoning: %#v", assistant)
 	}
 	if len(assistant.ReasoningDetails) != 2 {

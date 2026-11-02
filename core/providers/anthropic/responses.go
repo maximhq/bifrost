@@ -5521,8 +5521,9 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schema
 			},
 		}
 		// Keep each thinking run at its wire position: a client replays this turn, and
-		// Anthropic rejects thinking blocks that moved.
-		outputMessages := convertAnthropicMessagesToBifrostMessages(ctx, []AnthropicMessage{tempMsg}, nil, true, false, schemas.IsAnthropicModel(response.Model))
+		// Anthropic rejects thinking blocks that moved. The backend already produced this
+		// order, so emitting it as-is is always the faithful translation (no model gate).
+		outputMessages := convertAnthropicMessagesToBifrostMessages(ctx, []AnthropicMessage{tempMsg}, nil, true, false, true)
 		if len(outputMessages) > 0 {
 			// Lift the response-level code-execution container onto every
 			// code_interpreter_call so it round-trips (id is neutral; expiry is carried).
