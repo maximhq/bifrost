@@ -358,6 +358,7 @@ type Log struct {
 	BusinessUnitNames       *string   `gorm:"type:text" json:"-"`
 	UserAgent               *string   `gorm:"type:varchar(512);index:idx_logs_user_agent" json:"user_agent,omitempty"` // Raw HTTP User-Agent of the calling client
 	App                     *string   `gorm:"type:varchar(128);index:idx_logs_app" json:"app,omitempty"`               // Backend-detected client app derived from user_agent
+	ClientIP                *string   `gorm:"type:varchar(45)" json:"client_ip,omitempty"`                             // Caller IP: leftmost X-Forwarded-For, else X-Real-IP, else the TCP peer
 	InputHistory            string    `gorm:"type:text" json:"-"`                                                      // JSON serialized []schemas.ChatMessage
 	ResponsesInputHistory   string    `gorm:"type:text" json:"-"`                                                      // JSON serialized []schemas.ResponsesMessage
 	OutputMessage           string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.ChatMessage
@@ -1961,6 +1962,7 @@ type MCPToolLog struct {
 	ProjectName        *string   `gorm:"type:varchar(255)" json:"project_name"`
 	UserAgent          *string   `gorm:"type:varchar(512);index:idx_mcp_logs_user_agent" json:"user_agent,omitempty"` // Raw HTTP User-Agent of the calling client
 	App                *string   `gorm:"type:varchar(128);index:idx_mcp_logs_app" json:"app,omitempty"`               // Backend-detected client app derived from user_agent
+	ClientIP           *string   `gorm:"type:varchar(45)" json:"client_ip,omitempty"`                                 // Caller IP: leftmost X-Forwarded-For, else X-Real-IP, else the TCP peer
 	Arguments          string    `gorm:"type:text" json:"-"`                                                          // JSON serialized tool arguments
 	Result             string    `gorm:"type:text" json:"-"`                                                          // JSON serialized tool result
 	ErrorDetails       string    `gorm:"type:text" json:"-"`                                                          // JSON serialized *schemas.BifrostError
