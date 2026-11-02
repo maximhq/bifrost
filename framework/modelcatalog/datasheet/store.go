@@ -58,6 +58,7 @@ type Store struct {
 	// return defensive copies of any slice/map they expose.
 	mu                     sync.RWMutex
 	pricingData            map[string]configstoreTables.TableModelPricing // model|provider|mode → row
+	pricingKeyFolded       map[string]string                              // lowercased pricingData key → pricingData key
 	baseModelIndex         map[string]string                              // model → canonical base name
 	supportedResponseTypes map[string][]string                            // model → [chat_completion, responses, …]
 	supportedParams        map[string][]string                            // model → [temperature, top_p, …]
@@ -166,10 +167,9 @@ func (s *Store) MarkSynced(t time.Time) {
 // Get returns the raw pricing row for (model, provider, requestType) or nil.
 // Useful for callers that need exact pricing without override resolution.
 func (s *Store) Get(model string, provider schemas.ModelProvider, requestType schemas.RequestType) *configstoreTables.TableModelPricing {
-	key := makeKey(model, normalizeProvider(string(provider)), normalizeRequestType(requestType))
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	row, ok := s.pricingData[key]
+	row, ok := s.lookupPricingUnsafe(model, normalizeProvider(string(provider)), normalizeRequestType(requestType))
 	if !ok {
 		return nil
 	}
@@ -198,8 +198,7 @@ func (s *Store) GetPricingEntryForModel(model string, provider schemas.ModelProv
 		schemas.VideoGenerationRequest,
 		schemas.OCRRequest,
 	} {
-		key := makeKey(model, catalogProvider, normalizeRequestType(mode))
-		if pricing, ok := s.pricingData[key]; ok {
+		if pricing, ok := s.lookupPricingUnsafe(model, catalogProvider, normalizeRequestType(mode)); ok {
 			return convertTablePricingToEntry(&pricing)
 		}
 	}
@@ -358,8 +357,7 @@ func (s *Store) GetSupportedParameters(model string) []string {
 func (s *Store) IsTextCompletionSupported(model string, provider schemas.ModelProvider) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	key := makeKey(model, normalizeProvider(string(provider)), normalizeRequestType(schemas.TextCompletionRequest))
-	_, ok := s.pricingData[key]
+	_, ok := s.lookupPricingUnsafe(model, normalizeProvider(string(provider)), normalizeRequestType(schemas.TextCompletionRequest))
 	return ok
 }
 
@@ -372,8 +370,7 @@ func (s *Store) capabilityEntryForExactUnsafe(model string, provider schemas.Mod
 		schemas.TextCompletionRequest,
 	}
 	for _, mode := range preferredModes {
-		key := makeKey(model, string(provider), normalizeRequestType(mode))
-		if pricing, ok := s.pricingData[key]; ok {
+		if pricing, ok := s.lookupPricingUnsafe(model, string(provider), normalizeRequestType(mode)); ok {
 			return convertTablePricingToEntry(&pricing)
 		}
 	}
@@ -381,7 +378,7 @@ func (s *Store) capabilityEntryForExactUnsafe(model string, provider schemas.Mod
 	prefix := model + "|" + string(provider) + "|"
 	var matchingKeys []string
 	for key := range s.pricingData {
-		if strings.HasPrefix(key, prefix) {
+		if len(key) >= len(prefix) && strings.EqualFold(key[:len(prefix)], prefix) {
 			matchingKeys = append(matchingKeys, key)
 		}
 	}
@@ -486,6 +483,7 @@ func (s *Store) SetPricingRowsForTest(rows []configstoreTables.TableModelPricing
 // and deprecatedByProvider from pricingData. Caller MUST hold s.mu write-lock.
 // Called after every pricingData mutation in sync.go / params.go.
 func (s *Store) rebuildDatasheetViewUnsafe() {
+	s.rebuildPricingKeyFoldedUnsafe()
 	s.baseModelIndex = make(map[string]string)
 	providerModels := make(map[schemas.ModelProvider]map[string]struct{})
 	deprecatedModels := make(map[schemas.ModelProvider]map[string]struct{})
@@ -532,6 +530,43 @@ func (s *Store) rebuildDatasheetViewUnsafe() {
 	}
 
 	s.writeGen.Add(1)
+}
+
+// lookupPricingUnsafe returns the pricing row for (model, provider, mode),
+// matching the model name case-insensitively. A row stored under the exact
+// casing wins, so a feed that lists one model in two casings with different
+// rates keeps pricing each casing from its own row; any other casing falls
+// back to the row picked by rebuildPricingKeyFoldedUnsafe. Caller holds s.mu.
+func (s *Store) lookupPricingUnsafe(model, provider, mode string) (configstoreTables.TableModelPricing, bool) {
+	key := makeKey(model, provider, mode)
+	if pricing, ok := s.pricingData[key]; ok {
+		return pricing, true
+	}
+	if len(s.pricingKeyFolded) == 0 {
+		return configstoreTables.TableModelPricing{}, false
+	}
+	stored, ok := s.pricingKeyFolded[strings.ToLower(key)]
+	if !ok {
+		return configstoreTables.TableModelPricing{}, false
+	}
+	pricing, ok := s.pricingData[stored]
+	return pricing, ok
+}
+
+// rebuildPricingKeyFoldedUnsafe indexes every pricingData key by its lowercase
+// form. When several keys fold together, the one that is already lowercase
+// wins, then the byte-wise smallest, so every reload picks the same row.
+// Caller holds the s.mu write lock.
+func (s *Store) rebuildPricingKeyFoldedUnsafe() {
+	folded := make(map[string]string, len(s.pricingData))
+	for key := range s.pricingData {
+		lower := strings.ToLower(key)
+		if cur, taken := folded[lower]; taken && (cur == lower || (key != lower && cur < key)) {
+			continue
+		}
+		folded[lower] = key
+	}
+	s.pricingKeyFolded = folded
 }
 
 // WriteGen returns the monotonic count of membership rebuilds.

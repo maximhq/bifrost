@@ -75,6 +75,55 @@ func TestGetPricing_OverridePrecedenceExactWildcard(t *testing.T) {
 	assert.Equal(t, 20.0, *pricing.InputCostPerToken)
 }
 
+func TestGetPricing_OverridePatternsMatchAnyCase(t *testing.T) {
+	s := newTestStore()
+	s.pricingData[makeKey("qwen3-coder", "openai", "chat")] = configstoreTables.TableModelPricing{
+		Model:              "qwen3-coder",
+		Provider:           "openai",
+		Mode:               "chat",
+		InputCostPerToken:  bifrost.Ptr(1.0),
+		OutputCostPerToken: bifrost.Ptr(2.0),
+	}
+	s.rebuildPricingKeyFoldedUnsafe()
+
+	providerID := "openai"
+	require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{
+		{
+			ID:               "exact-mixed-case",
+			ScopeKind:        string(ScopeKindProvider),
+			ProviderID:       &providerID,
+			MatchType:        string(MatchTypeExact),
+			Pattern:          "Qwen3-Coder",
+			RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+			PricingPatchJSON: `{"input_cost_per_token":20}`,
+		},
+		{
+			ID:               "wildcard-mixed-case",
+			ScopeKind:        string(ScopeKindProvider),
+			ProviderID:       &providerID,
+			MatchType:        string(MatchTypeWildcard),
+			Pattern:          "QwQ-*",
+			RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+			PricingPatchJSON: `{"input_cost_per_token":30}`,
+		},
+	}))
+
+	pricing := s.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "qwen3-coder"}, schemas.ChatCompletionRequest, LookupScopes{Provider: "openai"})
+	require.NotNil(t, pricing)
+	require.NotNil(t, pricing.InputCostPerToken)
+	assert.Equal(t, 20.0, *pricing.InputCostPerToken)
+
+	// No catalog row: the override alone prices the request.
+	pricing = s.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "qwq-32b"}, schemas.ChatCompletionRequest, LookupScopes{Provider: "openai"})
+	require.NotNil(t, pricing)
+	require.NotNil(t, pricing.InputCostPerToken)
+	assert.Equal(t, 30.0, *pricing.InputCostPerToken)
+
+	catalog := s.CatalogPricingOverrides("QWEN3-CODER", "openai", "chat")
+	assert.Equal(t, "exact-mixed-case", catalog.AppliedID)
+	require.Len(t, catalog.Matching, 1)
+}
+
 func TestGetPricing_RequestTypeSpecificOverrideBeatsGeneric(t *testing.T) {
 	s := newTestStore()
 	s.pricingData[makeKey("gpt-4o", "openai", "responses")] = configstoreTables.TableModelPricing{

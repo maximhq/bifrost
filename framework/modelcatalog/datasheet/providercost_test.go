@@ -184,3 +184,70 @@ func TestGetBasePricing_ExactCaseWinsOverLowercase(t *testing.T) {
 	// 1000*0.000001 + 500*0.000002
 	assert.InDelta(t, 0.002, s.CalculateCost(resp, nil), 1e-12)
 }
+
+func TestGetBasePricing_LowercaseModelMatchesMixedCaseRow(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("Qwen3-235B-A22B", "azure", "chat"): chatPricing(0.0000003, 0.0000012),
+	})
+	resp := makeChatResponse(schemas.Azure, "qwen3-235b-a22b", &schemas.BifrostLLMUsage{
+		PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500,
+	})
+	// 1000*0.0000003 + 500*0.0000012
+	assert.InDelta(t, 0.0009, s.CalculateCost(resp, nil), 1e-12)
+}
+
+func TestGetBasePricing_CaseInsensitiveOnVertexPrefixFallback(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gemini-2.5-pro", "vertex", "chat"): chatPricing(0.0000003, 0.0000012),
+	})
+	resp := makeChatResponse(schemas.Vertex, "google/Gemini-2.5-Pro", &schemas.BifrostLLMUsage{
+		PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500,
+	})
+	// 1000*0.0000003 + 500*0.0000012
+	assert.InDelta(t, 0.0009, s.CalculateCost(resp, nil), 1e-12)
+}
+
+func TestGetBasePricing_UnlistedCasingPrefersLowercaseRow(t *testing.T) {
+	// The live feed lists azure/deepseek-v4-pro and azure/DeepSeek-V4-Pro with
+	// different rates. A third casing must resolve to the same row every time.
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("deepseek-v4-pro", "azure", "chat"): chatPricing(0.0000003, 0.0000012),
+		makeKey("DeepSeek-V4-Pro", "azure", "chat"): chatPricing(0.000001, 0.000002),
+	})
+	resp := makeChatResponse(schemas.Azure, "DEEPSEEK-V4-PRO", &schemas.BifrostLLMUsage{
+		PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500,
+	})
+	// 1000*0.0000003 + 500*0.0000012
+	assert.InDelta(t, 0.0009, s.CalculateCost(resp, nil), 1e-12)
+}
+
+func BenchmarkGetBasePricing_Casing(b *testing.B) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("deepseek-v4.1-flash", "azure", "chat"): chatPricing(0.0000003, 0.0000012),
+		makeKey("Qwen3-235B-A22B", "azure", "chat"):     chatPricing(0.0000003, 0.0000012),
+	})
+	for _, tc := range []struct{ name, model string }{
+		{"exact", "deepseek-v4.1-flash"},
+		{"mixed_request_lower_row", "DeepSeek-V4.1-Flash"},
+		{"lower_request_mixed_row", "qwen3-235b-a22b"},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				s.getBasePricing(tc.model, "azure", schemas.ChatCompletionRequest)
+			}
+		})
+	}
+}
+
+func TestRebuildPricingKeyFolded_PicksLowercaseThenSmallest(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("Model-X", "azure", "chat"): chatPricing(1, 1),
+		makeKey("MODEL-X", "azure", "chat"): chatPricing(2, 2),
+	})
+	assert.Equal(t, makeKey("MODEL-X", "azure", "chat"), s.pricingKeyFolded[makeKey("model-x", "azure", "chat")])
+
+	s.pricingData[makeKey("model-x", "azure", "chat")] = chatPricing(3, 3)
+	s.rebuildPricingKeyFoldedUnsafe()
+	assert.Equal(t, makeKey("model-x", "azure", "chat"), s.pricingKeyFolded[makeKey("model-x", "azure", "chat")])
+}
