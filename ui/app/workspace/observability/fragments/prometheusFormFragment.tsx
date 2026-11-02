@@ -276,7 +276,9 @@ export function PrometheusFormFragment({
 							<div className="flex items-center justify-between">
 								<div className="flex flex-col gap-1">
 									<span className="text-sm font-medium">{t("connectors.otel.metricsEndpoint")}</span>
-									<code className="text-muted-foreground text-xs">{metricsEndpoint || "http://<bifrost-host>:<port>/metrics"}</code>
+									<code className="text-muted-foreground text-xs" data-testid="prometheus-metrics-endpoint">
+										{metricsEndpoint || "http://<bifrost-host>:<port>/metrics"}
+									</code>
 								</div>
 								{metricsEndpoint && (
 									<Button

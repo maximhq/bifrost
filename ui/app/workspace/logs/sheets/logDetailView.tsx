@@ -30,6 +30,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { OverheadBreakdown } from "@/components/logs/overheadBreakdown";
 import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
+import { MESSAGE_ROLES, useMessageRoleFilterPreference } from "@/lib/hooks/useMessageRoleFilterPreference";
 import type { ParseKeys } from "i18next";
 import { useTranslation } from "react-i18next";
 import i18n, { getLocale } from "@/lib/i18n";
@@ -720,8 +721,9 @@ export function LogDetailView({
 		setShowRevealedValues(false);
 	}, [log?.id, revealAvailable]);
 
-	const allRoles: MessageRole[] = ["system", "user", "assistant", "tool", "reasoning"];
-	const [visibleRoles, setVisibleRoles] = useState<Set<MessageRole>>(new Set(allRoles));
+	const allRoles = MESSAGE_ROLES;
+	// Kept in localStorage so a filter such as "reasoning only" survives reloads and new sessions.
+	const [visibleRoles, setVisibleRoles] = useMessageRoleFilterPreference();
 	// Kept in the URL so the open section and active tab survive switching logs, which remounts this view.
 	const [moreDetailsOpen, setMoreDetailsOpen] = useQueryState(
 		"log_more",
@@ -2737,6 +2739,7 @@ export function LogDetailView({
 								<DropdownMenuTrigger asChild>
 									<button
 										type="button"
+										data-testid="log-messages-filter-trigger"
 										className={cn(
 											"inline-flex items-center gap-1.5 rounded-sm border px-2.5 py-1 text-[11.5px] font-medium transition",
 											visibleRoles.size < allRoles.length
@@ -2746,7 +2749,10 @@ export function LogDetailView({
 									>
 										{t("logs.detail.messages")}
 										{visibleRoles.size < allRoles.length && (
-											<span className="bg-primary text-primary-foreground rounded-sm px-1 py-0.5 text-[10px] tabular-nums">
+											<span
+												data-testid="log-messages-filter-count"
+												className="bg-primary text-primary-foreground rounded-sm px-1 py-0.5 text-[10px] tabular-nums"
+											>
 												{visibleRoles.size}/{allRoles.length}
 											</span>
 										)}
@@ -2755,6 +2761,7 @@ export function LogDetailView({
 								</DropdownMenuTrigger>
 								<DropdownMenuContent align="end" className="w-48">
 									<DropdownMenuCheckboxItem
+										data-testid="log-messages-filter-all"
 										checked={visibleRoles.size === allRoles.length}
 										onCheckedChange={(checked) => setVisibleRoles(checked ? new Set(allRoles) : new Set())}
 									>
@@ -2772,6 +2779,7 @@ export function LogDetailView({
 									).map(([role, label]) => (
 										<DropdownMenuCheckboxItem
 											key={role}
+											data-testid={`log-messages-filter-role-${role}`}
 											checked={visibleRoles.has(role)}
 											onCheckedChange={(checked) =>
 												setVisibleRoles((prev) => {
@@ -2786,7 +2794,11 @@ export function LogDetailView({
 										</DropdownMenuCheckboxItem>
 									))}
 									<DropdownMenuSeparator />
-									<DropdownMenuItem onClick={() => setVisibleRoles(new Set())} className="text-muted-foreground justify-center text-[12px]">
+									<DropdownMenuItem
+										data-testid="log-messages-filter-clear"
+										onClick={() => setVisibleRoles(new Set())}
+										className="text-muted-foreground justify-center text-[12px]"
+									>
 										{t("logs.detail.clearAll")}
 									</DropdownMenuItem>
 								</DropdownMenuContent>

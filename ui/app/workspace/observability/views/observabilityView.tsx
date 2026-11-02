@@ -18,6 +18,7 @@ import PrometheusView from "./plugins/prometheusView";
 import PubSubView from "./plugins/pubsubView";
 import SplunkView from "./plugins/splunkView";
 import { useTranslation } from "react-i18next";
+import { withBasePath } from "@/lib/utils/basePath";
 
 type SupportedPlatform = {
 	id: string;
@@ -27,6 +28,7 @@ type SupportedPlatform = {
 	disabled?: boolean;
 };
 
+/** Observability connectors shown in the picker, with icons matching resolvedTheme. */
 const supportedPlatformsList = (resolvedTheme: string): SupportedPlatform[] => [
 	{
 		id: "otel",
@@ -47,32 +49,32 @@ const supportedPlatformsList = (resolvedTheme: string): SupportedPlatform[] => [
 	{
 		id: "prometheus",
 		name: "Prometheus", // i18n-ignore: brand name
-		icon: <img alt="Prometheus" src="/images/prometheus-logo.svg" width={21} height={21} className="-ml-0.5" />,
+		icon: <img alt="Prometheus" src={withBasePath("/images/prometheus-logo.svg")} width={21} height={21} className="-ml-0.5" />,
 	},
 	{
 		id: "maxim",
 		name: "Maxim", // i18n-ignore: brand name
-		icon: <img alt="Maxim" src={`/maxim-logo${resolvedTheme === "dark" ? "-dark" : ""}.webp`} width={19} height={19} />,
+		icon: <img alt="Maxim" src={withBasePath(`/maxim-logo${resolvedTheme === "dark" ? "-dark" : ""}.webp`)} width={19} height={19} />,
 	},
 	{
 		id: "datadog",
 		name: "Datadog", // i18n-ignore: brand name
-		icon: <img alt="Datadog" src="/images/datadog-logo.webp" width={32} height={32} className="-ml-0.5" />,
+		icon: <img alt="Datadog" src={withBasePath("/images/datadog-logo.webp")} width={32} height={32} className="-ml-0.5" />,
 	},
 	{
 		id: "bigquery",
 		name: "BigQuery", // i18n-ignore: brand name
-		icon: <img alt="BigQuery" src="/images/bigquery-logo.svg" width={21} height={21} className="-ml-0.5" />,
+		icon: <img alt="BigQuery" src={withBasePath("/images/bigquery-logo.svg")} width={21} height={21} className="-ml-0.5" />,
 	},
 	{
 		id: "kafka",
 		name: "Kafka", // i18n-ignore: brand name
-		icon: <img alt="Kafka" src="/images/kafka-logo.svg" width={21} height={21} className="-ml-0.5" />,
+		icon: <img alt="Kafka" src={withBasePath("/images/kafka-logo.svg")} width={21} height={21} className="-ml-0.5" />,
 	},
 	{
 		id: "pubsub",
 		name: "Pub/Sub",
-		icon: <img alt="Pub/Sub" src="/images/pubsub-logo.svg" width={21} height={21} className="-ml-0.5" />,
+		icon: <img alt="Pub/Sub" src={withBasePath("/images/pubsub-logo.svg")} width={21} height={21} className="-ml-0.5" />,
 	},
 	{
 		id: "splunk",
@@ -80,7 +82,7 @@ const supportedPlatformsList = (resolvedTheme: string): SupportedPlatform[] => [
 		icon: (
 			<img // i18n-ignore: brand name
 				alt="Splunk"
-				src={`/images/splunk-${resolvedTheme === "dark" ? "white" : "black"}.png`}
+				src={withBasePath(`/images/splunk-${resolvedTheme === "dark" ? "white" : "black"}.png`)}
 				width={21}
 				height={21}
 				className="-ml-0.5"

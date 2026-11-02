@@ -440,3 +440,92 @@ func TestListPendingMCPPerUserHeaderFlows_NoFilters(t *testing.T) {
 	require.Len(t, got, 1)
 	require.Equal(t, "hf-1", got[0].ID)
 }
+
+// TestCompleteOauthUserSession stores a sign-in's token only in the write that
+// consumes its claimed flow row: once the row is gone (a revoke deleted it
+// during the code exchange) or was never claimed, nothing is stored.
+func TestCompleteOauthUserSession(t *testing.T) {
+	ctx := context.Background()
+	uid := "user-42"
+	newToken := func() *tables.TableMCPOauthToken {
+		return &tables.TableMCPOauthToken{ID: "tok-new", MCPClientID: "github-prod", UserID: &uid, AuthMode: "user", Status: "active", AccessToken: "fresh", TokenType: "Bearer", OauthConfigID: "cfg-1"}
+	}
+	storedToken := func(t *testing.T, store *RDBConfigStore) tables.TableMCPOauthToken {
+		t.Helper()
+		var row tables.TableMCPOauthToken
+		require.NoError(t, store.DB().Where("auth_mode = ? AND user_id = ? AND mcp_client_id = ?", "user", uid, "github-prod").First(&row).Error)
+		return row
+	}
+
+	t.Run("claimed flow", func(t *testing.T) {
+		store := setupMCPSessionsTestStore(t)
+		seedMCPSessionsFixture(t, store)
+		flow, err := store.ClaimOauthUserSessionByState(ctx, "state-sess-pending")
+		require.NoError(t, err)
+		require.NotNil(t, flow)
+
+		require.NoError(t, store.CompleteOauthUserSession(ctx, flow.ID, newToken()))
+
+		row := storedToken(t, store)
+		require.Equal(t, "active", row.Status)
+		require.Equal(t, "fresh", row.AccessToken)
+		var flows int64
+		require.NoError(t, store.DB().Model(&tables.TableMCPOauthFlow{}).Where("id = ?", flow.ID).Count(&flows).Error)
+		require.Zero(t, flows, "the flow row is consumed by the same write")
+	})
+
+	t.Run("flow deleted by a revoke during the exchange", func(t *testing.T) {
+		store := setupMCPSessionsTestStore(t)
+		seedMCPSessionsFixture(t, store)
+		flow, err := store.ClaimOauthUserSessionByState(ctx, "state-sess-pending")
+		require.NoError(t, err)
+		require.NoError(t, store.DeleteOauthUserSessionsByModeIdentityAndMCPClient(ctx, schemas.MCPAuthModeUser, uid, "github-prod"))
+
+		require.ErrorIs(t, store.CompleteOauthUserSession(ctx, flow.ID, newToken()), ErrNotFound)
+		require.Equal(t, "orphaned", storedToken(t, store).Status, "the existing row is left as it was")
+	})
+
+	t.Run("flow never claimed", func(t *testing.T) {
+		store := setupMCPSessionsTestStore(t)
+		seedMCPSessionsFixture(t, store)
+
+		require.ErrorIs(t, store.CompleteOauthUserSession(ctx, "sess-pending", newToken()), ErrNotFound)
+		require.Equal(t, "orphaned", storedToken(t, store).Status)
+	})
+}
+
+// TestCompleteMCPPerUserHeaderFlow stores submitted headers only in the write
+// that consumes the submission flow row: a flow a revoke deleted stores
+// nothing, and of two submits of one flow only the first stores its values.
+func TestCompleteMCPPerUserHeaderFlow(t *testing.T) {
+	ctx := context.Background()
+	uid := "user-42"
+	cred := func(headers string) *tables.TableMCPPerUserHeaderCredential {
+		return &tables.TableMCPPerUserHeaderCredential{MCPClientID: "github-prod", UserID: &uid, AuthMode: "user", Status: "active", HeadersJSON: headers}
+	}
+
+	t.Run("pending flow, then a second submit of it", func(t *testing.T) {
+		store := setupMCPSessionsTestStore(t)
+		seedMCPSessionsFixture(t, store)
+
+		require.NoError(t, store.CompleteMCPPerUserHeaderFlow(ctx, "hf-1", cred(`{"x-api-key":"first"}`)))
+		require.ErrorIs(t, store.CompleteMCPPerUserHeaderFlow(ctx, "hf-1", cred(`{"x-api-key":"second"}`)), ErrNotFound)
+
+		got, err := store.GetMCPPerUserHeaderCredentialByMode(ctx, schemas.MCPAuthModeUser, uid, "github-prod")
+		require.NoError(t, err)
+		require.NotNil(t, got)
+		require.Equal(t, `{"x-api-key":"first"}`, got.HeadersJSON)
+	})
+
+	t.Run("flow deleted by a revoke during verification", func(t *testing.T) {
+		store := setupMCPSessionsTestStore(t)
+		seedMCPSessionsFixture(t, store)
+		require.NoError(t, store.DeleteMCPPerUserHeaderFlowsByModeIdentityAndMCPClient(ctx, schemas.MCPAuthModeUser, uid, "github-prod"))
+
+		require.ErrorIs(t, store.CompleteMCPPerUserHeaderFlow(ctx, "hf-1", cred(`{"x-api-key":"first"}`)), ErrNotFound)
+
+		got, err := store.GetMCPPerUserHeaderCredentialByMode(ctx, schemas.MCPAuthModeUser, uid, "github-prod")
+		require.NoError(t, err)
+		require.Nil(t, got)
+	})
+}

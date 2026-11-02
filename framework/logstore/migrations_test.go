@@ -1362,3 +1362,75 @@ func TestIsPassthroughMigrationRollbackKeepsMarker(t *testing.T) {
 	require.NoError(t, db.First(&row, "id = ?", "typed-passthrough").Error)
 	require.True(t, row.IsPassthrough)
 }
+
+// TestClientIPColumnMigration pins logs_add_client_ip_column: existing tables gain client_ip, a rerun is a no-op, and rollback drops it.
+func TestClientIPColumnMigration(t *testing.T) {
+	ctx := context.Background()
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "client-ip.db")}, testLogger{})
+	require.NoError(t, err)
+	db := store.db
+	for _, model := range clientIPColumnModels {
+		require.True(t, db.Migrator().HasColumn(model, "client_ip"), "%T.client_ip is created", model)
+		require.False(t, db.Migrator().HasColumn(model, "forwarded_for"), "%T has no forwarded_for column", model)
+		require.NoError(t, db.Migrator().DropColumn(model, "client_ip"))
+	}
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "logs_add_client_ip_column").Error)
+	require.NoError(t, migrationAddClientIPColumn(ctx, db, testLogger{}))
+	for _, model := range clientIPColumnModels {
+		assert.True(t, db.Migrator().HasColumn(model, "client_ip"), "%T.client_ip is added to an existing table", model)
+	}
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "logs_add_client_ip_column").Error)
+	require.NoError(t, migrationAddClientIPColumn(ctx, db, testLogger{}), "a rerun over an existing column succeeds")
+
+	require.NoError(t, clientIPColumnMigration(ctx, testLogger{}).Rollback(db))
+	for _, model := range clientIPColumnModels {
+		assert.False(t, db.Migrator().HasColumn(model, "client_ip"), "%T.client_ip is dropped on rollback", model)
+	}
+}
+
+// TestRefuseRollbackWhileRecorded_LocksTablesOnPostgres pins that the rollback check takes the DROP COLUMN lock on every
+// table before it reads, so no writer can commit a value between the check and the drop, and that a statement timeout
+// bounds how long the check can hold those locks.
+func TestRefuseRollbackWhileRecorded_LocksTablesOnPostgres(t *testing.T) {
+	db := trySetupPostgresDB(t)
+	if db == nil {
+		t.Skip("PostgreSQL not available")
+	}
+	require.NoError(t, db.AutoMigrate(clientIPColumnModels...))
+	tx := db.Begin()
+	require.NoError(t, tx.Error)
+	defer tx.Rollback()
+
+	_ = refuseRollbackWhileRecorded(tx, "logs_add_client_ip_column", clientIPColumnModels, "client_ip")
+
+	var locked int64
+	require.NoError(t, tx.Raw(`SELECT count(*) FROM pg_locks l JOIN pg_class c ON c.oid = l.relation
+		WHERE l.pid = pg_backend_pid() AND l.mode = 'AccessExclusiveLock' AND c.relname IN ('logs', 'mcp_tool_logs', 'relay_logs')`).Scan(&locked).Error)
+	assert.EqualValues(t, 3, locked, "every table is locked against writers before its values are checked")
+
+	// lock_timeout only bounds waiting for the locks; the scan that runs while they are held needs its own bound.
+	var timeout string
+	require.NoError(t, tx.Raw("SHOW statement_timeout").Scan(&timeout).Error)
+	assert.Equal(t, "30s", timeout, "the recorded-value scan cannot hold the locks for longer than the statement timeout")
+}
+
+// TestClientIPColumnMigration_NonRollbackable pins that rolling logs_add_client_ip_column back is refused while any
+// table holds a recorded address: the values cannot be recaptured, so the drop would delete data, not reverse a schema change.
+func TestClientIPColumnMigration_NonRollbackable(t *testing.T) {
+	ctx := context.Background()
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "client-ip.db")}, testLogger{})
+	require.NoError(t, err)
+	db := store.db
+	require.NoError(t, db.Create(&MCPToolLog{ID: "mcp-1", ToolName: "echo", Status: "success", Timestamp: time.Now().UTC(), CreatedAt: time.Now().UTC()}).Error)
+	require.NoError(t, db.Model(&MCPToolLog{}).Where("id = ?", "mcp-1").Update("client_ip", "203.0.113.7").Error)
+
+	err = clientIPColumnMigration(ctx, testLogger{}).Rollback(db)
+	require.Error(t, err, "rollback must refuse while client_ip holds a value")
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	for _, model := range clientIPColumnModels {
+		assert.True(t, db.Migrator().HasColumn(model, "client_ip"), "%T.client_ip survives a refused rollback", model)
+	}
+	var stored string
+	require.NoError(t, db.Model(&MCPToolLog{}).Where("id = ?", "mcp-1").Pluck("client_ip", &stored).Error)
+	assert.Equal(t, "203.0.113.7", stored)
+}
