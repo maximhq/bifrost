@@ -7,6 +7,7 @@ import { useGetVirtualMCPQuery } from "@/lib/store";
 import { Info, Trash2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { Trans, useTranslation } from "react-i18next";
+import { withBasePath } from "@/lib/utils/basePath";
 
 // One assigned Virtual MCP: resolves its name/slug by id, then renders a removable row.
 function AssignedVirtualMcpRow({ id, onRemove }: { id: number; onRemove: () => void }) {
@@ -17,7 +18,9 @@ function AssignedVirtualMcpRow({ id, onRemove }: { id: number; onRemove: () => v
 		<div className="flex items-center justify-between gap-2 px-3 py-2">
 			<div className="flex min-w-0 flex-col">
 				<span className="truncate text-sm font-medium">{name}</span>
-				{data?.endpoint_slug && <span className="text-muted-foreground truncate text-xs">/mcp/{data.endpoint_slug}</span>}
+				{data?.endpoint_slug && (
+					<span className="text-muted-foreground truncate text-xs">{withBasePath(`/mcp/${data.endpoint_slug}`)}</span>
+				)}
 			</div>
 			<Button type="button" variant="ghost" size="sm" aria-label={t("virtualMcp.removeAria", { name })} onClick={onRemove}>
 				<Trash2 className="h-4 w-4" />

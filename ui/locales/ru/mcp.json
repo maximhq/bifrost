@@ -123,7 +123,9 @@
 			"toolsRefreshedDesc_one": "Клиент {{name}} теперь предоставляет {{count}} инструмент.",
 			"toolsRefreshedDesc_other": "Клиент {{name}} теперь предоставляет {{count}} инструментов.",
 			"toolsRefreshedDesc_few": "Клиент {{name}} теперь предоставляет {{count}} инструмента.",
-			"toolsRefreshedDesc_many": "Клиент {{name}} теперь предоставляет {{count}} инструментов."
+			"toolsRefreshedDesc_many": "Клиент {{name}} теперь предоставляет {{count}} инструментов.",
+			"oauthVerifiedPerUser": "Настройка OAuth успешно проверена. Каждый пользователь будет проходить аутентификацию отдельно.",
+			"clientConnected": "MCP-клиент успешно подключён"
 		},
 		"filter": {
 			"connectionType": "Тип подключения",
@@ -290,7 +292,10 @@
 			"baseUrlRequired": "Обязателен базовый URL",
 			"invalidAllowedExtraHeadersTitle": "Недопустимые разрешённые дополнительные заголовки",
 			"invalidAllowedExtraHeadersDesc": "Шаблон «*» нельзя использовать вместе с конкретными именами заголовков.",
-			"allowedExtraHeadersPlaceholder": "* или, например: authorization, x-user-id"
+			"allowedExtraHeadersPlaceholder": "* или, например: authorization, x-user-id",
+			"useGlobalSetting": "Использовать глобальную настройку",
+			"useGlobalSettingWithValue": "Использовать глобальную настройку ({{value}})",
+			"maxProtocolAuto": "Авто (последняя)"
 		},
 		"sheet": {
 			"statePendingTokenExchange": "Серверу нужна разовая проверка: Bifrost обменивает токен вашей идентичности входа, тестирует соединение и обнаруживает инструменты. Затем токены идентичности вызывающих обмениваются автоматически при каждом вызове инструмента.",
@@ -610,7 +615,25 @@
 		"vkCount_one": "{{count}} VK",
 		"vkCount_few": "{{count}} VK",
 		"vkCount_many": "{{count}} VK",
-		"vkCount_other": "{{count}} VK"
+		"vkCount_other": "{{count}} VK",
+		"failure": {
+			"stageConnect": "Подключение",
+			"stagePing": "Ping",
+			"stageListTools": "Получение списка инструментов",
+			"stageToolDiscovery": "Обнаружение инструментов",
+			"stageTransportLost": "Соединение потеряно",
+			"stageCredential": "Учётные данные",
+			"titleDegraded": "Экземпляры расходятся в оценке состояния этого сервера",
+			"titleUnstableAll": "Последняя проверка соединения не удалась на всех экземплярах",
+			"titleUnstable": "Последняя проверка соединения не удалась",
+			"titleNeedsReauth": "Требуется повторная авторизация",
+			"titleError": "Не зарегистрирован в среде выполнения",
+			"titleDefault": "Состояние соединения",
+			"lastFailedAgo": "Последний сбой {{age}} назад",
+			"lastFailedRun": "Последний сбой {{age}} назад · {{state}} уже {{duration}}",
+			"stateNeedsReauth": "требуется повторная авторизация",
+			"stateUnstable": "нестабильно"
+		}
 	},
 	"library": {
 		"title": "Библиотека MCP-серверов",

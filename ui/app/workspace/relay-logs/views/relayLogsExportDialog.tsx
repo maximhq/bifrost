@@ -14,6 +14,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { formatRelayActiveFiltersSummary, normalizeRelayExportFilters, relayLogsToCSV } from "./relayLogsExportDialog.utils";
+import { getLocale } from "@/lib/i18n";
 
 export type RelayLogsExportScope = "current_page" | "all";
 
@@ -187,7 +188,7 @@ export function RelayLogsExportDialog({
 								className={scopeButtonClass(exportScope === "all")}
 							>
 								<span className="font-medium">{t("logs.export.allEntries")}</span>
-								<span className="text-muted-foreground text-xs">{t("logs.export.totalCount", { total: totalLogs.toLocaleString() })}</span>
+								<span className="text-muted-foreground text-xs">{t("logs.export.totalCount", { total: totalLogs.toLocaleString(getLocale()) })}</span>
 							</button>
 						</div>
 					</div>
@@ -197,7 +198,7 @@ export function RelayLogsExportDialog({
 							<Label htmlFor="relay-logs-export-max-limit" className="text-sm">
 								{t("logs.export.maxEntries")}{" "}
 								<span className="text-muted-foreground font-normal">
-								{t("relayLogs.export.maxEntriesHint", { max: DEFAULT_MAX_EXPORT_LIMIT.toLocaleString() })}
+								{t("relayLogs.export.maxEntriesHint", { max: DEFAULT_MAX_EXPORT_LIMIT.toLocaleString(getLocale()) })}
 								</span>
 							</Label>
 							<Input
@@ -208,7 +209,7 @@ export function RelayLogsExportDialog({
 								max={DEFAULT_MAX_EXPORT_LIMIT}
 								disabled={isExporting}
 								placeholder={t("logs.export.defaultMax", {
-									value: Math.min(DEFAULT_MAX_EXPORT_LIMIT, totalLogs || DEFAULT_MAX_EXPORT_LIMIT).toLocaleString(),
+									value: Math.min(DEFAULT_MAX_EXPORT_LIMIT, totalLogs || DEFAULT_MAX_EXPORT_LIMIT).toLocaleString(getLocale()),
 								})}
 								value={exportMaxLimit}
 								onChange={(e) => setExportMaxLimit(e.target.value)}
@@ -229,7 +230,7 @@ export function RelayLogsExportDialog({
 						<div className="space-y-1.5 pt-1" data-testid="relay-logs-export-progress">
 							<Progress value={progress.total > 0 ? (progress.current / progress.total) * 100 : 0} className="h-1.5" />
 							<p className="text-muted-foreground text-center text-xs">
-								{t("logs.export.progress", { current: progress.current.toLocaleString(), total: progress.total.toLocaleString() })}
+								{t("logs.export.progress", { current: progress.current.toLocaleString(getLocale()), total: progress.total.toLocaleString(getLocale()) })}
 							</p>
 						</div>
 					)}

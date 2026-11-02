@@ -14,7 +14,7 @@ const NumberAndSelect = ({
 	onChangeSelect,
 	options,
 	labelClassName,
-	placeholder = "No limit",
+	placeholder,
 	dataTestId,
 	inputClassName,
 }: {
@@ -55,7 +55,7 @@ const NumberAndSelect = ({
 			<Input
 				id={id}
 				data-testid={dataTestId}
-				placeholder={placeholder}
+				placeholder={placeholder ?? t("numberAndSelect.noLimit")}
 				className={inputClassName}
 				value={displayValue}
 				onChange={(e) => {

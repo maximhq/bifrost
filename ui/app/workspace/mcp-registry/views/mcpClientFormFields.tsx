@@ -27,8 +27,8 @@ import {
 	isHTTPSOrLoopbackURL,
 	isSecretVarSet,
 	mcpOpenAPIConfigSchema,
-	PRIVATE_KEY_REQUIRED_MESSAGE,
-	SECRET_REQUIRED_FOR_METHOD_MESSAGE,
+	privateKeyRequiredMessage,
+	secretRequiredForMethodMessage,
 } from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
 import { buildOAuthConfigPayload } from "./mcpClientOAuthPayload";
@@ -386,11 +386,11 @@ export function validateMCPClientForm({
 				hasErrors = true;
 			}
 			if (hasPrivateKeySettingsWithoutKey(data.token_exchange)) {
-				setError("token_exchange.resource_private_key", { message: PRIVATE_KEY_REQUIRED_MESSAGE });
+				setError("token_exchange.resource_private_key", { message: privateKeyRequiredMessage() });
 				hasErrors = true;
 			}
 			if (hasSendMethodWithoutSecret(data.token_exchange)) {
-				setError("token_exchange.resource_client_secret", { message: SECRET_REQUIRED_FOR_METHOD_MESSAGE });
+				setError("token_exchange.resource_client_secret", { message: secretRequiredForMethodMessage() });
 				hasErrors = true;
 			}
 			const endpoint = data.token_exchange?.resource_token_endpoint?.trim();

@@ -913,7 +913,8 @@
 				"unsupportedMethod": "지원되지 않는 메서드 {{method}}",
 				"addRule": "규칙을 추가하거나, 아무것도 전달하지 않도록 사용 안 함을 선택하세요"
 			}
-		}
+		},
+		"customBaseUrlRequired": "기본 URL은 필수입니다"
 	},
 	"modelCatalog": {
 		"title": "모델 카탈로그",
@@ -1020,7 +1021,10 @@
 			"5": "금",
 			"6": "토요일"
 		},
-		"aboutModelsColumn": "모델 열 정보"
+		"aboutModelsColumn": "모델 열 정보",
+		"attributeKeyPlaceholder": "키",
+		"attributeValuePlaceholder": "값",
+		"filterProviderAria": "공급자별 필터"
 	},
 	"virtualKeys": {
 		"emptyTitle": "가상 키는 액세스, 예산, 속도 제한을 제어해요.",
@@ -1327,7 +1331,9 @@
 		"leavesGoverningOwner": "이 키의 공급자, 예산 및 요청 한도는 소유자의 액세스 프로필에서 가져왔으며, 키 자체 설정은 없습니다.",
 		"leavesGoverningOwnerUser": "할당할 사용자에게 액세스 프로필이 있으면 해당 프로필이 키를 관리하므로 계속 작동합니다. 그렇지 않으면 아래에서 설정해야 합니다. 설정하지 않으면 요청이 거부됩니다.",
 		"leavesGoverningOwnerUnassigned": "아래에서 설정하세요. 설정하지 않으면 할당 해제된 후 요청이 거부됩니다.",
-		"ownerProfileNoticeUnnamed": "이 키는 {{owner}}의 액세스 프로필에 따라 관리됩니다. 프로필의 예산, 요청 한도 및 공급자가 이 키에 적용됩니다."
+		"ownerProfileNoticeUnnamed": "이 키는 {{owner}}의 액세스 프로필에 따라 관리됩니다. 프로필의 예산, 요청 한도 및 공급자가 이 키에 적용됩니다.",
+		"managedByProfileToggleHint": "이 가상 키는 액세스 프로필에서 관리됩니다. 프로필에서 활성화하거나 비활성화하세요.",
+		"noUpdatePermission": "가상 키를 업데이트할 권한이 없습니다."
 	},
 	"modelLimits": {
 		"title": "예산 및 한도",
@@ -1642,7 +1648,8 @@
 		},
 		"offPeakRange": "0보다 크고 1 이하여야 해요.",
 		"actionsAria": "가격 재정의 {{name}} 작업",
-		"deleteDescriptionNamed": "\"{{name}}\"을(를) 삭제하시겠어요? 이 작업은 되돌릴 수 없어요."
+		"deleteDescriptionNamed": "\"{{name}}\"을(를) 삭제하시겠어요? 이 작업은 되돌릴 수 없어요.",
+		"noChangePermission": "가격 재정의를 변경할 권한이 없습니다"
 	},
 	"routing": {
 		"rulesTitle": "라우팅 규칙",
@@ -1917,7 +1924,17 @@
 			"statusWarming": "준비 중",
 			"statusReady": "준비됨",
 			"statusFailed": "실패",
-			"fallbackDecisionDesc": "의미 기반 매칭 결과가 없을 때 결정 모델이 계층을 지정해요. 기본 분류기일 때와 동일한 계층 안내를 사용해요."
+			"fallbackDecisionDesc": "의미 기반 매칭 결과가 없을 때 결정 모델이 계층을 지정해요. 기본 분류기일 때와 동일한 계층 안내를 사용해요.",
+			"criteriaSignalItemMax": "각 신호는 최대 {{max}}자여야 합니다",
+			"criteriaExampleItemMax": "각 예시는 최대 {{max}}자여야 합니다",
+			"criteriaSignalMin": "신호를 하나 이상 추가하세요",
+			"criteriaExampleMin": "예시를 하나 이상 추가하세요",
+			"criteriaSignalMax_other": "최대 {{count}}개의 신호",
+			"criteriaExampleMax_other": "최대 {{count}}개의 예시",
+			"enterDefinition": "정의를 입력하세요",
+			"selectDecisionProvider": "결정 모델을 제공하는 공급자를 선택하세요",
+			"selectDecisionModel": "결정 모델을 선택하세요",
+			"enterDecisionTimeout": "결정 모델 제한 시간을 입력하세요"
 		},
 		"editDescription": "라우팅 규칙 구성 업데이트",
 		"createDescription": "지능형 요청 라우팅을 위한 새로운 CEL 기반 라우팅 규칙 만들기",
@@ -2119,5 +2136,10 @@
 		"searchOrTypeJev": "Jev 모델 검색 또는 입력…",
 		"searchOrType": "모델 검색 또는 입력…",
 		"selectModel": "모델 선택"
+	},
+	"pricing": {
+		"notAvailable": "사용 불가",
+		"perMillionTokens": "{{price}} / 100만 토큰",
+		"perMillionCharacters": "{{price}} / 100만 자"
 	}
 }

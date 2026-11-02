@@ -20,6 +20,7 @@ import {
 	logsToCSV,
 	normalizeExportFilters,
 } from "../utils/logsExport";
+import { getLocale } from "@/lib/i18n";
 
 export type LogsExportScope = "current_page" | "all";
 
@@ -220,7 +221,9 @@ export function LogsExportDialog({
 								)}
 							>
 								<span className="font-medium">{t("logs.export.allEntries")}</span>
-								<span className="text-muted-foreground text-xs">{t("logs.export.totalCount", { total: totalLogs.toLocaleString() })}</span>
+								<span className="text-muted-foreground text-xs">
+									{t("logs.export.totalCount", { total: totalLogs.toLocaleString(getLocale()) })}
+								</span>
 							</button>
 						</div>
 					</div>
@@ -238,7 +241,7 @@ export function LogsExportDialog({
 								max="10000"
 								disabled={isExporting}
 								placeholder={t("logs.export.defaultMax", {
-									value: Math.min(DEFAULT_MAX_EXPORT_LIMIT, totalLogs || DEFAULT_MAX_EXPORT_LIMIT).toLocaleString(),
+									value: Math.min(DEFAULT_MAX_EXPORT_LIMIT, totalLogs || DEFAULT_MAX_EXPORT_LIMIT).toLocaleString(getLocale()),
 								})}
 								value={exportMaxLimit}
 								onChange={(e) => setExportMaxLimit(e.target.value)}
@@ -261,7 +264,10 @@ export function LogsExportDialog({
 						<div className="space-y-1.5 pt-1" data-testid="logs-export-progress">
 							<Progress value={progress.total > 0 ? (progress.current / progress.total) * 100 : 0} className="h-1.5" />
 							<p className="text-muted-foreground text-center text-xs">
-								{t("logs.export.progress", { current: progress.current.toLocaleString(), total: progress.total.toLocaleString() })}
+								{t("logs.export.progress", {
+									current: progress.current.toLocaleString(getLocale()),
+									total: progress.total.toLocaleString(getLocale()),
+								})}
 							</p>
 						</div>
 					)}

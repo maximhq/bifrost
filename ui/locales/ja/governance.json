@@ -59,7 +59,8 @@
 			"name": "名前",
 			"noBudgets": "予算が設定されていません"
 		},
-		"actionsAria": "顧客 {{name}} の操作"
+		"actionsAria": "顧客 {{name}} の操作",
+		"teamCount_other": "{{count}} チーム"
 	},
 	"teams": {
 		"title": "チーム",
@@ -531,7 +532,13 @@
 			"custom pricing": "カスタム料金",
 			"configuration": "構成",
 			"complexity router": "複雑度ルーター",
-			"routing rules": "ルーティングルール"
+			"routing rules": "ルーティングルール",
+			"relays": "リレー",
+			"Agent gateway configuration": "エージェントゲートウェイ設定",
+			"guardrail incidents": "ガードレールインシデント",
+			"relay logs": "リレーログ",
+			"agent logs": "エージェントログ",
+			"Warp": "Warp"
 		}
 	},
 	"loggingDisabled": {

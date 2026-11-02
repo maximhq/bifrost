@@ -32,7 +32,7 @@ import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import type { ParseKeys } from "i18next";
 import { useTranslation } from "react-i18next";
-import i18n from "@/lib/i18n";
+import i18n, { getLocale } from "@/lib/i18n";
 import { ProviderIconType, RenderProviderIcon, RoutingEngineUsedIcons } from "@/lib/constants/icons";
 import {
 	ComplexityTierColors,
@@ -123,6 +123,7 @@ import {
 	messageToneClass,
 	type MessageRole,
 } from "../views/responsesItemRow";
+import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 
 // Full-precision cost for the detail view; per-request costs are often < $0.01,
 // where formatCost's 2-4 dp rounding would hide the value.
@@ -136,7 +137,7 @@ const formatRealtimeTransport = (value: unknown): string => {
 		case "webrtc":
 			return "WebRTC";
 		default:
-			return transport || "Unknown";
+			return transport || i18n.t("logs.detail.unknown", { ns: "observability" });
 	}
 };
 
@@ -155,11 +156,11 @@ const formatRealtimeSource = (value: unknown): string => {
 	const source = String(value ?? "").trim();
 	switch (source.toLowerCase()) {
 		case "ei":
-			return "Event Initiated";
+			return i18n.t("logs.detail.sourceEventInitiated", { ns: "observability" });
 		case "lm":
-			return "Language Model";
+			return i18n.t("logs.detail.sourceLanguageModel", { ns: "observability" });
 		default:
-			return source || "Unknown";
+			return source || i18n.t("logs.detail.unknown", { ns: "observability" });
 	}
 };
 
@@ -305,7 +306,7 @@ const batchRequestStates = (counts: BatchRequestCounts): [ParseKeys<"observabili
 	];
 };
 
-const formatExactNumber = (value: number) => value.toLocaleString("en-US");
+const formatExactNumber = (value: number) => value.toLocaleString(getLocale());
 
 // Input tokens are normalized to include cache read/write tokens, so break the total down.
 const getInputTokensTooltip = (usage?: LLMUsage): string | undefined => {
@@ -877,9 +878,11 @@ export function LogDetailView({
 				}
 				const errorMessage: string | null =
 					item?.error?.message ||
-					(item?.result?.type && item.result.type !== "succeeded" ? `Batch item ${item.result.type}` : null) ||
+					(item?.result?.type && item.result.type !== "succeeded"
+						? i18n.t("logs.detail.batchItemResult", { ns: "observability", type: item.result.type })
+						: null) ||
 					(typeof item?.response?.status_code === "number" && item.response.status_code >= 400
-						? `Provider returned HTTP ${item.response.status_code}`
+						? i18n.t("logs.detail.providerReturnedHttp", { ns: "observability", status: item.response.status_code })
 						: null);
 				return { customId, model, message, rawFallback, errorMessage };
 			})
@@ -1329,7 +1332,9 @@ export function LogDetailView({
 									label={t("logs.detail.startTimestamp")}
 									value={(() => {
 										const d = log.timestamp ? new Date(log.timestamp) : null;
-										return d && !isNaN(d.getTime()) ? format(d, "yyyy-MM-dd hh:mm:ss aa") : t("labels.nA");
+										return d && !isNaN(d.getTime())
+											? format(d, "yyyy-MM-dd hh:mm:ss aa", { locale: dateFnsLocale(getLocale()) })
+											: t("labels.nA");
 									})()}
 								/>
 								<LogEntryDetailsView
@@ -1338,7 +1343,7 @@ export function LogDetailView({
 									value={(() => {
 										const d = log.timestamp ? new Date(log.timestamp) : null;
 										return d && !isNaN(d.getTime())
-											? format(addMilliseconds(d, log.latency || 0), "yyyy-MM-dd hh:mm:ss aa")
+											? format(addMilliseconds(d, log.latency || 0), "yyyy-MM-dd hh:mm:ss aa", { locale: dateFnsLocale(getLocale()) })
 											: t("labels.nA");
 									})()}
 								/>

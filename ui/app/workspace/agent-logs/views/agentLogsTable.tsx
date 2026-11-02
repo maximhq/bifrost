@@ -16,6 +16,7 @@ import { ColumnDef, flexRender, getCoreRowModel, SortingState, useReactTable } f
 import { ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
 import { Fragment, useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { getLocale } from "@/lib/i18n";
 
 interface DataTableProps {
 	columns: ColumnDef<AgentLogSummary>[];
@@ -266,9 +267,9 @@ export function AgentLogsDataTable({
 				<div className="flex items-center justify-between text-xs" data-testid="pagination">
 					<div className="text-muted-foreground flex items-center gap-2">
 						{t(sessionExpansion ? "agentLogs.table.groupRange" : "logs.entryRange", {
-							start: startItemDisplay.toLocaleString(),
-							end: endItemDisplay.toLocaleString(),
-							total: totalItems.toLocaleString(),
+							start: startItemDisplay.toLocaleString(getLocale()),
+							end: endItemDisplay.toLocaleString(getLocale()),
+							total: totalItems.toLocaleString(getLocale()),
 						})}
 					</div>
 

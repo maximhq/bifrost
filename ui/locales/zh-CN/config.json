@@ -37,6 +37,7 @@
 		"dumpErrorsHelp": "启用后，完整错误详情会写入服务器控制台日志。便于调试，但在生产环境可能噪音较大。",
 		"asyncJobTtl": "异步任务结果 TTL（秒）",
 		"asyncJobTtlHelp": "异步任务结果的默认存活时间（秒）。过期后结果会自动清理。",
+		"languageHelp": "控制台的显示语言。保存在此浏览器中，并立即生效。",
 		"headerForwarding": "请求头转发",
 		"headerForwardingHelp": "控制哪些额外请求头会转发到 LLM 提供商。",
 		"aboutHeaderForwarding": "关于请求头转发",
@@ -224,7 +225,7 @@
 		"directKeysHelp": "启用后，调用方可通过 <b0>Authorization</b0>、<b1>x-api-key</b1> 或 <b2>x-goog-api-key</b2> 请求头直接传入供应商 API 密钥，同时传入 <b3>x-bf-direct-key: true</b3>。Bifrost 将直接使用该密钥，绕过已注册的密钥池。",
 		"originsHelp": "以逗号分隔的 CORS 和 WebSocket 连接来源白名单。始终允许 localhost 来源。每个来源必须是包含协议的完整 URL（例如 https://app.example.com、http://10.0.0.100:3000）。子域名支持通配符（例如 https://*.example.com），也可使用“*”允许所有来源。",
 		"requiredHeadersHelp": "以逗号分隔的必需请求头列表。缺少任一请求头的请求将被拒绝，并返回 400 错误。请求头名称不区分大小写。",
-		"routesHelp": "以逗号分隔的路由列表，这些路由可绕过认证中间件，无需认证即可访问。无论此设置如何，<b0>/health</b0>、<b1>/api/session/login</b1> 和 <b2>/api/session/is-auth-enabled</b2> 等系统路由始终在白名单中。",
+		"routesHelp": "以逗号分隔的路由列表，这些路由可绕过认证中间件，无需认证即可访问。无论此设置如何，<b0>/health</b0>、<b1>/api/session/login</b1> 和 <b2>/api/session/is-auth-enabled</b2> 等系统路由始终在白名单中。 路由会在去掉 server.base_path 前缀后进行匹配，因此请不要带前缀。",
 		"see": "参见",
 		"documentation": "文档",
 		"forDetails": "了解详情。",
@@ -335,7 +336,8 @@
 		"unregisteredNote": "当前没有代码读取此开关。覆盖值已保存，但在添加 Register() 调用前不会生效。",
 		"toastToggled": "{{name}} 已{{state}}",
 		"enabledState": "启用",
-		"disabledState": "禁用"
+		"disabledState": "禁用",
+		"enableAria": "启用 {{name}}"
 	},
 	"mcpSettings": {
 		"title": "MCP 设置",
@@ -373,7 +375,7 @@
 		"disableAutoToolInjectionHelp": "启用后，不再自动为每个请求添加 MCP 工具。只有通过请求头（<code0>x-bf-mcp-include-tools</code0>）显式指定时才会注入工具，且这些工具仍须得到虚拟密钥 MCP 配置的允许。",
 		"tempTokenHelp": "启用后，用户的 MCP OAuth 链接可包含权限范围受限的短期令牌，让尚未登录 Bifrost 仪表盘的用户也能完成认证流程。保持关闭则要求用户先通过常规仪表盘认证。",
 		"bindingHelp": "设置工具在 VFS 中的组织方式：按服务器组织（每台服务器的所有工具放在一起），或按工具组织（每个工具单独存放）。",
-		"externalClientUrlHelp": "当 Bifrost 部署在反向代理后方时，可覆盖其公共基础 URL。<b0>留空则根据传入的 <code1>Host</code1> 请求头推导 URL</b0>。Bifrost 作为 MCP 服务器的客户端时，会将此地址作为 <code2>redirect_uri</code2> 注册到上游 OAuth 提供商（例如 Notion 或 Jira 在登录后会将浏览器重定向到 <code3>&lt;URL&gt;/api/oauth/callback</code3>）。支持环境变量语法（例如 <code4>env.BIFROST_EXTERNAL_URL</code4>）。",
+		"externalClientUrlHelp": "当 Bifrost 部署在反向代理后方时，可覆盖其公共基础 URL。<b0>留空则根据传入的 <code1>Host</code1> 请求头推导 URL</b0>。Bifrost 作为 MCP 服务器的客户端时，会将此地址作为 <code2>redirect_uri</code2> 注册到上游 OAuth 提供商（例如 Notion 或 Jira 在登录后会将浏览器重定向到 <code3>&lt;URL&gt;/api/oauth/callback</code3>）。支持环境变量语法（例如 <code4>env.BIFROST_EXTERNAL_URL</code4>）。 若部署在 URL 前缀（server.base_path）之下，请包含该前缀，例如 https://host/bifrost。",
 		"externalClientUrlWarningHelp": "上游 OAuth 提供商会将 <code0>redirect_uri</code0> 固定为最初注册的地址，因此已完成 OAuth 认证的 MCP 客户端将出现 <em1>“Invalid redirect URI”</em1> 错误。要恢复连接，请清除受影响 MCP 服务器已保存的 OAuth 客户端凭据并重新授权，让 Bifrost 使用新 URL 再次执行 Dynamic Client Registration。",
 		"authModeHelp": "控制 MCP 客户端（例如 Claude Code、Cursor）如何通过 <code0>/mcp</code0> 端点认证。<b1>headers</b1>（默认）：仅接受 VK / api-key / session 请求头，关闭 OAuth 发现。<b2>both</b2>：同时接受请求头凭据和 Bifrost 签发的 JWT，不影响现有集成。<b3>oauth</b3>：仅接受 JWT，禁用 VK 和请求头访问。",
 		"issuerUrlHelp": "发现文档中公布的稳定公共 URL，并作为每个 JWT 的 <code0>iss</code0> 声明。OAuth 和 Both 模式下必填：Bifrost 不会从请求的 <code1>Host</code1> 标头推导颁发者，因为该标头由调用方控制。支持环境变量语法（例如 <code2>env.BIFROST_ISSUER_URL</code2>）。",
@@ -490,7 +492,7 @@
 		"proxyConfiguration": "代理配置",
 		"proxyType": "代理类型",
 		"httpHttps": "HTTP / HTTPS",
-		"proxyTypeHelp": "选择代理协议类型。当前仅支持 HTTP 代理。",
+		"proxyTypeHelp": "HTTP / HTTPS 使用 http:// 或 https:// 代理 URL（https:// 会加密与代理之间的连接）。SOCKS5 使用 socks5:// URL。",
 		"selectType": "选择类型",
 		"proxyUrl": "代理 URL",
 		"proxyUrlHelp": "代理服务器的完整 URL，包含协议与端口。",
@@ -511,16 +513,16 @@
 		"scimHelp": "对 SCIM 目录同步请求使用代理。",
 		"scimEnterpriseOnly": "Bifrost Enterprise 提供 SCIM 代理支持。",
 		"inference": "推理",
-		"inferenceHelp": "对发往模型提供商的 LLM 推理请求使用代理。",
+		"inferenceHelp": "对发往模型提供商的 LLM 推理请求使用代理。已配置自身代理的提供商保留其设置。",
 		"comingSoon": "即将推出",
 		"api": "API",
-		"apiHelp": "对外部 API 调用与 webhook 使用代理。",
+		"apiHelp": "对出站 API 调用使用代理：MCP 服务器、OAuth、Webhook、插件下载、模型目录同步和 OpenTelemetry 导出。",
 		"noPermission": "你没有更新设置的权限",
 		"toastSaved": "代理配置已成功更新。",
 		"connectionTimeoutHelp": "建立代理连接的超时时间。0 表示不设超时，默认值为 60 秒。",
 		"caCertificateHelp": "通过会拦截 SSL 的代理建立 TLS 连接时，使用此 PEM 编码的 CA 证书作为受信任证书。",
 		"skipTlsHelp": "禁用 HTTPS 代理的 TLS 证书验证。不建议在生产环境中使用。",
-		"unsupportedType": "暂不支持 {{type}} 代理，请使用 HTTP 代理。"
+		"unsupportedType": "暂不支持 {{type}} 代理，请使用 HTTP 或 SOCKS5 代理。"
 	},
 	"userAgent": {
 		"title": "User-Agent 映射",
@@ -782,7 +784,44 @@
 		"showLess": "收起",
 		"showMore": "展开",
 		"skillNotFound": "未找到技能",
-		"backToList": "返回列表"
+		"backToList": "返回列表",
+		"validation": {
+			"nameRequired": "名称为必填项",
+			"nameTooLong": "名称不能超过 64 个字符",
+			"nameFormat": "名称只能包含小写字母、数字和连字符（连字符不能位于开头、结尾，也不能连续出现）",
+			"nameReserved": "\"{{name}}\" 是技能服务层使用的保留名称",
+			"descriptionRequired": "描述为必填项",
+			"descriptionTooLong": "描述超过 1024 个字符的限制（{{length}}/1024）",
+			"versionRequired": "版本为必填项",
+			"versionFormat": "版本必须符合 semver 格式（例如 1.0.0 或 1.0.0-beta.1）",
+			"versionParts": "版本各部分必须为非负整数",
+			"versionBump": "版本必须与 {{previous}} 不同。请至少提升以下之一：主版本（{{major}}）、次版本（{{minor}}）、补丁版本（{{patch}}），或修改后缀（例如 -beta.1）。",
+			"extraFrontmatterObject": "额外 frontmatter 必须是 JSON 对象",
+			"reservedKeys": "不能使用保留键：{{keys}}",
+			"invalidJson": "JSON 无效",
+			"metadataObject": "元数据必须是 JSON 对象",
+			"metadataKeys": "元数据的键必须是字符串",
+			"metadataValue": "元数据 \"{{key}}\" 的值必须是字符串",
+			"bodyRequired": "SKILL.md 正文为必填项",
+			"bodyLarge": "此 SKILL.md 正文超过了建议大小。建议将详细内容移到 references/ 下的文件中，并在技能正文中链接到这些文件。",
+			"fileTooLarge": "文件超过 {{limit}} 的限制",
+			"urlRequired": "URL 为必填项",
+			"urlScheme": "URL 必须以 http:// 或 https:// 开头",
+			"dataUrlRequired": "数据 URL 为必填项",
+			"dataUrlFormat": "数据 URL 必须以 data: 开头并包含 ;base64,",
+			"textRequired": "文本内容为必填项",
+			"unknownSource": "未知的来源类型：{{type}}",
+			"filenameRequired": "文件名为必填项",
+			"filenameDots": "文件名不能是 . 或 ..",
+			"filenameFolders": "文件名不能包含文件夹",
+			"skillMdManaged": "SKILL.md 由技能正文管理",
+			"pathRequired": "文件路径为必填项",
+			"pathRelative": "路径必须是相对路径（不能以 / 开头）",
+			"pathNotFolder": "路径必须指向文件，而不是文件夹",
+			"pathSlashes": "路径只能使用正斜杠",
+			"pathSegments": "路径不能包含空段、当前目录段或上级目录段"
+		},
+		"itemCount_other": "{{count}} 项"
 	},
 	"promptRepo": {
 		"loadFailed": "加载提示词仓库失败",
@@ -956,7 +995,9 @@
 		"file": "文件",
 		"attachmentAlt": "附件",
 		"noChangePermission": "你没有更改提示词的权限",
-		"noChangeFolderPermission": "你没有更改提示词文件夹的权限"
+		"noChangeFolderPermission": "你没有更改提示词文件夹的权限",
+		"noResponseBody": "无响应内容",
+		"mcpServerFallback": "MCP 服务器"
 	},
 	"docs": {
 		"title": "文档",
@@ -1150,7 +1191,9 @@
 			"thresholdLabel": "新主题阈值",
 			"thresholdHint": "达到多少个未匹配任何主题的等待请求后，Warp 才会将其归为新主题；系统每小时检查一次。设得较低时，较少样例即可更早发现新主题；设得较高时，系统会等待更明确的模式。范围：{{min}} 至 {{max}}。",
 			"thresholdError": "必须是 {{min}} 至 {{max}} 之间的整数"
-		}
+		},
+		"alphaBadge": "ALPHA",
+		"aboutAria": "关于{{label}}"
 	},
 	"agentGateway": {
 		"title": "代理网关设置",
@@ -1158,7 +1201,7 @@
 		"toastSaved": "代理网关设置已成功更新。",
 		"loadFailed": "加载代理网关设置失败。",
 		"externalClientUrl": "外部客户端 URL",
-		"externalClientUrlHelp": "Bifrost 的公共基础 URL，用于提供代理卡片和推送通知回调 URL。留空则所有代理协议端点均被禁用，但仍可进行代理管理。支持环境变量语法（例如 <code>env.BIFROST_EXTERNAL_URL</code>）。",
+		"externalClientUrlHelp": "Bifrost 的公共基础 URL，用于提供代理卡片和推送通知回调 URL。留空则所有代理协议端点均被禁用，但仍可进行代理管理。支持环境变量语法（例如 <code>env.BIFROST_EXTERNAL_URL</code>）。 若部署在 URL 前缀（server.base_path）之下，请包含该前缀，例如 https://host/bifrost。",
 		"privateAllowlist": "私有网络允许列表",
 		"privateAllowlistHelp": "代理网关的发现、OAuth 和运行时请求在解析到私有地址或环回地址时可以访问的主机、IP 地址或 CIDR 范围（不含协议和端口）。链路本地地址和云元数据地址始终被拦截。",
 		"privateAllowlistPlaceholder": "添加主机、IP 或 CIDR（按 Enter 或逗号）",
@@ -1280,7 +1323,26 @@
 			"authSuggestion": "认证建议：{{type}}",
 			"import": "导入",
 			"importCount_one": "导入 {{count}} 条路由",
-			"importCount_other": "导入 {{count}} 条路由"
+			"importCount_other": "导入 {{count}} 条路由",
+			"docEmpty": "文档为空",
+			"docNotJson": "文档不是 JSON 对象",
+			"docNotOpenapi": "文档不是 OpenAPI 对象",
+			"warn": {
+				"schemeUndeclared": "安全方案 {{name}} 为必需但未声明，请手动设置认证类型",
+				"apiKeyLocation": "安全方案 {{name}} 在 {{location}} 中使用 apiKey，Relay 无法注入",
+				"unsupportedLocation": "不受支持的位置",
+				"httpScheme": "安全方案 {{name}} 使用 HTTP {{scheme}} 认证，Relay 无法注入",
+				"schemeType": "安全方案 {{name}} 的类型为 {{type}}，请手动设置认证类型",
+				"unknownType": "未知",
+				"authOptional": "文档将认证设为可选；如果 API 需要密钥，请手动设置认证类型",
+				"noSingleScheme": "文档中没有任何安全方案选项是 Relay 可注入的单一方案，请手动设置认证类型",
+				"severalSchemes": "文档声明了多个安全方案但未要求任何一个，请手动设置认证类型",
+				"noPaths": "文档未声明任何路径",
+				"refPaths_other": "{{paths}} 通过 $ref 定义，导入不会解析 $ref，因此这些操作未被导入；请手动添加其路由并检查路由列表。",
+				"noMethods": "文档中没有任何操作使用 Relay 支持的方法",
+				"differentSchemes": "各操作要求不同的安全方案，而一个端点只能应用一种认证，请手动设置认证类型",
+				"serverQuery": "服务器 URL 的查询参数（{{query}}）未包含在建议的基础 URL 中，因为 Relay 基础 URL 不能携带查询参数；调用方必须自行发送。"
+			}
 		},
 		"usage": {
 			"relayDefault": "{{value}}（中继默认值）",
@@ -1301,7 +1363,17 @@
 			"blockSizeInfo": "按已开始的每块这么多单位计费。",
 			"minimumLabel": "最小单位数（可选）",
 			"minimumInfo": "读取到数量后计费的最少单位数。",
-			"formula": "每次计数的调用费用为 <strong>{{formula}}</strong>"
+			"formula": "每次计数的调用费用为 <strong>{{formula}}</strong>",
+			"sources": {
+				"response": "响应体",
+				"request": "请求体"
+			},
+			"measures": {
+				"value": "路径处的数值",
+				"chars": "路径处字符串的字符数",
+				"bodyBytes": "整个正文的大小（字节）",
+				"bodyChars": "整个正文的字符数"
+			}
 		},
 		"preview": {
 			"path": "路径",
@@ -1416,7 +1488,14 @@
 			"roleArnPlaceholder": "arn:aws:iam::123456789:role/MyRole 或 env.AWS_ROLE_ARN",
 			"externalIdLabel": "External ID（可选）",
 			"externalIdInfo": "使用跨账号访问时，角色的信任策略要求提供",
-			"externalIdPlaceholder": "external-id 或 env.AWS_EXTERNAL_ID"
+			"externalIdPlaceholder": "external-id 或 env.AWS_EXTERNAL_ID",
+			"authTypes": {
+				"bearer": "Bearer 令牌",
+				"header": "自定义请求头",
+				"query": "查询参数",
+				"basic": "Basic 认证",
+				"none": "无认证"
+			}
 		},
 		"endpointConfig": {
 			"tabs": {
@@ -1487,6 +1566,18 @@
 			"proxyCaCertPlaceholder": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE----- 或 env.PROXY_CA_CERT_PEM",
 			"removeConfig": "移除配置",
 			"saveProxy": "保存代理配置"
+		},
+		"pricing": {
+			"free": "免费",
+			"perCall": "${{price}} / 次调用",
+			"perUnit": "${{price}} / 单位",
+			"perByte": "${{price}} / 字节",
+			"perChar": "${{price}} / 字符",
+			"blockUnit_other": "${{price}} / {{count}} 单位",
+			"blockByte_other": "${{price}} / {{count}} 字节",
+			"blockChar_other": "${{price}} / {{count}} 字符",
+			"withMinimum": "{{pricing}}，最少 {{min}}",
+			"reportedCost": "上报成本"
 		}
 	},
 	"skillsSettings": {
@@ -1495,6 +1586,6 @@
 		"loadFailed": "加载技能设置失败。",
 		"retry": "重试",
 		"externalClientUrl": "外部客户端 URL",
-		"externalClientUrlHelp": "Bifrost 面向 Claude Code 和 Codex 市场的公共基础 URL。留空则禁用市场服务和注册，但仍可进行技能管理和下载。支持环境变量和 vault 引用。"
+		"externalClientUrlHelp": "Bifrost 面向 Claude Code 和 Codex 市场的公共基础 URL。留空则禁用市场服务和注册，但仍可进行技能管理和下载。支持环境变量和 vault 引用。 若部署在 URL 前缀（server.base_path）之下，请包含该前缀，例如 https://host/bifrost。"
 	}
 }

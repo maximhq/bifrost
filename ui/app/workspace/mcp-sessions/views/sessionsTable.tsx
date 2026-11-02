@@ -47,6 +47,8 @@ import { ScopeChips } from "@/components/scopeChips";
 import { ExternalLink, Fingerprint, KeyRound, Loader2, MoreHorizontal, Pencil, RefreshCcw, Trash2, UserRound } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { getLocale } from "@/lib/i18n";
+import { withBasePath } from "@/lib/utils/basePath";
 
 interface SessionsTableProps {
 	sessions: MCPSessionRow[];
@@ -248,9 +250,9 @@ export default function SessionsTable({
 					<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 						<div className="text-muted-foreground flex items-center gap-2">
 							{t("common.ofEntries", {
-								from: (offset + 1).toLocaleString(),
-								to: Math.min(offset + limit, totalCount).toLocaleString(),
-								total: totalCount.toLocaleString(),
+								from: (offset + 1).toLocaleString(getLocale()),
+								to: Math.min(offset + limit, totalCount).toLocaleString(getLocale()),
+								total: totalCount.toLocaleString(getLocale()),
 							})}
 						</div>
 
@@ -389,6 +391,7 @@ interface RowActionsProps {
 	onRevoke: () => void;
 }
 
+/** Per-row actions menu for an MCP session: complete auth, re-authenticate or revoke. */
 function RowActions({ row, reauthing, revoking, isPendingRow, onReauth, onRevoke }: RowActionsProps) {
 	const { t } = useTranslation("mcp");
 	const busy = reauthing || revoking;
@@ -428,7 +431,7 @@ function RowActions({ row, reauthing, revoking, isPendingRow, onReauth, onRevoke
 									row.auth_kind === "headers"
 										? `/workspace/mcp-sessions/auth?flow=${row.id}&kind=headers`
 										: `/workspace/mcp-sessions/auth?flow=${row.id}`;
-								window.location.href = url;
+								window.location.href = withBasePath(url);
 							}}
 						>
 							<ExternalLink className="h-4 w-4" />

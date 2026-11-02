@@ -41,6 +41,8 @@ import { WebhookDetailsSheet } from "./webhookDetailsSheet";
 import { WebhookSheet } from "./webhookSheet";
 import { WebhooksEmptyState } from "./webhooksEmptyState";
 import WebhooksFilterBar from "./webhooksFilterBar";
+import { useActionParam } from "@/hooks/useActionParam";
+import { getLocale } from "@/lib/i18n";
 
 const POLLING_INTERVAL = 5000;
 const PAGE_SIZE = 25;
@@ -259,6 +261,7 @@ export default function WebhooksView() {
 		setEditingEndpoint(null);
 		setSheetOpen(true);
 	};
+	useActionParam("create", handleAdd, { isOpen: sheetOpen, enabled: hasCreateAccess });
 
 	const handleEdit = (endpoint: WebhookEndpoint) => {
 		setEditingEndpoint(endpoint);
@@ -456,9 +459,9 @@ export default function WebhooksView() {
 						<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 							<div className="text-muted-foreground flex items-center gap-2">
 								{t("webhooks.pagination.entries", {
-									from: (offset + 1).toLocaleString(),
-									to: Math.min(offset + PAGE_SIZE, totalCount).toLocaleString(),
-									total: totalCount.toLocaleString(),
+									from: (offset + 1).toLocaleString(getLocale()),
+									to: Math.min(offset + PAGE_SIZE, totalCount).toLocaleString(getLocale()),
+									total: totalCount.toLocaleString(getLocale()),
 								})}
 							</div>
 							<div className="flex items-center gap-2">

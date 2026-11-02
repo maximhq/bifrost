@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n";
 import type { RoutingTarget } from "@/lib/types/routingRules";
 /**
  * Routing Rules Utility Functions
@@ -104,7 +105,7 @@ export function truncateCELExpression(expression: string, maxLength: number = 60
  */
 export function validateProviderModel(provider: string, _model?: string): string {
 	if (!provider || provider.trim().length === 0) {
-		return "Provider is required";
+		return i18n.t("validation.providerIsRequired");
 	}
 	return "";
 }

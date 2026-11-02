@@ -34,6 +34,8 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { CustomersEmptyState } from "./customersEmptyState";
 import CustomerSheet from "./customerSheet";
+import { useActionParam } from "@/hooks/useActionParam";
+import { getLocale } from "@/lib/i18n";
 
 // Helper to format reset duration for display
 const formatResetDuration = (duration: string) => {
@@ -179,6 +181,7 @@ export default function CustomersTable({
 		setEditingCustomer(null);
 		setShowCustomerSheet(true);
 	};
+	useActionParam("create", handleAddCustomer, { isOpen: showCustomerSheet, enabled: hasCreateAccess });
 
 	const handleEditCustomer = (customer: Customer) => {
 		setEditingCustomer(customer);
@@ -348,7 +351,7 @@ export default function CustomersTable({
 													<TableCell>
 														{teamCount > 0 ? (
 															<Badge variant="outline" className="text-xs">
-																{teamCount} {teamCount === 1 ? "team" : "teams"}
+																{t("customers.teamCount", { count: teamCount })}
 															</Badge>
 														) : (
 															<span className="text-muted-foreground text-sm">-</span>
@@ -409,7 +412,7 @@ export default function CustomersTable({
 																			<div className="space-y-1.5">
 																				<div className="flex items-center justify-between gap-4 text-xs">
 																					<span className="font-medium">
-																						{t("usage.tokens", { value: rateLimit.token_max_limit.toLocaleString() })}
+																						{t("usage.tokens", { value: rateLimit.token_max_limit.toLocaleString(getLocale()) })}
 																					</span>
 																					<span className="text-muted-foreground">
 																						{formatResetDuration(rateLimit.token_reset_duration || "1h")}
@@ -432,8 +435,8 @@ export default function CustomersTable({
 																		<TooltipContent>
 																			<p className="font-medium">
 																				{t("usage.tokenTooltip", {
-																					used: rateLimit.token_current_usage.toLocaleString(),
-																					max: rateLimit.token_max_limit.toLocaleString(),
+																					used: rateLimit.token_current_usage.toLocaleString(getLocale()),
+																					max: rateLimit.token_max_limit.toLocaleString(getLocale()),
 																				})}
 																			</p>
 																			<p className="text-primary-foreground/80 text-xs">
@@ -448,7 +451,7 @@ export default function CustomersTable({
 																			<div className="space-y-1.5">
 																				<div className="flex items-center justify-between gap-4 text-xs">
 																					<span className="font-medium">
-																						{t("usage.req", { value: rateLimit.request_max_limit.toLocaleString() })}
+																						{t("usage.req", { value: rateLimit.request_max_limit.toLocaleString(getLocale()) })}
 																					</span>
 																					<span className="text-muted-foreground">
 																						{formatResetDuration(rateLimit.request_reset_duration || "1h")}
@@ -471,8 +474,8 @@ export default function CustomersTable({
 																		<TooltipContent>
 																			<p className="font-medium">
 																				{t("usage.requestTooltip", {
-																					used: rateLimit.request_current_usage.toLocaleString(),
-																					max: rateLimit.request_max_limit.toLocaleString(),
+																					used: rateLimit.request_current_usage.toLocaleString(getLocale()),
+																					max: rateLimit.request_max_limit.toLocaleString(getLocale()),
 																				})}
 																			</p>
 																			<p className="text-primary-foreground/80 text-xs">
@@ -523,9 +526,9 @@ export default function CustomersTable({
 							<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 								<div className="text-muted-foreground flex items-center gap-2">
 									{t("webhooks.pagination.entries", {
-										from: (offset + 1).toLocaleString(),
-										to: Math.min(offset + limit, totalCount).toLocaleString(),
-										total: totalCount.toLocaleString(),
+										from: (offset + 1).toLocaleString(getLocale()),
+										to: Math.min(offset + limit, totalCount).toLocaleString(getLocale()),
+										total: totalCount.toLocaleString(getLocale()),
 									})}
 								</div>
 

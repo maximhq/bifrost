@@ -124,7 +124,9 @@
 			"barChart": "長條圖",
 			"lineChart": "折線圖",
 			"directValue": "直接命中：{{value}}",
-			"semanticValue": "語義命中：{{value}}"
+			"semanticValue": "語義命中：{{value}}",
+			"tokensPerSecValue": "{{value}} Token/秒",
+			"moreCount_other": "還有 {{count}} 項"
 		},
 		"rankings": {
 			"topDimension": "熱門{{dimension}}",
@@ -136,7 +138,9 @@
 			"avgLatency": "平均延遲",
 			"noData": "該時間段內暫無{{dimension}}用量資料。",
 			"attributedTooltipShort": "歸因：一條請求會計入其所屬的每個{{dimension}}，因此可能超過實際請求數。",
-			"attributedTooltipLong": "一條請求會計入其所屬的每個{{dimension}}，因此可能超過總請求數。"
+			"attributedTooltipLong": "一條請求會計入其所屬的每個{{dimension}}，因此可能超過總請求數。",
+			"newBadge": "新增",
+			"requestsCount_other": "{{formattedCount}} 個請求"
 		},
 		"noModelUsage": "該時間段內暫無模型用量資料。"
 	},
@@ -144,7 +148,21 @@
 		"fallbackChain": {
 			"openFinalAttempt": "開啟最終嘗試",
 			"title": "回退鏈",
-			"viewing": "檢視中"
+			"viewing": "檢視中",
+			"outcome": {
+				"succeeded": "請求成功",
+				"failed": "所有嘗試均失敗",
+				"inProgress": "仍在執行"
+			},
+			"summary": {
+				"attempt": "第 {{position}} 次嘗試，共 {{total}} 次",
+				"fellBack": "第 {{position}} 次嘗試，共 {{total}} 次。此次嘗試失敗，請求已改用 {{label}}。",
+				"later": "第 {{position}} 次嘗試，共 {{total}} 次。此次之後還有後續嘗試。"
+			},
+			"attempts_other": "{{count}} 次嘗試",
+			"attemptsWithTotal_other": "{{count}} 次嘗試 · 共 {{latency}}",
+			"keyName": "金鑰 {{name}}",
+			"retries_other": "{{count}} 次重試"
 		},
 		"searchPlaceholder": "搜尋日誌或貼上請求 ID",
 		"loggingSettings": "日誌設定",
@@ -244,7 +262,13 @@
 			"toastCancelled": "費用重新計算已取消",
 			"toastComplete": "費用重新計算完成",
 			"toastProgress": "正在重新計算日誌費用…",
-			"errorGeneric": "重新計算費用失敗"
+			"errorGeneric": "重新計算費用失敗",
+			"noLogsMatch": "沒有日誌符合目前的篩選條件。",
+			"toastStopped": "已停止：更新 {{updated}} 筆，略過 {{skipped}} 筆",
+			"toastUpdatedSkipped": "更新 {{updated}} 筆，略過 {{skipped}} 筆",
+			"toastCheckedOfTotal": "已檢查 {{processed}}/{{total}}，更新 {{updated}} 筆，略過 {{skipped}} 筆",
+			"toastChecked": "已檢查 {{processed}} 筆，更新 {{updated}} 筆，略過 {{skipped}} 筆",
+			"errorGenericStatus": "重新計算費用失敗（{{status}}）"
 		},
 		"session": {
 			"logs": "日誌",
@@ -551,7 +575,12 @@
 			"summaryNumbered": "摘要 {{number}}",
 			"attachment": "附件",
 			"toolTypeCount_one": "{{type}} · {{count}} 個工具",
-			"toolTypeCount_other": "{{type}} · {{count}} 個工具"
+			"toolTypeCount_other": "{{type}} · {{count}} 個工具",
+			"unknown": "未知",
+			"sourceEventInitiated": "事件觸發",
+			"sourceLanguageModel": "語言模型",
+			"batchItemResult": "批次項目 {{type}}",
+			"providerReturnedHttp": "供應商回傳 HTTP {{status}}"
 		},
 		"media": {
 			"pause": "暫停",
@@ -764,9 +793,21 @@
 				"virtualKeys": "虛擬金鑰（{{total}}）",
 				"teams": "團隊（{{total}}）",
 				"customers": "客戶（{{total}}）",
-				"period": "期間 {{value}}"
+				"period": "期間 {{value}}",
+				"relays": "中繼 ({{total}})",
+				"methods": "方法 ({{total}})",
+				"kinds": "類型 ({{total}})",
+				"users": "使用者 ({{total}})",
+				"businessUnits": "業務單位 ({{total}})",
+				"projects": "專案 ({{total}})",
+				"apps": "應用程式 ({{total}})",
+				"billableOnly": "僅計費",
+				"nonBillableOnly": "僅不計費",
+				"minCost": "最低費用 {{value}}",
+				"maxCost": "最高費用 {{value}}"
 			}
-		}
+		},
+		"batchMixedModel": "混合"
 	},
 	"relayLogs": {
 		"fields": {
@@ -1076,7 +1117,8 @@
 			"overheadLatencySpans": "開銷延遲 spans",
 			"overheadLatencySpansHelp": "內部計時 spans（setup、金鑰選擇、pipeline 階段）。預設關閉。",
 			"configJsonPrecedence": "若在 config.json 的 <plugin>{{pluginName}}</plugin> 外掛配置中設定了 <filter>plugin_span_filter</filter>，重啟 Bifrost 後將優先於此處設定。",
-			"destinationOtel": "the OTEL collector"
+			"destinationOtel": "the OTEL collector",
+			"noChangePermission": "您無權變更可觀測性設定"
 		},
 		"savePrometheus": "儲存 Prometheus 配置",
 		"saveOtel": "儲存 OTEL 配置",
@@ -1233,7 +1275,12 @@
 		"passthrough_stream": "流式透傳",
 		"websocket_responses": "WebSocket Responses",
 		"realtime": "即時",
-		"realtime_turn": "即時輪次"
+		"realtime_turn": "即時輪次",
+		"model_retrieve": "取得模型",
+		"live": "即時",
+		"live_session": "即時工作階段",
+		"live_content": "即時錄音",
+		"live_sideband": "即時旁路"
 	},
 	"celBuilder": {
 		"copied": "已複製",
@@ -1260,7 +1307,8 @@
 		"value": "值",
 		"enterValue": "輸入值...",
 		"commaSeparated": "輸入逗號分隔的值或 JSON 陣列",
-		"celPlaceholder": "例如 model == \"claude-sonnet-4-6\""
+		"celPlaceholder": "例如 model == \"claude-sonnet-4-6\"",
+		"remove": "移除"
 	},
 	"routingEngineLabels": {
 		"routing_rule": "路由規則",
@@ -1717,6 +1765,12 @@
 			"accepted": "已接受",
 			"requestParameters": "請求參數",
 			"noProtocolBody": "未記錄協定主體。"
+		},
+		"interactive": {
+			"copied": "已複製",
+			"filterBy": "依{{label}}篩選",
+			"clickToFilter": "點擊篩選 · 右鍵複製",
+			"rightClickToCopy": "右鍵複製"
 		}
 	},
 	"overhead": {

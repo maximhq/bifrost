@@ -36,6 +36,7 @@ import { ModelFilterSelect } from "./charts/modelFilterSelect";
 import { ModelUsageChart } from "./charts/modelUsageChart";
 import { TokenUsageChart } from "./charts/tokenUsageChart";
 import { useTranslation } from "react-i18next";
+import { getLocale } from "@/lib/i18n";
 
 export interface OverviewTabProps {
 	// Data
@@ -226,7 +227,7 @@ function OverviewTabImpl({
 					}
 					totalTooltip={
 						costTotal !== null
-							? costTotal.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 6 })
+							? costTotal.toLocaleString(getLocale(), { style: "currency", currency: "USD", maximumFractionDigits: 6 })
 							: undefined
 					}
 					legend={
@@ -247,7 +248,7 @@ function OverviewTabImpl({
 											<Tooltip>
 												<TooltipTrigger asChild>
 													<span tabIndex={0} data-testid="cost-legend-more-trigger" className="text-muted-foreground cursor-default">
-														+{costModels.length - 1} more
+														{t("dashboard.charts.moreCount", { count: costModels.length - 1 })}
 													</span>
 												</TooltipTrigger>
 												<TooltipContent>
@@ -304,7 +305,7 @@ function OverviewTabImpl({
 					testId="chart-log-volume"
 					totalLabel={t("labels.total")}
 					total={volumeTotal !== null ? <NumberFlow value={volumeTotal} format={COMPACT_NUMBER_FORMAT} /> : undefined}
-					totalTooltip={volumeTotal !== null ? volumeTotal.toLocaleString("en-US") : undefined}
+					totalTooltip={volumeTotal !== null ? volumeTotal.toLocaleString(getLocale()) : undefined}
 					legend={
 						<div className={CHART_HEADER_LEGEND_CLASS}>
 							<span className="flex items-center gap-1">
@@ -335,7 +336,7 @@ function OverviewTabImpl({
 					testId="chart-token-usage"
 					totalLabel={t("labels.total")}
 					total={tokenTotal !== null ? <NumberFlow value={tokenTotal} format={COMPACT_NUMBER_FORMAT} /> : undefined}
-					totalTooltip={tokenTotal !== null ? tokenTotal.toLocaleString("en-US") : undefined}
+					totalTooltip={tokenTotal !== null ? tokenTotal.toLocaleString(getLocale()) : undefined}
 					legend={
 						<div className={CHART_HEADER_LEGEND_CLASS}>
 							<span className="flex items-center gap-1">
@@ -374,7 +375,7 @@ function OverviewTabImpl({
 					testId="chart-model-usage"
 					totalLabel={t("labels.total")}
 					total={modelUsageTotal !== null ? <NumberFlow value={modelUsageTotal} format={COMPACT_NUMBER_FORMAT} /> : undefined}
-					totalTooltip={modelUsageTotal !== null ? modelUsageTotal.toLocaleString("en-US") : undefined}
+					totalTooltip={modelUsageTotal !== null ? modelUsageTotal.toLocaleString(getLocale()) : undefined}
 					legend={
 						<div className={CHART_HEADER_LEGEND_CLASS}>
 							{usageModel === "all" ? (
@@ -393,7 +394,7 @@ function OverviewTabImpl({
 											<Tooltip>
 												<TooltipTrigger asChild>
 													<span tabIndex={0} data-testid="usage-legend-more-trigger" className="text-muted-foreground cursor-default">
-														+{usageModels.length - 1} more
+														{t("dashboard.charts.moreCount", { count: usageModels.length - 1 })}
 													</span>
 												</TooltipTrigger>
 												<TooltipContent>
@@ -459,7 +460,7 @@ function OverviewTabImpl({
 							<NumberFlow value={latencyAvg} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="ms" />
 						) : undefined
 					}
-					totalTooltip={latencyAvg !== null ? `${latencyAvg.toLocaleString("en-US", { maximumFractionDigits: 6 })}ms` : undefined}
+					totalTooltip={latencyAvg !== null ? `${latencyAvg.toLocaleString(getLocale(), { maximumFractionDigits: 6 })}ms` : undefined}
 					legend={
 						<div className={CHART_HEADER_LEGEND_CLASS}>
 							<span className="flex items-center gap-1">
@@ -498,7 +499,7 @@ function OverviewTabImpl({
 							<NumberFlow value={overheadAvg} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="ms" />
 						) : undefined
 					}
-					totalTooltip={overheadAvg !== null ? `${overheadAvg.toLocaleString("en-US", { maximumFractionDigits: 6 })}ms` : undefined}
+					totalTooltip={overheadAvg !== null ? `${overheadAvg.toLocaleString(getLocale(), { maximumFractionDigits: 6 })}ms` : undefined}
 					legend={
 						<div className={CHART_HEADER_LEGEND_CLASS}>
 							<span className="flex items-center gap-1">
@@ -536,7 +537,9 @@ function OverviewTabImpl({
 						throughputAvg !== null ? <span className="truncate whitespace-nowrap">{formatTokensPerSecond(throughputAvg)}</span> : undefined
 					}
 					totalTooltip={
-						throughputAvg !== null ? `${throughputAvg.toLocaleString("en-US", { maximumFractionDigits: 2 })} tokens/sec` : undefined
+						throughputAvg !== null
+							? t("dashboard.charts.tokensPerSecValue", { value: throughputAvg.toLocaleString(getLocale(), { maximumFractionDigits: 2 }) })
+							: undefined
 					}
 					legend={
 						<div className={CHART_HEADER_LEGEND_CLASS}>

@@ -913,7 +913,8 @@
 				"unsupportedMethod": "Método no compatible: {{method}}",
 				"addRule": "Añade una regla o selecciona Desactivado para no reenviar nada"
 			}
-		}
+		},
+		"customBaseUrlRequired": "La URL base es obligatoria"
 	},
 	"modelCatalog": {
 		"title": "Catálogo modelo",
@@ -1020,7 +1021,10 @@
 			"5": "Fri.",
 			"6": "Sáb"
 		},
-		"aboutModelsColumn": "Acerca de la columna de modelos"
+		"aboutModelsColumn": "Acerca de la columna de modelos",
+		"attributeKeyPlaceholder": "clave",
+		"attributeValuePlaceholder": "valor",
+		"filterProviderAria": "Filtrar por proveedor"
 	},
 	"virtualKeys": {
 		"emptyTitle": "Acceso a control de claves virtuales, presupuestos y límites de tarifas",
@@ -1327,7 +1331,9 @@
 		"leavesGoverningOwner": "Los proveedores, presupuestos y límites de solicitudes de esta clave proceden del perfil de acceso de su propietario; no tiene configuración propia.",
 		"leavesGoverningOwnerUser": "Si el usuario al que la asignas tiene un perfil de acceso, ese perfil pasará a regir la clave y esta seguirá funcionando. De lo contrario, configúrala abajo o rechazará las solicitudes.",
 		"leavesGoverningOwnerUnassigned": "Configúrala abajo o rechazará las solicitudes cuando se desasigne.",
-		"ownerProfileNoticeUnnamed": "Este {{owner}} rige la clave mediante su perfil de acceso. Sus presupuestos, límites de solicitudes y proveedores se aplican a esta clave."
+		"ownerProfileNoticeUnnamed": "Este {{owner}} rige la clave mediante su perfil de acceso. Sus presupuestos, límites de solicitudes y proveedores se aplican a esta clave.",
+		"managedByProfileToggleHint": "Esta clave virtual la gestiona un perfil de acceso. Actívala o desactívala desde el perfil.",
+		"noUpdatePermission": "No tienes permiso para actualizar claves virtuales."
 	},
 	"modelLimits": {
 		"title": "Presupuestos y límites",
@@ -1642,7 +1648,8 @@
 		},
 		"offPeakRange": "Debe ser mayor que 0 y como máximo 1",
 		"actionsAria": "Acciones para la sobrescritura de precios {{name}}",
-		"deleteDescriptionNamed": "¿Seguro que quieres eliminar \"{{name}}\"? Esta acción no se puede deshacer."
+		"deleteDescriptionNamed": "¿Seguro que quieres eliminar \"{{name}}\"? Esta acción no se puede deshacer.",
+		"noChangePermission": "No tienes permiso para cambiar las anulaciones de precios"
 	},
 	"routing": {
 		"rulesTitle": "Reglas de rotación",
@@ -1917,7 +1924,19 @@
 			"statusWarming": "Calentando",
 			"statusReady": "Listo",
 			"statusFailed": "Fallido",
-			"fallbackDecisionDesc": "Un modelo de decisión indica el nivel cuando la coincidencia semántica no da resultado, con la misma guía de niveles que cuando es el clasificador principal."
+			"fallbackDecisionDesc": "Un modelo de decisión indica el nivel cuando la coincidencia semántica no da resultado, con la misma guía de niveles que cuando es el clasificador principal.",
+			"criteriaSignalItemMax": "Cada señal debe tener como máximo {{max}} caracteres",
+			"criteriaExampleItemMax": "Cada ejemplo debe tener como máximo {{max}} caracteres",
+			"criteriaSignalMin": "Añade al menos una señal",
+			"criteriaExampleMin": "Añade al menos un ejemplo",
+			"criteriaSignalMax_one": "Como máximo {{count}} señal",
+			"criteriaSignalMax_other": "Como máximo {{count}} señales",
+			"criteriaExampleMax_one": "Como máximo {{count}} ejemplo",
+			"criteriaExampleMax_other": "Como máximo {{count}} ejemplos",
+			"enterDefinition": "Introduce una definición",
+			"selectDecisionProvider": "Selecciona el proveedor que sirve el modelo de decisión",
+			"selectDecisionModel": "Selecciona el modelo de decisión",
+			"enterDecisionTimeout": "Introduce un tiempo de espera para el modelo de decisión"
 		},
 		"editDescription": "Actualizar la configuración de reglas de enrutamiento",
 		"createDescription": "Crear una nueva regla de enrutamiento basada en CEL para la routing de solicitud inteligente",
@@ -2119,5 +2138,10 @@
 		"searchOrTypeJev": "Busca o escribe un modelo Jev…",
 		"searchOrType": "Busca o escribe un modelo…",
 		"selectModel": "Selecciona un modelo"
+	},
+	"pricing": {
+		"notAvailable": "No disponible",
+		"perMillionTokens": "{{price}} / 1 M de tokens",
+		"perMillionCharacters": "{{price}} / 1 M de caracteres"
 	}
 }

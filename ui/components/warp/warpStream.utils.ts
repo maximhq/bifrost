@@ -1,5 +1,5 @@
 import type { WarpTurn, WarpTurnToolCall } from "@/lib/contexts/warpContext";
-import i18n from "@/lib/i18n";
+import i18n, { getLocale } from "@/lib/i18n";
 import type { WarpLogIndexStatus, WarpStoredMessage } from "@/lib/types/warp";
 /** SSE frame parsing for Warp, kept out of the hook so it is testable without a DOM or network. */
 
@@ -320,6 +320,27 @@ export function shouldDrainQueue(
 	return wasStreaming && !isStreaming && queued > 0;
 }
 
+export interface WarpHandoffGate {
+	isConfigLoading: boolean;
+	isConfigFetching: boolean;
+	isConfigError: boolean;
+	isConfigured: boolean;
+	isBusy: boolean; // the render's view: an answer in flight, a stored load, or queued follow-ups
+	isStreamingNow: boolean; // the session's live state, which a replayed effect sees before the render does
+}
+
+/** The handed-over question to send now, or null. Calls `take` only once the panel can act on what it removes. */
+export function nextWarpHandoff(gate: WarpHandoffGate, take: () => string | null): string | null {
+	// Only a finished, successful fetch: a failed one keeps the question for a retry, and a cached
+	// config may name a model the opening refetch is about to drop.
+	const isConfigSettled = !gate.isConfigLoading && !gate.isConfigFetching && !gate.isConfigError;
+	if (!isConfigSettled || gate.isBusy || gate.isStreamingNow) return null;
+	if (gate.isConfigured) return take();
+	// Not set up: the panel shows how to set it up, and every question is dropped rather than sent after setup.
+	while (take() !== null);
+	return null;
+}
+
 export const WARP_FINISH_QUESTION = "question";
 
 export function isWarpQuestionFinish(finishReason: string | undefined): boolean {
@@ -480,7 +501,7 @@ export function formatWarpUsage(usage: WarpUsage | undefined): string | null {
 
 	const parts: string[] = [];
 	const total = usage.total_tokens ?? (usage.prompt_tokens ?? 0) + (usage.completion_tokens ?? 0);
-	if (total > 0) parts.push(`${total.toLocaleString()} tokens`);
+	if (total > 0) parts.push(i18n.t("warp.usage.tokens", { ns: "shell", count: total, formattedCount: total.toLocaleString(getLocale()) }));
 
 	const cost = usage.cost?.total_cost;
 	if (typeof cost === "number" && cost > 0) {
@@ -634,7 +655,7 @@ export function formatWarpChartValue(unit: WarpChartSpec["unit"], value: number)
 		case "percent":
 			return `${Number(value.toFixed(2))}%`;
 		default:
-			return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(value);
+			return new Intl.NumberFormat(getLocale(), { notation: "compact", maximumFractionDigits: 1 }).format(value);
 	}
 }
 
@@ -644,11 +665,14 @@ export function formatWarpChartX(spec: Pick<WarpChartSpec, "kind" | "interval">,
 	const date = new Date(point.x);
 	if (Number.isNaN(date.getTime())) return point.x;
 	if (spec.interval === "week") {
-		return `Wk of ${new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: "UTC" }).format(date)}`;
+		return i18n.t("warp.chart.weekOf", {
+			ns: "shell",
+			date: new Intl.DateTimeFormat(getLocale(), { month: "short", day: "numeric", timeZone: "UTC" }).format(date),
+		});
 	}
 	const options: Intl.DateTimeFormatOptions =
 		spec.interval === "hour"
 			? { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: "UTC" }
 			: { month: "short", day: "numeric", timeZone: "UTC" };
-	return new Intl.DateTimeFormat("en-US", options).format(date);
+	return new Intl.DateTimeFormat(getLocale(), options).format(date);
 }

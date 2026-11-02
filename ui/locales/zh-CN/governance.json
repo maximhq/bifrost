@@ -59,7 +59,8 @@
 			"name": "名称",
 			"noBudgets": "未配置预算"
 		},
-		"actionsAria": "客户操作 {{name}}"
+		"actionsAria": "客户操作 {{name}}",
+		"teamCount_other": "{{count}} 个团队"
 	},
 	"teams": {
 		"title": "团队",
@@ -531,7 +532,13 @@
 			"custom pricing": "自定义定价",
 			"configuration": "配置",
 			"complexity router": "复杂度路由器",
-			"routing rules": "路由规则"
+			"routing rules": "路由规则",
+			"relays": "中继",
+			"Agent gateway configuration": "Agent 网关配置",
+			"guardrail incidents": "护栏事件",
+			"relay logs": "中继日志",
+			"agent logs": "Agent 日志",
+			"Warp": "Warp"
 		}
 	},
 	"loggingDisabled": {

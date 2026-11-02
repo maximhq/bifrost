@@ -298484,7 +298484,135 @@
       ]
     },
     {
-      "name": "297. Chat message role validation (#9298) (chat-message-role-validation)",
+      "name": "297. Forwarded-proto scheme decisions: HSTS follows x-bf-forwarded-proto (forwarded-proto hsts; runs under the openai fork) (PR #9442)",
+      "description": "lib.RequestIsHTTPS is the single scheme rule behind HSTS, cookie Secure, trace attributes and public URLs. Pinned here on the wire through Strict-Transport-Security on GET /health, which needs no provider: X-Forwarded-Proto alone still works, x-bf-forwarded-proto alone works (an edge behind an LB that overwrites the standard header), and when both are present x-bf-forwarded-proto decides, so an edge reporting http behind a chain reporting https yields no HSTS. Expects a plain-http BASE_URL; a TLS listener sets HSTS unconditionally.",
+      "item": [
+        {
+          "name": "GET /health with X-Forwarded-Proto: https sets HSTS (openai fork)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var LABEL = 'forwarded-proto hsts (x-forwarded-proto https)';",
+                  "pm.test(LABEL + ': /health answers 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "pm.test(LABEL + ': Strict-Transport-Security is set', function () { pm.expect(pm.response.headers.get('Strict-Transport-Security'), 'headers: ' + JSON.stringify(pm.response.headers.toJSON())).to.eql('max-age=31536000; includeSubDomains'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /health with x-bf-forwarded-proto: https behind X-Forwarded-Proto: http sets HSTS (openai fork)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var LABEL = 'forwarded-proto hsts (x-bf overrides lb http)';",
+                  "pm.test(LABEL + ': /health answers 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "pm.test(LABEL + ': Strict-Transport-Security is set', function () { pm.expect(pm.response.headers.get('Strict-Transport-Security'), 'headers: ' + JSON.stringify(pm.response.headers.toJSON())).to.eql('max-age=31536000; includeSubDomains'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "http"
+              },
+              {
+                "key": "x-bf-forwarded-proto",
+                "value": "https"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /health with x-bf-forwarded-proto: http behind X-Forwarded-Proto: https, http sends no HSTS (openai fork)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var LABEL = 'forwarded-proto hsts (x-bf http overrides lb https)';",
+                  "pm.test(LABEL + ': /health answers 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "pm.test(LABEL + ': Strict-Transport-Security is absent', function () { pm.expect(pm.response.headers.has('Strict-Transport-Security'), 'headers: ' + JSON.stringify(pm.response.headers.toJSON())).to.eql(false); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https, http"
+              },
+              {
+                "key": "x-bf-forwarded-proto",
+                "value": "http"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "298. Chat message role validation (#9298) (chat-message-role-validation)",
       "description": "Chat requests with missing, null or empty roles used to reach providers and could succeed on permissive backends. The native handler and shared OpenAI routes now refuse them with JSON 400 invalid_request_error before inference or SSE starts. Cases cover the native endpoint, OpenAI SDK aliases, LangChain, LiteLLM, PydanticAI and Azure deployment routes. The exact message and message index distinguish gateway validation from an unrelated provider/auth error. Large-payload passthrough is not parsed and remains outside this validation.",
       "event": [
         {
@@ -298508,7 +298636,7 @@
       ],
       "item": [
         {
-          "name": "297.1 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions missing messages[0].role - #9298",
+          "name": "298.1 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions missing messages[0].role - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -298531,7 +298659,7 @@
           "response": []
         },
         {
-          "name": "297.2 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions empty messages[0].role streaming - #9298",
+          "name": "298.2 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions empty messages[0].role streaming - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -298554,7 +298682,7 @@
           "response": []
         },
         {
-          "name": "297.3 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions null messages[0].role - #9298",
+          "name": "298.3 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions null messages[0].role - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -298577,7 +298705,7 @@
           "response": []
         },
         {
-          "name": "297.4 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions later message messages[1].role streaming - #9298",
+          "name": "298.4 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions later message messages[1].role streaming - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -298600,7 +298728,7 @@
           "response": []
         },
         {
-          "name": "297.5 [EXPECT-400] openai/gpt-4o-mini /openai/v1/chat/completions missing messages[0].role - #9298",
+          "name": "298.5 [EXPECT-400] openai/gpt-4o-mini /openai/v1/chat/completions missing messages[0].role - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -298623,7 +298751,7 @@
           "response": []
         },
         {
-          "name": "297.6 [EXPECT-400] openai/gpt-4o-mini /openai/v1/chat/completions later message messages[1].role streaming - #9298",
+          "name": "298.6 [EXPECT-400] openai/gpt-4o-mini /openai/v1/chat/completions later message messages[1].role streaming - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -298646,7 +298774,7 @@
           "response": []
         },
         {
-          "name": "297.7 [EXPECT-400] openai/gpt-4o-mini /openai/chat/completions null messages[0].role - #9298",
+          "name": "298.7 [EXPECT-400] openai/gpt-4o-mini /openai/chat/completions null messages[0].role - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -298669,7 +298797,7 @@
           "response": []
         },
         {
-          "name": "297.8 [EXPECT-400] openai/gpt-4o-mini /langchain/v1/chat/completions missing messages[0].role - #9298",
+          "name": "298.8 [EXPECT-400] openai/gpt-4o-mini /langchain/v1/chat/completions missing messages[0].role - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -298692,7 +298820,7 @@
           "response": []
         },
         {
-          "name": "297.9 [EXPECT-400] openai/gpt-4o-mini /langchain/chat/completions empty messages[0].role streaming - #9298",
+          "name": "298.9 [EXPECT-400] openai/gpt-4o-mini /langchain/chat/completions empty messages[0].role streaming - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -298715,7 +298843,7 @@
           "response": []
         },
         {
-          "name": "297.10 [EXPECT-400] openai/gpt-4o-mini /litellm/v1/chat/completions missing messages[0].role - #9298",
+          "name": "298.10 [EXPECT-400] openai/gpt-4o-mini /litellm/v1/chat/completions missing messages[0].role - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -298738,7 +298866,7 @@
           "response": []
         },
         {
-          "name": "297.11 [EXPECT-400] openai/gpt-4o-mini /litellm/chat/completions empty messages[0].role streaming - #9298",
+          "name": "298.11 [EXPECT-400] openai/gpt-4o-mini /litellm/chat/completions empty messages[0].role streaming - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -298761,7 +298889,7 @@
           "response": []
         },
         {
-          "name": "297.12 [EXPECT-400] openai/gpt-4o-mini /pydanticai/v1/chat/completions missing messages[0].role - #9298",
+          "name": "298.12 [EXPECT-400] openai/gpt-4o-mini /pydanticai/v1/chat/completions missing messages[0].role - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -298784,7 +298912,7 @@
           "response": []
         },
         {
-          "name": "297.13 [EXPECT-400] openai/gpt-4o-mini /pydanticai/chat/completions empty messages[0].role streaming - #9298",
+          "name": "298.13 [EXPECT-400] openai/gpt-4o-mini /pydanticai/chat/completions empty messages[0].role streaming - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -298807,7 +298935,7 @@
           "response": []
         },
         {
-          "name": "297.14 [EXPECT-400] azure/gpt-4o-mini /openai/openai/deployments/gpt-4o-mini/chat/completions missing messages[0].role - #9298",
+          "name": "298.14 [EXPECT-400] azure/gpt-4o-mini /openai/openai/deployments/gpt-4o-mini/chat/completions missing messages[0].role - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -298830,7 +298958,7 @@
           "response": []
         },
         {
-          "name": "297.15 [EXPECT-400] azure/gpt-4o-mini /azure/openai/deployments/gpt-4o-mini/chat/completions null messages[0].role streaming - #9298",
+          "name": "298.15 [EXPECT-400] azure/gpt-4o-mini /azure/openai/deployments/gpt-4o-mini/chat/completions null messages[0].role streaming - #9298",
           "request": {
             "method": "POST",
             "header": [

@@ -59,7 +59,11 @@
 			"name": "Имя",
 			"noBudgets": "Бюджеты не настроены"
 		},
-		"actionsAria": "Действия клиента {{name}}"
+		"actionsAria": "Действия клиента {{name}}",
+		"teamCount_one": "{{count}} команда",
+		"teamCount_other": "{{count}} команды",
+		"teamCount_few": "{{count}} команды",
+		"teamCount_many": "{{count}} команд"
 	},
 	"teams": {
 		"title": "Команды",
@@ -531,7 +535,13 @@
 			"custom pricing": "пользовательских цен",
 			"configuration": "конфигурации",
 			"complexity router": "маршрутизатора сложности",
-			"routing rules": "правил маршрутизации"
+			"routing rules": "правил маршрутизации",
+			"relays": "релеи",
+			"Agent gateway configuration": "конфигурацию шлюза агентов",
+			"guardrail incidents": "инциденты ограничителей",
+			"relay logs": "журналы релеев",
+			"agent logs": "журналы агентов",
+			"Warp": "Warp"
 		}
 	},
 	"loggingDisabled": {

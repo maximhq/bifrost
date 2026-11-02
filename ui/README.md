@@ -65,7 +65,7 @@ UI copy uses `i18next`. Source and fallback locale stay **en**. Also supported: 
 | Path | Purpose |
 | --- | --- |
 | `lib/i18n/index.ts` | Init; exports `i18n` / `SUPPORTED_LOCALES` / `changeLocale` / `getLocale` |
-| `lib/i18n/resources.ts` | Aggregates namespace JSON |
+| `lib/i18n/resources.ts` | Bundles the English catalogs; lazy-loads every other language per namespace |
 | `locales/en/*.json` | English (source and fallback) |
 | `locales/<code>/*.json` | Other supported locales, same keys as English |
 
@@ -74,7 +74,7 @@ Namespaces include `common`, `shell`, `login`, `observability`, `models`, `mcp`,
 #### Adding copy
 
 1. Add the same key to `locales/en/<ns>.json` and each `locales/<code>/<ns>.json`.
-2. For a new namespace: create the JSON files and register them in `lib/i18n/resources.ts`.
+2. For a new namespace: create the JSON file in every locale directory, then import the English one and add it to `NAMESPACES` in `lib/i18n/resources.ts`. Other languages are picked up automatically.
 3. In components:
 
 ```tsx
@@ -86,6 +86,8 @@ return <button>{t("save")}</button>;
 // Other namespaces
 const { t: tShell } = useTranslation("shell");
 ```
+
+Run `npm run i18n:check` before opening a pull request. It flags hardcoded user-facing strings and zod messages, and compares every catalog with English (missing keys, placeholders, `<Trans>` tags, plural forms, empty values, duplicate keys). The `ui-i18n` workflow runs it on every pull request that touches `ui/`. See the "UI i18n" section of the repo `AGENTS.md` for the full conventions.
 
 Default namespace is `common`. `I18nextProvider` is mounted in `app/clientLayout.tsx`, so any Router child can use `useTranslation`.
 

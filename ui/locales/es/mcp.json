@@ -121,7 +121,9 @@
 			"reauthorizationDidNotComplete": "La reautorización no se completó",
 			"toolsRefreshed": "Herramientas actualizadas",
 			"toolsRefreshedDesc_one": "El cliente {{name}} ahora ofrece {{count}} herramienta.",
-			"toolsRefreshedDesc_other": "El cliente {{name}} ahora ofrece {{count}} herramientas."
+			"toolsRefreshedDesc_other": "El cliente {{name}} ahora ofrece {{count}} herramientas.",
+			"oauthVerifiedPerUser": "La configuración de OAuth se verificó correctamente. Cada usuario se autenticará individualmente.",
+			"clientConnected": "Cliente MCP conectado correctamente"
 		},
 		"filter": {
 			"connectionType": "Tipo de conexión",
@@ -288,7 +290,10 @@
 			"baseUrlRequired": "La URL base es obligatoria",
 			"invalidAllowedExtraHeadersTitle": "Encabezados adicionales permitidos no válidos",
 			"invalidAllowedExtraHeadersDesc": "El comodín '*' no se puede combinar con nombres de encabezado específicos.",
-			"allowedExtraHeadersPlaceholder": "*, o: authorization, x-user-id"
+			"allowedExtraHeadersPlaceholder": "*, o: authorization, x-user-id",
+			"useGlobalSetting": "Usar configuración global",
+			"useGlobalSettingWithValue": "Usar configuración global ({{value}})",
+			"maxProtocolAuto": "Automático (última)"
 		},
 		"sheet": {
 			"statePendingTokenExchange": "Este servidor necesita una verificación única: Bifrost intercambia su token de identidad firmado, prueba la conexión y descubre las herramientas. Después, cada solicitante intercambia su propio token de identidad automáticamente en cada llamada de herramienta.",
@@ -600,7 +605,25 @@
 		"stateColumnHelp": "El estado de conexión del cliente (correcto, inestable, requiere reautorización, etc.). «Inestable» refleja las comprobaciones de conexión propias de Bifrost con el servidor, no los resultados de las llamadas a herramientas realizadas a través de él: se recupera solo y nunca bloquea las llamadas a herramientas. En los clientes por usuario (OAuth, encabezados, intercambio de tokens), refleja la credencial de administrador retenida por Bifrost (que solo se usa para actualizar periódicamente la lista de herramientas), no la sesión de ningún usuario individual, que no se ve afectada en ningún caso.",
 		"columnGuidanceAria": "Guía de la columna {{label}}",
 		"vkCount_one": "{{count}} VK",
-		"vkCount_other": "{{count}} VK"
+		"vkCount_other": "{{count}} VK",
+		"failure": {
+			"stageConnect": "Conectando",
+			"stagePing": "Ping",
+			"stageListTools": "Listando herramientas",
+			"stageToolDiscovery": "Descubriendo herramientas",
+			"stageTransportLost": "Conexión perdida",
+			"stageCredential": "Credencial",
+			"titleDegraded": "Las instancias no coinciden sobre el estado de este servidor",
+			"titleUnstableAll": "La última comprobación de conexión falló en todas las instancias",
+			"titleUnstable": "La última comprobación de conexión falló",
+			"titleNeedsReauth": "Se requiere reautorización",
+			"titleError": "No está registrado en el runtime",
+			"titleDefault": "Estado de la conexión",
+			"lastFailedAgo": "Último fallo hace {{age}}",
+			"lastFailedRun": "Último fallo hace {{age}} · {{state}} durante {{duration}}",
+			"stateNeedsReauth": "requiere reautorización",
+			"stateUnstable": "inestable"
+		}
 	},
 	"library": {
 		"title": "Biblioteca de servidores MCP",

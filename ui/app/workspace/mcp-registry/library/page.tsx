@@ -19,6 +19,8 @@ import { MCPLibraryInstallSheet } from "./views/mcpLibraryInstallSheet";
 import { MCPLibraryServerCard, MCPLibraryServerCardSkeleton } from "./views/mcpLibraryServerCard";
 import { MCPLibraryServersTable, MCPLibraryServersTableSkeleton } from "./views/mcpLibraryServersTable";
 import { MCPLibrarySettingsSheet } from "./views/mcpLibrarySettingsSheet";
+import { useActionParam } from "@/hooks/useActionParam";
+import { getLocale } from "@/lib/i18n";
 
 const PAGE_SIZE = 24;
 const VIEW_MODE_STORAGE_KEY = "mcp-library-view-mode";
@@ -43,6 +45,7 @@ export default function MCPLibraryPage() {
 	const [selectedServer, setSelectedServer] = useState<MCPLibraryEntry | null>(null);
 	const [settingsOpen, setSettingsOpen] = useState(false);
 	const [addServerOpen, setAddServerOpen] = useState(false);
+	useActionParam("create", () => setAddServerOpen(true), { isOpen: addServerOpen, enabled: hasCreateMCPClientAccess });
 	const [viewMode, setViewMode] = useState<MCPLibraryViewMode>(getInitialViewMode);
 	const { toast } = useToast();
 
@@ -296,8 +299,11 @@ export default function MCPLibraryPage() {
 									{totalCount > 0 && (
 										<div className="mt-auto flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 											<div className="text-muted-foreground flex items-center gap-2">
-												{(urlState.offset + 1).toLocaleString()}-{Math.min(urlState.offset + PAGE_SIZE, totalCount).toLocaleString()} of{" "}
-												{totalCount.toLocaleString()} entries
+												{t("common.ofEntries", {
+													from: (urlState.offset + 1).toLocaleString(getLocale()),
+													to: Math.min(urlState.offset + PAGE_SIZE, totalCount).toLocaleString(getLocale()),
+													total: totalCount.toLocaleString(getLocale()),
+												})}
 											</div>
 
 											<div className="flex items-center gap-2">

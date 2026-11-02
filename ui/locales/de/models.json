@@ -913,7 +913,8 @@
 				"unsupportedMethod": "Nicht unterstützte Methode {{method}}",
 				"addRule": "Füge eine Regel hinzu oder wähle „Aus“, um nichts weiterzuleiten"
 			}
-		}
+		},
+		"customBaseUrlRequired": "Die Basis-URL ist erforderlich"
 	},
 	"modelCatalog": {
 		"title": "Modellkatalog",
@@ -1020,7 +1021,10 @@
 			"5": "Fr",
 			"6": "Sa"
 		},
-		"aboutModelsColumn": "Informationen zur Spalte „Modelle“"
+		"aboutModelsColumn": "Informationen zur Spalte „Modelle“",
+		"attributeKeyPlaceholder": "Schlüssel",
+		"attributeValuePlaceholder": "Wert",
+		"filterProviderAria": "Nach Anbieter filtern"
 	},
 	"virtualKeys": {
 		"emptyTitle": "Virtuelle Schlüssel steuern Zugriff, Budgets und Rate Limits",
@@ -1327,7 +1331,9 @@
 		"leavesGoverningOwner": "Die Anbieter, Budgets und Ratenlimits dieses Schlüssels stammen aus dem Zugriffsprofil des Inhabers; eigene Einstellungen hat er nicht.",
 		"leavesGoverningOwnerUser": "Hat der Benutzer, dem du den Schlüssel zuweist, ein Zugriffsprofil, übernimmt dieses Profil den Schlüssel und er funktioniert weiter. Andernfalls konfiguriere ihn unten, sonst weist er Anfragen ab.",
 		"leavesGoverningOwnerUnassigned": "Konfiguriere ihn unten, sonst weist er Anfragen ab, sobald er nicht mehr zugewiesen ist.",
-		"ownerProfileNoticeUnnamed": "Wird durch das Zugriffsprofil von {{owner}} verwaltet. Dessen Budgets, Ratenlimits und Anbieter gelten für diesen Schlüssel."
+		"ownerProfileNoticeUnnamed": "Wird durch das Zugriffsprofil von {{owner}} verwaltet. Dessen Budgets, Ratenlimits und Anbieter gelten für diesen Schlüssel.",
+		"managedByProfileToggleHint": "Dieser virtuelle Schlüssel wird von einem Zugriffsprofil verwaltet. Aktivieren oder deaktivieren Sie ihn im Profil.",
+		"noUpdatePermission": "Sie haben keine Berechtigung, virtuelle Schlüssel zu aktualisieren."
 	},
 	"modelLimits": {
 		"title": "Budgets und Limits",
@@ -1642,7 +1648,8 @@
 		},
 		"offPeakRange": "Muss größer als 0 und höchstens 1 sein",
 		"actionsAria": "Aktionen für Preisüberschreibung {{name}}",
-		"deleteDescriptionNamed": "Möchtest du „{{name}}“ wirklich löschen? Diese Aktion kann nicht rückgängig gemacht werden."
+		"deleteDescriptionNamed": "Möchtest du „{{name}}“ wirklich löschen? Diese Aktion kann nicht rückgängig gemacht werden.",
+		"noChangePermission": "Sie haben keine Berechtigung, Preisüberschreibungen zu ändern"
 	},
 	"routing": {
 		"rulesTitle": "Routing-Regeln",
@@ -1917,7 +1924,19 @@
 			"statusWarming": "Wird aufgewärmt",
 			"statusReady": "Bereit",
 			"statusFailed": "Fehlgeschlagen",
-			"fallbackDecisionDesc": "Ein Entscheidungsmodell bestimmt die Stufe, wenn der semantische Abgleich kein Ergebnis liefert. Dabei gelten dieselben Stufenhinweise wie für den primären Klassifikator."
+			"fallbackDecisionDesc": "Ein Entscheidungsmodell bestimmt die Stufe, wenn der semantische Abgleich kein Ergebnis liefert. Dabei gelten dieselben Stufenhinweise wie für den primären Klassifikator.",
+			"criteriaSignalItemMax": "Jedes Signal darf höchstens {{max}} Zeichen lang sein",
+			"criteriaExampleItemMax": "Jedes Beispiel darf höchstens {{max}} Zeichen lang sein",
+			"criteriaSignalMin": "Fügen Sie mindestens ein Signal hinzu",
+			"criteriaExampleMin": "Fügen Sie mindestens ein Beispiel hinzu",
+			"criteriaSignalMax_one": "Höchstens {{count}} Signal",
+			"criteriaSignalMax_other": "Höchstens {{count}} Signale",
+			"criteriaExampleMax_one": "Höchstens {{count}} Beispiel",
+			"criteriaExampleMax_other": "Höchstens {{count}} Beispiele",
+			"enterDefinition": "Geben Sie eine Definition ein",
+			"selectDecisionProvider": "Wählen Sie den Anbieter des Entscheidungsmodells aus",
+			"selectDecisionModel": "Wählen Sie das Entscheidungsmodell aus",
+			"enterDecisionTimeout": "Geben Sie ein Timeout für das Entscheidungsmodell ein"
 		},
 		"editDescription": "Konfiguration der Routing-Regel aktualisieren",
 		"createDescription": "Erstelle eine neue CEL-basierte Routing-Regel für intelligentes Request-Routing",
@@ -2119,5 +2138,10 @@
 		"searchOrTypeJev": "Jev-Modell suchen oder eingeben…",
 		"searchOrType": "Modell suchen oder eingeben…",
 		"selectModel": "Modell auswählen"
+	},
+	"pricing": {
+		"notAvailable": "Nicht verfügbar",
+		"perMillionTokens": "{{price}} / 1 Mio. Tokens",
+		"perMillionCharacters": "{{price}} / 1 Mio. Zeichen"
 	}
 }

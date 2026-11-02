@@ -124,7 +124,10 @@
 			"barChart": "Grafico a barre",
 			"lineChart": "Grafico a linee",
 			"directValue": "Diretto: {{value}}",
-			"semanticValue": "Semantico: {{value}}"
+			"semanticValue": "Semantico: {{value}}",
+			"tokensPerSecValue": "{{value}} token/s",
+			"moreCount_one": "+{{count}} altri",
+			"moreCount_other": "+{{count}} altri"
 		},
 		"rankings": {
 			"topDimension": "Top {{dimension}}",
@@ -136,7 +139,10 @@
 			"avgLatency": "Latenza media",
 			"noData": "Nessun dato di utilizzo di {{dimension}} disponibile per questo periodo.",
 			"attributedTooltipShort": "Attribuite - una richiesta viene conteggiata per ogni {{dimension}} a cui appartiene, quindi questo valore può superare il conteggio effettivo delle richieste.",
-			"attributedTooltipLong": "Una richiesta viene conteggiata per ogni {{dimension}} a cui appartiene, quindi questo valore può superare il conteggio totale delle richieste."
+			"attributedTooltipLong": "Una richiesta viene conteggiata per ogni {{dimension}} a cui appartiene, quindi questo valore può superare il conteggio totale delle richieste.",
+			"newBadge": "nuovo",
+			"requestsCount_one": "{{formattedCount}} richiesta",
+			"requestsCount_other": "{{formattedCount}} richieste"
 		},
 		"noModelUsage": "Nessun dato di utilizzo del modello disponibile per questo periodo."
 	},
@@ -144,7 +150,24 @@
 		"fallbackChain": {
 			"openFinalAttempt": "Apri l'ultimo tentativo",
 			"title": "Catena di fallback",
-			"viewing": "In visualizzazione"
+			"viewing": "In visualizzazione",
+			"outcome": {
+				"succeeded": "Richiesta riuscita",
+				"failed": "Tutti i tentativi non sono riusciti",
+				"inProgress": "Ancora in esecuzione"
+			},
+			"summary": {
+				"attempt": "Tentativo {{position}} di {{total}}",
+				"fellBack": "Tentativo {{position}} di {{total}}. Questo tentativo non è riuscito e la richiesta è passata a {{label}}.",
+				"later": "Tentativo {{position}} di {{total}}. Dopo questo sono stati eseguiti altri tentativi."
+			},
+			"attempts_other": "{{count}} tentativi",
+			"attempts_one": "{{count}} tentativo",
+			"attemptsWithTotal_other": "{{count}} tentativi · {{latency}} in totale",
+			"attemptsWithTotal_one": "{{count}} tentativo · {{latency}} in totale",
+			"keyName": "chiave {{name}}",
+			"retries_other": "{{count}} nuovi tentativi",
+			"retries_one": "{{count}} nuovo tentativo"
 		},
 		"searchPlaceholder": "Cerca nei log o incolla un ID richiesta",
 		"loggingSettings": "Impostazioni dei log",
@@ -241,7 +264,13 @@
 			"toastCancelled": "Ricalcolo costi annullato",
 			"toastComplete": "Ricalcolo costi completato",
 			"toastProgress": "Ricalcolo costi dei log...",
-			"errorGeneric": "Ricalcolo costi non riuscito"
+			"errorGeneric": "Ricalcolo costi non riuscito",
+			"noLogsMatch": "Nessun log corrisponde ai filtri attuali.",
+			"toastStopped": "Interrotto dopo {{updated}} aggiornati e {{skipped}} ignorati",
+			"toastUpdatedSkipped": "{{updated}} aggiornati, {{skipped}} ignorati",
+			"toastCheckedOfTotal": "{{processed}}/{{total}} controllati, {{updated}} aggiornati, {{skipped}} ignorati",
+			"toastChecked": "{{processed}} controllati, {{updated}} aggiornati, {{skipped}} ignorati",
+			"errorGenericStatus": "Impossibile ricalcolare i costi ({{status}})"
 		},
 		"session": {
 			"logs": "Log",
@@ -548,7 +577,12 @@
 				"monitoredWouldTransform": "La regola è solo in monitoraggio: avrebbe trasformato il contenuto, ma la richiesta è proseguita senza modifiche.",
 				"monitored": "La regola è solo in monitoraggio: la richiesta è proseguita senza modifiche.",
 				"detected": "La regola ha segnalato la richiesta, che è proseguita senza modifiche."
-			}
+			},
+			"unknown": "Sconosciuto",
+			"sourceEventInitiated": "Avviato da evento",
+			"sourceLanguageModel": "Modello linguistico",
+			"batchItemResult": "Elemento del batch {{type}}",
+			"providerReturnedHttp": "Il provider ha restituito HTTP {{status}}"
 		},
 		"media": {
 			"pause": "Pausa",
@@ -764,9 +798,21 @@
 				"virtualKeys": "chiavi virtuali ({{total}})",
 				"teams": "team ({{total}})",
 				"customers": "clienti ({{total}})",
-				"period": "intervallo {{value}}"
+				"period": "intervallo {{value}}",
+				"relays": "relay ({{total}})",
+				"methods": "metodi ({{total}})",
+				"kinds": "tipi ({{total}})",
+				"users": "utenti ({{total}})",
+				"businessUnits": "unità aziendali ({{total}})",
+				"projects": "progetti ({{total}})",
+				"apps": "app ({{total}})",
+				"billableOnly": "solo fatturabili",
+				"nonBillableOnly": "solo non fatturabili",
+				"minCost": "costo min. {{value}}",
+				"maxCost": "costo max. {{value}}"
 			}
-		}
+		},
+		"batchMixedModel": "misto"
 	},
 	"relayLogs": {
 		"fields": {
@@ -1076,7 +1122,8 @@
 			"overheadLatencySpans": "Span di latenza overhead",
 			"overheadLatencySpansHelp": "Span dei tempi interni (setup, selezione della chiave, fasi della pipeline). Disattivati per impostazione predefinita.",
 			"configJsonPrecedence": "Se <filter>plugin_span_filter</filter> è impostato nella configurazione del plugin <plugin>{{pluginName}}</plugin> in config.json, ha la precedenza su queste impostazioni dopo il riavvio di Bifrost.",
-			"destinationOtel": "the OTEL collector"
+			"destinationOtel": "the OTEL collector",
+			"noChangePermission": "Non hai l'autorizzazione per modificare le impostazioni di osservabilità"
 		},
 		"savePrometheus": "Salva configurazione Prometheus",
 		"saveOtel": "Salva configurazione OTEL",
@@ -1233,7 +1280,12 @@
 		"passthrough_stream": "Stream inoltro",
 		"websocket_responses": "WebSocket Responses",
 		"realtime": "Tempo reale",
-		"realtime_turn": "Turno tempo reale"
+		"realtime_turn": "Turno tempo reale",
+		"model_retrieve": "Recupera modello",
+		"live": "Live",
+		"live_session": "Sessione live",
+		"live_content": "Registrazione live",
+		"live_sideband": "Sideband live"
 	},
 	"celBuilder": {
 		"copied": "Copiato",
@@ -1260,7 +1312,8 @@
 		"value": "Valore",
 		"enterValue": "Inserisci valore...",
 		"commaSeparated": "Inserisci valori separati da virgola o un array JSON",
-		"celPlaceholder": "ad es. model == \"claude-sonnet-4-6\""
+		"celPlaceholder": "ad es. model == \"claude-sonnet-4-6\"",
+		"remove": "Rimuovi"
 	},
 	"routingEngineLabels": {
 		"routing_rule": "Regola di routing",
@@ -1717,6 +1770,12 @@
 			"stepRegister": "Registra e abilita l'agente upstream in Agent Gateway.",
 			"stepReplace": "Sostituisci <code>{{agentName}}</code> con il nome registrato.",
 			"stepVirtualKey": "Usa una chiave virtuale che possa accedere all'agente oppure rimuovi l'header <code>x-bf-vk</code> se l'autenticazione è disattivata."
+		},
+		"interactive": {
+			"copied": "Copiato",
+			"filterBy": "Filtra per {{label}}",
+			"clickToFilter": "Clic per filtrare · Clic destro per copiare",
+			"rightClickToCopy": "Clic destro per copiare"
 		}
 	},
 	"overhead": {

@@ -18,6 +18,7 @@ import { CappedBarStack } from "./barShape";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 import { NoChartData } from "./noChartData";
+import { useLocale } from "@/lib/i18n/useLocale";
 
 interface ProviderTokenChartProps {
 	data: ProviderTokenHistogramResponse | null;
@@ -96,6 +97,7 @@ function SingleProviderTooltip({ active, payload, provider }: any) {
 }
 
 function ProviderTokenChartImpl({ data, chartType, startTime, endTime, selectedProvider }: ProviderTokenChartProps) {
+	useLocale();
 	const { chartData, mode, displayProviders } = useMemo(() => {
 		if (!data?.buckets || !data.bucket_size_seconds) {
 			return { chartData: [], mode: "all" as const, displayProviders: [] };

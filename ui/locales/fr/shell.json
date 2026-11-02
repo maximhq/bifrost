@@ -80,7 +80,9 @@
 		"clusterNodes": "Nœuds",
 		"clusterStorage": "Stockage",
 		"skills": "Compétences",
-		"skillsSettings": "Paramètres des compétences"
+		"skillsSettings": "Paramètres des compétences",
+		"relayLogs": "Journaux des relais",
+		"relays": "Relais"
 	},
 	"navDesc": {
 		"home": "Votre utilisation, vos clés, budgets et accès",
@@ -163,11 +165,81 @@
 		"clusterSettings": "Surveillance, conservation des échantillons et seuil de mémoire",
 		"adaptiveRoutingIncidents": "Incidents de routage adaptatif",
 		"skills": "Gérer les compétences et les paramètres de la marketplace",
-		"skillsSettings": "Configuration de la marketplace des compétences"
+		"skillsSettings": "Configuration de la marketplace des compétences",
+		"relayLogs": "Appels de relais et leur coût",
+		"relays": "Relayez des API non LLM avec une tarification par route"
 	},
 	"home": {
 		"unlockTitle": "Débloquez votre page d'accueil personnelle",
 		"unlockDescription": "Cette fonctionnalité fait partie de la licence entreprise Bifrost. L'accueil montre à chaque utilisateur sa propre utilisation, ses clés, ses budgets et ses accès."
+	},
+	"commandPalette": {
+		"title": "Menu de commandes",
+		"placeholder": "Rechercher des pages ou aller à…",
+		"empty": "Aucun résultat pour « {{query}} »",
+		"groups": {
+			"general": "Général",
+			"results": "Résultats",
+			"actions": "Actions",
+			"thisPage": "Sur cette page"
+		},
+		"current": "Actuelle",
+		"footer": {
+			"navigate": "Naviguer",
+			"open": "Ouvrir",
+			"newTab": "Nouvel onglet",
+			"back": "Retour"
+		},
+		"openHint": "Ouvrir le menu de commandes",
+		"actions": {
+			"create": "Créer…",
+			"copyLink": "Copier le lien de cette page",
+			"changeTheme": "Changer de thème…",
+			"changeLanguage": "Changer de langue…"
+		},
+		"pages": {
+			"create": {
+				"title": "Créer",
+				"placeholder": "Rechercher quoi créer…"
+			},
+			"theme": {
+				"title": "Thème",
+				"placeholder": "Rechercher un thème…"
+			},
+			"language": {
+				"title": "Langue",
+				"placeholder": "Rechercher une langue…"
+			}
+		},
+		"create": {
+			"virtualKey": "Créer une clé virtuelle",
+			"team": "Créer une équipe",
+			"customer": "Créer un client",
+			"user": "Créer un utilisateur",
+			"routingRule": "Créer une règle de routage",
+			"mcpServer": "Ajouter un serveur MCP",
+			"modelLimit": "Créer une limite de modèle",
+			"webhook": "Créer un webhook",
+			"mcpLibraryServer": "Ajouter un serveur à la bibliothèque MCP",
+			"virtualMcp": "Créer un MCP virtuel",
+			"agent": "Créer un agent",
+			"relay": "Ajouter un endpoint de relais",
+			"plugin": "Ajouter un plugin",
+			"alertChannel": "Ajouter un canal d’alerte",
+			"alertRule": "Créer une règle d’alerte",
+			"businessUnit": "Créer une unité commerciale",
+			"role": "Créer un rôle",
+			"accessProfile": "Créer un profil d’accès",
+			"project": "Créer un projet",
+			"prompt": "Créer un prompt",
+			"promptFolder": "Créer un dossier de prompts",
+			"skill": "Créer une compétence",
+			"apiKey": "Créer une clé API"
+		},
+		"toast": {
+			"linkCopied": "Lien copié",
+			"linkCopyFailed": "Impossible de copier le lien"
+		}
 	},
 	"search": {
 		"placeholder": "Rechercher…",
@@ -217,7 +289,9 @@
 		"discord": "Serveur Discord",
 		"github": "Dépôt GitHub",
 		"reportBug": "Signaler un bug",
-		"docs": "Documentation complète"
+		"docs": "Documentation complète",
+		"viewAsUser": "Voir en tant qu’utilisateur",
+		"closeView": "Fermer la vue"
 	},
 	"pageTitle": {
 		"beta": "Beta",
@@ -305,7 +379,8 @@
 			"Security": "Sécurité",
 			"Provider Setup": "Configuration du fournisseur",
 			"Everything Else": "Tout le reste"
-		}
+		},
+		"completedSr": "Terminé :"
 	},
 	"warp": {
 		"ask": "Demander à Warp",
@@ -369,7 +444,8 @@
 		"question": {
 			"label": "Question",
 			"skip": "Passer",
-			"orType": "Ou saisissez votre propre réponse ci-dessous."
+			"orType": "Ou saisissez votre propre réponse ci-dessous.",
+			"skipAnswer": "Fais au mieux et indique ce que tu as supposé."
 		},
 		"message": {
 			"whatThisCovers": "Ce que cela couvre",
@@ -512,7 +588,10 @@
 			"unknown": {
 				"summary": "Une erreur s'est produite.",
 				"cause": "Warp a renvoyé une erreur sans code reconnu.",
-				"suggestions": ["Réessayez la question.", "Si cela continue, signalez-le avec les détails ci-dessous."]
+				"suggestions": [
+					"Réessayez la question.",
+					"Si cela continue, signalez-le avec les détails ci-dessous."
+				]
 			},
 			"access_denied": {
 				"summary": "Votre compte n’a pas accès au modèle de Warp.",
@@ -547,7 +626,11 @@
 					"Demandez à un administrateur d’autoriser le modèle de Warp pour votre compte.",
 					"Vous pouvez aussi choisir dans les paramètres de Warp un modèle auquel votre compte a accès."
 				]
-			}
+			},
+			"requestFailedStatus": "Échec de la requête Warp ({{status}})",
+			"noResponseBody": "Warp n'a renvoyé aucun corps de réponse",
+			"connectionClosed": "La connexion s'est fermée avant que Warp ait fini de répondre.",
+			"requestFailed": "Échec de la requête Warp"
 		},
 		"dock": {
 			"resize": "Redimensionner le panneau Warp",
@@ -555,7 +638,12 @@
 		},
 		"chart": {
 			"openInLogs": "Ouvrir dans les journaux",
-			"empty": "Aucune donnée sur cette période."
+			"empty": "Aucune donnée sur cette période.",
+			"weekOf": "Semaine du {{date}}"
+		},
+		"usage": {
+			"tokens_one": "{{formattedCount}} jeton",
+			"tokens_other": "{{formattedCount}} jetons"
 		}
 	},
 	"rssSources": {
@@ -597,5 +685,11 @@
 		"upload": "Importer",
 		"logoHelp": "Une URL d’image ou un fichier PNG, JPEG, GIF, WebP, SVG ou ICO jusqu’à 96 Ko. Par défaut, le favicon du site.",
 		"addFeed": "Ajouter le flux"
+	},
+	"agentHandover": {
+		"completeTitle": "Connexion à Bifrost Agent terminée",
+		"title": "Connexion à Bifrost Agent",
+		"completeBody": "Vous pouvez fermer cette fenêtre et retourner à Bifrost Agent.",
+		"status": "État de la connexion : {{status}}"
 	}
 }

@@ -422,9 +422,9 @@
             },
             "type": {
               "type": "string",
-              "enum": ["http"],
+              "enum": ["http", "socks5"],
               "default": "http",
-              "description": "Proxy type. Only http is supported."
+              "description": "Proxy type: http (an http:// or https:// proxy URL) or socks5 (a socks5:// or socks5h:// proxy URL). A bare host:port takes its scheme from the type."
             },
             "url": {
               "type": "string",
@@ -1016,7 +1016,7 @@
               "properties": {
                 "issuerUrl": {
                   "type": "string",
-                  "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. Required when mcpServerAuthMode is 'both' or 'oauth': the chart fails to render without it and Bifrost exits at startup. Supports env var syntax: \"env.MY_VAR\"."
+                  "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. A trailing slash is ignored. Required when mcpServerAuthMode is 'both' or 'oauth': the chart fails to render without it and Bifrost exits at startup. Supports env var syntax: \"env.MY_VAR\"."
                 },
                 "authCodeTtl": {
                   "type": "integer",
@@ -1066,6 +1066,11 @@
               "type": "integer",
               "description": "Read buffer size in bytes. This controls the size of the buffer used for reading HTTP headers.",
               "default": 65536
+            },
+            "basePath": {
+              "type": "string",
+              "pattern": "^(/([A-Za-z0-9._~-]*[A-Za-z0-9_~-][A-Za-z0-9._~-]*|\\.{3,}))*/?$",
+              "description": "URL path prefix Bifrost is served under behind an ingress or reverse proxy, e.g. \"/bifrost\". Requests are accepted with or without the prefix. Segments may not be \".\" or \"..\", and surrounding whitespace is not allowed. The first segment must not match a Bifrost route (such as api, v1, or openai) or a top-level UI path (such as assets or images). Renders into server.base_path."
             },
             "bodyBufferPoolLimitBytes": {
               "type": "integer",

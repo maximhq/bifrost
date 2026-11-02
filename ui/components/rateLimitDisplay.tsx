@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
+import { getLocale } from "@/lib/i18n";
 
 interface RateLimitShape {
 	token_max_limit?: number | null;
@@ -101,7 +102,8 @@ function Bar({
 			</TooltipTrigger>
 			<TooltipContent>
 				<p className="font-medium">
-					{current.toLocaleString()} / {max.toLocaleString()} {kind === "requests" ? t("rateLimit.req") : t("rateLimit.tokens")}
+					{current.toLocaleString(getLocale())} / {max.toLocaleString(getLocale())}{" "}
+					{kind === "requests" ? t("rateLimit.req") : t("rateLimit.tokens")}
 				</p>
 				{resetDuration ? (
 					<p className="text-muted-foreground text-xs">

@@ -221,7 +221,7 @@ export function ValueEditor({
 				values={options}
 				value={value || ""}
 				onChange={(newValue: string) => handleOnChange(newValue)}
-				placeholder={fieldData.placeholder || "Select..."}
+				placeholder={fieldData.placeholder || t("celBuilder.selectPlaceholder")}
 				className="w-[360px]"
 				noPortal
 			/>

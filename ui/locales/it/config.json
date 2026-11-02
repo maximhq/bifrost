@@ -37,6 +37,7 @@
 		"dumpErrorsHelp": "Se abilitato, i dettagli completi degli errori vengono scritti nei log della console del server. Utile per il debug, ma può risultare rumoroso in produzione.",
 		"asyncJobTtl": "TTL dei risultati dei job asincroni (secondi)",
 		"asyncJobTtlHelp": "Time-to-live predefinito per i risultati dei job asincroni in secondi. I risultati vengono rimossi automaticamente dopo la scadenza.",
+		"languageHelp": "Lingua di visualizzazione della dashboard. Salvata in questo browser e applicata subito.",
 		"headerForwarding": "Inoltro degli header",
 		"headerForwardingHelp": "Controlla quali header aggiuntivi vengono inoltrati ai provider LLM.",
 		"aboutHeaderForwarding": "Informazioni sull'inoltro degli header",
@@ -224,7 +225,7 @@
 		"directKeysHelp": "Se abilitato, i chiamanti possono passare una chiave API del provider direttamente nell'header <b0>Authorization</b0>, <b1>x-api-key</b1> o <b2>x-goog-api-key</b2> insieme a <b3>x-bf-direct-key: true</b3>. Bifrost userà quella chiave direttamente, bypassando il pool di chiavi registrate.",
 		"originsHelp": "Elenco separato da virgole di origini consentite per connessioni CORS e WebSocket. Le origini localhost sono sempre consentite. Ogni origine deve essere un URL completo con protocollo (es. https://app.example.com, http://10.0.0.100:3000). Sono supportati i caratteri jolly per i sottodomini (es. https://*.example.com) oppure usa \"*\" per consentire tutte le origini.",
 		"requiredHeadersHelp": "Elenco separato da virgole di header che devono essere presenti in ogni richiesta. Le richieste senza uno di questi header verranno rifiutate con errore 400. I nomi degli header non distinguono maiuscole/minuscole.",
-		"routesHelp": "Elenco separato da virgole di route che bypassano il middleware di autenticazione. Le richieste a queste route non richiederanno autenticazione. Le route di sistema come <b0>/health</b0>, <b1>/api/session/login</b1> e <b2>/api/session/is-auth-enabled</b2> sono sempre in whitelist indipendentemente da questa impostazione.",
+		"routesHelp": "Elenco separato da virgole di route che bypassano il middleware di autenticazione. Le richieste a queste route non richiederanno autenticazione. Le route di sistema come <b0>/health</b0>, <b1>/api/session/login</b1> e <b2>/api/session/is-auth-enabled</b2> sono sempre in whitelist indipendentemente da questa impostazione. Le route vengono confrontate dopo la rimozione del prefisso server.base_path, quindi elencale senza prefisso.",
 		"see": "Vedi",
 		"documentation": "documentazione",
 		"forDetails": "per i dettagli.",
@@ -335,7 +336,8 @@
 		"unregisteredNote": "Al momento nessun codice legge questo flag. L'override è memorizzato ma inattivo finché non viene aggiunta una chiamata a Register().",
 		"toastToggled": "{{name}} {{state}}",
 		"enabledState": "abilitato",
-		"disabledState": "disabilitato"
+		"disabledState": "disabilitato",
+		"enableAria": "Abilita {{name}}"
 	},
 	"mcpSettings": {
 		"title": "Impostazioni MCP",
@@ -373,7 +375,7 @@
 		"disableAutoToolInjectionHelp": "Quando abilitato, gli strumenti MCP non vengono inclusi automaticamente in ogni richiesta. Gli strumenti vengono inseriti solo se specificati esplicitamente tramite gli header della richiesta (<code0>x-bf-mcp-include-tools</code0>) e devono comunque essere consentiti dalla configurazione MCP della chiave virtuale.",
 		"tempTokenHelp": "Quando abilitato, i link OAuth MCP per utente possono includere un token con ambito a breve durata, in modo che chi non ha una sessione attiva della dashboard di Bifrost possa completare il flusso. Mantieni disabilitato per richiedere la normale autenticazione della dashboard.",
 		"bindingHelp": "Come vengono esposti gli strumenti nel VFS: a livello di server (tutti gli strumenti per server) o a livello di strumento (singoli strumenti).",
-		"externalClientUrlHelp": "Esegui l'override dell'URL di base pubblico di Bifrost quando è in esecuzione dietro un reverse proxy. <b0>Lascia vuoto per ricavare l'URL</b0> dall'header <code1>Host</code1> in entrata. Utilizzato come <code2>redirect_uri</code2> che Bifrost registra con i provider OAuth upstream quando agisce come client per un server MCP (ad es. Notion o Jira reindirizzano il browser a <code3>&lt;URL&gt;/api/oauth/callback</code3> dopo il login). Supporta la sintassi delle variabili di ambiente (ad es.  <code4>env.BIFROST_EXTERNAL_URL</code4>).",
+		"externalClientUrlHelp": "Esegui l'override dell'URL di base pubblico di Bifrost quando è in esecuzione dietro un reverse proxy. <b0>Lascia vuoto per ricavare l'URL</b0> dall'header <code1>Host</code1> in entrata. Utilizzato come <code2>redirect_uri</code2> che Bifrost registra con i provider OAuth upstream quando agisce come client per un server MCP (ad es. Notion o Jira reindirizzano il browser a <code3>&lt;URL&gt;/api/oauth/callback</code3> dopo il login). Supporta la sintassi delle variabili di ambiente (ad es.  <code4>env.BIFROST_EXTERNAL_URL</code4>). Dietro un prefisso URL (server.base_path), includi il prefisso, ad esempio https://host/bifrost.",
 		"externalClientUrlWarningHelp": "I provider OAuth upstream bloccano il <code0>redirect_uri</code0> al valore registrato inizialmente, quindi i client MCP che hanno già completato OAuth falliranno con <em1>\"Invalid redirect URI\"</em1>. Per risolvere, cancella le credenziali client OAuth memorizzate per i server MCP interessati e autorizza nuovamente in modo che Bifrost esegua di nuovo la Dynamic Client Registration con il nuovo URL.",
 		"authModeHelp": "Controlla come i client MCP in entrata (ad es. Claude Code, Cursor) si autenticano all'endpoint <code0>/mcp</code0>. <b1>headers</b1> (predefinito) - solo header VK / api-key / sessione, discovery OAuth disabilitata. <b2>both</b2> - accetta credenziali negli header e JWT emessi da Bifrost; le integrazioni esistenti non sono interessate. <b3>oauth</b3> - solo JWT; l'accesso tramite VK e header è disabilitato.",
 		"issuerUrlHelp": "URL pubblico stabile pubblicato nei documenti di discovery e incorporato come claim <code0>iss</code0> in ogni JWT. Obbligatorio nelle modalità OAuth ed Entrambe: Bifrost non ricava mai l'emittente dall'header <code1>Host</code1> della richiesta, perché quell'header è controllato dal chiamante. Supporta la sintassi delle variabili di ambiente (ad es. <code2>env.BIFROST_ISSUER_URL</code2>).",
@@ -490,7 +492,7 @@
 		"proxyConfiguration": "Configurazione proxy",
 		"proxyType": "Tipo di proxy",
 		"httpHttps": "HTTP / HTTPS",
-		"proxyTypeHelp": "Seleziona il tipo di protocollo del proxy. Al momento è supportato solo il proxy HTTP.",
+		"proxyTypeHelp": "HTTP / HTTPS accetta un URL proxy http:// o https:// (https:// cifra la connessione al proxy). SOCKS5 accetta un URL socks5://.",
 		"selectType": "Seleziona tipo",
 		"proxyUrl": "URL del proxy",
 		"proxyUrlHelp": "URL completo del server proxy inclusi protocollo e porta.",
@@ -511,16 +513,16 @@
 		"scimHelp": "Usa il proxy per le richieste di sincronizzazione della directory SCIM.",
 		"scimEnterpriseOnly": "Il supporto per il proxy SCIM è disponibile in Bifrost Enterprise.",
 		"inference": "Inferenza",
-		"inferenceHelp": "Usa il proxy per le richieste di inferenza LLM ai provider di modelli.",
+		"inferenceHelp": "Usa il proxy per le richieste di inferenza LLM verso i provider di modelli. Un provider con impostazioni proxy proprie le mantiene.",
 		"comingSoon": "In arrivo",
 		"api": "API",
-		"apiHelp": "Usa il proxy per le chiamate API esterne e i webhook.",
+		"apiHelp": "Usa il proxy per le chiamate API in uscita: server MCP, OAuth, webhook, download dei plugin, sincronizzazione del catalogo modelli ed export OpenTelemetry.",
 		"noPermission": "Non hai i permessi per aggiornare le impostazioni",
 		"toastSaved": "Configurazione del proxy aggiornata con successo.",
 		"connectionTimeoutHelp": "Timeout per stabilire connessioni proxy. 0 significa nessun timeout. Il valore predefinito è 60 secondi.",
 		"caCertificateHelp": "Certificato CA con codifica PEM da considerare attendibile per le connessioni TLS tramite proxy con intercettazione SSL.",
 		"skipTlsHelp": "Disabilita la verifica del certificato TLS per i proxy HTTPS. Non consigliato per la produzione.",
-		"unsupportedType": "Il proxy {{type}} non è ancora supportato. Usa un proxy HTTP."
+		"unsupportedType": "Il proxy {{type}} non è ancora supportato. Usa un proxy HTTP o SOCKS5."
 	},
 	"userAgent": {
 		"title": "Mappature User Agent",
@@ -782,7 +784,45 @@
 		"showLess": "Mostra meno",
 		"showMore": "Mostra di più",
 		"skillNotFound": "Skill non trovata",
-		"backToList": "Torna all'elenco"
+		"backToList": "Torna all'elenco",
+		"validation": {
+			"nameRequired": "Il nome è obbligatorio",
+			"nameTooLong": "Il nome deve contenere al massimo 64 caratteri",
+			"nameFormat": "Il nome deve contenere solo lettere minuscole, numeri e trattini (senza trattini iniziali, finali o consecutivi)",
+			"nameReserved": "\"{{name}}\" è un nome riservato usato dal livello di distribuzione delle skill",
+			"descriptionRequired": "La descrizione è obbligatoria",
+			"descriptionTooLong": "La descrizione supera il limite di 1024 caratteri ({{length}}/1024)",
+			"versionRequired": "La versione è obbligatoria",
+			"versionFormat": "La versione deve essere in formato semver (ad es. 1.0.0 o 1.0.0-beta.1)",
+			"versionParts": "Le parti della versione devono essere interi non negativi",
+			"versionBump": "La versione deve essere diversa da {{previous}}. Incrementa almeno uno tra: major ({{major}}), minor ({{minor}}), patch ({{patch}}) oppure cambia il suffisso (ad es. -beta.1).",
+			"extraFrontmatterObject": "Il frontmatter aggiuntivo deve essere un oggetto JSON",
+			"reservedKeys": "Non è possibile usare chiavi riservate: {{keys}}",
+			"invalidJson": "JSON non valido",
+			"metadataObject": "I metadati devono essere un oggetto JSON",
+			"metadataKeys": "Le chiavi dei metadati devono essere stringhe",
+			"metadataValue": "Il valore dei metadati per \"{{key}}\" deve essere una stringa",
+			"bodyRequired": "Il corpo di SKILL.md è obbligatorio",
+			"bodyLarge": "Il corpo di questo SKILL.md supera la dimensione consigliata. Valuta di spostare il materiale dettagliato in file sotto references/ e di collegarli dal corpo della skill.",
+			"fileTooLarge": "Il file supera il limite di {{limit}}",
+			"urlRequired": "L'URL è obbligatorio",
+			"urlScheme": "L'URL deve iniziare con http:// o https://",
+			"dataUrlRequired": "L'URL dei dati è obbligatorio",
+			"dataUrlFormat": "L'URL dei dati deve iniziare con data: e contenere ;base64,",
+			"textRequired": "Il contenuto testuale è obbligatorio",
+			"unknownSource": "Tipo di origine sconosciuto: {{type}}",
+			"filenameRequired": "Il nome del file è obbligatorio",
+			"filenameDots": "Il nome del file non può essere . o ..",
+			"filenameFolders": "Il nome del file non deve includere cartelle",
+			"skillMdManaged": "SKILL.md è gestito dal corpo della skill",
+			"pathRequired": "Il percorso del file è obbligatorio",
+			"pathRelative": "Il percorso deve essere relativo (senza / iniziale)",
+			"pathNotFolder": "Il percorso deve indicare un file, non una cartella",
+			"pathSlashes": "Il percorso deve usare solo barre (/)",
+			"pathSegments": "Il percorso non deve contenere segmenti vuoti, della directory corrente o della directory padre"
+		},
+		"itemCount_one": "{{count}} elemento",
+		"itemCount_other": "{{count}} elementi"
 	},
 	"promptRepo": {
 		"loadFailed": "Impossibile caricare il repository dei prompt",
@@ -956,7 +996,9 @@
 		"file": "File",
 		"attachmentAlt": "allegato",
 		"noChangePermission": "Non hai il permesso di modificare i prompt",
-		"noChangeFolderPermission": "Non hai il permesso di modificare le cartelle dei prompt"
+		"noChangeFolderPermission": "Non hai il permesso di modificare le cartelle dei prompt",
+		"noResponseBody": "Nessun corpo di risposta",
+		"mcpServerFallback": "Server MCP"
 	},
 	"docs": {
 		"title": "Documentazione",
@@ -1150,7 +1192,9 @@
 			"thresholdLabel": "Soglia per i nuovi argomenti",
 			"thresholdHint": "Numero di richieste senza corrispondenza che devono essere in attesa prima che Warp le raggruppi in nuovi argomenti, con verifica ogni ora. Un valore basso individua prima nuovi temi con pochi esempi; uno alto attende schemi più chiari. Da {{min}} a {{max}}.",
 			"thresholdError": "Deve essere un numero intero da {{min}} a {{max}}"
-		}
+		},
+		"alphaBadge": "ALPHA",
+		"aboutAria": "Informazioni su {{label}}"
 	},
 	"agentGateway": {
 		"title": "Impostazioni Agent Gateway",
@@ -1158,7 +1202,7 @@
 		"toastSaved": "Impostazioni di Agent Gateway aggiornate correttamente.",
 		"loadFailed": "Impossibile caricare le impostazioni di Agent Gateway.",
 		"externalClientUrl": "URL client esterno",
-		"externalClientUrlHelp": "URL di base pubblico di Bifrost, usato per le schede agente pubblicate e gli URL callback delle notifiche push. Se lasciato vuoto, tutti gli endpoint del protocollo agente sono disabilitati. La gestione degli agenti resta disponibile. Supporta la sintassi delle variabili d'ambiente (ad es. <code>env.BIFROST_EXTERNAL_URL</code>).",
+		"externalClientUrlHelp": "URL di base pubblico di Bifrost, usato per le schede agente pubblicate e gli URL callback delle notifiche push. Se lasciato vuoto, tutti gli endpoint del protocollo agente sono disabilitati. La gestione degli agenti resta disponibile. Supporta la sintassi delle variabili d'ambiente (ad es. <code>env.BIFROST_EXTERNAL_URL</code>). Dietro un prefisso URL (server.base_path), includi il prefisso, ad esempio https://host/bifrost.",
 		"privateAllowlist": "Elenco consentiti rete privata",
 		"privateAllowlistHelp": "Host, indirizzi IP o intervalli CIDR, senza schema né porta, che Agent Gateway può raggiungere per discovery, OAuth e richieste runtime quando risolvono in un indirizzo privato o loopback. Gli indirizzi link-local e dei metadati cloud sono sempre bloccati.",
 		"privateAllowlistPlaceholder": "Aggiungi host, IP o CIDR (Invio o virgola)",
@@ -1280,7 +1324,27 @@
 			"authSuggestion": "Autenticazione suggerita: {{type}}",
 			"import": "Importa",
 			"importCount_one": "Importa {{count}} route",
-			"importCount_other": "Importa {{count}} route"
+			"importCount_other": "Importa {{count}} route",
+			"docEmpty": "Il documento è vuoto",
+			"docNotJson": "Il documento non è un oggetto JSON",
+			"docNotOpenapi": "Il documento non è un oggetto OpenAPI",
+			"warn": {
+				"schemeUndeclared": "Lo schema di sicurezza {{name}} è richiesto ma non dichiarato; imposta manualmente il tipo di autenticazione",
+				"apiKeyLocation": "Lo schema di sicurezza {{name}} usa una apiKey in {{location}}, che il relay non può iniettare",
+				"unsupportedLocation": "una posizione non supportata",
+				"httpScheme": "Lo schema di sicurezza {{name}} usa l'autenticazione HTTP {{scheme}}, che il relay non può iniettare",
+				"schemeType": "Lo schema di sicurezza {{name}} è {{type}}; imposta manualmente il tipo di autenticazione",
+				"unknownType": "sconosciuto",
+				"authOptional": "Il documento rende facoltativa l'autenticazione; se l'API richiede una chiave, imposta manualmente il tipo di autenticazione",
+				"noSingleScheme": "Nessuna alternativa di sicurezza nel documento è un singolo schema che il relay può iniettare; imposta manualmente il tipo di autenticazione",
+				"severalSchemes": "Il documento dichiara più schemi di sicurezza e non ne richiede nessuno; imposta manualmente il tipo di autenticazione",
+				"noPaths": "Il documento non dichiara alcun percorso",
+				"refPaths_one": "{{paths}} è definito tramite $ref, che l'importazione non risolve, quindi queste operazioni non sono state importate; aggiungi le relative route manualmente e controlla l'elenco delle route.",
+				"refPaths_other": "{{paths}} sono definiti tramite $ref, che l'importazione non risolve, quindi queste operazioni non sono state importate; aggiungi le relative route manualmente e controlla l'elenco delle route.",
+				"noMethods": "Nessuna operazione del documento usa un metodo gestito dal relay",
+				"differentSchemes": "Le operazioni richiedono schemi di sicurezza diversi e un endpoint applica una sola autenticazione; imposta manualmente il tipo di autenticazione",
+				"serverQuery": "La query dell'URL del server ({{query}}) è omessa dall'URL base suggerito, perché l'URL base di un relay non può contenerla; i chiamanti devono inviarla da soli."
+			}
 		},
 		"usage": {
 			"relayDefault": "{{value}} (predefinito del relay)",
@@ -1301,7 +1365,17 @@
 			"blockSizeInfo": "Fattura per ogni blocco iniziato di questo numero di unità.",
 			"minimumLabel": "Unità minime (facoltativo)",
 			"minimumInfo": "Numero minimo di unità fatturate una volta letta una quantità.",
-			"formula": "Ogni chiamata conteggiata costa <strong>{{formula}}</strong>"
+			"formula": "Ogni chiamata conteggiata costa <strong>{{formula}}</strong>",
+			"sources": {
+				"response": "Corpo della risposta",
+				"request": "Corpo della richiesta"
+			},
+			"measures": {
+				"value": "Numero al percorso",
+				"chars": "Caratteri della stringa al percorso",
+				"bodyBytes": "Dimensione dell'intero corpo (byte)",
+				"bodyChars": "Caratteri dell'intero corpo"
+			}
 		},
 		"preview": {
 			"path": "Percorso",
@@ -1416,7 +1490,14 @@
 			"roleArnPlaceholder": "arn:aws:iam::123456789:role/MyRole o env.AWS_ROLE_ARN",
 			"externalIdLabel": "External ID (facoltativo)",
 			"externalIdInfo": "Richiesto dalla trust policy del ruolo in caso di accesso cross-account",
-			"externalIdPlaceholder": "external-id o env.AWS_EXTERNAL_ID"
+			"externalIdPlaceholder": "external-id o env.AWS_EXTERNAL_ID",
+			"authTypes": {
+				"bearer": "Token Bearer",
+				"header": "Header personalizzato",
+				"query": "Parametro di query",
+				"basic": "Autenticazione Basic",
+				"none": "Nessuna autenticazione"
+			}
 		},
 		"endpointConfig": {
 			"tabs": {
@@ -1487,6 +1568,21 @@
 			"proxyCaCertPlaceholder": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE----- o env.PROXY_CA_CERT_PEM",
 			"removeConfig": "Rimuovi configurazione",
 			"saveProxy": "Salva configurazione proxy"
+		},
+		"pricing": {
+			"free": "Gratis",
+			"perCall": "${{price}} / chiamata",
+			"perUnit": "${{price}} / unità",
+			"perByte": "${{price}} / byte",
+			"perChar": "${{price}} / carattere",
+			"blockUnit_one": "${{price}} per {{count}} unità",
+			"blockUnit_other": "${{price}} per {{count}} unità",
+			"blockByte_one": "${{price}} per {{count}} byte",
+			"blockByte_other": "${{price}} per {{count}} byte",
+			"blockChar_one": "${{price}} per {{count}} carattere",
+			"blockChar_other": "${{price}} per {{count}} caratteri",
+			"withMinimum": "{{pricing}}, min. {{min}}",
+			"reportedCost": "costo riportato"
 		}
 	},
 	"skillsSettings": {
@@ -1495,6 +1591,6 @@
 		"loadFailed": "Impossibile caricare le impostazioni Skills.",
 		"retry": "Riprova",
 		"externalClientUrl": "URL client esterno",
-		"externalClientUrlHelp": "URL di base pubblico di Bifrost per i marketplace Claude Code e Codex. Lascialo vuoto per disabilitare la pubblicazione e la registrazione del marketplace. La gestione e il download delle skill restano disponibili. Supporta riferimenti a variabili d'ambiente e vault."
+		"externalClientUrlHelp": "URL di base pubblico di Bifrost per i marketplace Claude Code e Codex. Lascialo vuoto per disabilitare la pubblicazione e la registrazione del marketplace. La gestione e il download delle skill restano disponibili. Supporta riferimenti a variabili d'ambiente e vault. Dietro un prefisso URL (server.base_path), includi il prefisso, ad esempio https://host/bifrost."
 	}
 }

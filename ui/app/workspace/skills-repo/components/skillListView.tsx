@@ -58,6 +58,7 @@ import { useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { PAGE_SIZE, formatDateShort, useDebouncedValue } from "./helpers";
+import { getLocale } from "@/lib/i18n";
 
 const SKILLS_REPOSITORY_DOCS_URL = "https://docs.getbifrost.ai/features/skills-repository";
 
@@ -701,9 +702,9 @@ export function SkillsListView({
 				<div className="flex shrink-0 flex-col gap-2 text-xs md:flex-row md:items-center md:justify-between md:gap-0">
 					<div className="text-muted-foreground flex items-center gap-2">
 						{t("skillsRepo.entryRange", {
-							start: (offset + 1).toLocaleString(),
-							end: Math.min(offset + PAGE_SIZE, total).toLocaleString(),
-							total: total.toLocaleString(),
+							start: (offset + 1).toLocaleString(getLocale()),
+							end: Math.min(offset + PAGE_SIZE, total).toLocaleString(getLocale()),
+							total: total.toLocaleString(getLocale()),
 						})}
 					</div>
 					<div className="flex items-center gap-2">

@@ -18,6 +18,7 @@ import { CappedBarStack } from "./barShape";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 import { NoChartData } from "./noChartData";
+import { useLocale } from "@/lib/i18n/useLocale";
 
 interface CostChartProps {
 	data: CostHistogramResponse | null;
@@ -78,6 +79,7 @@ function CustomTooltip({ active, payload, selectedModel, displayModels }: any) {
 }
 
 function CostChartImpl({ data, chartType, startTime, endTime, selectedModel }: CostChartProps) {
+	useLocale();
 	const { chartData, displayModels } = useMemo(() => {
 		if (!data?.buckets || !data.bucket_size_seconds) {
 			return { chartData: [], displayModels: [] };

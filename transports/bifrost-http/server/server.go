@@ -242,9 +242,10 @@ type BifrostHTTPServer struct {
 	Version   string
 	UIContent embed.FS
 
-	Port   string
-	Host   string
-	AppDir string
+	Port     string
+	Host     string
+	AppDir   string
+	BasePath string // from -base-path / BIFROST_BASE_PATH; resolved against server.base_path in Bootstrap
 
 	LogLevel        string
 	LogOutputStyle  string
@@ -3255,7 +3256,7 @@ func (s *BifrostHTTPServer) ObserveWarmupRoutingEmbedding(provider, model string
 // RegisterUIRoutes registers the UI handler with the specified router
 func (s *BifrostHTTPServer) RegisterUIRoutes(middlewares ...schemas.BifrostHTTPMiddleware) {
 	// WARNING: This UI handler needs to be registered after all the other handlers
-	handlers.NewUIHandler(s.UIContent, s.ShellRewriter).RegisterRoutes(s.Router, middlewares...)
+	handlers.NewUIHandler(s.UIContent, s.ShellRewriter, s.BasePath).RegisterRoutes(s.Router, middlewares...)
 }
 
 // GetAllRedactedKeys gets all redacted keys from the config store
@@ -3391,6 +3392,27 @@ func startSkillsOrphanCleanupWorker(ctx context.Context, config *lib.Config, sho
 	}()
 }
 
+// ApplyBasePath resolves the base path from the -base-path flag value in
+// s.BasePath and server.base_path in s.Config, then stores the normalized
+// result on s.BasePath, on s.Config.ServerConfig (created when absent) and in
+// lib.SetBasePath. Bootstrap calls it right after loading the config, before
+// any handler is built; a build with its own bootstrap calls it at the same
+// point.
+func (s *BifrostHTTPServer) ApplyBasePath() error {
+	basePath, err := lib.ResolveBasePath(s.BasePath, s.Config.ServerConfig)
+	if err != nil {
+		return fmt.Errorf("invalid base path: %w", err)
+	}
+	if s.Config.ServerConfig == nil {
+		s.Config.ServerConfig = &lib.ServerConfig{ReadBufferSize: 1024 * 64}
+	}
+	s.BasePath = basePath
+	s.Config.ServerConfig.BasePath = basePath
+	lib.SetBasePath(basePath)
+	webhooks.SetResultURLPrefix(basePath)
+	return nil
+}
+
 // Bootstrap initializes the Bifrost HTTP server with all necessary components.
 // It:
 // 1. Initializes Prometheus collectors for monitoring
@@ -3416,6 +3438,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	s.Config, err = lib.LoadConfig(ctx, configDir)
 	if err != nil {
 		return fmt.Errorf("failed to load config %v", err)
+	}
+	// The base path is resolved once, before any handler is built.
+	if err := s.ApplyBasePath(); err != nil {
+		return err
 	}
 	if s.Config.KVStore != nil {
 		integrations.RegisterKVDecoders(s.Config.KVStore)
@@ -3829,6 +3855,9 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	})
 	// Register UI handler
 	s.RegisterUIRoutes()
+	if err := lib.CheckBasePathCollision(s.BasePath, s.Router.List(), s.UIContent); err != nil {
+		return err
+	}
 
 	// Start the Sidekiq dispatcher: on every node it periodically claims pending and
 	// stale (orphaned) jobs, with an atomic claim guaranteeing exactly one node runs
@@ -3890,7 +3919,7 @@ func (s *BifrostHTTPServer) Start() error {
 		return fmt.Errorf("failed to create listener on %s: %v", serverAddr, err)
 	}
 	go func() {
-		logger.Info("successfully started bifrost, serving UI on http://%s", serverAddr)
+		logger.Info("successfully started bifrost, serving UI on http://%s%s/", serverAddr, s.BasePath)
 		if err := s.Server.Serve(ln); err != nil {
 			errChan <- err
 		}
