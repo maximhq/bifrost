@@ -262,3 +262,55 @@ func TestResponsesStream_CompletesWithoutHanging(t *testing.T) {
 		t.Fatalf("expected ChunkIndex to vary across chunks (regression: always 0), got indexes: %v", seenChunkIndexes)
 	}
 }
+
+// TestResponsesCacheCounterPresenceOnDelegatingProvider covers a provider that
+// reuses the OpenAI Responses handlers: the raw cache-counter fact is recorded for
+// it too, and a compatible backend that omits usage.input_tokens_details reads as
+// false (its counters are not known), on the unary and the streaming path alike.
+func TestResponsesCacheCounterPresenceOnDelegatingProvider(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		details string
+		want    bool
+	}{
+		{"details present", `,"input_tokens_details":{"cached_tokens":0}`, true},
+		{"details omitted", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			body := `{"id":"r1","object":"response","created_at":1,"model":"fake-model","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2` + tc.details + `}}`
+			provider := newTestVLLMResponsesStreamProvider(t, false, false)
+
+			unaryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprint(w, body)
+			}))
+			defer unaryServer.Close()
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			response, bifrostErr := provider.Responses(ctx, testVLLMKey(unaryServer.URL), testVLLMResponsesStreamRequest())
+			if bifrostErr != nil {
+				t.Fatalf("Responses failed: %v", bifrostErr.Error.Message)
+			}
+			if known := response.ExtraFields.RawResponsesCacheCountersKnown; known == nil || *known != tc.want {
+				t.Fatalf("unary cache-counter knownness = %v, want %t", known, tc.want)
+			}
+
+			streamServer := sseServer(`data: {"type":"response.completed","sequence_number":1,"response":` + body + "}\n\n")
+			defer streamServer.Close()
+			stream, bifrostErr := provider.ResponsesStream(ctx, noopPostHookRunner, nil, testVLLMKey(streamServer.URL), testVLLMResponsesStreamRequest())
+			if bifrostErr != nil {
+				t.Fatalf("ResponsesStream failed: %v", bifrostErr.Error.Message)
+			}
+			var known *bool
+			for _, c := range drainStreamWithTimeout(t, stream, 5*time.Second) {
+				if c != nil && c.BifrostResponsesStreamResponse != nil && c.BifrostResponsesStreamResponse.ExtraFields.RawResponsesCacheCountersKnown != nil {
+					known = c.BifrostResponsesStreamResponse.ExtraFields.RawResponsesCacheCountersKnown
+				}
+			}
+			if known == nil || *known != tc.want {
+				t.Fatalf("stream cache-counter knownness = %v, want %t", known, tc.want)
+			}
+		})
+	}
+}
