@@ -563,7 +563,7 @@ func ToGeminiBatchEmbeddingRequest(body map[string]interface{}) (GeminiEmbedding
 			return req, fmt.Errorf("failed to unmarshal gemini embedding request: %w", err)
 		}
 		if req.Content == nil || len(req.Content.Parts) == 0 {
-			return req, fmt.Errorf("embedding content is empty")
+			return req, providerUtils.InvalidRequestErrorf("embedding content is empty")
 		}
 		return req, nil
 	}
@@ -682,6 +682,9 @@ func buildGeminiEmbeddingBatchBody(request *schemas.BifrostBatchCreateRequest, m
 		for i, bifrostItem := range request.Requests {
 			embedReq, err := ToGeminiBatchEmbeddingRequest(bifrostItem.Body)
 			if err != nil {
+				if badRequest, ok := providerUtils.AsBifrostBadRequestError(err); ok {
+					return nil, badRequest
+				}
 				return nil, providerUtils.NewBifrostOperationError("failed to convert batch request to gemini embedding format", err)
 			}
 			// Every request in an embeddings batch uses the batch's model.

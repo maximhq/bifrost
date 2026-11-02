@@ -722,6 +722,26 @@ func TestGeminiBatchCreateEmbeddingsRejectsConflictingItemModel(t *testing.T) {
 	assert.Empty(t, *gotPath, "no request should reach Gemini")
 }
 
+func TestGeminiBatchCreateEmbeddingsRejectsEmptyNativeContentAsBadRequest(t *testing.T) {
+	t.Parallel()
+	provider, gotPath, _ := newEmbedBatchTestProvider(t)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	_, err := provider.BatchCreate(ctx, schemas.Key{Value: *schemas.NewSecretVar("dummy-key")}, &schemas.BifrostBatchCreateRequest{
+		Provider: schemas.Gemini,
+		Model:    schemas.Ptr("gemini-embedding-2"),
+		Endpoint: schemas.BatchEndpointEmbeddings,
+		Requests: []schemas.BatchRequestItem{{CustomID: "p0", Body: map[string]interface{}{
+			"content": map[string]interface{}{"parts": []interface{}{}},
+		}}},
+	})
+	require.NotNil(t, err)
+	require.NotNil(t, err.StatusCode)
+	assert.Equal(t, 400, *err.StatusCode)
+	assert.Contains(t, err.Error.Message, "embedding content is empty")
+	assert.Empty(t, *gotPath, "no request should reach Gemini")
+}
+
 func TestGeminiEmbeddingBatchUsageFallsBackToPromptTokens(t *testing.T) {
 	t.Parallel()
 	body := geminiEmbeddingToBatchResultBody(&GeminiEmbeddingResponse{
