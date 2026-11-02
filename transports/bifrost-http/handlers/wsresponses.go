@@ -847,6 +847,16 @@ func createBifrostContextFromHeaders(handlerStore lib.HandlerStore, setupHeaders
 		return ctx, cancel
 	}
 
+	if len(setupHeaders.headers) > 0 {
+		requestHeaders := make(map[string]string, len(setupHeaders.headers))
+		for name, values := range setupHeaders.headers {
+			if len(values) > 0 {
+				requestHeaders[name] = values[len(values)-1]
+			}
+		}
+		ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, requestHeaders)
+	}
+
 	if sessionID := lib.ParseSessionIDFromBaggage(setupHeaders.baggage); sessionID != "" {
 		ctx.SetValue(schemas.BifrostContextKeyParentRequestID, sessionID)
 	}
