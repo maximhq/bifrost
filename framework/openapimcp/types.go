@@ -135,6 +135,7 @@ type ArgBinding struct {
 	ArgName             string // property name in the tool input schema
 	Location            string // path | query | header | cookie | querystring
 	Name                string // wire parameter name
+	Template            string // query names with a <placeholder>: the argument is an object, one pair per entry
 	Required            bool
 	Explode             bool
 	Style               string
@@ -178,6 +179,7 @@ type ParseOptions struct {
 type SynthesizeOptions struct {
 	ClientName        string // budgets the tool-name length against the "<client>-" prefix
 	IncludeDeprecated bool
+	TemplateParams    bool // expand <placeholder> query names into object arguments; only for a spec that uses that convention
 }
 
 // HeaderResolver supplies the headers for one upstream call.
