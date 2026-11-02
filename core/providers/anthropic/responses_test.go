@@ -11,6 +11,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/openai"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -3662,6 +3663,252 @@ func TestAnthropicIngress_DisableParallelToolUseMapsToParallelToolCalls(t *testi
 	}
 }
 
+// TestAnthropicIngress_ToolChoiceTool_DisableParallelToolUse verifies that
+// tool_choice.disable_parallel_tool_use survives Anthropic ingress/egress
+// conversion, restores on Claude hosts only when compat dropped
+// parallel_tool_calls (and not tool_choice), ignores false/none/neutral cases,
+// and respects explicit plugin overrides.
+func TestAnthropicIngress_ToolChoiceTool_DisableParallelToolUse(t *testing.T) {
+	newNativeReq := func(choice *AnthropicToolChoice) *AnthropicMessageRequest {
+		return &AnthropicMessageRequest{
+			Model:     "claude-sonnet-5",
+			MaxTokens: 256,
+			Messages:  []AnthropicMessage{{Role: AnthropicMessageRoleUser, Content: AnthropicContent{ContentStr: schemas.Ptr("Hello")}}},
+			Tools: []AnthropicTool{
+				{Name: "probe_tool", InputSchema: &schemas.ToolFunctionParameters{Type: "object"}},
+				{Name: "other_tool", InputSchema: &schemas.ToolFunctionParameters{Type: "object"}},
+			},
+			ToolChoice: choice,
+		}
+	}
+
+	t.Run("round-trip preserves tool_choice tool with disable_parallel_tool_use", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		bifrostReq := newNativeReq(&AnthropicToolChoice{Type: "tool", Name: "probe_tool", DisableParallelToolUse: schemas.Ptr(true)}).ToBifrostResponsesRequest(ctx)
+		if bifrostReq.Params.ParallelToolCalls == nil || *bifrostReq.Params.ParallelToolCalls {
+			t.Fatalf("expected ParallelToolCalls to be false, got %v", bifrostReq.Params.ParallelToolCalls)
+		}
+
+		out, err := ToAnthropicResponsesRequest(ctx, bifrostReq)
+		if err != nil {
+			t.Fatalf("egress error: %v", err)
+		}
+		if out.ToolChoice == nil || out.ToolChoice.Type != "tool" || out.ToolChoice.Name != "probe_tool" {
+			t.Fatalf("unexpected tool_choice: %+v", out.ToolChoice)
+		}
+		if out.ToolChoice.DisableParallelToolUse == nil || !*out.ToolChoice.DisableParallelToolUse {
+			t.Fatalf("expected DisableParallelToolUse to be true on egress, got %v", out.ToolChoice.DisableParallelToolUse)
+		}
+
+		body, bErr := BuildAnthropicResponsesRequestBody(ctx, bifrostReq, AnthropicRequestBuildConfig{
+			Provider:    schemas.Anthropic,
+			IsStreaming: true,
+		})
+		if bErr != nil {
+			t.Fatalf("build request body error: %v", bErr)
+		}
+		disable := providerUtils.GetJSONField(body, "tool_choice.disable_parallel_tool_use")
+		if !disable.Exists() || !disable.Bool() {
+			t.Fatalf("expected tool_choice.disable_parallel_tool_use in body: %s", string(body))
+		}
+	})
+
+	for _, provider := range []schemas.ModelProvider{
+		schemas.Anthropic,
+		schemas.Bedrock,
+		schemas.BedrockMantle,
+		schemas.Vertex,
+		schemas.Azure,
+	} {
+		t.Run("restores on compat drop for "+string(provider), func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(nil, time.Time{})
+			ctx.SetValue(schemas.BifrostContextKeyCompatDroppedParams, []string{"parallel_tool_calls"})
+			bifrostReq := newNativeReq(&AnthropicToolChoice{Type: "tool", Name: "probe_tool", DisableParallelToolUse: schemas.Ptr(true)}).ToBifrostResponsesRequest(ctx)
+			bifrostReq.Provider = provider
+			bifrostReq.Params.ParallelToolCalls = nil
+
+			body, bErr := BuildAnthropicResponsesRequestBody(ctx, bifrostReq, AnthropicRequestBuildConfig{
+				Provider:    provider,
+				Model:       "claude-sonnet-5",
+				IsStreaming: true,
+			})
+			if bErr != nil {
+				t.Fatalf("build request body error: %v", bErr)
+			}
+			disable := providerUtils.GetJSONField(body, "tool_choice.disable_parallel_tool_use")
+			if !disable.Exists() || !disable.Bool() {
+				t.Fatalf("expected tool_choice.disable_parallel_tool_use to be restored for %s: %s", provider, string(body))
+			}
+			if gotType := providerUtils.GetJSONField(body, "tool_choice.type").String(); gotType != "tool" {
+				t.Fatalf("expected tool_choice.type=tool for %s, got %q (%s)", provider, gotType, string(body))
+			}
+		})
+	}
+
+	for _, provider := range []schemas.ModelProvider{
+		schemas.VLLM,
+		schemas.SGL,
+		schemas.Fireworks,
+		schemas.DeepSeek,
+		schemas.GithubCopilot,
+	} {
+		t.Run("honors compat drop on non-Claude host "+string(provider), func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(nil, time.Time{})
+			ctx.SetValue(schemas.BifrostContextKeyCompatDroppedParams, []string{"parallel_tool_calls"})
+			bifrostReq := newNativeReq(&AnthropicToolChoice{Type: "tool", Name: "probe_tool", DisableParallelToolUse: schemas.Ptr(true)}).ToBifrostResponsesRequest(ctx)
+			bifrostReq.Provider = provider
+			bifrostReq.Params.ParallelToolCalls = nil
+
+			body, bErr := BuildAnthropicResponsesRequestBody(ctx, bifrostReq, AnthropicRequestBuildConfig{
+				Provider:    provider,
+				Model:       "claude-sonnet-5",
+				IsStreaming: true,
+			})
+			if bErr != nil {
+				t.Fatalf("build request body error: %v", bErr)
+			}
+			if providerUtils.GetJSONField(body, "tool_choice.disable_parallel_tool_use").Exists() {
+				t.Fatalf("expected compat drop to hold for non-Claude host %s: %s", provider, string(body))
+			}
+		})
+	}
+
+	guardCases := []struct {
+		name            string
+		native          bool
+		choice          *AnthropicToolChoice
+		mutate          func(*schemas.BifrostResponsesRequest)
+		dropped         []string
+		droppedParallel *bool
+		wantChoiceType  string // "" expects no tool_choice in JSON body
+		wantDisable     bool
+	}{
+		{
+			name:           "synthesizes auto tool_choice on compat drop when egress ToolChoice is nil",
+			native:         true,
+			choice:         &AnthropicToolChoice{Type: "auto", DisableParallelToolUse: schemas.Ptr(true)},
+			dropped:        []string{"parallel_tool_calls"},
+			mutate:         func(r *schemas.BifrostResponsesRequest) { r.Params.ParallelToolCalls = nil; r.Params.ToolChoice = nil },
+			wantChoiceType: "auto",
+			wantDisable:    true,
+		},
+		{
+			name:           "does not restore when ParallelToolCalls cleared without compat drop",
+			native:         true,
+			choice:         &AnthropicToolChoice{Type: "tool", Name: "probe_tool", DisableParallelToolUse: schemas.Ptr(true)},
+			mutate:         func(r *schemas.BifrostResponsesRequest) { r.Params.ParallelToolCalls = nil },
+			wantChoiceType: "tool",
+		},
+		{
+			name:           "does not override explicit plugin ParallelToolCalls true",
+			native:         true,
+			choice:         &AnthropicToolChoice{Type: "tool", Name: "probe_tool", DisableParallelToolUse: schemas.Ptr(true)},
+			dropped:        []string{"parallel_tool_calls"},
+			mutate:         func(r *schemas.BifrostResponsesRequest) { r.Params.ParallelToolCalls = schemas.Ptr(true) },
+			wantChoiceType: "tool",
+		},
+		{
+			name:            "does not restore when compat dropped ParallelToolCalls true set before compat",
+			native:          true,
+			choice:          &AnthropicToolChoice{Type: "tool", Name: "probe_tool", DisableParallelToolUse: schemas.Ptr(true)},
+			dropped:         []string{"parallel_tool_calls"},
+			droppedParallel: schemas.Ptr(true),
+			mutate:          func(r *schemas.BifrostResponsesRequest) { r.Params.ParallelToolCalls = nil },
+			wantChoiceType:  "tool",
+		},
+		{
+			name:    "does not synthesize tool_choice when compat also dropped tool_choice",
+			native:  true,
+			choice:  &AnthropicToolChoice{Type: "auto", DisableParallelToolUse: schemas.Ptr(true)},
+			dropped: []string{"parallel_tool_calls", "tool_choice"},
+			mutate:  func(r *schemas.BifrostResponsesRequest) { r.Params.ParallelToolCalls = nil; r.Params.ToolChoice = nil },
+		},
+		{
+			name:           "does not emit disable_parallel_tool_use when caller sent false with tool_choice",
+			native:         true,
+			choice:         &AnthropicToolChoice{Type: "auto", DisableParallelToolUse: schemas.Ptr(false)},
+			dropped:        []string{"parallel_tool_calls"},
+			mutate:         func(r *schemas.BifrostResponsesRequest) { r.Params.ParallelToolCalls = nil },
+			wantChoiceType: "auto",
+		},
+		{
+			name:    "does not synthesize auto tool_choice when caller sent disable_parallel_tool_use false",
+			native:  true,
+			choice:  &AnthropicToolChoice{Type: "auto", DisableParallelToolUse: schemas.Ptr(false)},
+			dropped: []string{"parallel_tool_calls"},
+			mutate:  func(r *schemas.BifrostResponsesRequest) { r.Params.ParallelToolCalls = nil; r.Params.ToolChoice = nil },
+		},
+		{
+			name:           "does not attach disable_parallel_tool_use to tool_choice none",
+			native:         true,
+			choice:         &AnthropicToolChoice{Type: "none", DisableParallelToolUse: schemas.Ptr(true)},
+			dropped:        []string{"parallel_tool_calls"},
+			mutate:         func(r *schemas.BifrostResponsesRequest) { r.Params.ParallelToolCalls = nil },
+			wantChoiceType: "none",
+		},
+		{
+			name:           "does not restore on neutral ingress without native witness",
+			native:         false,
+			dropped:        []string{"parallel_tool_calls"},
+			wantChoiceType: "tool",
+		},
+	}
+
+	for _, tc := range guardCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(nil, time.Time{})
+			var bifrostReq *schemas.BifrostResponsesRequest
+			if tc.native {
+				bifrostReq = newNativeReq(tc.choice).ToBifrostResponsesRequest(ctx)
+			} else {
+				toolChoiceName := "probe_tool"
+				bifrostReq = parallelToolsResponsesReq(&schemas.ResponsesToolChoice{
+					ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+						Type: schemas.ResponsesToolChoiceTypeFunction,
+						Name: &toolChoiceName,
+					},
+				}, nil)
+			}
+			if len(tc.dropped) > 0 {
+				ctx.SetValue(schemas.BifrostContextKeyCompatDroppedParams, tc.dropped)
+			}
+			if tc.droppedParallel != nil {
+				ctx.SetValue(schemas.BifrostContextKeyCompatDroppedParallelToolCalls, *tc.droppedParallel)
+			}
+			if tc.mutate != nil {
+				tc.mutate(bifrostReq)
+			}
+
+			body, bErr := BuildAnthropicResponsesRequestBody(ctx, bifrostReq, AnthropicRequestBuildConfig{
+				Provider:    schemas.Anthropic,
+				IsStreaming: true,
+			})
+			if bErr != nil {
+				t.Fatalf("build request body error: %v", bErr)
+			}
+
+			choiceField := providerUtils.GetJSONField(body, "tool_choice")
+			if tc.wantChoiceType == "" {
+				if choiceField.Exists() {
+					t.Fatalf("expected no tool_choice in body, got %s", string(body))
+				}
+				return
+			}
+			if gotType := providerUtils.GetJSONField(body, "tool_choice.type").String(); gotType != tc.wantChoiceType {
+				t.Fatalf("tool_choice.type = %q, want %q (%s)", gotType, tc.wantChoiceType, string(body))
+			}
+			disable := providerUtils.GetJSONField(body, "tool_choice.disable_parallel_tool_use")
+			if tc.wantDisable {
+				if !disable.Exists() || !disable.Bool() {
+					t.Fatalf("expected tool_choice.disable_parallel_tool_use=true in body: %s", string(body))
+				}
+			} else if disable.Exists() {
+				t.Fatalf("unexpected tool_choice.disable_parallel_tool_use in body: %s", string(body))
+			}
+		})
+	}
+}
+
 func boolPtrString(b *bool) string {
 	if b == nil {
 		return "<nil>"
@@ -3684,6 +3931,58 @@ func BenchmarkToAnthropicResponsesRequestParallelToolCalls(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
 				if _, err := ToAnthropicResponsesRequest(ctx, parallelToolsResponsesReq(nil, bc.parallel)); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkBuildAnthropicResponsesRequestBody_DisableParallelToolUse measures
+// native /anthropic/v1/messages ingress through BuildAnthropicResponsesRequestBody
+// (including setAnthropicNativeRequestSurface and restoreNativeAnthropicRequestSurface)
+// with 16 tools across off, flag_kept, and flag_dropped (compat cleared ParallelToolCalls).
+func BenchmarkBuildAnthropicResponsesRequestBody_DisableParallelToolUse(b *testing.B) {
+	tools := make([]AnthropicTool, 16)
+	for i := range tools {
+		tools[i] = AnthropicTool{
+			Name:        fmt.Sprintf("tool_%d", i),
+			Description: schemas.Ptr("benchmark tool"),
+			InputSchema: &schemas.ToolFunctionParameters{Type: "object"},
+		}
+	}
+	makeReq := func(choice *AnthropicToolChoice) *AnthropicMessageRequest {
+		return &AnthropicMessageRequest{
+			Model:      "claude-sonnet-5",
+			MaxTokens:  256,
+			Messages:   []AnthropicMessage{{Role: AnthropicMessageRoleUser, Content: AnthropicContent{ContentStr: schemas.Ptr("Hello")}}},
+			Tools:      tools,
+			ToolChoice: choice,
+		}
+	}
+	droppedParams := []string{"parallel_tool_calls"}
+	cfg := AnthropicRequestBuildConfig{Provider: schemas.Anthropic}
+
+	for _, bc := range []struct {
+		name    string
+		choice  *AnthropicToolChoice
+		dropped bool
+	}{
+		{"off", nil, false},
+		{"flag_kept", &AnthropicToolChoice{Type: "tool", Name: "tool_0", DisableParallelToolUse: schemas.Ptr(true)}, false},
+		{"flag_dropped", &AnthropicToolChoice{Type: "tool", Name: "tool_0", DisableParallelToolUse: schemas.Ptr(true)}, true},
+	} {
+		req := makeReq(bc.choice)
+		b.Run(bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx := schemas.NewBifrostContext(nil, time.Time{})
+				bifrostReq := req.ToBifrostResponsesRequest(ctx)
+				if bc.dropped {
+					bifrostReq.Params.ParallelToolCalls = nil
+					ctx.SetValue(schemas.BifrostContextKeyCompatDroppedParams, droppedParams)
+				}
+				if _, err := BuildAnthropicResponsesRequestBody(ctx, bifrostReq, cfg); err != nil {
 					b.Fatal(err)
 				}
 			}

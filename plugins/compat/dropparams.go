@@ -64,6 +64,9 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 			dropped = append(dropped, "metadata")
 		}
 		if params.ParallelToolCalls != nil && !isSupported["parallel_tool_calls"] {
+			if ctx != nil {
+				ctx.SetValue(schemas.BifrostContextKeyCompatDroppedParallelToolCalls, *params.ParallelToolCalls)
+			}
 			params.ParallelToolCalls = nil
 			dropped = append(dropped, "parallel_tool_calls")
 		}
@@ -179,6 +182,9 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 			dropped = append(dropped, "metadata")
 		}
 		if params.ParallelToolCalls != nil && !isSupported["parallel_tool_calls"] {
+			if ctx != nil {
+				ctx.SetValue(schemas.BifrostContextKeyCompatDroppedParallelToolCalls, *params.ParallelToolCalls)
+			}
 			params.ParallelToolCalls = nil
 			dropped = append(dropped, "parallel_tool_calls")
 		}

@@ -743,7 +743,8 @@ type anthropicNativeRequestSurface struct {
 	// already differs from the caller's own thinking before any plugin runs.
 	// Comparing against what the conversion itself produced is the only reading
 	// that isolates a later edit.
-	NeutralReasoning *schemas.ResponsesParametersReasoning
+	NeutralReasoning       *schemas.ResponsesParametersReasoning
+	DisableParallelToolUse bool // caller sent tool_choice.disable_parallel_tool_use: true
 }
 
 // The key is schemas.BifrostContextKeyAnthropicNativeRequestSurface rather than
@@ -815,6 +816,9 @@ func setAnthropicNativeRequestSurface(ctx *schemas.BifrostContext, req *Anthropi
 		surface.BlockBinding = copyThinkingBlockBinding(req.Thinking.BlockBinding)
 	}
 	surface.MaxTokens = req.MaxTokens
+	if req.ToolChoice != nil && req.ToolChoice.DisableParallelToolUse != nil && *req.ToolChoice.DisableParallelToolUse {
+		surface.DisableParallelToolUse = true
+	}
 	// Deep copy: the projection's pointer fields alias the inbound request
 	// (MaxTokens is literally req.Thinking.BudgetTokens), which may be pooled
 	// and reused after conversion.
@@ -932,6 +936,18 @@ func compatDroppedParams(ctx *schemas.BifrostContext) map[string]bool {
 	return set
 }
 
+// compatDroppedParallelToolCallsTrue reports whether compat dropped an
+// explicit ParallelToolCalls=true (e.g., set by a plugin before compat ran),
+// so restoreNativeAnthropicRequestSurface does not reverse that override back
+// to disable_parallel_tool_use: true.
+func compatDroppedParallelToolCallsTrue(ctx *schemas.BifrostContext) bool {
+	if ctx == nil {
+		return false
+	}
+	droppedVal, ok := ctx.Value(schemas.BifrostContextKeyCompatDroppedParallelToolCalls).(bool)
+	return ok && droppedVal
+}
+
 // restoreThinkingBlockBinding puts the caller's thinking.block_binding back on the
 // egress thinking object. The neutral reasoning shape has no slot for it, so the
 // converter rebuilds thinking without it -- and for "adaptive", the mode the
@@ -947,6 +963,18 @@ func restoreThinkingBlockBinding(req *AnthropicMessageRequest, binding *Anthropi
 		return
 	}
 	req.Thinking.BlockBinding = copyThinkingBlockBinding(binding)
+}
+
+// isClaudeHostProvider reports whether provider serves Claude models on an
+// Anthropic Messages wire where tool_choice.disable_parallel_tool_use is
+// natively supported even when a catalog row omits parallel_tool_calls.
+func isClaudeHostProvider(provider schemas.ModelProvider) bool {
+	switch provider {
+	case schemas.Anthropic, schemas.Bedrock, schemas.BedrockMantle, schemas.Vertex, schemas.Azure:
+		return true
+	default:
+		return false
+	}
 }
 
 // restoreNativeAnthropicRequestSurface puts back the parts of the caller's own
@@ -1035,6 +1063,32 @@ func restoreNativeAnthropicRequestSurface(ctx *schemas.BifrostContext, req *Anth
 	}
 
 	restoreThinkingBlockBinding(req, surface.BlockBinding, provider)
+
+	// Unlike the reasoning restore above (which backs off when compat dropped
+	// reasoning), this deliberately undoes compat dropping parallel_tool_calls
+	// on Claude hosts: external catalog rows for Claude models often omit the
+	// OpenAI-style supports_parallel_function_calling flag even though every
+	// Claude Messages host natively accepts tool_choice.disable_parallel_tool_use.
+	// Non-Claude hosts sharing this builder (vLLM, SGL, Fireworks, DeepSeek,
+	// Copilot) keep compat's drop because the catalog omission may reflect the
+	// target model. If compat also dropped tool_choice, a plugin before compat
+	// changed ParallelToolCalls to true before compat dropped it, or a later
+	// layer explicitly set ParallelToolCalls, that decision wins.
+	// Like applyParallelToolUse, only disable_parallel_tool_use: true is written
+	// (false is the API default, so we never synthesize an auto tool_choice for it).
+	if surface.DisableParallelToolUse &&
+		isClaudeHostProvider(provider) &&
+		dropped["parallel_tool_calls"] &&
+		!dropped["tool_choice"] &&
+		neutral.ParallelToolCalls == nil &&
+		!compatDroppedParallelToolCallsTrue(ctx) {
+		if req.ToolChoice == nil && len(req.Tools) > 0 {
+			req.ToolChoice = &AnthropicToolChoice{Type: "auto"}
+		}
+		if req.ToolChoice != nil && req.ToolChoice.Type != "none" {
+			req.ToolChoice.DisableParallelToolUse = schemas.Ptr(true)
+		}
+	}
 
 	// Sampling is deliberately NOT restored, and the reason is worth keeping
 	// here: this family is adaptive-only, and ToAnthropicResponsesRequest skips
