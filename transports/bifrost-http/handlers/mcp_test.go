@@ -463,7 +463,7 @@ func TestAddMCPClient_OAuthOnLoopbackFollowsPrivateAllowlist(t *testing.T) {
 			store := newRealOAuth2Store(t)
 			provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 			cfg := &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, OAuthProvider: provider}
-			h := &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg)}
+			h := &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg, nil)}
 
 			var req fasthttp.Request
 			req.Header.SetMethod(fasthttp.MethodPost)
@@ -518,7 +518,7 @@ func TestAddMCPClient_OAuthUsesClientIDMetadataDocument(t *testing.T) {
 			cfg := &lib.Config{ConfigStore: store, OAuthProvider: provider, ClientConfig: &configstore.ClientConfig{
 				MCPExternalClientURL: schemas.NewSecretVar("https://bifrost.example.com"),
 			}}
-			h := &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg)}
+			h := &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg, nil)}
 
 			var req fasthttp.Request
 			req.Header.SetMethod(fasthttp.MethodPost)
@@ -836,7 +836,7 @@ func TestSanitizeMCPLibraryServerName(t *testing.T) {
 // The use_client_metadata_document toggle reaches the provider on every bootstrap path: the create
 // request (through InitiateOAuthFlow) and a config.json client's stored pending config.
 func TestUseClientMetadataDocument_ReachesTheProvider(t *testing.T) {
-	handler := NewOAuthHandler(oauth2.NewOAuth2Provider(nil, bifrost.NewDefaultLogger(schemas.LogLevelError)), nil, nil)
+	handler := NewOAuthHandler(oauth2.NewOAuth2Provider(nil, bifrost.NewDefaultLogger(schemas.LogLevelError)), nil, nil, nil)
 	_, err := handler.InitiateOAuthFlow(context.Background(), OAuthInitiationRequest{
 		ClientID:                  schemas.NewSecretVar("preset"),
 		ClientMetadataURL:         "https://bifrost.example.com/api/oauth/client-metadata.json",
@@ -1916,7 +1916,7 @@ func newLoopbackOAuthMCPHandler(t *testing.T) (*MCPHandler, *oauth2.OAuth2Provid
 	store := newRealOAuth2Store(t)
 	provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 	cfg := &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, OAuthProvider: provider, MCPConfig: &schemas.MCPConfig{}}
-	return &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg)}, provider, server
+	return &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg, nil)}, provider, server
 }
 
 // TestAddMCPClient_OAuthRefusesATakenNameOrSlugBeforeAuthorizing pins that an
@@ -1977,7 +1977,7 @@ func TestRevokeOAuthConfig_UnknownIDIsNotFound(t *testing.T) {
 	store := newRealOAuth2Store(t)
 	provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 	cfg := &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, OAuthProvider: provider}
-	h := NewOAuthHandler(provider, nil, cfg)
+	h := NewOAuthHandler(provider, nil, cfg, nil)
 	status, respBody := doMCPRequest(t, h.revokeOAuthConfig, fasthttp.MethodDelete, "", "no-such-config", false)
 	require.Equal(t, fasthttp.StatusNotFound, status, respBody)
 	assert.Contains(t, respBody, "oauth config not found")
@@ -2012,7 +2012,7 @@ func TestAddMCPClient_OAuthURLsCarryBasePath(t *testing.T) {
 			cfg := &lib.Config{ConfigStore: store, OAuthProvider: provider, ClientConfig: &configstore.ClientConfig{
 				MCPExternalClientURL: schemas.NewSecretVar("https://bifrost.example.com" + tc.basePath),
 			}}
-			h := &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg)}
+			h := &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg, nil)}
 
 			var req fasthttp.Request
 			req.Header.SetMethod(fasthttp.MethodPost)
