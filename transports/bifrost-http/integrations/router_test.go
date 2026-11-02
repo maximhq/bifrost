@@ -25,6 +25,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/passthroughparse"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1528,6 +1529,191 @@ func TestHandlePassthrough_ProviderPolicy(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	require.Equal(t, []string{"POST /v1/messages"}, hits, "only the allowed route may reach the upstream")
+}
+
+// TestRegisterPassthroughTextRewriters verifies each passthrough route gets the same text rewriters as the native route
+// for the API it speaks, and that routes with no typed equivalent or no JSON text get none.
+func TestRegisterPassthroughTextRewriters(t *testing.T) {
+	type registered struct{ request, requestTransform, responseTransform bool }
+	cases := []struct {
+		name  string
+		route passthroughparse.Route
+		want  registered
+	}{
+		{"anthropic messages", passthroughparse.Route{Wire: schemas.Anthropic, RequestType: schemas.ResponsesRequest}, registered{true, true, true}},
+		{"anthropic count tokens", passthroughparse.Route{Wire: schemas.Anthropic, RequestType: schemas.CountTokensRequest}, registered{request: true}},
+		{"gemini generate", passthroughparse.Route{Wire: schemas.Gemini, RequestType: schemas.ResponsesRequest}, registered{request: true}},
+		{"openai chat", passthroughparse.Route{Wire: schemas.OpenAI, RequestType: schemas.ChatCompletionRequest}, registered{request: true}},
+		{"openai responses", passthroughparse.Route{Wire: schemas.OpenAI, RequestType: schemas.ResponsesRequest}, registered{request: true}},
+		{"openai embeddings", passthroughparse.Route{Wire: schemas.OpenAI, RequestType: schemas.EmbeddingRequest}, registered{}},
+		{"untyped route", passthroughparse.Route{}, registered{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			registerPassthroughTextRewriters(ctx, tc.route)
+			_, request := ctx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter).(schemas.RawRequestBodyTextRewriter)
+			_, requestTransform := ctx.Value(schemas.BifrostContextKeyRawRequestBodyTextTransformer).(schemas.RawRequestBodyTextTransformer)
+			_, responseTransform := ctx.Value(schemas.BifrostContextKeyRawResponseTextTransformer).(schemas.RawResponseTextTransformer)
+			require.Equal(t, tc.want, registered{request, requestTransform, responseTransform})
+		})
+	}
+}
+
+// passthroughRewriteCustom is a custom provider based on Anthropic that may forward every passthrough route.
+const passthroughRewriteCustom schemas.ModelProvider = "passthrough-claude-proxy"
+
+// passthroughRewriteAccount serves Anthropic, OpenAI, and a custom provider based on Anthropic from one local upstream.
+type passthroughRewriteAccount struct{ baseURL string }
+
+// GetConfiguredProviders lists the providers the rewrite test routes to.
+func (passthroughRewriteAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.Anthropic, schemas.OpenAI, passthroughRewriteCustom}, nil
+}
+
+// GetKeysForProvider supplies one synthetic operator key per provider.
+func (passthroughRewriteAccount) GetKeysForProvider(_ context.Context, p schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{{ID: "rewrite-" + string(p), Value: *schemas.NewSecretVar("sk-rewrite-" + string(p)), Models: schemas.WhiteList{"*"}, Weight: 1.0}}, nil
+}
+
+// GetConfigForProvider points every provider at the local upstream; the custom provider is based on Anthropic.
+func (a passthroughRewriteAccount) GetConfigForProvider(p schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	nc := schemas.DefaultNetworkConfig
+	nc.BaseURL = a.baseURL
+	config := &schemas.ProviderConfig{NetworkConfig: nc, ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize}
+	if p == passthroughRewriteCustom {
+		config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: schemas.Anthropic}
+	}
+	return config, nil
+}
+
+// passthroughRewritingPlugin stands in for a plugin that redacts a passthrough request: it records what the router
+// handed over and rewrites the body through the registered rewriter, as it would after finding a value.
+type passthroughRewritingPlugin struct {
+	mu           sync.Mutex
+	baseProvider schemas.ModelProvider
+	provider     schemas.ModelProvider
+	hasRewriter  bool
+}
+
+// GetName identifies the test plugin.
+func (*passthroughRewritingPlugin) GetName() string { return "synthetic-passthrough-rewriter" }
+
+// Cleanup has no resources to release.
+func (*passthroughRewritingPlugin) Cleanup() error { return nil }
+
+// PreRequestHook leaves the request unchanged.
+func (*passthroughRewritingPlugin) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+
+// PreLLMHook records the routing data and replaces the body with the rewriter's output when one is registered.
+func (p *passthroughRewritingPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	passthrough := req.PassthroughRequest
+	p.baseProvider, p.provider = passthrough.BaseProvider, passthrough.Provider
+	rewriter, _ := ctx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter).(schemas.RawRequestBodyTextRewriter)
+	p.hasRewriter = rewriter != nil
+	if rewriter == nil {
+		return req, nil, nil
+	}
+	body, err := rewriter(bytes.Clone(passthrough.Body), map[string]string{"alice@example.com": "[EMAIL]"})
+	if err != nil {
+		return req, nil, err
+	}
+	rewritten := *passthrough
+	rewritten.Body = body
+	out := *req
+	out.PassthroughRequest = &rewritten
+	return &out, nil, nil
+}
+
+// PostLLMHook leaves the response unchanged.
+func (*passthroughRewritingPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, err, nil
+}
+
+// TestHandlePassthrough_PluginRewritesBodyThroughRegisteredRewriter drives passthrough calls end to end and verifies a
+// plugin sees the route's base provider, including for a custom provider, and that a body it rewrites through the
+// registered rewriter is what the upstream receives: content fields redacted, other fields byte-identical. A route
+// with no typed equivalent registers no rewriter and forwards the original bytes. Payloads are synthetic.
+func TestHandlePassthrough_PluginRewritesBodyThroughRegisteredRewriter(t *testing.T) {
+	var mu sync.Mutex
+	var bodies []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(body))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	plugin := &passthroughRewritingPlugin{}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account:    passthroughRewriteAccount{baseURL: upstream.URL},
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+		Logger:     bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	store := &mockHandlerStore{customProviders: map[schemas.ModelProvider]mockCustomProvider{
+		passthroughRewriteCustom: {base: schemas.Anthropic, passthrough: true},
+	}}
+	NewAnthropicPassthroughRouter(client, store, nil, &testLogger{}).RegisterRoutes(r, identity)
+	NewOpenAIPassthroughRouter(client, store, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	const anthropicBody = `{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":"mail alice@example.com"}],"metadata":{"user_id":"alice@example.com"}}`
+	const openAIBody = `{"model":"gpt-4o","messages":[{"role":"user","content":"mail alice@example.com"}],"user":"alice@example.com"}`
+	cases := []struct {
+		name         string
+		uri          string
+		provider     schemas.ModelProvider
+		body         string
+		wantBase     schemas.ModelProvider
+		wantProvider schemas.ModelProvider
+		wantRewriter bool
+		wantBody     string
+	}{
+		{"anthropic messages", "/anthropic_passthrough/v1/messages", "", anthropicBody, schemas.Anthropic, schemas.Anthropic, true,
+			`{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":"mail [EMAIL]"}],"metadata":{"user_id":"alice@example.com"}}`},
+		{"custom provider based on anthropic", "/anthropic_passthrough/v1/messages", passthroughRewriteCustom, anthropicBody, schemas.Anthropic, passthroughRewriteCustom, true,
+			`{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":"mail [EMAIL]"}],"metadata":{"user_id":"alice@example.com"}}`},
+		{"openai chat", "/openai_passthrough/v1/chat/completions", "", openAIBody, schemas.OpenAI, schemas.OpenAI, true,
+			`{"model":"gpt-4o","messages":[{"role":"user","content":"mail [EMAIL]"}],"user":"alice@example.com"}`},
+		{"route without a typed equivalent", "/anthropic_passthrough/v1/files", "", `{"purpose":"alice@example.com"}`, schemas.Anthropic, schemas.Anthropic, false,
+			`{"purpose":"alice@example.com"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+			ctx.Request.SetRequestURI(tc.uri)
+			ctx.Request.Header.SetContentType("application/json")
+			if tc.provider != "" {
+				ctx.Request.Header.Set("x-model-provider", string(tc.provider))
+			}
+			ctx.Request.SetBodyString(tc.body)
+			r.Handler(&ctx)
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+			plugin.mu.Lock()
+			require.Equal(t, tc.wantBase, plugin.baseProvider)
+			require.Equal(t, tc.wantProvider, plugin.provider)
+			require.Equal(t, tc.wantRewriter, plugin.hasRewriter)
+			plugin.mu.Unlock()
+
+			mu.Lock()
+			defer mu.Unlock()
+			require.NotEmpty(t, bodies)
+			require.Equal(t, tc.wantBody, bodies[len(bodies)-1], "the upstream must receive the plugin's body")
+		})
+	}
 }
 
 // directKeyHandlerStore is the shared mock store with direct keys allowed.
