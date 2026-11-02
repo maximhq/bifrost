@@ -3822,6 +3822,7 @@ const EP08 = folder("EP-08 Per-client max_instructions_length", `Setup: ${FLEET}
   readConfig("EP-08"),
   putConfig("EP-08", "setup: mcp_max_instructions_per_client 100", ["cc.mcp_max_instructions_per_client = 100;"], [A.status(200)]),
   ...fleetInstructions("EP-08", { alpha: [digits(300), "300 bytes"], beta: [digits(300), "300 bytes"], alphaClient: { max_instructions_length: 50 } }),
+  getClient("EP-08", "ep-08-alpha", "alpha reads back max_instructions_length 50", [clientField("config.max_instructions_length", 50)]),
   initialize("EP-08", "initialize", [instructionsEqual(
     block("alpha", digits(50) + "\n[truncated: 250 bytes omitted]") + "\n\n" + block("beta", digits(100) + "\n[truncated: 200 bytes omitted]"),
     "alpha's block ending \"[truncated: 250 bytes omitted]\" and beta's cut at the global 100, \"[truncated: 200 bytes omitted]\"")]),
