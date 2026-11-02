@@ -20843,6 +20843,40 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 		require.Equal(t, modelcatalog.MinimumPricingSyncIntervalSec, *normalizedModelCatalog.MCPLibrarySyncInterval)
 	})
 
+	t.Run("mcp library file:// urls in config.json reach the catalog unchanged", func(t *testing.T) {
+		// The fetch resolves these forms (TestFetchMCPLibraryFromFileURL and its relative
+		// sibling), so boot must hand them over as written.
+		for _, mcpURL := range []string{"file:///opt/bifrost/mcp-library.json", "file://./mcp-library.json", "file:mcp-library.json"} {
+			t.Run(mcpURL, func(t *testing.T) {
+				raw := mcpURL
+				fileConfig := &framework.FrameworkConfig{Pricing: &modelcatalog.Config{MCPLibraryURL: &raw}}
+
+				normalizedTable, normalizedModelCatalog, _ := ResolveFrameworkPricingConfig(nil, fileConfig)
+				require.Equal(t, mcpURL, *normalizedTable.MCPLibraryURL)
+				require.Equal(t, mcpURL, *normalizedModelCatalog.MCPLibraryURL)
+			})
+		}
+	})
+
+	t.Run("mcp library file intervals 60, -5 and 0", func(t *testing.T) {
+		for _, tc := range []struct {
+			file, want int64
+		}{
+			{file: 60, want: modelcatalog.MinimumPricingSyncIntervalSec},
+			{file: -5, want: defaultSyncSeconds},
+			{file: modelcatalog.MCPLibrarySyncDisabled, want: modelcatalog.MCPLibrarySyncDisabled},
+		} {
+			t.Run(fmt.Sprint(tc.file), func(t *testing.T) {
+				interval := tc.file
+				fileConfig := &framework.FrameworkConfig{Pricing: &modelcatalog.Config{MCPLibrarySyncInterval: &interval}}
+
+				normalizedTable, normalizedModelCatalog, _ := ResolveFrameworkPricingConfig(nil, fileConfig)
+				require.Equal(t, tc.want, *normalizedTable.MCPLibrarySyncInterval)
+				require.Equal(t, tc.want, *normalizedModelCatalog.MCPLibrarySyncInterval)
+			})
+		}
+	})
+
 	t.Run("mcp library zero db interval is honoured as disabled", func(t *testing.T) {
 		disabledDBSync := modelcatalog.MCPLibrarySyncDisabled
 		dbConfig := &tables.TableFrameworkConfig{
