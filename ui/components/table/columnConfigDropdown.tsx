@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Columns3, RotateCcw } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type { ColumnConfigEntry } from "./hooks/useColumnConfig";
 
 interface ColumnConfigDropdownProps {
@@ -19,16 +20,23 @@ function formatColumnId(id: string): string {
 }
 
 export function ColumnConfigDropdown({ entries, labels = {}, onToggleVisibility, onReset }: ColumnConfigDropdownProps) {
+	const { t } = useTranslation("common");
 	return (
 		<Popover>
 			<PopoverTrigger asChild>
-				<Button variant="outline" size="sm" className="h-7.5 w-7.5" data-testid="column-config-trigger" aria-label="Column configuration">
+				<Button
+					variant="outline"
+					size="sm"
+					className="h-7.5 w-7.5"
+					data-testid="column-config-trigger"
+					aria-label={t("tableColumns.configAria")}
+				>
 					<Columns3 className="h-4 w-4" />
 				</Button>
 			</PopoverTrigger>
 			<PopoverContent className="w-[200px] p-2" align="end">
 				<div className="space-y-1">
-					<div className="text-muted-foreground px-1 pb-1 text-xs font-medium">Toggle Columns</div>
+					<div className="text-muted-foreground px-1 pb-1 text-xs font-medium">{t("tableColumns.toggle")}</div>
 					{entries.map((entry) => (
 						<label key={entry.id} className="hover:bg-muted/50 flex cursor-pointer items-center gap-2 rounded px-1 py-1">
 							<Checkbox
@@ -48,7 +56,7 @@ export function ColumnConfigDropdown({ entries, labels = {}, onToggleVisibility,
 							data-testid="column-reset-default"
 						>
 							<RotateCcw className="h-3 w-3" />
-							Reset to default
+							{t("tableColumns.resetToDefault")}
 						</Button>
 					</div>
 				</div>

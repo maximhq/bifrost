@@ -91,16 +91,14 @@ func (m *MCPManager) executeToolWithHooks(
 		}
 		defer release()
 
-		// state == nil signals a code-mode tool: pass nil conn/config/mapping and
+		// state == nil signals a code-mode tool: pass nil conn/config and
 		// ToolsManager.ExecuteTool routes directly to CodeMode.
 		var executionConfig *schemas.MCPClientConfig
-		var toolNameMapping map[string]string
 		if state != nil {
 			executionConfig = state.ExecutionConfig
-			toolNameMapping = state.ToolNameMapping
 		}
 
-		result, opErr := m.toolsManager.ExecuteTool(ctx, preReq, conn, executionConfig, toolNameMapping)
+		result, opErr := m.toolsManager.ExecuteTool(ctx, preReq, conn, executionConfig)
 		if opErr != nil {
 			return nil, opErr
 		}
@@ -122,7 +120,7 @@ func (m *MCPManager) executeToolWithHooks(
 //   - For regular MCP tools: state non-nil, conn is the live transport, release
 //     must be called by the caller (defer).
 //   - For code-mode tools: state nil, conn nil, release is a no-op. The caller
-//     forwards nil conn/config/mapping to ToolsManager.ExecuteTool which
+//     forwards nil conn/config to ToolsManager.ExecuteTool which
 //     dispatches via the CodeMode implementation.
 //
 // Errors here mean the call should NOT run — neither the envelope plugin

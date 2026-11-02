@@ -380,7 +380,7 @@ Perfect for analytics, debugging specific issues, or building custom monitoring 
 Subscribe to real-time log updates for live monitoring:
 
 ```javascript
-const ws = new WebSocket('ws://localhost:8080/ws')
+const ws = new WebSocket('ws://localhost:8080/ws') // ws://localhost:8080/<prefix>/ws under server.base_path
 
 ws.onmessage = (event) => {
   const logUpdate = JSON.parse(event.data)

@@ -267,7 +267,6 @@ func TestRefreshClientTools_AwaitingAdminVerification_Refuses(t *testing.T) {
 				ExecutionConfig: config,
 				State:           schemas.MCPConnectionStatePendingVerification,
 				ToolMap:         map[string]schemas.ChatTool{},
-				ToolNameMapping: map[string]string{},
 				ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
 			}
 			m.mu.Unlock()
@@ -306,7 +305,6 @@ func TestRefreshClientTools_DisabledAndNeedsReauth_Refuse(t *testing.T) {
 				ExecutionConfig: config,
 				State:           state,
 				ToolMap:         map[string]schemas.ChatTool{},
-				ToolNameMapping: map[string]string{},
 				ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
 			}
 			m.mu.Unlock()
@@ -436,7 +434,6 @@ func TestRefreshClientTools_EditedVerifiedClient_StillRefreshes(t *testing.T) {
 	// Already verified: exactly what a restart loads for a server whose admin
 	// verification ran in an earlier process.
 	config.DiscoveredTools = map[string]schemas.ChatTool{"edited-echo": {}}
-	config.DiscoveredToolNameMapping = map[string]string{}
 	require.NoError(t, m.AddClient(context.Background(), config))
 
 	_, err := m.RefreshClientTools(context.Background(), config.ID)
@@ -446,7 +443,6 @@ func TestRefreshClientTools_EditedVerifiedClient_StillRefreshes(t *testing.T) {
 	// editable fields, and no DiscoveredTools.
 	edit := *config
 	edit.DiscoveredTools = nil
-	edit.DiscoveredToolNameMapping = nil
 	edit.ToolsToAutoExecute = []string{"echo"}
 	require.NoError(t, m.UpdateClient(config.ID, &edit))
 

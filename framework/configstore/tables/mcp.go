@@ -54,7 +54,9 @@ type TableMCPClient struct {
 
 	// Per-user OAuth: discovered tools persisted so they survive restart
 	DiscoveredToolsJSON string `gorm:"type:text" json:"-"` // JSON serialized map[string]schemas.ChatTool
-	ToolNameMappingJSON string `gorm:"type:text" json:"-"` // JSON serialized map[string]string
+	// ToolNameMappingJSON is no longer written or read. The column stays so existing rows keep
+	// their data and the migration that adds it can still find the field.
+	ToolNameMappingJSON string `gorm:"type:text" json:"-"`
 
 	DiscoveredToolDetailsJSON string `gorm:"type:text" json:"-"` // JSON serialized map[string]schemas.MCPToolDetails, left out of ChatTool's JSON
 	// DiscoveredInstructions is the upstream's initialize `instructions`. Persisted for the
@@ -123,21 +125,20 @@ type TableMCPClient struct {
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
 
 	// Virtual fields for runtime use (not stored in DB)
-	StdioConfig               *schemas.MCPStdioConfig         `gorm:"-" json:"stdio_config,omitempty"`
-	TLSConfig                 *schemas.MCPTLSConfig           `gorm:"-" json:"tls_config,omitempty"`
-	ToolsToExecute            schemas.WhiteList               `gorm:"-" json:"tools_to_execute"`
-	ToolsToAutoExecute        schemas.WhiteList               `gorm:"-" json:"tools_to_auto_execute"`
-	PromptsToExpose           schemas.WhiteList               `gorm:"-" json:"prompts_to_expose"`
-	ResourcesToExpose         schemas.WhiteList               `gorm:"-" json:"resources_to_expose"`
-	Headers                   map[string]schemas.SecretVar    `gorm:"-" json:"headers"`
-	AllowedExtraHeaders       schemas.WhiteList               `gorm:"-" json:"allowed_extra_headers"`
-	ToolPricing               map[string]float64              `gorm:"-" json:"tool_pricing"`
-	DiscoveredTools           map[string]schemas.ChatTool     `gorm:"-" json:"-"`
-	DiscoveredToolNameMapping map[string]string               `gorm:"-" json:"-"`
-	PerUserHeaderKeys         []string                        `gorm:"-" json:"per_user_header_keys"`
-	TokenExchange             *schemas.MCPTokenExchangeConfig `gorm:"-" json:"token_exchange,omitempty"` // Runtime mirror of TokenExchangeJSON
-	PendingOAuthConfig        *schemas.OAuth2Config           `gorm:"-" json:"oauth_config,omitempty"`   // Runtime mirror of PendingOAuthConfigJSON
-	OpenAPIConfig             *schemas.MCPOpenAPIConfig       `gorm:"-" json:"openapi_config,omitempty"` // Runtime mirror of OpenAPISpec + OpenAPIConfigJSON
+	StdioConfig         *schemas.MCPStdioConfig         `gorm:"-" json:"stdio_config,omitempty"`
+	TLSConfig           *schemas.MCPTLSConfig           `gorm:"-" json:"tls_config,omitempty"`
+	ToolsToExecute      schemas.WhiteList               `gorm:"-" json:"tools_to_execute"`
+	ToolsToAutoExecute  schemas.WhiteList               `gorm:"-" json:"tools_to_auto_execute"`
+	PromptsToExpose     schemas.WhiteList               `gorm:"-" json:"prompts_to_expose"`
+	ResourcesToExpose   schemas.WhiteList               `gorm:"-" json:"resources_to_expose"`
+	Headers             map[string]schemas.SecretVar    `gorm:"-" json:"headers"`
+	AllowedExtraHeaders schemas.WhiteList               `gorm:"-" json:"allowed_extra_headers"`
+	ToolPricing         map[string]float64              `gorm:"-" json:"tool_pricing"`
+	DiscoveredTools     map[string]schemas.ChatTool     `gorm:"-" json:"-"`
+	PerUserHeaderKeys   []string                        `gorm:"-" json:"per_user_header_keys"`
+	TokenExchange       *schemas.MCPTokenExchangeConfig `gorm:"-" json:"token_exchange,omitempty"` // Runtime mirror of TokenExchangeJSON
+	PendingOAuthConfig  *schemas.OAuth2Config           `gorm:"-" json:"oauth_config,omitempty"`   // Runtime mirror of PendingOAuthConfigJSON
+	OpenAPIConfig       *schemas.MCPOpenAPIConfig       `gorm:"-" json:"openapi_config,omitempty"` // Runtime mirror of OpenAPISpec + OpenAPIConfigJSON
 
 	DiscoveredResources         []mcp.Resource         `gorm:"-" json:"-"` // Runtime mirror of DiscoveredResourcesJSON
 	DiscoveredResourceTemplates []mcp.ResourceTemplate `gorm:"-" json:"-"` // Runtime mirror of DiscoveredResourceTemplatesJSON
@@ -309,14 +310,6 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 		if c.DiscoveredToolDetailsJSON, err = EncodeToolDetails(c.DiscoveredTools); err != nil {
 			return err
 		}
-	}
-
-	if c.DiscoveredToolNameMapping != nil {
-		data, err := json.Marshal(c.DiscoveredToolNameMapping)
-		if err != nil {
-			return err
-		}
-		c.ToolNameMappingJSON = string(data)
 	}
 
 	if err := c.EncodeDiscoveredLists(); err != nil {
@@ -519,11 +512,6 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 			return err
 		}
 		schemas.ApplyToolDetails(c.DiscoveredTools, details)
-	}
-	if c.ToolNameMappingJSON != "" {
-		if err := sonic.Unmarshal([]byte(c.ToolNameMappingJSON), &c.DiscoveredToolNameMapping); err != nil {
-			return err
-		}
 	}
 	// encoding/json: resource templates decode through mcp.URITemplate's UnmarshalJSON.
 	if c.DiscoveredResourcesJSON != "" {

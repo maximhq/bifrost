@@ -440,7 +440,6 @@ func newAuthRetryClientState(clientName, toolName string, destructive, idempoten
 		Name:            clientName,
 		ExecutionConfig: config,
 		ToolMap:         map[string]schemas.ChatTool{prefixedName: tool},
-		ToolNameMapping: map[string]string{},
 	}
 	return state, prefixedName
 }
@@ -490,7 +489,7 @@ func TestExecuteTool_AuthFailureRetry_PerUser_SucceedsOnSecondAttempt(t *testing
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	req := newAuthRetryToolCallRequest(toolName)
 
-	resp, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig, state.ToolNameMapping)
+	resp, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig)
 	if err != nil {
 		t.Fatalf("expected the retry to succeed, got error: %v", err)
 	}
@@ -524,7 +523,7 @@ func TestExecuteTool_AuthFailureRetry_PerUser_AuthorizationRequiredError(t *test
 	tm := newAuthRetryToolsManager(cm, cs)
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	if _, err := tm.ExecuteTool(ctx, newAuthRetryToolCallRequest(toolName), conn, state.ExecutionConfig, state.ToolNameMapping); err != nil {
+	if _, err := tm.ExecuteTool(ctx, newAuthRetryToolCallRequest(toolName), conn, state.ExecutionConfig); err != nil {
 		t.Fatalf("expected the retry to succeed, got error: %v", err)
 	}
 	if got := ft.CallCount(); got != 2 {
@@ -559,7 +558,7 @@ func TestExecuteTool_AuthFailureRetry_PerUser_RetrySucceedsButReportsToolError(t
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	req := newAuthRetryToolCallRequest(toolName)
 
-	resp, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig, state.ToolNameMapping)
+	resp, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig)
 	if err != nil {
 		t.Fatalf("a successful (if tool-erroring) retry must not surface as a Go error, got: %v", err)
 	}
@@ -593,7 +592,7 @@ func TestExecuteTool_AuthFailureRetry_PerUser_RetryAlsoFails(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	req := newAuthRetryToolCallRequest(toolName)
 
-	_, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig, state.ToolNameMapping)
+	_, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig)
 	if err == nil {
 		t.Fatal("expected an error when the retry also fails")
 	}
@@ -633,7 +632,7 @@ func TestExecuteTool_AuthFailureRetry_Shared_RetriesAfterReconnectCompletes(t *t
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	req := newAuthRetryToolCallRequest(toolName)
 
-	resp, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig, state.ToolNameMapping)
+	resp, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig)
 	if err != nil {
 		t.Fatalf("expected the retry after a completed reconnect to succeed, got error: %v", err)
 	}
@@ -677,7 +676,6 @@ func TestExecuteTool_AuthFailureRetry_Shared_RoutingChangedDuringReconnect_Rejec
 		Name:            "sharedclient",
 		ExecutionConfig: &schemas.MCPClientConfig{ID: "sharedclient-id-v2", Name: "sharedclient"},
 		ToolMap:         state.ToolMap,
-		ToolNameMapping: map[string]string{},
 	}
 
 	ft := &fakeCallToolTransport{callErrs: []error{errors.New("tool call failed: 401 Unauthorized")}}
@@ -690,7 +688,7 @@ func TestExecuteTool_AuthFailureRetry_Shared_RoutingChangedDuringReconnect_Rejec
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	req := newAuthRetryToolCallRequest(toolName)
 
-	_, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig, state.ToolNameMapping)
+	_, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig)
 	if err == nil {
 		t.Fatalf("expected the original auth failure to surface when routing resolves to a different client, got no error")
 	}
@@ -732,7 +730,7 @@ func TestExecuteTool_AuthFailureRetry_Shared_FallsBackWhenReconnectExceedsBudget
 	req := newAuthRetryToolCallRequest(toolName)
 
 	start := time.Now()
-	_, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig, state.ToolNameMapping)
+	_, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig)
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -785,7 +783,7 @@ func TestExecuteTool_AuthFailureRetry_Shared_ReconnectFails_OriginalErrorSurface
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	req := newAuthRetryToolCallRequest(toolName)
 
-	_, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig, state.ToolNameMapping)
+	_, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig)
 	if err == nil {
 		t.Fatal("expected the original error to surface when the reconnect fails")
 	}
@@ -823,7 +821,7 @@ func TestExecuteTool_AuthFailureRetry_Shared_DestructiveNonIdempotent_Reconnects
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	req := newAuthRetryToolCallRequest(toolName)
 
-	_, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig, state.ToolNameMapping)
+	_, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig)
 	if err == nil {
 		t.Fatal("expected the original error to surface for a destructive, non-idempotent tool")
 	}
@@ -885,7 +883,7 @@ func TestExecuteTool_AuthFailureRetry_Shared_Concurrent401sJoinOneReconnect(t *t
 			defer wg.Done()
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 			req := newAuthRetryToolCallRequest(toolName)
-			_, errs[idx] = tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig, state.ToolNameMapping)
+			_, errs[idx] = tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig)
 		}(i)
 	}
 
@@ -943,7 +941,7 @@ func TestExecuteTool_AuthFailureRetry_DestructiveNonIdempotent_SkipsRetry(t *tes
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	req := newAuthRetryToolCallRequest(toolName)
 
-	_, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig, state.ToolNameMapping)
+	_, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig)
 	if err == nil {
 		t.Fatal("expected the original error to surface")
 	}
@@ -979,7 +977,7 @@ func TestExecuteTool_AuthFailureRetry_DestructiveButIdempotent_StillRetries(t *t
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	req := newAuthRetryToolCallRequest(toolName)
 
-	_, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig, state.ToolNameMapping)
+	_, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig)
 	if err != nil {
 		t.Fatalf("expected the retry to run and succeed for a destructive-but-idempotent tool, got error: %v", err)
 	}
@@ -1010,7 +1008,7 @@ func TestExecuteTool_AuthFailureRetry_NoAnnotations_SkipsRetry(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	req := newAuthRetryToolCallRequest(toolName)
 
-	_, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig, state.ToolNameMapping)
+	_, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig)
 	if err == nil {
 		t.Fatal("expected the original error to surface")
 	}
@@ -1046,7 +1044,7 @@ func TestExecuteTool_AuthFailureRetry_SkippedRetryRefreshFails_OriginalErrorSurf
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	req := newAuthRetryToolCallRequest(toolName)
 
-	_, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig, state.ToolNameMapping)
+	_, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig)
 	if err == nil || !errors.Is(err, ErrMCPToolCallFailed) || !strings.Contains(err.Error(), "401 Unauthorized") {
 		t.Fatalf("expected the tool call's own error to surface, got: %v", err)
 	}
@@ -1088,7 +1086,7 @@ func TestExecuteTool_AuthFailureRetry_SkippedRetryDoesNotWaitForRefresh(t *testi
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	start := time.Now()
-	_, err := tm.ExecuteTool(ctx, newAuthRetryToolCallRequest(toolName), conn, state.ExecutionConfig, state.ToolNameMapping)
+	_, err := tm.ExecuteTool(ctx, newAuthRetryToolCallRequest(toolName), conn, state.ExecutionConfig)
 	if err == nil || !errors.Is(err, ErrMCPToolCallFailed) {
 		t.Fatalf("expected the tool call's own error, got: %v", err)
 	}
@@ -1123,7 +1121,7 @@ func TestExecuteTool_AuthFailureRetry_ReadOnly_StillRetries(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	req := newAuthRetryToolCallRequest(toolName)
 
-	_, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig, state.ToolNameMapping)
+	_, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig)
 	if err != nil {
 		t.Fatalf("expected the retry to run and succeed for a read-only tool, got error: %v", err)
 	}
@@ -1150,7 +1148,7 @@ func TestExecuteTool_NonAuthFailure_NeverTriggersRetryLogic(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	req := newAuthRetryToolCallRequest(toolName)
 
-	_, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig, state.ToolNameMapping)
+	_, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig)
 	if err == nil {
 		t.Fatal("expected the call to fail")
 	}
@@ -1209,7 +1207,7 @@ func TestExecuteTool_AuthFailureRetry_Shared_ReconnectBudgetAloneIsNotAToolTimeo
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	req := newAuthRetryToolCallRequest(toolName)
 
-	_, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig, state.ToolNameMapping)
+	_, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig)
 
 	if err == nil {
 		t.Fatal("expected the original error to surface when the reconnect exceeds its budget")
