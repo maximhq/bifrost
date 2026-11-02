@@ -413,6 +413,59 @@ The cases are skipped unless `bedrockEndpointFixture=1`.
 
 Stop the fixture and isolated gateway with Ctrl+C after testing.
 
+## Builtin plugin ordering
+
+The builtin plugin ordering folder reloads telemetry and sends a non-streaming
+request with an invalid virtual key (expected 401). A scrape immediately before the
+streaming refusal verifies that `/metrics` lacks the streaming active-request series.
+The final scrape requires one non-streaming refusal and a newly present streaming
+series at zero. Its appearance shows telemetry's LLM pre-hook ran before governance
+refused the request. The zero confirms telemetry released the slot.
+The folder disables fixture
+telemetry last; the plugin API does not accept `builtin` placement, so startup
+metadata cannot be restored through that endpoint. Stop this disposable gateway
+afterwards and use a fresh app directory for every run. It does not test
+database/API metadata normalization or call a paid provider.
+The folder is skipped unless `builtinPluginOrderingFixture=1`; never enable it on a
+shared gateway. The fixture marker and loopback check must pass before any mutation.
+
+Run from the repository root inside your Go/Node development container.
+Use a fresh app directory, not the shared integration profile; ensure port 8799 is free:
+
+```bash
+lsof -nP -iTCP:8799 -sTCP:LISTEN
+ordering_fixture_dir=$(mktemp -d /tmp/bifrost-plugin-ordering.XXXXXX)
+cp tests/e2e/api/provider_config/builtin-plugin-ordering/config.json "$ordering_fixture_dir/config.json"
+BIFROST_SETUP_TOKEN=builtin-plugin-ordering-local-only make dev HOST=127.0.0.1 PORT=8799 APP_DIR="$ordering_fixture_dir" EXPOSE_ENV=true
+```
+
+In another terminal in the same container, filter the collection and run the seven
+requests directly with Newman. The first request verifies the active telemetry
+fixture marker before the collection permits plugin updates. Keep
+`--ignore-redirects` and run the whole selection without `--bail` so the final
+request can disable telemetry even after an assertion fails. The JSON and HTML
+reports are written to the temporary report directory.
+
+```bash
+make install-newman &&
+ordering_report_dir=$(mktemp -d /tmp/bifrost-ordering-report.XXXXXX) &&
+node tests/e2e/api/runners/filter-collection.mjs \
+  --source tests/e2e/api/collections/provider-harness.json \
+  --out "$ordering_report_dir/collection.json" \
+  --provider openai --feature "builtin plugin ordering" &&
+newman run "$ordering_report_dir/collection.json" \
+  --environment tests/e2e/api/provider_config/builtin-plugin-ordering/environment.json \
+  --env-var baseUrl=http://127.0.0.1:8799 \
+  --ignore-redirects --timeout-request 15000 --timeout-script 15000 \
+  --reporters cli,json,htmlextra \
+  --reporter-json-export "$ordering_report_dir/newman-report.json" \
+  --reporter-htmlextra-export "$ordering_report_dir/newman-report.html"
+```
+
+Stop this gateway with Ctrl+C afterwards. Its disposable directory retains the
+SQLite store for inspection; on interruption, stop it and use a new directory for
+the next run. No shared gateway configuration is deleted or overwritten.
+
 ## Workload identity federation
 
 These deterministic cases run Anthropic Workload Identity Federation end to end against a local

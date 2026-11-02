@@ -1314,5 +1314,180 @@ test("provider-prefix-registration: wrong provider, unexpected status, and non-J
   }
 });
 
+const orderingFolder = JSON.parse(readFileSync(join(here, "provider-harness.json"), "utf8"))
+  .item.find((item) => /^\d+\. Builtin plugin ordering\b/.test(item.name));
+assert.ok(orderingFolder, "builtin plugin ordering folder is missing");
+assert.strictEqual(orderingFolder.item.length, 7);
+const [orderingIdentity, orderingReload, orderingUnary, orderingBaseline, orderingStream, orderingMetrics, orderingCleanup] = orderingFolder.item;
+
+test("plugin ordering: the environment opts in with the isolated gateway's setup token", () => {
+  const fixtureDir = join(here, "../provider_config/builtin-plugin-ordering");
+  const config = JSON.parse(readFileSync(join(fixtureDir, "config.json"), "utf8"));
+  const environment = JSON.parse(readFileSync(join(fixtureDir, "environment.json"), "utf8"));
+  assert.strictEqual(environment.values.find((entry) => entry.key === "builtinPluginOrderingFixture").value, "1");
+  assert.strictEqual(environment.values.find((entry) => entry.key === "setupToken").value, config.setup_token);
+  assert.strictEqual(config.providers.openai.network_config.base_url, "http://127.0.0.1:1");
+  for (const { request } of orderingFolder.item) {
+    if (request.url === "{{baseUrl}}/v1/chat/completions") continue;
+    assert.strictEqual(request.header.find((header) => header.key === "X-Bifrost-Setup-Token")?.value, config.setup_token);
+  }
+});
+
+/** Runs an ordering script with mocked responses and immediate timers, capturing failures, polls, and delays without network I/O. */
+function simulateOrdering(source, { code = 200, body = "", contentType = "text/plain; version=0.0.4", variables = {}, nextBody = body, pollError = null } = {}) {
+  const failures = [];
+  const vars = { baseUrl: "http://localhost:8799", ...variables };
+  let skipped = false;
+  let polls = 0;
+  const response = (text) => ({
+    code, text: () => text, json: () => JSON.parse(text),
+    headers: { get: (name) => name.toLowerCase() === "content-type" ? contentType : undefined },
+  });
+  const pm = {
+    variables: { get: (key) => vars[key] },
+    collectionVariables: { get: (key) => vars[key], set: (key, value) => { vars[key] = value; }, unset: (key) => { delete vars[key]; } },
+    response: response(body),
+    execution: { skipRequest: () => { skipped = true; } },
+    expect: (value, message) => Object.assign(redactionExpect(value, message), { eql: (expected) => assert.deepStrictEqual(value, expected) }),
+    test: (name, fn) => { try { fn(); } catch (err) { failures.push(name + ": " + err.message); } },
+    sendRequest: (request, callback) => { polls++; assert.strictEqual(request.url, vars.baseUrl + "/metrics"); callback(pollError, response(nextBody)); },
+  };
+  const delays = [];
+  new Function("pm", "setTimeout", source)(pm, (fn, delay) => { delays.push(delay); fn(); });
+  return { failures, vars, skipped, polls, delays };
+}
+
+test("plugin ordering: fixture opt-in and loopback are required", () => {
+  const source = listenScript(orderingFolder, "prerequest");
+  assert.strictEqual(simulateOrdering(source).skipped, true);
+  const remote = simulateOrdering(source, { variables: { builtinPluginOrderingFixture: "1", baseUrl: "https://shared.example" } });
+  assert.strictEqual(remote.skipped, true);
+  assert.strictEqual(remote.failures.length, 1);
+  assert.strictEqual(simulateOrdering(source, { variables: { builtinPluginOrderingFixture: "1" } }).skipped, false);
+});
+
+test("plugin ordering: the identity request admits only the active marked fixture", () => {
+  const identity = listenScript(orderingIdentity, "test");
+  const reset = simulateOrdering(listenScript(orderingIdentity, "prerequest"), { variables: { builtinOrderingStreamBaseline: true } });
+  assert.strictEqual(reset.vars.builtinOrderingStreamBaseline, undefined);
+  const fixture = {
+    name: "telemetry", enabled: true, status: { status: "active" }, config: { custom_labels: ["builtin_plugin_ordering_fixture"] },
+  };
+  const confirmed = simulateOrdering(identity, { body: JSON.stringify(fixture) });
+  assert.deepStrictEqual(confirmed.failures, []);
+  assert.strictEqual(confirmed.vars.builtinOrderingReady, true);
+  for (const [code, body] of [
+    [200, JSON.stringify({ ...fixture, config: { custom_labels: [] } })],
+    [200, JSON.stringify({ ...fixture, enabled: false })],
+    [200, JSON.stringify({ ...fixture, status: { status: "disabled" } })],
+    [200, "{}"],
+    [200, "not JSON"],
+    [302, JSON.stringify(fixture)],
+    [401, "{}"],
+    [500, "{}"],
+  ]) {
+    const rejected = simulateOrdering(identity, { code, body });
+    assert.strictEqual(rejected.failures.length, 1);
+    assert.strictEqual(rejected.vars.builtinOrderingReady, undefined);
+    for (const request of [orderingReload, orderingCleanup]) {
+      const mutation = listenScript(request, "prerequest");
+      assert.strictEqual(simulateOrdering(mutation, { variables: rejected.vars }).skipped, true);
+    }
+  }
+  const cleanup = listenScript(orderingCleanup, "prerequest");
+  assert.strictEqual(simulateOrdering(cleanup, { variables: confirmed.vars }).skipped, false);
+});
+
+test("plugin ordering: cleanup disables telemetry without sending unsupported builtin placement", () => {
+  const cleanup = orderingCleanup;
+  assert.strictEqual(cleanup.request.method, "PUT");
+  assert.deepStrictEqual(JSON.parse(cleanup.request.body.raw), { enabled: false });
+  const body = { plugin: { name: "telemetry", enabled: false, status: { status: "disabled" } } };
+  assert.deepStrictEqual(simulateOrdering(listenScript(cleanup, "test"), { body: JSON.stringify(body) }).failures, []);
+  body.plugin.enabled = true;
+  assert.strictEqual(simulateOrdering(listenScript(cleanup, "test"), { body: JSON.stringify(body) }).failures.length, 1);
+});
+
+test("plugin ordering: both request modes assert refusal before any provider call", () => {
+  for (const [probe, stream, flag] of [[orderingUnary, false, "builtinOrderingRefused"], [orderingStream, true, "builtinOrderingStreamRefused"]]) {
+    assert.ok(probe.name.includes("[EXPECT-401]"));
+    assert.strictEqual(probe.request.url, "{{baseUrl}}/v1/chat/completions");
+    assert.strictEqual(JSON.parse(probe.request.body.raw).stream, stream);
+    const source = listenScript(probe, "test");
+    const refused = simulateOrdering(source, { code: 401, body: JSON.stringify({ error: { message: "access not found" } }) });
+    assert.deepStrictEqual(refused.failures, []);
+    assert.strictEqual(refused.vars[flag], true);
+    const unexpected = simulateOrdering(source, { code: 500, body: "provider failure" });
+    assert.strictEqual(unexpected.failures.length, 1);
+    assert.strictEqual(unexpected.vars[flag], undefined);
+  }
+});
+
+test("plugin ordering: metrics require both refusal probes and the streaming baseline", () => {
+  const source = listenScript(orderingMetrics, "prerequest");
+  const verified = { builtinOrderingRefused: true, builtinOrderingStreamBaseline: true, builtinOrderingStreamRefused: true };
+  for (const missing of Object.keys(verified)) {
+    assert.strictEqual(simulateOrdering(source, { variables: { ...verified, [missing]: undefined } }).skipped, true);
+  }
+  assert.strictEqual(simulateOrdering(source, { variables: verified }).skipped, false);
+});
+
+const orderingUnaryMetric = 'bifrost_error_requests_total{provider="openai",model="gpt-4o-mini",method="chat_completion",status_code="401",error_type="policy_access_denied"} 1\n';
+const orderingStreamMetric = 'bifrost_active_requests{method="chat_completion_stream"} 0\n';
+const orderingMetric = orderingUnaryMetric + orderingStreamMetric;
+
+test("plugin ordering: the streaming probe requires a clean metrics baseline", () => {
+  assert.strictEqual(orderingBaseline.request.method, "GET");
+  assert.strictEqual(orderingBaseline.request.url, "{{baseUrl}}/metrics");
+  const preBaseline = listenScript(orderingBaseline, "prerequest");
+  assert.strictEqual(simulateOrdering(preBaseline).skipped, true);
+  assert.strictEqual(simulateOrdering(preBaseline, { variables: { builtinOrderingRefused: true } }).skipped, false);
+
+  const baseline = listenScript(orderingBaseline, "test");
+  const stream = listenScript(orderingStream, "prerequest");
+  const clean = simulateOrdering(baseline, { body: orderingUnaryMetric + 'bifrost_active_requests{method="chat_completion"} 0\n' });
+  assert.deepStrictEqual(clean.failures, []);
+  assert.strictEqual(clean.vars.builtinOrderingStreamBaseline, true);
+  assert.strictEqual(simulateOrdering(stream, { variables: clean.vars }).skipped, false);
+
+  for (const options of [
+    { body: orderingMetric },
+    { body: orderingMetric.replace("} 0", "} 1") },
+    { code: 401, body: "unauthorized" },
+    { code: 500, body: "unavailable" },
+    { contentType: "text/html", body: "<html>not metrics</html>" },
+  ]) {
+    const rejected = simulateOrdering(baseline, { ...options, variables: { builtinOrderingStreamBaseline: true } });
+    assert.strictEqual(rejected.failures.length, 1);
+    assert.strictEqual(rejected.vars.builtinOrderingStreamBaseline, undefined);
+    assert.strictEqual(simulateOrdering(stream, { variables: rejected.vars }).skipped, true);
+  }
+});
+
+for (const [name, options, expectedFailures, expectedPolls] of [
+  ["records refusal", { body: orderingMetric }, 0, 0],
+  ["waits for asynchronous recording", { body: "", nextBody: orderingMetric }, 0, 1],
+  ["waits for streaming recording", { body: orderingUnaryMetric, nextBody: orderingMetric }, 0, 1],
+  ["waits for streaming release", { body: orderingMetric.replace('} 0', '} 1'), nextBody: orderingMetric }, 0, 1],
+  ["rejects stuck streaming gauge", { body: orderingMetric.replace('} 0', '} 1') }, 1, 20],
+  ["rejects missing streaming metric", { body: orderingUnaryMetric }, 1, 20],
+  ["rejects missing unary metric", { body: orderingStreamMetric }, 1, 20],
+  ["rejects missing telemetry", { body: "" }, 1, 20],
+  ["bounds failure diagnostics", { body: "x".repeat(16000) }, 1, 20],
+  ["rejects unrelated metrics", { body: orderingMetric.replace('status_code="401"', 'status_code="500"') }, 1, 20],
+  ["rejects duplicate counts", { body: orderingMetric.replace("} 1", "} 2") }, 1, 0],
+  ["rejects metrics auth errors", { code: 401, body: "unauthorized" }, 1, 0],
+  ["rejects metrics server errors", { code: 500, body: "failure" }, 1, 0],
+  ["rejects polling transport errors", { pollError: new Error("connection refused") }, 1, 1],
+]) {
+  test("plugin ordering: " + name, () => {
+    const result = simulateOrdering(listenScript(orderingMetrics, "test"), options);
+    assert.strictEqual(result.failures.length, expectedFailures);
+    assert.strictEqual(result.polls, expectedPolls);
+    assert.deepStrictEqual(result.delays, Array(expectedPolls).fill(250));
+    assert.ok(result.failures.every((message) => message.length < 1024));
+  });
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);
