@@ -136,6 +136,14 @@ func (s *Server) servePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A request on the sessionless core skips sessions altogether, once the server speaks it.
+	if s.versions.supports(ProtocolVersion20260728) && r.Header.Get(HeaderStdioBridge) == "" {
+		if headerVersion, metaVersion, modern := requestEra(r, &req); modern || req.Method == MethodServerDiscover {
+			s.serveModern(w, r, &req, headerVersion, metaVersion, identity, f)
+			return
+		}
+	}
+
 	// Session validity is only meaningful once one has been issued. An
 	// initialize request legitimately arrives without a session id, and must
 	// not be 404'd for it.
@@ -170,7 +178,12 @@ func (s *Server) servePost(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(HeaderSessionID, res.NewSession.ID)
 		w.Header().Set(HeaderProtocolVersion, res.NewSession.ProtocolVersion)
 	}
+	s.writeHandled(w, res, f, false)
+}
 
+// writeHandled renders what the protocol layer answered. A sessionless request's JSON-RPC error
+// carries the HTTP status 2026-07-28 gives it; a session-era one is always 200.
+func (s *Server) writeHandled(w http.ResponseWriter, res handleResult, f Faults, modern bool) {
 	switch {
 	case res.HTTPStatus != 0:
 		http.Error(w, res.Message, res.HTTPStatus)
@@ -199,6 +212,10 @@ func (s *Server) servePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if modern {
+		writeModern(w, res.Response)
+		return
+	}
 	writeJSON(w, http.StatusOK, res.Response)
 }
 
@@ -273,6 +290,7 @@ func (s *Server) serveListeningStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// writeJSON writes v as a JSON body with status.
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

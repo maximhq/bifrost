@@ -30,6 +30,7 @@ type Server struct {
 	rest     *restSurface
 	llm      *llmSurface
 	prompts  *promptSurface
+	versions *versionState
 
 	// version is reported in serverInfo. Scenarios that restart a server with
 	// changed behaviour bump it so a client's own logs distinguish the two.
@@ -68,6 +69,7 @@ func NewServer(name string) *Server {
 		rest:     &restSurface{},
 		llm:      newLLMSurface(),
 		prompts:  &promptSurface{},
+		versions: newVersionState(),
 		version:  "1.0.0",
 	}
 }
@@ -303,12 +305,7 @@ func (s *Server) Handle(req *request, sessionID, identity string, f Faults) hand
 	// this short, and putting the sleep first means even a method that would
 	// have failed still takes the full time, which is what a wedged upstream
 	// looks like.
-	if d := time.Duration(f.Hang); d > 0 {
-		time.Sleep(d)
-	}
-	if d := s.faults.delay(f); d > 0 {
-		time.Sleep(d)
-	}
+	s.wait(f)
 
 	switch req.Method {
 	case MethodInitialize:
@@ -341,6 +338,18 @@ func (s *Server) Handle(req *request, sessionID, identity string, f Faults) hand
 	}
 }
 
+// wait sleeps for the hang and latency faults in f, before a request is answered.
+func (s *Server) wait(f Faults) {
+	if d := time.Duration(f.Hang); d > 0 {
+		time.Sleep(d)
+	}
+	if d := s.faults.delay(f); d > 0 {
+		time.Sleep(d)
+	}
+}
+
+// handleInitialize answers initialize: it negotiates a version from the ones the server speaks,
+// opens or reuses the caller's session, and records the handshake.
 func (s *Server) handleInitialize(req *request, sessionID, identity string, f Faults) handleResult {
 	if f.InitFail {
 		s.counters.faulted()
@@ -356,15 +365,16 @@ func (s *Server) handleInitialize(req *request, sessionID, identity string, f Fa
 		_ = json.Unmarshal(req.Params, &params)
 	}
 
-	version := DefaultProtocolVersion
-	if params.ProtocolVersion != "" && supportedProtocolVersions[params.ProtocolVersion] {
-		version = params.ProtocolVersion
-	}
+	version := s.versions.negotiateLegacy(params.ProtocolVersion)
 	if f.BadVersion != "" {
 		// Deliberately answer with a version the client did not ask for and
 		// may not support, which is the one thing a strict client must reject.
 		version = f.BadVersion
 		s.counters.faulted()
+	}
+	if version == "" {
+		// A server set to speak only the sessionless core has no initialize to offer.
+		return handleResult{Response: unsupportedVersion(req.ID, params.ProtocolVersion, s.versions.list())}
 	}
 
 	// A session the caller already holds is reused rather than replaced. The
@@ -381,10 +391,22 @@ func (s *Server) handleInitialize(req *request, sessionID, identity string, f Fa
 		s.counters.session()
 	}
 	s.counters.initialize()
+	s.counters.handshake(Handshake{Method: MethodInitialize, Requested: params.ProtocolVersion, Negotiated: version})
 
+	result := initializeResult{
+		ProtocolVersion: version,
+		Capabilities:    s.capabilities(),
+		ServerInfo:      serverInfo{Name: s.name, Version: s.version},
+		Instructions:    s.Instructions(),
+	}
+	return handleResult{Response: newResult(req.ID, result), NewSession: sess}
+}
+
+// capabilities is what the server advertises in initialize and server/discover. Prompts, resources
+// and completion are advertised only once a scenario sets some, so a server without them keeps
+// the handshake every other scenario expects.
+func (s *Server) capabilities() capabilities {
 	caps := capabilities{Tools: &toolsCapability{ListChanged: true}}
-	// Prompts, resources and completion are advertised only once a scenario sets some, so a server
-	// without them keeps the handshake every other scenario expects.
 	if hasPrompts, hasResources := s.prompts.offers(); hasPrompts || hasResources {
 		if hasPrompts {
 			caps.Prompts = &struct{}{}
@@ -394,15 +416,10 @@ func (s *Server) handleInitialize(req *request, sessionID, identity string, f Fa
 			caps.Resources = &struct{}{}
 		}
 	}
-	result := initializeResult{
-		ProtocolVersion: version,
-		Capabilities:    caps,
-		ServerInfo:      serverInfo{Name: s.name, Version: s.version},
-		Instructions:    s.Instructions(),
-	}
-	return handleResult{Response: newResult(req.ID, result), NewSession: sess}
+	return caps
 }
 
+// handlePing answers ping, or fails it as the no_ping and ping_fail faults ask.
 func (s *Server) handlePing(req *request, f Faults) handleResult {
 	s.counters.ping()
 	switch {
@@ -419,6 +436,7 @@ func (s *Server) handlePing(req *request, f Faults) handleResult {
 	return handleResult{Response: newResult(req.ID, struct{}{})}
 }
 
+// handleToolsList answers tools/list with the tools the caller's identity sees, unless a fault fails it.
 func (s *Server) handleToolsList(req *request, identity string, f Faults) handleResult {
 	s.counters.toolsList()
 	if f.ListFail {
@@ -437,6 +455,7 @@ func (s *Server) handleToolsList(req *request, identity string, f Faults) handle
 	return handleResult{Response: newResult(req.ID, toolsListResult{Tools: wire})}
 }
 
+// handleToolsCall runs one tool call against the tool set, applying the tool's scripted reply and faults.
 func (s *Server) handleToolsCall(req *request, identity string, f Faults) handleResult {
 	var params callParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
