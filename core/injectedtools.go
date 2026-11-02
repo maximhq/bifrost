@@ -6,7 +6,7 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
-	"github.com/maximhq/bifrost/core/internal/injectedauth"
+	"github.com/maximhq/bifrost/core/internal/mcpvouch"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/core/toolsearch"
 )
@@ -805,7 +805,7 @@ func (bifrost *Bifrost) executeInjectedCall(ctx *schemas.BifrostContext, set *in
 	toolCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 	toolCtx.SetValue(schemas.BifrostContextKeyMCPLogID, uuid.New().String())
 	call, target := mcpInjectedCall(set, call)
-	injectedauth.Set(toolCtx, target.clientName, target.toolName)
+	mcpvouch.Set(toolCtx, schemas.MCPToolCallKindInjected, target.clientName, target.toolName)
 	result, bifrostErr := bifrost.MCPManager.ExecuteChatTool(toolCtx, &call)
 	if bifrostErr == nil && result != nil {
 		return result
