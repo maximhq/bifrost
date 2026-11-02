@@ -348,6 +348,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"mcp_tool_logs_add_method_column"}, run: migrationAddMethodColumnToMCPToolLogs},
 	{IDs: []string{"add_relay_logs_table"}, run: migrationCreateRelayLogsTable},
 	{IDs: []string{"relay_logs_add_object_columns"}, run: migrationAddRelayLogObjectColumns},
+	{IDs: []string{"logs_add_client_ip_column"}, run: migrationAddClientIPColumn},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -6021,4 +6022,93 @@ func migrationAddRelayLogObjectColumns(ctx context.Context, db *gorm.DB, logger 
 		},
 	}})
 	return m.Migrate()
+}
+
+// clientIPColumnModels are the log tables that carry client_ip.
+var clientIPColumnModels = []any{&Log{}, &MCPToolLog{}, &RelayLog{}}
+
+// migrationAddClientIPColumn adds client_ip to logs, mcp_tool_logs and relay_logs.
+func migrationAddClientIPColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	return migrator.New(db, &opts, []*migrator.Migration{clientIPColumnMigration(ctx, logger)}).Migrate()
+}
+
+func clientIPColumnMigration(ctx context.Context, logger schemas.Logger) *migrator.Migration {
+	eachTable := func(tx *gorm.DB, apply func(*gorm.DB, schemas.Logger, interface{}, string) error) error {
+		tx = tx.WithContext(ctx)
+		if err := boundDDLLockWait(tx); err != nil {
+			return err
+		}
+		for _, model := range clientIPColumnModels {
+			if err := apply(tx, logger, model, "ClientIP"); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return &migrator.Migration{
+		ID:      "logs_add_client_ip_column",
+		Migrate: func(tx *gorm.DB) error { return eachTable(tx, addColumnIfNotExists) },
+		Rollback: func(tx *gorm.DB) error {
+			if err := refuseRollbackWhileRecorded(tx.WithContext(ctx), "logs_add_client_ip_column", clientIPColumnModels, "client_ip"); err != nil {
+				return err
+			}
+			return eachTable(tx, dropColumnIfExists)
+		},
+	}
+}
+
+// refuseRollbackWhileRecorded returns an error when any of columns holds a value on any of models. Caller identity
+// cannot be recaptured after the fact, so dropping a populated column deletes data rather than reversing a schema change.
+//
+// On PostgreSQL it first takes the ACCESS EXCLUSIVE lock DROP COLUMN needs anyway, on every table at once and bounded by
+// boundDDLLockWait, so a writer cannot commit a value between the check and the drop. The lock lasts until the
+// migration's transaction ends. Without an index on the column, proving it empty reads the whole table while every
+// reader and writer waits, so a statement timeout bounds the check too: a scan that runs over it fails the rollback
+// before any column is dropped.
+func refuseRollbackWhileRecorded(tx *gorm.DB, migrationID string, models []any, columns ...string) error {
+	migrator := tx.Migrator()
+	if tx.Dialector.Name() == "postgres" {
+		if err := boundDDLLockWait(tx); err != nil {
+			return err
+		}
+		if err := tx.Exec("SET LOCAL statement_timeout = '30s'").Error; err != nil {
+			return fmt.Errorf("could not bound the recorded-value check for %s: %w", migrationID, err)
+		}
+		tables := make([]string, 0, len(models))
+		for _, model := range models {
+			if !migrator.HasTable(model) {
+				continue
+			}
+			stmt := &gorm.Statement{DB: tx}
+			if err := stmt.Parse(model); err != nil {
+				return fmt.Errorf("could not resolve the table for %T before rolling back %s: %w", model, migrationID, err)
+			}
+			tables = append(tables, stmt.Quote(stmt.Schema.Table))
+		}
+		if len(tables) > 0 {
+			if err := tx.Exec("LOCK TABLE " + strings.Join(tables, ", ") + " IN ACCESS EXCLUSIVE MODE").Error; err != nil {
+				return fmt.Errorf("could not lock the log tables before rolling back %s: %w", migrationID, err)
+			}
+		}
+	}
+	for _, model := range models {
+		if !migrator.HasTable(model) {
+			continue
+		}
+		for _, column := range columns {
+			if !migrator.HasColumn(model, column) {
+				continue
+			}
+			var present []struct{ One int }
+			if err := tx.Model(model).Select("1 AS one").Where(column + " IS NOT NULL").Limit(1).Find(&present).Error; err != nil {
+				return fmt.Errorf("could not check %T.%s before rolling back %s: %w", model, column, migrationID, err)
+			}
+			if len(present) > 0 {
+				return fmt.Errorf("%s is non-rollbackable: %T.%s holds recorded values that cannot be recaptured, and dropping it would delete them; clear the column first if the rollback is genuinely intended", migrationID, model, column)
+			}
+		}
+	}
+	return nil
 }
