@@ -383,6 +383,73 @@ The cases are skipped unless `bedrockEndpointFixture=1`.
 
 Stop the fixture and isolated gateway with Ctrl+C after testing.
 
+## Builtin plugin ordering
+
+The builtin plugin ordering folder reloads telemetry, sends an invalid virtual key (expected 401), and checks
+`/metrics` to prove telemetry still runs before governance. It disables fixture
+telemetry last; the plugin API does not accept `builtin` placement, so startup
+metadata cannot be restored through that endpoint. Stop this disposable gateway
+afterwards and use a fresh app directory for every run. It does not test
+database/API metadata normalization or call a paid provider.
+The folder is skipped unless `builtinPluginOrderingFixture=1`; never enable it on a
+shared gateway. The fixture marker and loopback check must pass before any mutation.
+
+Run from the repository root **inside your Go 1.27.3/Node development container**.
+Use a fresh app directory, not the shared integration profile; ensure port 8799 is free:
+
+```bash
+lsof -nP -iTCP:8799 -sTCP:LISTEN
+ordering_fixture_dir=$(mktemp -d /tmp/bifrost-plugin-ordering.XXXXXX)
+cp tests/e2e/api/provider_config/builtin-plugin-ordering/config.json "$ordering_fixture_dir/config.json"
+BIFROST_SETUP_TOKEN=builtin-plugin-ordering-local-only make dev HOST=127.0.0.1 PORT=8799 APP_DIR="$ordering_fixture_dir" EXPOSE_ENV=true
+```
+
+In another terminal in the same container, run the entire block below to execute all five
+requests in order (do not add `--bail`, so cleanup runs after a failed assertion).
+The read-only check must establish fixture identity before the harness starts.
+A healthy gateway or an accepted setup token alone is
+not sufficient. The `&&` prevents invocation on HTTP errors, invalid JSON, a missing
+fixture marker, or inactive telemetry; redirects are refused and the read times out
+after five seconds. Do not run the `make` line separately. The collection repeats
+the marker and loopback checks before its plugin mutations.
+Set `BIFROST_E2E_SKIP_RAW_OVERRIDE=1` for this fixture: none of its assertions need
+raw payloads, so the raw-override helper exits without any HTTP request. This removes
+its `/api/config` mutation even if the gateway changes after the read-only check.
+Do not use this opt-out for cases that assert on raw requests/responses. The default
+harness behavior is unchanged when the variable is unset.
+Keep both setup-token variables pinned to the fixture token.
+Pin `BIFROST_E2E_BASE_URL` to the same disposable gateway
+as `BASE_URL`, and use `EXPOSE_ENV=true` to skip shared `.env`/Infisical loading
+that could override it. `SKIP_STREAM_CANCEL=1` excludes unrelated provider probes.
+`RERUN_FAILED= SMOKE= FOLDER=` clears inherited rerun, smoke, and folder filters so
+a previous report or a different test selection cannot exclude this regression.
+
+For this isolated fixture only, use `CI=1` as an exception to the usual interactive
+harness workflow: it skips launching the viewer and freeing its port, without skipping
+the five regression requests or changing their pass/fail result. With `PARALLEL=0`,
+reports remain available at `tmp/newman-report.json` and `tmp/newman-report.html`.
+
+```bash
+node --input-type=module <<'ORDERING_FIXTURE' &&
+import assert from 'node:assert/strict';
+const response = await fetch('http://127.0.0.1:8799/api/plugins/telemetry', {
+  method: 'GET', redirect: 'error', signal: AbortSignal.timeout(5000),
+  headers: { 'X-Bifrost-Setup-Token': 'builtin-plugin-ordering-local-only' },
+});
+assert.equal(response.status, 200, 'fixture identity check failed');
+const plugin = await response.json();
+assert.equal(plugin.name, 'telemetry');
+assert.equal(plugin.enabled, true);
+assert.equal(plugin.status?.status, 'active');
+assert.deepEqual(plugin.config?.custom_labels, ['builtin_plugin_ordering_fixture']);
+ORDERING_FIXTURE
+BIFROST_SETUP_TOKEN=builtin-plugin-ordering-local-only BIFROST_E2E_SETUP_TOKEN=builtin-plugin-ordering-local-only BIFROST_E2E_BASE_URL=http://127.0.0.1:8799 BIFROST_E2E_SKIP_RAW_OVERRIDE=1 make run-provider-harness-test PROVIDER=openai FEATURE="builtin plugin ordering" BASE_URL=http://127.0.0.1:8799 PARALLEL=0 ENV_FILE=tests/e2e/api/provider_config/builtin-plugin-ordering/environment.json CI=1 EXPOSE_ENV=true SKIP_STREAM_CANCEL=1 RERUN_FAILED= SMOKE= FOLDER=
+```
+
+Stop this gateway with Ctrl+C afterwards. Its disposable directory retains the
+SQLite store for inspection; on interruption, stop it and use a new directory for
+the next run. No shared gateway configuration is deleted or overwritten.
+
 ## Workload identity federation
 
 These deterministic cases run Anthropic Workload Identity Federation end to end against a local
