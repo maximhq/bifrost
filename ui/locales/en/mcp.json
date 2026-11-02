@@ -897,7 +897,22 @@
 			"boundTo": "Bound to",
 			"status": "Status",
 			"accessTokenExpiry": "Access token expiry",
+			"discovery": "Discovery",
+			"discoveryHelp": "What Bifrost discovered with this credential on a server with Per-Caller Discovery on: its tools, prompts and resources, and when. Not yet: the caller has not connected since signing in, or discovery failed; it runs on their next connect. Shared: the server keeps one discovery that every caller uses. A dash: the credential needs action first, or it is session-bound.",
 			"created": "Created"
+		},
+		"discoveryCell": {
+			"shared": "Shared",
+			"noTools": "No tools",
+			"tools_one": "{{count}} tool",
+			"tools_other": "{{count}} tools",
+			"prompts_one": "{{count}} prompt",
+			"prompts_other": "{{count}} prompts",
+			"resources_one": "{{count}} resource",
+			"resources_other": "{{count}} resources",
+			"discoveredAgo": "discovered {{time}}",
+			"notYet": "Not yet",
+			"onNextConnect": "on the next connect"
 		},
 		"tooltips": {
 			"type": "OAuth: per-user OAuth credential, either a stored token from a completed sign-in, or a pending sign-in flow. Headers: per-user header values (API keys / signed tokens), either stored or pending submission.",

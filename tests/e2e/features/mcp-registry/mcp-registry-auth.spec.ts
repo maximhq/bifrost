@@ -302,6 +302,8 @@ test.describe("MCP Registry - Authentication", () => {
       await view.getByTestId("mcpclient-view-callers-filter-pending").click();
       await expect(view.getByTestId("mcpclient-view-caller-e2e-active-row")).toHaveCount(0);
       await expect(view.getByTestId("mcpclient-view-callers-rows-loading")).toBeVisible();
+      // The Discovery column makes four, and the loading row spans them all.
+      await expect(view.getByTestId("mcpclient-view-callers-rows-loading").locator("td")).toHaveAttribute("colspan", "4");
       await expect(view.getByTestId("mcpclient-view-callers-filter-pending")).toHaveAttribute("aria-pressed", "true");
       await expect(view.getByTestId("mcpclient-view-callers-filter-pending")).toBeFocused();
       await expect(view.getByTestId("mcpclient-view-stat-callers")).toContainText("1");
