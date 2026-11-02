@@ -40,6 +40,11 @@ type Tool struct {
 	// the arguments, which is enough to prove which tool actually ran.
 	Reply json.RawMessage `json:"reply,omitempty"`
 
+	// ReplyError is the JSON-RPC error tools/call answers this tool with, an
+	// object of code, message and data sent as given, so a scenario can return
+	// a code no fault produces, such as a protocol revision's own error codes.
+	ReplyError json.RawMessage `json:"reply_error,omitempty"`
+
 	// ReplyEnv answers with the value of this variable in the environment
 	// the stdio bridge registered, which is how a scenario proves what
 	// environment the system under test spawned its subprocess with.
@@ -69,7 +74,7 @@ func (t Tool) wire() wireTool {
 
 // Validate rejects a definition that would otherwise misbehave quietly:
 // annotations, an output schema or a reply that is not a JSON object, icons
-// that are not a JSON array, two reply sources, or a
+// that are not a JSON array, a reply error without a code, two reply sources, or a
 // per-tool fault field that cannot apply to one tool's call. In a chaos harness
 // a silently ignored field looks exactly like the client coping.
 func (t Tool) Validate() error {
@@ -85,8 +90,20 @@ func (t Tool) Validate() error {
 	if !isObjectOrEmpty(t.Reply) {
 		return fmt.Errorf("tool %q: reply must be a JSON object (a CallToolResult)", t.Name)
 	}
-	if len(t.Reply) > 0 && t.ReplyEnv != "" {
-		return fmt.Errorf("tool %q: reply and reply_env are exclusive", t.Name)
+	if len(t.ReplyError) > 0 {
+		var e rpcError
+		if !isObjectOrEmpty(t.ReplyError) || json.Unmarshal(t.ReplyError, &e) != nil || e.Code == 0 {
+			return fmt.Errorf("tool %q: reply_error must be a JSON-RPC error object with a non-zero integer code", t.Name)
+		}
+	}
+	sources := 0
+	for _, set := range []bool{len(t.Reply) > 0, len(t.ReplyError) > 0, t.ReplyEnv != ""} {
+		if set {
+			sources++
+		}
+	}
+	if sources > 1 {
+		return fmt.Errorf("tool %q: reply, reply_error and reply_env are exclusive", t.Name)
 	}
 	if t.Fault != nil {
 		if err := t.Fault.validateForTool(); err != nil {
@@ -152,6 +169,9 @@ func normalize(t Tool) *Tool {
 	}
 	if string(bytes.TrimSpace(t.Reply)) == "null" {
 		t.Reply = nil
+	}
+	if string(bytes.TrimSpace(t.ReplyError)) == "null" {
+		t.ReplyError = nil
 	}
 	if len(t.InputSchema) == 0 {
 		t.InputSchema = defaultInputSchema

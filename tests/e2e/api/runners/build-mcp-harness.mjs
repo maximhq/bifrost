@@ -8915,6 +8915,179 @@ const SET23 = folder("SET-23 Header value from an environment variable", `Setup:
   deleteClient("SET-23", "set23-c"),
 ]);
 
+// ================================================================ load on the gateway and its upstreams
+
+// burst fires n requests at once from a pre-request script. step is ES5 that defines run(i), which
+// sends request i and calls finish(i, good, why) exactly once. The outcome is saved as JSON
+// {ok, bad} in the collection variable varName, cleared first so a stale run cannot pass.
+const burst = (varName, n, step) => [
+  `pm.collectionVariables.set(${lit(varName)}, '');`,
+  "var base = pm.variables.get('base_url');",
+  `var n = ${n}, done = 0, ok = 0, bad = [];`,
+  "function finish(i, good, why) {",
+  "  if (good) { ok++; } else if (bad.length < 5) { bad.push(i + ': ' + why); }",
+  `  if (++done === n) { pm.collectionVariables.set(${lit(varName)}, JSON.stringify({ ok: ok, bad: bad })); }`,
+  "}",
+  "function why(err, res) { return err ? String(err) : res.code + ' ' + res.text(); }",
+  "function body(res) { try { return res.json(); } catch (e) { return {}; } }",
+  ...step,
+  "for (var i = 0; i < n; i++) { run(i); }",
+];
+const burstOk = (varName, n, what) => A.custom(`all ${n} ${what} succeeded`, [
+  `var b = JSON.parse(pm.collectionVariables.get(${lit(varName)}) || '{"ok":0,"bad":["the burst did not finish"]}');`,
+  `pm.expect(b.ok, JSON.stringify(b.bad)).to.equal(${n});`,
+]);
+// rpcStep defines rpcTo(msg, sid, extra, cb), a POST /mcp carrying the VK in vkVar and the session id
+// sid, and echoed(res, tok), whether the result is echo_tool's reply to the argument {text: tok}.
+const rpcStep = (vkVar) => [
+  "function rpcTo(msg, sid, extra, cb) {",
+  `  var h = { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'x-bf-vk': pm.collectionVariables.get(${lit(vkVar)}) };`,
+  "  if (sid) { h['Mcp-Session-Id'] = sid; }",
+  "  for (var k in extra) { h[k] = extra[k]; }",
+  "  pm.sendRequest({ url: base + '/mcp', method: 'POST', header: h, body: { mode: 'raw', raw: JSON.stringify(msg) } }, cb);",
+  "}",
+  "function echoed(res, tok) {",
+  "  var c = ((body(res).result || {}).content || [])[0];",
+  "  return res.code === 200 && !!c && c.text === 'echo_tool:' + JSON.stringify({ text: tok });",
+  "}",
+];
+// execStep defines run(i) as POST /v1/mcp/tool/execute of tool with the argument {text: prefix + i}.
+const execStep = (tool, prefix) => [
+  "function run(i) {",
+  `  var tok = ${lit(prefix)} + i;`,
+  `  var call = { id: 'c' + i, type: 'function', function: { name: ${lit(tool)}, arguments: JSON.stringify({ text: tok }) } };`,
+  "  pm.sendRequest({ url: base + '/v1/mcp/tool/execute', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify(call) } }, function (err, res) {",
+  "    finish(i, !err && res.code === 200 && body(res).content === 'echo_tool:' + JSON.stringify({ text: tok }), why(err, res));",
+  "  });",
+  "}",
+];
+const saveCounters = (id, server, varName) => mockGet(id, server, `setup: record ${server}'s counters`, [], [`pm.collectionVariables.set(${lit(varName)}, JSON.stringify(pm.response.json().counters));`]);
+const countersPlus = (varName, field, n) => A.custom(`counters.${field} is ${n} more than recorded`, [
+  `var before = JSON.parse(pm.collectionVariables.get(${lit(varName)}));`,
+  `pm.expect(pm.response.json().counters[${lit(field)}], 'body: ' + pm.response.text()).to.equal(before[${lit(field)}] + ${n});`,
+]);
+const handshakesPlus = (varName, n) => A.custom(`handshakes is ${n} more than recorded`, [
+  `var before = JSON.parse(pm.collectionVariables.get(${lit(varName)}));`,
+  `pm.expect((pm.response.json().counters.handshakes || []).length, 'body: ' + pm.response.text()).to.equal((before.handshakes || []).length + ${n});`,
+]);
+const loadVK = (id, name) => vkCreate(id, `setup: create a VK granting every tool of ${name}`, { name: `${id} key`, mcp_configs: [{ mcp_client_name: name, tools_to_execute: ["*"] }] }, `${name}_vk`);
+
+const GO33 = folder("GO-33 50 parallel /mcp sessions", "Setup: fleet server go33 (echo_tool, add_tool); a sticky client go33 on it; a VK granting every tool of go33. 50 sessions run at once: each sends initialize, which must return a session id no other session got, then tools/list and tools/call go33-echo_tool with its own argument go33-<i> and x-request-id go33-<i>, under that session id.", [
+  ...freshServer("GO-33", "go33", ["echo_tool", "add_tool"]),
+  createClient("GO-33", stickyClient("go33-c", "go33", "go33")),
+  loadVK("GO-33", "go33"),
+  mockGetAfter("GO-33", "go33", "every session listed go33-echo_tool and got back its own argument; go33 ran echo_tool 50 times", [burstOk("go33_burst", 50, "sessions"), callsIs("echo_tool", 50)], burst("go33_burst", 50, [
+    ...rpcStep("go33_vk"),
+    "var sids = {};",
+    "function run(i) {",
+    "  var tok = 'go33-' + i;",
+    "  rpcTo({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'harness-' + i, version: '1' } } }, null, {}, function (err, res) {",
+    "    if (err || res.code !== 200) { return finish(i, false, 'initialize ' + why(err, res)); }",
+    "    var sid = res.headers.get('Mcp-Session-Id');",
+    "    if (!sid || sids[sid]) { return finish(i, false, 'initialize gave no new Mcp-Session-Id: ' + sid); }",
+    "    sids[sid] = true;",
+    "    rpcTo({ jsonrpc: '2.0', id: 2, method: 'tools/list' }, sid, {}, function (err, res) {",
+    "      var names = !err ? ((body(res).result || {}).tools || []).map(function (t) { return t.name; }) : [];",
+    "      if (names.indexOf('go33-echo_tool') < 0) { return finish(i, false, 'tools/list ' + why(err, res)); }",
+    "      rpcTo({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'go33-echo_tool', arguments: { text: tok } } }, sid, { 'x-request-id': tok }, function (err, res) {",
+    "        finish(i, !err && echoed(res, tok), 'tools/call ' + why(err, res));",
+    "      });",
+    "    });",
+    "  });",
+    "}",
+  ])),
+  request("GO-33", "50 log entries for go33, with ids go33-0 to go33-49", "GET", "/api/mcp-logs?server_labels=go33&limit=100", { pre: pollLogCount("server_labels=go33", 50), asserts: [A.status(200), A.custom("total_count is 50 and the ids are go33-0 to go33-49", [
+    LOG_LIST,
+    "pm.expect(pm.response.json().pagination.total_count, 'body: ' + pm.response.text()).to.equal(50);",
+    "var want = []; for (var i = 0; i < 50; i++) { want.push('go33-' + i); }",
+    "pm.expect(logs.map(function (l) { return l.id; }).sort()).to.eql(want.sort());",
+  ])] }),
+  vkDelete("GO-33", "teardown: delete the VK", "go33_vk"),
+  deleteClient("GO-33", "go33-c"),
+]);
+
+const GO34 = folder("GO-34 Per-call and sticky upstream sessions under load", "Setup: fleet servers go34p and go34s (echo_tool, add_tool); a per-call client go34p on go34p and a sticky client go34s on go34s, both tools_to_execute [\"*\"]. 50 executes run at once on each, every one with its own argument.", [
+  ...freshServer("GO-34", "go34p", ["echo_tool", "add_tool"]),
+  ...freshServer("GO-34", "go34s", ["echo_tool", "add_tool"]),
+  createClient("GO-34", httpClient("go34-p", "go34p", "go34p", { tools_to_execute: ["*"] }), "setup: create the per-call client go34p"),
+  createClient("GO-34", stickyClient("go34-s", "go34s", "go34s"), "setup: create the sticky client go34s"),
+  saveCounters("GO-34", "go34p", "go34p_before"),
+  saveCounters("GO-34", "go34s", "go34s_before"),
+  mockGetAfter("GO-34", "go34p", "per call: 50 executes got back their own argument; go34p opened 50 sessions with 50 initializes", [burstOk("go34p_burst", 50, "executes"), callsIs("echo_tool", 50), countersPlus("go34p_before", "sessions", 50), countersPlus("go34p_before", "initializes", 50)], burst("go34p_burst", 50, execStep("go34p-echo_tool", "go34p-"))),
+  mockGetAfter("GO-34", "go34s", "sticky: 50 executes got back their own argument, with no new session or handshake", [burstOk("go34s_burst", 50, "executes"), callsIs("echo_tool", 50), countersPlus("go34s_before", "sessions", 0), handshakesPlus("go34s_before", 0)], burst("go34s_burst", 50, execStep("go34s-echo_tool", "go34s-"))),
+  deleteClient("GO-34", "go34-p"), deleteClient("GO-34", "go34-s"),
+]);
+
+const GO35 = folder("GO-35 Tool list swap under load", "Setup: fleet server go35 (echo_tool, add_tool); a sticky client go35 on it; a VK granting every tool of go35. 200 tools/call go35-echo_tool on /mcp, one every 10ms with its own argument, while refresh-tools runs 5 times, one every 400ms.", [
+  ...freshServer("GO-35", "go35", ["echo_tool", "add_tool"]),
+  createClient("GO-35", stickyClient("go35-c", "go35", "go35")),
+  loadVK("GO-35", "go35"),
+  mockGetAfter("GO-35", "go35", "all 200 calls got back their own argument and all 5 refreshes answered 200; go35 ran echo_tool 200 times", [burstOk("go35_burst", 205, "calls and refreshes"), callsIs("echo_tool", 200)], burst("go35_burst", 205, [
+    ...rpcStep("go35_vk"),
+    "function run(i) {",
+    "  if (i >= 200) {",
+    "    setTimeout(function () {",
+    "      pm.sendRequest({ url: base + '/api/mcp/client/go35-c/refresh-tools', method: 'POST', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) {",
+    "        finish(i, !err && res.code === 200, 'refresh ' + why(err, res));",
+    "      });",
+    "    }, (i - 200) * 400);",
+    "    return;",
+    "  }",
+    "  var tok = 'go35-' + i;",
+    "  setTimeout(function () {",
+    "    rpcTo({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'go35-echo_tool', arguments: { text: tok } } }, null, {}, function (err, res) {",
+    "      finish(i, !err && echoed(res, tok), 'tools/call ' + why(err, res));",
+    "    });",
+    "  }, i * 10);",
+    "}",
+  ])),
+  getClient("GO-35", "go35-c", "the client is healthy and still lists both tools", [clientState("healthy"), toolNamesAre(SET_TOOLS)]),
+  vkDelete("GO-35", "teardown: delete the VK", "go35_vk"),
+  deleteClient("GO-35", "go35-c"),
+]);
+
+const GO36 = folder("GO-36 SSE upstream under load", "Setup: fleet server go36 (echo_tool, add_tool); an SSE client go36 on /s/go36/sse, auth none, tools_to_execute [\"*\"]. 50 executes run at once, every one with its own argument.", [
+  ...freshServer("GO-36", "go36", ["echo_tool", "add_tool"]),
+  createClient("GO-36", sseClient("go36-c", "go36", "go36", { tools_to_execute: ["*"] })),
+  mockGetAfter("GO-36", "go36", "all 50 got back their own argument over one stream and one session", [burstOk("go36_burst", 50, "executes"), callsIs("echo_tool", 50), counterIs("open_streams", 1), counterIs("sessions", 1)], burst("go36_burst", 50, execStep("go36-echo_tool", "go36-"))),
+  deleteClient("GO-36", "go36-c"),
+]);
+
+// ================================================================ upstreams that need what only a user-facing client has
+
+const msgLacks = (m) => A.custom(`error message does not contain ${lit(m)}`, ["var b = pm.response.json();", `pm.expect(b.error && b.error.message, 'body: ' + pm.response.text()).to.not.include(${lit(m)});`]);
+const ELICIT_REPLY = { resultType: "input_required", inputRequests: { github_login: { method: "elicitation/create", params: { message: "Please provide your GitHub username", requestedSchema: { type: "object", properties: { username: { type: "string" } } } } } } };
+const FAIL27 = folder("FAIL-27 Upstream asks for user input", "Setup: fleet server fail27 serving echo_tool and needs_input, which answers tools/call with an input_required result asking for an elicitation; a sticky client fail27 on it (the 2026-07-28 protocol), tools_to_execute [\"*\"]; a VK granting every tool of fail27.", [
+  request("FAIL-27", "setup: fresh mcpchaos server fail27", "POST", "/control", { base: CHAOS, noAuth: true, body: { add: "fail27" }, asserts: [A.status(200)] }),
+  mockPost("FAIL-27", "fail27", "tools/set", "setup: fail27 serves echo_tool and needs_input", { tools: [{ name: "echo_tool" }, { name: "needs_input", reply: ELICIT_REPLY }] }),
+  createClient("FAIL-27", stickyClient("fail27-c", "fail27", "fail27")),
+  loadVK("FAIL-27", "fail27"),
+  execBody("FAIL-27", "execute needs_input", { id: "c1", type: "function", function: { name: "fail27-needs_input", arguments: "{}" } }, [A.status(400),
+    A.msgContains("MCP server \"fail27\" asked for input from the user (elicitation), which Bifrost cannot provide"), msgLacks("handler configured")], { headers: [reqId("fail27-e")] }),
+  mockGet("FAIL-27", "fail27", "fail27 ran needs_input once", [callsIs("needs_input", 1)]),
+  logRow("FAIL-27", "the log entry is an error with the same reason", "fail27-e", [rowIs("tool_name", "needs_input"), rowIs("status", "error"), rowErrorMsg("contains", "asked for input from the user (elicitation), which Bifrost cannot provide")]),
+  rpc("FAIL-27", "tools/call fail27-needs_input on /mcp", call("fail27-needs_input"), { headers: [MCP_ACCEPT, vkH("fail27_vk")], asserts: [A.status(200), A.custom("a result with isError true whose text carries the same reason", [
+    "var r = pm.response.json().result || {};",
+    "pm.expect(r.isError, 'body: ' + pm.response.text()).to.equal(true);",
+    "var text = ((r.content || [])[0] || {}).text || '';",
+    "pm.expect(text).to.include('MCP server \"fail27\" asked for input from the user (elicitation), which Bifrost cannot provide');",
+    "pm.expect(text).to.not.include('handler configured');",
+  ])] }),
+  mockGet("FAIL-27", "fail27", "fail27 ran needs_input once more", [callsIs("needs_input", 2)]),
+  vkDelete("FAIL-27", "teardown: delete the VK", "fail27_vk"),
+  deleteClient("FAIL-27", "fail27-c"),
+]);
+
+const FAIL28 = folder("FAIL-28 Upstream needs a client capability", "Setup: fleet server fail28 serving echo_tool and needs_capability, which refuses tools/call with JSON-RPC error -32021 naming the capability elicitation; a sticky client fail28 on it, tools_to_execute [\"*\"].", [
+  request("FAIL-28", "setup: fresh mcpchaos server fail28", "POST", "/control", { base: CHAOS, noAuth: true, body: { add: "fail28" }, asserts: [A.status(200)] }),
+  mockPost("FAIL-28", "fail28", "tools/set", "setup: fail28 serves echo_tool and needs_capability", { tools: [{ name: "echo_tool" }, { name: "needs_capability", reply_error: { code: -32021, message: "missing required client capability", data: { capability: "elicitation" } } }] }),
+  createClient("FAIL-28", stickyClient("fail28-c", "fail28", "fail28")),
+  execBody("FAIL-28", "execute needs_capability", { id: "c1", type: "function", function: { name: "fail28-needs_capability", arguments: "{}" } }, [A.status(400),
+    A.msgContains("MCP server \"fail28\" needs the client capability \"elicitation\" to run this tool, which Bifrost does not support")]),
+  mockGet("FAIL-28", "fail28", "fail28 ran needs_capability once, with no retry", [callsIs("needs_capability", 1)]),
+  deleteClient("FAIL-28", "fail28-c"),
+]);
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -8930,15 +9103,15 @@ const collection = {
   item: [
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM86, ADM87]),
     section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57]),
-    section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, GO18, CONN23, CONN24, CONN25, CONN27, CONN28, CONN29]),
-    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65]),
+    section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, GO18, CONN23, CONN24, CONN25, CONN27, CONN28, CONN29, GO34, GO36]),
+    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, GO33, GO35]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET26, SET27, SET28, SET29, SET30, SET31, SET32, SET04, SET05, SET10, SET11, SET15, SET23]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV37, GOV38, GOV39]),
     section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66, INF76, INF77]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB27, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43, LOG49]),
-    section("FAIL Failure handling", "Failure handling tests.", [FAIL01, FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL09, FAIL10, FAIL12, FAIL14, FAIL16, FAIL18, FAIL19, FAIL23, FAIL24, FAIL25]),
+    section("FAIL Failure handling", "Failure handling tests.", [FAIL01, FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL09, FAIL10, FAIL12, FAIL14, FAIL16, FAIL18, FAIL19, FAIL23, FAIL24, FAIL25, FAIL27, FAIL28]),
   ],
 };
 

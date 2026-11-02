@@ -508,6 +508,11 @@ func (s *Server) handleToolsCall(req *request, identity string, f Faults) handle
 		// Verbatim, so the scenario decides every field of the result,
 		// including ones this mock has no type for.
 		return handleResult{Response: &response{JSONRPC: jsonRPCVersion, ID: req.ID, Result: tool.Reply}}
+	case len(tool.ReplyError) > 0:
+		// Validate accepted it as a JSON-RPC error object, so it decodes.
+		var e rpcError
+		_ = json.Unmarshal(tool.ReplyError, &e)
+		return handleResult{Response: &response{JSONRPC: jsonRPCVersion, ID: req.ID, Error: &e}}
 	case tool.ReplyEnv != "":
 		value, ok := s.StdioEnv()[tool.ReplyEnv]
 		if !ok {
