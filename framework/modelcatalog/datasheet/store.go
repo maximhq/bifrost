@@ -375,14 +375,24 @@ func (s *Store) capabilityEntryForExactUnsafe(model string, provider schemas.Mod
 		}
 	}
 
+	// Rows under the exact casing win. Otherwise keep, per mode, only the row
+	// pricingKeyFolded resolves to, so this agrees with lookupPricingUnsafe.
 	prefix := model + "|" + string(provider) + "|"
-	var matchingKeys []string
+	var exactKeys, foldedKeys []string
 	for key := range s.pricingData {
-		if len(key) >= len(prefix) && strings.EqualFold(key[:len(prefix)], prefix) {
-			matchingKeys = append(matchingKeys, key)
+		if len(key) < len(prefix) {
+			continue
+		}
+		if key[:len(prefix)] == prefix {
+			exactKeys = append(exactKeys, key)
+		} else if strings.EqualFold(key[:len(prefix)], prefix) && s.pricingKeyFolded[strings.ToLower(key)] == key {
+			foldedKeys = append(foldedKeys, key)
 		}
 	}
-	return s.selectCapabilityEntryFromKeysUnsafe(matchingKeys)
+	if len(exactKeys) > 0 {
+		return s.selectCapabilityEntryFromKeysUnsafe(exactKeys)
+	}
+	return s.selectCapabilityEntryFromKeysUnsafe(foldedKeys)
 }
 
 func (s *Store) capabilityEntryForFamilyUnsafe(baseModel string, provider schemas.ModelProvider) *Entry {

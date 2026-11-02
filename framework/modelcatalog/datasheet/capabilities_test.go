@@ -82,6 +82,46 @@ func TestGetCapabilityEntry_FallsBackToAnyModeDeterministically(t *testing.T) {
 	}
 }
 
+// The any-mode prefix scan matches casing-insensitively, but a row under the
+// request's exact casing must still win over the same model in another casing.
+func TestGetCapabilityEntry_AnyModeFallbackPrefersExactCase(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("embed-x", "azure", "embedding"): {Model: "embed-x", Provider: "azure", Mode: "embedding", MaxInputTokens: capabilityIntPtr(100)},
+		makeKey("Embed-X", "azure", "embedding"): {Model: "Embed-X", Provider: "azure", Mode: "embedding", MaxInputTokens: capabilityIntPtr(999)},
+	})
+
+	for model, want := range map[string]int{"embed-x": 100, "Embed-X": 999} {
+		entry := s.GetCapabilityEntry(model, schemas.Azure)
+		if entry == nil || entry.MaxInputTokens == nil {
+			t.Fatalf("%s: expected capability entry with max_input_tokens, got %+v", model, entry)
+		}
+		if *entry.MaxInputTokens != want {
+			t.Fatalf("%s: expected max_input_tokens %d from the exact-case row, got %d", model, want, *entry.MaxInputTokens)
+		}
+	}
+}
+
+// With no exact-case row, the any-mode fallback picks the same row as the
+// pricing lookup: the lowercase one, not the byte-wise smallest.
+func TestGetCapabilityEntry_AnyModeFallbackUnlistedCasingMatchesPricingRow(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("embed-x", "azure", "embedding"): {Model: "embed-x", Provider: "azure", Mode: "embedding", MaxInputTokens: capabilityIntPtr(100)},
+		makeKey("Embed-X", "azure", "embedding"): {Model: "Embed-X", Provider: "azure", Mode: "embedding", MaxInputTokens: capabilityIntPtr(999)},
+	})
+
+	entry := s.GetCapabilityEntry("EMBED-X", schemas.Azure)
+	if entry == nil || entry.MaxInputTokens == nil {
+		t.Fatalf("expected capability entry with max_input_tokens, got %+v", entry)
+	}
+	if *entry.MaxInputTokens != 100 {
+		t.Fatalf("expected max_input_tokens 100 from the lowercase row, got %d", *entry.MaxInputTokens)
+	}
+	row := s.Get("EMBED-X", schemas.Azure, schemas.EmbeddingRequest)
+	if row == nil || row.MaxInputTokens == nil || *row.MaxInputTokens != *entry.MaxInputTokens {
+		t.Fatalf("capability entry and pricing row disagree: row %+v", row)
+	}
+}
+
 func TestGetCapabilityEntry_ResolvesAliasFamilyViaBaseModel(t *testing.T) {
 	contextLengthChat := 128000
 
