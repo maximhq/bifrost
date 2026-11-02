@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -519,5 +520,88 @@ func TestFleetResetRestoresSeededPromptsResourcesAndIdentityState(t *testing.T) 
 		if bad.Validate() == nil {
 			t.Errorf("%s: expected the seed to be refused", name)
 		}
+	}
+}
+
+// TestControlRefusesBrowserRequests checks that a request carrying an Origin
+// header cannot drive the control surfaces. Browsers set Origin on every
+// cross-origin request and on every POST, while the runner, Newman and Go tests
+// never do, so a web page open while the mock runs must not be able to register
+// a process id for stdio/kill, add a server, or make the mock's client dial out.
+func TestControlRefusesBrowserRequests(t *testing.T) {
+	fleet := controlFleet(t)
+	cases := []struct{ path, body string }{
+		{"/control/alpha/stdio/register", `{"pid": 1073741824}`},
+		{"/control", `{"add": "beta"}`},
+		{"/client/page/connect", `{"url": "` + fleet.URL() + `/s/none/mcp", "redirect_uri": "http://127.0.0.1:1/callback"}`},
+	}
+	for _, c := range cases {
+		// text/plain is what a cross-site fetch can send without a preflight.
+		req, err := http.NewRequest(http.MethodPost, fleet.URL()+c.path, strings.NewReader(c.body))
+		if err != nil {
+			t.Fatalf("failed to build the request to %s: %v", c.path, err)
+		}
+		req.Header.Set("Content-Type", "text/plain")
+		req.Header.Set("Origin", "https://page.example")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("request to %s failed: %v", c.path, err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("expected 403 for a browser request to %s, got %d", c.path, resp.StatusCode)
+		}
+	}
+	alpha, _ := fleet.Get("alpha")
+	if pid := alpha.StdioPID(); pid != 0 {
+		t.Errorf("a browser request registered stdio pid %d", pid)
+	}
+	if _, ok := fleet.Get("beta"); ok {
+		t.Errorf("a browser request added server beta")
+	}
+}
+
+// TestControlVerbsRequirePost checks that a verb which changes the mock refuses
+// a GET. A link or an image makes a GET with no Origin header, so without this
+// a web page could still kill a registered STDIO bridge or reset a run's state.
+func TestControlVerbsRequirePost(t *testing.T) {
+	fleet := controlFleet(t)
+	child := exec.Command("sleep", "30")
+	if err := child.Start(); err != nil {
+		t.Fatalf("failed to start the stand-in bridge: %v", err)
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- child.Wait() }()
+	t.Cleanup(func() { _ = child.Process.Kill() })
+	if resp, _ := post(t, fleet.URL()+"/control/alpha/stdio/register", map[string]any{"pid": child.Process.Pid}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 registering the bridge, got %d", resp.StatusCode)
+	}
+
+	resp, err := http.Get(fleet.URL() + "/control/alpha/stdio/kill")
+	if err != nil {
+		t.Fatalf("GET stdio/kill failed: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405 for GET stdio/kill, got %d", resp.StatusCode)
+	}
+	select {
+	case <-exited:
+		t.Errorf("a GET killed the registered bridge")
+	case <-time.After(300 * time.Millisecond):
+	}
+	alpha, _ := fleet.Get("alpha")
+	if pid := alpha.StdioPID(); pid != child.Process.Pid {
+		t.Errorf("expected the bridge to stay registered as %d, got %d", child.Process.Pid, pid)
+	}
+
+	// Reads stay on GET.
+	state, err := http.Get(fleet.URL() + "/control/alpha/state")
+	if err != nil {
+		t.Fatalf("GET state failed: %v", err)
+	}
+	_ = state.Body.Close()
+	if state.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 for GET state, got %d", state.StatusCode)
 	}
 }
