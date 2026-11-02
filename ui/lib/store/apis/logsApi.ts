@@ -23,6 +23,7 @@ import {
 	ThroughputHistogramResponse,
 	TokenHistogramResponse,
 } from "@/lib/types/logs";
+import { metadataFilterQueryValue, normalizeMetadataFilters } from "@/lib/utils/metadataFilters";
 import { getPeriodTimezone, withPeriodTimezone } from "@/lib/utils/timeRange";
 import { baseApi } from "./baseApi";
 import { GetLogByIdArg, normalizeGetLogByIdArg } from "./logsApi.utils";
@@ -130,10 +131,9 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	if (filters.user_agents && filters.user_agents.length > 0) {
 		params.user_agents = JSON.stringify(filters.user_agents);
 	}
-	if (filters.metadata_filters) {
-		for (const [key, value] of Object.entries(filters.metadata_filters)) {
-			params[`metadata_${key}`] = value;
-		}
+	// Normalized because links written before multiple selection hold one string per key.
+	for (const [key, values] of Object.entries(normalizeMetadataFilters(filters.metadata_filters) ?? {})) {
+		params[`metadata_${key}`] = metadataFilterQueryValue(values);
 	}
 
 	return params;
