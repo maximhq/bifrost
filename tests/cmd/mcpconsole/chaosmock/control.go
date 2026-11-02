@@ -44,6 +44,12 @@ type State struct {
 	REST *RESTState `json:"rest,omitempty"`
 	// LLM is the LLM surface's models and scenarios, present once used.
 	LLM *LLMState `json:"llm,omitempty"`
+	// Prompts, Resources and ResourceTemplates are what the server offers besides tools, and Reads
+	// the prompts/get, resources/read and completion/complete requests it answered.
+	Prompts           []Prompt           `json:"prompts,omitempty"`
+	Resources         []Resource         `json:"resources,omitempty"`
+	ResourceTemplates []ResourceTemplate `json:"resource_templates,omitempty"`
+	Reads             []ReadEntry        `json:"reads,omitempty"`
 }
 
 // State captures a server's current state.
@@ -52,21 +58,26 @@ func (s *Server) State() State {
 	if s.auth.get().OAuth != nil {
 		oauth = s.oauth.snapshot()
 	}
+	prompts, resources, templates, reads := s.prompts.snapshot()
 	return State{
-		Name:         s.name,
-		Tools:        s.tools.List(""),
-		Revision:     s.tools.Revision(),
-		Faults:       s.faults.peek(),
-		Auth:         s.auth.get(),
-		Counters:     s.counters.Snapshot(),
-		Sessions:     s.sessions.count(),
-		Streams:      s.streams.count(),
-		Instructions: s.Instructions(),
-		StdioPID:     s.StdioPID(),
-		StdioEnv:     s.StdioEnv(),
-		OAuth:        oauth,
-		REST:         s.rest.snapshot(),
-		LLM:          s.llm.snapshot(),
+		Prompts:           prompts,
+		Resources:         resources,
+		ResourceTemplates: templates,
+		Reads:             reads,
+		Name:              s.name,
+		Tools:             s.tools.List(""),
+		Revision:          s.tools.Revision(),
+		Faults:            s.faults.peek(),
+		Auth:              s.auth.get(),
+		Counters:          s.counters.Snapshot(),
+		Sessions:          s.sessions.count(),
+		Streams:           s.streams.count(),
+		Instructions:      s.Instructions(),
+		StdioPID:          s.StdioPID(),
+		StdioEnv:          s.StdioEnv(),
+		OAuth:             oauth,
+		REST:              s.rest.snapshot(),
+		LLM:               s.llm.snapshot(),
 	}
 }
 
@@ -187,6 +198,10 @@ type controlBody struct {
 	Turns    []LLMTurn `json:"turns,omitempty"`
 	Then     *LLMTurn  `json:"then,omitempty"`
 	Models   []string  `json:"models,omitempty"`
+	// Prompts, Resources and Templates drive the prompts/set and resources/set verbs.
+	Prompts   []Prompt           `json:"prompts,omitempty"`
+	Resources []Resource         `json:"resources,omitempty"`
+	Templates []ResourceTemplate `json:"templates,omitempty"`
 }
 
 func (s *Server) applyControl(verb string, r *http.Request) error {
@@ -286,7 +301,16 @@ func (s *Server) applyControl(verb string, r *http.Request) error {
 		if err := s.KillStdio(); err != nil {
 			return errBadRequest(err.Error())
 		}
+	case "prompts/set":
+		if err := s.prompts.setPrompts(body.Prompts); err != nil {
+			return errBadRequest(err.Error())
+		}
+	case "resources/set":
+		if err := s.prompts.setResources(body.Resources, body.Templates); err != nil {
+			return errBadRequest(err.Error())
+		}
 	case "counters/reset":
+		s.prompts.clearReads()
 		s.counters.Reset()
 		s.oauth.resetCounters()
 		s.rest.clearLog()

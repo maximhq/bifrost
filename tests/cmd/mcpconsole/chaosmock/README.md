@@ -123,6 +123,8 @@ exactly like the system under test behaving correctly.
 | `POST /control/<s>/tools/schema` | `{"name":"...","schema":{...}}` | change only the input schema |
 | `POST /control/<s>/tools/overlay` | `{"identity":"...","tools":[...]}` | give one identity its own tool list |
 | `POST /control/<s>/instructions` | `{"text":"..."}` / `{"clear":true}` | set or remove the instructions served in the initialize result |
+| `POST /control/<s>/prompts/set` | `{"prompts":[{"name":"greet","arguments":[{"name":"name","required":true}],"text":"Hello, {name}","completions":{"name":["Ada"]}}]}` | replace the prompts served by `prompts/list`, `prompts/get` and `completion/complete`; the server advertises prompts and completions only while it has some, and the state's `reads` lists each `prompts/get`, `resources/read` and `completion/complete` it answered |
+| `POST /control/<s>/resources/set` | `{"resources":[{"uri":"file:///x","text":"..."}],"templates":[{"uriTemplate":"file:///docs/{name}","text":"doc {uri}"}]}` | replace the resources and templates served by `resources/list`, `resources/templates/list` and `resources/read`; the server advertises resources only while it has some |
 | `POST /control/<s>/faults` | `{"faults":{...}}` | set the fault state |
 | `POST /control/<s>/faults/clear` | | return to healthy |
 | `POST /control/<s>/auth` | `{"auth":{...}}` | set auth requirements |
@@ -133,7 +135,7 @@ exactly like the system under test behaving correctly.
 | `POST /control/<s>/notify/tools-changed` | | push `notifications/tools/list_changed` |
 | `POST /control/<s>/stdio/register` | `{"pid":N,"env":{...}}` | record the bridging child process and its shared environment (the child does this itself) |
 | `POST /control/<s>/stdio/kill` | | kill the bridging child process |
-| `POST /control/<s>/counters/reset` | | zero the tallies, keeping live facts (OAuth counters and log too) |
+| `POST /control/<s>/counters/reset` | | zero the tallies and clear the OAuth counters and the OAuth, reads, REST and LLM logs; configuration, OAuth clients and tokens, sessions and open streams stay |
 | `POST /control/<s>/routes/set` | `{"routes":[...]}` | replace the REST routes |
 | `POST /control/<s>/routes/add` | `{"route":{...}}` | add a route, or replace the one with the same method and path |
 | `POST /control/<s>/routes/remove` | `{"path":"/x","method":"GET"}` | remove routes for a path (every method when none is given) |

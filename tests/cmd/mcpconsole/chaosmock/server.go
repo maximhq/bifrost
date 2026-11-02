@@ -29,6 +29,7 @@ type Server struct {
 	oauth    *oauthState
 	rest     *restSurface
 	llm      *llmSurface
+	prompts  *promptSurface
 
 	// version is reported in serverInfo. Scenarios that restart a server with
 	// changed behaviour bump it so a client's own logs distinguish the two.
@@ -66,6 +67,7 @@ func NewServer(name string) *Server {
 		oauth:    newOAuthState(),
 		rest:     &restSurface{},
 		llm:      newLLMSurface(),
+		prompts:  &promptSurface{},
 		version:  "1.0.0",
 	}
 }
@@ -223,7 +225,10 @@ type initializeResult struct {
 }
 
 type capabilities struct {
-	Tools *toolsCapability `json:"tools,omitempty"`
+	Tools       *toolsCapability `json:"tools,omitempty"`
+	Prompts     *struct{}        `json:"prompts,omitempty"`
+	Resources   *struct{}        `json:"resources,omitempty"`
+	Completions *struct{}        `json:"completions,omitempty"`
 }
 
 // toolsCapability advertises listChanged. The mock sets it true because it can
@@ -318,6 +323,18 @@ func (s *Server) Handle(req *request, sessionID, identity string, f Faults) hand
 		return s.handleToolsList(req, identity, f)
 	case MethodToolsCall:
 		return s.handleToolsCall(req, identity, f)
+	case MethodPromptsList:
+		return s.handlePromptsList(req)
+	case MethodPromptsGet:
+		return s.handlePromptsGet(req)
+	case MethodResourcesList:
+		return s.handleResourcesList(req)
+	case MethodResourceTemplatesList:
+		return s.handleResourceTemplatesList(req)
+	case MethodResourcesRead:
+		return s.handleResourcesRead(req)
+	case MethodCompletionComplete:
+		return s.handleCompletionComplete(req)
 	default:
 		return handleResult{Response: newError(req.ID, CodeMethodNotFound,
 			fmt.Sprintf("method %q is not supported by chaosmock", req.Method))}
@@ -365,9 +382,21 @@ func (s *Server) handleInitialize(req *request, sessionID, identity string, f Fa
 	}
 	s.counters.initialize()
 
+	caps := capabilities{Tools: &toolsCapability{ListChanged: true}}
+	// Prompts, resources and completion are advertised only once a scenario sets some, so a server
+	// without them keeps the handshake every other scenario expects.
+	if hasPrompts, hasResources := s.prompts.offers(); hasPrompts || hasResources {
+		if hasPrompts {
+			caps.Prompts = &struct{}{}
+			caps.Completions = &struct{}{}
+		}
+		if hasResources {
+			caps.Resources = &struct{}{}
+		}
+	}
 	result := initializeResult{
 		ProtocolVersion: version,
-		Capabilities:    capabilities{Tools: &toolsCapability{ListChanged: true}},
+		Capabilities:    caps,
 		ServerInfo:      serverInfo{Name: s.name, Version: s.version},
 		Instructions:    s.Instructions(),
 	}
