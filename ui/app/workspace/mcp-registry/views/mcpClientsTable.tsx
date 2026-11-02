@@ -72,6 +72,7 @@ import { MCPUsageGuideSheet } from "./mcpUsageGuide";
 import { OAuth2Authorizer } from "./oauth2Authorizer";
 import { useActionParam } from "@/hooks/useActionParam";
 import { getLocale } from "@/lib/i18n";
+import { withBasePath } from "@/lib/utils/basePath";
 
 function MCPClientActionsMenu({
 	client,
@@ -333,13 +334,13 @@ function ClientEndpointCell({ slug, baseUrl }: { slug?: string; baseUrl: string 
 					aria-label={t("registry.sheet.copyEndpointAria")}
 					data-testid={`mcp-client-endpoint-copy-${slug}`}
 				>
-					<span className="truncate">/mcp/{slug}</span>
+					<span className="truncate">{withBasePath(`/mcp/${slug}`)}</span>
 					<span className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100">
 						{copied ? <Check className="size-3.5 shrink-0" /> : <Copy className="size-3.5 shrink-0" />}
 					</span>
 				</button>
 			</TooltipTrigger>
-			<TooltipContent className="font-mono">/mcp/{slug}</TooltipContent>
+			<TooltipContent className="font-mono">{withBasePath(`/mcp/${slug}`)}</TooltipContent>
 		</Tooltip>
 	);
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,6 +16,7 @@ import (
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -34,6 +36,10 @@ func TestIsAuthFailureErrorText(t *testing.T) {
 		{"lowercase forbidden text, no numeric code", "access forbidden for this resource", true},
 		{"mixed case still matches", "Upstream returned Unauthorized", true},
 		{"unrelated connectivity error", "connection refused", false},
+		{"status 401 inside a sentence", "request failed with status 401: invalid token", true},
+		{"a port that merely contains 401", "dial tcp 10.0.0.5:4010: connect: connection refused", false},
+		{"a port that merely contains 403", "dial tcp 10.0.0.5:4030: i/o timeout", false},
+		{"an id in the URL that merely contains 401", `Post "http://mcp.internal/tenants/84013/mcp": EOF`, false},
 		{"unrelated bad request", "400 bad request", false},
 		{"timeout text alone does not match", "context deadline exceeded", false},
 		{"empty string", "", false},
@@ -45,6 +51,18 @@ func TestIsAuthFailureErrorText(t *testing.T) {
 				t.Errorf("isAuthFailureErrorText(%q) = %v, want %v", tc.errStr, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestToolCallConnectionFailureOnAnAuthLikePortStaysTransient: a connection refused by an upstream
+// whose port contains 401 is a transport blip, retried as one, not an auth rejection.
+func TestToolCallConnectionFailureOnAnAuthLikePortStaysTransient(t *testing.T) {
+	refused := &transport.Error{Err: errors.New(`Post "http://10.0.0.5:4010/mcp": dial tcp 10.0.0.5:4010: connect: connection refused`)}
+	if isAuthFailure(refused) {
+		t.Errorf("isAuthFailure(%q) = true, want false", refused)
+	}
+	if !isTransientToolCallError(refused) {
+		t.Errorf("isTransientToolCallError(%q) = false, want true", refused)
 	}
 }
 
@@ -63,7 +81,9 @@ func TestIsAuthFailureErrorText_OpposesIsTransientErrorOnAuthText(t *testing.T) 
 	}
 }
 
-// isAuthFailure matches mcp-go's typed 401 through any wrapping, and falls back to the text.
+// isAuthFailure matches mcp-go's typed 401 through any wrapping, and auth-shaped text inside the
+// transport's error frame. A JSON-RPC error, which mcp-go hands back as plain text, is the tool's own
+// answer and never matches, whatever it says.
 func TestIsAuthFailure(t *testing.T) {
 	tests := []struct {
 		name string
@@ -74,8 +94,11 @@ func TestIsAuthFailure(t *testing.T) {
 		{"typed oauth 401", &transport.OAuthAuthorizationRequiredError{}, true},
 		{"transport-wrapped 401", transport.NewError(&transport.AuthorizationRequiredError{}), true},
 		{"fmt-wrapped 401", fmt.Errorf("call failed: %w", transport.NewError(&transport.AuthorizationRequiredError{})), true},
-		{"text only, chain lost", fmt.Errorf("call failed: %v", transport.NewError(&transport.AuthorizationRequiredError{})), true},
-		{"status text", errors.New("tool call failed: 401 Unauthorized"), true},
+		{"transport 403", transport.NewError(errors.New("request failed with status 403: Forbidden")), true},
+		{"fmt-wrapped transport 403", fmt.Errorf("call failed: %w", transport.NewError(errors.New("request failed with status 403: Forbidden"))), true},
+		{"a tool's own error saying forbidden", errors.New("forbidden: this caller may not use echo_tool"), false},
+		{"a tool's own error saying 401", errors.New("tool call failed: 401 Unauthorized"), false},
+		{"text only, chain lost", fmt.Errorf("call failed: %v", transport.NewError(&transport.AuthorizationRequiredError{})), false},
 		{"unrelated", errors.New("connection refused"), false},
 		{"nil", nil, false},
 	}
@@ -1218,4 +1241,94 @@ func TestExecuteTool_AuthFailureRetry_Shared_ReconnectBudgetAloneIsNotAToolTimeo
 	if !errors.Is(err, ErrMCPToolCallFailed) {
 		t.Errorf("expected error to wrap ErrMCPToolCallFailed, got: %v", err)
 	}
+}
+
+// rotatingCredStore is a per-call credential store whose bearer a ForceRefresh
+// replaces with next, or, with refreshFails, cannot replace: the credential then
+// needs reauthorization, and resolving it returns reauth.
+type rotatingCredStore struct {
+	authRetryCredStore
+	mu           sync.Mutex
+	token, next  string
+	refreshFails bool
+	needsReauth  bool
+	reauth       error
+}
+
+// ConnectionHeaders returns the current bearer, or reauth once a refresh has failed.
+func (s *rotatingCredStore) ConnectionHeaders(_ *schemas.BifrostContext, _ *schemas.MCPClientConfig) (http.Header, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.needsReauth {
+		return nil, s.reauth
+	}
+	return http.Header{"Authorization": []string{"Bearer " + s.token}}, nil
+}
+
+// ForceRefresh rotates the bearer to next, or marks the credential as needing reauthorization.
+func (s *rotatingCredStore) ForceRefresh(_ *schemas.BifrostContext, _ *schemas.MCPClientConfig) error {
+	s.forceRefreshCalls.Add(1)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.refreshFails {
+		s.needsReauth = true
+		return errors.New("refresh token revoked")
+	}
+	s.token = s.next
+	return nil
+}
+
+// TestAcquireClientConn_RejectedPerCallConnectionRefreshesAndRedials: a per-user
+// token the upstream revoked before its stored expiry makes initialize answer
+// 401, before any tool runs. The connection refreshes the credential and dials
+// once more, so the call goes ahead. It used to fail with the 401 until the
+// stored expiry, since the refresh-and-retry only followed a failed tools/call.
+// When the refresh itself fails, the reauthorization the credential then needs
+// is returned at once, not the 401.
+func TestAcquireClientConn_RejectedPerCallConnectionRefreshesAndRedials(t *testing.T) {
+	upstream := server.NewStreamableHTTPServer(server.NewMCPServer("rotating", "1.0.0", server.WithToolCapabilities(true)))
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer fresh" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		upstream.ServeHTTP(w, r)
+	}))
+	t.Cleanup(ts.Close)
+	newState := func() *schemas.MCPClientState {
+		config := &schemas.MCPClientConfig{
+			ID: "rotating-id", Name: "rotating", ConnectionType: schemas.MCPConnectionTypeHTTP,
+			ConnectionString: schemas.NewSecretVar(ts.URL), AuthType: schemas.MCPAuthTypePerUserOauth,
+		}
+		return &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, ToolMap: map[string]schemas.ChatTool{}}
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	t.Run("a refresh that succeeds", func(t *testing.T) {
+		store := &rotatingCredStore{authRetryCredStore: authRetryCredStore{requiresPerCall: true}, token: "revoked", next: "fresh"}
+		m := NewMCPManager(context.Background(), schemas.MCPConfig{}, store, &MockLogger{}, nil)
+		t.Cleanup(func() { _ = m.Cleanup() })
+		conn, release, err := m.AcquireClientConn(ctx, newState())
+		if err != nil {
+			t.Fatalf("AcquireClientConn: %v, want a connection on the refreshed token", err)
+		}
+		release()
+		if conn == nil {
+			t.Fatal("expected a connection")
+		}
+		if got := store.forceRefreshCalls.Load(); got != 1 {
+			t.Fatalf("ForceRefresh calls = %d, want 1", got)
+		}
+	})
+
+	t.Run("a refresh that fails", func(t *testing.T) {
+		reauth := &schemas.MCPAuthRequiredError{MCPClientName: "rotating"}
+		store := &rotatingCredStore{authRetryCredStore: authRetryCredStore{requiresPerCall: true}, token: "revoked", refreshFails: true, reauth: reauth}
+		m := NewMCPManager(context.Background(), schemas.MCPConfig{}, store, &MockLogger{}, nil)
+		t.Cleanup(func() { _ = m.Cleanup() })
+		_, _, err := m.AcquireClientConn(ctx, newState())
+		if !errors.Is(err, reauth) {
+			t.Fatalf("AcquireClientConn error = %v, want the reauthorization the credential now needs", err)
+		}
+	})
 }

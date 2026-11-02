@@ -185,8 +185,7 @@ func newBedrockHTTPTransport(config *schemas.ProviderConfig, proxy func(*http.Re
 	if config.NetworkConfig.CACertPEM != nil {
 		caCertPEM = config.NetworkConfig.CACertPEM.GetValue()
 	}
-	targetTLS := config.NetworkConfig.InsecureSkipVerify || caCertPEM != ""
-	if targetTLS {
+	if config.NetworkConfig.InsecureSkipVerify || caCertPEM != "" {
 		// Layer on top of the proxy's CA, if any, so both are trusted.
 		tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
 		if proxyTLS != nil {
@@ -208,15 +207,13 @@ func newBedrockHTTPTransport(config *schemas.ProviderConfig, proxy func(*http.Re
 			}
 			tlsConfig.RootCAs = certPool
 		}
-		// Keep an inherited proxy's skip_tls_verify scoped to proxied traffic, now
-		// checked against the merged roots.
-		transport.TLSClientConfig = providerUtils.RescopeProxySkipVerify(proxyTLS, tlsConfig, config.NetworkConfig.InsecureSkipVerify)
+		transport.TLSClientConfig = tlsConfig
 	}
 
-	// net/http handshakes with an https:// proxy using TLSClientConfig, which carries the
-	// targets' settings: proxyTLS's no_proxy scope, and network_config's
-	// insecure_skip_verify and CA. A proxy from proxy_config is verified by its own.
-	if proxyFromConfig && (proxyHopTLS != proxyTLS || targetTLS) {
+	// An https:// proxy from proxy_config is dialed with its own TLS config (proxy CA,
+	// skip_tls_verify), separate from the target's, which net/http would otherwise share
+	// through TLSClientConfig. skip_tls_verify covers only that hop: targets are verified.
+	if proxyFromConfig {
 		providerUtils.DialHTTPSProxyWithHopTLS(transport, proxyHopTLS)
 	}
 

@@ -48,6 +48,7 @@ import { ExternalLink, Fingerprint, KeyRound, Loader2, MoreHorizontal, Pencil, R
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { getLocale } from "@/lib/i18n";
+import { withBasePath } from "@/lib/utils/basePath";
 
 interface SessionsTableProps {
 	sessions: MCPSessionRow[];
@@ -100,10 +101,22 @@ export default function SessionsTable({
 		setPendingActionRowId(row.id);
 		try {
 			await revoke(row.id).unwrap();
-			toast({ title: row.kind === "header" ? t("sessions.toast.headerRevoked") : t("sessions.toast.sessionRevoked") });
+			toast({
+				title:
+					row.kind === "header"
+						? t("sessions.toast.headerRevoked")
+						: row.kind === "flow"
+							? t("sessions.toast.flowRevoked")
+							: t("sessions.toast.sessionRevoked"),
+			});
 		} catch (err) {
 			toast({
-				title: row.kind === "header" ? t("sessions.toast.headerRevokeFailed") : t("sessions.toast.sessionRevokeFailed"),
+				title:
+					row.kind === "header"
+						? t("sessions.toast.headerRevokeFailed")
+						: row.kind === "flow"
+							? t("sessions.toast.flowRevokeFailed")
+							: t("sessions.toast.sessionRevokeFailed"),
 				description: getErrorMessage(err),
 				variant: "destructive",
 			});
@@ -121,6 +134,11 @@ export default function SessionsTable({
 							<>
 								<AlertDialogTitle>{t("sessions.revokeHeaderTitle")}</AlertDialogTitle>
 								<AlertDialogDescription>{t("sessions.revokeHeaderDescription")}</AlertDialogDescription>
+							</>
+						) : pendingDelete?.kind === "flow" ? (
+							<>
+								<AlertDialogTitle>{t("sessions.revokeFlowTitle")}</AlertDialogTitle>
+								<AlertDialogDescription>{t("sessions.revokeFlowDescription")}</AlertDialogDescription>
 							</>
 						) : (
 							<>
@@ -390,6 +408,7 @@ interface RowActionsProps {
 	onRevoke: () => void;
 }
 
+/** Per-row actions menu for an MCP session: complete auth, re-authenticate or revoke. */
 function RowActions({ row, reauthing, revoking, isPendingRow, onReauth, onRevoke }: RowActionsProps) {
 	const { t } = useTranslation("mcp");
 	const busy = reauthing || revoking;
@@ -409,33 +428,49 @@ function RowActions({ row, reauthing, revoking, isPendingRow, onReauth, onRevoke
 			</DropdownMenuTrigger>
 			<DropdownMenuContent align="end">
 				{row.kind === "flow" ? (
-					row.status === "needs_reauth" ? (
-						// The PKCE state on this flow row is dead; a fresh request to the
-						// MCP client will start a new flow. No action we can offer wires
-						// up to the existing flow row, so surface guidance instead.
-						<DropdownMenuItem disabled className="text-muted-foreground cursor-default text-xs">
-							{t("sessions.actions.triggerReauth")}
-						</DropdownMenuItem>
-					) : (
+					<>
+						{row.status === "needs_reauth" ? (
+							// The PKCE state on this flow row is dead; a fresh request to the
+							// MCP client will start a new flow. No action we can offer wires
+							// up to the existing flow row, so surface guidance instead.
+							<DropdownMenuItem disabled className="text-muted-foreground cursor-default text-xs">
+								{t("sessions.actions.triggerReauth")}
+							</DropdownMenuItem>
+						) : (
+							<DropdownMenuItem
+								className="cursor-pointer"
+								data-testid="mcp-session-complete-auth-menu-item"
+								onSelect={(e) => {
+									e.preventDefault();
+									// Header flows need &kind=headers so the auth landing page
+									// routes to the per-user-headers backend; OAuth flows use
+									// the default branch.
+									const url =
+										row.auth_kind === "headers"
+											? `/workspace/mcp-sessions/auth?flow=${row.id}&kind=headers`
+											: `/workspace/mcp-sessions/auth?flow=${row.id}`;
+									window.location.href = withBasePath(url);
+								}}
+							>
+								<ExternalLink className="h-4 w-4" />
+								{t("sessions.actions.completeAuth")}
+							</DropdownMenuItem>
+						)}
+						{/* A pending flow holds no credential yet: revoking it drops the row and its link. */}
 						<DropdownMenuItem
+							variant="destructive"
 							className="cursor-pointer"
-							data-testid="mcp-session-complete-auth-menu-item"
+							disabled={busy}
+							data-testid="mcp-session-revoke-menu-item"
 							onSelect={(e) => {
 								e.preventDefault();
-								// Header flows need &kind=headers so the auth landing page
-								// routes to the per-user-headers backend; OAuth flows use
-								// the default branch.
-								const url =
-									row.auth_kind === "headers"
-										? `/workspace/mcp-sessions/auth?flow=${row.id}&kind=headers`
-										: `/workspace/mcp-sessions/auth?flow=${row.id}`;
-								window.location.href = url;
+								onRevoke();
 							}}
 						>
-							<ExternalLink className="h-4 w-4" />
-							{t("sessions.actions.completeAuth")}
+							<Trash2 className="h-4 w-4" />
+							{t("sessions.actions.revoke")}
 						</DropdownMenuItem>
-					)
+					</>
 				) : row.kind === "header" ? (
 					<>
 						{row.status !== "orphaned" && row.can_reauth && (

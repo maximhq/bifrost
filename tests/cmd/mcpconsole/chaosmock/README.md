@@ -69,6 +69,23 @@ there. Under streamable HTTP a drop fails the request in flight; under SSE it
 to land. `sse_test.go` pins that a client gives up on its own deadline rather
 than being told.
 
+### Protocol versions
+
+Each server speaks a list of MCP protocol versions, set with the `versions` verb. A fresh server
+speaks 2025-06-18, 2025-03-26 and 2024-11-05, the session-era revisions it always has, so a
+scenario that never sets versions keeps the handshakes and session counts it had.
+
+| The list includes | The server |
+|---|---|
+| only session-era revisions | answers `server/discover` with method-not-found, so a current client falls back to `initialize`, and negotiates there: the requested version when listed, else the newest listed |
+| 2025-11-25 | also negotiates the last `initialize` revision |
+| 2026-07-28 | answers `server/discover` with the list, and serves sessionless requests: no `Mcp-Session-Id`, the version required in both the `MCP-Protocol-Version` header and `_meta`, `Mcp-Method` and `Mcp-Name` checked against the body (`-32020` and 400 on a mismatch), an unlisted version refused with `-32022`, 400 and the supported list, and `subscriptions/listen` held open for `list_changed` |
+
+`init_fail` and `bad_version` apply to `server/discover` as they do to `initialize`: the first
+fails the handshake, the second advertises that one version instead of the list. Requests the
+STDIO bridge forwards never take the sessionless path: stdio has no headers to check, and the
+bridge answers one message at a time, so it cannot hold a listen stream open.
+
 ### The STDIO bridge
 
 A STDIO server cannot share memory with the fleet, since the process under
@@ -111,7 +128,7 @@ exactly like the system under test behaving correctly.
 
 | Verb | Body | Effect |
 |---|---|---|
-| `GET /control` | | every server's state, plus fleet connection stats |
+| `GET /control` | | every server's state, plus fleet connection stats, and the TLS listener's `tls_url` and `tls_cert_pem` when one is open |
 | `POST /control` | `{"add":"name"}` / `{"remove":"name"}` | add (empty) or remove a server |
 | `POST /control` | `{"reset":"name"}` | rebuild a seeded server from its seed; 404 for an unseeded one |
 | `GET /control/<s>` | | that server's state |
@@ -123,6 +140,9 @@ exactly like the system under test behaving correctly.
 | `POST /control/<s>/tools/schema` | `{"name":"...","schema":{...}}` | change only the input schema |
 | `POST /control/<s>/tools/overlay` | `{"identity":"...","tools":[...]}` | give one identity its own tool list |
 | `POST /control/<s>/instructions` | `{"text":"..."}` / `{"clear":true}` | set or remove the instructions served in the initialize result |
+| `POST /control/<s>/prompts/set` | `{"prompts":[{"name":"greet","arguments":[{"name":"name","required":true}],"text":"Hello, {name}","completions":{"name":["Ada"]}}]}` | replace the prompts served by `prompts/list`, `prompts/get` and `completion/complete`; the server advertises prompts and completions only while it has some, and the state's `reads` lists each `prompts/get`, `resources/read` and `completion/complete` it answered |
+| `POST /control/<s>/resources/set` | `{"resources":[{"uri":"file:///x","text":"..."}],"templates":[{"uriTemplate":"file:///docs/{name}","text":"doc {uri}"}]}` | replace the resources and templates served by `resources/list`, `resources/templates/list` and `resources/read`; the server advertises resources only while it has some |
+| `POST /control/<s>/versions` | `{"versions":["2026-07-28","2025-11-25","2025-06-18"]}` | the protocol versions the server speaks (see Protocol versions); the state lists them newest first as `protocol_versions` |
 | `POST /control/<s>/faults` | `{"faults":{...}}` | set the fault state |
 | `POST /control/<s>/faults/clear` | | return to healthy |
 | `POST /control/<s>/auth` | `{"auth":{...}}` | set auth requirements |
@@ -133,7 +153,7 @@ exactly like the system under test behaving correctly.
 | `POST /control/<s>/notify/tools-changed` | | push `notifications/tools/list_changed` |
 | `POST /control/<s>/stdio/register` | `{"pid":N,"env":{...}}` | record the bridging child process and its shared environment (the child does this itself) |
 | `POST /control/<s>/stdio/kill` | | kill the bridging child process |
-| `POST /control/<s>/counters/reset` | | zero the tallies, keeping live facts (OAuth counters and log too) |
+| `POST /control/<s>/counters/reset` | | zero the tallies and clear the OAuth counters and the OAuth, reads, REST and LLM logs; configuration, OAuth clients and tokens, sessions and open streams stay |
 | `POST /control/<s>/routes/set` | `{"routes":[...]}` | replace the REST routes |
 | `POST /control/<s>/routes/add` | `{"route":{...}}` | add a route, or replace the one with the same method and path |
 | `POST /control/<s>/routes/remove` | `{"path":"/x","method":"GET"}` | remove routes for a path (every method when none is given) |
@@ -151,21 +171,28 @@ clients that initialize afterwards.
 
 ### Tools
 
-A tool is `{"name","description","inputSchema"}` plus optional fields. Only
-`annotations` goes on the wire with the first three; the rest are instructions
-to the mock, shown in the state readback and never sent to a client.
+A tool is `{"name","description","inputSchema"}` plus optional fields. `title`,
+`icons`, `outputSchema` and `annotations` go on the wire with the first three;
+the rest are instructions to the mock, shown in the state readback and never
+sent to a client.
 
 | Field | Effect |
 |---|---|
+| `title` | the tool's display name, sent in tools/list |
+| `icons` | sent verbatim in tools/list, a list of `{"src","mimeType","sizes","theme"}` |
+| `outputSchema` | sent verbatim in tools/list: the schema the tool's `structuredContent` follows |
 | `annotations` | sent verbatim in tools/list, e.g. `{"readOnlyHint":true}` |
 | `reply` | the CallToolResult tools/call returns, verbatim: several content blocks, `structuredContent`, `isError`. An empty result is `{"content":[]}`; clients reject a missing `content`. |
+| `reply_error` | the JSON-RPC error tools/call answers with, `{"code","message","data"}` as given, e.g. `{"code":-32021,"message":"missing capability","data":{"capability":"elicitation"}}` |
 | `reply_env` | answer with this variable from the stdio bridge's registered environment |
 | `fault` | a fault set that replaces the server-wide one for calls to this tool (see below) |
 
-Without `reply` or `reply_env`, a call echoes `"<tool>:<arguments>"`. A
-definition that would misbehave quietly is rejected with 400: annotations or a
-reply that is not an object, both `reply` and `reply_env`, or a tool fault
-field that cannot apply to one tool.
+Without `reply`, `reply_error` or `reply_env`, a call echoes
+`"<tool>:<arguments>"`. A definition that would misbehave quietly is rejected
+with 400: annotations, an output schema or a reply that is not an object, icons
+that are not a list, a `reply_error` without a non-zero code, more than one of
+`reply`, `reply_error` and `reply_env`, or a tool fault field that cannot apply
+to one tool.
 
 ## REST
 
@@ -243,13 +270,24 @@ clears the whole log and keeps the scripts. The model listings answer
 `mock-model` until `llm/models` or a seed's `llm_models` says otherwise.
 Unscoped server faults apply here as on REST.
 
+### The TLS listener
+
+`-tls-addr <addr>` also serves the fleet over HTTPS, including `/s/<name>/mcp`.
+It creates a self-signed loopback certificate at startup. `GET /control` reports
+`tls_url` and `tls_cert_pem`; tests can trust that certificate as a custom CA.
+
+```sh
+./tmp/mcpchaos -servers alpha -tls-addr 127.0.0.1:8401
+```
+
 ## OAuth
 
 `POST /control/<s>/auth {"auth":{"oauth":{...}}}` makes a server an OAuth 2.1
 protected resource with its own authorization server, so a client's whole
 upstream OAuth path runs for real: discovery (RFC 9728, RFC 8414), dynamic
-registration (RFC 7591), authorization with PKCE S256 (RFC 7636), code exchange
-and refresh (RFC 6749, with RFC 8707 resource indicators).
+registration (RFC 7591) or Client ID Metadata Documents, authorization with
+PKCE S256 (RFC 7636), code exchange and refresh (RFC 6749, with RFC 8707
+resource indicators).
 
 | Path | Serves |
 |---|---|
@@ -277,6 +315,14 @@ default `user`). That identity is what calls are attributed to, so
 | `deny` | every authorization ends in `access_denied` |
 | `access_ttl` | access token lifetime (default `1h`) |
 | `rotate_refresh` | a refresh issues a new refresh token and retires the old one |
+| `metadata_documents` | `"advertised"` or `"accepted"`: an https `client_id` is a Client ID Metadata Document, fetched at its first authorization; `"advertised"` also sets `client_id_metadata_document_supported` in the metadata |
+| `metadata_documents_via` | the base URL documents are fetched through, sending the document's own host and scheme as `Host` and `X-Forwarded-Proto` (default: the document URL itself) |
+
+A document client is a public client: the document must name its own URL as
+`client_id`, list `redirect_uris` and use `token_endpoint_auth_method` `none`.
+It is fetched once, at the client's first authorization request, and known from
+then on; a refused document is logged under `metadata_document` with the reason,
+and the request is answered as for an unknown client.
 
 With OAuth on, POST and GET on the MCP endpoint need an access token from this
 server, or a static `bearer` token. A refusal is 401 with a plain-text body
@@ -286,11 +332,47 @@ session needs only its id, and mcp-go sends it without credentials.
 
 `GET /control/<s>` gains `oauth`: clients, grants with their current tokens,
 counters (`prm`, `metadata`, `register`, `authorize`, `token_code`,
-`token_refresh`, `token_errors`, `rejected`), queued failures, and a log of the
+`token_refresh`, `token_errors`, `rejected`, `metadata_document_fetches`),
+queued failures, and a log of the
 last 500 requests with the raw secrets, verifier result (`pkce`), resource and
 tokens presented and issued. A grant's earlier access tokens stay valid until
 they expire, as with a real server. Changing the configuration keeps clients
 and grants, and `faults/clear` drops queued failures.
+
+## SDK clients
+
+The fleet can also drive a real `mcp-go` OAuth client against an outside MCP
+server, so a test sees that server the way an SDK client meets it: discovery
+from the protected resource metadata, dynamic registration, authorization with
+PKCE, the code exchange and every refresh after it. Consent is the test's to
+give, through whatever the server offers, so the flow is split where a browser
+would take over.
+
+| Request | Does |
+|---|---|
+| `POST /client/<c>/connect {"url", "redirect_uri", "client_name"}` | starts client `<c>` against `url`; it discovers and registers, then answers `authorize_url` and `client_id` |
+| `POST /client/<c>/authorized {"code", "state"}` | exchanges the code, completes the handshake and answers `protocol_version` and the `tools` it lists |
+| `POST /client/<c>/call {"tool", "arguments"}` | one `tools/call`, refreshing an expired token first; answers `is_error` and the `text` |
+| `GET /client/<c>` | every HTTP request the client made: `method`, `path`, `status`, and `grant_type` for a token request |
+| `DELETE /client/<c>` | closes the client |
+
+A step the client cannot complete answers 502 with the SDK's error. Without a
+token the client sends no MCP request at all: it goes straight to discovery.
+
+A plain client, with static headers and no OAuth, meets a server the way an SDK
+caller holding a key does. `call`, `GET` and `DELETE` above work on it too.
+
+| Request | Does |
+|---|---|
+| `POST /client/<c>/open {"url", "headers", "protocol_version", "listen"}` | starts client `<c>` with `headers` on every request and completes the handshake, pinned to `protocol_version` when set; with `listen` it then opens the notification stream (the GET stream before 2026-07-28, `subscriptions/listen` from it). Answers `protocol_version`, `server_name`, `server_version`, `tools_list_changed`, `session_id` and `instructions`; a refused handshake answers 502 with the error and the `requests` the client made |
+| `GET /client/<c>/tools` | one `tools/list`: each tool's `name` and `input_schema_type` |
+| `GET /client/<c>/notifications` | the method of every notification the client received |
+
+No SDK exposes a raw stream, so one is probed directly:
+
+| Request | Does |
+|---|---|
+| `POST /client/<c>/stream {"url", "headers", "hold"}` | a GET asking for `text/event-stream`, held for `hold`; answers its `status`, the `headers` a stream is judged by, the `body` received and whether it was still `open` when `hold` ended |
 
 ## Faults
 
@@ -342,6 +424,7 @@ something other than one call (`methods`, `init_fail`, `bad_version`,
 | `open_streams` / `max_streams` | stream-level leak detection |
 | `methods` | every JSON-RPC request received, counted as it arrives, before any fault, credential or session check can answer it. A call answered with an injected status, a 401 or a 404 still counts, so retries are countable. Unimplemented methods count too, so a surprise surfaces. |
 | `faulted` | how many responses were injected failures rather than real ones |
+| `handshakes` | every `initialize` and `server/discover` the server answered, in order, with the version the client `requested` and the one it was answered with (`negotiated`), which is how a client's version cap is checked |
 
 **Connection counts are not the HTTP reconnect signal.** Every mcp-go streamable
 HTTP transport is built with a bare `&http.Client{}`, whose nil Transport
@@ -361,7 +444,8 @@ carry an unsolicited notification, and a client only has one if it opted in with
 `WithContinuousListening()`. `listening_test.go` pins both sides: a listening
 client receives `notifications/tools/list_changed`, and a non-listening one
 opens no stream at all, so the notification reaches nobody and the change is
-only discoverable by asking again.
+only discoverable by asking again. A client on 2026-07-28 has no GET stream: it opts in with
+`subscriptions/listen`, whose stream carries the same notifications after an acknowledgement.
 
 ## Testing
 

@@ -2267,3 +2267,31 @@ func TestGovernanceInMemoryStoreProvidersSurviveEdits(t *testing.T) {
 	_, leaked := providers[schemas.Gemini]
 	assert.False(t, leaked, "the returned map is a snapshot, not the live map")
 }
+
+// TestApplyBasePath pins the resolve-and-store step that Bootstrap runs, and
+// that builds with their own bootstrap (enterprise) call: the flag value wins
+// over server.base_path, the normalized result lands on the server, on its
+// ServerConfig (created when absent) and in lib.BasePath, and an invalid value
+// is an error.
+func TestApplyBasePath(t *testing.T) {
+	t.Cleanup(func() { lib.SetBasePath("") })
+
+	s := &BifrostHTTPServer{BasePath: "/from-flag/", Config: &lib.Config{ServerConfig: &lib.ServerConfig{BasePath: "/from-config"}}}
+	require.NoError(t, s.ApplyBasePath())
+	assert.Equal(t, "/from-flag", s.BasePath)
+	assert.Equal(t, "/from-flag", s.Config.ServerConfig.BasePath)
+	assert.Equal(t, "/from-flag", lib.BasePath())
+
+	s = &BifrostHTTPServer{Config: &lib.Config{ServerConfig: &lib.ServerConfig{BasePath: "/from-config/"}}}
+	require.NoError(t, s.ApplyBasePath())
+	assert.Equal(t, "/from-config", s.BasePath)
+	assert.Equal(t, "/from-config", lib.BasePath())
+
+	s = &BifrostHTTPServer{BasePath: "/bifrost", Config: &lib.Config{}}
+	require.NoError(t, s.ApplyBasePath())
+	require.NotNil(t, s.Config.ServerConfig)
+	assert.Equal(t, "/bifrost", s.Config.ServerConfig.BasePath)
+
+	s = &BifrostHTTPServer{BasePath: "no-slash", Config: &lib.Config{}}
+	assert.Error(t, s.ApplyBasePath())
+}
