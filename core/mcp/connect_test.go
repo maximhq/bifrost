@@ -4,9 +4,12 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -23,9 +26,11 @@ const connectSignInMessage = "Authentication required for notes. Visit https://i
 // connectCredStore resolves a per-call credential per caller: a caller listed in
 // tokens connects with it as a bearer token, any other is asked to sign in.
 type connectCredStore struct {
-	mu     sync.Mutex
-	tokens map[string]string // by user or virtual-key identity
-	calls  int
+	mu        sync.Mutex
+	tokens    map[string]string // by user or virtual-key identity
+	calls     int
+	refresh   func(tokens map[string]string, identity string) error // what a forced refresh does; nil changes nothing
+	refreshes int
 }
 
 func (s *connectCredStore) ConnectionHeaders(ctx *schemas.BifrostContext, config *schemas.MCPClientConfig) (http.Header, error) {
@@ -51,8 +56,14 @@ func (s *connectCredStore) RequestHeaders(*schemas.BifrostContext, *schemas.MCPC
 
 func (s *connectCredStore) RequiresPerCallConnection(*schemas.MCPClientConfig) bool { return true }
 
-func (s *connectCredStore) ForceRefresh(*schemas.BifrostContext, *schemas.MCPClientConfig) error {
-	return nil
+func (s *connectCredStore) ForceRefresh(ctx *schemas.BifrostContext, _ *schemas.MCPClientConfig) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.refreshes++
+	if s.refresh == nil {
+		return nil
+	}
+	return s.refresh(s.tokens, ctx.MCPIdentity(ctx.MCPAuthMode()))
 }
 
 func (s *connectCredStore) AdminConnectionHeaders(context.Context, *schemas.MCPClientConfig) (http.Header, error) {
@@ -65,10 +76,44 @@ func (s *connectCredStore) callCount() int {
 	return s.calls
 }
 
+func (s *connectCredStore) refreshCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.refreshes
+}
+
 // buildConnectUpstream starts an upstream MCP server advertising instructions
 // and listing tools, each of which answers with its own name; it records every
 // request's headers.
 func buildConnectUpstream(t *testing.T, tools ...string) (*httptest.Server, *adminDiscoveryRecorder) {
+	t.Helper()
+	ts, rec, _ := buildConnectUpstreamAccepting(t, nil, tools...)
+	return ts, rec
+}
+
+// rejectedHandshakes counts, by bearer token, the initialize requests an
+// upstream answered with 401: one per handshake, whatever probes precede it.
+type rejectedHandshakes struct {
+	mu      sync.Mutex
+	byToken map[string]int
+}
+
+func (h *rejectedHandshakes) add(token string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.byToken[token]++
+}
+
+func (h *rejectedHandshakes) count(token string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.byToken[token]
+}
+
+// buildConnectUpstreamAccepting is buildConnectUpstream answering 401 to any
+// request whose bearer token is not in accepted, as a server does once a token
+// is revoked. A nil accepted lets every request through.
+func buildConnectUpstreamAccepting(t *testing.T, accepted []string, tools ...string) (*httptest.Server, *adminDiscoveryRecorder, *rejectedHandshakes) {
 	t.Helper()
 	s := server.NewMCPServer("connect-upstream", "1.0.0", server.WithToolCapabilities(true), server.WithInstructions("Search before you write."))
 	for _, name := range tools {
@@ -79,12 +124,24 @@ func buildConnectUpstream(t *testing.T, tools ...string) (*httptest.Server, *adm
 	}
 	streamable := server.NewStreamableHTTPServer(s)
 	rec := &adminDiscoveryRecorder{}
+	rejected := &rejectedHandshakes{byToken: map[string]int{}}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec.add(r.Method, r.Header)
+		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if accepted != nil && !slices.Contains(accepted, token) {
+			var message struct {
+				Method string `json:"method"`
+			}
+			if body, err := io.ReadAll(r.Body); err == nil && json.Unmarshal(body, &message) == nil && message.Method == "initialize" {
+				rejected.add(token)
+			}
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
 		streamable.ServeHTTP(w, r)
 	}))
 	t.Cleanup(ts.Close)
-	return ts, rec
+	return ts, rec, rejected
 }
 
 // newConnectTestManager returns a manager holding one client with
