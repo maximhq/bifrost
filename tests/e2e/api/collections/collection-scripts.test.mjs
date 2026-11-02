@@ -7,6 +7,7 @@
 // guard throws a script error instead of failing a named assertion, which aborts
 // the capture and leaves every dependent request stranded.
 import assert from "node:assert";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -1157,6 +1158,189 @@ test("routing-wiring: a trail check resolves run variables in the lines it expec
   };
   assert.throws(() => new Function("pm", probe)(pm), /should not contain/, "an absent line naming {{run_id}} was not resolved before the check");
 });
+
+const orderingFolder = JSON.parse(readFileSync(join(here, "provider-harness.json"), "utf8"))
+  .item.find((item) => /^\d+\. Builtin plugin ordering\b/.test(item.name));
+assert.strictEqual(orderingFolder.item.length, 6);
+
+test("plugin ordering: documented command isolates preflight and skips unrelated runner actions", () => {
+  const readme = readFileSync(join(here, "../README.md"), "utf8");
+  const section = readme.split("## Builtin plugin ordering\n")[1].split("\n## ")[0];
+  const command = section.split("\n").find((line) => line.includes("make run-provider-harness-test "));
+  assert.ok(command, "document the complete harness command");
+  const args = command.split(/\s+/);
+  for (const required of ["CI=1", "SKIP_STREAM_CANCEL=1", "EXPOSE_ENV=true", "PARALLEL=0", "RERUN_FAILED=", "SMOKE=", "FOLDER="]) {
+    assert.ok(args.includes(required), `missing ${required}`);
+  }
+  const value = (key) => args.find((arg) => arg.startsWith(key + "="))?.slice(key.length + 1);
+  assert.strictEqual(value("BASE_URL"), "http://127.0.0.1:8799");
+  assert.strictEqual(value("BIFROST_E2E_BASE_URL"), value("BASE_URL"));
+  assert.strictEqual(value("BIFROST_E2E_SETUP_TOKEN"), "builtin-plugin-ordering-local-only");
+  assert.strictEqual(value("BIFROST_SETUP_TOKEN"), value("BIFROST_E2E_SETUP_TOKEN"));
+  assert.strictEqual(value("BIFROST_E2E_SKIP_RAW_OVERRIDE"), "1");
+  const startup = section.split("\n").find((line) => line.includes(" make dev "));
+  assert.ok(startup.includes(" EXPOSE_ENV=true"), "isolate gateway startup as well as the harness");
+});
+
+for (const [name, status, body, accepted] of [
+  ["fixture", 200, { name: "telemetry", enabled: true, status: { status: "active" }, config: { custom_labels: ["builtin_plugin_ordering_fixture"] } }, true],
+  ["ordinary gateway accepting the token", 200, { name: "telemetry", enabled: true, status: { status: "active" }, config: { custom_labels: [] } }, false],
+  ["disabled fixture", 200, { name: "telemetry", enabled: false, status: { status: "disabled" }, config: { custom_labels: ["builtin_plugin_ordering_fixture"] } }, false],
+  ["missing plugin", 200, {}, false],
+  ["auth error", 401, {}, false],
+  ["server error", 500, {}, false],
+  ["redirect", 302, {}, false],
+  ["invalid JSON", 200, null, false],
+]) {
+  test("plugin ordering: preflight identity gate: " + name, () => {
+    const readme = readFileSync(join(here, "../README.md"), "utf8");
+    const section = readme.split("## Builtin plugin ordering\n")[1].split("\n## ")[0];
+    const extraction = /node --input-type=module <<'ORDERING_FIXTURE' &&\n([\s\S]*?)\nORDERING_FIXTURE\n/;
+    const match = section.match(extraction);
+    assert.ok(match, "identity gate must succeed before the harness can run");
+    const reordered = section.replace(/^((?:\S+=\S+ )+)make run-provider-harness-test /m,
+      (_, variables) => variables.trim().split(/\s+/).reverse().join(" ") + " make run-provider-harness-test ");
+    assert.notStrictEqual(reordered, section, "exercise a different variable order");
+    assert.strictEqual(reordered.match(extraction)?.[1], match[1], "variable order must not affect identity extraction");
+    const mock = `globalThis.fetch = async (url, options) => {
+      if (url !== 'http://127.0.0.1:8799/api/plugins/telemetry' || options.method !== 'GET' || options.redirect !== 'error' || !options.signal || options.headers['X-Bifrost-Setup-Token'] !== 'builtin-plugin-ordering-local-only') throw Error('unsafe identity request');
+      return { status: ${status}, json: async () => { ${body === null ? "throw Error('invalid JSON')" : "return " + JSON.stringify(body)}; } };
+    };\n`;
+    const result = spawnSync(process.execPath, ["--input-type=module"], { input: mock + match[1], encoding: "utf8", timeout: 5000 });
+    assert.ifError(result.error);
+    assert.strictEqual(result.status === 0, accepted, result.stderr);
+  });
+}
+
+for (const mode of ["enable", "disable"]) {
+  for (const skip of ["", "0", "true", "1"]) {
+    test(`plugin ordering: raw preflight ${mode}, skip=${JSON.stringify(skip)}`, () => {
+      const source = readFileSync(join(here, "../runners/set-raw-override-config.mjs"), "utf8").replace(/^#!.*\n/, "");
+      const mock = `globalThis.fetch = async (url, options) => {
+        console.log('REQUEST:' + options.method);
+        if (options.method === 'PUT' && JSON.parse(options.body).client_config.allow_per_request_raw_override !== ${mode === "enable"}) throw Error('wrong write');
+        return { ok: true, text: async () => JSON.stringify({client_config:{allow_per_request_raw_override:${mode !== "enable"},log_retention_days:1},framework_config:{}}) };
+      };\n`;
+      const result = spawnSync(process.execPath, ["--input-type=module", "-", mode], {
+        input: mock + source, encoding: "utf8", timeout: 5000,
+        env: { ...process.env, BIFROST_E2E_SKIP_RAW_OVERRIDE: skip },
+      });
+      assert.ifError(result.error);
+      assert.strictEqual(result.status, 0, result.stderr);
+      assert.deepStrictEqual(result.stdout.match(/REQUEST:\w+/g) || [], skip === "1" ? [] : ["REQUEST:GET", "REQUEST:PUT"]);
+    });
+  }
+}
+
+test("plugin ordering: harness augmentation uses the isolated gateway's setup token", () => {
+  const fixtureDir = join(here, "../provider_config/builtin-plugin-ordering");
+  const config = JSON.parse(readFileSync(join(fixtureDir, "config.json"), "utf8"));
+  const environment = JSON.parse(readFileSync(join(fixtureDir, "environment.json"), "utf8"));
+  assert.strictEqual(environment.values.find((entry) => entry.key === "setupToken").value, config.setup_token);
+  assert.strictEqual(config.providers.openai.network_config.base_url, "http://127.0.0.1:1");
+});
+
+/** Runs an ordering script with mocked responses and immediate timers, capturing failures, polls, and delays without network I/O. */
+function simulateOrdering(source, { code = 200, body = "", variables = {}, nextBody = body, pollError = null } = {}) {
+  const failures = [];
+  const vars = { baseUrl: "http://localhost:8799", ...variables };
+  let skipped = false;
+  let polls = 0;
+  const response = (text) => ({ code, text: () => text, json: () => JSON.parse(text) });
+  const pm = {
+    variables: { get: (key) => vars[key] },
+    collectionVariables: { get: (key) => vars[key], set: (key, value) => { vars[key] = value; }, unset: (key) => { delete vars[key]; } },
+    response: response(body),
+    execution: { skipRequest: () => { skipped = true; } },
+    expect: (value, message) => Object.assign(redactionExpect(value, message), { eql: (expected) => assert.deepStrictEqual(value, expected) }),
+    test: (name, fn) => { try { fn(); } catch (err) { failures.push(name + ": " + err.message); } },
+    sendRequest: (request, callback) => { polls++; assert.strictEqual(request.url, vars.baseUrl + "/metrics"); callback(pollError, response(nextBody)); },
+  };
+  const delays = [];
+  new Function("pm", "setTimeout", source)(pm, (fn, delay) => { delays.push(delay); fn(); });
+  return { failures, vars, skipped, polls, delays };
+}
+
+test("plugin ordering: fixture opt-in and loopback are required", () => {
+  const source = listenScript(orderingFolder, "prerequest");
+  assert.strictEqual(simulateOrdering(source).skipped, true);
+  const remote = simulateOrdering(source, { variables: { builtinPluginOrderingFixture: "1", baseUrl: "https://shared.example" } });
+  assert.strictEqual(remote.skipped, true);
+  assert.strictEqual(remote.failures.length, 1);
+  assert.strictEqual(simulateOrdering(source, { variables: { builtinPluginOrderingFixture: "1" } }).skipped, false);
+});
+
+test("plugin ordering: a wrong fixture cannot authorize mutation; cleanup only needs the fixture check", () => {
+  const wrong = simulateOrdering(listenScript(orderingFolder.item[0], "test"), {
+    body: JSON.stringify({ name: "telemetry", enabled: true, status: { status: "active" }, config: { custom_labels: [] } }),
+  });
+  assert.strictEqual(wrong.failures.length, 1);
+  assert.strictEqual(wrong.vars.builtinOrderingReady, undefined);
+  assert.strictEqual(simulateOrdering(listenScript(orderingFolder.item[1], "prerequest")).skipped, true);
+  assert.strictEqual(simulateOrdering(listenScript(orderingFolder.item[5], "prerequest"), { variables: { builtinOrderingReady: true } }).skipped, false);
+});
+
+test("plugin ordering: cleanup disables telemetry without sending unsupported builtin placement", () => {
+  const cleanup = orderingFolder.item[5];
+  assert.strictEqual(cleanup.request.method, "PUT");
+  assert.deepStrictEqual(JSON.parse(cleanup.request.body.raw), { enabled: false });
+  const body = { plugin: { name: "telemetry", enabled: false, status: { status: "disabled" } } };
+  assert.deepStrictEqual(simulateOrdering(listenScript(cleanup, "test"), { body: JSON.stringify(body) }).failures, []);
+  body.plugin.enabled = true;
+  assert.strictEqual(simulateOrdering(listenScript(cleanup, "test"), { body: JSON.stringify(body) }).failures.length, 1);
+});
+
+test("plugin ordering: both request modes assert refusal before any provider call", () => {
+  for (const [index, stream, flag] of [[2, false, "builtinOrderingRefused"], [3, true, "builtinOrderingStreamRefused"]]) {
+    const probe = orderingFolder.item[index];
+    assert.ok(probe.name.includes("[EXPECT-401]"));
+    assert.strictEqual(probe.request.url, "{{baseUrl}}/v1/chat/completions");
+    assert.strictEqual(JSON.parse(probe.request.body.raw).stream, stream);
+    const source = listenScript(probe, "test");
+    const refused = simulateOrdering(source, { code: 401, body: JSON.stringify({ error: { message: "access not found" } }) });
+    assert.deepStrictEqual(refused.failures, []);
+    assert.strictEqual(refused.vars[flag], true);
+    const unexpected = simulateOrdering(source, { code: 500, body: "provider failure" });
+    assert.strictEqual(unexpected.failures.length, 1);
+    assert.strictEqual(unexpected.vars[flag], undefined);
+  }
+});
+
+test("plugin ordering: metrics require both refusal probes", () => {
+  const source = listenScript(orderingFolder.item[4], "prerequest");
+  for (const variables of [{ builtinOrderingRefused: true }, { builtinOrderingStreamRefused: true }]) {
+    assert.strictEqual(simulateOrdering(source, { variables }).skipped, true);
+  }
+  assert.strictEqual(simulateOrdering(source, { variables: { builtinOrderingRefused: true, builtinOrderingStreamRefused: true } }).skipped, false);
+});
+
+const orderingUnaryMetric = 'bifrost_error_requests_total{provider="openai",model="gpt-4o-mini",method="chat_completion",status_code="401",error_type="policy_access_denied"} 1\n';
+const orderingStreamMetric = 'bifrost_active_requests{method="chat_completion_stream"} 0\n';
+const orderingMetric = orderingUnaryMetric + orderingStreamMetric;
+for (const [name, options, expectedFailures, expectedPolls] of [
+  ["records refusal", { body: orderingMetric }, 0, 0],
+  ["waits for asynchronous recording", { body: "", nextBody: orderingMetric }, 0, 1],
+  ["waits for streaming recording", { body: orderingUnaryMetric, nextBody: orderingMetric }, 0, 1],
+  ["waits for streaming release", { body: orderingMetric.replace('} 0', '} 1'), nextBody: orderingMetric }, 0, 1],
+  ["rejects stuck streaming gauge", { body: orderingMetric.replace('} 0', '} 1') }, 1, 20],
+  ["rejects missing streaming metric", { body: orderingUnaryMetric }, 1, 20],
+  ["rejects missing unary metric", { body: orderingStreamMetric }, 1, 20],
+  ["rejects missing telemetry", { body: "" }, 1, 20],
+  ["bounds failure diagnostics", { body: "x".repeat(16000) }, 1, 20],
+  ["rejects unrelated metrics", { body: orderingMetric.replace('status_code="401"', 'status_code="500"') }, 1, 20],
+  ["rejects duplicate counts", { body: orderingMetric.replace("} 1", "} 2") }, 1, 0],
+  ["rejects metrics auth errors", { code: 401, body: "unauthorized" }, 1, 0],
+  ["rejects metrics server errors", { code: 500, body: "failure" }, 1, 0],
+  ["rejects polling transport errors", { pollError: new Error("connection refused") }, 1, 1],
+]) {
+  test("plugin ordering: " + name, () => {
+    const result = simulateOrdering(listenScript(orderingFolder.item[4], "test"), options);
+    assert.strictEqual(result.failures.length, expectedFailures);
+    assert.strictEqual(result.polls, expectedPolls);
+    assert.deepStrictEqual(result.delays, Array(expectedPolls).fill(250));
+    assert.ok(result.failures.every((message) => message.length < 1024));
+  });
+}
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

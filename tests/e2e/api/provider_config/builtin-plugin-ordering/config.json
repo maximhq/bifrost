@@ -1,0 +1,20 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "source_of_truth": "config.json",
+  "setup_token": "builtin-plugin-ordering-local-only",
+  "client": { "enable_logging": false, "allow_direct_keys": false, "enforce_auth_on_inference": false },
+  "logs_store": { "enabled": false },
+  "providers": {
+    "openai": {
+      "keys": [{ "name": "local-only", "value": "not-a-provider-key", "models": ["gpt-4o-mini"], "weight": 1 }],
+      "network_config": { "base_url": "http://127.0.0.1:1", "max_retries": 0 }
+    }
+  },
+  "plugins": [{
+    "name": "telemetry",
+    "enabled": true,
+    "placement": "builtin",
+    "order": 1,
+    "config": { "custom_labels": ["builtin_plugin_ordering_fixture"] }
+  }]
+}
