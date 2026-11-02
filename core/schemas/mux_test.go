@@ -191,6 +191,11 @@ func TestToChatMessages_MergesClosingReasoningIntoExistingReasoning(t *testing.T
 	if len(assistant.ReasoningDetails) != 2 {
 		t.Fatalf("expected both reasoning runs in ReasoningDetails, got %#v", assistant.ReasoningDetails)
 	}
+	for i, d := range assistant.ReasoningDetails {
+		if d.Index != i {
+			t.Fatalf("reasoning detail %d has index %d, want sequential indexes: %#v", i, d.Index, assistant.ReasoningDetails)
+		}
+	}
 }
 
 func TestToChatMessages_AttachesReasoningToToolCallAssistantMessage(t *testing.T) {

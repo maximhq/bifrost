@@ -817,6 +817,11 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 			msg.Reasoning = &text
 		}
 		if len(pendingReasoningDetails) > 0 {
+			// Keep detail indexes sequential when the message already carries details.
+			offset := len(msg.ReasoningDetails)
+			for i := range pendingReasoningDetails {
+				pendingReasoningDetails[i].Index += offset
+			}
 			msg.ReasoningDetails = append(msg.ReasoningDetails, pendingReasoningDetails...)
 		}
 		pendingReasoning.Reset()
