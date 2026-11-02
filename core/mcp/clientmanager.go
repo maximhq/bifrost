@@ -3516,6 +3516,9 @@ func (m *MCPManager) handleSSEConnectionLost(clientID, clientName string, genera
 	recordClientFailure(client, schemas.MCPConnectionFailureStageTransportLost, err)
 	m.mu.Unlock()
 	m.logger.Warn("%s SSE connection lost for MCP server '%s': %v", MCPLogPrefix, clientName, err)
+	if m.checkerManager != nil {
+		m.checkerManager.Hasten(clientID)
+	}
 }
 
 // closeConnHandles cancels and closes one connection handle pair. Both may be
@@ -3636,6 +3639,11 @@ func (m *MCPManager) failConnectAttempt(entry *schemas.MCPClientState, config *s
 	}
 	cb := m.stateChangeCallback
 	m.mu.Unlock()
+	// A failed reconnect started outside the checker (an admin's, say) leaves
+	// the checker on whatever cadence it had, so move it to the unstable one.
+	if newState == schemas.MCPConnectionStateUnstable && m.checkerManager != nil {
+		m.checkerManager.Hasten(config.ID)
+	}
 
 	// One line per transition, carrying the reason — the per-attempt detail
 	// stays at Debug because a reconnect loop during an outage re-runs this
