@@ -95,9 +95,9 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 		return nil, fmt.Errorf("provider %s: %w", providerKey, err)
 	}
 	if ok {
-		// skip_tls_verify travels on inherited.proxy (ProxyConfig.SkipTLSVerify), which
-		// scopes it to TLS through the proxy. Setting NetworkConfig.InsecureSkipVerify
-		// instead would also skip verification for no_proxy hosts reached directly.
+		// skip_tls_verify and the proxy CA travel on inherited.proxy, which applies the
+		// skip to the https:// proxy's own certificate only. Setting
+		// NetworkConfig.InsecureSkipVerify instead would skip verification of targets.
 		providerConfig.ProxyConfig = inherited.proxy
 	}
 	if config.ConcurrencyAndBufferSize != nil {
@@ -139,14 +139,6 @@ type inheritedProxy struct {
 	proxy *schemas.ProxyConfig
 }
 
-// inheritGlobalProxy returns the global proxy for a provider that has none of its
-// own, when the global proxy is enabled for inference. A provider's own proxy always
-// wins. ok is false when nothing should be inherited.
-//
-// no_proxy carries over, so hosts such as a VPC endpoint stay direct. skip_tls_verify
-// carries over as the provider's insecure_skip_verify, since that is what the global
-// setting means for traffic tunnelled through a TLS-inspecting proxy. The global
-// timeout does not: each provider keeps its own network_config timeouts.
 // InheritedGlobalProxy is the proxy a relay with no proxy_config of its own inherits
 // from the global proxy, nil when the global proxy is off or not enabled for inference,
 // and an error when it is on but its URL cannot be read.
@@ -158,6 +150,15 @@ func InheritedGlobalProxy(global *configstoreTables.GlobalProxyConfig) (*schemas
 	return inherited.proxy, nil
 }
 
+// inheritGlobalProxy returns the global proxy for a provider that has none of its
+// own, when the global proxy is enabled for inference. A provider's own proxy always
+// wins. ok is false when nothing should be inherited.
+//
+// no_proxy carries over, so hosts such as a VPC endpoint stay direct. skip_tls_verify
+// and ca_cert_pem carry over on the proxy config: the skip covers only the https://
+// proxy's own certificate, and targets stay verified (the CA is trusted for them).
+// The global timeout does not carry over: each provider keeps its own network_config
+// timeouts.
 func inheritGlobalProxy(own *schemas.ProxyConfig, global *configstoreTables.GlobalProxyConfig) (inheritedProxy, bool, error) {
 	if hasOwnProxy(own) || global == nil || !global.Enabled || !global.EnableForInference || strings.TrimSpace(global.URL) == "" {
 		return inheritedProxy{}, false, nil
@@ -190,11 +191,11 @@ func inheritGlobalProxy(own *schemas.ProxyConfig, global *configstoreTables.Glob
 			Username: plainSecret(global.Username),
 			Password: plainSecret(global.Password),
 			NoProxy:  global.NoProxy,
-			// The only carrier of the global skip_tls_verify: the proxy stacks skip
-			// verification for the TLS hop to an https:// proxy and for TLS through
-			// the proxy, and still verify no_proxy hosts reached directly.
-			// NetworkConfig is deliberately left alone.
+			// skip_tls_verify covers only the https:// proxy's own certificate; the
+			// proxy CA is trusted for that hop and for TLS through the proxy, so
+			// targets are always verified. NetworkConfig is deliberately left alone.
 			SkipTLSVerify: global.SkipTLSVerify,
+			CACertPEM:     plainSecret(global.CACertPEM),
 		},
 	}, true, nil
 }

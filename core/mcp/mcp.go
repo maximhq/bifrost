@@ -259,35 +259,54 @@ func (m *MCPManager) getInProcessServerFactory() schemas.InProcessServerFactory 
 // run it only after all plugins are registered, ensuring every PreMCPConnectionHook
 // participates in the connection. Safe to call once after construction; clients are
 // dialed in parallel and a failed client is retained in the Unstable state with a
-// connection checker that recovers it automatically.
-func (m *MCPManager) ConnectConfiguredClients(ctx context.Context) {
+// connection checker that recovers it automatically. It returns once every client
+// has been attempted; onClientDone, when not nil, is called as each attempt
+// finishes, never two calls at once.
+func (m *MCPManager) ConnectConfiguredClients(ctx context.Context, onClientDone func(clientID string)) {
 	m.connectOnce.Do(func() {
-		m.connectConfiguredClients(ctx)
+		m.connectConfiguredClients(ctx, onClientDone)
 	})
 }
 
 // connectConfiguredClients performs the actual dial. It is invoked exactly once via
 // m.connectOnce, guarding against accidental repeat invocations (e.g. a double-Bootstrap
 // or a future code path) that would otherwise re-dial every boot config.
-func (m *MCPManager) connectConfiguredClients(ctx context.Context) {
+func (m *MCPManager) connectConfiguredClients(ctx context.Context, onClientDone func(clientID string)) {
 	if len(m.bootClientConfigs) == 0 {
 		return
 	}
 	if ctx == nil {
 		ctx = m.ctx
 	}
+	// Serializes onClientDone, so a caller resyncing on each call never has an
+	// older snapshot land after a newer one.
+	var doneMu sync.Mutex
 	// Add clients in parallel
 	wg := sync.WaitGroup{}
 	wg.Add(len(m.bootClientConfigs))
 	for _, clientConfig := range m.bootClientConfigs {
 		go func(clientConfig *schemas.MCPClientConfig) {
 			defer wg.Done()
-			if err := m.AddClient(ctx, clientConfig); err != nil {
+			if onClientDone != nil {
+				defer func() {
+					doneMu.Lock()
+					defer doneMu.Unlock()
+					onClientDone(clientConfig.ID)
+				}()
+			}
+			// A failed dial is kept unstable and recovered by addClient itself, which
+			// checks the client was not removed meanwhile: the caller may serve the
+			// API while this runs.
+			dialed, err := m.addClient(ctx, clientConfig, true)
+			if err != nil {
 				m.logger.Warn("%s Failed to register MCP client %s: %v", MCPLogPrefix, clientConfig.Name, err)
-				// Retain the entry in Unstable state and start a connection checker to
-				// recover it automatically. On startup, a connection failure is likely
-				// transient (e.g. autoscaling cold start) — the client was previously
-				// configured and should be recovered without user intervention.
+			}
+			if err != nil && !dialed {
+				// Refused before any dial, so nothing was kept. Retain the entry in
+				// Unstable state and start a connection checker to recover it
+				// automatically. On startup, a connection failure is likely transient
+				// (e.g. autoscaling cold start); the client was previously configured
+				// and should be recovered without user intervention.
 				m.mu.Lock()
 				if _, exists := m.clientMap[clientConfig.ID]; !exists {
 					m.clientMap[clientConfig.ID] = &schemas.MCPClientState{

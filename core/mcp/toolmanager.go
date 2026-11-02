@@ -776,6 +776,15 @@ func (m *ToolsManager) executeToolInternal(
 	toolExecutionTimeout := m.executionTimeout(executionConfig)
 	toolCtx, cancel := context.WithTimeout(ctx, toolExecutionTimeout)
 	defer cancel()
+	// What a timeout reports: the client's timeout, or less when the caller's own deadline comes
+	// first, so the message never names a limit that did not stop the call. A deadline that has
+	// already passed leaves a budget of zero, not a negative one.
+	callBudget := toolExecutionTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining < callBudget {
+			callBudget = max(remaining, 0).Round(time.Millisecond)
+		}
+	}
 
 	// The connection (shared persistent OR ephemeral per-call) is supplied by
 	// the caller via AcquireClientConn. Admin-level credentials live on the
@@ -797,16 +806,15 @@ func (m *ToolsManager) executeToolInternal(
 	// unlike a bare connect, this call may not be idempotent, so it only gets
 	// a couple of quick, latency-conscious attempts. isTransientToolCallError
 	// (ToolCallRetryConfig's configured classifier) already treats
-	// 401/403/unauthorized/forbidden as non-retryable — those fail
-	// immediately here with zero retries and fall through to the
-	// isAuthFailureErrorText handling below unchanged.
+	// auth-shaped failures as non-retryable. Those fail immediately here
+	// with zero retries and reach the isAuthFailure check below unchanged.
 	toolWait := schemas.BeginUpstreamWait(ctx)
 	var toolResponse *mcp.CallToolResult
 	callErr := ExecuteWithRetry(
 		toolCtx,
 		func() error {
 			var err error
-			toolResponse, err = clientConn.CallTool(toolCtx, callRequest)
+			toolResponse, err = CallToolWithin(toolCtx, clientConn, callRequest)
 			return err
 		},
 		ToolCallRetryConfig,
@@ -823,7 +831,7 @@ func (m *ToolsManager) executeToolInternal(
 
 		// Sentinel-wrapped so the gate can classify error.type (timeout vs tool_error).
 		if toolCtx.Err() == context.DeadlineExceeded {
-			return nil, "", "", fmt.Errorf("MCP tool call timed out after %v: %s: %w", toolExecutionTimeout, toolName, ErrMCPToolTimeout)
+			return nil, "", "", fmt.Errorf("MCP tool call timed out after %v: %s: %w", callBudget, toolName, ErrMCPToolTimeout)
 		}
 
 		// Two failures are worth reacting to instead of surfacing an opaque
@@ -886,10 +894,37 @@ func (m *ToolsManager) executeToolInternal(
 	return createToolResponseMessage(*toolCall, toolResponse, toolName), executionConfig.Name, originalMCPToolName, nil
 }
 
+// CallToolWithin calls the tool and answers no later than ctx's deadline. A
+// remote transport stops at the deadline itself, but an in-process server runs
+// the handler on the calling goroutine and returns only when the handler does,
+// so the call runs on its own goroutine and a late result is dropped. A result
+// that arrives once the deadline has passed is dropped too: a handler that
+// returns when its context ends has not finished the work in time.
+func CallToolWithin(ctx context.Context, conn *client.Client, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	type outcome struct {
+		result *mcp.CallToolResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := conn.CallTool(ctx, req)
+		done <- outcome{result, err}
+	}()
+	select {
+	case o := <-done:
+		if o.err == nil && ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return o.result, o.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 // attemptCallFailureRecovery reacts to a live tool call that failed for a
-// reason a fresh connection repairs: a clean upstream auth rejection
-// (401/403/unauthorized/forbidden), or a session the upstream has abandoned
-// (isDeadSessionError). Both land here because the remedy is identical;
+// reason a fresh connection repairs: a clean upstream auth rejection (a 401
+// or 403 from the upstream's transport), or a session the upstream has
+// abandoned (isDeadSessionError). Both land here because the remedy is identical;
 // the credential force-refresh below is simply redundant, not harmful, for the
 // session case, and a dead session and a rotated credential often arrive
 // together anyway. The mechanics differ by auth type:
@@ -976,7 +1011,7 @@ func (m *ToolsManager) attemptCallFailureRecovery(
 		},
 		func(ctx context.Context, conn *client.Client) error {
 			var err error
-			retryResponse, err = conn.CallTool(ctx, callRequest)
+			retryResponse, err = CallToolWithin(ctx, conn, callRequest)
 			return err
 		})
 	if !recovered {

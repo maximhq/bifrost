@@ -33,6 +33,8 @@ type State struct {
 	Streams  int              `json:"streams"`
 	// Instructions is what the initialize result carries, empty for none.
 	Instructions string `json:"instructions,omitempty"`
+	// ProtocolVersions are the MCP protocol versions the server speaks, newest first.
+	ProtocolVersions []string `json:"protocol_versions"`
 	// StdioPID is the child process bridging this server over stdin and
 	// stdout, or 0 when none has registered.
 	StdioPID int `json:"stdio_pid"`
@@ -44,6 +46,12 @@ type State struct {
 	REST *RESTState `json:"rest,omitempty"`
 	// LLM is the LLM surface's models and scenarios, present once used.
 	LLM *LLMState `json:"llm,omitempty"`
+	// Prompts, Resources and ResourceTemplates are what the server offers besides tools, and Reads
+	// the prompts/get, resources/read and completion/complete requests it answered.
+	Prompts           []Prompt           `json:"prompts,omitempty"`
+	Resources         []Resource         `json:"resources,omitempty"`
+	ResourceTemplates []ResourceTemplate `json:"resource_templates,omitempty"`
+	Reads             []ReadEntry        `json:"reads,omitempty"`
 }
 
 // State captures a server's current state.
@@ -52,21 +60,27 @@ func (s *Server) State() State {
 	if s.auth.get().OAuth != nil {
 		oauth = s.oauth.snapshot()
 	}
+	prompts, resources, templates, reads := s.prompts.snapshot()
 	return State{
-		Name:         s.name,
-		Tools:        s.tools.List(""),
-		Revision:     s.tools.Revision(),
-		Faults:       s.faults.peek(),
-		Auth:         s.auth.get(),
-		Counters:     s.counters.Snapshot(),
-		Sessions:     s.sessions.count(),
-		Streams:      s.streams.count(),
-		Instructions: s.Instructions(),
-		StdioPID:     s.StdioPID(),
-		StdioEnv:     s.StdioEnv(),
-		OAuth:        oauth,
-		REST:         s.rest.snapshot(),
-		LLM:          s.llm.snapshot(),
+		Prompts:           prompts,
+		Resources:         resources,
+		ResourceTemplates: templates,
+		Reads:             reads,
+		Name:              s.name,
+		Tools:             s.tools.List(""),
+		Revision:          s.tools.Revision(),
+		Faults:            s.faults.peek(),
+		Auth:              s.auth.get(),
+		Counters:          s.counters.Snapshot(),
+		Sessions:          s.sessions.count(),
+		Streams:           s.streams.count(),
+		Instructions:      s.Instructions(),
+		ProtocolVersions:  s.ProtocolVersions(),
+		StdioPID:          s.StdioPID(),
+		StdioEnv:          s.StdioEnv(),
+		OAuth:             oauth,
+		REST:              s.rest.snapshot(),
+		LLM:               s.llm.snapshot(),
 	}
 }
 
@@ -80,11 +94,16 @@ func (f *Fleet) routeFleetControl(w http.ResponseWriter, r *http.Request) {
 				states[name] = s.State()
 			}
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
+		body := map[string]any{
 			"base_url":    f.URL(),
 			"servers":     states,
 			"connections": f.Connections(),
-		})
+		}
+		if tlsURL, certPEM := f.tlsListener(); tlsURL != "" {
+			body["tls_url"] = tlsURL
+			body["tls_cert_pem"] = certPEM
+		}
+		writeJSON(w, http.StatusOK, body)
 	case http.MethodPost:
 		var body struct {
 			Add    string `json:"add"`
@@ -182,8 +201,15 @@ type controlBody struct {
 	Turns    []LLMTurn `json:"turns,omitempty"`
 	Then     *LLMTurn  `json:"then,omitempty"`
 	Models   []string  `json:"models,omitempty"`
+	// Prompts, Resources and Templates drive the prompts/set and resources/set verbs.
+	Prompts   []Prompt           `json:"prompts,omitempty"`
+	Resources []Resource         `json:"resources,omitempty"`
+	Templates []ResourceTemplate `json:"templates,omitempty"`
+	// Versions drives the versions verb.
+	Versions []string `json:"versions,omitempty"`
 }
 
+// applyControl applies one per-server control verb, refusing an unknown verb or a body it cannot use.
 func (s *Server) applyControl(verb string, r *http.Request) error {
 	var body controlBody
 	if err := decodeBody(r, &body); err != nil {
@@ -281,7 +307,20 @@ func (s *Server) applyControl(verb string, r *http.Request) error {
 		if err := s.KillStdio(); err != nil {
 			return errBadRequest(err.Error())
 		}
+	case "prompts/set":
+		if err := s.prompts.setPrompts(body.Prompts); err != nil {
+			return errBadRequest(err.Error())
+		}
+	case "resources/set":
+		if err := s.prompts.setResources(body.Resources, body.Templates); err != nil {
+			return errBadRequest(err.Error())
+		}
+	case "versions":
+		if err := s.versions.set(body.Versions); err != nil {
+			return errBadRequest(err.Error())
+		}
 	case "counters/reset":
+		s.prompts.clearReads()
 		s.counters.Reset()
 		s.oauth.resetCounters()
 		s.rest.clearLog()
@@ -378,6 +417,7 @@ func decodeBody(r *http.Request, v any) error {
 
 type errBadRequest string
 
+// Error returns the refusal's text.
 func (e errBadRequest) Error() string { return string(e) }
 
 // applyLLMScript handles llm/script, which replaces a scenario's turns and

@@ -799,12 +799,16 @@
 			"updateValues": "Update values",
 			"editValues": "Edit values"
 		},
+		"revokeFlowTitle": "Revoke this pending flow?",
+		"revokeFlowDescription": "Bifrost will delete this pending flow, so its link stops working. A credential already stored for this binding is kept; revoke its own row to remove it.",
 		"revokeHeaderTitle": "Revoke these stored header values?",
 		"revokeHeaderDescription": "Bifrost will remove the stored credential values for this binding. There is no upstream token to revoke; the user will need to resubmit their header values to use this MCP again.",
 		"revokeSessionTitle": "Revoke this MCP session?",
 		"revokeSessionDescription": "Bifrost will remove the stored credential for this binding. The upstream OAuth token is not revoked at the provider; it stays detached and expires naturally. Anyone using this binding will need to re-authenticate to obtain a fresh token.",
 		"toast": {
 			"reauthFailed": "Re-authentication failed",
+			"flowRevoked": "Pending flow revoked",
+			"flowRevokeFailed": "Failed to revoke pending flow",
 			"headerRevoked": "Header values revoked",
 			"sessionRevoked": "Session revoked",
 			"headerRevokeFailed": "Failed to revoke header values",

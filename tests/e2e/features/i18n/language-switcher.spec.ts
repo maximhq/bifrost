@@ -18,21 +18,27 @@ function strings(locale: string) {
 }
 
 async function selectLanguage(page: Page, locale: string) {
-  await page.getByTestId('language-switcher').click()
-  await page.getByTestId(`language-option-${locale}`).click()
+  await page.getByTestId('client-settings-language-select').click()
+  await page.getByTestId(`client-settings-language-option-${locale}`).click()
 }
 
 async function expectLanguage(page: Page, locale: string) {
   const expected = strings(locale)
   await expect(page.locator('html')).toHaveAttribute('lang', locale)
-  await expect(page.getByTestId('language-switcher')).toHaveAttribute('aria-label', expected.language)
+  await expect(page.locator('label[for="client-settings-language"]')).toContainText(expected.language)
   await expect(page.getByRole('button', { name: expected.observability, exact: true })).toBeVisible()
 }
 
-test.describe('Language switcher', () => {
+test.describe('Language setting (Client Settings)', () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/workspace/logs')
+    await page.goto('/workspace/config/client-settings')
     await expectLanguage(page, 'en')
+  })
+
+  test('lives in Client Settings with a beta badge, not in the topbar', async ({ page }) => {
+    await expect(page.getByTestId('language-switcher')).toHaveCount(0)
+    const label = page.locator('label[for="client-settings-language"]')
+    await expect(label).toContainText(catalog('en', 'common').badges.beta as string)
   })
 
   test('switches between languages and persists the choice across a reload', async ({ page }) => {
@@ -56,15 +62,33 @@ test.describe('Language switcher', () => {
     await selectLanguage(page, 'ja')
     await expectLanguage(page, 'ja')
 
-    await page.getByTestId('language-switcher').click()
-    await expect(page.getByTestId('language-option-ja').locator('svg')).toHaveCount(1)
-    await expect(page.getByTestId('language-option-en').locator('svg')).toHaveCount(0)
+    await page.getByTestId('client-settings-language-select').click()
+    await expect(page.getByTestId('client-settings-language-option-ja')).toHaveAttribute('data-state', 'checked')
+    await expect(page.getByTestId('client-settings-language-option-en')).toHaveAttribute('data-state', 'unchecked')
     await page.keyboard.press('Escape')
+  })
+
+  test('is reachable from the account menu outside Client Settings', async ({ page }) => {
+    // Client Settings is gated by Settings View; the account menu is not.
+    await page.goto('/workspace/logs')
+    await page.locator('[data-testid="topbar-user-pill"], [data-testid="topbar-menu-btn"]').first().click()
+    await page.getByTestId('topbar-language-submenu').hover()
+    await expect(page.getByTestId('topbar-language-option-en')).toHaveAttribute('data-state', 'checked')
+    await page.getByTestId('topbar-language-option-ja').click()
+
+    await expect(page.locator('html')).toHaveAttribute('lang', 'ja')
+    await expect(page.getByRole('button', { name: strings('ja').observability, exact: true })).toBeVisible()
+    expect(await page.evaluate((key) => localStorage.getItem(key), LOCALE_STORAGE_KEY)).toBe('ja')
+
+    await page.goto('/workspace/config/client-settings')
+    await expectLanguage(page, 'ja')
+    await selectLanguage(page, 'en')
+    await expectLanguage(page, 'en')
   })
 
   test('renders a saved non-English language on first load', async ({ page }) => {
     await page.addInitScript((key) => localStorage.setItem(key, 'ja'), LOCALE_STORAGE_KEY)
-    await page.goto('/workspace/logs')
+    await page.goto('/workspace/config/client-settings')
     await expectLanguage(page, 'ja')
 
     await selectLanguage(page, 'zh-CN')

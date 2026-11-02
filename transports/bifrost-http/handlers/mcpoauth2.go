@@ -127,10 +127,10 @@ func (h *OAuthHandler) handleOAuthCallback(ctx *fasthttp.RequestCtx) {
 	// Fall through: server-level admin-test flow.
 	if err := h.oauthProvider.CompleteOAuthFlow(ctx, state, code); err != nil {
 		logger.Error("[oauth] admin-test callback completion failed: err=%v", err)
-		ctx.Redirect("/workspace/mcp-registry/oauth-callback?status=failed&error="+url.QueryEscape("OAuth authentication failed."), fasthttp.StatusFound)
+		ctx.Redirect(lib.WithBasePath("/workspace/mcp-registry/oauth-callback?status=failed&error="+url.QueryEscape("OAuth authentication failed.")), fasthttp.StatusFound)
 		return
 	}
-	ctx.Redirect("/workspace/mcp-registry/oauth-callback?status=success", fasthttp.StatusFound)
+	ctx.Redirect(lib.WithBasePath("/workspace/mcp-registry/oauth-callback?status=success"), fasthttp.StatusFound)
 }
 
 // handleCallbackError handles ?error= responses. The upstream error is only logged, so provider text
@@ -166,7 +166,7 @@ func (h *OAuthHandler) redirectCallbackFailure(ctx *fasthttp.RequestCtx, state, 
 		}
 	}
 	if isAdminTestFlow {
-		ctx.Redirect("/workspace/mcp-registry/oauth-callback?status=failed&error="+url.QueryEscape(userMsg), fasthttp.StatusFound)
+		ctx.Redirect(lib.WithBasePath("/workspace/mcp-registry/oauth-callback?status=failed&error="+url.QueryEscape(userMsg)), fasthttp.StatusFound)
 		return
 	}
 	ctx.Redirect(perUserCallbackRedirect(ctx, h.store.ConfigStore, userMsg, false), fasthttp.StatusFound)
@@ -178,20 +178,21 @@ func (h *OAuthHandler) redirectCallbackFailure(ctx *fasthttp.RequestCtx, state, 
 // or ?error=... (failure). Anonymous temp-token visitors land on the public
 // MinimalShell pages (/auth-success or /auth-failed) which don't require a
 // cookie. This mirrors the model used by the temp-token-aware UI: keep admins
-// in the dashboard, route end users to chrome-less landings.
+// in the dashboard, route end users to chrome-less landings. Paths carry
+// server.base_path so the browser lands back under the proxy prefix.
 func perUserCallbackRedirect(ctx *fasthttp.RequestCtx, store configstore.ConfigStore, userMsg string, success bool) string {
 	cookieToken := string(ctx.Request.Header.Cookie("token"))
 	authenticated := cookieToken != "" && validateSession(ctx, store, cookieToken)
 	if success {
 		if authenticated {
-			return "/workspace/mcp-sessions?completed=1"
+			return lib.WithBasePath("/workspace/mcp-sessions?completed=1")
 		}
-		return "/workspace/mcp-sessions/auth-success"
+		return lib.WithBasePath("/workspace/mcp-sessions/auth-success")
 	}
 	if authenticated {
-		return "/workspace/mcp-sessions?error=" + url.QueryEscape(userMsg)
+		return lib.WithBasePath("/workspace/mcp-sessions?error=" + url.QueryEscape(userMsg))
 	}
-	return "/workspace/mcp-sessions/auth-failed?error=" + url.QueryEscape(userMsg)
+	return lib.WithBasePath("/workspace/mcp-sessions/auth-failed?error=" + url.QueryEscape(userMsg))
 }
 
 // resolveOAuthFlowPollStatus folds an admin-mode flow row into the status a

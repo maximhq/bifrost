@@ -216,6 +216,9 @@ func TestControlRejectsToolsThatWouldMisbehaveQuietly(t *testing.T) {
 		"annotations not an object": {"name": "x", "annotations": []any{"readOnlyHint"}},
 		"reply not an object":       {"name": "x", "reply": "hi"},
 		"two reply sources":         {"name": "x", "reply": map[string]any{"content": []any{}}, "reply_env": "CHAOS_TAG"},
+		"reply and reply_error":     {"name": "x", "reply": map[string]any{"content": []any{}}, "reply_error": map[string]any{"code": -32021, "message": "m"}},
+		"reply_error not an object": {"name": "x", "reply_error": "boom"},
+		"reply_error without code":  {"name": "x", "reply_error": map[string]any{"message": "m"}},
 		"fault on the handshake":    {"name": "x", "fault": map[string]any{"init_fail": true}},
 		"fault scoped by method":    {"name": "x", "fault": map[string]any{"status": 503, "methods": []string{"tools/call"}}},
 	} {
