@@ -122,6 +122,25 @@ func TestGetCapabilityEntry_AnyModeFallbackUnlistedCasingMatchesPricingRow(t *te
 	}
 }
 
+// The preferred-mode lookup (chat, responses, text completion) matches a row
+// whose casing differs from the request, so max output tokens and model info
+// resolve for it. The exact-case embedding row is what the any-mode scan would
+// return, so it proves the chat row came from the preferred-mode lookup.
+func TestGetCapabilityEntry_PreferredModeMatchesAnyCase(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("Qwen3-235B-A22B", "azure", "chat"):      {Model: "Qwen3-235B-A22B", Provider: "azure", Mode: "chat", MaxOutputTokens: capabilityIntPtr(32000)},
+		makeKey("qwen3-235b-a22b", "azure", "embedding"): {Model: "qwen3-235b-a22b", Provider: "azure", Mode: "embedding", MaxOutputTokens: capabilityIntPtr(1)},
+	})
+
+	entry := s.GetCapabilityEntry("qwen3-235b-a22b", schemas.Azure)
+	if entry == nil || entry.MaxOutputTokens == nil {
+		t.Fatalf("expected capability entry with max_output_tokens, got %+v", entry)
+	}
+	if *entry.MaxOutputTokens != 32000 {
+		t.Fatalf("expected max_output_tokens 32000, got %d", *entry.MaxOutputTokens)
+	}
+}
+
 func TestGetCapabilityEntry_ResolvesAliasFamilyViaBaseModel(t *testing.T) {
 	contextLengthChat := 128000
 

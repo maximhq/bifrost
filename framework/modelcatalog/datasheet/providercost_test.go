@@ -251,3 +251,70 @@ func TestRebuildPricingKeyFolded_PicksLowercaseThenSmallest(t *testing.T) {
 	s.rebuildPricingKeyFoldedUnsafe()
 	assert.Equal(t, makeKey("model-x", "azure", "chat"), s.pricingKeyFolded[makeKey("model-x", "azure", "chat")])
 }
+
+// Every fallback in getBasePricing goes through lookupPricingUnsafe, so each one
+// must find a row whose casing differs from the request. Each row carries its
+// own input rate so the test also proves which fallback answered.
+func TestGetBasePricing_CaseInsensitiveOnEveryFallback(t *testing.T) {
+	row := func(model, provider, mode string, input float64) (string, configstoreTables.TableModelPricing) {
+		p := chatPricing(input, input)
+		p.Model, p.Provider, p.Mode = model, provider, mode
+		return makeKey(model, provider, mode), p
+	}
+	entries := map[string]configstoreTables.TableModelPricing{}
+	for _, r := range []struct {
+		model, provider, mode string
+		input                 float64
+	}{
+		{"anthropic.Claude-Sonnet-4", "bedrock", "chat", 1},
+		{"anthropic.Claude-Haiku-4", "bedrock", "responses", 2},
+		{"Gemini-2.5-Flash", "vertex", "chat", 3},
+		{"Gemini-2.5-Flash-Lite", "vertex", "responses", 4},
+		{"GPT-5-Pro", "openai", "responses", 5},
+		{"GPT-Realtime", "openai", "realtime", 6},
+		{"GPT-Live", "openai", "realtime", 7},
+		{"Imagen-4", "vertex", "image_generation", 8},
+		{"Gemini-2.5-Flash-Image", "gemini", "image_generation", 9},
+		{"Container-1G", "openai", "chat", 10},
+		{"Container", "azure", "chat", 11},
+		{"openai.gpt-oss-120b", "bedrock", "chat", 12},
+		{"google.gemma-3-27b", "bedrock", "chat", 13},
+		{"xai.grok-4", "bedrock", "chat", 14},
+	} {
+		k, v := row(r.model, r.provider, r.mode, r.input)
+		entries[k] = v
+	}
+	s := testStoreWithPricing(entries)
+
+	for _, tc := range []struct {
+		name, model, provider string
+		requestType           schemas.RequestType
+		want                  float64
+	}{
+		{"bedrock vendor prefix", "claude-sonnet-4", "bedrock", schemas.ChatCompletionRequest, 1},
+		{"bedrock_mantle folds onto bedrock", "claude-sonnet-4", "bedrock_mantle", schemas.ChatCompletionRequest, 1},
+		{"bedrock vendor prefix in counterpart mode", "claude-haiku-4", "bedrock", schemas.ChatCompletionRequest, 2},
+		{"bedrock vendor prefix for mixed-case anthropic request", "Claude-Sonnet-4", "bedrock", schemas.ChatCompletionRequest, 1},
+		{"bedrock vendor prefix for mixed-case openai request", "GPT-OSS-120B", "bedrock", schemas.ChatCompletionRequest, 12},
+		{"bedrock vendor prefix for mixed-case google request", "Gemma-3-27B", "bedrock", schemas.ChatCompletionRequest, 13},
+		{"bedrock vendor prefix for mixed-case xai request", "Grok-4", "bedrock", schemas.ChatCompletionRequest, 14},
+		{"mixed-case request already carrying the namespace", "Anthropic.Claude-Sonnet-4", "bedrock", schemas.ChatCompletionRequest, 1},
+		{"gemini retries under vertex", "gemini-2.5-flash", "gemini", schemas.ChatCompletionRequest, 3},
+		{"gemini under vertex in counterpart mode", "gemini-2.5-flash-lite", "gemini", schemas.ChatCompletionRequest, 4},
+		{"chat falls back to responses row", "gpt-5-pro", "openai", schemas.ChatCompletionRequest, 5},
+		{"realtime row", "gpt-realtime", "openai", schemas.RealtimeRequest, 6},
+		{"live falls back to realtime row", "gpt-live", "openai", schemas.LiveRequest, 7},
+		{"image edit falls back to image generation", "imagen-4", "vertex", schemas.ImageEditRequest, 8},
+		{"vertex publisher form image fallback", "google/imagen-4", "vertex", schemas.ChatCompletionRequest, 8},
+		{"image model over chat", "gemini-2.5-flash-image", "gemini", schemas.ChatCompletionRequest, 9},
+		{"container create falls back to chat row", "container-1g", "openai", schemas.ContainerCreateRequest, 10},
+		{"container create falls back to base container", "container-4g", "azure", schemas.ContainerCreateRequest, 11},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pricing, ok := s.getBasePricing(tc.model, tc.provider, tc.requestType)
+			require.True(t, ok, "expected %s on %s to be priced", tc.model, tc.provider)
+			require.NotNil(t, pricing.InputCostPerToken)
+			assert.Equal(t, tc.want, *pricing.InputCostPerToken)
+		})
+	}
+}

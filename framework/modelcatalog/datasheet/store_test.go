@@ -136,3 +136,28 @@ func TestGithubCopilotDatasheetRowsPriceRuntimeProvider(t *testing.T) {
 		t.Fatalf("CalculateCost() with override = %v, want 0.005", cost)
 	}
 }
+
+// Get, GetPricingEntryForModel and IsTextCompletionSupported read pricingData
+// through lookupPricingUnsafe, so they match a row in any casing.
+func TestPricingReadsMatchModelCaseInsensitively(t *testing.T) {
+	inputCost := 0.0000015
+	s := NewTestStore(nil)
+	s.SetPricingRowsForTest([]configstoreTables.TableModelPricing{{
+		Model:             "GPT-3.5-Turbo-Instruct",
+		Provider:          "openai",
+		Mode:              "completion",
+		InputCostPerToken: &inputCost,
+	}})
+
+	row := s.Get("gpt-3.5-turbo-instruct", schemas.OpenAI, schemas.TextCompletionRequest)
+	if row == nil || row.InputCostPerToken == nil || *row.InputCostPerToken != inputCost {
+		t.Fatalf("Get() = %+v, want the GPT-3.5-Turbo-Instruct row", row)
+	}
+	entry := s.GetPricingEntryForModel("gpt-3.5-turbo-instruct", schemas.OpenAI)
+	if entry == nil || entry.InputCostPerToken == nil || *entry.InputCostPerToken != inputCost {
+		t.Fatalf("GetPricingEntryForModel() = %+v, want the GPT-3.5-Turbo-Instruct row", entry)
+	}
+	if !s.IsTextCompletionSupported("gpt-3.5-turbo-instruct", schemas.OpenAI) {
+		t.Fatal("IsTextCompletionSupported() = false, want true from the mixed-case completion row")
+	}
+}
