@@ -926,17 +926,7 @@ func BuildBaseURL(ctx *fasthttp.RequestCtx, externalBaseURL string) string {
 		}
 	}
 	scheme := "http"
-	xfProto := strings.ToLower(strings.TrimSpace(string(ctx.Request.Header.Peek("X-Forwarded-Proto"))))
-	if comma := strings.IndexByte(xfProto, ','); comma >= 0 {
-		xfProto = strings.TrimSpace(xfProto[:comma])
-	}
-	// x-bf-forwarded-proto is honored for setups where a managed LB overwrites the
-	// standard X-Forwarded-Proto (e.g. AWS L4 NLB -> ALB hops); the edge injects it.
-	xbfProto := strings.ToLower(strings.TrimSpace(string(ctx.Request.Header.Peek("x-bf-forwarded-proto"))))
-	if comma := strings.IndexByte(xbfProto, ','); comma >= 0 {
-		xbfProto = strings.TrimSpace(xbfProto[:comma])
-	}
-	if ctx.IsTLS() || xfProto == "https" || xbfProto == "https" {
+	if RequestIsHTTPS(ctx) {
 		scheme = "https"
 	}
 	host := string(ctx.Host())
@@ -944,6 +934,33 @@ func BuildBaseURL(ctx *fasthttp.RequestCtx, externalBaseURL string) string {
 		return ""
 	}
 	return scheme + "://" + host + BasePath()
+}
+
+// RequestIsHTTPS reports whether the client reached Bifrost over HTTPS: directly
+// over TLS, or through a proxy that says so in a forwarded-proto header (first
+// value of a comma-separated chain). x-bf-forwarded-proto exists for setups where
+// a managed LB overwrites the standard header (e.g. AWS L4 NLB -> ALB hops); the
+// edge injects it with the scheme the client really used, so when it is present
+// it decides, and X-Forwarded-Proto is only consulted without it. Every
+// scheme-dependent decision (public URLs, HSTS, cookie Secure, trace attributes)
+// goes through here so they cannot disagree.
+func RequestIsHTTPS(ctx *fasthttp.RequestCtx) bool {
+	if ctx.IsTLS() {
+		return true
+	}
+	if edge := ctx.Request.Header.Peek("x-bf-forwarded-proto"); len(edge) > 0 {
+		return forwardedProtoIsHTTPS(edge)
+	}
+	return forwardedProtoIsHTTPS(ctx.Request.Header.Peek("X-Forwarded-Proto"))
+}
+
+// forwardedProtoIsHTTPS reports whether the first value of a forwarded-proto header is https.
+func forwardedProtoIsHTTPS(value []byte) bool {
+	proto := strings.TrimSpace(string(value))
+	if comma := strings.IndexByte(proto, ','); comma >= 0 {
+		proto = strings.TrimSpace(proto[:comma])
+	}
+	return strings.EqualFold(proto, "https")
 }
 
 // BuildHTTPRequestFromFastHTTP creates an HTTPRequest from fasthttp context for streaming handlers.

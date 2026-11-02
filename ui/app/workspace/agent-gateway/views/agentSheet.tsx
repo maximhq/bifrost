@@ -240,7 +240,7 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 	const { data: vksData } = useGetVirtualKeysQuery({ limit: 1000 });
 	const vkById = new Map((vksData?.virtual_keys ?? []).map((virtualKey) => [virtualKey.id, virtualKey]));
 	const { data: coreConfig } = useGetCoreConfigQuery({ fromDB: true });
-	const baseUrl = getExternalBaseUrl(coreConfig?.client_config);
+	const baseUrl = getExternalBaseUrl(coreConfig?.client_config, "a2a_external_client_url");
 	const grpc = coreConfig?.agent_gateway
 		? {
 				baseDomain: coreConfig.agent_gateway.grpc_base_domain,

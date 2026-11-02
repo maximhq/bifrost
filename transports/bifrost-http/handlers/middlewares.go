@@ -61,8 +61,8 @@ func applySecurityHeaders(ctx *fasthttp.RequestCtx) {
 	ctx.Response.Header.Set("Referrer-Policy", "strict-origin-when-cross-origin")
 	ctx.Response.Header.Set("Content-Security-Policy", "frame-ancestors 'none'")
 	ctx.Response.Header.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-	// Only set HSTS when serving over HTTPS (detected via reverse proxy header or direct TLS)
-	if string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" || ctx.IsTLS() {
+	// Only set HSTS when serving over HTTPS (direct TLS or a proxy's forwarded-proto header)
+	if lib.RequestIsHTTPS(ctx) {
 		ctx.Response.Header.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 	}
 	// Keep CDNs from caching API responses; handlers may override.
@@ -255,10 +255,14 @@ func stripBasePath(ctx *fasthttp.RequestCtx, prefix []byte) bool {
 // prefixLocation puts prefix in front of the path of the response's Location
 // header when it points at this origin (a root-relative path, or an absolute
 // URL whose host is the request's Host) and is not already under prefix.
-// Protocol-relative and other-origin URLs are left alone.
+// Protocol-relative and other-origin URLs are left alone, as is a Location the
+// handler marked with markLocationExternal.
 func prefixLocation(ctx *fasthttp.RequestCtx, prefix []byte) {
 	loc := ctx.Response.Header.Peek(fasthttp.HeaderLocation)
 	if len(loc) == 0 {
+		return
+	}
+	if external, _ := ctx.UserValue(locationExternalKey).(bool); external {
 		return
 	}
 	var pathStart int
@@ -2455,7 +2459,7 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 				// The query string is dropped, not redacted: it can carry session
 				// credentials and nothing downstream needs it.
 				scheme := "http"
-				if ctx.IsTLS() || string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
+				if lib.RequestIsHTTPS(ctx) {
 					scheme = "https"
 				}
 				method, originalMethod := normalizeHTTPMethod(rawMethod)
@@ -2627,4 +2631,16 @@ func appendMCPParamHeaders(allowed string, requested []byte) string {
 		}
 	}
 	return out.String()
+}
+
+// locationExternalKey is the request user value a handler sets when its Location
+// header is a third party's URL that may share this host, such as an OAuth client's
+// redirect_uri, so prefixLocation leaves it alone.
+const locationExternalKey = "bf-location-external"
+
+// markLocationExternal records that the response's Location leaves Bifrost: the
+// base-path middleware will not pull it under server.base_path even when it is
+// root-relative or on this host.
+func markLocationExternal(ctx *fasthttp.RequestCtx) {
+	ctx.SetUserValue(locationExternalKey, true)
 }

@@ -872,6 +872,8 @@ func redirectWithParams(ctx *fasthttp.RequestCtx, base string, params map[string
 	}
 	u.RawQuery = q.Encode()
 	ctx.Response.Header.Set("Location", u.String())
+	// The client's redirect_uri may share this host; it must not be pulled under server.base_path.
+	markLocationExternal(ctx)
 	ctx.SetStatusCode(fasthttp.StatusFound)
 }
 

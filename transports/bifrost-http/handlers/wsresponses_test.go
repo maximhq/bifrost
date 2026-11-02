@@ -120,8 +120,8 @@ func TestNewBifrostError(t *testing.T) {
 	}
 }
 
-func TestCreateBifrostContextFromAuth_BaggageSessionIDSetsGrouping(t *testing.T) {
-	ctx, cancel := createBifrostContextFromAuth(testWSHandlerStore{}, &authHeaders{
+func TestCreateBifrostContextFromHeaders_BaggageSessionIDSetsGrouping(t *testing.T) {
+	ctx, cancel := createBifrostContextFromHeaders(testWSHandlerStore{}, &sessionHeaders{
 		baggage: "foo=bar, session-id=rt-ws-123, baz=qux",
 	})
 	defer cancel()
@@ -133,20 +133,20 @@ func TestCreateBifrostContextFromAuth_BaggageSessionIDSetsGrouping(t *testing.T)
 
 // A connection settles its identity at upgrade the way an HTTP request does at conversion, so
 // governance sees a settled request whether or not a key was presented.
-func TestCreateBifrostContextFromAuth_SettlesIdentity(t *testing.T) {
+func TestCreateBifrostContextFromHeaders_SettlesIdentity(t *testing.T) {
 	cases := map[string]struct {
-		auth     *authHeaders
-		wantKind string
-		wantKey  string
+		setupHeaders *sessionHeaders
+		wantKind     string
+		wantKey      string
 	}{
-		"no credential":       {auth: &authHeaders{}},
-		"virtual key header":  {auth: &authHeaders{virtualKey: "sk-bf-ws"}, wantKind: string(grant.CredentialVirtualKey), wantKey: "sk-bf-ws"},
-		"bearer virtual key":  {auth: &authHeaders{authorization: "Bearer sk-bf-bearer"}, wantKind: string(grant.CredentialVirtualKey), wantKey: "sk-bf-bearer"},
-		"provider key bearer": {auth: &authHeaders{authorization: "Bearer sk-openai"}},
+		"no credential":       {setupHeaders: &sessionHeaders{}},
+		"virtual key header":  {setupHeaders: &sessionHeaders{virtualKey: "sk-bf-ws"}, wantKind: string(grant.CredentialVirtualKey), wantKey: "sk-bf-ws"},
+		"bearer virtual key":  {setupHeaders: &sessionHeaders{authorization: "Bearer sk-bf-bearer"}, wantKind: string(grant.CredentialVirtualKey), wantKey: "sk-bf-bearer"},
+		"provider key bearer": {setupHeaders: &sessionHeaders{authorization: "Bearer sk-openai"}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			ctx, cancel := createBifrostContextFromAuth(testWSHandlerStore{}, tc.auth)
+			ctx, cancel := createBifrostContextFromHeaders(testWSHandlerStore{}, tc.setupHeaders)
 			defer cancel()
 
 			g := ctx.Grant()
@@ -166,23 +166,23 @@ func TestCreateBifrostContextFromAuth_SettlesIdentity(t *testing.T) {
 
 // A caller's own provider key is honoured at upgrade under the same gate as on HTTP: the server
 // setting and the per-request header, with a virtual key never mistaken for one.
-func TestCreateBifrostContextFromAuth_DirectKey(t *testing.T) {
+func TestCreateBifrostContextFromHeaders_DirectKey(t *testing.T) {
 	direct := map[string][]string{"x-bf-direct-key": {"true"}}
 	cases := map[string]struct {
-		store   testWSHandlerStore
-		auth    *authHeaders
-		wantKey string
+		store        testWSHandlerStore
+		setupHeaders *sessionHeaders
+		wantKey      string
 	}{
-		"bearer provider key":       {store: testWSHandlerStore{allowDirectKeys: true}, auth: &authHeaders{authorization: "Bearer sk-openai", headers: direct}, wantKey: "sk-openai"},
-		"x-api-key provider key":    {store: testWSHandlerStore{allowDirectKeys: true}, auth: &authHeaders{apiKey: "sk-openai", headers: direct}, wantKey: "sk-openai"},
-		"x-goog-api-key":            {store: testWSHandlerStore{allowDirectKeys: true}, auth: &authHeaders{googAPIKey: "AIza", headers: direct}, wantKey: "AIza"},
-		"virtual key is not direct": {store: testWSHandlerStore{allowDirectKeys: true}, auth: &authHeaders{authorization: "Bearer sk-bf-vk", headers: direct}},
-		"server setting off":        {store: testWSHandlerStore{}, auth: &authHeaders{authorization: "Bearer sk-openai", headers: direct}},
-		"header absent":             {store: testWSHandlerStore{allowDirectKeys: true}, auth: &authHeaders{authorization: "Bearer sk-openai"}},
+		"bearer provider key":       {store: testWSHandlerStore{allowDirectKeys: true}, setupHeaders: &sessionHeaders{authorization: "Bearer sk-openai", headers: direct}, wantKey: "sk-openai"},
+		"x-api-key provider key":    {store: testWSHandlerStore{allowDirectKeys: true}, setupHeaders: &sessionHeaders{apiKey: "sk-openai", headers: direct}, wantKey: "sk-openai"},
+		"x-goog-api-key":            {store: testWSHandlerStore{allowDirectKeys: true}, setupHeaders: &sessionHeaders{googAPIKey: "AIza", headers: direct}, wantKey: "AIza"},
+		"virtual key is not direct": {store: testWSHandlerStore{allowDirectKeys: true}, setupHeaders: &sessionHeaders{authorization: "Bearer sk-bf-vk", headers: direct}},
+		"server setting off":        {store: testWSHandlerStore{}, setupHeaders: &sessionHeaders{authorization: "Bearer sk-openai", headers: direct}},
+		"header absent":             {store: testWSHandlerStore{allowDirectKeys: true}, setupHeaders: &sessionHeaders{authorization: "Bearer sk-openai"}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			ctx, cancel := createBifrostContextFromAuth(tc.store, tc.auth)
+			ctx, cancel := createBifrostContextFromHeaders(tc.store, tc.setupHeaders)
 			defer cancel()
 
 			key, ok := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)
@@ -198,8 +198,8 @@ func TestCreateBifrostContextFromAuth_DirectKey(t *testing.T) {
 	}
 }
 
-func TestCreateBifrostContextFromAuth_EmptyBaggageSessionIDIgnored(t *testing.T) {
-	ctx, cancel := createBifrostContextFromAuth(testWSHandlerStore{}, &authHeaders{
+func TestCreateBifrostContextFromHeaders_EmptyBaggageSessionIDIgnored(t *testing.T) {
+	ctx, cancel := createBifrostContextFromHeaders(testWSHandlerStore{}, &sessionHeaders{
 		baggage: "session-id=   ",
 	})
 	defer cancel()
@@ -209,8 +209,8 @@ func TestCreateBifrostContextFromAuth_EmptyBaggageSessionIDIgnored(t *testing.T)
 	}
 }
 
-func TestCreateBifrostContextFromAuth_ForwardsPrefixedHeaders(t *testing.T) {
-	ctx, cancel := createBifrostContextFromAuth(testWSHandlerStore{}, &authHeaders{
+func TestCreateBifrostContextFromHeaders_ForwardsPrefixedHeaders(t *testing.T) {
+	ctx, cancel := createBifrostContextFromHeaders(testWSHandlerStore{}, &sessionHeaders{
 		headers: map[string][]string{
 			"x-bf-eh-originator": {"my-test-client"},
 			"x-bf-eh-x-trace-id": {"abc-123"},
@@ -228,12 +228,12 @@ func TestCreateBifrostContextFromAuth_ForwardsPrefixedHeaders(t *testing.T) {
 	assert.NotContains(t, extraHeaders, "cookie")
 }
 
-func TestCreateBifrostContextFromAuth_AppliesHeaderFilterAndDirectAllowlist(t *testing.T) {
+func TestCreateBifrostContextFromHeaders_AppliesHeaderFilterAndDirectAllowlist(t *testing.T) {
 	matcher := lib.NewHeaderMatcher(&configstoreTables.GlobalHeaderFilterConfig{
 		Allowlist: []string{"originator", "anthropic-*"},
 		Denylist:  []string{"anthropic-secret"},
 	})
-	ctx, cancel := createBifrostContextFromAuth(testWSHandlerStore{matcher: matcher}, &authHeaders{
+	ctx, cancel := createBifrostContextFromHeaders(testWSHandlerStore{matcher: matcher}, &sessionHeaders{
 		headers: map[string][]string{
 			"x-bf-eh-originator":       {"allowed-prefix"},
 			"x-bf-eh-x-trace-id":       {"blocked-by-allowlist"},
@@ -254,7 +254,7 @@ func TestCreateBifrostContextFromAuth_AppliesHeaderFilterAndDirectAllowlist(t *t
 	assert.NotContains(t, extraHeaders, "anthropic-secret")
 }
 
-func TestCaptureAuthHeaders_PreservesDuplicateHeaderValues(t *testing.T) {
+func TestCaptureSessionHeaders_PreservesDuplicateHeaderValues(t *testing.T) {
 	var req fasthttp.Request
 	req.Header.Set("Host", "example.test")
 	req.Header.Add("x-bf-eh-x-trace-id", "trace-a")
@@ -263,12 +263,12 @@ func TestCaptureAuthHeaders_PreservesDuplicateHeaderValues(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
 
-	auth := captureAuthHeaders(ctx)
-	assert.Equal(t, []string{"trace-a", "trace-b"}, auth.headers["x-bf-eh-x-trace-id"])
+	setupHeaders := captureSessionHeaders(ctx)
+	assert.Equal(t, []string{"trace-a", "trace-b"}, setupHeaders.headers["x-bf-eh-x-trace-id"])
 }
 
-func TestCreateBifrostContextFromAuth_PreservesMultipleForwardedHeaderValues(t *testing.T) {
-	ctx, cancel := createBifrostContextFromAuth(testWSHandlerStore{}, &authHeaders{
+func TestCreateBifrostContextFromHeaders_PreservesMultipleForwardedHeaderValues(t *testing.T) {
+	ctx, cancel := createBifrostContextFromHeaders(testWSHandlerStore{}, &sessionHeaders{
 		headers: map[string][]string{
 			"x-bf-eh-x-trace-id": {"trace-a", "trace-b"},
 		},
@@ -282,11 +282,11 @@ func TestCreateBifrostContextFromAuth_PreservesMultipleForwardedHeaderValues(t *
 	assert.Equal(t, []string{"trace-a", "trace-b"}, extraHeaders["x-trace-id"])
 }
 
-func TestCreateBifrostContextFromAuth_BlocksWebSocketHandshakeForwardedHeaders(t *testing.T) {
+func TestCreateBifrostContextFromHeaders_BlocksWebSocketHandshakeForwardedHeaders(t *testing.T) {
 	matcher := lib.NewHeaderMatcher(&configstoreTables.GlobalHeaderFilterConfig{
 		Allowlist: []string{"*"},
 	})
-	ctx, cancel := createBifrostContextFromAuth(testWSHandlerStore{matcher: matcher}, &authHeaders{
+	ctx, cancel := createBifrostContextFromHeaders(testWSHandlerStore{matcher: matcher}, &sessionHeaders{
 		headers: map[string][]string{
 			"x-bf-eh-upgrade":                {"websocket"},
 			"x-bf-eh-sec-websocket-protocol": {"realtime"},
@@ -612,7 +612,7 @@ func TestEventLoopIgnoresResponseInterrupt(t *testing.T) {
 			return
 		}
 		defer h.sessions.Remove(c)
-		h.eventLoop(c, session, &authHeaders{})
+		h.eventLoop(c, session, &sessionHeaders{})
 	}))
 	defer srv.Close()
 

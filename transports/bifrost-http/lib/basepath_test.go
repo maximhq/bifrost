@@ -133,6 +133,22 @@ func TestCheckBasePathCollision_UIFiles(t *testing.T) {
 	assert.NoError(t, CheckBasePathCollision("/assets", routes, embed.FS{}))
 }
 
+// TestCheckBasePathCollision_UIPageRoots pins that the dashboard's top-level
+// page paths are reserved even though they are neither router paths (the SPA
+// catch-all serves them) nor files in the embedded UI: with base_path
+// "/workspace", an unprefixed "/workspace/logs" would be stripped to "/logs".
+func TestCheckBasePathCollision_UIPageRoots(t *testing.T) {
+	routes := map[string][]string{"GET": {"/", "/{filepath:*}", "/health"}}
+	// The dashboard router strips its basepath case-insensitively, so "/Workspace"
+	// would still swallow an unprefixed "/workspace/..." href in the browser.
+	for _, basePath := range []string{"/workspace", "/login", "/oauth", "/agent", "/pprof", "/workspace/gw", "/Workspace", "/LOGIN/x"} {
+		assert.Error(t, CheckBasePathCollision(basePath, routes, nil), basePath)
+	}
+	for _, basePath := range []string{"/bifrost", "/workspaces", "/gw/workspace"} {
+		assert.NoError(t, CheckBasePathCollision(basePath, routes, nil), basePath)
+	}
+}
+
 // basePathCandidates covers values the base_path schema pattern must agree
 // with NormalizeBasePath on.
 var basePathCandidates = []string{

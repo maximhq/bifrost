@@ -358,6 +358,53 @@ func TestFailureBackoff(t *testing.T) {
 		assert.Nil(t, cache.Peek("k"))
 	})
 
+	t.Run("KeepOnPermanentFailure keeps serving the token through a permanent refresh failure", func(t *testing.T) {
+		// For an endpoint that answers temporary faults with a 401, the old token is kept like
+		// after a 5xx: served until it expires, with the retry held off by the permanent backoff.
+		clk := newClock()
+		cache := New[string](Options{Now: clk.Now, KeepOnPermanentFailure: true})
+		m := &countingMinter{clock: clk, ttl: 2 * time.Minute}
+
+		_, _ = cache.Get(context.Background(), "k", m.mint)
+		clk.Advance(90 * time.Second)
+		m.err.Store(statusError(http.StatusUnauthorized))
+		e, bErr := cache.Get(context.Background(), "k", m.mint)
+		require.Nil(t, bErr)
+		assert.Equal(t, "token-1", e.Value)
+		assert.Equal(t, int64(2), m.calls.Load(), "the refresh was attempted")
+
+		clk.Advance(time.Second) // inside the 2s permanent backoff
+		e, bErr = cache.Get(context.Background(), "k", m.mint)
+		require.Nil(t, bErr)
+		assert.Equal(t, "token-1", e.Value)
+		assert.Equal(t, int64(2), m.calls.Load())
+
+		clk.Advance(40 * time.Second)
+		_, bErr = cache.Get(context.Background(), "k", m.mint)
+		require.NotNil(t, bErr, "once the token has expired the failure surfaces")
+		assert.Nil(t, cache.Peek("k"))
+	})
+
+	t.Run("a token cleared while a failing refresh ran is not served", func(t *testing.T) {
+		// A request rejected with the old token clears it (InvalidateEntry) while the refresh is
+		// still exchanging; the refresh then fails transiently. The old token must not be handed
+		// out as the fallback, to this caller or any later one.
+		clk := newClock()
+		cache := newCache(clk)
+		m := &countingMinter{clock: clk, ttl: 2 * time.Minute}
+		_, _ = cache.Get(context.Background(), "k", m.mint)
+		clk.Advance(90 * time.Second)
+
+		e, bErr := cache.Get(context.Background(), "k", func(ctx context.Context, prev *Entry[string]) (*Entry[string], *schemas.BifrostError) {
+			cache.InvalidateEntry("k", prev)
+			return nil, statusError(http.StatusServiceUnavailable)
+		})
+		require.NotNil(t, bErr, "the cleared token must not be served, got %+v", e)
+		assert.Nil(t, cache.Peek("k"))
+		_, bErr = cache.Get(context.Background(), "k", m.mint)
+		require.NotNil(t, bErr, "inside the failure window there is no token to serve")
+	})
+
 	t.Run("a failure drops the stale token so prev is nil on the retry", func(t *testing.T) {
 		clk := newClock()
 		cache := newCache(clk)
@@ -398,6 +445,64 @@ func TestInvalidateAndExpire(t *testing.T) {
 		cache.Invalidate("k")
 		_, _ = cache.Get(context.Background(), "k", m.mint)
 		assert.Equal(t, int64(3), m.calls.Load(), "Invalidate must not reset the negative cache")
+	})
+
+	t.Run("InvalidateEntry clears only the entry it was given", func(t *testing.T) {
+		clk := newClock()
+		cache := newCache(clk)
+		m := &countingMinter{clock: clk}
+
+		first, _ := cache.Get(context.Background(), "k", m.mint)
+		cache.Expire("k")
+		second, _ := cache.Get(context.Background(), "k", m.mint)
+		require.Equal(t, "token-2", second.Value)
+
+		// A late rejection of the first token must not clear the one that replaced it.
+		assert.False(t, cache.InvalidateEntry("k", first))
+		assert.Same(t, second, cache.Peek("k"))
+		assert.False(t, cache.InvalidateEntry("missing", second))
+		assert.False(t, cache.InvalidateEntry("k", nil))
+
+		assert.True(t, cache.InvalidateEntry("k", second))
+		assert.Nil(t, cache.Peek("k"))
+		e, _ := cache.Get(context.Background(), "k", m.mint)
+		assert.Equal(t, "token-3", e.Value)
+		assert.Nil(t, m.last.Load(), "a discarded entry must not reach the minter as prev")
+	})
+
+	// Invalidate makes an in-flight refresh mint again from scratch; InvalidateEntry must not, since
+	// for a single-use credential that second mint would present it twice.
+	t.Run("InvalidateEntry leaves an in-flight refresh's result in place", func(t *testing.T) {
+		clk := newClock()
+		cache := newCache(clk)
+		var calls atomic.Int64
+		started, release := make(chan struct{}), make(chan struct{})
+		mint := func(_ context.Context, _ *Entry[string]) (*Entry[string], *schemas.BifrostError) {
+			n := calls.Add(1)
+			if n == 2 {
+				close(started)
+				<-release
+			}
+			return &Entry[string]{Value: "token-" + string(rune('0'+n)), ExpiresAt: clk.Now().Add(time.Hour), RefreshAt: clk.Now().Add(50 * time.Minute)}, nil
+		}
+
+		_, _ = cache.Get(context.Background(), "k", mint)
+		cache.Expire("k")
+		stale := cache.Peek("k")
+		refreshed := make(chan *Entry[string], 1)
+		go func() {
+			e, _ := cache.Get(context.Background(), "k", mint)
+			refreshed <- e
+		}()
+		<-started
+		require.True(t, cache.InvalidateEntry("k", stale))
+		close(release)
+
+		e := <-refreshed
+		require.NotNil(t, e)
+		assert.Equal(t, "token-2", e.Value)
+		assert.Equal(t, int64(2), calls.Load(), "the in-flight refresh must not mint a second time")
+		assert.Same(t, e, cache.Peek("k"))
 	})
 
 	t.Run("Expire keeps the value so the minter can reuse it as prev", func(t *testing.T) {

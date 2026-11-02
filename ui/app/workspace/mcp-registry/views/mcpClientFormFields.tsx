@@ -667,6 +667,11 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 
 	const isRemote = connectionType === "http" || connectionType === "sse";
 	const isOpenAPI = connectionType === "openapi";
+	// Per-user auth and token exchange open a new streamable HTTP connection for each
+	// call, which an SSE stream cannot serve, so SSE offers the shared variants only. A
+	// library entry can still seed one of them on SSE: its option then stays listed so
+	// the trigger shows what will be submitted, and the server's refusal explains it.
+	const isSSE = connectionType === "sse";
 	// Auth and header sections apply to every transport that speaks HTTP to its
 	// target, which includes a synthesized openapi server's upstream API.
 	const hasNetworkAuth = isRemote || isOpenAPI;
@@ -683,6 +688,14 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 			setValue("auth_type", "none");
 			setValue("headers", undefined);
 			setValue("oauth_config", undefined);
+		}
+		if (value === "sse") {
+			if (authKind === "token_exchange") {
+				setValue("auth_type", "none");
+				setValue("token_exchange", undefined);
+			} else if (authScope === "per_user") {
+				applyAuthScope("shared");
+			}
 		}
 		if (value === "openapi") {
 			// The upstream is the API described by the spec, not an
@@ -1078,11 +1091,13 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 										)}
 										{/* Also rendered when it is already the selected value, so the
 										    trigger shows the real auth type rather than a placeholder. */}
-										{!isOpenAPI && ((IS_ENTERPRISE && idpConfigured) || tokenExchangeUnavailable) && (
-											<SelectItem value="token_exchange" data-testid="auth-type-token-exchange">
-												{t("registry.form.tokenExchangeObo")}
-											</SelectItem>
-										)}
+										{!isOpenAPI &&
+											(!isSSE || authKind === "token_exchange") &&
+											((IS_ENTERPRISE && idpConfigured) || tokenExchangeUnavailable) && (
+												<SelectItem value="token_exchange" data-testid="auth-type-token-exchange">
+													{t("registry.form.tokenExchangeObo")}
+												</SelectItem>
+											)}
 									</SelectContent>
 								</Select>
 								{tokenExchangeUnavailable && (
@@ -1111,9 +1126,11 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 											<SelectItem value="shared" data-testid="auth-scope-shared">
 												{t("registry.form.shared")}
 											</SelectItem>
-											<SelectItem value="per_user" data-testid="auth-scope-per-user">
-												{t("registry.form.perUser")}
-											</SelectItem>
+											{(!isSSE || authScope === "per_user") && (
+												<SelectItem value="per_user" data-testid="auth-scope-per-user">
+													{t("registry.form.perUser")}
+												</SelectItem>
+											)}
 										</SelectContent>
 									</Select>
 								</FormItem>

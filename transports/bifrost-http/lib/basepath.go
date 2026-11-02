@@ -77,13 +77,21 @@ func ResolveBasePath(cliValue string, serverConfig *ServerConfig) (string, error
 	return NormalizeBasePath(value)
 }
 
+// uiPageRoots are the dashboard's top-level page paths (the directories under
+// ui/app that define routes). The SPA catch-all serves them, so they are neither
+// router paths nor files in the embedded UI, yet an unprefixed "/workspace/logs"
+// under base_path "/workspace" would be stripped to "/logs". They are compared
+// case-insensitively because the dashboard router strips its basepath that way.
+var uiPageRoots = []string{"workspace", "login", "oauth", "agent", "pprof"}
+
 // CheckBasePathCollision rejects a base path whose first segment is also the
 // first segment of a registered route. Requests are accepted with or without
 // the prefix, so such a prefix would make "/<segment>/..." ambiguous between a
-// prefixed request and a direct hit on the route. The top-level entries of the
-// embedded UI (uiContent's "ui" directory, e.g. "assets") are reserved too:
-// they are served by the "/{filepath:*}" catch-all, so they never appear as
-// router paths. uiContent may be nil or empty.
+// prefixed request and a direct hit on the route. The dashboard's page roots
+// (uiPageRoots) and the top-level entries of the embedded UI (uiContent's "ui"
+// directory, e.g. "assets") are reserved too: they are served by the
+// "/{filepath:*}" catch-all, so they never appear as router paths. uiContent
+// may be nil or empty.
 func CheckBasePathCollision(basePath string, routes map[string][]string, uiContent fs.FS) error {
 	if basePath == "" {
 		return nil
@@ -94,6 +102,11 @@ func CheckBasePathCollision(basePath string, routes map[string][]string, uiConte
 			if firstPathSegment(path) == first {
 				return fmt.Errorf("base path %q collides with route %q; choose a prefix whose first segment is not used by Bifrost", basePath, path)
 			}
+		}
+	}
+	for _, root := range uiPageRoots {
+		if strings.EqualFold(root, first) {
+			return fmt.Errorf("base path %q collides with UI path %q; choose a prefix whose first segment is not used by Bifrost", basePath, "/"+root)
 		}
 	}
 	if uiContent != nil {

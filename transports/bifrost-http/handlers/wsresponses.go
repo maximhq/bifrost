@@ -114,18 +114,18 @@ func (h *WSResponsesHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 		}
 		defer h.endSession(conn)
 
-		// Capture auth headers from the upgrade request for per-event context creation
-		authHeaders := captureAuthHeaders(ctx)
+		// Capture session headers from the upgrade request for per-event context creation
+		sessionHeaders := captureSessionHeaders(ctx)
 
-		h.eventLoop(conn, session, authHeaders)
+		h.eventLoop(conn, session, sessionHeaders)
 	})
 	if err != nil {
 		logger.Warn("websocket upgrade failed for /v1/responses: %v", err)
 	}
 }
 
-// authHeaders holds auth-related headers captured during the WS upgrade.
-type authHeaders struct {
+// sessionHeaders holds request headers and credentials captured during session setup.
+type sessionHeaders struct {
 	authorization string
 	virtualKey    string
 	apiKey        string
@@ -134,9 +134,9 @@ type authHeaders struct {
 	headers       map[string][]string
 }
 
-// captureAuthHeaders captures the auth headers from the request.
-func captureAuthHeaders(ctx *fasthttp.RequestCtx) *authHeaders {
-	ah := &authHeaders{
+// captureSessionHeaders copies all request headers for use after the setup request ends.
+func captureSessionHeaders(ctx *fasthttp.RequestCtx) *sessionHeaders {
+	capturedHeaders := &sessionHeaders{
 		authorization: string(ctx.Request.Header.Peek("Authorization")),
 		virtualKey:    string(ctx.Request.Header.Peek("x-bf-vk")),
 		apiKey:        string(ctx.Request.Header.Peek("x-api-key")),
@@ -147,13 +147,13 @@ func captureAuthHeaders(ctx *fasthttp.RequestCtx) *authHeaders {
 
 	for key, value := range ctx.Request.Header.All() {
 		k := strings.ToLower(string(key))
-		ah.headers[k] = append(ah.headers[k], string(value))
+		capturedHeaders.headers[k] = append(capturedHeaders.headers[k], string(value))
 	}
-	return ah
+	return capturedHeaders
 }
 
 // eventLoop reads events from the client WebSocket and processes them.
-func (h *WSResponsesHandler) eventLoop(conn *ws.Conn, session *bfws.Session, auth *authHeaders) {
+func (h *WSResponsesHandler) eventLoop(conn *ws.Conn, session *bfws.Session, setupHeaders *sessionHeaders) {
 	for {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
@@ -175,7 +175,7 @@ func (h *WSResponsesHandler) eventLoop(conn *ws.Conn, session *bfws.Session, aut
 
 		switch schemas.WebSocketEventType(envelope.Type) {
 		case schemas.WSEventResponseCreate:
-			h.handleResponseCreate(session, auth, message)
+			h.handleResponseCreate(session, setupHeaders, message)
 		case schemas.WSEventResponseInterrupt:
 			// Read only after its turn ends; OpenAI ignores it too, and an error here fails the client's next turn.
 		default:
@@ -187,7 +187,7 @@ func (h *WSResponsesHandler) eventLoop(conn *ws.Conn, session *bfws.Session, aut
 // handleResponseCreate processes a response.create event.
 // Strategy: try native WS upstream for providers that support it, otherwise use HTTP bridge.
 // If native WS upstream fails mid-stream, falls back to HTTP bridge.
-func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, auth *authHeaders, message []byte) {
+func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, setupHeaders *sessionHeaders, message []byte) {
 	var event schemas.WebSocketResponsesEvent
 
 	if err := sonic.Unmarshal(message, &event); err != nil {
@@ -226,7 +226,7 @@ func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, auth *a
 		bifrostReq.Params.ExtraParams = extraParams
 	}
 
-	bifrostCtx, cancel := createBifrostContextFromAuth(h.handlerStore, auth)
+	bifrostCtx, cancel := createBifrostContextFromHeaders(h.handlerStore, setupHeaders)
 	if bifrostCtx == nil {
 		writeWSError(session, 500, "server_error", "failed to create request context")
 		return
@@ -840,47 +840,47 @@ func (h *WSResponsesHandler) convertEventToRequest(event *schemas.WebSocketRespo
 	}, nil
 }
 
-// createBifrostContextFromAuth builds a BifrostContext from the auth headers captured during upgrade.
-func createBifrostContextFromAuth(handlerStore lib.HandlerStore, auth *authHeaders) (*schemas.BifrostContext, context.CancelFunc) {
+// createBifrostContextFromHeaders builds a BifrostContext from captured session setup headers.
+func createBifrostContextFromHeaders(handlerStore lib.HandlerStore, setupHeaders *sessionHeaders) (*schemas.BifrostContext, context.CancelFunc) {
 	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
-	if auth == nil {
+	if setupHeaders == nil {
 		return ctx, cancel
 	}
 
-	if sessionID := lib.ParseSessionIDFromBaggage(auth.baggage); sessionID != "" {
+	if sessionID := lib.ParseSessionIDFromBaggage(setupHeaders.baggage); sessionID != "" {
 		ctx.SetValue(schemas.BifrostContextKeyParentRequestID, sessionID)
 	}
 
-	if auth.virtualKey != "" {
-		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, auth.virtualKey)
+	if setupHeaders.virtualKey != "" {
+		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, setupHeaders.virtualKey)
 	}
 
 	// Handle Bearer token with sk-bf- prefix (virtual key via Authorization header)
-	if auth.authorization != "" {
-		if strings.HasPrefix(auth.authorization, "Bearer ") {
-			token := strings.TrimPrefix(auth.authorization, "Bearer ")
+	if setupHeaders.authorization != "" {
+		if strings.HasPrefix(setupHeaders.authorization, "Bearer ") {
+			token := strings.TrimPrefix(setupHeaders.authorization, "Bearer ")
 			if strings.HasPrefix(token, "sk-bf-") {
 				ctx.SetValue(schemas.BifrostContextKeyVirtualKey, token)
 			}
 		}
 	}
-	if auth.apiKey != "" {
-		if strings.HasPrefix(auth.apiKey, "sk-bf-") {
-			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, auth.apiKey)
+	if setupHeaders.apiKey != "" {
+		if strings.HasPrefix(setupHeaders.apiKey, "sk-bf-") {
+			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, setupHeaders.apiKey)
 		}
 	}
-	if auth.googAPIKey != "" {
-		if strings.HasPrefix(auth.googAPIKey, "sk-bf-") {
-			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, auth.googAPIKey)
+	if setupHeaders.googAPIKey != "" {
+		if strings.HasPrefix(setupHeaders.googAPIKey, "sk-bf-") {
+			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, setupHeaders.googAPIKey)
 		}
 	}
 	// The caller's own provider key, under the same gate as on HTTP, set before the identity
 	// settles so governance sees a resolved credential.
 	var directKey string
-	if v := auth.headers["x-bf-direct-key"]; len(v) > 0 {
+	if v := setupHeaders.headers["x-bf-direct-key"]; len(v) > 0 {
 		directKey = v[0]
 	}
-	if key, ok := lib.DirectKeyFromHeaders(handlerStore, directKey, auth.authorization, auth.apiKey, auth.googAPIKey); ok {
+	if key, ok := lib.DirectKeyFromHeaders(handlerStore, directKey, setupHeaders.authorization, setupHeaders.apiKey, setupHeaders.googAPIKey); ok {
 		ctx.SetValue(schemas.BifrostContextKeyDirectKey, key)
 	}
 	// The headers captured at upgrade are all this connection will ever present, so the identity is
@@ -894,7 +894,7 @@ func createBifrostContextFromAuth(handlerStore lib.HandlerStore, auth *authHeade
 		matcher = handlerStore.GetHeaderMatcher()
 	}
 	extraHeaders := make(map[string][]string)
-	for k, values := range auth.headers {
+	for k, values := range setupHeaders.headers {
 		for _, v := range values {
 			switch {
 			case k == "x-bf-vk":

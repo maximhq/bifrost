@@ -3409,7 +3409,72 @@ func (s *BifrostHTTPServer) ApplyBasePath() error {
 	s.BasePath = basePath
 	s.Config.ServerConfig.BasePath = basePath
 	lib.SetBasePath(basePath)
+	webhooks.SetResultURLPrefix(basePath)
 	return nil
+}
+
+// dialBootMCPClients dials the configured MCP clients, resyncing the served MCP
+// server as each one finishes, then wires and starts the OAuth token refresh
+// worker. Bootstrap runs it in the background: the dial waits out each
+// unreachable client's connect retries, about 30s, and the HTTP listener used
+// to wait with it. Each client's tools reach the served server as soon as it
+// is ready, and inference sees it from the moment it connects.
+func (s *BifrostHTTPServer) dialBootMCPClients() {
+	// Construction (bifrost.Init) no longer connects MCP, so connecting here ensures
+	// each client's PreMCPConnectionHook runs against the full plugin set rather than
+	// the point-in-time snapshot captured at Init (which would skip plugins registered
+	// after that snapshot, causing the client to fail and only recover on a later
+	// health-monitor reconnect).
+	s.Client.ConnectConfiguredMCPClients(s.Ctx, func(clientID string) {
+		// NewMCPServerHandler (inside RegisterInferenceRoutes) already synced the
+		// served server once, before any client had dialed, so it served zero
+		// tools. The discovery callback would ordinarily pick up what the boot dial
+		// discovers, but it is gated on a genuine change in a client's tool hash,
+		// and a client whose tools were persisted on a previous run boots with that
+		// hash already recorded: rediscovering the same tools looks like no change,
+		// so the callback never fires. This resync is not conditional on anything
+		// changing, and runs as each client's attempt finishes, so one unreachable
+		// client delays only its own tools.
+		s.SyncMCPServersAfterToolsChange(s.Ctx, clientID)
+	})
+	if s.Ctx.Err() != nil {
+		return
+	}
+	// A proactively refreshed shared OAuth token leaves the live MCP connection
+	// still holding the old bearer (the credential is baked into the transport
+	// at connect time), so recycle the connection as soon as the refresh worker
+	// lands a fresh token instead of waiting for a call to fail. Installed only
+	// after the boot dial above so the worker's first sweep cannot race client
+	// construction. In-flight calls on the old connection may fail once during
+	// the recycle; the reactive auth-failure retry covers them. Per-user
+	// (non-shared) tokens have no persistent connection, so they are skipped.
+	if s.Config.OAuthTokenRefreshWorker != nil {
+		s.Config.OAuthTokenRefreshWorker.SetOnTokenRefreshed(func(mcpClientID, authMode string) {
+			if authMode != "shared" {
+				return
+			}
+			// Run in a goroutine: a reconnect can take minutes worst-case and
+			// must not block the worker's sequential refresh loop. Expected
+			// no-op outcomes (a reconnect already in progress, or a client
+			// type reconnect does not apply to) surface here as errors and
+			// are deliberately logged at Debug only.
+			go func() {
+				if err := s.ReconnectMCPClient(s.Ctx, mcpClientID); err != nil {
+					logger.Debug("MCP client %s was not reconnected after a proactive token refresh: %v", mcpClientID, err)
+					return
+				}
+				logger.Debug("recycled shared MCP connection for client %s after a proactive token refresh", mcpClientID)
+			}()
+		})
+		// Started here, not at construction (lib/config.go): Start's first
+		// refresh sweep runs immediately, synchronously with launching its
+		// goroutine. Starting any earlier, before the callback above is wired
+		// up and before the boot dial above has run, would let a refresh land
+		// with nothing to trigger the affected client's reconnect, leaving a
+		// live connection on the old bearer until the next scheduled sweep or
+		// a call happens to fail.
+		s.Config.OAuthTokenRefreshWorker.Start(s.Ctx)
+	}
 }
 
 // Bootstrap initializes the Bifrost HTTP server with all necessary components.
@@ -3791,61 +3856,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		s.PersistMCPClientDiscovery(s.Ctx, clientID, discovery)
 		go s.SyncMCPServersAfterToolsChange(s.Ctx, clientID)
 	})
-	// Dial configured MCP clients now that every plugin is registered in the core.
-	// Construction (bifrost.Init) no longer connects MCP, so connecting here ensures
-	// each client's PreMCPConnectionHook runs against the full plugin set rather than
-	// the point-in-time snapshot captured at Init (which would skip plugins — e.g.
-	// enterprise ones — registered after that snapshot, causing the client to fail
-	// and only recover on a later health-monitor reconnect).
-	s.Client.ConnectConfiguredMCPClients(s.Ctx)
-	// NewMCPServerHandler (inside RegisterInferenceRoutes, above) already synced the served
-	// server once, before any client had dialed - it necessarily served zero tools. The
-	// callback registered above would ordinarily pick up what the boot dial just discovered,
-	// but it is gated on a genuine change in a client's tool hash, and a client whose tools
-	// were persisted to the config store on a previous run boots with that hash already
-	// recorded: rediscovering the same tools now looks like no change at all, so the callback
-	// never fires and the served server would stay at the zero tools it started with. This is
-	// the one place that resync is not conditional on anything changing: the boot dial is
-	// synchronous (ConnectConfiguredMCPClients blocks until every client has been attempted),
-	// so by the time it returns every client's tools are exactly what this request should see.
-	if err := s.MCPServerHandler.SyncMCPServer(s.Ctx); err != nil {
-		logger.Warn("failed to sync MCP server after the boot dial: %v", err)
-	}
-	// A proactively refreshed shared OAuth token leaves the live MCP connection
-	// still holding the old bearer (the credential is baked into the transport
-	// at connect time), so recycle the connection as soon as the refresh worker
-	// lands a fresh token instead of waiting for a call to fail. Installed only
-	// after the boot dial above so the worker's first sweep cannot race client
-	// construction. In-flight calls on the old connection may fail once during
-	// the recycle; the reactive auth-failure retry covers them. Per-user
-	// (non-shared) tokens have no persistent connection, so they are skipped.
-	if s.Config.OAuthTokenRefreshWorker != nil {
-		s.Config.OAuthTokenRefreshWorker.SetOnTokenRefreshed(func(mcpClientID, authMode string) {
-			if authMode != "shared" {
-				return
-			}
-			// Run in a goroutine: a reconnect can take minutes worst-case and
-			// must not block the worker's sequential refresh loop. Expected
-			// no-op outcomes (a reconnect already in progress, or a client
-			// type reconnect does not apply to) surface here as errors and
-			// are deliberately logged at Debug only.
-			go func() {
-				if err := s.ReconnectMCPClient(s.Ctx, mcpClientID); err != nil {
-					logger.Debug("MCP client %s was not reconnected after a proactive token refresh: %v", mcpClientID, err)
-					return
-				}
-				logger.Debug("recycled shared MCP connection for client %s after a proactive token refresh", mcpClientID)
-			}()
-		})
-		// Started here, not at construction (lib/config.go): Start's first
-		// refresh sweep runs immediately, synchronously with launching its
-		// goroutine. Starting any earlier — before the callback above is
-		// wired up and before the boot dial above has run — would let a
-		// refresh land with nothing to trigger the affected client's
-		// reconnect, leaving a live connection on the old bearer until the
-		// next scheduled sweep or a call happens to fail.
-		s.Config.OAuthTokenRefreshWorker.Start(s.Ctx)
-	}
+	// Dial configured MCP clients now that every plugin is registered in the core,
+	// in the background so an unreachable client cannot hold the HTTP listener for
+	// its connect retries.
+	go s.dialBootMCPClients()
 	// Serve a minimal robots.txt so crawlers/CLI tools (e.g. Claude Code) don't
 	// trigger 404 warnings when probing the host before marketplace fetches.
 	s.Router.GET("/robots.txt", func(ctx *fasthttp.RequestCtx) {

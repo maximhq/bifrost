@@ -838,6 +838,7 @@ func TestBuildBaseURL(t *testing.T) {
 		{name: "non HTTP override rejected", external: "ftp://proxy.example.com", host: host, want: "http://" + host},
 		{name: "external override wins", external: "https://proxy.example.com", host: host, xfProto: "http", want: "https://proxy.example.com"},
 		{name: "external override trailing slash trimmed", external: "https://proxy.example.com/", host: host, want: "https://proxy.example.com"},
+		{name: "external override surrounding whitespace trimmed", external: "  https://proxy.example.com/  ", host: host, xfProto: "http", want: "https://proxy.example.com"},
 		{name: "invalid external falls back to inference", external: "not-a-url", host: host, xbfProto: "https", want: "https://" + host},
 		{name: "empty host yields empty", host: "", xbfProto: "https", want: ""},
 	}
@@ -885,6 +886,33 @@ func TestBuildBaseURL_BasePath(t *testing.T) {
 	SetBasePath("")
 	if got := BuildBaseURL(ctx, ""); got != "https://abc.com" {
 		t.Fatalf("BuildBaseURL() without base path = %q, want https://abc.com", got)
+	}
+}
+
+// TestRequestIsHTTPS pins the one scheme rule every HTTPS-dependent decision uses.
+func TestRequestIsHTTPS(t *testing.T) {
+	for name, tc := range map[string]struct {
+		headers map[string]string
+		want    bool
+	}{
+		"plain":                        {want: false},
+		"x-forwarded-proto https":      {headers: map[string]string{"X-Forwarded-Proto": "https"}, want: true},
+		"x-forwarded-proto HTTPS":      {headers: map[string]string{"X-Forwarded-Proto": "HTTPS"}, want: true},
+		"x-forwarded-proto chain":      {headers: map[string]string{"X-Forwarded-Proto": "https, http"}, want: true},
+		"x-forwarded-proto http chain": {headers: map[string]string{"X-Forwarded-Proto": "http, https"}, want: false},
+		"x-bf-forwarded-proto https":   {headers: map[string]string{"x-bf-forwarded-proto": "https"}, want: true},
+		"x-bf wins over lb overwrite":  {headers: map[string]string{"X-Forwarded-Proto": "http", "x-bf-forwarded-proto": "https"}, want: true},
+		"x-bf http overrides lb https": {headers: map[string]string{"X-Forwarded-Proto": "https, http", "x-bf-forwarded-proto": "http"}, want: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			for k, v := range tc.headers {
+				ctx.Request.Header.Set(k, v)
+			}
+			if got := RequestIsHTTPS(ctx); got != tc.want {
+				t.Fatalf("RequestIsHTTPS() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

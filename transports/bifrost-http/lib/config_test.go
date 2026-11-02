@@ -381,6 +381,7 @@ import (
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/featureflags"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/objectstore"
 	"github.com/maximhq/bifrost/framework/vectorstore"
@@ -3682,6 +3683,86 @@ func TestSourceOfTruthConfigJSON_InvalidOpenAPIDeclarationKeepsStoredClient(t *t
 	require.NotNil(t, cfg.MCPConfig)
 	require.Len(t, cfg.MCPConfig.ClientConfigs, 1)
 	assert.Equal(t, "stored valid document", cfg.MCPConfig.ClientConfigs[0].OpenAPIConfig.Spec, "the runtime keeps the last valid configuration")
+}
+
+// mcpClientNames lists the names of configs, in order.
+func mcpClientNames(configs []*schemas.MCPClientConfig) []string {
+	names := make([]string, 0, len(configs))
+	for _, c := range configs {
+		names = append(names, c.Name)
+	}
+	return names
+}
+
+// TestLoadMCPConfig_RefusesAuthTypesCreateRefuses pins that config.json gets the
+// create API's answer on auth_type: an unknown auth_type, and a per-user one on SSE
+// or STDIO, are skipped and not stored, while the client beside them loads.
+func TestLoadMCPConfig_RefusesAuthTypesCreateRefuses(t *testing.T) {
+	initTestLogger()
+	store := NewMockConfigStore()
+	store.mcpConfig = &schemas.MCPConfig{}
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	configData := &ConfigData{MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+		{Name: "bogus_auth", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://127.0.0.1:9/mcp"), AuthType: "bogus"},
+		{Name: "headers_on_sse", ConnectionType: schemas.MCPConnectionTypeSSE, ConnectionString: schemas.NewSecretVar("http://127.0.0.1:9/sse"), AuthType: schemas.MCPAuthTypePerUserHeaders, PerUserHeaderKeys: []string{"x-key"}},
+		{Name: "oauth_on_stdio", ConnectionType: schemas.MCPConnectionTypeSTDIO, StdioConfig: &schemas.MCPStdioConfig{Command: "true"}, AuthType: schemas.MCPAuthTypePerUserOauth},
+		{Name: "plain_http", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://127.0.0.1:9/mcp"), AuthType: schemas.MCPAuthTypeNone},
+	}}}
+
+	loadMCPConfig(context.Background(), cfg, configData)
+
+	require.NotNil(t, cfg.MCPConfig)
+	assert.Equal(t, []string{"plain_http"}, mcpClientNames(cfg.MCPConfig.ClientConfigs), "the runtime")
+	assert.Equal(t, []string{"plain_http"}, mcpClientNames(store.mcpConfigsCreated), "the store")
+}
+
+// TestLoadMCPConfig_OmittedAuthTypeLoadsAsHeaders pins that a config.json client
+// without an auth_type loads as headers, the value the store saves and later boots
+// read back, so it connects the same way on its first boot as on every boot after.
+func TestLoadMCPConfig_OmittedAuthTypeLoadsAsHeaders(t *testing.T) {
+	initTestLogger()
+	store := NewMockConfigStore()
+	store.mcpConfig = &schemas.MCPConfig{}
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	configData := &ConfigData{MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+		{Name: "no_auth_type", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://127.0.0.1:9/mcp")},
+	}}}
+
+	loadMCPConfig(context.Background(), cfg, configData)
+
+	require.NotNil(t, cfg.MCPConfig)
+	require.Len(t, cfg.MCPConfig.ClientConfigs, 1)
+	assert.Equal(t, schemas.MCPAuthTypeHeaders, cfg.MCPConfig.ClientConfigs[0].AuthType, "the runtime")
+	require.Len(t, store.mcpConfigsCreated, 1)
+	assert.Equal(t, schemas.MCPAuthTypeHeaders, store.mcpConfigsCreated[0].AuthType, "the store")
+}
+
+// TestSourceOfTruthConfigJSON_RefusedAuthTypeKeepsStoredClient: a stored client whose
+// config.json declaration is now refused for its auth_type is kept with its stored
+// configuration, the way an unparsable OpenAPI declaration keeps it, instead of being
+// pruned as missing from the file.
+func TestSourceOfTruthConfigJSON_RefusedAuthTypeKeepsStoredClient(t *testing.T) {
+	initTestLogger()
+	stored := &schemas.MCPClientConfig{
+		ID: "sse-db", Name: "headers_on_sse", ConnectionType: schemas.MCPConnectionTypeSSE,
+		ConnectionString: schemas.NewSecretVar("http://127.0.0.1:9/sse"), AuthType: schemas.MCPAuthTypePerUserHeaders, PerUserHeaderKeys: []string{"x-key"},
+	}
+	store := NewMockConfigStore()
+	store.mcpConfig = &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{stored}}
+	cfg := &Config{ConfigStore: store}
+	configData := &ConfigData{
+		SourceOfTruth: SourceOfTruthConfigJSON,
+		MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{
+			Name: "headers_on_sse", ConnectionType: schemas.MCPConnectionTypeSSE,
+			ConnectionString: schemas.NewSecretVar("http://127.0.0.1:9/sse"), AuthType: schemas.MCPAuthTypePerUserHeaders, PerUserHeaderKeys: []string{"x-key"},
+		}}},
+	}
+
+	loadMCPConfig(context.Background(), cfg, configData)
+
+	assert.Equal(t, []string{"headers_on_sse"}, mcpClientNames(store.mcpConfig.ClientConfigs), "the stored client must not be pruned")
+	require.NotNil(t, cfg.MCPConfig)
+	assert.Equal(t, []string{"headers_on_sse"}, mcpClientNames(cfg.MCPConfig.ClientConfigs))
 }
 
 // TestLoadConfig_Governance_Merge tests governance config merge from DB and file
@@ -24227,6 +24308,79 @@ func TestGetAllKeys_PreservesEnabled(t *testing.T) {
 	}
 }
 
+// TestGetAllKeys_RedactsAnthropicWorkloadIdentity pins that /api/keys carries a federated key's
+// workload identity block with the identity token masked and the identifiers readable.
+func TestGetAllKeys_RedactsAnthropicWorkloadIdentity(t *testing.T) {
+	initTestLogger()
+	const jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ3b3JrbG9hZCJ9.c2lnbmF0dXJl"
+	cfg := &Config{
+		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.Anthropic: {Keys: []schemas.Key{{ID: "wif-key", Name: "wif", AnthropicKeyConfig: &schemas.AnthropicKeyConfig{
+				WorkloadIdentity: &schemas.AnthropicWorkloadIdentityConfig{
+					FederationRuleID: *schemas.NewSecretVar("fdrl_01abc"),
+					OrganizationID:   *schemas.NewSecretVar("org-uuid"),
+					ServiceAccountID: *schemas.NewSecretVar("svac_01def"),
+					IdentitySource:   &schemas.IdentitySource{Type: schemas.IdentitySourceInline, Token: schemas.NewSecretVar(jwt)},
+				},
+			}}}},
+		},
+	}
+
+	keys, err := cfg.GetAllKeys()
+	require.NoError(t, err)
+	require.Len(t, keys, 1)
+	require.True(t, keys[0].AnthropicKeyConfig.HasWorkloadIdentity())
+	wif := keys[0].AnthropicKeyConfig.WorkloadIdentity
+	assert.Equal(t, "svac_01def", wif.ServiceAccountID.GetValue())
+	assert.True(t, wif.IdentitySource.Token.IsMaskedPlaceholder())
+	body, err := json.Marshal(keys[0])
+	require.NoError(t, err)
+	assert.NotContains(t, string(body), jwt)
+	assert.Contains(t, string(body), `"anthropic_key_config"`)
+	assert.Equal(t, jwt, cfg.Providers[schemas.Anthropic].Keys[0].AnthropicKeyConfig.WorkloadIdentity.IdentitySource.Token.GetValue(), "the live config is untouched")
+}
+
+// TestReconcileProviderKeys_AnthropicWorkloadIdentity pins that an unchanged config.json key keeps
+// its dashboard edits when the env-backed identity token behind it rotates, on both the stored-hash
+// and the legacy no-hash paths, while an edit to the block still replaces the stored key.
+func TestReconcileProviderKeys_AnthropicWorkloadIdentity(t *testing.T) {
+	SetLogger(&testLogger{})
+	t.Setenv("RECONCILE_TEST_ANTHROPIC_TOKEN", "jwt-v1")
+	fileKey := func(workspace string) schemas.Key {
+		wif := &schemas.AnthropicWorkloadIdentityConfig{
+			FederationRuleID: *schemas.NewSecretVar("fdrl_01abc"),
+			OrganizationID:   *schemas.NewSecretVar("org-uuid"),
+			ServiceAccountID: *schemas.NewSecretVar("svac_01def"),
+			IdentitySource:   &schemas.IdentitySource{Type: schemas.IdentitySourceInline, Token: schemas.NewSecretVar("env.RECONCILE_TEST_ANTHROPIC_TOKEN")},
+		}
+		if workspace != "" {
+			wif.WorkspaceID = schemas.NewSecretVar(workspace)
+		}
+		return schemas.Key{Name: "wif", Weight: 1, AnthropicKeyConfig: &schemas.AnthropicKeyConfig{WorkloadIdentity: wif}}
+	}
+	syncedHash, err := configstore.GenerateKeyHash(fileKey(""))
+	require.NoError(t, err)
+	dbKey := fileKey("")
+	dbKey.ID = "key-1"
+	dbKey.ConfigHash = syncedHash
+	t.Setenv("RECONCILE_TEST_ANTHROPIC_TOKEN", "jwt-v2")
+
+	merged := reconcileProviderKeys(schemas.Anthropic, []schemas.Key{fileKey("")}, []schemas.Key{dbKey})
+	require.Len(t, merged, 1)
+	require.Equal(t, syncedHash, merged[0].ConfigHash, "a rotated identity token must not read as a config.json edit")
+
+	legacy := dbKey
+	legacy.ConfigHash = ""
+	merged = reconcileProviderKeys(schemas.Anthropic, []schemas.Key{fileKey("")}, []schemas.Key{legacy})
+	require.Len(t, merged, 1)
+	require.Empty(t, merged[0].ConfigHash, "a legacy key matching the file keeps the stored version")
+
+	merged = reconcileProviderKeys(schemas.Anthropic, []schemas.Key{fileKey("wrkspc_01ghi")}, []schemas.Key{dbKey})
+	require.Len(t, merged, 1)
+	require.NotNil(t, merged[0].AnthropicKeyConfig.WorkloadIdentity.WorkspaceID, "an edited block must replace the stored key")
+	require.NotEqual(t, syncedHash, merged[0].ConfigHash)
+}
+
 // Warp ships behind a feature flag that is on for OSS and off for enterprise,
 // where an operator turns it on per deployment. Either build can flip it.
 // registerFeatureFlags runs on every LoadConfig, and tests call LoadConfig many
@@ -25950,6 +26104,26 @@ func TestUpdateMCPClient_RequirePublicTargetOnlyTightens(t *testing.T) {
 	update.RequirePublicTarget = false
 	require.NoError(t, cfg.UpdateMCPClient(context.Background(), stored.ID, &update))
 	assert.True(t, cfg.MCPConfig.ClientConfigs[0].RequirePublicTarget)
+}
+
+// TestRemoveMCPClient_DropsItsCatalogPricing: the pricing catalog is keyed by
+// client name, so a deleted client's prices must leave it with the client.
+// Left behind, they priced the next client registered under the same name.
+func TestRemoveMCPClient_DropsItsCatalogPricing(t *testing.T) {
+	cfg, stored := newOpenAPIUpdateTestConfig(t, false)
+	stored.ToolPricing = map[string]float64{"listPets": 0.25}
+	catalog, err := mcpcatalog.Init(context.Background(), &mcpcatalog.Config{PricingData: mcpcatalog.MCPPricingData{
+		"petstore/listPets": {Server: "petstore", ToolName: "listPets", CostPerExecution: 0.25},
+		"other/listPets":    {Server: "other", ToolName: "listPets", CostPerExecution: 0.5},
+	}}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	require.NoError(t, err)
+	cfg.MCPCatalog = catalog
+
+	require.NoError(t, cfg.RemoveMCPClient(context.Background(), stored.ID))
+	_, priced := catalog.GetPricingData("petstore", "listPets")
+	assert.False(t, priced, "the deleted client's price is gone")
+	_, priced = catalog.GetPricingData("other", "listPets")
+	assert.True(t, priced, "another client's price stays")
 }
 
 // TestGetMCPClientOpenAPISpec_ReadsUnderLock: the stored document is copied out

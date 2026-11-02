@@ -799,12 +799,16 @@
 			"updateValues": "값 업데이트",
 			"editValues": "값 편집"
 		},
+		"revokeFlowTitle": "이 보류 중인 흐름을 취소하시겠습니까?",
+		"revokeFlowDescription": "Bifrost는 이 보류 중인 흐름을 삭제해요. 링크는 더 이상 작동하지 않아요. 이 바인딩에 이미 저장된 자격 증명은 유지돼요. 제거하려면 해당 자격 증명의 행을 취소하세요.",
 		"revokeHeaderTitle": "저장된 헤더 값을 취소하시겠습니까?",
 		"revokeHeaderDescription": "Bifrost는 이 바인딩에 대해 저장된 자격 증명 값을 제거해요. 취소할 업스트림 토큰이 없어요. 사용자는 이 MCP을 다시 사용하려면 헤더 값을 다시 제출해야 해요.",
 		"revokeSessionTitle": "이 MCP 세션을 취소하시겠습니까?",
 		"revokeSessionDescription": "Bifrost는 이 바인딩에 대해 저장된 자격 증명을 제거해요. 업스트림 OAuth 토큰은 공급자에서 취소되지 않어요. 분리된 상태로 유지되며 자연스럽게 만료돼요. 이 바인딩을 사용하는 사람은 누구나 새로운 토큰을 얻으려면 다시 인증해야 해요.",
 		"toast": {
 			"reauthFailed": "재인증 실패",
+			"flowRevoked": "보류 중인 흐름이 취소되었어요.",
+			"flowRevokeFailed": "보류 중인 흐름을 취소하지 못했어요.",
 			"headerRevoked": "헤더 값이 취소되었어요.",
 			"sessionRevoked": "세션이 취소되었어요.",
 			"headerRevokeFailed": "헤더 값을 취소하지 못했어요.",
