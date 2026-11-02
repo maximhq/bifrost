@@ -223,6 +223,18 @@ client:
       neither (for example one made with an API key) creates the client in
       pending_verification; finish it with
       POST /api/mcp/client/{id}/verify-exchange.
+
+      For auth_type "oauth" and "per_user_oauth", the name and endpoint slug
+      are checked before the OAuth flow starts, so a conflict returns 409 at
+      create rather than when the flow is completed, and endpoint_slug is kept
+      for the client the completion creates. OAuth discovery against a private
+      address that mcp_oauth_private_allowlist does not permit returns 400.
+
+      auth_type must be one of the MCPAuthType values; any other value returns
+      400. per_user_oauth and token_exchange need connection_type "http", and
+      per_user_headers needs "http" or "openapi": each call opens its own
+      connection, so all three return 400 on "sse" and "stdio". An omitted
+      auth_type is "headers".
     tags:
       - MCP
     requestBody:
@@ -250,6 +262,14 @@ client:
                 - $ref: '../../schemas/management/oauth.yaml#/OAuthFlowInitiation'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '409':
+        description: >-
+          Another MCP client already has the name, or an MCP client or Virtual
+          MCP already serves the endpoint slug.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '403':
         description: >-
           The request was not genuinely authenticated (dashboard authentication
@@ -320,6 +340,14 @@ client-by-id:
               $ref: '../../schemas/management/common.yaml#/SuccessResponse'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '409':
+        description: >
+          Nothing is applied. Either another MCP client already has the requested name, or the
+          request changes oauth_config on a client whose OAuth verification has not completed.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
@@ -402,6 +430,8 @@ client-reconnect:
               $ref: '../../schemas/management/common.yaml#/SuccessResponse'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
@@ -999,15 +1029,15 @@ session-by-id:
     description: |
       Revokes a session by primary key. Accepts these row kinds:
       - OAuth token rows → hard-deletes the token plus any pending OAuth flow
-        for the same binding (so an in-flight callback can't undo the revoke)
+        for the same binding, so a callback that has not yet claimed that flow
+        cannot undo the revoke
       - Header credential rows → hard-deletes the credential plus any pending
         header submission flow for the same binding
       - Pending per-user-headers flow rows → hard-deletes just the flow
-
-      Note: pending per-user OAuth flow rows are **not** revocable by this
-      endpoint — they expire naturally or are cleared when the bound token
-      row is revoked. To cancel a pending OAuth flow, revoke its parent token
-      (if one exists) or wait for expiry.
+      - Pending per-user OAuth flow rows → hard-deletes just the flow, so a
+        callback that has not yet claimed it can no longer mint a token. A
+        callback already completing at that moment can still save its token,
+        which then appears as a session that can be revoked
 
       Bifrost does **not** call the upstream provider's revoke endpoint —
       revocation is local. Per-user-headers credentials never call upstream.

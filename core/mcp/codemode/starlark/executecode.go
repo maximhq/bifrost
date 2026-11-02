@@ -312,6 +312,10 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 	}
 	nestedCtx := schemas.NewBifrostContext(ctx, deadline)
 	nestedCtx.SetValue(schemas.BifrostContextKeyRequestID, newRequestID)
+	// Each nested call is its own log entry. Agent mode puts a log id on the context of the
+	// executeToolCode call it runs; inherited here, every nested call would be logged under that
+	// one id and all but the first entry dropped as duplicates.
+	nestedCtx.SetValue(schemas.BifrostContextKeyMCPLogID, newRequestID)
 	if originalRequestID != "" {
 		nestedCtx.SetValue(schemas.BifrostContextKeyParentMCPRequestID, originalRequestID)
 	}
@@ -349,7 +353,12 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 	}
 	defer release()
 
+	// The client's own tool_execution_timeout bounds the call, as it does a direct call, and the
+	// code mode global is only the fallback.
 	toolExecutionTimeout := s.getToolExecutionTimeout()
+	if client.ExecutionConfig != nil && client.ExecutionConfig.ToolExecutionTimeout > 0 {
+		toolExecutionTimeout = client.ExecutionConfig.ToolExecutionTimeout
+	}
 
 	// Delegate to the canonical plugin gate. RunWithPluginPipeline owns the
 	// tracing span, MCPRequestType/ClientName/ToolName stamping (via
@@ -412,7 +421,7 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 
 		// The socket wait is upstream time, as for a direct tool call; overlapping calls count once.
 		toolWait := schemas.BeginUpstreamWait(nestedCtx)
-		toolResponse, callErr := conn.CallTool(toolCtx, callRequest)
+		toolResponse, callErr := codemcp.CallToolWithin(toolCtx, conn, callRequest)
 		toolWait.End()
 		if callErr != nil && toolCtx.Err() == context.DeadlineExceeded {
 			callErr = fmt.Errorf("MCP tool call timed out after %v: %s", toolExecutionTimeout, effectiveToolName)

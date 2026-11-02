@@ -27,6 +27,7 @@ import { Trans, useTranslation } from "react-i18next";
 import { AuthFields, TLSFields, authSummary, emptyAuth, emptySecret, hasTLS, normalizeAuth } from "./agentAuthFields";
 import { AgentCardPreview } from "@/components/agents/agentCardPreview";
 import { AgentEndpoints } from "./agentEndpoints";
+import { withBasePath } from "@/lib/utils/basePath";
 
 const AGENT_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -183,6 +184,7 @@ interface AgentSheetProps {
 	onSaved: () => void;
 }
 
+/** Sheet for registering a new agent, or editing `agent` when one is given. */
 export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps) {
 	const { t } = useTranslation("observability");
 	const { t: tCommon } = useTranslation("common");
@@ -238,7 +240,7 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 	const { data: vksData } = useGetVirtualKeysQuery({ limit: 1000 });
 	const vkById = new Map((vksData?.virtual_keys ?? []).map((virtualKey) => [virtualKey.id, virtualKey]));
 	const { data: coreConfig } = useGetCoreConfigQuery({ fromDB: true });
-	const baseUrl = getExternalBaseUrl(coreConfig?.client_config);
+	const baseUrl = getExternalBaseUrl(coreConfig?.client_config, "a2a_external_client_url");
 	const grpc = coreConfig?.agent_gateway
 		? {
 				baseDomain: coreConfig.agent_gateway.grpc_base_domain,
@@ -565,7 +567,9 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 									t={t}
 									i18nKey="agentGateway.sheet.additionalEndpointsIntro"
 									components={{
-										settings: <a href="/workspace/config/agent-gateway" className="text-primary underline underline-offset-2" />,
+										settings: (
+											<a href={withBasePath("/workspace/config/agent-gateway")} className="text-primary underline underline-offset-2" />
+										),
 									}}
 								/>
 							</p>

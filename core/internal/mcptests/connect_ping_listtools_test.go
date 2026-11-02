@@ -366,7 +366,6 @@ func TestListToolsHook_PreHookShortCircuitWithSyntheticTools(t *testing.T) {
 				},
 			},
 		},
-		ToolNameMapping: map[string]string{"synthetic_tool": "synthetic-tool"},
 	}
 	plugin.SetShortCircuitResponse(synthetic)
 

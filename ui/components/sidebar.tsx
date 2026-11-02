@@ -34,6 +34,7 @@ import { preserveTimeFilters } from "./navigation/navItem";
 import { getNavItemHref, type NavItem, useNavItems } from "./navigation/navItems";
 import { Badge } from "./ui/badge";
 import { PromoCardStack } from "./ui/promoCardStack";
+import { withBasePath } from "@/lib/utils/basePath";
 
 // Cookie name for dismissing production setup card
 const PRODUCTION_SETUP_DISMISSED_COOKIE = "bifrost_production_setup_dismissed";
@@ -400,6 +401,7 @@ const compareVersions = (v1: string, v2: string): number => {
 	return 0;
 };
 
+/** The workspace navigation sidebar. */
 export default function AppSidebar() {
 	const { t } = useTranslation("shell");
 	const pathname = useLocation({ select: (l) => l.pathname });
@@ -600,7 +602,7 @@ export default function AppSidebar() {
 				if (target) {
 					const url = target.url;
 					if (target.isExternal || e.metaKey || e.ctrlKey) {
-						window.open(url, "_blank", "noopener,noreferrer");
+						window.open(withBasePath(url), "_blank", "noopener,noreferrer");
 					} else {
 						navigate(url);
 					}
@@ -661,7 +663,10 @@ export default function AppSidebar() {
 	const { isConnected: isWebSocketConnected } = useWebSocket();
 
 	// New release image - based on theme
-	const newReleaseImage = mounted && resolvedTheme === "dark" ? "/images/new-release-image-dark.webp" : "/images/new-release-image.webp";
+	const newReleaseImage =
+		mounted && resolvedTheme === "dark"
+			? withBasePath("/images/new-release-image-dark.webp")
+			: withBasePath("/images/new-release-image.webp");
 
 	// Memoize promo cards array to prevent duplicates and unnecessary re-renders
 	const promoCards = useMemo(() => {

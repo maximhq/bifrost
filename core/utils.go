@@ -220,6 +220,18 @@ func validateKey(providerKey schemas.ModelProvider, key *schemas.Key) error {
 			}
 		}
 	}
+	// anthropic_key_config.workload_identity follows the same rules as oauth_key_config: only
+	// the Anthropic provider federates, and a static value wins over the config.
+	if key.AnthropicKeyConfig.HasWorkloadIdentity() {
+		if !ProviderSupportsAnthropicWorkloadIdentity(providerKey) {
+			return fmt.Errorf("anthropic_key_config.workload_identity is only supported on anthropic and on custom providers whose base_provider_type is anthropic")
+		}
+		if strings.TrimSpace(key.Value.GetValue()) == "" {
+			if err := key.AnthropicKeyConfig.WorkloadIdentity.Validate(); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
@@ -229,11 +241,19 @@ func ProviderSupportsOAuthKeyConfig(providerKey schemas.ModelProvider) bool {
 	return providerKey == schemas.OpenAI
 }
 
+// ProviderSupportsAnthropicWorkloadIdentity reports whether a provider (the base provider for a
+// custom one) exchanges anthropic_key_config.workload_identity for a bearer token.
+func ProviderSupportsAnthropicWorkloadIdentity(providerKey schemas.ModelProvider) bool {
+	return providerKey == schemas.Anthropic
+}
+
 // keyValueMayBeEmpty reports whether a key with no value is still usable: either the provider
 // carries its credentials in its own key config (CanProviderKeyValueBeEmpty), or the key
-// mints its bearer from oauth_key_config on a provider that honours it.
+// mints its bearer from oauth_key_config or workload identity on a provider that honours it.
 func keyValueMayBeEmpty(providerKey schemas.ModelProvider, key *schemas.Key) bool {
-	return CanProviderKeyValueBeEmpty(providerKey) || (key.OAuthKeyConfig != nil && ProviderSupportsOAuthKeyConfig(providerKey))
+	return CanProviderKeyValueBeEmpty(providerKey) ||
+		(key.OAuthKeyConfig != nil && ProviderSupportsOAuthKeyConfig(providerKey)) ||
+		(key.AnthropicKeyConfig.HasWorkloadIdentity() && ProviderSupportsAnthropicWorkloadIdentity(providerKey))
 }
 
 // routingErrorSummary produces a sanitized, audit-safe one-line summary of a

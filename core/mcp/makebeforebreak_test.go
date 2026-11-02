@@ -382,7 +382,6 @@ func TestConnectToMCPClient_MakeBeforeBreak_DialFailure_PostFailureState(t *test
 			// "needs re-authorization" / "disconnected" reason instead of a
 			// generic "not available").
 			assert.NotEmpty(t, after.ToolMap, "a failed re-dial must keep the last-known tool map")
-			assert.NotEmpty(t, after.ToolNameMapping)
 
 			// Reachability of the captured connection, which is the whole
 			// point of the split above.
@@ -417,7 +416,6 @@ func TestConnectToMCPClient_MakeBeforeBreak_DialFailure_PostFailureState(t *test
 				assert.Nil(t, afterSecondFailure.Conn)
 			}
 			assert.Equal(t, before.ToolMap, afterSecondFailure.ToolMap, "a second failed re-dial must keep the original last-known tool map")
-			assert.Equal(t, before.ToolNameMapping, afterSecondFailure.ToolNameMapping)
 		})
 	}
 }
@@ -461,6 +459,37 @@ func TestConnectToMCPClient_MakeBeforeBreak_DialFailure_KeepsLiveConnectionServi
 
 	// The point of every assertion above: traffic keeps flowing.
 	require.NoError(t, callEchoTool(m, toolName), "the surviving connection must still serve tool calls")
+}
+
+// TestUpdateClientCredentials_FailedTLSApplyKeepsConnectionAndStoresSettings pins
+// what a TLS edit whose live apply fails leaves on a client with a persistent
+// connection: the working connection keeps serving on its old settings, and the
+// runtime config already carries the new ones, so the client's next reconnect
+// dials with them. Nothing redials on its own while that connection stays healthy.
+func TestUpdateClientCredentials_FailedTLSApplyKeepsConnectionAndStoresSettings(t *testing.T) {
+	ts := buildGatedMCPServer(t, nil)
+
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, &flipCredStore{failWith: fmt.Errorf("connection refused")}, nil, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+	config := newMakeBeforeBreakConfig("failed-tls-apply", ts.URL)
+	config.Name = "mbb_failed_tls_apply" // UpdateClient refuses a hyphenated name
+	require.NoError(t, m.connectToMCPClient(context.Background(), config))
+	before, ok := snapshotClientState(m, config.ID)
+	require.True(t, ok)
+	require.NotNil(t, before.Conn)
+
+	edited := *config
+	edited.TLSConfig = &schemas.MCPTLSConfig{InsecureSkipVerify: true}
+	require.NoError(t, m.UpdateClient(config.ID, &edited))
+	require.Error(t, m.UpdateClientCredentials(config.ID, &edited), "the live apply fails")
+
+	after, ok := snapshotClientState(m, config.ID)
+	require.True(t, ok)
+	assert.Same(t, before.Conn, after.Conn, "the working connection keeps serving")
+	require.NotNil(t, after.ExecutionConfig)
+	require.NotNil(t, after.ExecutionConfig.TLSConfig, "the runtime config carries the new TLS settings")
+	assert.True(t, after.ExecutionConfig.TLSConfig.InsecureSkipVerify, "so the next reconnect dials with them")
+	require.NoError(t, callEchoTool(m, config.Name+"-echo"), "tool calls keep flowing meanwhile")
 }
 
 // =============================================================================
