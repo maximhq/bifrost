@@ -12,14 +12,23 @@ import (
 // with a permissive object schema at registration, so scenarios that only care
 // about a tool's presence do not have to spell one out.
 //
-// Name, Description, InputSchema and Annotations go on the wire in tools/list.
-// The rest are instructions to the mock itself: they show in the control API's
-// readback but never reach a client, which would otherwise see fields no real
-// server sends.
+// Name, Title, Description, Icons, InputSchema, OutputSchema and Annotations go
+// on the wire in tools/list. The rest are instructions to the mock itself: they
+// show in the control API's readback but never reach a client, which would
+// otherwise see fields no real server sends.
 type Tool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"inputSchema"`
+
+	// Title is the tool's display name, which 2025-06-18 added beside its name.
+	Title string `json:"title,omitempty"`
+
+	// Icons is sent verbatim, a list of {src, mimeType, sizes, theme} objects.
+	Icons json.RawMessage `json:"icons,omitempty"`
+
+	// OutputSchema is sent verbatim: the JSON schema the tool's structuredContent follows.
+	OutputSchema json.RawMessage `json:"outputSchema,omitempty"`
 
 	// Annotations is sent verbatim, so a scenario can mark a tool read-only or
 	// destructive, or send a hint a client does not know yet.
@@ -44,24 +53,34 @@ type Tool struct {
 
 // wireTool is the part of a Tool that tools/list sends.
 type wireTool struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	InputSchema json.RawMessage `json:"inputSchema"`
-	Annotations json.RawMessage `json:"annotations,omitempty"`
+	Name         string          `json:"name"`
+	Title        string          `json:"title,omitempty"`
+	Description  string          `json:"description"`
+	Icons        json.RawMessage `json:"icons,omitempty"`
+	InputSchema  json.RawMessage `json:"inputSchema"`
+	OutputSchema json.RawMessage `json:"outputSchema,omitempty"`
+	Annotations  json.RawMessage `json:"annotations,omitempty"`
 }
 
 // wire returns the client-visible view of t.
 func (t Tool) wire() wireTool {
-	return wireTool{Name: t.Name, Description: t.Description, InputSchema: t.InputSchema, Annotations: t.Annotations}
+	return wireTool{Name: t.Name, Title: t.Title, Description: t.Description, Icons: t.Icons, InputSchema: t.InputSchema, OutputSchema: t.OutputSchema, Annotations: t.Annotations}
 }
 
 // Validate rejects a definition that would otherwise misbehave quietly:
-// annotations or a reply that is not a JSON object, two reply sources, or a
+// annotations, an output schema or a reply that is not a JSON object, icons
+// that are not a JSON array, two reply sources, or a
 // per-tool fault field that cannot apply to one tool's call. In a chaos harness
 // a silently ignored field looks exactly like the client coping.
 func (t Tool) Validate() error {
 	if !isObjectOrEmpty(t.Annotations) {
 		return fmt.Errorf("tool %q: annotations must be a JSON object", t.Name)
+	}
+	if !isObjectOrEmpty(t.OutputSchema) {
+		return fmt.Errorf("tool %q: outputSchema must be a JSON object", t.Name)
+	}
+	if !isArrayOrEmpty(t.Icons) {
+		return fmt.Errorf("tool %q: icons must be a JSON array", t.Name)
 	}
 	if !isObjectOrEmpty(t.Reply) {
 		return fmt.Errorf("tool %q: reply must be a JSON object (a CallToolResult)", t.Name)
@@ -82,6 +101,12 @@ func (t Tool) Validate() error {
 func isObjectOrEmpty(raw json.RawMessage) bool {
 	trimmed := bytes.TrimSpace(raw)
 	return len(trimmed) == 0 || trimmed[0] == '{' || string(trimmed) == "null"
+}
+
+// isArrayOrEmpty reports whether raw is absent, null or a JSON array.
+func isArrayOrEmpty(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) == 0 || trimmed[0] == '[' || string(trimmed) == "null"
 }
 
 // defaultInputSchema accepts anything. Tools that need to reject input define
@@ -110,6 +135,7 @@ type toolSet struct {
 	revision uint64
 }
 
+// newToolSet starts with no tools and no overlays.
 func newToolSet() *toolSet {
 	return &toolSet{
 		base:     map[string]*Tool{},

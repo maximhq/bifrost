@@ -171,21 +171,25 @@ clients that initialize afterwards.
 
 ### Tools
 
-A tool is `{"name","description","inputSchema"}` plus optional fields. Only
-`annotations` goes on the wire with the first three; the rest are instructions
-to the mock, shown in the state readback and never sent to a client.
+A tool is `{"name","description","inputSchema"}` plus optional fields. `title`,
+`icons`, `outputSchema` and `annotations` go on the wire with the first three;
+the rest are instructions to the mock, shown in the state readback and never
+sent to a client.
 
 | Field | Effect |
 |---|---|
+| `title` | the tool's display name, sent in tools/list |
+| `icons` | sent verbatim in tools/list, a list of `{"src","mimeType","sizes","theme"}` |
+| `outputSchema` | sent verbatim in tools/list: the schema the tool's `structuredContent` follows |
 | `annotations` | sent verbatim in tools/list, e.g. `{"readOnlyHint":true}` |
 | `reply` | the CallToolResult tools/call returns, verbatim: several content blocks, `structuredContent`, `isError`. An empty result is `{"content":[]}`; clients reject a missing `content`. |
 | `reply_env` | answer with this variable from the stdio bridge's registered environment |
 | `fault` | a fault set that replaces the server-wide one for calls to this tool (see below) |
 
 Without `reply` or `reply_env`, a call echoes `"<tool>:<arguments>"`. A
-definition that would misbehave quietly is rejected with 400: annotations or a
-reply that is not an object, both `reply` and `reply_env`, or a tool fault
-field that cannot apply to one tool.
+definition that would misbehave quietly is rejected with 400: annotations, an
+output schema or a reply that is not an object, icons that are not a list, both
+`reply` and `reply_env`, or a tool fault field that cannot apply to one tool.
 
 ## REST
 
