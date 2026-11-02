@@ -8354,6 +8354,163 @@ const SET32 = folder("SET-32 Changing a client's own cap", "Setup: global max pr
   deleteClient("SET-32", "set32-c"),
 ]);
 
+// ================================================================ tool metadata and rich results
+const META_ICONS = [{ src: "https://icons.example.invalid/echo.png", mimeType: "image/png", sizes: ["48x48"] }];
+const META_SCHEMA = { type: "object", properties: { echoed: { type: "string" } }, required: ["echoed"] };
+const META_TOOLS = [{ name: "echo", title: "Echo", icons: META_ICONS, outputSchema: META_SCHEMA, annotations: { readOnlyHint: true } }, { name: "plain" }];
+const META_TEXT = "alpha serves echo with title \"Echo\", one icon (https://icons.example.invalid/echo.png, image/png, 48x48), an output schema ({echoed: string}, required) and readOnlyHint, and plain with none of them";
+const PNG = "iVBORw0KGgo=";
+const MP3 = "SUQzBAAAAAAA";
+const PDF = "JVBERi0xLjQK";
+const LINK_TEXT = "[Resource: report file:///docs/report.pdf (application/pdf)]";
+const placeholder = (kind) => `[${kind}, 9 bytes returned by the tool, not shown]`;
+const MEDIA_CONTENT = [
+  { type: "text", text: "see attached" },
+  { type: "image", data: PNG, mimeType: "image/png" },
+  { type: "audio", data: MP3, mimeType: "audio/mpeg" },
+  { type: "resource", resource: { uri: "file:///docs/notes.txt", mimeType: "text/plain", text: "the notes" } },
+  { type: "resource", resource: { uri: "file:///docs/chart.png", mimeType: "image/png", blob: PNG } },
+  { type: "resource", resource: { uri: "file:///docs/report.pdf", mimeType: "application/pdf", blob: PDF } },
+  { type: "resource_link", uri: "file:///docs/report.pdf", name: "report", mimeType: "application/pdf" },
+];
+const MEDIA_TOOL = { name: "media", reply: { content: MEDIA_CONTENT, structuredContent: { v: 1 } } };
+const MEDIA_TEXT = "alpha's media tool replies with text \"see attached\", a PNG image, an audio/mpeg clip, an embedded text resource file:///docs/notes.txt (\"the notes\"), an embedded PNG blob file:///docs/chart.png, an embedded PDF blob file:///docs/report.pdf, a resource_link to file:///docs/report.pdf named report, and structuredContent {v: 1}";
+const metaServer = (id, tools) => [
+  request(id, "setup: fresh mcpchaos server alpha", "POST", "/control", { base: CHAOS, noAuth: true, body: { add: "alpha" }, asserts: [A.status(200)] }),
+  mockPost(id, "alpha", "tools/set", "setup: alpha serves the tools under test", { tools }),
+];
+// listedTool picks a tool by name out of the client listing or a tools/list result.
+const LISTED = "function listed(tools, name) { return (tools || []).filter(function (t) { return t.name === name; })[0]; }";
+const noMetaKeys = (keys) => `function noMeta(t) { return ${lit(keys)}.filter(function (k) { return t && t[k] !== undefined; }); }`;
+
+const CONN28 = folder("CONN-28 Tool metadata on the client listing", `Setup: ${META_TEXT}; client conn28-c on alpha, per call, tools_to_execute ["*"]; later alpha drops echo's title and the client's tools are refreshed.`, [
+  ...metaServer("CONN-28", META_TOOLS),
+  createClient("CONN-28", httpClient("conn28-c", "alpha", "alpha", { tools_to_execute: ["*"] }), "setup: create the client"),
+  getClient("CONN-28", "conn28-c", "echo carries its title, icons, output schema and annotations; plain carries none", [A.custom("tool metadata as listed", [LISTED, noMetaKeys(["title", "icons", "output_schema", "annotations"]),
+    "var tools = pm.response.json().clients[0].tools, echo = listed(tools, 'echo'), plain = listed(tools, 'plain');",
+    "pm.expect(echo.title, 'body: ' + pm.response.text()).to.equal('Echo');",
+    `pm.expect(echo.icons).to.eql(${lit(META_ICONS)});`,
+    `pm.expect(echo.output_schema).to.eql(${lit(META_SCHEMA)});`,
+    "pm.expect(echo.annotations).to.eql({ readOnlyHint: true });",
+    "pm.expect(noMeta(plain), 'plain: ' + JSON.stringify(plain)).to.eql([]);",
+  ])]),
+  mockPost("CONN-28", "alpha", "tools/set", "alpha drops echo's title", { tools: [{ ...META_TOOLS[0], title: undefined }, META_TOOLS[1]] }),
+  request("CONN-28", "refresh the client's tools", "POST", "/api/mcp/client/conn28-c/refresh-tools", { asserts: [A.status(200)] }),
+  getClient("CONN-28", "conn28-c", "echo has no title any more, and keeps the rest", [A.custom("title gone, icons and output schema kept", [LISTED,
+    "var echo = listed(pm.response.json().clients[0].tools, 'echo');",
+    "pm.expect(echo.title, 'echo: ' + JSON.stringify(echo)).to.equal(undefined);",
+    `pm.expect(echo.icons).to.eql(${lit(META_ICONS)});`,
+    `pm.expect(echo.output_schema).to.eql(${lit(META_SCHEMA)});`,
+  ])]),
+  deleteClient("CONN-28", "conn28-c"),
+]);
+
+const metaOnGateway = (version) => A.custom(`on ${version}, alpha-echo carries its metadata and alpha-plain none`, [LISTED, noMetaKeys(["title", "icons", "outputSchema"]),
+  "var tools = pm.response.json().result.tools, echo = listed(tools, 'alpha-echo'), plain = listed(tools, 'alpha-plain');",
+  "pm.expect(echo && echo.title, 'body: ' + pm.response.text()).to.equal('Echo');",
+  `pm.expect(echo.icons).to.eql(${lit(META_ICONS)});`,
+  `pm.expect(echo.outputSchema).to.eql(${lit(META_SCHEMA)});`,
+  "pm.expect(echo.annotations).to.eql({ readOnlyHint: true });",
+  "pm.expect(noMeta(plain), 'plain: ' + JSON.stringify(plain)).to.eql([]);",
+]);
+const EP64 = folder("EP-64 Tool metadata on /mcp", `Setup: ${META_TEXT}; client ep64-c on alpha, per call, tools_to_execute ["*"]; anonymous /mcp requests on 2025-11-25 and on 2026-07-28.`, [
+  ...metaServer("EP-64", META_TOOLS),
+  createClient("EP-64", httpClient("ep64-c", "alpha", "alpha", { tools_to_execute: ["*"] }), "setup: create the client"),
+  rpc("EP-64", "tools/list on 2025-11-25", listMsg, { headers: [MCP_ACCEPT, { key: "MCP-Protocol-Version", value: "2025-11-25" }], asserts: [A.status(200), metaOnGateway("2025-11-25")] }),
+  modernRpc("EP-64", "tools/list on 2026-07-28", "tools/list", {}, [A.status(200), metaOnGateway("2026-07-28")]),
+  deleteClient("EP-64", "ep64-c"),
+]);
+
+const MEDIA_CHAT_BLOCKS = [
+  { type: "text", text: "see attached" },
+  { type: "image_url", image_url: { url: `data:image/png;base64,${PNG}` } },
+  { type: "input_audio", input_audio: { data: MP3, format: "mp3" } },
+  { type: "text", text: "the notes" },
+  { type: "image_url", image_url: { url: `data:image/png;base64,${PNG}` } },
+  { type: "file", file: { file_data: `data:application/pdf;base64,${PDF}`, filename: "report.pdf", file_type: "application/pdf" } },
+  { type: "text", text: LINK_TEXT },
+];
+const MEDIA_RESPONSES_OUTPUT = [
+  { type: "input_text", text: "see attached" },
+  { type: "input_image", image_url: `data:image/png;base64,${PNG}` },
+  { type: "input_text", text: placeholder("audio/mp3") },
+  { type: "input_text", text: "the notes" },
+  { type: "input_image", image_url: `data:image/png;base64,${PNG}` },
+  { type: "input_file", file_data: `data:application/pdf;base64,${PDF}`, filename: "report.pdf", file_type: "application/pdf" },
+  { type: "input_text", text: LINK_TEXT },
+];
+const CONN29 = folder("CONN-29 Audio, resources and links on execute", `Setup: ${MEDIA_TEXT}; client conn29-c on alpha, per call, tools_to_execute ["*"].`, [
+  ...metaServer("CONN-29", [MEDIA_TOOL]),
+  createClient("CONN-29", httpClient("conn29-c", "alpha", "alpha", { tools_to_execute: ["*"] }), "setup: create the client"),
+  execBody("CONN-29", "execute alpha-media", { id: "m1", type: "function", function: { name: "alpha-media", arguments: "{}" } }, [A.status(200),
+    A.custom("content blocks: text, image, input_audio mp3, the resource text, the PNG blob as an image, the PDF as a file, the link as text", [`pm.expect(pm.response.json().content, 'body: ' + pm.response.text()).to.eql(${lit(MEDIA_CHAT_BLOCKS)});`])]),
+  execBody("CONN-29", "execute alpha-media with format=responses", { call_id: "m2", name: "alpha-media", arguments: "{}" }, [A.status(200),
+    A.custom("output: the same, with the audio as a placeholder", [`pm.expect(pm.response.json().output, 'body: ' + pm.response.text()).to.eql(${lit(MEDIA_RESPONSES_OUTPUT)});`])], { query: "?format=responses" }),
+  deleteClient("CONN-29", "conn29-c"),
+]);
+
+const MEDIA_GATEWAY_CONTENT = MEDIA_CONTENT.map((c) => (c.type === "resource_link" ? { ...c, description: "" } : c));
+const mediaUnchanged = (version) => A.custom(`on ${version}, the upstream's content and structuredContent come back`, [
+  "var r = pm.response.json().result;",
+  `pm.expect(r.content, 'body: ' + pm.response.text()).to.eql(${lit(MEDIA_GATEWAY_CONTENT)});`,
+  "pm.expect(r.structuredContent).to.eql({ v: 1 });",
+  "pm.expect(r.isError || false).to.equal(false);",
+]);
+const EP65 = folder("EP-65 Rich results unchanged through /mcp", `Setup: ${MEDIA_TEXT}; client ep65-c on alpha, per call, tools_to_execute ["*"]; anonymous /mcp tools/call on 2025-11-25 and on 2026-07-28.`, [
+  ...metaServer("EP-65", [MEDIA_TOOL]),
+  createClient("EP-65", httpClient("ep65-c", "alpha", "alpha", { tools_to_execute: ["*"] }), "setup: create the client"),
+  rpc("EP-65", "tools/call alpha-media on 2025-11-25", call("alpha-media", {}), { headers: [MCP_ACCEPT, { key: "MCP-Protocol-Version", value: "2025-11-25" }], asserts: [A.status(200), mediaUnchanged("2025-11-25")] }),
+  modernRpc("EP-65", "tools/call alpha-media on 2026-07-28", "tools/call", { name: "alpha-media", arguments: {} }, [A.status(200), mediaUnchanged("2026-07-28")], { name: "alpha-media" }),
+  deleteClient("EP-65", "ep65-c"),
+]);
+
+const MEDIA_FLAT = ["see attached", placeholder("image/png"), placeholder("audio/mp3"), "the notes", placeholder("image/png"), placeholder("application/pdf report.pdf"), LINK_TEXT].join("\n");
+const MEDIA_ANTHROPIC = [
+  { type: "text", text: "see attached" },
+  { type: "image", source: { type: "base64", media_type: "image/png", data: PNG } },
+  { type: "text", text: placeholder("audio/mp3") },
+  { type: "text", text: "the notes" },
+  { type: "image", source: { type: "base64", media_type: "image/png", data: PNG } },
+  { type: "text", text: placeholder("application/pdf report.pdf") },
+  { type: "text", text: LINK_TEXT },
+];
+const INF76_TURN2 = {
+  openai: [`var m = (reqs[1].json.messages || []).filter(function (x) { return x.role === 'tool'; })[0];`, `pm.expect(m && m.content, JSON.stringify(reqs[1].json.messages)).to.equal(${lit(MEDIA_FLAT)});`],
+  anthropic: ["var r = []; (reqs[1].json.messages || []).forEach(function (m) { (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b.type === 'tool_result') { r.push(b); } }); });", `pm.expect(r.length === 1 && r[0].content, JSON.stringify(reqs[1].json.messages)).to.eql(${lit(MEDIA_ANTHROPIC)});`],
+  gemini: ["var fr = []; (reqs[1].json.contents || []).forEach(function (c) { (c.parts || []).forEach(function (p) { if (p.functionResponse) { fr.push(p.functionResponse); } }); });", `pm.expect(fr.length === 1 && fr[0].response.content, JSON.stringify(reqs[1].json.contents)).to.equal(${lit(MEDIA_FLAT)});`],
+};
+const INF76_SHAPE = { openai: "one string: the text, a placeholder for each media item, the resource text and the link", anthropic: "the text and both PNGs as image blocks, placeholders for the audio and the PDF", gemini: "one string in functionResponse, as on OpenAI" };
+const INF76 = folder("INF-76 Media in a tool result reaches each provider in its own shape", `Setup: ${MEDIA_TEXT}; alpha registered as client alpha, per call, tools_to_execute ["*"], tools_to_auto_execute ["media"]; ${LLM_TEXT}; on openai, anthropic and gemini, turn 1 calls alpha-media and turn 2 answers "done".`, [
+  ...metaServer("INF-76", [MEDIA_TOOL]),
+  alphaClient("INF-76", { tools_to_auto_execute: ["media"] }),
+  ...["openai", "anthropic", "gemini"].flatMap((prov) => [
+    llmScript("INF-76", `inf76-${prov}`, { turns: [{ tool_calls: [llmCall("t1", "alpha-media")] }, { text: "done" }] }),
+    infPost("INF-76", `chat on ${prov}`, "/v1/chat/completions", { model: `${prov}/mock-model`, messages: [userMsg(`inf76-${prov}`)] }, [A.status(200), chatContent("done")]),
+    llmCaptured("INF-76", `${prov} turn 2 carries the result as ${INF76_SHAPE[prov]}`, `inf76-${prov}`, [reqCount(2), A.custom(`the ${prov} tool result`, [REQS, ...INF76_TURN2[prov]])]),
+  ]),
+  agentTeardown("INF-76"),
+]);
+
+const INF77_TOOLS = {
+  openai: "var defs = (reqs[0].json.tools || []).map(function (t) { return t.function; });",
+  anthropic: "var defs = reqs[0].json.tools || [];",
+  gemini: "var defs = ((reqs[0].json.tools || [])[0] || {}).functionDeclarations || [];",
+};
+const INF77 = folder("INF-77 MCP tool metadata stays inside Bifrost", `Setup: ${META_TEXT}; alpha registered as client alpha, per call, tools_to_execute ["*"]; ${LLM_TEXT}; a chat on openai, anthropic and gemini, answered "ok".`, [
+  ...metaServer("INF-77", META_TOOLS),
+  alphaClient("INF-77"),
+  ...["openai", "anthropic", "gemini"].flatMap((prov) => [
+    llmScript("INF-77", `inf77-${prov}`, TEXT_OK),
+    infPost("INF-77", `chat on ${prov}`, "/v1/chat/completions", { model: `${prov}/mock-model`, messages: [userMsg(`inf77-${prov}`)] }, [A.status(200), chatContent("ok")]),
+    llmCaptured("INF-77", `the ${prov} tool definitions carry no title, icons or output schema`, `inf77-${prov}`, [reqCount(1), A.custom("alpha-echo is declared without its MCP metadata", [REQS, INF77_TOOLS[prov],
+      "var echo = defs.filter(function (d) { return d.name === 'alpha-echo'; })[0];",
+      "pm.expect(echo, JSON.stringify(reqs[0].json.tools)).to.be.an('object');",
+      "pm.expect(JSON.stringify(defs)).to.not.match(/title|icons|outputSchema|output_schema|icons\\.example/);",
+    ])]),
+  ]),
+  agentTeardown("INF-77"),
+]);
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -8369,12 +8526,12 @@ const collection = {
   item: [
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM86, ADM87]),
     section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH48, AUTH49, AUTH50, AUTH51]),
-    section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, GO18, CONN23, CONN24, CONN25, CONN27]),
-    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63]),
+    section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, GO18, CONN23, CONN24, CONN25, CONN27, CONN28, CONN29]),
+    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS40, OAS42]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET26, SET27, SET28, SET29, SET30, SET31, SET32]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV37, GOV38, GOV39]),
-    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
+    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66, INF76, INF77]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB27, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43, LOG49]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL01, FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL09, FAIL10, FAIL12, FAIL14, FAIL16, FAIL18, FAIL19, FAIL23, FAIL24, FAIL25]),
