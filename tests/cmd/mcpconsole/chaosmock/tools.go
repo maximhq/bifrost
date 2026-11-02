@@ -27,7 +27,8 @@ type Tool struct {
 	// Icons is sent verbatim, a list of {src, mimeType, sizes, theme} objects.
 	Icons json.RawMessage `json:"icons,omitempty"`
 
-	// OutputSchema is sent verbatim: the JSON schema the tool's structuredContent follows.
+	// OutputSchema is sent verbatim: the JSON schema the tool's structuredContent follows. A tool
+	// that has one, and no reply of its own, answers a call with structuredContent as well as text.
 	OutputSchema json.RawMessage `json:"outputSchema,omitempty"`
 
 	// Annotations is sent verbatim, so a scenario can mark a tool read-only or
@@ -105,12 +106,21 @@ func (t Tool) Validate() error {
 	if sources > 1 {
 		return fmt.Errorf("tool %q: reply, reply_error and reply_env are exclusive", t.Name)
 	}
+	if hasJSON(t.OutputSchema) && t.ReplyEnv != "" {
+		return fmt.Errorf("tool %q: reply_env answers text only, so it cannot honour an outputSchema", t.Name)
+	}
 	if t.Fault != nil {
 		if err := t.Fault.validateForTool(); err != nil {
 			return fmt.Errorf("tool %q: %w", t.Name, err)
 		}
 	}
 	return nil
+}
+
+// hasJSON reports whether raw holds a value other than null.
+func hasJSON(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) > 0 && string(trimmed) != "null"
 }
 
 // isObjectOrEmpty reports whether raw is absent, null or a JSON object. Callers
@@ -172,6 +182,9 @@ func normalize(t Tool) *Tool {
 	}
 	if string(bytes.TrimSpace(t.ReplyError)) == "null" {
 		t.ReplyError = nil
+	}
+	if string(bytes.TrimSpace(t.OutputSchema)) == "null" {
+		t.OutputSchema = nil
 	}
 	if len(t.InputSchema) == 0 {
 		t.InputSchema = defaultInputSchema
@@ -290,6 +303,25 @@ func (ts *toolSet) view(identity string) map[string]*Tool {
 		}
 	}
 	return ts.base
+}
+
+// views returns every overlay as sorted lists, nil when there are none.
+func (ts *toolSet) views() map[string][]Tool {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	if len(ts.overlays) == 0 {
+		return nil
+	}
+	out := make(map[string][]Tool, len(ts.overlays))
+	for identity, overlay := range ts.overlays {
+		list := make([]Tool, 0, len(overlay))
+		for _, t := range overlay {
+			list = append(list, *t)
+		}
+		sort.Slice(list, func(i, j int) bool { return list[i].Name < list[j].Name })
+		out[identity] = list
+	}
+	return out
 }
 
 // List returns the tools visible to identity, sorted by name so a client that

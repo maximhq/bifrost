@@ -242,7 +242,10 @@ write_config() {
     { "client_id": "adm86-o", "name": "adm86_o", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm86o/mcp", "auth_type": "per_user_oauth", "tool_sync_interval": "5s", "tools_to_execute": ["*"] },
     { "client_id": "adm86-c", "name": "adm86_c", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm86h/mcp", "auth_type": "headers", "headers": { "x-key": "good" }, "tool_sync_interval": "5s", "tools_to_execute": ["*"] },
     { "client_id": "adm85-h", "name": "adm85_h", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm85/mcp", "auth_type": "per_user_headers", "per_user_header_keys": ["x-key"], "tools_to_execute": ["*"] },
-    { "client_id": "auth47-t", "name": "auth47_t", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/auth47/mcp", "auth_type": "token_exchange", "token_exchange": { "audience": "auth47" }, "tools_to_execute": ["*"] }
+    { "client_id": "auth47-t", "name": "auth47_t", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/auth47/mcp", "auth_type": "token_exchange", "token_exchange": { "audience": "auth47" }, "tools_to_execute": ["*"] },
+    { "client_id": "pud10-h", "name": "pud10_h", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/pud10/mcp", "auth_type": "per_user_headers", "per_user_header_keys": ["x-api-key"], "per_user_discovery": true, "tools_to_execute": ["*"] },
+    { "client_id": "pud10-x", "name": "pud10_x", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/pud10/mcp", "auth_type": "headers", "headers": { "X-Api-Key": "admin-key" }, "per_user_discovery": true, "tools_to_execute": ["*"] },
+    { "client_id": "pud11-p", "name": "pud11_p", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/pud11p/mcp", "auth_type": "per_user_headers", "per_user_header_keys": ["x-api-key"], "per_user_discovery": true, "tools_to_execute": ["*"] }
   ] },
   "providers": {
     "openai": { "keys": [{ "name": "openai-mock", "value": "sk-mock", "models": ["*"], "weight": 1 }],
@@ -267,7 +270,9 @@ start_bifrost() {
     local log="$SERVER_DIR/server.log"
     # The setup token is what lets enable_dashboard_auth create the first admin account.
     # SET-23 reads a header value from this variable; MCP_E2E_UNSET_KEY stays unset.
-    MCP_E2E_HEADER_KEY="mcp-e2e-header-key" BIFROST_SETUP_TOKEN="$SETUP_TOKEN" "$BIFROST_BINARY" --app-dir "$SERVER_DIR" --port "$PORT" --log-level info > "$log" 2>&1 &
+    # The admin password and setup token are well-known test values, so the server must not
+    # inherit a wider BIFROST_HOST (such as 0.0.0.0) from the caller's environment.
+    MCP_E2E_HEADER_KEY="mcp-e2e-header-key" BIFROST_SETUP_TOKEN="$SETUP_TOKEN" "$BIFROST_BINARY" --app-dir "$SERVER_DIR" --host 127.0.0.1 --port "$PORT" --log-level info > "$log" 2>&1 &
     SERVER_PID=$!
     local elapsed=0
     while [ $elapsed -lt 60 ]; do

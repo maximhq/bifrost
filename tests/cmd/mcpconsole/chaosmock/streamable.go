@@ -18,9 +18,10 @@ const sseKeepAlive = 15 * time.Second
 // DELETE ends a session.
 //
 // The ordering here is the whole design. A POST's body is read first, so the
-// request is counted and a fault scoped to its method is resolved before
-// anything can answer it; nothing is written yet, so a connection that is
-// going to be refused or reset still never looks like it worked. Transport
+// request is counted, held at any gate it matches, and a fault scoped to its
+// method and caller is resolved before anything can answer it; nothing is
+// written yet, so a connection that is going to be refused or reset still
+// never looks like it worked. Transport
 // faults come next, then HTTP faults, because a bare status is not a JSON-RPC
 // exchange and must not be mistaken for one. Credentials and session validity
 // come after that, since a 404 is the client's signal to re-initialize and has
@@ -36,7 +37,8 @@ func (s *Server) ServeStreamableHTTP(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet, http.MethodDelete:
 		// Neither carries a JSON-RPC method, so only an unscoped fault set
 		// reaches them.
-		if s.failRequest(w, s.faults.forRequest("")) {
+		caller := s.callerIdentity(r, "", r.Header.Get(HeaderSessionID))
+		if s.failRequest(w, s.faults.forRequest("", caller)) {
 			return
 		}
 		// Without OAuth these stay open to anyone, as they always have. With
@@ -118,10 +120,17 @@ func (s *Server) servePost(w http.ResponseWriter, r *http.Request) {
 
 	var req request
 	parsed := json.Unmarshal(body, &req) == nil
+	caller := ""
 	if parsed {
-		s.countMethod(req.Method, sessionID)
+		caller = s.callerIdentity(r, req.Method, sessionID)
+		s.countMethod(req.Method, sessionID, caller)
+		// A held request is answered against the server as it is when its
+		// gate lets it go. One whose client gave up gets no answer.
+		if !s.gates.holdMethod(r.Context(), req.Method, caller) {
+			return
+		}
 	}
-	f := s.faults.forRequest(req.Method)
+	f := s.faults.forRequest(req.Method, caller)
 	if s.failRequest(w, f) {
 		return
 	}

@@ -189828,7 +189828,7 @@
     },
     {
       "name": "137. MCP client registration validation (mcp-registration-validation)",
-      "description": "Management-endpoint checks with no live provider involved. POST /api/mcp/client must validate connection_type against the enum (http, sse, stdio) before anything else, and an unauthenticated (auth-bypassed) registration whose target hostname cannot be resolved must be refused rather than handed to the connect path. Both run against the harness profile, which has no admin auth configured. DELETE /api/mcp/client/<id> for an id no client has must answer 404, not 500.",
+      "description": "Management-endpoint checks with no live provider involved. POST /api/mcp/client must validate connection_type against the enum (http, sse, stdio) before anything else, and an unauthenticated (auth-bypassed) registration whose target hostname cannot be resolved must be refused rather than handed to the connect path. Both run against the harness profile, which has no admin auth configured. DELETE /api/mcp/client/<id> for an id no client has must answer 404, not 500. per_user_discovery is refused, on create and update alike, for a shared auth type and for an openapi client.",
       "item": [
         {
           "name": "POST /api/mcp/client · unknown connection_type is rejected with 400",
@@ -189962,6 +189962,261 @@
                 "mcp",
                 "client",
                 "{{mcpClientDeleteUnknownId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] POST /api/mcp/client · per_user_discovery on a shared auth type is rejected with 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// per_user_discovery discovers each caller's tools with their own credential: a shared auth type has none, so the flag is refused before anything is dialed.",
+                  "// A probe the server should refuse but accepted would persist and block later runs with a name conflict: remove it (the assertion below still fails).",
+                  "if (pm.response.code === 200) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/mcp/clients?search=harness_mcp_pud_shared_probe&limit=10', method: 'GET' }, function (err, res) {",
+                  "    if (err || res.code !== 200) { return; }",
+                  "    (res.json().clients || []).forEach(function (c) {",
+                  "      if (c.config && c.config.name === 'harness_mcp_pud_shared_probe') {",
+                  "        pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/mcp/client/' + encodeURIComponent(c.config.client_id), method: 'DELETE' }, function () {});",
+                  "      }",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.test('per_user_discovery on a headers client is a 400', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include(\"only valid for per-user auth types\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"harness_mcp_pud_shared_probe\",\n  \"connection_type\": \"http\",\n  \"connection_string\": \"https://example.com/mcp\",\n  \"auth_type\": \"headers\",\n  \"tools_to_execute\": [\n    \"*\"\n  ],\n  \"per_user_discovery\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] POST /api/mcp/client · per_user_discovery on an openapi client is rejected with 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// An openapi client's tools come from its document, the same for every caller, so the flag is refused even with a per-user auth type.",
+                  "// A probe the server should refuse but accepted would persist and block later runs with a name conflict: remove it (the assertion below still fails).",
+                  "if (pm.response.code === 200) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/mcp/clients?search=harness_mcp_pud_openapi_probe&limit=10', method: 'GET' }, function (err, res) {",
+                  "    if (err || res.code !== 200) { return; }",
+                  "    (res.json().clients || []).forEach(function (c) {",
+                  "      if (c.config && c.config.name === 'harness_mcp_pud_openapi_probe') {",
+                  "        pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/mcp/client/' + encodeURIComponent(c.config.client_id), method: 'DELETE' }, function () {});",
+                  "      }",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.test('per_user_discovery on an openapi client is a 400', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include(\"does not apply to openapi clients\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"harness_mcp_pud_openapi_probe\",\n  \"connection_type\": \"openapi\",\n  \"auth_type\": \"per_user_headers\",\n  \"per_user_header_keys\": [\n    \"api_key\"\n  ],\n  \"tools_to_execute\": [\n    \"*\"\n  ],\n  \"per_user_discovery\": true,\n  \"openapi_config\": {\n    \"spec\": \"{\\\"openapi\\\": \\\"3.0.3\\\", \\\"info\\\": {\\\"title\\\": \\\"Harness Petstore\\\", \\\"version\\\": \\\"1.0.0\\\"}, \\\"servers\\\": [{\\\"url\\\": \\\"https://petstore3.swagger.io/api/v3\\\"}], \\\"paths\\\": {\\\"/pet/findByStatus\\\": {\\\"get\\\": {\\\"operationId\\\": \\\"listPets\\\", \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}}\",\n    \"base_url\": \"https://petstore3.swagger.io/api/v3\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /api/mcp/client · per_user_discovery update probe creates a shared openapi client",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Run-unique identity (timestamp plus a random suffix): harness shards and parallel runs never collide on this client.",
+                  "var run = Date.now() + '_' + Math.random().toString(36).slice(2, 8);",
+                  "pm.collectionVariables.set('pudUpdateProbeId', 'harness-mcp-pud-update-' + run.replace('_', '-'));",
+                  "pm.collectionVariables.set('pudUpdateProbeName', 'harness_mcp_pud_update_' + run);",
+                  "// A run that stopped before its cleanup leaves its client behind. Remove this probe's own leftovers once they are over an hour old,",
+                  "// which no run still in progress can own.",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/mcp/clients?search=harness_mcp_pud_update_&limit=100', method: 'GET' }, function (err, res) {",
+                  "  pm.test('leftover update probe clients listed', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.eql(200);",
+                  "  });",
+                  "  if (err || res.code !== 200) { return; }",
+                  "  var cutoff = Date.now() - 3600000;",
+                  "  (res.json().clients || []).forEach(function (c) {",
+                  "    var name = (c.config && c.config.name) || '';",
+                  "    var m = /^harness_mcp_pud_update_(\\d{13})(?:_|$)/.exec(name);",
+                  "    if (!m || Number(m[1]) >= cutoff) { return; }",
+                  "    pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/mcp/client/' + encodeURIComponent(c.config.client_id), method: 'DELETE' }, function (derr, dres) {",
+                  "      pm.test('leftover update probe client ' + name + ' removed', function () {",
+                  "        pm.expect(derr, String(derr)).to.equal(null);",
+                  "        var gone = dres.code === 404;",
+                  "        pm.expect(dres.code === 200 || gone, 'status ' + dres.code + ': ' + dres.text()).to.equal(true);",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('shared openapi client is created', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"client_id\": \"{{pudUpdateProbeId}}\",\n  \"name\": \"{{pudUpdateProbeName}}\",\n  \"connection_type\": \"openapi\",\n  \"auth_type\": \"none\",\n  \"tools_to_execute\": [\n    \"*\"\n  ],\n  \"openapi_config\": {\n    \"spec\": \"{\\\"openapi\\\": \\\"3.0.3\\\", \\\"info\\\": {\\\"title\\\": \\\"Harness Petstore\\\", \\\"version\\\": \\\"1.0.0\\\"}, \\\"servers\\\": [{\\\"url\\\": \\\"https://petstore3.swagger.io/api/v3\\\"}], \\\"paths\\\": {\\\"/pet/findByStatus\\\": {\\\"get\\\": {\\\"operationId\\\": \\\"listPets\\\", \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}}\",\n    \"base_url\": \"https://petstore3.swagger.io/api/v3\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] PUT /api/mcp/client/{id} · turning per_user_discovery on for a shared client is rejected with 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The update path accepts the flag too, under the same rule as create: refused for a client with no per-caller credential.",
+                  "pm.test('per_user_discovery on a shared client is a 400', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('only valid for per-user auth types');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"per_user_discovery\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{pudUpdateProbeId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{pudUpdateProbeId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "DELETE /api/mcp/client/{id} · per_user_discovery update probe cleanup deletes the client",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('update probe client is deleted', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{pudUpdateProbeId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{pudUpdateProbeId}}"
               ]
             }
           }
@@ -302201,7 +302456,133 @@
       ]
     },
     {
-      "name": "299. Gemini chat replays extra_content.google.thought_signature (#8149 / PR #8775) (extra content signature)",
+      "name": "299. Complexity Router decision.min_confidence (decision min confidence) [SERIAL]",
+      "description": "decision.min_confidence is the confidence a decision-model answer must reach to publish its complexity tier. The row snapshots the global complexity analyzer config, then checks that the management API refuses an out-of-range min_confidence (restoring the snapshot if it is accepted), switches it to the typesafe decision classifier with min_confidence 1, and sends one /v1/chat/completions request through a global routing rule that reads complexity_tier. Only requests that carry this run's x-harness-min-confidence-run header match the rule, so classification never runs for other rows. The answer must fall below the threshold: the log must show the rejection, the skipped mechanism, and no tier, and the request must not be served by the rule's target. The row then deletes the rule and restores the snapshot on every path. Because it changes global router state for a short time, the folder is [SERIAL]. It makes one paid typesafe decision call and one openai chat call. A typesafe confidence of exactly 1.00 would meet the threshold and fail the row.",
+      "item": [
+        {
+          "name": "GET-snapshot /api/routing/complexity-analyzer-config, typesafe/jev-latest decision min_confidence 1.5 is refused and min_confidence 1 publishes no complexity tier on openai/gpt-4o-mini /v1/chat/completions",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Serialized global-state row: snapshot the global complexity analyzer config (this request's",
+                  "// response), switch it to the decision classifier with min_confidence 1, route one request through a",
+                  "// header-gated rule that reads complexity_tier, then restore the snapshot byte for byte. Cleanup runs",
+                  "// on every path, including a failed setup step, so a red run never leaves the gate on.",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var RUN = 'run-' + Date.now();",
+                  "var HEADER = 'x-harness-min-confidence-run';",
+                  "var SNAPSHOT = pm.response.text();",
+                  "var RULE_TARGET = 'gpt-4.1-nano';",
+                  "function call(method, path, raw, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (raw !== null && raw !== undefined) { req.body = { mode: 'raw', raw: raw }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "var ruleId = null;",
+                  "function cleanup() {",
+                  "  function restore() {",
+                  "    call('PUT', '/api/routing/complexity-analyzer-config', SNAPSHOT, function (res) { expectOk('cleanup: the snapshotted analyzer config is restored', res); });",
+                  "  }",
+                  "  if (!ruleId) { return restore(); }",
+                  "  call('DELETE', '/api/governance/routing-rules/' + ruleId, null, function (res) { expectOk('cleanup: the complexity rule is deleted', res); restore(); });",
+                  "}",
+                  "pm.test('snapshot: the global complexity analyzer config was read', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "// The saved config is read only for its phrase lists, so the setup PUT keeps the stored phrases.",
+                  "// Its body is a fresh literal in schema order, never the snapshot round-tripped; SNAPSHOT stays raw for cleanup.",
+                  "var saved = null;",
+                  "try { saved = pm.response.json(); } catch (e) { saved = null; }",
+                  "var keywords = (saved && saved.keywords) || null;",
+                  "if (pm.response.code !== 200 || !keywords) {",
+                  "  pm.test('snapshot: config body carries its phrase lists', function () { pm.expect.fail('cannot snapshot the analyzer config, so nothing was changed: ' + pm.response.text()); });",
+                  "} else {",
+                  "  var lists = { simple_keywords: keywords.simple_keywords, medium_keywords: keywords.medium_keywords, complex_keywords: keywords.complex_keywords };",
+                  "  // Out-of-range min_confidence is checked here, after the snapshot, so an accepted write is restored.",
+                  "  var invalid = { classifier: 'decision', keywords: lists, decision: { provider: 'typesafe', model: 'jev-latest', timeout: '5s', min_confidence: 1.5 } };",
+                  "  call('PUT', '/api/routing/complexity-analyzer-config', JSON.stringify(invalid), function (badRes) {",
+                  "    var badText = badRes ? badRes.text() : 'no response';",
+                  "    pm.test('validation: out-of-range min_confidence is refused by name', function () {",
+                  "      pm.expect(badRes && badRes.code, 'expected the validation rejection: ' + badText).to.equal(400);",
+                  "      pm.expect(badText, 'expected the min_confidence bound in the error: ' + badText).to.include('decision min_confidence must be between 0 and 1');",
+                  "    });",
+                  "    if (!badRes || badRes.code !== 400) { return cleanup(); }",
+                  "    var setup = {",
+                  "      classifier: 'decision',",
+                  "      keywords: lists,",
+                  "      decision: { provider: 'typesafe', model: 'jev-latest', timeout: '5s', min_confidence: 1 }",
+                  "    };",
+                  "    call('PUT', '/api/routing/complexity-analyzer-config', JSON.stringify(setup), function (putRes) {",
+                  "      if (!expectOk('setup: decision classifier with min_confidence 1 is saved', putRes)) { return cleanup(); }",
+                  "      var rule = { name: 'Harness min confidence ' + RUN, description: 'Provider harness, created at run time and deleted by the same row.', priority: 900000 + (Date.now() % 90000), cel_expression: '\"' + HEADER + '\" in headers && headers[\"' + HEADER + '\"] == \"' + RUN + '\" && complexity_tier != \"\"', targets: [{ provider: 'openai', model: RULE_TARGET, weight: 1 }], scope: 'global' };",
+                  "      call('POST', '/api/governance/routing-rules', JSON.stringify(rule), function (ruleRes, ruleJson) {",
+                  "        if (!expectOk('setup: the header-gated complexity rule is created', ruleRes)) { return cleanup(); }",
+                  "        ruleId = ((ruleJson || {}).rule || {}).id || null;",
+                  "        var h = { 'Content-Type': 'application/json' }; h[HEADER] = RUN;",
+                  "        var body = { model: 'openai/gpt-4o-mini', messages: [{ role: 'user', content: 'Explain how a hash map handles collisions.' }], max_tokens: 16 };",
+                  "        pm.sendRequest({ url: BASE + '/v1/chat/completions', method: 'POST', header: h, body: { mode: 'raw', raw: JSON.stringify(body) } }, function (err, res) {",
+                  "          if (err || !res) { pm.test('routed request reached the gateway', function () { pm.expect.fail(String(err)); }); return cleanup(); }",
+                  "          pm.test('routed request: served without the rule target', function () {",
+                  "            pm.expect(res.code, res.text()).to.eql(200);",
+                  "            pm.expect(String((res.json() || {}).model || ''), 'a published tier would have matched the rule: ' + res.text()).to.not.include(RULE_TARGET);",
+                  "          });",
+                  "          var reqId = res.headers.get('x-bifrost-request-id');",
+                  "          if (!reqId) { pm.test('routed request: x-bifrost-request-id echoed', function () { pm.expect.fail('no request id: ' + res.text()); }); return cleanup(); }",
+                  "          (function checkLog(attempt) {",
+                  "            call('GET', '/api/logs/' + reqId, null, function (logRes, j) {",
+                  "              var engine = String((j && j.routing_engine_logs) || '');",
+                  "              if (engine.indexOf('Decision model complexity') !== -1) {",
+                  "                pm.test('log: the decision answer is rejected below min_confidence', function () { pm.expect(engine, engine).to.include('below min_confidence=1.00'); });",
+                  "                pm.test('log: no complexity tier is published', function () {",
+                  "                  pm.expect(j.complexity_mechanism, JSON.stringify(j)).to.eql('skipped');",
+                  "                  pm.expect(j.complexity_tier, JSON.stringify(j)).to.not.exist;",
+                  "                });",
+                  "                return cleanup();",
+                  "              }",
+                  "              if (attempt < 10) { return setTimeout(function () { checkLog(attempt + 1); }, 1000); }",
+                  "              pm.test('log: the decision classification was recorded', function () { pm.expect.fail('log ' + reqId + ' has no decision complexity line after 10 reads: ' + (logRes ? logRes.code + ' ' + logRes.text() : 'no response')); });",
+                  "              cleanup();",
+                  "            });",
+                  "          })(0);",
+                  "        });",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/routing/complexity-analyzer-config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "routing",
+                "complexity-analyzer-config"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "300. Gemini chat replays extra_content.google.thought_signature (#8149 / PR #8775) (extra content signature)",
       "description": "convertBifrostMessagesToGemini recovered a replayed tool call's thought signature only from the \"<id>_ts_<sig>\" id suffix and from reasoning_details, and wrote skip_thought_signature_validator otherwise. A client that sends the signature back as extra_content.google.thought_signature, the field Google's OpenAI-compatible endpoint uses, got its real signature replaced by the sentinel. The signature is captured from a live turn (Gemini validates what it is given, so a made-up blob would fail for an unrelated reason), moved by the replay row into extra_content on a bare id with no reasoning_details, and the case reads the request Bifrost sent upstream (x-bf-send-back-raw-request) to pin that the same signature, not the sentinel, is on the wire. The capture row fails when no signature came back, and the replay row fails when the capture stored nothing, so a run cannot pass having tested nothing.",
       "item": [
         {

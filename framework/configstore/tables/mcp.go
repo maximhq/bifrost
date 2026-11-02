@@ -49,6 +49,19 @@ type TableMCPClient struct {
 	ToolSyncInterval       int    `gorm:"default:0" json:"tool_sync_interval"`        // Per-client tool sync interval in seconds (0 = use global; negative values are rejected)
 	ToolExecutionTimeout   int    `gorm:"default:0" json:"tool_execution_timeout"`    // Per-client tool execution timeout in seconds (0 = use global from tool_manager_config)
 	MaxInstructionsLength  int    `gorm:"default:0" json:"max_instructions_length"`   // Per-client cap on forwarded instructions in bytes (0 = use global from tool_manager_config)
+	// PerUserDiscovery: each caller's discovery (tools and instructions) is
+	// made with its own credential and kept in mcp_per_user_discoveries,
+	// instead of every caller sharing the admin's discovery. Only meaningful
+	// for per-user auth types; off for everything else. Nullable like the
+	// schema field: NULL reads as off, and an update that leaves it nil keeps
+	// the stored value.
+	PerUserDiscovery *bool `json:"per_user_discovery"`
+	// PendingVerification: the client was created before its one-time admin
+	// step (an OAuth sign-in, or verification of per-user headers or a token
+	// exchange) and is parked in pending_verification until that step passes.
+	// Server-managed, so never read from a request body or config.json. Read
+	// through AwaitsAdminVerification, not directly.
+	PendingVerification bool `gorm:"default:false" json:"-"`
 
 	MaxProtocolVersion string `gorm:"type:varchar(20);default:''" json:"max_protocol_version"` // Per-client MCP protocol version cap ("" = use global, "auto" = newest)
 
@@ -410,6 +423,46 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 	}
 
 	return nil
+}
+
+// AwaitsAdminVerification reports whether the stored client still needs its
+// one-time admin step. Call it on a row that has been found, so the decoded
+// fields are set.
+//
+// Only a client with per_user_discovery on is read from PendingVerification.
+// Every other client is read from what its admin step changes (see
+// AdminStepSignalsPending). That is a deliberate transition measure: nodes
+// running a version from before this column keep maintaining only those
+// signals, so in a deployment where such nodes share this database (a rolling
+// upgrade, for one), a client whose step one of them completed, or one it
+// created pending, would otherwise read wrongly from the column. Every write
+// keeps the column in step, and the next versions drop this fallback and read
+// the column for every client, once no node from before it can be running.
+func (c *TableMCPClient) AwaitsAdminVerification() bool {
+	if c.PerUserDiscovery != nil && *c.PerUserDiscovery {
+		return c.PendingVerification
+	}
+	return c.AdminStepSignalsPending()
+}
+
+// AdminStepSignalsPending reports whether what the client's admin step changes
+// still says the step has not run: an OAuth client keeps its bootstrap stash,
+// or a per_user_headers or token_exchange client (not openapi, which has
+// nothing upstream to verify) has stored no tools.
+//
+// Turning per_user_discovery on or off records this in PendingVerification. On,
+// the client stays as verified as these say. Off, a per_user_headers or
+// token_exchange client goes back to its admin step, having stored no tools
+// while the flag was on, and an OAuth client stays verified, to get its admin
+// credential back through reauthorization.
+func (c *TableMCPClient) AdminStepSignalsPending() bool {
+	switch schemas.MCPAuthType(c.AuthType) {
+	case schemas.MCPAuthTypeOauth, schemas.MCPAuthTypePerUserOauth:
+		return c.PendingOAuthConfig != nil
+	case schemas.MCPAuthTypePerUserHeaders, schemas.MCPAuthTypeTokenExchange:
+		return c.ConnectionType != string(schemas.MCPConnectionTypeOpenAPI) && c.DiscoveredTools == nil
+	}
+	return false
 }
 
 // AfterFind is a GORM hook that decrypts the connection string and headers (if encrypted)
