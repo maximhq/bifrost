@@ -694,6 +694,62 @@ func (s *ClickHouseLogStore) FindByID(ctx context.Context, id string) (*Log, err
 	return s.withChildAggregates(ctx, log), nil
 }
 
+// chChildCandidateLimit caps how many child rows withChildAggregates binds
+// back into its FINAL rollup; a parent with more (a long realtime session)
+// gets the unbounded rollup instead.
+const chChildCandidateLimit = 10000
+
+// withChildAggregates bounds the RDB child rollup. `parent_request_id IN ?`
+// cannot use the sort key, and its bloom filter is unsafe under FINAL because
+// the column can change between versions, so on 24.x the rollup read all of
+// logs. Without FINAL that index can only over-match: every version that ever
+// named this parent, including each child's newest, is found. Those rows' ids
+// and timestamp range then bound the FINAL rollup, which still filters on
+// parent_request_id after dedup; id and timestamp are immutable, so pruning on
+// them cannot hide a newest version.
+func (s *ClickHouseLogStore) withChildAggregates(ctx context.Context, log Log) *Log {
+	var candidates []struct {
+		ID        string
+		Timestamp time.Time
+	}
+	noFinal := clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{"final": 0}))
+	if err := s.db.WithContext(noFinal).Model(&Log{}).
+		Select("id, timestamp").
+		Where("parent_request_id = ? AND id <> parent_request_id", log.ID).
+		Limit(chChildCandidateLimit + 1).
+		Scan(&candidates).Error; err != nil {
+		s.logger.Warn(fmt.Sprintf("logstore: child aggregates unavailable for log %s, returning it without them: %s", log.ID, err))
+		return &log
+	}
+	if len(candidates) == 0 {
+		return &log
+	}
+	if len(candidates) > chChildCandidateLimit {
+		return s.RDBLogStore.withChildAggregates(ctx, log)
+	}
+	ids := make([]string, 0, len(candidates))
+	lo, hi := candidates[0].Timestamp, candidates[0].Timestamp
+	for _, c := range candidates {
+		ids = append(ids, c.ID)
+		if c.Timestamp.Before(lo) {
+			lo = c.Timestamp
+		}
+		if c.Timestamp.After(hi) {
+			hi = c.Timestamp
+		}
+	}
+	narrow := func(db *gorm.DB) *gorm.DB {
+		return db.Where("id IN ?", ids).
+			Where("timestamp BETWEEN fromUnixTimestamp64Milli(?) AND fromUnixTimestamp64Milli(?)", lo.UnixMilli(), hi.UnixMilli())
+	}
+	rows := []Log{log}
+	if err := s.attachChildAggregatesWhere(s.idLookupContext(ctx), rows, SearchFilters{}, narrow); err != nil {
+		s.logger.Warn(fmt.Sprintf("logstore: child aggregates unavailable for log %s, returning it without them: %s", log.ID, err))
+		return &log
+	}
+	return &rows[0]
+}
+
 // --- Updates (read-modify-write + re-insert) ---
 
 // Update applies an update (a column->value map, or a *Log/Log whose non-zero

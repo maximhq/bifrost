@@ -573,15 +573,15 @@ func TestClickHouseIDLookupsPruneParts(t *testing.T) {
 	found, err := store.FindByID(hinted, "ch-prune-hinted")
 	require.NoError(t, err)
 	assert.Equal(t, "ch-prune-hinted", found.ID)
-	assert.Equal(t, uint64(1), chSelectedParts(t, store.db, "id = 'ch-prune-hinted'"), "timestamp hint must prune to the row's part")
+	assert.Equal(t, uint64(1), chSelectedParts(t, store.db, "WHERE id = 'ch-prune-hinted'"), "timestamp hint must prune to the row's part")
 
 	found, err = store.FindByID(ctx, "ch-prune-id-only")
 	require.NoError(t, err)
 	assert.Equal(t, "ch-prune-id-only", found.ID)
-	assert.Equal(t, uint64(1), chSelectedParts(t, store.db, "id = 'ch-prune-id-only'"), "id bloom filter must prune an unhinted lookup under FINAL")
+	assert.Equal(t, uint64(1), chSelectedParts(t, store.db, "WHERE id = 'ch-prune-id-only'"), "id bloom filter must prune an unhinted lookup under FINAL")
 
 	require.NoError(t, store.Update(ctx, "ch-prune-update", map[string]interface{}{"status": "success"}))
-	assert.Equal(t, uint64(1), chSelectedParts(t, store.db, "id = 'ch-prune-update'"), "Update's read must prune by id")
+	assert.Equal(t, uint64(1), chSelectedParts(t, store.db, "WHERE id = 'ch-prune-update'"), "Update's read must prune by id")
 
 	// A hint that misses the row (an old link, a client clock) still finds it.
 	stale := context.WithValue(ctx, LogTimestampContextKey, months[0])
@@ -592,6 +592,58 @@ func TestClickHouseIDLookupsPruneParts(t *testing.T) {
 
 	_, err = store.FindByID(hinted, "does-not-exist")
 	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+// TestClickHouseFindByIDChildAggregatesPruneParts covers the child rollup that
+// FindByID attaches. Its `parent_request_id IN ?` predicate cannot use the sort
+// key, and that index is unsafe under FINAL (parent_request_id can change
+// between versions), so on 24.x it scanned all of logs. Children that move to
+// or away from the parent after insert must still be counted by their newest
+// version.
+func TestClickHouseFindByIDChildAggregatesPruneParts(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	months := []time.Time{now.AddDate(0, -2, 0), now.AddDate(0, -1, 0), now}
+	for i, ts := range months {
+		filler := make([]*Log, 0, 64)
+		for j := range 64 {
+			filler = append(filler, chTestLog(fmt.Sprintf("ch-agg-filler-%d-%d", i, j), ts.Add(-time.Hour+time.Duration(j)*time.Second)))
+		}
+		require.NoError(t, store.BatchCreateIfNotExists(ctx, filler))
+	}
+	parent, elsewhere := "ch-agg-parent", "ch-agg-elsewhere"
+	target := months[1]
+	child := func(id string, offset time.Duration, parentID string, cost float64) *Log {
+		l := chTestLog(id, target.Add(offset))
+		l.ParentRequestID = &parentID
+		l.Cost = &cost
+		return l
+	}
+	require.NoError(t, store.BatchCreateIfNotExists(ctx, []*Log{
+		chTestLog(parent, target),
+		child("ch-agg-child-1", time.Minute, parent, 1),
+		child("ch-agg-child-2", 2*time.Minute, parent, 2),
+		child("ch-agg-moves-away", 3*time.Minute, parent, 4),
+		child("ch-agg-moves-in", 4*time.Minute, elsewhere, 8),
+	}))
+	var parts uint64
+	require.NoError(t, store.db.Raw("SELECT count() FROM system.parts WHERE database = currentDatabase() AND table = 'logs' AND active").Scan(&parts).Error)
+	require.Equal(t, uint64(4), parts, "rows must land in four parts for pruning to be observable")
+
+	found, err := store.FindByID(ctx, parent)
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), found.ChildCount)
+	assert.Equal(t, 7.0, found.ChildrenCost)
+	assert.Equal(t, uint64(1), chSelectedParts(t, store.db, "child_count"), "the child rollup must prune to the children's part")
+	assert.Equal(t, uint64(1), chSelectedParts(t, store.db, fmt.Sprintf("LIMIT %d", chChildCandidateLimit+1)), "the child candidate read must prune by the parent_request_id index")
+
+	require.NoError(t, store.Update(ctx, "ch-agg-moves-away", map[string]interface{}{"parent_request_id": elsewhere}))
+	require.NoError(t, store.Update(ctx, "ch-agg-moves-in", map[string]interface{}{"parent_request_id": parent}))
+	found, err = store.FindByID(ctx, parent)
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), found.ChildCount, "children are counted by their newest version")
+	assert.Equal(t, 11.0, found.ChildrenCost)
 }
 
 // TestClickHouseScopedFindByIDSeesNewestVersion pins that the id lookup's skip
