@@ -2,6 +2,9 @@ package openapimcp
 
 import (
 	"encoding/json"
+	"os"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -527,4 +530,96 @@ func TestSelectBodyContent_FallsBackToAUsableMediaType(t *testing.T) {
 	_, _, ok, reason = SelectBodyContent(map[string]any{"application/json": map[string]any{"schema": false}})
 	assert.False(t, ok)
 	assert.Contains(t, reason, "schema: false")
+}
+
+// validToolPropertyName is the property-name rule the Anthropic API applies to a
+// tool's input schema; a client relaying such a tool drops it when any property
+// breaks it.
+var validToolPropertyName = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,64}$`)
+
+// invalidArgNames returns the top-level property names of a tool input schema,
+// its arguments, that break validToolPropertyName.
+func invalidArgNames(schema map[string]any) []string {
+	var bad []string
+	for name := range asMap(schema["properties"]) {
+		if !validToolPropertyName.MatchString(name) {
+			bad = append(bad, name)
+		}
+	}
+	return bad
+}
+
+// TestFlattenInputSchema_ArgNamesAreValidPropertyNames: every argument name is
+// one a client accepts. A parameter name a tool schema cannot carry becomes a
+// valid argument name while the wire name stays; with templates on, a templated
+// query name (metadata_<key>) becomes an object argument; a body whose property
+// names are invalid travels whole as "body".
+func TestFlattenInputSchema_ArgNamesAreValidPropertyNames(t *testing.T) {
+	long := strings.Repeat("x", 80)
+	op := Operation{Method: "POST", Path: "/items", Params: []Parameter{
+		{Name: "metadata_<key>", In: InQuery, Description: "Filter on metadata.", Schema: map[string]any{"type": "string"}},
+		{Name: "filter[status]", In: InQuery, Schema: map[string]any{"type": "string"}},
+		{Name: long, In: InQuery, Schema: map[string]any{"type": "string"}},
+	}, Body: &RequestBody{ContentType: ContentTypeJSON, Schema: map[string]any{
+		"type": "object", "properties": map[string]any{"a b": map[string]any{"type": "string"}},
+	}}}
+	raw, args, body, _, err := flattenInputSchema(op, true)
+	require.NoError(t, err)
+	var schema map[string]any
+	require.NoError(t, json.Unmarshal(raw, &schema))
+	assert.Empty(t, invalidArgNames(schema))
+
+	byWire := map[string]ArgBinding{}
+	for _, a := range args {
+		byWire[a.Name] = a
+	}
+	meta := byWire["metadata_<key>"]
+	assert.Equal(t, "metadata", meta.ArgName)
+	assert.Equal(t, "metadata_<key>", meta.Template)
+	metaSchema := asMap(asMap(schema["properties"])["metadata"])
+	assert.Equal(t, "object", metaSchema["type"])
+	assert.Equal(t, "string", asMap(metaSchema["additionalProperties"])["type"], "each value keeps the parameter's own schema")
+
+	assert.Equal(t, "filter_status_", byWire["filter[status]"].ArgName)
+	assert.Empty(t, byWire["filter[status]"].Template)
+	assert.Len(t, byWire[long].ArgName, 64)
+
+	require.NotNil(t, body)
+	assert.Equal(t, "single", body.Mode, "a body property named %q cannot be an argument, so the body stays whole", "a b")
+
+	// Templates off (the default, as for a spec a user adds): metadata_<key> is
+	// not reinterpreted, only given a valid argument name.
+	raw, args, _, _, err = FlattenInputSchema(op)
+	require.NoError(t, err)
+	schema = nil
+	require.NoError(t, json.Unmarshal(raw, &schema))
+	assert.Empty(t, invalidArgNames(schema))
+	for _, a := range args {
+		if a.Name == "metadata_<key>" {
+			assert.Equal(t, "metadata__key_", a.ArgName)
+			assert.Empty(t, a.Template, "templates are opt-in")
+		}
+	}
+	assert.Equal(t, "string", asMap(asMap(schema["properties"])["metadata__key_"])["type"])
+}
+
+// TestSynthesize_RepoSpecArgNamesAreValid: every argument of every tool built
+// from Bifrost's own published spec has a name the Anthropic API accepts. A spec
+// parameter that would make a client drop the tool fails here by tool and name.
+// Nested body field names are the body's own JSON keys and are not checked here.
+func TestSynthesize_RepoSpecArgNamesAreValid(t *testing.T) {
+	data, err := os.ReadFile("../../docs/openapi/openapi.json")
+	require.NoError(t, err)
+	doc, err := Parse(data, ParseOptions{MaxBytes: len(data)})
+	require.NoError(t, err)
+	syn, err := Synthesize(doc, SynthesizeOptions{TemplateParams: true}) // the Bifrost MCP builds its tools this way
+	require.NoError(t, err)
+	require.NotEmpty(t, syn.Tools)
+	for _, tool := range syn.Tools {
+		var schema map[string]any
+		require.NoError(t, json.Unmarshal(tool.InputSchema, &schema), tool.Name)
+		if bad := invalidArgNames(schema); len(bad) > 0 {
+			t.Errorf("tool %s has argument names a client rejects: %v", tool.Name, bad)
+		}
+	}
 }
