@@ -436,15 +436,16 @@ func chainInjectedStream(ctx *schemas.BifrostContext, turns injectedStreamTurns,
 	go func() {
 		failed := false
 		defer func() {
-			providerUtils.CloseStream(ctx, out)
 			// A stream ending between turns (cancel, a turn that failed to open, an upstream
 			// that died without a final chunk) never reached a provider's completion path,
-			// so complete the LLM span here; a failure marks it failed. A normal end has
-			// already completed it, and this only runs the finalizer, which is idempotent.
+			// so CloseStream completes the LLM span; a failure marks it failed. The flags are
+			// set first because it reads them. A normal end has already completed the span,
+			// and the finalizer is idempotent.
 			ctx.SetValue(schemas.BifrostContextKeyStreamTurnPending, false)
 			if failed || !ended.Load() {
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, false)
 			}
+			providerUtils.CloseStream(ctx, out)
 			providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		}()
 		for {

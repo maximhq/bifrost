@@ -566,7 +566,8 @@ result = {"echo": echo, "calc": calc}`,
 			includeTools:  []string{},
 			code:          `result = testToolsServer.echo(message="blocked")`,
 			shouldSucceed: false,
-			expectedError: "undefined: testToolsServer",
+			// Narrowed to no tools, the request reaches no code-mode client, so code mode is refused.
+			expectedError: "not permitted (no code mode client available to this request)",
 		},
 	}
 

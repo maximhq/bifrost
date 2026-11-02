@@ -99,7 +99,7 @@ v2.2.0 moves the enterprise gateway onto OSS transports v2.2.0. Guardrails now i
 - **Complexity Router Skipped Continuation Turns** - A continuation turn with no active session keeps its extracted input and falls back to classifying the recovered last user text instead of being left without a tier.
 - **Runtime Responses-Compat Routing** - Bedrock runtime models that serve the Responses API are routed to it through a dedicated surface resolver rather than falling back to Converse.
 - **Bedrock Mantle Base Path** - Base path resolution is centralized and backed by a `bedrock_mantle_base_path` datasheet field, so a new model generation no longer silently falls through to the wrong path.
-- **Virtual Key `allowed_models: ["*"]` Handling Reverted** - The wildcard handling added in OSS #6767 is reverted; configurations relying on `allowed_models: ["*"]` with an empty synced catalog return to the previous behaviour.
+- **Virtual Key `allowed_models: ["*"]` Handling Reverted** - The wildcard handling is reverted; configurations relying on `allowed_models: ["*"]` with an empty synced catalog return to the previous behaviour.
 - **Helm `perUserHeaderKeys` Not Rendered** - `mcp.clientConfigs[].perUserHeaderKeys` is mapped into the rendered `config.json`.
 - **Helm Plural Access Profiles** - Governance roles accept `access_profiles` as an array in the Helm and config schemas; the singular form keeps rendering unchanged, the plural wins when both are present, and an explicitly empty plural list clears existing grants.
 - **Sidebar Title Overflow** - Long sidebar item titles are truncated instead of overflowing.

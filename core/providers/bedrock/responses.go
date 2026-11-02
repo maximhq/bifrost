@@ -2197,7 +2197,7 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 					Description:           tool.ToolSpec.Description,
 					DeferLoading:          tool.ToolSpec.DeferLoading,
 					EagerInputStreaming:   tool.ToolSpec.EagerInputStreaming,
-					ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{Strict: tool.ToolSpec.Strict},
 				}
 
 				// Handle different types for InputSchema.JSON
@@ -2424,6 +2424,28 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 		if store, ok := request.AdditionalModelRequestFields.Get("store"); ok {
 			if storeBool, ok := store.(bool); ok {
 				bifrostReq.Params.Store = &storeBool
+			}
+		}
+
+		// ConverseInput has no prompt_cache_options field either. Since #8334 a gpt-5.6
+		// target stays in implicit mode, so this is the only way a /bedrock caller can ask
+		// for breakpoint-only caching, or turn caching off with no cachePoint (#8554).
+		if raw, ok := request.AdditionalModelRequestFields.Get("prompt_cache_options"); ok {
+			if om, ok := schemas.SafeExtractOrderedMap(raw); ok && om != nil {
+				var options schemas.PromptCacheOptions
+				if mode, ok := om.Get("mode"); ok {
+					if s, ok := schemas.SafeExtractString(mode); ok {
+						options.Mode = new(s)
+					}
+				}
+				if ttl, ok := om.Get("ttl"); ok {
+					if s, ok := schemas.SafeExtractString(ttl); ok {
+						options.TTL = new(s)
+					}
+				}
+				if options.Mode != nil || options.TTL != nil {
+					bifrostReq.Params.PromptCacheOptions = &options
+				}
 			}
 		}
 
@@ -2861,6 +2883,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 	if len(keepTools) > 0 {
 		var bedrockTools []BedrockTool
 		isNova2 := schemas.IsNova2Model(capModel)
+		strictGate := bedrockStrictGate{ctx: ctx, model: bifrostReq.Model}
 		for _, tool := range keepTools {
 			if tool.Type == schemas.ResponsesToolTypeWebSearch || tool.Type == schemas.ResponsesToolTypeWebSearchPreview || tool.Type == schemas.ResponsesToolTypeCodeInterpreter {
 				// web_search and web_search_preview are both kept for Bedrock by
@@ -2920,6 +2943,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 						InputSchema: BedrockToolInputSchema{
 							JSON: json.RawMessage(schemaObjectBytes),
 						},
+						Strict: strictGate.forward(tool.ResponsesToolFunction.Strict),
 					},
 				}
 				bedrockTools = append(bedrockTools, bedrockTool)

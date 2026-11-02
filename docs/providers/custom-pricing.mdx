@@ -319,7 +319,7 @@ Any field you set (including `0`) is applied as an override; omitted fields are 
 | `output_cost_per_token_ultrafast` | Output token cost for ultrafast requests |
 | `input_cost_per_token_flex` | Input token cost for flex requests |
 | `output_cost_per_token_flex` | Output token cost for flex requests |
-| `input_cost_per_token_decisions` | Input token cost for decision requests, flat across the context window (no tiering). Always wins over `input_cost_per_token`, whether it comes from the datasheet or an override; `input_cost_per_token` is only the fallback when no decision rate is set |
+| `input_cost_per_token_decisions` | Input token cost for decision requests, flat across the context window (no tiering). Always wins over `input_cost_per_token`, whether it comes from the datasheet or an override; `input_cost_per_token` is only the fallback when no decision rate is set. Cached decision tokens are priced at `cache_read_input_token_cost` and `cache_creation_input_token_cost`, flat beside a decision rate, or at the decision rate when the row has no cache rate |
 | `output_cost_per_token_decisions` | Output token cost for decision requests, flat across the context window (no tiering). Always wins over `output_cost_per_token`, whether it comes from the datasheet or an override; `output_cost_per_token` is only the fallback when no decision rate is set |
 | `input_cost_per_token_fast` | Input token cost for fast-mode requests (flat across the full context window - no tiering) |
 | `output_cost_per_token_fast` | Output token cost for fast-mode requests (flat across the full context window - no tiering) |
@@ -446,10 +446,27 @@ least 1536) is billed at the 1536×1024 rate, which is checked first.
 | `output_cost_per_video_per_second_1024p` | Cost per second of 1024p video output |
 | `output_cost_per_video_per_second_1080p` | Cost per second of 1080p video output |
 | `output_cost_per_video_per_second_4k` | Cost per second of 4K video output |
+| `output_cost_per_video_token` | Cost per video output token, for providers that meter video in tokens (BytePlus Seedance) |
 | `input_cost_per_video_per_second_above_128k_tokens` | Video input cost above 128k context |
 | `input_cost_per_audio_per_second_above_128k_tokens` | Audio input cost above 128k context |
 
-The resolution-banded video rates are matched on the short edge of the generated video's size, so `1920x1080` and `1080x1920` both resolve to `output_cost_per_video_per_second_1080p`. A size matching no band falls back to `output_cost_per_video_per_second`, then `output_cost_per_second`. The resolved rate is multiplied by the number of clips the job returned.
+The resolution-banded video rates are matched on the short edge of the generated video's size, so `1920x1080` and `1080x1920` both resolve to `output_cost_per_video_per_second_1080p`. A size matching no band falls back to `output_cost_per_video_per_second`, then `output_cost_per_second`. The resolved rate is multiplied by the number of clips the job returned. When the provider reports metered video tokens, `output_cost_per_video_token` applies to them first, and a row without a token rate falls back to the per-second rates.
+
+### Azure Voice Live costs
+
+Azure Voice Live turns use these rates in place of the matching rates above. Each falls back to its normal rate when unset.
+
+| Field | Description |
+|-------|-------------|
+| `input_cost_per_token_voice_live` | Cost per text input token |
+| `output_cost_per_token_voice_live` | Cost per text output token |
+| `cache_read_input_token_cost_voice_live` | Cost per cached input token |
+| `input_cost_per_audio_token_voice_live` | Cost per audio input token the model hears natively |
+| `output_cost_per_audio_token_voice_live` | Cost per audio output token from the model's own voice |
+| `input_cost_per_standard_speech_audio_token_voice_live` | Cost per audio input token transcribed by Azure speech to text |
+| `output_cost_per_standard_speech_audio_token_voice_live` | Cost per audio output token from an Azure standard voice |
+| `input_cost_per_custom_speech_audio_token_voice_live` | Cost per audio input token transcribed by a custom speech model |
+| `output_cost_per_custom_speech_audio_token_voice_live` | Cost per audio output token from a custom or personal voice |
 
 ### Other costs
 

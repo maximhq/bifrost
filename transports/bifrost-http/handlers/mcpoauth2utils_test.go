@@ -81,3 +81,16 @@ func TestOAuth2ServerCfg_DefaultsWhenUnset(t *testing.T) {
 	assert.Equal(t, configtables.DefaultAuthCodeTTL, got.AuthCodeTTL)
 	assert.Equal(t, configtables.DefaultAccessTokenTTL, got.AccessTokenTTL)
 }
+
+func TestAuditOAuthConfigBeforeRedactsURLCredentials(t *testing.T) {
+	snap := auditOAuthConfigBefore(&configtables.TableOauthConfig{
+		Status:       "authorized",
+		AuthorizeURL: "https://user:pw-authorize@idp.example.com/authorize",
+		TokenURL:     "https://user:pw-token@idp.example.com/token",
+		ServerURL:    "https://user:pw-server@mcp.example.com",
+	})
+	for key, secret := range map[string]string{"authorize_url": "pw-authorize", "token_url": "pw-token", "server_url": "pw-server"} {
+		assert.NotContains(t, snap[key], secret, key)
+	}
+	assert.Equal(t, "authorized", snap["status"])
+}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -644,6 +645,43 @@ func TestExtraFieldsPlacementHeaders(t *testing.T) {
 		assert.Equal(t, `{"id":"x","choices":[{"extra_fields":"keep"}]}`, string(StripExtraFields(body)))
 		assert.Equal(t, `{"id":"x"}`, string(StripExtraFields([]byte(`{"id":"x"}`))))
 		assert.Equal(t, `[1]`, string(StripExtraFields([]byte(`[1]`))))
+	})
+
+	// Responses bodies as the handlers marshal them: a stream lifecycle event that wraps a
+	// response, and a unary response.
+	responsesBodies := func(t *testing.T) (event, unary []byte) {
+		extra := schemas.BifrostResponseExtraFields{RequestType: schemas.ResponsesStreamRequest, Provider: schemas.OpenAI}
+		event, err := schemas.MarshalSorted(&schemas.BifrostStreamChunk{BifrostResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type:        schemas.ResponsesStreamResponseTypeCreated,
+			Response:    &schemas.BifrostResponsesResponse{ID: new("resp_1"), Model: "gpt-4o"},
+			ExtraFields: extra,
+		}})
+		assert.NoError(t, err)
+		extra.RequestType = schemas.ResponsesRequest
+		unary, err = schemas.MarshalSorted(&schemas.BifrostResponsesResponse{ID: new("resp_1"), Model: "gpt-4o", ExtraFields: extra})
+		assert.NoError(t, err)
+		return event, unary
+	}
+
+	t.Run("body mode keeps one top-level extra_fields on responses bodies", func(t *testing.T) {
+		event, unary := responsesBodies(t)
+		ctx := &fasthttp.RequestCtx{}
+		for name, body := range map[string][]byte{"stream event": event, "unary": unary} {
+			out := StripExtraFieldsIfInHeaders(ctx, body)
+			assert.Equal(t, "openai", gjson.GetBytes(out, "extra_fields.provider").String(), "%s: %s", name, out)
+			assert.Equal(t, 1, strings.Count(string(out), `"extra_fields"`), "%s carries exactly one extra_fields: %s", name, out)
+		}
+	})
+
+	t.Run("headers mode leaves no extra_fields on responses bodies", func(t *testing.T) {
+		event, unary := responsesBodies(t)
+		ctx := &fasthttp.RequestCtx{}
+		ctx.SetUserValue(FastHTTPUserValueExtraFieldsInHeaders, true)
+		for name, body := range map[string][]byte{"stream event": event, "unary": unary} {
+			out := StripExtraFieldsIfInHeaders(ctx, body)
+			assert.NotContains(t, string(out), `"extra_fields"`, "%s: %s", name, out)
+			assert.Equal(t, "resp_1", gjson.GetBytes(out, "id").String()+gjson.GetBytes(out, "response.id").String(), "%s keeps its payload: %s", name, out)
+		}
 	})
 
 	t.Run("strip-if is a no-op in body mode", func(t *testing.T) {

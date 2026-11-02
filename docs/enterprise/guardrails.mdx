@@ -600,8 +600,9 @@ Profiles are reusable configurations for guardrail providers. External providers
    - Configure provider-specific detection, decision, or transformation settings
    - See the provider-specific page for detailed configuration
 
-4. **Save Profile**
-   - Click **Save Profile**
+4. **Verify and Save**
+   - Click **Verify and Save**. Bifrost checks the configuration against the provider (credentials, endpoint, or judge model) and saves the profile only if the check passes. When you edit an existing profile, **Re-verify** runs the same check without saving
+   - Secrets Detection and Custom Regex have nothing external to check, so they save directly with **Save Guardrail Configuration**
    - The profile is now available for linking to rules
 
 </Tab>

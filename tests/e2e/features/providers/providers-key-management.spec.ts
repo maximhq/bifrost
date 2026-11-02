@@ -139,4 +139,122 @@ test.describe("Provider Key Management", () => {
 
     await providersPage.keyCancelBtn.click();
   });
+
+  test.describe("AWS SageMaker keys", () => {
+    test("should create, reopen and edit a key with explicit AWS credentials", async ({ providersPage, page }) => {
+      const keyName = `SageMaker-Key-${Date.now()}`;
+      const createdProvider = !(await providersPage.providerExists("sagemaker"));
+      try {
+        if (createdProvider) {
+          await providersPage.addKnownProviderFromDropdown("sagemaker");
+        } else {
+          await providersPage.selectProvider("sagemaker");
+        }
+
+        await providersPage.addSageMakerKey({
+          name: keyName,
+          accessKey: "AKIAE2ESAGEMAKER0001",
+          secretKey: "e2e-sagemaker-secret-key-0001",
+          region: "us-east-1",
+        });
+        expect(await providersPage.keyExists(keyName)).toBe(true);
+
+        // Reopening must detect the explicit-credentials tab from the stored config and show the
+        // non-secret fields verbatim; the secret key comes back masked.
+        await providersPage.openKeyEditor(keyName);
+        await expect(page.getByTestId("apikey-sagemaker-explicit-credentials-tab")).toHaveAttribute("data-state", "active");
+        await expect(page.getByTestId("apikey-sagemaker-region-input")).toHaveValue("us-east-1");
+        await expect(page.getByTestId("apikey-sagemaker-secret-key-input")).toHaveValue(/.+/);
+        await expect(page.getByTestId("apikey-sagemaker-secret-key-input")).not.toHaveValue("e2e-sagemaker-secret-key-0001");
+
+        // Saving with the masked secrets untouched must keep the stored credentials.
+        await page.getByTestId("apikey-sagemaker-region-input").fill("us-west-2");
+        await providersPage.keySaveBtn.click();
+        await providersPage.waitForSuccessToast();
+        await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
+
+        await providersPage.openKeyEditor(keyName);
+        await expect(page.getByTestId("apikey-sagemaker-region-input")).toHaveValue("us-west-2");
+        // Both stored credentials must survive the save, still masked.
+        await expect(page.getByTestId("apikey-sagemaker-access-key-input")).toHaveValue(/.+/);
+        await expect(page.getByTestId("apikey-sagemaker-secret-key-input")).toHaveValue(/.+/);
+        await expect(page.getByTestId("apikey-sagemaker-secret-key-input")).not.toHaveValue("e2e-sagemaker-secret-key-0001");
+        await providersPage.keyCancelBtn.click();
+        await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
+      } finally {
+        if (await providersPage.keyExists(keyName, 2000)) {
+          await providersPage.deleteKey(keyName);
+        }
+        if (createdProvider && (await providersPage.providerExists("sagemaker"))) {
+          await providersPage.deleteProvider("sagemaker", { skipToastWait: true });
+          await expect(providersPage.getProviderItem("sagemaker")).toHaveCount(0, { timeout: 5000 });
+        }
+      }
+    });
+  });
+
+  test.describe("GitHub Copilot sign in with GitHub", () => {
+    let addedCopilotProvider = false;
+
+    test.beforeEach(async ({ providersPage }) => {
+      if (!(await providersPage.providerExists("github-copilot"))) {
+        await providersPage.addKnownProviderFromDropdown("github-copilot");
+        addedCopilotProvider = true;
+      }
+      await providersPage.selectProvider("github-copilot");
+    });
+
+    test.afterAll(async ({ request }) => {
+      if (addedCopilotProvider) {
+        await request.delete("/api/providers/github-copilot");
+      }
+    });
+
+    // GitHub is mocked at the gateway's sign-in endpoints: the device flow itself needs a person
+    // to approve on github.com. This pins the form side: the code is shown, polling finishes, the
+    // returned token lands in the key's value, and the key saves with it.
+    test("should sign in with the device flow and save the returned token as the key's value", async ({
+      providersPage,
+      request,
+    }) => {
+      const page = providersPage.page;
+
+      await page.route("**/api/providers/github-copilot/sign-in/poll", async (route) => {
+        await route.fulfill({ json: { status: "complete", token: "ghu_e2e_signed_in", login: "octocat" } });
+      });
+      await page.route("**/api/providers/github-copilot/sign-in", async (route) => {
+        await route.fulfill({
+          json: {
+            device_code: "dc_e2e",
+            user_code: "WDJB-MJHT",
+            verification_uri: "https://github.com/login/device",
+            expires_in: 900,
+            interval: 1,
+          },
+        });
+      });
+
+      const keyName = `Copilot-Sign-In-${Date.now()}`;
+      managementKeys.push(keyName);
+      await providersPage.startCopilotSignIn({ name: keyName });
+
+      await expect(page.getByTestId("copilot-sign-in-user-code")).toHaveText("WDJB-MJHT");
+      await expect(page.getByTestId("copilot-sign-in-verification-link")).toHaveAttribute(
+        "href",
+        "https://github.com/login/device",
+      );
+      await expect(page.getByTestId("copilot-sign-in-status")).toContainText("Signed in as @octocat", { timeout: 10000 });
+      await expect(page.getByTestId("key-input-copilot-token")).toHaveValue("ghu_e2e_signed_in");
+
+      await providersPage.keySaveBtn.click();
+      await providersPage.waitForSuccessToast();
+      await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
+
+      const response = await request.get("/api/providers/github-copilot/keys");
+      expect(response.ok(), await response.text()).toBeTruthy();
+      const body = await response.json();
+      const saved = (body.keys as Array<{ name: string; value?: { value?: string } }>).find((k) => k.name === keyName);
+      expect(saved?.value?.value, "the signed-in token was not saved as the key's value").toBeTruthy();
+    });
+  });
 });

@@ -539,6 +539,12 @@ var matviewRequiredColumns = func() map[string][]string {
 // only one instance does the work. It shares the same advisory lock as
 // refreshMatViews so startup create/repair cannot overlap a periodic refresh.
 func ensureMatViews(ctx context.Context, db *gorm.DB) error {
+	return ensureMatViewsLimited(ctx, db, matViewSessionLimits{})
+}
+
+// ensureMatViewsLimited is ensureMatViews with the operator's session limits
+// applied to the dedicated connection.
+func ensureMatViewsLimited(ctx context.Context, db *gorm.DB, limits matViewSessionLimits) error {
 	if db.Dialector.Name() != "postgres" {
 		return nil
 	}
@@ -552,29 +558,51 @@ func ensureMatViews(ctx context.Context, db *gorm.DB) error {
 	if err != nil {
 		return fmt.Errorf("failed to get dedicated connection for matview creation: %w", err)
 	}
-	defer conn.Close()
+	// discardConn drops the physical connection instead of pooling it, for the
+	// same reason as in refreshMatViews: an unconfirmed unlock must end the session.
+	discardConn := false
+	defer func() {
+		if discardConn {
+			_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+		}
+		conn.Close()
+	}()
 
 	// Creating or repairing a view over logs runs far past the runtime pool's
-	// statement_timeout; lift it on this connection only and restore it before
-	// the connection returns to the pool.
-	restoreTimeout, err := postgresconn.DisableStatementTimeout(ctx, conn)
+	// statement_timeout, so it stays lifted here: a first build over a large table
+	// is legitimately long. The client check still ends the work if this process
+	// dies. Restored before the connection returns to the pool.
+	restoreSession, err := limits.apply(ctx, conn, 0)
+	if restoreSession != nil {
+		defer func() {
+			_ = postgresconn.RestoreStatementTimeoutOrDiscard(ctx, conn, restoreSession, matViewUnlockTimeout)
+		}()
+	}
 	if err != nil {
 		return fmt.Errorf("matview creation: %w", err)
 	}
-	defer func() {
-		_ = postgresconn.RestoreStatementTimeoutOrDiscard(ctx, conn, restoreTimeout, matViewUnlockTimeout)
-	}()
 
+	// Acquire and release on contexts that outlive ctx, as in refreshMatViews: a
+	// shutdown cancels ctx, and a lost reply or a failed unlock would otherwise
+	// leave the lock held on a pooled session.
+	lockCtx, cancelLock := context.WithTimeout(context.WithoutCancel(ctx), matViewUnlockTimeout)
 	var acquired bool
-	if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", matviewRefreshAdvisoryLockKey).Scan(&acquired); err != nil {
-		return fmt.Errorf("failed to try advisory lock for matview creation: %w", err)
+	lockErr := conn.QueryRowContext(lockCtx, "SELECT pg_try_advisory_lock($1)", matviewRefreshAdvisoryLockKey).Scan(&acquired)
+	cancelLock()
+	if lockErr != nil {
+		discardConn = true
+		return fmt.Errorf("failed to try advisory lock for matview creation: %w", lockErr)
 	}
 	if !acquired {
 		// Another replica is doing the work — nothing to do here.
 		return nil
 	}
 	defer func() {
-		_, _ = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", matviewRefreshAdvisoryLockKey)
+		unlockCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), matViewUnlockTimeout)
+		defer cancel()
+		if _, err := conn.ExecContext(unlockCtx, "SELECT pg_advisory_unlock($1)", matviewRefreshAdvisoryLockKey); err != nil {
+			discardConn = true
+		}
 	}()
 
 	if err := dropLegacyMatViews(ctx, conn); err != nil {
@@ -804,6 +832,80 @@ const matViewRefreshSafetyInterval = 10 * time.Minute
 // refresh pass, including one cut short by its own deadline.
 const matViewUnlockTimeout = 5 * time.Second
 
+const (
+	// matViewServerTimeoutGrace is how far past the pass's client deadline the
+	// server-side statement_timeout fires. The client cancel normally wins; the
+	// server timeout is the backstop for a client that died.
+	matViewServerTimeoutGrace = 30 * time.Second
+
+	// matViewClientCheckInterval is how often a backend running a matview
+	// statement checks that its client is still connected. When the pod is gone
+	// the statement aborts, the session ends, and the refresh lock frees.
+	matViewClientCheckInterval = 10 * time.Second
+
+	// matViewIdleSessionTimeout ends a matview session that sits idle this long.
+	// A live pass only idles between its own statements, for well under this.
+	// It covers a client that vanished without closing its socket (node loss):
+	// the client check never fires then, and once the statement timeout cancels
+	// the statement, the idle session would otherwise hold the session-scoped
+	// refresh lock until TCP keepalives fail, which can take hours.
+	matViewIdleSessionTimeout = time.Minute
+)
+
+// matViewSessionLimits are the bounds applied to every session that holds the
+// matview refresh lock. The zero value applies only the built-in bounds.
+type matViewSessionLimits struct {
+	// tempFileLimit is the configured temp_file_limit; empty leaves it unchanged.
+	tempFileLimit string
+	// idleSessionTimeout overrides matViewIdleSessionTimeout when non-zero.
+	idleSessionTimeout time.Duration
+	logger             schemas.Logger
+	// deniedWarned makes the "role may not set temp_file_limit" warning fire
+	// once per store instead of on every pass. Nil skips the warning.
+	deniedWarned *atomic.Bool
+	// clientCheckWarned makes the "platform cannot check client sockets"
+	// warning fire once per store. Nil skips the warning.
+	clientCheckWarned *atomic.Bool
+}
+
+// apply bounds conn for matview maintenance. statementTimeout zero leaves the
+// server statement timeout off. See postgresconn.BoundMaintenanceSession for
+// the restore contract.
+func (l matViewSessionLimits) apply(ctx context.Context, conn *sql.Conn, statementTimeout time.Duration) (func(context.Context) error, error) {
+	idleTimeout := matViewIdleSessionTimeout
+	if l.idleSessionTimeout > 0 {
+		idleTimeout = l.idleSessionTimeout
+	}
+	restore, result, err := postgresconn.BoundMaintenanceSession(ctx, conn, postgresconn.MaintenanceSessionOptions{
+		StatementTimeout:    statementTimeout,
+		ClientCheckInterval: matViewClientCheckInterval,
+		IdleSessionTimeout:  idleTimeout,
+		TempFileLimit:       l.tempFileLimit,
+	})
+	if result.TempFileLimitDenied && l.logger != nil && l.deniedWarned != nil && l.deniedWarned.CompareAndSwap(false, true) {
+		l.logger.Warn(fmt.Sprintf("logstore: matview_refresh_temp_file_limit %q not applied: the database role may not set temp_file_limit (grant it with GRANT SET ON PARAMETER temp_file_limit TO <role>)", l.tempFileLimit))
+	}
+	if result.ClientCheckUnsupported && l.logger != nil && l.clientCheckWarned != nil && l.clientCheckWarned.CompareAndSwap(false, true) {
+		l.logger.Warn("logstore: client_connection_check_interval not applied: the database server's platform cannot check client sockets, so a matview refresh from a killed pod runs until statement_timeout")
+	}
+	return restore, err
+}
+
+// matViewServerStatementTimeout returns the server-side statement timeout for a
+// refresh pass bounded by ctx: the time left before ctx's deadline plus
+// matViewServerTimeoutGrace. Without a deadline it returns zero (no timeout).
+func matViewServerStatementTimeout(ctx context.Context) time.Duration {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return 0
+	}
+	left := time.Until(deadline)
+	if left < 0 {
+		left = 0
+	}
+	return left + matViewServerTimeoutGrace
+}
+
 // matViewRefreshGate tracks the last-seen activity counter on `logs` from
 // pg_stat_user_tables so refreshMatViews can short-circuit when nothing has
 // changed. Per-process state — multi-replica deployments still serialize via
@@ -888,6 +990,12 @@ func (g *matViewRefreshGate) markRefreshed(activityAtStart int64, activityOK boo
 // zero refreshes every view regardless, for repair paths that must not trust the
 // record.
 func refreshMatViews(ctx context.Context, db *gorm.DB, minGap time.Duration) error {
+	return refreshMatViewsLimited(ctx, db, minGap, matViewSessionLimits{})
+}
+
+// refreshMatViewsLimited is refreshMatViews with the operator's session limits
+// applied to the dedicated connection.
+func refreshMatViewsLimited(ctx context.Context, db *gorm.DB, minGap time.Duration, limits matViewSessionLimits) error {
 	sqlDB, err := db.DB()
 	if err != nil {
 		return fmt.Errorf("failed to get sql.DB for matview refresh: %w", err)
@@ -912,16 +1020,20 @@ func refreshMatViews(ctx context.Context, db *gorm.DB, minGap time.Duration) err
 	}()
 
 	// REFRESH ... CONCURRENTLY over logs outlives the runtime pool's
-	// statement_timeout; the pass is bounded by ctx (the refresh timeout)
-	// instead. Restored before the deferred close returns the connection; a
-	// failed restore discards the connection instead.
-	restoreTimeout, err := postgresconn.DisableStatementTimeout(ctx, conn)
+	// statement_timeout; the pass is bounded by ctx (the refresh timeout). ctx
+	// dies with this process, so the server gets its own bound too: a statement
+	// timeout a little past ctx's deadline, plus the client check, both of which
+	// still stop a REFRESH whose pod was killed mid-pass. Restored before the
+	// deferred close returns the connection; a failed restore discards it instead.
+	restoreSession, err := limits.apply(ctx, conn, matViewServerStatementTimeout(ctx))
+	if restoreSession != nil {
+		defer func() {
+			_ = postgresconn.RestoreStatementTimeoutOrDiscard(ctx, conn, restoreSession, matViewUnlockTimeout)
+		}()
+	}
 	if err != nil {
 		return fmt.Errorf("matview refresh: %w", err)
 	}
-	defer func() {
-		_ = postgresconn.RestoreStatementTimeoutOrDiscard(ctx, conn, restoreTimeout, matViewUnlockTimeout)
-	}()
 
 	// Activity check happens before the advisory lock so write-quiet replicas
 	// don't even contend for it. Capture the counter BEFORE refreshing — any
@@ -987,6 +1099,15 @@ func refreshMatViews(ctx context.Context, db *gorm.DB, minGap time.Duration) err
 		if fresh[view] {
 			continue
 		}
+		// statement_timeout counts per statement, so shrink it to what is left of
+		// the pass before each view: the server then ends the whole pass shortly
+		// after its deadline, not one full budget per view.
+		if timeout := matViewServerStatementTimeout(ctx); timeout > 0 {
+			if _, err := conn.ExecContext(ctx, "SELECT set_config('statement_timeout', $1, false)", fmt.Sprintf("%d", timeout.Milliseconds())); err != nil {
+				refreshErrs = append(refreshErrs, fmt.Errorf("failed to bound refresh of %s: %w", view, err))
+				break
+			}
+		}
 		if recordOK {
 			recordMatViewRefreshStart(ctx, sqlDB, view)
 		}
@@ -1009,25 +1130,61 @@ func refreshMatViews(ctx context.Context, db *gorm.DB, minGap time.Duration) err
 	return nil
 }
 
+// matViewTimeoutWarnAfter is how many passes in a row must hit their timeout
+// before the refresher reports that the views have stopped refreshing. One
+// timeout can be a slow moment; two in a row means the pass does not fit.
+const matViewTimeoutWarnAfter = 2
+
+// matViewTickState is the refresher's state across ticks.
+type matViewTickState struct {
+	limits matViewSessionLimits
+	// consecutiveTimeouts counts passes in a row that ended on their deadline.
+	consecutiveTimeouts int
+	// warned is set once the current streak has been reported.
+	warned bool
+}
+
+// recordOutcome updates the timeout streak with whether one pass ran out its
+// deadline and reports whether the streak just reached matViewTimeoutWarnAfter,
+// so the warning is logged once per streak. Any pass that does not time out
+// ends the streak.
+func (s *matViewTickState) recordOutcome(timedOut bool) bool {
+	if !timedOut {
+		s.consecutiveTimeouts = 0
+		s.warned = false
+		return false
+	}
+	s.consecutiveTimeouts++
+	if s.consecutiveTimeouts >= matViewTimeoutWarnAfter && !s.warned {
+		s.warned = true
+		return true
+	}
+	return false
+}
+
 // startMatViewRefresher launches a background goroutine that periodically
 // refreshes materialized views. If readyFlag is provided and not yet true,
 // it will be set to true on the first successful refresh (recovery path when
 // the initial refresh failed). Returns a stop function for graceful shutdown.
 // A non-positive interval means maintenance is disabled: no goroutine starts
-// and the stop function is a no-op.
-func startMatViewRefresher(ctx context.Context, db *gorm.DB, interval, timeout time.Duration, logger schemas.Logger, readyFlag *atomic.Bool) func() {
+// and the stop function is a no-op. The stop function waits for the goroutine
+// to exit; it does not cancel a running pass, so cancel ctx first to end one.
+func startMatViewRefresher(ctx context.Context, db *gorm.DB, interval, timeout time.Duration, logger schemas.Logger, readyFlag *atomic.Bool, limits matViewSessionLimits) func() {
 	if interval <= 0 {
 		return func() {}
 	}
 	stopCh := make(chan struct{})
+	done := make(chan struct{})
 	gate := newMigrationLockProbe(db, logger)
+	state := &matViewTickState{limits: limits}
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
-				runMatViewRefreshTick(ctx, db, gate, interval, timeout, logger, readyFlag)
+				runMatViewRefreshTick(ctx, db, gate, interval, timeout, logger, readyFlag, state)
 			case <-ctx.Done():
 				return
 			case <-stopCh:
@@ -1035,14 +1192,23 @@ func startMatViewRefresher(ctx context.Context, db *gorm.DB, interval, timeout t
 			}
 		}
 	}()
-	return func() { close(stopCh) }
+	var once sync.Once
+	return func() {
+		once.Do(func() { close(stopCh) })
+		<-done
+	}
 }
 
 // runMatViewRefreshTick is one iteration of the refresher. It is skipped
 // entirely while another node holds the migration lock: REFRESH MATERIALIZED
 // VIEW CONCURRENTLY reads the logs table, and any reader queued ahead of a
 // pending ALTER TABLE stalls that ALTER and everything queued behind it.
-func runMatViewRefreshTick(ctx context.Context, db *gorm.DB, gate *migrationLockProbe, interval, timeout time.Duration, logger schemas.Logger, readyFlag *atomic.Bool) {
+// state carries the session limits and the timeout streak across ticks; nil
+// uses no limits and tracks no streak.
+func runMatViewRefreshTick(ctx context.Context, db *gorm.DB, gate *migrationLockProbe, interval, timeout time.Duration, logger schemas.Logger, readyFlag *atomic.Bool, state *matViewTickState) {
+	if state == nil {
+		state = &matViewTickState{}
+	}
 	if gate.inProgress(ctx) {
 		logger.Debug("logstore: skipping matview refresh tick, migration lock is held by another node")
 		return
@@ -1054,9 +1220,17 @@ func runMatViewRefreshTick(ctx context.Context, db *gorm.DB, gate *migrationLock
 	// fails silently, leaving matviews permanently stale.
 	started := time.Now()
 	tickCtx, cancel := context.WithTimeout(ctx, timeout)
-	err := refreshMatViews(tickCtx, db, interval)
+	err := refreshMatViewsLimited(tickCtx, db, interval, state.limits)
+	timedOut := err != nil && errors.Is(tickCtx.Err(), context.DeadlineExceeded)
 	cancel()
 	elapsed := time.Since(started)
+	if ctx.Err() != nil {
+		return // the store is shutting down; a cancelled pass is expected
+	}
+	if state.recordOutcome(timedOut) {
+		logger.Error(fmt.Sprintf("logstore: matview refresh hit its %s timeout %d times in a row, so the materialized views are not being refreshed and dashboards are stale; raise matview_refresh_timeout (max %s) or set matview_refresh_interval to \"off\"",
+			timeout, state.consecutiveTimeouts, maxMatViewRefreshTimeout))
+	}
 
 	switch {
 	case err != nil:
@@ -1094,6 +1268,7 @@ func canUseMatViewFilters(f SearchFilters) bool {
 		len(f.AgentNames) == 0 &&
 		!f.RootsOnly &&
 		len(f.MetadataFilters) == 0 &&
+		f.RealtimeInputItemID == "" &&
 		canUseMatViewStatusFilter(f.Status) &&
 		len(f.RoutingEngineUsed) == 0 &&
 		len(f.ToolCallNames) == 0 &&
@@ -1108,6 +1283,9 @@ func canUseMatViewFilters(f SearchFilters) bool {
 		len(f.ErrorTypes) == 0 && len(f.ErrorCodes) == 0 && len(f.StatusCodes) == 0 &&
 		len(f.GuardrailOutcomes) == 0 &&
 		len(f.UserAgents) == 0 &&
+		// A topic is a membership test against the assignments table, which
+		// the hourly view does not carry.
+		len(f.TopicIDs) == 0 &&
 		len(f.TeamIDs) == 0 &&
 		len(f.BusinessUnitIDs) == 0 &&
 		len(f.CustomerIDs) == 0 &&

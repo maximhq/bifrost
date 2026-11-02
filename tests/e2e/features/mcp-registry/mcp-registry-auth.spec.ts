@@ -123,6 +123,44 @@ test.describe("MCP Registry - Authentication", () => {
       await mcpRegistryPage.cancelCreation();
     });
 
+    test("should register with Bifrost's client metadata document only when toggled on, and refuse a local address", async ({
+      mcpRegistryPage,
+    }) => {
+      await mcpRegistryPage.dismissToasts();
+      await mcpRegistryPage.createBtn.click();
+      await expect(mcpRegistryPage.sheet).toBeVisible();
+      await mcpRegistryPage.fillClientForm(createOAuthClientData());
+      await mcpRegistryPage.expandOAuthAdvancedIfCollapsed();
+
+      // Off by default: the client ID and secret stay editable.
+      await expect(mcpRegistryPage.oauthClientMetadataDocumentSwitch).toHaveAttribute("data-state", "unchecked");
+      await expect(mcpRegistryPage.oauthClientIdInput).toBeEnabled();
+      await mcpRegistryPage.oauthClientIdInput.fill("typed-before-toggling");
+
+      await mcpRegistryPage.oauthClientMetadataDocumentSwitch.click();
+      await expect(mcpRegistryPage.oauthClientMetadataDocumentSwitch).toHaveAttribute("data-state", "checked");
+      await expect(mcpRegistryPage.oauthClientIdInput).toBeDisabled();
+      await expect(mcpRegistryPage.oauthClientSecretInput).toBeDisabled();
+
+      const responsePromise = mcpRegistryPage.page.waitForResponse(
+        (response) =>
+          response.url().includes("/mcp/client") && !response.url().endsWith("/mcp/clients") && response.request().method() === "POST",
+        { timeout: 60000 },
+      );
+      await expect(mcpRegistryPage.saveBtn).toBeEnabled({ timeout: 10000 });
+      await mcpRegistryPage.saveBtn.click({ force: true });
+      const response = await responsePromise;
+
+      const sent = response.request().postDataJSON();
+      expect(sent.oauth_config.use_client_metadata_document).toBe(true);
+      expect(sent.oauth_config.client_id?.value ?? "").toBe("");
+      // The dashboard is served from localhost, which no authorization server can fetch the document from.
+      expect(response.status(), await response.text()).toBe(400);
+      expect(await response.text()).toContain("public HTTPS address");
+
+      await mcpRegistryPage.cancelCreation();
+    });
+
     test("should create OAuth 2.0 client and complete authorization flow", async ({
       mcpRegistryPage,
     }) => {

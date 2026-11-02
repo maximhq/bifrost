@@ -238,8 +238,19 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 					return string(anthropicResponse[0].Type), anthropicResponse[0], nil
 				},
 				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+					// A stream that errors never renders a terminal frame, so this is
+					// where its prompt-usage readings are released: handleStreaming
+					// converts chunks in order and returns after this callback, so
+					// every queued message_delta has already been converted. Kept out
+					// of ToAnthropicResponsesStreamError so that converter stays pure.
+					anthropic.ReleaseStreamPromptUsage(ctx)
 					return anthropic.ToAnthropicResponsesStreamError(err)
 				},
+				// The error path above covers a stream that failed. A stream that
+				// simply ends -- including one whose upstream closed without a
+				// message_stop -- releases here instead, rather than waiting for the
+				// next stream to sweep it.
+				Cleanup: anthropic.ReleaseStreamPromptUsage,
 			},
 			PreCallback:  checkAnthropicPassthrough,
 			ShortCircuit: anthropicRefuseThreadContinue,

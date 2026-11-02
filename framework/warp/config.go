@@ -33,7 +33,10 @@ type ConfigView struct {
 	LogVectorStoreNamespace string                `json:"log_vector_store_namespace"`
 	SemanticSearchThreshold float64               `json:"semantic_search_threshold"`
 	SemanticSearchLimit     int                   `json:"semantic_search_limit"`
-	VectorStoreConnected    bool                  `json:"vector_store_connected"`
+	// TopicDiscoveryMinRequests is how many requests that matched no topic
+	// start a discovery.
+	TopicDiscoveryMinRequests int  `json:"topic_discovery_min_requests"`
+	VectorStoreConnected      bool `json:"vector_store_connected"`
 }
 
 // ConfigInput is a configuration write.
@@ -64,6 +67,9 @@ type ConfigInput struct {
 	LogVectorStoreNamespace string                `json:"log_vector_store_namespace"`
 	SemanticSearchThreshold float64               `json:"semantic_search_threshold,omitempty"`
 	SemanticSearchLimit     int                   `json:"semantic_search_limit,omitempty"`
+	// TopicDiscoveryMinRequests is how many unmatched requests start a
+	// discovery. Omitted keeps the stored value.
+	TopicDiscoveryMinRequests int `json:"topic_discovery_min_requests,omitempty"`
 
 	// present records the keys the decoded request carried. See UnmarshalJSON.
 	present map[string]bool
@@ -122,6 +128,8 @@ func (c *ConfigInput) supplied(field string) bool {
 		return c.SemanticSearchThreshold != 0
 	case "semantic_search_limit":
 		return c.SemanticSearchLimit != 0
+	case "topic_discovery_min_requests":
+		return c.TopicDiscoveryMinRequests != 0
 	}
 	return false
 }
@@ -164,6 +172,9 @@ func applyStoredEmbeddingSettings(input *ConfigInput, previous *tables.TableWarp
 	if !input.supplied("semantic_search_limit") {
 		input.SemanticSearchLimit = previous.SemanticSearchLimit
 	}
+	if !input.supplied("topic_discovery_min_requests") {
+		input.TopicDiscoveryMinRequests = previous.TopicDiscoveryMinRequests
+	}
 }
 
 // ConfigView returns the stored configuration for display.
@@ -182,13 +193,14 @@ func (s *Service) ConfigView(ctx context.Context) (ConfigView, error) {
 	}
 	if row == nil {
 		return ConfigView{
-			MaxIterations:           schemas.WarpDefaultMaxIterations,
-			RequestTimeoutSeconds:   schemas.WarpDefaultRequestTimeoutSeconds,
-			HistoryRetentionDays:    schemas.WarpDefaultHistoryRetentionDays,
-			LogVectorStoreNamespace: schemas.WarpDefaultLogVectorStoreNamespace,
-			SemanticSearchThreshold: schemas.WarpDefaultSemanticSearchThreshold,
-			SemanticSearchLimit:     schemas.WarpDefaultSemanticSearchLimit,
-			VectorStoreConnected:    s.vectorStore != nil,
+			MaxIterations:             schemas.WarpDefaultMaxIterations,
+			RequestTimeoutSeconds:     schemas.WarpDefaultRequestTimeoutSeconds,
+			HistoryRetentionDays:      schemas.WarpDefaultHistoryRetentionDays,
+			LogVectorStoreNamespace:   schemas.WarpDefaultLogVectorStoreNamespace,
+			SemanticSearchThreshold:   schemas.WarpDefaultSemanticSearchThreshold,
+			SemanticSearchLimit:       schemas.WarpDefaultSemanticSearchLimit,
+			TopicDiscoveryMinRequests: schemas.WarpDefaultTopicDiscoveryMinRequests,
+			VectorStoreConnected:      s.vectorStore != nil,
 		}, nil
 	}
 	return s.configViewFromRow(row), nil
@@ -273,23 +285,24 @@ func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigVie
 		return ConfigView{}, err
 	}
 	row := &tables.TableWarpConfig{
-		Enabled:                 input.Enabled,
-		Provider:                string(input.Provider),
-		Model:                   input.Model,
-		APIKeyID:                strings.TrimSpace(input.APIKeyID),
-		AdditionalModels:        additionalModels,
-		MaxIterations:           input.MaxIterations,
-		RequestTimeoutSeconds:   input.RequestTimeoutSeconds,
-		HistoryRetentionDays:    input.HistoryRetentionDays,
-		Temperature:             input.Temperature,
-		ReasoningEffort:         input.ReasoningEffort,
-		EmbeddingProvider:       string(input.EmbeddingProvider),
-		EmbeddingModel:          input.EmbeddingModel,
-		EmbeddingAPIKeyID:       strings.TrimSpace(input.EmbeddingAPIKeyID),
-		EmbeddingDimension:      input.EmbeddingDimension,
-		LogVectorStoreNamespace: input.LogVectorStoreNamespace,
-		SemanticSearchThreshold: input.SemanticSearchThreshold,
-		SemanticSearchLimit:     input.SemanticSearchLimit,
+		Enabled:                   input.Enabled,
+		Provider:                  string(input.Provider),
+		Model:                     input.Model,
+		APIKeyID:                  strings.TrimSpace(input.APIKeyID),
+		AdditionalModels:          additionalModels,
+		MaxIterations:             input.MaxIterations,
+		RequestTimeoutSeconds:     input.RequestTimeoutSeconds,
+		HistoryRetentionDays:      input.HistoryRetentionDays,
+		Temperature:               input.Temperature,
+		ReasoningEffort:           input.ReasoningEffort,
+		EmbeddingProvider:         string(input.EmbeddingProvider),
+		EmbeddingModel:            input.EmbeddingModel,
+		EmbeddingAPIKeyID:         strings.TrimSpace(input.EmbeddingAPIKeyID),
+		EmbeddingDimension:        input.EmbeddingDimension,
+		LogVectorStoreNamespace:   input.LogVectorStoreNamespace,
+		SemanticSearchThreshold:   input.SemanticSearchThreshold,
+		SemanticSearchLimit:       input.SemanticSearchLimit,
+		TopicDiscoveryMinRequests: input.TopicDiscoveryMinRequests,
 	}
 	if len(retired) > 0 {
 		value := string(retiredJSON)
@@ -349,6 +362,9 @@ func mergeOmittedEmbeddingSettings(row, previous *tables.TableWarpConfig) {
 	if row.SemanticSearchLimit == 0 {
 		row.SemanticSearchLimit = previous.SemanticSearchLimit
 	}
+	if row.TopicDiscoveryMinRequests == 0 {
+		row.TopicDiscoveryMinRequests = previous.TopicDiscoveryMinRequests
+	}
 }
 
 // ValidateConfigInput normalizes and checks a write in place.
@@ -378,6 +394,9 @@ func ValidateConfigInput(input *ConfigInput) error {
 	}
 	if input.SemanticSearchLimit == 0 {
 		input.SemanticSearchLimit = schemas.WarpDefaultSemanticSearchLimit
+	}
+	if input.TopicDiscoveryMinRequests == 0 {
+		input.TopicDiscoveryMinRequests = schemas.WarpDefaultTopicDiscoveryMinRequests
 	}
 
 	if input.Enabled {
@@ -443,6 +462,9 @@ func ValidateConfigInput(input *ConfigInput) error {
 	}
 	if input.SemanticSearchLimit < 1 || input.SemanticSearchLimit > schemas.WarpMaxSemanticSearchLimit {
 		return fmt.Errorf("%w: semantic_search_limit must be between 1 and %d", ErrInvalidConfig, schemas.WarpMaxSemanticSearchLimit)
+	}
+	if input.TopicDiscoveryMinRequests < schemas.WarpMinTopicDiscoveryMinRequests || input.TopicDiscoveryMinRequests > schemas.WarpMaxTopicDiscoveryMinRequests {
+		return fmt.Errorf("%w: topic_discovery_min_requests must be between %d and %d", ErrInvalidConfig, schemas.WarpMinTopicDiscoveryMinRequests, schemas.WarpMaxTopicDiscoveryMinRequests)
 	}
 	return nil
 }
@@ -546,26 +568,27 @@ func (s *Service) Config(ctx context.Context) (*schemas.WarpConfig, error) {
 func (s *Service) configViewFromRow(row *tables.TableWarpConfig) ConfigView {
 	config := configFromRow(row)
 	return ConfigView{
-		Configured:              config.IsConfigured(),
-		Enabled:                 row.Enabled,
-		Provider:                schemas.ModelProvider(row.Provider),
-		Model:                   row.Model,
-		APIKeyID:                row.APIKeyID,
-		AdditionalModels:        config.AdditionalModels,
-		MaxIterations:           config.EffectiveMaxIterations(),
-		RequestTimeoutSeconds:   config.EffectiveRequestTimeoutSeconds(),
-		HistoryRetentionDays:    config.EffectiveHistoryRetentionDays(),
-		SystemPromptSuffix:      derefString(row.SystemPromptSuffix),
-		Temperature:             config.Temperature,
-		ReasoningEffort:         config.ReasoningEffort,
-		EmbeddingProvider:       config.EmbeddingProvider,
-		EmbeddingModel:          config.EmbeddingModel,
-		EmbeddingAPIKeyID:       config.EmbeddingAPIKeyID,
-		EmbeddingDimension:      config.EmbeddingDimension,
-		LogVectorStoreNamespace: config.EffectiveLogVectorStoreNamespace(),
-		SemanticSearchThreshold: config.EffectiveSemanticSearchThreshold(),
-		SemanticSearchLimit:     config.EffectiveSemanticSearchLimit(),
-		VectorStoreConnected:    s.vectorStore != nil,
+		Configured:                config.IsConfigured(),
+		Enabled:                   row.Enabled,
+		Provider:                  schemas.ModelProvider(row.Provider),
+		Model:                     row.Model,
+		APIKeyID:                  row.APIKeyID,
+		AdditionalModels:          config.AdditionalModels,
+		MaxIterations:             config.EffectiveMaxIterations(),
+		RequestTimeoutSeconds:     config.EffectiveRequestTimeoutSeconds(),
+		HistoryRetentionDays:      config.EffectiveHistoryRetentionDays(),
+		SystemPromptSuffix:        derefString(row.SystemPromptSuffix),
+		Temperature:               config.Temperature,
+		ReasoningEffort:           config.ReasoningEffort,
+		EmbeddingProvider:         config.EmbeddingProvider,
+		EmbeddingModel:            config.EmbeddingModel,
+		EmbeddingAPIKeyID:         config.EmbeddingAPIKeyID,
+		EmbeddingDimension:        config.EmbeddingDimension,
+		LogVectorStoreNamespace:   config.EffectiveLogVectorStoreNamespace(),
+		SemanticSearchThreshold:   config.EffectiveSemanticSearchThreshold(),
+		SemanticSearchLimit:       config.EffectiveSemanticSearchLimit(),
+		TopicDiscoveryMinRequests: config.EffectiveTopicDiscoveryMinRequests(),
+		VectorStoreConnected:      s.vectorStore != nil,
 	}
 }
 
@@ -594,6 +617,7 @@ func configFromRow(row *tables.TableWarpConfig) *schemas.WarpConfig {
 		LogVectorStoreNamespace:         row.LogVectorStoreNamespace,
 		SemanticSearchThreshold:         row.SemanticSearchThreshold,
 		SemanticSearchLimit:             row.SemanticSearchLimit,
+		TopicDiscoveryMinRequests:       row.TopicDiscoveryMinRequests,
 		RetiredLogVectorStoreNamespaces: retiredNamespaces(row),
 	}
 }

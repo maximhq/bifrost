@@ -260,6 +260,15 @@ func (c ModelCaps) SupportsSystemMessages(fallback bool) bool {
 	return fallback
 }
 
+// SupportsDeveloperRole reports whether the model accepts role "developer".
+// Models that do not are sent developer messages as system instead.
+func (c ModelCaps) SupportsDeveloperRole(fallback bool) bool {
+	if c.record != nil && c.record.SupportsDeveloperRole != nil {
+		return *c.record.SupportsDeveloperRole
+	}
+	return fallback
+}
+
 // SupportsAssistantPrefill reports whether a trailing assistant message may be
 // sent for the model to continue. Models without it need it trimmed.
 func (c ModelCaps) SupportsAssistantPrefill(fallback bool) bool {
@@ -605,6 +614,15 @@ func (c ModelCaps) SupportsRegexLookaround(fallback bool) bool {
 func (c ModelCaps) SupportsRegexNULEscape(fallback bool) bool {
 	if c.record != nil && c.record.SupportsRegexNULEscape != nil {
 		return *c.record.SupportsRegexNULEscape
+	}
+	return fallback
+}
+
+// SupportsSchemaPattern reports whether the model accepts the `pattern` keyword in
+// tool schemas at all. A row decides in either direction; absent returns fallback.
+func (c ModelCaps) SupportsSchemaPattern(fallback bool) bool {
+	if c.record != nil && c.record.SupportsSchemaPattern != nil {
+		return *c.record.SupportsSchemaPattern
 	}
 	return fallback
 }

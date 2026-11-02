@@ -6,6 +6,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -82,12 +83,9 @@ type MCPManagerInterface interface {
 	// NeedsReauth. Pass nil to clear a previously registered callback.
 	SetStateChangeCallback(cb func(clientID, name string, oldState, newState schemas.MCPConnectionState))
 
-	// SetToolsChangeCallback registers cb to be invoked whenever a client's
-	// tool map is freshly (re)discovered — connect/reconnect, per-call
-	// discovery, and the periodic checker's own refresh. core/mcp has no DB
-	// access; this is the seam the transport layer persists through. Pass
-	// nil to clear a previously registered callback.
-	SetToolsChangeCallback(cb func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string))
+	// SetDiscoveryChangeCallback registers cb to run whenever a client's discovery changes; the
+	// transport layer persists through it. nil clears it.
+	SetDiscoveryChangeCallback(cb func(clientID, name string, discovery *schemas.MCPDiscovery))
 
 	// SetInProcessServerFactory replaces the factory that synthesizes
 	// in-process servers for openapi clients (see
@@ -135,15 +133,15 @@ type MCPManagerInterface interface {
 	// VerifyHeadersConnection creates a temporary MCP connection using a set of
 	// caller-supplied header values to verify connectivity and discover tools.
 	// The connection is closed after verification.
-	VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (map[string]schemas.ChatTool, map[string]string, string, error)
+	VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (*schemas.MCPDiscovery, error)
 
 	// VerifyPerUserOAuthConnection creates a temporary MCP connection using a
 	// test access token to verify connectivity and discover tools. The connection
 	// is closed after verification.
-	VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (map[string]schemas.ChatTool, map[string]string, string, error)
+	VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (*schemas.MCPDiscovery, error)
 
-	// SetClientTools updates the tool map, name mapping and server instructions for an existing client.
-	SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string)
+	// SetClientDiscovery installs discovery on an existing client.
+	SetClientDiscovery(clientID string, discovery *schemas.MCPDiscovery)
 
 	// Tool Registration
 	// RegisterTool registers a local tool with the MCP server
@@ -156,3 +154,16 @@ type MCPManagerInterface interface {
 
 // Ensure MCPManager implements MCPManagerInterface
 var _ MCPManagerInterface = (*MCPManager)(nil)
+
+// ResourcesAndPromptsServer serves upstream resources and prompts. Optional, so MCPManagerInterface
+// implementations stay source compatible.
+type ResourcesAndPromptsServer interface {
+	GetAvailablePrompts(ctx context.Context) []mcp.Prompt
+	GetAvailableResources(ctx context.Context) []mcp.Resource
+	GetAvailableResourceTemplates(ctx context.Context) []mcp.ResourceTemplate
+	GetPrompt(ctx *schemas.BifrostContext, name string, arguments map[string]string) (*mcp.GetPromptResult, *schemas.BifrostError)
+	ReadResource(ctx *schemas.BifrostContext, uri string) (*mcp.ReadResourceResult, *schemas.BifrostError)
+	Complete(ctx *schemas.BifrostContext, params mcp.CompleteParams) (*mcp.CompleteResult, *schemas.BifrostError)
+}
+
+var _ ResourcesAndPromptsServer = (*MCPManager)(nil)

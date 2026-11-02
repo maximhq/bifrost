@@ -299,6 +299,41 @@ func TestToResponsesMessages_ToolResultBlocksUseResponsesInputTypes(t *testing.T
 	check(t, "ToResponsesMessages", &msgs[0])
 }
 
+// TestToResponsesToolMessage_MarksAFailedToolResult pins that a tool result the chat surface marks
+// failed keeps that mark in the Responses format: status "incomplete", the signal ToResponsesMessages
+// already writes and ToChatMessages reads back as is_error. MCP's Responses-format execute converts
+// through ToResponsesToolMessage, which dropped it, so a failed call came back looking successful.
+func TestToResponsesToolMessage_MarksAFailedToolResult(t *testing.T) {
+	failed := ChatMessage{
+		Role:            ChatMessageRoleTool,
+		ChatToolMessage: &ChatToolMessage{ToolCallID: Ptr("call_1"), IsError: Ptr(true)},
+		Content:         &ChatMessageContent{ContentStr: Ptr("upstream refused")},
+	}
+	msg := failed.ToResponsesToolMessage()
+	if msg == nil || msg.Status == nil || *msg.Status != "incomplete" {
+		t.Fatalf("expected status \"incomplete\" on a failed tool result, got %#v", msg)
+	}
+	if out := msg.ResponsesToolMessage.Output; out == nil || out.ResponsesToolCallOutputStr == nil || *out.ResponsesToolCallOutputStr != "upstream refused" {
+		t.Fatalf("expected the error text to stay the output, got %#v", out)
+	}
+	if general := failed.ToResponsesMessages(); len(general) != 1 || general[0].Status == nil || *general[0].Status != *msg.Status {
+		t.Fatalf("expected ToResponsesMessages to mark it the same way, got %#v", general)
+	}
+	back := ToChatMessages([]ResponsesMessage{*msg})
+	if len(back) != 1 || back[0].ChatToolMessage == nil || back[0].ChatToolMessage.IsError == nil || !*back[0].ChatToolMessage.IsError {
+		t.Fatalf("expected the mark to read back as is_error, got %#v", back)
+	}
+
+	succeeded := ChatMessage{
+		Role:            ChatMessageRoleTool,
+		ChatToolMessage: &ChatToolMessage{ToolCallID: Ptr("call_2")},
+		Content:         &ChatMessageContent{ContentStr: Ptr("18C")},
+	}
+	if msg := succeeded.ToResponsesToolMessage(); msg.Status != nil {
+		t.Fatalf("expected no status on a successful tool result, got %q", *msg.Status)
+	}
+}
+
 func TestToResponsesRequest_EmptyToolContentKeepsOutput(t *testing.T) {
 	// A tool that ran but printed nothing sends content "". OpenAI and Azure reject a
 	// function_call_output without output: "Missing required parameter: 'input[N].output'".
@@ -2355,5 +2390,23 @@ func TestToChatMessages_DropsConfigurationUpdateItem(t *testing.T) {
 	}
 	if got[0].Role != ChatMessageRoleUser {
 		t.Fatalf("expected the surviving message to be the user turn, got role %q", got[0].Role)
+	}
+}
+
+func TestUsageConvertersKeepIterations(t *testing.T) {
+	pass := ResponsesResponseUsage{Type: Ptr("advisor_message"), Model: Ptr("claude-opus-4-8"), InputTokens: 2000, OutputTokens: 900}
+	responses := &ResponsesResponseUsage{InputTokens: 10, OutputTokens: 1, TotalTokens: 11, Iterations: []ResponsesResponseUsage{pass}}
+
+	llm := responses.ToBifrostLLMUsage()
+	if len(llm.Iterations) != 1 || llm.Iterations[0].InputTokens != 2000 {
+		t.Fatalf("ToBifrostLLMUsage Iterations = %+v, want the advisor pass", llm.Iterations)
+	}
+	back := llm.ToResponsesResponseUsage()
+	if len(back.Iterations) != 1 || back.Iterations[0].Model == nil || *back.Iterations[0].Model != "claude-opus-4-8" {
+		t.Fatalf("ToResponsesResponseUsage Iterations = %+v, want the advisor pass", back.Iterations)
+	}
+	back.Iterations[0].InputTokens = 999
+	if responses.Iterations[0].InputTokens != 2000 || llm.Iterations[0].InputTokens != 2000 {
+		t.Fatal("converted Iterations alias the source")
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -258,6 +259,48 @@ func TestChatStreamDropsUpstreamMessageObject(t *testing.T) {
 	}
 	if !sawContent {
 		t.Error("the content delta itself must still be forwarded")
+	}
+}
+
+// Deltas that carry only extra_content must reach the client, including after finish_reason.
+func TestChatStreamForwardsExtraContentOnlyDeltas(t *testing.T) {
+	extraChunk := func(extra string) string {
+		return `data: {"id":"chatcmpl-repro","object":"chat.completion.chunk","created":1,"model":"repro-model",` +
+			`"choices":[{"index":0,"delta":{"extra_content":` + extra + `}}]}` + "\n\n"
+	}
+	midStream := `{"spans":[[0,5,[1,2,3,4]]]}`
+	afterFinish := `{"spans":[[0,5]]}`
+	stop := "stop"
+	server := completeSSEServer(t, chatChunk("hello", nil)+extraChunk(midStream)+chatChunk("", &stop)+extraChunk(afterFinish)+"data: [DONE]\n\n")
+	defer server.Close()
+
+	provider := newStreamTestProvider(server.URL)
+	stream, bifrostErr := provider.ChatCompletionStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), basicChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	chunks := collectChunks(t, stream)
+	var extras []string
+	for i, chunk := range chunks {
+		if chunk.BifrostError != nil {
+			t.Fatalf("chunk %d unexpectedly carried an error: %+v", i, chunk.BifrostError)
+		}
+		if chunk.BifrostChatResponse == nil {
+			continue
+		}
+		for _, choice := range chunk.BifrostChatResponse.Choices {
+			if choice.ChatStreamResponseChoice != nil && choice.Delta != nil && len(choice.Delta.ExtraContent) > 0 {
+				extras = append(extras, string(choice.Delta.ExtraContent))
+			}
+		}
+	}
+	if want := []string{midStream, afterFinish}; !slices.Equal(extras, want) {
+		t.Errorf("forwarded extra_content = %q, want %q", extras, want)
+	}
+	final := chunks[len(chunks)-1].BifrostChatResponse
+	if final == nil || len(final.Choices) == 0 || final.Choices[0].FinishReason == nil || *final.Choices[0].FinishReason != stop {
+		t.Errorf("expected the last chunk to carry finish_reason %q, got %+v", stop, final)
 	}
 }
 
@@ -1707,6 +1750,34 @@ func TestChatStreamForwardsAnnotationOnlyDelta(t *testing.T) {
 		}
 	}
 	t.Error("the annotation-only chunk was never forwarded; streamed citations are lost")
+}
+
+// OpenRouter streams a generated image as its own delta.images frame.
+func TestChatStreamForwardsImageOnlyDelta(t *testing.T) {
+	const imageURL = "data:image/png;base64,iVBORw0KGgo="
+	rawImageFrame := `{"id":"gen-repro","object":"chat.completion.chunk","created":1,"model":"repro-model","choices":[{"index":0,"delta":{"images":[{"type":"image_url","image_url":{"url":"` + imageURL + `"}}]},"finish_reason":null}],"usage":null}`
+	body := "data: " + rawImageFrame + "\n\n" +
+		"data: " + rawFinishOnlyFrame + "\n\n" +
+		"data: [DONE]\n\n"
+	server := completeSSEServer(t, body)
+	defer server.Close()
+
+	provider := newStreamTestProvider(server.URL)
+	stream, bifrostErr := provider.ChatCompletionStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), basicChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	for _, delta := range collectChatDeltas(collectChunks(t, stream)) {
+		encoded, err := schemas.Marshal(delta)
+		if err != nil {
+			t.Fatalf("encode delta: %v", err)
+		}
+		if strings.Contains(string(encoded), `"images":[{"type":"image_url","image_url":{"url":"`+imageURL+`"}}]`) {
+			return
+		}
+	}
+	t.Error("the image-only chunk was never forwarded; the generated image is lost")
 }
 
 // The fallback ingress owes the same contract as the direct chat path: every frame

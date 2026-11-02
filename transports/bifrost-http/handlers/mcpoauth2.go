@@ -28,6 +28,8 @@ type OAuthHandler struct {
 
 // NewOAuthHandler creates a new OAuth handler instance
 func NewOAuthHandler(oauthProvider *oauth2.OAuth2Provider, client *bifrost.Bifrost, store *lib.Config) *OAuthHandler {
+	// A metadata-document client_id follows the base these paths are served under.
+	oauthProvider.SetClientMetadataDocumentPaths(oauthCallbackPath, oauthClientMetadataPath)
 	return &OAuthHandler{
 		client:        client,
 		store:         store,
@@ -37,9 +39,33 @@ func NewOAuthHandler(oauthProvider *oauth2.OAuth2Provider, client *bifrost.Bifro
 
 // RegisterRoutes registers all OAuth-related routes
 func (h *OAuthHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
-	r.GET("/api/oauth/callback", lib.ChainMiddlewares(h.handleOAuthCallback, middlewares...))
+	r.GET(oauthCallbackPath, lib.ChainMiddlewares(h.handleOAuthCallback, middlewares...))
+	r.GET(oauthClientMetadataPath, lib.ChainMiddlewares(h.handleClientMetadataDocument, middlewares...))
 	r.GET("/api/oauth/config/{id}/status", lib.ChainMiddlewares(h.getOAuthConfigStatus, middlewares...))
 	r.DELETE("/api/oauth/config/{id}", lib.ChainMiddlewares(h.revokeOAuthConfig, middlewares...))
+}
+
+// Bifrost's OAuth client paths for upstream MCP servers.
+const (
+	oauthCallbackPath       = "/api/oauth/callback"
+	oauthClientMetadataPath = "/api/oauth/client-metadata.json"
+)
+
+// handleClientMetadataDocument serves Bifrost's Client ID Metadata Document (unauthenticated).
+func (h *OAuthHandler) handleClientMetadataDocument(ctx *fasthttp.RequestCtx) {
+	base := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL())
+	redirectURI := base + oauthCallbackPath
+	ctx.Response.Header.Set("Cache-Control", "public, max-age=3600")
+	SendJSON(ctx, map[string]any{
+		"client_id":                  base + oauthClientMetadataPath,
+		"client_name":                oauth2.ClientName,
+		"client_uri":                 base,
+		"redirect_uris":              []string{redirectURI},
+		"grant_types":                []string{"authorization_code", "refresh_token"},
+		"response_types":             []string{"code"},
+		"token_endpoint_auth_method": "none",
+		"application_type":           oauth2.ApplicationTypeFor(redirectURI),
+	})
 }
 
 // handleOAuthCallback handles the upstream OAuth provider callback. Performs
@@ -65,6 +91,13 @@ func (h *OAuthHandler) handleOAuthCallback(ctx *fasthttp.RequestCtx) {
 	code := string(ctx.QueryArgs().Peek("code"))
 	errorParam := string(ctx.QueryArgs().Peek("error"))
 	errorDescription := string(ctx.QueryArgs().Peek("error_description"))
+
+	// RFC 9207: an error response is checked too, and on a mismatch nothing it says is acted on.
+	if err := h.oauthProvider.CheckAuthorizationResponseIssuer(ctx, state, string(ctx.QueryArgs().Peek("iss")), ctx.QueryArgs().Has("iss")); err != nil {
+		logger.Warn("[oauth] refused an authorization response: %v", err)
+		h.redirectCallbackFailure(ctx, state, "Authentication failed: the response did not come from this MCP server's authorization server.")
+		return
+	}
 
 	if errorParam != "" {
 		h.handleCallbackError(ctx, state, errorParam, errorDescription)
@@ -94,31 +127,23 @@ func (h *OAuthHandler) handleOAuthCallback(ctx *fasthttp.RequestCtx) {
 	// Fall through: server-level admin-test flow.
 	if err := h.oauthProvider.CompleteOAuthFlow(ctx, state, code); err != nil {
 		logger.Error("[oauth] admin-test callback completion failed: err=%v", err)
-		ctx.Redirect("/workspace/mcp-registry/oauth-callback?status=failed&error="+url.QueryEscape("OAuth authentication failed."), fasthttp.StatusFound)
+		ctx.Redirect(lib.WithBasePath("/workspace/mcp-registry/oauth-callback?status=failed&error="+url.QueryEscape("OAuth authentication failed.")), fasthttp.StatusFound)
 		return
 	}
-	ctx.Redirect("/workspace/mcp-registry/oauth-callback?status=success", fasthttp.StatusFound)
+	ctx.Redirect(lib.WithBasePath("/workspace/mcp-registry/oauth-callback?status=success"), fasthttp.StatusFound)
 }
 
-// handleCallbackError handles ?error= responses from upstream providers.
-// Marks the admin-mode flow row as failed (for admin UI's pending-setup
-// display), then redirects to the route that matches the originating flow:
-//   - admin-test popup flow → /workspace/mcp-registry/oauth-callback (posts a
-//     message to window.opener and closes itself)
-//   - per-user runtime flow → /workspace/mcp-sessions (full-page, no opener)
-//
-// Every flow — admin and per-user alike — shares one state-token namespace on
-// mcp_oauth_flows, so classifying by FlowMode on a single lookup replaces the
-// old two-step "does a row exist in oauth_configs, else assume per-user"
-// inference (oauth_configs no longer carries a state column at all). Only
-// the admin-mode row's status is written here: a per-user flow row is
-// deliberately left 'pending' on an upstream error/deny so the same link can
-// still be retried within its TTL, matching today's behavior for that path
-// (CompleteUserOAuthFlow's own expiry/failure handling covers the cases that
-// do need a per-user row mutated or removed). The upstream-supplied error
-// code/description is logged server-side; only a generic message reaches
-// the URL so provider error text doesn't leak into history / Referer.
+// handleCallbackError handles ?error= responses. The upstream error is only logged, so provider text
+// never reaches browser history or Referer.
 func (h *OAuthHandler) handleCallbackError(ctx *fasthttp.RequestCtx, state, errorParam, errorDescription string) {
+	// Don't log state (CSRF token, replayable while flow is alive).
+	logger.Warn("[oauth] upstream callback error: error=%s description=%s", errorParam, errorDescription)
+	h.redirectCallbackFailure(ctx, state, "Authentication was denied or failed. Please try again.")
+}
+
+// redirectCallbackFailure redirects to the failure page of the flow's origin, the admin popup or the
+// per-user sessions page. An admin flow is marked failed; a per-user one stays pending for a retry.
+func (h *OAuthHandler) redirectCallbackFailure(ctx *fasthttp.RequestCtx, state, userMsg string) {
 	isAdminTestFlow := false
 	if state != "" {
 		flow, err := h.store.ConfigStore.GetOauthUserSessionByState(ctx, state)
@@ -140,11 +165,8 @@ func (h *OAuthHandler) handleCallbackError(ctx *fasthttp.RequestCtx, state, erro
 			}
 		}
 	}
-	// Don't log state (CSRF token, replayable while flow is alive).
-	logger.Warn("[oauth] upstream callback error: error=%s description=%s", errorParam, errorDescription)
-	const userMsg = "Authentication was denied or failed. Please try again."
 	if isAdminTestFlow {
-		ctx.Redirect("/workspace/mcp-registry/oauth-callback?status=failed&error="+url.QueryEscape(userMsg), fasthttp.StatusFound)
+		ctx.Redirect(lib.WithBasePath("/workspace/mcp-registry/oauth-callback?status=failed&error="+url.QueryEscape(userMsg)), fasthttp.StatusFound)
 		return
 	}
 	ctx.Redirect(perUserCallbackRedirect(ctx, h.store.ConfigStore, userMsg, false), fasthttp.StatusFound)
@@ -156,20 +178,21 @@ func (h *OAuthHandler) handleCallbackError(ctx *fasthttp.RequestCtx, state, erro
 // or ?error=... (failure). Anonymous temp-token visitors land on the public
 // MinimalShell pages (/auth-success or /auth-failed) which don't require a
 // cookie. This mirrors the model used by the temp-token-aware UI: keep admins
-// in the dashboard, route end users to chrome-less landings.
+// in the dashboard, route end users to chrome-less landings. Paths carry
+// server.base_path so the browser lands back under the proxy prefix.
 func perUserCallbackRedirect(ctx *fasthttp.RequestCtx, store configstore.ConfigStore, userMsg string, success bool) string {
 	cookieToken := string(ctx.Request.Header.Cookie("token"))
 	authenticated := cookieToken != "" && validateSession(ctx, store, cookieToken)
 	if success {
 		if authenticated {
-			return "/workspace/mcp-sessions?completed=1"
+			return lib.WithBasePath("/workspace/mcp-sessions?completed=1")
 		}
-		return "/workspace/mcp-sessions/auth-success"
+		return lib.WithBasePath("/workspace/mcp-sessions/auth-success")
 	}
 	if authenticated {
-		return "/workspace/mcp-sessions?error=" + url.QueryEscape(userMsg)
+		return lib.WithBasePath("/workspace/mcp-sessions?error=" + url.QueryEscape(userMsg))
 	}
-	return "/workspace/mcp-sessions/auth-failed?error=" + url.QueryEscape(userMsg)
+	return lib.WithBasePath("/workspace/mcp-sessions/auth-failed?error=" + url.QueryEscape(userMsg))
 }
 
 // resolveOAuthFlowPollStatus folds an admin-mode flow row into the status a
@@ -279,16 +302,41 @@ func (h *OAuthHandler) getOAuthConfigStatus(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, response)
 }
 
+// auditOAuthConfigBefore snapshots an OAuth config for the audit log with URL credentials stripped.
+func auditOAuthConfigBefore(cfg *configstoreTables.TableOauthConfig) map[string]any {
+	return map[string]any{
+		"status":        cfg.Status,
+		"authorize_url": lib.RedactURLCredentials(cfg.AuthorizeURL),
+		"token_url":     lib.RedactURLCredentials(cfg.TokenURL),
+		"server_url":    lib.RedactURLCredentials(cfg.ServerURL),
+	}
+}
+
 // revokeOAuthConfig revokes an OAuth configuration and its associated token
 // DELETE /api/oauth/config/{id}
 func (h *OAuthHandler) revokeOAuthConfig(ctx *fasthttp.RequestCtx) {
 	configID := ctx.UserValue("id").(string)
+
+	var before map[string]any
+	if h.store != nil && h.store.ConfigStore != nil {
+		cfg, err := h.store.ConfigStore.GetOauthConfigByID(ctx, configID)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to load OAuth config: %v", err))
+			return
+		}
+		if cfg == nil {
+			SendError(ctx, fasthttp.StatusNotFound, "oauth config not found")
+			return
+		}
+		before = auditOAuthConfigBefore(cfg)
+	}
 
 	if err := h.oauthProvider.RevokeToken(ctx, configID); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to revoke OAuth token: %v", err))
 		return
 	}
 
+	lib.RecordAuditChange(ctx, "oauth_config.token_revoked", "oauth_config", configID, configID, before, nil)
 	SendJSON(ctx, map[string]interface{}{
 		"message": "OAuth token revoked successfully",
 	})
@@ -306,7 +354,9 @@ type OAuthInitiationRequest struct {
 	ServerURL       string             `json:"server_url"` // For OAuth discovery
 	Resource        string             `json:"resource"`   // OAuth resource indicator (RFC 8707)
 
-	RequirePublicTarget bool `json:"-"` // Server-set from the MCP client: OAuth requests may reach only public addresses
+	RequirePublicTarget       bool   `json:"-"` // Server-set from the MCP client: OAuth requests may reach only public addresses
+	ClientMetadataURL         string `json:"-"` // Server-set: Bifrost's Client ID Metadata Document URL
+	UseClientMetadataDocument bool   `json:"-"` // From the request's oauth_config: register with that document
 }
 
 // InitiateOAuthFlow initiates an OAuth flow and returns the authorization URL
@@ -328,7 +378,9 @@ func (h *OAuthHandler) InitiateOAuthFlow(ctx context.Context, req OAuthInitiatio
 		ServerURL:       req.ServerURL,
 		Resource:        req.Resource,
 
-		RequirePublicTarget: req.RequirePublicTarget,
+		RequirePublicTarget:       req.RequirePublicTarget,
+		ClientMetadataURL:         req.ClientMetadataURL,
+		UseClientMetadataDocument: req.UseClientMetadataDocument,
 	}
 
 	return h.oauthProvider.InitiateOAuthFlow(ctx, config)

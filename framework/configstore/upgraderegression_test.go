@@ -25,6 +25,41 @@ import (
 // upgradeTestSchema isolates these tests from the package's other Postgres tests.
 const upgradeTestSchema = "configstore_upgrade_test"
 
+// upgradeTestDB is a database of its own for these tests. The matview refresh
+// lock is a database-scoped advisory lock, and go test runs the logstore package
+// against the same server at the same time: its pause tests take that lock and
+// cancel whichever REFRESH holds it, which in the shared database is this file's
+// old replica. A cancelled old replica unblocks the index builds, so the control
+// cases stop reproducing the stall. A separate database gives these tests their
+// own lock and their own old replica.
+const upgradeTestDB = "configstore_upgrade_test"
+
+// ensureUpgradeTestDB creates upgradeTestDB if it does not exist, or skips the
+// test when the local test Postgres is unreachable.
+func ensureUpgradeTestDB(t *testing.T) {
+	t.Helper()
+	admin, err := gorm.Open(postgres.Open(postgresDSN), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Skip("local test Postgres is not reachable")
+	}
+	sqlDB, err := admin.DB()
+	require.NoError(t, err)
+	defer sqlDB.Close()
+	if sqlDB.Ping() != nil {
+		t.Skip("local test Postgres is not reachable")
+	}
+	var exists bool
+	require.NoError(t, admin.Raw("SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = ?)", upgradeTestDB).Scan(&exists).Error)
+	if exists {
+		return
+	}
+	// A concurrent creator may win the race; only a real failure matters.
+	if err := admin.Exec("CREATE DATABASE " + upgradeTestDB).Error; err != nil {
+		require.NoError(t, admin.Raw("SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = ?)", upgradeTestDB).Scan(&exists).Error)
+		require.True(t, exists, "create %s: %v", upgradeTestDB, err)
+	}
+}
+
 // upgrade230IndexMigrations are configstore migrations new in 2.3.0 that build
 // indexes, with the indexes each one creates. The incident timeline stalled on
 // exactly these two.
@@ -33,12 +68,15 @@ var upgrade230IndexMigrations = map[string][]string{
 	"add_batch_jobs_file_id_indexes":              {"idx_batch_jobs_input_file_id", "idx_batch_jobs_output_file_id", "idx_batch_jobs_error_file_id"},
 }
 
-// openUpgradePod opens a pool on the upgrade schema tagged with app as its
-// application_name, the way a pod's migration pool is (postgresconn.MigrationDSN),
-// or skips the test when the local test Postgres is unreachable.
+// openUpgradePod opens a pool on the upgrade database and schema tagged with app
+// as its application_name, the way a pod's migration pool is
+// (postgresconn.MigrationDSN), or skips the test when the local test Postgres is
+// unreachable.
 func openUpgradePod(t *testing.T, app string) *gorm.DB {
 	t.Helper()
-	dsn := strings.Replace(postgresDSN, "search_path="+pgTestSchema, "search_path="+upgradeTestSchema, 1) +
+	ensureUpgradeTestDB(t)
+	dsn := strings.Replace(postgresDSN, "search_path="+pgTestSchema, "search_path="+upgradeTestSchema, 1)
+	dsn = strings.Replace(dsn, "dbname=bifrost ", "dbname="+upgradeTestDB+" ", 1) +
 		" application_name='" + app + "'"
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
@@ -128,11 +166,11 @@ func startOldReplicaRefresh(t *testing.T, db *gorm.DB, sleepSecs int) <-chan err
 	}()
 	t.Cleanup(func() {
 		// Never leave a long refresh running into the next test.
-		_ = db.Exec(`SELECT pg_cancel_backend(pid) FROM pg_stat_activity WHERE query LIKE 'REFRESH MATERIALIZED VIEW CONCURRENTLY mv_old_replica_hourly%' AND pid <> pg_backend_pid()`).Error
+		_ = db.Exec(`SELECT pg_cancel_backend(pid) FROM pg_stat_activity WHERE datname = current_database() AND query LIKE 'REFRESH MATERIALIZED VIEW CONCURRENTLY mv_old_replica_hourly%' AND pid <> pg_backend_pid()`).Error
 	})
 	require.Eventually(t, func() bool {
 		var n int64
-		return db.Raw(`SELECT count(*) FROM pg_stat_activity WHERE state = 'active' AND query LIKE 'REFRESH MATERIALIZED VIEW CONCURRENTLY mv_old_replica_hourly%'`).Scan(&n).Error == nil && n == 1
+		return db.Raw(`SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND state = 'active' AND query LIKE 'REFRESH MATERIALIZED VIEW CONCURRENTLY mv_old_replica_hourly%'`).Scan(&n).Error == nil && n == 1
 	}, 10*time.Second, 50*time.Millisecond, "old replica refresh must be running")
 	return done
 }
@@ -286,7 +324,7 @@ func stallFirstPod(t *testing.T, db *gorm.DB) <-chan error {
 		var n int64
 		return db.Raw(`SELECT count(*) FROM pg_stat_progress_create_index p
 			JOIN pg_stat_activity a USING (pid)
-			WHERE a.application_name = 'bifrost-migrate:pod-a' AND p.phase LIKE 'waiting for%'`).Scan(&n).Error == nil && n > 0
+			WHERE a.datname = current_database() AND a.application_name = 'bifrost-migrate:pod-a' AND p.phase LIKE 'waiting for%'`).Scan(&n).Error == nil && n > 0
 	}, 30*time.Second, 50*time.Millisecond, "pod A's index build must park behind the long reader")
 	return podA
 }

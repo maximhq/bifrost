@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -32,7 +34,6 @@ func newSyncTestClientState(clientID, clientName string, authType schemas.MCPAut
 		ExecutionConfig: config,
 		Conn:            nil, // every test here exercises the conn==nil branch
 		ToolMap:         tools,
-		ToolNameMapping: map[string]string{},
 	}
 	return state, config
 }
@@ -318,4 +319,86 @@ func TestSetState_FiresStateChangeCallbackOnGenuineTransition(t *testing.T) {
 	require.Len(t, calls, 2)
 	assert.Equal(t, schemas.MCPConnectionStateUnstable, calls[1].oldState)
 	assert.Equal(t, schemas.MCPConnectionStateHealthy, calls[1].newState)
+}
+
+// Kick runs a check ahead of the timer (10 minutes once healthy), and a burst of kicks costs one
+// check plus at most one follow-up.
+func TestClientConnectionChecker_KickChecksAheadOfTheTimer(t *testing.T) {
+	counter := newWireCounter()
+	ts := httptest.NewServer(counter.wrap(server.NewStreamableHTTPServer(newMatrixUpstream())))
+	t.Cleanup(ts.Close)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+	config := &schemas.MCPClientConfig{
+		ID: "kick", Name: "matrix", ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(ts.URL), NeedsSessionStickiness: schemas.Ptr(true), ToolsToExecute: []string{"*"},
+	}
+	require.NoError(t, m.connectToMCPClient(context.Background(), config))
+	// Settle any re-list the connect itself triggers (the 2026-07-28 listen stream's acknowledgement).
+	time.Sleep(200 * time.Millisecond)
+	before := counter.count("tools/list")
+
+	m.checkerManager.Kick(config.ID)
+	require.Eventually(t, func() bool { return counter.count("tools/list") == before+1 }, 2*time.Second, 10*time.Millisecond, "a kick runs a check now")
+
+	before = counter.count("tools/list")
+	for range 20 {
+		m.checkerManager.Kick(config.ID)
+	}
+	require.Eventually(t, func() bool { return counter.count("tools/list") > before }, 2*time.Second, 10*time.Millisecond)
+	time.Sleep(300 * time.Millisecond)
+	assert.LessOrEqual(t, counter.count("tools/list")-before, 2, "20 kicks collapse into one check and one follow-up")
+
+	m.checkerManager.Kick("no-such-client") // no checker: nothing happens
+}
+
+// TestClientConnectionCheckerStart_DoesNotDeadlockAgainstAStop: RemoveClient and
+// DisableClient hold MCPManager.mu while StopChecking waits for the checker's own
+// lock, so Start must not hold that lock while it waits for MCPManager.mu, or the
+// two wait on each other forever. A checker stopped before it got going does not
+// start afterwards, whether its client was removed or only disabled, since nothing
+// could stop it again.
+func TestClientConnectionCheckerStart_DoesNotDeadlockAgainstAStop(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		stop func(m *MCPManager, id string) // runs with MCPManager.mu held, as in RemoveClient or DisableClient
+	}{
+		{"removed", func(m *MCPManager, id string) { delete(m.clientMap, id) }},
+		{"disabled", func(m *MCPManager, id string) { m.clientMap[id].State = schemas.MCPConnectionStateDisabled }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			defer m.checkerManager.StopAll()
+			config := newVerifiedClientConfig("client", schemas.MCPAuthTypePerUserHeaders, map[string]schemas.ChatTool{})
+			m.mu.Lock()
+			m.clientMap[config.ID] = &schemas.MCPClientState{
+				Name:            config.Name,
+				ExecutionConfig: config,
+				State:           schemas.MCPConnectionStateHealthy,
+				ToolMap:         map[string]schemas.ChatTool{},
+				ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
+			}
+			m.mu.Unlock()
+			checker := NewClientConnectionChecker(m, config.ID, time.Hour, true, m.logger)
+
+			m.mu.Lock()
+			started := make(chan struct{})
+			go func() { m.checkerManager.StartChecking(checker); close(started) }()
+			time.Sleep(100 * time.Millisecond) // Start is now waiting for MCPManager.mu
+			tc.stop(m, config.ID)
+			stopped := make(chan struct{})
+			go func() { m.checkerManager.StopChecking(config.ID); close(stopped) }()
+			select {
+			case <-stopped:
+				m.mu.Unlock()
+			case <-time.After(2 * time.Second):
+				m.mu.Unlock() // let both goroutines finish before failing
+				<-stopped
+				<-started
+				t.Fatal("StopChecking under MCPManager.mu deadlocked against a starting checker")
+			}
+			<-started
+			assert.False(t, checkerRunning(checker), "a checker stopped before it started stays stopped")
+		})
+	}
 }

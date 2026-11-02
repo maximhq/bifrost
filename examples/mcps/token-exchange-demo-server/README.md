@@ -43,7 +43,7 @@ You'll need:
 ### Prerequisites
 
 ```bash
-go 1.27.2+
+go 1.27.3+
 ```
 
 ### Start the Server

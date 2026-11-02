@@ -73,6 +73,7 @@ func setupClickHouse(t testing.TB) clickhouseTestEnv {
 	db := ls.(scopedDBStore).ScopedDB(context.Background())
 	require.NoError(t, db.Callback().Raw().Before("gorm:raw").Register("queue_test:hook", runCHTestHook))
 	require.NoError(t, db.Callback().Row().Before("gorm:row").Register("queue_test:capture", runCHCapture))
+	require.NoError(t, db.Callback().Row().Before("gorm:row").Register("queue_test:rewrite", runCHRewrite))
 	for _, table := range []string{"queue_deliveries", "queue_messages", "queue_groups"} {
 		require.NoError(t, db.Exec("DROP TABLE IF EXISTS "+table+" SYNC").Error)
 	}
@@ -434,6 +435,72 @@ func runCHCapture(tx *gorm.DB) {
 	if f, ok := tx.Statement.Context.Value(chCaptureKey{}).(func(string)); ok {
 		f(tx.Dialector.Explain(tx.Statement.SQL.String(), tx.Statement.Vars...))
 	}
+}
+
+// chRewriteKey carries a function that may replace the SQL of a query a store
+// reads rows with, keeping its arguments. It stands in for a connection that
+// hands a read another statement's result.
+type chRewriteKey struct{}
+
+func runCHRewrite(tx *gorm.DB) {
+	if f, ok := tx.Statement.Context.Value(chRewriteKey{}).(func(string) string); ok {
+		if sql := f(tx.Statement.SQL.String()); sql != tx.Statement.SQL.String() {
+			tx.Statement.SQL.Reset()
+			tx.Statement.SQL.WriteString(sql)
+		}
+	}
+}
+
+// TestClickHouseReadRejectsAnotherStatementsResult pins the guard on every
+// store read: a result whose columns are not the ones the SELECT names is
+// never scanned. One stray result is retried on a fresh connection, so the
+// publish still succeeds; a read that keeps getting one fails with an error
+// naming the columns it got. CI saw the unguarded existence check fail a
+// publish with "Scan error on column index 0, name \"id\": destination not a
+// pointer" after receiving a multi-column result.
+func TestClickHouseReadRejectsAnotherStatementsResult(t *testing.T) {
+	env := setupClickHouse(t)
+	s := env.store(t, NewProcessLocker())
+	ctx := context.Background()
+	mustGroup(t, s, "shape", "g", StartFromLatest)
+	m := newMsg("shape", "k", "first")
+	mustAppend(t, s, m)
+
+	const existence = "SELECT id FROM queue_messages FINAL WHERE topic IN"
+	stray := func(times int) (context.Context, func() int) {
+		var mu sync.Mutex
+		seen := 0
+		return context.WithValue(ctx, chRewriteKey{}, func(sql string) string {
+				if !strings.HasPrefix(sql, existence) {
+					return sql
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				seen++
+				if seen > times {
+					return sql
+				}
+				return strings.Replace(sql, "SELECT id FROM", "SELECT id, topic FROM", 1)
+			}), func() int {
+				mu.Lock()
+				defer mu.Unlock()
+				return seen
+			}
+	}
+
+	once, seen := stray(1)
+	found, err := s.existingIDs(once, "queue_messages", []string{"shape"}, []string{m.ID})
+	require.NoError(t, err, "one stray result is retried on a fresh connection")
+	assert.Equal(t, map[string]bool{m.ID: true}, found)
+	assert.Equal(t, 2, seen(), "the read ran twice")
+
+	always, _ := stray(chReadAttempts)
+	_, err = s.existingIDs(always, "queue_messages", []string{"shape"}, []string{m.ID})
+	require.ErrorIs(t, err, errCHWrongShape)
+	assert.Contains(t, err.Error(), "returned [id topic], want [id]")
+
+	again, _ := stray(1)
+	require.NoError(t, s.Append(again, []*Message{newMsg("shape", "k", "second")}), "publish survives one stray result")
 }
 
 // failOnce fails the first statement starting with prefix.

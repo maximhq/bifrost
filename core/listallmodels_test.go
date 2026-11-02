@@ -2,6 +2,7 @@ package bifrost
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -142,6 +143,55 @@ func TestListAllModelsUnreachableProviderDoesNotBlockAggregate(t *testing.T) {
 	}
 	if !containsModelID(resp, "openai/gpt-4o") {
 		t.Fatalf("healthy provider's models missing from aggregate; got %v", modelIDs(resp))
+	}
+}
+
+// A provider whose catalog spans several internal pages must contribute every
+// page to the aggregate even when the pages together take longer than the
+// per-provider poll deadline (issue #8759: the deadline covered the whole page
+// walk, so a later page timed out and the aggregate silently kept only the
+// first 1,000 models while the provider-scoped listing returned all of them).
+func TestListAllModelsIncludesEveryPageOfASlowLargeProvider(t *testing.T) {
+	const totalModels = 2*schemas.DefaultPageSize + 500
+	ids := make([]string, totalModels)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("model-%05d", i)
+	}
+	listing := openAIStyleModelsHandler(ids...)
+	// Each page re-fetches the upstream catalog; every fetch alone fits the
+	// deadline below, but two of them back to back do not.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+		listing(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, srv.URL)
+	account.SetKeysForProvider(schemas.OpenAI, wildcardKey(schemas.OpenAI))
+	tuneProviderForTest(t, account, schemas.OpenAI)
+
+	oldTimeout := listAllModelsProviderTimeout
+	listAllModelsProviderTimeout = 500 * time.Millisecond
+	t.Cleanup(func() { listAllModelsProviderTimeout = oldTimeout })
+
+	client := newListModelsTestClient(t, account, nil)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+
+	resp, bfErr := client.ListAllModels(ctx, &schemas.BifrostListModelsRequest{})
+	if bfErr != nil {
+		t.Fatalf("ListAllModels returned error: %s", bfErr.GetErrorString())
+	}
+	if resp.NextPageToken != "" {
+		t.Fatalf("unpaged aggregate returned next_page_token %q; want every row in one response", resp.NextPageToken)
+	}
+	if got := len(resp.Data); got != totalModels {
+		t.Fatalf("aggregate returned %d of the provider's %d models with no continuation token", got, totalModels)
+	}
+	if last := "openai/" + ids[totalModels-1]; !containsModelID(resp, last) {
+		t.Fatalf("aggregate is missing the provider's last page (no %s)", last)
 	}
 }
 

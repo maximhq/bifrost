@@ -1,7 +1,11 @@
 package anthropic
 
 import (
+	"context"
+	"fmt"
+	"slices"
 	"testing"
+	"time"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -840,4 +844,151 @@ func TestBetweenToolsThinkingStrip(t *testing.T) {
 			t.Errorf("thinking.type = \"between_tools\" survived a row saying otherwise; body: %s", string(result))
 		}
 	})
+}
+
+// setThinkingDisplayUpdates overrides one provider's ThinkingDisplayUpdates feature for a test,
+// so the downgrade for a surface without the beta stays covered now that every shipped surface has it.
+func setThinkingDisplayUpdates(t *testing.T, provider schemas.ModelProvider, supported bool) {
+	t.Helper()
+	prev := ProviderFeatures[provider]
+	features := prev
+	features.ThinkingDisplayUpdates = supported
+	ProviderFeatures[provider] = features
+	t.Cleanup(func() { ProviderFeatures[provider] = prev })
+}
+
+// thinking.display:"updates" is a beta value (thinking-display-updates-2026-08-18). A surface
+// that does not carry the beta rejects it like any unknown display value ("thinking.adaptive.display:
+// Input should be 'summarized', 'omitted'", seen on Vertex), so it is downgraded to "omitted"
+// (empty reasoning, the nearest value) there and kept where the beta is derived. The other
+// display values are never touched.
+func TestThinkingDisplayUpdatesStrip(t *testing.T) {
+	const model = "claude-opus-5-5"
+	providers := []schemas.ModelProvider{schemas.Anthropic, schemas.Vertex, schemas.Bedrock, schemas.BedrockMantle, schemas.Azure}
+
+	for _, provider := range providers {
+		for _, keeps := range []bool{true, false} {
+			for _, thinkingType := range []string{"adaptive", "enabled"} {
+				for _, display := range []string{"updates", "summarized", "omitted"} {
+					want := display
+					if display == "updates" && !keeps {
+						want = "omitted"
+					}
+					name := fmt.Sprintf("%s/supported=%v/%s/%s", provider, keeps, thinkingType, display)
+
+					t.Run("typed/"+name, func(t *testing.T) {
+						setThinkingDisplayUpdates(t, provider, keeps)
+						req := &AnthropicMessageRequest{
+							Model:     model,
+							MaxTokens: 4096,
+							Thinking:  &AnthropicThinking{Type: thinkingType, Display: new(display)},
+						}
+						stripUnsupportedAnthropicFields(req, provider, model)
+						if req.Thinking == nil || req.Thinking.Display == nil || *req.Thinking.Display != want {
+							t.Errorf("thinking = %+v, want display %q", req.Thinking, want)
+						}
+					})
+
+					t.Run("raw/"+name, func(t *testing.T) {
+						setThinkingDisplayUpdates(t, provider, keeps)
+						body := []byte(`{"model":"` + model + `","max_tokens":4096,"thinking":{"type":"` + thinkingType + `","display":"` + display + `"}}`)
+						out, err := StripUnsupportedFieldsFromRawBody(body, provider, model)
+						if err != nil {
+							t.Fatalf("unexpected error: %v", err)
+						}
+						if got := providerUtils.GetJSONField(out, "thinking.display").String(); got != want {
+							t.Errorf("thinking.display = %q, want %q; body: %s", got, want, out)
+						}
+					})
+				}
+			}
+		}
+	}
+
+	t.Run("absent display stays absent", func(t *testing.T) {
+		setThinkingDisplayUpdates(t, schemas.Bedrock, false)
+		req := &AnthropicMessageRequest{Model: model, MaxTokens: 4096, Thinking: &AnthropicThinking{Type: "adaptive"}}
+		stripUnsupportedAnthropicFields(req, schemas.Bedrock, model)
+		if req.Thinking.Display != nil {
+			t.Errorf("display = %q, want it left unset", *req.Thinking.Display)
+		}
+		out, err := StripUnsupportedFieldsFromRawBody([]byte(`{"model":"`+model+`","thinking":{"type":"adaptive"}}`), schemas.Bedrock, model)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if providerUtils.JSONFieldExists(out, "thinking.display") {
+			t.Errorf("display added to a body that had none: %s", out)
+		}
+	})
+}
+
+// "updates" is accepted per model, not per surface: Bedrock rejects it even with its beta on Opus 4.6,
+// Opus 4.5 and Sonnet 4.5 ("thinking.adaptive.display: Input should be 'summarized', 'omitted'") while
+// taking it on the adaptive-only generation. The fallback is that generation, where "updates" also does
+// something (the models that write progress updates); elsewhere it is "omitted" anyway. A datasheet row
+// overrides the fallback either way.
+func TestThinkingDisplayUpdatesModelGate(t *testing.T) {
+	yes, no := true, false
+	cases := []struct {
+		model    string
+		override *bool
+		want     string
+	}{
+		{"claude-opus-5-5", nil, "updates"},
+		{"claude-opus-4-8", nil, "updates"},
+		{"claude-sonnet-5-5", nil, "updates"},
+		{"claude-opus-4-6", nil, "omitted"},
+		{"claude-sonnet-4-6", nil, "omitted"},
+		{"claude-haiku-4-5", nil, "omitted"},
+		{"claude-opus-4-6", &yes, "updates"},
+		{"claude-opus-5-5", &no, "omitted"},
+	}
+	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Vertex, schemas.Bedrock, schemas.BedrockMantle, schemas.Azure} {
+		for _, tc := range cases {
+			override := "none"
+			if tc.override != nil {
+				override = fmt.Sprint(*tc.override)
+			}
+			name := fmt.Sprintf("%s/%s/override=%s", provider, tc.model, override)
+			setResolver := func(t *testing.T) {
+				providerUtils.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+					if tc.override != nil && p == provider && m == tc.model {
+						return &schemas.ModelCapabilities{SupportsThinkingDisplayUpdates: tc.override}
+					}
+					return nil
+				})
+				t.Cleanup(func() { providerUtils.SetCapabilityResolver(nil) })
+			}
+
+			t.Run("typed/"+name, func(t *testing.T) {
+				setResolver(t)
+				req := &AnthropicMessageRequest{Model: tc.model, MaxTokens: 4096, Thinking: &AnthropicThinking{Type: "adaptive", Display: new("updates")}}
+				stripUnsupportedAnthropicFields(req, provider, tc.model)
+				if req.Thinking == nil || req.Thinking.Display == nil || *req.Thinking.Display != tc.want {
+					t.Errorf("thinking = %+v, want display %q", req.Thinking, tc.want)
+				}
+				// The beta follows the value: derived exactly when "updates" survives.
+				ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+				if err := AddMissingBetaHeadersToContext(ctx, req, provider); err != nil {
+					t.Fatalf("AddMissingBetaHeadersToContext: %v", err)
+				}
+				betas := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), provider)
+				if got := slices.Contains(betas, AnthropicThinkingDisplayUpdatesBetaHeader); got != (tc.want == "updates") {
+					t.Errorf("beta present = %v with display %q (betas: %v)", got, tc.want, betas)
+				}
+			})
+
+			t.Run("raw/"+name, func(t *testing.T) {
+				setResolver(t)
+				body := []byte(`{"model":"` + tc.model + `","max_tokens":4096,"thinking":{"type":"adaptive","display":"updates"}}`)
+				out, err := StripUnsupportedFieldsFromRawBody(body, provider, tc.model)
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if got := providerUtils.GetJSONField(out, "thinking.display").String(); got != tc.want {
+					t.Errorf("thinking.display = %q, want %q; body: %s", got, tc.want, out)
+				}
+			})
+		}
+	}
 }

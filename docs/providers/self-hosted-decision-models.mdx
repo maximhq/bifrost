@@ -17,7 +17,7 @@ icon: "server"
 | **Input** | Text only | Text only |
 
 <Tip>
-Running these models in Ollama? Use the [Ollama provider](/providers/supported-providers/ollama#6-decisions) instead; it needs no custom provider.
+Running these models in Ollama, vLLM or SGLang? Use the [Ollama](/providers/supported-providers/ollama#6-decisions), [vLLM](/providers/supported-providers/vllm#decisions) or [SGLang](/providers/supported-providers/sgl#decisions) provider instead; each serves `/v1/systemone` natively and needs no custom provider. The custom TypeSafe provider below is for servers that are none of these, such as `laya-serve` or Nimble's own SGLang app.
 </Tip>
 
 ---
@@ -125,7 +125,7 @@ curl http://localhost:8080/v1/decisions \
 
 ### 1. Run the server
 
-Nimble is served by an SGLang deployment on Modal. Follow Nimble's [serving guide](https://github.com/bespokelabsai/nimble/blob/main/docs/MODAL_SERVING.md) to deploy your own, or try the public demo at `https://bespokelabs--nimble-sglang-nimble.us-west.modal.direct`, which needs no key.
+Nimble ships as an SGLang deployment on Modal with its own server app. Follow Nimble's [serving guide](https://github.com/bespokelabsai/nimble/blob/main/docs/MODAL_SERVING.md) to deploy your own; the public demo URL it once offered has been answering `503 no upstreams available`. Because the Modal app wraps SGLang with Nimble's own prompt format, add it as a custom TypeSafe provider as below. A plain `sglang serve` deployment of a decision checkpoint (Clef, Kev, PPLX-Decider) needs no custom provider: use the [SGLang provider](/providers/supported-providers/sgl#decisions).
 
 ### 2. Add the provider
 
@@ -149,7 +149,7 @@ Nimble is served by an SGLang deployment on Modal. Follow Nimble's [serving guid
   "providers": {
     "nimble": {
       "network_config": {
-        "base_url": "https://bespokelabs--nimble-sglang-nimble.us-west.modal.direct"
+        "base_url": "https://<your-nimble-deployment>.modal.run"
       },
       "custom_provider_config": {
         "base_provider_type": "typesafe",
@@ -163,6 +163,8 @@ Nimble is served by an SGLang deployment on Modal. Follow Nimble's [serving guid
   }
 }
 ```
+
+Replace `base_url` with your own deployment's URL before use.
 
 </Tab>
 </Tabs>

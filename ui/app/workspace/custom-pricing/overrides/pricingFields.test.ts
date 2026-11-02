@@ -91,7 +91,7 @@ describe("pricingFieldUnit", () => {
 			expect(byUnit[unit], `${field.key} resolved to unexpected unit ${unit}`).toBeDefined();
 			byUnit[unit].push(field.key);
 		}
-		expect(PRICING_FIELDS).toHaveLength(119);
+		expect(PRICING_FIELDS).toHaveLength(129);
 		expect(byUnit.multiplier).toEqual(["inference_geo_us_multiplier", "off_peak_cost_multiplier"]);
 		expect(byUnit.character).toEqual(["input_cost_per_character"]);
 		// Sanity: the split is real, not everything collapsing into one bucket.
@@ -133,7 +133,7 @@ describe("request type groups", () => {
 	// GPT Live bills voice time per second, so its overrides use the audio fields.
 	it("offers live under the audio group with per-second pricing", () => {
 		expect(REQUEST_TYPE_OPTIONS).toContain("live");
-		expect(getRequestTypeGroup("live")).toBe("Audio");
+		expect(getRequestTypeGroup("live")).toBe("customPricing.groupAudio");
 		const perSecond = PRICING_FIELDS.find((f) => f.key === "input_cost_per_second");
 		expect(perSecond?.requestTypeGroups).toContain("audio");
 	});
@@ -143,7 +143,7 @@ describe("request type groups", () => {
 	// decisions offers exactly those two fields.
 	it("offers decisions with its input and output decision token fields", () => {
 		expect(REQUEST_TYPE_OPTIONS).toContain("decisions");
-		expect(getRequestTypeGroup("decisions")).toBe("Decisions");
+		expect(getRequestTypeGroup("decisions")).toBe("customPricing.groupDecisions");
 		const decisionFields = PRICING_FIELDS.filter((f) => (f.requestTypeGroups as readonly string[]).includes("decisions")).map((f) => f.key);
 		expect(decisionFields).toEqual(["input_cost_per_token_decisions", "output_cost_per_token_decisions"]);
 	});
@@ -154,5 +154,16 @@ describe("request type groups", () => {
 		expect(decisionField?.requestTypeGroups).toEqual(["decisions"]);
 		const plain = PRICING_FIELDS.find((f) => f.key === "input_cost_per_token");
 		expect(plain?.requestTypeGroups).not.toContain("decisions");
+	});
+
+	// Voice Live turns are priced in the responses mode, so an override scoped to
+	// responses (the chat group) must offer the Voice Live fields.
+	it("offers the Voice Live fields under the chat group", () => {
+		const voiceLive = PRICING_FIELDS.filter((f) => f.key.endsWith("_voice_live"));
+		expect(voiceLive).toHaveLength(9);
+		for (const f of voiceLive) {
+			expect(f.requestTypeGroups, f.key).toContain("chat");
+			expect(f.requestTypeGroups, f.key).toContain("audio");
+		}
 	});
 });

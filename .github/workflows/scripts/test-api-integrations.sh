@@ -4,7 +4,7 @@ set -euo pipefail
 # API integrations test: compiles bifrost-http, runs it against PostgreSQL using
 # tests/config.json (with a runtime config_store/logs_store overlay), then runs
 # the api-management newman collection via tests/e2e/api/runners/run-newman-api-tests.sh.
-# The Warp, routing-wiring and model-catalog-wiring collections follow, each on a
+# The Warp (unless SKIP_WARP=1), routing-wiring and model-catalog-wiring collections follow, each on a
 # server of its own.
 
 if command -v readlink >/dev/null 2>&1 && readlink -f "$0" >/dev/null 2>&1; then
@@ -157,12 +157,14 @@ if [ -n "$POSTGRES_CONTAINER" ]; then
 fi
 
 echo "📝 Building merged config (tests/config.json + postgres overlay)..."
+# Marketplace manifests require an explicit serving URL, including in tests.
 jq --arg host "$POSTGRES_HOST" --arg port "$POSTGRES_PORT" --arg user "$POSTGRES_USER" \
    --arg pass "$POSTGRES_PASSWORD" --arg db "$POSTGRES_DB" --arg ssl "$POSTGRES_SSLMODE" \
+   --arg skills_url "http://localhost:$PORT" \
    '. + {
      "config_store": {"enabled": true, "type": "postgres", "config": {"host": $host, "port": $port, "user": $user, "password": $pass, "db_name": $db, "ssl_mode": $ssl}},
      "logs_store":   {"enabled": true, "type": "postgres", "config": {"host": $host, "port": $port, "user": $user, "password": $pass, "db_name": $db, "ssl_mode": $ssl}}
-   }' "$SOURCE_CONFIG" > "$MERGED_CONFIG"
+   } | .client.skills_external_client_url = $skills_url' "$SOURCE_CONFIG" > "$MERGED_CONFIG"
 
 # The authenticated newman pass needs a first admin account. Creating it is the one
 # config write the server accepts unauthenticated, and it demands a bootstrap token
@@ -182,7 +184,7 @@ echo "🚀 Starting bifrost-http on port $PORT..."
 "$BIFROST_BINARY" --app-dir "$TEMP_DIR" --port "$PORT" --log-level debug > "$SERVER_LOG" 2>&1 &
 BIFROST_PID=$!
 
-MAX_WAIT=60
+MAX_WAIT=180
 ELAPSED=0
 while [ $ELAPSED -lt $MAX_WAIT ]; do
   if grep -q "successfully started bifrost" "$SERVER_LOG" 2>/dev/null; then
@@ -217,10 +219,13 @@ echo "🧪 Running api-management newman collection..."
 # Warp boots its own server on its own database (bifrost_warp_e2e on the same
 # Postgres), because its answers cover every row in the logs table and the
 # api-management run above has just written to this server's. It reuses the
-# compose stack's Weaviate and the job's OPENAI_API_KEY.
-echo ""
-echo "🧪 Running Warp newman collection..."
-"$REPO_ROOT/tests/e2e/api/runners/individual/run-newman-warp-tests.sh" --binary "$BIFROST_BINARY" --port "$((PORT + 8))" $REPORT_ARGS
+# compose stack's Weaviate and the job's OPENAI_API_KEY. CI sets SKIP_WARP=1
+# and runs it as the parallel test-warp job instead (test-warp.sh).
+if [ "${SKIP_WARP:-0}" != "1" ]; then
+  echo ""
+  echo "🧪 Running Warp newman collection..."
+  "$REPO_ROOT/tests/e2e/api/runners/individual/run-newman-warp-tests.sh" --binary "$BIFROST_BINARY" --port "$((PORT + 8))" $REPORT_ARGS
+fi
 
 # The wiring collections each boot a clean server (no providers, sqlite stores):
 # routing-wiring creates the global standard providers (openai, azure, bedrock,

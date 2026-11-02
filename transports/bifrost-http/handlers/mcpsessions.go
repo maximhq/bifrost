@@ -522,6 +522,7 @@ func (h *MCPSessionsHandler) reauth(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	logger.Debug("[mcp/sessions] reauth initiated: token=%s mcp_client=%s mode=%s flow=%s", rowID, tok.MCPClientID, rowMode, sessionID)
+	lib.RecordAuditChange(ctx, "mcp_session.reauth_started", "mcp_session", rowID, mcpSessionAuditName(tok.MCPClient, tok.MCPClientID), nil, auditMCPSession("oauth_token", tok.MCPClientID, tok.AuthMode, tok.UserID, tok.VirtualKeyID))
 	SendJSON(ctx, map[string]any{
 		"authorize_url": flow.AuthorizeURL,
 		"session_id":    sessionID,
@@ -583,6 +584,7 @@ func (h *MCPSessionsHandler) reauthHeaderCredential(ctx *fasthttp.RequestCtx, bf
 		return
 	}
 	logger.Debug("[mcp/sessions] reauth header initiated: cred=%s mcp_client=%s mode=%s flow=%s", cred.ID, cred.MCPClientID, rowMode, initiation.FlowID)
+	lib.RecordAuditChange(ctx, "mcp_session.reauth_started", "mcp_session", cred.ID, mcpSessionAuditName(cred.MCPClient, cred.MCPClientID), nil, auditMCPSession("header_credential", cred.MCPClientID, cred.AuthMode, cred.UserID, cred.VirtualKeyID))
 	SendJSON(ctx, map[string]any{
 		// submit_url is set so a future header-specific client can branch
 		// cleanly; authorize_url stays compatible with the existing UI which
@@ -655,6 +657,7 @@ func (h *MCPSessionsHandler) revoke(ctx *fasthttp.RequestCtx) {
 		}
 		h.mcpCredentialCacheManager.EvictMCPHeaderCredentialCacheByID(ctx, headerCred.ID)
 		logger.Debug("[mcp/sessions] revoked header credential: id=%s mcp_client=%s mode=%s", rowID, headerCred.MCPClientID, headerCred.AuthMode)
+		lib.RecordAuditChange(ctx, "mcp_session.revoked", "mcp_session", headerCred.ID, mcpSessionAuditName(headerCred.MCPClient, headerCred.MCPClientID), auditMCPSession("header_credential", headerCred.MCPClientID, headerCred.AuthMode, headerCred.UserID, headerCred.VirtualKeyID), nil)
 		ctx.SetStatusCode(fasthttp.StatusNoContent)
 		return
 	}
@@ -671,6 +674,7 @@ func (h *MCPSessionsHandler) revoke(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		logger.Debug("[mcp/sessions] revoked header flow: id=%s mcp_client=%s mode=%s", rowID, headerFlow.MCPClientID, headerFlow.FlowMode)
+		lib.RecordAuditChange(ctx, "mcp_session.revoked", "mcp_session", headerFlow.ID, mcpSessionAuditName(headerFlow.MCPClient, headerFlow.MCPClientID), auditMCPSession("header_flow", headerFlow.MCPClientID, headerFlow.FlowMode, headerFlow.UserID, headerFlow.VirtualKeyID), nil)
 		ctx.SetStatusCode(fasthttp.StatusNoContent)
 		return
 	}
@@ -700,6 +704,7 @@ func (h *MCPSessionsHandler) revoke(ctx *fasthttp.RequestCtx) {
 	}
 	h.mcpCredentialCacheManager.EvictOauthTokenCacheByID(ctx, tok.ID)
 	logger.Debug("[mcp/sessions] revoked: token=%s mcp_client=%s mode=%s", rowID, tok.MCPClientID, tok.AuthMode)
+	lib.RecordAuditChange(ctx, "mcp_session.revoked", "mcp_session", tok.ID, mcpSessionAuditName(tok.MCPClient, tok.MCPClientID), auditMCPSession("oauth_token", tok.MCPClientID, tok.AuthMode, tok.UserID, tok.VirtualKeyID), nil)
 	ctx.SetStatusCode(fasthttp.StatusNoContent)
 }
 
@@ -1124,3 +1129,27 @@ func bindingKeyFromHeaderFlow(f tables.TableMCPPerUserHeaderFlow) sessionBinding
 }
 
 const rfc3339Nano = "2006-01-02T15:04:05.999999999Z07:00"
+
+// auditMCPSession snapshots an MCP auth session's binding; session ids and credential material are left out.
+func auditMCPSession(kind, mcpClientID, authMode string, userID, virtualKeyID *string) map[string]any {
+	snap := map[string]any{
+		"kind":          kind,
+		"mcp_client_id": mcpClientID,
+		"auth_mode":     authMode,
+	}
+	if userID != nil {
+		snap["user_id"] = *userID
+	}
+	if virtualKeyID != nil {
+		snap["virtual_key_id"] = *virtualKeyID
+	}
+	return snap
+}
+
+// mcpSessionAuditName names an MCP auth session after its MCP client, falling back to the client id.
+func mcpSessionAuditName(client *tables.TableMCPClient, mcpClientID string) string {
+	if client != nil && client.Name != "" {
+		return client.Name
+	}
+	return mcpClientID
+}

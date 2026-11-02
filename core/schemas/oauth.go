@@ -89,8 +89,13 @@ type OAuth2Provider interface {
 	// token (BifrostContextKeyMCPInboundBearer) for one scoped to
 	// config.TokenExchange.Audience. Results are cached in memory per
 	// (auth mode, identity, mcp client) until shortly before expiry.
+	// A request with no caller token that was authenticated through the
+	// user's own sign-in exchanges the stored token instead (see
+	// TokenExchangeIdPResolver.StoredSubjectToken).
 	// Returns ErrExchangeSubjectTokenMissing when the request carried no
-	// caller token, ErrTokenExchangeUnavailable when no identity-provider
+	// caller token and does not qualify for the stored one,
+	// ErrStoredSignInExpired when it qualifies but the stored sign-in can no
+	// longer produce one, ErrTokenExchangeUnavailable when no identity-provider
 	// integration is configured, and *TokenExchangeRejectedError when the
 	// provider refused the exchange.
 	GetExchangedAccessToken(ctx *BifrostContext, config *MCPClientConfig) (string, error)
@@ -103,6 +108,11 @@ type OAuth2Provider interface {
 // display; it never contains tokens.
 type TokenExchangeRejectedError struct {
 	Detail string
+	// SubjectRejected reports that the provider answered invalid_grant, which
+	// for an exchange names the subject token: invalid, expired or revoked.
+	// False means it refused the exchange client instead (invalid_client,
+	// unauthorized_client, or a bare 401), which no new subject token fixes.
+	SubjectRejected bool
 }
 
 func (e *TokenExchangeRejectedError) Error() string {
@@ -163,6 +173,43 @@ type TokenExchangeIdPResolver interface {
 	// (implementations should cache discovery internally) so provider
 	// reconfiguration takes effect without restarts.
 	Resolve(ctx context.Context, config *MCPClientConfig) (*TokenExchangeIdP, error)
+
+	// StoredSubjectToken returns the identity-provider access token stored
+	// from userID's own sign-in, the subject for a request that carried no
+	// token of its own (the stored-session fallback). Implementations refresh
+	// it first when it has expired or is about to. rejected reports that the
+	// identity provider just declined the token this method returned as a
+	// subject (TokenExchangeRejectedError.SubjectRejected): the implementation
+	// refreshes it when a refresh could help, and returns the current token
+	// unchanged when it cannot. Returns ErrStoredSignInExpired when only a new
+	// sign-in can produce a token.
+	StoredSubjectToken(ctx context.Context, userID string, rejected bool) (string, error)
+}
+
+// Subject token types for the id_jag profile's identity-provider exchange.
+const (
+	TokenTypeIDToken      = "urn:ietf:params:oauth:token-type:id_token"
+	TokenTypeRefreshToken = "urn:ietf:params:oauth:token-type:refresh_token"
+)
+
+// IDJAGSubjectToken is the user's identity-provider credential an ID-JAG is
+// requested with. Identity providers accept only an ID token or a refresh
+// token issued to the requesting (SSO) application, never an access token.
+// SECURITY: live credential - never log Token.
+type IDJAGSubjectToken struct {
+	Token     string
+	TokenType string // TokenTypeIDToken or TokenTypeRefreshToken
+}
+
+// IDJAGSubjectResolver is optionally implemented by a TokenExchangeIdPResolver
+// to supply a user's ID-JAG subject for the id_jag profile from their stored
+// SSO session. IDJAGSubjectForUser returns ErrExchangeSubjectTokenMissing when
+// the user has no usable session; IsIDJAGUserActive reports whether the user
+// is still an active Bifrost user, checked before a retained admin credential
+// is renewed in their name.
+type IDJAGSubjectResolver interface {
+	IDJAGSubjectForUser(ctx context.Context, userID string) (*IDJAGSubjectToken, error)
+	IsIDJAGUserActive(ctx context.Context, userID string) (bool, error)
 }
 
 // OauthConfig represents OAuth client configuration
@@ -179,7 +226,10 @@ type OAuth2Config struct {
 	Resource        string     `json:"resource,omitempty"`         // Optional OAuth resource indicator (RFC 8707); omitted when empty
 	UseDiscovery    bool       `json:"use_discovery,omitempty"`    // Deprecated: Discovery now happens automatically when URLs are missing
 
-	RequirePublicTarget bool `json:"-"` // Server-set from the owning MCP client: OAuth requests may reach only public addresses
+	UseClientMetadataDocument bool `json:"use_client_metadata_document,omitempty"` // Register with Bifrost's Client ID Metadata Document even if the server does not advertise support
+
+	RequirePublicTarget bool   `json:"-"` // Server-set from the owning MCP client: OAuth requests may reach only public addresses
+	ClientMetadataURL   string `json:"-"` // Server-set: Bifrost's Client ID Metadata Document URL
 }
 
 // OauthToken represents OAuth access and refresh tokens
@@ -220,4 +270,6 @@ type OAuth2TokenExchangeResponse struct {
 	TokenType    string `json:"token_type"`
 	ExpiresIn    int    `json:"expires_in"`
 	Scope        string `json:"scope,omitempty"`
+	// IssuedTokenType is set by RFC 8693 responses (e.g. the ID-JAG token type).
+	IssuedTokenType string `json:"issued_token_type,omitempty"`
 }

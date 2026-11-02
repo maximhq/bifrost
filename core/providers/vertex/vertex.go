@@ -328,8 +328,11 @@ func (provider *VertexProvider) GetProviderKey() schemas.ModelProvider {
 // Returns the response and latency, or an error if the request fails.
 //
 // The logic is:
-// 1. If deployments or allowedModels are configured, return those (no API call needed)
-// 2. Otherwise, fetch from the publishers.models.list API endpoint (Model Garden)
+//  1. An API-key-only key with deployments or a restricted allowlist returns its configuration
+//     (no API call): Model Garden only accepts OAuth credentials.
+//  2. Otherwise, fetch from the publishers.models.list API endpoint (Model Garden). The pipeline
+//     filters the catalog through the allowlist, "*" and regex: entries included, and adds the
+//     deployments and exact entries the catalog does not return.
 func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	region := resolveVertexRegion(ctx, key)
 	if region == "" {
@@ -343,9 +346,9 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 		return &schemas.BifrostListModelsResponse{Data: make([]schemas.Model, 0)}, nil
 	}
 
-	// If deployments or allowedModels are configured, return those directly without API call
+	// An API-key-only key cannot list Model Garden, so it returns its deployments and allowlist directly.
 	// Skip this fast path when Unfiltered is set so the full Vertex catalog can be retrieved
-	if !request.Unfiltered && (len(deployments) > 0 || allowedModels.IsRestricted()) {
+	if !request.Unfiltered && vertexKeyUsesAPIKeyOnly(key) && (len(deployments) > 0 || allowedModels.IsRestricted()) {
 		return buildResponseFromConfig(deployments, allowedModels, key.BlacklistedModels), nil
 	}
 
@@ -690,6 +693,9 @@ func (provider *VertexProvider) inlineDocumentURLsResponses(ctx *schemas.Bifrost
 // It supports both text and image content in messages.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	if endpoint := schemas.GetVertexEndpoint(ctx); endpoint != nil {
+		return provider.openAIChatCompletion(ctx, key, request, endpoint)
+	}
 	var jsonBody []byte
 	var bifrostErr *schemas.BifrostError
 	// Resolve URL sources the target model family cannot read for itself: http(s) is
@@ -765,7 +771,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
 		gt, gh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
 		if rawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && rawBody {
-			jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(jsonBody)
+			jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(ctx, jsonBody, provider.GetProviderKey(), request.Model)
 		}
 		jsonBody = stripVertexGeminiUnsupportedFieldsRaw(jsonBody)
 		if gt != nil {
@@ -859,9 +865,16 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 			req.Header.Set(VertexServiceTierHeader, v)
 		}
 	}
-	// Skip anthropic-beta from context headers — Anthropic models on Vertex use the
-	// anthropic_beta body field instead, and other model families don't use it.
+	// anthropic-beta is rebuilt from the filtered list for Anthropic models only, as in Responses;
+	// other model families don't use it.
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, []string{anthropic.AnthropicBetaHeader})
+	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
+		if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Vertex, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
+			req.Header.Set(anthropic.AnthropicBetaHeader, strings.Join(betaHeaders, ","))
+		} else {
+			req.Header.Del(anthropic.AnthropicBetaHeader)
+		}
+	}
 
 	// If auth query is set, add it to the URL
 	// Otherwise, get the oauth2 token and set the Authorization header
@@ -1002,6 +1015,9 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 // It supports both OpenAI-style streaming (for non-Claude models) and Anthropic-style streaming (for Claude models).
 // Returns a channel of BifrostStreamChunk objects for streaming results or an error if the request fails.
 func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if endpoint := schemas.GetVertexEndpoint(ctx); endpoint != nil {
+		return provider.openAIChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request, endpoint)
+	}
 	providerName := provider.GetProviderKey()
 	projectID := resolveVertexProjectID(ctx, key)
 	if projectID == "" {
@@ -1257,6 +1273,13 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 
 // Responses performs a responses request to the Vertex API.
 func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	if endpoint := schemas.GetVertexEndpoint(ctx); endpoint != nil {
+		response, err := provider.openAIChatCompletion(ctx, key, request.ToChatRequest(), endpoint)
+		if err != nil {
+			return nil, err
+		}
+		return response.ToBifrostResponsesResponse(), nil
+	}
 	// Resolve URL sources the target model family cannot read for itself: http(s) is
 	// downloaded for both families (Vertex's own crawler rejects forwarded URLs), while a
 	// gs:// URI is forwarded to Gemini as fileData.fileUri and read from Cloud Storage for
@@ -1416,7 +1439,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		}
 		gt, gh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
 		if rawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && rawBody {
-			jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(jsonBody)
+			jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(ctx, jsonBody, provider.GetProviderKey(), request.Model)
 		}
 		jsonBody = stripVertexGeminiUnsupportedFieldsRaw(jsonBody)
 		if gt != nil {
@@ -1560,6 +1583,10 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 
 // ResponsesStream performs a streaming responses request to the Vertex API.
 func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if endpoint := schemas.GetVertexEndpoint(ctx); endpoint != nil {
+		ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
+		return provider.openAIChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request.ToChatRequest(), endpoint)
+	}
 	// Resolve URL sources the target model family cannot read for itself: http(s) is
 	// downloaded for both families (Vertex's own crawler rejects forwarded URLs), while a
 	// gs:// URI is forwarded to Gemini as fileData.fileUri and read from Cloud Storage for
@@ -1666,7 +1693,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			return nil, bifrostErr
 		}
 		if rawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && rawBody {
-			jsonData = gemini.NormalizeRawGenerateContentRequestForCompatibility(jsonData)
+			jsonData = gemini.NormalizeRawGenerateContentRequestForCompatibility(ctx, jsonData, provider.GetProviderKey(), request.Model)
 		}
 		jsonData = stripVertexGeminiUnsupportedFieldsRaw(jsonData)
 
@@ -4425,7 +4452,7 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		}
 
 		if rawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && rawBody {
-			jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(jsonBody)
+			jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(ctx, jsonBody, provider.GetProviderKey(), request.Model)
 		}
 
 		// Skip field-stripping when large payload mode is active — jsonBody is nil

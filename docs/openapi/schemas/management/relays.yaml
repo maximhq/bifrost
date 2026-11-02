@@ -1,0 +1,864 @@
+# Relays: Bifrost-managed endpoints that relay calls to non-LLM HTTP APIs with the operator's
+# credential, governed and logged like inference. Served at /relay/{endpoint}/{path}.
+
+RelayAuthConfig:
+  type: object
+  description: How the relay presents its credential to the upstream.
+  properties:
+    type:
+      type: string
+      enum: [bearer, header, query, basic, aws_sigv4, none]
+      default: bearer
+      description: >
+        `bearer` sends `Authorization: Bearer <value>`; `header` sends `<header_name>: <value_prefix><value>`;
+        `query` appends `?<query_param>=<value>`; `basic` sends `Authorization: Basic base64(<value>)` where the
+        value is `user:password`; `aws_sigv4` signs the request with `credential.aws`; `none` injects nothing.
+    header_name:
+      type: string
+      description: Required for `header`. The header that carries the key.
+    query_param:
+      type: string
+      description: Required for `query`. The query parameter that carries the key.
+    value_prefix:
+      type: string
+      description: For `header`. Literal prefix placed before the key value.
+    aws:
+      $ref: '#/RelayAWSAuthConfig'
+  required:
+    - type
+
+RelayAWSAuthConfig:
+  type: object
+  description: SigV4 settings for `aws_sigv4`. The signing region is `credential.aws.region`.
+  properties:
+    service:
+      type: string
+      pattern: '^[a-z0-9-]+$'
+      description: SigV4 signing name, for example `textract` or `translate`.
+  required:
+    - service
+
+RelayCredential:
+  type: object
+  description: >
+    The one secret the relay signs in with. `value` is used by every auth type except `aws_sigv4`,
+    which reads `aws`. Omit for `auth.type: none`. In responses every secret is redacted; an update
+    that sends a redacted placeholder back keeps the stored value.
+  properties:
+    value:
+      $ref: './common.yaml#/EnvVar'
+    aws:
+      $ref: '#/RelayAWSCredential'
+
+RelayAWSCredential:
+  type: object
+  description: AWS credential for `aws_sigv4`. Static keys, or a role to assume.
+  properties:
+    access_key:
+      $ref: './common.yaml#/EnvVar'
+    secret_key:
+      $ref: './common.yaml#/EnvVar'
+    session_token:
+      $ref: './common.yaml#/EnvVar'
+    region:
+      description: Signing region. Required.
+      $ref: './common.yaml#/EnvVar'
+    role_arn:
+      $ref: './common.yaml#/EnvVar'
+    external_id:
+      $ref: './common.yaml#/EnvVar'
+    session_name:
+      $ref: './common.yaml#/EnvVar'
+  required:
+    - region
+
+RelayNetworkConfig:
+  type: object
+  description: Timeouts and connection limits towards the upstream.
+  properties:
+    timeout_seconds:
+      type: integer
+      minimum: 0
+      default: 60
+      description: Whole-response timeout for buffered calls.
+    stream_idle_timeout_in_seconds:
+      type: integer
+      minimum: 0
+      default: 60
+      description: Longest silence allowed between stream chunks.
+    max_conns_per_host:
+      type: integer
+      minimum: 0
+      default: 5000
+    insecure_skip_verify:
+      type: boolean
+      description: Skip upstream TLS certificate verification.
+    ca_cert_pem:
+      type: string
+      description: Extra CA certificate (PEM) to trust for the upstream.
+
+RelayUsageConfig:
+  type: object
+  description: >
+    How a call is measured and priced. The endpoint-level block is inherited by every route; a route's
+    `usage` overrides it field by field. Paths are gjson paths into a JSON body (`usage.pages`,
+    `DocumentMetadata.Pages`). Cost is `cost_per_request + extracted cost + billed units * cost_per_unit`.
+  properties:
+    model_path:
+      type: string
+      description: Where the model is read - a request body path, or a query parameter when `model_source` is `query`.
+    model_source:
+      type: string
+      enum: [body, query]
+      default: body
+    input_tokens_path:
+      type: string
+      description: Response body path of the input token count. Token counts are logged, never priced.
+    output_tokens_path:
+      type: string
+      description: Response body path of the output token count.
+    total_tokens_path:
+      type: string
+      description: Response body path of the total token count.
+    cost_path:
+      type: string
+      description: Response body path of a provider-reported cost in USD. Arrays are summed.
+    cost_per_request:
+      type: number
+      minimum: 0
+      description: Flat USD fee added to every billable call. A route may set 0 to waive the endpoint fee.
+    units_path:
+      type: string
+      description: Path of the billable quantity (pages, credits, text). Ignored for `body_bytes` and `body_chars`.
+    units_source:
+      type: string
+      enum: [response, request]
+      default: response
+      description: Which body the quantity is read from - what the upstream reports, or what the caller sent.
+    units_measure:
+      type: string
+      enum: [value, chars, body_bytes, body_chars]
+      default: value
+      description: >
+        `value` is the number at `units_path`; `chars` the character count of the string there; `body_bytes`
+        the byte length of the whole body; `body_chars` the character count of the whole body, any content type.
+    cost_per_unit:
+      type: number
+      minimum: 0
+      description: USD per billed unit.
+    units_block_size:
+      type: number
+      exclusiveMinimum: 0
+      description: Bill per started block of this many raw units (for example 100 characters). Unset bills the raw quantity exactly; an explicit 1 rounds fractional quantities up.
+    units_minimum:
+      type: number
+      minimum: 0
+      default: 0
+      description: Least number of billed units once a quantity was read.
+
+RelayStreamingConfig:
+  type: object
+  description: Which requests are relayed as streams rather than buffered.
+  properties:
+    paths:
+      type: array
+      items:
+        type: string
+      description: >
+        Path globs whose replies are always relayed as streams. Elsewhere a route's `stream` flag decides, and
+        without one the upstream reply does - a `text/event-stream` response streams, anything else is buffered
+        and priced. Nothing the caller sends (`Accept`, a `stream` flag) selects streaming.
+
+RelayRouteConfig:
+  type: object
+  description: >
+    One upstream operation. Routes are matched in order, first match wins. Without `skip_route_check`,
+    a request matching no route is refused with 404.
+  properties:
+    method:
+      type: string
+      enum: [GET, POST, PUT, PATCH, DELETE, HEAD]
+    path:
+      type: string
+      description: Segment glob below the endpoint, for example `/v1/search` or `/jobs/*`. A trailing `/**` matches the prefix and everything below it.
+    headers:
+      type: object
+      additionalProperties:
+        type: string
+      description: >
+        Request headers that must also match - header name (case-insensitive) to a value glob, for example
+        `X-Amz-Target: Textract.Get*`.
+    enabled:
+      type: boolean
+      default: true
+      description: When false, requests matching the route are refused with 404.
+    billable:
+      type: boolean
+      description: When false the call is relayed but neither counted nor charged. Defaults to true for POST and false for every other method.
+    stream:
+      type: boolean
+      description: Forces the streaming (true) or buffered (false) relay for this route.
+    usage:
+      $ref: '#/RelayUsageConfig'
+  required:
+    - method
+    - path
+
+RelayConfig:
+  type: object
+  description: A relay as sent on create and update. Secrets may be plain text or `env.`/`vault.` references.
+  properties:
+    name:
+      type: string
+      pattern: '^[A-Za-z0-9._-]{1,64}$'
+      description: Served at `/relay/{name}`. Immutable once created.
+    description:
+      type: string
+    base_url:
+      type: string
+      format: uri
+      description: Upstream origin and base path every relayed request is pinned under. `http` or `https`, no query, fragment or user info.
+    auth:
+      $ref: '#/RelayAuthConfig'
+    credential:
+      $ref: '#/RelayCredential'
+    extra_headers:
+      type: object
+      additionalProperties:
+        $ref: './common.yaml#/EnvVar'
+      description: Headers sent on every upstream request. A caller cannot replace them. Credential-bearing headers are redacted in responses.
+    network:
+      $ref: '#/RelayNetworkConfig'
+    proxy_config:
+      description: Outbound proxy for this relay. Omit to inherit the global proxy when it is enabled for inference.
+      $ref: './providers.yaml#/ProxyConfig'
+    usage:
+      $ref: '#/RelayUsageConfig'
+    streaming:
+      $ref: '#/RelayStreamingConfig'
+    routes:
+      type: array
+      items:
+        $ref: '#/RelayRouteConfig'
+    skip_route_check:
+      type: boolean
+      default: false
+      description: Relay requests that match no `routes[]` entry instead of refusing them with 404. Such calls use the method default for billing and the endpoint usage mapping.
+    ignore_upstream_cost:
+      type: boolean
+      default: false
+      description: Drop values read at `cost_path`. The operator's fee and unit pricing still apply.
+  required:
+    - name
+    - base_url
+  example:
+    name: textract
+    description: Amazon Textract
+    base_url: https://textract.us-east-1.amazonaws.com
+    auth:
+      type: aws_sigv4
+      aws:
+        service: textract
+    credential:
+      aws:
+        access_key: env.AWS_ACCESS_KEY_ID
+        secret_key: env.AWS_SECRET_ACCESS_KEY
+        region: us-east-1
+    usage:
+      units_path: DocumentMetadata.Pages
+      cost_per_unit: 0.0015
+    routes:
+      - method: POST
+        path: /
+        headers:
+          X-Amz-Target: Textract.AnalyzeDocument
+
+Relay:
+  description: A relay as returned by the API - the stored configuration with every secret redacted, plus the path callers use.
+  allOf:
+    - $ref: '#/RelayConfig'
+    - type: object
+      properties:
+        url:
+          type: string
+          description: The path callers send requests to, `/relay/{name}`.
+      required:
+        - url
+
+RelayListResponse:
+  type: object
+  properties:
+    relays:
+      type: array
+      items:
+        $ref: '#/Relay'
+    count:
+      type: integer
+      description: Number of relays in this page.
+    total_count:
+      type: integer
+      description: Number of relays matching `search`, across all pages.
+  required:
+    - relays
+    - count
+    - total_count
+
+RelayUsagePreviewSample:
+  type: object
+  description: >
+    One hypothetical relayed call - what the caller would send and what the upstream would answer.
+    Bodies are the operator's own samples; nothing is fetched from the upstream.
+  properties:
+    method:
+      type: string
+      default: POST
+    path:
+      type: string
+      description: Request path below the endpoint. A query string may follow, as in `/jobs/1?stream=true`.
+    headers:
+      type: object
+      additionalProperties:
+        type: string
+      description: Request headers, for routes that match on one.
+    accept:
+      type: string
+      description: The `Accept` header. Read from `headers` when empty.
+    request_content_type:
+      type: string
+    request_body:
+      type: string
+    status_code:
+      type: integer
+      default: 200
+    response_content_type:
+      type: string
+    response_body:
+      type: string
+  required:
+    - path
+
+RelayUsagePreviewRequest:
+  type: object
+  description: Exactly one of `config` (an unsaved relay) or `name` (a saved one) selects the configuration to preview.
+  properties:
+    name:
+      type: string
+      description: Name of a saved relay to preview.
+    config:
+      $ref: '#/RelayConfig'
+    sample:
+      $ref: '#/RelayUsagePreviewSample'
+  required:
+    - sample
+
+RelayPreviewTokens:
+  type: object
+  properties:
+    input:
+      type: integer
+    output:
+      type: integer
+    total:
+      type: integer
+
+RelayUsagePreview:
+  type: object
+  description: What the relay would record for the sample call - the route it matched, whether it counts, what it read from each body, and the resulting cost.
+  properties:
+    route_index:
+      type: [integer, 'null']
+      description: Index into `routes[]`, null when no route matched.
+    route_allowed:
+      type: boolean
+      description: False when no route matches and `skip_route_check` is off - the relay would answer 404.
+    billable:
+      type: boolean
+    streams:
+      type: boolean
+      description: Whether the call would be served by the streaming relay.
+    counted:
+      type: boolean
+      description: Whether the call reports usage - billable and a 2xx status.
+    model_path:
+      type: string
+    model_source:
+      type: string
+      enum: ['', body, query]
+    model:
+      type: string
+    units_source:
+      type: string
+      enum: ['', response, request]
+    units_measure:
+      type: string
+      enum: ['', value, chars, body_bytes, body_chars]
+    units_path:
+      type: string
+    units:
+      type: [number, 'null']
+      description: Raw quantity read, null when none.
+    units_billed:
+      type: [number, 'null']
+      description: Quantity after block rounding and the minimum, null when none.
+    units_block_size:
+      type: number
+    units_minimum:
+      type: number
+    cost_per_unit:
+      type: number
+    cost_per_request:
+      type: number
+    extracted_cost:
+      type: [number, 'null']
+      description: Value read at `cost_path`, null when none.
+    tokens:
+      oneOf:
+        - $ref: '#/RelayPreviewTokens'
+        - type: 'null'
+    cost:
+      type: number
+      description: What the log row and budgets would carry.
+    notes:
+      type: array
+      items:
+        type: string
+      description: Why a field came out empty, or what the relay would do with this call.
+
+RelayOverheadBucket:
+  type: object
+  properties:
+    name:
+      type: string
+      description: Component the time was spent in, for example `plugin.governance` or `core`.
+    duration_us:
+      type: number
+  required:
+    - name
+    - duration_us
+
+RelayLog:
+  type: object
+  description: One relayed call, or the job row a relayed call started.
+  properties:
+    id:
+      type: string
+    timestamp:
+      type: string
+      format: date-time
+    created_at:
+      type: string
+      format: date-time
+    relay_name:
+      type: string
+    kind:
+      type: string
+      enum: [call, job]
+    method:
+      type: string
+    path:
+      type: string
+    route_path:
+      type: string
+      description: The matched route's path glob. Absent when no route matched.
+    status:
+      type: string
+      enum: [success, error, cancelled]
+    status_code:
+      type: integer
+    streamed:
+      type: boolean
+    billable:
+      type: boolean
+    model:
+      type: string
+    latency:
+      type: number
+      description: Milliseconds from the pre-hooks to the end of the reply.
+    upstream_latency:
+      type: number
+      description: Milliseconds blocked on the upstream socket. Absent when unmeasured.
+    overhead_latency:
+      type: number
+      description: Bifrost overhead in milliseconds - total minus upstream. Absent when unmeasured.
+    overhead_breakdown:
+      type: array
+      items:
+        $ref: '#/RelayOverheadBucket'
+      description: Where the overhead was spent, by component.
+    bytes_out:
+      type: integer
+      format: int64
+      description: Response body bytes forwarded to the caller.
+    cost:
+      type: number
+      description: USD charged to budgets.
+    cost_per_request:
+      type: number
+    cost_per_unit:
+      type: number
+    extracted_cost:
+      type: number
+    units:
+      type: number
+    billed_units:
+      type: number
+    input_tokens:
+      type: integer
+    output_tokens:
+      type: integer
+    total_tokens:
+      type: integer
+    job_id:
+      type: string
+    job_status:
+      type: string
+    parent_log_id:
+      type: string
+      description: On a job row, the id of the start call's log.
+    user_id:
+      type: string
+    user_name:
+      type: string
+    virtual_key_id:
+      type: string
+    virtual_key_name:
+      type: string
+    team_id:
+      type: string
+    team_name:
+      type: string
+    customer_id:
+      type: string
+    customer_name:
+      type: string
+    business_unit_id:
+      type: string
+    business_unit_name:
+      type: string
+    project_id:
+      type: string
+    project_name:
+      type: string
+    team_ids:
+      type: array
+      items:
+        type: string
+      description: Every team the call was attributed to, when the caller belongs to more than one.
+    team_names:
+      type: array
+      items:
+        type: string
+    customer_ids:
+      type: array
+      items:
+        type: string
+    customer_names:
+      type: array
+      items:
+        type: string
+    business_unit_ids:
+      type: array
+      items:
+        type: string
+    business_unit_names:
+      type: array
+      items:
+        type: string
+    user_agent:
+      type: string
+      description: Raw HTTP `User-Agent` of the calling client.
+    app:
+      type: string
+      description: Client application detected from `user_agent`.
+    request_id:
+      type: string
+    request_body:
+      type: string
+    response_body:
+      type: string
+    content_hidden:
+      type: boolean
+      description: True when request and response content was not persisted for this call.
+    plugin_logs:
+      type: string
+      description: JSON-serialized plugin log entries grouped by plugin name.
+    budget_ids:
+      type: array
+      items:
+        type: string
+    rate_limit_ids:
+      type: array
+      items:
+        type: string
+    request_headers:
+      type: object
+      additionalProperties:
+        type: string
+    response_headers:
+      type: object
+      additionalProperties:
+        type: string
+    error_details:
+      $ref: '../../schemas/inference/common.yaml#/BifrostError'
+  required:
+    - id
+    - timestamp
+    - created_at
+    - relay_name
+    - kind
+    - method
+    - path
+    - status
+    - status_code
+    - streamed
+    - billable
+    - bytes_out
+    - request_id
+    - content_hidden
+
+RelayLogSearchResult:
+  type: object
+  properties:
+    logs:
+      type: array
+      items:
+        $ref: '#/RelayLog'
+    pagination:
+      $ref: '#/RelayLogPagination'
+    has_logs:
+      type: boolean
+      description: Whether any relay log exists at all, so an empty page can be told from an empty store.
+  required:
+    - logs
+    - pagination
+    - has_logs
+
+RelayLogPagination:
+  type: object
+  description: Pagination metadata of a Relay Logs page. Relay logs sort by timestamp, latency or cost only.
+  properties:
+    limit:
+      type: integer
+    offset:
+      type: integer
+    sort_by:
+      type: string
+      enum: [timestamp, latency, cost]
+    order:
+      type: string
+      enum: [asc, desc]
+    total_count:
+      type: integer
+      format: int64
+  required:
+    - limit
+    - offset
+    - sort_by
+    - order
+    - total_count
+
+RelayLogStats:
+  type: object
+  properties:
+    total_requests:
+      type: integer
+      format: int64
+    success_count:
+      type: integer
+      format: int64
+    error_count:
+      type: integer
+      format: int64
+    success_rate:
+      type: number
+      description: Percentage of requests that succeeded.
+    average_latency:
+      type: number
+      description: Milliseconds.
+    total_cost:
+      type: number
+    total_units:
+      type: number
+    total_bytes_out:
+      type: integer
+      format: int64
+      description: Body bytes forwarded to callers.
+    previous:
+      description: The same statistics for the preceding window of equal length. Present only with `compare_to_previous=true` and a bounded time range.
+      allOf:
+        - $ref: '#/RelayLogStats'
+    has_previous_period:
+      type: boolean
+      description: Whether `previous` was computed.
+
+RelayHistogramBucket:
+  type: object
+  properties:
+    timestamp:
+      type: string
+      format: date-time
+    count:
+      type: integer
+      format: int64
+    success:
+      type: integer
+      format: int64
+    error:
+      type: integer
+      format: int64
+    cancelled:
+      type: integer
+      format: int64
+      description: Calls the caller hung up on.
+    cost:
+      type: number
+    avg_latency:
+      type: number
+      description: Mean latency of the bucket's calls, milliseconds; 0 when nothing was timed.
+    units:
+      type: number
+      description: Billed units in the bucket.
+    bytes_out:
+      type: integer
+      format: int64
+      description: Body bytes forwarded in the bucket.
+
+RelayHistogramResult:
+  type: object
+  properties:
+    buckets:
+      type: array
+      items:
+        $ref: '#/RelayHistogramBucket'
+    bucket_size_seconds:
+      type: integer
+      format: int64
+
+RelayTopEndpoint:
+  type: object
+  properties:
+    relay_name:
+      type: string
+    count:
+      type: integer
+      format: int64
+    error_count:
+      type: integer
+      format: int64
+    cost:
+      type: number
+    average_latency:
+      type: number
+      description: Milliseconds.
+
+RelayTopEndpointsResult:
+  type: object
+  properties:
+    endpoints:
+      type: array
+      items:
+        $ref: '#/RelayTopEndpoint'
+
+RelayFilterOption:
+  type: object
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+  required:
+    - id
+    - name
+
+RelayFilterData:
+  type: object
+  description: Distinct values per dimension. A dimension that was not requested is omitted.
+  properties:
+    relay_names:
+      type: array
+      items:
+        type: string
+    methods:
+      type: array
+      items:
+        type: string
+    apps:
+      type: array
+      items:
+        type: string
+    virtual_keys:
+      type: array
+      items:
+        $ref: '#/RelayFilterOption'
+    users:
+      type: array
+      items:
+        $ref: '#/RelayFilterOption'
+    teams:
+      type: array
+      items:
+        $ref: '#/RelayFilterOption'
+    customers:
+      type: array
+      items:
+        $ref: '#/RelayFilterOption'
+    business_units:
+      type: array
+      items:
+        $ref: '#/RelayFilterOption'
+    projects:
+      type: array
+      items:
+        $ref: '#/RelayFilterOption'
+
+DeleteRelayLogsRequest:
+  type: object
+  required:
+    - ids
+  properties:
+    ids:
+      type: array
+      minItems: 1
+      items:
+        type: string
+      description: IDs of the log rows to delete. Job rows that settle a deleted call are deleted with it.
+
+DeleteRelayLogsResponse:
+  type: object
+  properties:
+    deleted:
+      type: integer
+      description: Number of IDs submitted.
+
+RelayAccessProfileUsage:
+  type: object
+  description: An access-profile template that grants the relay.
+  properties:
+    id:
+      type: integer
+    name:
+      type: string
+    is_active:
+      type: boolean
+    via_allow_all:
+      type: boolean
+      description: True when the profile grants every relay rather than naming this one.
+    user_count:
+      type: integer
+      format: int64
+      description: Active, non-expired per-user copies of the template.
+
+RelayAccessProfilesResponse:
+  type: object
+  properties:
+    access_profiles:
+      type: array
+      items:
+        $ref: '#/RelayAccessProfileUsage'
+    total:
+      type: integer
+      format: int64
+    limit:
+      type: integer
+    offset:
+      type: integer

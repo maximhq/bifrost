@@ -125,16 +125,15 @@ func TestConvertMCPToolToBifrostSchema_SortsPropertiesAndDefs(t *testing.T) {
 }
 
 // TestComputeToolsHash_StableAcrossRediscovery: the tools-changed callback
-// (DB persist, local MCP server resync) is gated on computeToolsHash, which
+// (DB persist, local MCP server resync) is gated on computeDiscoveryHash, which
 // hashes the serialized tools. Rediscovering the same server tools must hash
 // the same.
 func TestComputeToolsHash_StableAcrossRediscovery(t *testing.T) {
-	mapping := map[string]string{"search": "search"}
 	var want string
 	for i := 0; i < 200; i++ {
 		mcpTool := decodeSchemaOrderTool(t, "search", schemaOrderInputSchema)
 		tools := map[string]schemas.ChatTool{"search": convertMCPToolToBifrostSchema(&mcpTool, defaultLogger)}
-		got := computeToolsHash(tools, mapping, "")
+		got := computeDiscoveryHash(&schemas.MCPDiscovery{Tools: tools})
 		if i == 0 {
 			want = got
 			continue
@@ -170,7 +169,7 @@ func TestPerformCheck_RepeatedSyncs_ToolSchemaBytesStable(t *testing.T) {
 	manager.clientMap[config.ID] = state
 
 	callCount := 0
-	manager.SetToolsChangeCallback(func(string, string, map[string]schemas.ChatTool, map[string]string, string) {
+	manager.SetDiscoveryChangeCallback(func(string, string, *schemas.MCPDiscovery) {
 		callCount++
 	})
 

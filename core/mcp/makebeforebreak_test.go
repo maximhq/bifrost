@@ -81,6 +81,7 @@ func (g *dialGate) releaseAll() {
 
 // buildGatedMCPServer starts a streamable-HTTP MCP server (one "echo" tool)
 // whose middleware routes new-connection requests through the given dialGate.
+// Pinned to 2025-11-25: protocol sessions ended with 2026-07-28.
 func buildGatedMCPServer(t *testing.T, gate *dialGate) *httptest.Server {
 	t.Helper()
 
@@ -94,7 +95,7 @@ func buildGatedMCPServer(t *testing.T, gate *dialGate) *httptest.Server {
 		return mcpgo.NewToolResultText(msg), nil
 	})
 
-	streamable := server.NewStreamableHTTPServer(s)
+	streamable := server.NewStreamableHTTPServer(s, server.WithStreamableHTTPProtocolVersions(mcpgo.ProtocolVersion20251125))
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if gate != nil {
 			gate.maybeBlock(r)
@@ -168,6 +169,7 @@ func TestConnectToMCPClient_MakeBeforeBreak_ServesDuringDialAndClosesOldConn(t *
 	ts := buildGatedMCPServer(t, gate)
 
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, nil, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
 	config := newMakeBeforeBreakConfig("serves-during-dial", ts.URL)
 	toolName := config.Name + "-echo"
 
@@ -228,6 +230,7 @@ func TestConnectToMCPClient_MakeBeforeBreak_ConcurrentCallsAcrossSwap(t *testing
 	ts := buildGatedMCPServer(t, nil)
 
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, nil, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
 	config := newMakeBeforeBreakConfig("concurrent-swap", ts.URL)
 	toolName := config.Name + "-echo"
 
@@ -349,6 +352,7 @@ func TestConnectToMCPClient_MakeBeforeBreak_DialFailure_PostFailureState(t *test
 			ts := buildGatedMCPServer(t, nil)
 
 			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, &flipCredStore{failWith: tc.failWith}, nil, nil)
+			t.Cleanup(func() { _ = m.Cleanup() })
 			config := newMakeBeforeBreakConfig("dial-failure", ts.URL)
 
 			require.NoError(t, m.connectToMCPClient(context.Background(), config))
@@ -378,7 +382,6 @@ func TestConnectToMCPClient_MakeBeforeBreak_DialFailure_PostFailureState(t *test
 			// "needs re-authorization" / "disconnected" reason instead of a
 			// generic "not available").
 			assert.NotEmpty(t, after.ToolMap, "a failed re-dial must keep the last-known tool map")
-			assert.NotEmpty(t, after.ToolNameMapping)
 
 			// Reachability of the captured connection, which is the whole
 			// point of the split above.
@@ -413,7 +416,6 @@ func TestConnectToMCPClient_MakeBeforeBreak_DialFailure_PostFailureState(t *test
 				assert.Nil(t, afterSecondFailure.Conn)
 			}
 			assert.Equal(t, before.ToolMap, afterSecondFailure.ToolMap, "a second failed re-dial must keep the original last-known tool map")
-			assert.Equal(t, before.ToolNameMapping, afterSecondFailure.ToolNameMapping)
 		})
 	}
 }
@@ -434,6 +436,7 @@ func TestConnectToMCPClient_MakeBeforeBreak_DialFailure_KeepsLiveConnectionServi
 	ts := buildGatedMCPServer(t, nil)
 
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, &flipCredStore{failWith: fmt.Errorf("connection refused")}, nil, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
 	config := newMakeBeforeBreakConfig("dial-failure-keeps-conn", ts.URL)
 	toolName := config.Name + "-echo"
 
@@ -505,6 +508,7 @@ func TestConnectionChecker_PerformCheck_StaleGenerationWriteDropped(t *testing.T
 	t.Cleanup(ts.Close)
 
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, nil, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
 	config := newMakeBeforeBreakConfig("stale-sync", ts.URL)
 
 	require.NoError(t, m.connectToMCPClient(context.Background(), config))

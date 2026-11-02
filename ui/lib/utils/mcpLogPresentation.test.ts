@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import type { MCPToolLogEntry } from "@/lib/types/logs";
-import { getMCPLogPillTone, getMCPLogPresentation, getMCPLogTimeline } from "./mcpLogPresentation";
+import { getMCPLogPillTone, getMCPLogPresentation, getMCPLogTimeline, getMCPReadKind } from "./mcpLogPresentation";
 
 const TIMESTAMP = "2026-09-14T10:00:00.000Z";
 
@@ -118,5 +118,13 @@ describe("observed tool timing", () => {
 				pendingPolicyEntry({ source: "native", metadata: { inspection_phase: "pre_execution", observed_latency_ms: "20" } }),
 			).observedDuration,
 		).toBeUndefined();
+	});
+});
+
+describe("read kind", () => {
+	test("prompt and resource reads are named; tool calls are not", () => {
+		expect(getMCPReadKind({ method: "prompts/get" })).toBe("Prompt");
+		expect(getMCPReadKind({ method: "resources/read" })).toBe("Resource");
+		expect(getMCPReadKind({})).toBeUndefined();
 	});
 });

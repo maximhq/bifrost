@@ -66,12 +66,12 @@ var logsPageParams = map[string]struct{}{
 	"parent_request_id": {}, "providers": {}, "models": {}, "aliases": {}, "status": {}, "stop_reasons": {},
 	"tool_call_names": {}, "objects": {}, "selected_key_ids": {}, "virtual_key_ids": {}, "routing_rule_ids": {},
 	"routing_engine_used": {}, "apps": {}, "user_agents": {}, "complexity_tiers": {}, "complexity_mechanisms": {},
-	"session_id": {}, "user_ids": {}, "team_ids": {}, "customer_ids": {}, "business_unit_ids": {}, "project_ids": {},
+	"session_id": {}, "user_ids": {}, "team_ids": {}, "customer_ids": {}, "business_unit_ids": {}, "project_ids": {}, "topic_ids": {},
 	"content_search": {}, "request_id": {}, "min_latency": {}, "max_latency": {}, "min_cost": {}, "max_cost": {},
 	"min_tokens": {}, "max_tokens": {},
 	"start_time": {}, "end_time": {}, "limit": {}, "offset": {}, "sort_by": {}, "order": {}, "polling": {},
 	"period": {}, "missing_cost_only": {}, "cache_hit_types": {}, "metadata_filters": {}, "selected_log": {},
-	"grouped": {},
+	"grouped": {}, "agent_names": {}, "agent_correlation_id": {},
 }
 
 // markdownLink matches an inline link, allowing one level of brackets in its
@@ -294,9 +294,11 @@ func failuresLink(filters *logstore.SearchFilters, totalRequests int64, successR
 // select. It has no error-type, error-code or status-code filter, by decision,
 // so a query narrowed by one cannot be reproduced there: the link would open
 // every failure beside a count of seventeen. Such a result gets no link - each
-// row still carries its own - rather than one that is silently wider.
+// row still carries its own - rather than one that is silently wider. The same
+// holds for guardrail_outcomes, which only the Guardrail Incidents view reads.
 func linkableInLogsView(filters *logstore.SearchFilters) bool {
-	return len(filters.ErrorTypes) == 0 && len(filters.ErrorCodes) == 0 && len(filters.StatusCodes) == 0
+	return len(filters.ErrorTypes) == 0 && len(filters.ErrorCodes) == 0 && len(filters.StatusCodes) == 0 &&
+		len(filters.GuardrailOutcomes) == 0
 }
 
 // setLogsLink puts logs_link on a result when there is one to give.
@@ -337,9 +339,11 @@ func logsViewLink(filters *logstore.SearchFilters) string {
 		{"customer_ids", filters.CustomerIDs},
 		{"business_unit_ids", filters.BusinessUnitIDs},
 		{"project_ids", filters.ProjectIDs},
+		{"topic_ids", filters.TopicIDs},
 		{"apps", filters.Apps},
 		{"user_agents", filters.UserAgents},
 		{"cache_hit_types", filters.CacheHitTypes},
+		{"agent_names", filters.AgentNames},
 	}
 	for _, list := range lists {
 		if len(list.values) > 0 {
@@ -354,6 +358,7 @@ func logsViewLink(filters *logstore.SearchFilters) string {
 		{"request_id", filters.RequestID},
 		{"parent_request_id", filters.ParentRequestID},
 		{"session_id", filters.SessionID},
+		{"agent_correlation_id", filters.AgentCorrelationID},
 	}
 	for _, text := range texts {
 		if strings.TrimSpace(text.value) != "" {

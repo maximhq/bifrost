@@ -2,10 +2,13 @@ package governance
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -829,6 +832,25 @@ func TestPreLLMHookChecksEveryModelAPassthroughBodyNames(t *testing.T) {
 		{"vertex body naming the allowed model as a publisher resource", geminiKey, genai(schemas.Vertex, "gemini-embedding-001", `{"model":"projects/p/locations/l/publishers/google/models/gemini-embedding-001"}`), DecisionAllow},
 		{"genai body naming another model as a resource", geminiKey, genai(schemas.Gemini, "gemini-embedding-001", `{"model":"models/gemini-2.5-pro"}`), DecisionModelBlocked},
 	}...)
+	// SageMaker names the model in the path (the endpoint); a body "model" is the container's own
+	// served name, not a Bifrost model, so only the endpoint is checked.
+	sageMakerKey := buildVirtualKeyWithProviders("vk-pt", "sk-bf-pt", "Passthrough VK", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("sagemaker", []string{"my-ep"}),
+	})
+	sageMaker := func(endpoint, body string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.SageMaker, Model: endpoint, Method: "POST", Path: "/endpoints/" + endpoint + "/invocations", Body: []byte(body),
+		}}
+	}
+	cases = append(cases, []struct {
+		name string
+		vk   *configstoreTables.TableVirtualKey
+		req  *schemas.BifrostRequest
+		want Decision
+	}{
+		{"sagemaker allowed endpoint, body naming the served model", sageMakerKey, sageMaker("my-ep", `{"model":"qwen2.5-0.5b","messages":[]}`), DecisionAllow},
+		{"sagemaker disallowed endpoint, body naming an allowed name", sageMakerKey, sageMaker("other-ep", `{"model":"my-ep"}`), DecisionModelBlocked},
+	}...)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			plugin := newAccessTestPlugin(t, tc.vk, nil)
@@ -843,6 +865,226 @@ func TestPreLLMHookChecksEveryModelAPassthroughBodyNames(t *testing.T) {
 	_, shortCircuit, err := plugin.PreLLMHook(emptyCtx(), passthrough(schemas.PassthroughRequest, "", mixed))
 	require.NoError(t, err)
 	assert.Nil(t, shortCircuit)
+}
+
+// An advisor tool names a second model that the provider runs and bills within the same request,
+// so that model is held to the key's model restriction just as the request's own model is. Each
+// ingress that can carry the tool is driven: the native Messages body (converted the way the
+// /anthropic/v1/messages route converts it), the neutral Responses tool (/v1/responses and the Go
+// SDK), and an Anthropic passthrough body. A request without the tool is untouched.
+func TestPreLLMHookChecksModelsNamedByServerTools(t *testing.T) {
+	const executor = "claude-haiku-4-5-20251001"
+	const advisor = "claude-opus-4-8"
+	restricted := buildVirtualKeyWithProviders("vk-adv", "sk-bf-adv", "Advisor VK", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("anthropic", []string{executor}),
+	})
+	permitsBoth := buildVirtualKeyWithProviders("vk-adv", "sk-bf-adv", "Advisor VK", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("anthropic", []string{executor, advisor}),
+	})
+
+	messages := func(t *testing.T, advisorModel string) *schemas.BifrostRequest {
+		t.Helper()
+		body := `{"model":"anthropic/` + executor + `","max_tokens":1024,"messages":[{"role":"user","content":"hi"}]`
+		if advisorModel != "" {
+			body += `,"tools":[{"type":"advisor_20260301","name":"advisor","model":"` + advisorModel + `"}]`
+		}
+		body += `}`
+		var native anthropic.AnthropicMessageRequest
+		require.NoError(t, json.Unmarshal([]byte(body), &native))
+		converted := native.ToBifrostResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+		require.NotNil(t, converted)
+		return &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: converted}
+	}
+	responses := func(t *testing.T, advisorModel string) *schemas.BifrostRequest {
+		t.Helper()
+		req := &schemas.BifrostResponsesRequest{Provider: schemas.Anthropic, Model: executor, Params: &schemas.ResponsesParameters{}}
+		if advisorModel != "" {
+			require.NoError(t, json.Unmarshal([]byte(`[{"type":"advisor","model":"`+advisorModel+`"}]`), &req.Params.Tools))
+		}
+		return &schemas.BifrostRequest{RequestType: schemas.ResponsesStreamRequest, ResponsesRequest: req}
+	}
+	passthrough := func(_ *testing.T, advisorModel string) *schemas.BifrostRequest {
+		body := `{"model":"` + executor + `","max_tokens":1024,"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"advisor_20260301","name":"advisor","model":"` + advisorModel + `"}]}`
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.Anthropic, Model: executor, Method: "POST", Path: "/v1/messages", Body: []byte(body),
+		}}
+	}
+
+	advisorTool := func(advisorModel string) map[string]any {
+		return map[string]any{"type": "advisor_20260301", "name": "advisor", "model": advisorModel}
+	}
+	// x-bf-passthrough-extra-params merges ExtraParams["tools"] onto the wire after governance runs.
+	responsesExtraParams := func(_ *testing.T, advisorModel string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: schemas.Anthropic, Model: executor,
+			Params: &schemas.ResponsesParameters{ExtraParams: map[string]any{"tools": []any{advisorTool(advisorModel)}}},
+		}}
+	}
+	chatExtraParams := func(_ *testing.T, advisorModel string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.Anthropic, Model: executor,
+			Params: &schemas.ChatParameters{ExtraParams: map[string]any{"tools": json.RawMessage(`[{"type":"advisor_20260301","name":"advisor","model":"` + advisorModel + `"}]`)}},
+		}}
+	}
+	// Raw forwarding sends RawRequestBody, not the parsed parameters; a tool the parser does not
+	// map (a later advisor version here) reaches the provider only through the raw body.
+	rawTools := func(advisorModel string) string {
+		return `[{"type":"advisor_20270101","name":"advisor","model":"` + advisorModel + `"}]`
+	}
+	responsesRawBody := func(_ *testing.T, advisorModel string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.ResponsesStreamRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: schemas.Anthropic, Model: executor, Params: &schemas.ResponsesParameters{},
+			RawRequestBody: []byte(`{"model":"` + executor + `","max_tokens":1024,"messages":[],"tools":` + rawTools(advisorModel) + `}`),
+		}}
+	}
+	chatRawBody := func(_ *testing.T, advisorModel string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.Anthropic, Model: executor,
+			RawRequestBody: []byte(`{"model":"` + executor + `","messages":[],"tools":` + rawTools(advisorModel) + `}`),
+		}}
+	}
+	// A JSON parser that keeps the last duplicate key sees the second tools array and the second
+	// model, so every occurrence is checked; escaped key and type spellings decode to the same names.
+	passthroughDuplicateKeys := func(_ *testing.T, advisorModel string) *schemas.BifrostRequest {
+		body := `{"model":"` + executor + `","messages":[],"tools":[],"t\u006fols":[{"type":"\u0061dvisor_20260301","name":"advisor","model":"` + executor + `","model":"` + advisorModel + `"}]}`
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.Anthropic, Model: executor, Method: "POST", Path: "/v1/messages", Body: []byte(body),
+		}}
+	}
+	inlineBatch := func(_ *testing.T, advisorModel string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{
+			Provider: schemas.Anthropic,
+			Requests: []schemas.BatchRequestItem{{CustomID: "a", Params: map[string]any{
+				"model": executor, "max_tokens": 1024, "messages": []any{}, "tools": []any{advisorTool(advisorModel)},
+			}}},
+		}}
+	}
+	batchRawBody := func(_ *testing.T, advisorModel string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{
+			Provider:       schemas.Anthropic,
+			Requests:       []schemas.BatchRequestItem{{CustomID: "a", Params: map[string]any{"model": executor}}},
+			RawRequestBody: []byte(`{"requests":[{"custom_id":"a","params":{"model":"` + executor + `","max_tokens":1024,"messages":[],"tools":` + rawTools(advisorModel) + `}}]}`),
+		}}
+	}
+
+	routes := []struct {
+		name  string
+		build func(t *testing.T, advisorModel string) *schemas.BifrostRequest
+	}{
+		{"anthropic messages", messages},
+		{"responses", responses},
+		{"anthropic passthrough", passthrough},
+		{"responses extra params", responsesExtraParams},
+		{"chat extra params", chatExtraParams},
+		{"responses raw body", responsesRawBody},
+		{"chat raw body", chatRawBody},
+		{"passthrough duplicate and escaped keys", passthroughDuplicateKeys},
+		{"anthropic inline batch", inlineBatch},
+		{"anthropic batch raw body", batchRawBody},
+	}
+	for _, route := range routes {
+		t.Run(route.name+": advisor model outside the key's models is refused", func(t *testing.T) {
+			plugin := newAccessTestPlugin(t, restricted, nil)
+			_, shortCircuit, err := plugin.PreLLMHook(presentCtx("sk-bf-adv"), route.build(t, advisor))
+			require.NoError(t, err)
+			assertShortCircuitDecision(t, DecisionModelBlocked, shortCircuit)
+			assert.Contains(t, shortCircuit.Error.Error.Message, advisor)
+		})
+		t.Run(route.name+": provider-prefixed advisor model is judged on its bare id", func(t *testing.T) {
+			plugin := newAccessTestPlugin(t, restricted, nil)
+			_, shortCircuit, err := plugin.PreLLMHook(presentCtx("sk-bf-adv"), route.build(t, "anthropic/"+advisor))
+			require.NoError(t, err)
+			assertShortCircuitDecision(t, DecisionModelBlocked, shortCircuit)
+		})
+		t.Run(route.name+": advisor model the key permits is allowed", func(t *testing.T) {
+			plugin := newAccessTestPlugin(t, permitsBoth, nil)
+			_, shortCircuit, err := plugin.PreLLMHook(presentCtx("sk-bf-adv"), route.build(t, advisor))
+			require.NoError(t, err)
+			assertShortCircuitDecision(t, DecisionAllow, shortCircuit)
+		})
+		t.Run(route.name+": advisor naming the executor model is allowed", func(t *testing.T) {
+			plugin := newAccessTestPlugin(t, restricted, nil)
+			_, shortCircuit, err := plugin.PreLLMHook(presentCtx("sk-bf-adv"), route.build(t, executor))
+			require.NoError(t, err)
+			assertShortCircuitDecision(t, DecisionAllow, shortCircuit)
+		})
+	}
+	for _, route := range routes[:2] {
+		t.Run(route.name+": no server tool, restricted key", func(t *testing.T) {
+			plugin := newAccessTestPlugin(t, restricted, nil)
+			_, shortCircuit, err := plugin.PreLLMHook(presentCtx("sk-bf-adv"), route.build(t, ""))
+			require.NoError(t, err)
+			assertShortCircuitDecision(t, DecisionAllow, shortCircuit)
+		})
+	}
+}
+
+// An advisor model with a budget or rate limit of its own is refused rather than checked and never
+// charged: the request's usage is charged against the executor model's limits alone.
+func TestPreLLMHookRefusesServerToolModelsWithTheirOwnLimits(t *testing.T) {
+	vk := buildVirtualKeyWithProviders("vk-adv", "sk-bf-adv", "Advisor VK", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("anthropic", []string{"*"}),
+	})
+	limited := buildRateLimit("rl-opus", 1000, 1000)
+	logger := NewMockLogger()
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys:  []configstoreTables.TableVirtualKey{*vk},
+		ModelConfigs: []configstoreTables.TableModelConfig{*buildModelConfig("mc-opus", "claude-opus-4-8", nil, nil, limited)},
+		RateLimits:   []configstoreTables.TableRateLimit{*limited},
+	}, nil, nil)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+	req := &schemas.BifrostResponsesRequest{Provider: schemas.Anthropic, Model: "claude-haiku-4-5-20251001", Params: &schemas.ResponsesParameters{}}
+	require.NoError(t, json.Unmarshal([]byte(`[{"type":"advisor","model":"claude-opus-4-8"}]`), &req.Params.Tools))
+	_, shortCircuit, err := plugin.PreLLMHook(presentCtx("sk-bf-adv"), &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: req})
+	require.NoError(t, err)
+	assertShortCircuitDecision(t, DecisionModelLimitsUnattributable, shortCircuit)
+	assert.Contains(t, shortCircuit.Error.Error.Message, "claude-opus-4-8")
+}
+
+// BenchmarkPreLLMHookServerToolModels measures the governance pre-hook on Responses requests with no
+// tools, with a function tool only (the common case, which must not pay for the server-tool scan),
+// and with an advisor tool naming a second model.
+func BenchmarkPreLLMHookServerToolModels(b *testing.B) {
+	vk := buildVirtualKeyWithProviders("vk-adv", "sk-bf-adv", "Advisor VK", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("anthropic", []string{"*"}),
+	})
+	plugin := newAccessTestPlugin(b, vk, nil)
+	const functionTool = `[{"type":"function","name":"f","parameters":{"type":"object"}}]`
+	rawBody := []byte(`{"model":"claude-haiku-4-5-20251001","max_tokens":1024,"messages":[{"role":"user","content":"` +
+		strings.Repeat("x", 4096) + `"}],"tools":[{"name":"f","input_schema":{"type":"object"}}]}`)
+	cases := []struct {
+		name, tools string
+		raw         []byte
+	}{
+		{"no_tools", "", nil},
+		{"function_tool", functionTool, nil},
+		{"advisor_tool", `[{"type":"function","name":"f","parameters":{"type":"object"}},{"type":"advisor","model":"claude-opus-4-8"}]`, nil},
+		// Raw forwarding (native route with OAuth or Claude Code passthrough) also scans the body it sends.
+		{"raw_body_function_tool", functionTool, rawBody},
+	}
+	for _, tc := range cases {
+		params := &schemas.ResponsesParameters{}
+		if tc.tools != "" {
+			if err := json.Unmarshal([]byte(tc.tools), &params.Tools); err != nil {
+				b.Fatal(err)
+			}
+		}
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				req := &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{
+					Provider: schemas.Anthropic, Model: "claude-haiku-4-5-20251001", Params: params, RawRequestBody: tc.raw,
+				}}
+				if _, _, err := plugin.PreLLMHook(presentCtx("sk-bf-adv"), req); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
 }
 
 // TestBudgetResolver_EvaluateVirtualKey_ActiveNoExpiry verifies that a VK

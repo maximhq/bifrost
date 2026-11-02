@@ -9,7 +9,6 @@ import (
 	"net"
 
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/mattn/go-sqlite3"
 )
 
 var (
@@ -18,6 +17,10 @@ var (
 	// ErrInvalidWebhookReference marks a submit whose webhook endpoint
 	// reference is unusable — a caller mistake, not a server failure.
 	ErrInvalidWebhookReference = fmt.Errorf("invalid webhook endpoint reference")
+	// ErrPartialLogDelete marks a log delete whose log rows are gone but whose
+	// Warp topic rows could not be removed after them. Only ClickHouse returns
+	// it: it has no transaction to roll the log delete back with.
+	ErrPartialLogDelete = fmt.Errorf("logs deleted but their warp topic rows were not")
 )
 
 // postgresSQLStateError is the subset of *pgconn.PgError (and any other
@@ -128,28 +131,4 @@ func IsTransientWriteError(err error) bool {
 		return true
 	}
 	return isPostgresTransientError(err) || isSQLiteTransientError(err)
-}
-
-// isSQLiteTransientError reports whether err is SQLITE_BUSY or SQLITE_LOCKED
-// (any extended variant, e.g. SQLITE_BUSY_SNAPSHOT) from the SQLite driver.
-// Both mean another connection holds the lock the write needs; they say nothing
-// about the rows, so the batch can be retried whole once the holder commits.
-// Falling back to per-row inserts instead makes every row wait out the
-// connection's busy_timeout again.
-func isSQLiteTransientError(err error) bool {
-	var sqliteErr sqlite3.Error
-	if errors.As(err, &sqliteErr) {
-		return sqliteErr.Code == sqlite3.ErrBusy || sqliteErr.Code == sqlite3.ErrLocked
-	}
-	var code sqlite3.ErrNo
-	if errors.As(err, &code) {
-		return code == sqlite3.ErrBusy || code == sqlite3.ErrLocked
-	}
-	// An extended code carries its primary code in the low byte (ErrNo.Extend).
-	var extended sqlite3.ErrNoExtended
-	if errors.As(err, &extended) {
-		base := sqlite3.ErrNo(int(extended) & 0xff)
-		return base == sqlite3.ErrBusy || base == sqlite3.ErrLocked
-	}
-	return false
 }

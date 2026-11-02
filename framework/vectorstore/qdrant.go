@@ -219,32 +219,66 @@ func (s *QdrantStore) GetAll(ctx context.Context, namespace string, queries []Qu
 	// paging to completion would never advance.
 	scrollLimit := boundedPageLimit(limit, 100)
 
-	scrollResult, err := s.client.Scroll(ctx, &qdrant.ScrollPoints{
+	// Vectors are large, so they are read only for a caller that asked.
+	includeVectors := IncludeVectorsRequested(ctx)
+	request := &qdrant.ScrollPoints{
 		CollectionName: namespace,
 		Filter:         filter,
 		Limit:          &scrollLimit,
 		Offset:         offset,
 		WithPayload:    qdrant.NewWithPayload(true),
-	})
+	}
+	if includeVectors {
+		request.WithVectors = qdrant.NewWithVectors(true)
+	}
+	// The next page starts at the offset Qdrant hands back, which is the
+	// first point it has not returned. Scroll's offset is inclusive, so
+	// resuming from the last point returned instead would return that point
+	// again at the head of every page after the first.
+	scrollResult, nextOffset, err := s.client.ScrollAndOffset(ctx, request)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to scroll points: %w", err)
 	}
 
 	results := make([]SearchResult, 0, len(scrollResult))
-	var lastID string
-
 	for _, point := range scrollResult {
-		lastID = pointIDToString(point.Id)
-		results = append(results, SearchResult{
-			ID:         lastID,
+		result := SearchResult{
+			ID:         pointIDToString(point.Id),
 			Properties: filterProperties(payloadToMap(point.Payload), selectFields),
-		})
+		}
+		if includeVectors {
+			result.Vector = qdrantDenseVector(point.GetVectors())
+		}
+		results = append(results, result)
 	}
 
-	if len(scrollResult) >= int(scrollLimit) {
-		return results, &lastID, nil
+	if nextOffset != nil {
+		next := pointIDToString(nextOffset)
+		return results, &next, nil
 	}
 	return results, nil, nil
+}
+
+// FiltersVectorReadsOnServer reports that a scroll applies its filter on the
+// server.
+func (s *QdrantStore) FiltersVectorReadsOnServer() bool { return true }
+
+// qdrantDenseVector is a point's unnamed dense vector, or nil when it has
+// none. Both shapes are read: newer servers return it under Dense, older ones
+// in the deprecated Data field.
+func qdrantDenseVector(vectors *qdrant.VectorsOutput) []float32 {
+	vector := vectors.GetVector()
+	if vector == nil {
+		return nil
+	}
+	if dense := vector.GetDense(); dense != nil && len(dense.GetData()) > 0 {
+		return dense.GetData()
+	}
+	//nolint:staticcheck // read for servers that predate the Dense field
+	if data := vector.GetData(); len(data) > 0 {
+		return data
+	}
+	return nil
 }
 
 // GetNearest retrieves the nearest points to a vector.

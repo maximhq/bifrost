@@ -2,11 +2,18 @@ package mcp
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
+	mcpgo "github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1295,4 +1302,154 @@ func TestParseAndAddToolsToRequest_InstructionsWhenFilterOptsIn(t *testing.T) {
 	require.NotEmpty(t, result.ChatRequest.Input)
 	assert.Equal(t, schemas.ChatMessageRoleSystem, result.ChatRequest.Input[0].Role)
 	assert.Contains(t, *result.ChatRequest.Input[0].Content.ContentStr, "Always call echo first.")
+}
+
+// missingCapabilityError is how a compliant upstream refuses a call it cannot serve without a
+// client capability Bifrost did not declare (-32021, 2026-07-28).
+type missingCapabilityError struct{ capability string }
+
+func (e missingCapabilityError) Error() string { return "missing required client capability" }
+
+func (e missingCapabilityError) JSONRPCError() mcpgo.JSONRPCError {
+	return mcpgo.JSONRPCError{
+		JSONRPC: mcpgo.JSONRPC_VERSION,
+		Error: mcpgo.JSONRPCErrorDetails{
+			Code: mcpgo.MISSING_REQUIRED_CLIENT_CAPABILITY, Message: e.Error(),
+			Data: map[string]any{"capability": e.capability},
+		},
+	}
+}
+
+// A tool whose upstream needs something only a user-facing client can provide fails with an error
+// that names the upstream and what it needed, instead of mcp-go's internal wording.
+func TestExecuteTool_UpstreamNeedsUserInput_ExplainsWhy(t *testing.T) {
+	var calls atomic.Int32
+	s := server.NewMCPServer("needs-input-upstream", "1.0.0", server.WithToolCapabilities(true))
+	handle := func(name string, result func() (*mcpgo.CallToolResult, error)) {
+		s.AddTool(mcpgo.NewTool(name), func(context.Context, mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+			calls.Add(1)
+			return result()
+		})
+	}
+	handle("elicit", func() (*mcpgo.CallToolResult, error) {
+		return server.NewInputRequestBuilder("").Elicit("github_login", mcpgo.ElicitationParams{Message: "Please provide your GitHub username"}).ToolResult(), nil
+	})
+	handle("sample", func() (*mcpgo.CallToolResult, error) {
+		return server.NewInputRequestBuilder("").Sample("summary", mcpgo.CreateMessageParams{MaxTokens: 10}).ToolResult(), nil
+	})
+	handle("needs_capability", func() (*mcpgo.CallToolResult, error) {
+		return nil, server.NewHandlerError(missingCapabilityError{capability: "elicitation"})
+	})
+	handle("busy", func() (*mcpgo.CallToolResult, error) {
+		return server.NewInputRequestBuilder("").RequestState("later").ToolResult(), nil
+	})
+	handle("connect_url", func() (*mcpgo.CallToolResult, error) {
+		return nil, mcpgo.URLElicitationRequiredError{Elicitations: []mcpgo.ElicitationParams{
+			{Mode: "url", Message: "Connect your GitHub account", URL: "https://example.com/connect"},
+		}}
+	})
+
+	connect := func(t *testing.T, id string, opts ...server.StreamableHTTPOption) *MCPManager {
+		ts := httptest.NewServer(server.NewStreamableHTTPServer(s, opts...))
+		t.Cleanup(ts.Close)
+		m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+		t.Cleanup(func() { _ = m.Cleanup() })
+		require.NoError(t, m.connectToMCPClient(context.Background(), &schemas.MCPClientConfig{
+			ID: id, Name: "upstream", ConnectionType: schemas.MCPConnectionTypeHTTP,
+			ConnectionString: schemas.NewSecretVar(ts.URL), NeedsSessionStickiness: schemas.Ptr(true), ToolsToExecute: []string{"*"},
+		}))
+		return m
+	}
+	modern := connect(t, "needs-input-modern")
+	legacy := connect(t, "needs-input-legacy", server.WithStreamableHTTPProtocolVersions(mcpgo.ProtocolVersion20251125))
+
+	cases := []struct {
+		m         *MCPManager
+		tool      string
+		want      []string
+		wantCalls int32
+	}{
+		{modern, "elicit", []string{`MCP server "upstream"`, "input from the user (elicitation)", "Bifrost cannot provide"}, 1},
+		{modern, "sample", []string{`MCP server "upstream"`, "LLM completion (sampling)", "Bifrost cannot provide"}, 1},
+		{modern, "needs_capability", []string{`MCP server "upstream"`, `client capability "elicitation"`, "Bifrost does not support"}, 1},
+		{modern, "busy", []string{`MCP server "upstream"`, "kept asking Bifrost to retry"}, 0},
+		{legacy, "connect_url", []string{`MCP server "upstream"`, "Connect your GitHub account", "https://example.com/connect"}, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.tool, func(t *testing.T) {
+			before := calls.Load()
+			_, bErr := executeEchoTool(tc.m, "upstream-"+tc.tool)
+			require.NotNil(t, bErr)
+			for _, want := range tc.want {
+				assert.Contains(t, bErr.Error.Message, want)
+			}
+			assert.NotContains(t, bErr.Error.Message, "handler configured", "mcp-go's internal wording must not leak")
+			if tc.wantCalls > 0 {
+				assert.Equal(t, tc.wantCalls, calls.Load()-before, "a call the upstream cannot serve is not retried")
+			}
+		})
+	}
+}
+
+// TestExecuteTool_CallsTheUpstreamToolByItsExactName pins that a call runs the upstream tool the
+// caller named. Execution used to translate the name through a map keyed by each tool's underscore
+// form, so when a server listed "a_b" before "a-b" the "a_b" key pointed at "a-b" and a call to
+// alpha-a_b ran a-b upstream. Tools are listed and resolved by their exact upstream names, so
+// execution sends that name unchanged.
+func TestExecuteTool_CallsTheUpstreamToolByItsExactName(t *testing.T) {
+	var mu sync.Mutex
+	calls := map[string]int{}
+	hooks := &server.Hooks{}
+	// mcp-go lists tools sorted by name, which puts "a-b" before "a_b"; other servers list them in
+	// the order they were registered.
+	hooks.AddAfterListTools(func(_ context.Context, _ any, _ *mcpgo.ListToolsRequest, result *mcpgo.ListToolsResult) {
+		slices.Reverse(result.Tools)
+	})
+	s := server.NewMCPServer("collision", "1.0.0", server.WithToolCapabilities(true), server.WithHooks(hooks))
+	for _, name := range []string{"a-b", "a_b", "web-search"} {
+		s.AddTool(mcpgo.NewTool(name), func(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+			mu.Lock()
+			calls[req.Params.Name]++
+			mu.Unlock()
+			return mcpgo.NewToolResultText("ok"), nil
+		})
+	}
+	ts := httptest.NewServer(server.NewStreamableHTTPServer(s))
+	t.Cleanup(ts.Close)
+
+	ctx := context.Background()
+	m := &MCPManager{credStore: &fakeAdminCredStore{headers: http.Header{}}, logger: &MockLogger{}, clientMap: map[string]*schemas.MCPClientState{}}
+	config := &schemas.MCPClientConfig{
+		ID:               "client-alpha",
+		Name:             "alpha",
+		AuthType:         schemas.MCPAuthTypeHeaders,
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(ts.URL),
+	}
+	discovery, err := m.performAdminToolDiscovery(ctx, config, 0)
+	require.NoError(t, err)
+	require.Contains(t, discovery.Tools, "alpha-a_b")
+	require.Contains(t, discovery.Tools, "alpha-a-b")
+	state := &schemas.MCPClientState{Name: "alpha", ExecutionConfig: config, ToolMap: discovery.Tools}
+
+	conn, err := client.NewStreamableHttpClient(ts.URL)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+	require.NoError(t, conn.Start(ctx))
+	_, err = initializeClient(ctx, conn, mcpgo.InitializeRequest{Params: mcpgo.InitializeParams{
+		ProtocolVersion: mcpgo.LATEST_PROTOCOL_VERSION,
+		ClientInfo:      mcpgo.Implementation{Name: "test", Version: "1.0.0"},
+	}}, "")
+	require.NoError(t, err)
+
+	tm := newAuthRetryToolsManager(&authRetryClientManager{state: state, acquireConn: conn}, &authRetryCredStore{})
+	for _, name := range []string{"alpha-a_b", "alpha-a-b", "alpha-web-search"} {
+		bctx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+		_, err := tm.ExecuteTool(bctx, newAuthRetryToolCallRequest(name), conn, state.ExecutionConfig)
+		require.NoError(t, err, name)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, map[string]int{"a_b": 1, "a-b": 1, "web-search": 1}, calls, "each call runs the tool it named, once")
 }

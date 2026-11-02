@@ -108,6 +108,8 @@ Each alias maps the name your application sends to either a plain target string 
 | Azure | `api_version` | Overrides the `api-version` query parameter |
 | Azure | `anthropic_version` | Overrides the `anthropic-version` header for Claude-on-Azure deployments |
 | Azure | `endpoint` | Overrides the key-level Azure endpoint — useful when one credential spans deployments on multiple Azure resources |
+| Azure | `use_speech_endpoints` | Sends the alias's speech and transcription requests to Azure AI Speech instead of Azure OpenAI; overrides the key-level value |
+| Azure | `use_voice_live_endpoints` | Sends the alias's realtime WebSocket sessions to Azure Voice Live instead of Azure OpenAI; overrides the key-level value |
 | Vertex | `project_id` | Per-alias GCP project ID |
 | Vertex | `project_number` | Per-alias GCP project number (required for fine-tuned models) |
 | Bedrock | `inference_profile_arn` | Cross-region inference profile ARN invoked instead of the model ID |

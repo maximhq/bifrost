@@ -1,6 +1,8 @@
 import {
 	AddProviderRequest,
 	CreateProviderKeyRequest,
+	GithubCopilotDeviceCode,
+	GithubCopilotSignInPollResult,
 	ListProviderKeysResponse,
 	ListProvidersResponse,
 	ModelProvider,
@@ -151,13 +153,15 @@ type UpdateProviderMutationArg = UpdateProviderRequest & {
 	name: ModelProviderName;
 };
 
+// Used when a model has no datasheet entry (404). Parameter names and help text normally come from the
+// server-provided datasheet in English, so this fallback mirrors it instead of adding a translated variant.
 const DEFAULT_MODEL_PARAMETERS: ModelDatasheetResponse = {
 	mode: "chat",
 	base_model: "default",
 	model_parameters: [
 		{
 			id: "temperature",
-			label: "Temperature",
+			label: "Temperature", // i18n-ignore
 			helpText:
 				"What sampling temperature to use, between 0 and 2. Higher values like 0.8 will make the output more random, while lower values like 0.2 will make it more focused and deterministic.",
 			type: "number",
@@ -165,14 +169,14 @@ const DEFAULT_MODEL_PARAMETERS: ModelDatasheetResponse = {
 		},
 		{
 			id: "max_tokens",
-			label: "Max Tokens",
+			label: "Max Tokens", // i18n-ignore
 			helpText: "The maximum number of tokens that can be generated in the Result.",
 			type: "number",
 			range: { min: 1, max: 8192, step: 1 },
 		},
 		{
 			id: "stream",
-			label: "Stream",
+			label: "Stream", // i18n-ignore
 			helpText:
 				"The stream parameter in the API controls whether the response is sent in incremental updates, like tokenized data as it's generated, or as a complete result in one go.",
 			type: "boolean",
@@ -204,6 +208,20 @@ export const providersApi = baseApi.injectEndpoints({
 		getProviderKey: builder.query<ModelProviderKey, { provider: string; keyId: string }>({
 			query: ({ provider, keyId }) => `/providers/${encodeURIComponent(provider)}/keys/${encodeURIComponent(keyId)}`,
 			providesTags: (result, error, { provider }) => [{ type: "ProviderKeys", id: provider }],
+		}),
+
+		// GitHub Copilot "Sign in with GitHub" (device flow). The gateway talks to GitHub; the UI
+		// shows the code and polls, and puts the returned token in the key's value.
+		startGithubCopilotSignIn: builder.mutation<GithubCopilotDeviceCode, { provider: string }>({
+			query: ({ provider }) => ({ url: `/providers/${encodeURIComponent(provider)}/sign-in`, method: "POST" }),
+		}),
+
+		pollGithubCopilotSignIn: builder.mutation<GithubCopilotSignInPollResult, { provider: string; deviceCode: string }>({
+			query: ({ provider, deviceCode }) => ({
+				url: `/providers/${encodeURIComponent(provider)}/sign-in/poll`,
+				method: "POST",
+				body: { device_code: deviceCode },
+			}),
 		}),
 
 		// Create new provider
@@ -556,4 +574,6 @@ export const {
 	useGetModelDetailsQuery,
 	useLazyGetModelDetailsQuery,
 	useUpsertModelCatalogEntriesMutation,
+	useStartGithubCopilotSignInMutation,
+	usePollGithubCopilotSignInMutation,
 } = providersApi;

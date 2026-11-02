@@ -17,6 +17,7 @@ What Bifrost handles for you:
 
 - **Automatic token refresh** before expiration
 - **PKCE** for public clients (no client secret)
+- **Client ID Metadata Documents**, so Bifrost can sign in without registering a client first
 - **Dynamic Client Registration** (RFC 7591)
 - **OAuth discovery** from server URLs (`.well-known/oauth-authorization-server`, `.well-known/openid-configuration`)
 - **Secure token storage** (encrypted at rest)
@@ -56,7 +57,8 @@ sequenceDiagram
 2. Pick **HTTP** or **SSE** as the connection type, fill in the **Connection URL**
 3. Set **Auth Type** to **OAuth 2.0**
 4. Fill in the OAuth fields:
-   - **Client ID** (optional — leave blank for Dynamic Client Registration)
+   - **Client ID** (optional — leave blank and Bifrost registers itself, through its [client metadata document](#client-id-metadata-documents) or [Dynamic Client Registration](#dynamic-client-registration-rfc-7591))
+   - **Use Bifrost's client metadata document** (off by default — turn on to use the document even when the server does not advertise support; see [below](#client-id-metadata-documents))
    - **Client Secret** (optional — omit for PKCE public clients)
    - **Authorize URL** (optional — leave blank to use OAuth discovery)
    - **Token URL** (optional — same)
@@ -185,6 +187,36 @@ For applications without a client secret, omit `client_secret` and Bifrost will 
 
 ---
 
+## Client ID Metadata Documents
+
+Bifrost publishes a client metadata document describing itself: its name, the redirect URI it signs in with, and that it is a public client with no secret. An authorization server that supports these documents accepts the document's address as the client ID and reads it during sign-in, so nothing has to be registered beforehand and there is no client secret to manage.
+
+When **Client ID** is left blank, Bifrost uses its document automatically when all of these hold, and falls back to [Dynamic Client Registration](#dynamic-client-registration-rfc-7591) otherwise:
+
+- the authorization server advertises support for client metadata documents;
+- Bifrost is reachable over public HTTPS (a local or plain-HTTP address cannot be fetched by the authorization server);
+- a token URL you entered by hand belongs to that same authorization server. Bifrost does not check a hand-entered authorization URL, so make sure it belongs to the same server too.
+
+Turn on **Use Bifrost's client metadata document** (`"use_client_metadata_document": true` in `oauth_config`) to use the document even when the authorization server does not advertise support, for example when its endpoints cannot be discovered and you enter them by hand:
+
+```json
+{
+  "oauth_config": {
+    "authorize_url": "https://auth.example.com/oauth/authorize",
+    "token_url": "https://auth.example.com/oauth/token",
+    "use_client_metadata_document": true
+  }
+}
+```
+
+- The authorization server has to fetch the document from Bifrost, so Bifrost must be reachable over public HTTPS. Set [`mcp_external_client_url`](#public-url-configuration) if Bifrost sits behind a proxy; on a local or plain-HTTP address the setting is refused when you save the client.
+- It replaces the client ID and secret, so it cannot be combined with a **Client ID**.
+- The authorization server must actually accept client metadata documents. If it does not, sign-in fails on its page; enter a client ID registered with that authorization server instead. Turning the setting off is not enough when the server advertises support, since Bifrost then still uses the document automatically.
+
+If Bifrost's public address changes later, the client ID moves to the document at the new address on the next sign-in, and existing sessions have to sign in again.
+
+---
+
 ## Dynamic Client Registration (RFC 7591)
 
 If your OAuth provider supports DCR, omit `client_id` and `client_secret` and provide a `registration_url` (or just a `server_url` for discovery):
@@ -230,6 +262,22 @@ If only `client_id` and `server_url` are provided, Bifrost will probe in order:
   }
 }
 ```
+
+Bifrost only uses an authorization server's metadata when the issuer it names is exactly the authorization server it was fetched for. A provider whose metadata names a different issuer, even one that differs only by a trailing slash, fails discovery. Ask the provider to correct its metadata. Entering its endpoints by hand also works, but then Bifrost has no issuer to check sign-in responses against, so it cannot confirm they come from that authorization server.
+
+---
+
+## Authorization server changes
+
+Bifrost remembers which authorization server issued an MCP client's OAuth credentials, and checks that the MCP server still points to it each time a sign-in or reauthorization starts. The check needs the MCP server's authorization metadata: if Bifrost cannot read it, the sign-in goes ahead with the stored authorization server. An MCP client set up before this check existed is tied to its authorization server once the token URL it uses matches the one the MCP server names. If the MCP server has moved to a different authorization server:
+
+- **Client ID Metadata Document:** Bifrost's client ID carries over when the new authorization server supports Client ID Metadata Documents. Otherwise Bifrost falls back to Dynamic Client Registration with it.
+- **Dynamic Client Registration:** Bifrost registers a new client with the new authorization server. If the new server offers no registration, or registration fails, the sign-in fails; register a client with it yourself and enter its credentials as below.
+- **Credentials entered by hand:** the sign-in fails with an error naming both authorization servers. Register a client with the new one, set its `client_id` / `client_secret` on the MCP client (and its `authorize_url` / `token_url`, if they differ from the old server's), then [reauthorize](#reauthorization). The reauthorization binds the MCP client to the new authorization server.
+
+The move happens when the sign-in starts. Once the MCP client has moved to the new authorization server, every credential bound to it is signed out, including every end user's on a `per_user_oauth` server, since Bifrost cannot use tokens from the old authorization server with the new one. Bifrost does not revoke them at the old authorization server. They stay signed out even if that sign-in is then abandoned or denied. A move that fails, such as one with credentials entered by hand for the old server, signs nobody out.
+
+If the MCP server lists several authorization servers, the one its credentials belong to stays in use for as long as it is listed, even when another listed server answers first.
 
 ---
 
@@ -491,7 +539,7 @@ The `redirect_uri` Bifrost registers and the consent URLs it builds are derived 
 See [Reverse Proxy configuration →](../../deployment-guides/config-json/client#reverse-proxy) for the full reference.
 
 <Warning>
-**Changing `mcp_external_client_url` after an upstream provider has been registered breaks already-authorized clients.** Upstream providers lock the `redirect_uri` to whatever was registered during DCR. To recover, delete and recreate the affected client so Bifrost re-registers with the new URL (reauthorization alone reuses the registered client and cannot fix the mismatch). For manually registered credentials, add the new redirect URI at the provider's dashboard, then [reauthorize](#reauthorization).
+**Changing `mcp_external_client_url` after an upstream provider has been registered breaks already-authorized clients registered through DCR or by hand.** Upstream providers lock the `redirect_uri` to whatever was registered during DCR. To recover a DCR client, use [Reauthorize with a new client](#reauthorizing-with-a-new-client) so Bifrost registers again with the new URL (plain reauthorization reuses the registered client and cannot fix the mismatch). For manually registered credentials, add the new redirect URI at the provider's dashboard, then [reauthorize](#reauthorization). Clients using Bifrost's [client metadata document](#client-id-metadata-documents) need no action: their client ID follows the new address at the next sign-in, and existing sessions sign in again.
 </Warning>
 
 ---
@@ -527,6 +575,11 @@ See [Reverse Proxy configuration →](../../deployment-guides/config-json/client
 You changed Bifrost's public URL after the upstream client was registered. Use [Reauthorize with a new client](#reauthorizing-with-a-new-client) so Bifrost re-runs DCR with the new URL; for manually registered credentials, add the new redirect URI at the provider's dashboard and then [reauthorize](#reauthorization).
 </Accordion>
 
+<Accordion title="Sign-in fails: the response did not come from this MCP server's authorization server">
+
+The provider's response named a different authorization server than the one Bifrost sent the user to, or left that out although the provider says it always includes it. Bifrost refuses such a response before using the authorization code. If it keeps happening for one provider, its configuration is inconsistent: check that the issuer in its OAuth metadata matches the address the MCP server points to.
+</Accordion>
+
 <Accordion title="`invalid_client: Invalid client_id` on refresh, and Reauthorize does not help">
 
 The provider has stopped recognising the `client_id` itself, not just the token issued under it, so redoing consent with the same client fails at the code exchange the same way the refresh did. This is common with Dynamic Client Registration, where the provider's client registry is often in memory and does not survive a restart.
@@ -559,6 +612,7 @@ If the provider has no `registration_url`, register a client in its dashboard by
 - Tokens are stored encrypted at rest (set `BIFROST_ENCRYPTION_KEY`)
 - PKCE is enforced automatically for public clients
 - The OAuth `state` parameter is verified server-side for CSRF protection
+- Bifrost compares the issuer an authorization response names with the authorization server it sent the user to, and refuses a mismatch. A response without an issuer is refused when that authorization server advertises that it always sends one; authorization servers that do not send it are not checked this way
 - Use HTTPS — most upstream providers refuse HTTP redirect URIs in production
 - Request only the scopes your tools need
 

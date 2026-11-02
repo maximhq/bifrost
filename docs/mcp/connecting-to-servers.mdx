@@ -578,6 +578,109 @@ mcpConfig := &schemas.MCPConfig{
 
 The matching `client.mcp_tool_execution_timeout`, `client.mcp_agent_depth`, `client.mcp_code_mode_binding_level`, and `client.mcp_disable_auto_tool_inject` fields are deprecated aliases kept for backward compatibility — prefer `mcp.tool_manager_config.*` in new `config.json` and Go SDK setups. The Web UI panel and `/api/config` continue to use the aliases because they edit the live `client_config` row directly.
 
+### Max Protocol Version
+
+Bifrost and each MCP server agree on an MCP protocol version when they connect. The max protocol version caps that negotiation: Bifrost never offers a server a version newer than the cap, and the server can still pick an older one. If a server answers with a version newer than the cap, the connection fails with an error.
+
+Use it to keep a server on an older protocol revision when it misbehaves on the latest one.
+
+| Value        | Meaning                                                           |
+| ------------ | ----------------------------------------------------------------- |
+| `auto`       | Newest version Bifrost supports (currently `2026-07-28`)          |
+| `2026-07-28` | Cap at the 2026-07-28 revision                                    |
+| `2025-11-25` | Cap at the 2025-11-25 revision                                    |
+| `2025-06-18` | Cap at the 2025-06-18 revision, the version earlier releases used |
+
+There is one global setting and an optional override on each server. A server's own value wins; a server set to "use the global setting" (`""` on the API) follows the global value.
+
+Defaults:
+
+- **Fresh install**: the global setting is `auto`.
+- **Upgrade with existing MCP servers**: the global setting starts at `2025-06-18`, so existing servers keep the version they used before. Switch the global setting to `auto` to move every server that follows it at once.
+- **No config store**: there is no stored value, so the global setting starts at `auto`. Set `mcp.max_protocol_version` to `"2025-06-18"` in `config.json` to keep the old behaviour.
+- **New server** (Web UI, API or `config.json`): follows the global setting unless you pick a version.
+
+Changing either setting in the Web UI or through the API reconnects the affected servers at the new version, with no restart. A change to `config.json` applies at the next startup. If `config.json` sets `mcp.max_protocol_version`, that value is applied at every startup and replaces one set in the Web UI or API; remove it from the file to manage the setting live. OpenAPI servers run inside Bifrost and do not negotiate a protocol version, so the setting does not apply to them.
+
+<Tabs>
+<Tab title="Web UI">
+
+**Global:** open **MCP Servers → MCP Settings**, pick a value in **Max Protocol Version** (**Auto (latest)**, `2026-07-28`, `2025-11-25`, or `2025-06-18`), and save.
+
+**Per server:**
+- When adding a server, **Max Protocol Version** is under **Server Behavior**. It defaults to **Use global setting**.
+- On an existing server's sheet, it is under **Sync & Timeouts**. **Use global setting** shows the current global value in brackets.
+
+</Tab>
+<Tab title="API">
+
+Global, through the client config. Omitting `mcp_max_protocol_version` keeps the stored value; `"auto"` removes the cap:
+
+```bash
+curl -s http://localhost:8080/api/config \
+  | jq '{client_config: (.client_config + {mcp_max_protocol_version: "auto"})}' \
+  | curl -X PUT http://localhost:8080/api/config -H "Content-Type: application/json" -d @-
+```
+
+Per server, with `max_protocol_version` on create or update:
+
+```bash
+# Create a server capped at 2025-11-25 (omit the field to follow the global setting)
+curl -X POST http://localhost:8080/api/mcp/client \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "web_search",
+    "connection_type": "http",
+    "connection_string": "https://mcp.example.com/mcp",
+    "tools_to_execute": ["*"],
+    "max_protocol_version": "2025-11-25"
+  }'
+
+# Make an existing server follow the global setting
+curl -X PUT http://localhost:8080/api/mcp/client/{id} \
+  -H "Content-Type: application/json" \
+  -d '{"max_protocol_version": ""}'
+```
+
+On update, omitting `max_protocol_version` keeps the server's current value.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "mcp": {
+    "max_protocol_version": "auto",
+    "client_configs": [
+      {
+        "name": "legacy_tools",
+        "connection_type": "http",
+        "connection_string": "https://legacy-mcp.example.com/mcp",
+        "tools_to_execute": ["*"],
+        "max_protocol_version": "2025-06-18"
+      }
+    ]
+  }
+}
+```
+
+Omitting `mcp.max_protocol_version` keeps the stored value; it never clears it. A `client_configs[]` entry without `max_protocol_version` follows the global setting, unless a version was set for that server in the Web UI or API; that override stays until you choose **Use global setting** (or send `"max_protocol_version": ""`).
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+mcpConfig := &schemas.MCPConfig{
+    MaxProtocolVersion: "auto",
+    ClientConfigs: []*schemas.MCPClientConfig{
+        { Name: "legacy_tools", MaxProtocolVersion: "2025-06-18", /* ... */ },
+    },
+}
+```
+
+</Tab>
+</Tabs>
+
 ---
 
 ## Environment Variables

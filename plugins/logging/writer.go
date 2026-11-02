@@ -2,6 +2,7 @@ package logging
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"strings"
@@ -22,6 +23,9 @@ const (
 	// is never evicted mid-flight. Matches the 30-minute window used by
 	// cleanupOldProcessingLogs so the two reapers agree on what "stale" means.
 	pendingLogTTL = 15 * time.Minute
+	// endpointStreamPendingTTL bounds how long a passthrough stream's pending row is kept; each entry
+	// holds at most a 64 KiB request body.
+	endpointStreamPendingTTL = 24 * time.Hour
 	// cleanupDrainTimeout caps how long Cleanup spends draining the write queue
 	// itself. Matches the outer server shutdown budget at server.go:1596 so the
 	// logging plugin can fully drain in the worst case; remaining entries beyond
@@ -69,7 +73,7 @@ type PendingLogData struct {
 	LastActivity atomic.Int64
 	// Live is set for a GPT Live session's row: what its units have folded into it so far.
 	Live             *liveSessionState
-	ProvisionalInput bool           // Input captured before the virtual key's content decision was known
+	ProvisionalInput bool           // Input captured before the virtual key's or project's content decision was known
 	ContentPolicy    *contentPolicy // Content policy resolved in PreLLMHook; nil means the global policy
 	EvictionAttempts int            // Sweeps that could not queue this entry's partial row
 	EvictedPartial   bool           // PostLLMHook stub for an already-evicted request; reconciles by UPDATE
@@ -80,11 +84,18 @@ type PendingLogData struct {
 type pendingInjectEntries struct {
 	mu        sync.Mutex
 	entries   []*logstore.Log
+	windows   []rowWindow // parallel to entries: each row's attempt window, if measured
 	createdAt time.Time
 	// drained is set by Inject under mu once entries has been handed to the write
 	// queue. A storeOrEnqueueEntry that appends after that point would be writing
 	// into a slice nobody reads again; it writes directly instead.
 	drained bool
+}
+
+// rowWindow is a parked row's attempt window; ok is false when none was measured.
+type rowWindow struct {
+	window schemas.AttemptWindow
+	ok     bool
 }
 
 // pendingAgentInjectEntries is the Agent analogue of pendingInjectEntries: request
@@ -99,15 +110,26 @@ type pendingAgentInjectEntries struct {
 	drained bool
 }
 
+// pendingRelayInjectEntries is the Relay analogue of pendingAgentInjectEntries: the row parked by
+// PostRelayHook until Inject backfills upstream, overhead and the breakdown from the completed trace.
+type pendingRelayInjectEntries struct {
+	mu        sync.Mutex
+	entries   []*logstore.RelayLog
+	createdAt time.Time
+	drained   bool
+}
+
 // writeQueueEntry is an entry pushed to the batch write queue.
-// Exactly one of log (insert), logUpdate (partial update), mcpLog or agentLog is set.
+// Exactly one insert, partial update, transcript correction, MCP log or agent log is set.
 type writeQueueEntry struct {
-	log         *logstore.Log
-	logUpdate   *logstore.Log
-	mcpLog      *logstore.MCPToolLog
-	agentLog    *logstore.AgentLog
-	callback    func(entry *logstore.Log)
-	mcpCallback func(entry *logstore.MCPToolLog)
+	realtimeInput *realtimeInputUpdate
+	log           *logstore.Log
+	logUpdate     *logstore.Log
+	mcpLog        *logstore.MCPToolLog
+	agentLog      *logstore.AgentLog
+	endpointLog   *logstore.RelayLog
+	callback      func(entry *logstore.Log)
+	mcpCallback   func(entry *logstore.MCPToolLog)
 }
 
 // batchWriter is the single writer goroutine that drains the write queue
@@ -446,6 +468,21 @@ func (p *LoggerPlugin) insertAgentLogIndividually(ctx context.Context, log *logs
 	return true
 }
 
+// insertEndpointLogIndividually is the per-row fallback for a Relay Logs entry. It reports
+// false when ctx ended before the row was written or dropped.
+func (p *LoggerPlugin) insertEndpointLogIndividually(ctx context.Context, log *logstore.RelayLog) bool {
+	_, err := p.store.BatchCreateRelayLogsIfNotExists(ctx, []*logstore.RelayLog{log})
+	if err == nil {
+		return true
+	}
+	if ctx.Err() != nil {
+		return false
+	}
+	p.logger.Warn("individual insert failed for relay log %s: %v", log.ID, err)
+	p.droppedRequests.Add(1)
+	return true
+}
+
 // updateLogIndividually is the per-row fallback for a partial log update whose
 // batch failed with a row-level error. It reports false when ctx ended before
 // the row was written or dropped.
@@ -476,6 +513,7 @@ func (p *LoggerPlugin) processBatch(ctx context.Context, batch []*writeQueueEntr
 	logUpdates := make([]*logstore.Log, 0, len(batch))
 	mcpLogs := make([]*logstore.MCPToolLog, 0, len(batch))
 	agentLogs := make([]*logstore.AgentLog, 0, len(batch))
+	endpointLogs := make([]*logstore.RelayLog, 0)
 	for _, entry := range batch {
 		if entry.log != nil {
 			p.applyParsedPassthrough(entry.log)
@@ -493,6 +531,9 @@ func (p *LoggerPlugin) processBatch(ctx context.Context, batch []*writeQueueEntr
 		if entry.agentLog != nil {
 			agentLogs = append(agentLogs, entry.agentLog)
 		}
+		if entry.endpointLog != nil {
+			endpointLogs = append(endpointLogs, entry.endpointLog)
+		}
 	}
 
 	unwrittenLogs := writeWithRecovery(p, ctx, "log", logs, func(ctx context.Context, chunk []*logstore.Log) error {
@@ -505,6 +546,10 @@ func (p *LoggerPlugin) processBatch(ctx context.Context, batch []*writeQueueEntr
 		_, err := p.store.BatchCreateAgentLogsIfNotExists(ctx, chunk)
 		return err
 	}, p.insertAgentLogIndividually)
+	unwrittenEndpoint := writeWithRecovery(p, ctx, "relay log", endpointLogs, func(ctx context.Context, chunk []*logstore.RelayLog) error {
+		_, err := p.store.BatchCreateRelayLogsIfNotExists(ctx, chunk)
+		return err
+	}, p.insertEndpointLogIndividually)
 	// Updates run after the inserts so a partial-row insert and its reconciling
 	// update landing in the same batch resolve correctly: the row exists by the
 	// time the update runs. The queue is FIFO and the insert is always enqueued
@@ -512,12 +557,27 @@ func (p *LoggerPlugin) processBatch(ctx context.Context, batch []*writeQueueEntr
 	unwrittenUpdates := writeWithRecovery(p, ctx, "log update", logUpdates, func(ctx context.Context, chunk []*logstore.Log) error {
 		return p.store.BatchUpdate(ctx, chunk)
 	}, p.updateLogIndividually)
+	for _, entry := range batch {
+		if entry.realtimeInput != nil {
+			if err := p.writeRealtimeInputUpdate(ctx, entry.realtimeInput); err != nil {
+				// Trace injection may enqueue the original turn after its transcript.
+				// Reuse the bounded queue and normal write retry budget, with no waiter.
+				entry.realtimeInput.attempts++
+				if errors.Is(err, logstore.ErrNotFound) && entry.realtimeInput.attempts < batchWriteAttempts {
+					p.enqueueRealtimeInputUpdate(entry.realtimeInput)
+					continue
+				}
+				p.logger.Warn("failed to update realtime transcript for log %s: %v", entry.realtimeInput.connectionID, err)
+				p.countDrop()
+			}
+		}
+	}
 
 	// Map unwritten rows back to their queue entries. An entry carrying more
 	// than one log type is handed back whole if any part is unwritten; persisted
 	// parts are re-inserted as no-ops by conflict-safe insertion.
 	var unwritten []*writeQueueEntry
-	unwrittenCount := len(unwrittenLogs) + len(unwrittenUpdates) + len(unwrittenMCP) + len(unwrittenAgent)
+	unwrittenCount := len(unwrittenLogs) + len(unwrittenUpdates) + len(unwrittenMCP) + len(unwrittenAgent) + len(unwrittenEndpoint)
 	skip := make(map[*writeQueueEntry]struct{}, unwrittenCount)
 	if unwrittenCount > 0 {
 		pending := make(map[any]struct{}, unwrittenCount)
@@ -533,12 +593,16 @@ func (p *LoggerPlugin) processBatch(ctx context.Context, batch []*writeQueueEntr
 		for _, a := range unwrittenAgent {
 			pending[a] = struct{}{}
 		}
+		for _, e := range unwrittenEndpoint {
+			pending[e] = struct{}{}
+		}
 		for _, entry := range batch {
 			_, logPending := pending[entry.log]
 			_, updatePending := pending[entry.logUpdate]
 			_, mcpPending := pending[entry.mcpLog]
 			_, agentPending := pending[entry.agentLog]
-			if (entry.log != nil && logPending) || (entry.logUpdate != nil && updatePending) || (entry.mcpLog != nil && mcpPending) || (entry.agentLog != nil && agentPending) {
+			_, endpointPending := pending[entry.endpointLog]
+			if (entry.log != nil && logPending) || (entry.logUpdate != nil && updatePending) || (entry.mcpLog != nil && mcpPending) || (entry.agentLog != nil && agentPending) || (entry.endpointLog != nil && endpointPending) {
 				skip[entry] = struct{}{}
 				unwritten = append(unwritten, entry)
 			}
@@ -650,6 +714,19 @@ func (p *LoggerPlugin) cleanupStalePendingLogs() {
 		}
 		return true
 	})
+	// A relayed stream can outlive pendingLogTTL; its request side is kept for the longer stream bound
+	// so the row written when it ends still carries the path, route and billable flag.
+	streamCutoff := time.Now().Add(-endpointStreamPendingTTL)
+	p.pendingEndpointLogs.Range(func(key, value any) bool {
+		pending, ok := value.(*logstore.RelayLog)
+		if !ok {
+			return true
+		}
+		if pending.Timestamp.Before(cutoff) && (!pending.Streamed || pending.Timestamp.Before(streamCutoff)) {
+			p.pendingEndpointLogs.Delete(key)
+		}
+		return true
+	})
 	p.pendingAgentLogs.Range(func(key, value any) bool {
 		if pending, ok := value.(*logstore.AgentLog); ok && pending.Timestamp.Before(cutoff) {
 			p.pendingAgentLogs.Delete(key)
@@ -660,6 +737,14 @@ func (p *LoggerPlugin) cleanupStalePendingLogs() {
 		if pending, ok := value.(*pendingAgentInjectEntries); ok {
 			if pending.createdAt.Before(cutoff) {
 				p.pendingAgentLogsToInject.Delete(key)
+			}
+		}
+		return true
+	})
+	p.pendingRelayLogsToInject.Range(func(key, value any) bool {
+		if pending, ok := value.(*pendingRelayInjectEntries); ok {
+			if pending.createdAt.Before(cutoff) {
+				p.pendingRelayLogsToInject.Delete(key)
 			}
 		}
 		return true
@@ -709,7 +794,7 @@ func (p *LoggerPlugin) pendingClaimLock(requestID string) *sync.Mutex {
 // counted. Content follows the policy resolved for the request in PreLLMHook
 // (ContentPolicy; the global policy when none was recorded), because eviction
 // has no request context. Input captured provisionally, before the virtual
-// key's decision was known, is never kept: PostLLMHook's final-policy drop
+// key's or project's decision was known, is never kept: PostLLMHook's final-policy drop
 // cannot run for it. CreatedAt is reset to now so flushStaleProcessingLogs
 // gives the row a fresh window; Timestamp keeps the original request time. No
 // callback: PreLLMHook already announced the processing entry to subscribers.
@@ -775,7 +860,7 @@ func (p *LoggerPlugin) claimStaleMCPEntry(key any) (*logstore.MCPToolLog, bool) 
 		// PostMCPHook claimed it first and still needs the held arguments.
 		return nil, false
 	}
-	// Arguments held back for an unresolved key go with the entry: a stale entry never
+	// Arguments held back for an unresolved key or project go with the entry: a stale entry never
 	// learns its final content decision, so it never gets them.
 	p.provisionalMCPArguments.Delete(key)
 	entry, ok := actual.(*logstore.MCPToolLog)
@@ -963,11 +1048,31 @@ func (p *LoggerPlugin) enqueueAgentLogEntry(entry *logstore.AgentLog) {
 	}
 }
 
+func (p *LoggerPlugin) enqueueEndpointLogEntry(entry *logstore.RelayLog) {
+	if entry == nil || p.closed.Load() {
+		return
+	}
+	defer func() {
+		if recover() != nil {
+			p.droppedRequests.Add(1)
+		}
+	}()
+	select {
+	case p.writeQueue <- &writeQueueEntry{endpointLog: entry}:
+	default:
+		p.countDrop()
+		p.logger.Warn("log write queue full, dropping relay log entry %s", entry.ID)
+	}
+}
+
 // estimateWriteQueueEntrySize returns the estimated serialized payload size for
 // the log entry carried by a write queue item.
 func estimateWriteQueueEntrySize(entry *writeQueueEntry) int {
 	if entry == nil {
 		return 0
+	}
+	if entry.realtimeInput != nil {
+		return len(entry.realtimeInput.raw) + len(entry.realtimeInput.connectionID) + len(entry.realtimeInput.itemID) + len(entry.realtimeInput.transcript)
 	}
 	if entry.agentLog != nil {
 		size := len(entry.agentLog.PluginLogs) + len(entry.agentLog.ErrorDetails) + 512
@@ -985,6 +1090,25 @@ func estimateWriteQueueEntrySize(entry *writeQueueEntry) int {
 		}
 		if entry.agentLog.EventBody != nil {
 			size += len(*entry.agentLog.EventBody)
+		}
+		return size
+	}
+	if entry.endpointLog != nil {
+		size := len(entry.endpointLog.PluginLogs) + len(entry.endpointLog.ErrorDetails) + 512
+		for k, v := range entry.endpointLog.MetadataParsed {
+			size += len(k) + len(fmt.Sprint(v)) + 6
+		}
+		for _, body := range []*string{entry.endpointLog.RequestBody, entry.endpointLog.ResponseBody} {
+			if body != nil {
+				size += len(*body)
+			}
+		}
+		// Headers are still maps here (the store serializes them on write), so they are sized as
+		// such; the serialized columns are nil until then.
+		for _, headers := range []map[string]string{entry.endpointLog.RequestHeadersParsed, entry.endpointLog.ResponseHeadersParsed} {
+			for k, v := range headers {
+				size += len(k) + len(v) + 6
+			}
 		}
 		return size
 	}
@@ -1167,6 +1291,7 @@ const (
 	maxPersistedUserAgentLen          = 512
 	maxPersistedAppLen                = 128
 	maxPersistedAgentCorrelationIDLen = 255
+	maxPersistedMCPToolNameLen        = 255 // mcp_tool_logs.tool_name; a resource read's URI is unbounded
 )
 
 // clampString truncates s to at most max bytes. The columns are sized in

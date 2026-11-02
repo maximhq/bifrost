@@ -75,6 +75,14 @@ type Tracer interface {
 	// Attributes provide additional context about the operation.
 	SetAttribute(handle SpanHandle, key string, value any)
 
+	// SetSpanStartTime moves a span's start time. A caller that opens a span only once
+	// the work has finished uses it so the span covers the work's real duration.
+	SetSpanStartTime(handle SpanHandle, start time.Time)
+
+	// MergeTraceDimensions adds dims to the trace's dimensions (TraceAttrDimensions), which
+	// connectors export with x-bf-dim-* labels. A name already there is overwritten.
+	MergeTraceDimensions(traceID string, dims map[string]string)
+
 	// SpanFromHandle resolves the *Span for a handle once, so a caller writing many
 	// attributes (e.g. the per-request LLM-call block) can call span.SetAttribute
 	// directly instead of paying a trace+span lookup on every attribute. Returns
@@ -104,6 +112,12 @@ type Tracer interface {
 	ClearTraceCompletionDeferral(traceID string)
 	// AwaitTransportHandoff blocks until the transport has attached its own logs.
 	AwaitTransportHandoff(traceID string)
+	// HoldTraceFlush keeps CompleteAndFlushTrace from exporting the trace until the
+	// returned release runs, so a background writer can still add spans to it. A
+	// flush requested while held runs on the last release. Take it while the
+	// request is still being handled, before the trace completes: a hold taken
+	// once completion has started does not delay the export.
+	HoldTraceFlush(traceID string) (release func())
 
 	// StoreDeferredSpan stores a span handle for later completion (used for streaming requests).
 	// The span handle is stored keyed by trace ID so it can be retrieved when the stream completes.
@@ -245,6 +259,12 @@ func (n *NoOpTracer) EndSpan(_ SpanHandle, _ SpanStatus, _ string) {}
 // SetAttribute does nothing.
 func (n *NoOpTracer) SetAttribute(_ SpanHandle, _ string, _ any) {}
 
+// SetSpanStartTime does nothing.
+func (n *NoOpTracer) SetSpanStartTime(_ SpanHandle, _ time.Time) {}
+
+// MergeTraceDimensions does nothing.
+func (n *NoOpTracer) MergeTraceDimensions(_ string, _ map[string]string) {}
+
 func (n *NoOpTracer) SpanFromHandle(_ SpanHandle) *Span { return nil }
 
 // GetSpanHandleByID returns nil.
@@ -271,6 +291,9 @@ func (n *NoOpTracer) ClearTraceCompletionDeferral(_ string) {}
 
 // AwaitTransportHandoff is a no-op.
 func (n *NoOpTracer) AwaitTransportHandoff(_ string) {}
+
+// HoldTraceFlush returns a no-op release.
+func (n *NoOpTracer) HoldTraceFlush(_ string) func() { return func() {} }
 
 // GetDeferredSpanHandle returns nil.
 func (n *NoOpTracer) GetDeferredSpanHandle(_ string) SpanHandle { return nil }

@@ -91,16 +91,14 @@ func (m *MCPManager) executeToolWithHooks(
 		}
 		defer release()
 
-		// state == nil signals a code-mode tool: pass nil conn/config/mapping and
+		// state == nil signals a code-mode tool: pass nil conn/config and
 		// ToolsManager.ExecuteTool routes directly to CodeMode.
 		var executionConfig *schemas.MCPClientConfig
-		var toolNameMapping map[string]string
 		if state != nil {
 			executionConfig = state.ExecutionConfig
-			toolNameMapping = state.ToolNameMapping
 		}
 
-		result, opErr := m.toolsManager.ExecuteTool(ctx, preReq, conn, executionConfig, toolNameMapping)
+		result, opErr := m.toolsManager.ExecuteTool(ctx, preReq, conn, executionConfig)
 		if opErr != nil {
 			return nil, opErr
 		}
@@ -122,7 +120,7 @@ func (m *MCPManager) executeToolWithHooks(
 //   - For regular MCP tools: state non-nil, conn is the live transport, release
 //     must be called by the caller (defer).
 //   - For code-mode tools: state nil, conn nil, release is a no-op. The caller
-//     forwards nil conn/config/mapping to ToolsManager.ExecuteTool which
+//     forwards nil conn/config to ToolsManager.ExecuteTool which
 //     dispatches via the CodeMode implementation.
 //
 // Errors here mean the call should NOT run — neither the envelope plugin
@@ -134,9 +132,13 @@ func (m *MCPManager) prepareToolExecution(ctx *schemas.BifrostContext, request *
 		return nil, nil, nil, fmt.Errorf("tool call missing function name")
 	}
 
-	// Code-mode tools have no upstream client — skip client lookup.
+	// Code-mode tools have no upstream client — skip client lookup. A narrowed request is refused
+	// them unless it can reach a code-mode client, the rule that lists them.
 	codeMode := m.toolsManager.GetCodeMode()
 	if codeMode != nil && codeMode.IsCodeModeTool(toolName) {
+		if requestNarrowed(ctx) && !m.codeModeClientReachable(ctx) {
+			return nil, nil, nil, fmt.Errorf("tool '%s' is not permitted (no code mode client available to this request)", toolName)
+		}
 		return nil, nil, func() {}, nil
 	}
 
@@ -176,6 +178,23 @@ func (m *MCPManager) prepareToolExecution(ctx *schemas.BifrostContext, request *
 		return nil, nil, nil, err
 	}
 	return state, conn, release, nil
+}
+
+// requestNarrowed reports whether the request carries an include list (virtual key, slug or
+// include headers). An unnarrowed request may use every tool, code mode included.
+func requestNarrowed(ctx *schemas.BifrostContext) bool {
+	return ctx.Value(schemas.MCPContextKeyIncludeClients) != nil || ctx.Value(schemas.MCPContextKeyIncludeTools) != nil
+}
+
+// codeModeClientReachable reports whether the request can see a code-mode client, the rule
+// GetAvailableTools uses to list the code-mode tools.
+func (m *MCPManager) codeModeClientReachable(ctx *schemas.BifrostContext) bool {
+	for clientName := range m.GetToolPerClient(ctx) {
+		if client := m.GetClientByName(clientName); client != nil && client.ExecutionConfig.IsCodeModeClient {
+			return true
+		}
+	}
+	return false
 }
 
 // checkToolExecutionPermitted enforces the same filters that GetToolPerClient applies

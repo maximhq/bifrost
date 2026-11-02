@@ -1,6 +1,7 @@
 package datasheet
 
 import (
+	"encoding/json"
 	"slices"
 	"testing"
 
@@ -244,6 +245,52 @@ func TestExtractSupportedParams_StopSpellings(t *testing.T) {
 				t.Errorf("model_parameters id %q must yield supported param \"stop\", got %v", id, got)
 			}
 		})
+	}
+}
+
+// TestExtractSupportedParams_NoModelParameters guards datasheet rows that
+// declare capability flags but no model_parameters list (e.g.
+// apac.anthropic.claude-sonnet-4-6 in the 2026-10-20 datasheet). Such a row
+// must not shrink the allowlist to flags alone: compat's should_drop_params
+// would strip max_tokens/temperature/top_p and the provider would silently
+// substitute its own defaults. An undisclosed list means "unknown", not
+// "unsupported".
+func TestExtractSupportedParams_NoModelParameters(t *testing.T) {
+	got := extractSupportedParams(&schemas.ModelCapabilities{
+		SupportsFunctionCalling: capabilityBoolPtr(true),
+	})
+	for _, want := range []string{"temperature", "top_p", "stop", "max_tokens", "max_completion_tokens", "max_output_tokens", "tools"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("expected supported params to contain %q for a row without model_parameters, got %v", want, got)
+		}
+	}
+
+	// A row that does list model_parameters keeps its declared surface.
+	declared := extractSupportedParams(&schemas.ModelCapabilities{
+		ModelParameters: []schemas.ModelParameterDescriptor{{ID: "temperature"}},
+	})
+	if slices.Contains(declared, "top_p") {
+		t.Errorf("expected top_p to stay undeclared for a row with a model_parameters list, got %v", declared)
+	}
+
+	// An explicit empty list declares an empty surface; only an absent (or
+	// null) list falls back to the defaults.
+	for _, tc := range []struct {
+		row          string
+		wantDefaults bool
+	}{
+		{`{"supports_function_calling": true}`, true},
+		{`{"supports_function_calling": true, "model_parameters": null}`, true},
+		{`{"supports_function_calling": true, "model_parameters": []}`, false},
+	} {
+		var caps schemas.ModelCapabilities
+		if err := json.Unmarshal([]byte(tc.row), &caps); err != nil {
+			t.Fatalf("unmarshal %s: %v", tc.row, err)
+		}
+		got := extractSupportedParams(&caps)
+		if slices.Contains(got, "temperature") != tc.wantDefaults {
+			t.Errorf("row %s: expected default sampling params=%v, got %v", tc.row, tc.wantDefaults, got)
+		}
 	}
 }
 

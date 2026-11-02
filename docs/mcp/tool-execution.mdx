@@ -212,7 +212,9 @@ func main() {
                 continue
             }
 
-            fmt.Printf("Tool result: %s\n", *toolResult.Content.ContentStr)
+            if toolResult.Content.ContentStr != nil { // nil when the tool returned images, audio or files
+                fmt.Printf("Tool result: %s\n", *toolResult.Content.ContentStr)
+            }
             history = append(history, *toolResult)
         }
     }
@@ -298,6 +300,27 @@ POST /v1/mcp/tool/execute?format=responses
 }
 ```
 
+### Images, audio and files
+
+A tool that returns only text comes back as a single string, as shown above. When it also returns images, audio or files, `content` is a list of blocks instead:
+
+```json
+{
+  "role": "tool",
+  "tool_call_id": "call_xyz789",
+  "content": [
+    { "type": "text", "text": "3 points" },
+    { "type": "image_url", "image_url": { "url": "data:image/png;base64,iVBORw0KGgo..." } }
+  ]
+}
+```
+
+A tool that returns only structured data comes back as that data, as JSON text.
+
+When the result is sent on to a model, Anthropic, Bedrock and Responses API models receive the images themselves (Responses API models receive files too). Models from other providers cannot take media in a tool result, so they receive a short note naming what the tool returned, such as `[image/png, 34 KB returned by the tool, not shown]`.
+
+Clients of [Bifrost's MCP server](./tool-hosting) receive each tool's result as the upstream server returned it, images, structured data and errors included, unless a plugin such as guardrails changed it.
+
 ---
 
 ## Multiple Tool Calls
@@ -381,15 +404,25 @@ if err != nil {
 }
 ```
 
+### Tools that ask for input
+
+Some MCP servers stop mid-call to ask for something: a question for the user (elicitation), a model completion (sampling), or the client's filesystem roots. Bifrost does not support these requests. It does not declare them to servers, and it cannot pass them to the MCP client or model that made the call.
+
+A tool that needs one fails. On a `2026-07-28` connection, the error names the server and what it asked for, and Bifrost does not retry the call. This applies to every path, including MCP clients connected through Bifrost's gateway, even if the client could answer the request itself.
+
+If the server needs a step completed in the browser, such as connecting an account, the error includes the step and its URL. Complete it and call the tool again.
+
+To use such a tool, connect the MCP client directly to the server.
+
 ### Auth failure recovery
 
 <Info>Inline auth-failure retry is available in **Bifrost v2.0.0 and above**.</Info>
 
 When a tool call reaches the upstream MCP server but comes back with a clean auth rejection (401/403), Bifrost reacts on the spot instead of waiting for the health monitor:
 
-- **Per-user clients** (`per_user_oauth`, `per_user_headers`): Bifrost force-refreshes the caller's credential, re-acquires a connection, and retries the same call inline, exactly once. If the retry succeeds, the caller just sees a normal success.
+- **Per-user clients** (`per_user_oauth`, `per_user_headers`, `token_exchange`): Bifrost force-refreshes the caller's credential (refreshes the per-user OAuth token, or discards the exchanged token and exchanges again), re-acquires a connection, and retries the same call inline, exactly once. If the retry succeeds, the caller just sees a normal success. Per-user header values have nothing to refresh; a rejected value needs a new submission.
 - **Shared clients** (`oauth`, `headers`): Bifrost immediately force-refreshes the credential and starts reconnecting in the background. The failing call waits briefly for that reconnect (capped by its own deadline) and retries once on the healed connection; the caller usually sees a normal success. If the reconnect doesn't finish in time, the original error surfaces and later calls succeed once the background reconnect completes.
-- **Safety opt-out**: tools annotated as destructive and not idempotent are never retried; the reconnect still happens, but the original error always surfaces so a side effect cannot run twice.
+- **Safety opt-out**: a tool that is not read-only and is destructive and not idempotent is never retried. A tool with no annotations counts as destructive and not idempotent, matching the MCP spec defaults. The original error always surfaces so a side effect cannot run twice. Bifrost still refreshes a per-user client's credential, or reconnects a shared client, in the background, so later calls use a fresh credential once that succeeds.
 
 This applies to `POST /v1/mcp/tool/execute`, [Agent Mode](./agent-mode) tool calls, and tool calls over the [MCP Gateway](./overview#bifrost-as-an-mcp-gateway) alike.
 

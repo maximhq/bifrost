@@ -205,6 +205,16 @@ func (p *PluginLogManager) GetLog(ctx context.Context, id string) (*logstore.Log
 	return p.plugin.GetLog(ctx, id)
 }
 
+// LogStore returns the store the plugin writes to, for readers that need a
+// surface the manager does not adapt, such as Warp's topic tables. Nil when
+// the plugin has none.
+func (p *PluginLogManager) LogStore() logstore.LogStore {
+	if p == nil || p.plugin == nil {
+		return nil
+	}
+	return p.plugin.store
+}
+
 func (p *PluginLogManager) Search(ctx context.Context, filters *logstore.SearchFilters, pagination *logstore.PaginationOptions) (*logstore.SearchResult, error) {
 	if filters == nil || pagination == nil {
 		return nil, fmt.Errorf("filters and pagination cannot be nil")
@@ -429,7 +439,13 @@ func (p *PluginLogManager) DeleteLog(ctx context.Context, id string) error {
 	if p.plugin == nil || p.plugin.store == nil {
 		return fmt.Errorf("log store not initialized")
 	}
-	return p.plugin.store.DeleteLog(ctx, id)
+	// A partial delete removed the log, so subscribers still hear of it.
+	err := p.plugin.store.DeleteLog(ctx, id)
+	if err != nil && !errors.Is(err, logstore.ErrPartialLogDelete) {
+		return err
+	}
+	p.plugin.notifyLogDeleteCallbacks(ctx, []string{id})
+	return err
 }
 
 // DeleteLogs deletes multiple logs from the log store
@@ -437,7 +453,13 @@ func (p *PluginLogManager) DeleteLogs(ctx context.Context, ids []string) error {
 	if p.plugin == nil || p.plugin.store == nil {
 		return fmt.Errorf("log store not initialized")
 	}
-	return p.plugin.store.DeleteLogs(ctx, ids)
+	// A partial delete removed the logs, so subscribers still hear of it.
+	err := p.plugin.store.DeleteLogs(ctx, ids)
+	if err != nil && !errors.Is(err, logstore.ErrPartialLogDelete) {
+		return err
+	}
+	p.plugin.notifyLogDeleteCallbacks(ctx, ids)
+	return err
 }
 
 func (p *PluginLogManager) RecalculateCosts(ctx context.Context, filters *logstore.SearchFilters, limit int) (*RecalculateCostResult, error) {
@@ -750,8 +772,9 @@ func redactEmbeddingMediaData(items []schemas.EmbeddingInputItem) []schemas.Embe
 // decisionInputLog renders a decision input as chat messages for the log.
 // Text and a structured input (as JSON, the way a state was always logged)
 // are one user message; messages are logged the way chat requests are, so the
-// logs UI shows their text and inline images the same way. A part of a type
-// the schema does not model is kept as its type name, and a message without a
+// logs UI shows their text and inline images the same way. A tool call or
+// output is logged as its JSON (see decisionToolItemLog). A part of a type the
+// schema does not model is kept as its type name, and a message without a
 // role is the user's.
 func decisionInputLog(input schemas.DecisionInput) []schemas.ChatMessage {
 	if input.Messages == nil {
@@ -768,6 +791,10 @@ func decisionInputLog(input schemas.DecisionInput) []schemas.ChatMessage {
 	}
 	messages := make([]schemas.ChatMessage, 0, len(input.Messages))
 	for _, message := range input.Messages {
+		if message.Type != nil && *message.Type != schemas.DecisionInputItemTypeMessage {
+			messages = append(messages, decisionToolItemLog(message))
+			continue
+		}
 		role := schemas.ChatMessageRole(message.Role)
 		if role == "" {
 			role = schemas.ChatMessageRoleUser
@@ -782,14 +809,18 @@ func decisionInputLog(input schemas.DecisionInput) []schemas.ChatMessage {
 		blocks := make([]schemas.ChatContentBlock, 0, len(message.Content.Parts))
 		for _, part := range message.Content.Parts {
 			switch {
-			case part.Type == schemas.DecisionInputPartTypeText && part.Text != nil:
+			case (part.Type == schemas.DecisionInputPartTypeText || part.Type == schemas.DecisionInputPartTypeOutputText) && part.Text != nil:
 				blocks = append(blocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr(decisionPartText(part.Text))})
-			case part.IsAsset() && part.Data != nil:
+			case part.Type == schemas.DecisionInputPartTypeRefusal && part.Refusal != nil:
+				blocks = append(blocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: part.Refusal})
+			case part.Type == schemas.DecisionInputPartTypeJSON && part.Data.Structured != nil:
+				blocks = append(blocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr(decisionPartText(&schemas.DecisionText{Structured: part.Data.Structured}))})
+			case part.IsAsset() && part.Data.File != nil:
 				// An image sent by reference carries its file, not a URL: log it as an
 				// image the same way. Its ID is already in the text that references it.
 				blocks = append(blocks, schemas.ChatContentBlock{
 					Type:           schemas.ChatContentBlockTypeImage,
-					ImageURLStruct: &schemas.ChatInputImage{URL: decisionAssetDataURL(part.Data)},
+					ImageURLStruct: &schemas.ChatInputImage{URL: decisionAssetDataURL(part.Data.File)},
 				})
 			case part.Type == schemas.DecisionInputPartTypeImage && part.ImageURL != nil:
 				blocks = append(blocks, schemas.ChatContentBlock{
@@ -806,6 +837,22 @@ func decisionInputLog(input schemas.DecisionInput) []schemas.ChatMessage {
 		})
 	}
 	return messages
+}
+
+// decisionToolItemLog logs a tool call as the assistant's message and a tool
+// output as a tool message answering its call, each with the item's JSON as
+// its text, so the call ID, name, input, and output are all kept.
+func decisionToolItemLog(item schemas.DecisionInputMessage) schemas.ChatMessage {
+	raw, _ := sonic.Marshal(item)
+	text := string(raw)
+	if *item.Type == schemas.DecisionInputItemTypeFunctionCallOutput || *item.Type == schemas.DecisionInputItemTypeCustomToolCallOutput {
+		return schemas.ChatMessage{
+			Role:            schemas.ChatMessageRoleTool,
+			Content:         &schemas.ChatMessageContent{ContentStr: &text},
+			ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: item.CallID},
+		}
+	}
+	return schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &text}}
 }
 
 // decisionAssetDataURL renders an asset's file as a data URL the logs UI shows as

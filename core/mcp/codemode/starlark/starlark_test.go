@@ -647,7 +647,7 @@ func TestExtractTextFromMCPResponseResultShapes(t *testing.T) {
 		{
 			name:   "text next to an image keeps its own line",
 			result: &mcp.CallToolResult{Content: []mcp.Content{mcp.NewTextContent("Found 2 files"), mcp.ImageContent{Data: "AAAA", MIMEType: "image/png"}}},
-			want:   "Found 2 files\n[Image Response: AAAA, MIME: image/png]",
+			want:   "Found 2 files\n[image/png, 3 bytes returned by the tool, not shown]",
 		},
 		{
 			name:   "a single block is passed through",
@@ -1257,8 +1257,6 @@ func TestCodeModeToolResponseSize(t *testing.T) {
 	oversized := strings.Repeat("x", schemas.DefaultCodeModeMaxValueBytes+1)
 	for _, content := range [][]mcp.Content{
 		{mcp.TextContent{Text: oversized}},
-		{mcp.ImageContent{Data: oversized}},
-		{mcp.AudioContent{Data: oversized}},
 		{mcp.ResourceLink{URI: oversized}},
 		{&mcp.TextContent{Text: oversized}},
 		{mcp.TextContent{Text: oversized[:schemas.DefaultCodeModeMaxValueBytes/2]}, mcp.TextContent{Text: oversized[:schemas.DefaultCodeModeMaxValueBytes/2+1]}},
@@ -1266,6 +1264,13 @@ func TestCodeModeToolResponseSize(t *testing.T) {
 		_, err := extractTextFromMCPResponse(&mcp.CallToolResult{Content: content}, "echo", schemas.DefaultCodeModeMaxValueBytes)
 		if err == nil {
 			t.Fatal("oversized tool response accepted")
+		}
+	}
+	// Media reaches a script as a short placeholder, never as base64, so its size does not count.
+	for _, content := range []mcp.Content{mcp.ImageContent{Data: oversized, MIMEType: "image/png"}, mcp.AudioContent{Data: oversized, MIMEType: "audio/wav"}} {
+		text, err := extractTextFromMCPResponse(&mcp.CallToolResult{Content: []mcp.Content{content}}, "echo", schemas.DefaultCodeModeMaxValueBytes)
+		if err != nil || len(text) > 100 || !strings.Contains(text, "not shown") {
+			t.Fatalf("media should become a placeholder, got %q (%v)", text, err)
 		}
 	}
 	thread := newSandboxThread(context.Background(), schemas.MCPCodeModeLimits{}.WithDefaults())

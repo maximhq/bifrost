@@ -1713,3 +1713,119 @@ func TestClickHouseBatchUpdate(t *testing.T) {
 	_, err = store.FindByID(ctx, "ch-upd-missing")
 	require.ErrorIs(t, err, ErrNotFound)
 }
+
+func TestClickHouseUserAgentMappingsCRUD(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.db.Exec("TRUNCATE TABLE user_agent_mappings").Error)
+
+	mime := "image/png"
+	mapping := &UserAgentMapping{ID: "ch-uam-1", Pattern: "my-cli/", MatchType: "prefix", App: "My CLI", Logo: []byte{0x89, 'P', 'N', 'G'}, LogoMime: &mime, IsActive: true}
+	require.NoError(t, store.CreateUserAgentMapping(ctx, mapping))
+
+	listed, err := store.ListUserAgentMappings(ctx, false)
+	require.NoError(t, err)
+	require.Len(t, listed, 1)
+	assert.Equal(t, "My CLI", listed[0].App)
+	assert.Equal(t, []byte{0x89, 'P', 'N', 'G'}, listed[0].Logo)
+
+	require.NoError(t, store.UpdateUserAgentMapping(ctx, "ch-uam-1", &UserAgentMapping{Pattern: "my-cli/", MatchType: "prefix", App: "Renamed", IsActive: false}))
+	listed, err = store.ListUserAgentMappings(ctx, false)
+	require.NoError(t, err)
+	require.Len(t, listed, 1)
+	assert.Equal(t, "Renamed", listed[0].App)
+	assert.False(t, listed[0].IsActive)
+	assert.Nil(t, listed[0].LogoMime)
+
+	active, err := store.ListUserAgentMappings(ctx, true)
+	require.NoError(t, err)
+	assert.Empty(t, active)
+
+	assert.ErrorIs(t, store.UpdateUserAgentMapping(ctx, "missing", &UserAgentMapping{}), gorm.ErrRecordNotFound)
+	assert.ErrorIs(t, store.DeleteUserAgentMapping(ctx, "missing"), gorm.ErrRecordNotFound)
+
+	require.NoError(t, store.DeleteUserAgentMapping(ctx, "ch-uam-1"))
+	listed, err = store.ListUserAgentMappings(ctx, false)
+	require.NoError(t, err)
+	assert.Empty(t, listed)
+}
+
+// Update reads then re-inserts, so a delete from another instance landing in
+// between would bring the mapping back. Both must wait on the shared per-id lock.
+func TestClickHouseUserAgentMappingWritesWaitForTheSharedLock(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.db.Exec("TRUNCATE TABLE user_agent_mappings").Error)
+	locker := &fakeDistributedLocker{}
+	store.SetDistributedLocker(locker)
+	t.Cleanup(func() { store.SetDistributedLocker(nil) })
+	require.NoError(t, store.CreateUserAgentMapping(ctx, &UserAgentMapping{ID: "ch-uam-lock", Pattern: "x", MatchType: "prefix", App: "X", IsActive: true}))
+
+	waitsForLock := func(t *testing.T, write func() error) {
+		t.Helper()
+		_, release, err := locker.Acquire(ctx, userAgentMappingLockKey("ch-uam-lock"))
+		require.NoError(t, err)
+		done := make(chan error, 1)
+		go func() { done <- write() }()
+		select {
+		case err := <-done:
+			release()
+			t.Fatalf("write finished while another instance held the mapping lock (err=%v)", err)
+		case <-time.After(300 * time.Millisecond):
+		}
+		release()
+		select {
+		case err := <-done:
+			require.NoError(t, err)
+		case <-time.After(30 * time.Second):
+			t.Fatal("write never finished after the lock was released")
+		}
+	}
+
+	waitsForLock(t, func() error {
+		return store.UpdateUserAgentMapping(ctx, "ch-uam-lock", &UserAgentMapping{Pattern: "x", MatchType: "prefix", App: "Y", IsActive: true})
+	})
+	waitsForLock(t, func() error { return store.DeleteUserAgentMapping(ctx, "ch-uam-lock") })
+
+	store.SetDistributedLocker(lostLeaseLocker{})
+	assert.ErrorIs(t, store.UpdateUserAgentMapping(ctx, "ch-uam-lock", &UserAgentMapping{}), context.Canceled)
+}
+
+// The assignments table is read like logs, by time range first, so it is laid
+// out like logs and expires with them. Topics must not expire at all: they
+// outlive the requests they were built from.
+func TestClickHouseWarpTopicTablesFollowLogsRetention(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	expiring := []string{"warp_topic_assignments", "warp_topic_unmatched"}
+	removeTTLs := func() {
+		t.Helper()
+		for _, table := range expiring {
+			if strings.Contains(chEngineFull(t, store.db, table), "TTL ") {
+				require.NoError(t, store.db.Exec("ALTER TABLE `"+table+"` REMOVE TTL").Error, "%s: reset TTL", table)
+			}
+		}
+	}
+	removeTTLs()
+	t.Cleanup(removeTTLs)
+
+	assignments := chEngineFull(t, store.db, "warp_topic_assignments")
+	assert.Contains(t, assignments, "PARTITION BY toYYYYMM(timestamp)")
+	assert.Contains(t, assignments, "ORDER BY (timestamp, log_id)", "the sort key is also the identity a rewritten assignment replaces")
+	assert.Contains(t, chEngineFull(t, store.db, "warp_topic_unmatched"), "ORDER BY log_id")
+	assert.Contains(t, chEngineFull(t, store.db, "warp_topics"), "ORDER BY id")
+
+	// Retention configured after the tables exist is applied to them, and a
+	// change of retention replaces the rule instead of adding a second.
+	for _, days := range []int{30, 7} {
+		require.NoError(t, migrationClickHouseWarpTopicTables(ctx, store.db, "", days, testLogger{}))
+		for _, table := range expiring {
+			engineFull := chEngineFull(t, store.db, table)
+			got, ok := chTTLDaysFromEngineFull(engineFull)
+			require.True(t, ok, "%s: expected a managed TTL, got %q", table, engineFull)
+			assert.Equal(t, days, got, "%s: %q", table, engineFull)
+			assert.Equal(t, 1, strings.Count(engineFull, "TTL "), "%s: exactly one TTL clause expected in %q", table, engineFull)
+		}
+		assert.NotContains(t, chEngineFull(t, store.db, "warp_topics"), "TTL ", "topics never expire")
+	}
+}

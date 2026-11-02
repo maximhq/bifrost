@@ -178,9 +178,118 @@ func panicSummary(r any) string {
 	return fmt.Sprintf("%T", r)
 }
 
-// ServerRootHandler wraps the router with the server-level middlewares.
+// ServerRootHandler wraps the router with the server-level middlewares. The
+// base-path middleware is added outermost only when server.base_path is
+// configured, so the default chain is unchanged.
 func ServerRootHandler(cors *CorsMiddleware, config *lib.Config, router fasthttp.RequestHandler) fasthttp.RequestHandler {
-	return SecurityHeadersMiddleware()(cors.Middleware()(RecoveryMiddleware(cors)(RequestDecompressionMiddleware(config)(router))))
+	return BasePathRootHandler(config, SecurityHeadersMiddleware()(cors.Middleware()(RecoveryMiddleware(cors)(RequestDecompressionMiddleware(config)(router)))))
+}
+
+// BasePathRootHandler wraps a server's root handler with the base-path strip
+// when server.base_path is configured, and returns next unchanged otherwise.
+// ServerRootHandler applies it; a build that assembles its own root chain
+// instead of calling ServerRootHandler wraps that chain with it, once and
+// outermost. Wrapping a chain that already went through ServerRootHandler
+// would strip the prefix twice.
+func BasePathRootHandler(config *lib.Config, next fasthttp.RequestHandler) fasthttp.RequestHandler {
+	if config == nil || config.ServerConfig == nil || config.ServerConfig.BasePath == "" {
+		return next
+	}
+	return basePathMiddleware(config.ServerConfig.BasePath)(next)
+}
+
+// basePathMiddleware strips basePath (normalized, e.g. "/bifrost") from the
+// request URI so every route, auth whitelist entry and path check downstream
+// sees the root-relative path. Requests that do not carry the prefix pass
+// through untouched, so proxies that already strip it, and unprefixed probes
+// such as /health, keep working. The match is on whole segments: "/bifrostx"
+// is not stripped. It is unexported so ServerRootHandler stays the only place
+// it is wired; a second wiring would strip the prefix twice.
+//
+// A same-origin Location on the response to a prefixed request gets the prefix
+// back (see prefixLocation): the router builds its trailing-slash and
+// fixed-path redirects from the stripped path, which would otherwise send the
+// browser out from under the proxy prefix.
+func basePathMiddleware(basePath string) schemas.BifrostHTTPMiddleware {
+	prefix := []byte(basePath)
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			if !stripBasePath(ctx, prefix) {
+				next(ctx)
+				return
+			}
+			next(ctx)
+			prefixLocation(ctx, prefix)
+		}
+	}
+}
+
+// stripBasePath rewrites the raw request URI without the prefix and reports
+// whether it did. The URI is re-set, not just the path, so Path() and
+// PathOriginal() agree afterwards.
+func stripBasePath(ctx *fasthttp.RequestCtx, prefix []byte) bool {
+	uri := ctx.Request.URI()
+	rawPath := uri.PathOriginal()
+	if !bytes.HasPrefix(rawPath, prefix) {
+		return false
+	}
+	rest := rawPath[len(prefix):]
+	if len(rest) > 0 && rest[0] != '/' {
+		return false
+	}
+	var stack [512]byte
+	buf := stack[:0]
+	if len(rest) == 0 {
+		buf = append(buf, '/')
+	} else {
+		buf = append(buf, rest...)
+	}
+	if query := uri.QueryString(); len(query) > 0 {
+		buf = append(buf, '?')
+		buf = append(buf, query...)
+	}
+	ctx.Request.SetRequestURIBytes(buf)
+	return true
+}
+
+// prefixLocation puts prefix in front of the path of the response's Location
+// header when it points at this origin (a root-relative path, or an absolute
+// URL whose host is the request's Host) and is not already under prefix.
+// Protocol-relative and other-origin URLs are left alone.
+func prefixLocation(ctx *fasthttp.RequestCtx, prefix []byte) {
+	loc := ctx.Response.Header.Peek(fasthttp.HeaderLocation)
+	if len(loc) == 0 {
+		return
+	}
+	var pathStart int
+	if loc[0] == '/' {
+		if len(loc) > 1 && (loc[1] == '/' || loc[1] == '\\') {
+			return
+		}
+	} else {
+		sep := bytes.Index(loc, []byte("://"))
+		if sep <= 0 {
+			return
+		}
+		authorityStart := sep + len("://")
+		authority := loc[authorityStart:]
+		if end := bytes.IndexAny(authority, "/?#"); end >= 0 {
+			authority = authority[:end]
+		}
+		if !bytes.EqualFold(authority, ctx.Host()) {
+			return
+		}
+		pathStart = authorityStart + len(authority)
+	}
+	path := loc[pathStart:]
+	if bytes.HasPrefix(path, prefix) && (len(path) == len(prefix) || bytes.IndexByte([]byte("/?#"), path[len(prefix)]) >= 0) {
+		return
+	}
+	out := make([]byte, 0, len(loc)+len(prefix))
+	out = append(out, loc[:pathStart]...)
+	out = append(out, prefix...)
+	out = append(out, path...)
+	ctx.Response.Header.SetBytesV(fasthttp.HeaderLocation, out)
 }
 
 // InferenceOuterMiddlewares returns the middlewares that wrap every inference route
@@ -218,6 +327,25 @@ type corsMiddlewareConfig struct {
 	dumpErrorsInConsoleLogs bool
 	allowedOrigins          []string
 	allowedHeaders          []string
+	allowHeaders            string // Access-Control-Allow-Headers when nothing is reflected, joined once
+}
+
+// defaultCorsAllowedHeaders are allowed on every route. SetupTokenHeader is sent by the dashboard
+// on every call while the OSS setup lock is active, so a UI served from another origin must be able
+// to preflight it. The MCP Streamable HTTP headers ride on every request a browser MCP client makes
+// after initialize, and on every 2026-07-28 request.
+var defaultCorsAllowedHeaders = []string{"Content-Type", "Authorization", "X-Requested-With", "X-Stainless-Timeout", "X-Api-Key", "X-OpenAI-Agents-SDK", "X-Operation-ID", "X-Bifrost-View-As", SetupTokenHeader,
+	"MCP-Protocol-Version", "Mcp-Session-Id", "Mcp-Method", "Mcp-Name", "Last-Event-ID"}
+
+// corsAllowHeaders joins the default headers with the configured extras, skipping duplicates.
+func corsAllowHeaders(configured []string) string {
+	headers := slices.Clone(defaultCorsAllowedHeaders)
+	for _, header := range configured {
+		if header != "*" && !slices.Contains(headers, header) {
+			headers = append(headers, header)
+		}
+	}
+	return strings.Join(headers, ", ")
 }
 
 // newCorsMiddlewareConfig builds an immutable snapshot from the live config,
@@ -230,6 +358,7 @@ func newCorsMiddlewareConfig(config *lib.Config) *corsMiddlewareConfig {
 		dumpErrorsInConsoleLogs: config.ClientConfig.DumpErrorsInConsoleLogs,
 		allowedOrigins:          slices.Clone(config.ClientConfig.AllowedOrigins),
 		allowedHeaders:          slices.Clone(config.ClientConfig.AllowedHeaders),
+		allowHeaders:            corsAllowHeaders(config.ClientConfig.AllowedHeaders),
 	}
 }
 
@@ -254,6 +383,20 @@ func NewCorsMiddleware(config *lib.Config) *CorsMiddleware {
 // client config is refreshed, mirroring how AuthMiddleware is updated.
 func (c *CorsMiddleware) UpdateConfig(config *lib.Config) {
 	c.config.Store(newCorsMiddlewareConfig(config))
+}
+
+// logRequestTarget is the request target for the access log with an api-key query value redacted: the
+// Azure Voice Live JavaScript SDK always sends its key, a virtual key here, in the query string. The
+// parsed names are checked, so a percent-encoded api-key name is redacted too.
+func logRequestTarget(ctx *fasthttp.RequestCtx) string {
+	uri := ctx.RequestURI()
+	if bytes.IndexByte(uri, '?') < 0 || !ctx.QueryArgs().Has("api-key") {
+		return string(uri)
+	}
+	var args fasthttp.Args
+	ctx.QueryArgs().CopyTo(&args)
+	args.Set("api-key", schemas.RedactedAttrValue)
+	return string(ctx.Request.URI().PathOriginal()) + "?" + args.String()
 }
 
 // CorsMiddleware handles CORS headers for localhost and configured allowed origins
@@ -282,7 +425,7 @@ func (c *CorsMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 					}
 					logBuilder := logger.LogHTTPRequest(level, "request completed").
 						Str("http.method", string(ctx.Method())).
-						Str("http.target", string(ctx.RequestURI())).
+						Str("http.target", logRequestTarget(ctx)).
 						Int("http.status_code", statusCode).
 						Int64("http.request_duration_ms", time.Since(startTime).Milliseconds()).
 						Str("http.remote_addr", ctx.RemoteAddr().String()).
@@ -334,35 +477,32 @@ func (c *CorsMiddleware) applyHeaders(ctx *fasthttp.RequestCtx, cfg *corsMiddlew
 		isLocalhostOrigin(origin) ||
 		slices.Contains(cfg.allowedOrigins, origin)
 
-	// SetupTokenHeader is sent by the dashboard on every call while the OSS setup lock is
-	// active, so a UI served from another origin must be able to preflight it.
-	allowedHeaders := []string{"Content-Type", "Authorization", "X-Requested-With", "X-Stainless-Timeout", "X-Api-Key", "X-OpenAI-Agents-SDK", "X-Operation-ID", SetupTokenHeader}
-	if slices.Contains(cfg.allowedHeaders, "*") {
-		if credentialed {
-			// Per the Fetch spec, Access-Control-Allow-Headers: * is NOT treated as a
-			// wildcard when Access-Control-Allow-Credentials: true is set — browsers
-			// interpret it as a literal header name. For credentialed preflight requests,
-			// reflect back the requested headers instead.
-			if requestedHeaders := string(ctx.Request.Header.Peek("Access-Control-Request-Headers")); requestedHeaders != "" {
-				allowedHeaders = []string{requestedHeaders}
-			}
-			// For non-preflight requests (no Access-Control-Request-Headers), keep defaults.
-		} else {
-			allowedHeaders = []string{"*"}
-		}
-	} else if len(cfg.allowedHeaders) > 0 {
-		// append allowed headers from config to the default headers
-		for _, header := range cfg.allowedHeaders {
-			if !slices.Contains(allowedHeaders, header) {
-				allowedHeaders = append(allowedHeaders, header)
-			}
-		}
-	}
 	// Check if origin is allowed (localhost always allowed + configured origins)
 	if allowed {
+		// Built only for an allowed origin: a refused one gets no CORS headers, so it costs nothing.
+		allowHeaders := cfg.allowHeaders
+		requested := ctx.Request.Header.Peek("Access-Control-Request-Headers")
+		if slices.Contains(cfg.allowedHeaders, "*") {
+			if credentialed {
+				// Per the Fetch spec, Access-Control-Allow-Headers: * is NOT treated as a
+				// wildcard when Access-Control-Allow-Credentials: true is set — browsers
+				// interpret it as a literal header name. For credentialed preflight requests,
+				// reflect back the requested headers instead.
+				if len(requested) > 0 {
+					allowHeaders = string(requested)
+				}
+				// For non-preflight requests (no Access-Control-Request-Headers), keep defaults.
+			} else {
+				// "*" never covers Authorization (Fetch standard), so it stays listed explicitly.
+				allowHeaders = cfg.allowHeaders + ", *"
+			}
+		} else if len(requested) > 0 {
+			// Mcp-Param-* names come from each tool's x-mcp-header annotations, so they are echoed from the preflight.
+			allowHeaders = appendMCPParamHeaders(allowHeaders, requested)
+		}
 		ctx.Response.Header.Set("Access-Control-Allow-Origin", origin)
 		ctx.Response.Header.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD")
-		ctx.Response.Header.Set("Access-Control-Allow-Headers", strings.Join(allowedHeaders, ", "))
+		ctx.Response.Header.Set("Access-Control-Allow-Headers", allowHeaders)
 		if credentialed {
 			ctx.Response.Header.Set("Access-Control-Allow-Credentials", "true")
 		}
@@ -750,6 +890,7 @@ func TransportPreAuthInterceptorMiddleware(config *lib.Config) schemas.BifrostHT
 			for key, value := range bifrostCtx.GetUserValues() {
 				ctx.SetUserValue(key, value)
 			}
+			retainRealtimeTurnValues(ctx, bifrostCtx)
 			next(ctx)
 		}
 	}
@@ -816,6 +957,7 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			for key, value := range bifrostCtx.GetUserValues() {
 				ctx.SetUserValue(key, value)
 			}
+			retainRealtimeTurnValues(ctx, bifrostCtx)
 			next(ctx)
 
 			deferred, _ := ctx.UserValue(schemas.BifrostContextKeyDeferTraceCompletion).(bool)
@@ -1676,6 +1818,8 @@ var apiSystemWhitelistedRoutes = []string{
 	// not a session token is present, so a repeat logout must not 401 here.
 	"/api/session/logout",
 	"/api/oauth/callback",
+	// Client ID Metadata Document
+	"/api/oauth/client-metadata.json",
 	"/health",
 	"/login",
 	"/favicon.ico",
@@ -2455,4 +2599,32 @@ func AuthBypassedMiddleware(allowedOrigins, whitelistedRoutes []string) schemas.
 			next(ctx)
 		}
 	}
+}
+
+// appendMCPParamHeaders appends the Mcp-Param-* names a preflight asks for to allowed, which is
+// returned unchanged when it asks for none.
+func appendMCPParamHeaders(allowed string, requested []byte) string {
+	isParam := func(name []byte) bool {
+		return len(name) > len("mcp-param-") && bytes.EqualFold(name[:len("mcp-param-")], []byte("mcp-param-"))
+	}
+	// Sized first so the list is built in one allocation: appending to a string copies it per name.
+	size := 0
+	for name := range bytes.SplitSeq(requested, []byte(",")) {
+		if name = bytes.TrimSpace(name); isParam(name) {
+			size += len(", ") + len(name)
+		}
+	}
+	if size == 0 {
+		return allowed
+	}
+	var out strings.Builder
+	out.Grow(len(allowed) + size)
+	out.WriteString(allowed)
+	for name := range bytes.SplitSeq(requested, []byte(",")) {
+		if name = bytes.TrimSpace(name); isParam(name) {
+			out.WriteString(", ")
+			out.Write(name)
+		}
+	}
+	return out.String()
 }

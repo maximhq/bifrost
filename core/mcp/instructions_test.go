@@ -309,7 +309,8 @@ func TestWriteBackInstructionsReplacesAndFiresCallback(t *testing.T) {
 	m.mu.Unlock()
 
 	var seen []string
-	m.SetToolsChangeCallback(func(_, _ string, _ map[string]schemas.ChatTool, _ map[string]string, instructions string) {
+	m.SetDiscoveryChangeCallback(func(_, _ string, discovery *schemas.MCPDiscovery) {
+		instructions := discovery.Instructions
 		seen = append(seen, instructions)
 	})
 
@@ -334,7 +335,7 @@ func TestWriteBackInstructionsNoOpWhenUnchanged(t *testing.T) {
 	m.mu.Unlock()
 
 	fired := false
-	m.SetToolsChangeCallback(func(_, _ string, _ map[string]schemas.ChatTool, _ map[string]string, _ string) { fired = true })
+	m.SetDiscoveryChangeCallback(func(_, _ string, _ *schemas.MCPDiscovery) { fired = true })
 
 	m.writeBackInstructions(config.ID, 0, "same")
 
@@ -489,4 +490,28 @@ func TestGetServerInstructionsKeepsNonCodeModeClientsAlongsideCodeMode(t *testin
 
 	assert.Contains(t, aggregate, `<mcp_server name="alpha">`)
 	assert.NotContains(t, aggregate, "codey", "code mode guidance leaked into the aggregate:\n%s", aggregate)
+}
+
+// BenchmarkGetServerInstructions measures the per-request cost on the inference path: 20 visible
+// clients, half with instructions.
+func BenchmarkGetServerInstructions(b *testing.B) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	for i := range 20 {
+		name, tool := fmt.Sprintf("client%02d", i), fmt.Sprintf("client%02d-echo", i)
+		instructions := ""
+		if i%2 == 0 {
+			instructions = "Check permissions first."
+		}
+		m.clientMap[name] = &schemas.MCPClientState{
+			Name:               name,
+			ExecutionConfig:    &schemas.MCPClientConfig{ID: name, Name: name, ToolsToExecute: []string{"*"}},
+			ToolMap:            map[string]schemas.ChatTool{tool: {Type: "function", Function: &schemas.ChatToolFunction{Name: tool}}},
+			ServerInstructions: instructions,
+		}
+	}
+	ctx := context.Background()
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = m.GetServerInstructions(ctx)
+	}
 }

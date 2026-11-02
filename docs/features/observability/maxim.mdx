@@ -215,7 +215,7 @@ The plugin supports the following Bifrost request types:
 
 A2A operations use the same Maxim SDK logger and repository configuration as LLM exports, including the `x-bf-maxim-log-repo-id` override. Each completed gateway trace becomes a Maxim trace with an operation span. Available operation, agent, task, conversation, push-delivery, and governance identifiers are tags. Errors and streaming updates appear beneath the operation span.
 
-Structured messages, returned tasks, artifacts, and accumulated output populate the trace input and output, with operation content also available in span metadata. Virtual-key content suppression removes those bodies while preserving operation metadata. Raw HTTP capture is not exported to Maxim.
+Structured messages, returned tasks, artifacts, and accumulated output populate the trace input and output, with operation content also available in span metadata. Virtual-key or project content suppression removes those bodies while preserving operation metadata. Raw HTTP capture is not exported to Maxim.
 
 The gateway's original start and end times are metadata, and each operation span has a `duration_ms` metric. Maxim's displayed SDK timeline uses SDK logging time; it does not reconstruct the original gateway timeline from those metadata fields.
 
