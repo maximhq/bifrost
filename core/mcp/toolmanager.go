@@ -776,6 +776,15 @@ func (m *ToolsManager) executeToolInternal(
 	toolExecutionTimeout := m.executionTimeout(executionConfig)
 	toolCtx, cancel := context.WithTimeout(ctx, toolExecutionTimeout)
 	defer cancel()
+	// What a timeout reports: the client's timeout, or less when the caller's own deadline comes
+	// first, so the message never names a limit that did not stop the call. A deadline that has
+	// already passed leaves a budget of zero, not a negative one.
+	callBudget := toolExecutionTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining < callBudget {
+			callBudget = max(remaining, 0).Round(time.Millisecond)
+		}
+	}
 
 	// The connection (shared persistent OR ephemeral per-call) is supplied by
 	// the caller via AcquireClientConn. Admin-level credentials live on the
@@ -822,7 +831,7 @@ func (m *ToolsManager) executeToolInternal(
 
 		// Sentinel-wrapped so the gate can classify error.type (timeout vs tool_error).
 		if toolCtx.Err() == context.DeadlineExceeded {
-			return nil, "", "", fmt.Errorf("MCP tool call timed out after %v: %s: %w", toolExecutionTimeout, toolName, ErrMCPToolTimeout)
+			return nil, "", "", fmt.Errorf("MCP tool call timed out after %v: %s: %w", callBudget, toolName, ErrMCPToolTimeout)
 		}
 
 		// Two failures are worth reacting to instead of surfacing an opaque
