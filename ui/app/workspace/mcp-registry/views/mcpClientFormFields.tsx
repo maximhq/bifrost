@@ -92,6 +92,20 @@ export function authScopeOf(authType: MCPAuthType | undefined): MCPAuthScope {
 	return authType === "per_user_oauth" || authType === "per_user_headers" ? "per_user" : "shared";
 }
 
+// authScopeLabel is how the servers table and the server view name a scope.
+// token_exchange carries the caller's own token on every call, so it is
+// per-user even though the form does not expose a scope dropdown for it.
+// Everything else, including "none", resolves through authScopeOf so the
+// label agrees with the form.
+export function authScopeLabel(authType: MCPAuthType | undefined): string {
+	if (authType === "token_exchange") {
+		return i18n.t("registry.form.perUser", { ns: "mcp" });
+	}
+	return authScopeOf(authType) === "per_user"
+		? i18n.t("registry.form.perUser", { ns: "mcp" })
+		: i18n.t("registry.form.shared", { ns: "mcp" });
+}
+
 /**
  * Form values that live outside react-hook-form: comma-separated text inputs
  * whose parsed form is only needed at submit time, plus the auth scope half of
