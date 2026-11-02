@@ -676,6 +676,8 @@ func extractSupportedParams(parsed *schemas.ModelCapabilities) []string {
 	}
 	if parsed.SupportsParallelFunctionCalling != nil && *parsed.SupportsParallelFunctionCalling {
 		addParam("parallel_tool_calls")
+	} else if parsed.SupportsParallelFunctionCalling == nil && parsed.SupportsToolChoice != nil && *parsed.SupportsToolChoice {
+		addParam("parallel_tool_calls")
 	}
 	if parsed.SupportsToolChoice != nil && *parsed.SupportsToolChoice {
 		addParam("tool_choice")

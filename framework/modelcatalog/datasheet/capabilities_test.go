@@ -384,3 +384,35 @@ func TestExtractSupportedParams_ReasoningSummaryFlags(t *testing.T) {
 		}
 	}
 }
+
+// TestExtractSupportedParams_ParallelToolCalls confirms parallel_tool_calls is added
+// when SupportsParallelFunctionCalling is true, or when it is unset but SupportsToolChoice is true
+// (which Anthropic Claude models use via disable_parallel_tool_use).
+func TestExtractSupportedParams_ParallelToolCalls(t *testing.T) {
+	// Explicitly enabled
+	got := extractSupportedParams(&schemas.ModelCapabilities{SupportsParallelFunctionCalling: capabilityBoolPtr(true)})
+	if !slices.Contains(got, "parallel_tool_calls") {
+		t.Errorf("expected parallel_tool_calls when SupportsParallelFunctionCalling=true, got %v", got)
+	}
+
+	// Explicitly disabled
+	got = extractSupportedParams(&schemas.ModelCapabilities{
+		SupportsParallelFunctionCalling: capabilityBoolPtr(false),
+		SupportsToolChoice:              capabilityBoolPtr(true),
+	})
+	if slices.Contains(got, "parallel_tool_calls") {
+		t.Errorf("expected parallel_tool_calls omitted when SupportsParallelFunctionCalling=false, got %v", got)
+	}
+
+	// Unset but SupportsToolChoice is true (Claude models)
+	got = extractSupportedParams(&schemas.ModelCapabilities{SupportsToolChoice: capabilityBoolPtr(true)})
+	if !slices.Contains(got, "parallel_tool_calls") {
+		t.Errorf("expected parallel_tool_calls when unset but SupportsToolChoice=true, got %v", got)
+	}
+
+	// Neither is set
+	got = extractSupportedParams(&schemas.ModelCapabilities{})
+	if slices.Contains(got, "parallel_tool_calls") {
+		t.Errorf("expected parallel_tool_calls omitted when neither is set, got %v", got)
+	}
+}
