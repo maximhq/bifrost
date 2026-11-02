@@ -602,6 +602,8 @@ func (h *MCPSessionsHandler) reauthHeaderCredential(ctx *fasthttp.RequestCtx, bf
 // revocation endpoint, and discovery for it is not yet wired up. The provider
 // token therefore remains live upstream until natural expiry; a follow-up can
 // add explicit upstream revocation once the schema captures the endpoint.
+// Every row kind the list returns can be revoked: a header credential, a
+// pending header flow, a pending OAuth flow and an OAuth token.
 //
 // Same authorization model as list/reauth: caller with an identity must match
 // the row's identity column; caller without an identity is the dashboard admin
@@ -612,10 +614,10 @@ func (h *MCPSessionsHandler) revoke(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid session id")
 		return
 	}
-	// Row IDs from three tables (OAuth tokens, header credentials, header
-	// flows) are all UUIDs. Try headers first (credential, then pending
-	// flow); on miss fall through to OAuth tokens. Each branch returns;
-	// only one delete runs per request. Store errors must surface as 500
+	// Row IDs from four tables (OAuth tokens, OAuth flows, header credentials,
+	// header flows) are all UUIDs. Try headers first (credential, then pending
+	// flow), then OAuth flows; on miss fall through to OAuth tokens. Each
+	// branch returns; only one delete runs per request. Store errors must surface as 500
 	// (not be swallowed into a miss) so a DB outage doesn't manifest as
 	// a misleading 404 from the OAuth fallback.
 	headerCred, headerCredErr := h.store.ConfigStore.GetMCPPerUserHeaderCredentialByID(ctx, rowID)
@@ -675,6 +677,27 @@ func (h *MCPSessionsHandler) revoke(ctx *fasthttp.RequestCtx) {
 		}
 		logger.Debug("[mcp/sessions] revoked header flow: id=%s mcp_client=%s mode=%s", rowID, headerFlow.MCPClientID, headerFlow.FlowMode)
 		lib.RecordAuditChange(ctx, "mcp_session.revoked", "mcp_session", headerFlow.ID, mcpSessionAuditName(headerFlow.MCPClient, headerFlow.MCPClientID), auditMCPSession("header_flow", headerFlow.MCPClientID, headerFlow.FlowMode, headerFlow.UserID, headerFlow.VirtualKeyID), nil)
+		ctx.SetStatusCode(fasthttp.StatusNoContent)
+		return
+	}
+	// A pending OAuth flow is listed beside the tokens. Deleting its row is the
+	// whole revoke: the callback then finds no flow for its state, so no token is
+	// minted. The lookup never returns an admin-mode flow, the same visibility the
+	// token lookup below has.
+	oauthFlow, oauthFlowErr := h.store.ConfigStore.GetOauthUserSessionByID(ctx, rowID)
+	if oauthFlowErr != nil {
+		logger.Error("[mcp/sessions] load oauth flow failed: id=%s err=%v", rowID, oauthFlowErr)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete MCP session")
+		return
+	}
+	if oauthFlow != nil {
+		if err := h.store.ConfigStore.DeleteOauthUserSession(ctx, oauthFlow.ID); err != nil {
+			logger.Error("[mcp/sessions] delete oauth flow failed: id=%s err=%v", rowID, err)
+			SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete MCP session")
+			return
+		}
+		logger.Debug("[mcp/sessions] revoked oauth flow: id=%s mcp_client=%s mode=%s", rowID, oauthFlow.MCPClientID, oauthFlow.FlowMode)
+		lib.RecordAuditChange(ctx, "mcp_session.revoked", "mcp_session", oauthFlow.ID, mcpSessionAuditName(oauthFlow.MCPClient, oauthFlow.MCPClientID), auditMCPSession("oauth_flow", oauthFlow.MCPClientID, oauthFlow.FlowMode, oauthFlow.UserID, oauthFlow.VirtualKeyID), nil)
 		ctx.SetStatusCode(fasthttp.StatusNoContent)
 		return
 	}

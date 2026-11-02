@@ -153,6 +153,7 @@ type Key struct {
 	SGLKeyConfig           *SGLKeyConfig           `json:"sgl_key_config,omitempty"`            // SGLang-specific key configuration
 	DatabricksKeyConfig    *DatabricksKeyConfig    `json:"databricks_key_config,omitempty"`     // Databricks-specific key configuration
 	CloudflareKeyConfig    *CloudflareKeyConfig    `json:"cloudflare_key_config,omitempty"`     // Cloudflare Workers AI-specific key configuration
+	AnthropicKeyConfig     *AnthropicKeyConfig     `json:"anthropic_key_config,omitempty"`      // Anthropic-specific key configuration
 	OAuthKeyConfig         *OAuthKeyConfig         `json:"oauth_key_config,omitempty"`          // OAuth-minted bearer for OpenAI-compatible providers; used when Value is empty
 	Enabled                *bool                   `json:"enabled,omitempty"`                   // Whether the key is active (default:true)
 	UseForBatchAPI         *bool                   `json:"use_for_batch_api,omitempty"`         // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
@@ -881,6 +882,117 @@ func (c *VertexAWSWorkloadIdentityConfig) Redacted() *VertexAWSWorkloadIdentityC
 
 // NOTE: To use Vertex IAM role authentication, set AuthCredentials to empty string and leave
 // AWSWorkloadIdentity nil.
+
+// AnthropicKeyConfig represents the Anthropic-specific key configuration.
+type AnthropicKeyConfig struct {
+	WorkloadIdentity *AnthropicWorkloadIdentityConfig `json:"workload_identity,omitempty"` // Workload Identity Federation; used when Value is empty
+}
+
+// AnthropicWorkloadIdentityConfig configures Anthropic Workload Identity Federation. Bifrost
+// exchanges an OIDC identity token issued to the workload (a Kubernetes projected service
+// account token, a CI OIDC token, ...) at the Anthropic token endpoint for a short-lived
+// access token that acts as ServiceAccountID, and sends that token as an OAuth bearer.
+//
+// IdentitySource says where the identity token comes from.
+type AnthropicWorkloadIdentityConfig struct {
+	FederationRuleID SecretVar       `json:"federation_rule_id"`     // fdrl_... rule the exchange is evaluated against
+	OrganizationID   SecretVar       `json:"organization_id"`        // Anthropic organization UUID
+	ServiceAccountID SecretVar       `json:"service_account_id"`     // svac_... service account the minted token acts as
+	WorkspaceID      *SecretVar      `json:"workspace_id,omitempty"` // wrkspc_...; required when the rule spans several workspaces
+	IdentitySource   *IdentitySource `json:"identity_source"`        // where the identity token comes from
+}
+
+// IdentitySourceType names where a federated key gets its identity token.
+type IdentitySourceType string
+
+const (
+	IdentitySourceFile   IdentitySourceType = "file"   // read from Path on every exchange, so a token the platform rotates on disk is picked up
+	IdentitySourceInline IdentitySourceType = "inline" // Token, fixed for the life of the config
+)
+
+// IdentitySource is where a federated key gets the identity token it exchanges for a provider
+// credential. It is shared by every provider that federates, so a new source type works for all
+// of them.
+type IdentitySource struct {
+	Type  IdentitySourceType `json:"type"`
+	Path  *SecretVar         `json:"path,omitempty"`  // file: path of the identity token
+	Token *SecretVar         `json:"token,omitempty"` // inline: the identity token itself, usually an env. reference
+}
+
+// Redacted returns a copy safe to send to clients: the path stays readable unless it comes from a
+// secret reference, while the token is always masked.
+func (s *IdentitySource) Redacted() *IdentitySource {
+	if s == nil {
+		return nil
+	}
+	return &IdentitySource{Type: s.Type, Path: s.Path.RedactedIfSecret(), Token: s.Token.Redacted()}
+}
+
+// Validate checks that the source names a known type and sets exactly that type's field. field is
+// the config path reported in errors.
+func (s *IdentitySource) Validate(field string) error {
+	has := func(v *SecretVar) bool {
+		return v != nil && (v.IsFromSecret() || strings.TrimSpace(v.GetValue()) != "")
+	}
+	if s == nil {
+		return fmt.Errorf("%s is required", field)
+	}
+	switch s.Type {
+	case IdentitySourceFile:
+		if !has(s.Path) || s.Token != nil {
+			return fmt.Errorf("%s of type file needs path and no token", field)
+		}
+	case IdentitySourceInline:
+		if !has(s.Token) || s.Path != nil {
+			return fmt.Errorf("%s of type inline needs token and no path", field)
+		}
+	default:
+		return fmt.Errorf("%s.type must be file or inline", field)
+	}
+	return nil
+}
+
+// HasWorkloadIdentity reports whether the key federates its credential instead of carrying one.
+func (c *AnthropicKeyConfig) HasWorkloadIdentity() bool {
+	return c != nil && c.WorkloadIdentity != nil
+}
+
+// Redacted returns a copy safe to send to clients: the identifiers and the identity source's path
+// stay readable unless they come from a secret reference, while an inline token is always masked.
+func (c *AnthropicKeyConfig) Redacted() *AnthropicKeyConfig {
+	if c == nil {
+		return nil
+	}
+	out := &AnthropicKeyConfig{}
+	if wif := c.WorkloadIdentity; wif != nil {
+		out.WorkloadIdentity = &AnthropicWorkloadIdentityConfig{
+			FederationRuleID: *wif.FederationRuleID.RedactedIfSecret(),
+			OrganizationID:   *wif.OrganizationID.RedactedIfSecret(),
+			ServiceAccountID: *wif.ServiceAccountID.RedactedIfSecret(),
+			WorkspaceID:      wif.WorkspaceID.RedactedIfSecret(),
+			IdentitySource:   wif.IdentitySource.Redacted(),
+		}
+	}
+	return out
+}
+
+// Validate checks the config at setup time, so a half-configured key is refused where the
+// operator can act on it rather than failing at the first inference call.
+func (c *AnthropicWorkloadIdentityConfig) Validate() error {
+	has := func(v *SecretVar) bool {
+		return v != nil && (v.IsFromSecret() || strings.TrimSpace(v.GetValue()) != "")
+	}
+	if !has(&c.FederationRuleID) {
+		return fmt.Errorf("anthropic_key_config.workload_identity.federation_rule_id is required")
+	}
+	if !has(&c.OrganizationID) {
+		return fmt.Errorf("anthropic_key_config.workload_identity.organization_id is required")
+	}
+	if !has(&c.ServiceAccountID) {
+		return fmt.Errorf("anthropic_key_config.workload_identity.service_account_id is required")
+	}
+	return c.IdentitySource.Validate("anthropic_key_config.workload_identity.identity_source")
+}
 
 // S3BucketConfig represents a single S3 bucket configuration for batch operations.
 type S3BucketConfig struct {

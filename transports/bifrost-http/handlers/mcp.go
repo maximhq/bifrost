@@ -981,10 +981,10 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 // reference metadata passes through intact.
 // oauthBootstrapErrorStatus is the status for a failed OAuth bootstrap: 400 for a request the caller
 // must change, such as discovery refused because the target is a private address the private
-// allowlist does not permit, and 500 otherwise.
+// allowlist does not permit, or endpoints discovery could not find, and 500 otherwise.
 func oauthBootstrapErrorStatus(err error) int {
 	var blocked *network.PrivateTargetNotAllowedError
-	if errors.Is(err, oauth2.ErrClientMetadataDocumentWithClientID) || errors.Is(err, oauth2.ErrClientMetadataDocumentUnavailable) || errors.As(err, &blocked) {
+	if errors.Is(err, oauth2.ErrClientMetadataDocumentWithClientID) || errors.Is(err, oauth2.ErrClientMetadataDocumentUnavailable) || errors.Is(err, oauth2.ErrOAuthDiscoveryFailed) || errors.As(err, &blocked) {
 		return fasthttp.StatusBadRequest
 	}
 	return fasthttp.StatusInternalServerError
@@ -1797,6 +1797,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 			ToolSyncInterval:       time.Duration(dbClient.ToolSyncInterval) * time.Second,
 			MaxProtocolVersion:     dbClient.MaxProtocolVersion,
 			ToolExecutionTimeout:   time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
+			MaxInstructionsLength:  dbClient.MaxInstructionsLength,
 			ToolPricing:            dbClient.ToolPricing,
 			AllowByDefault:         dbClient.AllowByDefault,
 			Disabled:               dbClient.Disabled,
@@ -2080,6 +2081,9 @@ func (m *MCPSyncInterval) Resolve(existing time.Duration) (time.Duration, error)
 // OAuth flow where the admin's temp access token is used the same way: the
 // server runs discovery, attaches DiscoveredTools to the persisted config,
 // and discards the credentials. Ignored for non-per_user_headers auth types.
+//
+// The embedded table's tool_pricing is decoded but not used: prices are set
+// with an update, the only path that stores them.
 type MCPClientRequest struct {
 	configstoreTables.TableMCPClient
 	OauthConfig      *OAuthConfigRequest `json:"oauth_config,omitempty"`
@@ -2390,6 +2394,16 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid connection_type %q: must be one of http, sse, stdio, openapi", req.ConnectionType))
 		return
 	}
+	// auth_type is checked next, for the same reason: an unknown value reaches the
+	// connect path, fails there and is rolled back as a 500. auth_type and
+	// connection_type cannot change on update, so create is the one place to refuse
+	// them. An omitted auth_type becomes the headers the store saves it as.
+	authType, err := lib.ResolveMCPClientAuthType(schemas.MCPAuthType(req.AuthType), schemas.MCPConnectionType(req.ConnectionType))
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	req.AuthType = string(authType)
 	isOpenAPIClient := req.ConnectionType == string(schemas.MCPConnectionTypeOpenAPI)
 
 	// Both gates run before anything else: registering a client is what makes
@@ -2608,13 +2622,13 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			ConnectionString:       req.ConnectionString,
 			RequirePublicTarget:    req.RequirePublicTarget,
 			StdioConfig:            req.StdioConfig,
+			TLSConfig:              req.TLSConfig,
 			AuthType:               schemas.MCPAuthTypePerUserHeaders,
 			PerUserHeaderKeys:      canonHeaderKeys,
 			ToolsToExecute:         req.ToolsToExecute,
 			ToolsToAutoExecute:     req.ToolsToAutoExecute,
 			PromptsToExpose:        req.PromptsToExpose,
 			ResourcesToExpose:      req.ResourcesToExpose,
-			ToolPricing:            req.ToolPricing,
 			Headers:                req.Headers,
 			AllowedExtraHeaders:    req.AllowedExtraHeaders,
 			AllowByDefault:         req.AllowByDefault,
@@ -2764,7 +2778,6 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			ToolsToAutoExecute:     req.ToolsToAutoExecute,
 			PromptsToExpose:        req.PromptsToExpose,
 			ResourcesToExpose:      req.ResourcesToExpose,
-			ToolPricing:            req.ToolPricing,
 			Headers:                req.Headers,
 			AllowedExtraHeaders:    req.AllowedExtraHeaders,
 			AllowByDefault:         req.AllowByDefault,
@@ -2904,7 +2917,6 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			ToolsToAutoExecute:     req.ToolsToAutoExecute,
 			PromptsToExpose:        req.PromptsToExpose,
 			ResourcesToExpose:      req.ResourcesToExpose,
-			ToolPricing:            req.ToolPricing,
 			Headers:                req.Headers,
 			AllowedExtraHeaders:    req.AllowedExtraHeaders,
 			AllowByDefault:         req.AllowByDefault,
@@ -2996,7 +3008,6 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			ResourcesToExpose:      req.ResourcesToExpose,
 			Headers:                req.Headers,
 			AllowedExtraHeaders:    req.AllowedExtraHeaders,
-			ToolPricing:            req.ToolPricing,
 			AllowByDefault:         req.AllowByDefault,
 		}
 
@@ -3054,7 +3065,6 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		MaxProtocolVersion:     req.MaxProtocolVersion,
 		ToolExecutionTimeout:   resolvedToolExecutionTimeout,
 		MaxInstructionsLength:  resolvedMaxInstructionsLength,
-		ToolPricing:            req.ToolPricing,
 		AllowByDefault:         req.AllowByDefault,
 	}
 	if preparedOpenAPI != nil {
@@ -3223,18 +3233,17 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	// (post-redaction-merge) value so a caller that round-trips the map
 	// unchanged doesn't force a needless reconnect. Only shared auth types
 	// carry a connection-level header credential — per-user values are
-	// supplied per caller and never baked into a shared transport. HTTP only,
-	// matching the transport VerifyHeadersConnection builds for the
-	// pre-flight below.
+	// supplied per caller and never baked into a shared transport. HTTP and
+	// SSE, the transports VerifyHeadersConnection can dial for the pre-flight
+	// below.
 	// Skipped for a disabled client: there is no live connection to protect,
 	// and refusing the edit because a deliberately-unreachable upstream can't
 	// be dialed would make a disabled client's credentials uneditable. It is
 	// verified on enable instead, which dials for real.
-	staticHeadersChanged := (existingConfig.AuthType == schemas.MCPAuthTypeHeaders || existingConfig.AuthType == schemas.MCPAuthTypeNone) &&
-		existingConfig.ConnectionType == schemas.MCPConnectionTypeHTTP &&
-		!disabled &&
+	sharedHeaderAuth := existingConfig.AuthType == schemas.MCPAuthTypeHeaders || existingConfig.AuthType == schemas.MCPAuthTypeNone
+	remoteTransport := existingConfig.ConnectionType == schemas.MCPConnectionTypeHTTP || existingConfig.ConnectionType == schemas.MCPConnectionTypeSSE
+	staticHeadersChanged := sharedHeaderAuth && remoteTransport && !disabled &&
 		req.Headers != nil && !mcpHeadersEqual(existingConfig.Headers, headers)
-	headersChanged := staticHeadersChanged && !existingConfig.Disabled
 
 	// TLSConfig: if omitted keep existing; if provided, restore raw CACertPEM when the
 	// incoming value is the redacted placeholder returned by the API.
@@ -3250,6 +3259,13 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		}
 		tlsConfig = &tlsCopy
 	}
+	// A TLS edit is baked into the live transport the same way a header is, so
+	// it takes the same path: tried first where the pre-flight can reach the
+	// upstream with the client's own credential (headers and none), then
+	// applied by redialing.
+	tlsChanged := remoteTransport && !disabled && !mcpTLSConfigEqual(existingConfig.TLSConfig, tlsConfig)
+	preflightConnectionEdit := staticHeadersChanged || (tlsChanged && sharedHeaderAuth)
+	connectionEditChanged := (staticHeadersChanged || tlsChanged) && !existingConfig.Disabled
 	resolvedMaxProtocolVersion := existingConfig.MaxProtocolVersion
 	if req.MaxProtocolVersion != nil {
 		if err := schemas.ValidateMCPMaxProtocolVersion("max_protocol_version", *req.MaxProtocolVersion); err != nil {
@@ -3612,17 +3628,18 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "oauth credentials cannot be rotated while disabling a client; send these as two separate requests")
 		return
 	}
-	// Pre-flight the new static headers against the upstream before anything
-	// is written. VerifyHeadersConnection dials its own ephemeral transport
-	// and closes it, touching neither the stored row nor the live connection,
-	// so a rejected credential leaves the client exactly as it was — still
+	// Pre-flight the new static headers or TLS settings against the upstream
+	// before anything is written. VerifyHeadersConnection dials its own
+	// ephemeral transport and closes it, touching neither the stored row nor
+	// the live connection, so a rejected credential leaves the client exactly
+	// as it was, still
 	// serving on the headers that work. Committing first and reconnecting
 	// afterwards cannot offer that: the failed dial drops the live connection
 	// (leaving the client unusable with "no active connection") while the bad
 	// headers are already persisted, so the connection checker has nothing
 	// good to retry with. Same verify-then-persist order the create path uses
 	// for per-user headers.
-	if staticHeadersChanged {
+	if preflightConnectionEdit {
 		verifyConfig := *existingConfig
 		verifyConfig.Headers = headers
 		verifyConfig.TLSConfig = tlsConfig
@@ -3647,7 +3664,13 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		_, verifyErr := h.mcpManager.VerifyHeadersConnection(bifrostCtx, &verifyConfig, verifyHeaders)
 		cancel()
 		if verifyErr != nil {
-			SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("The new headers were rejected by the MCP server, so nothing was changed: %v", verifyErr))
+			edited := "headers"
+			if !staticHeadersChanged {
+				edited = "TLS settings"
+			} else if tlsChanged {
+				edited = "headers and TLS settings"
+			}
+			SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("The new %s were rejected by the MCP server, so nothing was changed: %v", edited, verifyErr))
 			return
 		}
 	}
@@ -3835,8 +3858,8 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	// so record it before the OAuth, exchange and VK steps that can still fail.
 	lib.RecordAuditChange(ctx, "mcp_client.updated", "mcp_client", id, name, before, after)
 
-	// Apply the verified headers to the live client. A sticky client holds an
-	// open transport with the old header baked in, and
+	// Apply the new headers or TLS settings to the live client. A sticky
+	// client holds an open transport with the old ones baked in, and
 	// UpdateMCPClientCredentials is the only thing that replaces it (redial +
 	// tool rediscovery). A per-call client reads the current config on every
 	// dial, so its credential is already live, but its tool list would sit
@@ -3859,10 +3882,10 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	// than the connection checker's reconnect path. The response wording
 	// below differs accordingly.
 	var toolRefreshErr error
-	if headersChanged && sharedConnectErr == nil && !(wasPerCallConnection && !isPerCallConnection) {
+	if connectionEditChanged && sharedConnectErr == nil && !(wasPerCallConnection && !isPerCallConnection) {
 		if err := h.updateMCPClientCredentialsWithRetry(ctx, id, schemasConfig); err != nil &&
 			!errors.Is(err, schemas.ErrMCPReconnectNotApplicable) {
-			logger.Error(fmt.Sprintf("MCP client %s updated, but applying the new headers to the live client failed: %v", id, err))
+			logger.Error(fmt.Sprintf("MCP client %s updated, but applying the new headers or TLS settings to the live client failed: %v", id, err))
 			if isPerCallConnection {
 				toolRefreshErr = err
 			} else {
@@ -4078,17 +4101,20 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			message += ". This client now connects per call instead of maintaining a persistent connection: the existing shared connection was closed."
 		}
 	}
+	// The partial-success sentences follow message as sentences of their own,
+	// whether or not message already ends with one.
+	partial := strings.TrimSuffix(message, ".") + "."
 	if sharedConnectErr != nil {
 		SendJSON(ctx, map[string]any{
 			"status":  "partial_success",
-			"message": fmt.Sprintf("%s However, establishing the shared connection failed: %v. The connection checker will keep retrying automatically.", message, sharedConnectErr),
+			"message": fmt.Sprintf("%s However, establishing the shared connection failed: %v. The connection checker will keep retrying automatically.", partial, sharedConnectErr),
 		})
 		return
 	}
 	if toolRefreshErr != nil {
 		SendJSON(ctx, map[string]any{
 			"status":  "partial_success",
-			"message": fmt.Sprintf("%s However, refreshing the client's tools with the new headers failed: %v. The periodic tool sync will retry automatically.", message, toolRefreshErr),
+			"message": fmt.Sprintf("%s However, refreshing the client's tools with the new headers failed: %v. The periodic tool sync will retry automatically.", partial, toolRefreshErr),
 		})
 		return
 	}
@@ -4287,6 +4313,18 @@ func (h *MCPHandler) updateMCPClientWithRetry(ctx context.Context, id string, co
 		time.Sleep(retryDelay)
 	}
 	return lastErr
+}
+
+// mcpTLSConfigEqual reports whether two TLS settings dial the same way. A nil
+// config and one that sets nothing are the same: neither customizes TLS.
+func mcpTLSConfigEqual(a, b *schemas.MCPTLSConfig) bool {
+	unset := func(c *schemas.MCPTLSConfig) bool {
+		return c == nil || (!c.InsecureSkipVerify && (c.CACertPEM == nil || c.CACertPEM.GetValue() == ""))
+	}
+	if unset(a) || unset(b) {
+		return unset(a) && unset(b)
+	}
+	return a.InsecureSkipVerify == b.InsecureSkipVerify && a.CACertPEM.Equals(b.CACertPEM)
 }
 
 // mcpHeadersEqual reports whether two resolved static header maps carry the
@@ -4998,7 +5036,8 @@ type CreateMCPLibraryEntryRequest struct {
 // createMCPLibraryEntry handles POST /api/mcp/library — publishes an org-internal
 // ("custom") MCP server into the library so other members can discover and
 // install it. The entry is protected from the remote sync (see Source/skip-set
-// in SyncMCPLibrary). A duplicate name (same generated slug) returns 409.
+// in SyncMCPLibrary). A duplicate of a listed entry's name (same generated slug)
+// returns 409; a deleted entry's name can be published again.
 func (h *MCPHandler) createMCPLibraryEntry(ctx *fasthttp.RequestCtx) {
 	if h.store.ConfigStore == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP operations unavailable: config store is disabled")
@@ -5017,34 +5056,14 @@ func (h *MCPHandler) createMCPLibraryEntry(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Validate connection type and the matching connection field.
-	switch req.ConnectionType {
-	case schemas.MCPConnectionTypeHTTP, schemas.MCPConnectionTypeSSE:
-		if strings.TrimSpace(req.ConnectionURL) == "" {
-			SendError(ctx, fasthttp.StatusBadRequest, "connection_url is required for http/sse connection types")
-			return
-		}
-	case schemas.MCPConnectionTypeSTDIO:
-		if req.StdioConfig == nil || strings.TrimSpace(req.StdioConfig.Command) == "" {
-			SendError(ctx, fasthttp.StatusBadRequest, "stdio_config.command is required for stdio connection type")
-			return
-		}
-	default:
-		SendError(ctx, fasthttp.StatusBadRequest, "connection_type must be one of: http, stdio, sse")
+	// Validate the connection and auth fields with the checks the catalog sync
+	// also applies, then default the auth type.
+	if err := modelcatalog.ValidateMCPLibraryEntry(req.ConnectionType, req.ConnectionURL, req.StdioConfig, req.AuthType); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
-
-	// Default and validate auth type.
 	if req.AuthType == "" {
 		req.AuthType = schemas.MCPAuthTypeNone
-	}
-	switch req.AuthType {
-	case schemas.MCPAuthTypeNone, schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypeOauth,
-		schemas.MCPAuthTypePerUserOauth, schemas.MCPAuthTypePerUserHeaders,
-		schemas.MCPAuthTypeTokenExchange:
-	default:
-		SendError(ctx, fasthttp.StatusBadRequest, "invalid auth_type")
-		return
 	}
 
 	slug := modelcatalog.Slugify(req.Name)

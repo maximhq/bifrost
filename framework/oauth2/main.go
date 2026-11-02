@@ -729,21 +729,21 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 
 		metadata, err := DiscoverOAuthMetadata(ctx, config.ServerURL)
 		if err != nil {
-			return nil, fmt.Errorf("OAuth discovery failed: %w. Please provide authorize_url, token_url, and registration_url manually", err)
+			return nil, fmt.Errorf("%w: %w. Please provide authorize_url, token_url, and registration_url manually", ErrOAuthDiscoveryFailed, err)
 		}
 
 		// Use discovered values only for missing fields (prefer user-provided values)
 		if authorizeURL == "" {
 			authorizeURL = metadata.AuthorizationURL
 			if authorizeURL == "" {
-				return nil, fmt.Errorf("authorize_url could not be discovered. Please provide it manually")
+				return nil, fmt.Errorf("%w: authorize_url could not be discovered. Please provide it manually", ErrOAuthDiscoveryFailed)
 			}
 			logger.Debug("Discovered authorize_url", "url", authorizeURL)
 		}
 		if tokenURL == "" {
 			tokenURL = metadata.TokenURL
 			if tokenURL == "" {
-				return nil, fmt.Errorf("token_url could not be discovered. Please provide it manually")
+				return nil, fmt.Errorf("%w: token_url could not be discovered. Please provide it manually", ErrOAuthDiscoveryFailed)
 			}
 			logger.Debug("Discovered token_url", "url", tokenURL)
 		}
@@ -1773,6 +1773,10 @@ var (
 	// ErrClientMetadataDocumentUnavailable means use_client_metadata_document was set but Bifrost's
 	// document is not at an address an authorization server can fetch (public HTTPS, not loopback).
 	ErrClientMetadataDocumentUnavailable = errors.New("the client metadata document needs Bifrost on a public HTTPS address: set the MCP external URL")
+
+	// ErrOAuthDiscoveryFailed means the authorization endpoints could not be discovered from the MCP
+	// server, so the caller has to provide them in the OAuth config.
+	ErrOAuthDiscoveryFailed = errors.New("OAuth discovery failed")
 )
 
 // ReregisterDynamicClient obtains a fresh client_id (and secret, if the

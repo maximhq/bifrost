@@ -45532,7 +45532,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPGateway:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Add MCP client",
-        "description": "Adds a new MCP client with the specified configuration.\nNote: tool_pricing is not available when creating a new client; tool\npricing can only be set once the tool list is known. For shared-connection\nclients tools are fetched after client creation; for per-user auth types\nthey are discovered during the create/verify flow itself.\n\nTwo cases require a genuinely authenticated admin session and are refused\nwith 403 when dashboard authentication is disabled or unconfigured, even\nthough other management endpoints stay reachable in that state:\nconnection_type \"stdio\" (which runs the supplied command as a gateway\nsubprocess), and connection_type \"http\"/\"sse\" whose connection_string\nresolves to a loopback, private-network, link-local, or CGNAT address.\nPublic http/sse targets are unaffected.\n\nFor auth_type \"token_exchange\", verification and tool discovery run\nduring the create as the signed-in admin: Bifrost exchanges the\nidentity-provider token on the request or, when it carries none, the\naccess token from the admin's own Bifrost sign-in. A request with\nneither (for example one made with an API key) creates the client in\npending_verification; finish it with\nPOST /api/mcp/client/{id}/verify-exchange.\n\nFor auth_type \"oauth\" and \"per_user_oauth\", the name and endpoint slug\nare checked before the OAuth flow starts, so a conflict returns 409 at\ncreate rather than when the flow is completed, and endpoint_slug is kept\nfor the client the completion creates. OAuth discovery against a private\naddress that mcp_oauth_private_allowlist does not permit returns 400.\n",
+        "description": "Adds a new MCP client with the specified configuration.\nNote: tool_pricing is not available when creating a new client; tool\npricing can only be set once the tool list is known. For shared-connection\nclients tools are fetched after client creation; for per-user auth types\nthey are discovered during the create/verify flow itself.\n\nTwo cases require a genuinely authenticated admin session and are refused\nwith 403 when dashboard authentication is disabled or unconfigured, even\nthough other management endpoints stay reachable in that state:\nconnection_type \"stdio\" (which runs the supplied command as a gateway\nsubprocess), and connection_type \"http\"/\"sse\" whose connection_string\nresolves to a loopback, private-network, link-local, or CGNAT address.\nPublic http/sse targets are unaffected.\n\nFor auth_type \"token_exchange\", verification and tool discovery run\nduring the create as the signed-in admin: Bifrost exchanges the\nidentity-provider token on the request or, when it carries none, the\naccess token from the admin's own Bifrost sign-in. A request with\nneither (for example one made with an API key) creates the client in\npending_verification; finish it with\nPOST /api/mcp/client/{id}/verify-exchange.\n\nFor auth_type \"oauth\" and \"per_user_oauth\", the name and endpoint slug\nare checked before the OAuth flow starts, so a conflict returns 409 at\ncreate rather than when the flow is completed, and endpoint_slug is kept\nfor the client the completion creates. OAuth discovery against a private\naddress that mcp_oauth_private_allowlist does not permit returns 400.\n\nauth_type must be one of the MCPAuthType values; any other value returns\n400. per_user_oauth and token_exchange need connection_type \"http\", and\nper_user_headers needs \"http\" or \"openapi\": each call opens its own\nconnection, so all three return 400 on \"sse\" and \"stdio\". An omitted\nauth_type is \"headers\".\n",
         "tags": [
           "MCP"
         ],
@@ -45758,7 +45758,7 @@
                               },
                               "ca_cert_pem": {
                                 "type": "string",
-                                "description": "PEM-encoded CA certificate to trust for MCP server connections.\nUse when the MCP server uses a self-signed or private CA certificate.\nSupports env.VAR_NAME syntax to read the certificate from an environment variable.\n"
+                                "description": "PEM-encoded CA certificate to trust for MCP server connections.\nUse when the MCP server uses a self-signed or private CA certificate.\nSupports env.VAR_NAME syntax to read the certificate from an environment variable.\nA value that does not parse as a PEM certificate is refused when the client is\ncreated or edited, unless insecure_skip_verify is set.\n"
                               }
                             }
                           },
@@ -46075,7 +46075,7 @@
                               },
                               "ca_cert_pem": {
                                 "type": "string",
-                                "description": "PEM-encoded CA certificate to trust for MCP server connections.\nUse when the MCP server uses a self-signed or private CA certificate.\nSupports env.VAR_NAME syntax to read the certificate from an environment variable.\n"
+                                "description": "PEM-encoded CA certificate to trust for MCP server connections.\nUse when the MCP server uses a self-signed or private CA certificate.\nSupports env.VAR_NAME syntax to read the certificate from an environment variable.\nA value that does not parse as a PEM certificate is refused when the client is\ncreated or edited, unless insecure_skip_verify is set.\n"
                               }
                             }
                           },
@@ -46171,6 +46171,15 @@
                           "connection_string": {
                             "type": "string",
                             "description": "SSE URL (required for SSE connection type)"
+                          },
+                          "auth_type": {
+                            "type": "string",
+                            "enum": [
+                              "none",
+                              "headers",
+                              "oauth"
+                            ],
+                            "description": "The per-user auth types open a new connection for each call, which an\nSSE stream does not allow, so SSE takes the shared auth types only.\n"
                           }
                         }
                       }
@@ -46392,7 +46401,7 @@
                               },
                               "ca_cert_pem": {
                                 "type": "string",
-                                "description": "PEM-encoded CA certificate to trust for MCP server connections.\nUse when the MCP server uses a self-signed or private CA certificate.\nSupports env.VAR_NAME syntax to read the certificate from an environment variable.\n"
+                                "description": "PEM-encoded CA certificate to trust for MCP server connections.\nUse when the MCP server uses a self-signed or private CA certificate.\nSupports env.VAR_NAME syntax to read the certificate from an environment variable.\nA value that does not parse as a PEM certificate is refused when the client is\ncreated or edited, unless insecure_skip_verify is set.\n"
                               }
                             }
                           },
@@ -46508,6 +46517,15 @@
                                 "description": "Environment variables required"
                               }
                             }
+                          },
+                          "auth_type": {
+                            "type": "string",
+                            "enum": [
+                              "none",
+                              "headers",
+                              "oauth"
+                            ],
+                            "description": "A STDIO subprocess is one connection for every caller, so STDIO takes\nthe shared auth types only.\n"
                           }
                         }
                       }
@@ -46729,7 +46747,7 @@
                               },
                               "ca_cert_pem": {
                                 "type": "string",
-                                "description": "PEM-encoded CA certificate to trust for MCP server connections.\nUse when the MCP server uses a self-signed or private CA certificate.\nSupports env.VAR_NAME syntax to read the certificate from an environment variable.\n"
+                                "description": "PEM-encoded CA certificate to trust for MCP server connections.\nUse when the MCP server uses a self-signed or private CA certificate.\nSupports env.VAR_NAME syntax to read the certificate from an environment variable.\nA value that does not parse as a PEM certificate is refused when the client is\ncreated or edited, unless insecure_skip_verify is set.\n"
                               }
                             }
                           },
@@ -47144,7 +47162,7 @@
                   },
                   "tls_config": {
                     "type": "object",
-                    "description": "TLS configuration for HTTP and SSE connections.\nNot applicable to stdio or inprocess connection types.\n",
+                    "description": "TLS configuration for HTTP, SSE and OpenAPI connections (for OpenAPI, the HTTP\nclient that calls the API). Not applicable to stdio or inprocess connection types.\nOn an enabled client a change applies at once: a client with a persistent\nconnection reconnects with it, a per-call client uses it from its next call, and\nan OpenAPI client rebuilds the HTTP client that calls the API.\nA per-call client with none, headers or oauth auth also refreshes its tool list\nwith it; a per-user client's tool list picks it up at its next periodic check.\nFor headers and none auth the change is first tried against the server, and a\nfailure answers 422 with nothing changed. If applying it to the live client then\nfails, the change is still stored and the answer is 200 with status\npartial_success. A client with a persistent connection then keeps serving on its\ncurrent connection and uses the stored change from its next reconnect; call\nPOST /api/mcp/client/{id}/reconnect to apply it now. The exception is a redial\nthat finds the client's OAuth credential needs re-authorization: the connection\nis closed and the client moves to needs_reauth until it is reauthorized. A\ndisabled client stores the change and connects with it when it is enabled again.\n",
                     "properties": {
                       "insecure_skip_verify": {
                         "type": "boolean",
@@ -47152,7 +47170,7 @@
                       },
                       "ca_cert_pem": {
                         "type": "string",
-                        "description": "PEM-encoded CA certificate to trust for MCP server connections.\nUse when the MCP server uses a self-signed or private CA certificate.\nSupports env.VAR_NAME syntax to read the certificate from an environment variable.\n"
+                        "description": "PEM-encoded CA certificate to trust for MCP server connections.\nUse when the MCP server uses a self-signed or private CA certificate.\nSupports env.VAR_NAME syntax to read the certificate from an environment variable.\nA value that does not parse as a PEM certificate is refused when the client is\ncreated or edited, unless insecure_skip_verify is set.\n"
                       }
                     }
                   },
@@ -48196,7 +48214,7 @@
     "/api/mcp/sessions/{id}": {
       "delete": {
         "summary": "Revoke an MCP session",
-        "description": "Revokes a session by primary key. Accepts these row kinds:\n- OAuth token rows → hard-deletes the token plus any pending OAuth flow\n  for the same binding (so an in-flight callback can't undo the revoke)\n- Header credential rows → hard-deletes the credential plus any pending\n  header submission flow for the same binding\n- Pending per-user-headers flow rows → hard-deletes just the flow\n\nNote: pending per-user OAuth flow rows are **not** revocable by this\nendpoint — they expire naturally or are cleared when the bound token\nrow is revoked. To cancel a pending OAuth flow, revoke its parent token\n(if one exists) or wait for expiry.\n\nBifrost does **not** call the upstream provider's revoke endpoint —\nrevocation is local. Per-user-headers credentials never call upstream.\n",
+        "description": "Revokes a session by primary key. Accepts these row kinds:\n- OAuth token rows → hard-deletes the token plus any pending OAuth flow\n  for the same binding, so a callback that has not yet claimed that flow\n  cannot undo the revoke\n- Header credential rows → hard-deletes the credential plus any pending\n  header submission flow for the same binding\n- Pending per-user-headers flow rows → hard-deletes just the flow\n- Pending per-user OAuth flow rows → hard-deletes just the flow, so a\n  callback that has not yet claimed it can no longer mint a token. A\n  callback already completing at that moment can still save its token,\n  which then appears as a session that can be revoked\n\nBifrost does **not** call the upstream provider's revoke endpoint —\nrevocation is local. Per-user-headers credentials never call upstream.\n",
         "operationId": "revokeMcpSession",
         "x-mint": {
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPGateway:Delete` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"

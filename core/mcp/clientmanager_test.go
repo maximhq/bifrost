@@ -462,7 +462,7 @@ func TestUpdateClientCredentials_PerCallShared_Disabled_SkipsRefresh(t *testing.
 	assert.Equal(t, schemas.MCPConnectionStateDisabled, state.State, "a credential update must not resurrect a disabled client")
 }
 
-// TestUpdateClientCredentials_PerCallSharedOAuth_PendingVerification_TransitionsToHealthy
+// TestUpdateClientCredentials_PerCallSharedOAuth_PendingVerification_LeavesThatState
 // pins the second half of the same bug report: a per-call shared-OAuth
 // client's FIRST connection (still in PendingVerification — e.g. a
 // config.json-bootstrapped client whose admin just completed the OAuth
@@ -471,8 +471,10 @@ func TestUpdateClientCredentials_PerCallShared_Disabled_SkipsRefresh(t *testing.
 // left the client permanently stuck showing pending_verification in the UI
 // (with no way to retry, since the pending OAuth stash this endpoint
 // requires is already cleared by the caller) until a restart re-ran
-// AddClient from scratch and performed the transition correctly.
-func TestUpdateClientCredentials_PerCallSharedOAuth_PendingVerification_TransitionsToHealthy(t *testing.T) {
+// AddClient from scratch and performed the transition correctly. No OAuth
+// provider is configured here, so the first discovery fails and the client
+// leaves pending_verification as Unstable, with that failure recorded.
+func TestUpdateClientCredentials_PerCallSharedOAuth_PendingVerification_LeavesThatState(t *testing.T) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, nil, nil)
 	config := &schemas.MCPClientConfig{
 		ID:             "client-pending-percall",
@@ -496,7 +498,9 @@ func TestUpdateClientCredentials_PerCallSharedOAuth_PendingVerification_Transiti
 	m.mu.RLock()
 	state := *m.clientMap[config.ID]
 	m.mu.RUnlock()
-	assert.Equal(t, schemas.MCPConnectionStateHealthy, state.State, "must transition out of pending_verification, mirroring AddClient's own per-call setup")
+	assert.Equal(t, schemas.MCPConnectionStateUnstable, state.State, "must transition out of pending_verification, mirroring AddClient's own per-call setup")
+	require.NotNil(t, state.LastFailure)
+	assert.Equal(t, schemas.MCPConnectionFailureStageToolDiscovery, state.LastFailure.Stage)
 
 	// Without a connection checker, nothing would ever discover this
 	// client's tools afterward (no persistent Conn, no DiscoveredTools to
@@ -508,8 +512,8 @@ func TestUpdateClientCredentials_PerCallSharedOAuth_PendingVerification_Transiti
 	m.checkerManager.mu.RUnlock()
 	assert.True(t, hasChecker, "must start a connection checker so tools actually get discovered")
 
-	// A second call, now that the client is already Healthy, is the plain
-	// reauthorize case: it must attempt a synchronous tool refresh with the
+	// A second call, now that the client has left pending_verification, is the
+	// plain reauthorize case: it must attempt a synchronous tool refresh with the
 	// updated credential rather than report not-applicable. No OAuth
 	// provider is configured here, so resolving the credential for that
 	// discovery fails, and the failure must surface as a real error (not
@@ -558,6 +562,47 @@ func TestUpdateClientCredentials_PerCallSharedType_PendingVerification_Discovers
 	m.mu.RUnlock()
 	assert.Equal(t, schemas.MCPConnectionStateHealthy, state.State)
 	assert.Contains(t, state.ToolMap, "pending-percall-client-sync-echo", "tools must be discovered synchronously, not deferred entirely to the periodic checker")
+}
+
+// TestUpdateClientCredentials_PerCallSharedType_PendingVerification_FailedFirstDiscoveryIsUnstable:
+// a per-call client completing its first connection here whose first discovery
+// fails is recorded as Unstable at the tool_discovery stage, as AddClient's
+// per-call branch records it, rather than reported Healthy with no tools.
+func TestUpdateClientCredentials_PerCallSharedType_PendingVerification_FailedFirstDiscoveryIsUnstable(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(ts.Close)
+
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+	config := &schemas.MCPClientConfig{
+		ID:               "client-pending-percall-failed",
+		Name:             "pending-percall-client-failed",
+		AuthType:         schemas.MCPAuthTypeHeaders,
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(ts.URL),
+		Headers:          map[string]schemas.SecretVar{"Authorization": *schemas.NewSecretVar("Bearer BAD")},
+	}
+
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{
+		Name:            config.Name,
+		ExecutionConfig: config,
+		State:           schemas.MCPConnectionStatePendingVerification,
+		ToolMap:         make(map[string]schemas.ChatTool),
+	}
+	m.mu.Unlock()
+
+	require.NoError(t, m.UpdateClientCredentials(config.ID, config))
+
+	m.mu.RLock()
+	state := *m.clientMap[config.ID]
+	m.mu.RUnlock()
+	assert.Equal(t, schemas.MCPConnectionStateUnstable, state.State)
+	require.NotNil(t, state.LastFailure)
+	assert.Equal(t, schemas.MCPConnectionFailureStageToolDiscovery, state.LastFailure.Stage)
+	assert.Empty(t, state.ToolMap)
 }
 
 // TestReconnectClient_PerCallSharedOAuth_ReturnsReconnectNotApplicable pins

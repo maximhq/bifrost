@@ -172,7 +172,7 @@ func connectedAlpha(t *testing.T, a *alphaServer, edit func(*schemas.MCPClientCo
 		edit(client)
 	}
 	b := newSDKClient(t, schemas.BifrostConfig{MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{client}}})
-	b.ConnectConfiguredMCPClients(context.Background())
+	b.ConnectConfiguredMCPClients(context.Background(), nil)
 	return b
 }
 
@@ -267,7 +267,7 @@ func testSDKSTDIORespawn(t *testing.T) {
 		ToolsToExecute:   schemas.WhiteList{"*"},
 		ToolSyncInterval: 2 * time.Second,
 	}}}})
-	b.ConnectConfiguredMCPClients(context.Background())
+	b.ConnectConfiguredMCPClients(context.Background(), nil)
 	if got := clientNamed(t, b, "stdioalpha").State; got != schemas.MCPConnectionStateHealthy {
 		t.Fatalf("state after connect = %q, want healthy", got)
 	}
@@ -306,7 +306,7 @@ func testSDKConnectGating(t *testing.T) {
 	if len(clients) != 0 {
 		t.Fatalf("before connect: %d clients, want none", len(clients))
 	}
-	b.ConnectConfiguredMCPClients(context.Background())
+	b.ConnectConfiguredMCPClients(context.Background(), nil)
 	alpha := clientNamed(t, b, "alpha")
 	if alpha.State != schemas.MCPConnectionStateHealthy {
 		t.Fatalf("state = %q, want healthy", alpha.State)
@@ -464,7 +464,7 @@ func testSDKPluginShortCircuit(t *testing.T) {
 		MCPPlugins: []schemas.MCPPlugin{plugin},
 		MCPConfig:  &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{alphaClient(a.url)}},
 	})
-	b.ConnectConfiguredMCPClients(context.Background())
+	b.ConnectConfiguredMCPClients(context.Background(), nil)
 	if alpha := clientNamed(t, b, "alpha"); alpha.State != schemas.MCPConnectionStateHealthy || !slices.Contains(toolNames(alpha), "echo_tool") {
 		t.Fatalf("control: alpha is %q with tools %v, want healthy with echo_tool", alpha.State, toolNames(alpha))
 	}
@@ -553,7 +553,7 @@ func testSDKInProcessClient(t *testing.T) {
 		alphaClient(a.url),
 		{ID: "inproc-id", Name: "inproc", ConnectionType: schemas.MCPConnectionTypeInProcess, InProcessServer: inproc, ToolsToExecute: schemas.WhiteList{"*"}},
 	}}})
-	b.ConnectConfiguredMCPClients(context.Background())
+	b.ConnectConfiguredMCPClients(context.Background(), nil)
 	if got := clientNamed(t, b, "inproc").State; got != schemas.MCPConnectionStateHealthy {
 		t.Fatalf("in-process state = %q, want healthy", got)
 	}
@@ -577,14 +577,17 @@ func testSDKInProcessClient(t *testing.T) {
 	}
 }
 
-// testSDKInProcessNoServer: an in-process client with no server is refused. Today the refusal comes
-// only after the connect retries run out, about 31s, because this permanent error is retried like a
-// network one.
+// testSDKInProcessNoServer: an in-process client with no server is refused at once. The error is a
+// misconfiguration, so the connect retries, about 31s for a network error, do not run.
 func testSDKInProcessNoServer(t *testing.T) {
 	b := newSDKClient(t, schemas.BifrostConfig{MCPConfig: &schemas.MCPConfig{}})
+	start := time.Now()
 	err := b.AddMCPClient(context.Background(), &schemas.MCPClientConfig{ID: "inproc-id", Name: "inproc", ConnectionType: schemas.MCPConnectionTypeInProcess, ToolsToExecute: schemas.WhiteList{"*"}})
 	if err == nil || !strings.Contains(err.Error(), "InProcess connection requires a server instance") {
 		t.Fatalf("AddMCPClient error = %v, want \"InProcess connection requires a server instance\"", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("AddMCPClient took %v, want the refusal without retries", elapsed)
 	}
 }
 
@@ -739,38 +742,53 @@ func testSDKInProcessResults(t *testing.T) {
 		time.Sleep(3 * time.Second)
 		return mcpgo.NewToolResultText("late"), nil
 	})
+	s.AddTool(mcpgo.NewTool("stops"), func(ctx context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		<-ctx.Done()
+		return mcpgo.NewToolResultText("stopped"), nil
+	})
 	b := newSDKClient(t, schemas.BifrostConfig{MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{
 		ID: "results-id", Name: "results", ConnectionType: schemas.MCPConnectionTypeInProcess, InProcessServer: s,
 		ToolsToExecute: schemas.WhiteList{"*"}, ToolExecutionTimeout: time.Second,
 	}}}})
-	b.ConnectConfiguredMCPClients(context.Background())
+	b.ConnectConfiguredMCPClients(context.Background(), nil)
 	if msg, bErr := execChat(b, "results-echo", `{"text":"round trip"}`); bErr != nil || contentOf(msg) != "round trip" {
 		t.Fatalf("results-echo = %q, %q; want \"round trip\"", contentOf(msg), errorText(bErr))
 	}
+	// The image comes back as an image content block, beside the empty text item the tool sends with it.
 	msg, bErr := execChat(b, "results-image", `{}`)
-	if bErr != nil || contentOf(msg) != "[Image Response: QUJD, MIME: image/png]" {
-		t.Fatalf("results-image = %q, %q; want \"[Image Response: QUJD, MIME: image/png]\"", contentOf(msg), errorText(bErr))
+	hasImage := false
+	if bErr == nil && msg != nil && msg.Content != nil {
+		for _, block := range msg.Content.ContentBlocks {
+			hasImage = hasImage || (block.ImageURLStruct != nil && block.ImageURLStruct.URL == "data:image/png;base64,QUJD")
+		}
+	}
+	if !hasImage {
+		raw, _ := json.Marshal(msg)
+		t.Fatalf("results-image = %s, %q; want an image block data:image/png;base64,QUJD", raw, errorText(bErr))
 	}
 	msg, bErr = execChat(b, "results-error", `{}`)
 	if bErr != nil || msg == nil || msg.ChatToolMessage == nil || msg.ChatToolMessage.IsError == nil || !*msg.ChatToolMessage.IsError {
 		t.Fatalf("results-error = %+v, %q; want IsError set", msg, errorText(bErr))
 	}
-	t.Run("the slow tool times out at 1s", func(t *testing.T) {
-		t.Skip("known issue: an in-process client does not enforce the tool timeout yet")
-		start := time.Now()
-		_, bErr := execChat(b, "results-slow", `{}`)
-		if !strings.Contains(errorText(bErr), "timed out after 1s") {
-			t.Fatalf("results-slow error = %q, want the 1s timeout", errorText(bErr))
-		}
-		if took := time.Since(start); took > 2500*time.Millisecond {
-			t.Fatalf("results-slow took %s, want about 1s", took)
-		}
-	})
+	// A tool that ignores its context and one that returns once it ends both time out at 1s:
+	// an in-process handler runs on the call's own goroutine, so neither stops the call itself.
+	for _, tool := range []string{"results-slow", "results-stops"} {
+		t.Run(tool+" times out at 1s", func(t *testing.T) {
+			start := time.Now()
+			_, bErr := execChat(b, tool, `{}`)
+			if !strings.Contains(errorText(bErr), "timed out after 1s") {
+				t.Fatalf("%s error = %q, want the 1s timeout", tool, errorText(bErr))
+			}
+			if took := time.Since(start); took > 2500*time.Millisecond {
+				t.Fatalf("%s took %s, want about 1s", tool, took)
+			}
+		})
+	}
 	before := strings.Join(toolNames(clientNamed(t, b, "results")), ",")
 	if err := b.ReconnectMCPClient("results-id"); err != nil {
 		t.Fatalf("ReconnectMCPClient: %v", err)
 	}
-	if after := strings.Join(toolNames(clientNamed(t, b, "results")), ","); after != before || after != "echo,error,image,slow" {
-		t.Fatalf("tools after reconnect = %s (before %s), want echo,error,image,slow", after, before)
+	if after := strings.Join(toolNames(clientNamed(t, b, "results")), ","); after != before || after != "echo,error,image,slow,stops" {
+		t.Fatalf("tools after reconnect = %s (before %s), want echo,error,image,slow,stops", after, before)
 	}
 }

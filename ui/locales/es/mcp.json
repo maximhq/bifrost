@@ -799,12 +799,16 @@
 			"updateValues": "Valores de actualización",
 			"editValues": "Modificar los valores"
 		},
+		"revokeFlowTitle": "¿Revocar este flujo pendiente?",
+		"revokeFlowDescription": "Bifrost eliminará este flujo pendiente y su enlace dejará de funcionar. Una credencial ya almacenada para esta vinculación se conserva; revoca su propia fila para eliminarla.",
 		"revokeHeaderTitle": "¿Rechazar estos valores de cabecera almacenados?",
 		"revokeHeaderDescription": "Bifrost eliminará los valores credenciales almacenados para esta unión. No hay token upstream para revocar; el usuario tendrá que volver a presentar tus valores de cabecera para utilizar este MCP de nuevo.",
 		"revokeSessionTitle": "¿Revocar esta sesión del MCP?",
 		"revokeSessionDescription": "Bifrost eliminará la credencial almacenada para esta unión. El token OAuth upstream no es revocado en el proveedor; se mantiene separado y expira naturalmente. Cualquier persona que use esta unión tendrá que volver a autenticar para obtener una ficha fresca.",
 		"toast": {
 			"reauthFailed": "Falló la re-authenticación",
+			"flowRevoked": "Flujo pendiente revocado",
+			"flowRevokeFailed": "No se pudo revocar el flujo pendiente",
 			"headerRevoked": "Valores de encabezado revocados",
 			"sessionRevoked": "Período de sesiones revocado",
 			"headerRevokeFailed": "Fallado para revocar los valores de cabecera",

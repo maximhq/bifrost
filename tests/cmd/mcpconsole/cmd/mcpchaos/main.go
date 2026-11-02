@@ -12,6 +12,10 @@
 //	curl localhost:8400/control
 //	curl -XPOST localhost:8400/control/alpha/tools/add -d '{"tool":{"name":"new_tool"}}'
 //	curl -XPOST localhost:8400/control/alpha/faults -d '{"faults":{"status":429}}'
+//
+// With -tls-addr it also serves the fleet over HTTPS with a loopback certificate:
+//
+//	mcpchaos -servers llm -tls-addr 127.0.0.1:8401
 package main
 
 import (
@@ -36,6 +40,7 @@ func main() {
 	stdio := flag.Bool("stdio", false, "serve one virtual server over stdin and stdout, bridging to a running fleet")
 	fleetURL := flag.String("fleet", "", "fleet base URL to bridge to (with -stdio)")
 	serverName := flag.String("server", "", "virtual server to bridge (with -stdio)")
+	tlsAddr := flag.String("tls-addr", "", "also serve the fleet over HTTPS on this address")
 	flag.Parse()
 
 	// In stdio mode this process is spawned by whatever is under test, so it
@@ -74,6 +79,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	var shutdownTLS func(context.Context) error
+	if *tlsAddr != "" {
+		tlsURL, stop, err := fleet.ServeTLS(*tlsAddr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "mcpchaos: TLS listen: %v\n", err)
+			os.Exit(1)
+		}
+		shutdownTLS = stop
+		fmt.Printf("mcpchaos TLS listening on %s\n", tlsURL)
+	}
+
 	fmt.Printf("mcpchaos listening on %s\n", url)
 	fmt.Printf("  fleet control  %s/control\n", url)
 	for _, name := range fleet.Names() {
@@ -87,6 +103,9 @@ func main() {
 	fmt.Println("\nmcpchaos shutting down")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	if shutdownTLS != nil {
+		_ = shutdownTLS(ctx)
+	}
 	if err := shutdown(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "mcpchaos: shutdown: %v\n", err)
 		os.Exit(1)
