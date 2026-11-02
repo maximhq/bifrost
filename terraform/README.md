@@ -51,7 +51,7 @@ Bifrost config can come from two sources simultaneously. Terraform variables ove
 The following 18 top-level sections of the schema are exposed as Terraform variables (the schema defines more; pass any other section through `config_json_file` or `config_json`):
 `encryption_key`, `auth_config`, `client`, `framework`, `providers_config`, `governance`, `mcp`, `vector_store`, `config_store`, `logs_store`, `cluster_config`, `scim_config`, `load_balancer_config`, `guardrails_config`, `plugins`, `audit_logs`, `websocket`, `server`.
 
-To serve Bifrost under a URL prefix, set `server = { base_path = "/bifrost" }`. On the Kubernetes targets (EKS, GKE, AKS, generic Kubernetes) also set `ingress_path = "/bifrost"` so the ingress routes the prefix; ECS, Cloud Run and ACI ignore `ingress_path`, so route the prefix on your own load balancer or proxy there. Probes keep using `/health`.
+To serve Bifrost under a URL prefix, set `server = { base_path = "/bifrost" }`. Variables replace the matching top-level key of the base file, not individual fields, so if your `config.json` already has a `server` section (for example `read_buffer_size`), repeat those fields in the override alongside `base_path` or set `base_path` in the file instead. On the Kubernetes targets (EKS, GKE, AKS, generic Kubernetes) also set `ingress_path = "/bifrost"` so the ingress routes the prefix; ECS, Cloud Run and ACI ignore `ingress_path`, so route the prefix on your own load balancer or proxy there. Probes keep using `/health`.
 
 For `scim_config` with `provider = "okta"`, include `config.issuerUrl`, `config.clientId`, `config.clientSecret`, and `config.apiToken`.
 
