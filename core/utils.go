@@ -917,6 +917,7 @@ func isPromptOptionalVideoEditType(t *string) bool {
 func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, targetType schemas.RequestType) schemas.PostHookRunner {
 	roleSent := false
 	var identity chatStreamIdentity
+	var toolState *schemas.ResponsesToChatStreamState
 	return func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 		if result != nil {
 			switch targetType {
@@ -931,7 +932,17 @@ func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, ta
 			case schemas.ResponsesRequest:
 				// chat→responses: convert responses stream chunk back to chat
 				if result.ResponsesStreamResponse != nil {
-					if converted := result.ResponsesStreamResponse.ToBifrostChatResponse(); converted != nil {
+					event := result.ResponsesStreamResponse
+					if toolState == nil && (event.Type == schemas.ResponsesStreamResponseTypeOutputItemAdded || event.Type == schemas.ResponsesStreamResponseTypeOutputItemDone) && event.Item != nil && event.Item.Type != nil && *event.Item.Type == schemas.ResponsesMessageTypeFunctionCall && event.Item.ResponsesToolMessage != nil {
+						toolState = &schemas.ResponsesToChatStreamState{}
+					}
+					var converted *schemas.BifrostChatResponse
+					if toolState != nil {
+						converted = toolState.Convert(event)
+					} else {
+						converted = event.ToBifrostChatResponse()
+					}
+					if converted != nil {
 						roleSent = setAssistantRoleOnce(converted, roleSent)
 						identity.apply(converted)
 						converted.ExtraFields.ConvertedRequestType = targetType

@@ -805,6 +805,140 @@ func TestWrapConvertedStreamPostHookRunnerKeepsStreamIdentityOnEveryChunk(t *tes
 	}
 }
 
+func TestWrapConvertedStreamPostHookRunnerPreservesToolCalls(t *testing.T) {
+	type toolCall struct {
+		id, name, arguments string
+	}
+	tests := []struct {
+		name   string
+		events []string
+		want   map[uint16]toolCall
+	}{
+		{
+			name: "parallel calls with terminal-only arguments",
+			events: []string{
+				`{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_0","call_id":"call_0","name":"read","arguments":""}}`,
+				`{"type":"response.function_call_arguments.done","output_index":0,"item_id":"fc_0","arguments":"{\"filePath\":\"/tmp/demo.txt\"}"}`,
+				`{"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_0","call_id":"call_0","name":"read","arguments":"{\"filePath\":\"/tmp/demo.txt\"}"}}`,
+				`{"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"glob","arguments":""}}`,
+				`{"type":"response.function_call_arguments.done","output_index":1,"item_id":"fc_1","arguments":"{\"pattern\":\"*.go\"}"}`,
+				`{"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"glob","arguments":"{\"pattern\":\"*.go\"}"}}`,
+			},
+			want: map[uint16]toolCall{
+				0: {id: "call_0", name: "read", arguments: `{"filePath":"/tmp/demo.txt"}`},
+				1: {id: "call_1", name: "glob", arguments: `{"pattern":"*.go"}`},
+			},
+		},
+		{
+			name: "interleaved arguments with non-tool output items",
+			events: []string{
+				`{"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_0"}}`,
+				`{"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_0","call_id":"call_0","name":"read","arguments":""}}`,
+				`{"type":"response.output_item.added","output_index":2,"item":{"type":"message","id":"msg_0"}}`,
+				`{"type":"response.output_item.added","output_index":3,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"glob","arguments":""}}`,
+				`{"type":"response.function_call_arguments.delta","item_id":"fc_0","delta":"{\"filePath\":"}`,
+				`{"type":"response.function_call_arguments.delta","output_index":3,"item_id":"fc_1","delta":"{\"pattern\":\"*.go\"}"}`,
+				`{"type":"response.function_call_arguments.done","output_index":1,"item_id":"fc_0","arguments":"{\"filePath\":\"/tmp/demo.txt\"}"}`,
+				`{"type":"response.function_call_arguments.done","output_index":3,"item_id":"fc_1","arguments":"{\"pattern\":\"*.go\"}"}`,
+				`{"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc_0","call_id":"call_0","name":"read","arguments":"{\"filePath\":\"/tmp/demo.txt\"}"}}`,
+			},
+			want: map[uint16]toolCall{
+				0: {id: "call_0", name: "read", arguments: `{"filePath":"/tmp/demo.txt"}`},
+				1: {id: "call_1", name: "glob", arguments: `{"pattern":"*.go"}`},
+			},
+		},
+		{
+			name: "completed item supplies missing arguments",
+			events: []string{
+				`{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_0","call_id":"call_0","name":"read","arguments":""}}`,
+				`{"type":"response.function_call_arguments.done","output_index":0,"item_id":"fc_0"}`,
+				`{"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_0","call_id":"call_0","name":"read","arguments":"{\"filePath\":\"/tmp/demo.txt\"}"}}`,
+			},
+			want: map[uint16]toolCall{0: {id: "call_0", name: "read", arguments: `{"filePath":"/tmp/demo.txt"}`}},
+		},
+		{
+			name: "sequential calls without output indexes or item ids",
+			events: []string{
+				`{"type":"response.output_item.added","item":{"type":"function_call","call_id":"call_0","name":"read","arguments":""}}`,
+				`{"type":"response.function_call_arguments.delta","delta":"{\"filePath\":\"/tmp/demo.txt\"}"}`,
+				`{"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_0","name":"read","arguments":"{\"filePath\":\"/tmp/demo.txt\"}"}}`,
+				`{"type":"response.output_item.added","item":{"type":"function_call","call_id":"call_1","name":"glob","arguments":""}}`,
+				`{"type":"response.function_call_arguments.done","arguments":"{\"pattern\":\"*.go\"}"}`,
+			},
+			want: map[uint16]toolCall{
+				0: {id: "call_0", name: "read", arguments: `{"filePath":"/tmp/demo.txt"}`},
+				1: {id: "call_1", name: "glob", arguments: `{"pattern":"*.go"}`},
+			},
+		},
+		{
+			name: "divergent terminal snapshot does not corrupt emitted arguments",
+			events: []string{
+				`{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_0","call_id":"call_0","name":"read","arguments":""}}`,
+				`{"type":"response.function_call_arguments.delta","output_index":0,"item_id":"fc_0","delta":"{\"filePath\":\"/tmp/a\"}"}`,
+				`{"type":"response.function_call_arguments.done","output_index":0,"item_id":"fc_0","arguments":"{\"filePath\":\"/tmp/b\"}"}`,
+				`{"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_0","call_id":"call_0","name":"read","arguments":"{\"filePath\":\"/tmp/b\"}"}}`,
+			},
+			want: map[uint16]toolCall{0: {id: "call_0", name: "read", arguments: `{"filePath":"/tmp/a"}`}},
+		},
+		{
+			name: "arguments on the opening item are not emitted twice",
+			events: []string{
+				`{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_0","call_id":"call_0","name":"read","arguments":"{\"filePath\":"}}`,
+				`{"type":"response.function_call_arguments.done","output_index":0,"item_id":"fc_0","arguments":"{\"filePath\":\"/tmp/demo.txt\"}"}`,
+			},
+			want: map[uint16]toolCall{0: {id: "call_0", name: "read", arguments: `{"filePath":"/tmp/demo.txt"}`}},
+		},
+		{
+			name: "completed item without an announcement carries the complete call",
+			events: []string{
+				`{"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_0","call_id":"call_0","name":"read","arguments":"{\"filePath\":\"/tmp/demo.txt\"}"}}`,
+			},
+			want: map[uint16]toolCall{0: {id: "call_0", name: "read", arguments: `{"filePath":"/tmp/demo.txt"}`}},
+		},
+		{
+			name: "an unmatched item id does not modify another call",
+			events: []string{
+				`{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_0","call_id":"call_0","name":"read","arguments":""}}`,
+				`{"type":"response.function_call_arguments.delta","output_index":0,"item_id":"fc_other","delta":"wrong"}`,
+				`{"type":"response.function_call_arguments.done","output_index":0,"item_id":"fc_0","arguments":"{\"filePath\":\"/tmp/demo.txt\"}"}`,
+			},
+			want: map[uint16]toolCall{0: {id: "call_0", name: "read", arguments: `{"filePath":"/tmp/demo.txt"}`}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := make(map[uint16]toolCall)
+			runner := wrapConvertedStreamPostHookRunner(func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				for _, choice := range result.ChatResponse.Choices {
+					if choice.Delta == nil {
+						continue
+					}
+					for _, chunk := range choice.Delta.ToolCalls {
+						call := calls[chunk.Index]
+						if chunk.ID != nil {
+							call.id = *chunk.ID
+						}
+						if chunk.Function.Name != nil {
+							call.name = *chunk.Function.Name
+						}
+						call.arguments += chunk.Function.Arguments
+						calls[chunk.Index] = call
+					}
+				}
+				return result, err
+			}, schemas.ResponsesRequest)
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			for _, raw := range tt.events {
+				var event schemas.BifrostResponsesStreamResponse
+				require.NoError(t, sonic.UnmarshalString(raw, &event))
+				_, err := runner(ctx, &schemas.BifrostResponse{ResponsesStreamResponse: &event}, nil)
+				require.Nil(t, err)
+			}
+			require.Equal(t, tt.want, calls)
+		})
+	}
+}
+
 // BenchmarkWrapConvertedStreamPostHookRunner measures one converted text turn,
 // created through completed, as a chat stream served through Responses sees it.
 func BenchmarkWrapConvertedStreamPostHookRunner(b *testing.B) {
@@ -822,6 +956,30 @@ func BenchmarkWrapConvertedStreamPostHookRunner(b *testing.B) {
 	}
 	noop := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 		return result, bifrostErr
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		runner := wrapConvertedStreamPostHookRunner(noop, schemas.ResponsesRequest)
+		for _, event := range events {
+			runner(ctx, &schemas.BifrostResponse{ResponsesStreamResponse: event}, nil)
+		}
+	}
+}
+
+func BenchmarkWrapConvertedStreamPostHookRunnerToolCalls(b *testing.B) {
+	functionCall := schemas.ResponsesMessageTypeFunctionCall
+	events := []*schemas.BifrostResponsesStreamResponse{
+		{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, OutputIndex: schemas.Ptr(0), Item: &schemas.ResponsesMessage{ID: schemas.Ptr("fc_0"), Type: &functionCall, ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("call_0"), Name: schemas.Ptr("read")}}},
+		{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, OutputIndex: schemas.Ptr(0), ItemID: schemas.Ptr("fc_0"), Delta: schemas.Ptr(`{"path":`)},
+		{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone, OutputIndex: schemas.Ptr(0), ItemID: schemas.Ptr("fc_0"), Arguments: schemas.Ptr(`{"path":"/tmp/a"}`)},
+		{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, OutputIndex: schemas.Ptr(1), Item: &schemas.ResponsesMessage{ID: schemas.Ptr("fc_1"), Type: &functionCall, ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("call_1"), Name: schemas.Ptr("glob")}}},
+		{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone, OutputIndex: schemas.Ptr(1), ItemID: schemas.Ptr("fc_1"), Arguments: schemas.Ptr(`{"pattern":"*.go"}`)},
+		{Type: schemas.ResponsesStreamResponseTypeCompleted},
+	}
+	noop := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, err
 	}
 	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 	b.ReportAllocs()
