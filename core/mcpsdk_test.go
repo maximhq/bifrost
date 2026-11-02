@@ -742,6 +742,10 @@ func testSDKInProcessResults(t *testing.T) {
 		time.Sleep(3 * time.Second)
 		return mcpgo.NewToolResultText("late"), nil
 	})
+	s.AddTool(mcpgo.NewTool("stops"), func(ctx context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		<-ctx.Done()
+		return mcpgo.NewToolResultText("stopped"), nil
+	})
 	b := newSDKClient(t, schemas.BifrostConfig{MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{
 		ID: "results-id", Name: "results", ConnectionType: schemas.MCPConnectionTypeInProcess, InProcessServer: s,
 		ToolsToExecute: schemas.WhiteList{"*"}, ToolExecutionTimeout: time.Second,
@@ -750,30 +754,41 @@ func testSDKInProcessResults(t *testing.T) {
 	if msg, bErr := execChat(b, "results-echo", `{"text":"round trip"}`); bErr != nil || contentOf(msg) != "round trip" {
 		t.Fatalf("results-echo = %q, %q; want \"round trip\"", contentOf(msg), errorText(bErr))
 	}
+	// The image comes back as an image content block, beside the empty text item the tool sends with it.
 	msg, bErr := execChat(b, "results-image", `{}`)
-	if bErr != nil || contentOf(msg) != "[Image Response: QUJD, MIME: image/png]" {
-		t.Fatalf("results-image = %q, %q; want \"[Image Response: QUJD, MIME: image/png]\"", contentOf(msg), errorText(bErr))
+	hasImage := false
+	if bErr == nil && msg != nil && msg.Content != nil {
+		for _, block := range msg.Content.ContentBlocks {
+			hasImage = hasImage || (block.ImageURLStruct != nil && block.ImageURLStruct.URL == "data:image/png;base64,QUJD")
+		}
+	}
+	if !hasImage {
+		raw, _ := json.Marshal(msg)
+		t.Fatalf("results-image = %s, %q; want an image block data:image/png;base64,QUJD", raw, errorText(bErr))
 	}
 	msg, bErr = execChat(b, "results-error", `{}`)
 	if bErr != nil || msg == nil || msg.ChatToolMessage == nil || msg.ChatToolMessage.IsError == nil || !*msg.ChatToolMessage.IsError {
 		t.Fatalf("results-error = %+v, %q; want IsError set", msg, errorText(bErr))
 	}
-	t.Run("the slow tool times out at 1s", func(t *testing.T) {
-		t.Skip("known issue: an in-process client does not enforce the tool timeout yet")
-		start := time.Now()
-		_, bErr := execChat(b, "results-slow", `{}`)
-		if !strings.Contains(errorText(bErr), "timed out after 1s") {
-			t.Fatalf("results-slow error = %q, want the 1s timeout", errorText(bErr))
-		}
-		if took := time.Since(start); took > 2500*time.Millisecond {
-			t.Fatalf("results-slow took %s, want about 1s", took)
-		}
-	})
+	// A tool that ignores its context and one that returns once it ends both time out at 1s:
+	// an in-process handler runs on the call's own goroutine, so neither stops the call itself.
+	for _, tool := range []string{"results-slow", "results-stops"} {
+		t.Run(tool+" times out at 1s", func(t *testing.T) {
+			start := time.Now()
+			_, bErr := execChat(b, tool, `{}`)
+			if !strings.Contains(errorText(bErr), "timed out after 1s") {
+				t.Fatalf("%s error = %q, want the 1s timeout", tool, errorText(bErr))
+			}
+			if took := time.Since(start); took > 2500*time.Millisecond {
+				t.Fatalf("%s took %s, want about 1s", tool, took)
+			}
+		})
+	}
 	before := strings.Join(toolNames(clientNamed(t, b, "results")), ",")
 	if err := b.ReconnectMCPClient("results-id"); err != nil {
 		t.Fatalf("ReconnectMCPClient: %v", err)
 	}
-	if after := strings.Join(toolNames(clientNamed(t, b, "results")), ","); after != before || after != "echo,error,image,slow" {
-		t.Fatalf("tools after reconnect = %s (before %s), want echo,error,image,slow", after, before)
+	if after := strings.Join(toolNames(clientNamed(t, b, "results")), ","); after != before || after != "echo,error,image,slow,stops" {
+		t.Fatalf("tools after reconnect = %s (before %s), want echo,error,image,slow,stops", after, before)
 	}
 }
