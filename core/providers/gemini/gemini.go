@@ -3503,6 +3503,9 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 		}
 	}
 
+	// Read the endpoint before the placeholder below, which says nothing about it.
+	resultsEndpoint := geminiBatchResultsEndpoint(results)
+
 	// If no results found but job is complete, return info message
 	if len(results) == 0 && (geminiResp.Metadata.State == GeminiBatchStateSucceeded || geminiResp.Metadata.State == GeminiBatchStateFailed) {
 		results = []schemas.BatchResultItem{{
@@ -3518,7 +3521,7 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 
 	batchResultsResp := &schemas.BifrostBatchResultsResponse{
 		BatchID:  request.BatchID,
-		Endpoint: geminiBatchResultsEndpoint(results),
+		Endpoint: resultsEndpoint,
 		Results:  results,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency: latency.Milliseconds(),

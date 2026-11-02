@@ -684,6 +684,13 @@ func TestGeminiBatchResultsEndpoint(t *testing.T) {
 
 	assert.Equal(t, schemas.BatchEndpointEmbeddings, geminiBatchResultsEndpoint([]schemas.BatchResultItem{embedding}))
 	assert.Equal(t, schemas.BatchEndpointChatCompletions, geminiBatchResultsEndpoint([]schemas.BatchResultItem{chat}))
+	decoded := schemas.BatchResultItem{CustomID: "d0", Response: &schemas.BatchResultResponse{StatusCode: 200, Body: map[string]interface{}{
+		"object": "list",
+		"data":   []interface{}{map[string]interface{}{"object": "embedding"}},
+	}}}
+	assert.Equal(t, schemas.BatchEndpointEmbeddings, geminiBatchResultsEndpoint([]schemas.BatchResultItem{decoded}))
+	failed := schemas.BatchResultItem{CustomID: "f0", Response: &schemas.BatchResultResponse{StatusCode: 429, Body: map[string]interface{}{"error": "rate limited"}}}
+	assert.Equal(t, schemas.BatchEndpoint(""), geminiBatchResultsEndpoint([]schemas.BatchResultItem{failed}))
 	// No successful result says nothing about the endpoint, so settlement keeps the persisted one.
 	assert.Equal(t, schemas.BatchEndpoint(""), geminiBatchResultsEndpoint(nil))
 	assert.Equal(t, schemas.BatchEndpoint(""), geminiBatchResultsEndpoint([]schemas.BatchResultItem{{CustomID: "e0", Error: &schemas.BatchResultError{Code: "400", Message: "bad"}}}))
@@ -753,6 +760,8 @@ func TestGeminiBatchCreateEmbeddingsRejectsBadInputShapesAsBadRequest(t *testing
 		"multiple inputs":       {"input": []interface{}{"a", "b"}},
 		"non-string input":      {"input": []interface{}{float64(1)}},
 		"missing input":         {"dimensions": float64(8)},
+		"empty string input":    {"input": ""},
+		"empty list input":      {"input": []interface{}{""}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

@@ -600,6 +600,9 @@ func ToGeminiBatchEmbeddingRequest(body map[string]interface{}) (GeminiEmbedding
 	default:
 		return req, providerUtils.InvalidRequestErrorf("embedding batch request is missing a string input")
 	}
+	if text == "" {
+		return req, providerUtils.InvalidRequestErrorf("embedding batch input must not be empty")
+	}
 	req.Content = &Content{Parts: []*Part{{Text: text}}}
 	if openAI.Dimensions != nil && *openAI.Dimensions > 0 {
 		req.OutputDimensionality = openAI.Dimensions
@@ -714,16 +717,19 @@ func buildGeminiEmbeddingBatchBody(request *schemas.BifrostBatchCreateRequest, m
 
 // geminiBatchResultsEndpoint tells accounting which endpoint a finished job served.
 // Results carry no endpoint of their own, so embeddings are recognized by their
-// OpenAI-style body; other successful results are priced as chat, as before. A job
-// with no successful result says nothing about its endpoint, so it returns "" and
-// settlement keeps the endpoint persisted at creation.
+// OpenAI-style body; other successful (non-error, non-3xx+) results are priced as chat,
+// as before. A job with no successful result says nothing about its endpoint, so it
+// returns "" and settlement keeps the endpoint persisted at creation.
 func geminiBatchResultsEndpoint(results []schemas.BatchResultItem) schemas.BatchEndpoint {
 	endpoint := schemas.BatchEndpoint("")
 	for _, item := range results {
-		if item.Response == nil {
+		if item.Response == nil || item.Response.StatusCode >= http.StatusMultipleChoices {
 			continue
 		}
-		if _, ok := item.Response.Body["data"].([]map[string]interface{}); ok && item.Response.Body["object"] == "list" {
+		// Built results hold []map[string]interface{}; envelope lines decoded from JSON hold []interface{}.
+		_, builtData := item.Response.Body["data"].([]map[string]interface{})
+		_, decodedData := item.Response.Body["data"].([]interface{})
+		if (builtData || decodedData) && item.Response.Body["object"] == "list" {
 			return schemas.BatchEndpointEmbeddings
 		}
 		endpoint = schemas.BatchEndpointChatCompletions
