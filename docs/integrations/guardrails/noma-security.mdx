@@ -54,7 +54,7 @@ When Noma is the only provider enforcing a rule's output, Bifrost streams respon
 
 - A **block** ends the stream after the text already delivered.
 - A **mask** is applied to text that has not been delivered yet. If a mask would change text the client already received, the stream ends instead.
-- If Noma cannot be reached mid-stream, the stream ends rather than releasing unchecked text, because text already delivered cannot be recalled. Outside progressive streaming, a Noma error follows the standard guardrail behavior: the error is reported and the request continues.
+- If Noma cannot be reached during a stream, Bifrost follows the standard guardrail behavior: the error is reported and the affected text continues to the client unscanned.
 
 Bifrost holds the complete response and evaluates it once when another provider also enforces the output, for Responses API streams, for requests that declare tools, and for requests that ask for more than one choice.
 
