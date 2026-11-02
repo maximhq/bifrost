@@ -198,6 +198,56 @@ func TestCreateBifrostContextFromHeaders_DirectKey(t *testing.T) {
 	}
 }
 
+func TestCreateBifrostContextFromHeadersOwnsRequestHeaders(t *testing.T) {
+	requestCtx := &fasthttp.RequestCtx{}
+	requestCtx.Request.Header.Add("X-Bf-Lh-Tenant", "first")
+	requestCtx.Request.Header.Add("X-Bf-Lh-Tenant", "acme")
+	requestCtx.Request.Header.Set("X-Custom-Identity", "alice")
+	setupHeaders := captureSessionHeaders(requestCtx)
+	setupHeaders.headers["x-empty"] = nil
+	ctx, cancel := createBifrostContextFromHeaders(testWSHandlerStore{}, setupHeaders)
+	defer cancel()
+	requestCtx.Request.Reset()
+	setupHeaders.headers["x-bf-lh-tenant"][1] = "changed"
+	delete(setupHeaders.headers, "x-custom-identity")
+
+	headers, ok := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
+	require.True(t, ok)
+	assert.Equal(t, map[string]string{
+		"x-bf-lh-tenant":    "acme",
+		"x-custom-identity": "alice",
+	}, headers)
+	assert.Nil(t, ctx.Value(schemas.BifrostContextKeyExtraHeaders))
+
+	for _, emptyAuth := range []*sessionHeaders{nil, {}, {headers: map[string][]string{}}} {
+		emptyCtx, emptyCancel := createBifrostContextFromHeaders(testWSHandlerStore{}, emptyAuth)
+		assert.Nil(t, emptyCtx.Value(schemas.BifrostContextKeyRequestHeaders))
+		emptyCancel()
+	}
+}
+
+func BenchmarkCreateBifrostContextFromHeaders(b *testing.B) {
+	for name, setupHeaders := range map[string]*sessionHeaders{
+		"empty": {},
+		"headers": {headers: map[string][]string{
+			"authorization":      {"Bearer sk-bf-test"},
+			"x-bf-lh-tenant":     {"acme"},
+			"x-custom-identity":  {"alice"},
+			"x-bf-eh-originator": {"test-client"},
+			"connection":         {"Upgrade"},
+			"upgrade":            {"websocket"},
+		}},
+	} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_, cancel := createBifrostContextFromHeaders(testWSHandlerStore{}, setupHeaders)
+				cancel()
+			}
+		})
+	}
+}
+
 func TestCreateBifrostContextFromHeaders_EmptyBaggageSessionIDIgnored(t *testing.T) {
 	ctx, cancel := createBifrostContextFromHeaders(testWSHandlerStore{}, &sessionHeaders{
 		baggage: "session-id=   ",
@@ -230,7 +280,7 @@ func TestCreateBifrostContextFromHeaders_ForwardsPrefixedHeaders(t *testing.T) {
 
 func TestCreateBifrostContextFromHeaders_AppliesHeaderFilterAndDirectAllowlist(t *testing.T) {
 	matcher := lib.NewHeaderMatcher(&configstoreTables.GlobalHeaderFilterConfig{
-		Allowlist: []string{"originator", "anthropic-*"},
+		Allowlist: []string{"originator", "anthropic-*", "x-bf-lh-*"},
 		Denylist:  []string{"anthropic-secret"},
 	})
 	ctx, cancel := createBifrostContextFromHeaders(testWSHandlerStore{matcher: matcher}, &sessionHeaders{
@@ -240,6 +290,7 @@ func TestCreateBifrostContextFromHeaders_AppliesHeaderFilterAndDirectAllowlist(t
 			"anthropic-beta":           {"allowed-direct"},
 			"anthropic-secret":         {"blocked-by-denylist"},
 			"x-bf-eh-anthropic-secret": {"blocked-prefix-denylist"},
+			"x-bf-lh-tenant":           {"acme"},
 		},
 	})
 	defer cancel()
@@ -252,6 +303,8 @@ func TestCreateBifrostContextFromHeaders_AppliesHeaderFilterAndDirectAllowlist(t
 	assert.Equal(t, []string{"allowed-direct"}, extraHeaders["anthropic-beta"])
 	assert.NotContains(t, extraHeaders, "x-trace-id")
 	assert.NotContains(t, extraHeaders, "anthropic-secret")
+	assert.NotContains(t, extraHeaders, "x-bf-lh-tenant")
+	assert.Equal(t, "acme", ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)["x-bf-lh-tenant"])
 }
 
 func TestCaptureSessionHeaders_PreservesDuplicateHeaderValues(t *testing.T) {
