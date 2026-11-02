@@ -554,6 +554,8 @@ Supports text and multimodal embeddings (text, image, audio, video, and PDF via 
 - Inline responses: Array in `dest.inlinedResponses`
 - File-based responses: JSONL file in `dest.fileName`
 
+**Embeddings batches**: A batch created with endpoint `/v1/embeddings`, or with an embedding model, is sent to `models/{model}:asyncBatchEmbedContent` instead of `batchGenerateContent`. A `model` is required. Inline `requests` embed one text each and accept OpenAI-style bodies (`input`/`dimensions`) or native ones (`content`/`outputDimensionality`, `taskType`, `title`, and `embedContentConfig` with `documentOcr` or `audioTrackExtraction`). `embedContentConfig` belongs on each request entry. Uploaded files are passed to Gemini unchanged, as for other batches, so each line must already be native: `{"key": "...", "request": {"content": {"parts": [{"text": "..."}]}, "outputDimensionality": 768}}`. Each result is returned as an OpenAI-style embeddings body (`data[].embedding`).
+
 **Note**: RFC3339 timestamps converted to Unix timestamps
 
 ---

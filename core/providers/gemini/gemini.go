@@ -2655,6 +2655,17 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 		return nil, providerUtils.NewBifrostOperationError("cannot specify both input_file_id and requests", nil)
 	}
 
+	isEmbeddings := isGeminiEmbeddingBatch(request, model)
+	if isEmbeddings && model == "" {
+		return nil, providerUtils.NewBifrostBadRequestError("model is required for embedding batches (e.g. gemini-embedding-2)")
+	}
+	if len(jsonData) == 0 && isEmbeddings {
+		var bodyErr *schemas.BifrostError
+		if jsonData, bodyErr = buildGeminiEmbeddingBatchBody(request, model); bodyErr != nil {
+			return nil, bodyErr
+		}
+	}
+
 	if len(jsonData) == 0 {
 		// Build the batch request with proper nested structure. Honor a caller-supplied
 		// display name (e.g. genai config.display_name), falling back to a generated one.
@@ -2721,12 +2732,16 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	// Build URL - use batchGenerateContent endpoint
-	// We default gemini 2.5 flash
+	// Build URL - embeddings have their own batch method; everything else uses
+	// batchGenerateContent. We default gemini 2.5 flash
 	if model == "" {
 		model = "gemini-2.5-flash"
 	}
-	url := fmt.Sprintf("%s/models/%s:batchGenerateContent", provider.networkConfig.BaseURL, model)
+	method := "batchGenerateContent"
+	if isEmbeddings {
+		method = "asyncBatchEmbedContent"
+	}
+	url := fmt.Sprintf("%s/models/%s:%s", provider.networkConfig.BaseURL, model, method)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(url)
@@ -2795,11 +2810,18 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 		completedCount = len(inlinedResponses) - failedCount
 	}
 
+	// A detected embeddings job reports the logical endpoint even when the request omitted it,
+	// since accounting keeps this persisted value when results carry no endpoint of their own.
+	endpoint := request.Endpoint
+	if isEmbeddings {
+		endpoint = schemas.BatchEndpointEmbeddings
+	}
+
 	// Build response
 	result := &schemas.BifrostBatchCreateResponse{
 		ID:            geminiResp.Metadata.Name,
 		Object:        "batch",
-		Endpoint:      string(request.Endpoint),
+		Endpoint:      string(endpoint),
 		Status:        status,
 		CreatedAt:     parseGeminiTimestamp(geminiResp.Metadata.CreateTime),
 		OperationName: &geminiResp.Metadata.Name,
@@ -3488,6 +3510,9 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 		}
 	}
 
+	// Read the endpoint before the placeholder below, which says nothing about it.
+	resultsEndpoint := geminiBatchResultsEndpoint(results)
+
 	// If no results found but job is complete, return info message
 	if len(results) == 0 && (geminiResp.Metadata.State == GeminiBatchStateSucceeded || geminiResp.Metadata.State == GeminiBatchStateFailed) {
 		results = []schemas.BatchResultItem{{
@@ -3503,7 +3528,7 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 
 	batchResultsResp := &schemas.BifrostBatchResultsResponse{
 		BatchID:  request.BatchID,
-		Endpoint: schemas.BatchEndpointChatCompletions,
+		Endpoint: resultsEndpoint,
 		Results:  results,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency: latency.Milliseconds(),

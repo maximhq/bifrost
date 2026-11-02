@@ -2773,7 +2773,8 @@ type GenerateContentResponseUsageMetadata struct {
 // GenerateContentResponse represents response message for PredictionService.GenerateContent.
 type GenerateContentResponse struct {
 	// Response variations returned by the model.
-	Candidates []*Candidate `json:"candidates,omitempty"`
+	Candidates []*Candidate     `json:"candidates,omitempty"`
+	Embedding  *GeminiEmbedding `json:"embedding,omitempty"` // set on embeddings batch results
 	// Timestamp when the request is made to the server.
 	CreateTime time.Time `json:"createTime,omitempty"`
 	// Output only. The model version used to generate the response.
@@ -2913,6 +2914,34 @@ type GeminiBatchGenerateContentRequest struct {
 	Labels            map[string]string `json:"labels,omitempty"`
 }
 
+// GeminiBatchEmbedCreateRequest is the body of an asyncBatchEmbedContent call.
+type GeminiBatchEmbedCreateRequest struct {
+	Batch GeminiBatchEmbedConfig `json:"batch"`
+}
+
+// GeminiBatchEmbedConfig is the batch configuration for an embeddings batch.
+type GeminiBatchEmbedConfig struct {
+	DisplayName string                      `json:"displayName,omitempty"`
+	InputConfig GeminiBatchEmbedInputConfig `json:"inputConfig"`
+}
+
+// GeminiBatchEmbedInputConfig carries either inline embedding requests or an uploaded file.
+type GeminiBatchEmbedInputConfig struct {
+	Requests *GeminiBatchEmbedRequestsWrapper `json:"requests,omitempty"`
+	FileName string                           `json:"fileName,omitempty"`
+}
+
+// GeminiBatchEmbedRequestsWrapper wraps the array of embedding batch request items.
+type GeminiBatchEmbedRequestsWrapper struct {
+	Requests []GeminiBatchEmbedRequestItem `json:"requests"`
+}
+
+// GeminiBatchEmbedRequestItem is one embedding request in a batch with its caller key.
+type GeminiBatchEmbedRequestItem struct {
+	Request  GeminiEmbeddingRequest `json:"request"`
+	Metadata *GeminiBatchMetadata   `json:"metadata,omitempty"`
+}
+
 // GeminiBatchStats represents the stats of a batch job.
 type GeminiBatchStats struct {
 	RequestCount           int `json:"requestCount"`
@@ -3047,10 +3076,12 @@ type GeminiBatchErrorInfo struct {
 // OpenAI-compatible integrations may wrap it as {status_code, body}. Preserve the
 // raw response so the decoder can accept both wire shapes.
 type GeminiBatchFileResultLine struct {
-	CustomID string                 `json:"custom_id,omitempty"`
-	Key      string                 `json:"key,omitempty"`
-	Response sonic.NoCopyRawMessage `json:"response,omitempty"`
-	Error    *GeminiBatchErrorInfo  `json:"error,omitempty"`
+	CustomID      string                                `json:"custom_id,omitempty"`
+	Key           string                                `json:"key,omitempty"`
+	Response      sonic.NoCopyRawMessage                `json:"response,omitempty"`
+	Error         *GeminiBatchErrorInfo                 `json:"error,omitempty"`
+	Embedding     *GeminiEmbedding                      `json:"embedding,omitempty"`     // embeddings lines may skip the response wrapper
+	UsageMetadata *GenerateContentResponseUsageMetadata `json:"usageMetadata,omitempty"` // usage that rides with an unwrapped embedding
 }
 
 // GeminiFileResponseLine represents the response field inside a Gemini batch
