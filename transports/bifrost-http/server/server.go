@@ -3409,6 +3409,7 @@ func (s *BifrostHTTPServer) ApplyBasePath() error {
 	s.BasePath = basePath
 	s.Config.ServerConfig.BasePath = basePath
 	lib.SetBasePath(basePath)
+	webhooks.SetResultURLPrefix(basePath)
 	return nil
 }
 
