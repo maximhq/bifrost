@@ -1,10 +1,13 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -401,4 +404,51 @@ func TestClientConnectionCheckerStart_DoesNotDeadlockAgainstAStop(t *testing.T) 
 			assert.False(t, checkerRunning(checker), "a checker stopped before it started stays stopped")
 		})
 	}
+}
+
+// TestUpdateClient_PingEditReachesTheRunningChecker: an is_ping_available edit
+// reaches the client's running checker, so its next check stops pinging. The
+// checker used to keep the value it was built with until a reconnect replaced
+// it. The client is capped at 2025-06-18, a revision whose check still pings.
+func TestUpdateClient_PingEditReachesTheRunningChecker(t *testing.T) {
+	var pings, lists atomic.Int32
+	upstream := server.NewStreamableHTTPServer(server.NewMCPServer("ping-edit", "1.0.0", server.WithToolCapabilities(true)))
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		if bytes.Contains(body, []byte(`"method":"ping"`)) {
+			pings.Add(1)
+		}
+		if bytes.Contains(body, []byte(`"method":"tools/list"`)) {
+			lists.Add(1)
+		}
+		upstream.ServeHTTP(w, r)
+	}))
+	t.Cleanup(ts.Close)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+	config := &schemas.MCPClientConfig{
+		ID:                     "ping-edit",
+		Name:                   "ping_edit",
+		ConnectionType:         schemas.MCPConnectionTypeHTTP,
+		ConnectionString:       schemas.NewSecretVar(ts.URL),
+		AuthType:               schemas.MCPAuthTypeNone,
+		NeedsSessionStickiness: schemas.Ptr(true),
+		MaxProtocolVersion:     "2025-06-18",
+	}
+	require.NoError(t, m.AddClient(context.Background(), config))
+
+	// checkNow kicks one check and reports how many pings it sent.
+	checkNow := func() int32 {
+		listsBefore, pingsBefore := lists.Load(), pings.Load()
+		m.checkerManager.Kick(config.ID)
+		require.Eventually(t, func() bool { return lists.Load() > listsBefore }, 5*time.Second, 20*time.Millisecond, "the kicked check never listed tools")
+		return pings.Load() - pingsBefore
+	}
+	require.Equal(t, int32(1), checkNow(), "a check pings while is_ping_available is on")
+
+	edited := *config
+	edited.IsPingAvailable = schemas.Ptr(false)
+	require.NoError(t, m.UpdateClient(config.ID, &edited))
+	assert.Equal(t, int32(0), checkNow(), "the next check sends no ping")
 }
