@@ -5,7 +5,9 @@ import { buildVSCodeConfig, buildVSCodeDeeplink } from "../commandBuilders";
 import { HarnessCommandSection } from "../harnessCommandSection";
 import type { HarnessInstallProps, VSCodeConfigScope } from "../types";
 import { getRegistrationLabel } from "../utils";
+import { withBasePath } from "@/lib/utils/basePath";
 
+/** Install panel for VS Code: the generated config or command for the selected MCP servers. */
 export function VSCodeHarnessInstall({
 	canGenerateCommand,
 	clientConfig,
@@ -58,7 +60,7 @@ export function VSCodeHarnessInstall({
 			emptyMessage={emptyMessage}
 			harnessName="VS Code"
 			label={t("common.config")}
-			logoSrc="/images/harness/vscode.svg"
+			logoSrc={withBasePath("/images/harness/vscode.svg")}
 			registrationLabel={`${configPath} · ${getRegistrationLabel(serverScope, selectedServers)}`}
 		/>
 	);

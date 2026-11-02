@@ -19,7 +19,7 @@ Bifrost exposes Prometheus metrics via two methods:
 
 ## Pull-based Scraping
 
-Bifrost automatically exposes a `/metrics` endpoint when the telemetry plugin is enabled (enabled by default). No additional configuration is needed.
+Bifrost automatically exposes a `/metrics` endpoint when the telemetry plugin is enabled (enabled by default). No additional configuration is needed. Under a path prefix (`server.base_path`) a scraper that goes through the proxy targets `/<prefix>/metrics`, for example `metrics_path: /bifrost/metrics`; the dashboard's Prometheus connector shows the exact URL.
 
 <Info>
   When Bifrost's authentication is enabled (`auth_config.is_enabled = true`), the `/metrics` endpoint requires credentials. You can authenticate the scraper with either the admin **Basic auth** credentials (`admin_username` / `admin_password` from your `auth_config`) or, on Enterprise, a **Bifrost API key** with the Metrics permission. Without valid credentials, Prometheus receives `401 Unauthorized` responses and scraping silently fails.

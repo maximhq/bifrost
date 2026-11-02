@@ -165,7 +165,8 @@ type pluginOrderInfo struct {
 }
 
 type ServerConfig struct {
-	ReadBufferSize int `json:"read_buffer_size,omitempty"`
+	ReadBufferSize int    `json:"read_buffer_size,omitempty"`
+	BasePath       string `json:"base_path,omitempty"` // URL path prefix behind a reverse proxy, e.g. "/bifrost"; see ResolveBasePath
 
 	// BodyBufferPoolLimitBytes caps the request-body buffer a pooled keep-alive
 	// connection keeps between requests; larger buffers are released after each
@@ -2102,6 +2103,7 @@ func mergeProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbKeys 
 					SGLKeyConfig:           dbKey.SGLKeyConfig,
 					DatabricksKeyConfig:    dbKey.DatabricksKeyConfig,
 					CloudflareKeyConfig:    dbKey.CloudflareKeyConfig,
+					AnthropicKeyConfig:     dbKey.AnthropicKeyConfig,
 					OAuthKeyConfig:         dbKey.OAuthKeyConfig,
 					Enabled:                dbKey.Enabled,
 					UseForBatchAPI:         dbKey.UseForBatchAPI,
@@ -2195,6 +2197,7 @@ func reconcileProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbK
 					SGLKeyConfig:           dbKey.SGLKeyConfig,
 					DatabricksKeyConfig:    dbKey.DatabricksKeyConfig,
 					CloudflareKeyConfig:    dbKey.CloudflareKeyConfig,
+					AnthropicKeyConfig:     dbKey.AnthropicKeyConfig,
 					OAuthKeyConfig:         dbKey.OAuthKeyConfig,
 					Enabled:                dbKey.Enabled,
 					UseForBatchAPI:         dbKey.UseForBatchAPI,
@@ -2280,6 +2283,31 @@ func prepareOpenAPIClientFromFile(c *schemas.MCPClientConfig, configDir string) 
 	return nil
 }
 
+// ResolveMCPClientAuthType returns the auth type a new MCP client is stored and run
+// with, or why the client cannot be created. An omitted auth type is headers, the
+// store's column default, so a client connects the same way before and after a
+// restart. The per-user types open a new streamable HTTP connection for each call,
+// which neither an SSE server nor a STDIO subprocess can serve. The API create and
+// the config.json load both apply it, so a client one refuses the other refuses too.
+func ResolveMCPClientAuthType(authType schemas.MCPAuthType, connectionType schemas.MCPConnectionType) (schemas.MCPAuthType, error) {
+	switch authType {
+	case "":
+		return schemas.MCPAuthTypeHeaders, nil
+	case schemas.MCPAuthTypeNone, schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypeOauth:
+		return authType, nil
+	case schemas.MCPAuthTypePerUserOauth, schemas.MCPAuthTypePerUserHeaders, schemas.MCPAuthTypeTokenExchange:
+		if connectionType == schemas.MCPConnectionTypeSSE || connectionType == schemas.MCPConnectionTypeSTDIO {
+			return "", fmt.Errorf("auth_type %q is not supported for connection_type '%s' (use connection_type 'http')", authType, connectionType)
+		}
+		return authType, nil
+	default:
+		return "", fmt.Errorf("Invalid auth_type %q: must be one of none, headers, oauth, per_user_oauth, per_user_headers, token_exchange", authType)
+	}
+}
+
+// loadMCPConfig loads the MCP client configs from the store and config.json and
+// reconciles the two. A config.json client that cannot be created is skipped, and a
+// stored client of the same name keeps its stored configuration.
 func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) {
 	if config.ConfigStore == nil {
 		if configData.MCP != nil && len(configData.MCP.ClientConfigs) > 0 {
@@ -2298,6 +2326,16 @@ func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) 
 				logger.Warn("skipping MCP client config %q from config file: %v", c.Name, err)
 				continue
 			}
+			authType, err := ResolveMCPClientAuthType(c.AuthType, c.ConnectionType)
+			if err != nil {
+				logger.Error("skipping MCP client config %q from config file: %v; an existing client keeps its stored configuration", c.Name, err)
+				if configData.rejectedMCPClients == nil {
+					configData.rejectedMCPClients = map[string]bool{}
+				}
+				configData.rejectedMCPClients[c.Name] = true
+				continue
+			}
+			c.AuthType = authType
 			if c.AuthType == schemas.MCPAuthTypeTokenExchange {
 				if isEnterprise, _ := ctx.Value(schemas.BifrostContextKeyIsEnterprise).(bool); !isEnterprise {
 					logger.Error("skipping MCP client config %q from config file: auth_type 'token_exchange' is not supported", c.Name)
@@ -9276,6 +9314,10 @@ func (c *Config) GetAllKeys() ([]configstoreTables.TableKey, error) {
 				cfg.AccountID = *cfg.AccountID.RedactedIfSecret()
 				configStoreKey.CloudflareKeyConfig = &cfg
 			}
+			if key.AnthropicKeyConfig != nil {
+				// Identifiers readable unless secret-backed; the identity token always masked.
+				configStoreKey.AnthropicKeyConfig = key.AnthropicKeyConfig.Redacted()
+			}
 			if key.OAuthKeyConfig != nil {
 				// Token URL readable, credentials and every extra_params value masked.
 				configStoreKey.OAuthKeyConfig = key.OAuthKeyConfig.Redacted()
@@ -9348,7 +9390,8 @@ func (c *Config) AddMCPClient(ctx context.Context, clientConfig *schemas.MCPClie
 	// Config with processed env vars
 	if err := c.client.AddMCPClient(ctx, clientConfig); err != nil {
 		c.MCPConfig.ClientConfigs = c.MCPConfig.ClientConfigs[:len(c.MCPConfig.ClientConfigs)-1]
-		return fmt.Errorf("failed to connect MCP client: %w", err)
+		// Returned as is: the caller reports it as a failed connect.
+		return err
 	}
 	// Update MCP catalog pricing data for the new client
 	if c.MCPCatalog != nil && c.ConfigStore != nil {
@@ -9412,7 +9455,8 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 					if !errors.Is(err, mcp.ErrMCPSharedConnectFailedAfterUpdate) {
 						return fmt.Errorf("failed to edit MCP client: %w", err)
 					}
-					sharedConnectErr = fmt.Errorf("failed to edit MCP client: %w", err)
+					// Not "failed to edit": the edit stands, only the dial failed.
+					sharedConnectErr = err
 				}
 				break
 			}
@@ -9492,8 +9536,10 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 				// the revert still applies there.
 				if !errors.Is(err, mcp.ErrMCPEnableConnectFailed) {
 					c.MCPConfig.ClientConfigs[configIndex].Disabled = oldDisabled
+					return fmt.Errorf("failed to enable MCP client: %w", err)
 				}
-				return fmt.Errorf("failed to enable MCP client: %w", err)
+				// Not "failed to enable": the enable stands, only the dial failed.
+				return err
 			}
 		}
 	}
@@ -9588,9 +9634,16 @@ func (c *Config) RemoveMCPClient(ctx context.Context, id string) error {
 			}
 		}
 	}
-	// Find and remove client from in-memory config
+	// Find and remove client from in-memory config, and its prices from the
+	// catalog: the catalog is keyed by client name, so prices left there would
+	// apply to the next client registered under the same name.
 	for i, clientConfig := range c.MCPConfig.ClientConfigs {
 		if clientConfig.ID == id {
+			if c.MCPCatalog != nil {
+				for toolName := range clientConfig.ToolPricing {
+					c.MCPCatalog.DeletePricingData(clientConfig.Name, toolName)
+				}
+			}
 			c.MCPConfig.ClientConfigs = append(c.MCPConfig.ClientConfigs[:i], c.MCPConfig.ClientConfigs[i+1:]...)
 			break
 		}

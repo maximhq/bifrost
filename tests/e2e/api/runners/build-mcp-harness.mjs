@@ -69,7 +69,7 @@ const folder = (name, description, item) => ({ name, description, item });
 // ---------------------------------------------------------------- ADM
 const clientBody = (over) => ({ name: "adm_probe", connection_type: "http", connection_string: "http://127.0.0.1:9/mcp", auth_type: "none", ...over });
 
-const ADM05 = folder("ADM-05 Create rejects a bad body and connection_type",
+const ADM05 = folder("ADM-05 Create rejects a bad body, connection_type and auth_type",
   "Setup: dashboard auth on, admin credentials.", [
   request("ADM-05", "setup: record the client count", "GET", "/api/mcp/clients", {
     asserts: [A.status(200)],
@@ -81,6 +81,10 @@ const ADM05 = folder("ADM-05 Create rejects a bad body and connection_type",
       body: clientBody({ name: "adm05_client", connection_type: ct }),
       asserts: [A.status(400), A.msgContains("must be one of http, sse, stdio, openapi")],
     })),
+  request("ADM-05", "auth_type \"bogus\" is rejected", "POST", "/api/mcp/client", {
+    body: clientBody({ name: "adm05_client", auth_type: "bogus" }),
+    asserts: [A.status(400), A.msgEquals("Invalid auth_type \"bogus\": must be one of none, headers, oauth, per_user_oauth, per_user_headers, token_exchange")],
+  }),
   request("ADM-05", "no client was added", "GET", "/api/mcp/clients", {
     asserts: [A.status(200), A.custom("total_count is unchanged", [
       "var before = Number(pm.collectionVariables.get('adm05_total'));",
@@ -580,6 +584,20 @@ const toolNamesAre = (names) => A.custom(`tools are ${lit(names)}`, [
   `pm.expect(names, 'body: ' + pm.response.text()).to.eql(${lit(names)});`,
 ]);
 const clientState = (state) => A.custom(`state is ${lit(state)}`, ["pm.expect(pm.response.json().clients[0].state, 'body: ' + pm.response.text()).to.equal(" + lit(state) + ");"]);
+// waitForClient polls the client list, 250ms apart, until cond (ES5 on the client c) holds or tries polls ran (20 by
+// default, about 5s).
+const waitForClient = (clientId, cond, tries = 20) => [
+  `var left = ${tries};`,
+  "function poll() {",
+  `  pm.sendRequest({ url: pm.variables.get('base_url') + '/api/mcp/clients?server=${clientId}', method: 'GET', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) {`,
+  "    var list = !err && res.code === 200 ? res.json().clients : null;",
+  "    var c = list && list[0];",
+  `    if ((c && (${cond})) || --left <= 0) { return; }`,
+  "    setTimeout(poll, 250);",
+  "  });",
+  "}",
+  "poll();",
+];
 const httpClient = (clientId, name, server, over = {}) => ({ client_id: clientId, name, connection_type: "http", connection_string: `${CHAOS}/s/${server}/mcp`, auth_type: "none", ...over });
 
 // ---------------------------------------------------------------- ADM tests on the fleet
@@ -625,9 +643,9 @@ const ADM42 = folder("ADM-42 Reconnect a sticky client", "Setup: a client on alp
   mockGet("ADM-42", "alpha", "setup: record alpha's session count", [], ["pm.collectionVariables.set('adm42_sessions', pm.response.json().counters.sessions);"]),
   mockPost("ADM-42", "alpha", "sessions/kill", "setup: kill alpha's sessions"),
   request("ADM-42", "reconnect the sticky client", "POST", "/api/mcp/client/adm42-s/reconnect", { asserts: [A.status(200), A.jsonMessage("MCP client reconnected successfully")] }),
-  mockGet("ADM-42", "alpha", "alpha opened one more session", [A.custom("sessions is one more than before", [
+  mockGet("ADM-42", "alpha", "alpha opened two more sessions: one for calls and one for the list_changed stream", [A.custom("sessions is two more than before", [
     "var before = Number(pm.collectionVariables.get('adm42_sessions'));",
-    "pm.expect(pm.response.json().counters.sessions, 'body: ' + pm.response.text()).to.equal(before + 1);",
+    "pm.expect(pm.response.json().counters.sessions, 'body: ' + pm.response.text()).to.equal(before + 2);",
   ])]),
   deleteClient("ADM-42", "adm42-s"),
 ]);
@@ -669,7 +687,7 @@ const fleetTeardown = (id) => {
 };
 const MCP_ACCEPT = { key: "Accept", value: "application/json, text/event-stream" };
 const rpc = (id, title, message, opts = {}) => request(id, title, "POST", opts.path || "/mcp", {
-  noAuth: true, raw: typeof message === "string" ? message : JSON.stringify(message), headers: opts.headers || [MCP_ACCEPT], asserts: opts.asserts || [], noAccept: opts.noAccept,
+  noAuth: true, raw: typeof message === "string" ? message : JSON.stringify(message), headers: opts.headers || [MCP_ACCEPT], asserts: opts.asserts || [], noAccept: opts.noAccept, pre: opts.pre || [],
 });
 const rpcResultEquals = (v) => A.custom(`result is ${lit(v)}`, ["var b = pm.response.json();", `pm.expect(b.result, 'body: ' + pm.response.text()).to.eql(${lit(v)});`]);
 const rpcError = (code, message) => A.custom(`error.code ${code}${message ? ", message " + lit(message) : ""}`, [
@@ -717,16 +735,19 @@ const EP28 = folder("EP-28 Client notifications and responses", "Setup: none; in
   rpc("EP-28", "a bare result", { jsonrpc: "2.0", id: 7, result: {} }, { asserts: empty202() }),
 ]);
 
-const EP29 = folder("EP-29 Unsupported methods", `Setup: ${FLEET}.`, [
+const EP29 = folder("EP-29 Methods with nothing to serve", `Setup: ${FLEET}; neither server exposes prompts or resources.`, [
   ...fleetSetup("EP-29"),
   ...[
-    ["resources/list", "resources not supported", {}],
-    ["resources/read", "resources not supported", { uri: "x" }],
-    ["resources/templates/list", "resources not supported", {}],
-    ["prompts/list", "prompts not supported", {}],
-    ["prompts/get", "prompts not supported", { name: "x" }],
+    ["resources/list", { resources: [] }],
+    ["resources/templates/list", { resourceTemplates: [] }],
+    ["prompts/list", { prompts: [] }],
+  ].map(([method, result]) =>
+    rpc("EP-29", `${method} is empty`, { jsonrpc: "2.0", id: 1, method, params: {} }, { asserts: [A.status(200), rpcResultEquals(result)] })),
+  rpc("EP-29", "resources/read of an unknown uri", { jsonrpc: "2.0", id: 1, method: "resources/read", params: { uri: "x" } }, { asserts: [A.status(200), rpcError(-32002, "handler not found for resource URI 'x': resource not found")] }),
+  rpc("EP-29", "prompts/get of an unknown prompt", { jsonrpc: "2.0", id: 1, method: "prompts/get", params: { name: "x" } }, { asserts: [A.status(200), rpcError(-32602, "prompt 'x' not found: prompt not found")] }),
+  rpc("EP-29", "completion/complete for an unknown prompt is empty", { jsonrpc: "2.0", id: 1, method: "completion/complete", params: { ref: { type: "ref/prompt", name: "x" }, argument: { name: "a", value: "" } } }, { asserts: [A.status(200), rpcResultEquals({ completion: { values: [] } })] }),
+  ...[
     ["logging/setLevel", "logging not supported", { level: "info" }],
-    ["completion/complete", "Method completion/complete not found", {}],
     ["foo/bar", "Method foo/bar not found", {}],
   ].map(([method, message, params]) =>
     rpc("EP-29", `${method} is unsupported`, { jsonrpc: "2.0", id: 1, method, params }, { asserts: [A.status(200), rpcError(-32601, message)] })),
@@ -742,29 +763,34 @@ const jsonNotSSE = () => [A.status(200), A.custom("the reply is a JSON-RPC body,
 const listMsg = { jsonrpc: "2.0", id: 1, method: "tools/list" };
 const EP31 = folder("EP-31 Content negotiation", `Setup: ${FLEET}.`, [
   ...fleetSetup("EP-31"),
-  rpc("EP-31", "a text/plain body", listMsg, { headers: [{ key: "Content-Type", value: "text/plain" }, MCP_ACCEPT], asserts: jsonNotSSE() }),
+  rpc("EP-31", "a text/plain body", listMsg, { headers: [{ key: "Content-Type", value: "text/plain" }, MCP_ACCEPT], asserts: [A.status(400), A.custom("the plain-text body is \"Invalid content type: must be 'application/json'\"", [
+    "pm.expect(pm.response.text().trim(), 'body').to.equal(\"Invalid content type: must be 'application/json'\");",
+  ])] }),
   rpc("EP-31", "Accept text/event-stream only", listMsg, { headers: [{ key: "Accept", value: "text/event-stream" }], asserts: jsonNotSSE() }),
   rpc("EP-31", "no Accept header", listMsg, { headers: [], noAccept: true, asserts: jsonNotSSE() }),
   ...fleetTeardown("EP-31"),
 ]);
 
 const rpcResult = () => A.custom("a JSON-RPC result and no error", ["var b = pm.response.json();", "pm.expect(b, 'body: ' + pm.response.text()).to.have.property('result');", "pm.expect(b).to.not.have.property('error');"]);
-const EP32 = folder("EP-32 No session id is used", `Setup: ${FLEET}.`, [
+const EP32 = folder("EP-32 A session id is issued but never required", `Setup: ${FLEET}.`, [
   ...fleetSetup("EP-32"),
   rpc("EP-32", "tools/call before initialize", { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "alpha-echo", arguments: { text: "hi" } } }, { asserts: [A.status(200), rpcResult()] }),
   rpc("EP-32", "initialize", { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "mcp-harness", version: "1.0.0" } } }, {
-    asserts: [A.status(200), A.custom("there is no Mcp-Session-Id header", ["pm.expect(pm.response.headers.has('Mcp-Session-Id'), 'Mcp-Session-Id: ' + pm.response.headers.get('Mcp-Session-Id')).to.equal(false);"])],
+    asserts: [A.status(200), A.custom("there is an Mcp-Session-Id header", ["pm.expect(pm.response.headers.get('Mcp-Session-Id'), 'Mcp-Session-Id').to.be.a('string').and.not.empty;"])],
+    extraTests: ["pm.collectionVariables.set('ep32_sid', pm.response.headers.get('Mcp-Session-Id') || '');"],
   }),
   rpc("EP-32", "tools/list without a session id", listMsg, { asserts: [A.status(200), rpcResult()] }),
   rpc("EP-32", "tools/list with a bogus session id", listMsg, { headers: [MCP_ACCEPT, { key: "Mcp-Session-Id", value: "bogus" }], asserts: [A.status(200), rpcResult()] }),
+  request("EP-32", "DELETE /mcp with the issued session id", "DELETE", "/mcp", { noAuth: true, headers: [{ key: "Mcp-Session-Id", value: "{{ep32_sid}}" }], asserts: [A.status(200)] }),
+  rpc("EP-32", "tools/list with the deleted session id", listMsg, { headers: [MCP_ACCEPT, { key: "Mcp-Session-Id", value: "{{ep32_sid}}" }], asserts: [A.status(200), rpcResult()] }),
   ...fleetTeardown("EP-32"),
 ]);
 
-const method405 = () => [A.status(405), A.custom("Allow is \"GET, OPTIONS, POST\"", ["pm.expect(pm.response.headers.get('Allow'), 'Allow').to.equal('GET, OPTIONS, POST');"])];
-const EP33 = folder("EP-33 Unsupported HTTP methods", "Setup: none; DELETE and PUT on /mcp, DELETE on /mcp/alpha.", [
-  request("EP-33", "DELETE /mcp", "DELETE", "/mcp", { noAuth: true, asserts: method405() }),
+const method405 = () => [A.status(405), A.custom("Allow is \"DELETE, GET, OPTIONS, POST\"", ["pm.expect(pm.response.headers.get('Allow'), 'Allow').to.equal('DELETE, GET, OPTIONS, POST');"])];
+const EP33 = folder("EP-33 Unsupported HTTP methods", "Setup: none; PUT on /mcp and on /mcp/alpha, PATCH on /mcp.", [
   request("EP-33", "PUT /mcp", "PUT", "/mcp", { noAuth: true, raw: "{}", asserts: method405() }),
-  request("EP-33", "DELETE /mcp/alpha", "DELETE", "/mcp/alpha", { noAuth: true, asserts: method405() }),
+  request("EP-33", "PUT /mcp/alpha", "PUT", "/mcp/alpha", { noAuth: true, raw: "{}", asserts: method405() }),
+  request("EP-33", "PATCH /mcp", "PATCH", "/mcp", { noAuth: true, raw: "{}", asserts: method405() }),
 ]);
 
 // ================================================================ ADM tests on the fleet
@@ -808,6 +834,11 @@ const ADM01 = folder("ADM-01 Every MCP admin route without a credential",
 
 const createExpect = (id, title, cfg, asserts) => request(id, title, "POST", "/api/mcp/client", { body: cfg, asserts });
 const clientField = (path, v) => A.custom(`${path} is ${lit(v)}`, [`pm.expect(pm.response.json().clients[0].${path}, 'body: ' + pm.response.text()).to.eql(${lit(v)});`]);
+// responseTime asserts how long the response took, in ms: at least min (null for no floor) and under max.
+const responseTime = (min, max) => A.custom(`the response took ${min !== null ? `at least ${min / 1000}s and ` : ""}under ${max / 1000}s`, [
+  ...(min !== null ? [`pm.expect(pm.response.responseTime, 'ms').to.be.at.least(${min});`] : []),
+  `pm.expect(pm.response.responseTime, 'ms').to.be.below(${max});`,
+]);
 const ALPHA = `${CHAOS}/s/alpha/mcp`;
 
 const ADM07 = folder("ADM-07 Endpoint slug derivation and override", "Setup: admin credentials; alpha (echo_tool, add_tool) for the clients that are created.", [
@@ -886,6 +917,21 @@ const ADM12 = folder("ADM-12 Reused explicit client_id", "Setup: admin credentia
     "pm.expect(c.connection_string).to.eql(before.connection_string);",
   ])]),
   deleteClient("ADM-12", "fixed-id"),
+]);
+
+const ADM15 = folder("ADM-15 Sticky vs per-call create against a dead upstream", "Setup: admin credentials; alpha (echo_tool, add_tool) refusing connections; an HTTP client on alpha with needs_session_stickiness true, and one without it.", [
+  ...freshServer("ADM-15", "alpha", ["echo_tool", "add_tool"]),
+  mockPost("ADM-15", "alpha", "faults", "setup: alpha refuses connections", { faults: { refuse: true } }),
+  createExpect("ADM-15", "create the sticky client", httpClient("adm15-s", "adm15_s", "alpha", { needs_session_stickiness: true }), [A.status(500), A.msgStartsWith("Failed to connect MCP client: "),
+    A.custom("the reason after it does not repeat \"failed to connect\"", [
+      "var m = pm.response.json().error.message.slice('Failed to connect MCP client: '.length);",
+      "pm.expect(m.toLowerCase(), 'message: ' + pm.response.json().error.message).to.not.include('failed to connect');",
+    ])]),
+  request("ADM-15", "the sticky client is not kept", "GET", "/api/mcp/clients?server=adm15-s", { asserts: [A.status(200), A.custom("no client is returned", ["pm.expect(pm.response.json().clients, 'body: ' + pm.response.text()).to.eql([]);"])] }),
+  createExpect("ADM-15", "create the per-call client", httpClient("adm15-p", "adm15_p", "alpha"), [A.status(200)]),
+  getClient("ADM-15", "adm15-p", "the per-call client is unstable at stage tool_discovery, with no tools", [clientState("unstable"), clientField("last_failure.stage", "tool_discovery"), A.custom("tools is []", ["pm.expect(pm.response.json().clients[0].tools, 'body: ' + pm.response.text()).to.eql([]);"])]),
+  mockPost("ADM-15", "alpha", "faults/clear", "teardown: clear alpha's faults"),
+  deleteClient("ADM-15", "adm15-p"),
 ]);
 
 const ADM16 = folder("ADM-16 Missing connection target is rolled back", "Setup: admin credentials; alpha (echo_tool, add_tool) for the reuse checks (an HTTP client and a STDIO bridge).", [
@@ -1009,13 +1055,13 @@ const EP01 = folder("EP-01 initialize (2025-03-26)", `Setup: ${FLEET}; mcp_serve
   ...fleetSetup("EP-01"),
   request("EP-01", "setup: read GET /api/version", "GET", "/api/version", { asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('ep01_version', JSON.stringify(pm.response.json()));"] }),
   rpc("EP-01", "initialize with 2025-03-26", init("2025-03-26"), {
-    asserts: [A.status(200), A.custom("JSON reply; serverInfo bifrost at the server version; capabilities exactly tools.listChanged; no Mcp-Session-Id", [
+    asserts: [A.status(200), A.custom("JSON reply; serverInfo bifrost at the server version; capabilities tools, prompts and resources with listChanged, and completions; an Mcp-Session-Id", [
       "pm.expect(pm.response.headers.get('Content-Type')).to.include('application/json');",
       "var r = pm.response.json().result;",
       "pm.expect(r.serverInfo.name, 'body: ' + pm.response.text()).to.equal('bifrost');",
       "pm.expect(r.serverInfo.version).to.equal(JSON.parse(pm.collectionVariables.get('ep01_version')));",
-      "pm.expect(r.capabilities).to.eql({ tools: { listChanged: true } });",
-      "pm.expect(pm.response.headers.has('Mcp-Session-Id')).to.equal(false);",
+      "pm.expect(r.capabilities).to.eql({ tools: { listChanged: true }, prompts: { listChanged: true }, resources: { listChanged: true }, completions: {} });",
+      "pm.expect(pm.response.headers.get('Mcp-Session-Id'), 'Mcp-Session-Id').to.be.a('string').and.not.empty;",
     ])],
   }),
   ...fleetTeardown("EP-01"),
@@ -1024,7 +1070,7 @@ const EP01 = folder("EP-01 initialize (2025-03-26)", `Setup: ${FLEET}; mcp_serve
 
 const EP02 = folder("EP-02 Protocol version negotiation", `Setup: ${FLEET}.`, [
   ...fleetSetup("EP-02"),
-  ...[["2024-11-05", "2024-11-05"], ["2025-06-18", "2025-06-18"], ["1999-01-01", "2025-06-18"], [null, "2025-03-26"]].map(([asked, got]) =>
+  ...[["2024-11-05", "2024-11-05"], ["2025-06-18", "2025-06-18"], ["1999-01-01", "2025-11-25"], [null, "2025-03-26"]].map(([asked, got]) =>
     rpc("EP-02", `initialize asking ${asked || "no version"}`, init(asked), {
       asserts: [A.status(200), A.custom(`protocolVersion is ${got}`, [`pm.expect(pm.response.json().result.protocolVersion, 'body: ' + pm.response.text()).to.equal(${lit(got)});`])],
     })),
@@ -1763,16 +1809,21 @@ const ADM47 = folder("ADM-47 PUT is a patch and ignores immutable fields", "Setu
   deleteClient("ADM-47", "adm47-c"),
 ]);
 
-const ADM52 = folder("ADM-52 Enabling a sticky client with a dead upstream", "Setup: alpha (echo_tool, add_tool); a client on alpha with needs_session_stickiness true, disabled; then alpha refuses connections. The client being reported disabled after the enable is a known issue, so that check is skipped.", [
+const ADM52 = folder("ADM-52 Enabling a sticky client with a dead upstream", "Setup: alpha (echo_tool, add_tool); a client on alpha with needs_session_stickiness true, disabled; then alpha refuses connections. 12s after the enable, while alpha still refuses, the client is renamed; then alpha accepts connections again.", [
   ...freshServer("ADM-52", "alpha", ["echo_tool", "add_tool"]),
   createClient("ADM-52", httpClient("adm52-s", "adm52_s", "alpha", { needs_session_stickiness: true }), "setup: create the sticky client"),
   request("ADM-52", "setup: disable it", "PUT", "/api/mcp/client/adm52-s", { body: { disabled: true }, asserts: [A.status(200)] }),
   mockPost("ADM-52", "alpha", "faults", "setup: alpha refuses connections", { faults: { refuse: true } }),
-  request("ADM-52", "enable it", "PUT", "/api/mcp/client/adm52-s", { body: { disabled: false }, asserts: [A.status(200), A.jsonEquals("status", "partial_success"), A.custom("message contains \"establishing the shared connection failed\"", [
-    "pm.expect(pm.response.json().message, 'body: ' + pm.response.text()).to.include('establishing the shared connection failed');",
+  request("ADM-52", "enable it", "PUT", "/api/mcp/client/adm52-s", { body: { disabled: false }, asserts: [A.status(200), A.jsonEquals("status", "partial_success"), A.custom("message starts with \"MCP client edited successfully. However, establishing the shared connection failed: \"", [
+    "pm.expect(pm.response.json().message, 'body: ' + pm.response.text()).to.match(/^MCP client edited successfully\\. However, establishing the shared connection failed: /);",
   ])] }),
-  getClient("ADM-52", "adm52-s", "disabled is false and the client is not reported disabled", [clientField("config.disabled", false), A.skip(A.custom("state is not \"disabled\"", ["pm.expect(pm.response.json().clients[0].state, 'body: ' + pm.response.text()).to.not.equal('disabled');"]))]),
-  mockPost("ADM-52", "alpha", "faults/clear", "teardown: clear alpha's faults"),
+  getClient("ADM-52", "adm52-s", "disabled is false and the client is unstable at stage connect", [clientField("config.disabled", false), clientState("unstable"), clientField("last_failure.stage", "connect")]),
+  request("ADM-52", "rename it 12s later, while alpha still refuses", "PUT", "/api/mcp/client/adm52-s", { body: { name: "adm52_renamed" }, pre: ["setTimeout(function () {}, 12000);"],
+    asserts: [A.status(200), A.jsonMessage("MCP client edited successfully"), A.custom("the response took under 6s", ["pm.expect(pm.response.responseTime, 'ms').to.be.below(6000);"])] }),
+  mockPost("ADM-52", "alpha", "faults/clear", "alpha accepts connections again"),
+  getClient("ADM-52", "adm52-s", "within 20s the client is healthy, with no admin action", [clientState("healthy")], { pre: waitForClient("adm52-s", "c.state === 'healthy'", 80) }),
+  request("ADM-52", "disable it again", "PUT", "/api/mcp/client/adm52-s", { body: { disabled: true }, asserts: [A.status(200)] }),
+  getClient("ADM-52", "adm52-s", "it is disabled", [clientField("config.disabled", true), clientState("disabled")]),
   deleteClient("ADM-52", "adm52-s"),
 ]);
 
@@ -1784,9 +1835,9 @@ const ADM53 = folder("ADM-53 Flip needs_session_stickiness live", "Setup: alpha 
   request("ADM-53", "set needs_session_stickiness true", "PUT", "/api/mcp/client/adm53-c", { body: { needs_session_stickiness: true }, asserts: [A.status(200), A.custom("message contains \"now maintains a persistent shared connection\"", [
     "pm.expect(pm.response.json().message, 'body: ' + pm.response.text()).to.include('now maintains a persistent shared connection');",
   ])] }),
-  mockGet("ADM-53", "alpha", "alpha opened one more session", [A.custom("sessions is one more than before", [
+  mockGet("ADM-53", "alpha", "alpha opened two more sessions: one for calls and one for the list_changed stream", [A.custom("sessions is two more than before", [
     "var before = Number(pm.collectionVariables.get('adm53_sessions'));",
-    "pm.expect(pm.response.json().counters.sessions, 'body: ' + pm.response.text()).to.equal(before + 1);",
+    "pm.expect(pm.response.json().counters.sessions, 'body: ' + pm.response.text()).to.equal(before + 2);",
   ])]),
   request("ADM-53", "set needs_session_stickiness false", "PUT", "/api/mcp/client/adm53-c", { body: { needs_session_stickiness: false }, asserts: [A.status(200), A.custom("message contains \"now connects per call\"", [
     "pm.expect(pm.response.json().message, 'body: ' + pm.response.text()).to.include('now connects per call');",
@@ -1973,19 +2024,6 @@ const messageStarts = (m) => A.custom(`message starts with ${lit(m)}`, [
   "pm.expect(b.message, 'body: ' + pm.response.text()).to.be.a('string');",
   `pm.expect(b.message.indexOf(${lit(m)}), 'message: ' + b.message).to.equal(0);`,
 ]);
-// waitForClient polls the client list for up to about 5s until cond (ES5 on the client c) holds.
-const waitForClient = (clientId, cond) => [
-  "var left = 20;",
-  "function poll() {",
-  `  pm.sendRequest({ url: pm.variables.get('base_url') + '/api/mcp/clients?server=${clientId}', method: 'GET', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) {`,
-  "    var list = !err && res.code === 200 ? res.json().clients : null;",
-  "    var c = list && list[0];",
-  `    if ((c && (${cond})) || --left <= 0) { return; }`,
-  "    setTimeout(poll, 250);",
-  "  });",
-  "}",
-  "poll();",
-];
 
 // T1 is the bearer token AUTH and CONN servers require; the mock maps it to identity id1.
 const T1 = "auth-t1-token";
@@ -2012,7 +2050,7 @@ const AUTH02 = folder("AUTH-02 headers auth, sticky", `Setup: ${T1_TEXT("alpha")
   ...requiresT1("AUTH-02", "alpha"),
   createExpect("AUTH-02", "create the sticky client", t1Client("auth02-c", "auth02_c", { needs_session_stickiness: true }), [A.status(200)]),
   ...[1, 2, 3].map((i) => execTool("AUTH-02", `execute ${i} of 3`, "auth02_c-echo_tool", [A.status(200)])),
-  mockGet("AUTH-02", "alpha", "one session, one initialize, three calls under id1", [counterIs("sessions", 1), counterIs("initializes", 1), identityCalls("id1", 3)]),
+  mockGet("AUTH-02", "alpha", "two sessions and two initializes (calls and the list_changed stream), three calls under id1", [counterIs("sessions", 2), counterIs("initializes", 2), identityCalls("id1", 3)]),
   deleteClient("AUTH-02", "auth02-c"),
 ]);
 
@@ -2028,11 +2066,23 @@ const AUTH03 = folder("AUTH-03 headers auth, per call", `Setup: ${T1_TEXT("alpha
   deleteClient("AUTH-03", "auth03-c"),
 ]);
 
+const badT1Client = (clientId, name, over = {}) => t1Client(clientId, name, { headers: { Authorization: "Bearer BAD" }, ...over });
+const AUTH04 = folder("AUTH-04 Wrong token", `Setup: ${T1_TEXT("alpha")}; an HTTP client on alpha with auth headers "Authorization: Bearer BAD", tools_to_execute ["*"], created sticky (needs_session_stickiness true), then per call.`, [
+  ...requiresT1("AUTH-04", "alpha"),
+  createExpect("AUTH-04", "create the sticky client", badT1Client("auth04-s", "auth04_s", { needs_session_stickiness: true }), [A.status(500), A.msgStartsWith("Failed to connect MCP client")]),
+  request("AUTH-04", "the sticky client is not listed", "GET", "/api/mcp/clients?server=auth04-s", { asserts: [A.status(200), A.custom("no client is returned", [
+    "pm.expect(pm.response.json().clients, 'body: ' + pm.response.text()).to.have.lengthOf(0);",
+  ])] }),
+  createExpect("AUTH-04", "create the per-call client", badT1Client("auth04-p", "auth04_p"), [A.status(200)]),
+  getClient("AUTH-04", "auth04-p", "the per-call client is unstable at stage tool_discovery, with no tools", [clientState("unstable"), clientField("last_failure.stage", "tool_discovery"), toolNamesAre([])]),
+  deleteClient("AUTH-04", "auth04-p"),
+]);
+
 const AUTH05 = folder("AUTH-05 Token revoked after connect", `Setup: ${T1_TEXT("alpha")}; ${T1_CLIENT_TEXT}, needs_session_stickiness true, tools_to_execute ["*"] (as AUTH-02); then alpha revokes T1.`, [
   ...requiresT1("AUTH-05", "alpha"),
   createClient("AUTH-05", t1Client("auth05-c", "auth05_c", { needs_session_stickiness: true }), "setup: create the sticky client"),
   mockPost("AUTH-05", "alpha", "auth/revoke", "setup: revoke T1", { token: T1 }),
-  execTool("AUTH-05", "execute after the revoke", "auth05_c-echo_tool", [A.status(400), A.msgContains("MCP tool call failed for"), A.msgContains("401")]),
+  execTool("AUTH-05", "execute after the revoke", "auth05_c-echo_tool", [A.status(400), A.msgContains("MCP tool call failed for"), A.msgContains("authorization required")]),
   gwCall("AUTH-05", "/mcp tools/call after the revoke", "auth05_c-echo_tool", [toolResultError("Tool execution failed:", null)]),
   getClient("AUTH-05", "auth05-c", "the client list shows unstable, last_failure.stage connect", [clientState("unstable"), clientField("last_failure.stage", "connect")],
     { pre: waitForClient("auth05-c", "c.state === 'unstable'") }),
@@ -2050,13 +2100,13 @@ const AUTH06 = folder("AUTH-06 Masked round trip and rejected rotation", `Setup:
   saveSessions("AUTH-06", "alpha", "auth06_s1"),
   request("AUTH-06", "setup: reconnect, so the next call uses the stored header", "POST", "/api/mcp/client/auth06-c/reconnect", { asserts: [A.status(200)] }),
   execTool("AUTH-06", "execute after the masked PUT", "auth06_c-echo_tool", [A.status(200)]),
-  mockGet("AUTH-06", "alpha", "the call ran as id1 on a new session", [identityCallsAre({ id1: 1 }), sessionsPlus("auth06_s1", 1)]),
+  mockGet("AUTH-06", "alpha", "the call ran as id1 after the reconnect opened two sessions", [identityCallsAre({ id1: 1 }), sessionsPlus("auth06_s1", 2)]),
   request("AUTH-06", "PUT Authorization: Bearer BAD", "PUT", "/api/mcp/client/auth06-c", { body: { headers: { Authorization: "Bearer BAD" } },
     asserts: [A.status(422), A.msgContains("The new headers were rejected by the MCP server, so nothing was changed")] }),
   saveSessions("AUTH-06", "alpha", "auth06_s2"),
   request("AUTH-06", "setup: reconnect again, so the next call uses the stored header", "POST", "/api/mcp/client/auth06-c/reconnect", { asserts: [A.status(200)] }),
   execTool("AUTH-06", "execute after the rejected PUT", "auth06_c-echo_tool", [A.status(200)]),
-  mockGet("AUTH-06", "alpha", "the call still ran as id1 on a new session", [identityCallsAre({ id1: 2 }), sessionsPlus("auth06_s2", 1)]),
+  mockGet("AUTH-06", "alpha", "the call still ran as id1 after the reconnect opened two sessions", [identityCallsAre({ id1: 2 }), sessionsPlus("auth06_s2", 2)]),
   deleteClient("AUTH-06", "auth06-c"),
 ]);
 
@@ -2145,6 +2195,25 @@ const AUTH43 = folder("AUTH-43 Header submission", `Setup: as AUTH-42 (${AUTH42_
   deleteClient("AUTH-43", "auth43-c"),
 ]);
 
+const AUTH51_FLOW = "/api/mcp/per-user-headers/flows/{{auth51_h}}";
+const AUTH51 = folder("AUTH-51 per_user_headers over TLS with a custom CA", `Setup: ${KEY_A_TEXT}, reached through the fleet's TLS listener; a per_user_headers client on alpha's https URL with tls_config.ca_cert_pem set to that listener's self-signed certificate, per_user_header_keys ["x-api-key"], sample key-a, tools_to_execute ["*"]; an execute call as session auth51-sess1 opens a header flow.`, [
+  ...alphaKeyA("AUTH-51"),
+  request("AUTH-51", "setup: read the fleet's TLS listener and its certificate", "GET", "/control", { base: CHAOS, noAuth: true, asserts: [A.status(200), A.custom("the fleet has a TLS listener", [
+    "pm.expect(pm.response.json().tls_url, 'body: ' + pm.response.text()).to.match(/^https:/);",
+  ])], extraTests: [
+    "var b = pm.response.json();",
+    "pm.collectionVariables.set('auth51_tls', b.tls_url);",
+    // Escaped for use inside a JSON string in the create body.
+    "pm.collectionVariables.set('auth51_ca', JSON.stringify(b.tls_cert_pem).slice(1, -1));",
+  ] }),
+  createExpect("AUTH-51", "create with the certificate as ca_cert_pem", perUser("auth51-c", "auth51_c", { ...PER_USER_KEY_A, connection_string: "{{auth51_tls}}/s/alpha/mcp", tls_config: { ca_cert_pem: "{{auth51_ca}}" } }), [A.status(200), messageStarts("MCP client registered. 2 tools discovered.")]),
+  execTool("AUTH-51", "setup: execute as auth51-sess1 opens a header flow", "auth51_c-echo_tool", [A.status(400), headersFlow({ saveAs: "auth51_h" })], { session: "auth51-sess1" }),
+  request("AUTH-51", "submit x-api-key key-a", "PUT", AUTH51_FLOW, { body: { headers: { "x-api-key": "key-a" } }, asserts: [A.status(200)] }),
+  execTool("AUTH-51", "execute with the submitted headers", "auth51_c-echo_tool", [A.status(200)], { session: "auth51-sess1" }),
+  mockGet("AUTH-51", "alpha", "the call ran under key-a's identity", [identityCalls("key-a", 1)]),
+  deleteClient("AUTH-51", "auth51-c"),
+]);
+
 const verifyHeaders = (id, title, clientId, userHeaders, asserts) => request(id, title, "POST", `/api/mcp/client/${clientId}/verify-headers`, { body: { user_headers: userHeaders }, asserts });
 const AUTH45 = folder("AUTH-45 verify-headers", `Setup: ${KEY_A_TEXT}; the AUTH-41 per_user_headers client on alpha (per_user_header_keys ["x-api-key"], sample key-a); a headers client on alpha; an OpenAPI per_user_headers client from an inline Petstore document.`, [
   ...alphaKeyA("AUTH-45"),
@@ -2214,14 +2283,16 @@ const CONN03 = folder("CONN-03 Per-call only for HTTP", "Setup: alpha (echo_tool
 
 // CONN-04 creates can take about 31s each: permanent connect errors are retried today.
 const CONN04_FAULTS = [["refuse", { refuse: true }], ["init", { init_fail: true }], ["list", { list_fail: true }], ["version", { bad_version: "1999-01-01" }]];
-const CONN04 = folder("CONN-04 Upstream failing at create (sticky)", "Setup: alpha (echo_tool, add_tool) with one fault at a time: refuse, init_fail, list_fail, bad_version 1999-01-01. Each create is an HTTP client on alpha, auth none, needs_session_stickiness true, tools_to_execute [\"*\"], and may take about 35s.", [
+const CONN04 = folder("CONN-04 Upstream failing at create (sticky)", "Setup: alpha (echo_tool, add_tool) with one fault at a time: refuse, init_fail, list_fail, bad_version 1999-01-01. Each create is an HTTP client on alpha, auth none, needs_session_stickiness true, tools_to_execute [\"*\"]; the refuse, init_fail and list_fail creates may take about 35s.", [
   ...freshServer("CONN-04", "alpha", ["echo_tool", "add_tool"]),
   ...CONN04_FAULTS.flatMap(([label, faults]) => {
     const fault = Object.keys(faults)[0];
     return [
       mockPost("CONN-04", "alpha", "faults", `setup: alpha fault ${fault}`, { faults }),
       createExpect("CONN-04", `create while alpha has ${fault}`, httpClient(`conn04-${label}`, `conn04_${label}`, "alpha", { needs_session_stickiness: true, tools_to_execute: ["*"] }),
-        [A.status(500), A.msgStartsWith("Failed to connect MCP client:"), ...(label === "list" ? [A.msgContains("failed to retrieve tools from MCP client")] : [])]),
+        [A.status(500), A.msgStartsWith("Failed to connect MCP client:"), ...(label === "list" ? [A.msgContains("failed to retrieve tools from MCP client")] : []),
+          // An unsupported protocol version is permanent, so it is not retried.
+          ...(label === "version" ? [A.msgContains("unsupported protocol version"), responseTime(null, 5000)] : [])]),
       request("CONN-04", `conn04-${label} is not listed`, "GET", `/api/mcp/clients?server=conn04-${label}`, { asserts: [A.status(200), A.custom("no client is returned", [
         "pm.expect(pm.response.json().clients, 'body: ' + pm.response.text()).to.eql([]);",
       ])] }),
@@ -2240,17 +2311,39 @@ const CONN17 = folder("CONN-17 SSE with header auth", `Setup: a fleet server ${T
   request("CONN-17", "teardown: remove gamma", "POST", "/control", { base: CHAOS, noAuth: true, body: { remove: "gamma" }, asserts: [A.status(200)] }),
 ]);
 
+const CONN19 = folder("CONN-19 Per-user auth on SSE", "Setup: alpha (echo_tool, add_tool) requires x-key: good; a per_user_headers client on alpha's SSE endpoint, per_user_header_keys [\"x-key\"], sample x-key good.", [
+  ...alphaRequiresKey("CONN-19"),
+  createExpect("CONN-19", "create per_user_headers on sse", HEADERS_BASE("conn19-c", "conn19_c", { connection_type: "sse", connection_string: `${CHAOS}/s/alpha/sse`, per_user_header_keys: ["x-key"], user_headers: { "x-key": "good" } }),
+    [A.status(400), A.msgEquals("auth_type \"per_user_headers\" is not supported for connection_type 'sse' (use connection_type 'http')")]),
+  request("CONN-19", "no client was kept", "GET", "/api/mcp/clients?server=conn19-c", { asserts: [A.status(200), A.custom("no client is returned", [
+    "pm.expect(pm.response.json().clients, 'body: ' + pm.response.text()).to.eql([]);",
+  ])] }),
+]);
+
 const CONN18 = folder("CONN-18 SSE stream dropped", "Setup: alpha (echo_tool, add_tool); an SSE client on alpha, auth none, tool_execution_timeout 3s, tools_to_execute [\"*\"]; then POST /control/alpha/streams/drop.", [
   ...freshServer("CONN-18", "alpha", ["echo_tool", "add_tool"]),
   createClient("CONN-18", sseClient("conn18-c", "conn18_c", "alpha", { tool_execution_timeout: 3, tools_to_execute: ["*"] }), "setup: create the SSE client with a 3s tool timeout"),
   mockPost("CONN-18", "alpha", "streams/drop", "setup: drop alpha's SSE streams"),
-  getClient("CONN-18", "conn18-c", "the client list still shows healthy", [clientState("healthy")]),
+  getClient("CONN-18", "conn18-c", "the client list shows unstable, last_failure.stage transport_lost", [clientState("unstable"), clientField("last_failure.stage", "transport_lost")],
+    { pre: waitForClient("conn18-c", "c.state === 'unstable'") }),
   execTool("CONN-18", "execute on the dropped stream", "conn18_c-echo_tool", [A.status(400)]),
   saveSessions("CONN-18", "alpha", "conn18_s1"),
   request("CONN-18", "reconnect", "POST", "/api/mcp/client/conn18-c/reconnect", { asserts: [A.status(200)] }),
   execTool("CONN-18", "execute after the reconnect", "conn18_c-echo_tool", [A.status(200)]),
   mockGet("CONN-18", "alpha", "the reconnect opened one session", [sessionsPlus("conn18_s1", 1)]),
   deleteClient("CONN-18", "conn18-c"),
+]);
+
+const CONN21_STDIO = stdioClient("conn21-x", "conn21_x", "alpha").stdio_config;
+const CONN21 = folder("CONN-21 STDIO create guards", "Setup: STDIO clients bridging to alpha: one created with no credential while /api/mcp/client is in whitelisted_routes, then with admin credentials one listing the unset environment variable MISSING_X in envs, and one with the command \"no-such-binary\".", [
+  readConfig("CONN-21"), whitelist("CONN-21", ["/api/mcp/client"]),
+  unauthReq("CONN-21", "create with no credential", "POST", "/api/mcp/client", stdioClient("conn21-anon", "conn21_anon", "alpha"),
+    [A.status(403), A.msgStartsWith("Registering a stdio MCP client requires an authenticated admin session")]),
+  restoreConfig("CONN-21"),
+  createExpect("CONN-21", "create with the unset MISSING_X", stdioClient("conn21-env", "conn21_env", "alpha", { stdio_config: { ...CONN21_STDIO, envs: ["MISSING_X"] } }),
+    [A.status(500), A.msgContains("environment variable MISSING_X is not set for MCP client"), responseTime(null, 5000)]),
+  createExpect("CONN-21", "create with the command no-such-binary", stdioClient("conn21-bin", "conn21_bin", "alpha", { stdio_config: { command: "no-such-binary", args: [], envs: [] } }),
+    [A.status(500), A.msgContains("executable file not found"), responseTime(null, 5000)]),
 ]);
 
 const CONN22 = folder("CONN-22 STDIO child exit", "Setup: alpha (echo_tool, add_tool); a STDIO client bridging to alpha, auth none, tools_to_execute [\"*\"].", [
@@ -3087,6 +3180,19 @@ const INF57 = folder("INF-57 Nested call transport failure", `Setup: ${CM_TEXT};
   cmTeardown("INF-57"),
 ]);
 
+const INF59 = folder("INF-59 Per-client timeout inside code mode", `Setup: ${CM_TEXT}, tool_execution_timeout 1; the global tool execution timeout stays 30s; cm then answers every tools/call after 5s. Then the client's timeout is raised to 10 and the global lowered to 2: the script's own deadline still ends the nested call.`, [
+  ...cmSetup("INF-59", ["echo", "add"], { tool_execution_timeout: 1 }),
+  mockPost("INF-59", "cm", "faults", "setup: cm answers every tools/call after 5s", { faults: { latency: "5s", methods: ["tools/call"] } }),
+  code("INF-59", "call cm.echo", "r = cm.echo(text='hi')\nresult = r", [A.status(200), isError(), contentHas("timed out after 1s"), responseTime(null, 4000)]),
+  readConfig("INF-59"),
+  request("INF-59", "setup: raise cm's tool_execution_timeout to 10", "PUT", "/api/mcp/client/inf-59-cm", { body: { tool_execution_timeout: 10 }, asserts: [A.status(200)] }),
+  putConfig("INF-59", "setup: mcp_tool_execution_timeout 2", ["cc.mcp_tool_execution_timeout = 2;"], [A.status(200)]),
+  code("INF-59", "a 10s client timeout does not outlast the 2s script", "r = cm.echo(text='hi')\nresult = r", [A.status(200), isError(), responseTime(1500, 4000)]),
+  restoreConfig("INF-59"),
+  mockPost("INF-59", "cm", "faults/clear", "teardown: clear cm's faults"),
+  cmTeardown("INF-59"),
+]);
+
 // INF-58 counts log entries before and after. MCP log entries are written in 5s batches, so the baseline waits 7s
 // for earlier folders' log entries to land, and the after-count polls until the two nested log entries arrive.
 const logCountReq = (id, title, query, varName, pre = [], asserts = []) => request(id, title, "GET", `/api/mcp-logs?${query}`, {
@@ -3339,10 +3445,6 @@ const LIB37 = folder("LIB-37 Valid interval", "Setup: PUT /api/config with frame
   frameworkPut("LIB-37", "teardown: restore mcp_library_sync_interval", "mcp_library_sync_interval", "JSON.parse(pm.collectionVariables.get('lib37_interval'))", [A.status(200)]),
 ]);
 
-const responseTime = (min, max) => A.custom(`the response took ${min !== null ? `at least ${min / 1000}s and ` : ""}under ${max / 1000}s`, [
-  ...(min !== null ? [`pm.expect(pm.response.responseTime, 'ms').to.be.at.least(${min});`] : []),
-  `pm.expect(pm.response.responseTime, 'ms').to.be.below(${max});`,
-]);
 const FAIL02 = folder("FAIL-02 SSE create against a closed port", "Setup: an SSE client named alpha at 127.0.0.1:9, where nothing listens.", [
   createExpect("FAIL-02", "create the SSE client", { client_id: "fail02-a", name: "alpha", connection_type: "sse", connection_string: "http://127.0.0.1:9/s/alpha/sse", auth_type: "none", tools_to_execute: ["*"] },
     [A.status(500), A.msgContains("failed to start MCP client transport after 5 retries"), responseTime(30000, 40000)]),
@@ -3619,6 +3721,17 @@ const LOG22 = folder("LOG-22 Cost survives a rename", `Setup: as LOG-21 (${ALPHA
   clearPrice("LOG-22", "log-22-a"), deleteClient("LOG-22", "log-22-a"),
 ]);
 
+const LOG23 = folder("LOG-23 Delete and recreate a priced client", `Setup: ${ALPHA_TOOLS_TEXT}; echo_tool priced 0.25 with PUT and called once; then alpha is deleted and created again under the same name without tool_pricing.`, [
+  ...setClient("LOG-23", {}), priceEcho("LOG-23", "log-23-a"),
+  execR("LOG-23", "setup: a call while priced", "log23-priced", "alpha-echo_tool", {}, [A.status(200)]),
+  logRow("LOG-23", "setup: the priced call costs 0.25", "log23-priced", [rowIs("cost", 0.25)]),
+  request("LOG-23", "setup: delete client alpha", "DELETE", "/api/mcp/client/log-23-a", { asserts: [A.status(200)] }),
+  createClient("LOG-23", httpClient("log-23-b", "alpha", "alpha", { tools_to_execute: ["*"] }), "setup: create client alpha again, without tool_pricing"),
+  execR("LOG-23", "execute alpha-echo_tool on the new client", "log23-new", "alpha-echo_tool", {}, [A.status(200)]),
+  logRow("LOG-23", "the new client's log entry has no cost", "log23-new", [rowLacks("cost")]),
+  deleteClient("LOG-23", "log-23-b"),
+]);
+
 const LOG31 = folder("LOG-31 Filter data", `Setup: ${ALPHA_TOOLS_TEXT}; a VK "LOG-31 vk" granting alpha; one call with User-Agent "${CLAUDE_UA}" (as LOG-01) and one with the VK (as LOG-20).`, [
   ...setClient("LOG-31", {}), logVK("LOG-31", "log31_vk"),
   execR("LOG-31", "setup: a call with the Claude Code user agent", "log31-ua", "alpha-echo_tool", {}, [A.status(200)], { headers: [UA_H] }),
@@ -3779,6 +3892,7 @@ const EP08 = folder("EP-08 Per-client max_instructions_length", `Setup: ${FLEET}
   readConfig("EP-08"),
   putConfig("EP-08", "setup: mcp_max_instructions_per_client 100", ["cc.mcp_max_instructions_per_client = 100;"], [A.status(200)]),
   ...fleetInstructions("EP-08", { alpha: [digits(300), "300 bytes"], beta: [digits(300), "300 bytes"], alphaClient: { max_instructions_length: 50 } }),
+  getClient("EP-08", "ep-08-alpha", "alpha reads back max_instructions_length 50", [clientField("config.max_instructions_length", 50)]),
   initialize("EP-08", "initialize", [instructionsEqual(
     block("alpha", digits(50) + "\n[truncated: 250 bytes omitted]") + "\n\n" + block("beta", digits(100) + "\n[truncated: 200 bytes omitted]"),
     "alpha's block ending \"[truncated: 250 bytes omitted]\" and beta's cut at the global 100, \"[truncated: 200 bytes omitted]\"")]),
@@ -3902,12 +4016,12 @@ const CONN12 = folder("CONN-12 Dead session (sticky)", "Setup: alpha (echo_ro an
   saveSessions("CONN-12", "alpha", "conn12_s1"),
   mockPost("CONN-12", "alpha", "sessions/kill", "setup: kill alpha's sessions"),
   execTool("CONN-12", "execute the read-only tool", "conn12-echo_ro", [A.status(200)]),
-  mockGet("CONN-12", "alpha", "the read-only call opened one new session", [sessionsPlus("conn12_s1", 1)]),
+  mockGet("CONN-12", "alpha", "the read-only call's reconnect opened two sessions", [sessionsPlus("conn12_s1", 2)]),
   mockPost("CONN-12", "alpha", "sessions/kill", "setup: kill alpha's sessions again"),
   saveSessions("CONN-12", "alpha", "conn12_s2"),
   execTool("CONN-12", "first execute call of the unannotated tool", "conn12-echo_tool", [A.status(400), A.msgContains("session terminated")]),
   execToolAfter("CONN-12", "second execute call of the unannotated tool, once the background reconnect has opened a session", "conn12-echo_tool", [A.status(200)],
-    waitForMock("alpha", "s.counters.sessions > Number(pm.collectionVariables.get('conn12_s2'))")),
+    waitForMock("alpha", "s.counters.sessions >= Number(pm.collectionVariables.get('conn12_s2')) + 2")),
   deleteClient("CONN-12", "conn12-c"),
 ]);
 
@@ -3932,16 +4046,16 @@ const methodsPlus = (prefix, init, toolsCall) => A.custom(`initialize +${init}${
   ...(toolsCall !== undefined ? [`pm.expect(${toolsCallMethods}, 'body: ' + pm.response.text()).to.equal(Number(pm.collectionVariables.get(${lit(prefix + "_call")})) + ${toolsCall});`] : []),
 ]);
 
-const FAIL04 = folder("FAIL-04 503 on the per-call connect", "Setup: alpha (echo_tool, add_tool) as client alpha, per call, tools_to_execute [\"*\"]; alpha answers with 503 once, then always. Counts are alpha's per-method request counts, read just before each step.", [
+const FAIL04 = folder("FAIL-04 503 on the per-call connect", "Setup: alpha (echo_tool, add_tool) as client alpha, per call, tools_to_execute [\"*\"]; alpha answers initialize with 503 once, then always. Counts are alpha's per-method request counts, read just before each step.", [
   ...setClient("FAIL-04", {}),
   saveMethods("FAIL-04", "alpha", "fail04_a"),
-  mockPost("FAIL-04", "alpha", "faults", "setup: alpha answers the next request with 503", { faults: { status: 503, status_once: true } }),
+  mockPost("FAIL-04", "alpha", "faults", "setup: alpha answers the next initialize with 503", { faults: { status: 503, status_once: true, methods: ["initialize"] } }),
   setExec("FAIL-04", "execute echo_tool after a 503 once", "echo_tool", [A.status(200)]),
   mockGet("FAIL-04", "alpha", "initialize +2", [methodsPlus("fail04_a", 2)]),
   saveMethods("FAIL-04", "alpha", "fail04_b"),
-  mockPost("FAIL-04", "alpha", "faults", "setup: alpha answers every request with 503", { faults: { status: 503 } }),
+  mockPost("FAIL-04", "alpha", "faults", "setup: alpha answers every initialize with 503", { faults: { status: 503, methods: ["initialize"] } }),
   setExec("FAIL-04", "execute echo_tool under a 503 always", "echo_tool", [A.status(400), A.msgContains("failed to establish ephemeral MCP connection"), A.msgContains("503")]),
-  mockGet("FAIL-04", "alpha", "initialize +4, tools/call +0", [methodsPlus("fail04_b", 4, 0)]),
+  mockGet("FAIL-04", "alpha", "initialize +5, tools/call +0", [methodsPlus("fail04_b", 5, 0)]),
   mockPost("FAIL-04", "alpha", "faults/clear", "teardown: clear alpha's faults"),
   deleteClient("FAIL-04", "fail-04-a"),
 ]);
@@ -3970,7 +4084,7 @@ const FAIL05 = folder("FAIL-05 401 with WWW-Authenticate on an unannotated tool"
   ...setClient("FAIL-05", { needs_session_stickiness: true }),
   saveMethods("FAIL-05", "alpha", "fail05"),
   mockPost("FAIL-05", "alpha", "faults", "setup: alpha answers 401 with WWW-Authenticate", { faults: { status: 401, www_auth: "Bearer realm=\"chaosmock\"" } }),
-  setExec("FAIL-05", "execute echo_tool", "echo_tool", [A.status(400), A.msgContains("status 401")]),
+  setExec("FAIL-05", "execute echo_tool", "echo_tool", [A.status(400), A.msgContains("authorization required")]),
   getClient("FAIL-05", "fail-05-a", "within 5s the client is unstable at stage connect, and never needs_reauth", [
     clientState("unstable"),
     A.custom("last_failure.stage is \"connect\"", ["pm.expect((pm.response.json().clients[0].last_failure || {}).stage, 'body: ' + pm.response.text()).to.equal('connect');"]),
@@ -3993,11 +4107,11 @@ const FAIL06 = folder("FAIL-06 401 once on a read-only tool", "Setup: alpha (ech
   ]),
   mockPost("FAIL-06", "alpha", "faults", "setup: alpha answers the next request with 401", { faults: { status: 401, status_once: true } }),
   setExec("FAIL-06", "execute echo_ro", "echo_ro", [A.status(200)]),
-  mockGet("FAIL-06", "alpha", "calls[echo_ro] +1, tools/call +2, sessions +1", [A.custom("calls[echo_ro] +1, tools/call +2, sessions +1 since the recorded counts", [
+  mockGet("FAIL-06", "alpha", "calls[echo_ro] +1, tools/call +2, sessions +2", [A.custom("calls[echo_ro] +1, tools/call +2, sessions +2 since the recorded counts", [
     "var c = pm.response.json().counters;",
     "pm.expect((c.calls || {}).echo_ro || 0, 'body: ' + pm.response.text()).to.equal(Number(pm.collectionVariables.get('fail06_ro')) + 1);",
     `pm.expect(${toolsCallMethods}, 'body: ' + pm.response.text()).to.equal(Number(pm.collectionVariables.get('fail06_call')) + 2);`,
-    "pm.expect(c.sessions, 'body: ' + pm.response.text()).to.equal(Number(pm.collectionVariables.get('fail06_s')) + 1);",
+    "pm.expect(c.sessions, 'body: ' + pm.response.text()).to.equal(Number(pm.collectionVariables.get('fail06_s')) + 2);",
   ])]),
   mockPost("FAIL-06", "alpha", "faults/clear", "teardown: clear alpha's faults"),
   deleteClient("FAIL-06", "fail-06-a"),
@@ -4007,7 +4121,7 @@ const FAIL07 = folder("FAIL-07 401 at create is not retried", "Setup: alpha (ech
   ...freshServer("FAIL-07", "alpha", ["echo_tool", "add_tool"]),
   saveMethods("FAIL-07", "alpha", "fail07"),
   mockPost("FAIL-07", "alpha", "faults", "setup: alpha answers every request with 401", { faults: { status: 401 } }),
-  createExpect("FAIL-07", "create the sticky client", httpClient("fail-07-a", "alpha", "alpha", { needs_session_stickiness: true, tools_to_execute: ["*"] }), [A.status(500), A.msgContains("401"), responseTime(null, 5000)]),
+  createExpect("FAIL-07", "create the sticky client", httpClient("fail-07-a", "alpha", "alpha", { needs_session_stickiness: true, tools_to_execute: ["*"] }), [A.status(500), A.msgContains("authorization required"), responseTime(null, 5000)]),
   mockGet("FAIL-07", "alpha", "initialize +1", [methodsPlus("fail07", 1)]),
   mockPost("FAIL-07", "alpha", "faults/clear", "teardown: clear alpha's faults"),
 ]);
@@ -4105,14 +4219,17 @@ const AUTH11 = folder("AUTH-11 OAuth create with discovery and DCR", `Setup: ${A
 ]);
 
 const R1 = "https://r1.mcp-harness.example/mcp";
-const AUTH12 = folder("AUTH-12 Discovery fallbacks", `Setup: ${ALLOWLIST_TEXT}; a fleet server auth12 (echo_tool, add_tool) as an OAuth protected resource whose 401 is a bare Bearer challenge, with its metadata only at the path-inserted URL, publishing resource ${R1}; an OAuth client created on it with oauth_config {}.`, [
+// AUTH12_RESOURCE is a path-segment prefix of auth12's server URL, so it identifies the server without equalling it.
+const AUTH12_RESOURCE = `${CHAOS}/s/auth12`;
+const AUTH12_RESOURCE_JS = "pm.variables.get('chaos_url') + '/s/auth12'";
+const AUTH12 = folder("AUTH-12 Discovery fallbacks", `Setup: ${ALLOWLIST_TEXT}; a fleet server auth12 (echo_tool, add_tool) as an OAuth protected resource whose 401 is a bare Bearer challenge, with its metadata only at the path-inserted URL, publishing resource <chaos>/s/auth12 (a path prefix of its URL); an OAuth client created on it with oauth_config {}.`, [
   ...allowlistOn("AUTH-12"),
-  ...asServer("AUTH-12", "auth12", { challenge: "bare", resource: R1 }),
+  ...asServer("AUTH-12", "auth12", { challenge: "bare", resource: AUTH12_RESOURCE }),
   request("AUTH-12", "control: the 401 challenge is bare", "GET", "/s/auth12/mcp", { base: CHAOS, noAuth: true, asserts: [A.status(401), A.custom("WWW-Authenticate is Bearer realm=\"chaosmock\"", ["pm.expect(pm.response.headers.get('WWW-Authenticate')).to.equal('Bearer realm=\"chaosmock\"');"])] }),
   request("AUTH-12", "control: there is no root resource metadata", "GET", "/.well-known/oauth-protected-resource", { base: CHAOS, noAuth: true, asserts: [A.status(404)] }),
-  request("AUTH-12", `control: the path-inserted resource metadata publishes ${R1}`, "GET", "/.well-known/oauth-protected-resource/s/auth12/mcp", { base: CHAOS, noAuth: true, asserts: [A.status(200), A.custom(`resource is ${R1}`, [`pm.expect(pm.response.json().resource).to.equal(${lit(R1)});`])] }),
+  request("AUTH-12", "control: the path-inserted resource metadata publishes <chaos>/s/auth12", "GET", "/.well-known/oauth-protected-resource/s/auth12/mcp", { base: CHAOS, noAuth: true, asserts: [A.status(200), A.custom("resource is <chaos>/s/auth12", [`pm.expect(pm.response.json().resource).to.equal(${AUTH12_RESOURCE_JS});`])] }),
   createOAuth("AUTH-12", "create the OAuth client", oauthBody("auth12-c", "auth12", "auth12"), "auth12", [statusIs("pending_oauth"),
-    A.custom(`authorize_url includes resource=${R1}`, [QS_FN, `pm.expect(qs(pm.response.json().authorize_url).resource, 'body: ' + pm.response.text()).to.equal(${lit(R1)});`])]),
+    A.custom("authorize_url includes resource=<chaos>/s/auth12", [QS_FN, `pm.expect(qs(pm.response.json().authorize_url).resource, 'body: ' + pm.response.text()).to.equal(${AUTH12_RESOURCE_JS});`])]),
   restoreConfig("AUTH-12"),
 ]);
 
@@ -4132,7 +4249,7 @@ const AUTH14 = folder("AUTH-14 Pre-registered client skips discovery", `Setup: $
   createOAuth("AUTH-14", "create the OAuth client", oauthBody("auth14-c", "auth14", "auth14", { oauth_config: { client_id: "C1", client_secret: "S1", authorize_url: `${CHAOS}/s/auth14/as/authorize`, token_url: `${CHAOS}/s/auth14/as/token`, scopes: ["a", "b"], resource: R2 } }), "auth14", [
     A.custom(`authorize_url has client_id C1, scope "a b" and resource ${R2}`, [QS_FN, "var q = qs(pm.response.json().authorize_url);", "pm.expect(q.client_id, 'query').to.equal('C1');", "pm.expect(q.scope, 'query').to.equal('a b');", `pm.expect(q.resource, 'query').to.equal(${lit(R2)});`]),
   ]),
-  oauthCounters("AUTH-14", "auth14", "no registration and no metadata fetch", { register: 0, metadata: 0, prm: 0 }),
+  oauthCounters("AUTH-14", "auth14", "no registration; the resource and server metadata are read once for the issuer", { register: 0, metadata: 1, prm: 1 }),
   consentAs("AUTH-14", "consent", "auth14", null),
   followCallback("AUTH-14", "follow the callback", "auth14", callbackSuccess()),
   mockGet("AUTH-14", "auth14", `the token request carried client_secret S1, resource ${R2} and a code_verifier`, [A.custom(`one authorization_code request with client_secret S1, resource ${R2} and a verified code_verifier`, [
@@ -4143,7 +4260,7 @@ const AUTH14 = folder("AUTH-14 Pre-registered client skips discovery", `Setup: $
     `pm.expect(t[0].resource).to.equal(${lit(R2)});`,
     "pm.expect(t[0].pkce).to.equal('ok');",
   ])]),
-  oauthCounters("AUTH-14", "auth14", "still no registration and no metadata fetch after the exchange", { register: 0, metadata: 0, prm: 0 }),
+  oauthCounters("AUTH-14", "auth14", "still no registration and no further metadata read after the exchange", { register: 0, metadata: 1, prm: 1 }),
   restoreConfig("AUTH-14"),
 ]);
 
@@ -4220,14 +4337,14 @@ const AUTH19 = folder("AUTH-19 Sticky: upstream rejects an unexpired token", `Se
   saveOAuthCounts("AUTH-19", "auth19", "auth19a"),
   mockPost("AUTH-19", "auth19", "oauth/expire", "setup: expire id1's access token", { identity: "id1" }),
   execTool("AUTH-19", "execute the read-only tool", "auth19-echo_ro", [A.status(200)]),
-  mockGet("AUTH-19", "auth19", "one refresh and one new session", [A.custom("refresh +1, sessions +1", [refreshPlus("auth19a", 1), sessionsPlusP("auth19a", 1)])]),
+  mockGet("AUTH-19", "auth19", "one refresh and a reconnect of two sessions", [A.custom("refresh +1, sessions +2", [refreshPlus("auth19a", 1), sessionsPlusP("auth19a", 2)])]),
   saveOAuthCounts("AUTH-19", "auth19", "auth19b"),
   mockPost("AUTH-19", "auth19", "oauth/expire", "setup: expire id1's access token again", { identity: "id1" }),
-  execTool("AUTH-19", "first execute call of the unannotated tool", "auth19-echo_tool", [A.status(400), A.msgContains("401")]),
+  execTool("AUTH-19", "first execute call of the unannotated tool", "auth19-echo_tool", [A.status(400), A.msgContains("authorization required")]),
   mockGetAfter("AUTH-19", "auth19", "one refresh after the first unannotated call, once the detached refresh has run", [A.custom("refresh +1", [refreshPlus("auth19b", 1)])],
     waitForMock("auth19", "s.oauth.counters.token_refresh > Number(pm.collectionVariables.get('auth19b_rf'))")),
   execToolAfter("AUTH-19", "second execute call of the unannotated tool, once the background reconnect has opened a session", "auth19-echo_tool", [A.status(200)],
-    waitForMock("auth19", "s.counters.sessions > Number(pm.collectionVariables.get('auth19b_ss'))")),
+    waitForMock("auth19", "s.counters.sessions >= Number(pm.collectionVariables.get('auth19b_ss')) + 2")),
   deleteClient("AUTH-19", "auth19-c"),
   restoreConfig("AUTH-19"),
 ]);
@@ -4494,8 +4611,8 @@ const puConfig = (id, tempTokens) => [readConfig(id), putConfig(id, `setup: ${PU
 const PU_SERVER_TEXT = (p, cfgText = "") => `a fleet server ${p} (echo_tool, add_tool) as an OAuth protected resource with dynamic registration${cfgText}; a per_user_oauth client ${p} on it with tools_to_execute ["*"]`;
 const puBody = (p) => oauthBody(`${p}-u`, p, p, { auth_type: "per_user_oauth" });
 // puConnect creates a per_user_oauth client (with over merged into its config) and verifies it by consenting as admin.
-const puConnect = (id, p, cfg = {}, over = {}) => [
-  ...asServer(id, p, cfg),
+const puConnect = (id, p, cfg = {}, over = {}, tools) => [
+  ...asServer(id, p, cfg, tools),
   createOAuth(id, "setup: create the per-user OAuth client", { ...puBody(p), ...over }, p),
   consentAs(id, "setup: consent for the per-user OAuth client as admin", p, "admin"),
   followCallback(id, "setup: follow the callback for the per-user OAuth client", p, callbackSuccess()),
@@ -4739,6 +4856,45 @@ const AUTH36 = folder("AUTH-36 Per-user lazy refresh", `Setup: ${PU_TEXT(false)}
   restoreConfig("AUTH-36"),
 ]);
 
+// refreshGrants asserts identity's refresh_token grants on the authorization server: n of them, all answered with status.
+// A refused grant is logged without an identity, so it counts only grants the server accepted.
+const refreshGrants = (identity, n, status) => A.custom(`${n} refresh_token request${n === 1 ? "" : "s"} for ${identity}, all ${status}`, [
+  `var r = pm.response.json().oauth.log.filter(function (e) { return e.grant_type === 'refresh_token' && e.identity === ${lit(identity)}; });`,
+  `pm.expect(r.length, 'log: ' + JSON.stringify(pm.response.json().oauth.log)).to.equal(${n});`,
+  `r.forEach(function (e) { pm.expect(e.status).to.equal(${status}); });`,
+]);
+const AUTH37_TOOLS = { list: [{ name: "echo_tool" }, { name: "add_tool" }, READ_ONLY_TOOL], title: "echo_tool, add_tool and echo_ro (readOnlyHint true)" };
+const AUTH37 = folder("AUTH-37 Per-user token revoked upstream", `Setup: ${PU_TEXT(false)}; a fleet server auth37 (echo_tool, add_tool, and echo_ro annotated readOnlyHint true) as an OAuth protected resource with dynamic registration; a per_user_oauth client auth37 on it with tools_to_execute ["*"], verified as admin; auth37-sess1 completes as alice. Before each call the authorization server expires alice's access token, keeping her refresh token, while Bifrost still holds it as unexpired.`, [
+  ...puConfig("AUTH-37", false),
+  ...puConnect("AUTH-37", "auth37", {}, {}, AUTH37_TOOLS),
+  execTool("AUTH-37", "setup: execute as auth37-sess1 opens a flow", "auth37-echo_tool", [A.status(400), keepFlow("auth37_f")], { session: "auth37-sess1" }),
+  ...puFinish("AUTH-37", "auth37_f", "alice", "the flow"),
+  mockPost("AUTH-37", "auth37", "oauth/expire", "setup: expire alice's access token", { identity: "alice" }),
+  execTool("AUTH-37", "execute the read-only echo_ro", "auth37-echo_ro", [A.status(200)], { session: "auth37-sess1" }),
+  mockPost("AUTH-37", "auth37", "oauth/expire", "setup: expire alice's access token again", { identity: "alice" }),
+  execTool("AUTH-37", "execute the unannotated echo_tool", "auth37-echo_tool", [A.status(200)], { session: "auth37-sess1" }),
+  mockGet("AUTH-37", "auth37", "one refresh per call, both 200, and both calls ran as alice", [refreshGrants("alice", 2, 200), identityCalls("alice", 2)]),
+  deleteClient("AUTH-37", "auth37-u"),
+  restoreConfig("AUTH-37"),
+]);
+
+const AUTH38 = folder("AUTH-38 Per-user refresh token revoked", `Setup: ${PU_TEXT(false)}; ${PU_SERVER_TEXT("auth38")}, verified as admin; auth38-sess1 completes as alice and makes one call; then the authorization server revokes alice's grant, her access and refresh tokens alike (case b).`, [
+  ...puConfig("AUTH-38", false),
+  ...puConnect("AUTH-38", "auth38"),
+  execTool("AUTH-38", "setup: execute as auth38-sess1 opens a flow", "auth38-echo_tool", [A.status(400), keepFlow("auth38_f")], { session: "auth38-sess1" }),
+  ...puFinish("AUTH-38", "auth38_f", "alice", "the flow"),
+  execTool("AUTH-38", "setup: execute as auth38-sess1", "auth38-echo_tool", [A.status(200)], { session: "auth38-sess1" }),
+  mockPost("AUTH-38", "auth38", "oauth/revoke", "setup: revoke alice's grant", { identity: "alice" }),
+  execTool("AUTH-38", "execute as auth38-sess1 after the revoke", "auth38-echo_tool", [A.status(400), keepFlow("auth38_f2", "auth38_f")], { session: "auth38-sess1" }),
+  mockGet("AUTH-38", "auth38", "the one refresh attempt was refused", [A.custom("1 refresh_token request, refused with invalid_grant", [
+    "var r = pm.response.json().oauth.log.filter(function (e) { return e.grant_type === 'refresh_token'; });",
+    "pm.expect(r.length, 'log: ' + JSON.stringify(pm.response.json().oauth.log)).to.equal(1);",
+    "pm.expect(r[0].status).to.equal(400);", "pm.expect(r[0].error).to.equal('invalid_grant');",
+  ]), identityCalls("alice", 1)]),
+  deleteClient("AUTH-38", "auth38-u"),
+  restoreConfig("AUTH-38"),
+]);
+
 const gwFlow = (id, title, tool, vk, v, withToken) => request(id, title, "POST", "/mcp", {
   noAuth: true, raw: JSON.stringify(call(tool, { text: "hi" })), headers: [MCP_ACCEPT, { key: "x-bf-vk", value: `{{${vk}}}` }],
   asserts: [A.status(200), A.custom(`isError true and the text links a flow${withToken ? " with a #t= temp token" : ""}`, [
@@ -4853,7 +5009,8 @@ const ADM75 = folder("ADM-75 Sessions reauth", `Setup: dashboard auth on, admin 
   restoreConfig("ADM-75"),
 ]);
 
-const ADM76 = folder("ADM-76 Sessions revoke", `Setup: dashboard auth on, admin credentials; ${PU_TEXT(false)}; ${PH_TEXT("adm76h")}, with a header credential (adm76-hsess1 submitted key-a, then reauth opened a flow for it) and a pending header flow (adm76-hsess2); ${PU_SERVER_TEXT("adm76")}, verified as admin, with an OAuth token (adm76-sess1 completed as alice, then reauth opened a pending flow for it); and a shared OAuth client on fleet server adm76s, connected.`, [
+const ADM76_OAUTH_FLOW = "s.kind === 'flow' && s.auth_kind === 'oauth' && s.id === pm.collectionVariables.get('adm76_of')";
+const ADM76 = folder("ADM-76 Sessions revoke", `Setup: dashboard auth on, admin credentials; ${PU_TEXT(false)}; ${PH_TEXT("adm76h")}, with a header credential (adm76-hsess1 submitted key-a, then reauth opened a flow for it) and a pending header flow (adm76-hsess2); ${PU_SERVER_TEXT("adm76")}, verified as admin, with an OAuth token (adm76-sess1 completed as alice, then reauth opened a pending flow for it) and a pending OAuth flow (adm76-sess2); and a shared OAuth client on fleet server adm76s, connected.`, [
   ...puConfig("ADM-76", false),
   ...phClient("ADM-76", "adm76h"),
   ...phCredential("ADM-76", "adm76h", "adm76-hsess1", "adm76_hc"),
@@ -4868,12 +5025,17 @@ const ADM76 = folder("ADM-76 Sessions revoke", `Setup: dashboard auth on, admin 
   oauthStatus("ADM-76", "setup: record the shared token_id", "adm76s", "", [A.custom("token_id is set", ["pm.expect(pm.response.json().token_id, 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;"])], ["pm.collectionVariables.set('adm76s_tok', pm.response.json().token_id);"]),
   request("ADM-76", "control: the header credential's flow is open", "GET", "/api/mcp/per-user-headers/flows/{{adm76_hc_flow}}", { asserts: [A.status(200)] }),
   flowDetail("ADM-76", "control: the OAuth token's pending flow is open", "adm76_t_flow", [A.status(200)]),
+  execTool("ADM-76", "setup: execute as adm76-sess2 opens a pending OAuth flow", "adm76-echo_tool", [A.status(400), keepFlow("adm76_of", "adm76_f")], { session: "adm76-sess2" }),
+  sessionsHas("ADM-76", "control: the pending OAuth flow is listed", "adm76-u", ADM76_OAUTH_FLOW, "one kind \"flow\", auth_kind \"oauth\" entry for it"),
   request("ADM-76", "revoke the header credential", "DELETE", "/api/mcp/sessions/{{adm76_hc}}", { asserts: [A.status(204)] }),
   request("ADM-76", "the header credential's flow is gone", "GET", "/api/mcp/per-user-headers/flows/{{adm76_hc_flow}}", { asserts: [A.status(404)] }),
   request("ADM-76", "revoke the pending header flow", "DELETE", "/api/mcp/sessions/{{adm76_hf}}", { asserts: [A.status(204)] }),
   request("ADM-76", "revoke the OAuth token", "DELETE", "/api/mcp/sessions/{{adm76_t}}", { asserts: [A.status(204)] }),
   flowDetail("ADM-76", "the OAuth token's pending flow is gone", "adm76_t_flow", [A.status(404), A.msgEquals(NO_FLOW)]),
   request("ADM-76", "revoke the shared token id", "DELETE", "/api/mcp/sessions/{{adm76s_tok}}", { asserts: [A.status(404), A.msgEquals(NO_SESSION)] }),
+  request("ADM-76", "revoke the pending OAuth flow", "DELETE", "/api/mcp/sessions/{{adm76_of}}", { asserts: [A.status(204)] }),
+  flowDetail("ADM-76", "the pending OAuth flow is gone", "adm76_of", [A.status(404), A.msgEquals(NO_FLOW)]),
+  request("ADM-76", "the pending OAuth flow is no longer listed", "GET", SESSIONS, { asserts: [A.status(200), A.custom("no entry for it", [sessionRows("adm76-u", ADM76_OAUTH_FLOW), "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(0);"])] }),
   deleteClient("ADM-76", "adm76h-c"),
   deleteClient("ADM-76", "adm76-u"),
   deleteClient("ADM-76", "adm76s-o"),
@@ -5168,6 +5330,30 @@ const LIB14 = folder("LIB-14 Deleted remote entry stays deleted after sync", `Se
     "pm.expect(b.tags).to.not.include('lib14-r');",
   ])] }),
   resetLibrary("LIB-14"),
+]);
+
+const LIB15_URL = "http://127.0.0.1:9/lib15/mcp";
+// lib15Custom checks that the one listed "LIB-15 entry" is the published custom entry.
+const lib15Custom = (title) => request("LIB-15", title, "GET", libSearch("LIB-15 entry"), { asserts: [A.status(200), A.custom("one entry named \"LIB-15 entry\": the published one, source \"custom\", at its URL", [
+  byName("LIB-15 entry"),
+  "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(1);",
+  "pm.expect(found[0].id).to.equal(Number(pm.collectionVariables.get('lib15_c')));",
+  "pm.expect(found[0].source).to.equal('custom');",
+  `pm.expect(found[0].connection_url).to.equal(${lit(LIB15_URL)});`,
+])] });
+const LIB15 = folder("LIB-15 Publish over a deleted remote entry's name", `Setup: ${LIB_BOOT_TEXT} plus remote entry "LIB-15 entry", synced; the entry is deleted while the catalog still lists it.`, [
+  readBoot("LIB-15"),
+  setCatalog("LIB-15", "setup: the catalog adds LIB-15 entry", [libEntry("LIB-15 entry", "lib15")]),
+  forceSync("LIB-15", "setup: force-sync", 6),
+  saveLibEntry("LIB-15", "setup: find the remote entry", "LIB-15 entry", "lib15_r"),
+  libDeleteAs("LIB-15", "setup: delete the remote entry", "lib15_r"),
+  libPublish("LIB-15", "publish \"LIB-15 entry\"", { name: "LIB-15 entry", connection_type: "http", connection_url: LIB15_URL }, "lib15_c"),
+  lib15Custom("the published entry is listed"),
+  forceSync("LIB-15", "force-sync with the remote entry still in the catalog", 5),
+  lib15Custom("the published entry is still listed"),
+  request("LIB-15", "publish \"LIB-15 entry\" again", "POST", LIBRARY, { body: { name: "LIB-15 entry", connection_type: "http", connection_url: LIB15_URL }, asserts: [A.status(409), A.msgEquals(LIB_DUP_MSG)] }),
+  libDeleteAs("LIB-15", "teardown: delete the custom entry", "lib15_c"),
+  resetLibrary("LIB-15"),
 ]);
 
 const LIB21 = folder("LIB-21 Force-sync adds new entries", `Setup: ${LIB_BOOT_TEXT} plus two new entries, "LIB-21 first" and "LIB-21 second".`, [
@@ -6239,6 +6425,50 @@ const AUTH39 = folder("AUTH-39 No-token caller on every surface", `Setup: ${PU_T
 
 const FAIL19_TEXT = "echo is broken upstream";
 const FAIL19_TIMEOUT = "Error executing tool alpha-slow_tool: tool execution failed: MCP tool call timed out after 2s";
+// pollMcpInstructions re-sends initialize to /mcp, 200ms apart for up to about 2s, until its instructions equal want;
+// /mcp resyncs from a background goroutine after a refresh.
+const pollMcpInstructions = (want) => [
+  "var left = 10;",
+  "function poll() {",
+  `  pm.sendRequest({ url: pm.variables.get('base_url') + '/mcp', method: 'POST', header: { 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream' }, body: { mode: 'raw', raw: ${lit(JSON.stringify(init("2025-03-26")))} } }, function (err, res) {`,
+  "    var r = !err && res.code === 200 ? res.json().result : null;",
+  `    if ((r && r.instructions === ${lit(want)}) || --left <= 0) { return; }`,
+  "    setTimeout(poll, 200);",
+  "  });",
+  "}",
+  "poll();",
+];
+const SET26_BOTH = (v) => block("alpha", v) + "\n\n" + block("beta", v);
+const SET26 = folder("SET-26 refresh-tools re-reads a sticky client's instructions", `Setup: alpha (echo, add) and beta (echo) each send instructions "v1"; client alpha is HTTP, auth none, needs_session_stickiness true; client beta is SSE on /s/beta/sse with auth headers X-Key: k1; both tools_to_execute ["*"], allow_by_default false. Then both servers send "v2" and each client's tools are refreshed.`, [
+  ...freshServer("SET-26", "alpha", ["echo", "add"]),
+  ...freshServer("SET-26", "beta", ["echo"]),
+  setInstructions("SET-26", "alpha", "v1", "\"v1\""),
+  setInstructions("SET-26", "beta", "v1", "\"v1\""),
+  createClient("SET-26", httpClient("set-26-alpha", "alpha", "alpha", { needs_session_stickiness: true, tools_to_execute: ["*"], allow_by_default: false }), "setup: register client alpha, sticky"),
+  createClient("SET-26", sseClient("set-26-beta", "beta", "beta", { auth_type: "headers", headers: { "X-Key": "k1" }, tools_to_execute: ["*"], allow_by_default: false }), "setup: register client beta over SSE"),
+  initialize("SET-26", "setup: /mcp serves v1 from both", [instructionsEqual(SET26_BOTH("v1"), "v1 from alpha and beta")]),
+  setInstructions("SET-26", "alpha", "v2", "\"v2\""),
+  setInstructions("SET-26", "beta", "v2", "\"v2\""),
+  request("SET-26", "refresh-tools on alpha", "POST", "/api/mcp/client/set-26-alpha/refresh-tools", { asserts: [A.status(200)] }),
+  request("SET-26", "refresh-tools on beta", "POST", "/api/mcp/client/set-26-beta/refresh-tools", { asserts: [A.status(200)] }),
+  initialize("SET-26", "/mcp now serves v2 from both", [instructionsEqual(SET26_BOTH("v2"), "v2 from alpha and beta")], { pre: pollMcpInstructions(SET26_BOTH("v2")) }),
+  deleteClient("SET-26", "set-26-alpha"),
+  deleteClient("SET-26", "set-26-beta"),
+]);
+
+const FAIL25_MSG = "forbidden: this caller may not use echo_tool";
+const FAIL25 = folder("FAIL-25 A tool's own \"forbidden\" error is not an auth failure", `Setup: alpha (echo_tool, add_tool) as client alpha, sticky, tools_to_execute ["*"], healthy; then alpha fails every tools/call with a JSON-RPC error "${FAIL25_MSG}". Counts are read 3s after the call, so a reconnect it started would show.`, [
+  ...setClient("FAIL-25", { needs_session_stickiness: true }),
+  saveMethods("FAIL-25", "alpha", "fail25"),
+  saveSessions("FAIL-25", "alpha", "fail25_s"),
+  mockPost("FAIL-25", "alpha", "faults", "setup: alpha fails every tools/call with a JSON-RPC error saying forbidden", { faults: { err_rate: 1, err_kind: "protocol", message: FAIL25_MSG } }),
+  setExec("FAIL-25", "execute echo_tool", "echo_tool", [A.status(400), A.msgContains(FAIL25_MSG)]),
+  mockGetAfter("FAIL-25", "alpha", "3s later: tools/call +1, initialize +0, sessions +0", [methodsPlus("fail25", 0, 1), sessionsPlus("fail25_s", 0)], ["setTimeout(function () {}, 3000);"]),
+  getClient("FAIL-25", "fail-25-a", "the client is still healthy", [clientState("healthy")]),
+  mockPost("FAIL-25", "alpha", "faults/clear", "teardown: clear alpha's faults"),
+  deleteClient("FAIL-25", "fail-25-a"),
+]);
+
 const FAIL19 = folder("FAIL-19 Agent mode with a tool-level error and a timeout", `Setup: ${LLM_TEXT}; alpha (echo, slow_tool), with echo answering every call with an isError result (err_kind tool) whose text is ${lit(FAIL19_TEXT)} and slow_tool hanging for 10s, registered as client alpha, per call, tools_to_execute ["*"], tools_to_auto_execute ["*"], tool_execution_timeout 2; each chat's turn 1 calls one tool and turn 2 answers "final".`, [
   request("FAIL-19", "setup: fresh mcpchaos server alpha", "POST", "/control", { base: CHAOS, noAuth: true, body: { add: "alpha" }, asserts: [A.status(200)] }),
   mockPost("FAIL-19", "alpha", "tools/set", "setup: alpha serves echo (an isError result every call) and slow_tool (hanging 10s)", { tools: [{ name: "echo", fault: { err_rate: 1, err_kind: "tool", message: FAIL19_TEXT } }, { name: "slow_tool", fault: { hang: "10s" } }] }),
@@ -6307,7 +6537,7 @@ const ADM37 = folder("ADM-37 oauth_config rotation guards", `Setup: admin creden
   createClient("ADM-37", httpClient("adm37-n", "adm37_n", "alpha"), "setup: create the none client"),
   clientPut("ADM-37", "oauth_config on the none client", "adm37-n", { oauth_config: { client_id: "adm37-new" } }, [A.status(400), A.msgEquals("oauth_config can only be updated for MCP clients using auth_type 'oauth' or 'per_user_oauth'")]),
   clientPut("ADM-37", "oauth_config on the pending client", "adm37-p", { oauth_config: { client_id: "adm37-new" } }, [A.status(409), A.msgContains("cannot be updated before this MCP client's OAuth verification is completed")]),
-  clientPut("ADM-37", "token_url change without client_secret", "adm37-o", { oauth_config: { token_url: "http://127.0.0.1:9/adm37/token" } }, [A.status(400), A.msgContains("client_secret must be resent explicitly")]),
+  clientPut("ADM-37", "token_url change without client_secret on the public client", "adm37-o", { oauth_config: { token_url: "http://127.0.0.1:9/adm37/token" } }, [A.status(200), A.jsonMessage("MCP client edited successfully")]),
   clientPut("ADM-37", "rotation plus disabled true", "adm37-o", { oauth_config: { client_id: "adm37-new" }, disabled: true }, [A.status(400), A.msgContains("cannot be rotated while disabling")]),
   deleteClient("ADM-37", "adm37-o"),
   deleteClient("ADM-37", "adm37-n"),
@@ -6524,6 +6754,21 @@ const ADM86 = folder("ADM-86 Verifying a pending client starts its tool sync", `
   deleteClient("ADM-86", "adm86-h"),
   deleteClient("ADM-86", "adm86-o"),
   restoreConfig("ADM-86"),
+]);
+
+// noToolPricing passes when a getClient response's config carries no tool prices.
+const noToolPricing = A.custom("config has no tool_pricing", [
+  "var p = pm.response.json().clients[0].config.tool_pricing;",
+  "pm.expect(p === undefined || p === null || Object.keys(p).length === 0, 'body: ' + pm.response.text()).to.be.true;",
+]);
+const ADM87 = folder("ADM-87 Create does not take tool_pricing", `Setup: ${ALPHA_TOOLS_TEXT}, created with tool_pricing {"echo_tool": 0.25} in the POST body; then renamed alpha2.`, [
+  ...setClient("ADM-87", { tool_pricing: { echo_tool: 0.25 } }),
+  getClient("ADM-87", "adm-87-a", "the client reads back without tool_pricing", [noToolPricing]),
+  request("ADM-87", "rename alpha to alpha2", "PUT", "/api/mcp/client/adm-87-a", { body: { name: "alpha2" }, asserts: [A.status(200)] }),
+  getClient("ADM-87", "adm-87-a", "after the rename the client still has no tool_pricing", [noToolPricing]),
+  execR("ADM-87", "execute alpha2-echo_tool", "adm87-call", "alpha2-echo_tool", {}, [A.status(200)]),
+  logRow("ADM-87", "the log entry has no cost", "adm87-call", [rowLacks("cost")]),
+  deleteClient("ADM-87", "adm-87-a"),
 ]);
 
 // AUTH-46: a per_user_headers client created over the API keeps the admin's sample values as its admin credential, which
@@ -6781,7 +7026,7 @@ const CONN05 = folder("CONN-05 Execute validation", "Setup: alpha (echo_tool, ad
 
 const contentIs = (v) => A.custom(`content is ${lit(v)}`, [`pm.expect(pm.response.json().content, 'body: ' + pm.response.text()).to.equal(${lit(v)});`]);
 const PNG_REPLY = { content: [{ type: "image", data: "QUJD", mimeType: "image/png" }] };
-const CONN07 = folder("CONN-07 Result content types on execute", "Setup: alpha serves texts (two text blocks \"a\" and \"b\"), image (a PNG), structured (structuredContent {\"v\": 1} and no content) and empty (content []); a client conn07_c on alpha, auth none, tools_to_execute [\"*\"]. Joining text blocks with a separator and returning structuredContent alone are a known issue, so those checks are skipped.", [
+const CONN07 = folder("CONN-07 Result content types on execute", "Setup: alpha serves texts (two text blocks \"a\" and \"b\"), image (a PNG), structured (structuredContent {\"v\": 1} and no content) and empty (content []); a client conn07_c on alpha, auth none, tools_to_execute [\"*\"]. Joining text blocks with a separator is a known issue, so that check is skipped.", [
   request("CONN-07", "setup: fresh mcpchaos server alpha", "POST", "/control", { base: CHAOS, noAuth: true, body: { add: "alpha" }, asserts: [A.status(200)] }),
   mockPost("CONN-07", "alpha", "tools/set", "setup: alpha serves texts, image, structured and empty", { tools: [
     { name: "texts", reply: { content: [{ type: "text", text: "a" }, { type: "text", text: "b" }] } },
@@ -6791,8 +7036,10 @@ const CONN07 = folder("CONN-07 Result content types on execute", "Setup: alpha s
   ] }),
   createClient("CONN-07", httpClient("conn07-c", "conn07_c", "alpha", { tools_to_execute: ["*"] }), "setup: create the client"),
   execTool("CONN-07", "texts", "conn07_c-texts", [A.status(200), A.skip(A.custom("the two blocks are joined with a separator", ["var c = pm.response.json().content;", "pm.expect(c, 'body: ' + pm.response.text()).to.match(/^a[\\s\\S]+b$/);"]))]),
-  execTool("CONN-07", "image", "conn07_c-image", [A.status(200), contentIs("[Image Response: QUJD, MIME: image/png]")]),
-  execTool("CONN-07", "structured", "conn07_c-structured", [A.status(200), A.skip(A.custom("the structuredContent comes back", ["pm.expect(pm.response.json().content, 'body: ' + pm.response.text()).to.include('\"v\"');"]))]),
+  execTool("CONN-07", "image", "conn07_c-image", [A.status(200), A.custom("content is one image_url block with the PNG as a data URL", [
+    "pm.expect(pm.response.json().content, 'body: ' + pm.response.text()).to.eql([{ type: 'image_url', image_url: { url: 'data:image/png;base64,QUJD' } }]);",
+  ])]),
+  execTool("CONN-07", "structured", "conn07_c-structured", [A.status(200), contentIs("{\"v\":1}")]),
   execTool("CONN-07", "empty", "conn07_c-empty", [A.status(200), contentIs("MCP tool 'conn07_c-empty' executed successfully")]),
   deleteClient("CONN-07", "conn07-c"),
 ]);
@@ -6834,9 +7081,9 @@ const CONN16 = folder("CONN-16 Tool list changes", "Setup: alpha (echo_tool, add
   ...freshServer("CONN-16", "alpha", ["echo_tool", "add_tool"]),
   createClient("CONN-16", httpClient("conn16-c", "conn16_c", "alpha", { needs_session_stickiness: true, tools_to_execute: ["*"] }), "setup: create the sticky client"),
   mockPost("CONN-16", "alpha", "tools/add", "alpha adds new_tool", { tool: { name: "new_tool" } }),
-  mockPost("CONN-16", "alpha", "notify/tools-changed", "alpha pushes list_changed", {}),
-  getClient("CONN-16", "conn16-c", "the client's tools are unchanged", [toolNamesAre(["add_tool", "echo_tool"])]),
-  mockGet("CONN-16", "alpha", "alpha has no open stream", [counterIs("open_streams", 0)]),
+  request("CONN-16", "alpha pushes list_changed", "POST", "/control/alpha/notify/tools-changed", { base: CHAOS, noAuth: true, body: {}, asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('conn16_t0', Date.now());"] }),
+  getClient("CONN-16", "conn16-c", "within 5s the client lists new_tool without a refresh", [toolNamesAre(["add_tool", "echo_tool", "new_tool"]), seenWithin("conn16-c", 5)], { pre: pollClientTools("conn16-c", 3, 5, "conn16_t0") }),
+  mockGet("CONN-16", "alpha", "alpha has one open stream", [counterIs("open_streams", 1)]),
   clientPost("CONN-16", "refresh-tools", "conn16-c", "refresh-tools", [A.status(200), A.jsonEquals("tool_count", 3)]),
   execTool("CONN-16", "execute conn16_c-new_tool", "conn16_c-new_tool", [A.status(200)]),
   mockPost("CONN-16", "alpha", "tools/remove", "alpha removes echo_tool", { name: "echo_tool" }),
@@ -6860,26 +7107,26 @@ const EP21 = folder("EP-21 Tool call timeout", `Setup: ${FLEET}; client alpha ha
   deleteVK("EP-21", "full"), ...fleetTeardown("EP-21"),
 ]);
 
-const EP22 = folder("EP-22 Non-text and empty results", `Setup: ${FLEET}, with alpha's echo replying (a) two text blocks "a" and "b", a PNG image block and structuredContent {"v": 1}, then (b) content []; the full-access VK. Passing the content blocks through is a known issue, so those checks are skipped.`, [
+const EP22 = folder("EP-22 Non-text and empty results", `Setup: ${FLEET}, with alpha's echo replying (a) two text blocks "a" and "b", a PNG image block and structuredContent {"v": 1}, then (b) content []; the full-access VK.`, [
   ...fleetSetup("EP-22"), createVK("EP-22", "full"),
   mockPost("EP-22", "alpha", "tools/set", "setup: alpha's echo replies two text blocks, an image and structuredContent", { tools: [{ name: "echo", reply: { content: [{ type: "text", text: "a" }, { type: "text", text: "b" }, { type: "image", data: "QUJD", mimeType: "image/png" }], structuredContent: { v: 1 } } }, { name: "add" }] }),
   request("EP-22", "setup: refresh alpha's tools", "POST", "/api/mcp/client/ep-22-alpha/refresh-tools", { asserts: [A.status(200)] }),
-  gwCall("EP-22", "tools/call alpha-echo, mixed content", "alpha-echo", [A.skip(A.custom("two text blocks, the image block and structuredContent pass through", [
+  gwCall("EP-22", "tools/call alpha-echo, mixed content", "alpha-echo", [A.custom("two text blocks, the image block and structuredContent pass through", [
     "var r = pm.response.json().result;",
     "pm.expect(r.content, 'body: ' + pm.response.text()).to.eql([{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }, { type: 'image', data: 'QUJD', mimeType: 'image/png' }]);",
     "pm.expect(r.structuredContent).to.eql({ v: 1 });",
-  ]))], [fullVK("EP-22")]),
+  ])], [fullVK("EP-22")]),
   mockPost("EP-22", "alpha", "tools/set", "setup: alpha's echo replies content []", { tools: [{ name: "echo", reply: { content: [] } }, { name: "add" }] }),
-  gwCall("EP-22", "tools/call alpha-echo, empty content", "alpha-echo", [gwText("the text is \"MCP tool 'alpha-echo' executed successfully\"", ["pm.expect(text, 'body: ' + pm.response.text()).to.equal(\"MCP tool 'alpha-echo' executed successfully\");"])], [fullVK("EP-22")]),
+  gwCall("EP-22", "tools/call alpha-echo, empty content", "alpha-echo", [rpcResultEquals({ content: [] })], [fullVK("EP-22")]),
   deleteVK("EP-22", "full"), ...fleetTeardown("EP-22"),
 ]);
 
 const EP30 = folder("EP-30 Malformed JSON-RPC and batches", `Setup: ${FLEET}; no credential (enforce_auth_on_inference off). A batch of two tools/list requests gets -32700.`, [
   ...fleetSetup("EP-30"),
-  rpc("EP-30", "body \"{\"", "{", { asserts: [A.status(200), rpcError(-32700, "Failed to parse message"), A.custom("id is null", ["pm.expect(pm.response.json().id, 'body: ' + pm.response.text()).to.equal(null);"])] }),
-  rpc("EP-30", "an empty body", "", { asserts: [A.status(200), rpcError(-32700, "Failed to parse message"), A.custom("id is null", ["pm.expect(pm.response.json().id, 'body: ' + pm.response.text()).to.equal(null);"])] }),
+  rpc("EP-30", "body \"{\"", "{", { asserts: [A.status(400), rpcError(-32700, "request body is not valid json"), A.custom("id is null", ["pm.expect(pm.response.json().id, 'body: ' + pm.response.text()).to.equal(null);"])] }),
+  rpc("EP-30", "an empty body", "", { asserts: [A.status(400), rpcError(-32700, "request body is not valid json"), A.custom("id is null", ["pm.expect(pm.response.json().id, 'body: ' + pm.response.text()).to.equal(null);"])] }),
   rpc("EP-30", "jsonrpc \"1.0\"", { jsonrpc: "1.0", id: 1, method: "tools/list" }, { asserts: [A.status(200), rpcError(-32600, "Invalid JSON-RPC version")] }),
-  rpc("EP-30", "a batch of two tools/list requests", JSON.stringify([listMsg, { ...listMsg, id: 2 }]), { asserts: [A.status(200), rpcError(-32700)] }),
+  rpc("EP-30", "a batch of two tools/list requests", JSON.stringify([listMsg, { ...listMsg, id: 2 }]), { asserts: [A.status(400), rpcError(-32700)] }),
   ...fleetTeardown("EP-30"),
 ]);
 
@@ -7586,7 +7833,7 @@ const AUTH07 = folder("AUTH-07 Rotation applies to the live connection", `Setup:
   createClient("AUTH-07", t1Client("auth07-c", "auth07_c", { needs_session_stickiness: true }), "setup: create the sticky client"),
   saveSessions("AUTH-07", "alpha", "auth07_s"),
   request("AUTH-07", "PUT Authorization: Bearer T2", "PUT", "/api/mcp/client/auth07-c", { body: { headers: { Authorization: `Bearer ${T2}` } }, asserts: [A.status(200)] }),
-  mockGet("AUTH-07", "alpha", "two more sessions: the new header is verified on its own connection, then the client reconnects", [sessionsPlus("auth07_s", 2)]),
+  mockGet("AUTH-07", "alpha", "three more sessions: the new header is verified on its own connection, then the reconnect opens two", [sessionsPlus("auth07_s", 3)]),
   execTool("AUTH-07", "execute after the rotation", "auth07_c-echo_tool", [A.status(200)]),
   mockGet("AUTH-07", "alpha", "the call was counted under id2", [identityCallsAre({ id2: 1 })]),
   deleteClient("AUTH-07", "auth07-c"),
@@ -7600,7 +7847,7 @@ const CONN01 = folder("CONN-01 HTTP sticky round trip", "Setup: alpha (echo_tool
   ...[1, 2, 3].map((i) => execTool("CONN-01", `execute ${i} of 3`, "conn01-echo_tool", [A.status(200), A.custom("the body is {role \"tool\", content \"hi\", tool_call_id \"c1\"}", [
     "pm.expect(pm.response.json(), 'body: ' + pm.response.text()).to.eql({ role: 'tool', content: 'hi', tool_call_id: 'c1' });",
   ])])),
-  mockGet("CONN-01", "alpha", "one session, three calls to echo_tool", [counterIs("sessions", 1), callsIs("echo_tool", 3)]),
+  mockGet("CONN-01", "alpha", "two sessions (calls and the list_changed stream), one open stream, three calls to echo_tool", [counterIs("sessions", 2), counterIs("open_streams", 1), callsIs("echo_tool", 3)]),
   deleteClient("CONN-01", "conn01-c"),
 ]);
 
@@ -7646,17 +7893,17 @@ const collection = {
     { key: "admin_auth_header", value: "" },
   ],
   item: [
-    section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM86]),
-    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH48, AUTH49, AUTH50]),
-    section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN20, CONN22, CONN23, CONN24, CONN25, CONN27]),
+    section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM86, ADM87]),
+    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH48, AUTH49, AUTH50, AUTH51]),
+    section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, CONN23, CONN24, CONN25, CONN27]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS40, OAS42]),
-    section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET21, SET22]),
+    section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET21, SET22, SET26]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV37, GOV38]),
-    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
-    section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB32, LIB33, LIB34, LIB36, LIB37]),
-    section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43]),
-    section("FAIL Failure handling", "Failure handling tests.", [FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL14, FAIL16, FAIL18, FAIL19]),
+    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
+    section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB32, LIB33, LIB34, LIB36, LIB37]),
+    section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43]),
+    section("FAIL Failure handling", "Failure handling tests.", [FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL14, FAIL16, FAIL18, FAIL19, FAIL25]),
   ],
 };
 

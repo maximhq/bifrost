@@ -325,8 +325,9 @@ type ConfigStore interface {
 	GetMCPLibraryPaginated(ctx context.Context, params MCPLibraryQueryParams) ([]tables.TableMCPLibrary, int64, error)
 	GetMCPLibraryFilterData(ctx context.Context) (*MCPLibraryFilterData, error)
 	UpsertMCPLibraryEntry(ctx context.Context, entry *tables.TableMCPLibrary, tx ...*gorm.DB) error
-	// CreateCustomMCPLibraryEntry inserts an org-internal ("custom") library row.
-	// Returns ErrAlreadyExists when the slug collides with an existing entry.
+	// CreateCustomMCPLibraryEntry inserts an org-internal ("custom") library row,
+	// replacing a deleted entry with the same slug. Returns ErrAlreadyExists when
+	// the slug collides with a live entry.
 	CreateCustomMCPLibraryEntry(ctx context.Context, entry *tables.TableMCPLibrary) error
 	// SoftDeleteMCPLibraryEntry tombstones a library row by ID (sets deleted_at)
 	// so it is hidden from listings and never resurrected by the remote sync.

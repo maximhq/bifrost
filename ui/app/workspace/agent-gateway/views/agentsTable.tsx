@@ -214,7 +214,7 @@ export default function AgentsTable({
 
 	// Externally reachable base URL, so the endpoint cell copies the full URL callers use.
 	const { data: coreConfig } = useGetCoreConfigQuery({ fromDB: true });
-	const baseUrl = getExternalBaseUrl(coreConfig?.client_config);
+	const baseUrl = getExternalBaseUrl(coreConfig?.client_config, "a2a_external_client_url");
 
 	const handleCreate = () => {
 		setSelectedAgent(null);

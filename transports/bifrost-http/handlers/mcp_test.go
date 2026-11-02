@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -18,6 +19,7 @@ import (
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	bifrost "github.com/maximhq/bifrost/core"
+	coremcp "github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -1704,6 +1706,63 @@ func TestAddMCPClient_MissingConnectionTargetIs400(t *testing.T) {
 	}
 }
 
+// TestAddMCPClient_UnknownAuthTypeIs400 pins that an auth_type no credential
+// resolver handles is refused at create with the accepted values, and nothing is
+// stored or handed to the runtime.
+func TestAddMCPClient_UnknownAuthTypeIs400(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	body := `{"name":"bogus_auth","connection_type":"http","connection_string":"http://127.0.0.1:9/mcp","auth_type":"bogus"}`
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, body, "", false)
+	require.Equal(t, fasthttp.StatusBadRequest, status, respBody)
+	assert.Contains(t, respBody, `Invalid auth_type \"bogus\": must be one of none, headers, oauth, per_user_oauth, per_user_headers, token_exchange`)
+	assert.Empty(t, mgr.added, "the runtime is not asked to connect")
+	_, err := h.store.ConfigStore.GetMCPClientByName(context.Background(), "bogus_auth")
+	assert.ErrorIs(t, err, configstore.ErrNotFound, "no row is stored")
+}
+
+// TestAddMCPClient_OmittedAuthTypeRunsAsStored pins that a client created
+// without an auth_type reaches the runtime with the auth_type its stored row
+// carries, headers, so it connects the same way before and after a restart. The
+// runtime used to get an empty auth_type, which connects with a persistent
+// connection, while the reloaded row connects per call.
+func TestAddMCPClient_OmittedAuthTypeRunsAsStored(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	body := `{"name":"no_auth_type","connection_type":"http","connection_string":"http://127.0.0.1:9/mcp","tools_to_execute":["*"]}`
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, body, "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	require.Len(t, mgr.added, 1)
+	stored, err := h.store.ConfigStore.GetMCPClientByName(context.Background(), "no_auth_type")
+	require.NoError(t, err)
+	assert.Equal(t, string(schemas.MCPAuthTypeHeaders), stored.AuthType, "the stored row")
+	assert.Equal(t, stored.AuthType, string(mgr.added[0].AuthType), "the runtime config matches the stored row")
+}
+
+// TestAddMCPClient_PerUserAuthTypeNeedsHTTP pins that the per-user auth types,
+// which open a new streamable HTTP connection for each call, are refused at
+// create on SSE and STDIO, where that connection cannot be made, before anything
+// is stored or verified.
+func TestAddMCPClient_PerUserAuthTypeNeedsHTTP(t *testing.T) {
+	targets := map[string]string{
+		"sse":   `"connection_string":"http://127.0.0.1:9/sse"`,
+		"stdio": `"stdio_config":{"command":"true"}`,
+	}
+	for _, authType := range []string{"per_user_oauth", "per_user_headers", "token_exchange"} {
+		for connectionType, target := range targets {
+			t.Run(authType+"_"+connectionType, func(t *testing.T) {
+				h, mgr := newOpenAPITestHandler(t)
+				name := authType + "_" + connectionType
+				body := fmt.Sprintf(`{"name":%q,"connection_type":%q,%s,"auth_type":%q,"per_user_header_keys":["x-key"],"user_headers":{"x-key":"v"}}`, name, connectionType, target, authType)
+				status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, body, "", false)
+				require.Equal(t, fasthttp.StatusBadRequest, status, respBody)
+				assert.Contains(t, respBody, fmt.Sprintf(`auth_type \"%s\" is not supported for connection_type '%s' (use connection_type 'http')`, authType, connectionType))
+				assert.Empty(t, mgr.added, "the runtime is not asked to connect")
+				_, err := h.store.ConfigStore.GetMCPClientByName(context.Background(), name)
+				assert.ErrorIs(t, err, configstore.ErrNotFound, "no row is stored")
+			})
+		}
+	}
+}
+
 // TestUpdateMCPClient_RenameToATakenNameIs409 pins that renaming a client to
 // another client's name answers 409, like creating one with that name, and
 // applies nothing. It was a 500.
@@ -1728,6 +1787,88 @@ func TestUpdateMCPClient_RenameToATakenNameIs409(t *testing.T) {
 	stored, err := h.store.ConfigStore.GetMCPClientByID(context.Background(), second.ID)
 	require.NoError(t, err)
 	assert.Equal(t, "petstore_b", stored.Name, "the stored row keeps its name")
+}
+
+// TestAddMCPClient_IgnoresToolPricing pins that create does not take
+// tool_pricing; prices are set with an update. A price taken from the create
+// body was never stored, yet sat in the running config until the next edit
+// stored and applied it.
+func TestAddMCPClient_IgnoresToolPricing(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	createBody, _ := json.Marshal(map[string]any{
+		"name": "petstore", "connection_type": "openapi", "auth_type": "none",
+		"tools_to_execute": []string{"listPets"},
+		"tool_pricing":     map[string]float64{"listPets": 0.25},
+		"openapi_config":   map[string]any{"spec": petstoreSpecJSON, "base_url": "https://petstore.example.com/v1/"},
+	})
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(createBody), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	require.Len(t, mgr.added, 1)
+	assert.Empty(t, mgr.added[0].ToolPricing)
+}
+
+// TestGetMCPClients_ReturnsMaxInstructionsLength pins that the client list carries
+// a client's max_instructions_length, so a reader sees the stored cap and an edit
+// that sends the listed config back keeps it. The list used to leave it out.
+func TestGetMCPClients_ReturnsMaxInstructionsLength(t *testing.T) {
+	h, _ := newOpenAPITestHandler(t)
+	h.client = &bifrost.Bifrost{MCPManager: coremcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &mockLogger{}, nil)}
+	createBody, _ := json.Marshal(map[string]any{
+		"name": "petstore", "connection_type": "openapi", "auth_type": "none",
+		"tools_to_execute":        []string{"listPets"},
+		"max_instructions_length": 50,
+		"openapi_config":          map[string]any{"spec": petstoreSpecJSON, "base_url": "https://petstore.example.com/v1/"},
+	})
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(createBody), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+
+	status, respBody = doMCPRequest(t, h.getMCPClients, fasthttp.MethodGet, "", "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	var list struct {
+		Clients []MCPClientResponse `json:"clients"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(respBody), &list), respBody)
+	require.Len(t, list.Clients, 1)
+	assert.Equal(t, 50, list.Clients[0].Config.MaxInstructionsLength)
+}
+
+// dialFailingUpdateManager applies every update and then reports the dial that
+// followed as failed, as the runtime does for an enable whose upstream is down.
+type dialFailingUpdateManager struct {
+	*openAPIRecordingManager
+}
+
+// UpdateMCPClient records the update and reports its dial as failed.
+func (m *dialFailingUpdateManager) UpdateMCPClient(ctx context.Context, id string, c *schemas.MCPClientConfig) error {
+	_ = m.openAPIRecordingManager.UpdateMCPClient(ctx, id, c)
+	return fmt.Errorf("%w for '%s': connection refused", coremcp.ErrMCPEnableConnectFailed, c.Name)
+}
+
+// TestUpdateMCPClient_PartialSuccessMessageIsTwoSentences pins that an update
+// whose dial failed after it applied reads as two sentences: "MCP client edited
+// successfully. However, establishing the shared connection failed: ...". It
+// used to read "edited successfully However".
+func TestUpdateMCPClient_PartialSuccessMessageIsTwoSentences(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	createBody, _ := json.Marshal(map[string]any{
+		"name": "petstore", "connection_type": "openapi", "auth_type": "none",
+		"tools_to_execute": []string{"listPets"},
+		"openapi_config":   map[string]any{"spec": petstoreSpecJSON, "base_url": "https://petstore.example.com/v1/"},
+	})
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(createBody), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	h.store.MCPConfig.ClientConfigs = mgr.added
+	h.mcpManager = &dialFailingUpdateManager{openAPIRecordingManager: mgr}
+
+	status, respBody = doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"name":"petstore_renamed"}`, mgr.added[0].ID, false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	var resp struct {
+		Status  string `json:"status"`
+		Message string `json:"message"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(respBody), &resp))
+	assert.Equal(t, "partial_success", resp.Status)
+	assert.True(t, strings.HasPrefix(resp.Message, "MCP client edited successfully. However, establishing the shared connection failed: "), resp.Message)
 }
 
 // reconnectRecordingMCPManager records reconnect calls and answers them as the
@@ -1840,4 +1981,206 @@ func TestRevokeOAuthConfig_UnknownIDIsNotFound(t *testing.T) {
 	require.Equal(t, fasthttp.StatusNotFound, status, respBody)
 	assert.Contains(t, respBody, "oauth config not found")
 	assert.NotContains(t, respBody, "%!w")
+}
+
+// TestAddMCPClient_OAuthURLsCarryBasePath pins that the complete_url and status_url
+// handed back from an OAuth bootstrap are prefixed with server.base_path: an API
+// client behind a prefix-routing proxy follows them as given, so a root-relative
+// path would land outside the prefix and 404. At the domain root they are unchanged.
+func TestAddMCPClient_OAuthURLsCarryBasePath(t *testing.T) {
+	oauth2.SetDiscoveryDialContextForTests(nil)
+	t.Cleanup(func() {
+		oauth2.SetDiscoveryDialContextForTests((&net.Dialer{}).DialContext)
+		require.NoError(t, lib.ApplyMCPOAuthPrivateAllowlist(nil))
+	})
+	require.NoError(t, lib.ApplyMCPOAuthPrivateAllowlist([]string{"127.0.0.1"}))
+
+	for _, tc := range []struct {
+		basePath, wantPrefix string
+	}{
+		{basePath: "", wantPrefix: ""},
+		{basePath: "/bifrost", wantPrefix: "/bifrost"},
+	} {
+		t.Run("base_path="+tc.basePath, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			lib.SetBasePath(tc.basePath)
+			t.Cleanup(func() { lib.SetBasePath("") })
+			server, _ := newLoopbackOAuthMCPServerWithCIMD(t, true)
+			store := newRealOAuth2Store(t)
+			provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+			cfg := &lib.Config{ConfigStore: store, OAuthProvider: provider, ClientConfig: &configstore.ClientConfig{
+				MCPExternalClientURL: schemas.NewSecretVar("https://bifrost.example.com" + tc.basePath),
+			}}
+			h := &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg)}
+
+			var req fasthttp.Request
+			req.Header.SetMethod(fasthttp.MethodPost)
+			req.Header.SetContentType("application/json")
+			req.Header.SetHost("bifrost.example.com")
+			req.SetBodyString(`{"name":"bp_oauth","connection_type":"http","connection_string":"` + server.URL + `/mcp","auth_type":"oauth","oauth_config":{}}`)
+			ctx := initCtx(&req)
+			h.addMCPClient(ctx)
+
+			body := string(ctx.Response.Body())
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), body)
+			var resp struct {
+				OAuthConfigID string `json:"oauth_config_id"`
+				CompleteURL   string `json:"complete_url"`
+				StatusURL     string `json:"status_url"`
+			}
+			require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+			assert.Equal(t, tc.wantPrefix+"/api/mcp/client/"+resp.OAuthConfigID+"/complete-oauth", resp.CompleteURL)
+			assert.True(t, strings.HasPrefix(resp.StatusURL, tc.wantPrefix+"/api/oauth/config/"+resp.OAuthConfigID+"/status"), resp.StatusURL)
+		})
+	}
+}
+
+// TestAddMCPClient_PerUserHeadersKeepsTLSConfig: a per_user_headers client keeps
+// its tls_config. Verification dials with the config handed to the runtime, so
+// without it a server behind a custom CA failed verification and the client
+// could not be created.
+func TestAddMCPClient_PerUserHeadersKeepsTLSConfig(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	const caPEM = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+
+	body, err := json.Marshal(map[string]any{
+		"name": "acme_tls", "connection_type": "http", "connection_string": "https://127.0.0.1:1/mcp",
+		"auth_type": "per_user_headers", "per_user_header_keys": []string{"X-Api-Key"},
+		"user_headers": map[string]string{"X-Api-Key": "sample-key"}, "tools_to_execute": []string{"*"},
+		"tls_config": map[string]any{"ca_cert_pem": caPEM},
+	})
+	require.NoError(t, err)
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(body), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	require.Len(t, mgr.added, 1)
+	require.NotNil(t, mgr.added[0].TLSConfig, "verification and the runtime see the tls_config")
+	assert.Equal(t, caPEM, mgr.added[0].TLSConfig.CACertPEM.GetValue())
+
+	stored, err := h.store.ConfigStore.GetMCPClientByID(context.Background(), mgr.added[0].ID)
+	require.NoError(t, err)
+	require.NotNil(t, stored.TLSConfig, "the stored client keeps the tls_config")
+	assert.Equal(t, caPEM, stored.TLSConfig.CACertPEM.GetValue())
+}
+
+// connectionEditRecorder stands in for the runtime on a client edit: it answers
+// VerifyHeadersConnection with verifyErr and records the configs the pre-flight
+// and the live-client update were handed.
+type connectionEditRecorder struct {
+	*openAPIRecordingManager
+	verifyErr error
+	applyErr  error
+	verified  []*schemas.MCPClientConfig
+	applied   []*schemas.MCPClientConfig
+}
+
+// VerifyHeadersConnection records the config it was asked to try and answers verifyErr.
+func (m *connectionEditRecorder) VerifyHeadersConnection(_ context.Context, c *schemas.MCPClientConfig, _ map[string]string) (*schemas.MCPDiscovery, error) {
+	m.verified = append(m.verified, c)
+	if m.verifyErr != nil {
+		return nil, m.verifyErr
+	}
+	return &schemas.MCPDiscovery{}, nil
+}
+
+// UpdateMCPClientCredentials records the config the live client was updated with and answers applyErr.
+func (m *connectionEditRecorder) UpdateMCPClientCredentials(_ context.Context, _ string, c *schemas.MCPClientConfig) error {
+	m.applied = append(m.applied, c)
+	return m.applyErr
+}
+
+// newConnectionEditHandler creates a sticky headers client of connectionType
+// through the handler, then puts a connectionEditRecorder answering verifyErr
+// in front of the runtime. It returns the handler, the recorder and the id.
+func newConnectionEditHandler(t *testing.T, connectionType string, verifyErr error) (*MCPHandler, *connectionEditRecorder, string) {
+	t.Helper()
+	h, mgr := newOpenAPITestHandler(t)
+	url := "https://upstream.example/mcp"
+	if connectionType == "sse" {
+		url = "https://upstream.example/sse"
+	}
+	createBody, _ := json.Marshal(map[string]any{
+		"name": "edited", "connection_type": connectionType, "connection_string": url, "auth_type": "headers",
+		"headers": map[string]string{"X-Key": "v1"}, "tools_to_execute": []string{"*"},
+	})
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(createBody), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	h.store.MCPConfig.ClientConfigs = mgr.added
+	rec := &connectionEditRecorder{openAPIRecordingManager: mgr, verifyErr: verifyErr}
+	h.mcpManager = rec
+	return h, rec, mgr.added[0].ID
+}
+
+// TestUpdateMCPClient_TLSEditIsTriedThenApplied: a TLS edit on a client with a
+// live connection is tried against the upstream first, then applied to the
+// live client by redialing, as a header edit is. It used to be stored only, so
+// the open connection kept the old settings until something else redialed.
+func TestUpdateMCPClient_TLSEditIsTriedThenApplied(t *testing.T) {
+	h, rec, id := newConnectionEditHandler(t, "http", nil)
+	status, respBody := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"tls_config":{"ca_cert_pem":"PEM-B"}}`, id, false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	require.Len(t, rec.verified, 1, "the edit is tried first")
+	assert.Equal(t, "PEM-B", rec.verified[0].TLSConfig.CACertPEM.GetValue())
+	require.Len(t, rec.applied, 1, "then applied to the live client")
+	assert.Equal(t, "PEM-B", rec.applied[0].TLSConfig.CACertPEM.GetValue())
+}
+
+// TestUpdateMCPClient_RejectedTLSEditChangesNothing: a TLS edit the upstream
+// cannot be reached with is refused with 422 and nothing is stored or applied.
+func TestUpdateMCPClient_RejectedTLSEditChangesNothing(t *testing.T) {
+	h, rec, id := newConnectionEditHandler(t, "http", errors.New("x509: certificate signed by unknown authority"))
+	status, respBody := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"tls_config":{"ca_cert_pem":"PEM-B"}}`, id, false)
+	require.Equal(t, fasthttp.StatusUnprocessableEntity, status, respBody)
+	assert.Contains(t, respBody, "The new TLS settings were rejected by the MCP server, so nothing was changed")
+	assert.Empty(t, rec.updated, "the runtime was not updated")
+	assert.Empty(t, rec.applied, "the live client was not redialed")
+	stored, err := h.store.ConfigStore.GetMCPClientByID(context.Background(), id)
+	require.NoError(t, err)
+	assert.Nil(t, stored.TLSConfig, "the stored client keeps its TLS settings")
+}
+
+// TestUpdateMCPClient_FailedTLSApplyIsStoredAsPartialSuccess: a TLS edit that
+// passed its pre-flight but could not be applied to the live client is still
+// stored, and the answer is 200 with status partial_success rather than a 422.
+func TestUpdateMCPClient_FailedTLSApplyIsStoredAsPartialSuccess(t *testing.T) {
+	h, rec, id := newConnectionEditHandler(t, "http", nil)
+	rec.applyErr = errors.New("dial tcp: connection refused")
+	status, respBody := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"tls_config":{"ca_cert_pem":"PEM-B"}}`, id, false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	var resp struct {
+		Status string `json:"status"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(respBody), &resp))
+	assert.Equal(t, "partial_success", resp.Status, respBody)
+	require.Len(t, rec.applied, 1, "the live client was tried")
+	stored, err := h.store.ConfigStore.GetMCPClientByID(context.Background(), id)
+	require.NoError(t, err)
+	require.NotNil(t, stored.TLSConfig, "the edit is stored")
+	assert.Equal(t, "PEM-B", stored.TLSConfig.CACertPEM.GetValue())
+}
+
+// TestUpdateMCPClient_UnchangedTLSIsNotReapplied: sending TLS settings that dial
+// the same way, as an editor saving an untouched form does, neither tries nor
+// redials anything.
+func TestUpdateMCPClient_UnchangedTLSIsNotReapplied(t *testing.T) {
+	h, rec, id := newConnectionEditHandler(t, "http", nil)
+	status, respBody := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"tls_config":{"insecure_skip_verify":false}}`, id, false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	assert.Empty(t, rec.verified)
+	assert.Empty(t, rec.applied)
+}
+
+// TestUpdateMCPClient_SSEHeaderEditIsTriedThenApplied: a header edit on an SSE
+// client is tried over SSE and then applied to the live client by redialing,
+// as on an HTTP client. SSE clients used to store the new headers only.
+func TestUpdateMCPClient_SSEHeaderEditIsTriedThenApplied(t *testing.T) {
+	h, rec, id := newConnectionEditHandler(t, "sse", nil)
+	status, respBody := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"headers":{"X-Key":"v2"}}`, id, false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	require.Len(t, rec.verified, 1, "the edit is tried first")
+	assert.Equal(t, schemas.MCPConnectionTypeSSE, rec.verified[0].ConnectionType)
+	verifiedKey := rec.verified[0].Headers["X-Key"]
+	assert.Equal(t, "v2", verifiedKey.GetValue())
+	require.Len(t, rec.applied, 1, "then applied to the live client")
+	appliedKey := rec.applied[0].Headers["X-Key"]
+	assert.Equal(t, "v2", appliedKey.GetValue())
 }

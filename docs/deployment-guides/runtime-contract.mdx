@@ -196,6 +196,8 @@ Bifrost serves the API, dashboard, health endpoint, and metrics from one HTTP li
 | API and dashboard | `8080/TCP`, HTTP | Clients, ingress, gateway, or load balancer |
 | Health check | `GET /health` on the HTTP port | Container platform, Kubernetes probes, and load balancer |
 | Prometheus metrics | `GET /metrics` on the HTTP port | Monitoring system when Prometheus telemetry is enabled |
+
+Under a path prefix (`server.base_path`), Bifrost answers both `/health` and `/<prefix>/health` (and likewise `/metrics`), so probes that reach the container directly stay unprefixed; a scraper or check that goes through a proxy routing only the prefix uses the prefixed path. See [Serving under a path prefix](/deployment-guides/how-to/nginx-reverse-proxy#serving-under-a-path-prefix).
 | Enterprise membership | `10101/TCP` and `10101/UDP` | Communication between Enterprise mesh replicas |
 | Enterprise application sync | `10102/TCP`, gRPC | Communication between Enterprise mesh replicas |
 

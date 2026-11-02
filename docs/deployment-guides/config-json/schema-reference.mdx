@@ -37,6 +37,7 @@ This page is a concise reference for every top-level key in `config.json`. Click
 | `framework` | object | Model pricing catalog URL and sync interval | [Framework](#framework) |
 | `mcp` | object | MCP server and tool configuration | [MCP](#mcp) |
 | `websocket` | object | WebSocket / Realtime API connection pool tuning | [WebSocket](#websocket) |
+| `server` | object | HTTP server settings read at startup: header buffer size, URL path prefix, body buffer pooling, plugin download allowlist, Agent Gateway gRPC | [Server](#server) |
 | `proxy_config` | object | Global outbound proxy and which components use it (SCIM directory sync, inference, API) | [Client](/deployment-guides/config-json/client#global-proxy) |
 | `warp` | object | Warp settings: models, behaviour and limits, log search, and topics | [Warp](/features/warp#configure-warp) |
 | `auth_config` | object | **Deprecated** - use `governance.auth_config` | [Client](/deployment-guides/config-json/client#authentication) |
@@ -488,6 +489,8 @@ Auth-type-specific fields:
 | `per_user_header_keys` | `per_user_headers` | Required, non-empty. Array of header names each end-user must supply. |
 | `token_exchange` | `token_exchange` | Required. `{ "audience": string, "use_idp_credentials": boolean (optional, default false), "client_id": SecretVar (required unless use_idp_credentials is true), "client_secret": SecretVar (optional, public clients; ignored when use_idp_credentials is true), "scopes": string[] (optional), "authorization_server_url": string (optional) }`. `client_id`/`client_secret` support `env.VAR_NAME`/`vault.path` references. `use_idp_credentials` performs the exchange as the SSO login application instead of a dedicated one — required for Microsoft Entra ID, see [Token Exchange auth](../../mcp/auth/token-exchange#prerequisites). Include `"offline_access"` in `scopes` where the identity provider supports it to keep the retained admin discovery credential self-renewing instead of expiring into `needs_reauth`. |
 
+The per-user auth types (`per_user_oauth`, `per_user_headers`, `token_exchange`) need `connection_type` `"http"`, because each call opens its own connection. On `"sse"` or `"stdio"` the schema rejects them and Bifrost skips the client at boot with an error naming it; a client already stored under that name keeps its stored configuration. An omitted `auth_type` is `"headers"`.
+
 The schema enforces these pairings: `oauth_config` is rejected on non-OAuth auth types, `per_user_header_keys` is rejected on any auth type other than `per_user_headers`, and `token_exchange` is rejected on any auth type other than `token_exchange` — a misplaced block fails `$schema` validation instead of being silently ignored.
 
 <Warning>
@@ -568,6 +571,43 @@ Optional tuning for the WebSocket gateway (Responses API WebSocket mode, Realtim
 | `pool.max_total_connections` | `1000` | Max total idle upstream connections |
 | `pool.idle_timeout_seconds` | `600` | Evict idle connections after this many seconds |
 | `pool.max_connection_lifetime_seconds` | `7200` | Max lifetime of any upstream connection |
+
+---
+
+## `server`
+
+HTTP server settings. Every field is deploy-time only: Bifrost reads them once at startup, so a change needs a restart.
+
+```json
+{
+  "server": {
+    "read_buffer_size": 65536,
+    "base_path": "/bifrost",
+    "body_buffer_pool_limit_bytes": 4194304,
+    "plugin_download_private_allowlist": ["artifacts.internal.corp", "10.0.0.0/8"]
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `read_buffer_size` | integer | `65536` | Buffer size in bytes for reading HTTP request headers. Requests whose headers do not fit are rejected with `431`. |
+| `base_path` | string | unset (domain root) | URL path prefix Bifrost is served under behind a reverse proxy, for example `/bifrost` for `https://example.com/bifrost/`. Nested prefixes such as `/tools/llm-gw` work. The `-base-path` flag and the `BIFROST_BASE_PATH` environment variable take precedence. See [Serving under a path prefix](/deployment-guides/how-to/nginx-reverse-proxy#serving-under-a-path-prefix). |
+| `body_buffer_pool_limit_bytes` | integer | `4194304` (4 MiB) | Largest request-body buffer a keep-alive connection keeps for reuse. Larger buffers are released after each request; larger bodies are still accepted. `0` keeps every buffer. Also applies to outbound request buffers. |
+| `plugin_download_private_allowlist` | array of strings | unset | Hostnames, IP addresses or CIDR ranges that custom plugin (`.so`) downloads may reach even when they resolve to a private, loopback, link-local or CGNAT address. Blocked by default to prevent SSRF. Not settable through the plugin API. |
+| `a2a_grpc_base_domain` | string | unset | Base domain for the Agent Gateway's shared gRPC listener. Needs a wildcard DNS record for `*.<base-domain>`. See [Enable gRPC](/features/agent-gateway/configuration#enable-grpc). |
+| `a2a_grpc_port` | integer | unset | Public port advertised for that gRPC listener. gRPC stays off while this or `a2a_grpc_base_domain` is unset. `BIFROST_A2A_GRPC_LISTEN_PORT` overrides the local bind port. |
+| `a2a_allow_private_push_callbacks` | boolean | `false` | Allows Agent push delivery to loopback and private network addresses. For development and test environments only. |
+
+`base_path` rules:
+
+- It must start with `/`. A single trailing `/` is removed, and `""` or `"/"` means the domain root.
+- Segments may only use the characters `A-Z a-z 0-9 - . _ ~`, and may not be `.` or `..`. Surrounding whitespace is rejected, not trimmed.
+- The first segment must not match a Bifrost route (such as `api`, `v1`, `openai` or `health`), a dashboard page root (`workspace`, `login`, `oauth`, `agent`, `pprof`) or a top-level dashboard file path (such as `assets` or `images`). Bifrost refuses to start otherwise.
+- Passing `-base-path /` (or `BIFROST_BASE_PATH=/`) forces the domain root even when `config.json` sets a prefix.
+- Requests are accepted with or without the prefix, so health checks and probes can stay on `/health`.
+- Public URLs you set explicitly, such as `client.mcp_external_client_url`, `client.a2a_external_client_url`, `client.skills_external_client_url` and `client.oauth2_server_config.issuer_url`, must include the prefix themselves.
+- OAuth discovery for an issuer with a prefix lives at the host root (`https://example.com/.well-known/oauth-authorization-server/bifrost`, per RFC 8414), so the proxy must also forward `/.well-known/` to Bifrost.
 
 ---
 

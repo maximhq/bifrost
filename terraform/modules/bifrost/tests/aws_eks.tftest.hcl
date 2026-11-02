@@ -140,3 +140,18 @@ run "eks_custom_volume" {
     volume_size_gb = 50
   }
 }
+
+run "eks_with_ingress_path" {
+  command = plan
+  module { source = "./tests/setup" }
+  variables {
+    cloud_provider       = "aws"
+    service              = "eks"
+    region               = "us-east-1"
+    config_json          = jsonencode({})
+    create_load_balancer = true
+    domain_name          = "bifrost.example.com"
+    ingress_path         = "/bifrost"
+    server               = { base_path = "/bifrost" }
+  }
+}

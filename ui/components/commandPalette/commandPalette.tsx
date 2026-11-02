@@ -12,6 +12,7 @@ import { WarpIcon } from "@/components/ui/icons";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { useWarp } from "@/lib/contexts/warpContext";
 import { cn } from "@/lib/utils";
+import { withBasePath } from "@/lib/utils/basePath";
 
 import {
 	findCurrentCommandId,
@@ -188,12 +189,14 @@ export default function CommandPalette({ open, onOpenChange }: { open: boolean; 
 	const navigate = useCallback(
 		(command: PaletteNavCommand, inNewTab = false) => {
 			if (inNewTab || command.isExternal) {
-				window.open(command.href, "_blank", "noopener,noreferrer");
+				// A dashboard href is router-relative; a new tab needs the server.base_path in front of it.
+				window.open(command.isExternal ? command.href : withBasePath(command.href), "_blank", "noopener,noreferrer");
 				if (command.isExternal) onOpenChange(false);
 				return;
 			}
 			onOpenChange(false);
-			router.history.push(preserveTimeFilters(command.href, command.href.split("?")[0], pathname, search));
+			// router.navigate, not history.push: only the router applies server.base_path to the address bar.
+			void router.navigate({ href: preserveTimeFilters(command.href, command.href.split("?")[0], pathname, search) });
 		},
 		[onOpenChange, router, pathname, search],
 	);

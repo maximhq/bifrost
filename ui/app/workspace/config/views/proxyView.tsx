@@ -253,6 +253,7 @@ export default function ProxyView() {
 											<FormLabel>{t("proxy.caCertificate")}</FormLabel>
 											<FormControl>
 												<Textarea
+													data-testid="proxy-ca-cert-input"
 													placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
 													className="font-mono text-xs"
 													rows={6}
@@ -279,7 +280,12 @@ export default function ProxyView() {
 										render={({ field }) => (
 											<FormItem>
 												<FormControl>
-													<Switch checked={field.value} onCheckedChange={field.onChange} disabled={!watchedEnabled} />
+													<Switch
+														data-testid="proxy-skip-tls-verify-switch"
+														checked={field.value}
+														onCheckedChange={field.onChange}
+														disabled={!watchedEnabled}
+													/>
 												</FormControl>
 											</FormItem>
 										)}
