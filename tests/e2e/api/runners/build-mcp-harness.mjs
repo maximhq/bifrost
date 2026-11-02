@@ -9421,6 +9421,84 @@ const GO14 = folder("GO-14 SDK continuous listening", `Setup: ${FLEET}; no crede
   ...fleetTeardown("GO-14"),
 ]);
 
+// ================================================================ two identical requests at once, replays and OSS refusals
+
+// twoAtOnce fires one admin request twice at once from a pre-request script and keeps both answers
+// as JSON in varName, sorted by status, for the request's own asserts. The body's {{chaos_url}} is
+// filled in here, since pm.sendRequest sends a body as written.
+const twoAtOnce = (varName, method, path, body) => [
+  `pm.collectionVariables.set(${lit(varName)}, '');`,
+  `var raw = ${lit(JSON.stringify(body))}.split('{{chaos_url}}').join(pm.variables.get('chaos_url'));`,
+  "var out = [];",
+  "function one() {",
+  `  pm.sendRequest({ url: pm.variables.get('base_url') + ${lit(path)}, method: ${lit(method)}, header: { 'Content-Type': 'application/json', Authorization: pm.variables.get('admin_auth_header') }, body: { mode: 'raw', raw: raw } }, function (err, res) {`,
+  "    out.push(err ? { status: 0, body: String(err) } : { status: res.code, body: res.text() });",
+  `    if (out.length === 2) { out.sort(function (a, b) { return a.status - b.status; }); pm.collectionVariables.set(${lit(varName)}, JSON.stringify(out)); }`,
+  "  });",
+  "}",
+  "one(); one();",
+];
+const TWO = (varName) => `var out = JSON.parse(pm.collectionVariables.get(${lit(varName)}) || '[]');`;
+const twoStatusesAre = (varName, statuses) => A.custom(`the two answers are ${statuses.join(" and ")}`, [
+  TWO(varName), `pm.expect(out.map(function (o) { return o.status; }), JSON.stringify(out)).to.eql(${lit(statuses)});`,
+]);
+const searchCount = (n) => A.custom(`${n} client${n === 1 ? "" : "s"} listed`, ["pm.expect(pm.response.json().clients.length, 'body: ' + pm.response.text()).to.equal(" + n + ");"]);
+
+const ADM26 = folder("ADM-26 Replayed complete-oauth on a shared client", `Setup: dashboard auth on, admin credentials; ${OAUTH_SERVER_TEXT} (adm26); as ADM-25: create the OAuth client, consent, callback, complete; then complete-oauth again.`, [
+  ...allowlistOn("ADM-26"),
+  ...asServer("ADM-26", "adm26"),
+  createOAuth("ADM-26", "setup: create the OAuth client", oauthBody("adm26-c", "adm26", "adm26"), "adm26"),
+  consentAs("ADM-26", "setup: follow authorize_url", "adm26", null),
+  followCallback("ADM-26", "setup: the callback", "adm26", callbackSuccess()),
+  completeOAuth("ADM-26", "setup: complete", "adm26", [A.status(200), A.jsonMessage("MCP client connected successfully with OAuth")]),
+  completeOAuth("ADM-26", "complete again", "adm26", [A.status(200), A.jsonMessage("MCP client re-authorized and tools refreshed successfully")]),
+  request("ADM-26", "still one client named adm26, with the same client_id", "GET", "/api/mcp/clients?search=adm26", { asserts: [A.status(200), searchCount(1), A.custom("its client_id is adm26-c", ["pm.expect(pm.response.json().clients[0].config.client_id, 'body: ' + pm.response.text()).to.equal('adm26-c');"])] }),
+  getClient("ADM-26", "adm26-c", "the client is healthy", [clientState("healthy")]),
+  deleteClient("ADM-26", "adm26-c"),
+  restoreConfig("ADM-26"),
+]);
+
+const ADM84 = folder("ADM-84 Concurrent creates with the same name", "Setup: admin credentials; fleet server adm84 (echo_tool); two identical creates of client adm84-c (adm84, HTTP, auth none) sent at once.", [
+  ...freshServer("ADM-84", "adm84", ["echo_tool"]),
+  request("ADM-84", "two identical creates at once, then one client is listed", "GET", "/api/mcp/clients?search=adm84", {
+    pre: twoAtOnce("adm84_two", "POST", "/api/mcp/client", httpClient("adm84-c", "adm84", "adm84", { tools_to_execute: ["*"] })),
+    asserts: [A.status(200), twoStatusesAre("adm84_two", [200, 409]), searchCount(1), A.custom("the 409 names the conflict", [TWO("adm84_two"), "pm.expect(out[1].body).to.match(/already exists/);"])],
+  }),
+  deleteClient("ADM-84", "adm84-c"),
+]);
+
+const ADM85 = folder("ADM-85 Concurrent verify-headers", `Setup: admin credentials; fleet server adm85 (echo_tool, add_tool) requires x-key: good; ${BOOT_TEXT("adm85-h", "a per_user_headers", "adm85")}, per_user_header_keys ["x-key"]; two verify-headers with x-key good sent at once.`, [
+  ...freshServer("ADM-85", "adm85", ["echo_tool", "add_tool"]),
+  mockAuth("ADM-85", "adm85", "setup: adm85 requires x-key: good", { require_headers: { "x-key": "good" } }),
+  getClient("ADM-85", "adm85-h", "control: the client is pending_verification", [clientState("pending_verification")]),
+  getClient("ADM-85", "adm85-h", "two verify-headers at once: both 200 with tools_count 2; the client is healthy with an active credential", [
+    twoStatusesAre("adm85_two", [200, 200]),
+    A.custom("both answer tools_count 2", [TWO("adm85_two"), "out.forEach(function (o) { pm.expect(JSON.parse(o.body).tools_count, o.body).to.equal(2); });"]),
+    clientState("healthy"), credStatus("active"),
+  ], { pre: twoAtOnce("adm85_two", "POST", "/api/mcp/client/adm85-h/verify-headers", { user_headers: { "x-key": "good" } }) }),
+  deleteClient("ADM-85", "adm85-h"),
+]);
+
+const LIB12 = folder("LIB-12 Two parallel publishes of one name", `Setup: admin credentials; two identical publishes of a custom entry "LIB-12 dup" (http, ${libURL}) sent at once.`, [
+  request("LIB-12", "two identical publishes at once, then one entry is listed", "GET", `/api/mcp/library?search=${encodeURIComponent("LIB-12 dup")}`, {
+    pre: twoAtOnce("lib12_two", "POST", "/api/mcp/library", { name: "LIB-12 dup", connection_type: "http", connection_url: libURL }),
+    asserts: [A.status(200), twoStatusesAre("lib12_two", [200, 409]), A.custom("one entry named LIB-12 dup", [
+      "var named = (pm.response.json().servers || []).filter(function (e) { return e.name === 'LIB-12 dup'; });",
+      "pm.expect(named.length, 'body: ' + pm.response.text()).to.equal(1);",
+    ])],
+    extraTests: [TWO("lib12_two"), "pm.collectionVariables.set('lib12_id', JSON.parse(out[0].body).entry.id);"],
+  }),
+  libDelete("LIB-12", "lib12_id"),
+]);
+
+const AUTH47 = folder("AUTH-47 token_exchange create and config.json in OSS", `Setup: admin credentials; fleet server auth47 (echo_tool); config.json declares client auth47-t (auth47_t) with auth_type token_exchange on it.`, [
+  ...freshServer("AUTH-47", "auth47", ["echo_tool"]),
+  createExpect("AUTH-47", "create a token_exchange client", httpClient("auth47-c", "auth47_c", "auth47", { auth_type: "token_exchange", token_exchange: { audience: "auth47" } }), [A.status(400), A.msgEquals("auth_type 'token_exchange' is not supported")]),
+  request("AUTH-47", "the config.json token_exchange client was not loaded", "GET", "/api/mcp/clients?search=auth47", { asserts: [A.status(200), searchCount(0)] }),
+  execTool("AUTH-47", "execute auth47_t-echo_tool", "auth47_t-echo_tool", [A.status(400), A.msgContains("is not available or not permitted")]),
+  noMockCalls("AUTH-47", "auth47"),
+]);
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -9434,15 +9512,15 @@ const collection = {
     { key: "admin_auth_header", value: "" },
   ],
   item: [
-    section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM86, ADM87]),
-    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57]),
+    section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM26, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM84, ADM85, ADM86, ADM87]),
+    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH47, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57]),
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, GO18, CONN23, CONN24, CONN25, CONN27, CONN28, CONN29, GO34, GO36]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, GO01, GO02, GO03, GO06, GO07, GO08, GO09, GO10, GO11, GO12, GO13, GO14, GO33, GO35]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET26, SET27, SET28, SET29, SET30, SET31, SET32, SET04, SET05, SET10, SET11, SET15, SET23]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV36, GOV37, GOV38, GOV39]),
     section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66, INF76, INF77]),
-    section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB27, LIB32, LIB33, LIB34, LIB36, LIB37]),
+    section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB12, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB27, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43, LOG49]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL01, FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL09, FAIL10, FAIL12, FAIL14, FAIL16, FAIL18, FAIL19, FAIL23, FAIL24, FAIL25, FAIL27, FAIL28]),
   ],
