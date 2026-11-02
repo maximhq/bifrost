@@ -1073,6 +1073,13 @@ func NewProviderHTTPClient(proxyConfig *schemas.ProxyConfig, networkConfig schem
 	return &http.Client{Transport: &fasthttpRoundTripper{client: client, schemes: schemes}, Timeout: timeout}
 }
 
+// NewHTTPClientOn returns an *http.Client that sends its requests on client, for a call that
+// must keep the inference client's ConfigureProxy, ConfigureDialer and ConfigureTLS setup but
+// goes through a library or helper that only takes an *http.Client.
+func NewHTTPClientOn(client *fasthttp.Client, timeout time.Duration) *http.Client {
+	return &http.Client{Transport: &fasthttpRoundTripper{client: client}, Timeout: timeout}
+}
+
 // namesProxy reports whether proxyConfig names a proxy. nil, an empty type and the
 // UI's default "none" all mean "not configured".
 func namesProxy(proxyConfig *schemas.ProxyConfig) bool {
