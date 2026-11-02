@@ -11,6 +11,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/openai"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -3597,6 +3598,75 @@ func TestAnthropicIngress_DisableParallelToolUseMapsToParallelToolCalls(t *testi
 				t.Errorf("round-trip disable_parallel_tool_use = %s, want %v", boolPtrString(out.ToolChoice.DisableParallelToolUse), wantDisable)
 			}
 		})
+	}
+}
+
+func TestAnthropicIngress_ToolChoiceTool_DisableParallelToolUse(t *testing.T) {
+	req := &AnthropicMessageRequest{
+		Model:     "claude-sonnet-5",
+		MaxTokens: 256,
+		Messages:  []AnthropicMessage{{Role: AnthropicMessageRoleUser, Content: AnthropicContent{ContentStr: schemas.Ptr("Hello")}}},
+		Tools: []AnthropicTool{
+			{Name: "probe_tool", InputSchema: &schemas.ToolFunctionParameters{Type: "object"}},
+			{Name: "other_tool", InputSchema: &schemas.ToolFunctionParameters{Type: "object"}},
+		},
+		ToolChoice: &AnthropicToolChoice{Type: "tool", Name: "probe_tool", DisableParallelToolUse: schemas.Ptr(true)},
+	}
+	ctx := schemas.NewBifrostContext(nil, time.Time{})
+	bifrostReq := req.ToBifrostResponsesRequest(ctx)
+	if bifrostReq.Params.ParallelToolCalls == nil || *bifrostReq.Params.ParallelToolCalls {
+		t.Fatalf("expected ParallelToolCalls to be false, got %v", bifrostReq.Params.ParallelToolCalls)
+	}
+
+	out, err := ToAnthropicResponsesRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("egress error: %v", err)
+	}
+	if out.ToolChoice == nil || out.ToolChoice.Type != "tool" || out.ToolChoice.Name != "probe_tool" {
+		t.Fatalf("unexpected tool_choice: %+v", out.ToolChoice)
+	}
+	if out.ToolChoice.DisableParallelToolUse == nil || !*out.ToolChoice.DisableParallelToolUse {
+		t.Errorf("expected DisableParallelToolUse to be true on egress, got %v", out.ToolChoice.DisableParallelToolUse)
+	}
+
+	body, bErr := BuildAnthropicResponsesRequestBody(ctx, bifrostReq, AnthropicRequestBuildConfig{
+		Provider:    schemas.Anthropic,
+		IsStreaming: true,
+	})
+	if bErr != nil {
+		t.Fatalf("build request body error: %v", bErr)
+	}
+	disable := providerUtils.GetJSONField(body, "tool_choice.disable_parallel_tool_use")
+	if !disable.Exists() || !disable.Bool() {
+		t.Fatalf("expected tool_choice.disable_parallel_tool_use in body: %s", string(body))
+	}
+
+	// Now simulate when an intermediate layer clears ParallelToolCalls:
+	// restoreNativeAnthropicRequestSurface must restore the caller's native setting.
+	bifrostReq.Params.ParallelToolCalls = nil
+	bodyRestored, bErr := BuildAnthropicResponsesRequestBody(ctx, bifrostReq, AnthropicRequestBuildConfig{
+		Provider:    schemas.Anthropic,
+		IsStreaming: true,
+	})
+	if bErr != nil {
+		t.Fatalf("build request body error: %v", bErr)
+	}
+	disableRestored := providerUtils.GetJSONField(bodyRestored, "tool_choice.disable_parallel_tool_use")
+	if !disableRestored.Exists() || !disableRestored.Bool() {
+		t.Fatalf("expected tool_choice.disable_parallel_tool_use to be restored: %s", string(bodyRestored))
+	}
+
+	bifrostReq.Params.ParallelToolCalls = schemas.Ptr(true)
+	bodyChanged, bErr := BuildAnthropicResponsesRequestBody(ctx, bifrostReq, AnthropicRequestBuildConfig{
+		Provider:    schemas.Anthropic,
+		IsStreaming: true,
+	})
+	if bErr != nil {
+		t.Fatalf("build request body error: %v", bErr)
+	}
+	disableChanged := providerUtils.GetJSONField(bodyChanged, "tool_choice.disable_parallel_tool_use")
+	if disableChanged.Exists() && disableChanged.Bool() {
+		t.Fatalf("changed ParallelToolCalls was overridden: %s", string(bodyChanged))
 	}
 }
 

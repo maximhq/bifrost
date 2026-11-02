@@ -742,6 +742,9 @@ type anthropicNativeRequestSurface struct {
 	// Comparing against what the conversion itself produced is the only reading
 	// that isolates a later edit.
 	NeutralReasoning *schemas.ResponsesParametersReasoning
+	// DisableParallelToolUse records the caller's own tool_choice.disable_parallel_tool_use setting,
+	// so it is restored on outbound Anthropic requests even if an intermediate layer dropped ParallelToolCalls.
+	DisableParallelToolUse *bool
 }
 
 // The key is schemas.BifrostContextKeyAnthropicNativeRequestSurface rather than
@@ -808,6 +811,9 @@ func setAnthropicNativeRequestSurface(ctx *schemas.BifrostContext, req *Anthropi
 		surface.Thinking = &recorded
 	}
 	surface.MaxTokens = req.MaxTokens
+	if req.ToolChoice != nil && req.ToolChoice.DisableParallelToolUse != nil {
+		surface.DisableParallelToolUse = schemas.Ptr(*req.ToolChoice.DisableParallelToolUse)
+	}
 	// Deep copy: the projection's pointer fields alias the inbound request
 	// (MaxTokens is literally req.Thinking.BudgetTokens), which may be pooled
 	// and reused after conversion.
@@ -993,6 +999,20 @@ func restoreNativeAnthropicRequestSurface(ctx *schemas.BifrostContext, req *Anth
 				// The lowered max_tokens leaves no room for any budget, which is
 				// how the strip pass and the raw path both resolve this.
 				req.Thinking = nil
+			}
+		}
+	}
+
+	if surface.DisableParallelToolUse != nil {
+		restoreNativeSetting := params == nil || params.ParallelToolCalls == nil ||
+			*params.ParallelToolCalls == !*surface.DisableParallelToolUse
+		if restoreNativeSetting {
+			if req.ToolChoice == nil && len(req.Tools) > 0 {
+				req.ToolChoice = &AnthropicToolChoice{Type: "auto"}
+			}
+			if req.ToolChoice != nil && req.ToolChoice.Type != "none" {
+				disable := *surface.DisableParallelToolUse
+				req.ToolChoice.DisableParallelToolUse = &disable
 			}
 		}
 	}
