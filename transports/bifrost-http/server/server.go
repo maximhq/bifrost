@@ -3405,13 +3405,16 @@ func (s *BifrostHTTPServer) ApplyBasePath() error {
 	return nil
 }
 
-// dialBootMCPClients dials the configured MCP clients, resyncing the served MCP
+// DialBootMCPClients dials the configured MCP clients, resyncing the served MCP
 // server as each one finishes, then wires and starts the OAuth token refresh
-// worker. Bootstrap runs it in the background: the dial waits out each
-// unreachable client's connect retries, about 30s, and the HTTP listener used
-// to wait with it. Each client's tools reach the served server as soon as it
-// is ready, and inference sees it from the moment it connects.
-func (s *BifrostHTTPServer) dialBootMCPClients() {
+// worker, which hands each proactively refreshed shared token's client to
+// reconnect so its connection stops using the old bearer. Bootstrap runs it in
+// the background with ReconnectMCPClient: the dial waits out each unreachable
+// client's connect retries, about 30s, and the HTTP listener used to wait with
+// it. Each client's tools reach the served server as soon as it is ready, and
+// inference sees it from the moment it connects. Any refresh gate must be set on
+// the worker before this is called, because it starts the worker.
+func (s *BifrostHTTPServer) DialBootMCPClients(reconnect func(ctx context.Context, clientID string) error) {
 	// Construction (bifrost.Init) no longer connects MCP, so connecting here ensures
 	// each client's PreMCPConnectionHook runs against the full plugin set rather than
 	// the point-in-time snapshot captured at Init (which would skip plugins registered
@@ -3451,7 +3454,7 @@ func (s *BifrostHTTPServer) dialBootMCPClients() {
 			// type reconnect does not apply to) surface here as errors and
 			// are deliberately logged at Debug only.
 			go func() {
-				if err := s.ReconnectMCPClient(s.Ctx, mcpClientID); err != nil {
+				if err := reconnect(s.Ctx, mcpClientID); err != nil {
 					logger.Debug("MCP client %s was not reconnected after a proactive token refresh: %v", mcpClientID, err)
 					return
 				}
@@ -3863,7 +3866,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// Dial configured MCP clients now that every plugin is registered in the core,
 	// in the background so an unreachable client cannot hold the HTTP listener for
 	// its connect retries.
-	go s.dialBootMCPClients()
+	go s.DialBootMCPClients(s.ReconnectMCPClient)
 	// Serve a minimal robots.txt so crawlers/CLI tools (e.g. Claude Code) don't
 	// trigger 404 warnings when probing the host before marketplace fetches.
 	s.Router.GET("/robots.txt", func(ctx *fasthttp.RequestCtx) {
