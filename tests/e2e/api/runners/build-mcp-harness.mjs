@@ -8511,6 +8511,214 @@ const INF77 = folder("INF-77 MCP tool metadata stays inside Bifrost", `Setup: ${
   agentTeardown("INF-77"),
 ]);
 
+// ================================================================ client metadata documents
+
+// Bifrost signs in with its client metadata document only from a public HTTPS address. These tests point
+// mcp_external_client_url at names nothing resolves: the mock's authorization server fetches the document through
+// Bifrost's local address, sending the document's own host, and a callback under such a name is followed on the local
+// address.
+const EXT_A = "https://bifrost.example.test";
+const EXT_B = "https://moved.example.test";
+const DOC_PATH = "/api/oauth/client-metadata.json";
+const CB_PATH = "/api/oauth/callback";
+const DOCS_ADVERTISED = { metadata_documents: "advertised", metadata_documents_via: "{{base_url}}" };
+const DOCS_ACCEPTED = { metadata_documents: "accepted", metadata_documents_via: "{{base_url}}" };
+const EXT_TEXT = (ext) => `${ALLOWLIST_TEXT}, mcp_external_client_url ${ext}`;
+// extUrl sets the allowlist, mcp_external_client_url when ext is given (none otherwise) and any further changes.
+const extUrl = (id, ext, more = [], moreText = "") => putConfig(id, `setup: ${ext ? EXT_TEXT(ext) : `${ALLOWLIST_TEXT}, no mcp_external_client_url`}${moreText}`, [
+  "cc.mcp_oauth_private_allowlist = ['127.0.0.1'];",
+  ext ? `cc.mcp_external_client_url = ${lit(ext)};` : "delete cc.mcp_external_client_url;",
+  ...more,
+], [A.status(200)]);
+// docAuthorize checks that the response's authorize_url signs in with ext's document as client_id and ext's callback.
+const docAuthorize = (ext) => A.custom(`authorize_url has client_id ${ext}${DOC_PATH} and redirect_uri ${ext}${CB_PATH}`, [QS_FN,
+  "var u = pm.response.json().authorize_url; var q = qs(u);",
+  `pm.expect(q.client_id, 'authorize_url: ' + u).to.equal(${lit(ext + DOC_PATH)});`,
+  `pm.expect(q.redirect_uri, 'authorize_url: ' + u).to.equal(${lit(ext + CB_PATH)});`,
+]);
+const authorizeClientId = (want, title) => A.custom(`authorize_url has client_id ${title}`, [QS_FN,
+  "var u = pm.response.json().authorize_url; var q = qs(u);",
+  want instanceof RegExp ? `pm.expect(String(q.client_id), 'authorize_url: ' + u).to.match(${want});` : `pm.expect(q.client_id, 'authorize_url: ' + u).to.equal(${lit(want)});`,
+]);
+const dcrAuthorize = () => authorizeClientId(/^dcr-/, "from a dynamic registration (dcr-...)");
+// consentVia is consentAs for a sign-in under ext: the authorization server must send the browser to ext's callback,
+// kept in <p>_cb on Bifrost's local address for followCallback.
+const consentVia = (id, title, p, identity, ext) => request(id, title, "GET", identity ? `&login_hint=${identity}` : "", {
+  base: `{{${p}_au}}`, noAuth: true, noRedirect: true, noCookies: true,
+  asserts: [A.status(302), A.custom(`Location is ${ext}${CB_PATH}?...`, ["var loc = pm.response.headers.get('Location') || '';", `pm.expect(loc.indexOf(${lit(ext + CB_PATH + "?")}), 'Location: ' + loc).to.equal(0);`])],
+  extraTests: [`pm.collectionVariables.set('${p}_cb', (pm.response.headers.get('Location') || '').replace(${lit(ext)}, pm.variables.get('base_url')));`],
+});
+const oauthCountsAre = (expected) => A.custom(`oauth counters include ${lit(expected)}`, [
+  "var c = pm.response.json().oauth.counters;",
+  ...Object.entries(expected).map(([k, v]) => `pm.expect(c[${lit(k)}], 'counters: ' + JSON.stringify(c)).to.equal(${v});`),
+]);
+// docsFetched checks the documents the authorization server fetched, in order, each accepted.
+const docsFetched = (docs) => A.custom(`the authorization server fetched and accepted ${docs.join(", then ")}`, [
+  "var f = pm.response.json().oauth.log.filter(function (e) { return e.endpoint === 'metadata_document'; });",
+  `pm.expect(f.map(function (e) { return e.client_id; }), 'log: ' + JSON.stringify(f)).to.eql(${lit(docs)});`,
+  "f.forEach(function (e) { pm.expect(e.status, JSON.stringify(e)).to.equal(200); });",
+]);
+// docTokens checks the token requests of a grant type: n of them (at least one when n is null), each 200, sent with the
+// document as client_id and no client_secret.
+const docTokens = (grant, n, doc) => A.custom(`${n === null ? "at least one" : n} ${grant} token request${n === 1 ? "" : "s"}, each 200 with client_id ${doc} and no client_secret`, [
+  `var r = pm.response.json().oauth.log.filter(function (e) { return e.endpoint === 'token' && e.grant_type === ${lit(grant)}; });`,
+  n === null ? "pm.expect(r.length, 'log: ' + JSON.stringify(r)).to.be.at.least(1);" : `pm.expect(r.length, 'log: ' + JSON.stringify(r)).to.equal(${n});`,
+  `r.forEach(function (e) { pm.expect(e.status, JSON.stringify(e)).to.equal(200); pm.expect(e.client_id, JSON.stringify(e)).to.equal(${lit(doc)}); pm.expect(e.client_secret || '', JSON.stringify(e)).to.equal(''); });`,
+]);
+
+const docGet = (id, title, asserts, headers = []) => request(id, title, "GET", DOC_PATH, { noAuth: true, noCookies: true, headers, asserts: [A.status(200), ...asserts] });
+// docUnder checks the document's addresses against base, a script expression, and its application_type.
+const docUnder = (base, title, appType) => A.custom(`client_id, client_uri and redirect_uris are under ${title}; application_type ${appType}`, [
+  `var d = pm.response.json(); var base = ${base};`,
+  `pm.expect(d.client_id, 'body: ' + pm.response.text()).to.equal(base + ${lit(DOC_PATH)});`,
+  "pm.expect(d.client_uri, 'body: ' + pm.response.text()).to.equal(base);",
+  `pm.expect(d.redirect_uris, 'body: ' + pm.response.text()).to.eql([base + ${lit(CB_PATH)}]);`,
+  `pm.expect(d.application_type, 'body: ' + pm.response.text()).to.equal(${lit(appType)});`,
+]);
+const docFields = () => A.custom("client_name Bifrost MCP Gateway, grant_types, response_types code, token_endpoint_auth_method none, Cache-Control public, max-age=3600", [
+  "var d = pm.response.json();",
+  "pm.expect(d.client_name, 'body: ' + pm.response.text()).to.equal('Bifrost MCP Gateway');",
+  "pm.expect(d.grant_types, 'body: ' + pm.response.text()).to.eql(['authorization_code', 'refresh_token']);",
+  "pm.expect(d.response_types, 'body: ' + pm.response.text()).to.eql(['code']);",
+  "pm.expect(d.token_endpoint_auth_method, 'body: ' + pm.response.text()).to.equal('none');",
+  "pm.expect(pm.response.headers.get('Cache-Control')).to.equal('public, max-age=3600');",
+]);
+const AUTH52 = folder("AUTH-52 Bifrost's client metadata document", `Setup: no credential on the requests; first no mcp_external_client_url, then ${EXT_A}.`, [
+  readConfig("AUTH-52"), extUrl("AUTH-52", null),
+  docGet("AUTH-52", "on Bifrost's local http address", [docUnder("pm.variables.get('base_url')", "the base URL", "native"), docFields()]),
+  docGet("AUTH-52", "with X-Forwarded-Proto https and Host gw.example.test", [docUnder(lit("https://gw.example.test"), "https://gw.example.test", "web"), docFields()], [{ key: "X-Forwarded-Proto", value: "https" }, { key: "Host", value: "gw.example.test" }]),
+  extUrl("AUTH-52", EXT_A),
+  docGet("AUTH-52", `with mcp_external_client_url ${EXT_A}, sent with Host gw.example.test`, [docUnder(lit(EXT_A), EXT_A, "web"), docFields()], [{ key: "Host", value: "gw.example.test" }]),
+  restoreConfig("AUTH-52"),
+]);
+
+const AUTH53_DOC = EXT_A + DOC_PATH;
+const AUTH53 = folder("AUTH-53 Sign-in with the client metadata document", `Setup: ${EXT_TEXT(EXT_A)}; fleet server auth53 as an OAuth protected resource whose authorization server advertises client metadata documents, offers registration and issues 5s access tokens; an OAuth client auth53-c on it, per call, created with oauth_config {}; consent as id1.`, [
+  readConfig("AUTH-53"), extUrl("AUTH-53", EXT_A),
+  ...asServer("AUTH-53", "auth53", { ...DOCS_ADVERTISED, access_ttl: "5s" }),
+  createOAuth("AUTH-53", "create the OAuth client", oauthBody("auth53-c", "auth53", "auth53"), "auth53", [statusIs("pending_oauth"), docAuthorize(EXT_A)]),
+  oauthCounters("AUTH-53", "auth53", "no registration and no document fetched yet", { register: 0, metadata_document_fetches: 0 }),
+  consentVia("AUTH-53", "consent as id1", "auth53", "id1", EXT_A),
+  mockGet("AUTH-53", "auth53", "the authorization server fetched the document once and registered nothing", [docsFetched([AUTH53_DOC]), oauthCountsAre({ register: 0, metadata_document_fetches: 1 })]),
+  followCallback("AUTH-53", "follow the callback", "auth53", callbackSuccess()),
+  completeOAuth("AUTH-53", "complete", "auth53", [A.status(200)]),
+  execTool("AUTH-53", "execute", "auth53-echo_tool", [A.status(200)]),
+  execAfterWait("AUTH-53", "execute after the access token expired, 6s later", "auth53-echo_tool", [A.status(200)], 6000),
+  mockGet("AUTH-53", "auth53", "the code exchange and every refresh sent the document URL and no client_secret; both calls ran as id1", [docTokens("authorization_code", 1, AUTH53_DOC), docTokens("refresh_token", null, AUTH53_DOC), identityCalls("id1", 2)]),
+  deleteClient("AUTH-53", "auth53-c"),
+  restoreConfig("AUTH-53"),
+]);
+
+const AUTH54 = folder("AUTH-54 The client metadata document is skipped when it cannot be used", `Setup: ${ALLOWLIST_TEXT}. (a) fleet server auth54a's authorization server advertises client metadata documents and there is no mcp_external_client_url (Bifrost on its local http address). Then mcp_external_client_url ${EXT_A}: (b) fleet server auth54b's authorization server does not advertise them; (c) fleet server auth54c's advertises them and knows client C1 (secret S1). Every server offers registration; each client is created with oauth_config {}, (c) with client_id C1.`, [
+  readConfig("AUTH-54"), extUrl("AUTH-54", null),
+  ...asServer("AUTH-54", "auth54a", DOCS_ADVERTISED),
+  createOAuth("AUTH-54", "(a) create from the local http address", oauthBody("auth54-a", "auth54a", "auth54a"), "auth54a", [dcrAuthorize()]),
+  oauthCounters("AUTH-54", "auth54a", "(a) one registration", { register: 1 }),
+  extUrl("AUTH-54", EXT_A),
+  ...asServer("AUTH-54", "auth54b"),
+  createOAuth("AUTH-54", "(b) create when the authorization server does not advertise documents", oauthBody("auth54-b", "auth54b", "auth54b"), "auth54b", [dcrAuthorize()]),
+  oauthCounters("AUTH-54", "auth54b", "(b) one registration", { register: 1 }),
+  ...asServer("AUTH-54", "auth54c", { ...DOCS_ADVERTISED, clients: [{ client_id: "C1", client_secret: "S1" }] }),
+  createOAuth("AUTH-54", "(c) create with client_id C1", oauthBody("auth54-c", "auth54c", "auth54c", { oauth_config: { client_id: "C1", client_secret: "S1" } }), "auth54c", [authorizeClientId("C1", "C1")]),
+  oauthCounters("AUTH-54", "auth54c", "(c) no registration and no document fetched", { register: 0, metadata_document_fetches: 0 }),
+  restoreConfig("AUTH-54"),
+]);
+
+const AUTH55 = folder("AUTH-55 use_client_metadata_document", `Setup: ${EXT_TEXT(EXT_A)}; fleet server auth55a's authorization server accepts client metadata documents without advertising them; fleet server auth55d's accepts none. Every create sets use_client_metadata_document true: (a) on auth55a; (b) on auth55a with client_id C1; (c) on auth55a with no mcp_external_client_url; (d) on auth55d.`, [
+  readConfig("AUTH-55"), extUrl("AUTH-55", EXT_A),
+  ...asServer("AUTH-55", "auth55a", DOCS_ACCEPTED),
+  request("AUTH-55", "control: auth55a's authorization server metadata does not advertise documents", "GET", "/.well-known/oauth-authorization-server/s/auth55a/as", { base: CHAOS, noAuth: true, asserts: [A.status(200), A.custom("there is no client_id_metadata_document_supported", ["pm.expect(pm.response.json(), 'body: ' + pm.response.text()).to.not.have.property('client_id_metadata_document_supported');"])] }),
+  createOAuth("AUTH-55", "(a) create", oauthBody("auth55-a", "auth55a", "auth55a", { oauth_config: { use_client_metadata_document: true } }), "auth55a", [docAuthorize(EXT_A)]),
+  consentVia("AUTH-55", "(a) consent as id1", "auth55a", "id1", EXT_A),
+  followCallback("AUTH-55", "(a) follow the callback", "auth55a", callbackSuccess()),
+  completeOAuth("AUTH-55", "(a) complete", "auth55a", [A.status(200)]),
+  execTool("AUTH-55", "(a) execute", "auth55a-echo_tool", [A.status(200)]),
+  oauthCounters("AUTH-55", "auth55a", "(a) no registration and one document fetched", { register: 0, metadata_document_fetches: 1 }),
+  createExpect("AUTH-55", "(b) create with client_id C1", oauthBody("auth55-b", "auth55b", "auth55a", { oauth_config: { client_id: "C1", use_client_metadata_document: true } }), [A.status(400), A.msgContains("use_client_metadata_document cannot be combined with a client_id")]),
+  notListed("AUTH-55", "auth55-b"),
+  extUrl("AUTH-55", null),
+  createExpect("AUTH-55", "(c) create with no mcp_external_client_url", oauthBody("auth55-c", "auth55c", "auth55a", { oauth_config: { use_client_metadata_document: true } }), [A.status(400), A.msgContains("the client metadata document needs Bifrost on a public HTTPS address: set the MCP external URL")]),
+  notListed("AUTH-55", "auth55-c"),
+  extUrl("AUTH-55", EXT_A),
+  ...asServer("AUTH-55", "auth55d"),
+  createOAuth("AUTH-55", "(d) create on a server that accepts no documents", oauthBody("auth55-d", "auth55d", "auth55d", { oauth_config: { use_client_metadata_document: true } }), "auth55d", [statusIs("pending_oauth"), docAuthorize(EXT_A)]),
+  consentAs("AUTH-55", "(d) the authorization server refuses the sign-in", "auth55d", null, [A.status(400), A.custom("the answer names an unknown client_id", ["pm.expect(pm.response.text()).to.include('unknown client_id');"])]),
+  oauthStatus("AUTH-55", "(d) the sign-in is still pending", "auth55d", "", [statusIs("pending")]),
+  notListed("AUTH-55", "auth55-d"),
+  deleteClient("AUTH-55", "auth55-a"),
+  restoreConfig("AUTH-55"),
+]);
+
+const AUTH56 = folder("AUTH-56 Endpoints entered by hand", `Setup: ${EXT_TEXT(EXT_A)}; fleet server auth56a's authorization server advertises client metadata documents; fleet server auth56b's offers registration and does not advertise them. Both clients are on auth56a: (a) with auth56a's authorize_url and token_url entered by hand; (b) with auth56b's authorize_url, token_url and registration_url.`, [
+  readConfig("AUTH-56"), extUrl("AUTH-56", EXT_A),
+  ...asServer("AUTH-56", "auth56a", DOCS_ADVERTISED),
+  ...asServer("AUTH-56", "auth56b"),
+  createOAuth("AUTH-56", "(a) create with auth56a's endpoints", oauthBody("auth56-a", "auth56a", "auth56a", { oauth_config: { authorize_url: `${CHAOS}/s/auth56a/as/authorize`, token_url: `${CHAOS}/s/auth56a/as/token` } }), "auth56a", [docAuthorize(EXT_A)]),
+  consentVia("AUTH-56", "(a) consent as id1", "auth56a", "id1", EXT_A),
+  followCallback("AUTH-56", "(a) follow the callback", "auth56a", callbackSuccess()),
+  completeOAuth("AUTH-56", "(a) complete", "auth56a", [A.status(200)]),
+  execTool("AUTH-56", "(a) execute", "auth56a-echo_tool", [A.status(200)]),
+  createOAuth("AUTH-56", "(b) create with auth56b's endpoints", oauthBody("auth56-b", "auth56b", "auth56a", { oauth_config: { authorize_url: `${CHAOS}/s/auth56b/as/authorize`, token_url: `${CHAOS}/s/auth56b/as/token`, registration_url: `${CHAOS}/s/auth56b/as/register` } }), "auth56b", [dcrAuthorize(), A.custom("authorize_url is auth56b's", ["pm.expect(pm.response.json().authorize_url, 'body: ' + pm.response.text()).to.include('/s/auth56b/as/authorize?');"])]),
+  oauthCounters("AUTH-56", "auth56b", "(b) one registration at auth56b", { register: 1 }),
+  oauthCounters("AUTH-56", "auth56a", "auth56a registered nothing and fetched one document, in (a)", { register: 0, metadata_document_fetches: 1 }),
+  deleteClient("AUTH-56", "auth56-a"),
+  restoreConfig("AUTH-56"),
+]);
+
+const PU_NO_TT = ["cc.mcp_enable_temp_token_auth = false;"];
+const AUTH57 = folder("AUTH-57 A new public address moves the client ID", `Setup: ${EXT_TEXT(EXT_A)}, mcp_enable_temp_token_auth false; fleet servers auth57s and auth57u, whose authorization servers advertise client metadata documents; a shared OAuth client auth57-s on auth57s, per call, signed in as id1; a per_user_oauth client auth57u on auth57u, verified as admin, with auth57-sess1 signed in as alice. Then mcp_external_client_url becomes ${EXT_B}.`, [
+  readConfig("AUTH-57"), extUrl("AUTH-57", EXT_A, PU_NO_TT, ", mcp_enable_temp_token_auth false"),
+  ...asServer("AUTH-57", "auth57s", DOCS_ADVERTISED),
+  createOAuth("AUTH-57", "setup: create the shared client", oauthBody("auth57-s", "auth57s", "auth57s"), "auth57s", [docAuthorize(EXT_A)]),
+  consentVia("AUTH-57", "setup: consent for the shared client as id1", "auth57s", "id1", EXT_A),
+  followCallback("AUTH-57", "setup: follow the callback for the shared client", "auth57s", callbackSuccess()),
+  completeOAuth("AUTH-57", "setup: complete the shared client", "auth57s", [A.status(200)]),
+  execTool("AUTH-57", "control: the shared client executes", "auth57s-echo_tool", [A.status(200)]),
+  ...asServer("AUTH-57", "auth57u", DOCS_ADVERTISED),
+  createOAuth("AUTH-57", "setup: create the per-user client", puBody("auth57u"), "auth57u", [docAuthorize(EXT_A)]),
+  consentVia("AUTH-57", "setup: consent for the per-user client as admin", "auth57u", "admin", EXT_A),
+  followCallback("AUTH-57", "setup: follow the callback for the per-user client", "auth57u", callbackSuccess()),
+  completeOAuth("AUTH-57", "setup: complete the per-user client", "auth57u", [A.status(200)]),
+  execTool("AUTH-57", "setup: execute as auth57-sess1 opens a flow", "auth57u-echo_tool", [A.status(400), keepFlow("auth57_f1")], { session: "auth57-sess1" }),
+  flowStart("AUTH-57", "setup: start auth57-sess1's flow", "auth57_f1", [A.status(200), docAuthorize(EXT_A)]),
+  consentVia("AUTH-57", "setup: consent as alice", "auth57_f1", "alice", EXT_A),
+  followCallback("AUTH-57", "setup: follow alice's callback", "auth57_f1", [A.status(302), locationEnds(PU_SUCCESS)]),
+  execTool("AUTH-57", "control: auth57-sess1 executes", "auth57u-echo_tool", [A.status(200)], { session: "auth57-sess1" }),
+  extUrl("AUTH-57", EXT_B, PU_NO_TT, ", mcp_enable_temp_token_auth false"),
+  clientPost("AUTH-57", "reauthorize the shared client", "auth57-s", "reauthorize", [A.status(200), docAuthorize(EXT_B)], { extraTests: ["pm.collectionVariables.set('auth57s_au', pm.response.json().authorize_url);"] }),
+  execTool("AUTH-57", "execute on the shared client before it signs in again", "auth57s-echo_tool", [A.status(400), A.msgContains("OAuth client credentials were rotated; tokens issued under the previous credentials must be re-authorized")]),
+  consentVia("AUTH-57", "consent for the shared client as id1 under the new address", "auth57s", "id1", EXT_B),
+  followCallback("AUTH-57", "follow the shared client's callback", "auth57s", callbackSuccess()),
+  completeOAuth("AUTH-57", "complete the shared client", "auth57s", [A.status(200)]),
+  execTool("AUTH-57", "execute on the shared client", "auth57s-echo_tool", [A.status(200)]),
+  mockGet("AUTH-57", "auth57s", "auth57s's authorization server fetched both documents and registered nothing", [docsFetched([EXT_A + DOC_PATH, EXT_B + DOC_PATH]), oauthCountsAre({ register: 0 })]),
+  execTool("AUTH-57", "execute as auth57-sess2 opens a flow", "auth57u-echo_tool", [A.status(400), keepFlow("auth57_f2")], { session: "auth57-sess2" }),
+  flowStart("AUTH-57", "start auth57-sess2's flow", "auth57_f2", [A.status(200), docAuthorize(EXT_B)]),
+  execTool("AUTH-57", "auth57-sess1 must sign in again", "auth57u-echo_tool", [A.status(400), keepFlow("auth57_f3")], { session: "auth57-sess1" }),
+  consentVia("AUTH-57", "consent as bob", "auth57_f2", "bob", EXT_B),
+  followCallback("AUTH-57", "follow bob's callback", "auth57_f2", [A.status(302), locationEnds(PU_SUCCESS)]),
+  execTool("AUTH-57", "execute as auth57-sess2", "auth57u-echo_tool", [A.status(200)], { session: "auth57-sess2" }),
+  mockGet("AUTH-57", "auth57u", "alice's one call before the move and bob's after it", [identityCalls("alice", 1), identityCalls("bob", 1)]),
+  deleteClient("AUTH-57", "auth57-s"), deleteClient("AUTH-57", "auth57u-u"),
+  restoreConfig("AUTH-57"),
+]);
+
+// OAS-43: Bifrost fetches a client metadata document only from a public address, so the documents here are never fetched.
+const OAS43 = folder("OAS-43 Client metadata document client_ids on Bifrost's authorization server", "Setup: mcp_server_auth_mode oauth with issuer_url set to the base URL; no client is registered for these client_ids.", [
+  readConfig("OAS-43"), setMode("OAS-43", "oauth"),
+  request("OAS-43", "authorization server metadata", "GET", "/.well-known/oauth-authorization-server", { noAuth: true, asserts: [A.status(200), A.custom("client_id_metadata_document_supported is true", ["pm.expect(pm.response.json().client_id_metadata_document_supported, 'body: ' + pm.response.text()).to.equal(true);"])] }),
+  ...[
+    ["a document on 127.0.0.1", "https://127.0.0.1/oas43/client.json", "client metadata document could not be fetched"],
+    ["a document on localhost", "https://localhost/oas43/client.json", "client metadata document could not be fetched"],
+    ["an http URL", "http://example.test/oas43/client.json", "unknown client_id"],
+    ["an https URL with a .. segment", "https://example.test/oas43/../client.json", "unknown client_id"],
+  ].map(([what, clientId, desc]) => request("OAS-43", `authorize with ${what} as client_id`, "GET", goodAuthorize("oas43_unused", { client_id: encodeURIComponent(clientId) }), {
+    noAuth: true, noRedirect: true,
+    asserts: [A.status(400), O.error("invalid_client"), O.descEquals(desc), A.custom("there is no Location", ["pm.expect(pm.response.headers.get('Location'), 'Location').to.equal(undefined);"])],
+  })),
+  restoreHeaders("OAS-43"),
+]);
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -8525,10 +8733,10 @@ const collection = {
   ],
   item: [
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM86, ADM87]),
-    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH48, AUTH49, AUTH50, AUTH51]),
+    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57]),
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, GO18, CONN23, CONN24, CONN25, CONN27, CONN28, CONN29]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65]),
-    section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS40, OAS42]),
+    section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS40, OAS42, OAS43]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET26, SET27, SET28, SET29, SET30, SET31, SET32]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV37, GOV38, GOV39]),
     section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66, INF76, INF77]),
