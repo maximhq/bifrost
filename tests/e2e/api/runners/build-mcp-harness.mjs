@@ -2791,6 +2791,10 @@ const EP54 = folder("EP-54 Non-VK keys in VK headers", `Setup: ${FLEET}; a provi
   restoreConfig("EP-54"), ...fleetTeardown("EP-54"),
 ]);
 
+// ---------------------------------------------------------------- EP tests on input-required-server
+// INPUT is examples/mcps/input-required-server, whose tools ask the caller for input mid-call
+// (2026-07-28 input_required). Each test registers it as client "inputs" (HTTP, auth none, per-call)
+// and calls it as an anonymous 2026-07-28 caller declaring the capabilities the test names.
 // EP-53 polls for up to about 15s until the asynchronous log write lands and is no longer "processing".
 const EP53_POLL = [
   "var left = 30;",
@@ -11038,6 +11042,91 @@ const PUD64 = folder("PUD-64 Connect refreshes a token the upstream ended early"
   restoreConfig("PUD-64"),
 ]);
 
+// ================================================================ input_required pass-through (EP-66..EP-69)
+
+const INPUT = "{{input_url}}";
+const INPUTS = "input-required-server registered as client \"inputs\" (HTTP, auth none, per-call); anonymous 2026-07-28 callers";
+const ELICIT_FORM = { elicitation: {} };
+const ELICIT_FORM_URL = { elicitation: { form: {}, url: {} } };
+const inputsSetup = (id) => createClient(id, { client_id: `${id.toLowerCase()}-in`, name: "inputs", connection_type: "http", connection_string: `${INPUT}/mcp`, auth_type: "none", tools_to_execute: ["*"] }, "setup: register client inputs");
+const inputsTeardown = (id) => deleteClient(id, `${id.toLowerCase()}-in`);
+// modernCall sends tools/call as a 2026-07-28 caller declaring caps; extra adds inputResponses or requestState.
+// A retry (one carrying requestState) gets its own JSON-RPC id, which the spec requires.
+const modernCall = (id, title, tool, caps, extra, asserts, pre = []) => request(id, title, "POST", "/mcp", {
+  noAuth: true,
+  raw: JSON.stringify({ jsonrpc: "2.0", id: extra.requestState ? 2 : 1, method: "tools/call", params: { name: tool, arguments: {}, ...extra, _meta: {
+    "io.modelcontextprotocol/protocolVersion": MODERN,
+    "io.modelcontextprotocol/clientCapabilities": caps,
+    "io.modelcontextprotocol/clientInfo": { name: "mcp-harness", version: "1.0.0" },
+  } } }),
+  headers: [MCP_ACCEPT, { key: "MCP-Protocol-Version", value: MODERN }, { key: "Mcp-Method", value: "tools/call" }, { key: "Mcp-Name", value: tool }],
+  asserts, pre,
+});
+const legacyCall = (id, title, tool, asserts) => rpc(id, title, call(tool), { headers: [MCP_ACCEPT, { key: "MCP-Protocol-Version", value: "2025-11-25" }], asserts });
+const inputRequired = (ids, saveAs) => A.custom(`result is input_required${ids.length ? " asking for " + ids.join(", ") : " with no input requests"}`, [
+  "var r = pm.response.json().result;",
+  "pm.expect(r && r.resultType, 'body: ' + pm.response.text()).to.equal('input_required');",
+  `pm.expect(Object.keys(r.inputRequests || {}).sort(), 'body: ' + pm.response.text()).to.eql(${lit(ids)});`,
+  "pm.expect(r.requestState, 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+  `pm.collectionVariables.set(${lit(saveAs)}, r.requestState);`,
+]);
+const resultText = (text) => A.custom(`result text is ${lit(text)}`, [
+  "var r = pm.response.json().result;",
+  "pm.expect(r && r.resultType !== 'input_required', 'body: ' + pm.response.text()).to.equal(true);",
+  "pm.expect(r.isError, 'body: ' + pm.response.text()).to.not.equal(true);",
+  `pm.expect(r.content[0].text, 'body: ' + pm.response.text()).to.equal(${lit(text)});`,
+]);
+// ENVIRONMENT_SCHEMA is the form ask_environment requests (examples/mcps/input-required-server).
+const ENVIRONMENT_SCHEMA = { type: "object", properties: { environment: { type: "string", enum: ["staging", "production"] } }, required: ["environment"] };
+const accepted = (content) => ({ action: "accept", ...(content ? { content } : {}) });
+
+const EP66 = folder("EP-66 input_required reaches a caller that can answer", `Setup: ${INPUTS}. ask_environment asks for a form elicitation; the caller declares elicitation, receives the request unchanged, and retries with its answer and the requestState.`, [
+  inputsSetup("EP-66"),
+  modernCall("EP-66", "the caller receives the elicitation", "inputs-ask_environment", ELICIT_FORM, {}, [A.status(200), inputRequired(["environment"], "ep66_state"),
+    A.custom("the request is the server's elicitation, form schema included", [
+      "var q = pm.response.json().result.inputRequests.environment;",
+      "pm.expect(q.method, 'body: ' + pm.response.text()).to.equal('elicitation/create');",
+      "pm.expect(q.params.message).to.equal('Which environment should I deploy to?');",
+      `pm.expect(q.params.requestedSchema, 'body: ' + pm.response.text()).to.eql(${lit(ENVIRONMENT_SCHEMA)});`,
+    ])]),
+  request("EP-66", "the retry with the answer completes the call", "POST", "/mcp", {
+    noAuth: true,
+    raw: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "inputs-ask_environment", arguments: {},
+      inputResponses: { environment: accepted({ environment: "staging" }) }, requestState: "{{ep66_state}}", _meta: {
+        "io.modelcontextprotocol/protocolVersion": MODERN, "io.modelcontextprotocol/clientCapabilities": ELICIT_FORM, "io.modelcontextprotocol/clientInfo": { name: "mcp-harness", version: "1.0.0" },
+      } } }),
+    headers: [MCP_ACCEPT, { key: "MCP-Protocol-Version", value: MODERN }, { key: "Mcp-Method", value: "tools/call" }, { key: "Mcp-Name", value: "inputs-ask_environment" }],
+    asserts: [A.status(200), resultText("deployed to staging")],
+  }),
+  inputsTeardown("EP-66"),
+]);
+
+const EP67 = folder("EP-67 A caller that cannot answer gets a clear error", `Setup: ${INPUTS}, plus a 2025-11-25 caller. Neither the 2026-07-28 caller declaring no capabilities nor the 2025-11-25 caller can answer ask_environment's elicitation, and summarize asks for sampling, which Bifrost does not relay even to a caller that declared sampling.`, [
+  inputsSetup("EP-67"),
+  modernCall("EP-67", "2026-07-28 caller without elicitation", "inputs-ask_environment", {}, {}, [A.status(200), toolResultError(null, "input from the user (elicitation)")]),
+  legacyCall("EP-67", "2025-11-25 caller", "inputs-ask_environment", [A.status(200), toolResultError(null, "input from the user (elicitation)")]),
+  modernCall("EP-67", "sampling is not relayed, even to a caller that declared it", "inputs-summarize", { ...ELICIT_FORM_URL, sampling: {} }, {}, [A.status(200), toolResultError(null, "an LLM completion (sampling)")]),
+  inputsTeardown("EP-67"),
+]);
+
+const EP68 = folder("EP-68 URL elicitation needs a caller that declared URL mode", `Setup: ${INPUTS}. connect_account asks for a URL-mode elicitation; a caller declaring elicitation without url gets the clear error naming the URL, one declaring url receives the request and completes the call, and a retry that declines or cancels the step ends it.`, [
+  inputsSetup("EP-68"),
+  modernCall("EP-68", "form-only caller gets the clear error", "inputs-connect_account", ELICIT_FORM, {}, [A.status(200), toolResultError(null, "https://example.com/connect")]),
+  modernCall("EP-68", "url caller receives the elicitation", "inputs-connect_account", ELICIT_FORM_URL, {}, [A.status(200), inputRequired(["connect"], "ep68_state"),
+    A.custom("the request is URL mode", ["var q = pm.response.json().result.inputRequests.connect;", "pm.expect(q.params.mode, 'body: ' + pm.response.text()).to.equal('url');", "pm.expect(q.params.url).to.equal('https://example.com/connect');"])]),
+  modernCall("EP-68", "the retry after the step completes the call", "inputs-connect_account", ELICIT_FORM_URL, { inputResponses: { connect: accepted() }, requestState: "{{ep68_state}}" }, [A.status(200), resultText("account connected")]),
+  ...["decline", "cancel"].map((action) => modernCall("EP-68", `a retry that answers ${action} ends the call`, "inputs-connect_account", ELICIT_FORM_URL, { inputResponses: { connect: { action } }, requestState: "{{ep68_state}}" }, [A.status(200), resultText("connection cancelled")])),
+  inputsTeardown("EP-68"),
+]);
+
+const EP69 = folder("EP-69 A retry-later answer", `Setup: ${INPUTS}, plus a 2025-11-25 caller. busy answers input_required with no input requests once, then completes. A 2026-07-28 caller receives it and retries; for a 2025-11-25 caller Bifrost retries itself.`, [
+  inputsSetup("EP-69"),
+  modernCall("EP-69", "2026-07-28 caller receives the retry-later answer", "inputs-busy", ELICIT_FORM, {}, [A.status(200), inputRequired([], "ep69_state")]),
+  modernCall("EP-69", "the caller's retry completes the call", "inputs-busy", ELICIT_FORM, { requestState: "{{ep69_state}}" }, [A.status(200), resultText("done after retry")]),
+  legacyCall("EP-69", "2025-11-25 caller: Bifrost retries and the call completes", "inputs-busy", [A.status(200), resultText("done after retry")]),
+  inputsTeardown("EP-69"),
+]);
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -11054,7 +11143,7 @@ const collection = {
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM26, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM84, ADM85, ADM86, ADM87]),
     section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH47, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57, AUTH58]),
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, GO18, CONN23, CONN24, CONN25, CONN27, CONN28, CONN29, GO34, GO36]),
-    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, GO01, GO02, GO03, GO06, GO07, GO08, GO09, GO10, GO11, GO12, GO13, GO14, GO33, GO35]),
+    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, EP66, EP67, EP68, EP69, GO01, GO02, GO03, GO06, GO07, GO08, GO09, GO10, GO11, GO12, GO13, GO14, GO33, GO35]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET26, SET27, SET28, SET29, SET30, SET31, SET32, SET04, SET05, SET10, SET11, SET15, SET23]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV36, GOV37, GOV38, GOV39]),
