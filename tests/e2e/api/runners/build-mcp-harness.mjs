@@ -9088,6 +9088,114 @@ const FAIL28 = folder("FAIL-28 Upstream needs a client capability", "Setup: flee
   deleteClient("FAIL-28", "fail28-c"),
 ]);
 
+// ================================================================ GOV-36 every surface agrees for every grant
+
+// Four fleet servers serve echo and add each. g36a is not allowed by default; g36b and g36g are, and
+// g36g's own tools_to_execute is ["echo"]; g36d is allowed by default but disabled.
+const G36_SERVERS = ["g36a", "g36b", "g36g", "g36d"];
+const G36_TOOLS = G36_SERVERS.flatMap((s) => [`${s}-add`, `${s}-echo`]);
+// g36ClientRefuses reports a tool the client itself refuses, whatever the key grants.
+const g36ClientRefuses = (tool) => tool === "g36g-add" || tool.startsWith("g36d-");
+// Each allowed tool is called once on each of these surfaces, so its server counts this many calls.
+const G36_CALL_SURFACES = 4;
+const G36_KEYS = [
+  { k: "none", grant: "no virtual key (enforcement off)", allowed: ["g36a-add", "g36a-echo", "g36b-add", "g36b-echo", "g36g-echo"] },
+  { k: "k0", grant: "no mcp_configs", mcp: null, allowed: ["g36b-add", "g36b-echo", "g36g-echo"] },
+  { k: "k1", grant: "g36a [\"echo\"]", mcp: [{ mcp_client_name: "g36a", tools_to_execute: ["echo"] }], allowed: ["g36a-echo", "g36b-add", "g36b-echo", "g36g-echo"] },
+  { k: "k2", grant: "g36a [\"*\"]", mcp: [{ mcp_client_name: "g36a", tools_to_execute: ["*"] }], allowed: ["g36a-add", "g36a-echo", "g36b-add", "g36b-echo", "g36g-echo"] },
+  { k: "k3", grant: "g36a [] and g36b []", mcp: [{ mcp_client_name: "g36a", tools_to_execute: [] }, { mcp_client_name: "g36b", tools_to_execute: [] }], allowed: ["g36g-echo"] },
+  { k: "k4", grant: "g36b [\"add\"] and g36g [\"*\"]", mcp: [{ mcp_client_name: "g36b", tools_to_execute: ["add"] }, { mcp_client_name: "g36g", tools_to_execute: ["*"] }], allowed: ["g36b-add", "g36g-echo"] },
+  { k: "k5", grant: "no mcp_configs, attached to V1 (g36a echo)", mcp: null, vmcp: "v1", allowed: ["g36a-echo", "g36b-add", "g36b-echo", "g36g-echo"] },
+  { k: "k6", grant: "g36a [\"echo\"], attached to V2 (g36a add)", mcp: [{ mcp_client_name: "g36a", tools_to_execute: ["echo"] }], vmcp: "v2", allowed: ["g36a-add", "g36a-echo", "g36b-add", "g36b-echo", "g36g-echo"] },
+  { k: "k7", grant: "no mcp_configs, attached to V3 (g36b [])", mcp: null, vmcp: "v3", allowed: ["g36g-echo"] },
+  { k: "k8", grant: "g36d [\"*\"] (a disabled client)", mcp: [{ mcp_client_name: "g36d", tools_to_execute: ["*"] }], allowed: ["g36b-add", "g36b-echo", "g36g-echo"] },
+  { k: "k9", grant: "g36a [\"*\"], with x-bf-mcp-include-tools g36a-add,g36b-echo,g36g-add", mcp: [{ mcp_client_name: "g36a", tools_to_execute: ["*"] }], headers: [{ key: "x-bf-mcp-include-tools", value: "g36a-add,g36b-echo,g36g-add" }], allowed: ["g36a-add", "g36b-echo"] },
+  { k: "k10", grant: "g36a [\"*\"], with x-bf-mcp-include-clients g36a", mcp: [{ mcp_client_name: "g36a", tools_to_execute: ["*"] }], headers: [{ key: "x-bf-mcp-include-clients", value: "g36a" }], allowed: ["g36a-add", "g36a-echo"] },
+];
+const G36_VMCPS = [
+  { v: "v1", name: "GOV-36 V1", tools: [{ mcp_client_id: "gov36-g36a", tool_names: ["echo"] }] },
+  { v: "v2", name: "GOV-36 V2", tools: [{ mcp_client_id: "gov36-g36a", tool_names: ["add"] }] },
+  { v: "v3", name: "GOV-36 V3", tools: [{ mcp_client_id: "gov36-g36b", tool_names: [] }] },
+];
+// g36Headers is the key header (none without a key) plus the key's own extra headers.
+const g36Headers = (key) => [...(key.k === "none" ? [] : [{ key: "x-bf-vk", value: `{{gov36_${key.k}}}` }]), ...(key.headers || [])];
+const g36Tok = (key, surface, tool) => `gov36-${key.k}-${surface}-${tool}`;
+// g36Names keeps the GOV-36 tools of a name list, sorted, so other tests' clients cannot affect it.
+const G36_NAMES = "function g36(names) { return (names || []).filter(function (n) { return n.indexOf('g36') === 0; }).sort(); }";
+const g36Exactly = (what, read, allowed) => A.custom(`${what} are exactly ${lit(allowed)}`, [REQS, G36_NAMES, `pm.expect(g36(${read}), 'body: ' + pm.response.text()).to.eql(${lit([...allowed].sort())});`]);
+// g36Refused is what execute answers for a tool the key, its headers or the client refuses.
+const g36Refused = (key, tool) => (key.k !== "none" && !g36ClientRefuses(tool) && !key.headers)
+  ? [A.status(403), A.custom("type mcp_tool_blocked", ["pm.expect(pm.response.json().type, 'body: ' + pm.response.text()).to.equal('mcp_tool_blocked');"])]
+  : [A.custom("refused with a 4xx", ["pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(400, 499);"])];
+
+const g36KeyBlock = (key) => {
+  const id = "GOV-36";
+  const allowed = new Set(key.allowed);
+  const label = `${key.k}: ${key.grant}`;
+  const headers = g36Headers(key);
+  const scen = (s) => `gov36-${key.k}-${s}`;
+  // g36g-add is not auto-executable (the client's own list leaves it out), and a turn holding one
+  // comes back to the caller after its auto-executable calls run, so it gets a turn of its own.
+  const agentTools = G36_TOOLS.filter((tool) => tool !== "g36g-add");
+  const agentCalls = agentTools.map((tool, i) => llmCall(`a${i}`, tool, { text: g36Tok(key, "agent", tool) }));
+  return [
+    ...(key.k === "none" ? [] : [govVKFor(key)]),
+    ...(key.vmcp ? [request(id, `${label}: setup: attach the key to ${key.vmcp}`, "POST", `/api/mcp/virtual-mcps/{{gov36_${key.vmcp}}}/virtual-keys/{{gov36_${key.k}_id}}`, { asserts: [A.status(200)] })] : []),
+    ...G36_SERVERS.map((s) => mockPost(id, s, "counters/reset", `${label}: setup: reset ${s}'s counters`, {})),
+    llmScript(id, scen("chat"), TEXT_OK, `${label}: setup: script the chat`),
+    llmScript(id, scen("resp"), TEXT_OK, `${label}: setup: script the Responses request`),
+    llmScript(id, scen("agent"), { turns: [{ tool_calls: agentCalls }, { text: "done" }] }, `${label}: setup: script the agent turn calling every tool but g36g-add`),
+    llmScript(id, scen("agent1"), { turns: [{ tool_calls: [llmCall("g1", "g36g-add", { text: g36Tok(key, "agent", "g36g-add") })] }, { text: "done" }] }, `${label}: setup: script the agent turn calling g36g-add`),
+    infPost(id, `${label}: chat`, "/v1/chat/completions", chatBody(scen("chat")), [A.status(200)], { headers }),
+    llmCaptured(id, `${label}: chat injects exactly the allowed tools`, scen("chat"), [reqCount(1), g36Exactly("injected tools", "(reqs[0] || {}).tools", key.allowed)]),
+    infResponses(id, `${label}: Responses request`, scen("resp"), [A.status(200)], { headers }),
+    llmCaptured(id, `${label}: Responses injects exactly the allowed tools`, scen("resp"), [reqCount(1), g36Exactly("injected tools", "(reqs[0] || {}).tools", key.allowed)]),
+    rpc(id, `${label}: /mcp tools/list`, listMsg, { headers: [MCP_ACCEPT, ...headers], asserts: [A.status(200), g36Exactly("listed tools", "pm.response.json().result.tools.map(function (t) { return t.name; })", key.allowed)] }),
+    ...G36_TOOLS.map((tool) => rpc(id, `${label}: /mcp tools/call ${tool}`, call(tool, { text: g36Tok(key, "mcp", tool) }), { headers: [MCP_ACCEPT, ...headers], asserts: allowed.has(tool)
+      ? [A.status(200), A.custom("the result is the echo of its own argument", [
+        "var r = pm.response.json().result || {};",
+        "pm.expect(r.isError, 'body: ' + pm.response.text()).to.not.equal(true);",
+        `pm.expect(((r.content || [])[0] || {}).text).to.equal(${lit(`${tool.split("-")[1]}:${JSON.stringify({ text: g36Tok(key, "mcp", tool) })}`)});`,
+      ])]
+      : [A.status(200), A.custom("refused: a JSON-RPC error or isError true", [
+        "var b = pm.response.json();",
+        "pm.expect(!!b.error || (b.result && b.result.isError === true), 'body: ' + pm.response.text()).to.equal(true);",
+      ])] })),
+    ...G36_TOOLS.map((tool) => execBody(id, `${label}: execute ${tool}`, { id: "c1", type: "function", function: { name: tool, arguments: lit({ text: g36Tok(key, "exec", tool) }) } },
+      allowed.has(tool) ? [A.status(200), toolContent(`${tool.split("-")[1]}:${JSON.stringify({ text: g36Tok(key, "exec", tool) })}`)] : g36Refused(key, tool), { headers })),
+    ...G36_TOOLS.map((tool) => execBody(id, `${label}: execute ${tool} in the Responses format`, { call_id: "r1", name: tool, arguments: lit({ text: g36Tok(key, "resp", tool) }) },
+      allowed.has(tool) ? [A.status(200), A.custom("output is the echo of its own argument", [`pm.expect(pm.response.json().output, 'body: ' + pm.response.text()).to.equal(${lit(`${tool.split("-")[1]}:${JSON.stringify({ text: g36Tok(key, "resp", tool) })}`)});`])] : g36Refused(key, tool),
+      { query: "?format=responses", headers })),
+    infPost(id, `${label}: agent mode chat`, "/v1/chat/completions", chatBody(scen("agent")), [A.status(200), chatContent("done")], { headers }),
+    llmCaptured(id, `${label}: agent mode ran exactly the allowed tools`, scen("agent"), [reqCount(2), A.custom("each allowed tool's result is its echo; each refused tool reports an error", [
+      REQS, TOOL_MSGS(1),
+      ...agentTools.map((tool, i) => allowed.has(tool)
+        ? `pm.expect(tm.a${i}, ${lit(tool)}).to.equal(${lit(`${tool.split("-")[1]}:${JSON.stringify({ text: g36Tok(key, "agent", tool) })}`)});`
+        : `pm.expect(String(tm.a${i}).indexOf(${lit(`Error executing tool ${tool}`)}), ${lit(tool)} + ': ' + tm.a${i}).to.equal(0);`),
+    ])]),
+    infPost(id, `${label}: agent mode chat calling g36g-add`, "/v1/chat/completions", chatBody(scen("agent1")), [A.status(200), finishIs("tool_calls"), toolCallNames(["g36g-add"])], { headers }),
+    ...G36_SERVERS.map((s) => mockGet(id, s, `${label}: ${s} ran each allowed tool ${G36_CALL_SURFACES} times and no refused one`, [
+      callsIs("echo", allowed.has(`${s}-echo`) ? G36_CALL_SURFACES : 0),
+      callsIs("add", allowed.has(`${s}-add`) ? G36_CALL_SURFACES : 0),
+    ])),
+    ...(key.k === "none" ? [] : [vkDelete(id, `${label}: teardown: delete the key`, `gov36_${key.k}`)]),
+  ];
+};
+const govVKFor = (key) => vkCreate("GOV-36", `${key.k}: ${key.grant}: setup: create the key`, { name: `GOV-36 ${key.k}`, provider_configs: OPENAI_GRANT, ...(key.mcp ? { mcp_configs: key.mcp } : {}) }, `gov36_${key.k}`);
+
+const GOV36 = folder("GOV-36 Cross-surface parity matrix", `Setup: ${LLM_TEXT}; fleet servers g36a, g36b, g36g and g36d each serve echo and add, registered per call as clients of the same names, each with tools_to_auto_execute equal to its tools_to_execute: g36a with allow_by_default false and tools_to_execute ["*"], g36b with allow_by_default true and ["*"], g36g with allow_by_default true and ["echo"], g36d with allow_by_default true and ["*"] but disabled; virtual MCPs V1 over g36a echo, V2 over g36a add and V3 over g36b with no tools. For each key below (a virtual key allowed openai with any model and key), every surface must serve exactly its allowed tools: chat and Responses injection, /mcp tools/list, /mcp tools/call, execute in the chat and Responses formats, and agent mode with the model calling every tool but g36g-add in one turn, then g36g-add alone, which is not auto-executable and comes back to the caller unrun; each server then counts 4 calls for each allowed tool and none for a refused one. Keys: ${G36_KEYS.map((k) => `${k.k} (${k.grant}) allows ${k.allowed.join(", ")}`).join("; ")}.`, [
+  ...G36_SERVERS.flatMap((s) => freshServer("GOV-36", s, ["echo", "add"])),
+  createClient("GOV-36", httpClient("gov36-g36a", "g36a", "g36a", { tools_to_execute: ["*"], tools_to_auto_execute: ["*"], allow_by_default: false })),
+  createClient("GOV-36", httpClient("gov36-g36b", "g36b", "g36b", { tools_to_execute: ["*"], tools_to_auto_execute: ["*"], allow_by_default: true })),
+  createClient("GOV-36", httpClient("gov36-g36g", "g36g", "g36g", { tools_to_execute: ["echo"], tools_to_auto_execute: ["echo"], allow_by_default: true })),
+  createClient("GOV-36", httpClient("gov36-g36d", "g36d", "g36d", { tools_to_execute: ["*"], tools_to_auto_execute: ["*"], allow_by_default: true })),
+  request("GOV-36", "setup: disable g36d", "PUT", "/api/mcp/client/gov36-g36d", { body: { disabled: true }, asserts: [A.status(200)] }),
+  ...G36_VMCPS.map((vm) => request("GOV-36", `setup: create the virtual MCP ${vm.name}`, "POST", "/api/mcp/virtual-mcps", { body: { name: vm.name, tools: vm.tools }, asserts: [A.status(201)], extraTests: [`pm.collectionVariables.set('gov36_${vm.v}', pm.response.json().virtual_mcp.id);`] })),
+  ...G36_KEYS.flatMap(g36KeyBlock),
+  ...G36_VMCPS.map((vm) => request("GOV-36", `teardown: delete the virtual MCP ${vm.name}`, "DELETE", `/api/mcp/virtual-mcps/{{gov36_${vm.v}}}`, { asserts: [A.status(200)] })),
+  ...G36_SERVERS.map((s) => deleteClient("GOV-36", `gov36-${s}`)),
+]);
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -9107,7 +9215,7 @@ const collection = {
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, GO33, GO35]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET26, SET27, SET28, SET29, SET30, SET31, SET32, SET04, SET05, SET10, SET11, SET15, SET23]),
-    section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV37, GOV38, GOV39]),
+    section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV36, GOV37, GOV38, GOV39]),
     section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66, INF76, INF77]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB27, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43, LOG49]),
