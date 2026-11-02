@@ -8719,6 +8719,62 @@ const OAS43 = folder("OAS-43 Client metadata document client_ids on Bifrost's au
   restoreHeaders("OAS-43"),
 ]);
 
+// OAS-39: the mock drives a real mcp-go OAuth client against /mcp; the harness gives the consent it stops for.
+const OAS39_CLIENT = "/client/oas39";
+// sdkSteps keeps the driven client's OAuth requests (every request but /mcp), as "METHOD path grant_type", in s.
+const sdkSteps = "var log = pm.response.json().requests || []; var s = log.filter(function (r) { return r.path !== '/mcp'; }).map(function (r) { return (r.method + ' ' + r.path + ' ' + (r.grant_type || '')).trim() + ' ' + r.status; });";
+const OAS39_DISCOVERY = ["GET /.well-known/oauth-protected-resource/mcp 200", "GET /.well-known/oauth-authorization-server 200", "POST /oauth2/register 201", "POST /oauth2/token authorization_code 200"];
+const OAS39 = folder("OAS-39 A real SDK OAuth client end to end", `Setup: ${FLEET}; the full-access VK (${VKS.full.text}); mcp_server_auth_mode oauth with issuer_url set to the base URL, enforce_auth_on_inference on, temp-token auth on, access_token_ttl 3; an mcp-go OAuth client, driven by the mock against /mcp with redirect_uri ${LOOPBACK_CB}; the harness consents for it with the full-access VK through the temp token.`, [
+  ...fleetGrantSetup("OAS-39"),
+  oauthConfig("OAS-39", "oauth", ["cc.enforce_auth_on_inference = true;", "cc.oauth2_server_config.access_token_ttl = 3;"], "setup: mcp_server_auth_mode oauth, issuer_url set to the base URL, enforce_auth_on_inference on, temp-token auth on, access_token_ttl 3"),
+  rpc("OAS-39", "control: /mcp with no credential", listMsg, { asserts: [A.status(401), A.custom("WWW-Authenticate points at the protected resource metadata", ["pm.expect(pm.response.headers.get('WWW-Authenticate'), 'headers').to.equal('Bearer resource_metadata=\"' + pm.variables.get('base_url') + '/.well-known/oauth-protected-resource/mcp\"');"])] }),
+  request("OAS-39", "the client discovers, registers and stops at authorization", "POST", `${OAS39_CLIENT}/connect`, {
+    base: CHAOS, noAuth: true, body: { url: "{{base_url}}/mcp", redirect_uri: LOOPBACK_CB, client_name: "OAS-39 SDK client" },
+    asserts: [A.status(200), A.custom("authorize_url is Bifrost's authorize endpoint with the registered client_id, S256 and the redirect_uri", [QS_FN,
+      "var b = pm.response.json(); var q = qs(b.authorize_url);",
+      "pm.expect(b.authorize_url.indexOf(pm.variables.get('base_url') + '/oauth2/authorize?'), 'body: ' + pm.response.text()).to.equal(0);",
+      "pm.expect(q.client_id, 'body: ' + pm.response.text()).to.equal(b.client_id).and.not.empty;",
+      "pm.expect(q.code_challenge_method).to.equal('S256');",
+      `pm.expect(q.redirect_uri).to.equal(${lit(LOOPBACK_CB)});`,
+    ])],
+    extraTests: ["pm.collectionVariables.set('oas39_au', pm.response.json().authorize_url || '');"],
+  }),
+  request("OAS-39", "follow the client's authorization URL", "GET", "", {
+    base: "{{oas39_au}}", noAuth: true, noRedirect: true, asserts: [A.status(302), consentLocation()],
+    extraTests: [
+      "var loc = pm.response.headers.get('Location') || '';",
+      "var m = /[?&]flow=([^#&]+)#t=(.+)$/.exec(loc);",
+      "pm.collectionVariables.set('oas39_f_id', m ? decodeURIComponent(m[1]) : '');",
+      "pm.collectionVariables.set('oas39_f_tt', m ? decodeURIComponent(m[2]) : '');",
+    ],
+  }),
+  consent("OAS-39", "oas39_f", "consent with the full-access VK through the temp token", "temp", vkBody("OAS-39"), [A.status(200), codeIssued()], { extraTests: [
+    QS_FN, "var q = qs((pm.response.json() || {}).redirect_url || '');",
+    "pm.collectionVariables.set('oas39_f_code', q.code || '');",
+    "pm.collectionVariables.set('oas39_f_state', q.state || '');",
+  ] }),
+  request("OAS-39", "the client exchanges the code and lists the tools", "POST", `${OAS39_CLIENT}/authorized`, {
+    base: CHAOS, noAuth: true, body: { code: "{{oas39_f_code}}", state: "{{oas39_f_state}}" },
+    asserts: [A.status(200), A.custom(`tools are exactly ${lit(ALL_TOOLS)}`, [`pm.expect(pm.response.json().tools, 'body: ' + pm.response.text()).to.eql(${lit(ALL_TOOLS)});`])],
+  }),
+  request("OAS-39", "the client's requests so far", "GET", OAS39_CLIENT, { base: CHAOS, noAuth: true, asserts: [A.status(200),
+    A.custom(`its OAuth requests are ${OAS39_DISCOVERY.join(", ")}`, [sdkSteps, `pm.expect(s, 'log: ' + JSON.stringify(log)).to.eql(${lit(OAS39_DISCOVERY)});`]),
+    A.custom("no /mcp request went out before the code exchange, and every /mcp request after it succeeded", [
+      "var log = pm.response.json().requests || []; var exchanged = false;",
+      "log.forEach(function (r) { if (r.grant_type === 'authorization_code') { exchanged = true; } if (r.path === '/mcp') { pm.expect(exchanged, 'log: ' + JSON.stringify(log)).to.equal(true); pm.expect(r.status, JSON.stringify(r)).to.be.below(300); } });",
+    ]),
+  ] }),
+  request("OAS-39", "after the access token expires, the client calls alpha-echo", "POST", `${OAS39_CLIENT}/call`, {
+    base: CHAOS, noAuth: true, body: { tool: "alpha-echo", arguments: { text: "hi" } }, pre: ["setTimeout(function () {}, 4000);"],
+    asserts: [A.status(200), A.custom("is_error is false", ["pm.expect(pm.response.json().is_error, 'body: ' + pm.response.text()).to.equal(false);"])],
+  }),
+  request("OAS-39", "the client refreshed once before that call", "GET", OAS39_CLIENT, { base: CHAOS, noAuth: true, asserts: [A.status(200),
+    A.custom(`its OAuth requests are ${OAS39_DISCOVERY.join(", ")}, then POST /oauth2/token refresh_token 200`, [sdkSteps, `pm.expect(s, 'log: ' + JSON.stringify(log)).to.eql(${lit([...OAS39_DISCOVERY, "POST /oauth2/token refresh_token 200"])});`]),
+  ] }),
+  request("OAS-39", "teardown: close the client", "DELETE", OAS39_CLIENT, { base: CHAOS, noAuth: true, asserts: [A.status(200)] }),
+  ...fleetGrantTeardown("OAS-39"),
+]);
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -8736,7 +8792,7 @@ const collection = {
     section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57]),
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, GO18, CONN23, CONN24, CONN25, CONN27, CONN28, CONN29]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65]),
-    section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS40, OAS42, OAS43]),
+    section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET26, SET27, SET28, SET29, SET30, SET31, SET32]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV37, GOV38, GOV39]),
     section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66, INF76, INF77]),
