@@ -95,10 +95,12 @@ func (state *ResponsesToChatStreamState) Convert(event *BifrostResponsesStreamRe
 	return response
 }
 
+// isResponsesFunctionCall identifies output items that contain function-call data.
 func isResponsesFunctionCall(item *ResponsesMessage) bool {
 	return item != nil && item.Type != nil && *item.Type == ResponsesMessageTypeFunctionCall && item.ResponsesToolMessage != nil
 }
 
+// find correlates an event by item ID or output index, using the current call only when neither is present.
 func (state *ResponsesToChatStreamState) find(event *BifrostResponsesStreamResponse) *responsesChatToolCall {
 	itemID := responsesStreamItemID(event)
 	if itemID != "" {
@@ -123,6 +125,7 @@ func (state *ResponsesToChatStreamState) find(event *BifrostResponsesStreamRespo
 	return state.current
 }
 
+// add assigns the next Chat index and records the Responses identifiers for a new call.
 func (state *ResponsesToChatStreamState) add(event *BifrostResponsesStreamResponse) *responsesChatToolCall {
 	if state.nextIndex > uint32(^uint16(0)) {
 		return nil
@@ -143,6 +146,7 @@ func (state *ResponsesToChatStreamState) add(event *BifrostResponsesStreamRespon
 	return call
 }
 
+// responsesStreamItemID returns the item identifier from either event representation.
 func responsesStreamItemID(event *BifrostResponsesStreamResponse) string {
 	if event.ItemID != nil {
 		return *event.ItemID
@@ -153,6 +157,7 @@ func responsesStreamItemID(event *BifrostResponsesStreamResponse) string {
 	return ""
 }
 
+// record tracks emitted argument bytes without retaining their contents.
 func (call *responsesChatToolCall) record(fragment string) {
 	if fragment == "" {
 		return
@@ -165,6 +170,7 @@ func (call *responsesChatToolCall) record(fragment string) {
 	call.argumentSize += len(fragment)
 }
 
+// emitTerminal emits only the unseen suffix when the final arguments extend the emitted prefix.
 func (state *ResponsesToChatStreamState) emitTerminal(response *BifrostChatResponse, call *responsesChatToolCall, arguments string) {
 	if call.finished || len(arguments) < call.argumentSize {
 		return

@@ -105,6 +105,7 @@ func newStreamTestClient(t *testing.T, account *MockAccount, plugins ...schemas.
 	return client
 }
 
+// TestChatStreamThroughResponsesPreservesParallelToolCalls exercises conversion through the core client.
 func TestChatStreamThroughResponsesPreservesParallelToolCalls(t *testing.T) {
 	paths := make(chan string, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

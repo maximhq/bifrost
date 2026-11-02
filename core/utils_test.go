@@ -805,6 +805,7 @@ func TestWrapConvertedStreamPostHookRunnerKeepsStreamIdentityOnEveryChunk(t *tes
 	}
 }
 
+// TestWrapConvertedStreamPostHookRunnerPreservesToolCalls covers correlation and terminal argument recovery.
 func TestWrapConvertedStreamPostHookRunnerPreservesToolCalls(t *testing.T) {
 	type toolCall struct {
 		id, name, arguments string
@@ -968,6 +969,7 @@ func BenchmarkWrapConvertedStreamPostHookRunner(b *testing.B) {
 	}
 }
 
+// BenchmarkWrapConvertedStreamPostHookRunnerToolCalls measures a stream with two function calls.
 func BenchmarkWrapConvertedStreamPostHookRunnerToolCalls(b *testing.B) {
 	functionCall := schemas.ResponsesMessageTypeFunctionCall
 	events := []*schemas.BifrostResponsesStreamResponse{
