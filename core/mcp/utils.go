@@ -3,6 +3,8 @@ package mcp
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -27,10 +29,6 @@ import (
 func computeDiscoveryHash(discovery *schemas.MCPDiscovery) string {
 	h := sha256.New()
 	if data, err := json.Marshal(discovery.Tools); err == nil {
-		h.Write(data)
-	}
-	h.Write([]byte{0}) // separator so {"a":"b"} tools + {} mapping can't collide with {} tools + {"a":"b"} mapping
-	if data, err := json.Marshal(discovery.ToolNameMapping); err == nil {
 		h.Write(data)
 	}
 	h.Write([]byte{0})
@@ -283,6 +281,53 @@ func (m *MCPManager) GetMaxAgentDepth() int {
 	return int(m.toolsManager.maxAgentDepth.Load())
 }
 
+// misconfiguredError marks a connect failure caused by the client's own
+// configuration: the same configuration fails the same way on every attempt,
+// so the connect classifiers never retry it. Its text is the wrapped error's.
+type misconfiguredError struct{ err error }
+
+// Error returns the wrapped error's text unchanged.
+func (e misconfiguredError) Error() string { return e.err.Error() }
+
+// Unwrap exposes the wrapped error to errors.Is and errors.As.
+func (e misconfiguredError) Unwrap() error { return e.err }
+
+// isPermanentConnectError reports connect failures that no retry can fix: a
+// misconfigured client, an upstream speaking only protocol versions this client
+// does not support, and a server certificate this client does not trust. Each
+// is matched by type, so it holds through any wrapping that keeps the chain.
+func isPermanentConnectError(err error) bool {
+	if _, ok := errors.AsType[misconfiguredError](err); ok {
+		return true
+	}
+	if _, ok := errors.AsType[mcp.UnsupportedProtocolVersionError](err); ok {
+		return true
+	}
+	if _, ok := errors.AsType[*tls.CertificateVerificationError](err); ok {
+		return true
+	}
+	return false
+}
+
+// validateMCPTLSConfig refuses a ca_cert_pem that does not parse, the check
+// every dial makes, so the client is refused when it is added or edited
+// instead of failing each connection afterwards. The certificate is ignored
+// when insecure_skip_verify is set, so it is not checked then either.
+func validateMCPTLSConfig(config *schemas.MCPClientConfig) error {
+	tlsCfg := config.TLSConfig
+	if tlsCfg == nil || tlsCfg.InsecureSkipVerify || tlsCfg.CACertPEM == nil {
+		return nil
+	}
+	caPEM := tlsCfg.CACertPEM.GetValue()
+	if caPEM == "" {
+		return nil
+	}
+	if !x509.NewCertPool().AppendCertsFromPEM([]byte(caPEM)) {
+		return fmt.Errorf("tls_config.ca_cert_pem is not a valid PEM certificate in client '%s'", config.Name)
+	}
+	return nil
+}
+
 // isTransientError determines if an error is transient and should be retried.
 // Permanent errors (auth failures, config errors, context deadline, etc.) return false.
 // Transient errors (network issues, temporary timeouts, etc.) return true.
@@ -292,7 +337,7 @@ func isTransientError(err error) bool {
 	}
 
 	errStr := err.Error()
-	if errors.Is(err, ErrMCPProtocolVersionAboveMax) || isAuthRequiredError(err) {
+	if errors.Is(err, ErrMCPProtocolVersionAboveMax) || isAuthRequiredError(err) || isPermanentConnectError(err) {
 		return false
 	}
 
@@ -462,11 +507,12 @@ func isTransientToolCallError(err error) bool {
 		return false
 	}
 	errStr := strings.ToLower(err.Error())
-	// Auth failures are checked first, before the transient substring scan:
-	// error text like "401 unauthorized: try again" would otherwise match
-	// "try again" below and get retried, contradicting the non-retryable
-	// auth-failure rule this classifier exists to enforce for tool calls.
-	if isAuthFailure(err) {
+	// Auth failures, and any error that reads like one, are checked first,
+	// before the transient substring scan: error text like "401 unauthorized:
+	// try again" would otherwise match "try again" below and get retried,
+	// contradicting the non-retryable auth-failure rule this classifier exists
+	// to enforce for tool calls.
+	if isAuthFailure(err) || isAuthFailureErrorText(errStr) {
 		return false
 	}
 	for _, transientErr := range transientErrorSubstrings {
@@ -483,36 +529,39 @@ func isAuthRequiredError(err error) bool {
 	return errors.Is(err, transport.ErrAuthorizationRequired) || errors.Is(err, transport.ErrOAuthAuthorizationRequired)
 }
 
-// isAuthFailure reports whether a tool-call error is an upstream auth rejection: mcp-go's typed
-// 401 first, then the error text for rejections that reach us only as text.
+// isAuthFailure reports whether a tool-call error is an upstream auth rejection:
+// mcp-go's typed 401, or auth-shaped text inside the *transport.Error frame,
+// which wraps only what the transport produced, as isDeadSessionError reads
+// it. A JSON-RPC error the server answered with is the tool's own result and
+// carries no such frame, so it never matches whatever its text says: a tool
+// reporting "forbidden" for its own reasons used to force a credential refresh
+// and a reconnect of a healthy client.
 func isAuthFailure(err error) bool {
-	return err != nil && (isAuthRequiredError(err) || isAuthFailureErrorText(err.Error()))
+	if err == nil {
+		return false
+	}
+	if isAuthRequiredError(err) {
+		return true
+	}
+	transportErr, ok := errors.AsType[*transport.Error](err)
+	return ok && isAuthFailureErrorText(transportErr.Error())
 }
 
-// isAuthFailureErrorText reports whether a raw upstream tool-call error looks
-// like an auth rejection (401/403/unauthorized/forbidden). mcp-go flattens
-// HTTP status codes into a plain error string by the time a CallTool error
-// reaches toolmanager.go — no typed status field survives — so, like
-// isTransientError above, substring matching on the same class of text is
-// the only option.
-//
-// This is deliberately not a reuse of isTransientError: that function matches
-// this exact substring class too, but as a PERMANENT signal (don't retry) for
-// its connection-establishment callers — the opposite polarity needed here,
-// where the same text is the POSITIVE trigger for a forced-refresh-and-retry.
-// A tool call that reaches this point already has a live, previously-healthy
-// connection (AcquireClientConn already succeeded once), so a 401/403 here
-// means the upstream server is actively rejecting a credential Bifrost's own
-// bookkeeping still considers valid — worth reacting to, not giving up on.
-//
-// This is also distinct from schemas.ErrOAuth2TokenExpired-based
-// classification (see connectToMCPClient), which fires only after Bifrost's
-// own refresh logic already ran and classified a credential as permanently
-// dead. A raw CallTool error never goes through that classification at all —
-// it's the upstream server's rejection text verbatim, not Bifrost's.
+// authStatusCode matches 401 or 403 as a number of its own, so a port, path or id that merely
+// contains those digits (":4010", "/tenants/84013") is not read as an auth status.
+var authStatusCode = regexp.MustCompile(`(?:^|[^0-9])40[13](?:[^0-9]|$)`)
+
+// isAuthFailureErrorText reports whether an error's text reads like an auth
+// rejection (401/403/unauthorized/forbidden). isAuthFailure applies it only
+// inside the transport's error frame, since a tool's own error can carry any of
+// these words. isTransientToolCallError applies it to any error, to keep such a
+// failure from being retried whichever side produced it.
 func isAuthFailureErrorText(errStr string) bool {
 	lower := strings.ToLower(errStr)
-	for _, needle := range []string{"401", "403", "unauthorized", "forbidden", "authorization required"} {
+	if authStatusCode.MatchString(lower) {
+		return true
+	}
+	for _, needle := range []string{"unauthorized", "forbidden", "authorization required"} {
 		if strings.Contains(lower, needle) {
 			return true
 		}
@@ -679,7 +728,7 @@ func isTransientProbeError(err error) bool {
 		return false
 	}
 	errStr := strings.ToLower(err.Error())
-	if isDeadSessionErrorText(errStr) || errors.Is(err, ErrMCPProtocolVersionAboveMax) || isAuthRequiredError(err) {
+	if isDeadSessionErrorText(errStr) || errors.Is(err, ErrMCPProtocolVersionAboveMax) || isAuthRequiredError(err) || isPermanentConnectError(err) {
 		return false
 	}
 	// Checked before the timeout rule, not after: an error carrying any
@@ -806,10 +855,9 @@ func ExecuteWithRetry(
 // listToolsResult captures the full outcome of retrieveExternalToolsDetailed so the
 // plugin gate can expose RawToolCount and SkippedTools to plugins.
 type listToolsResult struct {
-	tools           map[string]schemas.ChatTool
-	toolNameMapping map[string]string
-	rawCount        int
-	skipped         []schemas.SkippedMCPTool
+	tools    map[string]schemas.ChatTool
+	rawCount int
+	skipped  []schemas.SkippedMCPTool
 }
 
 // retrieveExternalToolsDetailed retrieves and filters tools from an external MCP server
@@ -820,7 +868,7 @@ type listToolsResult struct {
 func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, clientName string, logger schemas.Logger) (*listToolsResult, error) {
 	// A server offering only prompts or resources has no tools/list to call.
 	if caps := client.GetServerCapabilities(); caps.Tools == nil && (caps.Prompts != nil || caps.Resources != nil) {
-		return &listToolsResult{tools: map[string]schemas.ChatTool{}, toolNameMapping: map[string]string{}}, nil
+		return &listToolsResult{tools: map[string]schemas.ChatTool{}}, nil
 	}
 	// Get available tools from external server with retry logic
 	listRequest := mcp.ListToolsRequest{
@@ -844,18 +892,16 @@ func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, c
 		logger,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list tools after %d retries: %v", retryConfig.MaxRetries, err)
+		return nil, fmt.Errorf("failed to list tools: %v", err)
 	}
 
 	if toolsResponse == nil {
 		return &listToolsResult{
-			tools:           make(map[string]schemas.ChatTool),
-			toolNameMapping: make(map[string]string),
+			tools: make(map[string]schemas.ChatTool),
 		}, nil
 	}
 
 	tools := make(map[string]schemas.ChatTool)
-	toolNameMapping := make(map[string]string) // Maps sanitized_name -> original_mcp_name
 	var skipped []schemas.SkippedMCPTool
 
 	// toolsResponse is already a ListToolsResult
@@ -882,16 +928,12 @@ func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, c
 		}
 		// Store the tool with the prefixed name
 		tools[prefixedToolName] = bifrostTool
-		// Store the mapping from sanitized name to original MCP name for later lookup during execution
-		sanitizedToolName := strings.ReplaceAll(mcpTool.Name, "-", "_")
-		toolNameMapping[sanitizedToolName] = mcpTool.Name
 	}
 
 	return &listToolsResult{
-		tools:           tools,
-		toolNameMapping: toolNameMapping,
-		rawCount:        len(toolsResponse.Tools),
-		skipped:         skipped,
+		tools:    tools,
+		rawCount: len(toolsResponse.Tools),
+		skipped:  skipped,
 	}, nil
 }
 
@@ -1171,6 +1213,11 @@ func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
 		if config.StdioConfig == nil {
 			return fmt.Errorf("StdioConfig is required for STDIO connection type in client '%s'", config.Name)
 		}
+		// mcp-go starts no process for an empty command and leaves its stdout nil, which its
+		// reader goroutine then dereferences.
+		if strings.TrimSpace(config.StdioConfig.Command) == "" {
+			return fmt.Errorf("a stdio command is required for STDIO connection type in client '%s'", config.Name)
+		}
 	case schemas.MCPConnectionTypeInProcess:
 		// InProcess can be provided programmatically or created automatically.
 	case schemas.MCPConnectionTypeOpenAPI:
@@ -1179,6 +1226,9 @@ func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
 		}
 	default:
 		return fmt.Errorf("unknown connection type '%s' in client '%s'", config.ConnectionType, config.Name)
+	}
+	if err := validateMCPTLSConfig(config); err != nil {
+		return err
 	}
 	if config.AuthType == schemas.MCPAuthTypePerUserHeaders {
 		if len(config.PerUserHeaderKeys) == 0 {
@@ -1469,29 +1519,6 @@ func stripClientPrefix(prefixedToolName, clientName string) string {
 	}
 	// If prefix doesn't match, return as-is (shouldn't happen, but be safe)
 	return prefixedToolName
-}
-
-// getOriginalToolName retrieves the original MCP tool name from the sanitized name using the mapping.
-// This function is used to restore the original tool name (with hyphens) that the MCP server expects.
-//
-// Parameters:
-//   - sanitizedToolName: Sanitized tool name (e.g., "notion_search")
-//   - toolNameMapping: Map of sanitized tool names to original MCP tool names
-//
-// Returns:
-//   - string: Original MCP tool name (e.g., "notion-search"), or sanitizedToolName if not found in mapping
-func getOriginalToolName(sanitizedToolName string, toolNameMapping map[string]string) string {
-	if toolNameMapping == nil {
-		return sanitizedToolName
-	}
-
-	// Look up the original MCP name in the mapping
-	if originalName, exists := toolNameMapping[sanitizedToolName]; exists {
-		return originalName
-	}
-
-	// If not in mapping, return as-is (might not need mapping if names are the same)
-	return sanitizedToolName
 }
 
 // FixArraySchemas recursively fixes array schemas by ensuring they have an 'items' field.

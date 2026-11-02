@@ -1,10 +1,12 @@
 package handlers
 
 import (
-	"embed"
+	"bytes"
+	"io/fs"
 	"mime"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -29,21 +31,27 @@ type ShellRewriter func(ctx *fasthttp.RequestCtx, data []byte) []byte
 
 // UIHandler handles UI routes.
 type UIHandler struct {
-	uiContent embed.FS
+	uiContent fs.FS
 	// uiDevClient proxies dashboard requests to the local Vite dev server.
 	// It is only set when dev mode is enabled (see NewUIHandler); nil otherwise.
 	uiDevClient *fasthttp.HostClient
 	// shellRewriter rewrites the pre-hydration shell. nil disables the rewrite
 	// entirely, which is the OSS path.
 	shellRewriter ShellRewriter
+	// basePathShells maps embedded HTML paths to their base-path-adjusted copy; nil without a base path.
+	basePathShells map[string][]byte
 }
 
 // NewUIHandler creates a new UIHandler instance. shellRewriter may be nil, in
-// which case index.html is always served exactly as embedded.
-func NewUIHandler(uiContent embed.FS, shellRewriter ShellRewriter) *UIHandler {
+// which case index.html is always served exactly as embedded. basePath is the
+// normalized server.base_path ("" at the domain root); when set, every
+// embedded HTML document is rewritten for it once, here, and served from
+// memory afterwards.
+func NewUIHandler(uiContent fs.FS, shellRewriter ShellRewriter, basePath string) *UIHandler {
 	h := &UIHandler{
-		uiContent:     uiContent,
-		shellRewriter: shellRewriter,
+		uiContent:      uiContent,
+		shellRewriter:  shellRewriter,
+		basePathShells: buildBasePathShells(uiContent, basePath),
 	}
 	// Only wire the dev-server proxy client when running in dev mode. Timeouts
 	// guard against the local Vite server hanging dashboard requests if it is
@@ -118,7 +126,7 @@ func (h *UIHandler) serveDashboard(ctx *fasthttp.RequestCtx) {
 	hasExtension := strings.Contains(filepath.Base(cleanPath), ".")
 
 	// Try to read the file from embedded filesystem
-	data, err := h.uiContent.ReadFile(cleanPath)
+	data, err := fs.ReadFile(h.uiContent, cleanPath)
 	if err != nil {
 
 		// If it's a static asset (has extension) and not found, return 404
@@ -131,12 +139,12 @@ func (h *UIHandler) serveDashboard(ctx *fasthttp.RequestCtx) {
 		// For routes without extensions (SPA routing), try {path}/index.html first
 		if !hasExtension {
 			indexPath := cleanPath + "/index.html"
-			data, err = h.uiContent.ReadFile(indexPath)
+			data, err = fs.ReadFile(h.uiContent, indexPath)
 			if err == nil {
 				cleanPath = indexPath
 			} else {
 				// If that fails, serve root index.html as fallback
-				data, err = h.uiContent.ReadFile("ui/index.html")
+				data, err = fs.ReadFile(h.uiContent, "ui/index.html")
 				if err != nil {
 					ctx.SetStatusCode(fasthttp.StatusNotFound)
 					ctx.SetBodyString("404 - File not found")
@@ -148,6 +156,16 @@ func (h *UIHandler) serveDashboard(ctx *fasthttp.RequestCtx) {
 			ctx.SetStatusCode(fasthttp.StatusNotFound)
 			ctx.SetBodyString("404 - File not found")
 			return
+		}
+	}
+
+	if h.basePathShells != nil {
+		if shell, ok := h.basePathShells[cleanPath]; ok {
+			data = shell
+			if h.shellRewriter != nil {
+				// The rewriter may edit its input in place; keep the cached shell intact.
+				data = bytes.Clone(shell)
+			}
 		}
 	}
 
@@ -177,6 +195,59 @@ func (h *UIHandler) serveDashboard(ctx *fasthttp.RequestCtx) {
 
 	// Send the file content
 	ctx.SetBody(data)
+}
+
+// rootAbsoluteRef matches a src/href attribute pointing at a root-absolute path,
+// double-quoted, single-quoted or unquoted (the shell's inline "upgrading"
+// markup is unquoted), but not a protocol-relative "//host" URL.
+var rootAbsoluteRef = regexp.MustCompile(`\b(src|href)=(["']?)/([^/])`)
+
+// openingHeadTag matches <head> with or without attributes, but not <header>.
+var openingHeadTag = regexp.MustCompile(`(?i)<head(\s[^>]*)?>`)
+
+// buildBasePathShells returns a copy of every embedded HTML document adjusted
+// for basePath, or nil when basePath is empty. Root-absolute src/href
+// references get the prefix, and window.__BIFROST_BASE_PATH__ is set at the
+// top of <head> so the bundle can resolve chunks, API calls and routes
+// against it (see ui/lib/utils/basePath.ts and renderBuiltUrl in
+// ui/vite.config.mts). basePath is spliced into HTML attributes and a JS
+// string literal unescaped, so only a value lib.NormalizeBasePath returns
+// unchanged is used: that limits it to URL-unreserved characters and "/". Any
+// other value is refused and the shell is served as embedded.
+func buildBasePathShells(uiContent fs.FS, basePath string) map[string][]byte {
+	if basePath == "" {
+		return nil
+	}
+	if normalized, err := lib.NormalizeBasePath(basePath); err != nil || normalized != basePath {
+		logger.Error("ui: refusing to rewrite the UI shell for non-canonical base path %q", basePath)
+		return nil
+	}
+	shells := make(map[string][]byte)
+	_ = fs.WalkDir(uiContent, "ui", func(filePath string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || filepath.Ext(filePath) != ".html" {
+			return nil
+		}
+		data, readErr := fs.ReadFile(uiContent, filePath)
+		if readErr != nil {
+			return nil
+		}
+		shells[filePath] = applyBasePathToShell(data, basePath)
+		return nil
+	})
+	return shells
+}
+
+// applyBasePathToShell prefixes root-absolute src/href references in one HTML
+// document with basePath and injects the window.__BIFROST_BASE_PATH__ script
+// right after the opening <head> tag (or at the start, when there is none).
+func applyBasePathToShell(data []byte, basePath string) []byte {
+	out := rootAbsoluteRef.ReplaceAll(data, []byte("${1}=${2}"+basePath+"/${3}"))
+	script := []byte(`<script>window.__BIFROST_BASE_PATH__="` + basePath + `"</script>`)
+	if loc := openingHeadTag.FindIndex(out); loc != nil {
+		at := loc[1]
+		return append(out[:at:at], append(script, out[at:]...)...)
+	}
+	return append(script, out...)
 }
 
 // serveDevDashboard proxies dashboard requests to the local Vite dev server.

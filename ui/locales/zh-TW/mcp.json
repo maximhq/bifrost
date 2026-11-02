@@ -799,12 +799,16 @@
 			"updateValues": "更新值",
 			"editValues": "編輯值"
 		},
+		"revokeFlowTitle": "撤銷此待處理流程？",
+		"revokeFlowDescription": "Bifrost 將刪除此待處理流程，其連結將失效。此綁定已儲存的憑證會保留；如需移除，請撤銷該憑證所在的列。",
 		"revokeHeaderTitle": "撤銷這些已儲存的請求頭值？",
 		"revokeHeaderDescription": "Bifrost 將移除此繫結的已存憑證值。沒有可在上游撤銷的令牌；使用者需重新提交請求頭值才能再次使用此 MCP。",
 		"revokeSessionTitle": "撤銷此 MCP 會話？",
 		"revokeSessionDescription": "Bifrost 將移除此繫結的已存憑證。上游 OAuth 令牌不會在提供方處撤銷；它會保持遊離並自然過期。使用此繫結的任何人需重新驗證以獲取新令牌。",
 		"toast": {
 			"reauthFailed": "重新驗證失敗",
+			"flowRevoked": "待處理流程已撤銷",
+			"flowRevokeFailed": "無法撤銷待處理流程",
 			"headerRevoked": "請求頭值已撤銷",
 			"sessionRevoked": "會話已撤銷",
 			"headerRevokeFailed": "撤銷請求頭值失敗",

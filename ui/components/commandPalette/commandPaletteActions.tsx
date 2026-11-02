@@ -71,8 +71,10 @@ export function usePaletteActions({ close, commands, currentId }: PaletteActions
 						close();
 						const action = def.action ?? "create";
 						// Replace on the page already open, or Back would land on the same page.
-						if (sameRoute) router.history.replace(withActionParamOnPage(def.href, router.history.location.search, action));
-						else router.history.push(withActionParam(def.href, action));
+						// router.navigate, not history.push: only the router applies server.base_path to the address bar.
+						if (sameRoute)
+							void router.navigate({ href: withActionParamOnPage(def.href, router.history.location.search, action), replace: true });
+						else void router.navigate({ href: withActionParam(def.href, action) });
 					},
 				},
 			];

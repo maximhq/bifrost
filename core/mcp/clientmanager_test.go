@@ -329,7 +329,6 @@ func TestUpdateClientCredentials_PerCallShared_Healthy_RefreshesToolsSynchronous
 		ExecutionConfig: config,
 		State:           schemas.MCPConnectionStateHealthy,
 		ToolMap:         make(map[string]schemas.ChatTool),
-		ToolNameMapping: make(map[string]string),
 	}
 	m.mu.Unlock()
 
@@ -361,18 +360,16 @@ func TestSetClientDiscovery_ReplacesStaleTools(t *testing.T) {
 		ToolMap: map[string]schemas.ChatTool{
 			"replace-tools-client-removed": {},
 		},
-		ToolNameMapping: map[string]string{"replace-tools-client-removed": "removed"},
 	}
 	m.mu.Unlock()
 
-	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"replace-tools-client-kept": {}}, ToolNameMapping: map[string]string{"replace-tools-client-kept": "kept"}})
+	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"replace-tools-client-kept": {}}})
 
 	m.mu.RLock()
 	state := *m.clientMap[config.ID]
 	m.mu.RUnlock()
 	assert.Contains(t, state.ToolMap, "replace-tools-client-kept")
 	assert.NotContains(t, state.ToolMap, "replace-tools-client-removed", "a tool absent from the fresh discovery result must not survive in memory")
-	assert.Equal(t, map[string]string{"replace-tools-client-kept": "kept"}, state.ToolNameMapping)
 }
 
 // TestUpdateClientCredentials_PerCallSharedOAuth_DiscoveryFailureFailsUpdate
@@ -465,7 +462,7 @@ func TestUpdateClientCredentials_PerCallShared_Disabled_SkipsRefresh(t *testing.
 	assert.Equal(t, schemas.MCPConnectionStateDisabled, state.State, "a credential update must not resurrect a disabled client")
 }
 
-// TestUpdateClientCredentials_PerCallSharedOAuth_PendingVerification_TransitionsToHealthy
+// TestUpdateClientCredentials_PerCallSharedOAuth_PendingVerification_LeavesThatState
 // pins the second half of the same bug report: a per-call shared-OAuth
 // client's FIRST connection (still in PendingVerification — e.g. a
 // config.json-bootstrapped client whose admin just completed the OAuth
@@ -474,8 +471,10 @@ func TestUpdateClientCredentials_PerCallShared_Disabled_SkipsRefresh(t *testing.
 // left the client permanently stuck showing pending_verification in the UI
 // (with no way to retry, since the pending OAuth stash this endpoint
 // requires is already cleared by the caller) until a restart re-ran
-// AddClient from scratch and performed the transition correctly.
-func TestUpdateClientCredentials_PerCallSharedOAuth_PendingVerification_TransitionsToHealthy(t *testing.T) {
+// AddClient from scratch and performed the transition correctly. No OAuth
+// provider is configured here, so the first discovery fails and the client
+// leaves pending_verification as Unstable, with that failure recorded.
+func TestUpdateClientCredentials_PerCallSharedOAuth_PendingVerification_LeavesThatState(t *testing.T) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, nil, nil)
 	config := &schemas.MCPClientConfig{
 		ID:             "client-pending-percall",
@@ -490,7 +489,6 @@ func TestUpdateClientCredentials_PerCallSharedOAuth_PendingVerification_Transiti
 		ExecutionConfig: config,
 		State:           schemas.MCPConnectionStatePendingVerification,
 		ToolMap:         make(map[string]schemas.ChatTool),
-		ToolNameMapping: make(map[string]string),
 	}
 	m.mu.Unlock()
 
@@ -500,7 +498,9 @@ func TestUpdateClientCredentials_PerCallSharedOAuth_PendingVerification_Transiti
 	m.mu.RLock()
 	state := *m.clientMap[config.ID]
 	m.mu.RUnlock()
-	assert.Equal(t, schemas.MCPConnectionStateHealthy, state.State, "must transition out of pending_verification, mirroring AddClient's own per-call setup")
+	assert.Equal(t, schemas.MCPConnectionStateUnstable, state.State, "must transition out of pending_verification, mirroring AddClient's own per-call setup")
+	require.NotNil(t, state.LastFailure)
+	assert.Equal(t, schemas.MCPConnectionFailureStageToolDiscovery, state.LastFailure.Stage)
 
 	// Without a connection checker, nothing would ever discover this
 	// client's tools afterward (no persistent Conn, no DiscoveredTools to
@@ -512,8 +512,8 @@ func TestUpdateClientCredentials_PerCallSharedOAuth_PendingVerification_Transiti
 	m.checkerManager.mu.RUnlock()
 	assert.True(t, hasChecker, "must start a connection checker so tools actually get discovered")
 
-	// A second call, now that the client is already Healthy, is the plain
-	// reauthorize case: it must attempt a synchronous tool refresh with the
+	// A second call, now that the client has left pending_verification, is the
+	// plain reauthorize case: it must attempt a synchronous tool refresh with the
 	// updated credential rather than report not-applicable. No OAuth
 	// provider is configured here, so resolving the credential for that
 	// discovery fails, and the failure must surface as a real error (not
@@ -551,7 +551,6 @@ func TestUpdateClientCredentials_PerCallSharedType_PendingVerification_Discovers
 		ExecutionConfig: config,
 		State:           schemas.MCPConnectionStatePendingVerification,
 		ToolMap:         make(map[string]schemas.ChatTool),
-		ToolNameMapping: make(map[string]string),
 	}
 	m.mu.Unlock()
 
@@ -563,6 +562,47 @@ func TestUpdateClientCredentials_PerCallSharedType_PendingVerification_Discovers
 	m.mu.RUnlock()
 	assert.Equal(t, schemas.MCPConnectionStateHealthy, state.State)
 	assert.Contains(t, state.ToolMap, "pending-percall-client-sync-echo", "tools must be discovered synchronously, not deferred entirely to the periodic checker")
+}
+
+// TestUpdateClientCredentials_PerCallSharedType_PendingVerification_FailedFirstDiscoveryIsUnstable:
+// a per-call client completing its first connection here whose first discovery
+// fails is recorded as Unstable at the tool_discovery stage, as AddClient's
+// per-call branch records it, rather than reported Healthy with no tools.
+func TestUpdateClientCredentials_PerCallSharedType_PendingVerification_FailedFirstDiscoveryIsUnstable(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(ts.Close)
+
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+	config := &schemas.MCPClientConfig{
+		ID:               "client-pending-percall-failed",
+		Name:             "pending-percall-client-failed",
+		AuthType:         schemas.MCPAuthTypeHeaders,
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(ts.URL),
+		Headers:          map[string]schemas.SecretVar{"Authorization": *schemas.NewSecretVar("Bearer BAD")},
+	}
+
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{
+		Name:            config.Name,
+		ExecutionConfig: config,
+		State:           schemas.MCPConnectionStatePendingVerification,
+		ToolMap:         make(map[string]schemas.ChatTool),
+	}
+	m.mu.Unlock()
+
+	require.NoError(t, m.UpdateClientCredentials(config.ID, config))
+
+	m.mu.RLock()
+	state := *m.clientMap[config.ID]
+	m.mu.RUnlock()
+	assert.Equal(t, schemas.MCPConnectionStateUnstable, state.State)
+	require.NotNil(t, state.LastFailure)
+	assert.Equal(t, schemas.MCPConnectionFailureStageToolDiscovery, state.LastFailure.Stage)
+	assert.Empty(t, state.ToolMap)
 }
 
 // TestReconnectClient_PerCallSharedOAuth_ReturnsReconnectNotApplicable pins
@@ -1036,7 +1076,7 @@ func TestSetClientDiscoveryRecordsInstructionsForRestart(t *testing.T) {
 	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, ToolMap: map[string]schemas.ChatTool{}}
 	m.mu.Unlock()
 
-	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"t": {Type: "function"}}, ToolNameMapping: map[string]string{"t": "t"}, Instructions: "Use me carefully."})
+	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"t": {Type: "function"}}, Instructions: "Use me carefully."})
 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -1061,9 +1101,8 @@ func TestInstructionsOnlyChangeStillFiresToolsChangeCallback(t *testing.T) {
 	})
 
 	tools := map[string]schemas.ChatTool{"echo": {Type: "function"}}
-	mapping := map[string]string{"echo": "echo"}
-	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: tools, ToolNameMapping: mapping, Instructions: "v1"})
-	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"echo": {Type: "function"}}, ToolNameMapping: map[string]string{"echo": "echo"}, Instructions: "v2"})
+	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: tools, Instructions: "v1"})
+	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"echo": {Type: "function"}}, Instructions: "v2"})
 
 	assert.Equal(t, []string{"v1", "v2"}, seen)
 }
@@ -1080,7 +1119,7 @@ func TestWriteBackDiscoveredToolsKeepsInstructionsWhenNotRediscovered(t *testing
 	}
 	m.mu.Unlock()
 
-	require.True(t, m.writeBackDiscovery(config.ID, 0, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"a": {Type: "function"}}, ToolNameMapping: map[string]string{"a": "a"}}, false))
+	require.True(t, m.writeBackDiscovery(config.ID, 0, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"a": {Type: "function"}}}, false))
 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -1243,7 +1282,10 @@ func TestBuildTLSHTTPClientUsesGlobalProxy(t *testing.T) {
 	// MCP allows private networks (local MCP servers) but never instance metadata.
 	set.Reset()
 	req, _ = http.NewRequestWithContext(ctx, http.MethodGet, "https://169.254.169.254/sse", nil)
-	_, err = httpClient.Do(req)
+	resp, err := httpClient.Do(req)
+	if err == nil {
+		resp.Body.Close()
+	}
 	require.Error(t, err, "a metadata address must be refused")
 	proxytest.AssertRoute(t, set, proxytest.Direct, "", nil)
 }
@@ -1659,6 +1701,23 @@ func (p *headerRewritingPipeline) RunMCPPostConnectionHooks(_ *schemas.BifrostCo
 	return resp, bifrostErr
 }
 
+// TestCreateSTDIOConnection_RefusesAnEmptyCommandFromAHook: a connection hook may replace the
+// STDIO command, and an empty one is refused like an empty configured command. mcp-go starts no
+// process for it and leaves stdout nil, and its reader goroutine then panics on it.
+func TestCreateSTDIOConnection_RefusesAnEmptyCommandFromAHook(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	config := &schemas.MCPClientConfig{
+		ID: "stdio-hooked", Name: "stdio_hooked", ConnectionType: schemas.MCPConnectionTypeSTDIO,
+		StdioConfig: &schemas.MCPStdioConfig{Command: "echo"},
+	}
+	for _, command := range []string{"", "   "} {
+		conn, _, err := m.createSTDIOConnection(context.Background(), config, &schemas.BifrostMCPConnectRequest{StdioCommand: &command})
+		require.Error(t, err, "command %q", command)
+		assert.Contains(t, err.Error(), "stdio command is required")
+		assert.Nil(t, conn)
+	}
+}
+
 // TestConnect_OpenAPI_PluginAdjustedHeadersReachUpstream: as for HTTP and SSE,
 // the static headers a PreMCPConnectionHook leaves on the connect request are
 // what the upstream receives. A header the plugin adds is sent, one it drops is
@@ -1698,6 +1757,38 @@ func TestRefreshClientTools_OpenAPI_RebuildsServer(t *testing.T) {
 	assert.Equal(t, int32(2), stub.calls.Load(), "refresh rebuilds the synthesized server")
 	assert.Equal(t, 2, count)
 	assert.Equal(t, []string{"petstore-createPet", "petstore-listPets"}, openAPIToolNames(t, m, config.ID))
+}
+
+// TestRefreshClientTools_PerUserHeadersDiscoversWithTheAdminCredential: an on-demand
+// refresh of a per_user_headers client connects with its stored admin credential, as
+// periodic discovery does; no caller's values are involved.
+func TestRefreshClientTools_PerUserHeadersDiscoversWithTheAdminCredential(t *testing.T) {
+	ts, rec := buildAdminDiscoveryHTTPServer(t)
+	cred := &fakeAdminCredStore{headers: http.Header{"X-Api-Key": []string{"admin-key-1"}}}
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, cred, &MockLogger{}, nil)
+	config := &schemas.MCPClientConfig{
+		ID:                "client-refresh",
+		Name:              "headers_client",
+		AuthType:          schemas.MCPAuthTypePerUserHeaders,
+		ConnectionType:    schemas.MCPConnectionTypeHTTP,
+		ConnectionString:  schemas.NewSecretVar(ts.URL),
+		PerUserHeaderKeys: []string{"x-api-key"},
+		ToolsToExecute:    schemas.WhiteList{"*"},
+		DiscoveredTools:   map[string]schemas.ChatTool{}, // verified at create
+	}
+	require.NoError(t, m.AddClient(context.Background(), config))
+	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+	before := cred.callCount()
+
+	count, err := m.RefreshClientTools(context.Background(), config.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+	assert.Equal(t, before+1, cred.callCount(), "the refresh read the admin credential")
+	keys := rec.headerValues("X-Api-Key")
+	require.NotEmpty(t, keys)
+	for _, v := range keys {
+		assert.Equal(t, "admin-key-1", v)
+	}
 }
 
 // TestRefreshClientTools_OpenAPI_RespectsExclusiveOp: the rebuild a refresh

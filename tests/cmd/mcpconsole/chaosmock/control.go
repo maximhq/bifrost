@@ -80,11 +80,16 @@ func (f *Fleet) routeFleetControl(w http.ResponseWriter, r *http.Request) {
 				states[name] = s.State()
 			}
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
+		body := map[string]any{
 			"base_url":    f.URL(),
 			"servers":     states,
 			"connections": f.Connections(),
-		})
+		}
+		if tlsURL, certPEM := f.tlsListener(); tlsURL != "" {
+			body["tls_url"] = tlsURL
+			body["tls_cert_pem"] = certPEM
+		}
+		writeJSON(w, http.StatusOK, body)
 	case http.MethodPost:
 		var body struct {
 			Add    string `json:"add"`

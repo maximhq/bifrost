@@ -11,7 +11,7 @@ icon: "user-shield"
 
 If a single shared admin token is fine, use [OAuth 2.0](./oauth) instead.
 
-This auth type is only valid for **HTTP** and **SSE** connections.
+This auth type is only valid for **HTTP** connections. It is refused on an SSE or STDIO client, because each call opens its own connection: the API answers 400, and a `config.json` client is skipped at boot with an error naming it.
 
 <Note>
 This page covers **upstream** per-user OAuth — Bifrost holding a token *for* an upstream MCP service on behalf of each end-user, resolved **lazily** on the first tool call that needs it. Identity is asserted by the caller via headers (or upstream SSO).
@@ -39,7 +39,7 @@ You can run the admin verification either from the **Web UI** during create, or 
 
 1. Navigate to **MCP Gateway** in the sidebar
 2. Click **New MCP Server**
-3. Pick **HTTP** or **SSE** as the connection type, fill in the **Connection URL**
+3. Pick **HTTP** as the connection type, fill in the **Connection URL**
 4. Set **Auth Type** to **Per-User OAuth 2.0**
 5. Fill in the OAuth fields:
    - **Client ID** (optional — leave blank for Dynamic Client Registration)
@@ -114,6 +114,7 @@ The same lazy-auth pattern is used on both the **MCP Gateway** (`/mcp`) and the 
 3. Bifrost looks up an existing token for `(identity, mcp_client)`:
    - **Token found and `active`** → upstream call goes out transparently
    - **Missing, `orphaned`, or `needs_reauth`** → Bifrost returns an `mcp_auth_required` payload with an inline `authorize_url`. The tool is **not** executed.
+   - **Rejected upstream** (the provider expired or revoked it before the expiry Bifrost stored) → Bifrost refreshes it once and connects again, so the call goes ahead. If the provider refuses the refresh too, the token becomes `needs_reauth` and the same request returns `mcp_auth_required`.
 4. The user opens the URL, completes the upstream OAuth flow, and Bifrost stores the resulting token against their identity.
 5. The next request executes the tool normally.
 
@@ -225,10 +226,10 @@ The admin's one-time bootstrap token is not thrown away after verification: Bifr
 
 If the admin credential permanently dies (refresh rejected, provider-side revocation, or a credential rotation), the client list projects a **`needs_reauth`** badge next to the client's **View sessions** link. This is a display-level state: end-user credentials and tool calls keep working, only tool-list refresh pauses until an admin repairs it. Clients verified before Bifrost retained admin credentials have no admin row and simply stay healthy.
 
-To repair it, open the client sheet and click **Repair OAuth**: Bifrost redoes the admin consent flow, verifies the fresh token upstream, re-discovers tools, and installs the token as the new admin credential. If verification fails, the fresh token is revoked and the previous credential and tool set are left untouched, so the repair is safely retryable.
+To repair it, open the server's actions menu (**⋯**) in the MCP Server Catalog and choose **Refresh admin credential**: Bifrost redoes the admin consent flow, verifies the fresh token upstream, re-discovers tools, and installs the token as the new admin credential. If verification fails, the fresh token is revoked and the previous credential and tool set are left untouched, so the repair is safely retryable.
 
 <Frame>
-  <img src="/media/ui-mcp-per-user-oauth-admin-repair.png" alt="Per-user OAuth client sheet showing the needs_reauth badge next to View sessions and the Repair OAuth button" />
+  <img src="/media/ui-mcp-per-user-oauth-admin-repair.png" alt="MCP Server Catalog with a per-user OAuth client in Needs Reauth state and Refresh admin credential highlighted in its actions menu" />
 </Frame>
 
 The same repair is scriptable via `POST /api/mcp/client/{id}/reauthorize` (`{id}` = MCP client ID). For `per_user_oauth` clients the endpoint is strictly a repair surface: it returns **409** ("does not need repair or does not exist") unless the admin credential actually sits in `needs_reauth`, so it can never churn a healthy credential. The response is the standard `pending_oauth` payload (`authorize_url`, `status_url`, `complete_url`); complete it the same way as the [scriptable verification flow](#setup).

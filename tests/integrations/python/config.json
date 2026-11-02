@@ -1934,7 +1934,8 @@
     }
   ],
   "server": {
-    "read_buffer_size": 65536
+    "read_buffer_size": 65536,
+    "base_path":"/testing-path"
   },
   "client": {
     "allow_per_request_raw_override": true,
