@@ -941,6 +941,7 @@
 			"completeAuth": "Complete authentication",
 			"triggerReauth": "Trigger a request to re-authenticate",
 			"revoke": "Revoke",
+			"refreshTools": "Refresh tools",
 			"updateValues": "Update values",
 			"editValues": "Edit values"
 		},
@@ -957,7 +958,10 @@
 			"headerRevoked": "Header values revoked",
 			"sessionRevoked": "Session revoked",
 			"headerRevokeFailed": "Failed to revoke header values",
-			"sessionRevokeFailed": "Failed to revoke session"
+			"sessionRevokeFailed": "Failed to revoke session",
+			"toolsRefreshed_one": "Refreshed: {{count}} tool",
+			"toolsRefreshed_other": "Refreshed: {{count}} tools",
+			"toolsRefreshFailed": "Couldn't refresh tools"
 		},
 		"filter": {
 			"type": "Type",

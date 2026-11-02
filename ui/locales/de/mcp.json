@@ -941,6 +941,7 @@
 			"completeAuth": "Authentifizierung abschließen",
 			"triggerReauth": "Eine erneute Authentifizierungsanfrage auslösen",
 			"revoke": "Widerrufen",
+			"refreshTools": "Tools aktualisieren",
 			"updateValues": "Werte aktualisieren",
 			"editValues": "Werte bearbeiten"
 		},
@@ -957,7 +958,10 @@
 			"headerRevoked": "Header-Werte widerrufen",
 			"sessionRevoked": "Sitzung widerrufen",
 			"headerRevokeFailed": "Header-Werte konnten nicht widerrufen werden",
-			"sessionRevokeFailed": "Sitzung konnte nicht widerrufen werden"
+			"sessionRevokeFailed": "Sitzung konnte nicht widerrufen werden",
+			"toolsRefreshed_one": "Aktualisiert: {{count}} Tool",
+			"toolsRefreshed_other": "Aktualisiert: {{count}} Tools",
+			"toolsRefreshFailed": "Tools konnten nicht aktualisiert werden"
 		},
 		"filter": {
 			"type": "Typ",

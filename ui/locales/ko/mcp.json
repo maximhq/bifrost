@@ -941,6 +941,7 @@
 			"completeAuth": "인증 완료",
 			"triggerReauth": "재인증 요청 트리거",
 			"revoke": "취소",
+			"refreshTools": "도구 새로고침",
 			"updateValues": "값 업데이트",
 			"editValues": "값 편집"
 		},
@@ -957,7 +958,10 @@
 			"headerRevoked": "헤더 값이 취소되었어요.",
 			"sessionRevoked": "세션이 취소되었어요.",
 			"headerRevokeFailed": "헤더 값을 취소하지 못했어요.",
-			"sessionRevokeFailed": "세션을 취소하지 못했어요."
+			"sessionRevokeFailed": "세션을 취소하지 못했어요.",
+			"toolsRefreshed_one": "새로고침 완료: 도구 {{count}}개",
+			"toolsRefreshed_other": "새로고침 완료: 도구 {{count}}개",
+			"toolsRefreshFailed": "도구를 새로고침하지 못했어요"
 		},
 		"filter": {
 			"type": "유형",

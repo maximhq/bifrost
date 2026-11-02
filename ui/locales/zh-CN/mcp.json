@@ -941,6 +941,7 @@
 			"completeAuth": "完成鉴权",
 			"triggerReauth": "触发请求以重新鉴权",
 			"revoke": "撤销",
+			"refreshTools": "刷新工具",
 			"updateValues": "更新值",
 			"editValues": "编辑值"
 		},
@@ -957,7 +958,10 @@
 			"headerRevoked": "请求头值已撤销",
 			"sessionRevoked": "会话已撤销",
 			"headerRevokeFailed": "撤销请求头值失败",
-			"sessionRevokeFailed": "撤销会话失败"
+			"sessionRevokeFailed": "撤销会话失败",
+			"toolsRefreshed_one": "已刷新：{{count}} 个工具",
+			"toolsRefreshed_other": "已刷新：{{count}} 个工具",
+			"toolsRefreshFailed": "无法刷新工具"
 		},
 		"filter": {
 			"type": "类型",

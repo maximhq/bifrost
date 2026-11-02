@@ -39,13 +39,24 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { ChevronLeft, ChevronRight, Info, Search } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { getErrorMessage, useReauthMCPSessionMutation, useRevokeMCPSessionMutation } from "@/lib/store";
+import { getErrorMessage, useReauthMCPSessionMutation, useRefreshMCPSessionMutation, useRevokeMCPSessionMutation } from "@/lib/store";
 import { MCPSessionRow } from "@/lib/types/mcpSessions";
 import { formatRelativePast, formatTokenExpiry } from "@/lib/utils/mcpCredential";
 import { sessionDiscoveryCell } from "@/lib/utils/mcpPerUserDiscovery";
 import { RefreshTokenStatus } from "@/components/refreshTokenStatus";
 import { ScopeChips } from "@/components/scopeChips";
-import { ExternalLink, Fingerprint, KeyRound, Loader2, MoreHorizontal, Pencil, RefreshCcw, Trash2, UserRound } from "lucide-react";
+import {
+	ExternalLink,
+	Fingerprint,
+	KeyRound,
+	Loader2,
+	MoreHorizontal,
+	Pencil,
+	RefreshCcw,
+	RefreshCw,
+	Trash2,
+	UserRound,
+} from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { getLocale } from "@/lib/i18n";
@@ -79,6 +90,7 @@ export default function SessionsTable({
 	const { toast } = useToast();
 	const [reauth, { isLoading: reauthing }] = useReauthMCPSessionMutation();
 	const [revoke, { isLoading: revoking }] = useRevokeMCPSessionMutation();
+	const [refresh, { isLoading: refreshing }] = useRefreshMCPSessionMutation();
 	const [pendingDelete, setPendingDelete] = useState<MCPSessionRow | null>(null);
 	const [pendingActionRowId, setPendingActionRowId] = useState<string | null>(null);
 
@@ -92,6 +104,18 @@ export default function SessionsTable({
 		} catch (err) {
 			setPendingActionRowId(null);
 			toast({ title: t("sessions.toast.reauthFailed"), description: getErrorMessage(err), variant: "destructive" });
+		}
+	};
+
+	const handleRefresh = async (row: MCPSessionRow) => {
+		setPendingActionRowId(row.id);
+		try {
+			const res = await refresh(row.id).unwrap();
+			toast({ title: t("sessions.toast.toolsRefreshed", { count: res.tool_count }) });
+		} catch (err) {
+			toast({ title: t("sessions.toast.toolsRefreshFailed"), description: getErrorMessage(err), variant: "destructive" });
+		} finally {
+			setPendingActionRowId(null);
 		}
 	};
 
@@ -258,9 +282,11 @@ export default function SessionsTable({
 												row={row}
 												reauthing={reauthing}
 												revoking={revoking}
+												refreshing={refreshing}
 												isPendingRow={pendingActionRowId === row.id}
 												onReauth={() => handleReauth(row)}
 												onRevoke={() => setPendingDelete(row)}
+												onRefresh={() => handleRefresh(row)}
 											/>
 										</TableCell>
 									</TableRow>
@@ -422,15 +448,30 @@ interface RowActionsProps {
 	row: MCPSessionRow;
 	reauthing: boolean;
 	revoking: boolean;
+	refreshing: boolean;
 	isPendingRow: boolean;
 	onReauth: () => void;
 	onRevoke: () => void;
+	onRefresh: () => void;
 }
 
-/** Per-row actions menu for an MCP session: complete auth, re-authenticate or revoke. */
-function RowActions({ row, reauthing, revoking, isPendingRow, onReauth, onRevoke }: RowActionsProps) {
+/** Per-row actions menu for an MCP session: complete auth, re-authenticate, refresh tools or revoke. */
+function RowActions({ row, reauthing, revoking, refreshing, isPendingRow, onReauth, onRevoke, onRefresh }: RowActionsProps) {
 	const { t } = useTranslation("mcp");
-	const busy = reauthing || revoking;
+	const busy = reauthing || revoking || refreshing;
+	// Discovers the caller's tools again with the stored credential; the server
+	// decides who may (can_refresh), the same callers as re-authentication.
+	const refreshItem = row.can_refresh && (
+		<DropdownMenuItem
+			className="cursor-pointer"
+			disabled={busy}
+			data-testid="mcp-session-refresh-menu-item"
+			onSelect={onRefresh}
+		>
+			<RefreshCw className="h-4 w-4" />
+			{t("sessions.actions.refreshTools")}
+		</DropdownMenuItem>
+	);
 	return (
 		<DropdownMenu>
 			<DropdownMenuTrigger asChild>
@@ -512,6 +553,7 @@ function RowActions({ row, reauthing, revoking, isPendingRow, onReauth, onRevoke
 								{row.status === "needs_update" ? t("sessions.actions.updateValues") : t("sessions.actions.editValues")}
 							</DropdownMenuItem>
 						)}
+						{refreshItem}
 						<DropdownMenuItem
 							variant="destructive"
 							className="cursor-pointer"
@@ -547,6 +589,7 @@ function RowActions({ row, reauthing, revoking, isPendingRow, onReauth, onRevoke
 								{t("sessions.actions.reauthenticate")}
 							</DropdownMenuItem>
 						)}
+						{refreshItem}
 						<DropdownMenuItem
 							variant="destructive"
 							className="cursor-pointer"

@@ -27,7 +27,7 @@ import (
 // signInMCPManager answers verification the way a client's upstream would, with
 // one tool, and records the credential each verification was handed. duringVerify,
 // when set, runs inside a verification, as something that happens while it dials;
-// verifyErr, when set, fails an OAuth verification, as an upstream that is down.
+// verifyErr, when set, fails every verification, as an upstream that is down.
 type signInMCPManager struct {
 	MCPManager
 	mu           sync.Mutex
@@ -58,6 +58,9 @@ func (m *signInMCPManager) VerifyHeadersConnection(_ context.Context, config *sc
 	m.mu.Unlock()
 	if hook != nil {
 		hook()
+	}
+	if m.verifyErr != nil {
+		return nil, m.verifyErr
 	}
 	return signInDiscovery(config.Name), nil
 }

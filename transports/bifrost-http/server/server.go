@@ -3084,7 +3084,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 			go callbacks.EvictMCPPerUserDiscoveryCache(context.WithoutCancel(ctx), mode, identity, mcpClientID)
 		})
 	}
-	mcpSessionsHandler := handlers.NewMCPSessionsHandler(s.Config, callbacks)
+	mcpSessionsHandler := handlers.NewMCPSessionsHandler(s.Config, callbacks, callbacks)
 	// The headers provider evicts a credential it writes only from this
 	// process's cache. Forward those evictions to callbacks so a deployment
 	// that overrides EvictMCPHeaderCredentialCacheByID reaches every process,

@@ -941,6 +941,7 @@
 			"completeAuth": "完成驗證",
 			"triggerReauth": "觸發請求以重新驗證",
 			"revoke": "撤銷",
+			"refreshTools": "重新整理工具",
 			"updateValues": "更新值",
 			"editValues": "編輯值"
 		},
@@ -957,7 +958,10 @@
 			"headerRevoked": "請求頭值已撤銷",
 			"sessionRevoked": "會話已撤銷",
 			"headerRevokeFailed": "撤銷請求頭值失敗",
-			"sessionRevokeFailed": "撤銷會話失敗"
+			"sessionRevokeFailed": "撤銷會話失敗",
+			"toolsRefreshed_one": "已重新整理：{{count}} 個工具",
+			"toolsRefreshed_other": "已重新整理：{{count}} 個工具",
+			"toolsRefreshFailed": "無法重新整理工具"
 		},
 		"filter": {
 			"type": "型別",

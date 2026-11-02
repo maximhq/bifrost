@@ -922,7 +922,7 @@ func (m *MCPManager) RefreshClientTools(ctx context.Context, clientID string) (i
 	// A client with per_user_discovery on has no tool list of its own to
 	// refresh, and no admin credential to discover one with.
 	if perUserDiscoveryOn(config) {
-		return 0, fmt.Errorf("mcp client %s keeps a discovery per caller, so it has no shared tool list to refresh: %w", config.Name, schemas.ErrMCPRefreshNotApplicable)
+		return 0, fmt.Errorf("mcp client %s keeps a discovery per caller, so it has no shared tool list to refresh; refresh a caller's tools from their session instead: %w", config.Name, schemas.ErrMCPRefreshNotApplicable)
 	}
 
 	if config.ConnectionType == schemas.MCPConnectionTypeOpenAPI {

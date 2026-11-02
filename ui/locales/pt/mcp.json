@@ -941,6 +941,7 @@
 			"completeAuth": "Concluir autenticação",
 			"triggerReauth": "Acionar um pedido para voltar a autenticar",
 			"revoke": "Revogar",
+			"refreshTools": "Atualizar ferramentas",
 			"updateValues": "Atualizar valores",
 			"editValues": "Editar valores"
 		},
@@ -957,7 +958,10 @@
 			"headerRevoked": "Valores de cabeçalho revogados",
 			"sessionRevoked": "Sessão revogada",
 			"headerRevokeFailed": "Falha ao revogar valores de cabeçalho",
-			"sessionRevokeFailed": "Falha ao revogar a sessão"
+			"sessionRevokeFailed": "Falha ao revogar a sessão",
+			"toolsRefreshed_one": "Atualizado: {{count}} ferramenta",
+			"toolsRefreshed_other": "Atualizado: {{count}} ferramentas",
+			"toolsRefreshFailed": "Não foi possível atualizar as ferramentas"
 		},
 		"filter": {
 			"type": "Tipo",

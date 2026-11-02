@@ -35,7 +35,7 @@ The table is **scoped to the caller's identity**: a signed-in admin sees rows vi
 | **Access token expiry** | When the OAuth access token expires. `—` for header rows (no concept of access-token expiry) |
 | **Discovery**   | On a server with Per-Caller Discovery on, what Bifrost discovered with this credential and when, such as `3 tools · 1 prompt · 2 resources`, discovered 4 min ago. `Not yet` while a sign-in is pending, or until the caller connects after signing in. `Shared` on a server without Per-Caller Discovery, whose one discovery every caller uses. `-` for a credential that needs action (its discovery was deleted with it) or a session-bound one, which keeps none |
 | **Created**     | When the credential or flow was first opened                                                         |
-| Action menu      | Re-authenticate, Edit values, Complete authentication, Revoke — see [Actions](#actions)             |
+| Action menu      | Re-authenticate, Edit values, Refresh tools, Complete authentication, Revoke — see [Actions](#actions) |
 
 ---
 
@@ -97,6 +97,16 @@ Available on `active` and `needs_update` header credential rows. Clicking it:
 1. Mints a fresh submission flow against the same MCP client and identity
 2. Redirects the browser to the values form pre-populated with the names of currently-stored keys (values are never shown)
 3. On submit, Bifrost runs a one-time upstream verify, replaces the credential in place, and flips status to `active`
+
+### Refresh tools (Per-Caller Discovery)
+
+Available on `active` OAuth token and header credential rows of a user or a virtual key, on a server with Per-Caller Discovery on. Clicking it discovers the caller's tools, prompts and resources again with the credential the row stores, without the caller signing in again, so tools the upstream server added since they signed in reach them. Every node serves the new discovery, and MCP clients connected to `/mcp` are told to list their tools again. The toast says how many tools the new discovery holds.
+
+- A user's session can be refreshed only by that user; a virtual key's by anyone who can see the row.
+- If discovery fails, because the upstream is down or refuses the credential, the caller keeps the tools they had and the error is shown.
+- Not offered while the server awaits admin verification, or on rows that need re-authentication or updated header values: do that first.
+
+Over the API: `POST /api/mcp/sessions/{id}/refresh`, which answers with the new tool, prompt and resource counts.
 
 ### Complete authentication (Pending)
 

@@ -22,7 +22,7 @@ const SESSIONS = [
   },
   {
     id: 'hdr-bot', kind: 'header', auth_kind: 'headers', auth_mode: 'vk', virtual_key: { id: 'vk-1', name: 'support-bot' }, mcp_client: PER_CALLER,
-    status: 'active', created_at: minutesAgo(90), updated_at: minutesAgo(90), can_reauth: true,
+    status: 'active', created_at: minutesAgo(90), updated_at: minutesAgo(90), can_reauth: true, can_refresh: true,
     discovery: { discovered_at: minutesAgo(120), tool_count: 0, prompt_count: 0, resource_count: 0 },
   },
   {
@@ -91,6 +91,29 @@ test.describe('MCP per-caller discovery in sessions', () => {
     await expect(cell('tok-sam')).toHaveText('-')
     await expect(cell('hdr-sess')).toHaveText('-')
     await expect(cell('tok-wiki')).toHaveText('Shared')
+  })
+
+  test('a session that can be refreshed offers Refresh tools, and says how many tools it found', async ({ page }) => {
+    await stubSessions(page)
+    const refreshed: string[] = []
+    await page.route(
+      (url) => /^\/api\/mcp\/sessions\/[^/]+\/refresh$/.test(url.pathname),
+      async (route) => {
+        refreshed.push(new URL(route.request().url()).pathname)
+        await route.fulfill({ json: { status: 'success', tool_count: 4, prompt_count: 1, resource_count: 2 } })
+      },
+    )
+    await page.goto('/workspace/mcp-sessions')
+
+    await page.getByTestId('mcp-session-row-actions-tok-sam').click()
+    await expect(page.getByTestId('mcp-session-revoke-menu-item')).toBeVisible()
+    await expect(page.getByTestId('mcp-session-refresh-menu-item')).toHaveCount(0)
+    await page.keyboard.press('Escape')
+
+    await page.getByTestId('mcp-session-row-actions-hdr-bot').click()
+    await page.getByTestId('mcp-session-refresh-menu-item').click()
+    await expect(page.getByText('Refreshed: 4 tools')).toBeVisible()
+    expect(refreshed).toEqual(['/api/mcp/sessions/hdr-bot/refresh'])
   })
 
   test("a Per-Caller Discovery server's Callers tab shows each caller's discovery", async ({ page, mcpRegistryPage }) => {
