@@ -637,6 +637,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	developerAsSystem := !caps.SupportsDeveloperRole(true)
 	keepAdditionalTools := supportsAdditionalToolsItem(bifrostReq.Provider) && !customToolsAsFunctions
 	keepsReasoningItemIDs := baseProvider == schemas.BedrockMantle || baseProvider == schemas.Bedrock
+	joinsReasoningBlocks := baseProvider == schemas.VLLM
 	keepConfigurationUpdate := supportsConfigurationUpdateItem(ctx, bifrostReq.Provider)
 	replayAssistantTextAsInput := isMantleGPTOSSResponses(ctx, bifrostReq.Provider, capModel)
 	replayComputerActions := bifrostReq.Params != nil && slices.ContainsFunc(bifrostReq.Params.Tools, func(t schemas.ResponsesTool) bool {
@@ -913,7 +914,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		}
 
 		if message.ResponsesReasoning != nil {
-			usesContentBlocks := caps.SupportsReasoningContentBlocks(defaultSupportsReasoningContentBlocks(capModel))
+			usesContentBlocks := caps.SupportsReasoningContentBlocks(defaultSupportsReasoningContentBlocks(baseProvider, capModel))
 			isReasoning := caps.SupportsReasoning(IsOpenAIReasoningModel(capModel))
 
 			// Models that read reasoning from summary[] have nothing to gain from a
@@ -946,9 +947,13 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 						Text: schemas.Ptr(summary.Text),
 					})
 				}
+				if joinsReasoningBlocks {
+					contentBlocks = joinReasoningBlocks(contentBlocks)
+				}
 				newMessage.Content = &schemas.ResponsesMessageContent{
 					ContentBlocks: contentBlocks,
 				}
+				newMessage.ResponsesReasoning = &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}}
 				messages = append(messages, newMessage)
 			} else {
 				// Clone the embedded pointer to avoid mutating the original input
@@ -991,6 +996,8 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 						}
 					case len(message.Content.ContentBlocks) == 0:
 						message.Content = nil
+					case joinsReasoningBlocks && len(message.Content.ContentBlocks) > 1:
+						message.Content = &schemas.ResponsesMessageContent{ContentBlocks: joinReasoningBlocks(message.Content.ContentBlocks)}
 					}
 				}
 				messages = append(messages, message)
