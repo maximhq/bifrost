@@ -61,7 +61,7 @@ servers:
     variables:
       baseUrl:
         default: http://localhost:8080
-        description: Base URL of your Bifrost instance (e.g. https://bifrost.mycompany.com)
+        description: Base URL of your Bifrost instance (e.g. https://bifrost.mycompany.com, or https://mycompany.com/bifrost when served under server.base_path)
 
 # Fallback only. Every operation MUST declare its own `security` (use `security: []`
 # for genuinely public endpoints) - `spec_invariants_test.py` enforces this. This

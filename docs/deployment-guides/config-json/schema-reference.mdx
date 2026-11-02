@@ -601,9 +601,11 @@ HTTP server settings. Every field is deploy-time only: Bifrost reads them once a
 
 - It must start with `/`. A single trailing `/` is removed, and `""` or `"/"` means the domain root.
 - Segments may only use the characters `A-Z a-z 0-9 - . _ ~`, and may not be `.` or `..`. Surrounding whitespace is rejected, not trimmed.
-- The first segment must not match a Bifrost route (such as `api`, `v1`, `openai` or `health`) or a top-level dashboard path (such as `assets` or `images`). Bifrost refuses to start otherwise.
+- The first segment must not match a Bifrost route (such as `api`, `v1`, `openai` or `health`), a dashboard page root (`workspace`, `login`, `oauth`, `agent`, `pprof`) or a top-level dashboard file path (such as `assets` or `images`). Bifrost refuses to start otherwise.
+- Passing `-base-path /` (or `BIFROST_BASE_PATH=/`) forces the domain root even when `config.json` sets a prefix.
 - Requests are accepted with or without the prefix, so health checks and probes can stay on `/health`.
-- Public URLs you set explicitly, such as `client.mcp_external_client_url`, `client.a2a_external_client_url` and `client.skills_external_client_url`, must include the prefix themselves.
+- Public URLs you set explicitly, such as `client.mcp_external_client_url`, `client.a2a_external_client_url`, `client.skills_external_client_url` and `client.oauth2_server_config.issuer_url`, must include the prefix themselves.
+- OAuth discovery for an issuer with a prefix lives at the host root (`https://example.com/.well-known/oauth-authorization-server/bifrost`, per RFC 8414), so the proxy must also forward `/.well-known/` to Bifrost.
 
 ---
 

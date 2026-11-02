@@ -186,7 +186,7 @@ curl -X PUT http://localhost:8080/api/config \
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `mcp_server_auth_mode` | string | No | `headers` (default), `both`, or `oauth`. |
-| `oauth2_server_config.issuer_url` | string | Yes, when mode is `both` or `oauth` | Stable public URL advertised as the issuer in discovery docs and the JWT `iss` claim. A trailing slash is ignored. Supports `env.MY_VAR` syntax. |
+| `oauth2_server_config.issuer_url` | string | Yes, when mode is `both` or `oauth` | Stable public URL advertised as the issuer in discovery docs and the JWT `iss` claim. A trailing slash is ignored. Supports `env.MY_VAR` syntax. Behind a path prefix (`server.base_path`) it must include the prefix, for example `https://bifrost.example.com/bifrost`; clients then fetch the discovery documents at the host root (`https://bifrost.example.com/.well-known/oauth-authorization-server/bifrost`, per RFC 8414 and RFC 9728), so the proxy must forward `/.well-known/` to Bifrost as well. See [Serving under a path prefix](/deployment-guides/how-to/nginx-reverse-proxy#serving-under-a-path-prefix). |
 | `oauth2_server_config.allowed_redirect_uris` | string[] | No | Exact approved remote callback URIs. Remote callbacks are denied unless listed. Loopback callbacks and `cursor://anysphere.cursor-mcp` remain available without entries. A bare `"*"` entry allows any `https` callback; partial wildcards are rejected. API changes require dashboard authentication. |
 | `oauth2_server_config.auth_code_ttl` | integer | No | Authorization code lifetime in seconds (default `300`, max `900` = 15 minutes). |
 | `oauth2_server_config.access_token_ttl` | integer | No | Issued JWT lifetime in seconds (default `600`). |
@@ -295,6 +295,9 @@ Browser-based MCP clients send an `Origin` header, and Bifrost checks it on ever
 **Symptom:** A client can't discover the authorization server; `.well-known` endpoints return `404`.
 **Cause:** `mcp_server_auth_mode` is `headers`, so the OAuth surface is disabled.
 **Fix:** Set the mode to `both` or `oauth`.
+
+**Cause:** Bifrost is served under a path prefix and the proxy only forwards that prefix. For an issuer such as `https://bifrost.example.com/bifrost`, clients fetch `https://bifrost.example.com/.well-known/oauth-authorization-server/bifrost` at the host root.
+**Fix:** Forward `/.well-known/` to Bifrost too; see [Serving under a path prefix](/deployment-guides/how-to/nginx-reverse-proxy#serving-under-a-path-prefix).
 
 ### Header credential rejected on /mcp
 **Symptom:** A virtual key or API key that worked before now gets a `401`.

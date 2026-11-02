@@ -254,6 +254,7 @@ dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Star
 			-log-style "$(LOG_STYLE)" \
 			-log-level "$(LOG_LEVEL)" \
 			$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)") \
+			$(if $(BASE_PATH),-base-path "$(BASE_PATH)") \
 			$(if $(APP_DIR),-app-dir "$(abspath $(APP_DIR))")) & \
 	else \
 		(cd transports/bifrost-http && BIFROST_UI_DEV=true air -c .air.toml -- \
@@ -262,6 +263,7 @@ dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Star
 			-log-style "$(LOG_STYLE)" \
 			-log-level "$(LOG_LEVEL)" \
 			$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)") \
+			$(if $(BASE_PATH),-base-path "$(BASE_PATH)") \
 			$(if $(APP_DIR),-app-dir "$(abspath $(APP_DIR))")) & \
 	fi; \
 	api_pid="$$!"; \
@@ -509,6 +511,7 @@ run: build ## Build and run bifrost-http (no hot reload)
 		-log-style "$(LOG_STYLE)" \
 		-log-level "$(LOG_LEVEL)" \
 		$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)") \
+		$(if $(BASE_PATH),-base-path "$(BASE_PATH)") \
 		$(if $(APP_DIR),-app-dir "$(abspath $(APP_DIR))")
 
 run-cli: build-cli ## Run bifrost CLI (Usage: make run-cli [ARGS="--config ~/.bifrost/config.json"])
