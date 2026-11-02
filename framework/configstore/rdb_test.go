@@ -6346,6 +6346,27 @@ func TestPerUserDiscovery_CascadesWithClientAndVirtualKey(t *testing.T) {
 	assert.Nil(t, got)
 }
 
+func TestPerUserDiscovery_BindingsListsUserAndVirtualKeyHoldersOfOneClient(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, samplePerUserDiscovery(schemas.MCPAuthModeUser, "alice", "notes", "search")))
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, samplePerUserDiscovery(schemas.MCPAuthModeVK, "vk-1", "notes", "search")))
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, samplePerUserDiscovery(schemas.MCPAuthModeUser, "bob", "wiki", "read")))
+
+	rows, err := store.GetMCPPerUserDiscoveryBindings(ctx, "notes")
+	require.NoError(t, err)
+	got := map[string]string{}
+	for _, row := range rows {
+		got[row.AuthMode+"/"+row.Identity()] = row.DiscoveryHash
+		assert.Empty(t, row.Tools, "listing bindings must not load the tool schemas")
+	}
+	assert.Equal(t, map[string]string{"user/alice": "hash-alice", "vk/vk-1": "hash-vk-1"}, got, "another client's rows are left out")
+
+	rows, err = store.GetMCPPerUserDiscoveryBindings(ctx, "missing")
+	require.NoError(t, err)
+	assert.Empty(t, rows)
+}
+
 // TestUpdateMCPClientConfig_KeepsPerUserDiscoveryWhenUnset: the update writes
 // per_user_discovery only when the row it is handed sets it, the same rule as
 // needs_session_stickiness, so a row that leaves it unset (a config.json

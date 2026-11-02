@@ -205,22 +205,33 @@ type reachableClient struct {
 // reachableClients returns the enabled clients ctx may reach, by name, each holding only the prompts,
 // resources and templates its allow-lists expose. A tool filter reaches a client through its
 // "<client>-*" entry or one of its tools, so a server without tools is reached by the wildcard.
+//
+// The clients are copied under m.mu and each caller's discovery is read outside it: a per-user store
+// may read through to a database.
 func (m *MCPManager) reachableClients(ctx context.Context) []*reachableClient {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-	clients := make([]*reachableClient, 0, len(m.clientMap))
+	states := make([]schemas.MCPClientState, 0, len(m.clientMap))
 	for _, state := range m.clientMap {
-		if !m.reachable(ctx, state) {
+		states = append(states, *state)
+	}
+	m.mu.RUnlock()
+
+	clients := make([]*reachableClient, 0, len(states))
+	for i := range states {
+		state := &states[i]
+		if !m.included(ctx, state) {
 			continue
 		}
 		config := state.ExecutionConfig
-		discovery := m.discoveryStore.GetDiscovery(ctx, config.ID)
+		discovery := m.discoveryStore.GetDiscovery(ctx, config)
 		if discovery == nil {
 			discovery = &schemas.MCPDiscovery{}
 		}
-		stateCopy := *state
+		if !toolsReach(ctx, config, discovery.Tools) {
+			continue
+		}
 		clients = append(clients, &reachableClient{
-			state:             &stateCopy,
+			state:             state,
 			prompts:           exposed(discovery.Prompts, config.PromptsToExpose, func(p mcp.Prompt) string { return stripClientPrefix(p.Name, config.Name) }),
 			resources:         exposed(discovery.Resources, config.ResourcesToExpose, resourceURI),
 			resourceTemplates: exposed(discovery.ResourceTemplates, config.ResourcesToExpose, ResourceTemplateURI),
@@ -231,22 +242,27 @@ func (m *MCPManager) reachableClients(ctx context.Context) []*reachableClient {
 }
 
 // reachable reports whether ctx's include lists let a request reach state: the client is included,
-// and, when the tools are narrowed, one of its tools or its wildcard is listed. Callers hold m.mu.
+// and, when the tools are narrowed, one of the caller's tools for it or its wildcard is listed. It
+// reads the caller's discovery, so the caller must not hold m.mu.
 func (m *MCPManager) reachable(ctx context.Context, state *schemas.MCPClientState) bool {
+	return m.included(ctx, state) && toolsReach(ctx, state.ExecutionConfig, m.discoveryStore.GetDiscovery(ctx, state.ExecutionConfig).GetTools())
+}
+
+// included reports whether state is enabled and ctx's client include list admits it.
+func (m *MCPManager) included(ctx context.Context, state *schemas.MCPClientState) bool {
 	config := state.ExecutionConfig
 	if config == nil || state.State == schemas.MCPConnectionStateDisabled {
 		return false
 	}
 	includeClients, _ := ctx.Value(schemas.MCPContextKeyIncludeClients).([]string)
-	if !shouldIncludeClient(config.Name, includeClients, m.logger) {
-		return false
-	}
+	return shouldIncludeClient(config.Name, includeClients, m.logger)
+}
+
+// toolsReach reports whether ctx's tool include list, when it narrows the request, names one of tools
+// or config's "<client>-*" wildcard.
+func toolsReach(ctx context.Context, config *schemas.MCPClientConfig, tools map[string]schemas.ChatTool) bool {
 	includeTools, narrowed := ctx.Value(schemas.MCPContextKeyIncludeTools).([]string)
-	if !narrowed {
-		return true
-	}
-	tools := m.discoveryStore.GetDiscovery(ctx, config.ID).GetTools()
-	return slices.ContainsFunc(includeTools, func(entry string) bool {
+	return !narrowed || slices.ContainsFunc(includeTools, func(entry string) bool {
 		_, isTool := tools[entry]
 		return isTool || entry == config.Name+"-*"
 	})
@@ -420,10 +436,7 @@ func runOnClient[T any](m *MCPManager, ctx *schemas.BifrostContext, req *schemas
 		// The owner was picked before the pre-hooks ran; one (governance) may have narrowed access since.
 		// Pick again among what the request can still reach, so a URI two servers expose goes to the
 		// one it is allowed.
-		m.mu.RLock()
-		stillReachable := m.reachable(gateCtx, state)
-		m.mu.RUnlock()
-		if !stillReachable {
+		if !m.reachable(gateCtx, state) {
 			next := owner(m.reachableClients(gateCtx))
 			if next == nil {
 				return zero, fmt.Errorf("%w: no server this request can reach owns it", ErrNotFound)

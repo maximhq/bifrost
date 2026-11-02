@@ -170,7 +170,7 @@ func snapshotClientState(m *MCPManager, id string) (state clientSnapshot, exists
 	}
 	snapshot := *cs
 	m.mu.RUnlock()
-	discovery := m.discoveryStore.GetDiscovery(context.Background(), id)
+	discovery := m.discoveryStore.GetDiscovery(context.Background(), &schemas.MCPClientConfig{ID: id})
 	if discovery == nil {
 		discovery = &schemas.MCPDiscovery{}
 	}
@@ -594,7 +594,7 @@ func TestConnectionChecker_PerformCheck_StaleGenerationWriteDropped(t *testing.T
 	markerTools := map[string]schemas.ChatTool{"marker-tool": {}}
 	m.mu.Lock()
 	m.clientMap[config.ID].ConnGeneration++
-	m.discoveryStore.SetDiscovery(context.Background(), config.ID, &schemas.MCPDiscovery{Tools: markerTools})
+	m.discoveryStore.SetDiscovery(context.Background(), config, &schemas.MCPDiscovery{Tools: markerTools})
 	m.mu.Unlock()
 
 	close(listRelease)
@@ -612,7 +612,7 @@ func TestConnectionChecker_PerformCheck_StaleGenerationWriteDropped(t *testing.T
 
 func TestHandleSSEConnectionLost_StaleGenerationNoOp(t *testing.T) {
 	m := &MCPManager{
-		discoveryStore: NewDiscoveryStore(),
+		discoveryStore: NewDiscoveryStore(nil, nil),
 		logger:         &MockLogger{},
 		clientMap:      map[string]*schemas.MCPClientState{},
 	}
