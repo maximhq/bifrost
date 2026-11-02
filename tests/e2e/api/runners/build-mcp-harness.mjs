@@ -2346,23 +2346,6 @@ const CONN21 = folder("CONN-21 STDIO create guards", "Setup: STDIO clients bridg
     [A.status(500), A.msgContains("executable file not found"), responseTime(null, 5000)]),
 ]);
 
-const CONN22 = folder("CONN-22 STDIO child exit", "Setup: alpha (echo_tool, add_tool); a STDIO client bridging to alpha, auth none, tools_to_execute [\"*\"].", [
-  ...freshServer("CONN-22", "alpha", ["echo_tool", "add_tool"]),
-  createClient("CONN-22", stdioClient("conn22-c", "conn22_c", "alpha", { tools_to_execute: ["*"] }), "setup: create the STDIO client"),
-  mockGet("CONN-22", "alpha", "setup: record the STDIO child's pid", [A.custom("stdio_pid is set", ["pm.expect(pm.response.json().stdio_pid, 'body: ' + pm.response.text()).to.be.above(0);"])],
-    ["pm.collectionVariables.set('conn22_pid', pm.response.json().stdio_pid);"]),
-  mockPost("CONN-22", "alpha", "stdio/kill", "stdio/kill"),
-  execTool("CONN-22", "execute after the child exits", "conn22_c-echo_tool", [A.status(400)]),
-  request("CONN-22", "reconnect", "POST", "/api/mcp/client/conn22-c/reconnect", { asserts: [A.status(200)] }),
-  mockGet("CONN-22", "alpha", "a new STDIO child is running", [A.custom("stdio_pid is set and differs from the first", [
-    "var pid = pm.response.json().stdio_pid;",
-    "pm.expect(pid, 'body: ' + pm.response.text()).to.be.above(0);",
-    "pm.expect(pid).to.not.equal(Number(pm.collectionVariables.get('conn22_pid')));",
-  ])]),
-  execTool("CONN-22", "execute after the reconnect", "conn22_c-echo_tool", [A.status(200)]),
-  deleteClient("CONN-22", "conn22-c"),
-]);
-
 // ================================================================ EP slugs, credentials and auth modes
 
 const wwwPresent = () => A.custom("WWW-Authenticate is present", ["pm.expect(pm.response.headers.get('WWW-Authenticate'), 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;"]);
@@ -4918,6 +4901,27 @@ const AUTH38 = folder("AUTH-38 Per-user refresh token revoked", `Setup: ${PU_TEX
   ]), identityCalls("alice", 1)]),
   deleteClient("AUTH-38", "auth38-u"),
   restoreConfig("AUTH-38"),
+]);
+
+const AUTH58 = folder("AUTH-58 Per-user token revoked before it expires", `Setup: ${PU_TEXT(false)}; ${PU_SERVER_TEXT("auth58")}, verified as admin; auth58-sess1 completes as alice and makes one call. Then the authorization server revokes alice's grant while her access token is still within its lifetime, so the upstream rejects it at the handshake.`, [
+  ...puConfig("AUTH-58", false),
+  ...puConnect("AUTH-58", "auth58"),
+  execTool("AUTH-58", "setup: execute as auth58-sess1 opens a flow", "auth58-echo_tool", [A.status(400), keepFlow("auth58_f")], { session: "auth58-sess1" }),
+  ...puFinish("AUTH-58", "auth58_f", "alice", "the flow"),
+  execTool("AUTH-58", "setup: execute as auth58-sess1", "auth58-echo_tool", [A.status(200)], { session: "auth58-sess1" }),
+  mockPost("AUTH-58", "auth58", "oauth/revoke", "setup: the authorization server revokes alice's grant", { identity: "alice" }),
+  execTool("AUTH-58", "execute as auth58-sess1 asks it to sign in again", "auth58-echo_tool", [A.status(400), authFlow("auth58", {}), keepFlow("auth58_f2", "auth58_f")], { session: "auth58-sess1" }),
+  mockGet("AUTH-58", "auth58", "one refresh, refused invalid_grant, and the revoked token reached no tool", [A.custom("one refresh_token request, answered 400 invalid_grant", [
+    "var r = pm.response.json().oauth.log.filter(function (e) { return e.grant_type === 'refresh_token'; });",
+    "pm.expect(r.length, 'log: ' + JSON.stringify(pm.response.json().oauth.log)).to.equal(1);",
+    "pm.expect([r[0].status, r[0].error]).to.eql([400, 'invalid_grant']);",
+  ]), identityCalls("alice", 1)]),
+  sessionsHas("AUTH-58", "auth58-sess1's session needs reauth", "auth58-u", `${sessionPred("auth58-sess1")} && s.status === 'needs_reauth'`, "auth58-sess1's entry has status needs_reauth"),
+  ...puFinish("AUTH-58", "auth58_f2", "alice", "the new flow"),
+  execTool("AUTH-58", "execute as auth58-sess1 after signing in again", "auth58-echo_tool", [A.status(200)], { session: "auth58-sess1" }),
+  mockGet("AUTH-58", "auth58", "alice's second call ran", [identityCalls("alice", 2)]),
+  deleteClient("AUTH-58", "auth58-u"),
+  restoreConfig("AUTH-58"),
 ]);
 
 const gwFlow = (id, title, tool, vk, v, withToken) => request(id, title, "POST", "/mcp", {
@@ -7916,6 +7920,3124 @@ const ADM02 = folder("ADM-02 Setup-lock gating of `POST /api/mcp/client`", `Setu
   deleteClient("ADM-02", "adm02-c"),
 ]);
 
+// ================================================================ upstream prompts, resources and completion on /mcp
+
+// A mock server offers prompts and resources once given some, and lists each prompts/get, resources/read and
+// completion/complete it answered in its state's reads. Each folder gives its servers prompts and resources before
+// registering the client, since a client lists them when it connects.
+const GREET = { name: "greet", arguments: [{ name: "name", required: true }], text: "Hello, {name}", completions: { name: ["Ada", "Alan", "Grace"] } };
+const promptsSet = (id, server, prompts) => mockPost(id, server, "prompts/set", `setup: ${server} serves prompts ${prompts.map((p) => p.name).join(", ")}`, { prompts });
+const resourcesSet = (id, server, resources, templates = []) => mockPost(id, server, "resources/set",
+  `setup: ${server} serves resources ${resources.map((r) => r.uri).concat(templates.map((t) => t.uriTemplate)).join(", ")}`, { resources, templates });
+const readsAre = (reads) => A.custom(`reads are ${lit(reads)}`, [`pm.expect(pm.response.json().reads || [], 'body: ' + pm.response.text()).to.eql(${lit(reads)});`]);
+const mcpMsg = (method, params = {}) => ({ jsonrpc: "2.0", id: 1, method, params });
+const resultNames = (field, key, names) => A.custom(`result.${field} ${key}s are ${lit(names)}`, [
+  `pm.expect((pm.response.json().result || {})[${lit(field)}].map(function (x) { return x[${lit(key)}]; }), 'body: ' + pm.response.text()).to.eql(${lit(names)});`,
+]);
+const firstText = (path, text) => A.custom(`${path} text is ${lit(text)}`, [`var r = pm.response.json().result || {};`, `pm.expect(r.${path}, 'body: ' + pm.response.text()).to.equal(${lit(text)});`]);
+const NOTES = { uri: "file:///notes.txt", text: "hello" };
+const DOCS = { uriTemplate: "file:///docs/{name}", text: "doc {uri}" };
+
+const EP55 = folder("EP-55 Upstream prompts on /mcp", "Setup: alpha (echo) serving prompt greet (argument name, required; text \"Hello, {name}\"); client alpha, auth none, tools_to_execute [\"*\"].", [
+  ...freshServer("EP-55", "alpha", ["echo"]),
+  promptsSet("EP-55", "alpha", [GREET]),
+  createClient("EP-55", httpClient("ep-55-alpha", "alpha", "alpha", { tools_to_execute: ["*"] }), "setup: register client alpha"),
+  rpc("EP-55", "prompts/list", mcpMsg("prompts/list"), { asserts: [A.status(200), resultNames("prompts", "name", ["alpha-greet"]), A.custom("alpha-greet takes the required argument name", [
+    "var p = pm.response.json().result.prompts[0];",
+    "pm.expect(p.arguments, 'body: ' + pm.response.text()).to.eql([{ name: 'name', required: true }]);",
+  ])] }),
+  rpc("EP-55", "prompts/get alpha-greet with name Ada", mcpMsg("prompts/get", { name: "alpha-greet", arguments: { name: "Ada" } }), { asserts: [A.status(200), firstText("messages[0].content.text", "Hello, Ada"), firstText("messages[0].role", "user")] }),
+  mockGet("EP-55", "alpha", "alpha saw prompts/get greet with name Ada", [readsAre([{ method: "prompts/get", name: "greet", arguments: { name: "Ada" } }])]),
+  rpc("EP-55", "prompts/get of an unknown prompt", mcpMsg("prompts/get", { name: "alpha-nope" }), { asserts: [A.status(200), rpcError(-32602)] }),
+  deleteClient("EP-55", "ep-55-alpha"),
+]);
+
+const EP56 = folder("EP-56 Upstream resources and templates on /mcp", "Setup: alpha (echo) serving resource file:///notes.txt (text \"hello\") and template file:///docs/{name} (text \"doc {uri}\"); client alpha, auth none, tools_to_execute [\"*\"].", [
+  ...freshServer("EP-56", "alpha", ["echo"]),
+  resourcesSet("EP-56", "alpha", [NOTES], [DOCS]),
+  createClient("EP-56", httpClient("ep-56-alpha", "alpha", "alpha", { tools_to_execute: ["*"] }), "setup: register client alpha"),
+  rpc("EP-56", "resources/list", mcpMsg("resources/list"), { asserts: [A.status(200), resultNames("resources", "uri", ["file:///notes.txt"])] }),
+  rpc("EP-56", "resources/read file:///notes.txt", mcpMsg("resources/read", { uri: "file:///notes.txt" }), { asserts: [A.status(200), firstText("contents[0].text", "hello")] }),
+  rpc("EP-56", "resources/templates/list", mcpMsg("resources/templates/list"), { asserts: [A.status(200), resultNames("resourceTemplates", "uriTemplate", ["file:///docs/{name}"])] }),
+  rpc("EP-56", "resources/read file:///docs/a", mcpMsg("resources/read", { uri: "file:///docs/a" }), { asserts: [A.status(200), firstText("contents[0].text", "doc file:///docs/a")] }),
+  mockGet("EP-56", "alpha", "alpha saw both reads", [readsAre([{ method: "resources/read", uri: "file:///notes.txt" }, { method: "resources/read", uri: "file:///docs/a" }])]),
+  rpc("EP-56", "resources/read of an unknown URI", mcpMsg("resources/read", { uri: "file:///nope" }), { asserts: [A.status(200), rpcError(-32002)] }),
+  deleteClient("EP-56", "ep-56-alpha"),
+]);
+
+const EP57 = folder("EP-57 Completion on /mcp", "Setup: as EP-55; alpha completes argument name with Ada, Alan and Grace.", [
+  ...freshServer("EP-57", "alpha", ["echo"]),
+  promptsSet("EP-57", "alpha", [GREET]),
+  createClient("EP-57", httpClient("ep-57-alpha", "alpha", "alpha", { tools_to_execute: ["*"] }), "setup: register client alpha"),
+  rpc("EP-57", "completion/complete for alpha-greet's name, typed A", mcpMsg("completion/complete", { ref: { type: "ref/prompt", name: "alpha-greet" }, argument: { name: "name", value: "A" } }),
+    { asserts: [A.status(200), A.custom("values are Ada and Alan", ["pm.expect(pm.response.json().result.completion.values, 'body: ' + pm.response.text()).to.eql(['Ada', 'Alan']);"])] }),
+  mockGet("EP-57", "alpha", "alpha saw the unprefixed prompt name", [readsAre([{ method: "completion/complete", name: "greet", argument: "name", value: "A" }])]),
+  deleteClient("EP-57", "ep-57-alpha"),
+]);
+
+const EP58 = folder("EP-58 prompts_to_expose and resources_to_expose", "Setup: alpha (echo) serving prompts greet and farewell and resources file:///notes.txt and file:///secret.txt; client alpha, auth none, tools_to_execute [\"*\"], prompts_to_expose [\"greet\"], resources_to_expose [\"file:///notes.txt\"].", [
+  ...freshServer("EP-58", "alpha", ["echo"]),
+  promptsSet("EP-58", "alpha", [GREET, { name: "farewell", text: "Bye" }]),
+  resourcesSet("EP-58", "alpha", [NOTES, { uri: "file:///secret.txt", text: "secret" }]),
+  createClient("EP-58", httpClient("ep-58-alpha", "alpha", "alpha", { tools_to_execute: ["*"], prompts_to_expose: ["greet"], resources_to_expose: ["file:///notes.txt"] }), "setup: register client alpha"),
+  rpc("EP-58", "prompts/list", mcpMsg("prompts/list"), { asserts: [A.status(200), resultNames("prompts", "name", ["alpha-greet"])] }),
+  rpc("EP-58", "resources/list", mcpMsg("resources/list"), { asserts: [A.status(200), resultNames("resources", "uri", ["file:///notes.txt"])] }),
+  rpc("EP-58", "prompts/get of the hidden alpha-farewell", mcpMsg("prompts/get", { name: "alpha-farewell" }), { asserts: [A.status(200), rpcError(-32602)] }),
+  rpc("EP-58", "resources/read of the hidden file:///secret.txt", mcpMsg("resources/read", { uri: "file:///secret.txt" }), { asserts: [A.status(200), rpcError(-32002)] }),
+  mockGet("EP-58", "alpha", "alpha was not asked for either", [readsAre([])]),
+  deleteClient("EP-58", "ep-58-alpha"),
+]);
+
+// GOV-39 and LOG-49 share their setup: alpha and beta each serve a prompt and a resource, and a VK grants alpha only.
+const readsSetup = (id) => {
+  const p = id.toLowerCase().replace("-", "");
+  return [
+    ...freshServer(id, "alpha", ["echo"]),
+    ...freshServer(id, "beta", ["echo"]),
+    promptsSet(id, "alpha", [GREET]),
+    resourcesSet(id, "alpha", [NOTES]),
+    promptsSet(id, "beta", [{ name: "summary", text: "Summary" }]),
+    resourcesSet(id, "beta", [{ uri: "file:///beta.txt", text: "beta" }]),
+    createClient(id, httpClient(`${p}-alpha`, "alpha", "alpha", { tools_to_execute: ["*"], allow_by_default: false }), "setup: register client alpha"),
+    createClient(id, httpClient(`${p}-beta`, "beta", "beta", { tools_to_execute: ["*"], allow_by_default: false }), "setup: register client beta"),
+    vkCreate(id, "setup: create a VK granting alpha only", { name: `${id} vk`, mcp_configs: ALPHA_ALL, rate_limit: { request_max_limit: 100, request_reset_duration: "1h" } }, `${p}_vk`),
+  ];
+};
+const readsTeardown = (id) => {
+  const p = id.toLowerCase().replace("-", "");
+  return [vkDelete(id, "teardown: delete the VK", `${p}_vk`), deleteClient(id, `${p}-alpha`), deleteClient(id, `${p}-beta`)];
+};
+const readsVK = (id) => [MCP_ACCEPT, { key: "x-bf-vk", value: `{{${id.toLowerCase().replace("-", "")}_vk}}` }];
+
+const GOV39 = folder("GOV-39 A VK's reads stay on its granted servers", "Setup: alpha (echo) serving prompt greet and file:///notes.txt; beta (echo) serving prompt summary and file:///beta.txt; clients alpha and beta, auth none, allow_by_default false; a VK granting alpha [\"*\"].", [
+  ...readsSetup("GOV-39"),
+  rpc("GOV-39", "prompts/list with the VK", mcpMsg("prompts/list"), { headers: readsVK("GOV-39"), asserts: [A.status(200), resultNames("prompts", "name", ["alpha-greet"])] }),
+  rpc("GOV-39", "resources/list with the VK", mcpMsg("resources/list"), { headers: readsVK("GOV-39"), asserts: [A.status(200), resultNames("resources", "uri", ["file:///notes.txt"])] }),
+  rpc("GOV-39", "prompts/get beta-summary with the VK", mcpMsg("prompts/get", { name: "beta-summary" }), { headers: readsVK("GOV-39"), asserts: [A.status(200), rpcError(-32602)] }),
+  rpc("GOV-39", "resources/read file:///beta.txt with the VK", mcpMsg("resources/read", { uri: "file:///beta.txt" }), { headers: readsVK("GOV-39"), asserts: [A.status(200), rpcError(-32002)] }),
+  mockGet("GOV-39", "beta", "beta was never asked", [readsAre([])]),
+  ...readsTeardown("GOV-39"),
+]);
+
+const LOG49 = folder("LOG-49 Reads are logged and counted", "Setup: as GOV-39; one prompts/get (x-request-id log49-p) and one resources/read (x-request-id log49-r) with the VK.", [
+  ...readsSetup("LOG-49"),
+  vkMemory("LOG-49", "setup: record the VK's requests", "log49_vk", [], keepRequests("log49_r0")),
+  rpc("LOG-49", "prompts/get alpha-greet with the VK", mcpMsg("prompts/get", { name: "alpha-greet", arguments: { name: "Ada" } }), { headers: [...readsVK("LOG-49"), reqId("log49-p")], asserts: [A.status(200), firstText("messages[0].content.text", "Hello, Ada")] }),
+  rpc("LOG-49", "resources/read file:///notes.txt with the VK", mcpMsg("resources/read", { uri: "file:///notes.txt" }), { headers: [...readsVK("LOG-49"), reqId("log49-r")], asserts: [A.status(200), firstText("contents[0].text", "hello")] }),
+  logRow("LOG-49", "the prompt read's log entry", "log49-p", [rowIs("server_label", "alpha"), rowIs("status", "success"), rowIs("tool_name", "greet"), rowIs("arguments", { name: "Ada" }), A.custom("virtual_key_id is the VK's", ["pm.expect(pm.response.json().virtual_key_id, 'body: ' + pm.response.text()).to.equal(pm.collectionVariables.get('log49_vk_id'));"])]),
+  logRow("LOG-49", "the resource read's log entry", "log49-r", [rowIs("server_label", "alpha"), rowIs("status", "success"), rowIs("tool_name", "file:///notes.txt"), rowIs("arguments", { uri: "file:///notes.txt" }), A.custom("virtual_key_id is the VK's", ["pm.expect(pm.response.json().virtual_key_id, 'body: ' + pm.response.text()).to.equal(pm.collectionVariables.get('log49_vk_id'));"])]),
+  vkMemory("LOG-49", "the VK's requests rose by 2", "log49_vk", [requestsPlus("log49_r0", 2)]),
+  ...readsTeardown("LOG-49"),
+]);
+
+// ================================================================ /mcp on protocol 2026-07-28
+
+// A 2026-07-28 request names its method, and for a call or a read its target, in headers as well as the body, and
+// carries the client's protocol version, capabilities and info in params._meta. There is no initialize and no session.
+const MODERN = "2026-07-28";
+const MODERN_META = { "io.modelcontextprotocol/protocolVersion": MODERN, "io.modelcontextprotocol/clientCapabilities": {}, "io.modelcontextprotocol/clientInfo": { name: "harness", version: "0" } };
+const modernMsg = (method, params = {}, version = MODERN) => ({ jsonrpc: "2.0", id: 1, method, params: { ...params, _meta: { ...MODERN_META, "io.modelcontextprotocol/protocolVersion": version } } });
+const modernHeaders = (method, name, extra = [], version = MODERN) => [MCP_ACCEPT, { key: "MCP-Protocol-Version", value: version }, { key: "Mcp-Method", value: method }, ...(name ? [{ key: "Mcp-Name", value: name }] : []), ...extra];
+const modernRpc = (id, title, method, params, asserts, { name, headers = [] } = {}) => rpc(id, title, modernMsg(method, params), { headers: modernHeaders(method, name, headers), asserts });
+const noSessionHeader = A.custom("no Mcp-Session-Id header", ["pm.expect(pm.response.headers.has('Mcp-Session-Id'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(false);"]);
+const echoHiResult = A.custom("the result's text is echo:{\"text\":\"hi\"}", ["var r = pm.response.json().result || {};", "pm.expect(r.isError, 'body: ' + pm.response.text()).to.not.equal(true);", "pm.expect(r.content[0].text).to.equal('echo:{\"text\":\"hi\"}');"]);
+
+const EP59 = folder("EP-59 Modern discovery", `Setup: ${FLEET}; requests on protocol ${MODERN}.`, [
+  ...fleetSetup("EP-59"),
+  modernRpc("EP-59", "server/discover", "server/discover", {}, [A.status(200), A.custom("versions, capabilities and server info", [
+    "var r = pm.response.json().result;",
+    `pm.expect(r.supportedVersions[0], 'body: ' + pm.response.text()).to.equal(${lit(MODERN)});`,
+    "pm.expect(r.supportedVersions).to.include.members(['2025-11-25', '2025-06-18']);",
+    "pm.expect(r.capabilities.tools.listChanged).to.equal(true);",
+    "pm.expect(r.capabilities.prompts.listChanged).to.equal(true);",
+    "pm.expect(r.capabilities.resources.listChanged).to.equal(true);",
+    "pm.expect(r.capabilities).to.have.property('completions');",
+    "pm.expect(r._meta['io.modelcontextprotocol/serverInfo'].name).to.equal('bifrost');",
+  ])]),
+  modernRpc("EP-59", `initialize on ${MODERN}`, "initialize", { protocolVersion: MODERN, capabilities: {}, clientInfo: { name: "harness", version: "0" } },
+    [A.status(404), rpcError(-32601, `"initialize" was removed in protocol version ${MODERN}`)]),
+  ...fleetTeardown("EP-59"),
+]);
+
+const EP60 = folder("EP-60 Modern tools without a session", `Setup: ${FLEET}; anonymous; requests on protocol ${MODERN}.`, [
+  ...fleetSetup("EP-60"),
+  modernRpc("EP-60", "tools/list", "tools/list", {}, [A.status(200), toolNamesInList(ALL_TOOLS), noSessionHeader]),
+  modernRpc("EP-60", "tools/call alpha-echo", "tools/call", { name: "alpha-echo", arguments: { text: "hi" } }, [A.status(200), echoHiResult, noSessionHeader], { name: "alpha-echo" }),
+  mockGet("EP-60", "alpha", "alpha ran echo once", [callsIs("echo", 1)]),
+  ...fleetTeardown("EP-60"),
+]);
+
+const EP61 = folder("EP-61 Modern VK scoping", `Setup: ${FLEET}; the echo-only VK (${VKS.echo.text}); requests on protocol ${MODERN}.`, [
+  ...fleetSetup("EP-61"), createVK("EP-61", "echo"),
+  modernRpc("EP-61", "tools/list with the VK", "tools/list", {}, [A.status(200), toolNamesInList(["alpha-echo"])], { headers: [vkHeader("EP-61", "echo")] }),
+  modernRpc("EP-61", "tools/call alpha-add with the VK", "tools/call", { name: "alpha-add", arguments: {} }, [A.status(200), A.custom("an isError result naming the VK", [
+    "var r = pm.response.json().result || {};",
+    "pm.expect(r.isError, 'body: ' + pm.response.text()).to.equal(true);",
+    "pm.expect(r.content[0].text).to.equal(\"Tool execution failed: MCP tool 'alpha-add' is not allowed for virtual key 'EP-61 echo-only VK'\");",
+  ])], { name: "alpha-add", headers: [vkHeader("EP-61", "echo")] }),
+  mockGet("EP-61", "alpha", "alpha never ran add", [callsIs("add", 0)]),
+  modernRpc("EP-61", "tools/list with an unknown VK", "tools/list", {}, [A.status(401), A.custom("type access_not_found", ["pm.expect(pm.response.json().type, 'body: ' + pm.response.text()).to.equal('access_not_found');"])],
+    { headers: [{ key: "x-bf-vk", value: "sk-bf-ep61-unknown" }] }),
+  request("EP-61", "teardown: delete the VK", "DELETE", "/api/governance/virtual-keys/{{ep-61_echo_id}}", { asserts: [A.status(200)] }),
+  ...fleetTeardown("EP-61"),
+]);
+
+const EP62 = folder("EP-62 Modern OAuth", `Setup: ${FLEET}; the full-access VK (${VKS.full.text}); mcp_server_auth_mode oauth, enforce_auth_on_inference on; a token from a grant consented with that VK; requests on protocol ${MODERN}.`, [
+  readConfig("EP-62"), ...fleetSetup("EP-62"), createVK("EP-62", "full"), authMode("EP-62", "O", true),
+  register("EP-62", "ep62_client"),
+  ...grantFor("EP-62", "ep62_client", "ep62_g", "full"),
+  modernRpc("EP-62", "tools/list with no credential", "tools/list", {}, [A.status(401), A.msgEquals(OAUTH_MODE_MSG), A.custom("WWW-Authenticate names /.well-known/oauth-protected-resource/mcp", [
+    "pm.expect(pm.response.headers.get('WWW-Authenticate') || '', 'body: ' + pm.response.text()).to.include('/.well-known/oauth-protected-resource/mcp');",
+  ])]),
+  modernRpc("EP-62", "tools/list with the token", "tools/list", {}, [A.status(200), toolNamesInList(ALL_TOOLS)], { headers: [bearer("{{ep62_g_at}}")] }),
+  modernRpc("EP-62", "tools/call alpha-echo with the token", "tools/call", { name: "alpha-echo", arguments: { text: "hi" } }, [A.status(200), echoHiResult], { name: "alpha-echo", headers: [bearer("{{ep62_g_at}}")] }),
+  restoreConfig("EP-62"),
+  request("EP-62", "teardown: delete the VK", "DELETE", "/api/governance/virtual-keys/{{ep-62_full_id}}", { asserts: [A.status(200)] }),
+  ...fleetTeardown("EP-62"),
+]);
+
+const EP63 = folder("EP-63 Modern transport rules and read errors", `Setup: ${FLEET}; no server offers resources or prompts; requests on protocol ${MODERN}.`, [
+  ...fleetSetup("EP-63"),
+  modernRpc("EP-63", "resources/read without Mcp-Name", "resources/read", { uri: "file:///nope" }, [A.status(400), rpcError(-32020, 'header mismatch: Mcp-Name: missing required header for method "resources/read"')]),
+  rpc("EP-63", "an Mcp-Method that disagrees with the body", modernMsg("tools/list"), { headers: modernHeaders("tools/call", "alpha-echo"), asserts: [A.status(400), rpcError(-32020)] }),
+  rpc("EP-63", "protocol version 2099-01-01", modernMsg("tools/list", {}, "2099-01-01"), { headers: modernHeaders("tools/list", undefined, [], "2099-01-01"), asserts: [A.status(400), rpcError(-32022)] }),
+  request("EP-63", `GET /mcp on ${MODERN}`, "GET", "/mcp", { noAuth: true, headers: [{ key: "Accept", value: "text/event-stream" }, { key: "MCP-Protocol-Version", value: MODERN }], asserts: [A.status(405)] }),
+  modernRpc("EP-63", "resources/read of an unknown URI", "resources/read", { uri: "file:///nope" }, [A.status(400), rpcError(-32602, "handler not found for resource URI 'file:///nope': resource not found")], { name: "file:///nope" }),
+  modernRpc("EP-63", "prompts/get of an unknown prompt", "prompts/get", { name: "alpha-nope" }, [A.status(400), rpcError(-32602, "prompt 'alpha-nope' not found: prompt not found")], { name: "alpha-nope" }),
+  ...fleetTeardown("EP-63"),
+]);
+
+// ================================================================ connection failures and recovery on the mock
+
+// afterSeconds holds a request back n seconds, for a step that asserts nothing happened in between.
+const afterSeconds = (n) => [`setTimeout(function () {}, ${n * 1000});`];
+const pingsAndListsMethods = "(function (m) { return (m.ping || 0) + ':' + (m['tools/list'] || 0); })(pm.response.json().counters.methods || {})";
+
+const FAIL09 = folder("FAIL-09 Initialize failure on a per-call client", "Setup: alpha (echo_tool, add_tool) as client alpha, per call, tools_to_execute [\"*\"], created healthy; then alpha fails every initialize (init_fail).", [
+  ...setClient("FAIL-09", {}),
+  saveMethods("FAIL-09", "alpha", "fail09"),
+  mockPost("FAIL-09", "alpha", "faults", "setup: alpha fails every initialize", { faults: { init_fail: true } }),
+  setExec("FAIL-09", "execute echo_tool", "echo_tool", [A.status(400), A.msgEquals("failed to establish ephemeral MCP connection: internal error: initialize failed (injected)")]),
+  mockGet("FAIL-09", "alpha", "initialize +4: the per-call connect is retried", [methodsPlus("fail09", 4, 0)]),
+  mockPost("FAIL-09", "alpha", "faults/clear", "teardown: clear alpha's faults"),
+  deleteClient("FAIL-09", "fail-09-a"),
+]);
+
+const FAIL10 = folder("FAIL-10 Unsupported protocol version on a per-call client", "Setup: alpha (echo_tool, add_tool) as client alpha, per call, tools_to_execute [\"*\"], created healthy; then alpha answers initialize with protocol version 1999-01-01.", [
+  ...setClient("FAIL-10", {}),
+  saveMethods("FAIL-10", "alpha", "fail10"),
+  mockPost("FAIL-10", "alpha", "faults", "setup: alpha advertises protocol version 1999-01-01", { faults: { bad_version: "1999-01-01" } }),
+  setExec("FAIL-10", "execute echo_tool", "echo_tool", [A.status(400), A.msgEquals("failed to establish ephemeral MCP connection: unsupported protocol version: \"1999-01-01\""), responseTime(null, 1000)]),
+  mockGet("FAIL-10", "alpha", "initialize +1: an unsupported version is not retried", [methodsPlus("fail10", 1, 0)]),
+  mockPost("FAIL-10", "alpha", "faults/clear", "teardown: clear alpha's faults"),
+  deleteClient("FAIL-10", "fail-10-a"),
+]);
+
+const FAIL23 = folder("FAIL-23 A stickiness flip that fails to dial", "Setup: alpha (echo_tool, add_tool) as client alpha, per call, tools_to_execute [\"*\"]; alpha refuses connections; then PUT needs_session_stickiness true; then the fault clears.", [
+  ...setClient("FAIL-23", {}),
+  saveSessions("FAIL-23", "alpha", "fail23_s0"),
+  mockPost("FAIL-23", "alpha", "faults", "setup: alpha refuses connections", { faults: { refuse: true } }),
+  request("FAIL-23", "PUT needs_session_stickiness true", "PUT", "/api/mcp/client/fail-23-a", { body: { needs_session_stickiness: true }, asserts: [A.status(200), A.jsonEquals("status", "partial_success"), A.custom("the message says the shared connection failed", ["pm.expect(pm.response.json().message, 'body: ' + pm.response.text()).to.include('establishing the shared connection failed');"])] }),
+  getClient("FAIL-23", "fail-23-a", "the client is unstable at stage connect", [clientState("unstable"), clientField("last_failure.stage", "connect")]),
+  mockPost("FAIL-23", "alpha", "faults/clear", "setup: alpha accepts connections again"),
+  getClient("FAIL-23", "fail-23-a", "the client turns healthy within 30s", [clientState("healthy")], { pre: waitForClient("fail-23-a", "c.state === 'healthy'", 120) }),
+  mockGet("FAIL-23", "alpha", "sessions +2: the shared connection and its list_changed stream", [sessionsPlus("fail23_s0", 2)]),
+  deleteClient("FAIL-23", "fail-23-a"),
+]);
+
+// FAIL24_BODY is a 503 body of 40 lines, about 2000 characters.
+const FAIL24_BODY = Array.from({ length: 40 }, (_, i) => `line ${String(i).padStart(2, "0")} ${"x".repeat(41)}`).join("\n");
+const inStateList = (state, clientId, present) => request("FAIL-24", `?state=${state} ${present ? "lists" : "does not list"} ${clientId}`, "GET", `/api/mcp/clients?state=${state}&limit=100`, {
+  asserts: [A.status(200), A.custom(`${clientId} is ${present ? "" : "not "}listed`, [`var ids = (pm.response.json().clients || []).map(function (c) { return c.config.client_id; });`, `pm.expect(ids, 'body: ' + pm.response.text()).to.${present ? "" : "not."}include(${lit(clientId)});`])],
+});
+const FAIL24 = folder("FAIL-24 State filter and failure record shape", "Setup: alpha (echo_tool) as a healthy per-call client fail-24-h; beta (echo_tool) answering every request with 503 and a 40-line, about 2000-character body, with a per-call client fail-24-u on it.", [
+  ...freshServer("FAIL-24", "alpha", ["echo_tool"]),
+  createClient("FAIL-24", httpClient("fail-24-h", "alpha", "alpha", { tools_to_execute: ["*"] }), "setup: create the healthy client"),
+  ...freshServer("FAIL-24", "beta", ["echo_tool"]),
+  mockPost("FAIL-24", "beta", "faults", "setup: beta answers 503 with a long multi-line body", { faults: { status: 503, message: FAIL24_BODY } }),
+  createClient("FAIL-24", httpClient("fail-24-u", "beta", "beta", { tools_to_execute: ["*"] }), "setup: create the client on beta"),
+  inStateList("healthy", "fail-24-h", true), inStateList("healthy", "fail-24-u", false),
+  inStateList("unstable", "fail-24-u", true), inStateList("unstable", "fail-24-h", false),
+  request("FAIL-24", "?state=bogus", "GET", "/api/mcp/clients?state=bogus", { asserts: [A.status(400), A.msgEquals("Invalid state parameter: must be 'healthy' or 'unstable'")] }),
+  getClient("FAIL-24", "fail-24-u", "last_failure.message is one line of at most 512 characters ending with an ellipsis", [A.custom("one line, at most 512 characters, ending with …", [
+    "var m = pm.response.json().clients[0].last_failure.message;",
+    "pm.expect(m, 'message: ' + m).to.not.include('\\n');",
+    "pm.expect(Array.from(m).length).to.be.at.most(512);",
+    "pm.expect(m.slice(-1)).to.equal('\\u2026');",
+  ])]),
+  mockPost("FAIL-24", "beta", "faults/clear", "teardown: clear beta's faults"),
+  deleteClient("FAIL-24", "fail-24-h"), deleteClient("FAIL-24", "fail-24-u"),
+]);
+
+const SET18 = folder("SET-18 Disable a sticky client", "Setup: alpha (echo_tool, add_tool) as client alpha, sticky, tools_to_execute [\"*\"]; then PUT disabled true.", [
+  ...setClient("SET-18", { needs_session_stickiness: true }),
+  request("SET-18", "PUT disabled true", "PUT", "/api/mcp/client/set-18-a", { body: { disabled: true }, asserts: [A.status(200)] }),
+  getClient("SET-18", "set-18-a", "the client is disabled with no tools", [clientState("disabled"), toolNamesAre([])]),
+  list("SET-18", "/mcp lists none of alpha's tools", "/mcp", [], [A.status(200), A.custom("no alpha-* tool", [`pm.expect(${mcpNames}.filter(function (n) { return n.indexOf('alpha-') === 0; }), 'body: ' + pm.response.text()).to.eql([]);`])]),
+  setExec("SET-18", "execute echo_tool", "echo_tool", [A.status(400), A.msgContains("is not available or not permitted")]),
+  list("SET-18", "/mcp/alpha", "/mcp/alpha", [], [A.status(403)]),
+  mockGet("SET-18", "alpha", "setup: record alpha's ping and tools/list counts", [], [`pm.collectionVariables.set('set18_pl', ${pingsAndListsMethods});`]),
+  request("SET-18", "15s later alpha saw no ping or tools/list", "GET", "/control/alpha", { base: CHAOS, noAuth: true, pre: afterSeconds(15), asserts: [A.status(200), A.custom("ping and tools/list counts are unchanged", [
+    `pm.expect(${pingsAndListsMethods}, 'body: ' + pm.response.text()).to.equal(pm.collectionVariables.get('set18_pl'));`,
+  ])] }),
+  deleteClient("SET-18", "set-18-a"),
+]);
+
+// ================================================================ STDIO child lifecycle
+const CONN22 = folder("CONN-22 STDIO child exit", "Setup: alpha (echo_tool, add_tool); a STDIO client bridging to alpha, auth none, tools_to_execute [\"*\"].", [
+  ...freshServer("CONN-22", "alpha", ["echo_tool", "add_tool"]),
+  createClient("CONN-22", stdioClient("conn22-c", "conn22_c", "alpha", { tools_to_execute: ["*"] }), "setup: create the STDIO client"),
+  mockGet("CONN-22", "alpha", "setup: record the STDIO child's pid", [A.custom("stdio_pid is set", ["pm.expect(pm.response.json().stdio_pid, 'body: ' + pm.response.text()).to.be.above(0);"])],
+    ["pm.collectionVariables.set('conn22_pid', pm.response.json().stdio_pid);"]),
+  execTool("CONN-22", "execute before the child exits", "conn22_c-echo_tool", [A.status(200)]),
+  mockPost("CONN-22", "alpha", "stdio/kill", "stdio/kill"),
+  execR("CONN-22", "execute after the child exits", "conn22-k", "conn22_c-echo_tool", { text: "hi" }, [A.status(400), A.msgStartsWith("MCP tool call failed for conn22_c-echo_tool: ")]),
+  logRow("CONN-22", "the failed call is logged as an error", "conn22-k", [rowIs("status", "error")]),
+  request("CONN-22", "reconnect", "POST", "/api/mcp/client/conn22-c/reconnect", { asserts: [A.status(200), A.jsonMessage("MCP client reconnected successfully")] }),
+  mockGet("CONN-22", "alpha", "a new STDIO child is running", [A.custom("stdio_pid is set and differs from the first", [
+    "var pid = pm.response.json().stdio_pid;",
+    "pm.expect(pid, 'body: ' + pm.response.text()).to.be.above(0);",
+    "pm.expect(pid).to.not.equal(Number(pm.collectionVariables.get('conn22_pid')));",
+  ])]),
+  execTool("CONN-22", "execute after the reconnect", "conn22_c-echo_tool", [A.status(200)]),
+  deleteClient("CONN-22", "conn22-c"),
+]);
+
+// waitForNewPid polls the fleet server name, 500ms apart, until it reports a STDIO child other than the one saved
+// in the collection variable pidVar, or tries polls ran (60 by default, about 30s).
+const waitForNewPid = (name, pidVar, tries = 60) => [
+  `var left = ${tries};`,
+  "function poll() {",
+  `  pm.sendRequest({ url: pm.variables.get('chaos_url') + '/control/${name}', method: 'GET' }, function (err, res) {`,
+  "    var pid = !err && res.code === 200 ? res.json().stdio_pid : 0;",
+  `    if ((pid > 0 && pid !== Number(pm.collectionVariables.get('${pidVar}'))) || --left <= 0) { return; }`,
+  "    setTimeout(poll, 500);",
+  "  });",
+  "}",
+  "poll();",
+];
+const GO18 = folder("GO-18 Automatic STDIO respawn", "Setup: alpha (echo_tool, add_tool); a STDIO client bridging to alpha, auth none, tools_to_execute [\"*\"], tool_sync_interval \"5s\".", [
+  ...freshServer("GO-18", "alpha", ["echo_tool", "add_tool"]),
+  createClient("GO-18", stdioClient("go18-c", "go18_c", "alpha", { tools_to_execute: ["*"], tool_sync_interval: "5s" }), "setup: create the STDIO client, syncing every 5s"),
+  mockGet("GO-18", "alpha", "setup: record the STDIO child's pid", [A.custom("stdio_pid is set", ["pm.expect(pm.response.json().stdio_pid, 'body: ' + pm.response.text()).to.be.above(0);"])],
+    ["pm.collectionVariables.set('go18_pid', pm.response.json().stdio_pid);"]),
+  mockPost("GO-18", "alpha", "stdio/kill", "stdio/kill"),
+  mockGetAfter("GO-18", "alpha", "a new STDIO child is running within 30s, with no admin action", [A.custom("stdio_pid is set and differs from the first", [
+    "var pid = pm.response.json().stdio_pid;",
+    "pm.expect(pid, 'body: ' + pm.response.text()).to.be.above(0);",
+    "pm.expect(pid).to.not.equal(Number(pm.collectionVariables.get('go18_pid')));",
+  ])], waitForNewPid("alpha", "go18_pid")),
+  request("GO-18", "the client is healthy within 30s", "GET", "/api/mcp/clients?server=go18-c", { pre: waitForClient("go18-c", "c.state === 'healthy'", 120), asserts: [A.status(200), clientState("healthy")] }),
+  execTool("GO-18", "execute over the new child", "go18_c-echo_tool", [A.status(200)]),
+  deleteClient("GO-18", "go18-c"),
+]);
+
+// ================================================================ max protocol version
+const ALL_VERSIONS = ["2026-07-28", "2025-11-25", "2025-06-18"];
+const setVersions = (id, server, versions) => mockPost(id, server, "versions", `setup: ${server} speaks ${versions.join(", ")}`, { versions });
+const hs = (method, requested, negotiated = requested) => ({ method, requested, negotiated });
+const DISCOVER = hs("server/discover", "2026-07-28");
+const INIT = (version) => hs("initialize", version);
+// saveHandshakes keeps how many handshakes server has answered; handshakesSince checks the ones answered after that.
+const saveHandshakes = (id, server, varName) => mockGet(id, server, `setup: record ${server}'s handshakes`, [], [`pm.collectionVariables.set(${lit(varName)}, pm.response.json().counters.handshakes.length);`]);
+const handshakesSince = (varName, want) => A.custom(`the handshakes since are ${lit(want)}`, [
+  "var all = pm.response.json().counters.handshakes || [];",
+  `pm.expect(all.slice(Number(pm.collectionVariables.get(${lit(varName)}))), 'handshakes: ' + JSON.stringify(all)).to.eql(${lit(want)});`,
+]);
+// waitForHandshakes polls server, 250ms apart, until it has answered n handshakes since varName was saved, or about 10s pass.
+const waitForHandshakes = (server, varName, n, tries = 40) => [
+  `var left = ${tries};`,
+  "function poll() {",
+  `  pm.sendRequest({ url: pm.variables.get('chaos_url') + '/control/${server}', method: 'GET' }, function (err, res) {`,
+  `    var got = !err && res.code === 200 ? res.json().counters.handshakes.length : 0;`,
+  `    if (got >= Number(pm.collectionVariables.get(${lit(varName)})) + ${n} || --left <= 0) { return; }`,
+  "    setTimeout(poll, 250);",
+  "  });",
+  "}",
+  "poll();",
+];
+const stickyOn = (clientId, name, server, over = {}) => httpClient(clientId, name, server, { needs_session_stickiness: true, tools_to_execute: ["*"], ...over });
+const capMessage = (field, v) => `${field} must be one of auto, 2026-07-28, 2025-11-25, 2025-06-18, got "${v}"`;
+const setGlobalCap = (id, title, v, asserts = [A.status(200)]) => putConfig(id, title, [`cc.mcp_max_protocol_version = ${lit(v)};`], asserts);
+const omitGlobalCap = (id, title) => putConfig(id, title, ["delete cc.mcp_max_protocol_version;"], [A.status(200)]);
+const globalCap = (id, title, v) => request(id, title, "GET", "/api/config", { asserts: [A.status(200), A.custom(`mcp_max_protocol_version is ${v === undefined ? "absent" : lit(v)}`, [
+  `pm.expect(pm.response.json().client_config.mcp_max_protocol_version, 'body: ' + JSON.stringify(pm.response.json().client_config)).to.${v === undefined ? "equal(undefined)" : `equal(${lit(v)})`};`,
+])] });
+const capIs = (v) => A.custom(`max_protocol_version is ${v === undefined ? "absent" : lit(v)}`, [
+  `pm.expect(pm.response.json().clients[0].config.max_protocol_version, 'body: ' + pm.response.text()).to.${v === undefined ? "equal(undefined)" : `equal(${lit(v)})`};`,
+]);
+const noClient = (id, clientId, title) => request(id, title, "GET", `/api/mcp/clients?server=${clientId}`, { asserts: [A.status(200), A.custom("no such client is listed", ["pm.expect(pm.response.json().clients || [], 'body: ' + pm.response.text()).to.eql([]);"])] });
+const healthyAfterHandshakes = (id, clientId, title) => request(id, title, "GET", `/api/mcp/clients?server=${clientId}`, { pre: waitForClient(clientId, "c.state === 'healthy'"), asserts: [A.status(200), clientState("healthy")] });
+
+const SET27 = folder("SET-27 Max protocol version validation", "Setup: admin credentials; alpha (echo_tool); client set27-c, per call on alpha, with no cap.", [
+  ...freshServer("SET-27", "alpha", ["echo_tool"]),
+  createClient("SET-27", httpClient("set27-c", "set27_c", "alpha", { tools_to_execute: ["*"] }), "setup: create the client"),
+  ...["2024-11-05", "nope"].flatMap((v) => [
+    createExpect("SET-27", `create with max_protocol_version ${lit(v)}`, stickyOn("set27-x", "set27_x", "alpha", { max_protocol_version: v }), [A.status(400), A.msgEquals(capMessage("max_protocol_version", v))]),
+    noClient("SET-27", "set27-x", `the ${lit(v)} create stored no client`),
+    clientPut("SET-27", `PUT max_protocol_version ${lit(v)}`, "set27-c", { max_protocol_version: v }, [A.status(400), A.msgEquals(capMessage("max_protocol_version", v))]),
+  ]),
+  getClient("SET-27", "set27-c", "the client still has no cap", [capIs(undefined)]),
+  readConfig("SET-27"),
+  setGlobalCap("SET-27", "PUT /api/config with mcp_max_protocol_version \"bogus\"", "bogus", [A.status(400), A.msgEquals(capMessage("mcp_max_protocol_version", "bogus"))]),
+  request("SET-27", "the global setting is unchanged", "GET", "/api/config", { asserts: [A.status(200), A.custom("mcp_max_protocol_version is what it was", [
+    "var before = JSON.parse(pm.collectionVariables.get('client_config')).mcp_max_protocol_version;",
+    "pm.expect(pm.response.json().client_config.mcp_max_protocol_version).to.equal(before);",
+  ])] }),
+  deleteClient("SET-27", "set27-c"),
+]);
+
+const SET28 = folder("SET-28 A capped client offers no newer version", "Setup: global max protocol version auto; fleet servers set28u, set28n and set28o, each speaking 2026-07-28, 2025-11-25 and 2025-06-18; on each a sticky client: set28-u with no cap, set28-n capped at 2025-11-25, set28-o capped at 2025-06-18.", [
+  ...[["set28u", "set28-u", "set28_u", {}, [DISCOVER]], ["set28n", "set28-n", "set28_n", { max_protocol_version: "2025-11-25" }, [INIT("2025-11-25"), INIT("2025-11-25")]], ["set28o", "set28-o", "set28_o", { max_protocol_version: "2025-06-18" }, [INIT("2025-06-18"), INIT("2025-06-18")]]].flatMap(([server, clientId, name, over, want]) => [
+    ...freshServer("SET-28", server, ["echo_tool"]),
+    setVersions("SET-28", server, ALL_VERSIONS),
+    saveHandshakes("SET-28", server, `${server}_h`),
+    createClient("SET-28", stickyOn(clientId, name, server, over), `setup: create ${clientId}`),
+    mockGet("SET-28", server, `${server} answered ${want.map((h) => `${h.method} ${h.requested}`).join(" and ")}`, [handshakesSince(`${server}_h`, want)]),
+    getClient("SET-28", clientId, `${clientId} is healthy and reads back its cap`, [clientState("healthy"), capIs(over.max_protocol_version)]),
+    execTool("SET-28", `execute through ${clientId}`, `${name}-echo_tool`, [A.status(200)]),
+  ]),
+  mockGet("SET-28", "set28u", "the uncapped client holds no session, only its subscriptions/listen stream", [
+    A.custom("sessions 0 and one open stream", ["var b = pm.response.json();", "pm.expect(b.counters.sessions, 'body: ' + pm.response.text()).to.equal(0);", "pm.expect(b.streams).to.equal(1);"]),
+  ]),
+  deleteClient("SET-28", "set28-u"), deleteClient("SET-28", "set28-n"), deleteClient("SET-28", "set28-o"),
+]);
+
+const SET29_CAP_MESSAGE = "mcp protocol version above the configured maximum: upstream negotiated 2025-11-25, newer than this client's max protocol version 2025-06-18";
+const SET29 = folder("SET-29 Upstream answering above the cap", "Setup: alpha (echo_tool) answers initialize with protocol version 2025-11-25 (bad_version). Clients on alpha: a sticky one capped at 2025-06-18, a per-call one capped at 2025-06-18, a sticky one with no cap, a sticky one capped at 2025-11-25.", [
+  ...freshServer("SET-29", "alpha", ["echo_tool"]),
+  mockPost("SET-29", "alpha", "faults", "setup: alpha answers initialize with 2025-11-25", { faults: { bad_version: "2025-11-25" } }),
+  saveHandshakes("SET-29", "alpha", "set29_h"),
+  createExpect("SET-29", "create the sticky client capped at 2025-06-18", stickyOn("set29-s", "set29_s", "alpha", { max_protocol_version: "2025-06-18" }),
+    [A.status(500), A.msgEquals(`Failed to connect MCP client: failed to initialize MCP client: ${SET29_CAP_MESSAGE}`)]),
+  mockGet("SET-29", "alpha", "alpha answered one initialize, not retried", [handshakesSince("set29_h", [hs("initialize", "2025-06-18", "2025-11-25")])]),
+  noClient("SET-29", "set29-s", "the sticky client is not kept"),
+  createClient("SET-29", httpClient("set29-p", "set29_p", "alpha", { tools_to_execute: ["*"], max_protocol_version: "2025-06-18" }), "create the per-call client capped at 2025-06-18"),
+  getClient("SET-29", "set29-p", "the per-call client is unstable at stage tool_discovery, with no tools", [clientState("unstable"), clientField("last_failure.stage", "tool_discovery"), toolNamesAre([]),
+    A.custom("last_failure.message names the cap", [`pm.expect(pm.response.json().clients[0].last_failure.message, 'body: ' + pm.response.text()).to.include(${lit(SET29_CAP_MESSAGE)});`])]),
+  execTool("SET-29", "execute through the per-call client", "set29_p-echo_tool", [A.status(400), A.msgContains("is not available or not permitted")]),
+  createClient("SET-29", stickyOn("set29-u", "set29_u", "alpha"), "create the sticky client with no cap"),
+  getClient("SET-29", "set29-u", "the uncapped client is healthy", [clientState("healthy")]),
+  createClient("SET-29", stickyOn("set29-n", "set29_n", "alpha", { max_protocol_version: "2025-11-25" }), "create the sticky client capped at 2025-11-25"),
+  getClient("SET-29", "set29-n", "the client capped at 2025-11-25 is healthy", [clientState("healthy")]),
+  mockPost("SET-29", "alpha", "faults/clear", "teardown: clear alpha's faults"),
+  deleteClient("SET-29", "set29-p"), deleteClient("SET-29", "set29-u"), deleteClient("SET-29", "set29-n"),
+]);
+
+const SET30 = folder("SET-30 Global max protocol version round trip", "Setup: admin credentials; a fresh install, so no global max protocol version is stored. The folder ends with the global setting at auto.", [
+  globalCap("SET-30", "a fresh install stores no global setting", undefined),
+  readConfig("SET-30"),
+  setGlobalCap("SET-30", "PUT mcp_max_protocol_version 2025-06-18", "2025-06-18"),
+  globalCap("SET-30", "2025-06-18 is stored", "2025-06-18"),
+  readConfig("SET-30"),
+  omitGlobalCap("SET-30", "PUT the client config without mcp_max_protocol_version"),
+  globalCap("SET-30", "omitting the field keeps 2025-06-18", "2025-06-18"),
+  readConfig("SET-30"),
+  setGlobalCap("SET-30", "PUT mcp_max_protocol_version auto", "auto"),
+  request("SET-30", "auto is stored", "GET", "/api/config", { pre: afterSeconds(3), asserts: [A.status(200), A.custom("mcp_max_protocol_version is \"auto\"", ["pm.expect(pm.response.json().client_config.mcp_max_protocol_version).to.equal('auto');"])] }),
+]);
+
+const SET31 = folder("SET-31 A global cap change reconnects only the clients it affects", "Setup: global max protocol version auto; fleet servers set31u and set31c, each speaking 2026-07-28, 2025-11-25 and 2025-06-18; sticky client set31-u on set31u following the global setting, sticky client set31-c on set31c capped at 2025-06-18. The folder ends with the global setting at auto.", [
+  ...freshServer("SET-31", "set31u", ["echo_tool"]), setVersions("SET-31", "set31u", ALL_VERSIONS),
+  ...freshServer("SET-31", "set31c", ["echo_tool"]), setVersions("SET-31", "set31c", ALL_VERSIONS),
+  createClient("SET-31", stickyOn("set31-u", "set31_u", "set31u"), "setup: create set31-u, following the global setting"),
+  createClient("SET-31", stickyOn("set31-c", "set31_c", "set31c", { max_protocol_version: "2025-06-18" }), "setup: create set31-c, capped at 2025-06-18"),
+  readConfig("SET-31"),
+  saveHandshakes("SET-31", "set31u", "set31u_h"), saveHandshakes("SET-31", "set31c", "set31c_h"),
+  setGlobalCap("SET-31", "lower the global setting to 2025-06-18", "2025-06-18"),
+  mockGetAfter("SET-31", "set31u", "set31-u reconnects at 2025-06-18 within 10s", [handshakesSince("set31u_h", [INIT("2025-06-18"), INIT("2025-06-18")])], waitForHandshakes("set31u", "set31u_h", 2)),
+  healthyAfterHandshakes("SET-31", "set31-u", "set31-u is healthy"),
+  mockGet("SET-31", "set31c", "set31-c, with its own cap, did not reconnect", [handshakesSince("set31c_h", [])]),
+  readConfig("SET-31"),
+  saveHandshakes("SET-31", "set31u", "set31u_h"), saveHandshakes("SET-31", "set31c", "set31c_h"),
+  setGlobalCap("SET-31", "raise the global setting to auto", "auto"),
+  mockGetAfter("SET-31", "set31u", "set31-u reconnects at 2026-07-28 within 10s", [handshakesSince("set31u_h", [DISCOVER])], waitForHandshakes("set31u", "set31u_h", 1)),
+  healthyAfterHandshakes("SET-31", "set31-u", "set31-u is healthy"),
+  mockGetAfter("SET-31", "set31c", "set31-c still did not reconnect", [handshakesSince("set31c_h", [])], afterSeconds(3)),
+  execTool("SET-31", "execute through set31-u", "set31_u-echo_tool", [A.status(200)]),
+  deleteClient("SET-31", "set31-u"), deleteClient("SET-31", "set31-c"),
+]);
+
+const SET32 = folder("SET-32 Changing a client's own cap", "Setup: global max protocol version auto; fleet server set32 speaking 2026-07-28, 2025-11-25 and 2025-06-18; sticky client set32-c on it capped at 2025-06-18.", [
+  ...freshServer("SET-32", "set32", ["echo_tool"]), setVersions("SET-32", "set32", ALL_VERSIONS),
+  saveHandshakes("SET-32", "set32", "set32_h"),
+  createClient("SET-32", stickyOn("set32-c", "set32_c", "set32", { max_protocol_version: "2025-06-18" }), "setup: create set32-c, capped at 2025-06-18"),
+  mockGet("SET-32", "set32", "set32-c connected at 2025-06-18", [handshakesSince("set32_h", [INIT("2025-06-18"), INIT("2025-06-18")])]),
+  ...[["auto", [DISCOVER], "auto"], ["2026-07-28", [], "2026-07-28"], ["2025-11-25", [INIT("2025-11-25"), INIT("2025-11-25")], "2025-11-25"], ["", [DISCOVER], undefined]].flatMap(([cap, want, readBack]) => [
+    saveHandshakes("SET-32", "set32", "set32_h"),
+    clientPut("SET-32", `PUT max_protocol_version ${lit(cap)}`, "set32-c", { max_protocol_version: cap }, [A.status(200), A.jsonMessage("MCP client edited successfully")]),
+    want.length
+      ? mockGetAfter("SET-32", "set32", `set32-c reconnects with ${want.map((h) => `${h.method} ${h.requested}`).join(" and ")} within 10s`, [handshakesSince("set32_h", want)], waitForHandshakes("set32", "set32_h", want.length))
+      : mockGetAfter("SET-32", "set32", "set32-c does not reconnect: it already runs at 2026-07-28", [handshakesSince("set32_h", [])], afterSeconds(3)),
+    request("SET-32", `set32-c is healthy and reads back ${readBack === undefined ? "no cap" : lit(readBack)}`, "GET", "/api/mcp/clients?server=set32-c", { pre: waitForClient("set32-c", "c.state === 'healthy'"), asserts: [A.status(200), clientState("healthy"), capIs(readBack)] }),
+  ]),
+  execTool("SET-32", "execute through set32-c", "set32_c-echo_tool", [A.status(200)]),
+  deleteClient("SET-32", "set32-c"),
+]);
+
+// ================================================================ tool metadata and rich results
+const META_ICONS = [{ src: "https://icons.example.invalid/echo.png", mimeType: "image/png", sizes: ["48x48"] }];
+const META_SCHEMA = { type: "object", properties: { echoed: { type: "string" } }, required: ["echoed"] };
+const META_TOOLS = [{ name: "echo", title: "Echo", icons: META_ICONS, outputSchema: META_SCHEMA, annotations: { readOnlyHint: true } }, { name: "plain" }];
+const META_TEXT = "alpha serves echo with title \"Echo\", one icon (https://icons.example.invalid/echo.png, image/png, 48x48), an output schema ({echoed: string}, required) and readOnlyHint, and plain with none of them";
+const PNG = "iVBORw0KGgo=";
+const MP3 = "SUQzBAAAAAAA";
+const PDF = "JVBERi0xLjQK";
+const LINK_TEXT = "[Resource: report file:///docs/report.pdf (application/pdf)]";
+const placeholder = (kind) => `[${kind}, 9 bytes returned by the tool, not shown]`;
+const MEDIA_CONTENT = [
+  { type: "text", text: "see attached" },
+  { type: "image", data: PNG, mimeType: "image/png" },
+  { type: "audio", data: MP3, mimeType: "audio/mpeg" },
+  { type: "resource", resource: { uri: "file:///docs/notes.txt", mimeType: "text/plain", text: "the notes" } },
+  { type: "resource", resource: { uri: "file:///docs/chart.png", mimeType: "image/png", blob: PNG } },
+  { type: "resource", resource: { uri: "file:///docs/report.pdf", mimeType: "application/pdf", blob: PDF } },
+  { type: "resource_link", uri: "file:///docs/report.pdf", name: "report", mimeType: "application/pdf" },
+];
+const MEDIA_TOOL = { name: "media", reply: { content: MEDIA_CONTENT, structuredContent: { v: 1 } } };
+const MEDIA_TEXT = "alpha's media tool replies with text \"see attached\", a PNG image, an audio/mpeg clip, an embedded text resource file:///docs/notes.txt (\"the notes\"), an embedded PNG blob file:///docs/chart.png, an embedded PDF blob file:///docs/report.pdf, a resource_link to file:///docs/report.pdf named report, and structuredContent {v: 1}";
+const metaServer = (id, tools) => [
+  request(id, "setup: fresh mcpchaos server alpha", "POST", "/control", { base: CHAOS, noAuth: true, body: { add: "alpha" }, asserts: [A.status(200)] }),
+  mockPost(id, "alpha", "tools/set", "setup: alpha serves the tools under test", { tools }),
+];
+// listedTool picks a tool by name out of the client listing or a tools/list result.
+const LISTED = "function listed(tools, name) { return (tools || []).filter(function (t) { return t.name === name; })[0]; }";
+const noMetaKeys = (keys) => `function noMeta(t) { return ${lit(keys)}.filter(function (k) { return t && t[k] !== undefined; }); }`;
+
+const CONN28 = folder("CONN-28 Tool metadata on the client listing", `Setup: ${META_TEXT}; client conn28-c on alpha, per call, tools_to_execute ["*"]; later alpha drops echo's title and the client's tools are refreshed.`, [
+  ...metaServer("CONN-28", META_TOOLS),
+  createClient("CONN-28", httpClient("conn28-c", "alpha", "alpha", { tools_to_execute: ["*"] }), "setup: create the client"),
+  getClient("CONN-28", "conn28-c", "echo carries its title, icons, output schema and annotations; plain carries none", [A.custom("tool metadata as listed", [LISTED, noMetaKeys(["title", "icons", "output_schema", "annotations"]),
+    "var tools = pm.response.json().clients[0].tools, echo = listed(tools, 'echo'), plain = listed(tools, 'plain');",
+    "pm.expect(echo.title, 'body: ' + pm.response.text()).to.equal('Echo');",
+    `pm.expect(echo.icons).to.eql(${lit(META_ICONS)});`,
+    `pm.expect(echo.output_schema).to.eql(${lit(META_SCHEMA)});`,
+    "pm.expect(echo.annotations).to.eql({ readOnlyHint: true });",
+    "pm.expect(noMeta(plain), 'plain: ' + JSON.stringify(plain)).to.eql([]);",
+  ])]),
+  mockPost("CONN-28", "alpha", "tools/set", "alpha drops echo's title", { tools: [{ ...META_TOOLS[0], title: undefined }, META_TOOLS[1]] }),
+  request("CONN-28", "refresh the client's tools", "POST", "/api/mcp/client/conn28-c/refresh-tools", { asserts: [A.status(200)] }),
+  getClient("CONN-28", "conn28-c", "echo has no title any more, and keeps the rest", [A.custom("title gone, icons and output schema kept", [LISTED,
+    "var echo = listed(pm.response.json().clients[0].tools, 'echo');",
+    "pm.expect(echo.title, 'echo: ' + JSON.stringify(echo)).to.equal(undefined);",
+    `pm.expect(echo.icons).to.eql(${lit(META_ICONS)});`,
+    `pm.expect(echo.output_schema).to.eql(${lit(META_SCHEMA)});`,
+  ])]),
+  deleteClient("CONN-28", "conn28-c"),
+]);
+
+const metaOnGateway = (version) => A.custom(`on ${version}, alpha-echo carries its metadata and alpha-plain none`, [LISTED, noMetaKeys(["title", "icons", "outputSchema"]),
+  "var tools = pm.response.json().result.tools, echo = listed(tools, 'alpha-echo'), plain = listed(tools, 'alpha-plain');",
+  "pm.expect(echo && echo.title, 'body: ' + pm.response.text()).to.equal('Echo');",
+  `pm.expect(echo.icons).to.eql(${lit(META_ICONS)});`,
+  `pm.expect(echo.outputSchema).to.eql(${lit(META_SCHEMA)});`,
+  "pm.expect(echo.annotations).to.eql({ readOnlyHint: true });",
+  "pm.expect(noMeta(plain), 'plain: ' + JSON.stringify(plain)).to.eql([]);",
+]);
+const EP64 = folder("EP-64 Tool metadata on /mcp", `Setup: ${META_TEXT}; client ep64-c on alpha, per call, tools_to_execute ["*"]; anonymous /mcp requests on 2025-11-25 and on 2026-07-28.`, [
+  ...metaServer("EP-64", META_TOOLS),
+  createClient("EP-64", httpClient("ep64-c", "alpha", "alpha", { tools_to_execute: ["*"] }), "setup: create the client"),
+  rpc("EP-64", "tools/list on 2025-11-25", listMsg, { headers: [MCP_ACCEPT, { key: "MCP-Protocol-Version", value: "2025-11-25" }], asserts: [A.status(200), metaOnGateway("2025-11-25")] }),
+  modernRpc("EP-64", "tools/list on 2026-07-28", "tools/list", {}, [A.status(200), metaOnGateway("2026-07-28")]),
+  deleteClient("EP-64", "ep64-c"),
+]);
+
+const MEDIA_CHAT_BLOCKS = [
+  { type: "text", text: "see attached" },
+  { type: "image_url", image_url: { url: `data:image/png;base64,${PNG}` } },
+  { type: "input_audio", input_audio: { data: MP3, format: "mp3" } },
+  { type: "text", text: "the notes" },
+  { type: "image_url", image_url: { url: `data:image/png;base64,${PNG}` } },
+  { type: "file", file: { file_data: `data:application/pdf;base64,${PDF}`, filename: "report.pdf", file_type: "application/pdf" } },
+  { type: "text", text: LINK_TEXT },
+];
+const MEDIA_RESPONSES_OUTPUT = [
+  { type: "input_text", text: "see attached" },
+  { type: "input_image", image_url: `data:image/png;base64,${PNG}` },
+  { type: "input_text", text: placeholder("audio/mp3") },
+  { type: "input_text", text: "the notes" },
+  { type: "input_image", image_url: `data:image/png;base64,${PNG}` },
+  { type: "input_file", file_data: `data:application/pdf;base64,${PDF}`, filename: "report.pdf", file_type: "application/pdf" },
+  { type: "input_text", text: LINK_TEXT },
+];
+const CONN29 = folder("CONN-29 Audio, resources and links on execute", `Setup: ${MEDIA_TEXT}; client conn29-c on alpha, per call, tools_to_execute ["*"].`, [
+  ...metaServer("CONN-29", [MEDIA_TOOL]),
+  createClient("CONN-29", httpClient("conn29-c", "alpha", "alpha", { tools_to_execute: ["*"] }), "setup: create the client"),
+  execBody("CONN-29", "execute alpha-media", { id: "m1", type: "function", function: { name: "alpha-media", arguments: "{}" } }, [A.status(200),
+    A.custom("content blocks: text, image, input_audio mp3, the resource text, the PNG blob as an image, the PDF as a file, the link as text", [`pm.expect(pm.response.json().content, 'body: ' + pm.response.text()).to.eql(${lit(MEDIA_CHAT_BLOCKS)});`])]),
+  execBody("CONN-29", "execute alpha-media with format=responses", { call_id: "m2", name: "alpha-media", arguments: "{}" }, [A.status(200),
+    A.custom("output: the same, with the audio as a placeholder", [`pm.expect(pm.response.json().output, 'body: ' + pm.response.text()).to.eql(${lit(MEDIA_RESPONSES_OUTPUT)});`])], { query: "?format=responses" }),
+  deleteClient("CONN-29", "conn29-c"),
+]);
+
+const MEDIA_GATEWAY_CONTENT = MEDIA_CONTENT.map((c) => (c.type === "resource_link" ? { ...c, description: "" } : c));
+const mediaUnchanged = (version) => A.custom(`on ${version}, the upstream's content and structuredContent come back`, [
+  "var r = pm.response.json().result;",
+  `pm.expect(r.content, 'body: ' + pm.response.text()).to.eql(${lit(MEDIA_GATEWAY_CONTENT)});`,
+  "pm.expect(r.structuredContent).to.eql({ v: 1 });",
+  "pm.expect(r.isError || false).to.equal(false);",
+]);
+const EP65 = folder("EP-65 Rich results unchanged through /mcp", `Setup: ${MEDIA_TEXT}; client ep65-c on alpha, per call, tools_to_execute ["*"]; anonymous /mcp tools/call on 2025-11-25 and on 2026-07-28.`, [
+  ...metaServer("EP-65", [MEDIA_TOOL]),
+  createClient("EP-65", httpClient("ep65-c", "alpha", "alpha", { tools_to_execute: ["*"] }), "setup: create the client"),
+  rpc("EP-65", "tools/call alpha-media on 2025-11-25", call("alpha-media", {}), { headers: [MCP_ACCEPT, { key: "MCP-Protocol-Version", value: "2025-11-25" }], asserts: [A.status(200), mediaUnchanged("2025-11-25")] }),
+  modernRpc("EP-65", "tools/call alpha-media on 2026-07-28", "tools/call", { name: "alpha-media", arguments: {} }, [A.status(200), mediaUnchanged("2026-07-28")], { name: "alpha-media" }),
+  deleteClient("EP-65", "ep65-c"),
+]);
+
+const MEDIA_FLAT = ["see attached", placeholder("image/png"), placeholder("audio/mp3"), "the notes", placeholder("image/png"), placeholder("application/pdf report.pdf"), LINK_TEXT].join("\n");
+const MEDIA_ANTHROPIC = [
+  { type: "text", text: "see attached" },
+  { type: "image", source: { type: "base64", media_type: "image/png", data: PNG } },
+  { type: "text", text: placeholder("audio/mp3") },
+  { type: "text", text: "the notes" },
+  { type: "image", source: { type: "base64", media_type: "image/png", data: PNG } },
+  { type: "text", text: placeholder("application/pdf report.pdf") },
+  { type: "text", text: LINK_TEXT },
+];
+const INF76_TURN2 = {
+  openai: [`var m = (reqs[1].json.messages || []).filter(function (x) { return x.role === 'tool'; })[0];`, `pm.expect(m && m.content, JSON.stringify(reqs[1].json.messages)).to.equal(${lit(MEDIA_FLAT)});`],
+  anthropic: ["var r = []; (reqs[1].json.messages || []).forEach(function (m) { (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b.type === 'tool_result') { r.push(b); } }); });", `pm.expect(r.length === 1 && r[0].content, JSON.stringify(reqs[1].json.messages)).to.eql(${lit(MEDIA_ANTHROPIC)});`],
+  gemini: ["var fr = []; (reqs[1].json.contents || []).forEach(function (c) { (c.parts || []).forEach(function (p) { if (p.functionResponse) { fr.push(p.functionResponse); } }); });", `pm.expect(fr.length === 1 && fr[0].response.content, JSON.stringify(reqs[1].json.contents)).to.equal(${lit(MEDIA_FLAT)});`],
+};
+const INF76_SHAPE = { openai: "one string: the text, a placeholder for each media item, the resource text and the link", anthropic: "the text and both PNGs as image blocks, placeholders for the audio and the PDF", gemini: "one string in functionResponse, as on OpenAI" };
+const INF76 = folder("INF-76 Media in a tool result reaches each provider in its own shape", `Setup: ${MEDIA_TEXT}; alpha registered as client alpha, per call, tools_to_execute ["*"], tools_to_auto_execute ["media"]; ${LLM_TEXT}; on openai, anthropic and gemini, turn 1 calls alpha-media and turn 2 answers "done".`, [
+  ...metaServer("INF-76", [MEDIA_TOOL]),
+  alphaClient("INF-76", { tools_to_auto_execute: ["media"] }),
+  ...["openai", "anthropic", "gemini"].flatMap((prov) => [
+    llmScript("INF-76", `inf76-${prov}`, { turns: [{ tool_calls: [llmCall("t1", "alpha-media")] }, { text: "done" }] }),
+    infPost("INF-76", `chat on ${prov}`, "/v1/chat/completions", { model: `${prov}/mock-model`, messages: [userMsg(`inf76-${prov}`)] }, [A.status(200), chatContent("done")]),
+    llmCaptured("INF-76", `${prov} turn 2 carries the result as ${INF76_SHAPE[prov]}`, `inf76-${prov}`, [reqCount(2), A.custom(`the ${prov} tool result`, [REQS, ...INF76_TURN2[prov]])]),
+  ]),
+  agentTeardown("INF-76"),
+]);
+
+const INF77_TOOLS = {
+  openai: "var defs = (reqs[0].json.tools || []).map(function (t) { return t.function; });",
+  anthropic: "var defs = reqs[0].json.tools || [];",
+  gemini: "var defs = ((reqs[0].json.tools || [])[0] || {}).functionDeclarations || [];",
+};
+const INF77 = folder("INF-77 MCP tool metadata stays inside Bifrost", `Setup: ${META_TEXT}; alpha registered as client alpha, per call, tools_to_execute ["*"]; ${LLM_TEXT}; a chat on openai, anthropic and gemini, answered "ok".`, [
+  ...metaServer("INF-77", META_TOOLS),
+  alphaClient("INF-77"),
+  ...["openai", "anthropic", "gemini"].flatMap((prov) => [
+    llmScript("INF-77", `inf77-${prov}`, TEXT_OK),
+    infPost("INF-77", `chat on ${prov}`, "/v1/chat/completions", { model: `${prov}/mock-model`, messages: [userMsg(`inf77-${prov}`)] }, [A.status(200), chatContent("ok")]),
+    llmCaptured("INF-77", `the ${prov} tool definitions carry no title, icons or output schema`, `inf77-${prov}`, [reqCount(1), A.custom("alpha-echo is declared without its MCP metadata", [REQS, INF77_TOOLS[prov],
+      "var echo = defs.filter(function (d) { return d.name === 'alpha-echo'; })[0];",
+      "pm.expect(echo, JSON.stringify(reqs[0].json.tools)).to.be.an('object');",
+      "pm.expect(JSON.stringify(defs)).to.not.match(/title|icons|outputSchema|output_schema|icons\\.example/);",
+    ])]),
+  ]),
+  agentTeardown("INF-77"),
+]);
+
+// ================================================================ client metadata documents
+
+// Bifrost signs in with its client metadata document only from a public HTTPS address. These tests point
+// mcp_external_client_url at names nothing resolves: the mock's authorization server fetches the document through
+// Bifrost's local address, sending the document's own host, and a callback under such a name is followed on the local
+// address.
+const EXT_A = "https://bifrost.example.test";
+const EXT_B = "https://moved.example.test";
+const DOC_PATH = "/api/oauth/client-metadata.json";
+const CB_PATH = "/api/oauth/callback";
+const DOCS_ADVERTISED = { metadata_documents: "advertised", metadata_documents_via: "{{base_url}}" };
+const DOCS_ACCEPTED = { metadata_documents: "accepted", metadata_documents_via: "{{base_url}}" };
+const EXT_TEXT = (ext) => `${ALLOWLIST_TEXT}, mcp_external_client_url ${ext}`;
+// extUrl sets the allowlist, mcp_external_client_url when ext is given (none otherwise) and any further changes.
+const extUrl = (id, ext, more = [], moreText = "") => putConfig(id, `setup: ${ext ? EXT_TEXT(ext) : `${ALLOWLIST_TEXT}, no mcp_external_client_url`}${moreText}`, [
+  "cc.mcp_oauth_private_allowlist = ['127.0.0.1'];",
+  ext ? `cc.mcp_external_client_url = ${lit(ext)};` : "delete cc.mcp_external_client_url;",
+  ...more,
+], [A.status(200)]);
+// docAuthorize checks that the response's authorize_url signs in with ext's document as client_id and ext's callback.
+const docAuthorize = (ext) => A.custom(`authorize_url has client_id ${ext}${DOC_PATH} and redirect_uri ${ext}${CB_PATH}`, [QS_FN,
+  "var u = pm.response.json().authorize_url; var q = qs(u);",
+  `pm.expect(q.client_id, 'authorize_url: ' + u).to.equal(${lit(ext + DOC_PATH)});`,
+  `pm.expect(q.redirect_uri, 'authorize_url: ' + u).to.equal(${lit(ext + CB_PATH)});`,
+]);
+const authorizeClientId = (want, title) => A.custom(`authorize_url has client_id ${title}`, [QS_FN,
+  "var u = pm.response.json().authorize_url; var q = qs(u);",
+  want instanceof RegExp ? `pm.expect(String(q.client_id), 'authorize_url: ' + u).to.match(${want});` : `pm.expect(q.client_id, 'authorize_url: ' + u).to.equal(${lit(want)});`,
+]);
+const dcrAuthorize = () => authorizeClientId(/^dcr-/, "from a dynamic registration (dcr-...)");
+// consentVia is consentAs for a sign-in under ext: the authorization server must send the browser to ext's callback,
+// kept in <p>_cb on Bifrost's local address for followCallback.
+const consentVia = (id, title, p, identity, ext) => request(id, title, "GET", identity ? `&login_hint=${identity}` : "", {
+  base: `{{${p}_au}}`, noAuth: true, noRedirect: true, noCookies: true,
+  asserts: [A.status(302), A.custom(`Location is ${ext}${CB_PATH}?...`, ["var loc = pm.response.headers.get('Location') || '';", `pm.expect(loc.indexOf(${lit(ext + CB_PATH + "?")}), 'Location: ' + loc).to.equal(0);`])],
+  extraTests: [`pm.collectionVariables.set('${p}_cb', (pm.response.headers.get('Location') || '').replace(${lit(ext)}, pm.variables.get('base_url')));`],
+});
+const oauthCountsAre = (expected) => A.custom(`oauth counters include ${lit(expected)}`, [
+  "var c = pm.response.json().oauth.counters;",
+  ...Object.entries(expected).map(([k, v]) => `pm.expect(c[${lit(k)}], 'counters: ' + JSON.stringify(c)).to.equal(${v});`),
+]);
+// docsFetched checks the documents the authorization server fetched, in order, each accepted.
+const docsFetched = (docs) => A.custom(`the authorization server fetched and accepted ${docs.join(", then ")}`, [
+  "var f = pm.response.json().oauth.log.filter(function (e) { return e.endpoint === 'metadata_document'; });",
+  `pm.expect(f.map(function (e) { return e.client_id; }), 'log: ' + JSON.stringify(f)).to.eql(${lit(docs)});`,
+  "f.forEach(function (e) { pm.expect(e.status, JSON.stringify(e)).to.equal(200); });",
+]);
+// docTokens checks the token requests of a grant type: n of them (at least one when n is null), each 200, sent with the
+// document as client_id and no client_secret.
+const docTokens = (grant, n, doc) => A.custom(`${n === null ? "at least one" : n} ${grant} token request${n === 1 ? "" : "s"}, each 200 with client_id ${doc} and no client_secret`, [
+  `var r = pm.response.json().oauth.log.filter(function (e) { return e.endpoint === 'token' && e.grant_type === ${lit(grant)}; });`,
+  n === null ? "pm.expect(r.length, 'log: ' + JSON.stringify(r)).to.be.at.least(1);" : `pm.expect(r.length, 'log: ' + JSON.stringify(r)).to.equal(${n});`,
+  `r.forEach(function (e) { pm.expect(e.status, JSON.stringify(e)).to.equal(200); pm.expect(e.client_id, JSON.stringify(e)).to.equal(${lit(doc)}); pm.expect(e.client_secret || '', JSON.stringify(e)).to.equal(''); });`,
+]);
+
+const docGet = (id, title, asserts, headers = []) => request(id, title, "GET", DOC_PATH, { noAuth: true, noCookies: true, headers, asserts: [A.status(200), ...asserts] });
+// docUnder checks the document's addresses against base, a script expression, and its application_type.
+const docUnder = (base, title, appType) => A.custom(`client_id, client_uri and redirect_uris are under ${title}; application_type ${appType}`, [
+  `var d = pm.response.json(); var base = ${base};`,
+  `pm.expect(d.client_id, 'body: ' + pm.response.text()).to.equal(base + ${lit(DOC_PATH)});`,
+  "pm.expect(d.client_uri, 'body: ' + pm.response.text()).to.equal(base);",
+  `pm.expect(d.redirect_uris, 'body: ' + pm.response.text()).to.eql([base + ${lit(CB_PATH)}]);`,
+  `pm.expect(d.application_type, 'body: ' + pm.response.text()).to.equal(${lit(appType)});`,
+]);
+const docFields = () => A.custom("client_name Bifrost MCP Gateway, grant_types, response_types code, token_endpoint_auth_method none, Cache-Control public, max-age=3600", [
+  "var d = pm.response.json();",
+  "pm.expect(d.client_name, 'body: ' + pm.response.text()).to.equal('Bifrost MCP Gateway');",
+  "pm.expect(d.grant_types, 'body: ' + pm.response.text()).to.eql(['authorization_code', 'refresh_token']);",
+  "pm.expect(d.response_types, 'body: ' + pm.response.text()).to.eql(['code']);",
+  "pm.expect(d.token_endpoint_auth_method, 'body: ' + pm.response.text()).to.equal('none');",
+  "pm.expect(pm.response.headers.get('Cache-Control')).to.equal('public, max-age=3600');",
+]);
+const AUTH52 = folder("AUTH-52 Bifrost's client metadata document", `Setup: no credential on the requests; first no mcp_external_client_url, then ${EXT_A}.`, [
+  readConfig("AUTH-52"), extUrl("AUTH-52", null),
+  docGet("AUTH-52", "on Bifrost's local http address", [docUnder("pm.variables.get('base_url')", "the base URL", "native"), docFields()]),
+  docGet("AUTH-52", "with X-Forwarded-Proto https and Host gw.example.test", [docUnder(lit("https://gw.example.test"), "https://gw.example.test", "web"), docFields()], [{ key: "X-Forwarded-Proto", value: "https" }, { key: "Host", value: "gw.example.test" }]),
+  extUrl("AUTH-52", EXT_A),
+  docGet("AUTH-52", `with mcp_external_client_url ${EXT_A}, sent with Host gw.example.test`, [docUnder(lit(EXT_A), EXT_A, "web"), docFields()], [{ key: "Host", value: "gw.example.test" }]),
+  restoreConfig("AUTH-52"),
+]);
+
+const AUTH53_DOC = EXT_A + DOC_PATH;
+const AUTH53 = folder("AUTH-53 Sign-in with the client metadata document", `Setup: ${EXT_TEXT(EXT_A)}; fleet server auth53 as an OAuth protected resource whose authorization server advertises client metadata documents, offers registration and issues 5s access tokens; an OAuth client auth53-c on it, per call, created with oauth_config {}; consent as id1.`, [
+  readConfig("AUTH-53"), extUrl("AUTH-53", EXT_A),
+  ...asServer("AUTH-53", "auth53", { ...DOCS_ADVERTISED, access_ttl: "5s" }),
+  createOAuth("AUTH-53", "create the OAuth client", oauthBody("auth53-c", "auth53", "auth53"), "auth53", [statusIs("pending_oauth"), docAuthorize(EXT_A)]),
+  oauthCounters("AUTH-53", "auth53", "no registration and no document fetched yet", { register: 0, metadata_document_fetches: 0 }),
+  consentVia("AUTH-53", "consent as id1", "auth53", "id1", EXT_A),
+  mockGet("AUTH-53", "auth53", "the authorization server fetched the document once and registered nothing", [docsFetched([AUTH53_DOC]), oauthCountsAre({ register: 0, metadata_document_fetches: 1 })]),
+  followCallback("AUTH-53", "follow the callback", "auth53", callbackSuccess()),
+  completeOAuth("AUTH-53", "complete", "auth53", [A.status(200)]),
+  execTool("AUTH-53", "execute", "auth53-echo_tool", [A.status(200)]),
+  execAfterWait("AUTH-53", "execute after the access token expired, 6s later", "auth53-echo_tool", [A.status(200)], 6000),
+  mockGet("AUTH-53", "auth53", "the code exchange and every refresh sent the document URL and no client_secret; both calls ran as id1", [docTokens("authorization_code", 1, AUTH53_DOC), docTokens("refresh_token", null, AUTH53_DOC), identityCalls("id1", 2)]),
+  deleteClient("AUTH-53", "auth53-c"),
+  restoreConfig("AUTH-53"),
+]);
+
+const AUTH54 = folder("AUTH-54 The client metadata document is skipped when it cannot be used", `Setup: ${ALLOWLIST_TEXT}. (a) fleet server auth54a's authorization server advertises client metadata documents and there is no mcp_external_client_url (Bifrost on its local http address). Then mcp_external_client_url ${EXT_A}: (b) fleet server auth54b's authorization server does not advertise them; (c) fleet server auth54c's advertises them and knows client C1 (secret S1). Every server offers registration; each client is created with oauth_config {}, (c) with client_id C1.`, [
+  readConfig("AUTH-54"), extUrl("AUTH-54", null),
+  ...asServer("AUTH-54", "auth54a", DOCS_ADVERTISED),
+  createOAuth("AUTH-54", "(a) create from the local http address", oauthBody("auth54-a", "auth54a", "auth54a"), "auth54a", [dcrAuthorize()]),
+  oauthCounters("AUTH-54", "auth54a", "(a) one registration", { register: 1 }),
+  extUrl("AUTH-54", EXT_A),
+  ...asServer("AUTH-54", "auth54b"),
+  createOAuth("AUTH-54", "(b) create when the authorization server does not advertise documents", oauthBody("auth54-b", "auth54b", "auth54b"), "auth54b", [dcrAuthorize()]),
+  oauthCounters("AUTH-54", "auth54b", "(b) one registration", { register: 1 }),
+  ...asServer("AUTH-54", "auth54c", { ...DOCS_ADVERTISED, clients: [{ client_id: "C1", client_secret: "S1" }] }),
+  createOAuth("AUTH-54", "(c) create with client_id C1", oauthBody("auth54-c", "auth54c", "auth54c", { oauth_config: { client_id: "C1", client_secret: "S1" } }), "auth54c", [authorizeClientId("C1", "C1")]),
+  oauthCounters("AUTH-54", "auth54c", "(c) no registration and no document fetched", { register: 0, metadata_document_fetches: 0 }),
+  restoreConfig("AUTH-54"),
+]);
+
+const AUTH55 = folder("AUTH-55 use_client_metadata_document", `Setup: ${EXT_TEXT(EXT_A)}; fleet server auth55a's authorization server accepts client metadata documents without advertising them; fleet server auth55d's accepts none. Every create sets use_client_metadata_document true: (a) on auth55a; (b) on auth55a with client_id C1; (c) on auth55a with no mcp_external_client_url; (d) on auth55d.`, [
+  readConfig("AUTH-55"), extUrl("AUTH-55", EXT_A),
+  ...asServer("AUTH-55", "auth55a", DOCS_ACCEPTED),
+  request("AUTH-55", "control: auth55a's authorization server metadata does not advertise documents", "GET", "/.well-known/oauth-authorization-server/s/auth55a/as", { base: CHAOS, noAuth: true, asserts: [A.status(200), A.custom("there is no client_id_metadata_document_supported", ["pm.expect(pm.response.json(), 'body: ' + pm.response.text()).to.not.have.property('client_id_metadata_document_supported');"])] }),
+  createOAuth("AUTH-55", "(a) create", oauthBody("auth55-a", "auth55a", "auth55a", { oauth_config: { use_client_metadata_document: true } }), "auth55a", [docAuthorize(EXT_A)]),
+  consentVia("AUTH-55", "(a) consent as id1", "auth55a", "id1", EXT_A),
+  followCallback("AUTH-55", "(a) follow the callback", "auth55a", callbackSuccess()),
+  completeOAuth("AUTH-55", "(a) complete", "auth55a", [A.status(200)]),
+  execTool("AUTH-55", "(a) execute", "auth55a-echo_tool", [A.status(200)]),
+  oauthCounters("AUTH-55", "auth55a", "(a) no registration and one document fetched", { register: 0, metadata_document_fetches: 1 }),
+  createExpect("AUTH-55", "(b) create with client_id C1", oauthBody("auth55-b", "auth55b", "auth55a", { oauth_config: { client_id: "C1", use_client_metadata_document: true } }), [A.status(400), A.msgContains("use_client_metadata_document cannot be combined with a client_id")]),
+  notListed("AUTH-55", "auth55-b"),
+  extUrl("AUTH-55", null),
+  createExpect("AUTH-55", "(c) create with no mcp_external_client_url", oauthBody("auth55-c", "auth55c", "auth55a", { oauth_config: { use_client_metadata_document: true } }), [A.status(400), A.msgContains("the client metadata document needs Bifrost on a public HTTPS address: set the MCP external URL")]),
+  notListed("AUTH-55", "auth55-c"),
+  extUrl("AUTH-55", EXT_A),
+  ...asServer("AUTH-55", "auth55d"),
+  createOAuth("AUTH-55", "(d) create on a server that accepts no documents", oauthBody("auth55-d", "auth55d", "auth55d", { oauth_config: { use_client_metadata_document: true } }), "auth55d", [statusIs("pending_oauth"), docAuthorize(EXT_A)]),
+  consentAs("AUTH-55", "(d) the authorization server refuses the sign-in", "auth55d", null, [A.status(400), A.custom("the answer names an unknown client_id", ["pm.expect(pm.response.text()).to.include('unknown client_id');"])]),
+  oauthStatus("AUTH-55", "(d) the sign-in is still pending", "auth55d", "", [statusIs("pending")]),
+  notListed("AUTH-55", "auth55-d"),
+  deleteClient("AUTH-55", "auth55-a"),
+  restoreConfig("AUTH-55"),
+]);
+
+const AUTH56 = folder("AUTH-56 Endpoints entered by hand", `Setup: ${EXT_TEXT(EXT_A)}; fleet server auth56a's authorization server advertises client metadata documents; fleet server auth56b's offers registration and does not advertise them. Both clients are on auth56a: (a) with auth56a's authorize_url and token_url entered by hand; (b) with auth56b's authorize_url, token_url and registration_url.`, [
+  readConfig("AUTH-56"), extUrl("AUTH-56", EXT_A),
+  ...asServer("AUTH-56", "auth56a", DOCS_ADVERTISED),
+  ...asServer("AUTH-56", "auth56b"),
+  createOAuth("AUTH-56", "(a) create with auth56a's endpoints", oauthBody("auth56-a", "auth56a", "auth56a", { oauth_config: { authorize_url: `${CHAOS}/s/auth56a/as/authorize`, token_url: `${CHAOS}/s/auth56a/as/token` } }), "auth56a", [docAuthorize(EXT_A)]),
+  consentVia("AUTH-56", "(a) consent as id1", "auth56a", "id1", EXT_A),
+  followCallback("AUTH-56", "(a) follow the callback", "auth56a", callbackSuccess()),
+  completeOAuth("AUTH-56", "(a) complete", "auth56a", [A.status(200)]),
+  execTool("AUTH-56", "(a) execute", "auth56a-echo_tool", [A.status(200)]),
+  createOAuth("AUTH-56", "(b) create with auth56b's endpoints", oauthBody("auth56-b", "auth56b", "auth56a", { oauth_config: { authorize_url: `${CHAOS}/s/auth56b/as/authorize`, token_url: `${CHAOS}/s/auth56b/as/token`, registration_url: `${CHAOS}/s/auth56b/as/register` } }), "auth56b", [dcrAuthorize(), A.custom("authorize_url is auth56b's", ["pm.expect(pm.response.json().authorize_url, 'body: ' + pm.response.text()).to.include('/s/auth56b/as/authorize?');"])]),
+  oauthCounters("AUTH-56", "auth56b", "(b) one registration at auth56b", { register: 1 }),
+  oauthCounters("AUTH-56", "auth56a", "auth56a registered nothing and fetched one document, in (a)", { register: 0, metadata_document_fetches: 1 }),
+  deleteClient("AUTH-56", "auth56-a"),
+  restoreConfig("AUTH-56"),
+]);
+
+const PU_NO_TT = ["cc.mcp_enable_temp_token_auth = false;"];
+const AUTH57 = folder("AUTH-57 A new public address moves the client ID", `Setup: ${EXT_TEXT(EXT_A)}, mcp_enable_temp_token_auth false; fleet servers auth57s and auth57u, whose authorization servers advertise client metadata documents; a shared OAuth client auth57-s on auth57s, per call, signed in as id1; a per_user_oauth client auth57u on auth57u, verified as admin, with auth57-sess1 signed in as alice. Then mcp_external_client_url becomes ${EXT_B}.`, [
+  readConfig("AUTH-57"), extUrl("AUTH-57", EXT_A, PU_NO_TT, ", mcp_enable_temp_token_auth false"),
+  ...asServer("AUTH-57", "auth57s", DOCS_ADVERTISED),
+  createOAuth("AUTH-57", "setup: create the shared client", oauthBody("auth57-s", "auth57s", "auth57s"), "auth57s", [docAuthorize(EXT_A)]),
+  consentVia("AUTH-57", "setup: consent for the shared client as id1", "auth57s", "id1", EXT_A),
+  followCallback("AUTH-57", "setup: follow the callback for the shared client", "auth57s", callbackSuccess()),
+  completeOAuth("AUTH-57", "setup: complete the shared client", "auth57s", [A.status(200)]),
+  execTool("AUTH-57", "control: the shared client executes", "auth57s-echo_tool", [A.status(200)]),
+  ...asServer("AUTH-57", "auth57u", DOCS_ADVERTISED),
+  createOAuth("AUTH-57", "setup: create the per-user client", puBody("auth57u"), "auth57u", [docAuthorize(EXT_A)]),
+  consentVia("AUTH-57", "setup: consent for the per-user client as admin", "auth57u", "admin", EXT_A),
+  followCallback("AUTH-57", "setup: follow the callback for the per-user client", "auth57u", callbackSuccess()),
+  completeOAuth("AUTH-57", "setup: complete the per-user client", "auth57u", [A.status(200)]),
+  execTool("AUTH-57", "setup: execute as auth57-sess1 opens a flow", "auth57u-echo_tool", [A.status(400), keepFlow("auth57_f1")], { session: "auth57-sess1" }),
+  flowStart("AUTH-57", "setup: start auth57-sess1's flow", "auth57_f1", [A.status(200), docAuthorize(EXT_A)]),
+  consentVia("AUTH-57", "setup: consent as alice", "auth57_f1", "alice", EXT_A),
+  followCallback("AUTH-57", "setup: follow alice's callback", "auth57_f1", [A.status(302), locationEnds(PU_SUCCESS)]),
+  execTool("AUTH-57", "control: auth57-sess1 executes", "auth57u-echo_tool", [A.status(200)], { session: "auth57-sess1" }),
+  extUrl("AUTH-57", EXT_B, PU_NO_TT, ", mcp_enable_temp_token_auth false"),
+  clientPost("AUTH-57", "reauthorize the shared client", "auth57-s", "reauthorize", [A.status(200), docAuthorize(EXT_B)], { extraTests: ["pm.collectionVariables.set('auth57s_au', pm.response.json().authorize_url);"] }),
+  execTool("AUTH-57", "execute on the shared client before it signs in again", "auth57s-echo_tool", [A.status(400), A.msgContains("OAuth client credentials were rotated; tokens issued under the previous credentials must be re-authorized")]),
+  consentVia("AUTH-57", "consent for the shared client as id1 under the new address", "auth57s", "id1", EXT_B),
+  followCallback("AUTH-57", "follow the shared client's callback", "auth57s", callbackSuccess()),
+  completeOAuth("AUTH-57", "complete the shared client", "auth57s", [A.status(200)]),
+  execTool("AUTH-57", "execute on the shared client", "auth57s-echo_tool", [A.status(200)]),
+  mockGet("AUTH-57", "auth57s", "auth57s's authorization server fetched both documents and registered nothing", [docsFetched([EXT_A + DOC_PATH, EXT_B + DOC_PATH]), oauthCountsAre({ register: 0 })]),
+  execTool("AUTH-57", "execute as auth57-sess2 opens a flow", "auth57u-echo_tool", [A.status(400), keepFlow("auth57_f2")], { session: "auth57-sess2" }),
+  flowStart("AUTH-57", "start auth57-sess2's flow", "auth57_f2", [A.status(200), docAuthorize(EXT_B)]),
+  execTool("AUTH-57", "auth57-sess1 must sign in again", "auth57u-echo_tool", [A.status(400), keepFlow("auth57_f3")], { session: "auth57-sess1" }),
+  consentVia("AUTH-57", "consent as bob", "auth57_f2", "bob", EXT_B),
+  followCallback("AUTH-57", "follow bob's callback", "auth57_f2", [A.status(302), locationEnds(PU_SUCCESS)]),
+  execTool("AUTH-57", "execute as auth57-sess2", "auth57u-echo_tool", [A.status(200)], { session: "auth57-sess2" }),
+  mockGet("AUTH-57", "auth57u", "alice's one call before the move and bob's after it", [identityCalls("alice", 1), identityCalls("bob", 1)]),
+  deleteClient("AUTH-57", "auth57-s"), deleteClient("AUTH-57", "auth57u-u"),
+  restoreConfig("AUTH-57"),
+]);
+
+// OAS-43: Bifrost fetches a client metadata document only from a public address, so the documents here are never fetched.
+const OAS43 = folder("OAS-43 Client metadata document client_ids on Bifrost's authorization server", "Setup: mcp_server_auth_mode oauth with issuer_url set to the base URL; no client is registered for these client_ids.", [
+  readConfig("OAS-43"), setMode("OAS-43", "oauth"),
+  request("OAS-43", "authorization server metadata", "GET", "/.well-known/oauth-authorization-server", { noAuth: true, asserts: [A.status(200), A.custom("client_id_metadata_document_supported is true", ["pm.expect(pm.response.json().client_id_metadata_document_supported, 'body: ' + pm.response.text()).to.equal(true);"])] }),
+  ...[
+    ["a document on 127.0.0.1", "https://127.0.0.1/oas43/client.json", "client metadata document could not be fetched"],
+    ["a document on localhost", "https://localhost/oas43/client.json", "client metadata document could not be fetched"],
+    ["an http URL", "http://example.test/oas43/client.json", "unknown client_id"],
+    ["an https URL with a .. segment", "https://example.test/oas43/../client.json", "unknown client_id"],
+  ].map(([what, clientId, desc]) => request("OAS-43", `authorize with ${what} as client_id`, "GET", goodAuthorize("oas43_unused", { client_id: encodeURIComponent(clientId) }), {
+    noAuth: true, noRedirect: true,
+    asserts: [A.status(400), O.error("invalid_client"), O.descEquals(desc), A.custom("there is no Location", ["pm.expect(pm.response.headers.get('Location'), 'Location').to.equal(undefined);"])],
+  })),
+  restoreHeaders("OAS-43"),
+]);
+
+// OAS-39: the mock drives a real mcp-go OAuth client against /mcp; the harness gives the consent it stops for.
+const OAS39_CLIENT = "/client/oas39";
+// sdkSteps keeps the driven client's OAuth requests (every request but /mcp), as "METHOD path grant_type", in s.
+const sdkSteps = "var log = pm.response.json().requests || []; var s = log.filter(function (r) { return r.path !== '/mcp'; }).map(function (r) { return (r.method + ' ' + r.path + ' ' + (r.grant_type || '')).trim() + ' ' + r.status; });";
+const OAS39_DISCOVERY = ["GET /.well-known/oauth-protected-resource/mcp 200", "GET /.well-known/oauth-authorization-server 200", "POST /oauth2/register 201", "POST /oauth2/token authorization_code 200"];
+const OAS39 = folder("OAS-39 A real SDK OAuth client end to end", `Setup: ${FLEET}; the full-access VK (${VKS.full.text}); mcp_server_auth_mode oauth with issuer_url set to the base URL, enforce_auth_on_inference on, temp-token auth on, access_token_ttl 3; an mcp-go OAuth client, driven by the mock against /mcp with redirect_uri ${LOOPBACK_CB}; the harness consents for it with the full-access VK through the temp token.`, [
+  ...fleetGrantSetup("OAS-39"),
+  oauthConfig("OAS-39", "oauth", ["cc.enforce_auth_on_inference = true;", "cc.oauth2_server_config.access_token_ttl = 3;"], "setup: mcp_server_auth_mode oauth, issuer_url set to the base URL, enforce_auth_on_inference on, temp-token auth on, access_token_ttl 3"),
+  rpc("OAS-39", "control: /mcp with no credential", listMsg, { asserts: [A.status(401), A.custom("WWW-Authenticate points at the protected resource metadata", ["pm.expect(pm.response.headers.get('WWW-Authenticate'), 'headers').to.equal('Bearer resource_metadata=\"' + pm.variables.get('base_url') + '/.well-known/oauth-protected-resource/mcp\"');"])] }),
+  request("OAS-39", "the client discovers, registers and stops at authorization", "POST", `${OAS39_CLIENT}/connect`, {
+    base: CHAOS, noAuth: true, body: { url: "{{base_url}}/mcp", redirect_uri: LOOPBACK_CB, client_name: "OAS-39 SDK client" },
+    asserts: [A.status(200), A.custom("authorize_url is Bifrost's authorize endpoint with the registered client_id, S256 and the redirect_uri", [QS_FN,
+      "var b = pm.response.json(); var q = qs(b.authorize_url);",
+      "pm.expect(b.authorize_url.indexOf(pm.variables.get('base_url') + '/oauth2/authorize?'), 'body: ' + pm.response.text()).to.equal(0);",
+      "pm.expect(q.client_id, 'body: ' + pm.response.text()).to.equal(b.client_id).and.not.empty;",
+      "pm.expect(q.code_challenge_method).to.equal('S256');",
+      `pm.expect(q.redirect_uri).to.equal(${lit(LOOPBACK_CB)});`,
+    ])],
+    extraTests: ["pm.collectionVariables.set('oas39_au', pm.response.json().authorize_url || '');"],
+  }),
+  request("OAS-39", "follow the client's authorization URL", "GET", "", {
+    base: "{{oas39_au}}", noAuth: true, noRedirect: true, asserts: [A.status(302), consentLocation()],
+    extraTests: [
+      "var loc = pm.response.headers.get('Location') || '';",
+      "var m = /[?&]flow=([^#&]+)#t=(.+)$/.exec(loc);",
+      "pm.collectionVariables.set('oas39_f_id', m ? decodeURIComponent(m[1]) : '');",
+      "pm.collectionVariables.set('oas39_f_tt', m ? decodeURIComponent(m[2]) : '');",
+    ],
+  }),
+  consent("OAS-39", "oas39_f", "consent with the full-access VK through the temp token", "temp", vkBody("OAS-39"), [A.status(200), codeIssued()], { extraTests: [
+    QS_FN, "var q = qs((pm.response.json() || {}).redirect_url || '');",
+    "pm.collectionVariables.set('oas39_f_code', q.code || '');",
+    "pm.collectionVariables.set('oas39_f_state', q.state || '');",
+  ] }),
+  request("OAS-39", "the client exchanges the code and lists the tools", "POST", `${OAS39_CLIENT}/authorized`, {
+    base: CHAOS, noAuth: true, body: { code: "{{oas39_f_code}}", state: "{{oas39_f_state}}" },
+    asserts: [A.status(200), A.custom(`tools are exactly ${lit(ALL_TOOLS)}`, [`pm.expect(pm.response.json().tools, 'body: ' + pm.response.text()).to.eql(${lit(ALL_TOOLS)});`])],
+  }),
+  request("OAS-39", "the client's requests so far", "GET", OAS39_CLIENT, { base: CHAOS, noAuth: true, asserts: [A.status(200),
+    A.custom(`its OAuth requests are ${OAS39_DISCOVERY.join(", ")}`, [sdkSteps, `pm.expect(s, 'log: ' + JSON.stringify(log)).to.eql(${lit(OAS39_DISCOVERY)});`]),
+    A.custom("no /mcp request went out before the code exchange, and every /mcp request after it succeeded", [
+      "var log = pm.response.json().requests || []; var exchanged = false;",
+      "log.forEach(function (r) { if (r.grant_type === 'authorization_code') { exchanged = true; } if (r.path === '/mcp') { pm.expect(exchanged, 'log: ' + JSON.stringify(log)).to.equal(true); pm.expect(r.status, JSON.stringify(r)).to.be.below(300); } });",
+    ]),
+  ] }),
+  request("OAS-39", "after the access token expires, the client calls alpha-echo", "POST", `${OAS39_CLIENT}/call`, {
+    base: CHAOS, noAuth: true, body: { tool: "alpha-echo", arguments: { text: "hi" } }, pre: ["setTimeout(function () {}, 4000);"],
+    asserts: [A.status(200), A.custom("is_error is false", ["pm.expect(pm.response.json().is_error, 'body: ' + pm.response.text()).to.equal(false);"])],
+  }),
+  request("OAS-39", "the client refreshed once before that call", "GET", OAS39_CLIENT, { base: CHAOS, noAuth: true, asserts: [A.status(200),
+    A.custom(`its OAuth requests are ${OAS39_DISCOVERY.join(", ")}, then POST /oauth2/token refresh_token 200`, [sdkSteps, `pm.expect(s, 'log: ' + JSON.stringify(log)).to.eql(${lit([...OAS39_DISCOVERY, "POST /oauth2/token refresh_token 200"])});`]),
+  ] }),
+  request("OAS-39", "teardown: close the client", "DELETE", OAS39_CLIENT, { base: CHAOS, noAuth: true, asserts: [A.status(200)] }),
+  ...fleetGrantTeardown("OAS-39"),
+]);
+
+// ================================================================ sync intervals, timeouts, TLS and env-sourced headers
+
+// stickyClient is an HTTP client on server that keeps one session open.
+const stickyClient = (clientId, name, server, over = {}) => httpClient(clientId, name, server, { needs_session_stickiness: true, tools_to_execute: ["*"], ...over });
+const SET_TOOLS = ["add_tool", "echo_tool"];
+const SET_NEW_TOOLS = ["add_tool", "echo_tool", "new_tool"];
+// waitClientFor polls the client list, 500ms apart, until cond (ES5 on the client c) holds or seconds have passed.
+const waitClientFor = (clientId, cond, seconds) => [
+  `var deadline = Date.now() + ${seconds * 1000};`,
+  "function poll() {",
+  `  pm.sendRequest({ url: pm.variables.get('base_url') + '/api/mcp/clients?server=${clientId}', method: 'GET', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) {`,
+  "    var c = !err && res.code === 200 ? (res.json().clients || [])[0] : null;",
+  `    if ((c && (${cond})) || Date.now() >= deadline) { return; }`,
+  "    setTimeout(poll, 500);",
+  "  });",
+  "}",
+  "poll();",
+];
+const listsNewTool = (clientId, seconds) => ({ pre: waitClientFor(clientId, "(c.tools || []).length >= 3", seconds) });
+
+const SET04 = folder("SET-04 Per-client sync interval drives rediscovery", "Setup: fleet server set04 (echo_tool, add_tool); a sticky client set04 on it with tool_sync_interval \"5s\" while mcp_tool_sync_interval stays at its default; a VK granting every tool of set04. set04 then adds new_tool and nothing asks for a refresh.", [
+  ...freshServer("SET-04", "set04", ["echo_tool", "add_tool"]),
+  createClient("SET-04", stickyClient("set04-c", "set04", "set04", { tool_sync_interval: "5s" })),
+  vkCreate("SET-04", "setup: create a VK granting every tool of set04", { name: "SET-04 key", mcp_configs: [{ mcp_client_name: "set04", tools_to_execute: ["*"] }] }, "set04_vk"),
+  mockGet("SET-04", "set04", "setup: record set04's tools/list and ping counts", [], [
+    "var m = pm.response.json().counters.methods || {};",
+    "pm.collectionVariables.set('set04_list', m['tools/list'] || 0);",
+    "pm.collectionVariables.set('set04_ping', m.ping || 0);",
+  ]),
+  mockPost("SET-04", "set04", "tools/add", "set04 adds new_tool", { tool: { name: "new_tool" } }),
+  getClient("SET-04", "set04-c", "within 20s the client lists new_tool", [toolNamesAre(SET_NEW_TOOLS)], listsNewTool("set04-c", 20)),
+  rpc("SET-04", "/mcp tools/list with the VK includes set04-new_tool", listMsg, { headers: [MCP_ACCEPT, { key: "x-bf-vk", value: "{{set04_vk}}" }], asserts: [A.status(200), A.custom("the tools include set04-new_tool", [
+    "var names = ((pm.response.json().result || {}).tools || []).map(function (t) { return t.name; });",
+    "pm.expect(names, 'body: ' + pm.response.text()).to.include('set04-new_tool');",
+  ])] }),
+  mockGet("SET-04", "set04", "set04 was asked tools/list and ping again", [A.custom("tools/list +1 or more and ping +1 or more since the add", [
+    "var m = pm.response.json().counters.methods || {};",
+    "pm.expect(m['tools/list'] || 0, JSON.stringify(m)).to.be.at.least(Number(pm.collectionVariables.get('set04_list')) + 1);",
+    "pm.expect(m.ping || 0, JSON.stringify(m)).to.be.at.least(Number(pm.collectionVariables.get('set04_ping')) + 1);",
+  ])]),
+  vkDelete("SET-04", "teardown: delete the VK", "set04_vk"),
+  deleteClient("SET-04", "set04-c"),
+]);
+
+const SET05 = folder("SET-05 Global sync interval re-times only clients that follow it", "Setup: fleet servers set05a and set05b (echo_tool, add_tool); a sticky client set05a on set05a with no tool_sync_interval of its own, so it follows the global, and a sticky client set05b on set05b with tool_sync_interval \"10m\"; then mcp_tool_sync_interval 1 (minute), and each server adds new_tool.", [
+  readConfig("SET-05"),
+  ...freshServer("SET-05", "set05a", ["echo_tool", "add_tool"]),
+  ...freshServer("SET-05", "set05b", ["echo_tool", "add_tool"]),
+  createClient("SET-05", stickyClient("set05-a", "set05a", "set05a")),
+  createClient("SET-05", stickyClient("set05-b", "set05b", "set05b", { tool_sync_interval: "10m" })),
+  putConfig("SET-05", "setup: mcp_tool_sync_interval 1", ["cc.mcp_tool_sync_interval = 1;"], [A.status(200)]),
+  mockPost("SET-05", "set05a", "tools/add", "set05a adds new_tool", { tool: { name: "new_tool" } }),
+  mockPost("SET-05", "set05b", "tools/add", "set05b adds new_tool", { tool: { name: "new_tool" } }),
+  // Newman bounds one script at 60s, so the 75s wait is split over two polls.
+  request("SET-05", "setup: wait up to 45s for set05-a to list new_tool", "GET", "/api/mcp/clients?server=set05-a", { asserts: [A.status(200)], ...listsNewTool("set05-a", 45) }),
+  getClient("SET-05", "set05-a", "within 75s the client that follows the global lists new_tool", [toolNamesAre(SET_NEW_TOOLS)], listsNewTool("set05-a", 30)),
+  getClient("SET-05", "set05-b", "the client on its own 10m interval still does not", [toolNamesAre(SET_TOOLS)]),
+  putConfig("SET-05", "mcp_tool_sync_interval -1", ["cc.mcp_tool_sync_interval = -1;"], [A.status(400), A.msgEquals("mcp_tool_sync_interval must be 0 (use the default) or a positive number of minutes")]),
+  restoreConfig("SET-05"),
+  deleteClient("SET-05", "set05-a"), deleteClient("SET-05", "set05-b"),
+]);
+
+const setDelay = (id, server, delay) => mockPost(id, server, "faults", `setup: ${server} delays every tools/call by ${delay}`, { faults: { latency: delay, methods: ["tools/call"] } });
+const clientTimeout = (id, clientId, v) => request(id, `setup: set ${clientId}'s tool_execution_timeout to ${v}`, "PUT", `/api/mcp/client/${clientId}`, { body: { tool_execution_timeout: v }, asserts: [A.status(200)] });
+const SET10 = folder("SET-10 Per-client timeout overrides the global", "Setup: fleet server set10 (echo_tool, add_tool) delaying every tools/call by 3s; a sticky client set10 on it with tool_execution_timeout 2, while the global stays 30s. Its timeout is then set to 5, then to 0 with the delay raised to 7s.", [
+  ...freshServer("SET-10", "set10", ["echo_tool", "add_tool"]),
+  createClient("SET-10", stickyClient("set10-c", "set10", "set10", { tool_execution_timeout: 2 })),
+  setDelay("SET-10", "set10", "3s"),
+  execTool("SET-10", "execute with the 2s override", "set10-echo_tool", [A.status(400), A.msgContains("MCP tool call timed out after 2s: set10-echo_tool"), responseTime(1500, 3500)]),
+  clientTimeout("SET-10", "set10-c", 5),
+  execTool("SET-10", "execute with the timeout set to 5", "set10-echo_tool", [A.status(200)]),
+  clientTimeout("SET-10", "set10-c", 0),
+  setDelay("SET-10", "set10", "7s"),
+  execTool("SET-10", "with the timeout set to 0, a 7s call runs under the global 30s", "set10-echo_tool", [A.status(200)]),
+  mockPost("SET-10", "set10", "faults/clear", "teardown: clear set10's faults", {}),
+  deleteClient("SET-10", "set10-c"),
+]);
+
+const globalTimeout = (id, title, v, asserts = [A.status(200)]) => putConfig(id, title, [`cc.mcp_tool_execution_timeout = ${v};`], asserts);
+const SET11 = folder("SET-11 Global timeout applies at runtime", "Setup: fleet server set11 (echo_tool, add_tool) delaying every tools/call by 3s; a client set11 on it, per call, with no tool_execution_timeout of its own; mcp_tool_execution_timeout 2, then 10, then 0 sent.", [
+  readConfig("SET-11"),
+  ...freshServer("SET-11", "set11", ["echo_tool", "add_tool"]),
+  createClient("SET-11", httpClient("set11-c", "set11", "set11", { tools_to_execute: ["*"] })),
+  setDelay("SET-11", "set11", "3s"),
+  globalTimeout("SET-11", "setup: mcp_tool_execution_timeout 2", 2),
+  execTool("SET-11", "execute under the 2s global", "set11-echo_tool", [A.status(400), A.msgContains("timed out after 2s"), responseTime(1500, 3500)]),
+  globalTimeout("SET-11", "mcp_tool_execution_timeout 10", 10),
+  execTool("SET-11", "execute under the 10s global", "set11-echo_tool", [A.status(200)]),
+  globalTimeout("SET-11", "send mcp_tool_execution_timeout 0", 0),
+  request("SET-11", "0 left the global at 10", "GET", "/api/config", { asserts: [A.status(200), A.custom("mcp_tool_execution_timeout is 10", ["pm.expect(pm.response.json().client_config.mcp_tool_execution_timeout, 'body: ' + pm.response.text()).to.equal(10);"])] }),
+  execTool("SET-11", "execute after sending 0", "set11-echo_tool", [A.status(200)]),
+  mockPost("SET-11", "set11", "faults/clear", "teardown: clear set11's faults", {}),
+  putConfig("SET-11", "teardown: restore the original config", ["if (!cc.mcp_tool_execution_timeout) { cc.mcp_tool_execution_timeout = 30; }"], [A.status(200)]),
+  deleteClient("SET-11", "set11-c"),
+]);
+
+const SET15 = folder("SET-15 TLS: custom CA, skip verify, none", "Setup: fleet server set15 (echo_tool, add_tool) reached through the fleet's TLS listener, whose certificate is self-signed; sticky clients on its https URL: set15-ca with tls_config.ca_cert_pem set to that certificate, set15-skip with insecure_skip_verify true, and set15-none with no tls_config.", [
+  ...freshServer("SET-15", "set15", ["echo_tool", "add_tool"]),
+  request("SET-15", "setup: read the fleet's TLS listener and its certificate", "GET", "/control", { base: CHAOS, noAuth: true, asserts: [A.status(200), A.custom("the fleet has a TLS listener", [
+    "pm.expect(pm.response.json().tls_url, 'body: ' + pm.response.text()).to.match(/^https:/);",
+  ])], extraTests: [
+    "var b = pm.response.json();",
+    "pm.collectionVariables.set('set15_tls', b.tls_url);",
+    // Escaped for use inside a JSON string in the create body.
+    "pm.collectionVariables.set('set15_ca', JSON.stringify(b.tls_cert_pem).slice(1, -1));",
+  ] }),
+  createExpect("SET-15", "create with the certificate as ca_cert_pem", stickyClient("set15-ca", "set15_ca", "set15", { connection_string: "{{set15_tls}}/s/set15/mcp", tls_config: { ca_cert_pem: "{{set15_ca}}" } }), [A.status(200)]),
+  getClient("SET-15", "set15-ca", "it is healthy and ca_cert_pem is masked", [clientState("healthy"), A.custom("ca_cert_pem is not returned as the certificate", [
+    "var t = pm.response.json().clients[0].config.tls_config || {};",
+    "var v = (t.ca_cert_pem || {}).value || '';",
+    "pm.expect(v, 'tls_config: ' + JSON.stringify(t)).to.not.equal('');",
+    "pm.expect(v).to.not.include('BEGIN CERTIFICATE');",
+  ])]),
+  createExpect("SET-15", "create with insecure_skip_verify", stickyClient("set15-skip", "set15_skip", "set15", { connection_string: "{{set15_tls}}/s/set15/mcp", tls_config: { insecure_skip_verify: true } }), [A.status(200)]),
+  getClient("SET-15", "set15-skip", "it is healthy", [clientState("healthy")]),
+  createExpect("SET-15", "create with no tls_config", stickyClient("set15-none", "set15_none", "set15", { connection_string: "{{set15_tls}}/s/set15/mcp" }), [A.status(500), A.msgContains("certificate"), responseTime(null, 5000)]),
+  notListed("SET-15", "set15-none"),
+  deleteClient("SET-15", "set15-ca"), deleteClient("SET-15", "set15-skip"),
+]);
+
+// SET23_KEY is the value the runner puts in Bifrost's environment as MCP_E2E_HEADER_KEY.
+const SET23_KEY = "mcp-e2e-header-key";
+const SET23 = folder("SET-23 Header value from an environment variable", `Setup: Bifrost runs with MCP_E2E_HEADER_KEY=${SET23_KEY} and without MCP_E2E_UNSET_KEY; fleet server set23 (echo_tool, add_tool) accepts only X-Api-Key ${SET23_KEY}; sticky headers clients on it: set23-c with X-Api-Key "env.MCP_E2E_HEADER_KEY", and set23-u with X-Api-Key "env.MCP_E2E_UNSET_KEY".`, [
+  ...freshServer("SET-23", "set23", ["echo_tool", "add_tool"]),
+  mockAuth("SET-23", "set23", `setup: set23 accepts only X-Api-Key ${SET23_KEY}`, { identity_header: "X-Api-Key", require_headers: { "X-Api-Key": SET23_KEY } }),
+  createExpect("SET-23", "create with the header from MCP_E2E_HEADER_KEY", stickyClient("set23-c", "set23_c", "set23", { auth_type: "headers", headers: { "X-Api-Key": "env.MCP_E2E_HEADER_KEY" } }), [A.status(200)]),
+  execTool("SET-23", "execute", "set23_c-echo_tool", [A.status(200)]),
+  mockGet("SET-23", "set23", "the call carried the variable's value", [identityCalls(SET23_KEY, 1)]),
+  getClient("SET-23", "set23-c", "the header reads back masked, with its reference", [A.custom("X-Api-Key is masked (its first four characters, 24 asterisks and its last four), ref env.MCP_E2E_HEADER_KEY, type env", [
+    "var h = pm.response.json().clients[0].config.headers['X-Api-Key'];",
+    "pm.expect(h, 'body: ' + pm.response.text()).to.be.an('object');",
+    `pm.expect(h.value).to.equal(${lit(SET23_KEY.slice(0, 4) + "*".repeat(24) + SET23_KEY.slice(-4))});`,
+    "pm.expect(h.ref).to.equal('env.MCP_E2E_HEADER_KEY');",
+    "pm.expect(h.type).to.equal('env');",
+  ])]),
+  createExpect("SET-23", "create with the header from the unset MCP_E2E_UNSET_KEY", stickyClient("set23-u", "set23_u", "set23", { auth_type: "headers", headers: { "X-Api-Key": "env.MCP_E2E_UNSET_KEY" } }), [A.status(500), A.msgContains("authorization required")]),
+  notListed("SET-23", "set23-u"),
+  deleteClient("SET-23", "set23-c"),
+]);
+
+// ================================================================ load on the gateway and its upstreams
+
+// burst fires n requests at once from a pre-request script. step is ES5 that defines run(i), which
+// sends request i and calls finish(i, good, why) exactly once. The outcome is saved as JSON
+// {ok, bad} in the collection variable varName, cleared first so a stale run cannot pass.
+const burst = (varName, n, step) => [
+  `pm.collectionVariables.set(${lit(varName)}, '');`,
+  "var base = pm.variables.get('base_url');",
+  `var n = ${n}, done = 0, ok = 0, bad = [];`,
+  "function finish(i, good, why) {",
+  "  if (good) { ok++; } else if (bad.length < 5) { bad.push(i + ': ' + why); }",
+  `  if (++done === n) { pm.collectionVariables.set(${lit(varName)}, JSON.stringify({ ok: ok, bad: bad })); }`,
+  "}",
+  "function why(err, res) { return err ? String(err) : res.code + ' ' + res.text(); }",
+  "function body(res) { try { return res.json(); } catch (e) { return {}; } }",
+  ...step,
+  "for (var i = 0; i < n; i++) { run(i); }",
+];
+const burstOk = (varName, n, what) => A.custom(`all ${n} ${what} succeeded`, [
+  `var b = JSON.parse(pm.collectionVariables.get(${lit(varName)}) || '{"ok":0,"bad":["the burst did not finish"]}');`,
+  `pm.expect(b.ok, JSON.stringify(b.bad)).to.equal(${n});`,
+]);
+// rpcStep defines rpcTo(msg, sid, extra, cb), a POST /mcp carrying the VK in vkVar and the session id
+// sid, and echoed(res, tok), whether the result is echo_tool's reply to the argument {text: tok}.
+const rpcStep = (vkVar) => [
+  "function rpcTo(msg, sid, extra, cb) {",
+  `  var h = { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'x-bf-vk': pm.collectionVariables.get(${lit(vkVar)}) };`,
+  "  if (sid) { h['Mcp-Session-Id'] = sid; }",
+  "  for (var k in extra) { h[k] = extra[k]; }",
+  "  pm.sendRequest({ url: base + '/mcp', method: 'POST', header: h, body: { mode: 'raw', raw: JSON.stringify(msg) } }, cb);",
+  "}",
+  "function echoed(res, tok) {",
+  "  var c = ((body(res).result || {}).content || [])[0];",
+  "  return res.code === 200 && !!c && c.text === 'echo_tool:' + JSON.stringify({ text: tok });",
+  "}",
+];
+// execStep defines run(i) as POST /v1/mcp/tool/execute of tool with the argument {text: prefix + i}.
+const execStep = (tool, prefix) => [
+  "function run(i) {",
+  `  var tok = ${lit(prefix)} + i;`,
+  `  var call = { id: 'c' + i, type: 'function', function: { name: ${lit(tool)}, arguments: JSON.stringify({ text: tok }) } };`,
+  "  pm.sendRequest({ url: base + '/v1/mcp/tool/execute', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify(call) } }, function (err, res) {",
+  "    finish(i, !err && res.code === 200 && body(res).content === 'echo_tool:' + JSON.stringify({ text: tok }), why(err, res));",
+  "  });",
+  "}",
+];
+const saveCounters = (id, server, varName) => mockGet(id, server, `setup: record ${server}'s counters`, [], [`pm.collectionVariables.set(${lit(varName)}, JSON.stringify(pm.response.json().counters));`]);
+const countersPlus = (varName, field, n) => A.custom(`counters.${field} is ${n} more than recorded`, [
+  `var before = JSON.parse(pm.collectionVariables.get(${lit(varName)}));`,
+  `pm.expect(pm.response.json().counters[${lit(field)}], 'body: ' + pm.response.text()).to.equal(before[${lit(field)}] + ${n});`,
+]);
+const handshakesPlus = (varName, n) => A.custom(`handshakes is ${n} more than recorded`, [
+  `var before = JSON.parse(pm.collectionVariables.get(${lit(varName)}));`,
+  `pm.expect((pm.response.json().counters.handshakes || []).length, 'body: ' + pm.response.text()).to.equal((before.handshakes || []).length + ${n});`,
+]);
+const loadVK = (id, name) => vkCreate(id, `setup: create a VK granting every tool of ${name}`, { name: `${id} key`, mcp_configs: [{ mcp_client_name: name, tools_to_execute: ["*"] }] }, `${name}_vk`);
+
+const GO33 = folder("GO-33 50 parallel /mcp sessions", "Setup: fleet server go33 (echo_tool, add_tool); a sticky client go33 on it; a VK granting every tool of go33. 50 sessions run at once: each sends initialize, which must return a session id no other session got, then tools/list and tools/call go33-echo_tool with its own argument go33-<i> and x-request-id go33-<i>, under that session id.", [
+  ...freshServer("GO-33", "go33", ["echo_tool", "add_tool"]),
+  createClient("GO-33", stickyClient("go33-c", "go33", "go33")),
+  loadVK("GO-33", "go33"),
+  mockGetAfter("GO-33", "go33", "every session listed go33-echo_tool and got back its own argument; go33 ran echo_tool 50 times", [burstOk("go33_burst", 50, "sessions"), callsIs("echo_tool", 50)], burst("go33_burst", 50, [
+    ...rpcStep("go33_vk"),
+    "var sids = {};",
+    "function run(i) {",
+    "  var tok = 'go33-' + i;",
+    "  rpcTo({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'harness-' + i, version: '1' } } }, null, {}, function (err, res) {",
+    "    if (err || res.code !== 200) { return finish(i, false, 'initialize ' + why(err, res)); }",
+    "    var sid = res.headers.get('Mcp-Session-Id');",
+    "    if (!sid || sids[sid]) { return finish(i, false, 'initialize gave no new Mcp-Session-Id: ' + sid); }",
+    "    sids[sid] = true;",
+    "    rpcTo({ jsonrpc: '2.0', id: 2, method: 'tools/list' }, sid, {}, function (err, res) {",
+    "      var names = !err ? ((body(res).result || {}).tools || []).map(function (t) { return t.name; }) : [];",
+    "      if (names.indexOf('go33-echo_tool') < 0) { return finish(i, false, 'tools/list ' + why(err, res)); }",
+    "      rpcTo({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'go33-echo_tool', arguments: { text: tok } } }, sid, { 'x-request-id': tok }, function (err, res) {",
+    "        finish(i, !err && echoed(res, tok), 'tools/call ' + why(err, res));",
+    "      });",
+    "    });",
+    "  });",
+    "}",
+  ])),
+  request("GO-33", "50 log entries for go33, with ids go33-0 to go33-49", "GET", "/api/mcp-logs?server_labels=go33&limit=100", { pre: pollLogCount("server_labels=go33", 50), asserts: [A.status(200), A.custom("total_count is 50 and the ids are go33-0 to go33-49", [
+    LOG_LIST,
+    "pm.expect(pm.response.json().pagination.total_count, 'body: ' + pm.response.text()).to.equal(50);",
+    "var want = []; for (var i = 0; i < 50; i++) { want.push('go33-' + i); }",
+    "pm.expect(logs.map(function (l) { return l.id; }).sort()).to.eql(want.sort());",
+  ])] }),
+  vkDelete("GO-33", "teardown: delete the VK", "go33_vk"),
+  deleteClient("GO-33", "go33-c"),
+]);
+
+const GO34 = folder("GO-34 Per-call and sticky upstream sessions under load", "Setup: fleet servers go34p and go34s (echo_tool, add_tool); a per-call client go34p on go34p and a sticky client go34s on go34s, both tools_to_execute [\"*\"]. 50 executes run at once on each, every one with its own argument.", [
+  ...freshServer("GO-34", "go34p", ["echo_tool", "add_tool"]),
+  ...freshServer("GO-34", "go34s", ["echo_tool", "add_tool"]),
+  createClient("GO-34", httpClient("go34-p", "go34p", "go34p", { tools_to_execute: ["*"] }), "setup: create the per-call client go34p"),
+  createClient("GO-34", stickyClient("go34-s", "go34s", "go34s"), "setup: create the sticky client go34s"),
+  saveCounters("GO-34", "go34p", "go34p_before"),
+  saveCounters("GO-34", "go34s", "go34s_before"),
+  mockGetAfter("GO-34", "go34p", "per call: 50 executes got back their own argument; go34p opened 50 sessions with 50 initializes", [burstOk("go34p_burst", 50, "executes"), callsIs("echo_tool", 50), countersPlus("go34p_before", "sessions", 50), countersPlus("go34p_before", "initializes", 50)], burst("go34p_burst", 50, execStep("go34p-echo_tool", "go34p-"))),
+  mockGetAfter("GO-34", "go34s", "sticky: 50 executes got back their own argument, with no new session or handshake", [burstOk("go34s_burst", 50, "executes"), callsIs("echo_tool", 50), countersPlus("go34s_before", "sessions", 0), handshakesPlus("go34s_before", 0)], burst("go34s_burst", 50, execStep("go34s-echo_tool", "go34s-"))),
+  deleteClient("GO-34", "go34-p"), deleteClient("GO-34", "go34-s"),
+]);
+
+const GO35 = folder("GO-35 Tool list swap under load", "Setup: fleet server go35 (echo_tool, add_tool); a sticky client go35 on it; a VK granting every tool of go35. 200 tools/call go35-echo_tool on /mcp, one every 10ms with its own argument, while refresh-tools runs 5 times, one every 400ms.", [
+  ...freshServer("GO-35", "go35", ["echo_tool", "add_tool"]),
+  createClient("GO-35", stickyClient("go35-c", "go35", "go35")),
+  loadVK("GO-35", "go35"),
+  mockGetAfter("GO-35", "go35", "all 200 calls got back their own argument and all 5 refreshes answered 200; go35 ran echo_tool 200 times", [burstOk("go35_burst", 205, "calls and refreshes"), callsIs("echo_tool", 200)], burst("go35_burst", 205, [
+    ...rpcStep("go35_vk"),
+    "function run(i) {",
+    "  if (i >= 200) {",
+    "    setTimeout(function () {",
+    "      pm.sendRequest({ url: base + '/api/mcp/client/go35-c/refresh-tools', method: 'POST', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) {",
+    "        finish(i, !err && res.code === 200, 'refresh ' + why(err, res));",
+    "      });",
+    "    }, (i - 200) * 400);",
+    "    return;",
+    "  }",
+    "  var tok = 'go35-' + i;",
+    "  setTimeout(function () {",
+    "    rpcTo({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'go35-echo_tool', arguments: { text: tok } } }, null, {}, function (err, res) {",
+    "      finish(i, !err && echoed(res, tok), 'tools/call ' + why(err, res));",
+    "    });",
+    "  }, i * 10);",
+    "}",
+  ])),
+  getClient("GO-35", "go35-c", "the client is healthy and still lists both tools", [clientState("healthy"), toolNamesAre(SET_TOOLS)]),
+  vkDelete("GO-35", "teardown: delete the VK", "go35_vk"),
+  deleteClient("GO-35", "go35-c"),
+]);
+
+const GO36 = folder("GO-36 SSE upstream under load", "Setup: fleet server go36 (echo_tool, add_tool); an SSE client go36 on /s/go36/sse, auth none, tools_to_execute [\"*\"]. 50 executes run at once, every one with its own argument.", [
+  ...freshServer("GO-36", "go36", ["echo_tool", "add_tool"]),
+  createClient("GO-36", sseClient("go36-c", "go36", "go36", { tools_to_execute: ["*"] })),
+  mockGetAfter("GO-36", "go36", "all 50 got back their own argument over one stream and one session", [burstOk("go36_burst", 50, "executes"), callsIs("echo_tool", 50), counterIs("open_streams", 1), counterIs("sessions", 1)], burst("go36_burst", 50, execStep("go36-echo_tool", "go36-"))),
+  deleteClient("GO-36", "go36-c"),
+]);
+
+// ================================================================ upstreams that need what only a user-facing client has
+
+const msgLacks = (m) => A.custom(`error message does not contain ${lit(m)}`, ["var b = pm.response.json();", `pm.expect(b.error && b.error.message, 'body: ' + pm.response.text()).to.not.include(${lit(m)});`]);
+const ELICIT_REPLY = { resultType: "input_required", inputRequests: { github_login: { method: "elicitation/create", params: { message: "Please provide your GitHub username", requestedSchema: { type: "object", properties: { username: { type: "string" } } } } } } };
+const FAIL27 = folder("FAIL-27 Upstream asks for user input", "Setup: fleet server fail27 serving echo_tool and needs_input, which answers tools/call with an input_required result asking for an elicitation; a sticky client fail27 on it (the 2026-07-28 protocol), tools_to_execute [\"*\"]; a VK granting every tool of fail27.", [
+  request("FAIL-27", "setup: fresh mcpchaos server fail27", "POST", "/control", { base: CHAOS, noAuth: true, body: { add: "fail27" }, asserts: [A.status(200)] }),
+  mockPost("FAIL-27", "fail27", "tools/set", "setup: fail27 serves echo_tool and needs_input", { tools: [{ name: "echo_tool" }, { name: "needs_input", reply: ELICIT_REPLY }] }),
+  createClient("FAIL-27", stickyClient("fail27-c", "fail27", "fail27")),
+  loadVK("FAIL-27", "fail27"),
+  execBody("FAIL-27", "execute needs_input", { id: "c1", type: "function", function: { name: "fail27-needs_input", arguments: "{}" } }, [A.status(400),
+    A.msgContains("MCP server \"fail27\" asked for input from the user (elicitation), which Bifrost cannot provide"), msgLacks("handler configured")], { headers: [reqId("fail27-e")] }),
+  mockGet("FAIL-27", "fail27", "fail27 ran needs_input once", [callsIs("needs_input", 1)]),
+  logRow("FAIL-27", "the log entry is an error with the same reason", "fail27-e", [rowIs("tool_name", "needs_input"), rowIs("status", "error"), rowErrorMsg("contains", "asked for input from the user (elicitation), which Bifrost cannot provide")]),
+  rpc("FAIL-27", "tools/call fail27-needs_input on /mcp", call("fail27-needs_input"), { headers: [MCP_ACCEPT, vkH("fail27_vk")], asserts: [A.status(200), A.custom("a result with isError true whose text carries the same reason", [
+    "var r = pm.response.json().result || {};",
+    "pm.expect(r.isError, 'body: ' + pm.response.text()).to.equal(true);",
+    "var text = ((r.content || [])[0] || {}).text || '';",
+    "pm.expect(text).to.include('MCP server \"fail27\" asked for input from the user (elicitation), which Bifrost cannot provide');",
+    "pm.expect(text).to.not.include('handler configured');",
+  ])] }),
+  mockGet("FAIL-27", "fail27", "fail27 ran needs_input once more", [callsIs("needs_input", 2)]),
+  vkDelete("FAIL-27", "teardown: delete the VK", "fail27_vk"),
+  deleteClient("FAIL-27", "fail27-c"),
+]);
+
+const FAIL28 = folder("FAIL-28 Upstream needs a client capability", "Setup: fleet server fail28 serving echo_tool and needs_capability, which refuses tools/call with JSON-RPC error -32021 naming the capability elicitation; a sticky client fail28 on it, tools_to_execute [\"*\"].", [
+  request("FAIL-28", "setup: fresh mcpchaos server fail28", "POST", "/control", { base: CHAOS, noAuth: true, body: { add: "fail28" }, asserts: [A.status(200)] }),
+  mockPost("FAIL-28", "fail28", "tools/set", "setup: fail28 serves echo_tool and needs_capability", { tools: [{ name: "echo_tool" }, { name: "needs_capability", reply_error: { code: -32021, message: "missing required client capability", data: { capability: "elicitation" } } }] }),
+  createClient("FAIL-28", stickyClient("fail28-c", "fail28", "fail28")),
+  execBody("FAIL-28", "execute needs_capability", { id: "c1", type: "function", function: { name: "fail28-needs_capability", arguments: "{}" } }, [A.status(400),
+    A.msgContains("MCP server \"fail28\" needs the client capability \"elicitation\" to run this tool, which Bifrost does not support")]),
+  mockGet("FAIL-28", "fail28", "fail28 ran needs_capability once, with no retry", [callsIs("needs_capability", 1)]),
+  deleteClient("FAIL-28", "fail28-c"),
+]);
+
+// ================================================================ GOV-36 every surface agrees for every grant
+
+// Four fleet servers serve echo and add each. g36a is not allowed by default; g36b and g36g are, and
+// g36g's own tools_to_execute is ["echo"]; g36d is allowed by default but disabled.
+const G36_SERVERS = ["g36a", "g36b", "g36g", "g36d"];
+const G36_TOOLS = G36_SERVERS.flatMap((s) => [`${s}-add`, `${s}-echo`]);
+// g36ClientRefuses reports a tool the client itself refuses, whatever the key grants.
+const g36ClientRefuses = (tool) => tool === "g36g-add" || tool.startsWith("g36d-");
+// Each allowed tool is called once on each of these surfaces, so its server counts this many calls.
+const G36_CALL_SURFACES = 4;
+const G36_KEYS = [
+  { k: "none", grant: "no virtual key (enforcement off)", allowed: ["g36a-add", "g36a-echo", "g36b-add", "g36b-echo", "g36g-echo"] },
+  { k: "k0", grant: "no mcp_configs", mcp: null, allowed: ["g36b-add", "g36b-echo", "g36g-echo"] },
+  { k: "k1", grant: "g36a [\"echo\"]", mcp: [{ mcp_client_name: "g36a", tools_to_execute: ["echo"] }], allowed: ["g36a-echo", "g36b-add", "g36b-echo", "g36g-echo"] },
+  { k: "k2", grant: "g36a [\"*\"]", mcp: [{ mcp_client_name: "g36a", tools_to_execute: ["*"] }], allowed: ["g36a-add", "g36a-echo", "g36b-add", "g36b-echo", "g36g-echo"] },
+  { k: "k3", grant: "g36a [] and g36b []", mcp: [{ mcp_client_name: "g36a", tools_to_execute: [] }, { mcp_client_name: "g36b", tools_to_execute: [] }], allowed: ["g36g-echo"] },
+  { k: "k4", grant: "g36b [\"add\"] and g36g [\"*\"]", mcp: [{ mcp_client_name: "g36b", tools_to_execute: ["add"] }, { mcp_client_name: "g36g", tools_to_execute: ["*"] }], allowed: ["g36b-add", "g36g-echo"] },
+  { k: "k5", grant: "no mcp_configs, attached to V1 (g36a echo)", mcp: null, vmcp: "v1", allowed: ["g36a-echo", "g36b-add", "g36b-echo", "g36g-echo"] },
+  { k: "k6", grant: "g36a [\"echo\"], attached to V2 (g36a add)", mcp: [{ mcp_client_name: "g36a", tools_to_execute: ["echo"] }], vmcp: "v2", allowed: ["g36a-add", "g36a-echo", "g36b-add", "g36b-echo", "g36g-echo"] },
+  { k: "k7", grant: "no mcp_configs, attached to V3 (g36b [])", mcp: null, vmcp: "v3", allowed: ["g36g-echo"] },
+  { k: "k8", grant: "g36d [\"*\"] (a disabled client)", mcp: [{ mcp_client_name: "g36d", tools_to_execute: ["*"] }], allowed: ["g36b-add", "g36b-echo", "g36g-echo"] },
+  { k: "k9", grant: "g36a [\"*\"], with x-bf-mcp-include-tools g36a-add,g36b-echo,g36g-add", mcp: [{ mcp_client_name: "g36a", tools_to_execute: ["*"] }], headers: [{ key: "x-bf-mcp-include-tools", value: "g36a-add,g36b-echo,g36g-add" }], allowed: ["g36a-add", "g36b-echo"] },
+  { k: "k10", grant: "g36a [\"*\"], with x-bf-mcp-include-clients g36a", mcp: [{ mcp_client_name: "g36a", tools_to_execute: ["*"] }], headers: [{ key: "x-bf-mcp-include-clients", value: "g36a" }], allowed: ["g36a-add", "g36a-echo"] },
+];
+const G36_VMCPS = [
+  { v: "v1", name: "GOV-36 V1", tools: [{ mcp_client_id: "gov36-g36a", tool_names: ["echo"] }] },
+  { v: "v2", name: "GOV-36 V2", tools: [{ mcp_client_id: "gov36-g36a", tool_names: ["add"] }] },
+  { v: "v3", name: "GOV-36 V3", tools: [{ mcp_client_id: "gov36-g36b", tool_names: [] }] },
+];
+// g36Headers is the key header (none without a key) plus the key's own extra headers.
+const g36Headers = (key) => [...(key.k === "none" ? [] : [{ key: "x-bf-vk", value: `{{gov36_${key.k}}}` }]), ...(key.headers || [])];
+const g36Tok = (key, surface, tool) => `gov36-${key.k}-${surface}-${tool}`;
+// g36Names keeps the GOV-36 tools of a name list, sorted, so other tests' clients cannot affect it.
+const G36_NAMES = "function g36(names) { return (names || []).filter(function (n) { return n.indexOf('g36') === 0; }).sort(); }";
+const g36Exactly = (what, read, allowed) => A.custom(`${what} are exactly ${lit(allowed)}`, [REQS, G36_NAMES, `pm.expect(g36(${read}), 'body: ' + pm.response.text()).to.eql(${lit([...allowed].sort())});`]);
+// g36Refused is what execute answers for a tool the key, its headers or the client refuses.
+const g36Refused = (key, tool) => (key.k !== "none" && !g36ClientRefuses(tool) && !key.headers)
+  ? [A.status(403), A.custom("type mcp_tool_blocked", ["pm.expect(pm.response.json().type, 'body: ' + pm.response.text()).to.equal('mcp_tool_blocked');"])]
+  : [A.custom("refused with a 4xx", ["pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(400, 499);"])];
+
+const g36KeyBlock = (key) => {
+  const id = "GOV-36";
+  const allowed = new Set(key.allowed);
+  const label = `${key.k}: ${key.grant}`;
+  const headers = g36Headers(key);
+  const scen = (s) => `gov36-${key.k}-${s}`;
+  // g36g-add is not auto-executable (the client's own list leaves it out), and a turn holding one
+  // comes back to the caller after its auto-executable calls run, so it gets a turn of its own.
+  const agentTools = G36_TOOLS.filter((tool) => tool !== "g36g-add");
+  const agentCalls = agentTools.map((tool, i) => llmCall(`a${i}`, tool, { text: g36Tok(key, "agent", tool) }));
+  return [
+    ...(key.k === "none" ? [] : [govVKFor(key)]),
+    ...(key.vmcp ? [request(id, `${label}: setup: attach the key to ${key.vmcp}`, "POST", `/api/mcp/virtual-mcps/{{gov36_${key.vmcp}}}/virtual-keys/{{gov36_${key.k}_id}}`, { asserts: [A.status(200)] })] : []),
+    ...G36_SERVERS.map((s) => mockPost(id, s, "counters/reset", `${label}: setup: reset ${s}'s counters`, {})),
+    llmScript(id, scen("chat"), TEXT_OK, `${label}: setup: script the chat`),
+    llmScript(id, scen("resp"), TEXT_OK, `${label}: setup: script the Responses request`),
+    llmScript(id, scen("agent"), { turns: [{ tool_calls: agentCalls }, { text: "done" }] }, `${label}: setup: script the agent turn calling every tool but g36g-add`),
+    llmScript(id, scen("agent1"), { turns: [{ tool_calls: [llmCall("g1", "g36g-add", { text: g36Tok(key, "agent", "g36g-add") })] }, { text: "done" }] }, `${label}: setup: script the agent turn calling g36g-add`),
+    infPost(id, `${label}: chat`, "/v1/chat/completions", chatBody(scen("chat")), [A.status(200)], { headers }),
+    llmCaptured(id, `${label}: chat injects exactly the allowed tools`, scen("chat"), [reqCount(1), g36Exactly("injected tools", "(reqs[0] || {}).tools", key.allowed)]),
+    infResponses(id, `${label}: Responses request`, scen("resp"), [A.status(200)], { headers }),
+    llmCaptured(id, `${label}: Responses injects exactly the allowed tools`, scen("resp"), [reqCount(1), g36Exactly("injected tools", "(reqs[0] || {}).tools", key.allowed)]),
+    rpc(id, `${label}: /mcp tools/list`, listMsg, { headers: [MCP_ACCEPT, ...headers], asserts: [A.status(200), g36Exactly("listed tools", "pm.response.json().result.tools.map(function (t) { return t.name; })", key.allowed)] }),
+    ...G36_TOOLS.map((tool) => rpc(id, `${label}: /mcp tools/call ${tool}`, call(tool, { text: g36Tok(key, "mcp", tool) }), { headers: [MCP_ACCEPT, ...headers], asserts: allowed.has(tool)
+      ? [A.status(200), A.custom("the result is the echo of its own argument", [
+        "var r = pm.response.json().result || {};",
+        "pm.expect(r.isError, 'body: ' + pm.response.text()).to.not.equal(true);",
+        `pm.expect(((r.content || [])[0] || {}).text).to.equal(${lit(`${tool.split("-")[1]}:${JSON.stringify({ text: g36Tok(key, "mcp", tool) })}`)});`,
+      ])]
+      : [A.status(200), A.custom("refused: a JSON-RPC error or isError true", [
+        "var b = pm.response.json();",
+        "pm.expect(!!b.error || (b.result && b.result.isError === true), 'body: ' + pm.response.text()).to.equal(true);",
+      ])] })),
+    ...G36_TOOLS.map((tool) => execBody(id, `${label}: execute ${tool}`, { id: "c1", type: "function", function: { name: tool, arguments: lit({ text: g36Tok(key, "exec", tool) }) } },
+      allowed.has(tool) ? [A.status(200), toolContent(`${tool.split("-")[1]}:${JSON.stringify({ text: g36Tok(key, "exec", tool) })}`)] : g36Refused(key, tool), { headers })),
+    ...G36_TOOLS.map((tool) => execBody(id, `${label}: execute ${tool} in the Responses format`, { call_id: "r1", name: tool, arguments: lit({ text: g36Tok(key, "resp", tool) }) },
+      allowed.has(tool) ? [A.status(200), A.custom("output is the echo of its own argument", [`pm.expect(pm.response.json().output, 'body: ' + pm.response.text()).to.equal(${lit(`${tool.split("-")[1]}:${JSON.stringify({ text: g36Tok(key, "resp", tool) })}`)});`])] : g36Refused(key, tool),
+      { query: "?format=responses", headers })),
+    infPost(id, `${label}: agent mode chat`, "/v1/chat/completions", chatBody(scen("agent")), [A.status(200), chatContent("done")], { headers }),
+    llmCaptured(id, `${label}: agent mode ran exactly the allowed tools`, scen("agent"), [reqCount(2), A.custom("each allowed tool's result is its echo; each refused tool reports an error", [
+      REQS, TOOL_MSGS(1),
+      ...agentTools.map((tool, i) => allowed.has(tool)
+        ? `pm.expect(tm.a${i}, ${lit(tool)}).to.equal(${lit(`${tool.split("-")[1]}:${JSON.stringify({ text: g36Tok(key, "agent", tool) })}`)});`
+        : `pm.expect(String(tm.a${i}).indexOf(${lit(`Error executing tool ${tool}`)}), ${lit(tool)} + ': ' + tm.a${i}).to.equal(0);`),
+    ])]),
+    infPost(id, `${label}: agent mode chat calling g36g-add`, "/v1/chat/completions", chatBody(scen("agent1")), [A.status(200), finishIs("tool_calls"), toolCallNames(["g36g-add"])], { headers }),
+    ...G36_SERVERS.map((s) => mockGet(id, s, `${label}: ${s} ran each allowed tool ${G36_CALL_SURFACES} times and no refused one`, [
+      callsIs("echo", allowed.has(`${s}-echo`) ? G36_CALL_SURFACES : 0),
+      callsIs("add", allowed.has(`${s}-add`) ? G36_CALL_SURFACES : 0),
+    ])),
+    ...(key.k === "none" ? [] : [vkDelete(id, `${label}: teardown: delete the key`, `gov36_${key.k}`)]),
+  ];
+};
+const govVKFor = (key) => vkCreate("GOV-36", `${key.k}: ${key.grant}: setup: create the key`, { name: `GOV-36 ${key.k}`, provider_configs: OPENAI_GRANT, ...(key.mcp ? { mcp_configs: key.mcp } : {}) }, `gov36_${key.k}`);
+
+const GOV36 = folder("GOV-36 Cross-surface parity matrix", `Setup: ${LLM_TEXT}; fleet servers g36a, g36b, g36g and g36d each serve echo and add, registered per call as clients of the same names, each with tools_to_auto_execute equal to its tools_to_execute: g36a with allow_by_default false and tools_to_execute ["*"], g36b with allow_by_default true and ["*"], g36g with allow_by_default true and ["echo"], g36d with allow_by_default true and ["*"] but disabled; virtual MCPs V1 over g36a echo, V2 over g36a add and V3 over g36b with no tools. For each key below (a virtual key allowed openai with any model and key), every surface must serve exactly its allowed tools: chat and Responses injection, /mcp tools/list, /mcp tools/call, execute in the chat and Responses formats, and agent mode with the model calling every tool but g36g-add in one turn, then g36g-add alone, which is not auto-executable and comes back to the caller unrun; each server then counts 4 calls for each allowed tool and none for a refused one. Keys: ${G36_KEYS.map((k) => `${k.k} (${k.grant}) allows ${k.allowed.join(", ")}`).join("; ")}.`, [
+  ...G36_SERVERS.flatMap((s) => freshServer("GOV-36", s, ["echo", "add"])),
+  createClient("GOV-36", httpClient("gov36-g36a", "g36a", "g36a", { tools_to_execute: ["*"], tools_to_auto_execute: ["*"], allow_by_default: false })),
+  createClient("GOV-36", httpClient("gov36-g36b", "g36b", "g36b", { tools_to_execute: ["*"], tools_to_auto_execute: ["*"], allow_by_default: true })),
+  createClient("GOV-36", httpClient("gov36-g36g", "g36g", "g36g", { tools_to_execute: ["echo"], tools_to_auto_execute: ["echo"], allow_by_default: true })),
+  createClient("GOV-36", httpClient("gov36-g36d", "g36d", "g36d", { tools_to_execute: ["*"], tools_to_auto_execute: ["*"], allow_by_default: true })),
+  request("GOV-36", "setup: disable g36d", "PUT", "/api/mcp/client/gov36-g36d", { body: { disabled: true }, asserts: [A.status(200)] }),
+  ...G36_VMCPS.map((vm) => request("GOV-36", `setup: create the virtual MCP ${vm.name}`, "POST", "/api/mcp/virtual-mcps", { body: { name: vm.name, tools: vm.tools }, asserts: [A.status(201)], extraTests: [`pm.collectionVariables.set('gov36_${vm.v}', pm.response.json().virtual_mcp.id);`] })),
+  ...G36_KEYS.flatMap(g36KeyBlock),
+  ...G36_VMCPS.map((vm) => request("GOV-36", `teardown: delete the virtual MCP ${vm.name}`, "DELETE", `/api/mcp/virtual-mcps/{{gov36_${vm.v}}}`, { asserts: [A.status(200)] })),
+  ...G36_SERVERS.map((s) => deleteClient("GOV-36", `gov36-${s}`)),
+]);
+
+// ================================================================ GO a real MCP SDK client and raw streams on /mcp
+
+// The mock drives an mcp-go client, or a raw GET stream, against Bifrost; each request below talks to
+// the mock, which talks to Bifrost at base_url.
+const SDK_TEXT = "an mcp-go client driven by the mock against Bifrost";
+const sdkPath = (name, verb) => `/client/${name}${verb ? "/" + verb : ""}`;
+const sdkOpen = (id, name, title, { path = "/mcp", headers = {}, version = "", listen = false } = {}, asserts) => request(id, title, "POST", sdkPath(name, "open"), {
+  base: CHAOS, noAuth: true, body: { url: `{{base_url}}${path}`, headers, protocol_version: version, listen }, asserts,
+});
+const sdkTools = (id, name, title, asserts) => request(id, title, "GET", sdkPath(name, "tools"), { base: CHAOS, noAuth: true, asserts });
+const sdkCall = (id, name, title, tool, args, asserts) => request(id, title, "POST", sdkPath(name, "call"), { base: CHAOS, noAuth: true, body: { tool, arguments: args }, asserts });
+const sdkLog = (id, name, title, asserts) => request(id, title, "GET", sdkPath(name), { base: CHAOS, noAuth: true, asserts });
+const sdkClose = (id, name) => request(id, `teardown: close the client ${name}`, "DELETE", sdkPath(name), { base: CHAOS, noAuth: true, asserts: [A.status(200)] });
+const probeStream = (id, title, { path = "/mcp", headers = {}, hold = "3s" } = {}, asserts) => request(id, title, "POST", sdkPath(id.toLowerCase(), "stream"), {
+  base: CHAOS, noAuth: true, body: { url: `{{base_url}}${path}`, headers, hold }, asserts: [A.status(200), ...asserts],
+});
+const sdkJSON = (title, lines) => A.custom(title, ["var b = pm.response.json();", ...lines.map((l) => l.replace("BODY", "'body: ' + pm.response.text()"))]);
+const sdkToolNames = (names) => sdkJSON(`the tools are exactly ${lit(names)}, each with an object input schema`, [
+  `pm.expect((b.tools || []).map(function (t) { return t.name; }), BODY).to.eql(${lit(names)});`,
+  "(b.tools || []).forEach(function (t) { pm.expect(t.input_schema_type, t.name).to.equal('object'); });",
+]);
+const sdkResult = (text) => sdkJSON(`is_error false and the text is ${lit(text)}`, ["pm.expect(b.is_error, BODY).to.equal(false);", `pm.expect(b.text).to.equal(${lit(text)});`]);
+// sdkRefused is a handshake the server refused: the SDK's error, and every request it made answered status.
+const sdkRefused = (status, errorPart) => [A.status(502), sdkJSON(`the handshake failed${errorPart ? " with " + lit(errorPart) : ""} and every request the SDK made was answered ${status}`, [
+  "pm.expect(b.error, BODY).to.include('handshake: ');",
+  ...(errorPart ? [`pm.expect(b.error).to.include(${lit(errorPart)});`] : []),
+  "var rs = b.requests || [];",
+  "pm.expect(rs.length, BODY).to.be.above(0);",
+  `rs.forEach(function (r) { pm.expect(r.status, JSON.stringify(rs)).to.equal(${status}); });`,
+])];
+const MODERN_V = "2026-07-28";
+const LEGACY_V = "2025-11-25";
+
+const GO01 = folder("GO-01 Hold GET /mcp open", `Setup: ${FLEET}; no credential (enforce_auth_on_inference off). A raw GET on /mcp asking for text/event-stream, with no session id, held for 3s (Bifrost writes one heartbeat up front, then every 15s).`, [
+  ...fleetSetup("GO-01"),
+  probeStream("GO-01", "hold the GET stream for 3s", {}, [sdkJSON("200, an event stream with no-cache that starts with a \": heartbeat\" comment and is still open after 3s", [
+    "pm.expect(b.status, BODY).to.equal(200);",
+    "pm.expect(b.headers['Content-Type'] || '').to.match(/^text\\/event-stream/);",
+    "pm.expect(b.headers['Cache-Control']).to.equal('no-cache');",
+    "pm.expect(b.body.indexOf(': heartbeat')).to.equal(0);",
+    "pm.expect(b.open).to.equal(true);",
+  ])]),
+  ...fleetTeardown("GO-01"),
+]);
+
+const GO02 = folder("GO-02 GET stream without a credential under enforced auth", `Setup: ${FLEET}; enforce_auth_on_inference on; a raw GET on /mcp with no credential.`, [
+  readConfig("GO-02"),
+  ...fleetSetup("GO-02"),
+  putConfig("GO-02", "setup: enforce_auth_on_inference on", ["cc.enforce_auth_on_inference = true;"], [A.status(200)]),
+  probeStream("GO-02", "GET /mcp with no credential", { hold: "1s" }, [sdkJSON("401 \"virtual key required to access mcp server\", not an event stream, and closed", [
+    "pm.expect(b.status, BODY).to.equal(401);",
+    "pm.expect(b.body).to.include('virtual key required to access mcp server');",
+    "pm.expect(b.headers['Content-Type'] || '').to.not.match(/^text\\/event-stream/);",
+    "pm.expect(b.open).to.equal(false);",
+  ])]),
+  restoreConfig("GO-02"),
+  ...fleetTeardown("GO-02"),
+]);
+
+const GO03 = folder("GO-03 GET stream on an unknown slug", `Setup: ${FLEET}; no credential; a raw GET on /mcp/nosuch.`, [
+  ...fleetSetup("GO-03"),
+  probeStream("GO-03", "GET /mcp/nosuch", { path: "/mcp/nosuch", hold: "1s" }, [sdkJSON("403 access_denied, not an event stream, and closed", [
+    "pm.expect(b.status, BODY).to.equal(403);",
+    "pm.expect(b.body).to.include('access_denied');",
+    "pm.expect(b.headers['Content-Type'] || '').to.not.match(/^text\\/event-stream/);",
+    "pm.expect(b.open).to.equal(false);",
+  ])]),
+  ...fleetTeardown("GO-03"),
+]);
+
+const GO06 = folder("GO-06 SDK Initialize on /mcp", `Setup: ${FLEET}; no credential; ${SDK_TEXT}, once on ${MODERN_V} (the SDK's default) and once pinned to ${LEGACY_V}.`, [
+  ...fleetSetup("GO-06"),
+  sdkOpen("GO-06", "go06m", `handshake on ${MODERN_V}`, {}, [A.status(200), sdkJSON(`${MODERN_V}; server bifrost; tools listChanged; no session id`, [
+    `pm.expect(b.protocol_version, BODY).to.equal(${lit(MODERN_V)});`,
+    "pm.expect(b.server_name).to.equal('bifrost');",
+    "pm.expect(b.tools_list_changed).to.equal(true);",
+    "pm.expect(b.session_id).to.equal('');",
+  ])]),
+  sdkOpen("GO-06", "go06l", `handshake pinned to ${LEGACY_V}`, { version: LEGACY_V }, [A.status(200), sdkJSON(`${LEGACY_V}; server bifrost; tools listChanged; a session id`, [
+    `pm.expect(b.protocol_version, BODY).to.equal(${lit(LEGACY_V)});`,
+    "pm.expect(b.server_name).to.equal('bifrost');",
+    "pm.expect(b.tools_list_changed).to.equal(true);",
+    "pm.expect(b.session_id).to.be.a('string').and.not.empty;",
+  ])]),
+  sdkClose("GO-06", "go06m"), sdkClose("GO-06", "go06l"),
+  ...fleetTeardown("GO-06"),
+]);
+
+const GO07 = folder("GO-07 SDK ListTools", `Setup: ${FLEET}; no credential; ${SDK_TEXT} on each protocol era.`, [
+  ...fleetSetup("GO-07"),
+  ...[["go07m", "", MODERN_V], ["go07l", LEGACY_V, LEGACY_V]].flatMap(([name, version, label]) => [
+    sdkOpen("GO-07", name, `setup: handshake on ${label}`, { version }, [A.status(200)]),
+    sdkTools("GO-07", name, `ListTools on ${label}`, [A.status(200), sdkToolNames(ALL_TOOLS)]),
+    sdkClose("GO-07", name),
+  ]),
+  ...fleetTeardown("GO-07"),
+]);
+
+const GO08 = folder("GO-08 SDK CallTool", `Setup: ${FLEET}; no credential; ${SDK_TEXT} on each protocol era calls alpha-echo with {"text": "go08"}.`, [
+  ...fleetSetup("GO-08"),
+  sdkOpen("GO-08", "go08l", `setup: handshake pinned to ${LEGACY_V}`, { version: LEGACY_V }, [A.status(200)]),
+  sdkCall("GO-08", "go08l", `CallTool alpha-echo on ${LEGACY_V}`, "alpha-echo", { text: "go08" }, [A.status(200), sdkResult(ECHO_RESULT("go08"))]),
+  sdkLog("GO-08", "go08l", `the ${LEGACY_V} client's notifications/initialized was answered 202`, [A.status(200), sdkJSON("one POST /mcp answered 202", [
+    "var accepted = (b.requests || []).filter(function (r) { return r.method === 'POST' && r.path === '/mcp' && r.status === 202; });",
+    "pm.expect(accepted.length, BODY).to.equal(1);",
+  ])]),
+  sdkOpen("GO-08", "go08m", `setup: handshake on ${MODERN_V}`, {}, [A.status(200)]),
+  sdkCall("GO-08", "go08m", `CallTool alpha-echo on ${MODERN_V}`, "alpha-echo", { text: "go08" }, [A.status(200), sdkResult(ECHO_RESULT("go08"))]),
+  mockGet("GO-08", "alpha", "alpha ran echo twice", [callsIs("echo", 2)]),
+  sdkClose("GO-08", "go08l"), sdkClose("GO-08", "go08m"),
+  ...fleetTeardown("GO-08"),
+]);
+
+const GO09 = folder("GO-09 SDK CallTool when upstream fails", `Setup: ${FLEET}; no credential; alpha's tools/call fails with a JSON-RPC error (err_kind protocol); ${SDK_TEXT} calls alpha-echo.`, [
+  ...fleetSetup("GO-09"),
+  mockPost("GO-09", "alpha", "faults", "setup: alpha's tools/call fails with a JSON-RPC error", { faults: { err_rate: 1, err_kind: "protocol", methods: ["tools/call"] } }),
+  sdkOpen("GO-09", "go09", "setup: handshake", {}, [A.status(200)]),
+  sdkCall("GO-09", "go09", "CallTool alpha-echo", "alpha-echo", { text: "hi" }, [A.status(200), sdkJSON("is_error true; the text starts \"Tool execution failed: \" and names \"MCP tool call failed for\"", [
+    "pm.expect(b.is_error, BODY).to.equal(true);",
+    "pm.expect(b.text.indexOf('Tool execution failed: ')).to.equal(0);",
+    "pm.expect(b.text).to.include('MCP tool call failed for');",
+  ])]),
+  mockPost("GO-09", "alpha", "faults/clear", "teardown: clear alpha's faults", {}),
+  sdkClose("GO-09", "go09"),
+  ...fleetTeardown("GO-09"),
+]);
+
+const GO10 = folder("GO-10 SDK CallTool of an unregistered name", `Setup: ${FLEET}; no credential; ${SDK_TEXT} calls alpha-nope.`, [
+  ...fleetSetup("GO-10"),
+  sdkOpen("GO-10", "go10", "setup: handshake", {}, [A.status(200)]),
+  sdkCall("GO-10", "go10", "CallTool alpha-nope", "alpha-nope", { text: "hi" }, [A.status(502), sdkJSON("the SDK reports invalid params: tool 'alpha-nope' not found", ["pm.expect(b.error, BODY).to.equal(\"tools/call: invalid params: tool 'alpha-nope' not found: tool not found\");"])]),
+  noMockCalls("GO-10", "alpha"),
+  sdkClose("GO-10", "go10"),
+  ...fleetTeardown("GO-10"),
+]);
+
+const GO11 = folder("GO-11 SDK on /mcp/{client slug}", `Setup: ${FLEET}; no credential; ${SDK_TEXT} on /mcp/alpha.`, [
+  ...fleetSetup("GO-11"),
+  sdkOpen("GO-11", "go11", "setup: handshake on /mcp/alpha", { path: "/mcp/alpha" }, [A.status(200)]),
+  sdkTools("GO-11", "go11", "ListTools shows only alpha's tools", [A.status(200), sdkToolNames(["alpha-add", "alpha-echo"])]),
+  sdkCall("GO-11", "go11", "CallTool beta-echo through /mcp/alpha", "beta-echo", { text: "hi" }, [A.status(200), sdkJSON("is_error true, not permitted (filtered by request context)", ["pm.expect(b.is_error, BODY).to.equal(true);", "pm.expect(b.text).to.equal(\"Tool execution failed: tool 'beta-echo' is not permitted (filtered by request context)\");"])]),
+  noMockCalls("GO-11", "beta"),
+  sdkClose("GO-11", "go11"),
+  ...fleetTeardown("GO-11"),
+]);
+
+const GO12 = folder("GO-12 SDK on /mcp/{virtual MCP slug}", `Setup: ${FLEET}; virtual keys VK1 and VK2 with no mcp_configs; a virtual MCP "GO-12 V" over alpha's echo, attached to VK1 only; ${SDK_TEXT} on /mcp/go-12-v with each key.`, [
+  ...fleetSetup("GO-12"),
+  vkCreate("GO-12", "setup: create VK1", { name: "GO-12 VK1" }, "go12_vk1"),
+  vkCreate("GO-12", "setup: create VK2", { name: "GO-12 VK2" }, "go12_vk2"),
+  request("GO-12", "setup: create the virtual MCP GO-12 V over alpha's echo", "POST", "/api/mcp/virtual-mcps", { body: { name: "GO-12 V", tools: [{ mcp_client_id: "go-12-alpha", tool_names: ["echo"] }] }, asserts: [A.status(201)], extraTests: ["pm.collectionVariables.set('go12_vmcp', pm.response.json().virtual_mcp.id);"] }),
+  request("GO-12", "setup: attach VK1", "POST", "/api/mcp/virtual-mcps/{{go12_vmcp}}/virtual-keys/{{go12_vk1_id}}", { asserts: [A.status(200)] }),
+  sdkOpen("GO-12", "go12a", "handshake on /mcp/go-12-v with VK1", { path: "/mcp/go-12-v", headers: { "x-bf-vk": "{{go12_vk1}}" } }, [A.status(200)]),
+  sdkTools("GO-12", "go12a", "VK1 lists the virtual MCP's tools", [A.status(200), sdkToolNames(["alpha-echo"])]),
+  sdkCall("GO-12", "go12a", "VK1 calls alpha-echo", "alpha-echo", { text: "go12" }, [A.status(200), sdkResult(ECHO_RESULT("go12"))]),
+  sdkOpen("GO-12", "go12b", "handshake on /mcp/go-12-v with VK2", { path: "/mcp/go-12-v", headers: { "x-bf-vk": "{{go12_vk2}}" } }, sdkRefused(403)),
+  sdkClose("GO-12", "go12a"),
+  request("GO-12", "teardown: delete the virtual MCP", "DELETE", "/api/mcp/virtual-mcps/{{go12_vmcp}}", { asserts: [A.status(200)] }),
+  vkDelete("GO-12", "teardown: delete VK1", "go12_vk1"), vkDelete("GO-12", "teardown: delete VK2", "go12_vk2"),
+  ...fleetTeardown("GO-12"),
+]);
+
+const GO13 = folder("GO-13 SDK auth under enforced auth", `Setup: ${FLEET}; the full-access VK (${VKS.full.text}); enforce_auth_on_inference on; ${SDK_TEXT} with and without x-bf-vk.`, [
+  readConfig("GO-13"),
+  ...fleetSetup("GO-13"),
+  createVK("GO-13", "full"),
+  putConfig("GO-13", "setup: enforce_auth_on_inference on", ["cc.enforce_auth_on_inference = true;"], [A.status(200)]),
+  sdkOpen("GO-13", "go13a", "handshake with the full-access VK", { headers: { "x-bf-vk": "{{go-13_full}}" } }, [A.status(200)]),
+  sdkTools("GO-13", "go13a", "ListTools with the VK", [A.status(200), sdkToolNames(ALL_TOOLS)]),
+  sdkCall("GO-13", "go13a", "CallTool alpha-echo with the VK", "alpha-echo", { text: "go13" }, [A.status(200), sdkResult(ECHO_RESULT("go13"))]),
+  sdkOpen("GO-13", "go13b", "handshake with no VK", {}, sdkRefused(401, "authorization required")),
+  sdkClose("GO-13", "go13a"),
+  restoreConfig("GO-13"),
+  deleteVK("GO-13", "full"),
+  ...fleetTeardown("GO-13"),
+]);
+
+// waitNotified polls a driven client's notifications, 250ms apart, until tools/list_changed arrives or seconds pass.
+const waitNotified = (name, seconds) => [
+  `var deadline = Date.now() + ${seconds * 1000};`,
+  "function poll() {",
+  `  pm.sendRequest({ url: pm.variables.get('chaos_url') + '/client/${name}/notifications', method: 'GET' }, function (err, res) {`,
+  "    var got = !err && res.code === 200 ? (res.json().notifications || []) : [];",
+  "    if (got.indexOf('notifications/tools/list_changed') >= 0 || Date.now() >= deadline) { return; }",
+  "    setTimeout(poll, 250);",
+  "  });",
+  "}",
+  "poll();",
+];
+// waitListening polls two driven clients, 250ms apart for up to 10s, until the modern one has its
+// subscriptions/acknowledged and the legacy one's GET stream has answered 200. Both streams are then
+// registered with Bifrost, which replays nothing sent before a stream opens.
+const waitListening = (modern, legacy) => [
+  "var deadline = Date.now() + 10000, chaos = pm.variables.get('chaos_url');",
+  "function ready(cb) {",
+  `  pm.sendRequest({ url: chaos + '/client/${modern}/notifications', method: 'GET' }, function (e1, r1) {`,
+  `    pm.sendRequest({ url: chaos + '/client/${legacy}', method: 'GET' }, function (e2, r2) {`,
+  "      var acked = !e1 && r1.code === 200 && (r1.json().notifications || []).indexOf('notifications/subscriptions/acknowledged') >= 0;",
+  "      var streaming = !e2 && r2.code === 200 && (r2.json().requests || []).some(function (q) { return q.method === 'GET' && q.status === 200; });",
+  "      cb(acked && streaming);",
+  "    });",
+  "  });",
+  "}",
+  "function poll() { ready(function (ok) { if (ok || Date.now() >= deadline) { return; } setTimeout(poll, 250); }); }",
+  "poll();",
+];
+const GO14 = folder("GO-14 SDK continuous listening", `Setup: ${FLEET}; no credential; ${SDK_TEXT} listening on each era (subscriptions/listen on ${MODERN_V}, the GET stream on ${LEGACY_V}); then alpha adds new_tool and alpha's tools are refreshed.`, [
+  ...fleetSetup("GO-14"),
+  sdkOpen("GO-14", "go14m", `setup: handshake on ${MODERN_V}, listening`, { listen: true }, [A.status(200)]),
+  sdkOpen("GO-14", "go14l", `setup: handshake pinned to ${LEGACY_V}, listening`, { version: LEGACY_V, listen: true }, [A.status(200)]),
+  request("GO-14", `setup: the ${MODERN_V} client's subscription is acknowledged`, "GET", sdkPath("go14m", "notifications"), {
+    base: CHAOS, noAuth: true, pre: waitListening("go14m", "go14l"), asserts: [A.status(200), sdkJSON("notifications include notifications/subscriptions/acknowledged", ["pm.expect(b.notifications, BODY).to.include('notifications/subscriptions/acknowledged');"])],
+  }),
+  request("GO-14", `setup: the ${LEGACY_V} client's GET stream is open`, "GET", sdkPath("go14l"), {
+    base: CHAOS, noAuth: true, asserts: [A.status(200), sdkJSON("a GET answered 200", ["pm.expect(b.requests.some(function (q) { return q.method === 'GET' && q.status === 200; }), BODY).to.equal(true);"])],
+  }),
+  mockPost("GO-14", "alpha", "tools/add", "setup: alpha adds new_tool", { tool: { name: "new_tool" } }),
+  request("GO-14", "setup: refresh alpha's tools", "POST", "/api/mcp/client/go-14-alpha/refresh-tools", { asserts: [A.status(200)] }),
+  ...["go14m", "go14l"].map((name) => request("GO-14", `the ${name === "go14m" ? MODERN_V : LEGACY_V} client receives tools/list_changed within 10s`, "GET", sdkPath(name, "notifications"), {
+    base: CHAOS, noAuth: true, pre: waitNotified(name, 10), asserts: [A.status(200), sdkJSON("notifications include notifications/tools/list_changed", ["pm.expect(b.notifications, BODY).to.include('notifications/tools/list_changed');"])],
+  })),
+  sdkClose("GO-14", "go14m"), sdkClose("GO-14", "go14l"),
+  ...fleetTeardown("GO-14"),
+]);
+
+// ================================================================ two identical requests at once, replays and OSS refusals
+
+// twoAtOnce fires one admin request twice at once from a pre-request script and keeps both answers
+// as JSON in varName, sorted by status, for the request's own asserts. The body's {{chaos_url}} is
+// filled in here, since pm.sendRequest sends a body as written.
+const twoAtOnce = (varName, method, path, body) => [
+  `pm.collectionVariables.set(${lit(varName)}, '');`,
+  `var raw = ${lit(JSON.stringify(body))}.split('{{chaos_url}}').join(pm.variables.get('chaos_url'));`,
+  "var out = [];",
+  "function one() {",
+  `  pm.sendRequest({ url: pm.variables.get('base_url') + ${lit(path)}, method: ${lit(method)}, header: { 'Content-Type': 'application/json', Authorization: pm.variables.get('admin_auth_header') }, body: { mode: 'raw', raw: raw } }, function (err, res) {`,
+  "    out.push(err ? { status: 0, body: String(err) } : { status: res.code, body: res.text() });",
+  `    if (out.length === 2) { out.sort(function (a, b) { return a.status - b.status; }); pm.collectionVariables.set(${lit(varName)}, JSON.stringify(out)); }`,
+  "  });",
+  "}",
+  "one(); one();",
+];
+const TWO = (varName) => `var out = JSON.parse(pm.collectionVariables.get(${lit(varName)}) || '[]');`;
+const twoStatusesAre = (varName, statuses) => A.custom(`the two answers are ${statuses.join(" and ")}`, [
+  TWO(varName), `pm.expect(out.map(function (o) { return o.status; }), JSON.stringify(out)).to.eql(${lit(statuses)});`,
+]);
+const searchCount = (n) => A.custom(`${n} client${n === 1 ? "" : "s"} listed`, ["pm.expect(pm.response.json().clients.length, 'body: ' + pm.response.text()).to.equal(" + n + ");"]);
+
+const ADM26 = folder("ADM-26 Replayed complete-oauth on a shared client", `Setup: dashboard auth on, admin credentials; ${OAUTH_SERVER_TEXT} (adm26); as ADM-25: create the OAuth client, consent, callback, complete; then complete-oauth again.`, [
+  ...allowlistOn("ADM-26"),
+  ...asServer("ADM-26", "adm26"),
+  createOAuth("ADM-26", "setup: create the OAuth client", oauthBody("adm26-c", "adm26", "adm26"), "adm26"),
+  consentAs("ADM-26", "setup: follow authorize_url", "adm26", null),
+  followCallback("ADM-26", "setup: the callback", "adm26", callbackSuccess()),
+  completeOAuth("ADM-26", "setup: complete", "adm26", [A.status(200), A.jsonMessage("MCP client connected successfully with OAuth")]),
+  completeOAuth("ADM-26", "complete again", "adm26", [A.status(200), A.jsonMessage("MCP client re-authorized and tools refreshed successfully")]),
+  request("ADM-26", "still one client named adm26, with the same client_id", "GET", "/api/mcp/clients?search=adm26", { asserts: [A.status(200), searchCount(1), A.custom("its client_id is adm26-c", ["pm.expect(pm.response.json().clients[0].config.client_id, 'body: ' + pm.response.text()).to.equal('adm26-c');"])] }),
+  getClient("ADM-26", "adm26-c", "the client is healthy", [clientState("healthy")]),
+  deleteClient("ADM-26", "adm26-c"),
+  restoreConfig("ADM-26"),
+]);
+
+const ADM84 = folder("ADM-84 Concurrent creates with the same name", "Setup: admin credentials; fleet server adm84 (echo_tool); two identical creates of client adm84-c (adm84, HTTP, auth none) sent at once.", [
+  ...freshServer("ADM-84", "adm84", ["echo_tool"]),
+  request("ADM-84", "two identical creates at once, then one client is listed", "GET", "/api/mcp/clients?search=adm84", {
+    pre: twoAtOnce("adm84_two", "POST", "/api/mcp/client", httpClient("adm84-c", "adm84", "adm84", { tools_to_execute: ["*"] })),
+    asserts: [A.status(200), twoStatusesAre("adm84_two", [200, 409]), searchCount(1), A.custom("the 409 names the conflict", [TWO("adm84_two"), "pm.expect(out[1].body).to.match(/already exists/);"])],
+  }),
+  deleteClient("ADM-84", "adm84-c"),
+]);
+
+const ADM85 = folder("ADM-85 Concurrent verify-headers", `Setup: admin credentials; fleet server adm85 (echo_tool, add_tool) requires x-key: good; ${BOOT_TEXT("adm85-h", "a per_user_headers", "adm85")}, per_user_header_keys ["x-key"]; two verify-headers with x-key good sent at once.`, [
+  ...freshServer("ADM-85", "adm85", ["echo_tool", "add_tool"]),
+  mockAuth("ADM-85", "adm85", "setup: adm85 requires x-key: good", { require_headers: { "x-key": "good" } }),
+  getClient("ADM-85", "adm85-h", "control: the client is pending_verification", [clientState("pending_verification")]),
+  getClient("ADM-85", "adm85-h", "two verify-headers at once: both 200 with tools_count 2; the client is healthy with an active credential", [
+    twoStatusesAre("adm85_two", [200, 200]),
+    A.custom("both answer tools_count 2", [TWO("adm85_two"), "out.forEach(function (o) { pm.expect(JSON.parse(o.body).tools_count, o.body).to.equal(2); });"]),
+    clientState("healthy"), credStatus("active"),
+  ], { pre: twoAtOnce("adm85_two", "POST", "/api/mcp/client/adm85-h/verify-headers", { user_headers: { "x-key": "good" } }) }),
+  deleteClient("ADM-85", "adm85-h"),
+]);
+
+const LIB12 = folder("LIB-12 Two parallel publishes of one name", `Setup: admin credentials; two identical publishes of a custom entry "LIB-12 dup" (http, ${libURL}) sent at once.`, [
+  request("LIB-12", "two identical publishes at once, then one entry is listed", "GET", `/api/mcp/library?search=${encodeURIComponent("LIB-12 dup")}`, {
+    pre: twoAtOnce("lib12_two", "POST", "/api/mcp/library", { name: "LIB-12 dup", connection_type: "http", connection_url: libURL }),
+    asserts: [A.status(200), twoStatusesAre("lib12_two", [200, 409]), A.custom("one entry named LIB-12 dup", [
+      "var named = (pm.response.json().servers || []).filter(function (e) { return e.name === 'LIB-12 dup'; });",
+      "pm.expect(named.length, 'body: ' + pm.response.text()).to.equal(1);",
+    ])],
+    extraTests: [TWO("lib12_two"), "pm.collectionVariables.set('lib12_id', JSON.parse(out[0].body).entry.id);"],
+  }),
+  libDelete("LIB-12", "lib12_id"),
+]);
+
+const AUTH47 = folder("AUTH-47 token_exchange create and config.json in OSS", `Setup: admin credentials; fleet server auth47 (echo_tool); config.json declares client auth47-t (auth47_t) with auth_type token_exchange on it.`, [
+  ...freshServer("AUTH-47", "auth47", ["echo_tool"]),
+  createExpect("AUTH-47", "create a token_exchange client", httpClient("auth47-c", "auth47_c", "auth47", { auth_type: "token_exchange", token_exchange: { audience: "auth47" } }), [A.status(400), A.msgEquals("auth_type 'token_exchange' is not supported")]),
+  request("AUTH-47", "the config.json token_exchange client was not loaded", "GET", "/api/mcp/clients?search=auth47", { asserts: [A.status(200), searchCount(0)] }),
+  execTool("AUTH-47", "execute auth47_t-echo_tool", "auth47_t-echo_tool", [A.status(400), A.msgContains("is not available or not permitted")]),
+  noMockCalls("AUTH-47", "auth47"),
+]);
+
+// ================================================================ PUD per-user discovery
+
+// A client with per_user_discovery on keeps no tools of its own: each caller's tools, prompts and resources are
+// discovered with that caller's own credential, and until a caller has a discovery they are offered one tool,
+// <client>-connect. Callers are virtual keys; a session-only or anonymous caller keeps no discovery.
+//
+// HDOOR(p) is fleet server p (echo_tool, add_tool), which takes each caller's identity from the X-Api-Key value,
+// with client p (id <p>-h) on it: per_user_headers, per_user_header_keys ["x-api-key"], verified at create with the
+// sample admin-key, per_user_discovery on, tools_to_execute ["*"]. ODOOR(p) is the per_user_oauth equivalent (id
+// <p>-u), verified by consenting as admin. VK-<L> is a virtual key granted every tool of p (and openai, for chats),
+// kept in <p>_<l> and <p>_<l>_id; it signs in to HDOOR with X-Api-Key key-<l>, or to ODOOR as the identity the case
+// names. gw-list is tools/list on /mcp with the caller's x-bf-vk.
+const PUD_SERVER_TEXT = (p, extra = "") => `fleet server ${p} (echo_tool, add_tool${extra}) takes the caller's identity from X-Api-Key`;
+const HDOOR_TEXT = (p, extra = "") => `HDOOR(${p}): ${PUD_SERVER_TEXT(p, extra)}; ${p}, a per_user_headers client on it (per_user_header_keys ["x-api-key"], sample admin-key, tools_to_execute ["*"]) with per_user_discovery on`;
+const pudServer = (id, p, tools = ["echo_tool", "add_tool"]) => [
+  ...freshServer(id, p, tools),
+  mockAuth(id, p, `setup: ${p} takes the caller's identity from X-Api-Key, any value`, { identity_header: "X-Api-Key", require_headers: { "X-Api-Key": "" } }),
+];
+const hdoorBody = (p, over = {}) => ({ client_id: `${p}-h`, name: p, connection_type: "http", connection_string: `${CHAOS}/s/${p}/mcp`, auth_type: "per_user_headers", per_user_header_keys: ["x-api-key"], user_headers: { "x-api-key": "admin-key" }, per_user_discovery: true, tools_to_execute: ["*"], ...over });
+// hdoor builds HDOOR(p); flag false leaves per_user_discovery unset.
+const hdoor = (id, p, { tools, flag = true, over = {} } = {}) => [
+  ...pudServer(id, p, tools),
+  createClient(id, hdoorBody(p, { ...(flag ? {} : { per_user_discovery: undefined }), ...over }), `setup: create ${p}, per_user_headers${flag ? " with per_user_discovery on" : ", per_user_discovery unset"}`),
+];
+const L = (l) => `VK-${l.toUpperCase()}`;
+const pudVK = (id, p, l, configs) => vkCreate(id, `setup: create ${L(l)}${configs ? `, mcp_configs ${lit(configs)}` : `, granted every tool of ${p}`}`, { name: `${id} ${L(l)}`, provider_configs: OPENAI_GRANT, mcp_configs: configs || [{ mcp_client_name: p, tools_to_execute: ["*"] }] }, `${p}_${l}`);
+const pudVKDelete = (id, p, l) => vkDelete(id, `teardown: delete ${L(l)}`, `${p}_${l}`);
+// pudVKGrant grants VK-<l> every tool of p again, as a new mcp_configs entry: deleting a client
+// removes the grants virtual keys held on it.
+const pudVKGrant = (id, p, l) => request(id, `grant ${L(l)} every tool of ${p} again`, "PUT", `/api/governance/virtual-keys/{{${p}_${l}_id}}`, {
+  body: { mcp_configs: [{ mcp_client_name: p, tools_to_execute: ["*"] }] }, asserts: [A.status(200)],
+});
+const vkOf = (p, l) => ({ key: "x-bf-vk", value: `{{${p}_${l}}}` });
+const SESS = (sid) => ({ key: "x-bf-mcp-session-id", value: sid });
+// FLOW_RE finds a sign-in link's flow id in a tool result's text.
+const FLOW_RE = "/\\/workspace\\/mcp-sessions\\/auth\\?flow=([^&#\\s]+)/";
+// execAs runs a tool through execute with the given headers; results read `content` (ES5 asserts).
+const execAs = (id, title, tool, headers, asserts, { extraTests = [], args = { text: "hi" } } = {}) => request(id, title, "POST", "/v1/mcp/tool/execute", {
+  noAuth: true, noCookies: true, headers, asserts, extraTests,
+  body: { id: "c1", type: "function", function: { name: tool, arguments: lit(args) } },
+});
+const contentMatches = (title, re) => A.custom(title, [`pm.expect(pm.response.json().content, 'body: ' + pm.response.text()).to.match(${re});`]);
+// H_SIGNIN matches the connect result of a caller with no header credential, exactly; its group is the flow id.
+const H_SIGNIN = (p) => `/^Authentication required for ${p}\\. Visit http:\\/\\/[^\\s]+\\/workspace\\/mcp-sessions\\/auth\\?flow=([^&#\\s]+)&kind=headers to submit the required headers\\.$/`;
+// H_SIGNIN_TT is the same text when temp-token auth is on: the link carries a #t= token and a notice follows.
+const H_SIGNIN_TT = (p) => `/^Authentication required for ${p}\\. Visit http:\\/\\/[^\\s]+\\/workspace\\/mcp-sessions\\/auth\\?flow=([^&#\\s]+)&kind=headers#t=[^\\s]+ to submit the required headers\\. IMPORTANT: this link includes a required fragment/`;
+const keepFlowFrom = (v, textExpr) => [`var fm = ${FLOW_RE}.exec(${textExpr} || '');`, `pm.collectionVariables.set(${lit(v)}, fm ? fm[1] : '');`];
+const sameFlowIn = (v, textExpr) => A.custom("the link names the same flow", [`var fm = ${FLOW_RE}.exec(${textExpr} || '');`, `pm.expect(fm && fm[1], 'text: ' + ${textExpr}).to.equal(pm.collectionVariables.get(${lit(v)}));`]);
+// connectH calls <p>-connect with VK-<l>, which has no header credential: the result is the sign-in text, whose flow
+// id is kept in <p>_<l>_flow.
+const connectH = (id, title, p, l, tt = false) => execAs(id, title, `${p}-connect`, [vkOf(p, l)], [A.status(200), contentMatches(`content is "Authentication required for ${p}. Visit <link${tt ? " with a #t= token" : ""}> to submit the required headers."${tt ? " and the fragment notice" : ""}`, tt ? H_SIGNIN_TT(p) : H_SIGNIN(p))], { extraTests: keepFlowFrom(`${p}_${l}_flow`, "pm.response.json().content") });
+const submitH = (id, title, p, l, key, asserts = [A.status(200)]) => hdrSubmit(id, title, `${p}_${l}_flow`, { "x-api-key": key }, asserts, [keepCredential(`${p}_${l}_cred`)]);
+// signInH signs VK-<l> in to HDOOR(p) with X-Api-Key key: connect opens the flow, the submit stores the credential.
+const signInH = (id, p, l, key = `key-${l}`, tt = false) => [
+  connectH(id, `setup: ${L(l)} calls ${p}-connect and gets the sign-in link`, p, l, tt),
+  submitH(id, `setup: ${L(l)} submits X-Api-Key ${key}`, p, l, key),
+];
+// signInFlowH signs VK-<l> in to an unflagged per_user_headers client: a call opens the flow, the submit stores it.
+const signInFlowH = (id, p, l, key = `key-${l}`, vp = p) => [
+  execAs(id, `setup: ${L(l)} calls ${p}-echo_tool and is sent to a header flow`, `${p}-echo_tool`, [vkOf(vp, l)], [A.status(400), headersFlow({ saveAs: `${p}_${l}_flow` })]),
+  submitH(id, `setup: ${L(l)} submits X-Api-Key ${key}`, p, l, key),
+];
+const connectedText = (p, n) => `Connected to ${p}: ${n} tools are available from your next turn.`;
+const alreadyText = (p) => `Already connected to ${p}; its tools are in your tool list.`;
+const connectExpect = (id, title, p, l, text) => execAs(id, title, `${p}-connect`, [vkOf(p, l)], [A.status(200), contentIs(text)]);
+// gw-list helpers: names are compared sorted.
+const gwNames = (names) => A.custom(`tools/list names are ${lit([...names].sort())}`, [
+  "var names = ((pm.response.json().result || {}).tools || []).map(function (t) { return t.name; }).sort();",
+  `pm.expect(names, 'body: ' + pm.response.text()).to.eql(${lit([...names].sort())});`,
+]);
+const gwNoneOf = (p) => A.custom(`no ${p}-* tool is listed`, [
+  "var names = ((pm.response.json().result || {}).tools || []).map(function (t) { return t.name; });",
+  `pm.expect(names.filter(function (n) { return n.indexOf(${lit(p + "-")}) === 0; }), 'body: ' + pm.response.text()).to.eql([]);`,
+]);
+const gwList = (id, title, headers, names, extra = []) => rpc(id, title, listMsg, { headers: [MCP_ACCEPT, ...headers], asserts: [A.status(200), gwNames(names), ...extra] });
+const gwListNone = (id, title, headers, p) => rpc(id, title, listMsg, { headers: [MCP_ACCEPT, ...headers], asserts: [A.status(200), gwNoneOf(p)] });
+const gwTextIs = (text) => gwText(`the result is not an error and its text is ${lit(text)}`, ["pm.expect(r.isError, 'body: ' + pm.response.text()).to.not.equal(true);", `pm.expect(text).to.equal(${lit(text)});`]);
+const gwCallAs = (id, title, tool, headers, asserts, args = { text: "hi" }) => rpc(id, title, call(tool, args), { headers: [MCP_ACCEPT, ...headers], asserts: [A.status(200), ...asserts] });
+const CONNECT_DESC = (p) => `Connect the user's account to ${p} to use its tools. If the user has not signed in to ${p} yet, this returns a link for them to open; give them the link exactly as returned. Otherwise it connects right away, and ${p}'s tools are available from your next turn.`;
+const connectToolShape = (p) => A.custom(`${p}-connect has the connect description and an empty object schema`, [
+  `var t = ((pm.response.json().result || {}).tools || []).filter(function (x) { return x.name === ${lit(p + "-connect")}; })[0];`,
+  "pm.expect(t, 'body: ' + pm.response.text()).to.be.an('object');",
+  `pm.expect(t.description).to.equal(${lit(CONNECT_DESC(p))});`,
+  "pm.expect(t.inputSchema).to.eql({ type: 'object', properties: {}, required: [] });",
+]);
+// Client-list helpers.
+const callersAre = (map) => A.custom(map ? `callers_by_tool is ${lit(map)}` : "there is no callers_by_tool", [map
+  ? `pm.expect(pm.response.json().clients[0].callers_by_tool, 'body: ' + pm.response.text()).to.eql(${lit(map)});`
+  : "pm.expect(pm.response.json().clients[0], 'body: ' + pm.response.text()).to.not.have.property('callers_by_tool');"]);
+const flagIs = (v) => configField("per_user_discovery", v);
+const noCredential = () => A.custom("there is no credential", ["pm.expect(pm.response.json().clients[0], 'body: ' + pm.response.text()).to.not.have.property('credential');"]);
+// Sessions helpers: rowOf finds VK-<l>'s credential row on clientId as `row`.
+const vkRowPred = (p, l) => `s.kind !== 'flow' && s.virtual_key && s.virtual_key.id === pm.collectionVariables.get(${lit(`${p}_${l}_id`)})`;
+const rowOf = (id, title, clientId, p, l, what, lines, extraTests = []) => request(id, title, "GET", SESSIONS, {
+  asserts: [A.status(200), A.custom(what, [sessionRows(clientId, vkRowPred(p, l)), "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(1);", "var row = found[0];", ...lines])],
+  extraTests: extraTests.length ? [sessionRows(clientId, vkRowPred(p, l)), "var row = found[0] || {};", ...extraTests] : [],
+});
+const NO_DISCOVERY = ["pm.expect(row, 'row: ' + JSON.stringify(row)).to.not.have.property('discovery');"];
+const DISCOVERY = (t, pr = 0, r = 0) => [
+  "pm.expect(row.discovery, 'row: ' + JSON.stringify(row)).to.be.an('object');",
+  `pm.expect([row.discovery.tool_count, row.discovery.prompt_count, row.discovery.resource_count], 'row: ' + JSON.stringify(row)).to.eql([${t}, ${pr}, ${r}]);`,
+];
+const ROW_STATUS = (s) => [`pm.expect(row.status, 'row: ' + JSON.stringify(row)).to.equal(${lit(s)});`];
+const keepRowId = (v) => [`pm.collectionVariables.set(${lit(v)}, row.id || '');`];
+const keepDiscoveredAt = (v) => [`pm.collectionVariables.set(${lit(v)}, (row.discovery || {}).discovered_at || '');`];
+// Mock helpers.
+const identityMethod = (identity, method, n) => A.custom(`${identity} sent ${method} ${n} time${n === 1 ? "" : "s"}`, [
+  `pm.expect(((pm.response.json().counters.methods_by_identity || {})[${lit(identity)}] || {})[${lit(method)}] || 0, 'counters: ' + JSON.stringify(pm.response.json().counters)).to.equal(${n});`,
+]);
+const methodsEmpty = () => A.custom("no MCP request reached the server", ["pm.expect(pm.response.json().counters.methods || {}, 'counters: ' + JSON.stringify(pm.response.json().counters)).to.eql({});"]);
+const overlay = (id, p, identity, tools, title) => mockPost(id, p, "tools/overlay", title || `setup: ${identity} sees ${tools.map((t) => t.name || t).join(", ")} on ${p}`, { identity, tools: tools.map((t) => (typeof t === "string" ? { name: t } : t)) });
+const identityFault = (id, p, identity, faults, title) => mockPost(id, p, "faults/identity", title || `setup: ${identity}'s requests to ${p} see ${lit(faults)}`, { identity, faults });
+const PUD_SCOPE_MSG = (auth, name) => `per_user_discovery is only valid for per-user auth types (per_user_oauth, per_user_headers, token_exchange), not '${auth}', in client '${name}'`;
+const odoorBody = (p, over = {}) => ({ ...puBody(p), per_user_discovery: true, ...over });
+const ODOOR_TEXT = (p, cfgText = "") => `${PU_TEXT(false)}; ODOOR(${p}): ${PU_SERVER_TEXT(p, cfgText)}, with per_user_discovery on, verified by consenting as admin`;
+// odoor builds ODOOR(p), verified by consenting as admin.
+const odoor = (id, p, cfg = {}, over = {}) => puConnect(id, p, cfg, { per_user_discovery: true, ...over });
+// connectO calls <p>-connect with VK-<l>, which has no token: the result is the sign-in text (no temp tokens), whose
+// flow id is kept in <p>_<l>_flow.
+const O_SIGNIN = (p) => `/^Authentication required for ${p}\\. Visit http:\\/\\/[^\\s]+\\/workspace\\/mcp-sessions\\/auth\\?flow=([^&#\\s]+) to connect your account\\.$/`;
+const connectO = (id, title, p, l) => execAs(id, title, `${p}-connect`, [vkOf(p, l)], [A.status(200), contentMatches(`content is "Authentication required for ${p}. Visit <link> to connect your account."`, O_SIGNIN(p))], { extraTests: keepFlowFrom(`${p}_${l}_flow`, "pm.response.json().content") });
+// signInO signs VK-<l> in to ODOOR(p) as identity: connect opens the flow, which is started, consented and called
+// back; landing is what the callback's Location must end with.
+const signInO = (id, p, l, identity, landing = PU_SUCCESS) => [
+  connectO(id, `setup: ${L(l)} calls ${p}-connect and gets the sign-in link`, p, l),
+  flowStart(id, `setup: start ${L(l)}'s flow`, `${p}_${l}_flow`),
+  consentAs(id, `setup: consent for ${L(l)} as ${identity}`, `${p}_${l}_flow`, identity),
+  followCallback(id, `setup: follow ${L(l)}'s callback`, `${p}_${l}_flow`, [A.status(302), locationEnds(landing)]),
+];
+// pudGrant runs a Bifrost OAuth grant (bf_mode vk) for VK-<l>: register, authorize, consent with the VK through the
+// temp token and exchange the code. The access token lands in <flow>_at.
+const pudGrant = (id, p, l, flow) => [
+  register(id, `${flow}_client`, LOOPBACK_CB, `${id} ${L(l)} grant`, REFRESHABLE),
+  authorize(id, `${flow}_client`, flow, `setup: authorize ${L(l)}'s grant`),
+  consent(id, flow, `setup: consent with ${L(l)} through the temp token`, "temp", { mode: "vk", value: `{{${p}_${l}}}` }, [A.status(200), codeIssued()], { extraTests: saveCode(flow) }),
+  tokenReq(id, `setup: exchange ${L(l)}'s code`, codeParams(flow, `${flow}_client`), [A.status(200), tokensIssued()], { extraTests: saveTokens(flow) }),
+];
+const tokenList = (id, title, flow, names) => request(id, title, "POST", "/mcp", { noAuth: true, raw: JSON.stringify(listMsg), headers: [MCP_ACCEPT, { key: "Authorization", value: `Bearer {{${flow}_at}}` }], asserts: [A.status(200), gwNames(names)] });
+// NOTIFY_NOTE: a discovery write also sends notifications/tools/list_changed to listening /mcp GET streams. Bifrost
+// keeps those streams open until the client hangs up, and a script request cannot hang up, so the harness checks
+// what a re-list returns instead.
+const NOTIFY_NOTE = "The tools/list_changed notification a discovery write sends to listening /mcp GET streams is not checked here: those streams stay open until the client hangs up, which a Newman request cannot do; what a re-list returns is checked instead.";
+// credentialFlip builds HDOOR(p) with per_user_discovery unset, signs the given callers in through header flows,
+// then turns per_user_discovery on: each caller then holds a credential and no discovery.
+const credentialFlip = (id, p, callers, { tools, over } = {}) => [
+  ...hdoor(id, p, { flag: false, tools, over }),
+  ...callers.flatMap((l) => [pudVK(id, p, l), ...signInFlowH(id, p, l)]),
+  clientPut(id, "setup: turn per_user_discovery on", `${p}-h`, { per_user_discovery: true }, [A.status(200)]),
+];
+const FLIP_TEXT = (p, callers) => `HDOOR(${p}) created with per_user_discovery unset (${PUD_SERVER_TEXT(p)}); ${callers.map((l) => `${L(l)} signed in with key-${l}`).join(", ")} through header flows; then per_user_discovery turned on, so each holds a credential and no discovery`;
+const O_SIGNIN_TT = (p) => `/^Authentication required for ${p}\\. Visit http:\\/\\/[^\\s]+\\/workspace\\/mcp-sessions\\/auth\\?flow=([^&#\\s]+)#t=[^\\s]+ to connect your account\\. IMPORTANT: this link includes a required fragment/`;
+const clearIdentityFault = (id, p, identity) => mockPost(id, p, "faults/identity", `setup: clear ${identity}'s faults on ${p}`, { identity, clear: true });
+const LIST_FAILED = (p) => `failed to list the tools of MCP client ${p}: failed to list tools`;
+const PUD18_VARIANTS = [
+  ["a", { list_fail: true }, "list_fail", [A.msgStartsWith(LIST_FAILED("pud18"))]],
+  ["c", { init_fail: true }, "init_fail", [A.msgEquals("failed to establish ephemeral MCP connection: internal error: initialize failed (injected)")]],
+  ["d", { malformed: true }, "malformed", [A.msgStartsWith(LIST_FAILED("pud18"))]],
+  ["e", { latency: "6s", methods: ["tools/list"] }, "tools/list delayed 6s", [A.msgStartsWith(LIST_FAILED("pud18")), responseTime(5000, 15000)]],
+];
+const toolDescIs = (name, desc) => A.custom(`${name}'s description is ${lit(desc)}`, [
+  `var t = ((pm.response.json().result || {}).tools || []).filter(function (x) { return x.name === ${lit(name)}; })[0];`,
+  `pm.expect(t && t.description, 'body: ' + pm.response.text()).to.equal(${lit(desc)});`,
+]);
+const followWithCookie = (id, title, v, asserts) => request(id, title, "GET", "", { base: `{{${v}_cb}}`, noAuth: true, noRedirect: true, noCookies: true, headers: [{ key: "Cookie", value: "token={{admin_cookie}}" }], asserts });
+const execAfterVK = (id, title, tool, p, l, ms, asserts) => request(id, title, "POST", "/v1/mcp/tool/execute", {
+  noAuth: true, noCookies: true, headers: [vkOf(p, l)], asserts, pre: [`setTimeout(function () {}, ${ms});`],
+  body: { id: "c1", type: "function", function: { name: tool, arguments: lit({ text: "hi" }) } },
+});
+// pollGwList re-sends tools/list with VK-<l> up to about 5s until cond (ES5 on names) holds, keeping the wait in v.
+const pollGwList = (p, l, cond, v) => [
+  "var t0 = Date.now(); var left = 25;",
+  "function poll() {",
+  `  pm.sendRequest({ url: pm.variables.get('base_url') + '/mcp', method: 'POST', header: { 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream', 'x-bf-vk': pm.variables.get(${lit(`${p}_${l}`)}) }, body: { mode: 'raw', raw: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) } }, function (err, res) {`,
+  "    var names = !err && res.code === 200 && res.json().result ? res.json().result.tools.map(function (t) { return t.name; }) : [];",
+  `    pm.collectionVariables.set(${lit(v)}, String(Date.now() - t0));`,
+  `    if ((${cond}) || --left <= 0) { return; }`,
+  "    setTimeout(poll, 200);",
+  "  });",
+  "}",
+  "poll();",
+];
+const NOT_FOUND_TOOL = (name) => rpcError(-32602, `tool '${name}' not found: tool not found`);
+const REFRESH_TOOLS_PUD = (p) => `mcp client ${p} keeps a discovery per caller, so it has no shared tool list to refresh; refresh a caller's tools from their session instead: tool refresh is not applicable for this client's current state`;
+const mockList = (id, p, verb, key, items, title) => mockPost(id, p, verb, title || `setup: ${p} serves ${verb.split("/")[0]} ${items.map((x) => x.name || x.uri || x.uriTemplate).join(", ")}`, { [key]: items });
+const kindOverlay = (id, p, kind, identity, items) => mockPost(id, p, `${kind}/overlay`, `setup: ${identity} sees ${kind} ${items.map((x) => x.name || x.uri || x.uriTemplate).join(", ") || "none"} on ${p}`, { identity, [kind]: items });
+const rpcMsg = (method, params) => ({ jsonrpc: "2.0", id: 1, method, ...(params ? { params } : {}) });
+const gwRpc = (id, title, method, params, headers, asserts, path) => rpc(id, title, rpcMsg(method, params), { path, headers: [MCP_ACCEPT, ...headers], asserts: [A.status(200), ...asserts] });
+const listedAre = (field, key, values) => A.custom(`result.${field} ${key}s are ${lit([...values].sort())}`, [
+  `var xs = ((pm.response.json().result || {})[${lit(field)}] || []).map(function (x) { return x[${lit(key)}]; }).sort();`,
+  `pm.expect(xs, 'body: ' + pm.response.text()).to.eql(${lit([...values].sort())});`,
+]);
+const listedNoneOf = (field, key, values) => A.custom(`result.${field} has none of ${lit(values)}`, [
+  `var xs = ((pm.response.json().result || {})[${lit(field)}] || []).map(function (x) { return x[${lit(key)}]; });`,
+  `${lit(values)}.forEach(function (v) { pm.expect(xs, 'body: ' + pm.response.text()).to.not.include(v); });`,
+]);
+const readTextIs = (text) => A.custom(`contents[0].text is ${lit(text)}`, [`pm.expect((((pm.response.json().result || {}).contents || [])[0] || {}).text, 'body: ' + pm.response.text()).to.equal(${lit(text)});`]);
+const promptTextIs = (text) => A.custom(`messages[0].content.text is ${lit(text)}`, [`pm.expect(((((pm.response.json().result || {}).messages || [])[0] || {}).content || {}).text, 'body: ' + pm.response.text()).to.equal(${lit(text)});`]);
+// keepError keeps a JSON-RPC error with `name` replaced by <name>; sameErrorAs checks a later one against it.
+const keepError = (v, name) => [`var e = pm.response.json().error || null;`, `pm.collectionVariables.set(${lit(v)}, e ? JSON.stringify({ code: e.code, message: String(e.message).split(${lit(name)}).join('<name>') }) : 'no error');`];
+// gwKeep sends a JSON-RPC request that must fail and keeps its error, with name replaced, in v.
+const gwKeep = (id, title, method, params, headers, v, name) => request(id, title, "POST", "/mcp", {
+  noAuth: true, raw: JSON.stringify(rpcMsg(method, params)), headers: [MCP_ACCEPT, ...headers],
+  asserts: [A.status(200), A.custom("a JSON-RPC error", ["pm.expect(pm.response.json().error, 'body: ' + pm.response.text()).to.be.an('object');"])],
+  extraTests: keepError(v, name),
+});
+const sameErrorAs = (v, name) => A.custom(`the error is the one an unknown name gets, with ${name} in place of it`, [
+  "var e = pm.response.json().error;",
+  "pm.expect(e, 'body: ' + pm.response.text()).to.be.an('object');",
+  `pm.expect(JSON.stringify({ code: e.code, message: String(e.message).split(${lit(name)}).join('<name>') })).to.equal(pm.collectionVariables.get(${lit(v)}));`,
+]);
+const gatesSet = (id, p, gate) => mockPost(id, p, "gates/set", `setup: gate ${gate.name} on ${p} holds ${gate.endpoint ? "the token endpoint" : `${gate.identity ? gate.identity + "'s " : ""}${gate.method}`}`, { gate: { timeout: "20s", ...gate } });
+const gatesClear = (id, p) => mockPost(id, p, "gates/clear", `teardown: clear ${p}'s gates`, {});
+const gateIs = (name, passed) => A.custom(`gate ${name}: open, nothing waiting, passed ${passed}, no timeouts`, [
+  `var g = (pm.response.json().gates || []).filter(function (x) { return x.name === ${lit(name)}; })[0];`,
+  "pm.expect(g, 'body: ' + pm.response.text()).to.be.an('object');",
+  `pm.expect([g.open, g.waiting, g.passed, g.timed_out], 'gate: ' + JSON.stringify(g)).to.eql([true, 0, ${passed}, 0]);`,
+]);
+// race runs, in the item's pre-request script: send `first`, wait until gate `gate` on fleet server p holds a
+// request, run `steps` in order, open the gate, then wait for `first` to answer. Each request is a spec {method,
+// url, header, body} whose strings may hold {{variables}}; a step is ES5 `function (next) {...}` calling next(result).
+// Results ({code, body}) are kept as JSON in <v>: {first, steps}. The item itself reads p's state for gateIs. A
+// redirect `first` answers is followed (a script request cannot stop it), so its code is the landing page's.
+const sendStep = (spec) => `function (next) { send(${lit(spec)}, next); }`;
+const deleteRowStep = (clientId, vkIdVar) => `function (next) { send({ method: 'GET', url: '{{base_url}}/api/mcp/sessions?limit=500', header: { Authorization: '{{admin_auth_header}}' } }, function (r) { var rows = []; try { rows = JSON.parse(r.body).sessions || []; } catch (e) {} var row = rows.filter(function (s) { return s.kind !== 'flow' && s.mcp_client && s.mcp_client.client_id === ${lit(clientId)} && s.virtual_key && s.virtual_key.id === pm.variables.get(${lit(vkIdVar)}); })[0]; if (!row) { next({ code: -1, body: 'no row: ' + r.body }); return; } send({ method: 'DELETE', url: '{{base_url}}/api/mcp/sessions/' + row.id, header: { Authorization: '{{admin_auth_header}}' } }, next); }); }`;
+const ADMIN_H = { Authorization: "{{admin_auth_header}}" };
+const JSON_H = { "Content-Type": "application/json" };
+const race = (id, title, p, gate, first, steps, v, asserts) => request(id, title, "GET", `/control/${p}`, {
+  base: CHAOS, noAuth: true, asserts: [A.status(200), gateIs(gate, 1), ...asserts],
+  pre: [
+    "function R(s) { return String(s).replace(/{{([^{}]+)}}/g, function (m, k) { return pm.variables.get(k); }); }",
+    "function send(spec, cb) { var h = []; Object.keys(spec.header || {}).forEach(function (k) { h.push({ key: k, value: R(spec.header[k]) }); }); pm.sendRequest({ url: R(spec.url), method: spec.method, header: h, body: spec.body !== undefined ? { mode: 'raw', raw: R(typeof spec.body === 'string' ? spec.body : JSON.stringify(spec.body)) } : undefined }, function (err, res) { cb({ code: err ? 0 : res.code, body: err ? String(err) : res.text() }); }); }",
+    "var out = { first: null, steps: [] }; var firstDone = false;",
+    `var FIRST = ${lit(first)};`,
+    `var STEPS = [${steps.join(", ")}];`,
+    `var CTL = pm.variables.get('chaos_url') + '/control/${p}';`,
+    "send(FIRST, function (r) { out.first = r; firstDone = true; });",
+    "var left = 150;",
+    `function waitGate() { pm.sendRequest({ url: CTL, method: 'GET' }, function (err, res) { var g = (!err && res.code === 200 ? (res.json().gates || []) : []).filter(function (x) { return x.name === ${lit(gate)}; })[0]; if ((g && g.waiting >= 1) || --left <= 0) { out.held = !!(g && g.waiting >= 1); runSteps(0); return; } setTimeout(waitGate, 100); }); }`,
+    "function runSteps(i) { if (i >= STEPS.length) { openGate(); return; } STEPS[i](function (r) { out.steps.push(r); runSteps(i + 1); }); }",
+    `function openGate() { pm.sendRequest({ url: CTL + '/gates/open', method: 'POST', header: [{ key: 'Content-Type', value: 'application/json' }], body: { mode: 'raw', raw: JSON.stringify({ name: ${lit(gate)} }) } }, function () { waitFirst(); }); }`,
+    "var wl = 400;",
+    `function waitFirst() { if (firstDone || --wl <= 0) { pm.collectionVariables.set(${lit(v)}, JSON.stringify(out)); return; } setTimeout(waitFirst, 100); }`,
+    "waitGate();",
+  ],
+});
+const RACE = (v) => `var race = JSON.parse(pm.collectionVariables.get(${lit(v)}) || '{}');`;
+const raceHeld = (v) => A.custom("the first request was held at the gate before the steps ran", [RACE(v), "pm.expect(race.held, 'race: ' + JSON.stringify(race)).to.equal(true);"]);
+const raceFirst = (v, title, lines) => A.custom(title, [RACE(v), "var first = race.first || {};", ...lines]);
+const raceStep = (v, i, code) => A.custom(`step ${i + 1} answered ${code}`, [RACE(v), `pm.expect((race.steps[${i}] || {}).code, 'race: ' + JSON.stringify(race)).to.equal(${code});`]);
+const PENDING_LANDING = (p) => `${PU_SUCCESS}?tools=pending&client=${p}`;
+const PUD38_A = [{ name: "echo_tool", description: "key-a's echo", inputSchema: { type: "object", properties: { text: { type: "string" } } } }, { name: "add_tool", description: "key-a's add", inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } } } }];
+const PUD38_C = [{ name: "echo_tool", description: "key-c's echo", inputSchema: { type: "object", properties: { msg: { type: "string" } } }, outputSchema: { type: "object", properties: { tool: { type: "string" }, arguments: { type: "object" } } } }];
+const toolShapes = (p, tools) => A.custom(`each tool has the caller's own description and schema`, [
+  "var got = {}; ((pm.response.json().result || {}).tools || []).forEach(function (t) { got[t.name] = t; });",
+  ...tools.flatMap((t) => [
+    `pm.expect(got[${lit(`${p}-${t.name}`)}], 'body: ' + pm.response.text()).to.be.an('object');`,
+    `pm.expect(got[${lit(`${p}-${t.name}`)}].description, 'body: ' + pm.response.text()).to.equal(${lit(t.description)});`,
+    `pm.expect(got[${lit(`${p}-${t.name}`)}].inputSchema.properties, 'body: ' + pm.response.text()).to.eql(${lit(t.inputSchema.properties)});`,
+    t.outputSchema ? `pm.expect([got[${lit(`${p}-${t.name}`)}].outputSchema.type, got[${lit(`${p}-${t.name}`)}].outputSchema.properties], 'outputSchema: ' + JSON.stringify(got[${lit(`${p}-${t.name}`)}].outputSchema)).to.eql([${lit(t.outputSchema.type)}, ${lit(t.outputSchema.properties)}]);` : `pm.expect(got[${lit(`${p}-${t.name}`)}]).to.not.have.property('outputSchema');`,
+  ]),
+]);
+// mcpInit initializes an /mcp session and keeps the Mcp-Session-Id the gateway hands out in v; MCPSESS sends it back.
+const mcpInit = (id, title, headers, v) => request(id, title, "POST", "/mcp", {
+  noAuth: true, raw: JSON.stringify(init("2025-03-26")), headers: [MCP_ACCEPT, ...headers],
+  asserts: [A.status(200), A.custom("an Mcp-Session-Id is issued", ["pm.expect(pm.response.headers.get('Mcp-Session-Id'), 'headers').to.be.a('string').and.not.empty;"])],
+  extraTests: [`pm.collectionVariables.set(${lit(v)}, pm.response.headers.get('Mcp-Session-Id') || '');`],
+});
+const MCPSESS = (v) => ({ key: "Mcp-Session-Id", value: `{{${v}}}` });
+// refreshRow refreshes the session row kept in v (POST /api/mcp/sessions/{id}/refresh, as the admin).
+const refreshRow = (id, title, v, asserts) => request(id, title, "POST", `/api/mcp/sessions/{{${v}}}/refresh`, { asserts });
+const refreshed = (t, pr = 0, r = 0) => [A.status(200), A.custom(`the body is exactly {status: success, tool_count: ${t}, prompt_count: ${pr}, resource_count: ${r}}`, [`pm.expect(pm.response.json(), 'body: ' + pm.response.text()).to.eql({ status: 'success', tool_count: ${t}, prompt_count: ${pr}, resource_count: ${r} });`])];
+const CAN_REFRESH = (v) => [`pm.expect(row.can_refresh, 'row: ' + JSON.stringify(row)).to.equal(${v});`];
+const SAME_AT = (v) => [`pm.expect(row.discovery.discovered_at, 'row: ' + JSON.stringify(row)).to.equal(pm.collectionVariables.get(${lit(v)}));`];
+const NEW_AT = (v) => [`pm.expect(row.discovery.discovered_at, 'row: ' + JSON.stringify(row)).to.not.equal(pm.collectionVariables.get(${lit(v)}));`];
+const REFRESH_CONFLICT = "The session was revoked or replaced while its tools were being refreshed";
+// resubmitStep reauths the header row kept in rowVar and submits headers on the flow it opens.
+const resubmitStep = (rowVar, headers) => `function (next) { send({ method: 'POST', url: '{{base_url}}/api/mcp/sessions/{{${rowVar}}}/reauth', header: { Authorization: '{{admin_auth_header}}' } }, function (r) { var flow = ''; try { flow = JSON.parse(r.body).session_id || ''; } catch (e) {} if (!flow) { next({ code: -1, body: 'no flow: ' + r.body }); return; } send({ method: 'PUT', url: '{{base_url}}/api/mcp/per-user-headers/flows/' + flow, header: { Authorization: '{{admin_auth_header}}', 'Content-Type': 'application/json' }, body: ${lit({ headers })} }, next); }); }`;
+const refreshRefused = (code, msg) => [A.status(code), A.msgEquals(msg)];
+
+// ---------------------------------------------------------------- A. Admin, config.json and turning the flag on or off
+
+const PUD01 = folder("PUD-01 Create validation", `Setup: ${PUD_SERVER_TEXT("pud01")}. Creates with per_user_discovery on for auth headers, auth none and an OpenAPI per_user_headers client, then a headers client with it off.`, [
+  ...pudServer("PUD-01", "pud01"),
+  createExpect("PUD-01", "per_user_discovery on with auth headers", httpClient("pud01-x", "pud01_x", "pud01", { auth_type: "headers", headers: { "X-Api-Key": "admin-key" }, per_user_discovery: true, tools_to_execute: ["*"] }), [A.status(400), A.msgEquals(PUD_SCOPE_MSG("headers", "pud01_x"))]),
+  createExpect("PUD-01", "per_user_discovery on with auth none", httpClient("pud01-x", "pud01_x", "pud01", { per_user_discovery: true, tools_to_execute: ["*"] }), [A.status(400), A.msgEquals(PUD_SCOPE_MSG("none", "pud01_x"))]),
+  createExpect("PUD-01", "per_user_discovery on for an OpenAPI per_user_headers client", { client_id: "pud01-o", name: "pud01_o", connection_type: "openapi", auth_type: "per_user_headers", per_user_header_keys: ["x-api-key"], per_user_discovery: true, tools_to_execute: ["*"], openapi_config: { spec: PETSTORE } }, [A.status(400), A.msgEquals("per_user_discovery does not apply to openapi clients, whose tools come from the OpenAPI document, in client 'pud01_o'")]),
+  notListed("PUD-01", "pud01-x"),
+  notListed("PUD-01", "pud01-o"),
+  createExpect("PUD-01", "per_user_discovery off with auth headers", httpClient("pud01-y", "pud01_y", "pud01", { auth_type: "headers", headers: { "X-Api-Key": "admin-key" }, per_user_discovery: false, tools_to_execute: ["*"] }), [A.status(200)]),
+  getClient("PUD-01", "pud01-y", "the headers client is healthy with its tools and the flag off", [clientState("healthy"), toolNamesAre(["add_tool", "echo_tool"]), A.custom("per_user_discovery is not on", ["pm.expect(pm.response.json().clients[0].config.per_user_discovery, 'body: ' + pm.response.text()).to.not.equal(true);"])]),
+  deleteClient("PUD-01", "pud01-y"),
+]);
+
+const PUD02 = folder("PUD-02 Flagged headers client keeps nothing", `Setup: ${PUD_SERVER_TEXT("pud02")}; client pud02 created on it as in HDOOR(pud02).`, [
+  ...pudServer("PUD-02", "pud02"),
+  createExpect("PUD-02", "create pud02, per_user_headers with per_user_discovery on", hdoorBody("pud02"), [A.status(200), A.custom("the body is exactly the registered-and-verified message", [
+    "pm.expect(pm.response.json(), 'body: ' + pm.response.text()).to.eql({ status: 'success', message: 'MCP client registered and verified. Each user will submit their own headers and discover their own tools on first tool use.' });",
+  ])]),
+  getClient("PUD-02", "pud02-h", "healthy, flag on, tools [], no credential, no callers_by_tool", [clientState("healthy"), flagIs(true), toolNamesAre([]), noCredential(), callersAre(null)]),
+  sessionsNone("PUD-02", "no sessions entry for pud02", "pud02-h"),
+  gwListNone("PUD-02", "anonymous gw-list has no pud02-* tool", [], "pud02"),
+  mockGet("PUD-02", "pud02", "the create verified with the sample: admin-key listed tools once", [identityMethod("admin-key", "tools/list", 1)]),
+  deleteClient("PUD-02", "pud02-h"),
+]);
+
+const PUD03 = folder("PUD-03 Flagged OAuth client keeps nothing", `Setup: ${PU_TEXT(false)}; ${PU_SERVER_TEXT("pud03")}, created with per_user_discovery on and verified by consenting as admin.`, [
+  ...puConfig("PUD-03", false),
+  ...asServer("PUD-03", "pud03"),
+  createOAuth("PUD-03", "create pud03, per_user_oauth with per_user_discovery on", odoorBody("pud03"), "pud03", [statusIs("pending_oauth")]),
+  consentAs("PUD-03", "consent as admin", "pud03", "admin"),
+  followCallback("PUD-03", "follow the callback", "pud03", callbackSuccess()),
+  completeOAuth("PUD-03", "complete", "pud03", [A.status(200), A.jsonEquals("tools_count", 2), A.jsonMessage("OAuth configuration verified successfully. 2 tools discovered. Each user will authenticate individually when using this MCP server.")]),
+  getClient("PUD-03", "pud03-u", "healthy, flag on, tools [], no credential, no callers_by_tool", [clientState("healthy"), flagIs(true), toolNamesAre([]), noCredential(), callersAre(null)]),
+  sessionsNone("PUD-03", "no sessions entry for pud03", "pud03-u"),
+  completeOAuth("PUD-03", "complete again", "pud03", [A.status(409)]),
+  deleteClient("PUD-03", "pud03-u"),
+  restoreConfig("PUD-03"),
+]);
+
+const PUD04 = folder("PUD-04 Admin refusals once verified", `Setup: ${HDOOR_TEXT("pud04")}; ${ODOOR_TEXT("pud04o")}. Both servers' counters are reset before the admin actions.`, [
+  ...hdoor("PUD-04", "pud04"),
+  ...puConfig("PUD-04", false),
+  ...odoor("PUD-04", "pud04o"),
+  resetCounters("PUD-04", "pud04"),
+  resetCounters("PUD-04", "pud04o"),
+  clientPost("PUD-04", "refresh-tools on pud04", "pud04-h", "refresh-tools", [A.status(400), A.msgEquals("mcp client pud04 keeps a discovery per caller, so it has no shared tool list to refresh; refresh a caller's tools from their session instead: tool refresh is not applicable for this client's current state")]),
+  verifyHeaders("PUD-04", "verify-headers on pud04", "pud04-h", { "x-api-key": "admin-key" }, [A.status(400), A.msgEquals("MCP client has per_user_discovery on and is already verified: it keeps no admin credential to re-verify")]),
+  clientPost("PUD-04", "reauthorize pud04", "pud04-h", "reauthorize", [A.status(400), A.msgEquals("reauthorize only applies to OAuth-based clients (oauth, per_user_oauth), got \"per_user_headers\"")]),
+  clientPost("PUD-04", "reconnect pud04", "pud04-h", "reconnect", [A.status(400), A.msgEquals("client uses per-call connections; there is no persistent connection to reconnect: reconnect is not applicable for this client type")]),
+  clientPost("PUD-04", "refresh-tools on pud04o", "pud04o-u", "refresh-tools", [A.status(400), A.msgEquals("mcp client pud04o keeps a discovery per caller, so it has no shared tool list to refresh; refresh a caller's tools from their session instead: tool refresh is not applicable for this client's current state")]),
+  verifyHeaders("PUD-04", "verify-headers on pud04o", "pud04o-u", { "x-api-key": "admin-key" }, [A.status(400), A.msgEquals("verify-headers only applies to auth_type='per_user_headers' clients, got \"per_user_oauth\"")]),
+  clientPost("PUD-04", "reauthorize pud04o", "pud04o-u", "reauthorize", [A.status(400), A.msgEquals("MCP client has per_user_discovery on and keeps no admin credential to refresh: each caller signs in with their own")]),
+  clientPost("PUD-04", "reconnect pud04o", "pud04o-u", "reconnect", [A.status(400), A.msgEquals("client uses per-call connections; there is no persistent connection to reconnect: reconnect is not applicable for this client type")]),
+  mockGet("PUD-04", "pud04", "pud04 received no MCP request", [methodsEmpty()]),
+  mockGet("PUD-04", "pud04o", "pud04o received no MCP request", [methodsEmpty()]),
+  deleteClient("PUD-04", "pud04-h"),
+  deleteClient("PUD-04", "pud04o-u"),
+  restoreConfig("PUD-04"),
+]);
+
+const PUD05 = folder("PUD-05 Update validation; an omitted flag is kept", `Setup: ${HDOOR_TEXT("pud05")}; a headers client pud05_c on pud05; an OpenAPI per_user_headers client pud05_o from the Petstore document.`, [
+  ...hdoor("PUD-05", "pud05"),
+  createClient("PUD-05", httpClient("pud05-c", "pud05_c", "pud05", { auth_type: "headers", headers: { "X-Api-Key": "admin-key" }, tools_to_execute: ["*"] }), "setup: create the headers client pud05_c"),
+  createClient("PUD-05", { client_id: "pud05-o", name: "pud05_o", connection_type: "openapi", auth_type: "per_user_headers", per_user_header_keys: ["x-api-key"], tools_to_execute: ["*"], openapi_config: { spec: PETSTORE } }, "setup: create the OpenAPI per_user_headers client pud05_o"),
+  clientPut("PUD-05", "PUT per_user_discovery true on the headers client", "pud05-c", { per_user_discovery: true }, [A.status(400), A.msgEquals(PUD_SCOPE_MSG("headers", "pud05_c"))]),
+  clientPut("PUD-05", "PUT per_user_discovery true on the OpenAPI client", "pud05-o", { per_user_discovery: true }, [A.status(400), A.msgEquals("per_user_discovery does not apply to openapi clients, whose tools come from the OpenAPI document, in client 'pud05_o'")]),
+  getClient("PUD-05", "pud05-c", "the headers client's flag is still off", [A.custom("per_user_discovery is not on", ["pm.expect(pm.response.json().clients[0].config.per_user_discovery, 'body: ' + pm.response.text()).to.not.equal(true);"])]),
+  clientPut("PUD-05", "PUT tools_to_execute [\"echo_tool\"] on pud05, omitting the flag", "pud05-h", { tools_to_execute: ["echo_tool"] }, [A.status(200)]),
+  getClient("PUD-05", "pud05-h", "the flag is still on and tools_to_execute is [\"echo_tool\"]", [flagIs(true), configField("tools_to_execute", ["echo_tool"])]),
+  deleteClient("PUD-05", "pud05-h"),
+  deleteClient("PUD-05", "pud05-c"),
+  deleteClient("PUD-05", "pud05-o"),
+]);
+
+const PUD06 = folder("PUD-06 Turning the flag on", `Setup: HDOOR(pud06) with per_user_discovery unset (${PUD_SERVER_TEXT("pud06")}), verified with verify-headers admin-key, so it keeps an admin credential; VK-A signed in with key-a through a header flow. Then per_user_discovery is turned on.`, [
+  ...hdoor("PUD-06", "pud06", { flag: false }),
+  verifyHeaders("PUD-06", "setup: verify-headers with admin-key", "pud06-h", { "x-api-key": "admin-key" }, [A.status(200)]),
+  pudVK("PUD-06", "pud06", "a"),
+  ...signInFlowH("PUD-06", "pud06", "a"),
+  getClient("PUD-06", "pud06-h", "control: the admin credential is active and the client lists 2 tools", [credKind("headers"), credStatus("active"), toolNamesAre(["add_tool", "echo_tool"])]),
+  clientPut("PUD-06", "PUT per_user_discovery true", "pud06-h", { per_user_discovery: true }, [A.status(200), A.jsonMessage("MCP client edited successfully")]),
+  getClient("PUD-06", "pud06-h", "healthy, flag on, no credential, tools [], no callers_by_tool", [clientState("healthy"), flagIs(true), noCredential(), toolNamesAre([]), callersAre(null)]),
+  rowOf("PUD-06", "VK-A's row is active and keeps no discovery", "pud06-h", "pud06", "a", "VK-A's header row: active, no discovery", [...ROW_STATUS("active"), ...NO_DISCOVERY]),
+  gwList("PUD-06", "VK-A's gw-list is [pud06-connect]", [vkOf("pud06", "a")], ["pud06-connect"]),
+  connectExpect("PUD-06", "VK-A calls pud06-connect", "pud06", "a", connectedText("pud06", 2)),
+  gwList("PUD-06", "VK-A's gw-list is pud06's two tools", [vkOf("pud06", "a")], ["pud06-add_tool", "pud06-echo_tool"]),
+  getClient("PUD-06", "pud06-h", "callers_by_tool counts VK-A once per tool", [callersAre({ add_tool: 1, echo_tool: 1 })]),
+  deleteClient("PUD-06", "pud06-h"),
+  pudVKDelete("PUD-06", "pud06", "a"),
+]);
+
+const PUD07 = folder("PUD-07 Turning it off (headers)", `Setup: ${HDOOR_TEXT("pud07")}; VK-A and VK-B signed in with key-a and key-b. Then per_user_discovery is turned off.`, [
+  ...hdoor("PUD-07", "pud07"),
+  pudVK("PUD-07", "pud07", "a"), pudVK("PUD-07", "pud07", "b"),
+  ...signInH("PUD-07", "pud07", "a"), ...signInH("PUD-07", "pud07", "b"),
+  getClient("PUD-07", "pud07-h", "control: callers_by_tool counts both callers", [callersAre({ add_tool: 2, echo_tool: 2 })]),
+  clientPut("PUD-07", "PUT per_user_discovery false", "pud07-h", { per_user_discovery: false }, [A.status(200)]),
+  getClient("PUD-07", "pud07-h", "pending_verification, tools [], no callers_by_tool", [clientState("pending_verification"), toolNamesAre([]), callersAre(null)]),
+  rowOf("PUD-07", "VK-A's row keeps no discovery", "pud07-h", "pud07", "a", "VK-A's header row: no discovery", NO_DISCOVERY),
+  rowOf("PUD-07", "VK-B's row keeps no discovery", "pud07-h", "pud07", "b", "VK-B's header row: no discovery", NO_DISCOVERY),
+  gwListNone("PUD-07", "VK-A's gw-list has no pud07-* tool", [vkOf("pud07", "a")], "pud07"),
+  verifyHeaders("PUD-07", "verify-headers with admin-key", "pud07-h", { "x-api-key": "admin-key" }, [A.status(200), A.jsonEquals("tools_count", 2), A.jsonMessage("MCP client verified. 2 tools discovered. Each user will submit their own header values on first tool use.")]),
+  getClient("PUD-07", "pud07-h", "healthy with the shared tools", [clientState("healthy"), toolNamesAre(["add_tool", "echo_tool"])]),
+  gwList("PUD-07", "VK-A's gw-list is the shared tools", [vkOf("pud07", "a")], ["pud07-add_tool", "pud07-echo_tool"]),
+  resetCounters("PUD-07", "pud07"),
+  execAs("PUD-07", "VK-A calls pud07-echo_tool", "pud07-echo_tool", [vkOf("pud07", "a")], [A.status(200), contentIs("echo_tool:{\"text\":\"hi\"}")]),
+  mockGet("PUD-07", "pud07", "the call ran under key-a", [identityCallsAre({ "key-a": 1 })]),
+  deleteClient("PUD-07", "pud07-h"),
+  pudVKDelete("PUD-07", "pud07", "a"), pudVKDelete("PUD-07", "pud07", "b"),
+]);
+
+const PUD08 = folder("PUD-08 Turning it off (OAuth)", `Setup: ${ODOOR_TEXT("pud08")}; VK-A signed in as alice. Then per_user_discovery is turned off and the admin reauthorizes.`, [
+  ...puConfig("PUD-08", false),
+  ...odoor("PUD-08", "pud08"),
+  pudVK("PUD-08", "pud08", "a"),
+  ...signInO("PUD-08", "pud08", "a", "alice"),
+  clientPut("PUD-08", "PUT per_user_discovery false", "pud08-u", { per_user_discovery: false }, [A.status(200)]),
+  getClient("PUD-08", "pud08-u", "no credential and tools []", [noCredential(), toolNamesAre([]), callersAre(null)]),
+  clientPost("PUD-08", "reauthorize as admin", "pud08-u", "reauthorize", [A.status(200)], { extraTests: ["pm.collectionVariables.set('pud08_au', pm.response.json().authorize_url);"] }),
+  consentAs("PUD-08", "consent as admin", "pud08", "admin"),
+  followCallback("PUD-08", "follow the callback", "pud08", callbackSuccess()),
+  completeOAuth("PUD-08", "complete", "pud08", [A.status(200), A.jsonMessage("Admin discovery credential repaired successfully. 2 tools discovered."), A.jsonEquals("tools_count", 2)]),
+  getClient("PUD-08", "pud08-u", "the client lists the shared tools", [toolNamesAre(["add_tool", "echo_tool"])]),
+  resetCounters("PUD-08", "pud08"),
+  execAs("PUD-08", "VK-A calls pud08-echo_tool", "pud08-echo_tool", [vkOf("pud08", "a")], [A.status(200)]),
+  mockGet("PUD-08", "pud08", "the call ran under alice", [identityCallsAre({ alice: 1 })]),
+  deleteClient("PUD-08", "pud08-u"),
+  pudVKDelete("PUD-08", "pud08", "a"),
+  restoreConfig("PUD-08"),
+]);
+
+const PUD09 = folder("PUD-09 Same-value PUT is not a flip", `Setup: ${HDOOR_TEXT("pud09")}; VK-A signed in with key-a. Then per_user_discovery true is PUT again.`, [
+  ...hdoor("PUD-09", "pud09"),
+  pudVK("PUD-09", "pud09", "a"),
+  ...signInH("PUD-09", "pud09", "a"),
+  rowOf("PUD-09", "setup: record VK-A's discovered_at", "pud09-h", "pud09", "a", "VK-A's row has a discovery", DISCOVERY(2), keepDiscoveredAt("pud09_at")),
+  clientPut("PUD-09", "PUT per_user_discovery true again", "pud09-h", { per_user_discovery: true }, [A.status(200)]),
+  getClient("PUD-09", "pud09-h", "callers_by_tool is unchanged", [flagIs(true), callersAre({ add_tool: 1, echo_tool: 1 })]),
+  rowOf("PUD-09", "VK-A's discovered_at is unchanged", "pud09-h", "pud09", "a", "VK-A's discovery is the same one", [...DISCOVERY(2), "pm.expect(row.discovery.discovered_at).to.equal(pm.collectionVariables.get('pud09_at'));"]),
+  gwList("PUD-09", "VK-A's gw-list is unchanged", [vkOf("pud09", "a")], ["pud09-add_tool", "pud09-echo_tool"]),
+  deleteClient("PUD-09", "pud09-h"),
+  pudVKDelete("PUD-09", "pud09", "a"),
+]);
+
+const PUD10 = folder("PUD-10 config.json at boot", `Setup: the runner's config.json declares pud10_h, a per_user_headers client on fleet server pud10 (per_user_header_keys ["x-api-key"], no sample) with per_user_discovery on, and pud10_x, a headers client on pud10 with per_user_discovery on, which is invalid; ${PUD_SERVER_TEXT("pud10")}; VK-A granted every tool of pud10_h.`, [
+  ...pudServer("PUD-10", "pud10"),
+  getClient("PUD-10", "pud10-h", "pud10_h booted pending verification, flag on, no credential", [clientState("pending_verification"), flagIs(true), noCredential()]),
+  notListed("PUD-10", "pud10-x"),
+  pudVK("PUD-10", "pud10_h", "a"),
+  gwListNone("PUD-10", "while pending, VK-A's gw-list has no pud10_h-* tool", [vkOf("pud10_h", "a")], "pud10_h"),
+  verifyHeaders("PUD-10", "verify-headers with admin-key", "pud10-h", { "x-api-key": "admin-key" }, [A.status(200), A.jsonMessage("MCP client verified. 2 tools discovered. Each user will submit their own header values on first tool use."), A.jsonEquals("tools_count", 2)]),
+  getClient("PUD-10", "pud10-h", "healthy, no credential, tools [], no callers_by_tool", [clientState("healthy"), noCredential(), toolNamesAre([]), callersAre(null)]),
+  verifyHeaders("PUD-10", "verify-headers again", "pud10-h", { "x-api-key": "admin-key" }, [A.status(400), A.msgEquals("MCP client has per_user_discovery on and is already verified: it keeps no admin credential to re-verify")]),
+  gwList("PUD-10", "VK-A's gw-list is [pud10_h-connect]", [vkOf("pud10_h", "a")], ["pud10_h-connect"]),
+  deleteClient("PUD-10", "pud10-h"),
+  pudVKDelete("PUD-10", "pud10_h", "a"),
+]);
+
+const PUD11 = folder("PUD-11 Disable then enable keeps verification", `Setup: ${HDOOR_TEXT("pud11")}; VK-A signed in with key-a. The runner's config.json declares pud11_p, a per_user_headers client on fleet server pud11p with per_user_discovery on, still pending verification. Each client is disabled, then enabled.`, [
+  ...hdoor("PUD-11", "pud11"),
+  pudVK("PUD-11", "pud11", "a"),
+  ...signInH("PUD-11", "pud11", "a"),
+  rowOf("PUD-11", "setup: record VK-A's discovered_at", "pud11-h", "pud11", "a", "VK-A's row has a discovery", DISCOVERY(2), keepDiscoveredAt("pud11_at")),
+  clientPut("PUD-11", "disable pud11", "pud11-h", { disabled: true }, [A.status(200)]),
+  gwListNone("PUD-11", "while disabled VK-A's gw-list has no pud11-* tool", [vkOf("pud11", "a")], "pud11"),
+  clientPut("PUD-11", "enable pud11", "pud11-h", { disabled: false }, [A.status(200)]),
+  getClient("PUD-11", "pud11-h", "healthy again, flag on, callers_by_tool unchanged", [clientState("healthy"), flagIs(true), callersAre({ add_tool: 1, echo_tool: 1 })]),
+  gwList("PUD-11", "VK-A's gw-list is its tools again", [vkOf("pud11", "a")], ["pud11-add_tool", "pud11-echo_tool"]),
+  rowOf("PUD-11", "VK-A's discovery is the same one", "pud11-h", "pud11", "a", "no new discovery: discovered_at is unchanged", [...DISCOVERY(2), "pm.expect(row.discovery.discovered_at).to.equal(pm.collectionVariables.get('pud11_at'));"]),
+  getClient("PUD-11", "pud11-p", "control: pud11_p is pending verification", [clientState("pending_verification")]),
+  clientPut("PUD-11", "disable pud11_p", "pud11-p", { disabled: true }, [A.status(200)]),
+  clientPut("PUD-11", "enable pud11_p", "pud11-p", { disabled: false }, [A.status(200)]),
+  getClient("PUD-11", "pud11-p", "pud11_p is still pending verification", [clientState("pending_verification"), flagIs(true)]),
+  deleteClient("PUD-11", "pud11-h"),
+  pudVKDelete("PUD-11", "pud11", "a"),
+]);
+
+const PUD12 = folder("PUD-12 callers_by_tool", `Setup: ${HDOOR_TEXT("pud12")}; key-c sees only echo_tool; VK-A, VK-B and VK-C signed in with key-a, key-b and key-c. Then VK-C is deleted, VK-B's credential revoked, then VK-A's.`, [
+  ...hdoor("PUD-12", "pud12"),
+  overlay("PUD-12", "pud12", "key-c", ["echo_tool"]),
+  ...["a", "b", "c"].flatMap((l) => [pudVK("PUD-12", "pud12", l), ...signInH("PUD-12", "pud12", l)]),
+  getClient("PUD-12", "pud12-h", "tools are names only; callers_by_tool {add_tool: 2, echo_tool: 3}", [toolNamesAre(["add_tool", "echo_tool"]), A.custom("each tool is only a name", ["(pm.response.json().clients[0].tools || []).forEach(function (t) { pm.expect(Object.keys(t), 'body: ' + pm.response.text()).to.eql(['name']); });"]), callersAre({ add_tool: 2, echo_tool: 3 })]),
+  pudVKDelete("PUD-12", "pud12", "c"),
+  getClient("PUD-12", "pud12-h", "after VK-C is deleted: {add_tool: 2, echo_tool: 2}", [callersAre({ add_tool: 2, echo_tool: 2 })]),
+  credentialDelete("PUD-12", "revoke VK-B's credential", "pud12_b_cred", [A.status(204)]),
+  getClient("PUD-12", "pud12-h", "after VK-B's revoke: {add_tool: 1, echo_tool: 1}", [callersAre({ add_tool: 1, echo_tool: 1 })]),
+  credentialDelete("PUD-12", "revoke VK-A's credential", "pud12_a_cred", [A.status(204)]),
+  getClient("PUD-12", "pud12-h", "after VK-A's revoke: no callers_by_tool and tools []", [callersAre(null), toolNamesAre([])]),
+  deleteClient("PUD-12", "pud12-h"),
+  pudVKDelete("PUD-12", "pud12", "a"), pudVKDelete("PUD-12", "pud12", "b"),
+]);
+
+// ---------------------------------------------------------------- B. The <client>-connect tool
+
+const PUD13 = folder("PUD-13 Offered until the caller has a discovery, on every route", `Setup: ${HDOOR_TEXT("pud13")}; VK-A without a credential; ${LLM_TEXT}; ${BOTH}, temp-token auth on, and a Bifrost OAuth grant (bf_mode vk) for VK-A. After the first round VK-A signs in with key-a.`, [
+  readConfig("PUD-13"), oauthConfig("PUD-13", "both"),
+  ...hdoor("PUD-13", "pud13"),
+  pudVK("PUD-13", "pud13", "a"),
+  ...pudGrant("PUD-13", "pud13", "a", "pud13_grant"),
+  gwList("PUD-13", "VK-A's gw-list is exactly [pud13-connect]", [vkOf("pud13", "a")], ["pud13-connect"], [connectToolShape("pud13")]),
+  tokenList("PUD-13", "the bf_mode vk token's gw-list is exactly [pud13-connect]", "pud13_grant", ["pud13-connect"]),
+  llmScript("PUD-13", "pud13a", TEXT_OK),
+  infChat("PUD-13", "chat with VK-A", "pud13a", [A.status(200)], { headers: [vkOf("pud13", "a")] }),
+  llmScript("PUD-13", "pud13r", TEXT_OK),
+  infResponses("PUD-13", "/v1/responses with VK-A", "pud13r", [A.status(200)], { headers: [vkOf("pud13", "a")] }),
+  llmCaptured("PUD-13", "the chat declared only pud13-connect", "pud13a", [reqCount(1), toolsAre(0, ["pud13-connect"])]),
+  llmCaptured("PUD-13", "the /v1/responses request declared only pud13-connect", "pud13r", [reqCount(1), toolsAre(0, ["pud13-connect"])]),
+  gwListNone("PUD-13", "a session-only caller's gw-list has no pud13-* tool", [SESS("pud13-sess")], "pud13"),
+  gwListNone("PUD-13", "an anonymous gw-list has no pud13-* tool", [], "pud13"),
+  ...signInH("PUD-13", "pud13", "a", "key-a", true),
+  gwList("PUD-13", "after sign-in VK-A's gw-list is pud13's tools, not connect", [vkOf("pud13", "a")], ["pud13-add_tool", "pud13-echo_tool"]),
+  tokenList("PUD-13", "after sign-in the token's gw-list is the same", "pud13_grant", ["pud13-add_tool", "pud13-echo_tool"]),
+  llmScript("PUD-13", "pud13b", TEXT_OK),
+  infChat("PUD-13", "chat with VK-A after sign-in", "pud13b", [A.status(200)], { headers: [vkOf("pud13", "a")] }),
+  llmScript("PUD-13", "pud13s", TEXT_OK),
+  infResponses("PUD-13", "/v1/responses with VK-A after sign-in", "pud13s", [A.status(200)], { headers: [vkOf("pud13", "a")] }),
+  llmCaptured("PUD-13", "the chat declared pud13's tools and not connect", "pud13b", [reqCount(1), toolsAre(0, ["pud13-add_tool", "pud13-echo_tool"])]),
+  llmCaptured("PUD-13", "the /v1/responses request declared pud13's tools and not connect", "pud13s", [reqCount(1), toolsAre(0, ["pud13-add_tool", "pud13-echo_tool"])]),
+  deleteClient("PUD-13", "pud13-h"),
+  pudVKDelete("PUD-13", "pud13", "a"),
+  restoreConfig("PUD-13"),
+]);
+
+const PUD14 = folder("PUD-14 Connect without a credential (headers)", `Setup: ${HDOOR_TEXT("pud14")}; VK-A without a credential; pud14's counters reset after the create.`, [
+  ...hdoor("PUD-14", "pud14"),
+  pudVK("PUD-14", "pud14", "a"),
+  resetCounters("PUD-14", "pud14"),
+  connectH("PUD-14", "VK-A calls pud14-connect", "pud14", "a"),
+  mockGet("PUD-14", "pud14", "nothing was dialed", [methodsEmpty()]),
+  execAs("PUD-14", "VK-A calls pud14-connect again", "pud14-connect", [vkOf("pud14", "a")], [A.status(200), contentMatches("the same sign-in text", H_SIGNIN("pud14")), sameFlowIn("pud14_a_flow", "pm.response.json().content")]),
+  gwCallAs("PUD-14", "VK-A calls pud14-connect over /mcp", "pud14-connect", [vkOf("pud14", "a")], [gwText("the result is not an error and links the same flow", ["pm.expect(r.isError, 'body: ' + pm.response.text()).to.not.equal(true);", `pm.expect(text).to.match(${H_SIGNIN("pud14")});`]), sameFlowIn("pud14_a_flow", "pm.response.json().result.content[0].text")], {}),
+  mockGet("PUD-14", "pud14", "still nothing was dialed", [methodsEmpty()]),
+  submitH("PUD-14", "VK-A submits X-Api-Key key-a", "pud14", "a", "key-a"),
+  gwList("PUD-14", "VK-A's gw-list is pud14's two tools", [vkOf("pud14", "a")], ["pud14-add_tool", "pud14-echo_tool"]),
+  execAs("PUD-14", "VK-A calls pud14-echo_tool", "pud14-echo_tool", [vkOf("pud14", "a")], [A.status(200), contentIs("echo_tool:{\"text\":\"hi\"}")]),
+  mockGet("PUD-14", "pud14", "the call ran under key-a", [identityCallsAre({ "key-a": 1 })]),
+  deleteClient("PUD-14", "pud14-h"),
+  pudVKDelete("PUD-14", "pud14", "a"),
+]);
+
+const PUD15 = folder("PUD-15 Connect without a credential (OAuth)", `Setup: ${ODOOR_TEXT("pud15")}; VK-A without a token; pud15's counters reset after the create. Temp-token auth is then turned on, and VK-A completes its flow as alice.`, [
+  ...puConfig("PUD-15", false),
+  ...odoor("PUD-15", "pud15"),
+  pudVK("PUD-15", "pud15", "a"),
+  resetCounters("PUD-15", "pud15"),
+  connectO("PUD-15", "VK-A calls pud15-connect: the exact sign-in text, no fragment notice", "pud15", "a"),
+  mockGet("PUD-15", "pud15", "nothing was dialed", [methodsEmpty()]),
+  putConfig("PUD-15", "setup: turn temp-token auth on", ["cc.mcp_enable_temp_token_auth = true;"], [A.status(200)]),
+  execAs("PUD-15", "VK-A calls pud15-connect again: the link carries a #t= token and the fragment notice", "pud15-connect", [vkOf("pud15", "a")], [A.status(200), contentMatches("the sign-in text with the temp token and the notice", O_SIGNIN_TT("pud15")), sameFlowIn("pud15_a_flow", "pm.response.json().content")]),
+  flowStart("PUD-15", "start VK-A's flow", "pud15_a_flow"),
+  consentAs("PUD-15", "consent as alice", "pud15_a_flow", "alice"),
+  followCallback("PUD-15", "the callback lands on auth-success", "pud15_a_flow", [A.status(302), locationEnds(PU_SUCCESS)]),
+  execAs("PUD-15", "VK-A calls pud15-echo_tool", "pud15-echo_tool", [vkOf("pud15", "a")], [A.status(200), contentIs("echo_tool:{\"text\":\"hi\"}")]),
+  mockGet("PUD-15", "pud15", "the call ran as alice", [identityCallsAre({ alice: 1 })]),
+  deleteClient("PUD-15", "pud15-u"),
+  pudVKDelete("PUD-15", "pud15", "a"),
+  restoreConfig("PUD-15"),
+]);
+
+const PUD16 = folder("PUD-16 Credential, no discovery; \"Already connected\"", `Setup: ${FLIP_TEXT("pud16", ["a"])}. ${NOTIFY_NOTE}`, [
+  ...credentialFlip("PUD-16", "pud16", ["a"]),
+  connectExpect("PUD-16", "VK-A calls pud16-connect", "pud16", "a", connectedText("pud16", 2)),
+  connectExpect("PUD-16", "VK-A calls pud16-connect again", "pud16", "a", alreadyText("pud16")),
+  gwCallAs("PUD-16", "VK-A calls pud16-connect over /mcp", "pud16-connect", [vkOf("pud16", "a")], [gwTextIs(alreadyText("pud16"))]),
+  deleteClient("PUD-16", "pud16-h"),
+  pudVKDelete("PUD-16", "pud16", "a"),
+]);
+
+const PUD17 = folder("PUD-17 Refusals, and when connect is offered", `Setup: ${HDOOR_TEXT("pud17")}; an auth-none client pud17n on fleet server pud17n (echo_tool); VK-A granted every tool of pud17, VK-E only pud17's echo_tool, VK-N only pud17n's tools; none of them has a credential.`, [
+  ...hdoor("PUD-17", "pud17"),
+  ...freshServer("PUD-17", "pud17n", ["echo_tool"]),
+  createClient("PUD-17", httpClient("pud17n-c", "pud17n", "pud17n", { tools_to_execute: ["*"] }), "setup: create the auth-none client pud17n"),
+  pudVK("PUD-17", "pud17", "a"),
+  pudVK("PUD-17", "pud17", "e", [{ mcp_client_name: "pud17", tools_to_execute: ["echo_tool"] }]),
+  pudVK("PUD-17", "pud17", "n", [{ mcp_client_name: "pud17n", tools_to_execute: ["*"] }]),
+  execAs("PUD-17", "a session-only caller calls pud17-connect", "pud17-connect", [SESS("pud17-sess")], [A.status(400), A.msgEquals("pud17 keeps tools per caller and needs a signed-in user or a virtual key to connect")]),
+  execAs("PUD-17", "VK-N calls pud17-connect", "pud17-connect", [vkOf("pud17", "n")], [A.status(403), A.custom("type mcp_tool_blocked", ["pm.expect(pm.response.json().type, 'body: ' + pm.response.text()).to.equal('mcp_tool_blocked');"]), A.msgEquals("MCP tool 'pud17-connect' is not allowed for virtual key 'PUD-17 VK-N'")]),
+  gwList("PUD-17", "VK-N's gw-list has only pud17n's tool", [vkOf("pud17", "n")], ["pud17n-echo_tool"]),
+  gwList("PUD-17", "VK-E's gw-list is [pud17-connect]", [vkOf("pud17", "e")], ["pud17-connect"]),
+  ...signInH("PUD-17", "pud17", "e"),
+  gwList("PUD-17", "after sign-in VK-E's gw-list is only pud17-echo_tool", [vkOf("pud17", "e")], ["pud17-echo_tool"]),
+  gwList("PUD-17", "VK-A with include-clients pud17 gets connect", [vkOf("pud17", "a"), inc("clients", "pud17")], ["pud17-connect"]),
+  gwList("PUD-17", "VK-A with include-clients pud17n gets nothing", [vkOf("pud17", "a"), inc("clients", "pud17n")], []),
+  gwList("PUD-17", "VK-A with include-tools pud17-echo_tool gets connect", [vkOf("pud17", "a"), inc("tools", "pud17-echo_tool")], ["pud17-connect"]),
+  gwList("PUD-17", "VK-A with include-tools pud17n-echo_tool gets nothing", [vkOf("pud17", "a"), inc("tools", "pud17n-echo_tool")], []),
+  clientPut("PUD-17", "disable pud17", "pud17-h", { disabled: true }, [A.status(200)]),
+  gwList("PUD-17", "while pud17 is disabled VK-A gets nothing", [vkOf("pud17", "a")], []),
+  clientPut("PUD-17", "enable pud17", "pud17-h", { disabled: false }, [A.status(200)]),
+  gwList("PUD-17", "once enabled VK-A gets connect again", [vkOf("pud17", "a")], ["pud17-connect"]),
+  clientPut("PUD-17", "PUT tools_to_execute []", "pud17-h", { tools_to_execute: [] }, [A.status(200)]),
+  gwList("PUD-17", "with tools_to_execute [] VK-A gets nothing", [vkOf("pud17", "a")], []),
+  deleteClient("PUD-17", "pud17-h"),
+  deleteClient("PUD-17", "pud17n-c"),
+  ...["a", "e", "n"].map((l) => pudVKDelete("PUD-17", "pud17", l)),
+]);
+
+const PUD18 = folder("PUD-18 One caller's discovery fails, others unaffected", `Setup: ${FLIP_TEXT("pud18", ["a", "b", "c", "d", "e"])}. Then one caller at a time sees a fault of its own: key-a list_fail, key-c init_fail, key-d malformed, key-e tools/list delayed 6s (past the 5s check timeout); each fault is cleared after that caller's failed connect.`, [
+  ...credentialFlip("PUD-18", "pud18", ["a", "b", "c", "d", "e"]),
+  ...PUD18_VARIANTS.flatMap(([l, faults, label, asserts], i) => [
+    identityFault("PUD-18", "pud18", `key-${l}`, faults),
+    execAs("PUD-18", `${L(l)}'s connect fails (${label})`, "pud18-connect", [vkOf("pud18", l)], [A.status(400), ...asserts]),
+    rowOf("PUD-18", `${L(l)}'s row keeps no discovery`, "pud18-h", "pud18", l, `${L(l)}'s row: active, no discovery`, [...ROW_STATUS("active"), ...NO_DISCOVERY]),
+    gwList("PUD-18", `${L(l)}'s gw-list is still [pud18-connect]`, [vkOf("pud18", l)], ["pud18-connect"]),
+    ...(i === 0 ? [connectExpect("PUD-18", "VK-B connects while key-a fails", "pud18", "b", connectedText("pud18", 2))] : []),
+    clearIdentityFault("PUD-18", "pud18", `key-${l}`),
+    connectExpect("PUD-18", `once the fault is cleared ${L(l)} connects`, "pud18", l, connectedText("pud18", 2)),
+  ]),
+  getClient("PUD-18", "pud18-h", "callers_by_tool counts all five callers", [callersAre({ add_tool: 5, echo_tool: 5 })]),
+  deleteClient("PUD-18", "pud18-h"),
+  ...["a", "b", "c", "d", "e"].map((l) => pudVKDelete("PUD-18", "pud18", l)),
+]);
+
+const PUD19 = folder("PUD-19 Partial discovery", `Setup: ${FLIP_TEXT("pud19", ["a"])}; pud19 also serves prompt greet and resource notes://1; then key-a's resources/list fails (list_fail scoped to resources/list).`, [
+  ...hdoor("PUD-19", "pud19", { flag: false }),
+  mockList("PUD-19", "pud19", "prompts/set", "prompts", [{ name: "greet", description: "greets" }]),
+  mockList("PUD-19", "pud19", "resources/set", "resources", [{ uri: "notes://1", name: "note one" }]),
+  pudVK("PUD-19", "pud19", "a"), ...signInFlowH("PUD-19", "pud19", "a"),
+  clientPut("PUD-19", "setup: turn per_user_discovery on", "pud19-h", { per_user_discovery: true }, [A.status(200)]),
+  identityFault("PUD-19", "pud19", "key-a", { list_fail: true, methods: ["resources/list"] }),
+  connectExpect("PUD-19", "VK-A calls pud19-connect", "pud19", "a", connectedText("pud19", 2)),
+  rowOf("PUD-19", "VK-A's row counts tools 2, prompts 1, resources 0", "pud19-h", "pud19", "a", "VK-A's discovery: 2 tools, 1 prompt, 0 resources", DISCOVERY(2, 1, 0)),
+  gwRpc("PUD-19", "VK-A's prompts/list shows the prompt", "prompts/list", null, [vkOf("pud19", "a")], [listedAre("prompts", "name", ["pud19-greet"])]),
+  gwRpc("PUD-19", "VK-A's resources/list does not show the resource", "resources/list", null, [vkOf("pud19", "a")], [listedNoneOf("resources", "uri", ["notes://1"])]),
+  clearIdentityFault("PUD-19", "pud19", "key-a"),
+  deleteClient("PUD-19", "pud19-h"),
+  pudVKDelete("PUD-19", "pud19", "a"),
+]);
+
+const PUD20 = folder("PUD-20 Upstream tool named connect", `Setup: ${HDOOR_TEXT("pud20")}; key-g sees echo_tool and a tool named connect; VK-G and VK-A without a credential. VK-G then signs in with key-g.`, [
+  ...hdoor("PUD-20", "pud20"),
+  overlay("PUD-20", "pud20", "key-g", ["echo_tool", "connect"]),
+  pudVK("PUD-20", "pud20", "g"), pudVK("PUD-20", "pud20", "a"),
+  gwList("PUD-20", "before sign-in VK-G's pud20-connect is Bifrost's", [vkOf("pud20", "g")], ["pud20-connect"], [connectToolShape("pud20")]),
+  ...signInH("PUD-20", "pud20", "g"),
+  gwList("PUD-20", "after sign-in VK-G's pud20-connect is the upstream's", [vkOf("pud20", "g")], ["pud20-connect", "pud20-echo_tool"], [toolDescIs("pud20-connect", "chaosmock tool connect")]),
+  execAs("PUD-20", "VK-G calls pud20-connect", "pud20-connect", [vkOf("pud20", "g"), reqId("pud20-g")], [A.status(200), contentIs("connect:{\"text\":\"hi\"}")]),
+  mockGet("PUD-20", "pud20", "the upstream ran connect under key-g", [callsIs("connect", 1), identityCallsAre({ "key-g": 1 })]),
+  logRow("PUD-20", "VK-G's call to the upstream connect is logged", "pud20-g", [rowIs("tool_name", "connect"), rowIs("server_label", "pud20")]),
+  gwList("PUD-20", "VK-A's pud20-connect is still Bifrost's", [vkOf("pud20", "a")], ["pud20-connect"], [connectToolShape("pud20")]),
+  deleteClient("PUD-20", "pud20-h"),
+  pudVKDelete("PUD-20", "pud20", "g"), pudVKDelete("PUD-20", "pud20", "a"),
+]);
+
+const PUD21 = folder("PUD-21 Agent mode", `Setup: ${FLIP_TEXT("pud21", ["a"])}; pud21 also has tools_to_auto_execute ["*"]; VK-B without a credential; ${LLM_TEXT}. VK-A's chat: turn 1 calls pud21-connect, turn 2 calls pud21-echo_tool, turn 3 answers "done". VK-B's chat: turn 1 calls pud21-connect, turn 2 answers "sign in first".`, [
+  ...credentialFlip("PUD-21", "pud21", ["a"], { over: { tools_to_auto_execute: ["*"] } }),
+  pudVK("PUD-21", "pud21", "b"),
+  llmScript("PUD-21", "pud21a", { turns: [{ tool_calls: [llmCall("t1", "pud21-connect", {})] }, { tool_calls: [llmCall("t2", "pud21-echo_tool")] }, { text: "done" }] }),
+  infPost("PUD-21", "VK-A's chat", "/v1/chat/completions", chatBody("pud21a"), [A.status(200), chatContent("done")], { headers: [vkOf("pud21", "a")] }),
+  llmCaptured("PUD-21", "turn 1 declared connect, turn 2 the tools and the connect result, turn 3 the echo", "pud21a", [reqCount(3), toolsAre(0, ["pud21-connect"]),
+    A.custom("turn 2 declares pud21's tools and not connect", [REQS, "pm.expect(reqs[1].tools.slice().sort(), 'body: ' + pm.response.text()).to.eql(['pud21-add_tool', 'pud21-echo_tool']);"]),
+    A.custom("turn 2 carries the connect result, turn 3 the echo", [REQS, TOOL_MSGS(1), `pm.expect(tm.t1, 'body: ' + pm.response.text()).to.equal(${lit(connectedText("pud21", 2))});`, TOOL_MSGS(2), "pm.expect(tm.t2).to.equal('echo_tool:{\"text\":\"hi\"}');"])]),
+  llmScript("PUD-21", "pud21b", { turns: [{ tool_calls: [llmCall("t1", "pud21-connect", {})] }, { text: "sign in first" }] }),
+  infPost("PUD-21", "VK-B's chat, with no credential", "/v1/chat/completions", chatBody("pud21b"), [A.status(200), chatContent("sign in first")], { headers: [vkOf("pud21", "b")] }),
+  llmCaptured("PUD-21", "turn 2 carries the sign-in text", "pud21b", [reqCount(2), toolsAre(0, ["pud21-connect"]), A.custom("the connect result is the sign-in text", [REQS, TOOL_MSGS(1), `pm.expect(tm.t1, 'body: ' + pm.response.text()).to.match(${H_SIGNIN("pud21")});`])]),
+  deleteClient("PUD-21", "pud21-h"),
+  pudVKDelete("PUD-21", "pud21", "a"), pudVKDelete("PUD-21", "pud21", "b"),
+]);
+
+const PUD22 = folder("PUD-22 Code-mode client", `Setup: ${HDOOR_TEXT("pud22")}, also a code-mode client; carol sees echo_tool and notes_tool; VK-A and VK-C without a credential. Then VK-A signs in with key-a and VK-C with carol; listToolFiles is read with mcp_code_mode_binding_level "tool", then the config is restored.`, [
+  ...hdoor("PUD-22", "pud22", { over: { is_code_mode_client: true } }),
+  overlay("PUD-22", "pud22", "carol", ["echo_tool", "notes_tool"]),
+  pudVK("PUD-22", "pud22", "a"), pudVK("PUD-22", "pud22", "c"),
+  gwList("PUD-22", "before sign-in VK-A's gw-list is pud22-connect, directly", [vkOf("pud22", "a")], ["pud22-connect"]),
+  ...signInH("PUD-22", "pud22", "a"),
+  ...signInH("PUD-22", "pud22", "c", "carol"),
+  gwList("PUD-22", "after sign-in VK-A's gw-list is the four code-mode tools, no pud22-* tool", [vkOf("pud22", "a")], CODE_MODE_TOOLS),
+  execBody("PUD-22", "VK-A reads servers/pud22.pyi", toolCall("readToolFile", { fileName: "servers/pud22.pyi" }), [A.status(200), A.custom("it declares add_tool and echo_tool", ["var c = pm.response.json().content;", "pm.expect(c, 'body: ' + pm.response.text()).to.include('add_tool');", "pm.expect(c).to.include('echo_tool');", "pm.expect(c).to.not.include('notes_tool');"])], { headers: [vkOf("pud22", "a")] }),
+  execBody("PUD-22", "VK-C reads servers/pud22.pyi", toolCall("readToolFile", { fileName: "servers/pud22.pyi" }), [A.status(200), A.custom("it declares echo_tool and notes_tool, not add_tool", ["var c = pm.response.json().content;", "pm.expect(c, 'body: ' + pm.response.text()).to.include('notes_tool');", "pm.expect(c).to.include('echo_tool');", "pm.expect(c).to.not.include('add_tool');"])], { headers: [vkOf("pud22", "c")] }),
+  readConfig("PUD-22"),
+  putConfig("PUD-22", "setup: set mcp_code_mode_binding_level \"tool\"", ["cc.mcp_code_mode_binding_level = 'tool';"], [A.status(200)]),
+  execBody("PUD-22", "VK-A's listToolFiles lists its own tools", toolCall("listToolFiles", {}), [A.status(200), A.custom("servers/pud22/ holds add_tool.pyi and echo_tool.pyi only", ["var c = pm.response.json().content;", "pm.expect(c, 'body: ' + pm.response.text()).to.include('servers/\\n  pud22/');", "pm.expect(c.split('\\n').filter(function (l) { return /\\.pyi$/.test(l); })).to.eql(['    add_tool.pyi', '    echo_tool.pyi']);"])], { headers: [vkOf("pud22", "a")] }),
+  execBody("PUD-22", "VK-C's listToolFiles lists its own tools", toolCall("listToolFiles", {}), [A.status(200), A.custom("servers/pud22/ holds echo_tool.pyi and notes_tool.pyi only", ["var c = pm.response.json().content;", "pm.expect(c, 'body: ' + pm.response.text()).to.include('servers/\\n  pud22/');", "pm.expect(c.split('\\n').filter(function (l) { return /\\.pyi$/.test(l); })).to.eql(['    echo_tool.pyi', '    notes_tool.pyi']);"])], { headers: [vkOf("pud22", "c")] }),
+  restoreConfig("PUD-22"),
+  resetCounters("PUD-22", "pud22"),
+  execBody("PUD-22", "VK-A runs code calling pud22.echo_tool", toolCall("executeToolCode", { code: "result = pud22.echo_tool(text=\"pud22\")" }), [A.status(200), noIsError()], { headers: [vkOf("pud22", "a")] }),
+  mockGet("PUD-22", "pud22", "the nested call ran under key-a", [identityCallsAre({ "key-a": 1 }), callsIs("echo_tool", 1)]),
+  deleteClient("PUD-22", "pud22-h"),
+  pudVKDelete("PUD-22", "pud22", "a"), pudVKDelete("PUD-22", "pud22", "c"),
+]);
+
+// ---------------------------------------------------------------- C. Discovery at sign-in
+
+const PUD23 = folder("PUD-23 Headers sign-in stores the discovery", `Setup: ${HDOOR_TEXT("pud23", ", prompt greet, resource notes://1, template notes://{id}")}; VK-A without a credential; pud23's counters reset after the create.`, [
+  ...hdoor("PUD-23", "pud23"),
+  mockList("PUD-23", "pud23", "prompts/set", "prompts", [{ name: "greet", description: "greets" }]),
+  mockList("PUD-23", "pud23", "resources/set", "resources", [{ uri: "notes://1", name: "note one" }]),
+  mockList("PUD-23", "pud23", "templates/set", "templates", [{ uriTemplate: "notes://{id}", name: "a note" }]),
+  pudVK("PUD-23", "pud23", "a"),
+  resetCounters("PUD-23", "pud23"),
+  connectH("PUD-23", "VK-A calls pud23-connect and gets the sign-in link", "pud23", "a"),
+  submitH("PUD-23", "VK-A submits X-Api-Key key-a", "pud23", "a", "key-a", [A.status(200), A.custom("the body is only status, credential_id and updated_at", ["var b = pm.response.json();", "pm.expect(Object.keys(b).sort(), 'body: ' + pm.response.text()).to.eql(['credential_id', 'status', 'updated_at']);", "pm.expect(b.status).to.equal('success');"])]),
+  execAs("PUD-23", "VK-A calls pud23-echo_tool with no connect", "pud23-echo_tool", [vkOf("pud23", "a")], [A.status(200), contentIs("echo_tool:{\"text\":\"hi\"}")]),
+  rowOf("PUD-23", "VK-A's row counts tools 2, prompts 1, resources 2", "pud23-h", "pud23", "a", "VK-A's discovery: 2 tools, 1 prompt, 2 resources (one resource, one template)", DISCOVERY(2, 1, 2)),
+  mockGet("PUD-23", "pud23", "key-a listed each kind exactly once", [identityMethod("key-a", "tools/list", 1), identityMethod("key-a", "prompts/list", 1), identityMethod("key-a", "resources/list", 1), identityMethod("key-a", "resources/templates/list", 1)]),
+  deleteClient("PUD-23", "pud23-h"),
+  pudVKDelete("PUD-23", "pud23", "a"),
+]);
+
+const PUD24 = folder("PUD-24 OAuth sign-in stores the discovery", `Setup: ${ODOOR_TEXT("pud24")}; VK-A and VK-B without a token; pud24's counters reset after the create. VK-A signs in as alice; VK-B as bob, its callback followed with the admin's dashboard session cookie.`, [
+  ...puConfig("PUD-24", false),
+  ...odoor("PUD-24", "pud24"),
+  pudVK("PUD-24", "pud24", "a"), pudVK("PUD-24", "pud24", "b"),
+  resetCounters("PUD-24", "pud24"),
+  ...signInO("PUD-24", "pud24", "a", "alice"),
+  rowOf("PUD-24", "VK-A's row has the discovery", "pud24-u", "pud24", "a", "VK-A's token row: active, 2 tools", [...ROW_STATUS("active"), ...DISCOVERY(2)]),
+  execAs("PUD-24", "VK-A calls pud24-echo_tool at once, with no connect", "pud24-echo_tool", [vkOf("pud24", "a")], [A.status(200), contentIs("echo_tool:{\"text\":\"hi\"}")]),
+  mockGet("PUD-24", "pud24", "alice listed tools exactly once", [identityMethod("alice", "tools/list", 1), identityCallsAre({ alice: 1 })]),
+  adminLogin("PUD-24"),
+  connectO("PUD-24", "VK-B calls pud24-connect and gets the sign-in link", "pud24", "b"),
+  flowStart("PUD-24", "start VK-B's flow", "pud24_b_flow"),
+  consentAs("PUD-24", "consent for VK-B as bob", "pud24_b_flow", "bob"),
+  followWithCookie("PUD-24", "follow VK-B's callback with the admin session cookie", "pud24_b_flow", [A.status(302), locationEnds("/workspace/mcp-sessions?completed=1")]),
+  rowOf("PUD-24", "VK-B's row has the discovery", "pud24-u", "pud24", "b", "VK-B's token row: active, 2 tools", [...ROW_STATUS("active"), ...DISCOVERY(2)]),
+  request("PUD-24", "no other pud24 row holds a discovery", "GET", SESSIONS, { asserts: [A.status(200), A.custom("only VK-A's and VK-B's rows, both virtual-key rows", [sessionRows("pud24-u", "true"), "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(2);", "found.forEach(function (s) { pm.expect(s.auth_mode).to.equal('vk'); });"])] }),
+  gwList("PUD-24", "VK-B's gw-list is pud24's tools", [vkOf("pud24", "b")], ["pud24-add_tool", "pud24-echo_tool"]),
+  adminLogout("PUD-24"),
+  deleteClient("PUD-24", "pud24-u"),
+  pudVKDelete("PUD-24", "pud24", "a"), pudVKDelete("PUD-24", "pud24", "b"),
+  restoreConfig("PUD-24"),
+]);
+
+const PUD25 = folder("PUD-25 Discovery fails at OAuth sign-in", `Setup: ${ODOOR_TEXT("pud25")}; alice's tools/list fails (list_fail scoped to tools/list); VK-A signs in as alice, VK-B as bob. Then alice's fault is cleared.`, [
+  ...puConfig("PUD-25", false),
+  ...odoor("PUD-25", "pud25"),
+  pudVK("PUD-25", "pud25", "a"), pudVK("PUD-25", "pud25", "b"),
+  identityFault("PUD-25", "pud25", "alice", { list_fail: true, methods: ["tools/list"] }),
+  ...signInO("PUD-25", "pud25", "a", "alice", PENDING_LANDING("pud25")),
+  rowOf("PUD-25", "VK-A's token is kept, with no discovery", "pud25-u", "pud25", "a", "VK-A's row: active, no discovery", [...ROW_STATUS("active"), ...NO_DISCOVERY]),
+  gwList("PUD-25", "VK-A's gw-list is [pud25-connect]", [vkOf("pud25", "a")], ["pud25-connect"]),
+  ...signInO("PUD-25", "pud25", "b", "bob"),
+  gwList("PUD-25", "bob is unaffected: VK-B's gw-list is pud25's tools", [vkOf("pud25", "b")], ["pud25-add_tool", "pud25-echo_tool"]),
+  clearIdentityFault("PUD-25", "pud25", "alice"),
+  connectExpect("PUD-25", "once the fault is cleared VK-A connects", "pud25", "a", connectedText("pud25", 2)),
+  gwList("PUD-25", "VK-A's gw-list is pud25's tools", [vkOf("pud25", "a")], ["pud25-add_tool", "pud25-echo_tool"]),
+  deleteClient("PUD-25", "pud25-u"),
+  pudVKDelete("PUD-25", "pud25", "a"), pudVKDelete("PUD-25", "pud25", "b"),
+  restoreConfig("PUD-25"),
+]);
+
+const PUD26 = folder("PUD-26 Discovery slower than 10s", `Setup: ${ODOOR_TEXT("pud26")}; alice's tools/list is delayed 12s; VK-A signs in as alice.`, [
+  ...puConfig("PUD-26", false),
+  ...odoor("PUD-26", "pud26"),
+  pudVK("PUD-26", "pud26", "a"),
+  identityFault("PUD-26", "pud26", "alice", { latency: "12s", methods: ["tools/list"] }),
+  connectO("PUD-26", "setup: VK-A calls pud26-connect and gets the sign-in link", "pud26", "a"),
+  flowStart("PUD-26", "setup: start VK-A's flow", "pud26_a_flow"),
+  consentAs("PUD-26", "setup: consent for VK-A as alice", "pud26_a_flow", "alice"),
+  followCallback("PUD-26", "the callback answers within 10-15s, tools pending", "pud26_a_flow", [A.status(302), locationEnds(PENDING_LANDING("pud26")), responseTime(10000, 15000)]),
+  rowOf("PUD-26", "VK-A's token is stored, with no discovery", "pud26-u", "pud26", "a", "VK-A's row: active, no discovery", [...ROW_STATUS("active"), ...NO_DISCOVERY]),
+  clearIdentityFault("PUD-26", "pud26", "alice"),
+  deleteClient("PUD-26", "pud26-u"),
+  pudVKDelete("PUD-26", "pud26", "a"),
+  restoreConfig("PUD-26"),
+]);
+
+const PUD27 = folder("PUD-27 Re-auth as another account whose discovery fails", `Setup: ${ODOOR_TEXT("pud27")}; dave sees echo_tool, add_tool and search; VK-A signed in as alice. Then dave's tools/list fails, and VK-A reauthorizes from its session row as dave; then dave's fault is cleared.`, [
+  ...puConfig("PUD-27", false),
+  ...odoor("PUD-27", "pud27"),
+  overlay("PUD-27", "pud27", "dave", ["echo_tool", "add_tool", "search"]),
+  pudVK("PUD-27", "pud27", "a"),
+  ...signInO("PUD-27", "pud27", "a", "alice"),
+  rowOf("PUD-27", "setup: find VK-A's session", "pud27-u", "pud27", "a", "VK-A's row has alice's discovery", DISCOVERY(2), keepRowId("pud27_a_row")),
+  identityFault("PUD-27", "pud27", "dave", { list_fail: true, methods: ["tools/list"] }),
+  request("PUD-27", "reauth VK-A's session", "POST", "/api/mcp/sessions/{{pud27_a_row}}/reauth", { asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('pud27_r', pm.response.json().session_id);"] }),
+  flowStart("PUD-27", "start the reauth flow", "pud27_r"),
+  consentAs("PUD-27", "consent as dave", "pud27_r", "dave"),
+  followCallback("PUD-27", "the callback lands with tools pending", "pud27_r", [A.status(302), locationEnds(PENDING_LANDING("pud27"))]),
+  rowOf("PUD-27", "the old discovery is gone", "pud27-u", "pud27", "a", "VK-A's row: active, no discovery", [...ROW_STATUS("active"), ...NO_DISCOVERY]),
+  gwList("PUD-27", "VK-A's gw-list is [pud27-connect]", [vkOf("pud27", "a")], ["pud27-connect"]),
+  clearIdentityFault("PUD-27", "pud27", "dave"),
+  connectExpect("PUD-27", "VK-A connects and gets dave's 3 tools", "pud27", "a", connectedText("pud27", 3)),
+  gwList("PUD-27", "VK-A's gw-list is dave's tools", [vkOf("pud27", "a")], ["pud27-add_tool", "pud27-echo_tool", "pud27-search"]),
+  deleteClient("PUD-27", "pud27-u"),
+  pudVKDelete("PUD-27", "pud27", "a"),
+  restoreConfig("PUD-27"),
+]);
+
+const PUD28 = folder("PUD-28 Upstream revokes during discovery", `Setup: ${ODOOR_TEXT("pud28")}; VK-A has consented as alice; a gate holds alice's tools/list. VK-A's callback is sent; while its sign-in discovery waits at the gate, the authorization server revokes alice's grant; then the gate opens.`, [
+  ...puConfig("PUD-28", false),
+  ...odoor("PUD-28", "pud28"),
+  pudVK("PUD-28", "pud28", "a"),
+  connectO("PUD-28", "setup: VK-A calls pud28-connect and gets the sign-in link", "pud28", "a"),
+  flowStart("PUD-28", "setup: start VK-A's flow", "pud28_a_flow"),
+  consentAs("PUD-28", "setup: consent for VK-A as alice", "pud28_a_flow", "alice"),
+  gatesSet("PUD-28", "pud28", { name: "g28", method: "tools/list", identity: "alice" }),
+  race("PUD-28", "the callback waits at the gate while alice's grant is revoked", "pud28", "g28", { method: "GET", url: "{{pud28_a_flow_cb}}" },
+    [sendStep({ method: "POST", url: "{{chaos_url}}/control/pud28/oauth/revoke", header: JSON_H, body: { identity: "alice" } })], "pud28_race",
+    [raceHeld("pud28_race"), raceStep("pud28_race", 0, 200), raceFirst("pud28_race", "the callback completed", ["pm.expect(first.code, 'race: ' + JSON.stringify(race)).to.equal(200);"])]),
+  rowOf("PUD-28", "VK-A's row keeps no discovery", "pud28-u", "pud28", "a", "VK-A's row: no discovery", NO_DISCOVERY),
+  connectO("PUD-28", "VK-A's connect gives the sign-in text", "pud28", "a"),
+  rowOf("PUD-28", "VK-A's row now needs reauth", "pud28-u", "pud28", "a", "VK-A's row: needs_reauth, no discovery", [...ROW_STATUS("needs_reauth"), ...NO_DISCOVERY]),
+  gatesClear("PUD-28", "pud28"),
+  deleteClient("PUD-28", "pud28-u"),
+  pudVKDelete("PUD-28", "pud28", "a"),
+  restoreConfig("PUD-28"),
+]);
+
+const PUD29 = folder("PUD-29 Control: unflagged clients keep nothing per caller", `Setup: HDOOR(pud29h) and ODOOR(pud29o) both with per_user_discovery unset (${PU_TEXT(false)}); alice's tools/list on pud29o fails. VK-A signs in to pud29h with key-a through a header flow, and to pud29o as alice; both servers' counters are reset first.`, [
+  ...hdoor("PUD-29", "pud29h", { flag: false }),
+  ...puConfig("PUD-29", false),
+  ...puConnect("PUD-29", "pud29o"),
+  pudVK("PUD-29", "pud29h", "a", [{ mcp_client_name: "pud29h", tools_to_execute: ["*"] }, { mcp_client_name: "pud29o", tools_to_execute: ["*"] }]),
+  resetCounters("PUD-29", "pud29o"),
+  identityFault("PUD-29", "pud29o", "alice", { list_fail: true, methods: ["tools/list"] }),
+  ...signInFlowH("PUD-29", "pud29h", "a"),
+  execAs("PUD-29", "setup: VK-A calls pud29o-echo_tool and is sent to an OAuth flow", "pud29o-echo_tool", [vkOf("pud29h", "a")], [A.status(400), keepFlow("pud29o_a_flow")]),
+  flowStart("PUD-29", "setup: start VK-A's flow on pud29o", "pud29o_a_flow"),
+  consentAs("PUD-29", "setup: consent on pud29o as alice", "pud29o_a_flow", "alice"),
+  followCallback("PUD-29", "the callback lands on auth-success with no tools=pending", "pud29o_a_flow", [A.status(302), locationEnds(PU_SUCCESS)]),
+  mockGet("PUD-29", "pud29o", "the sign-in dialed nothing as alice", [A.custom("no MCP request as alice", ["pm.expect(pm.response.json().counters.methods_by_identity || {}, 'counters: ' + JSON.stringify(pm.response.json().counters)).to.not.have.property('alice');"])]),
+  request("PUD-29", "no row of either client carries a discovery", "GET", SESSIONS, { asserts: [A.status(200), A.custom("VK-A has one row on each client, neither with a discovery", [sessionsOfClients(["pud29h-h", "pud29o-u"]), "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(2);", "found.forEach(function (s) { pm.expect(s, 'row: ' + JSON.stringify(s)).to.not.have.property('discovery'); pm.expect(s.can_refresh).to.equal(false); });"])] }),
+  getClient("PUD-29", "pud29h-h", "pud29h has no callers_by_tool", [callersAre(null)]),
+  getClient("PUD-29", "pud29o-u", "pud29o has no callers_by_tool", [callersAre(null)]),
+  clearIdentityFault("PUD-29", "pud29o", "alice"),
+  deleteClient("PUD-29", "pud29h-h"),
+  deleteClient("PUD-29", "pud29o-u"),
+  pudVKDelete("PUD-29", "pud29h", "a"),
+  restoreConfig("PUD-29"),
+]);
+
+// ---------------------------------------------------------------- D. A discovery is deleted with its credential
+
+const PUD30 = folder("PUD-30 Revoke a token session", `Setup: ${ODOOR_TEXT("pud30")}; VK-A signed in as alice, VK-B as bob. Then VK-A's session is deleted.`, [
+  ...puConfig("PUD-30", false),
+  ...odoor("PUD-30", "pud30"),
+  pudVK("PUD-30", "pud30", "a"), pudVK("PUD-30", "pud30", "b"),
+  ...signInO("PUD-30", "pud30", "a", "alice"),
+  ...signInO("PUD-30", "pud30", "b", "bob"),
+  rowOf("PUD-30", "setup: find VK-A's session", "pud30-u", "pud30", "a", "VK-A's row has a discovery", DISCOVERY(2), keepRowId("pud30_a_row")),
+  request("PUD-30", "delete VK-A's session", "DELETE", "/api/mcp/sessions/{{pud30_a_row}}", { asserts: [A.status(204)] }),
+  gwList("PUD-30", "VK-A's gw-list is [pud30-connect]", [vkOf("pud30", "a")], ["pud30-connect"]),
+  gwList("PUD-30", "VK-B's gw-list is unchanged", [vkOf("pud30", "b")], ["pud30-add_tool", "pud30-echo_tool"]),
+  rowOf("PUD-30", "VK-B's row keeps its discovery", "pud30-u", "pud30", "b", "VK-B's row: active, 2 tools", [...ROW_STATUS("active"), ...DISCOVERY(2)]),
+  request("PUD-30", "no needs_reauth row carries a discovery", "GET", SESSIONS, { asserts: [A.status(200), A.custom("every needs_reauth row of pud30 has no discovery", [sessionRows("pud30-u", "s.status === 'needs_reauth'"), "found.forEach(function (s) { pm.expect(s, 'row: ' + JSON.stringify(s)).to.not.have.property('discovery'); });"])] }),
+  getClient("PUD-30", "pud30-u", "callers_by_tool counts only VK-B", [callersAre({ add_tool: 1, echo_tool: 1 })]),
+  deleteClient("PUD-30", "pud30-u"),
+  pudVKDelete("PUD-30", "pud30", "a"), pudVKDelete("PUD-30", "pud30", "b"),
+  restoreConfig("PUD-30"),
+]);
+
+const PUD31 = folder("PUD-31 Revoke a header credential, both routes", `Setup: ${HDOOR_TEXT("pud31")}; VK-A and VK-B signed in with key-a and key-b. VK-A's credential is revoked through the per-user headers credential route, VK-B's through the sessions route.`, [
+  ...hdoor("PUD-31", "pud31"),
+  pudVK("PUD-31", "pud31", "a"), pudVK("PUD-31", "pud31", "b"),
+  ...signInH("PUD-31", "pud31", "a"), ...signInH("PUD-31", "pud31", "b"),
+  credentialDelete("PUD-31", "revoke VK-A's credential", "pud31_a_cred", [A.status(204)]),
+  gwList("PUD-31", "VK-A's gw-list is [pud31-connect]", [vkOf("pud31", "a")], ["pud31-connect"]),
+  gwList("PUD-31", "VK-B's gw-list is unchanged", [vkOf("pud31", "b")], ["pud31-add_tool", "pud31-echo_tool"]),
+  rowOf("PUD-31", "setup: find VK-B's session", "pud31-h", "pud31", "b", "VK-B's row has a discovery", DISCOVERY(2), keepRowId("pud31_b_row")),
+  request("PUD-31", "delete VK-B's session", "DELETE", "/api/mcp/sessions/{{pud31_b_row}}", { asserts: [A.status(204)] }),
+  gwList("PUD-31", "VK-B's gw-list is [pud31-connect]", [vkOf("pud31", "b")], ["pud31-connect"]),
+  getClient("PUD-31", "pud31-h", "no callers_by_tool", [callersAre(null), toolNamesAre([])]),
+  sessionsNone("PUD-31", "no sessions entry for pud31", "pud31-h"),
+  deleteClient("PUD-31", "pud31-h"),
+  pudVKDelete("PUD-31", "pud31", "a"), pudVKDelete("PUD-31", "pud31", "b"),
+]);
+
+const PUD32 = folder("PUD-32 Refresh rejected", `Setup: ${ODOOR_TEXT("pud32", " whose authorization server issues 5s access tokens")}; VK-A signed in as alice, VK-B as bob. Then the authorization server revokes alice's grant, and each call waits 6s first, so it finds an expired token.`, [
+  ...puConfig("PUD-32", false),
+  ...odoor("PUD-32", "pud32", { access_ttl: "5s" }),
+  pudVK("PUD-32", "pud32", "a"), pudVK("PUD-32", "pud32", "b"),
+  ...signInO("PUD-32", "pud32", "a", "alice"),
+  ...signInO("PUD-32", "pud32", "b", "bob"),
+  mockPost("PUD-32", "pud32", "oauth/revoke", "setup: the authorization server revokes alice's grant", { identity: "alice" }),
+  execAfterVK("PUD-32", "VK-A calls pud32-echo_tool 6s later", "pud32-echo_tool", "pud32", "a", 6000, [A.status(400), A.custom("extra_fields.mcp_auth_required names an oauth flow", ["var r = (pm.response.json().extra_fields || {}).mcp_auth_required;", "pm.expect(r && r.kind, 'body: ' + pm.response.text()).to.equal('oauth');"])]),
+  rowOf("PUD-32", "VK-A's row needs reauth and keeps no discovery", "pud32-u", "pud32", "a", "VK-A's row: needs_reauth, no discovery", [...ROW_STATUS("needs_reauth"), ...NO_DISCOVERY]),
+  execAs("PUD-32", "VK-B calls pud32-echo_tool", "pud32-echo_tool", [vkOf("pud32", "b")], [A.status(200)]),
+  mockGet("PUD-32", "pud32", "VK-B's call ran as bob", [identityCalls("bob", 1), noIdentity("alice")]),
+  rowOf("PUD-32", "VK-B's row is active with its discovery", "pud32-u", "pud32", "b", "VK-B's row: active, 2 tools", [...ROW_STATUS("active"), ...DISCOVERY(2)]),
+  deleteClient("PUD-32", "pud32-u"),
+  pudVKDelete("PUD-32", "pud32", "a"), pudVKDelete("PUD-32", "pud32", "b"),
+  restoreConfig("PUD-32"),
+]);
+
+const PUD33 = folder("PUD-33 Expiry without rejection keeps the discovery", `Setup: ${ODOOR_TEXT("pud33", " whose authorization server issues 5s access tokens")}; VK-A signed in as alice. Each call waits 6s first, so it finds an expired token. The second call's refresh is answered 503 once; the third call's three times, which exhausts its retries.`, [
+  ...puConfig("PUD-33", false),
+  ...odoor("PUD-33", "pud33", { access_ttl: "5s" }),
+  pudVK("PUD-33", "pud33", "a"),
+  ...signInO("PUD-33", "pud33", "a", "alice"),
+  rowOf("PUD-33", "setup: record VK-A's discovered_at", "pud33-u", "pud33", "a", "VK-A's row has a discovery", DISCOVERY(2), keepDiscoveredAt("pud33_at")),
+  saveOAuthCounts("PUD-33", "pud33", "pud33"),
+  execAfterVK("PUD-33", "VK-A calls pud33-echo_tool 6s later", "pud33-echo_tool", "pud33", "a", 6000, [A.status(200)]),
+  mockGet("PUD-33", "pud33", "the expired token was refreshed once", [A.custom("token_refresh +1", [refreshPlus("pud33", 1)])]),
+  rowOf("PUD-33", "VK-A's row is active and its discovered_at unchanged", "pud33-u", "pud33", "a", "VK-A's row: active, the same discovery", [...ROW_STATUS("active"), ...DISCOVERY(2), "pm.expect(row.discovery.discovered_at).to.equal(pm.collectionVariables.get('pud33_at'));"]),
+  resetCounters("PUD-33", "pud33"),
+  mockPost("PUD-33", "pud33", "oauth/fail", "setup: the token endpoint answers the next refresh with 503", { fail: { endpoint: "token", grant_type: "refresh_token", status: 503, count: 1 } }),
+  execAfterVK("PUD-33", "VK-A calls pud33-echo_tool 6s later, its first refresh answered 503", "pud33-echo_tool", "pud33", "a", 6000, [A.status(200)]),
+  mockGet("PUD-33", "pud33", "two refresh attempts, 503 then 200", [refreshStatuses([503, 200])]),
+  rowOf("PUD-33", "VK-A's row is active with the same discovery", "pud33-u", "pud33", "a", "VK-A's row: active, the same discovery", [...ROW_STATUS("active"), ...DISCOVERY(2), "pm.expect(row.discovery.discovered_at).to.equal(pm.collectionVariables.get('pud33_at'));"]),
+  resetCounters("PUD-33", "pud33"),
+  mockPostAfter("PUD-33", "pud33", "oauth/fail", "setup: 6s later, the token endpoint answers the next three refreshes with 503", { fail: { endpoint: "token", grant_type: "refresh_token", status: 503, count: 3 } }, ["setTimeout(function () {}, 6000);"]),
+  execAs("PUD-33", "VK-A calls pud33-echo_tool, every refresh answered 503", "pud33-echo_tool", [vkOf("pud33", "a")], [A.status(400), A.msgContains("token expired and refresh failed")]),
+  rowOf("PUD-33", "VK-A's row and discovery stay consistent", "pud33-u", "pud33", "a", "VK-A's row: active with the same discovery", [...ROW_STATUS("active"), ...DISCOVERY(2), "pm.expect(row.discovery.discovered_at).to.equal(pm.collectionVariables.get('pud33_at'));"]),
+  execAs("PUD-33", "VK-A calls pud33-echo_tool again: the refresh succeeds", "pud33-echo_tool", [vkOf("pud33", "a")], [A.status(200)]),
+  deleteClient("PUD-33", "pud33-u"),
+  pudVKDelete("PUD-33", "pud33", "a"),
+  restoreConfig("PUD-33"),
+]);
+
+const PUD34 = folder("PUD-34 Admin changes the header keys", `Setup: ${HDOOR_TEXT("pud34")}; VK-A and VK-B signed in with key-a and key-b. Then the admin adds header key x-extra.`, [
+  ...hdoor("PUD-34", "pud34"),
+  pudVK("PUD-34", "pud34", "a"), pudVK("PUD-34", "pud34", "b"),
+  ...signInH("PUD-34", "pud34", "a"), ...signInH("PUD-34", "pud34", "b"),
+  clientPut("PUD-34", "PUT per_user_header_keys [\"x-api-key\", \"x-extra\"]", "pud34-h", { per_user_header_keys: ["x-api-key", "x-extra"] }, [A.status(200)]),
+  rowOf("PUD-34", "VK-A's row needs an update and keeps no discovery", "pud34-h", "pud34", "a", "VK-A's row: needs_update, no discovery", [...ROW_STATUS("needs_update"), ...NO_DISCOVERY]),
+  rowOf("PUD-34", "VK-B's row needs an update and keeps no discovery", "pud34-h", "pud34", "b", "VK-B's row: needs_update, no discovery", [...ROW_STATUS("needs_update"), ...NO_DISCOVERY]),
+  getClient("PUD-34", "pud34-h", "no callers_by_tool", [callersAre(null)]),
+  gwList("PUD-34", "VK-A's gw-list is [pud34-connect]", [vkOf("pud34", "a")], ["pud34-connect"]),
+  connectH("PUD-34", "VK-A's connect gives the sign-in text", "pud34", "a"),
+  deleteClient("PUD-34", "pud34-h"),
+  pudVKDelete("PUD-34", "pud34", "a"), pudVKDelete("PUD-34", "pud34", "b"),
+]);
+
+const PUD35 = folder("PUD-35 Re-registering rotates and drops discoveries", `Setup: ${ODOOR_TEXT("pud35")}; VK-A signed in as alice. Then the client is reregistered and the admin completes sign-in on the new registration.`, [
+  ...puConfig("PUD-35", false),
+  ...odoor("PUD-35", "pud35"),
+  pudVK("PUD-35", "pud35", "a"),
+  ...signInO("PUD-35", "pud35", "a", "alice"),
+  clientPost("PUD-35", "reregister", "pud35-u", "reregister", [A.status(200)], { extraTests: ["pm.collectionVariables.set('pud35_au', pm.response.json().authorize_url);"] }),
+  rowOf("PUD-35", "VK-A's row needs reauth and keeps no discovery", "pud35-u", "pud35", "a", "VK-A's row: needs_reauth, no discovery", [...ROW_STATUS("needs_reauth"), ...NO_DISCOVERY]),
+  gwList("PUD-35", "VK-A's gw-list is [pud35-connect]", [vkOf("pud35", "a")], ["pud35-connect"]),
+  consentAs("PUD-35", "consent on the new registration as admin", "pud35", "admin"),
+  followCallback("PUD-35", "follow the callback", "pud35", callbackSuccess()),
+  completeOAuth("PUD-35", "complete", "pud35", [A.status(200), A.jsonMessage("Sign-in verified. The client keeps no admin credential: each caller signs in with their own."), A.jsonEquals("tools_count", 0)]),
+  getClient("PUD-35", "pud35-u", "no credential, tools []", [noCredential(), toolNamesAre([])]),
+  deleteClient("PUD-35", "pud35-u"),
+  pudVKDelete("PUD-35", "pud35", "a"),
+  restoreConfig("PUD-35"),
+]);
+
+const PUD36 = folder("PUD-36 A VK rotated, then a VK deleted", `Setup: ${HDOOR_TEXT("pud36")}; VK-A and VK-B signed in with key-a and key-b. Then VK-A is rotated and VK-B deleted.`, [
+  ...hdoor("PUD-36", "pud36"),
+  pudVK("PUD-36", "pud36", "a"), pudVK("PUD-36", "pud36", "b"),
+  ...signInH("PUD-36", "pud36", "a"), ...signInH("PUD-36", "pud36", "b"),
+  request("PUD-36", "rotate VK-A", "POST", "/api/governance/virtual-keys/{{pud36_a_id}}/rotate", { asserts: [A.status(200), A.custom("the same id with a new value", ["var v = pm.response.json().virtual_key;", "pm.expect(v.id, 'body: ' + pm.response.text()).to.equal(pm.collectionVariables.get('pud36_a_id'));", "pm.expect(v.value).to.not.equal(pm.collectionVariables.get('pud36_a'));"])], extraTests: ["pm.collectionVariables.set('pud36_a', pm.response.json().virtual_key.value);"] }),
+  gwList("PUD-36", "the rotated VK-A keeps its tools", [vkOf("pud36", "a")], ["pud36-add_tool", "pud36-echo_tool"]),
+  rowOf("PUD-36", "VK-A's row keeps its discovery", "pud36-h", "pud36", "a", "VK-A's row: active, 2 tools", [...ROW_STATUS("active"), ...DISCOVERY(2)]),
+  pudVKDelete("PUD-36", "pud36", "b"),
+  getClient("PUD-36", "pud36-h", "the deleted VK-B drops from callers_by_tool", [callersAre({ add_tool: 1, echo_tool: 1 })]),
+  deleteClient("PUD-36", "pud36-h"),
+  pudVKDelete("PUD-36", "pud36", "a"),
+]);
+
+const PUD37 = folder("PUD-37 Client deleted and re-created", `Setup: ${HDOOR_TEXT("pud37")}; VK-A signed in with key-a. Then the client is deleted, which removes VK-A's grant, created again with the same id and name, and VK-A is granted it again.`, [
+  ...hdoor("PUD-37", "pud37"),
+  pudVK("PUD-37", "pud37", "a"),
+  ...signInH("PUD-37", "pud37", "a"),
+  deleteClient("PUD-37", "pud37-h"),
+  createClient("PUD-37", hdoorBody("pud37"), "create pud37 again with the same id and name"),
+  getClient("PUD-37", "pud37-h", "no callers_by_tool, tools []", [callersAre(null), toolNamesAre([])]),
+  sessionsNone("PUD-37", "no sessions entry for pud37", "pud37-h"),
+  gwList("PUD-37", "VK-A's gw-list is empty: the delete removed its grant", [vkOf("pud37", "a")], []),
+  pudVKGrant("PUD-37", "pud37", "a"),
+  gwList("PUD-37", "VK-A's gw-list is [pud37-connect]: nothing of the old client's is kept", [vkOf("pud37", "a")], ["pud37-connect"]),
+  deleteClient("PUD-37", "pud37-h"),
+  pudVKDelete("PUD-37", "pud37", "a"),
+]);
+
+// ---------------------------------------------------------------- E. Per-caller serving on /mcp
+
+const PUD38 = folder("PUD-38 Each caller's own tools", `Setup: ${HDOOR_TEXT("pud38")}; key-a sees its own echo_tool and add_tool (own descriptions and schemas); key-c sees only its own echo_tool, with another schema and an output schema; VK-A and VK-C signed in, VK-F without a credential; ${BOTH}, temp-token auth on, and a Bifrost OAuth grant (bf_mode vk) for VK-A.`, [
+  readConfig("PUD-38"), oauthConfig("PUD-38", "both"),
+  ...hdoor("PUD-38", "pud38"),
+  overlay("PUD-38", "pud38", "key-a", PUD38_A, "setup: key-a sees its own echo_tool and add_tool"),
+  overlay("PUD-38", "pud38", "key-c", PUD38_C, "setup: key-c sees its own echo_tool, with an output schema"),
+  pudVK("PUD-38", "pud38", "a"), pudVK("PUD-38", "pud38", "c"), pudVK("PUD-38", "pud38", "f"),
+  ...signInH("PUD-38", "pud38", "a", "key-a", true), ...signInH("PUD-38", "pud38", "c", "key-c", true),
+  ...pudGrant("PUD-38", "pud38", "a", "pud38_grant"),
+  gwList("PUD-38", "VK-A's gw-list has key-a's descriptions and schemas", [vkOf("pud38", "a")], ["pud38-add_tool", "pud38-echo_tool"], [toolShapes("pud38", PUD38_A)]),
+  gwList("PUD-38", "VK-C's gw-list has key-c's description, schema and output schema", [vkOf("pud38", "c")], ["pud38-echo_tool"], [toolShapes("pud38", PUD38_C)]),
+  gwCallAs("PUD-38", "VK-C calls pud38-echo_tool", "pud38-echo_tool", [vkOf("pud38", "c")], [A.custom("structuredContent is the mock's {tool, arguments}", ["var r = pm.response.json().result;", "pm.expect(r && r.structuredContent, 'body: ' + pm.response.text()).to.eql({ tool: 'echo_tool', arguments: { msg: 'hi' } });"])], { msg: "hi" }),
+  gwList("PUD-38", "VK-F's gw-list is [pud38-connect]", [vkOf("pud38", "f")], ["pud38-connect"]),
+  request("PUD-38", "VK-A's bf_mode vk token lists the same tools as its header", "POST", "/mcp", { noAuth: true, raw: JSON.stringify(listMsg), headers: [MCP_ACCEPT, { key: "Authorization", value: "Bearer {{pud38_grant_at}}" }], asserts: [A.status(200), gwNames(["pud38-add_tool", "pud38-echo_tool"]), toolShapes("pud38", PUD38_A)] }),
+  deleteClient("PUD-38", "pud38-h"),
+  ...["a", "c", "f"].map((l) => pudVKDelete("PUD-38", "pud38", l)),
+  restoreConfig("PUD-38"),
+]);
+
+const PUD39 = folder("PUD-39 A name another caller holds looks unknown", `Setup: ${HDOOR_TEXT("pud39")}; key-a sees echo_tool and add_tool, prompt a_prompt and resource notes://a; key-c sees only echo_tool and no prompt or resource; VK-A and VK-C signed in; pud39's counters reset after the sign-ins.`, [
+  ...hdoor("PUD-39", "pud39"),
+  overlay("PUD-39", "pud39", "key-c", ["echo_tool"]),
+  kindOverlay("PUD-39", "pud39", "prompts", "key-a", [{ name: "a_prompt", description: "key-a's prompt" }]),
+  kindOverlay("PUD-39", "pud39", "prompts", "key-c", []),
+  kindOverlay("PUD-39", "pud39", "resources", "key-a", [{ uri: "notes://a", name: "key-a's note" }]),
+  kindOverlay("PUD-39", "pud39", "resources", "key-c", []),
+  pudVK("PUD-39", "pud39", "a"), pudVK("PUD-39", "pud39", "c"),
+  ...signInH("PUD-39", "pud39", "a"), ...signInH("PUD-39", "pud39", "c"),
+  resetCounters("PUD-39", "pud39"),
+  gwKeep("PUD-39", "control: VK-C calls pud39-zzz, a name nobody holds", "tools/call", { name: "pud39-zzz", arguments: { text: "hi" } }, [vkOf("pud39", "c")], "pud39_tool_err", "pud39-zzz"),
+  gwCallAs("PUD-39", "VK-C calls pud39-add_tool, which only key-a holds", "pud39-add_tool", [vkOf("pud39", "c")], [sameErrorAs("pud39_tool_err", "pud39-add_tool")]),
+  gwKeep("PUD-39", "control: VK-C gets prompt pud39-zzz", "prompts/get", { name: "pud39-zzz" }, [vkOf("pud39", "c")], "pud39_prompt_err", "pud39-zzz"),
+  gwRpc("PUD-39", "VK-C gets prompt pud39-a_prompt, which only key-a holds", "prompts/get", { name: "pud39-a_prompt" }, [vkOf("pud39", "c")], [sameErrorAs("pud39_prompt_err", "pud39-a_prompt")]),
+  gwKeep("PUD-39", "control: VK-C reads notes://zzz", "resources/read", { uri: "notes://zzz" }, [vkOf("pud39", "c")], "pud39_res_err", "notes://zzz"),
+  gwRpc("PUD-39", "VK-C reads notes://a, which only key-a holds", "resources/read", { uri: "notes://a" }, [vkOf("pud39", "c")], [sameErrorAs("pud39_res_err", "notes://a")]),
+  mockGet("PUD-39", "pud39", "nothing reached the upstream", [methodsEmpty()]),
+  gwCallAs("PUD-39", "control: VK-A calls pud39-add_tool", "pud39-add_tool", [vkOf("pud39", "a")], [gwTextIs("add_tool:{\"text\":\"hi\"}")]),
+  deleteClient("PUD-39", "pud39-h"),
+  pudVKDelete("PUD-39", "pud39", "a"), pudVKDelete("PUD-39", "pud39", "c"),
+]);
+
+const PUD40 = folder("PUD-40 Prompts, resources and templates per caller", `Setup: ${HDOOR_TEXT("pud40")}; key-a sees prompt pa (argument x), resource notes://a and template a://{id}; key-c sees prompt pc, resource notes://c and template c://{id}; each entry answers with text naming its holder; VK-A and VK-C signed in.`, [
+  ...hdoor("PUD-40", "pud40"),
+  kindOverlay("PUD-40", "pud40", "prompts", "key-a", [{ name: "pa", description: "key-a's prompt", arguments: [{ name: "x", description: "an x", required: false }], text: "key-a's pa {x}" }]),
+  kindOverlay("PUD-40", "pud40", "prompts", "key-c", [{ name: "pc", description: "key-c's prompt", text: "key-c's pc" }]),
+  kindOverlay("PUD-40", "pud40", "resources", "key-a", [{ uri: "notes://a", name: "key-a's note", text: "key-a's note a" }]),
+  kindOverlay("PUD-40", "pud40", "resources", "key-c", [{ uri: "notes://c", name: "key-c's note", text: "key-c's note c" }]),
+  kindOverlay("PUD-40", "pud40", "templates", "key-a", [{ uriTemplate: "a://{id}", name: "key-a's template", text: "key-a read {uri}" }]),
+  kindOverlay("PUD-40", "pud40", "templates", "key-c", [{ uriTemplate: "c://{id}", name: "key-c's template", text: "key-c read {uri}" }]),
+  pudVK("PUD-40", "pud40", "a"), pudVK("PUD-40", "pud40", "c"),
+  ...signInH("PUD-40", "pud40", "a"), ...signInH("PUD-40", "pud40", "c"),
+  gwRpc("PUD-40", "VK-A's prompts/list", "prompts/list", null, [vkOf("pud40", "a")], [listedAre("prompts", "name", ["pud40-pa"])]),
+  gwRpc("PUD-40", "VK-C's prompts/list", "prompts/list", null, [vkOf("pud40", "c")], [listedAre("prompts", "name", ["pud40-pc"])]),
+  gwRpc("PUD-40", "VK-A's resources/list", "resources/list", null, [vkOf("pud40", "a")], [listedAre("resources", "uri", ["notes://a"])]),
+  gwRpc("PUD-40", "VK-C's resources/list", "resources/list", null, [vkOf("pud40", "c")], [listedAre("resources", "uri", ["notes://c"])]),
+  gwRpc("PUD-40", "VK-A's resources/templates/list", "resources/templates/list", null, [vkOf("pud40", "a")], [listedAre("resourceTemplates", "uriTemplate", ["a://{id}"])]),
+  gwRpc("PUD-40", "VK-C's resources/templates/list", "resources/templates/list", null, [vkOf("pud40", "c")], [listedAre("resourceTemplates", "uriTemplate", ["c://{id}"])]),
+  gwRpc("PUD-40", "VK-A gets pud40-pa", "prompts/get", { name: "pud40-pa", arguments: { x: "1" } }, [vkOf("pud40", "a")], [promptTextIs("key-a's pa 1")]),
+  gwRpc("PUD-40", "VK-C gets pud40-pc", "prompts/get", { name: "pud40-pc" }, [vkOf("pud40", "c")], [promptTextIs("key-c's pc")]),
+  gwRpc("PUD-40", "VK-A reads notes://a", "resources/read", { uri: "notes://a" }, [vkOf("pud40", "a")], [readTextIs("key-a's note a")]),
+  gwRpc("PUD-40", "VK-A reads a://7 through its template", "resources/read", { uri: "a://7" }, [vkOf("pud40", "a")], [readTextIs("key-a read a://7")]),
+  gwRpc("PUD-40", "VK-C reads notes://c", "resources/read", { uri: "notes://c" }, [vkOf("pud40", "c")], [readTextIs("key-c's note c")]),
+  gwRpc("PUD-40", "a session-only caller's prompts/list has neither prompt", "prompts/list", null, [SESS("pud40-sess")], [listedNoneOf("prompts", "name", ["pud40-pa", "pud40-pc"])]),
+  gwRpc("PUD-40", "a session-only caller's resources/list has neither resource", "resources/list", null, [SESS("pud40-sess")], [listedNoneOf("resources", "uri", ["notes://a", "notes://c"])]),
+  gwRpc("PUD-40", "a session-only caller's resources/templates/list has neither template", "resources/templates/list", null, [SESS("pud40-sess")], [listedNoneOf("resourceTemplates", "uriTemplate", ["a://{id}", "c://{id}"])]),
+  deleteClient("PUD-40", "pud40-h"),
+  pudVKDelete("PUD-40", "pud40", "a"), pudVKDelete("PUD-40", "pud40", "c"),
+]);
+
+const PUD41 = folder("PUD-41 A brand-new name appears after a short delay", `Setup: ${HDOOR_TEXT("pud41")}; VK-A and VK-D signed in with key-a and key-d. Then key-d also sees search, a name no caller held, and VK-D signs in again (credential revoked, connect, submit). ${NOTIFY_NOTE}`, [
+  ...hdoor("PUD-41", "pud41"),
+  pudVK("PUD-41", "pud41", "a"), pudVK("PUD-41", "pud41", "d"),
+  ...signInH("PUD-41", "pud41", "a"), ...signInH("PUD-41", "pud41", "d"),
+  overlay("PUD-41", "pud41", "key-d", ["echo_tool", "add_tool", "search"]),
+  credentialDelete("PUD-41", "setup: revoke VK-D's credential", "pud41_d_cred", [A.status(204)]),
+  ...signInH("PUD-41", "pud41", "d"),
+  gwCallAs("PUD-41", "VK-D calls pud41-search over /mcp at once", "pud41-search", [vkOf("pud41", "d")], [gwTextIs("search:{\"text\":\"hi\"}")]),
+  request("PUD-41", "VK-D's gw-list shows pud41-search within 5s", "POST", "/mcp", { noAuth: true, raw: JSON.stringify(listMsg), headers: [MCP_ACCEPT, vkOf("pud41", "d")], pre: pollGwList("pud41", "d", "names.indexOf('pud41-search') !== -1", "pud41_wait"), asserts: [A.status(200), gwNames(["pud41-add_tool", "pud41-echo_tool", "pud41-search"]), A.custom("it appeared within 5s", ["pm.expect(Number(pm.collectionVariables.get('pud41_wait'))).to.be.at.most(5000);"])] }),
+  gwList("PUD-41", "VK-A never sees pud41-search", [vkOf("pud41", "a")], ["pud41-add_tool", "pud41-echo_tool"]),
+  gwCallAs("PUD-41", "VK-A calls pud41-search over /mcp", "pud41-search", [vkOf("pud41", "a")], [NOT_FOUND_TOOL("pud41-search")]),
+  gwCallAs("PUD-41", "control: VK-A calls pud41-zzz over /mcp", "pud41-zzz", [vkOf("pud41", "a")], [NOT_FOUND_TOOL("pud41-zzz")]),
+  mockGet("PUD-41", "pud41", "search ran once, under key-d", [callsIs("search", 1), identityCallsAre({ "key-d": 1 })]),
+  deleteClient("PUD-41", "pud41-h"),
+  pudVKDelete("PUD-41", "pud41", "a"), pudVKDelete("PUD-41", "pud41", "d"),
+]);
+
+const PUD42 = folder("PUD-42 Include headers, slug endpoint and Virtual MCP", `Setup: ${HDOOR_TEXT("pud42")}; VK-A signed in with key-a; VK-B without a credential; a virtual MCP "Pud42 Echo" over pud42's echo_tool, with VK-V (no mcp_configs) attached to it.`, [
+  ...hdoor("PUD-42", "pud42"),
+  pudVK("PUD-42", "pud42", "a"), pudVK("PUD-42", "pud42", "b"),
+  ...signInH("PUD-42", "pud42", "a"),
+  gwList("PUD-42", "VK-A with include-tools pud42-echo_tool", [vkOf("pud42", "a"), inc("tools", "pud42-echo_tool")], ["pud42-echo_tool"]),
+  gwList("PUD-42", "VK-A with include-clients pud42", [vkOf("pud42", "a"), inc("clients", "pud42")], ["pud42-add_tool", "pud42-echo_tool"]),
+  gwList("PUD-42", "VK-A with include-clients pud42zz gets nothing", [vkOf("pud42", "a"), inc("clients", "pud42zz")], []),
+  rpc("PUD-42", "VK-A on /mcp/pud42 gets its own tools", listMsg, { path: "/mcp/pud42", headers: [MCP_ACCEPT, vkOf("pud42", "a")], asserts: [A.status(200), gwNames(["pud42-add_tool", "pud42-echo_tool"])] }),
+  rpc("PUD-42", "VK-B on /mcp/pud42 gets [pud42-connect]", listMsg, { path: "/mcp/pud42", headers: [MCP_ACCEPT, vkOf("pud42", "b")], asserts: [A.status(200), gwNames(["pud42-connect"])] }),
+  request("PUD-42", "setup: create the virtual MCP Pud42 Echo over pud42's echo_tool", "POST", "/api/mcp/virtual-mcps", { body: { name: "Pud42 Echo", tools: [{ mcp_client_id: "pud42-h", tool_names: ["echo_tool"] }] }, asserts: [A.status(201)], extraTests: ["pm.collectionVariables.set('pud42_vmcp', pm.response.json().virtual_mcp.id);"] }),
+  vkCreate("PUD-42", "setup: create VK-V, with no mcp_configs", { name: "PUD-42 VK-V", provider_configs: OPENAI_GRANT }, "pud42_v"),
+  request("PUD-42", "setup: attach VK-V to the virtual MCP", "POST", "/api/mcp/virtual-mcps/{{pud42_vmcp}}/virtual-keys/{{pud42_v_id}}", { asserts: [A.status(200)] }),
+  rpc("PUD-42", "VK-V on /mcp/pud42-echo gets [pud42-connect] before sign-in", listMsg, { path: "/mcp/pud42-echo", headers: [MCP_ACCEPT, vkOf("pud42", "v")], asserts: [A.status(200), gwNames(["pud42-connect"])] }),
+  ...signInH("PUD-42", "pud42", "v"),
+  rpc("PUD-42", "VK-V on /mcp/pud42-echo gets only pud42-echo_tool after sign-in", listMsg, { path: "/mcp/pud42-echo", headers: [MCP_ACCEPT, vkOf("pud42", "v")], asserts: [A.status(200), gwNames(["pud42-echo_tool"])] }),
+  request("PUD-42", "teardown: delete the virtual MCP", "DELETE", "/api/mcp/virtual-mcps/{{pud42_vmcp}}", { asserts: [A.status(200)] }),
+  deleteClient("PUD-42", "pud42-h"),
+  pudVKDelete("PUD-42", "pud42", "a"), pudVKDelete("PUD-42", "pud42", "b"), pudVKDelete("PUD-42", "pud42", "v"),
+]);
+
+const PUD43 = folder("PUD-43 Instructions per caller", `Setup: ${HDOOR_TEXT("pud43")}; pud43 sends key-a the instructions "A notes" and key-c "C notes", and no server-wide text; VK-A and VK-C signed in, VK-F without a credential; ${LLM_TEXT}.`, [
+  ...hdoor("PUD-43", "pud43"),
+  mockPost("PUD-43", "pud43", "instructions", "setup: pud43 sends key-a \"A notes\"", { identity: "key-a", text: "A notes" }),
+  mockPost("PUD-43", "pud43", "instructions", "setup: pud43 sends key-c \"C notes\"", { identity: "key-c", text: "C notes" }),
+  pudVK("PUD-43", "pud43", "a"), pudVK("PUD-43", "pud43", "c"), pudVK("PUD-43", "pud43", "f"),
+  ...signInH("PUD-43", "pud43", "a"), ...signInH("PUD-43", "pud43", "c"),
+  initialize("PUD-43", "VK-A's initialize carries its own block", [instructionsEqual(block("pud43", "A notes"))], { headers: [MCP_ACCEPT, vkOf("pud43", "a")] }),
+  initialize("PUD-43", "VK-C's initialize carries its own block", [instructionsEqual(block("pud43", "C notes"))], { headers: [MCP_ACCEPT, vkOf("pud43", "c")] }),
+  initialize("PUD-43", "VK-F's initialize carries no pud43 block", [A.custom("no <mcp_server name=\"pud43\"> block", ["pm.expect(String((pm.response.json().result || {}).instructions || ''), 'body: ' + pm.response.text()).to.not.include('<mcp_server name=\"pud43\">');"])], { headers: [MCP_ACCEPT, vkOf("pud43", "f")] }),
+  llmScript("PUD-43", "pud43", TEXT_OK),
+  infChat("PUD-43", "chat with VK-A", "pud43", [A.status(200)], { headers: [vkOf("pud43", "a")] }),
+  llmCaptured("PUD-43", "the chat carries only key-a's block", "pud43", [reqCount(1), systemBlock(0, "pud43", "A notes"), A.custom("no C notes", [REQS, MCP_TEXT, "pm.expect(mcpText(reqs[0])).to.not.include('C notes');"])]),
+  deleteClient("PUD-43", "pud43-h"),
+  ...["a", "c", "f"].map((l) => pudVKDelete("PUD-43", "pud43", l)),
+]);
+
+const PUD44 = folder("PUD-44 Callers with the same discovery, then one changes", `Setup: ${HDOOR_TEXT("pud44")}; VK-A and VK-B signed in with key-a and key-b, so both hold the same two tools. Then key-b also sees extra, and VK-B signs in again (credential revoked, connect, submit).`, [
+  ...hdoor("PUD-44", "pud44"),
+  pudVK("PUD-44", "pud44", "a"), pudVK("PUD-44", "pud44", "b"),
+  ...signInH("PUD-44", "pud44", "a"), ...signInH("PUD-44", "pud44", "b"),
+  getClient("PUD-44", "pud44-h", "control: both callers hold the same tools", [callersAre({ add_tool: 2, echo_tool: 2 })]),
+  overlay("PUD-44", "pud44", "key-b", ["echo_tool", "add_tool", "extra"]),
+  credentialDelete("PUD-44", "setup: revoke VK-B's credential", "pud44_b_cred", [A.status(204)]),
+  ...signInH("PUD-44", "pud44", "b"),
+  gwList("PUD-44", "VK-B's gw-list has extra", [vkOf("pud44", "b")], ["pud44-add_tool", "pud44-echo_tool", "pud44-extra"]),
+  gwList("PUD-44", "VK-A's gw-list is unchanged", [vkOf("pud44", "a")], ["pud44-add_tool", "pud44-echo_tool"]),
+  getClient("PUD-44", "pud44-h", "callers_by_tool {add_tool: 2, echo_tool: 2, extra: 1}", [callersAre({ add_tool: 2, echo_tool: 2, extra: 1 })]),
+  deleteClient("PUD-44", "pud44-h"),
+  pudVKDelete("PUD-44", "pud44", "a"), pudVKDelete("PUD-44", "pud44", "b"),
+]);
+
+const PUD45 = folder("PUD-45 An upstream change reaches a caller through a refresh of their session", `Setup: ${HDOOR_TEXT("pud45")}; VK-A signed in with key-a. Then pud45 adds new_tool and pushes list_changed.`, [
+  ...hdoor("PUD-45", "pud45"),
+  pudVK("PUD-45", "pud45", "a"),
+  ...signInH("PUD-45", "pud45", "a"),
+  mockPost("PUD-45", "pud45", "tools/add", "pud45 adds new_tool", { tool: { name: "new_tool" } }),
+  mockPost("PUD-45", "pud45", "notify/tools-changed", "pud45 pushes list_changed", {}),
+  mockGet("PUD-45", "pud45", "pud45 has no open stream, so the push reached no one", [counterIs("open_streams", 0)]),
+  gwList("PUD-45", "VK-A's gw-list is unchanged", [vkOf("pud45", "a")], ["pud45-add_tool", "pud45-echo_tool"]),
+  connectExpect("PUD-45", "VK-A's connect says already connected", "pud45", "a", alreadyText("pud45")),
+  clientPost("PUD-45", "refresh-tools on the client is refused", "pud45-h", "refresh-tools", [A.status(400), A.msgEquals(REFRESH_TOOLS_PUD("pud45"))]),
+  rowOf("PUD-45", "setup: find VK-A's session", "pud45-h", "pud45", "a", "VK-A's row can be refreshed", ["pm.expect(row.can_refresh).to.equal(true);"], keepRowId("pud45_a_row")),
+  request("PUD-45", "refresh VK-A's session", "POST", "/api/mcp/sessions/{{pud45_a_row}}/refresh", { asserts: [A.status(200), A.custom("success with 3 tools, 0 prompts, 0 resources", ["pm.expect(pm.response.json(), 'body: ' + pm.response.text()).to.eql({ status: 'success', tool_count: 3, prompt_count: 0, resource_count: 0 });"])] }),
+  gwList("PUD-45", "VK-A's gw-list now has new_tool", [vkOf("pud45", "a")], ["pud45-add_tool", "pud45-echo_tool", "pud45-new_tool"]),
+  deleteClient("PUD-45", "pud45-h"),
+  pudVKDelete("PUD-45", "pud45", "a"),
+]);
+
+const PUD52 = folder("PUD-52 A caller's own list changing, seen on the same session", `Setup: ${HDOOR_TEXT("pud52")}; VK-A and VK-B signed in with key-a and key-b, so both hold the same names; VK-B initializes an /mcp session. Then VK-B's credential is revoked, and VK-B signs in again. ${NOTIFY_NOTE}`, [
+  ...hdoor("PUD-52", "pud52"),
+  pudVK("PUD-52", "pud52", "a"), pudVK("PUD-52", "pud52", "b"),
+  ...signInH("PUD-52", "pud52", "a"), ...signInH("PUD-52", "pud52", "b"),
+  mcpInit("PUD-52", "VK-B initializes an /mcp session", [vkOf("pud52", "b")], "pud52_sess"),
+  gwList("PUD-52", "VK-B lists on its session: pud52's tools", [vkOf("pud52", "b"), MCPSESS("pud52_sess")], ["pud52-add_tool", "pud52-echo_tool"]),
+  credentialDelete("PUD-52", "revoke VK-B's credential", "pud52_b_cred", [A.status(204)]),
+  gwList("PUD-52", "VK-B re-lists on the same session: [pud52-connect]", [vkOf("pud52", "b"), MCPSESS("pud52_sess")], ["pud52-connect"]),
+  gwList("PUD-52", "VK-A is unaffected", [vkOf("pud52", "a")], ["pud52-add_tool", "pud52-echo_tool"]),
+  ...signInH("PUD-52", "pud52", "b"),
+  gwList("PUD-52", "VK-B re-lists on the same session: key-b's tools again", [vkOf("pud52", "b"), MCPSESS("pud52_sess")], ["pud52-add_tool", "pud52-echo_tool"]),
+  deleteClient("PUD-52", "pud52-h"),
+  pudVKDelete("PUD-52", "pud52", "a"), pudVKDelete("PUD-52", "pud52", "b"),
+]);
+
+const PUD53 = folder("PUD-53 Connect after signing in, on a stale list", `Setup: ${HDOOR_TEXT("pud53")}; key-g sees echo_tool and other-connect; VK-G signed in with key-g; VK-F initializes an /mcp session and lists [pud53-connect] on it, then signs in with key-f. ${NOTIFY_NOTE}`, [
+  ...hdoor("PUD-53", "pud53"),
+  overlay("PUD-53", "pud53", "key-g", ["echo_tool", "other-connect"]),
+  pudVK("PUD-53", "pud53", "f"), pudVK("PUD-53", "pud53", "g"),
+  ...signInH("PUD-53", "pud53", "g"),
+  mcpInit("PUD-53", "VK-F initializes an /mcp session", [vkOf("pud53", "f")], "pud53_sess"),
+  gwList("PUD-53", "VK-F lists [pud53-connect] on its session", [vkOf("pud53", "f"), MCPSESS("pud53_sess")], ["pud53-connect"]),
+  ...signInH("PUD-53", "pud53", "f"),
+  gwCallAs("PUD-53", "VK-F calls pud53-connect on the same session", "pud53-connect", [vkOf("pud53", "f"), MCPSESS("pud53_sess")], [gwTextIs(alreadyText("pud53"))]),
+  execAs("PUD-53", "control: VK-F's connect on the execute route says the same", "pud53-connect", [vkOf("pud53", "f")], [A.status(200), contentIs(alreadyText("pud53"))]),
+  gwCallAs("PUD-53", "VK-F narrowed to another client calls pud53-connect", "pud53-connect", [vkOf("pud53", "f"), MCPSESS("pud53_sess"), inc("clients", "pud53zz")], [toolResultError("Tool execution failed: tool 'pud53-connect' is not available or not permitted", null)]),
+  gwKeep("PUD-53", "control: VK-F calls pud53-zzz", "tools/call", { name: "pud53-zzz", arguments: { text: "hi" } }, [vkOf("pud53", "f"), MCPSESS("pud53_sess")], "pud53_err", "pud53-zzz"),
+  gwCallAs("PUD-53", "VK-F calls pud53-other-connect, which only key-g holds", "pud53-other-connect", [vkOf("pud53", "f"), MCPSESS("pud53_sess")], [sameErrorAs("pud53_err", "pud53-other-connect")]),
+  deleteClient("PUD-53", "pud53-h"),
+  pudVKDelete("PUD-53", "pud53", "f"), pudVKDelete("PUD-53", "pud53", "g"),
+]);
+
+const PUD54 = folder("PUD-54 A read lands on another caller's entry", `Setup: ${HDOOR_TEXT("pud54")}; key-b holds the resource notes://123; key-c the template notes://{id}; key-d the template notes://{+path}; key-a none of them; VK-A to VK-D signed in.`, [
+  ...hdoor("PUD-54", "pud54"),
+  kindOverlay("PUD-54", "pud54", "resources", "key-b", [{ uri: "notes://123", name: "key-b's note", text: "key-b's note 123" }]),
+  kindOverlay("PUD-54", "pud54", "templates", "key-c", [{ uriTemplate: "notes://{id}", name: "key-c's notes", text: "key-c read {uri}" }]),
+  kindOverlay("PUD-54", "pud54", "templates", "key-d", [{ uriTemplate: "notes://{+path}", name: "key-d's notes", text: "key-d read {uri}" }]),
+  ...["a", "b", "c", "d"].flatMap((l) => [pudVK("PUD-54", "pud54", l), ...signInH("PUD-54", "pud54", l)]),
+  gwRpc("PUD-54", "control: VK-B reads notes://123", "resources/read", { uri: "notes://123" }, [vkOf("pud54", "b")], [readTextIs("key-b's note 123")]),
+  gwRpc("PUD-54", "VK-C reads notes://123 and gets its own template's content", "resources/read", { uri: "notes://123" }, [vkOf("pud54", "c")], [readTextIs("key-c read notes://123")]),
+  gwRpc("PUD-54", "VK-C reads notes://456 through its own template", "resources/read", { uri: "notes://456" }, [vkOf("pud54", "c")], [readTextIs("key-c read notes://456")]),
+  gwRpc("PUD-54", "VK-D reads notes://456 through its own template", "resources/read", { uri: "notes://456" }, [vkOf("pud54", "d")], [readTextIs("key-d read notes://456")]),
+  gwKeep("PUD-54", "control: VK-A reads notes://zzz", "resources/read", { uri: "notes://zzz" }, [vkOf("pud54", "a")], "pud54_err", "notes://zzz"),
+  gwRpc("PUD-54", "VK-A reads notes://123, holding neither entry", "resources/read", { uri: "notes://123" }, [vkOf("pud54", "a")], [sameErrorAs("pud54_err", "notes://123")]),
+  deleteClient("PUD-54", "pud54-h"),
+  ...["a", "b", "c", "d"].map((l) => pudVKDelete("PUD-54", "pud54", l)),
+]);
+
+// ---------------------------------------------------------------- F. Logging and the sessions API
+
+const PUD46 = folder("PUD-46 Sign-in prompts and connect calls are not logged", `Setup: ${HDOOR_TEXT("pud46")}; key-g sees echo_tool and a tool named connect; pud46u, a per_user_headers client on fleet server pud46u (as pud46, per_user_discovery unset); VK-A granted every tool of pud46 and pud46u, VK-G every tool of pud46; neither has a credential. Each call carries its own x-request-id.`, [
+  ...hdoor("PUD-46", "pud46"),
+  overlay("PUD-46", "pud46", "key-g", ["echo_tool", "connect"]),
+  ...hdoor("PUD-46", "pud46u", { flag: false }),
+  pudVK("PUD-46", "pud46", "a", [{ mcp_client_name: "pud46", tools_to_execute: ["*"] }, { mcp_client_name: "pud46u", tools_to_execute: ["*"] }]),
+  pudVK("PUD-46", "pud46", "g"),
+  execAs("PUD-46", "VK-A's connect without a credential", "pud46-connect", [vkOf("pud46", "a"), reqId("pud46-r1")], [A.status(200), contentMatches("the sign-in text", H_SIGNIN("pud46"))], { extraTests: keepFlowFrom("pud46_a_flow", "pm.response.json().content") }),
+  rpc("PUD-46", "VK-A's connect over /mcp without a credential", call("pud46-connect", {}), { headers: [MCP_ACCEPT, vkOf("pud46", "a"), reqId("pud46-r2")], asserts: [A.status(200)] }),
+  execAs("PUD-46", "VK-A's call to pud46u, a sign-in prompt", "pud46u-echo_tool", [vkOf("pud46", "a"), reqId("pud46-r3")], [A.status(400), headersFlow({})]),
+  submitH("PUD-46", "setup: VK-A submits X-Api-Key key-a", "pud46", "a", "key-a"),
+  execAs("PUD-46", "VK-A's connect after sign-in", "pud46-connect", [vkOf("pud46", "a"), reqId("pud46-r4")], [A.status(200), contentIs(alreadyText("pud46"))]),
+  execAs("PUD-46", "VK-A's normal call", "pud46-echo_tool", [vkOf("pud46", "a"), reqId("pud46-r5")], [A.status(200)]),
+  ...signInH("PUD-46", "pud46", "g"),
+  execAs("PUD-46", "VK-G's call to the upstream connect", "pud46-connect", [vkOf("pud46", "g"), reqId("pud46-r6")], [A.status(200), contentIs("connect:{\"text\":\"hi\"}")]),
+  logRow("PUD-46", "the normal call is logged", "pud46-r5", [rowIs("tool_name", "echo_tool"), rowIs("server_label", "pud46")]),
+  logRow("PUD-46", "the upstream connect is logged", "pud46-r6", [rowIs("tool_name", "connect"), rowIs("server_label", "pud46")]),
+  noRowYet("PUD-46", "no log entry for the connect without a credential", "pud46-r1"),
+  noRowYet("PUD-46", "no log entry for the connect over /mcp", "pud46-r2"),
+  noRowYet("PUD-46", "no log entry for the sign-in prompt", "pud46-r3"),
+  noRowYet("PUD-46", "no log entry for the connect after sign-in", "pud46-r4"),
+  deleteClient("PUD-46", "pud46-h"),
+  deleteClient("PUD-46", "pud46u-h"),
+  pudVKDelete("PUD-46", "pud46", "a"), pudVKDelete("PUD-46", "pud46", "g"),
+]);
+
+const PUD47 = folder("PUD-47 The sessions discovery field", `Setup: ${HDOOR_TEXT("pud47", ", prompt greet, resource notes://1, template notes://{id}")}; ${ODOOR_TEXT("pud47o")}, where dave's tools/list fails; pud47u, a per_user_headers client on fleet server pud47u with per_user_discovery unset. Rows: VK-A signed in to pud47; VK-B's pending flow on pud47; VK-C signed in to pud47o as carol; VK-D to pud47o as dave (tools pending); VK-E signed in to pud47o as erin, then the client reregistered (needs reauth) only after the other rows are read; VK-A signed in to pud47u; session pud47-sess signed in to pud47u.`, [
+  ...hdoor("PUD-47", "pud47"),
+  mockList("PUD-47", "pud47", "prompts/set", "prompts", [{ name: "greet", description: "greets" }]),
+  mockList("PUD-47", "pud47", "resources/set", "resources", [{ uri: "notes://1", name: "note one" }]),
+  mockList("PUD-47", "pud47", "templates/set", "templates", [{ uriTemplate: "notes://{id}", name: "a note" }]),
+  ...hdoor("PUD-47", "pud47u", { flag: false }),
+  ...puConfig("PUD-47", false),
+  ...odoor("PUD-47", "pud47o"),
+  identityFault("PUD-47", "pud47o", "dave", { list_fail: true, methods: ["tools/list"] }),
+  pudVK("PUD-47", "pud47", "a", [{ mcp_client_name: "pud47", tools_to_execute: ["*"] }, { mcp_client_name: "pud47u", tools_to_execute: ["*"] }]),
+  pudVK("PUD-47", "pud47", "b"),
+  ...["c", "d", "e"].map((l) => pudVK("PUD-47", "pud47o", l)),
+  ...signInH("PUD-47", "pud47", "a"),
+  connectH("PUD-47", "setup: VK-B calls pud47-connect, leaving its flow pending", "pud47", "b"),
+  ...signInO("PUD-47", "pud47o", "c", "carol"),
+  ...signInO("PUD-47", "pud47o", "d", "dave", PENDING_LANDING("pud47o")),
+  ...signInO("PUD-47", "pud47o", "e", "erin"),
+  ...signInFlowH("PUD-47", "pud47u", "a", "key-a", "pud47"),
+  execAs("PUD-47", "setup: session pud47-sess calls pud47u-echo_tool and is sent to a header flow", "pud47u-echo_tool", [SESS("pud47-sess")], [A.status(400), headersFlow({ saveAs: "pud47_s_flow" })]),
+  hdrSubmit("PUD-47", "setup: session pud47-sess submits X-Api-Key key-s", "pud47_s_flow", { "x-api-key": "key-s" }, [A.status(200)]),
+  rowOf("PUD-47", "VK-A's pud47 row: discovery 2 tools, 1 prompt, 2 resources (templates counted)", "pud47-h", "pud47", "a", "discovery {tool_count 2, prompt_count 1, resource_count 2} with a discovered_at", [...DISCOVERY(2, 1, 2), "pm.expect(row.discovery.discovered_at).to.match(/^\\d{4}-\\d{2}-\\d{2}T/);", "pm.expect(row.mcp_client.per_user_discovery).to.equal(true);"]),
+  request("PUD-47", "VK-B's pending flow on pud47 carries none", "GET", SESSIONS, { asserts: [A.status(200), A.custom("one pending flow row for VK-B, no discovery", [sessionRows("pud47-h", "s.kind === 'flow'"), "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(1);", "pm.expect(found[0].virtual_key.id).to.equal(pm.collectionVariables.get('pud47_b_id'));", "pm.expect(found[0]).to.not.have.property('discovery');"])] }),
+  rowOf("PUD-47", "VK-C's pud47o row: discovery 2 tools", "pud47o-u", "pud47o", "c", "discovery {tool_count 2, prompt_count 0, resource_count 0}", DISCOVERY(2, 0, 0)),
+  rowOf("PUD-47", "VK-D's tools-pending token carries none", "pud47o-u", "pud47o", "d", "VK-D's row: active, no discovery", [...ROW_STATUS("active"), ...NO_DISCOVERY]),
+  rowOf("PUD-47", "VK-A's row on unflagged pud47u carries none", "pud47u-h", "pud47", "a", "VK-A's pud47u row: no discovery, and the client is not flagged", [...NO_DISCOVERY, "pm.expect(row.mcp_client).to.not.have.property('per_user_discovery');"]),
+  request("PUD-47", "the session-mode row carries none", "GET", SESSIONS, { asserts: [A.status(200), A.custom("one session-mode row on pud47u, no discovery", [sessionRows("pud47u-h", "s.auth_mode === 'session'"), "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(1);", "pm.expect(found[0]).to.not.have.property('discovery');"])] }),
+  rowOf("PUD-47", "control: VK-E's row has its discovery", "pud47o-u", "pud47o", "e", "VK-E's row: active, 2 tools", [...ROW_STATUS("active"), ...DISCOVERY(2)]),
+  clientPost("PUD-47", "setup: reregister pud47o", "pud47o-u", "reregister", [A.status(200)]),
+  rowOf("PUD-47", "VK-E's needs_reauth row carries none", "pud47o-u", "pud47o", "e", "VK-E's row: needs_reauth, no discovery", [...ROW_STATUS("needs_reauth"), ...NO_DISCOVERY]),
+  clearIdentityFault("PUD-47", "pud47o", "dave"),
+  deleteClient("PUD-47", "pud47-h"), deleteClient("PUD-47", "pud47u-h"), deleteClient("PUD-47", "pud47o-u"),
+  pudVKDelete("PUD-47", "pud47", "a"), pudVKDelete("PUD-47", "pud47", "b"),
+  ...["c", "d", "e"].map((l) => pudVKDelete("PUD-47", "pud47o", l)),
+  restoreConfig("PUD-47"),
+]);
+
+// ---------------------------------------------------------------- G. Races
+
+const PUD48 = folder("PUD-48 Revoke during sign-in discovery", `Setup: ${ODOOR_TEXT("pud48")}; VK-A has consented as alice; a gate holds alice's tools/list. VK-A's callback is sent; while its sign-in discovery waits at the gate, VK-A's new token row is deleted; then the gate opens.`, [
+  ...puConfig("PUD-48", false),
+  ...odoor("PUD-48", "pud48"),
+  pudVK("PUD-48", "pud48", "a"),
+  connectO("PUD-48", "setup: VK-A calls pud48-connect and gets the sign-in link", "pud48", "a"),
+  flowStart("PUD-48", "setup: start VK-A's flow", "pud48_a_flow"),
+  consentAs("PUD-48", "setup: consent for VK-A as alice", "pud48_a_flow", "alice"),
+  gatesSet("PUD-48", "pud48", { name: "g48", method: "tools/list", identity: "alice" }),
+  race("PUD-48", "the callback waits at the gate while VK-A's new token is deleted", "pud48", "g48", { method: "GET", url: "{{pud48_a_flow_cb}}" },
+    [deleteRowStep("pud48-u", "pud48_a_id")], "pud48_race",
+    [raceHeld("pud48_race"), raceStep("pud48_race", 0, 204), raceFirst("pud48_race", "the callback completed", ["pm.expect(first.code, 'race: ' + JSON.stringify(race)).to.equal(200);"])]),
+  sessionsNone("PUD-48", "no sessions row for pud48", "pud48-u"),
+  gwList("PUD-48", "VK-A's gw-list is [pud48-connect]", [vkOf("pud48", "a")], ["pud48-connect"]),
+  getClient("PUD-48", "pud48-u", "no callers_by_tool", [callersAre(null)]),
+  gatesClear("PUD-48", "pud48"),
+  deleteClient("PUD-48", "pud48-u"),
+  pudVKDelete("PUD-48", "pud48", "a"),
+  restoreConfig("PUD-48"),
+]);
+
+const PUD49 = folder("PUD-49 Revoke during the OAuth code exchange", `Setup: ${ODOOR_TEXT("pud49")}; VK-A signed in as alice, then reauthorized from its session row and consented as alice again; a gate holds pud49's token endpoint. The reauth callback is sent; while its code exchange waits at the gate, VK-A's session is deleted; then the gate opens.`, [
+  ...puConfig("PUD-49", false),
+  ...odoor("PUD-49", "pud49"),
+  pudVK("PUD-49", "pud49", "a"),
+  ...signInO("PUD-49", "pud49", "a", "alice"),
+  rowOf("PUD-49", "setup: find VK-A's session", "pud49-u", "pud49", "a", "VK-A's row has a discovery", DISCOVERY(2), keepRowId("pud49_a_row")),
+  request("PUD-49", "setup: reauth VK-A's session", "POST", "/api/mcp/sessions/{{pud49_a_row}}/reauth", { asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('pud49_r', pm.response.json().session_id);"] }),
+  flowStart("PUD-49", "setup: start the reauth flow", "pud49_r"),
+  consentAs("PUD-49", "setup: consent as alice again", "pud49_r", "alice"),
+  mockGet("PUD-49", "pud49", "setup: record pud49's code exchanges", [], ["pm.collectionVariables.set('pud49_tc', pm.response.json().oauth.counters.token_code);"]),
+  gatesSet("PUD-49", "pud49", { name: "g49", endpoint: "token" }),
+  race("PUD-49", "the reauth callback's code exchange waits at the gate while VK-A's session is deleted", "pud49", "g49", { method: "GET", url: "{{pud49_r_cb}}" },
+    [sendStep({ method: "DELETE", url: "{{base_url}}/api/mcp/sessions/{{pud49_a_row}}", header: ADMIN_H })], "pud49_race",
+    [raceHeld("pud49_race"), raceStep("pud49_race", 0, 204), A.custom("the code was exchanged upstream once more", ["pm.expect(pm.response.json().oauth.counters.token_code, 'body: ' + pm.response.text()).to.equal(Number(pm.collectionVariables.get('pud49_tc')) + 1);"])]),
+  sessionsNone("PUD-49", "no token or flow row for pud49", "pud49-u"),
+  gwList("PUD-49", "VK-A's gw-list is [pud49-connect]", [vkOf("pud49", "a")], ["pud49-connect"]),
+  getClient("PUD-49", "pud49-u", "no callers_by_tool", [callersAre(null)]),
+  gatesClear("PUD-49", "pud49"),
+  deleteClient("PUD-49", "pud49-u"),
+  pudVKDelete("PUD-49", "pud49", "a"),
+  restoreConfig("PUD-49"),
+]);
+
+const PUD50 = folder("PUD-50 Revoke during the headers submit", `Setup: ${HDOOR_TEXT("pud50")}; VK-B has a pending header flow; a gate holds key-b's initialize. VK-B's submit is sent; while its verification waits at the gate, the flow is deleted; then the gate opens.`, [
+  ...hdoor("PUD-50", "pud50"),
+  pudVK("PUD-50", "pud50", "b"),
+  connectH("PUD-50", "setup: VK-B calls pud50-connect and gets the sign-in link", "pud50", "b"),
+  gatesSet("PUD-50", "pud50", { name: "g50", method: "initialize", identity: "key-b" }),
+  race("PUD-50", "the submit waits at the gate while VK-B's flow is deleted", "pud50", "g50", { method: "PUT", url: "{{base_url}}/api/mcp/per-user-headers/flows/{{pud50_b_flow}}", header: { ...ADMIN_H, ...JSON_H }, body: { headers: { "x-api-key": "key-b" } } },
+    [sendStep({ method: "DELETE", url: "{{base_url}}/api/mcp/sessions/{{pud50_b_flow}}", header: ADMIN_H })], "pud50_race",
+    [raceHeld("pud50_race"), raceStep("pud50_race", 0, 204), raceFirst("pud50_race", "the submit answered 404 \"Headers submission flow was revoked or expired...\"", ["pm.expect(first.code, 'race: ' + JSON.stringify(race)).to.equal(404);", "pm.expect(JSON.parse(first.body).error.message.indexOf('Headers submission flow was revoked or expired'), 'race: ' + JSON.stringify(race)).to.equal(0);"])]),
+  sessionsNone("PUD-50", "no sessions row for pud50", "pud50-h"),
+  gwList("PUD-50", "VK-B's gw-list is [pud50-connect]", [vkOf("pud50", "b")], ["pud50-connect"]),
+  getClient("PUD-50", "pud50-h", "no callers_by_tool", [callersAre(null)]),
+  gatesClear("PUD-50", "pud50"),
+  deleteClient("PUD-50", "pud50-h"),
+  pudVKDelete("PUD-50", "pud50", "b"),
+]);
+
+const PUD51 = folder("PUD-51 Client replaced during a call", `Setup: ${HDOOR_TEXT("pud51")}; VK-A signed in with key-a; a gate holds key-a's tools/call; pud51's counters reset. VK-A's call is sent; while it waits at the gate, the client is deleted (which removes VK-A's grant) and created again with the same id and name, and key-a's tools/call is set to answer 401; then the gate opens. Afterwards VK-A is granted the new client.`, [
+  ...hdoor("PUD-51", "pud51"),
+  pudVK("PUD-51", "pud51", "a"),
+  ...signInH("PUD-51", "pud51", "a"),
+  resetCounters("PUD-51", "pud51"),
+  gatesSet("PUD-51", "pud51", { name: "g51", method: "tools/call", identity: "key-a" }),
+  race("PUD-51", "VK-A's call waits at the gate while the client is replaced and key-a's calls answer 401", "pud51", "g51", { method: "POST", url: "{{base_url}}/v1/mcp/tool/execute", header: { "x-bf-vk": "{{pud51_a}}", ...JSON_H }, body: { id: "c1", type: "function", function: { name: "pud51-echo_tool", arguments: "{\"text\":\"hi\"}" } } },
+    [sendStep({ method: "DELETE", url: "{{base_url}}/api/mcp/client/pud51-h", header: ADMIN_H }),
+      sendStep({ method: "POST", url: "{{base_url}}/api/mcp/client", header: { ...ADMIN_H, ...JSON_H }, body: { ...hdoorBody("pud51"), connection_string: "{{chaos_url}}/s/pud51/mcp" } }),
+      sendStep({ method: "POST", url: "{{chaos_url}}/control/pud51/faults/identity", header: JSON_H, body: { identity: "key-a", faults: { status: 401, methods: ["tools/call"] } } })], "pud51_race",
+    [raceHeld("pud51_race"), raceStep("pud51_race", 0, 200), raceStep("pud51_race", 1, 200), raceStep("pud51_race", 2, 200),
+      raceFirst("pud51_race", "the call failed with no mcp_auth_required", ["pm.expect(first.code, 'race: ' + JSON.stringify(race)).to.equal(400);", "var b = JSON.parse(first.body);", "pm.expect(b.extra_fields || {}, 'race: ' + JSON.stringify(race)).to.not.have.property('mcp_auth_required');"]),
+      identityMethod("key-a", "tools/call", 1)]),
+  sessionsNone("PUD-51", "no sessions row for the new pud51", "pud51-h"),
+  gwList("PUD-51", "VK-A's gw-list is empty: the delete removed its grant", [vkOf("pud51", "a")], []),
+  pudVKGrant("PUD-51", "pud51", "a"),
+  gwList("PUD-51", "VK-A's gw-list is [pud51-connect]: nothing of the old client's is kept", [vkOf("pud51", "a")], ["pud51-connect"]),
+  clearIdentityFault("PUD-51", "pud51", "key-a"),
+  gatesClear("PUD-51", "pud51"),
+  deleteClient("PUD-51", "pud51-h"),
+  pudVKDelete("PUD-51", "pud51", "a"),
+]);
+
+// ---------------------------------------------------------------- H. Refreshing one caller's discovery from their session
+
+const PUD55 = folder("PUD-55 Refresh picks up what the upstream added", `Setup: ${HDOOR_TEXT("pud55")}; VK-A and VK-B signed in with key-a and key-b. Then key-a also sees new_tool, prompt greet, resource notes://a and template notes://{id}, and VK-A's session is refreshed.`, [
+  ...hdoor("PUD-55", "pud55"),
+  pudVK("PUD-55", "pud55", "a"), pudVK("PUD-55", "pud55", "b"),
+  ...signInH("PUD-55", "pud55", "a"), ...signInH("PUD-55", "pud55", "b"),
+  rowOf("PUD-55", "setup: find VK-A's session", "pud55-h", "pud55", "a", "VK-A's row can be refreshed", [...DISCOVERY(2), ...CAN_REFRESH(true)], [...keepRowId("pud55_a_row"), ...keepDiscoveredAt("pud55_at")]),
+  overlay("PUD-55", "pud55", "key-a", ["echo_tool", "add_tool", "new_tool"]),
+  kindOverlay("PUD-55", "pud55", "prompts", "key-a", [{ name: "greet", description: "greets" }]),
+  kindOverlay("PUD-55", "pud55", "resources", "key-a", [{ uri: "notes://a", name: "key-a's note" }]),
+  kindOverlay("PUD-55", "pud55", "templates", "key-a", [{ uriTemplate: "notes://{id}", name: "key-a's notes", text: "key-a read {uri}" }]),
+  gwList("PUD-55", "control: before the refresh VK-A's gw-list is unchanged", [vkOf("pud55", "a")], ["pud55-add_tool", "pud55-echo_tool"]),
+  refreshRow("PUD-55", "refresh VK-A's session", "pud55_a_row", refreshed(3, 1, 2)),
+  rowOf("PUD-55", "VK-A's row holds the new discovery", "pud55-h", "pud55", "a", "discovery {3, 1, 2} with a new discovered_at", [...DISCOVERY(3, 1, 2), ...NEW_AT("pud55_at")]),
+  gwList("PUD-55", "VK-A's gw-list has new_tool", [vkOf("pud55", "a")], ["pud55-add_tool", "pud55-echo_tool", "pud55-new_tool"]),
+  execAs("PUD-55", "VK-A calls pud55-new_tool", "pud55-new_tool", [vkOf("pud55", "a")], [A.status(200), contentIs("new_tool:{\"text\":\"hi\"}")]),
+  gwRpc("PUD-55", "VK-A's prompts/list has greet", "prompts/list", null, [vkOf("pud55", "a")], [listedAre("prompts", "name", ["pud55-greet"])]),
+  gwRpc("PUD-55", "VK-A reads notes://7 through its new template", "resources/read", { uri: "notes://7" }, [vkOf("pud55", "a")], [readTextIs("key-a read notes://7")]),
+  gwList("PUD-55", "VK-B's gw-list is unchanged", [vkOf("pud55", "b")], ["pud55-add_tool", "pud55-echo_tool"]),
+  execAs("PUD-55", "VK-B calls pud55-new_tool", "pud55-new_tool", [vkOf("pud55", "b")], [A.status(400), A.msgEquals("tool 'pud55-new_tool' is not available or not permitted")]),
+  getClient("PUD-55", "pud55-h", "callers_by_tool {add_tool: 2, echo_tool: 2, new_tool: 1}", [callersAre({ add_tool: 2, echo_tool: 2, new_tool: 1 })]),
+  mockGet("PUD-55", "pud55", "only key-a listed again", [identityMethod("key-a", "tools/list", 2), identityMethod("key-b", "tools/list", 1)]),
+  deleteClient("PUD-55", "pud55-h"),
+  pudVKDelete("PUD-55", "pud55", "a"), pudVKDelete("PUD-55", "pud55", "b"),
+]);
+
+const PUD56 = folder("PUD-56 Refresh an OAuth caller", `Setup: ${ODOOR_TEXT("pud56")}; VK-A signed in as alice. Then alice also sees search, and VK-A's session is refreshed.`, [
+  ...puConfig("PUD-56", false),
+  ...odoor("PUD-56", "pud56"),
+  pudVK("PUD-56", "pud56", "a"),
+  ...signInO("PUD-56", "pud56", "a", "alice"),
+  rowOf("PUD-56", "setup: find VK-A's session", "pud56-u", "pud56", "a", "VK-A's token row can be refreshed", [...DISCOVERY(2), ...CAN_REFRESH(true)], keepRowId("pud56_a_row")),
+  overlay("PUD-56", "pud56", "alice", ["echo_tool", "add_tool", "search"]),
+  refreshRow("PUD-56", "refresh VK-A's session", "pud56_a_row", refreshed(3)),
+  gwList("PUD-56", "VK-A's gw-list has search", [vkOf("pud56", "a")], ["pud56-add_tool", "pud56-echo_tool", "pud56-search"]),
+  gwCallAs("PUD-56", "VK-A calls pud56-search over /mcp", "pud56-search", [vkOf("pud56", "a")], [gwTextIs("search:{\"text\":\"hi\"}")]),
+  mockGet("PUD-56", "pud56", "alice listed tools twice and ran search once", [identityMethod("alice", "tools/list", 2), identityCallsAre({ alice: 1 })]),
+  deleteClient("PUD-56", "pud56-u"),
+  pudVKDelete("PUD-56", "pud56", "a"),
+  restoreConfig("PUD-56"),
+]);
+
+const PUD57 = folder("PUD-57 A refresh that cannot discover keeps the caller's tools", `Setup: ${HDOOR_TEXT("pud57")}; VK-A and VK-B signed in with key-a and key-b. Then key-a also sees new_tool, but key-a's tools/list fails (list_fail scoped to tools/list); VK-A's session is refreshed, then VK-B's; then the fault is cleared and VK-A's is refreshed again.`, [
+  ...hdoor("PUD-57", "pud57"),
+  pudVK("PUD-57", "pud57", "a"), pudVK("PUD-57", "pud57", "b"),
+  ...signInH("PUD-57", "pud57", "a"), ...signInH("PUD-57", "pud57", "b"),
+  rowOf("PUD-57", "setup: find VK-A's session", "pud57-h", "pud57", "a", "VK-A's row has a discovery", DISCOVERY(2), [...keepRowId("pud57_a_row"), ...keepDiscoveredAt("pud57_at")]),
+  rowOf("PUD-57", "setup: find VK-B's session", "pud57-h", "pud57", "b", "VK-B's row has a discovery", DISCOVERY(2), keepRowId("pud57_b_row")),
+  overlay("PUD-57", "pud57", "key-a", ["echo_tool", "add_tool", "new_tool"]),
+  identityFault("PUD-57", "pud57", "key-a", { list_fail: true, methods: ["tools/list"] }),
+  refreshRow("PUD-57", "refresh VK-A's session while its tools/list fails", "pud57_a_row", [A.status(502), A.msgStartsWith("Failed to discover the tools of MCP client pud57: ")]),
+  rowOf("PUD-57", "VK-A keeps its discovery", "pud57-h", "pud57", "a", "VK-A's row: active, the same discovery, still refreshable", [...ROW_STATUS("active"), ...DISCOVERY(2), ...SAME_AT("pud57_at"), ...CAN_REFRESH(true)]),
+  gwList("PUD-57", "VK-A's gw-list is unchanged", [vkOf("pud57", "a")], ["pud57-add_tool", "pud57-echo_tool"]),
+  execAs("PUD-57", "VK-A still calls pud57-echo_tool", "pud57-echo_tool", [vkOf("pud57", "a")], [A.status(200), contentIs("echo_tool:{\"text\":\"hi\"}")]),
+  refreshRow("PUD-57", "VK-B's refresh is unaffected", "pud57_b_row", refreshed(2)),
+  clearIdentityFault("PUD-57", "pud57", "key-a"),
+  refreshRow("PUD-57", "once the fault is cleared VK-A's refresh succeeds", "pud57_a_row", refreshed(3)),
+  gwList("PUD-57", "VK-A's gw-list has new_tool", [vkOf("pud57", "a")], ["pud57-add_tool", "pud57-echo_tool", "pud57-new_tool"]),
+  deleteClient("PUD-57", "pud57-h"),
+  pudVKDelete("PUD-57", "pud57", "a"), pudVKDelete("PUD-57", "pud57", "b"),
+]);
+
+const PUD58 = folder("PUD-58 A refresh revoked mid-discovery stores nothing", `Setup: ${HDOOR_TEXT("pud58")}; VK-A signed in with key-a; key-a then also sees new_tool; a gate holds key-a's tools/list. VK-A's session is refreshed; while its discovery waits at the gate, VK-A's credential is revoked; then the gate opens.`, [
+  ...hdoor("PUD-58", "pud58"),
+  pudVK("PUD-58", "pud58", "a"),
+  ...signInH("PUD-58", "pud58", "a"),
+  rowOf("PUD-58", "setup: find VK-A's session", "pud58-h", "pud58", "a", "VK-A's row has a discovery", DISCOVERY(2), keepRowId("pud58_a_row")),
+  overlay("PUD-58", "pud58", "key-a", ["echo_tool", "add_tool", "new_tool"]),
+  gatesSet("PUD-58", "pud58", { name: "g58", method: "tools/list", identity: "key-a" }),
+  race("PUD-58", "the refresh waits at the gate while VK-A's credential is revoked", "pud58", "g58", { method: "POST", url: "{{base_url}}/api/mcp/sessions/{{pud58_a_row}}/refresh", header: ADMIN_H },
+    [sendStep({ method: "DELETE", url: "{{base_url}}/api/mcp/per-user-headers/credential/{{pud58_a_cred}}", header: ADMIN_H })], "pud58_race",
+    [raceHeld("pud58_race"), raceStep("pud58_race", 0, 204), raceFirst("pud58_race", `the refresh answered 409 ${lit(REFRESH_CONFLICT)}`, ["pm.expect(first.code, 'race: ' + JSON.stringify(race)).to.equal(409);", `pm.expect(JSON.parse(first.body).error.message).to.equal(${lit(REFRESH_CONFLICT)});`])]),
+  sessionsNone("PUD-58", "no sessions row for pud58", "pud58-h"),
+  gwList("PUD-58", "VK-A's gw-list is [pud58-connect]", [vkOf("pud58", "a")], ["pud58-connect"]),
+  getClient("PUD-58", "pud58-h", "no callers_by_tool", [callersAre(null)]),
+  gatesClear("PUD-58", "pud58"),
+  deleteClient("PUD-58", "pud58-h"),
+  pudVKDelete("PUD-58", "pud58", "a"),
+]);
+
+const PUD59 = folder("PUD-59 A refresh that loses to a newer sign-in keeps the newer discovery", `Setup: ${HDOOR_TEXT("pud59")}; VK-A signed in with key-a; key-a then also sees stale_tool, and key-a2 sees echo_tool, add_tool and fresh_tool; a gate holds key-a's tools/list. VK-A's session is refreshed; while its discovery waits at the gate, VK-A reauthorizes from its session row and submits X-Api-Key key-a2; then the gate opens.`, [
+  ...hdoor("PUD-59", "pud59"),
+  pudVK("PUD-59", "pud59", "a"),
+  ...signInH("PUD-59", "pud59", "a"),
+  rowOf("PUD-59", "setup: find VK-A's session", "pud59-h", "pud59", "a", "VK-A's row has a discovery", DISCOVERY(2), keepRowId("pud59_a_row")),
+  overlay("PUD-59", "pud59", "key-a", ["echo_tool", "add_tool", "stale_tool"]),
+  overlay("PUD-59", "pud59", "key-a2", ["echo_tool", "add_tool", "fresh_tool"]),
+  gatesSet("PUD-59", "pud59", { name: "g59", method: "tools/list", identity: "key-a" }),
+  race("PUD-59", "the refresh waits at the gate while VK-A signs in again with key-a2", "pud59", "g59", { method: "POST", url: "{{base_url}}/api/mcp/sessions/{{pud59_a_row}}/refresh", header: ADMIN_H },
+    [resubmitStep("pud59_a_row", { "x-api-key": "key-a2" })], "pud59_race",
+    [raceHeld("pud59_race"), raceStep("pud59_race", 0, 200), raceFirst("pud59_race", `the refresh answered 409 ${lit(REFRESH_CONFLICT)}`, ["pm.expect(first.code, 'race: ' + JSON.stringify(race)).to.equal(409);", `pm.expect(JSON.parse(first.body).error.message).to.equal(${lit(REFRESH_CONFLICT)});`])]),
+  rowOf("PUD-59", "VK-A's row holds key-a2's discovery", "pud59-h", "pud59", "a", "VK-A's row: active, 3 tools", [...ROW_STATUS("active"), ...DISCOVERY(3)]),
+  gwList("PUD-59", "VK-A's gw-list is key-a2's tools, not the refresh's", [vkOf("pud59", "a")], ["pud59-add_tool", "pud59-echo_tool", "pud59-fresh_tool"]),
+  gatesClear("PUD-59", "pud59"),
+  deleteClient("PUD-59", "pud59-h"),
+  pudVKDelete("PUD-59", "pud59", "a"),
+]);
+
+const PUD60 = folder("PUD-60 can_refresh and refusals on header rows", `Setup: ${HDOOR_TEXT("pud60")} with VK-A signed in and VK-B's flow left pending; pud60u, as pud60 with per_user_discovery unset, VK-A signed in through a header flow; pud60s, the same unset client where session pud60-sess signed in, then per_user_discovery turned on; HDOOR(pud60k) with VK-C signed in, then header key x-extra added; HDOOR(pud60p) with VK-D signed in, then per_user_discovery turned off and on again, which leaves it awaiting verification.`, [
+  ...hdoor("PUD-60", "pud60"),
+  ...hdoor("PUD-60", "pud60u", { flag: false }),
+  ...hdoor("PUD-60", "pud60s", { flag: false }),
+  ...hdoor("PUD-60", "pud60k"),
+  ...hdoor("PUD-60", "pud60p"),
+  pudVK("PUD-60", "pud60", "a", ["pud60", "pud60u"].map((c) => ({ mcp_client_name: c, tools_to_execute: ["*"] }))),
+  pudVK("PUD-60", "pud60", "b"),
+  pudVK("PUD-60", "pud60k", "c"),
+  pudVK("PUD-60", "pud60p", "d"),
+  ...signInH("PUD-60", "pud60", "a"),
+  connectH("PUD-60", "setup: VK-B calls pud60-connect, leaving its flow pending", "pud60", "b"),
+  ...signInFlowH("PUD-60", "pud60u", "a", "key-a", "pud60"),
+  execAs("PUD-60", "setup: session pud60-sess calls pud60s-echo_tool and is sent to a header flow", "pud60s-echo_tool", [SESS("pud60-sess")], [A.status(400), headersFlow({ saveAs: "pud60s_flow" })]),
+  hdrSubmit("PUD-60", "setup: session pud60-sess submits X-Api-Key key-s", "pud60s_flow", { "x-api-key": "key-s" }, [A.status(200)]),
+  clientPut("PUD-60", "setup: turn per_user_discovery on for pud60s", "pud60s-h", { per_user_discovery: true }, [A.status(200)]),
+  ...signInH("PUD-60", "pud60k", "c"),
+  clientPut("PUD-60", "setup: add header key x-extra to pud60k", "pud60k-h", { per_user_header_keys: ["x-api-key", "x-extra"] }, [A.status(200)]),
+  ...signInH("PUD-60", "pud60p", "d"),
+  clientPut("PUD-60", "setup: turn per_user_discovery off for pud60p", "pud60p-h", { per_user_discovery: false }, [A.status(200)]),
+  clientPut("PUD-60", "setup: turn per_user_discovery on again for pud60p", "pud60p-h", { per_user_discovery: true }, [A.status(200)]),
+  getClient("PUD-60", "pud60p-h", "control: pud60p awaits verification with the flag on", [clientState("pending_verification"), flagIs(true)]),
+  rowOf("PUD-60", "VK-A's active row on pud60 can be refreshed", "pud60-h", "pud60", "a", "can_refresh true", CAN_REFRESH(true), keepRowId("pud60_a_row")),
+  request("PUD-60", "VK-B's pending flow on pud60 cannot", "GET", SESSIONS, { asserts: [A.status(200), A.custom("one flow row, can_refresh false", [sessionRows("pud60-h", "s.kind === 'flow'"), "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(1);", "pm.expect(found[0].can_refresh).to.equal(false);"])] }),
+  rowOf("PUD-60", "VK-A's row on unflagged pud60u cannot", "pud60u-h", "pud60", "a", "can_refresh false", CAN_REFRESH(false), keepRowId("pud60u_a_row")),
+  request("PUD-60", "the session-mode row on pud60s cannot", "GET", SESSIONS, { asserts: [A.status(200), A.custom("one session-mode row, can_refresh false", [sessionRows("pud60s-h", "s.auth_mode === 'session'"), "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(1);", "pm.expect(found[0].can_refresh).to.equal(false);"])], extraTests: [sessionRows("pud60s-h", "s.auth_mode === 'session'"), "pm.collectionVariables.set('pud60s_row', found.length ? found[0].id : '');"] }),
+  rowOf("PUD-60", "VK-C's needs_update row on pud60k cannot", "pud60k-h", "pud60k", "c", "needs_update, can_refresh false", [...ROW_STATUS("needs_update"), ...CAN_REFRESH(false)], keepRowId("pud60k_c_row")),
+  rowOf("PUD-60", "VK-D's row on pud60p, awaiting verification, cannot", "pud60p-h", "pud60p", "d", "active, can_refresh false", [...ROW_STATUS("active"), ...CAN_REFRESH(false)], keepRowId("pud60p_d_row")),
+  refreshRow("PUD-60", "refresh VK-A's pud60 row", "pud60_a_row", refreshed(2)),
+  refreshRow("PUD-60", "refresh VK-B's pending flow id", "pud60_b_flow", refreshRefused(404, "MCP session not found")),
+  refreshRow("PUD-60", "refresh VK-A's pud60u row", "pud60u_a_row", refreshRefused(400, "MCP client pud60u keeps one tool list for every caller; refresh it from the MCP registry instead")),
+  refreshRow("PUD-60", "refresh the session-mode row", "pud60s_row", refreshRefused(400, "A session-bound caller keeps no discovery to refresh")),
+  refreshRow("PUD-60", "refresh VK-C's needs_update row", "pud60k_c_row", refreshRefused(400, "Update this session's headers before refreshing its tools")),
+  refreshRow("PUD-60", "refresh VK-D's row while pud60p awaits verification", "pud60p_d_row", refreshRefused(400, "MCP client pud60p is awaiting admin verification, which serves no caller until it completes")),
+  request("PUD-60", "refresh an unknown id", "POST", "/api/mcp/sessions/7f3e2a10-0000-4000-8000-000000000060/refresh", { asserts: refreshRefused(404, "MCP session not found") }),
+  ...["pud60", "pud60u", "pud60s", "pud60k", "pud60p"].map((c) => deleteClient("PUD-60", `${c}-h`)),
+  pudVKDelete("PUD-60", "pud60", "a"), pudVKDelete("PUD-60", "pud60", "b"), pudVKDelete("PUD-60", "pud60k", "c"), pudVKDelete("PUD-60", "pud60p", "d"),
+]);
+
+const PUD61 = folder("PUD-61 can_refresh and refusals on OAuth rows", `Setup: ${ODOOR_TEXT("pud61")}, VK-A signed in as alice and VK-B's flow left pending; pud61u, a per_user_oauth client with per_user_discovery unset on fleet server pud61u, verified as admin, with VK-C signed in as carol. Then pud61 is reregistered, which leaves VK-A's row needing reauth.`, [
+  ...puConfig("PUD-61", false),
+  ...odoor("PUD-61", "pud61"),
+  ...puConnect("PUD-61", "pud61u"),
+  pudVK("PUD-61", "pud61", "a"), pudVK("PUD-61", "pud61", "b"),
+  pudVK("PUD-61", "pud61u", "c"),
+  ...signInO("PUD-61", "pud61", "a", "alice"),
+  connectO("PUD-61", "setup: VK-B calls pud61-connect, leaving its flow pending", "pud61", "b"),
+  execAs("PUD-61", "setup: VK-C calls pud61u-echo_tool and is sent to an OAuth flow", "pud61u-echo_tool", [vkOf("pud61u", "c")], [A.status(400), keepFlow("pud61u_c_flow")]),
+  flowStart("PUD-61", "setup: start VK-C's flow", "pud61u_c_flow"),
+  consentAs("PUD-61", "setup: consent for VK-C as carol", "pud61u_c_flow", "carol"),
+  followCallback("PUD-61", "setup: follow VK-C's callback", "pud61u_c_flow", [A.status(302), locationEnds(PU_SUCCESS)]),
+  rowOf("PUD-61", "VK-A's active token row can be refreshed", "pud61-u", "pud61", "a", "can_refresh true", CAN_REFRESH(true), keepRowId("pud61_a_row")),
+  request("PUD-61", "VK-B's pending flow cannot", "GET", SESSIONS, { asserts: [A.status(200), A.custom("one flow row, can_refresh false", [sessionRows("pud61-u", "s.kind === 'flow'"), "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(1);", "pm.expect(found[0].can_refresh).to.equal(false);"])] }),
+  rowOf("PUD-61", "VK-C's row on unflagged pud61u cannot", "pud61u-u", "pud61u", "c", "can_refresh false", CAN_REFRESH(false), keepRowId("pud61u_c_row")),
+  refreshRow("PUD-61", "refresh VK-A's row", "pud61_a_row", refreshed(2)),
+  refreshRow("PUD-61", "refresh VK-C's pud61u row", "pud61u_c_row", refreshRefused(400, "MCP client pud61u keeps one tool list for every caller; refresh it from the MCP registry instead")),
+  clientPost("PUD-61", "setup: reregister pud61", "pud61-u", "reregister", [A.status(200)]),
+  rowOf("PUD-61", "VK-A's needs_reauth row cannot", "pud61-u", "pud61", "a", "needs_reauth, can_refresh false", [...ROW_STATUS("needs_reauth"), ...CAN_REFRESH(false)]),
+  refreshRow("PUD-61", "refresh VK-A's needs_reauth row", "pud61_a_row", refreshRefused(400, "Reauthorize this session before refreshing its tools")),
+  deleteClient("PUD-61", "pud61-u"), deleteClient("PUD-61", "pud61u-u"),
+  pudVKDelete("PUD-61", "pud61", "a"), pudVKDelete("PUD-61", "pud61", "b"), pudVKDelete("PUD-61", "pud61u", "c"),
+  restoreConfig("PUD-61"),
+]);
+
+const PUD62 = folder("PUD-62 Client-level refresh-tools points at the session refresh", `Setup: ${HDOOR_TEXT("pud62")}; ${ODOOR_TEXT("pud62o")}; VK-A signed in to both (key-a, alice); both servers' counters reset. refresh-tools is called on each client, then VK-A's pud62 session is refreshed.`, [
+  ...hdoor("PUD-62", "pud62"),
+  ...puConfig("PUD-62", false),
+  ...odoor("PUD-62", "pud62o"),
+  pudVK("PUD-62", "pud62", "a", ["pud62", "pud62o"].map((c) => ({ mcp_client_name: c, tools_to_execute: ["*"] }))),
+  ...signInH("PUD-62", "pud62", "a"),
+  execAs("PUD-62", "setup: VK-A calls pud62o-connect and gets the sign-in link", "pud62o-connect", [vkOf("pud62", "a")], [A.status(200), contentMatches("the sign-in text", O_SIGNIN("pud62o"))], { extraTests: keepFlowFrom("pud62o_a_flow", "pm.response.json().content") }),
+  flowStart("PUD-62", "setup: start VK-A's pud62o flow", "pud62o_a_flow"),
+  consentAs("PUD-62", "setup: consent for VK-A as alice", "pud62o_a_flow", "alice"),
+  followCallback("PUD-62", "setup: follow VK-A's callback", "pud62o_a_flow", [A.status(302), locationEnds(PU_SUCCESS)]),
+  rowOf("PUD-62", "setup: record VK-A's pud62 discovery", "pud62-h", "pud62", "a", "VK-A's pud62 row has a discovery", DISCOVERY(2), [...keepRowId("pud62_a_row"), ...keepDiscoveredAt("pud62_at")]),
+  rowOf("PUD-62", "setup: record VK-A's pud62o discovery", "pud62o-u", "pud62", "a", "VK-A's pud62o row has a discovery", DISCOVERY(2), keepDiscoveredAt("pud62o_at")),
+  resetCounters("PUD-62", "pud62"), resetCounters("PUD-62", "pud62o"),
+  clientPost("PUD-62", "refresh-tools on pud62", "pud62-h", "refresh-tools", [A.status(400), A.msgEquals(REFRESH_TOOLS_PUD("pud62"))]),
+  clientPost("PUD-62", "refresh-tools on pud62o", "pud62o-u", "refresh-tools", [A.status(400), A.msgEquals(REFRESH_TOOLS_PUD("pud62o"))]),
+  mockGet("PUD-62", "pud62", "pud62 received no MCP request", [methodsEmpty()]),
+  mockGet("PUD-62", "pud62o", "pud62o received no MCP request", [methodsEmpty()]),
+  rowOf("PUD-62", "VK-A's pud62 discovery is untouched", "pud62-h", "pud62", "a", "the same discovery", [...DISCOVERY(2), ...SAME_AT("pud62_at")]),
+  rowOf("PUD-62", "VK-A's pud62o discovery is untouched", "pud62o-u", "pud62", "a", "the same discovery", [...DISCOVERY(2), ...SAME_AT("pud62o_at")]),
+  refreshRow("PUD-62", "refresh VK-A's pud62 session instead", "pud62_a_row", refreshed(2)),
+  mockGet("PUD-62", "pud62", "the session refresh listed key-a's tools once", [identityMethod("key-a", "tools/list", 1)]),
+  deleteClient("PUD-62", "pud62-h"), deleteClient("PUD-62", "pud62o-u"),
+  pudVKDelete("PUD-62", "pud62", "a"),
+  restoreConfig("PUD-62"),
+]);
+
+const PUD63 = folder("PUD-63 Revoke the pending reauth flow during its code exchange", `Setup: ${ODOOR_TEXT("pud63")}; VK-A signed in as alice, then reauthorized from its session row and consented as bob; a gate holds pud63's token endpoint. The reauth callback is sent; while its code exchange waits at the gate, the pending reauth flow itself is revoked from the sessions list; then the gate opens. The exchange still happens upstream, but no token is stored from it, so VK-A keeps alice's token and discovery.`, [
+  ...puConfig("PUD-63", false),
+  ...odoor("PUD-63", "pud63"),
+  pudVK("PUD-63", "pud63", "a"),
+  ...signInO("PUD-63", "pud63", "a", "alice"),
+  rowOf("PUD-63", "setup: find VK-A's session", "pud63-u", "pud63", "a", "VK-A's row has a discovery", DISCOVERY(2), keepRowId("pud63_a_row")),
+  request("PUD-63", "setup: reauth VK-A's session", "POST", "/api/mcp/sessions/{{pud63_a_row}}/reauth", { asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('pud63_r', pm.response.json().session_id);"] }),
+  flowStart("PUD-63", "setup: start the reauth flow", "pud63_r"),
+  consentAs("PUD-63", "setup: consent as bob", "pud63_r", "bob"),
+  mockGet("PUD-63", "pud63", "setup: record pud63's code exchanges", [], ["pm.collectionVariables.set('pud63_tc', pm.response.json().oauth.counters.token_code);"]),
+  gatesSet("PUD-63", "pud63", { name: "g63", endpoint: "token" }),
+  race("PUD-63", "the reauth callback's code exchange waits at the gate while the pending reauth flow is revoked", "pud63", "g63", { method: "GET", url: "{{pud63_r_cb}}" },
+    [sendStep({ method: "DELETE", url: "{{base_url}}/api/mcp/sessions/{{pud63_r}}", header: ADMIN_H })], "pud63_race",
+    [raceHeld("pud63_race"), raceStep("pud63_race", 0, 204), A.custom("the code was exchanged upstream once more", ["pm.expect(pm.response.json().oauth.counters.token_code, 'body: ' + pm.response.text()).to.equal(Number(pm.collectionVariables.get('pud63_tc')) + 1);"])]),
+  request("PUD-63", "no flow row is left for pud63", "GET", SESSIONS, { asserts: [A.status(200), A.custom("no flow row for pud63-u", [sessionRows("pud63-u", "s.kind === 'flow'"), "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(0);"])] }),
+  rowOf("PUD-63", "VK-A keeps its session and discovery", "pud63-u", "pud63", "a", "VK-A's one row is the same active token, with its discovery", [...ROW_STATUS("active"), ...DISCOVERY(2), "pm.expect(row.id, 'row: ' + JSON.stringify(row)).to.equal(pm.collectionVariables.get('pud63_a_row'));"]),
+  gwList("PUD-63", "VK-A's gw-list still has pud63's tools", [vkOf("pud63", "a")], ["pud63-add_tool", "pud63-echo_tool"]),
+  gwCallAs("PUD-63", "VK-A calls pud63-add_tool over /mcp", "pud63-add_tool", [vkOf("pud63", "a")], [gwTextIs("add_tool:{\"text\":\"hi\"}")]),
+  mockGet("PUD-63", "pud63", "the call ran with alice's token, not bob's", [identityCallsAre({ alice: 1 })]),
+  gatesClear("PUD-63", "pud63"),
+  deleteClient("PUD-63", "pud63-u"),
+  pudVKDelete("PUD-63", "pud63", "a"),
+  restoreConfig("PUD-63"),
+]);
+
+const PUD64 = folder("PUD-64 Connect refreshes a token the upstream ended early", `Setup: ${ODOOR_TEXT("pud64")}; alice's tools/list fails (list_fail scoped to tools/list) while VK-A signs in as alice, so VK-A keeps alice's token with no discovery; then the fault is cleared and the authorization server ends alice's access token before the expiry Bifrost stored. VK-A then calls pud64-connect, whose handshake the upstream rejects with 401.`, [
+  ...puConfig("PUD-64", false),
+  ...odoor("PUD-64", "pud64"),
+  pudVK("PUD-64", "pud64", "a"),
+  identityFault("PUD-64", "pud64", "alice", { list_fail: true, methods: ["tools/list"] }),
+  ...signInO("PUD-64", "pud64", "a", "alice", PENDING_LANDING("pud64")),
+  rowOf("PUD-64", "setup: VK-A's token is kept, with no discovery", "pud64-u", "pud64", "a", "VK-A's row: active, no discovery", [...ROW_STATUS("active"), ...NO_DISCOVERY]),
+  clearIdentityFault("PUD-64", "pud64", "alice"),
+  mockPost("PUD-64", "pud64", "oauth/expire", "setup: end alice's access token upstream", { identity: "alice" }),
+  connectExpect("PUD-64", "VK-A connects: the rejected token is refreshed once and the discovery runs", "pud64", "a", connectedText("pud64", 2)),
+  mockGet("PUD-64", "pud64", "one refresh_token grant for alice, answered 200", [refreshGrants("alice", 1, 200)]),
+  rowOf("PUD-64", "VK-A's row now has the discovery", "pud64-u", "pud64", "a", "VK-A's row: active, 2 tools", [...ROW_STATUS("active"), ...DISCOVERY(2)]),
+  gwList("PUD-64", "VK-A's gw-list is pud64's tools", [vkOf("pud64", "a")], ["pud64-add_tool", "pud64-echo_tool"]),
+  deleteClient("PUD-64", "pud64-u"),
+  pudVKDelete("PUD-64", "pud64", "a"),
+  restoreConfig("PUD-64"),
+]);
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -7929,17 +11051,18 @@ const collection = {
     { key: "admin_auth_header", value: "" },
   ],
   item: [
-    section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM86, ADM87]),
-    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH48, AUTH49, AUTH50, AUTH51]),
-    section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, CONN23, CONN24, CONN25, CONN27]),
-    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54]),
-    section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS40, OAS42]),
-    section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET21, SET22, SET26]),
-    section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV37, GOV38]),
-    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
-    section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB27, LIB32, LIB33, LIB34, LIB36, LIB37]),
-    section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43]),
-    section("FAIL Failure handling", "Failure handling tests.", [FAIL01, FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL12, FAIL14, FAIL16, FAIL18, FAIL19, FAIL25]),
+    section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM26, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM84, ADM85, ADM86, ADM87]),
+    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH47, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57, AUTH58]),
+    section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, GO18, CONN23, CONN24, CONN25, CONN27, CONN28, CONN29, GO34, GO36]),
+    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, GO01, GO02, GO03, GO06, GO07, GO08, GO09, GO10, GO11, GO12, GO13, GO14, GO33, GO35]),
+    section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43]),
+    section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET26, SET27, SET28, SET29, SET30, SET31, SET32, SET04, SET05, SET10, SET11, SET15, SET23]),
+    section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV36, GOV37, GOV38, GOV39]),
+    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66, INF76, INF77]),
+    section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB12, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB27, LIB32, LIB33, LIB34, LIB36, LIB37]),
+    section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43, LOG49]),
+    section("FAIL Failure handling", "Failure handling tests.", [FAIL01, FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL09, FAIL10, FAIL12, FAIL14, FAIL16, FAIL18, FAIL19, FAIL23, FAIL24, FAIL25, FAIL27, FAIL28]),
+    section("PUD Per-user discovery", "Per-user discovery tests.", [PUD01, PUD02, PUD03, PUD04, PUD05, PUD06, PUD07, PUD08, PUD09, PUD10, PUD11, PUD12, PUD13, PUD14, PUD15, PUD16, PUD17, PUD18, PUD19, PUD20, PUD21, PUD22, PUD23, PUD24, PUD25, PUD26, PUD27, PUD28, PUD29, PUD30, PUD31, PUD32, PUD33, PUD34, PUD35, PUD36, PUD37, PUD38, PUD39, PUD40, PUD41, PUD42, PUD43, PUD44, PUD45, PUD46, PUD47, PUD48, PUD49, PUD50, PUD51, PUD52, PUD53, PUD54, PUD55, PUD56, PUD57, PUD58, PUD59, PUD60, PUD61, PUD62, PUD63, PUD64]),
   ],
 };
 
