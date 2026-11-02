@@ -2346,23 +2346,6 @@ const CONN21 = folder("CONN-21 STDIO create guards", "Setup: STDIO clients bridg
     [A.status(500), A.msgContains("executable file not found"), responseTime(null, 5000)]),
 ]);
 
-const CONN22 = folder("CONN-22 STDIO child exit", "Setup: alpha (echo_tool, add_tool); a STDIO client bridging to alpha, auth none, tools_to_execute [\"*\"].", [
-  ...freshServer("CONN-22", "alpha", ["echo_tool", "add_tool"]),
-  createClient("CONN-22", stdioClient("conn22-c", "conn22_c", "alpha", { tools_to_execute: ["*"] }), "setup: create the STDIO client"),
-  mockGet("CONN-22", "alpha", "setup: record the STDIO child's pid", [A.custom("stdio_pid is set", ["pm.expect(pm.response.json().stdio_pid, 'body: ' + pm.response.text()).to.be.above(0);"])],
-    ["pm.collectionVariables.set('conn22_pid', pm.response.json().stdio_pid);"]),
-  mockPost("CONN-22", "alpha", "stdio/kill", "stdio/kill"),
-  execTool("CONN-22", "execute after the child exits", "conn22_c-echo_tool", [A.status(400)]),
-  request("CONN-22", "reconnect", "POST", "/api/mcp/client/conn22-c/reconnect", { asserts: [A.status(200)] }),
-  mockGet("CONN-22", "alpha", "a new STDIO child is running", [A.custom("stdio_pid is set and differs from the first", [
-    "var pid = pm.response.json().stdio_pid;",
-    "pm.expect(pid, 'body: ' + pm.response.text()).to.be.above(0);",
-    "pm.expect(pid).to.not.equal(Number(pm.collectionVariables.get('conn22_pid')));",
-  ])]),
-  execTool("CONN-22", "execute after the reconnect", "conn22_c-echo_tool", [A.status(200)]),
-  deleteClient("CONN-22", "conn22-c"),
-]);
-
 // ================================================================ EP slugs, credentials and auth modes
 
 const wwwPresent = () => A.custom("WWW-Authenticate is present", ["pm.expect(pm.response.headers.get('WWW-Authenticate'), 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;"]);
@@ -8179,6 +8162,55 @@ const SET18 = folder("SET-18 Disable a sticky client", "Setup: alpha (echo_tool,
   deleteClient("SET-18", "set-18-a"),
 ]);
 
+// ================================================================ STDIO child lifecycle
+const CONN22 = folder("CONN-22 STDIO child exit", "Setup: alpha (echo_tool, add_tool); a STDIO client bridging to alpha, auth none, tools_to_execute [\"*\"].", [
+  ...freshServer("CONN-22", "alpha", ["echo_tool", "add_tool"]),
+  createClient("CONN-22", stdioClient("conn22-c", "conn22_c", "alpha", { tools_to_execute: ["*"] }), "setup: create the STDIO client"),
+  mockGet("CONN-22", "alpha", "setup: record the STDIO child's pid", [A.custom("stdio_pid is set", ["pm.expect(pm.response.json().stdio_pid, 'body: ' + pm.response.text()).to.be.above(0);"])],
+    ["pm.collectionVariables.set('conn22_pid', pm.response.json().stdio_pid);"]),
+  execTool("CONN-22", "execute before the child exits", "conn22_c-echo_tool", [A.status(200)]),
+  mockPost("CONN-22", "alpha", "stdio/kill", "stdio/kill"),
+  execR("CONN-22", "execute after the child exits", "conn22-k", "conn22_c-echo_tool", { text: "hi" }, [A.status(400), A.msgStartsWith("MCP tool call failed for conn22_c-echo_tool: ")]),
+  logRow("CONN-22", "the failed call is logged as an error", "conn22-k", [rowIs("status", "error")]),
+  request("CONN-22", "reconnect", "POST", "/api/mcp/client/conn22-c/reconnect", { asserts: [A.status(200), A.jsonMessage("MCP client reconnected successfully")] }),
+  mockGet("CONN-22", "alpha", "a new STDIO child is running", [A.custom("stdio_pid is set and differs from the first", [
+    "var pid = pm.response.json().stdio_pid;",
+    "pm.expect(pid, 'body: ' + pm.response.text()).to.be.above(0);",
+    "pm.expect(pid).to.not.equal(Number(pm.collectionVariables.get('conn22_pid')));",
+  ])]),
+  execTool("CONN-22", "execute after the reconnect", "conn22_c-echo_tool", [A.status(200)]),
+  deleteClient("CONN-22", "conn22-c"),
+]);
+
+// waitForNewPid polls the fleet server name, 500ms apart, until it reports a STDIO child other than the one saved
+// in the collection variable pidVar, or tries polls ran (60 by default, about 30s).
+const waitForNewPid = (name, pidVar, tries = 60) => [
+  `var left = ${tries};`,
+  "function poll() {",
+  `  pm.sendRequest({ url: pm.variables.get('chaos_url') + '/control/${name}', method: 'GET' }, function (err, res) {`,
+  "    var pid = !err && res.code === 200 ? res.json().stdio_pid : 0;",
+  `    if ((pid > 0 && pid !== Number(pm.collectionVariables.get('${pidVar}'))) || --left <= 0) { return; }`,
+  "    setTimeout(poll, 500);",
+  "  });",
+  "}",
+  "poll();",
+];
+const GO18 = folder("GO-18 Automatic STDIO respawn", "Setup: alpha (echo_tool, add_tool); a STDIO client bridging to alpha, auth none, tools_to_execute [\"*\"], tool_sync_interval \"5s\".", [
+  ...freshServer("GO-18", "alpha", ["echo_tool", "add_tool"]),
+  createClient("GO-18", stdioClient("go18-c", "go18_c", "alpha", { tools_to_execute: ["*"], tool_sync_interval: "5s" }), "setup: create the STDIO client, syncing every 5s"),
+  mockGet("GO-18", "alpha", "setup: record the STDIO child's pid", [A.custom("stdio_pid is set", ["pm.expect(pm.response.json().stdio_pid, 'body: ' + pm.response.text()).to.be.above(0);"])],
+    ["pm.collectionVariables.set('go18_pid', pm.response.json().stdio_pid);"]),
+  mockPost("GO-18", "alpha", "stdio/kill", "stdio/kill"),
+  mockGetAfter("GO-18", "alpha", "a new STDIO child is running within 30s, with no admin action", [A.custom("stdio_pid is set and differs from the first", [
+    "var pid = pm.response.json().stdio_pid;",
+    "pm.expect(pid, 'body: ' + pm.response.text()).to.be.above(0);",
+    "pm.expect(pid).to.not.equal(Number(pm.collectionVariables.get('go18_pid')));",
+  ])], waitForNewPid("alpha", "go18_pid")),
+  request("GO-18", "the client is healthy within 30s", "GET", "/api/mcp/clients?server=go18-c", { pre: waitForClient("go18-c", "c.state === 'healthy'", 120), asserts: [A.status(200), clientState("healthy")] }),
+  execTool("GO-18", "execute over the new child", "go18_c-echo_tool", [A.status(200)]),
+  deleteClient("GO-18", "go18-c"),
+]);
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -8194,7 +8226,7 @@ const collection = {
   item: [
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM86, ADM87]),
     section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH48, AUTH49, AUTH50, AUTH51]),
-    section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, CONN23, CONN24, CONN25, CONN27]),
+    section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, GO18, CONN23, CONN24, CONN25, CONN27]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS40, OAS42]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET26]),
