@@ -81,9 +81,9 @@ func (r *discoveryRecorder) count() int {
 
 func installedOf(t *testing.T, m *MCPManager, id string) *schemas.MCPDiscovery {
 	t.Helper()
-	state, ok := snapshotClientState(m, id)
+	_, ok := snapshotClientState(m, id)
 	require.True(t, ok)
-	return installedDiscovery(&state)
+	return m.installedDiscovery(id)
 }
 
 func requireResourcesAndPrompts(t *testing.T, listed *schemas.MCPDiscovery, promptPrefix string) {
@@ -845,28 +845,6 @@ func TestResourcesAndPrompts_EditOfUndiscoveredClientFiresNothing(t *testing.T) 
 	assert.Equal(t, 0, recorder.count())
 }
 
-// GetClients hands out its own copies of the discovered lists, so a caller that sorts or edits one
-// cannot change what the manager serves.
-func TestGetClients_ReturnsOwnedDiscoveryLists(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
-	m.clientMap["docs-id"] = &schemas.MCPClientState{
-		Name:              "docs",
-		Resources:         []mcpgo.Resource{mcpgo.NewResource("file:///b.md", "b"), mcpgo.NewResource("file:///a.md", "a")},
-		ResourceTemplates: []mcpgo.ResourceTemplate{mcpgo.NewResourceTemplate("repo://{name}", "repo")},
-		Prompts:           []mcpgo.Prompt{mcpgo.NewPrompt("docs-review")},
-	}
-	got := m.GetClients()
-	require.Len(t, got, 1)
-	got[0].Resources[0] = mcpgo.NewResource("file:///edited.md", "edited")
-	got[0].ResourceTemplates[0].Name = "edited"
-	got[0].Prompts[0].Name = "edited"
-
-	held := m.clientMap["docs-id"]
-	assert.Equal(t, "file:///b.md", held.Resources[0].URI)
-	assert.Equal(t, "repo", held.ResourceTemplates[0].Name)
-	assert.Equal(t, "docs-review", held.Prompts[0].Name)
-}
-
 // stampingPipeline's pre-hook narrows the request to stamped tools, as governance does for a read.
 type stampingPipeline struct {
 	listGatePipeline
@@ -887,15 +865,19 @@ func TestResourcesAndPrompts_ReadRecheckedAfterPreHooksNarrowAccess(t *testing.T
 	m.clientMap["allowed-id"] = &schemas.MCPClientState{
 		Name:            "allowed",
 		ExecutionConfig: &schemas.MCPClientConfig{ID: "allowed-id", Name: "allowed"},
-		ToolMap:         map[string]schemas.ChatTool{"allowed-search": {}},
 	}
+	m.discoveryStore.SetDiscovery(context.Background(), "allowed-id", &schemas.MCPDiscovery{
+		Tools: map[string]schemas.ChatTool{"allowed-search": {}},
+	})
 	m.clientMap["denied-id"] = &schemas.MCPClientState{
 		Name:            "denied",
 		ExecutionConfig: &schemas.MCPClientConfig{ID: "denied-id", Name: "denied"},
-		ToolMap:         map[string]schemas.ChatTool{"denied-search": {}},
-		Prompts:         []mcpgo.Prompt{mcpgo.NewPrompt("denied-review")},
-		Resources:       []mcpgo.Resource{mcpgo.NewResource("file:///secret.md", "secret")},
 	}
+	m.discoveryStore.SetDiscovery(context.Background(), "denied-id", &schemas.MCPDiscovery{
+		Tools:     map[string]schemas.ChatTool{"denied-search": {}},
+		Prompts:   []mcpgo.Prompt{mcpgo.NewPrompt("denied-review")},
+		Resources: []mcpgo.Resource{mcpgo.NewResource("file:///secret.md", "secret")},
+	})
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	_, bErr := m.GetPrompt(ctx, "denied-review", nil)
@@ -933,9 +915,11 @@ func TestResourcesAndPrompts_SharedURIReadGoesToTheReachableServer(t *testing.T)
 	m.clientMap["a-id"] = &schemas.MCPClientState{
 		Name:            "a",
 		ExecutionConfig: &schemas.MCPClientConfig{ID: "a-id", Name: "a"},
-		ToolMap:         map[string]schemas.ChatTool{},
-		Resources:       []mcpgo.Resource{mcpgo.NewResource("file:///handbook.md", "handbook")},
 	}
+	m.discoveryStore.SetDiscovery(context.Background(), "a-id", &schemas.MCPDiscovery{
+		Tools:     map[string]schemas.ChatTool{},
+		Resources: []mcpgo.Resource{mcpgo.NewResource("file:///handbook.md", "handbook")},
+	})
 	pipeline := &servedByPipeline{stampingPipeline: stampingPipeline{tools: []string{"b-*"}}}
 	m.pluginPipelineProvider = func() PluginPipeline { return pipeline }
 	m.releasePluginPipeline = func(PluginPipeline) {}

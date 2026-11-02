@@ -88,7 +88,6 @@ func TestEnableClient_StillPendingVerification_KeepsThatState(t *testing.T) {
 				Name:            config.Name,
 				ExecutionConfig: config,
 				State:           schemas.MCPConnectionStateDisabled,
-				ToolMap:         map[string]schemas.ChatTool{},
 				ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
 			}
 			m.mu.Unlock()
@@ -288,7 +287,6 @@ func TestUpdateClient_VerifiedClientStaysVerified(t *testing.T) {
 				Name:            config.Name,
 				ExecutionConfig: config,
 				State:           schemas.MCPConnectionStateHealthy,
-				ToolMap:         map[string]schemas.ChatTool{},
 				ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
 			}
 			m.mu.Unlock()
@@ -337,7 +335,6 @@ func TestUpdateClient_ReverifiedToolsReplaceTheOldOnes(t *testing.T) {
 		Name:            config.Name,
 		ExecutionConfig: config,
 		State:           schemas.MCPConnectionStateHealthy,
-		ToolMap:         map[string]schemas.ChatTool{},
 		ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
 	}
 	m.mu.Unlock()
@@ -354,8 +351,8 @@ func TestUpdateClient_ReverifiedToolsReplaceTheOldOnes(t *testing.T) {
 
 // TestUpdateClient_RenameRebindsTheVerifiedTools pins the second job
 // DiscoveredTools has. It is not only the "verification ran" marker: a per-call
-// client's ToolMap is restored from it, keys and all. UpdateClient rebinds the
-// live ToolMap to the new name on a rename, so a verification record carried
+// client's stored discovery is restored from it, keys and all. UpdateClient
+// rebinds that discovery to the new name on a rename, so a verification record carried
 // forward under the old name would disagree with it, and the next restore
 // (enable, after a disable) would bring the tools back under a name the client
 // no longer has.
@@ -371,10 +368,12 @@ func TestUpdateClient_RenameRebindsTheVerifiedTools(t *testing.T) {
 		Name:            config.Name,
 		ExecutionConfig: config,
 		State:           schemas.MCPConnectionStateHealthy,
-		ToolMap:         map[string]schemas.ChatTool{"verifiedclient-lookup": lookup},
 		ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
 	}
 	m.mu.Unlock()
+	m.discoveryStore.SetDiscovery(context.Background(), config.ID, &schemas.MCPDiscovery{
+		Tools: map[string]schemas.ChatTool{"verifiedclient-lookup": lookup},
+	})
 
 	edit := *config
 	edit.Name = "renamedclient"
@@ -392,9 +391,7 @@ func TestUpdateClient_RenameRebindsTheVerifiedTools(t *testing.T) {
 	// And the restore that reads it installs the tool under the current name.
 	require.NoError(t, m.DisableClient(config.ID))
 	require.NoError(t, m.EnableClient(config.ID))
-	m.mu.RLock()
-	toolMap := m.clientMap[config.ID].ToolMap
-	m.mu.RUnlock()
+	toolMap := m.discoveryStore.GetDiscovery(context.Background(), config.ID).GetTools()
 	assert.Contains(t, toolMap, "renamedclient-lookup")
 	assert.NotContains(t, toolMap, "verifiedclient-lookup")
 }
@@ -460,7 +457,6 @@ func TestSetClientDiscovery_RecordsTheVerificationOnTheConfig(t *testing.T) {
 				Name:            config.Name,
 				ExecutionConfig: config,
 				State:           schemas.MCPConnectionStatePendingVerification,
-				ToolMap:         map[string]schemas.ChatTool{},
 				ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
 			}
 			m.mu.Unlock()
@@ -533,7 +529,6 @@ func TestSetClientDiscovery_VerifyingAPendingClientStartsItsChecker(t *testing.T
 				Name:            config.Name,
 				ExecutionConfig: config,
 				State:           schemas.MCPConnectionStatePendingVerification,
-				ToolMap:         map[string]schemas.ChatTool{},
 				ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
 			}
 			m.mu.Unlock()
@@ -573,7 +568,6 @@ func TestSetClientDiscovery_VerifiedClientKeepsItsChecker(t *testing.T) {
 		Name:            config.Name,
 		ExecutionConfig: config,
 		State:           schemas.MCPConnectionStateHealthy,
-		ToolMap:         map[string]schemas.ChatTool{},
 		ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
 	}
 	m.mu.Unlock()
@@ -606,7 +600,6 @@ func TestSetClientDiscovery_StartsTheCheckerFromTheClientAsItIsThen(t *testing.T
 			Name:            config.Name,
 			ExecutionConfig: config,
 			State:           schemas.MCPConnectionStatePendingVerification,
-			ToolMap:         map[string]schemas.ChatTool{},
 			ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
 		}
 		m.mu.Unlock()
@@ -643,7 +636,6 @@ func TestSetClientDiscovery_StartsTheCheckerFromTheClientAsItIsThen(t *testing.T
 				Name:            current.Name,
 				ExecutionConfig: current,
 				State:           schemas.MCPConnectionStateHealthy,
-				ToolMap:         map[string]schemas.ChatTool{},
 				ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: current.ConnectionType},
 			}
 			m.mu.Unlock()

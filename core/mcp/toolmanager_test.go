@@ -45,8 +45,16 @@ func (m *mockToolClientManager) GetClientByName(clientName string) *schemas.MCPC
 	return nil
 }
 
-func (m *mockToolClientManager) GetClientForTool(toolName string) *schemas.MCPClientState {
+func (m *mockToolClientManager) GetClientForTool(_ context.Context, toolName string) (*schemas.MCPClientState, *schemas.MCPDiscovery) {
+	return nil, nil
+}
+
+func (m *mockToolClientManager) GetToolsForClient(_ context.Context, clientID string) map[string]schemas.ChatTool {
 	return nil
+}
+
+func (m *mockToolClientManager) GetInstructionsForClient(_ context.Context, clientID string) string {
+	return ""
 }
 
 func (m *mockToolClientManager) GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool {
@@ -1418,7 +1426,7 @@ func TestExecuteTool_CallsTheUpstreamToolByItsExactName(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	ctx := context.Background()
-	m := &MCPManager{credStore: &fakeAdminCredStore{headers: http.Header{}}, logger: &MockLogger{}, clientMap: map[string]*schemas.MCPClientState{}}
+	m := &MCPManager{credStore: &fakeAdminCredStore{headers: http.Header{}}, logger: &MockLogger{}, clientMap: map[string]*schemas.MCPClientState{}, discoveryStore: NewDiscoveryStore()}
 	config := &schemas.MCPClientConfig{
 		ID:               "client-alpha",
 		Name:             "alpha",
@@ -1430,7 +1438,7 @@ func TestExecuteTool_CallsTheUpstreamToolByItsExactName(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, discovery.Tools, "alpha-a_b")
 	require.Contains(t, discovery.Tools, "alpha-a-b")
-	state := &schemas.MCPClientState{Name: "alpha", ExecutionConfig: config, ToolMap: discovery.Tools}
+	state := &schemas.MCPClientState{Name: "alpha", ExecutionConfig: config}
 
 	conn, err := client.NewStreamableHttpClient(ts.URL)
 	require.NoError(t, err)
@@ -1442,7 +1450,7 @@ func TestExecuteTool_CallsTheUpstreamToolByItsExactName(t *testing.T) {
 	}}, "")
 	require.NoError(t, err)
 
-	tm := newAuthRetryToolsManager(&authRetryClientManager{state: state, acquireConn: conn}, &authRetryCredStore{})
+	tm := newAuthRetryToolsManager(&authRetryClientManager{state: state, stateDiscovery: discovery, acquireConn: conn}, &authRetryCredStore{})
 	for _, name := range []string{"alpha-a_b", "alpha-a-b", "alpha-web-search"} {
 		bctx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 		_, err := tm.ExecuteTool(bctx, newAuthRetryToolCallRequest(name), conn, state.ExecutionConfig)

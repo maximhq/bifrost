@@ -29,26 +29,52 @@ const (
 // Visibility follows GetToolPerClient, so a narrowed caller never reads the guidance of a server it
 // was not granted.
 //
+// The text is read from the caller's discovery for each client, the same one its visible
+// tools came from, so a store serving a caller its own discovery serves it its own
+// instructions with no extra wiring.
+//
 // Code mode clients are excluded: their tools are never sent, so their guidance rides in the
 // stub instead. See InstructionsCommentBlock.
 func (m *MCPManager) GetServerInstructions(ctx context.Context) []schemas.MCPServerInstructions {
 	visible := m.GetToolPerClient(ctx)
-	// Runs on every MCP-bearing request: reads three fields under the lock instead of copying client state.
+
+	// Snapshot the clients under the lock, then read each one's text from the caller's
+	// discovery outside it: the same per-caller discovery that made the client visible, and
+	// a ctx-aware store may read through to slower backing, which must not run under m.mu.
+	type candidate struct {
+		id        string
+		maxLength int
+	}
 	m.mu.RLock()
-	var result []schemas.MCPServerInstructions
+	candidates := make(map[string]candidate, len(m.clientMap))
 	for _, client := range m.clientMap {
 		config := client.ExecutionConfig
-		if config == nil || config.IsCodeModeClient || client.ServerInstructions == "" || len(visible[config.Name]) == 0 {
+		if config == nil || config.IsCodeModeClient {
+			continue
+		}
+		candidates[client.ExecutionConfig.Name] = candidate{id: client.ExecutionConfig.ID, maxLength: client.ExecutionConfig.MaxInstructionsLength}
+	}
+	m.mu.RUnlock()
+
+	result := make([]schemas.MCPServerInstructions, 0, len(visible))
+	for clientName, tools := range visible {
+		c, ok := candidates[clientName]
+		if !ok || len(tools) == 0 {
+			continue
+		}
+		instructions := m.discoveryStore.GetDiscovery(ctx, c.id).GetInstructions()
+		if instructions == "" {
 			continue
 		}
 		result = append(result, schemas.MCPServerInstructions{
-			ClientName:   config.Name,
-			Instructions: client.ServerInstructions,
-			MaxLength:    config.MaxInstructionsLength,
+			ClientName:   clientName,
+			Instructions: instructions,
+			MaxLength:    c.maxLength,
 		})
 	}
-	m.mu.RUnlock()
-	slices.SortFunc(result, func(a, b schemas.MCPServerInstructions) int { return strings.Compare(a.ClientName, b.ClientName) })
+	slices.SortFunc(result, func(a, b schemas.MCPServerInstructions) int {
+		return strings.Compare(a.ClientName, b.ClientName)
+	})
 	return result
 }
 
