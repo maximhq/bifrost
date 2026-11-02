@@ -562,6 +562,9 @@ func ToGeminiBatchEmbeddingRequest(body map[string]interface{}) (GeminiEmbedding
 		if err := sonic.Unmarshal(raw, &req); err != nil {
 			return req, fmt.Errorf("failed to unmarshal gemini embedding request: %w", err)
 		}
+		if req.Content == nil || len(req.Content.Parts) == 0 {
+			return req, fmt.Errorf("embedding content is empty")
+		}
 		return req, nil
 	}
 

@@ -151,4 +151,16 @@ func TestToGeminiBatchEmbeddingRequest(t *testing.T) {
 		_, err := gemini.ToGeminiBatchEmbeddingRequest(map[string]interface{}{"dimensions": float64(8)})
 		require.Error(t, err)
 	})
+
+	t.Run("RejectsEmptyNativeContent", func(t *testing.T) {
+		for name, content := range map[string]interface{}{
+			"null":       nil,
+			"no parts":   map[string]interface{}{},
+			"empty list": map[string]interface{}{"parts": []interface{}{}},
+		} {
+			_, err := gemini.ToGeminiBatchEmbeddingRequest(map[string]interface{}{"content": content})
+			require.Error(t, err, name)
+			assert.Contains(t, err.Error(), "embedding content is empty", name)
+		}
+	})
 }
