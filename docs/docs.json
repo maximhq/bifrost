@@ -378,6 +378,16 @@
               "enterprise/access-profiles",
               "enterprise/rbac",
               "enterprise/data-access-control",
+              {
+                "group": "Workload Identity",
+                "icon": "fingerprint",
+                "pages": [
+                  "enterprise/workload-identity/overview",
+                  "enterprise/workload-identity/entra",
+                  "enterprise/workload-identity/aws",
+                  "enterprise/workload-identity/oidc"
+                ]
+              },
               "enterprise/virtual-mcps",
               "enterprise/projects",
               "enterprise/prompt-deployments",
@@ -2462,6 +2472,7 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.48",
               "changelogs/helm-v2.1.47",
               "changelogs/helm-v2.1.46",
               "changelogs/helm-v2.1.45",
