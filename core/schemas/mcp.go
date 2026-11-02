@@ -86,6 +86,18 @@ const (
 	MCPAuthRequiredKindExchange = "exchange"
 )
 
+// MCPToolCallKind says why core vouches for an MCP tool call it runs, when it
+// does. A plugin that gates MCP tools reads it (bifrost.MCPToolCallKindOf) to
+// authorize such a call differently from a tool the caller picked out of their
+// own grants. Only core can record it, so no plugin or caller can claim it.
+type MCPToolCallKind uint8
+
+const (
+	MCPToolCallKindNone     MCPToolCallKind = iota // a call core does not vouch for
+	MCPToolCallKindInjected                        // a provider-injected tool the operator configured: no tool permit names it, and none applies
+	MCPToolCallKindConnect                         // the connect tool of a client with per_user_discovery on: allowed by access to the client
+)
+
 // MCPAuthRequiredError is returned when a per-user MCP credential is missing
 // and the caller must complete an inline auth flow (OAuth dance or headers
 // submission) before tool execution can proceed.
@@ -270,6 +282,107 @@ type MCPConfig struct {
 	// The transport registers framework/openapimcp.Factory here; Go SDK users opt in
 	// the same way. Nil means openapi clients fail to connect with a clear error.
 	InProcessServerFactory InProcessServerFactory `json:"-"`
+
+	// SharedDiscoveryStore is where the manager keeps the discoveries of
+	// clients without per_user_discovery, one per client served to every
+	// caller. It is used only together with PerUserDiscoveryStore: when either
+	// is nil, these discoveries are kept in memory.
+	// BifrostConfig.MCPSharedDiscoveryStore fills it when it is unset,
+	// including for a manager created on first use.
+	SharedDiscoveryStore MCPDiscoveryStore `json:"-"`
+
+	// PerUserDiscoveryStore is where the manager keeps the discoveries of
+	// clients with per_user_discovery on, one per caller. Nil leaves such a
+	// client with no tools for anyone, and keeps shared discoveries in memory
+	// even when SharedDiscoveryStore is set. BifrostConfig.MCPPerUserDiscoveryStore
+	// fills it when it is unset, including for a manager created on first use.
+	PerUserDiscoveryStore MCPDiscoveryStore `json:"-"`
+}
+
+// MCPDiscovery is what discovering one MCP client produced, as one caller sees
+// it: the tools keyed by "<client>-<tool>", where <tool> is the upstream's own
+// name (execution strips only the client prefix), the upstream's initialize
+// `instructions`, its resources, resource templates and prompts (prompt names
+// prefixed like tools; resource URIs and templates are the server's own), and
+// when the upstream last answered tools/list for it.
+//
+// Everything here comes from one handshake under one credential, so it is
+// stored, replaced and served as a unit: a store that gives a caller its own
+// tools gives that caller the instructions that came with them. Anything else
+// a server advertises per caller belongs here for the same reason.
+//
+// Values handed out by a store are shared snapshots — callers must not
+// mutate the maps or slices.
+type MCPDiscovery struct {
+	Tools             map[string]ChatTool
+	Instructions      string                 // Upstream initialize `instructions`, "" when it advertises none; replaced, never appended to
+	Resources         []mcp.Resource         // As the server lists them
+	ResourceTemplates []mcp.ResourceTemplate // As the server lists them
+	Prompts           []mcp.Prompt           // Names prefixed with the client name, like tools
+	// DiscoveredAt is when this discovery's tools were produced by an
+	// upstream tools/list. The manager compares it against a client's tool
+	// sync interval to decide when a refresh is due. Zero means unknown (e.g.
+	// restored from persisted config), which reads as "not due".
+	DiscoveredAt time.Time
+}
+
+// GetTools returns the discovery's tools; nil-safe, so a store's "nothing
+// recorded for this client" reads as an empty tool list without branching at
+// call sites.
+func (d *MCPDiscovery) GetTools() map[string]ChatTool {
+	if d == nil {
+		return nil
+	}
+	return d.Tools
+}
+
+// GetInstructions returns the discovery's upstream instructions; nil-safe like
+// GetTools.
+func (d *MCPDiscovery) GetInstructions() string {
+	if d == nil {
+		return ""
+	}
+	return d.Instructions
+}
+
+// MCPDiscoveryStore holds the discovery results of MCP clients. It is a plain
+// mapping: discovery, refresh, and every upstream interaction stay with the
+// caller (the MCP manager); the store only records results and answers
+// lookups. An implementation may keep them in memory or persist them; the
+// manager depends on neither.
+//
+// Every method takes the client and the caller's ctx. The manager keeps two:
+// a shared store, holding the one discovery every caller of a shared client
+// sees (MCPConfig.SharedDiscoveryStore, in memory by default), and a per-user
+// store for clients with per_user_discovery on, holding one discovery per
+// caller (MCPConfig.PerUserDiscoveryStore). A per-user store resolves the
+// caller off ctx the way the per-user credential lookup does (user or
+// virtual key), so a discovery lands under the same identity as the
+// credential it was made with when it is written with that credential's ctx.
+//
+// The manager reads and writes the shared store while holding its own lock,
+// so no shared store method may block: a persistent one writes in the
+// background. It calls the per-user store under that lock only with its own
+// ctx, which names no caller, and serves requests from both outside it.
+//
+// Implementations must be safe for concurrent use.
+type MCPDiscoveryStore interface {
+	// GetDiscovery returns the discovery the caller on ctx sees for client,
+	// or nil when there is none.
+	GetDiscovery(ctx context.Context, client *MCPClientConfig) *MCPDiscovery
+	// SetDiscovery replaces the caller's discovery for client wholesale.
+	// Every write carries a complete discovery result; merging would keep
+	// tools the upstream has since withdrawn.
+	//
+	// The manager writes shared discoveries under its own lock so a result
+	// and the connection state it belongs to land atomically, so the built-in
+	// store never blocks on I/O for a shared client. A per-caller store may
+	// read through to a database; the manager calls it outside its lock, and
+	// a write on the manager's own ctx (no caller) is refused before any I/O.
+	SetDiscovery(ctx context.Context, client *MCPClientConfig, discovery *MCPDiscovery) error
+	// DeleteDiscovery removes the caller's discovery for client. Deleting one
+	// that does not exist is not an error.
+	DeleteDiscovery(ctx context.Context, client *MCPClientConfig) error
 }
 
 // ErrMCPOpenAPIConfigInvalid marks a permanent failure to synthesize an openapi
@@ -549,6 +662,19 @@ const (
 	MCPAuthTypePerUserHeaders MCPAuthType = "per_user_headers" // Per-user header authentication (each user submits API keys / signed tokens; admin declares the required key names via PerUserHeaderKeys)
 	MCPAuthTypeTokenExchange  MCPAuthType = "token_exchange"   // Delegated token exchange: the caller's identity-provider token is exchanged for a short-lived upstream token scoped to this server's audience; requires user-identity authentication to be available
 )
+
+// IsPerUser reports whether callers of a client with this auth type
+// authenticate individually, each with a credential of their own, as opposed
+// to every caller riding one shared credential the admin set up. These are
+// the auth types that can carry per-user discoveries (PerUserDiscovery), since
+// only they have a per-caller credential to discover with.
+func (t MCPAuthType) IsPerUser() bool {
+	switch t {
+	case MCPAuthTypePerUserOauth, MCPAuthTypePerUserHeaders, MCPAuthTypeTokenExchange:
+		return true
+	}
+	return false
+}
 
 // MCPTokenExchangeConfig configures delegated token exchange for one MCP
 // client (AuthType == token_exchange): which resource the exchanged token
@@ -867,6 +993,22 @@ type MCPClientConfig struct {
 	// The wire name used to be allow_on_all_virtual_keys. That key is still read (UnmarshalJSON) and
 	// still written (MarshalJSON), so configuration and clients written against it keep working.
 	AllowByDefault bool `json:"allow_by_default"`
+
+	// PerUserDiscovery makes each caller's discovery (its tools and the
+	// server's instructions, see MCPDiscovery) its own for a client whose
+	// callers authenticate individually (per_user_oauth, per_user_headers,
+	// token_exchange). Off (the default), every caller is served the
+	// discovery made with the retained admin credential, so a tool the
+	// upstream only grants some accounts is either visible to everyone or to
+	// no one. On, discovery runs with each caller's own credential and is
+	// kept per (auth mode, identity, client); the client stores no admin
+	// credential and does no admin discovery at all. Rejected for every other
+	// auth type, where there is no per-caller credential to discover with.
+	// nil means not declared and reads as off; a pointer so an update or a
+	// config.json entry that omits it can keep the stored value.
+	PerUserDiscovery *bool `json:"per_user_discovery,omitempty"`
+
+	PendingVerification bool `json:"-"` // Server-set: the client still needs its one-time admin sign-in or verification
 
 	// Discovered tools for per-user OAuth clients (persisted so they survive restart)
 	DiscoveredTools map[string]ChatTool `json:"-"` // Discovered tool schemas keyed by prefixed name
@@ -1374,37 +1516,21 @@ type MCPInstanceState struct {
 	LastFailure *MCPConnectionFailure `json:"last_failure,omitempty"`
 }
 
-// MCPClientState represents a connected MCP client with its configuration and tools.
-// It is used internally by the MCP manager to track the state of a connected MCP client.
+// MCPClientState represents a connected MCP client: its configuration and
+// connection state. It is used internally by the MCP manager to track the
+// state of a connected MCP client. It carries no discovery data — a client's
+// discovered tools, instructions, resources and prompts live in the manager's
+// MCPDiscoveryStore, fetched separately by whoever needs them.
 type MCPClientState struct {
-	Name            string                   // Unique name for this client
-	Conn            *client.Client           // Active MCP client connection
-	ExecutionConfig *MCPClientConfig         // Tool filtering settings
-	ToolMap         map[string]ChatTool      // Available tools mapped by name
-	ConnectionInfo  *MCPClientConnectionInfo `json:"connection_info"` // Connection metadata for management
-	// ServerInstructions is the upstream's initialize `instructions`, as of the last handshake.
-	// Overwritten (never appended to) on reconnect, so dropping it upstream drops it here.
-	ServerInstructions string                `json:"server_instructions,omitempty"`
-	CancelFunc         context.CancelFunc    `json:"-"` // Cancel function for SSE connections (not serialized)
-	State              MCPConnectionState    // Connection state (healthy, unstable, needs_reauth, ...)
-	LastFailure        *MCPConnectionFailure `json:"last_failure,omitempty"` // Why State is not Healthy; nil while Healthy (see MCPConnectionFailure)
-	ConnGeneration     uint64                `json:"-"`                      // Counts connection swaps; late writers bound to an older Conn compare against it to detect staleness (not serialized)
-	LastDiscoveryHash  string                `json:"-"`                      // Content hash of the last discovery (tools, instructions, resources, prompts) the change callback fired for; gates it to genuine changes (not serialized)
-
-	Resources         []mcp.Resource         `json:"-"` // As the server lists them
-	ResourceTemplates []mcp.ResourceTemplate `json:"-"` // As the server lists them
-	Prompts           []mcp.Prompt           `json:"-"` // Names prefixed with the client name, like tools
-}
-
-// MCPDiscovery is what an MCP server exposed as of one connection: its tools, instructions,
-// resources and prompts. Tool and prompt names are prefixed with the client name; resource URIs
-// and templates are the server's own.
-type MCPDiscovery struct {
-	Tools             map[string]ChatTool
-	Instructions      string
-	Resources         []mcp.Resource
-	ResourceTemplates []mcp.ResourceTemplate
-	Prompts           []mcp.Prompt
+	Name              string                   // Unique name for this client
+	Conn              *client.Client           // Active MCP client connection
+	ExecutionConfig   *MCPClientConfig         // Tool filtering settings
+	ConnectionInfo    *MCPClientConnectionInfo `json:"connection_info"` // Connection metadata for management
+	CancelFunc        context.CancelFunc       `json:"-"`               // Cancel function for SSE connections (not serialized)
+	State             MCPConnectionState       // Connection state (healthy, unstable, needs_reauth, ...)
+	LastFailure       *MCPConnectionFailure    `json:"last_failure,omitempty"` // Why State is not Healthy; nil while Healthy (see MCPConnectionFailure)
+	ConnGeneration    uint64                   `json:"-"`                      // Counts connection swaps; late writers bound to an older Conn compare against it to detect staleness (not serialized)
+	LastDiscoveryHash string                   `json:"-"`                      // Content hash of the last discovery (tools, instructions, resources, prompts) the change callback fired for; gates it to genuine changes (not serialized)
 }
 
 // MCPClientConnectionInfo stores metadata about how a client is connected.
