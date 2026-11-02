@@ -82,10 +82,10 @@ Only meaningful for `connection_type: "http"` — `sse` and `stdio` connections 
 <Tabs>
 <Tab title="Web UI">
 
-Toggle **Session Stickiness** in the client's create/edit sheet (HTTP connections only):
+Toggle **Maintain Persistent Connection** under **Server Behavior** in the client's create/edit sheet (HTTP connections only):
 
 <Frame>
-  <img src="/media/ui-mcp-session-stickiness.png" alt="MCP client edit sheet showing the Session Stickiness toggle" />
+  <img src="/media/ui-mcp-session-stickiness.png" alt="MCP client edit sheet showing the Maintain Persistent Connection toggle" />
 </Frame>
 
 </Tab>
@@ -1251,9 +1251,11 @@ You can temporarily disable an MCP client without removing it. When disabled, Bi
 <Tabs>
 <Tab title="Web UI">
 
-Use the **Enabled** toggle in the MCP Server Catalog table to disable or re-enable a client with a single click. The toggle shows a loading spinner while the API call is in flight and automatically reflects the updated state.
+Use the **Status** toggle in the MCP Server Catalog table to disable or re-enable a client with a single click. The toggle shows a loading spinner while the API call is in flight and automatically reflects the updated state.
 
-![MCP client enable/disable toggle in the server catalog table](/images/placeholder-mcp-disable-toggle.png)
+<Frame>
+  <img src="/media/ui-mcp-disable-toggle.png" alt="MCP Server Catalog table with the Status toggle for each client" />
+</Frame>
 
 </Tab>
 <Tab title="Gateway API">

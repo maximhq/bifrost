@@ -544,6 +544,9 @@ false
 {{- if .Values.bifrost.server.readBufferSize }}
 {{- $_ := set $server "read_buffer_size" .Values.bifrost.server.readBufferSize }}
 {{- end }}
+{{- if .Values.bifrost.server.basePath }}
+{{- $_ := set $server "base_path" .Values.bifrost.server.basePath }}
+{{- end }}
 {{- if not (kindIs "invalid" .Values.bifrost.server.bodyBufferPoolLimitBytes) }}
 {{- $_ := set $server "body_buffer_pool_limit_bytes" .Values.bifrost.server.bodyBufferPoolLimitBytes }}
 {{- end }}

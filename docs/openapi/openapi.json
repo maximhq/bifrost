@@ -20,7 +20,7 @@
       "variables": {
         "baseUrl": {
           "default": "http://localhost:8080",
-          "description": "Base URL of your Bifrost instance (e.g. https://bifrost.mycompany.com)"
+          "description": "Base URL of your Bifrost instance (e.g. https://bifrost.mycompany.com, or https://mycompany.com/bifrost when served under server.base_path)"
         }
       }
     }
@@ -45532,7 +45532,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPGateway:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Add MCP client",
-        "description": "Adds a new MCP client with the specified configuration.\nNote: tool_pricing is not available when creating a new client; tool\npricing can only be set once the tool list is known. For shared-connection\nclients tools are fetched after client creation; for per-user auth types\nthey are discovered during the create/verify flow itself.\n\nTwo cases require a genuinely authenticated admin session and are refused\nwith 403 when dashboard authentication is disabled or unconfigured, even\nthough other management endpoints stay reachable in that state:\nconnection_type \"stdio\" (which runs the supplied command as a gateway\nsubprocess), and connection_type \"http\"/\"sse\" whose connection_string\nresolves to a loopback, private-network, link-local, or CGNAT address.\nPublic http/sse targets are unaffected.\n\nFor auth_type \"token_exchange\", verification and tool discovery run\nduring the create as the signed-in admin: Bifrost exchanges the\nidentity-provider token on the request or, when it carries none, the\naccess token from the admin's own Bifrost sign-in. A request with\nneither (for example one made with an API key) creates the client in\npending_verification; finish it with\nPOST /api/mcp/client/{id}/verify-exchange.\n",
+        "description": "Adds a new MCP client with the specified configuration.\nNote: tool_pricing is not available when creating a new client; tool\npricing can only be set once the tool list is known. For shared-connection\nclients tools are fetched after client creation; for per-user auth types\nthey are discovered during the create/verify flow itself.\n\nTwo cases require a genuinely authenticated admin session and are refused\nwith 403 when dashboard authentication is disabled or unconfigured, even\nthough other management endpoints stay reachable in that state:\nconnection_type \"stdio\" (which runs the supplied command as a gateway\nsubprocess), and connection_type \"http\"/\"sse\" whose connection_string\nresolves to a loopback, private-network, link-local, or CGNAT address.\nPublic http/sse targets are unaffected.\n\nFor auth_type \"token_exchange\", verification and tool discovery run\nduring the create as the signed-in admin: Bifrost exchanges the\nidentity-provider token on the request or, when it carries none, the\naccess token from the admin's own Bifrost sign-in. A request with\nneither (for example one made with an API key) creates the client in\npending_verification; finish it with\nPOST /api/mcp/client/{id}/verify-exchange.\n\nFor auth_type \"oauth\" and \"per_user_oauth\", the name and endpoint slug\nare checked before the OAuth flow starts, so a conflict returns 409 at\ncreate rather than when the flow is completed, and endpoint_slug is kept\nfor the client the completion creates. OAuth discovery against a private\naddress that mcp_oauth_private_allowlist does not permit returns 400.\n",
         "tags": [
           "MCP"
         ],
@@ -45835,7 +45835,7 @@
                             "additionalProperties": {
                               "type": "string"
                             },
-                            "description": "Used only at create time when `auth_type` is `per_user_headers`. A sample\nset of header values the admin supplies so Bifrost can run a one-time\nupstream verify and discover the tool list. Not persisted by the create\ncall; each end-user submits their own values at runtime. To have Bifrost\nretain an admin discovery credential for periodic tool-list refresh,\nuse POST /api/mcp/client/{id}/verify-headers, which stores the sample\nvalues as that credential.\n"
+                            "description": "Used only at create time when `auth_type` is `per_user_headers`. A sample\nset of header values the admin supplies so Bifrost can run a one-time\nupstream verify and discover the tool list. The create call also keeps\nthem as the client's admin discovery credential, as\nPOST /api/mcp/client/{id}/verify-headers does, used only for periodic\nand on-demand (POST /api/mcp/client/{id}/refresh-tools) tool-list\nrefresh. Keeping them is best effort: if storing the credential fails,\nthe client is still created. Each end-user submits their own values at\nruntime.\n"
                           }
                         }
                       },
@@ -46152,7 +46152,7 @@
                             "additionalProperties": {
                               "type": "string"
                             },
-                            "description": "Used only at create time when `auth_type` is `per_user_headers`. A sample\nset of header values the admin supplies so Bifrost can run a one-time\nupstream verify and discover the tool list. Not persisted by the create\ncall; each end-user submits their own values at runtime. To have Bifrost\nretain an admin discovery credential for periodic tool-list refresh,\nuse POST /api/mcp/client/{id}/verify-headers, which stores the sample\nvalues as that credential.\n"
+                            "description": "Used only at create time when `auth_type` is `per_user_headers`. A sample\nset of header values the admin supplies so Bifrost can run a one-time\nupstream verify and discover the tool list. The create call also keeps\nthem as the client's admin discovery credential, as\nPOST /api/mcp/client/{id}/verify-headers does, used only for periodic\nand on-demand (POST /api/mcp/client/{id}/refresh-tools) tool-list\nrefresh. Keeping them is best effort: if storing the credential fails,\nthe client is still created. Each end-user submits their own values at\nruntime.\n"
                           }
                         }
                       },
@@ -46469,7 +46469,7 @@
                             "additionalProperties": {
                               "type": "string"
                             },
-                            "description": "Used only at create time when `auth_type` is `per_user_headers`. A sample\nset of header values the admin supplies so Bifrost can run a one-time\nupstream verify and discover the tool list. Not persisted by the create\ncall; each end-user submits their own values at runtime. To have Bifrost\nretain an admin discovery credential for periodic tool-list refresh,\nuse POST /api/mcp/client/{id}/verify-headers, which stores the sample\nvalues as that credential.\n"
+                            "description": "Used only at create time when `auth_type` is `per_user_headers`. A sample\nset of header values the admin supplies so Bifrost can run a one-time\nupstream verify and discover the tool list. The create call also keeps\nthem as the client's admin discovery credential, as\nPOST /api/mcp/client/{id}/verify-headers does, used only for periodic\nand on-demand (POST /api/mcp/client/{id}/refresh-tools) tool-list\nrefresh. Keeping them is best effort: if storing the credential fails,\nthe client is still created. Each end-user submits their own values at\nruntime.\n"
                           }
                         }
                       },
@@ -46806,7 +46806,7 @@
                             "additionalProperties": {
                               "type": "string"
                             },
-                            "description": "Used only at create time when `auth_type` is `per_user_headers`. A sample\nset of header values the admin supplies so Bifrost can run a one-time\nupstream verify and discover the tool list. Not persisted by the create\ncall; each end-user submits their own values at runtime. To have Bifrost\nretain an admin discovery credential for periodic tool-list refresh,\nuse POST /api/mcp/client/{id}/verify-headers, which stores the sample\nvalues as that credential.\n"
+                            "description": "Used only at create time when `auth_type` is `per_user_headers`. A sample\nset of header values the admin supplies so Bifrost can run a one-time\nupstream verify and discover the tool list. The create call also keeps\nthem as the client's admin discovery credential, as\nPOST /api/mcp/client/{id}/verify-headers does, used only for periodic\nand on-demand (POST /api/mcp/client/{id}/refresh-tools) tool-list\nrefresh. Keeping them is best effort: if storing the credential fails,\nthe client is still created. Each end-user submits their own values at\nruntime.\n"
                           }
                         }
                       },
@@ -46888,6 +46888,16 @@
           },
           "400": {
             "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Another MCP client already has the name, or an MCP client or Virtual MCP already serves the endpoint slug.",
             "content": {
               "application/json": {
                 "schema": {
@@ -47205,6 +47215,16 @@
               }
             }
           },
+          "409": {
+            "description": "Nothing is applied. Either another MCP client already has the requested name, or the request changes oauth_config on a client whose OAuth verification has not completed.\n",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -47323,6 +47343,16 @@
           },
           "400": {
             "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -48921,6 +48951,16 @@
               }
             }
           },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -49467,7 +49507,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `VirtualKeys:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Rotate virtual key",
-        "description": "Generates a new value for the virtual key. When the client vk_rotation_cooldown setting is non-zero, the retired value keeps authenticating until previous_value_expires_at; otherwise it stops working immediately.\n",
+        "description": "Generates a new credential value for the virtual key while leaving its configuration,\nassignments, budgets, and rate limits unchanged.\n\nWhen the client `vk_rotation_cooldown` setting is non-zero, the previous value keeps\nauthenticating until `previous_value_expires_at`. Otherwise, on the node handling the\nrequest, the previous value is invalidated before a successful response is returned.\nIf the cooldown setting cannot be read, rotation proceeds with a zero cooldown, so check\n`previous_value_expires_at` in the response before relying on a grace period. Only the\nmost recently retired value is kept: rotating again during the cooldown replaces it, and\nthe older value stops authenticating immediately.\n\nRotation also revokes the key's MCP OAuth grants (pending authorization codes and active\nrefresh tokens) in the same transaction, regardless of the cooldown. MCP clients that\nauthorized with this virtual key must authorize again.\n\nIn a clustered deployment, peer invalidation is asynchronous. Until each peer processes the\ncluster update and reloads the virtual key, that peer may continue to accept the previous\nvalue. There is no fixed upper bound when a peer is unavailable, so wait for cluster\nconvergence before treating the previous credential as revoked cluster-wide.\n\nThe new credential is returned in `virtual_key.value`. Store it securely and update clients\nthat use the previous value.\n",
         "tags": [
           "Governance"
         ],
@@ -49493,19 +49533,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "required": [
-                    "message",
-                    "virtual_key"
-                  ],
-                  "properties": {
-                    "message": {
-                      "type": "string"
-                    },
-                    "virtual_key": {
-                      "$ref": "#/components/schemas/VirtualKey"
-                    }
-                  }
+                  "$ref": "#/components/schemas/VirtualKeyResponse"
                 }
               }
             }
@@ -50046,7 +50074,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `VirtualKeys:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Rotate multiple virtual keys",
-        "description": "Generates a new value for each listed virtual key. When the client vk_rotation_cooldown setting is non-zero, each retired value keeps authenticating until previous_value_expires_at; otherwise it stops working immediately.\n",
+        "description": "Generates a new value for each listed virtual key. When the client vk_rotation_cooldown setting is non-zero, each retired value keeps authenticating until previous_value_expires_at; otherwise it stops working immediately. If the cooldown setting cannot be read, the keys rotate with a zero cooldown, so check each key's previous_value_expires_at. Only the most recently retired value of a key is kept; rotating it again during the cooldown replaces that value. Each rotation also revokes the key's MCP OAuth grants (pending authorization codes and active refresh tokens), so MCP clients that authorized with it must authorize again. In a clustered deployment, peer invalidation is asynchronous: until each peer processes the cluster update and reloads the key, it may still accept the retired value, with no fixed upper bound while a peer is unavailable, so wait for cluster convergence before treating a previous credential as revoked cluster-wide.\n",
         "tags": [
           "Governance"
         ],
@@ -80749,7 +80777,7 @@
                               "properties": {
                                 "mcp_client_id": {
                                   "type": "string",
-                                  "description": "ID of a deployed MCP client."
+                                  "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                                 },
                                 "tool_names": {
                                   "type": "array",
@@ -80877,7 +80905,7 @@
                       "properties": {
                         "mcp_client_id": {
                           "type": "string",
-                          "description": "ID of a deployed MCP client."
+                          "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                         },
                         "tool_names": {
                           "type": "array",
@@ -80949,7 +80977,7 @@
                             "properties": {
                               "mcp_client_id": {
                                 "type": "string",
-                                "description": "ID of a deployed MCP client."
+                                "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                               },
                               "tool_names": {
                                 "type": "array",
@@ -81100,7 +81128,7 @@
                             "properties": {
                               "mcp_client_id": {
                                 "type": "string",
-                                "description": "ID of a deployed MCP client."
+                                "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                               },
                               "tool_names": {
                                 "type": "array",
@@ -81240,7 +81268,7 @@
                       "properties": {
                         "mcp_client_id": {
                           "type": "string",
-                          "description": "ID of a deployed MCP client."
+                          "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                         },
                         "tool_names": {
                           "type": "array",
@@ -81312,7 +81340,7 @@
                             "properties": {
                               "mcp_client_id": {
                                 "type": "string",
-                                "description": "ID of a deployed MCP client."
+                                "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                               },
                               "tool_names": {
                                 "type": "array",
@@ -81725,7 +81753,7 @@
                               "properties": {
                                 "mcp_client_id": {
                                   "type": "string",
-                                  "description": "ID of a deployed MCP client."
+                                  "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                                 },
                                 "tool_names": {
                                   "type": "array",
@@ -81860,7 +81888,7 @@
                       "properties": {
                         "mcp_client_id": {
                           "type": "string",
-                          "description": "ID of a deployed MCP client."
+                          "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                         },
                         "tool_names": {
                           "type": "array",
@@ -81959,7 +81987,7 @@
                             "properties": {
                               "mcp_client_id": {
                                 "type": "string",
-                                "description": "ID of a deployed MCP client."
+                                "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                               },
                               "tool_names": {
                                 "type": "array",
@@ -82109,7 +82137,7 @@
                             "properties": {
                               "mcp_client_id": {
                                 "type": "string",
-                                "description": "ID of a deployed MCP client."
+                                "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                               },
                               "tool_names": {
                                 "type": "array",
@@ -82242,7 +82270,7 @@
                       "properties": {
                         "mcp_client_id": {
                           "type": "string",
-                          "description": "ID of a deployed MCP client."
+                          "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                         },
                         "tool_names": {
                           "type": "array",
@@ -82341,7 +82369,7 @@
                             "properties": {
                               "mcp_client_id": {
                                 "type": "string",
-                                "description": "ID of a deployed MCP client."
+                                "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                               },
                               "tool_names": {
                                 "type": "array",
@@ -130743,7 +130771,7 @@
                         "additionalProperties": false
                       }
                     ],
-                    "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and the JWT iss claim. Required whenever mcp_server_auth_mode is 'both' or 'oauth'. A config.json that enables one of those modes without it fails validation at startup; a PUT /api/config that does the same is refused with HTTP 400. The issuer is never derived from the request Host header while OAuth is enabled. Supports env var syntax (\"env.MY_VAR\").\n"
+                    "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and the JWT iss claim. A trailing slash is ignored. Required whenever mcp_server_auth_mode is 'both' or 'oauth'. A config.json that enables one of those modes without it fails validation at startup; a PUT /api/config that does the same is refused with HTTP 400. The issuer is never derived from the request Host header while OAuth is enabled. Supports env var syntax (\"env.MY_VAR\").\n"
                   },
                   "auth_code_ttl": {
                     "type": "integer",
@@ -131284,7 +131312,7 @@
                         "additionalProperties": false
                       }
                     ],
-                    "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and the JWT iss claim. Required whenever mcp_server_auth_mode is 'both' or 'oauth'. A config.json that enables one of those modes without it fails validation at startup; a PUT /api/config that does the same is refused with HTTP 400. The issuer is never derived from the request Host header while OAuth is enabled. Supports env var syntax (\"env.MY_VAR\").\n"
+                    "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and the JWT iss claim. A trailing slash is ignored. Required whenever mcp_server_auth_mode is 'both' or 'oauth'. A config.json that enables one of those modes without it fails validation at startup; a PUT /api/config that does the same is refused with HTTP 400. The issuer is never derived from the request Host header while OAuth is enabled. Supports env var syntax (\"env.MY_VAR\").\n"
                   },
                   "auth_code_ttl": {
                     "type": "integer",
