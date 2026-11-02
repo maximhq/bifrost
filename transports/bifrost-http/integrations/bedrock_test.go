@@ -3,12 +3,16 @@ package integrations
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/bytedance/sonic"
@@ -22,8 +26,395 @@ import (
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
+
+// Exercise native ingress, the actual Bedrock provider/signing/decoder, and the
+// HTTP EventStream writer. The only substituted component is the AWS upstream.
+func TestBedrockInvokeMistralWire(t *testing.T) {
+	const model = "mistral.mistral-large-3-675b-instruct"
+	for _, prefix := range []string{"/bedrock", "/langchain", "/litellm", "/pydanticai", "/cursor"} {
+		for _, scenario := range []struct {
+			name       string
+			stop       string
+			mixedTools bool
+		}{{"end_turn", "end_turn", false}, {"max_tokens", "max_tokens", false}, {"tool_use", "tool_use", false}, {"mixed tools", "tool_use", true}} {
+			stop := scenario.stop
+			for _, suffix := range []string{"invoke", "invoke-with-response-stream"} {
+				t.Run(prefix+"/"+scenario.name+"/"+suffix, func(t *testing.T) {
+					captured := make(chan *http.Request, 1)
+					upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						body, err := io.ReadAll(r.Body)
+						if err != nil {
+							t.Error(err)
+							return
+						}
+						assert.Equal(t, int64(256), gjson.GetBytes(body, "inferenceConfig.maxTokens").Int())
+						assert.Equal(t, "Hello", gjson.GetBytes(body, "messages.0.content.0.text").String())
+						if stop == "tool_use" {
+							assert.Equal(t, "weather", gjson.GetBytes(body, "toolConfig.tools.0.toolSpec.name").String())
+							assert.Equal(t, "time", gjson.GetBytes(body, "toolConfig.tools.1.toolSpec.name").String())
+						}
+						captured <- r
+						content := `[{"text":"hello"}]`
+						delta := `{"text":"hello"}`
+						if stop == "tool_use" {
+							content = `[{"toolUse":{"toolUseId":"call_1","name":"weather","input":{}}}]`
+							delta = `{"toolUse":{"input":"{}"}}`
+							if scenario.mixedTools {
+								content = `[{"text":"checking"},{"toolUse":{"toolUseId":"call_1","name":"weather","input":{}}},{"text":"and time"},{"toolUse":{"toolUseId":"call_2","name":"time","input":{}}}]`
+							}
+						}
+						if !strings.HasSuffix(r.URL.Path, "/converse-stream") {
+							w.Header().Set("Content-Type", "application/json")
+							_, _ = io.WriteString(w, `{"output":{"message":{"role":"assistant","content":`+content+`}},"stopReason":"`+stop+`","usage":{"inputTokens":15,"outputTokens":51,"totalTokens":66}}`)
+							return
+						}
+						w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+						frames := [][2]string{{"messageStart", `{"role":"assistant"}`}}
+						if stop == "tool_use" {
+							frames = append(frames, [2]string{"contentBlockStart", `{"contentBlockIndex":0,"start":{"toolUse":{"toolUseId":"call_1","name":"weather"}}}`})
+						}
+						frames = append(frames, [2]string{"contentBlockDelta", `{"contentBlockIndex":0,"delta":` + delta + `}`}, [2]string{"contentBlockStop", `{"contentBlockIndex":0}`}, [2]string{"messageStop", `{"stopReason":"` + stop + `"}`}, [2]string{"metadata", `{"usage":{"inputTokens":15,"outputTokens":51,"totalTokens":66}}`})
+						if scenario.mixedTools {
+							frames = [][2]string{
+								{"messageStart", `{"role":"assistant"}`},
+								{"contentBlockDelta", `{"contentBlockIndex":0,"delta":{"text":"checking"}}`},
+								{"contentBlockStop", `{"contentBlockIndex":0}`},
+								{"contentBlockStart", `{"contentBlockIndex":1,"start":{"toolUse":{"toolUseId":"call_1","name":"weather"}}}`},
+								{"contentBlockDelta", `{"contentBlockIndex":1,"delta":{"toolUse":{"input":"{"}}}`},
+								{"contentBlockDelta", `{"contentBlockIndex":1,"delta":{"toolUse":{"input":"}"}}}`},
+								{"contentBlockStop", `{"contentBlockIndex":1}`},
+								{"contentBlockDelta", `{"contentBlockIndex":2,"delta":{"text":"and time"}}`},
+								{"contentBlockStop", `{"contentBlockIndex":2}`},
+								{"contentBlockStart", `{"contentBlockIndex":3,"start":{"toolUse":{"toolUseId":"call_2","name":"time"}}}`},
+								{"contentBlockDelta", `{"contentBlockIndex":3,"delta":{"toolUse":{"input":"{"}}}`},
+								{"contentBlockDelta", `{"contentBlockIndex":3,"delta":{"toolUse":{"input":"}"}}}`},
+								{"contentBlockStop", `{"contentBlockIndex":3}`},
+								{"messageStop", `{"stopReason":"tool_use"}`},
+								{"metadata", `{"usage":{"inputTokens":15,"outputTokens":51,"totalTokens":66}}`},
+							}
+						}
+						for _, frame := range frames {
+							err := eventstream.NewEncoder().Encode(w, eventstream.Message{Headers: eventstream.Headers{{Name: ":message-type", Value: eventstream.StringValue("event")}, {Name: ":event-type", Value: eventstream.StringValue(frame[0])}}, Payload: []byte(frame[1])})
+							if err != nil {
+								t.Error(err)
+								return
+							}
+							w.(http.Flusher).Flush()
+						}
+					}))
+					defer upstream.Close()
+					logger := bifrost.NewNoOpLogger()
+					provider, err := bedrock.NewBedrockProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{InsecureSkipVerify: true, DefaultRequestTimeoutInSeconds: 5}}, logger)
+					require.NoError(t, err)
+					key := schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{AccessKey: *schemas.NewSecretVar("AKIDEXAMPLE"), SecretKey: *schemas.NewSecretVar("test-secret"), Region: schemas.NewSecretVar("us-west-2"), Endpoints: &schemas.BedrockEndpoints{Runtime: schemas.NewSecretVar(upstream.URL)}}}
+					parent, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+					store := &mockHandlerStore{}
+					var route RouteConfig
+					for _, candidate := range CreateBedrockRouteConfigs(prefix, store) {
+						if candidate.Path == prefix+"/model/{modelId}/"+suffix {
+							route = candidate
+							break
+						}
+					}
+					require.NotNil(t, route.RequestConverter)
+					httpCtx := &fasthttp.RequestCtx{}
+					httpCtx.SetUserValue("modelId", model)
+					httpCtx.Request.SetBodyString(`{"max_tokens":256,"temperature":0,"messages":[{"role":"user","content":"Hello"}]}`)
+					if stop == "tool_use" {
+						// Use the existing Converse-shaped toolConfig compatibility input.
+						// Native tools[].function ingress is independently tracked in #8940.
+						httpCtx.Request.SetBodyString(`{"max_tokens":256,"temperature":0,"messages":[{"role":"user","content":"Hello"}],"toolConfig":{"tools":[{"toolSpec":{"name":"weather","description":"Get weather","inputSchema":{"json":{"type":"object","properties":{}}}}},{"toolSpec":{"name":"time","description":"Get time","inputSchema":{"json":{"type":"object","properties":{}}}}}]}}`)
+					}
+					typ := route.GetHTTPRequestType(httpCtx)
+					require.Equal(t, schemas.ResponsesRequest, typ)
+					ctx.SetValue(schemas.BifrostContextKeyHTTPRequestType, typ)
+					ingress := route.GetRequestTypeInstance(ctx)
+					require.NoError(t, sonic.Unmarshal(httpCtx.Request.Body(), ingress))
+					require.NoError(t, route.PreCallback(httpCtx, ctx, ingress))
+					req, err := route.RequestConverter(ctx, ingress)
+					require.NoError(t, err)
+					router := NewGenericRouter(nil, store, nil, nil, nil, logger)
+					var payloads [][]byte
+					if suffix == "invoke" {
+						resp, bifrostErr := provider.Responses(ctx, key, req.ResponsesRequest)
+						require.Nil(t, bifrostErr)
+						out, err := route.ResponsesResponseConverter(ctx, resp)
+						require.NoError(t, err)
+						router.sendSuccess(httpCtx, ctx, route.ErrorConverter, out, nil)
+						assert.Equal(t, fasthttp.StatusOK, httpCtx.Response.StatusCode())
+						assert.Equal(t, "application/json", string(httpCtx.Response.Header.ContentType()))
+						payloads = append(payloads, httpCtx.Response.Body())
+					} else {
+						stream, bifrostErr := provider.ResponsesStream(ctx, func(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+							// Core stamps the routed identity before the transport converter.
+							if resp != nil && resp.ResponsesStreamResponse != nil {
+								resp.ResponsesStreamResponse.ExtraFields.ResolvedModelUsed = model
+							}
+							return resp, err
+						}, nil, key, req.ResponsesRequest)
+						require.Nil(t, bifrostErr)
+						router.handleStreaming(httpCtx, ctx, route, "", stream, cancel)
+						// HTTP stream headers are set by handleStreamingRequest. This
+						// lower-level test checks the EventStream writer; the harness
+						// checks headers through the complete HTTP request path.
+						wire, err := io.ReadAll(httpCtx.Response.BodyStream())
+						require.NoError(t, err)
+						reader := bytes.NewReader(wire)
+						decoder := eventstream.NewDecoder()
+						for {
+							frame, err := decoder.Decode(reader, nil)
+							if err == io.EOF {
+								break
+							}
+							require.NoError(t, err)
+							require.Equal(t, "chunk", frame.Headers.Get(":event-type").String())
+							assert.Equal(t, "event", eventStreamHeaderString(t, frame.Headers, ":message-type"))
+							assert.Equal(t, "application/json", eventStreamHeaderString(t, frame.Headers, ":content-type"))
+							data, err := base64.StdEncoding.DecodeString(gjson.GetBytes(frame.Payload, "bytes").String())
+							require.NoError(t, err)
+							payloads = append(payloads, data)
+						}
+					}
+					require.NotEmpty(t, payloads)
+					object := "chat.completion"
+					if suffix != "invoke" {
+						object += ".chunk"
+					}
+					for i, raw := range payloads {
+						assert.Equal(t, object, gjson.GetBytes(raw, "object").String(), "%s", raw)
+						assert.NotEmpty(t, gjson.GetBytes(raw, "id").String())
+						assert.Equal(t, gjson.GetBytes(payloads[0], "id").String(), gjson.GetBytes(raw, "id").String())
+						assert.Positive(t, gjson.GetBytes(raw, "created").Int())
+						assert.Equal(t, gjson.GetBytes(payloads[0], "created").Int(), gjson.GetBytes(raw, "created").Int())
+						assert.Equal(t, model, gjson.GetBytes(raw, "model").String())
+						assert.False(t, gjson.GetBytes(raw, "type").Exists(), "%s", raw)
+						assert.False(t, gjson.GetBytes(raw, "extra_fields").Exists())
+						require.Len(t, gjson.GetBytes(raw, "choices").Array(), 1)
+						assert.True(t, gjson.GetBytes(raw, "choices.0.index").Exists())
+						assert.Equal(t, int64(0), gjson.GetBytes(raw, "choices.0.index").Int())
+						if suffix == "invoke" {
+							assert.False(t, gjson.GetBytes(raw, "choices.0.delta").Exists())
+							assert.Equal(t, "assistant", gjson.GetBytes(raw, "choices.0.message.role").String())
+						} else {
+							assert.False(t, gjson.GetBytes(raw, "choices.0.message").Exists())
+							if i == 0 {
+								assert.Equal(t, "assistant", gjson.GetBytes(raw, "choices.0.delta.role").String())
+							}
+							if i < len(payloads)-1 {
+								assert.True(t, gjson.GetBytes(raw, "choices.0.finish_reason").Exists())
+								assert.Equal(t, gjson.Null, gjson.GetBytes(raw, "choices.0.finish_reason").Type)
+								assert.False(t, gjson.GetBytes(raw, "usage").Exists())
+							} else {
+								assert.JSONEq(t, `{}`, gjson.GetBytes(raw, "choices.0.delta").Raw)
+							}
+						}
+					}
+					if stop == "tool_use" {
+						type toolResult struct{ id, name, arguments string }
+						tools := make(map[int64]toolResult)
+						for _, raw := range payloads {
+							path := "choices.0.delta.tool_calls"
+							if suffix == "invoke" {
+								path = "choices.0.message.tool_calls"
+							}
+							for i, call := range gjson.GetBytes(raw, path).Array() {
+								index := int64(i)
+								if suffix != "invoke" {
+									index = call.Get("index").Int()
+								}
+								tool := tools[index]
+								if id := call.Get("id").String(); id != "" {
+									assert.Equal(t, "function", call.Get("type").String())
+									tool.id = id
+								}
+								tool.name += call.Get("function.name").String()
+								tool.arguments += call.Get("function.arguments").String()
+								tools[index] = tool
+							}
+						}
+						names := []string{"weather"}
+						if scenario.mixedTools {
+							names = append(names, "time")
+						}
+						require.Len(t, tools, len(names))
+						for i, name := range names {
+							tool, exists := tools[int64(i)]
+							require.True(t, exists)
+							assert.Equal(t, []string{"call_1", "call_2"}[i], tool.id)
+							assert.Equal(t, name, tool.name)
+							assert.JSONEq(t, `{}`, tool.arguments)
+						}
+					}
+					var text string
+					for _, raw := range payloads {
+						path := "choices.0.message.content"
+						if suffix != "invoke" {
+							path = "choices.0.delta.content"
+						}
+						text += gjson.GetBytes(raw, path).String()
+					}
+					wantText := "hello"
+					if stop == "tool_use" {
+						wantText = ""
+					}
+					if scenario.mixedTools {
+						wantText = "checkingand time"
+					}
+					assert.Equal(t, wantText, text)
+					last := payloads[len(payloads)-1]
+					finish := map[string]string{"end_turn": "stop", "max_tokens": "length", "tool_use": "tool_calls"}[stop]
+					assert.Equal(t, finish, gjson.GetBytes(last, "choices.0.finish_reason").String(), "%s", last)
+					assert.JSONEq(t, `{"prompt_tokens":15,"completion_tokens":51,"total_tokens":66}`, gjson.GetBytes(last, "usage").Raw)
+					r := <-captured
+					action := "converse"
+					if suffix != "invoke" {
+						action += "-stream"
+					}
+					assert.Equal(t, "/model/"+model+"/"+action, r.URL.Path)
+					assert.Contains(t, r.Header.Get("Authorization"), "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/")
+				})
+			}
+		}
+	}
+}
+
+func TestBedrockInvokeMistralProviderErrors(t *testing.T) {
+	const model = "mistral.mistral-large-3-675b-instruct"
+	for _, prefix := range []string{"/bedrock", "/langchain", "/litellm", "/pydanticai", "/cursor"} {
+		for _, tc := range []struct {
+			name, suffix string
+			streamError  bool
+		}{
+			{"unary validation", "invoke", false},
+			{"stream startup validation", "invoke-with-response-stream", false},
+			{"stream exception", "invoke-with-response-stream", true},
+		} {
+			t.Run(prefix+"/"+tc.name, func(t *testing.T) {
+				upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					assert.Contains(t, r.Header.Get("Authorization"), "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/")
+					if !tc.streamError {
+						w.Header().Set("Content-Type", "application/json")
+						w.Header().Set("X-Amzn-Errortype", "ValidationException")
+						w.WriteHeader(http.StatusBadRequest)
+						_, _ = io.WriteString(w, `{"__type":"ValidationException","message":"fixture validation"}`)
+						return
+					}
+					assert.Equal(t, "/model/"+model+"/converse-stream", r.URL.Path)
+					w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+					encoder := eventstream.NewEncoder()
+					for _, frame := range [][2]string{
+						{"messageStart", `{"role":"assistant"}`},
+						{"contentBlockDelta", `{"contentBlockIndex":0,"delta":{"text":"partial"}}`},
+					} {
+						if err := encoder.Encode(w, eventstream.Message{Headers: eventstream.Headers{
+							{Name: ":message-type", Value: eventstream.StringValue("event")},
+							{Name: ":event-type", Value: eventstream.StringValue(frame[0])},
+						}, Payload: []byte(frame[1])}); err != nil {
+							t.Error(err)
+							return
+						}
+					}
+					if err := encoder.Encode(w, eventstream.Message{Headers: eventstream.Headers{
+						{Name: ":message-type", Value: eventstream.StringValue("exception")},
+						{Name: ":exception-type", Value: eventstream.StringValue("throttlingException")},
+					}, Payload: []byte(`{"message":"fixture throttle"}`)}); err != nil {
+						t.Error(err)
+					}
+				}))
+				defer upstream.Close()
+				logger := bifrost.NewNoOpLogger()
+				provider, err := bedrock.NewBedrockProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{InsecureSkipVerify: true, DefaultRequestTimeoutInSeconds: 5}}, logger)
+				require.NoError(t, err)
+				key := schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{AccessKey: *schemas.NewSecretVar("AKIDEXAMPLE"), SecretKey: *schemas.NewSecretVar("test-secret"), Region: schemas.NewSecretVar("us-west-2"), Endpoints: &schemas.BedrockEndpoints{Runtime: schemas.NewSecretVar(upstream.URL)}}}
+				parent, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+				store := &mockHandlerStore{}
+				var route RouteConfig
+				for _, candidate := range CreateBedrockRouteConfigs(prefix, store) {
+					if candidate.Path == prefix+"/model/{modelId}/"+tc.suffix {
+						route = candidate
+						break
+					}
+				}
+				require.NotNil(t, route.RequestConverter)
+				httpCtx := &fasthttp.RequestCtx{}
+				httpCtx.SetUserValue("modelId", model)
+				httpCtx.Request.SetBodyString(`{"max_tokens":32,"messages":[{"role":"user","content":"Hello"}]}`)
+				ctx.SetValue(schemas.BifrostContextKeyHTTPRequestType, route.GetHTTPRequestType(httpCtx))
+				ingress := route.GetRequestTypeInstance(ctx)
+				require.NoError(t, sonic.Unmarshal(httpCtx.Request.Body(), ingress))
+				require.NoError(t, route.PreCallback(httpCtx, ctx, ingress))
+				req, err := route.RequestConverter(ctx, ingress)
+				require.NoError(t, err)
+				router := NewGenericRouter(nil, store, nil, nil, nil, logger)
+				if tc.suffix == "invoke" {
+					resp, bifrostErr := provider.Responses(ctx, key, req.ResponsesRequest)
+					require.Nil(t, resp)
+					require.NotNil(t, bifrostErr)
+					router.sendError(httpCtx, ctx, route.ErrorConverter, bifrostErr)
+				} else {
+					stream, bifrostErr := provider.ResponsesStream(ctx, func(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+						if resp != nil && resp.ResponsesStreamResponse != nil {
+							resp.ResponsesStreamResponse.ExtraFields.ResolvedModelUsed = model
+						}
+						return resp, err
+					}, nil, key, req.ResponsesRequest)
+					if tc.streamError {
+						require.Nil(t, bifrostErr)
+						router.handleStreaming(httpCtx, ctx, route, "", stream, cancel)
+						wire, err := io.ReadAll(httpCtx.Response.BodyStream())
+						require.NoError(t, err)
+						reader := bytes.NewReader(wire)
+						decoder := eventstream.NewDecoder()
+						var chunks, exceptions int
+						for {
+							frame, err := decoder.Decode(reader, nil)
+							if err == io.EOF {
+								break
+							}
+							require.NoError(t, err)
+							if eventStreamHeaderString(t, frame.Headers, ":message-type") == "exception" {
+								exceptions++
+								assert.Equal(t, "throttlingException", eventStreamHeaderString(t, frame.Headers, ":exception-type"))
+								assert.Equal(t, "throttlingException", gjson.GetBytes(frame.Payload, "__type").String())
+								assert.Contains(t, gjson.GetBytes(frame.Payload, "message").String(), "fixture throttle")
+								assert.False(t, gjson.GetBytes(frame.Payload, "choices").Exists())
+								assert.Zero(t, reader.Len(), "exception must terminate the stream")
+							} else {
+								chunks++
+								assert.Equal(t, "chunk", eventStreamHeaderString(t, frame.Headers, ":event-type"))
+								data, err := base64.StdEncoding.DecodeString(gjson.GetBytes(frame.Payload, "bytes").String())
+								require.NoError(t, err)
+								assert.Equal(t, "chat.completion.chunk", gjson.GetBytes(data, "object").String())
+								assert.Equal(t, gjson.Null, gjson.GetBytes(data, "choices.0.finish_reason").Type)
+								if chunks == 2 {
+									assert.Equal(t, "partial", gjson.GetBytes(data, "choices.0.delta.content").String())
+								}
+							}
+						}
+						assert.Equal(t, 2, chunks)
+						assert.Equal(t, 1, exceptions)
+						return
+					}
+					require.Nil(t, stream)
+					require.NotNil(t, bifrostErr)
+					router.sendStreamError(httpCtx, ctx, route, bifrostErr)
+				}
+				assert.Equal(t, fasthttp.StatusBadRequest, httpCtx.Response.StatusCode())
+				assert.Equal(t, "application/json", string(httpCtx.Response.Header.ContentType()))
+				assert.Equal(t, "ValidationException", gjson.GetBytes(httpCtx.Response.Body(), "__type").String())
+				assert.Contains(t, gjson.GetBytes(httpCtx.Response.Body(), "message").String(), "fixture validation")
+				assert.False(t, gjson.GetBytes(httpCtx.Response.Body(), "choices").Exists())
+			})
+		}
+	}
+}
 
 // mockHandlerStore implements lib.HandlerStore for testing
 type mockHandlerStore struct {
