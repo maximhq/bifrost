@@ -1703,7 +1703,7 @@ func TestExecuteTool_DeclaresRelayableCallerCapabilitiesUpstream(t *testing.T) {
 			caller *mcpgo.ClientCapabilities
 			want   mcpgo.ClientCapabilities
 		}{
-			{"no gateway caller", nil, mcpgo.ClientCapabilities{}},
+			{"no gateway caller declares nothing, not even MCP Apps", nil, mcpgo.ClientCapabilities{}},
 			{"caller declares a relayed capability", &mcpgo.ClientCapabilities{Elicitation: &mcpgo.ElicitationCapability{}, Sampling: &mcpgo.SamplingCapability{}},
 				mcpgo.ClientCapabilities{Elicitation: &mcpgo.ElicitationCapability{}}},
 			{"caller declares none", &mcpgo.ClientCapabilities{}, mcpgo.ClientCapabilities{}},
@@ -1728,4 +1728,155 @@ func TestExecuteTool_DeclaresRelayableCallerCapabilitiesUpstream(t *testing.T) {
 			})
 		}
 	}
+}
+
+// App-only tools are listed and callable only for gateway callers that declared MCP Apps.
+func TestGetToolPerClient_AppOnlyToolsReachOnlySlugAppsCallers(t *testing.T) {
+	var seen, listedWith atomic.Pointer[mcpgo.ClientCapabilities]
+	hooks := &server.Hooks{}
+	hooks.AddBeforeListTools(func(ctx context.Context, _ any, _ *mcpgo.ListToolsRequest) {
+		if info := server.RequestProtocolInfoFromContext(ctx); info != nil {
+			listedWith.Store(info.ClientCapabilities)
+		}
+	})
+	s := server.NewMCPServer("apps-upstream", "1.0.0", server.WithToolCapabilities(true), server.WithHooks(hooks))
+	view := mcpgo.NewTool("view")
+	view.Meta = &mcpgo.Meta{AdditionalFields: map[string]any{"ui": map[string]any{"resourceUri": "ui://apps/view"}}}
+	refresh := mcpgo.NewTool("refresh")
+	refresh.Meta = &mcpgo.Meta{AdditionalFields: map[string]any{"ui": map[string]any{"resourceUri": "ui://apps/view", "visibility": []any{"app"}}}}
+	ok := func(context.Context, mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		return mcpgo.NewToolResultText("ok"), nil
+	}
+	s.AddTool(view, ok)
+	s.AddTool(refresh, ok)
+	s.AddTool(mcpgo.NewTool("caps"), func(ctx context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		if info := server.RequestProtocolInfoFromContext(ctx); info != nil {
+			seen.Store(info.ClientCapabilities)
+		}
+		return mcpgo.NewToolResultText("ok"), nil
+	})
+	ts := httptest.NewServer(server.NewStreamableHTTPServer(s))
+	t.Cleanup(ts.Close)
+
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+	require.NoError(t, m.connectToMCPClient(context.Background(), &schemas.MCPClientConfig{
+		ID: "apps", Name: "apps", ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"},
+	}))
+
+	appsCaller := &mcpgo.ClientCapabilities{Extensions: map[string]any{schemas.MCPAppsExtension: map[string]any{}}}
+	newCtx := func(gateway bool, caller *mcpgo.ClientCapabilities) *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if gateway {
+			ctx.SetValue(schemas.BifrostContextKeyIsMCPGateway, true)
+		}
+		if caller != nil {
+			ctx.SetValue(schemas.BifrostContextKeyMCPCallerCapabilities, caller)
+		}
+		return ctx
+	}
+	listed := func(ctx context.Context) []string {
+		var names []string
+		for _, tool := range m.GetToolPerClient(ctx)["apps"] {
+			names = append(names, tool.Function.Name)
+		}
+		return names
+	}
+
+	cases := []struct {
+		name     string
+		ctx      context.Context
+		appsSees bool
+	}{
+		{"model request", newCtx(false, nil), false},
+		{"model request claiming apps", newCtx(false, appsCaller), false},
+		{"gateway caller without apps", newCtx(true, &mcpgo.ClientCapabilities{}), false},
+		{"gateway caller hosting apps", newCtx(true, appsCaller), true},
+		{"code mode under an apps caller", WithModelToolsOnly(newCtx(true, appsCaller)), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			names := listed(tc.ctx)
+			assert.Contains(t, names, "apps-view")
+			assert.Equal(t, tc.appsSees, slices.Contains(names, "apps-refresh"))
+		})
+	}
+
+	call := func(ctx *schemas.BifrostContext, name string) *schemas.BifrostError {
+		_, bErr := m.ExecuteChatTool(ctx, &schemas.ChatAssistantMessageToolCall{
+			Function: schemas.ChatAssistantMessageToolCallFunction{Name: &name, Arguments: "{}"},
+		})
+		return bErr
+	}
+	bErr := call(newCtx(false, nil), "apps-refresh")
+	require.NotNil(t, bErr, "a model must not call an app-only tool")
+	assert.Contains(t, bErr.GetErrorString(), "only callable from an MCP App")
+	require.NotNil(t, call(newCtx(true, &mcpgo.ClientCapabilities{}), "apps-refresh"))
+	require.Nil(t, call(newCtx(true, appsCaller), "apps-refresh"))
+	require.Nil(t, call(newCtx(false, nil), "apps-view"))
+
+	var viewTool *schemas.ChatTool
+	for _, tool := range m.GetToolPerClient(newCtx(false, nil))["apps"] {
+		if tool.Function.Name == "apps-view" {
+			viewTool = &tool
+		}
+	}
+	require.NotNil(t, viewTool)
+	require.NotNil(t, viewTool.MCP)
+	assert.Equal(t, "ui://apps/view", viewTool.MCP.UIResourceURI)
+
+	require.NotNil(t, listedWith.Load())
+	assert.Contains(t, listedWith.Load().Extensions, schemas.MCPAppsExtension, "discovery declares MCP Apps so servers list their app tools")
+
+	require.Nil(t, call(newCtx(true, appsCaller), "apps-caps"))
+	got := seen.Load()
+	require.NotNil(t, got)
+	assert.Contains(t, got.Extensions, schemas.MCPAppsExtension, "an apps caller's extension is relayed upstream")
+
+	seen.Store(nil)
+	require.Nil(t, call(newCtx(false, nil), "apps-caps"))
+	require.NotNil(t, seen.Load())
+	assert.NotContains(t, seen.Load().Extensions, schemas.MCPAppsExtension, "a model's call must not claim an MCP Apps host")
+
+	_, err := m.GetInjectedTool(context.Background(), "apps", "refresh")
+	require.Error(t, err, "an app-only tool must never be injected into a model's request")
+	assert.Contains(t, err.Error(), "only callable from an MCP App")
+	injected, err := m.GetInjectedTool(context.Background(), "apps", "view")
+	require.NoError(t, err)
+	assert.Equal(t, "apps-view", injected.Function.Name)
+}
+
+// A per-user-discovery client's app-only tool, read from the caller's own discovery, is kept from a
+// model on every path: injection, listing, execution and provider-injected tools.
+func TestGetToolPerClient_AppOnlyToolsOfPerUserClients(t *testing.T) {
+	shared, perUser := newCountingDiscoveryStore(), newCountingDiscoveryStore()
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{SharedDiscoveryStore: shared, PerUserDiscoveryStore: perUser}, nil, &MockLogger{}, nil)
+	notes := &schemas.MCPClientConfig{ID: "notes-id", Name: "notes", ToolsToExecute: []string{"*"}, PerUserDiscovery: schemas.Ptr(true)}
+	m.clientMap[notes.ID] = &schemas.MCPClientState{Name: notes.Name, ExecutionConfig: notes, State: schemas.MCPConnectionStateHealthy}
+	discovery := discoveryOf("notes", "search", "refresh")
+	refresh := discovery.Tools["notes-refresh"]
+	refresh.MCP = &schemas.MCPToolMetadata{Visibility: []string{schemas.MCPToolVisibilityApp}}
+	discovery.Tools["notes-refresh"] = refresh
+	perUser.byID[notes.ID] = discovery
+
+	req := m.toolsManager.ParseAndAddToolsToRequest(userContext("alice"), buildChatRequest())
+	assert.ElementsMatch(t, []string{"notes-search"}, toolNamesFromChatRequest(req), "a model's request is never offered the app-only tool")
+
+	var listed []string
+	for _, tool := range m.GetToolPerClient(userContext("alice"))["notes"] {
+		listed = append(listed, tool.Function.Name)
+	}
+	assert.Equal(t, []string{"notes-search"}, listed)
+
+	name := "notes-refresh"
+	_, bErr := m.ExecuteChatTool(userContext("alice"), &schemas.ChatAssistantMessageToolCall{
+		Function: schemas.ChatAssistantMessageToolCallFunction{Name: &name, Arguments: "{}"},
+	})
+	require.NotNil(t, bErr, "a model must not call the app-only tool")
+	assert.Contains(t, bErr.GetErrorString(), "only callable from an MCP App")
+
+	_, err := m.GetInjectedTool(userContext("alice"), "notes", "refresh")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "only callable from an MCP App")
 }

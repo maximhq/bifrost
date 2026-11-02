@@ -463,7 +463,7 @@ func runOnClient[T any](m *MCPManager, ctx *schemas.BifrostContext, req *schemas
 		if err != nil {
 			return zero, err
 		}
-		upstreamCtx, _, _ := upstreamContext(callCtx, false)
+		upstreamCtx, _, _ := upstreamContext(callCtx, conn, false)
 		result, err := call(upstreamCtx, conn, preReq)
 		recoverable := err != nil && (isAuthFailure(err) || (isDeadSessionError(err) && hasProtocolSession(conn)))
 		release()
@@ -474,7 +474,7 @@ func runOnClient[T any](m *MCPManager, ctx *schemas.BifrostContext, req *schemas
 		if recovered, _ := m.toolsManager.recoverCall(recoveryCtx, req.RequestType.OTelMethodName(), state, state.ExecutionConfig, timeout, false, nil,
 			func(retryCtx context.Context, conn *client.Client) error {
 				var retryErr error
-				retryUpstreamCtx, _, _ := upstreamContext(retryCtx, false)
+				retryUpstreamCtx, _, _ := upstreamContext(retryCtx, conn, false)
 				result, retryErr = call(retryUpstreamCtx, conn, preReq)
 				return retryErr
 			}); recovered {

@@ -168,13 +168,16 @@ func (m *MCPManager) prepareToolExecution(ctx *schemas.BifrostContext, request *
 		return nil, nil, func() {}, nil
 	}
 
-	state, _ := m.GetClientForTool(ctx, toolName)
+	state, discovery := m.GetClientForTool(ctx, toolName)
 	if state == nil {
 		return nil, nil, nil, fmt.Errorf("tool '%s' is not available or not permitted", toolName)
 	}
 	clientName := state.ExecutionConfig.Name
 	if err := checkToolExecutionPermitted(ctx, state, toolName, m.logger); err != nil {
 		return nil, nil, nil, err
+	}
+	if !hostsApps(ctx) && !discovery.GetTools()[toolName].MCP.ModelVisible() {
+		return nil, nil, nil, fmt.Errorf("tool '%s' is not permitted (it is only callable from an MCP App)", toolName)
 	}
 	// NeedsReauth is the one hard gate left besides Disabled: the credential
 	// is confirmed permanently dead (see connectToMCPClient's typed
@@ -231,6 +234,8 @@ func (m *MCPManager) codeModeClientReachable(ctx *schemas.BifrostContext) bool {
 //  2. Client allow-list — request-context MCPContextKeyIncludeClients.
 //  3. Tool allow-list   — client-level ToolsToExecute (most restrictive).
 //  4. Tool narrowing    — request-context MCPContextKeyIncludeTools.
+//
+// The app-only rule is enforced in prepareToolExecution.
 //
 // A provider-injected tool (core's mcpvouch mark names it) skips 2-4.
 // The operator chose it in the provider config, and the caller never saw it in the

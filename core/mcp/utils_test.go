@@ -756,7 +756,7 @@ func BenchmarkDescribeUnservableInput(b *testing.B) {
 
 // A gateway caller's capabilities are declared upstream only where Bifrost can relay them.
 func TestRelayableCapabilities(t *testing.T) {
-	const ui = "io.modelcontextprotocol/ui"
+	const ui = schemas.MCPAppsExtension
 	elicitation := &mcp.ElicitationCapability{}
 	sampling := &mcp.SamplingCapability{}
 	cases := []struct {
@@ -771,9 +771,9 @@ func TestRelayableCapabilities(t *testing.T) {
 			want:    mcp.ClientCapabilities{Elicitation: elicitation}},
 		{name: "relayed but not declared", relayed: mcp.ClientCapabilities{Elicitation: &mcp.ElicitationCapability{}}, want: mcp.ClientCapabilities{}},
 		{name: "extensions by name",
-			caller:  mcp.ClientCapabilities{Extensions: map[string]any{ui: map[string]any{"mimeTypes": []any{"text/html;profile=mcp-app"}}, "other": map[string]any{}}},
+			caller:  mcp.ClientCapabilities{Extensions: map[string]any{ui: map[string]any{"mimeTypes": []any{schemas.MCPAppsMimeType}}, "other": map[string]any{}}},
 			relayed: mcp.ClientCapabilities{Extensions: map[string]any{ui: map[string]any{}}},
-			want:    mcp.ClientCapabilities{Extensions: map[string]any{ui: map[string]any{"mimeTypes": []any{"text/html;profile=mcp-app"}}}}},
+			want:    mcp.ClientCapabilities{Extensions: map[string]any{ui: map[string]any{"mimeTypes": []any{schemas.MCPAppsMimeType}}}}},
 		{name: "experimental and tasks are never relayed",
 			caller:  mcp.ClientCapabilities{Experimental: map[string]any{"x": true}, Tasks: &mcp.TasksCapability{}},
 			relayed: mcp.ClientCapabilities{Experimental: map[string]any{"x": true}, Tasks: &mcp.TasksCapability{}},
@@ -822,4 +822,48 @@ func TestDescribeInputRequests_IsStable(t *testing.T) {
 	for range 50 {
 		require.Equal(t, want, describeInputRequests(requests, "upstream"))
 	}
+}
+
+// MCP Apps fields are read from the tool's _meta; no visibility means model and app.
+func TestToolMetadata_MCPAppsFields(t *testing.T) {
+	withMeta := func(fields map[string]any) *mcp.Tool {
+		tool := mcp.NewTool("t")
+		tool.Meta = &mcp.Meta{AdditionalFields: fields}
+		return &tool
+	}
+	cases := []struct {
+		name         string
+		tool         *mcp.Tool
+		wantURI      string
+		wantVisible  []string
+		model, app   bool
+		wantMetaJSON string
+	}{
+		{name: "resource and visibility", tool: withMeta(map[string]any{"ui": map[string]any{"resourceUri": "ui://charts/view", "visibility": []any{"app"}}}),
+			wantURI: "ui://charts/view", wantVisible: []string{"app"}, model: false, app: true,
+			wantMetaJSON: `{"ui":{"resourceUri":"ui://charts/view","visibility":["app"]}}`},
+		{name: "deprecated resourceUri key", tool: withMeta(map[string]any{"ui/resourceUri": "ui://charts/view"}),
+			wantURI: "ui://charts/view", model: true, app: true, wantMetaJSON: `{"ui/resourceUri":"ui://charts/view"}`},
+		{name: "non-ui URI is not an app resource", tool: withMeta(map[string]any{"ui": map[string]any{"resourceUri": "https://example.com/view"}}),
+			model: true, app: true, wantMetaJSON: `{"ui":{"resourceUri":"https://example.com/view"}}`},
+		{name: "model only", tool: withMeta(map[string]any{"ui": map[string]any{"visibility": []any{"model"}}}),
+			wantVisible: []string{"model"}, model: true, app: false, wantMetaJSON: `{"ui":{"visibility":["model"]}}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := toolMetadata(tc.tool)
+			require.NotNil(t, got)
+			assert.Equal(t, tc.wantURI, got.UIResourceURI)
+			assert.Equal(t, tc.wantVisible, got.Visibility)
+			assert.Equal(t, tc.model, got.ModelVisible())
+			assert.Equal(t, tc.app, got.AppVisible())
+			assert.JSONEq(t, tc.wantMetaJSON, string(got.Meta))
+		})
+	}
+
+	plain := mcp.NewTool("plain")
+	got := toolMetadata(&plain)
+	assert.Nil(t, got, "a tool with no metadata keeps none")
+	assert.True(t, got.ModelVisible())
+	assert.True(t, got.AppVisible())
 }

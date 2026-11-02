@@ -22,6 +22,7 @@ import (
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
@@ -192,6 +193,7 @@ func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.
 // tools when withConnect is set and its instructions when withInstructions is set.
 func (m *MCPManager) resolveCallerDiscovery(ctx context.Context, withConnect, withInstructions bool) CallerDiscovery {
 	var includeClients []string
+	appTools := hostsApps(ctx)
 
 	// Extract client filtering from request context
 	if existingIncludeClients, ok := ctx.Value(schemas.MCPContextKeyIncludeClients).([]string); ok && existingIncludeClients != nil {
@@ -271,6 +273,11 @@ func (m *MCPManager) resolveCallerDiscovery(ctx context.Context, withConnect, wi
 				continue
 			}
 
+			// Third check: app-only MCP Apps tools are listed only to callers that host MCP Apps
+			if !appTools && !toolMap[toolName].MCP.ModelVisible() {
+				continue
+			}
+
 			kept = append(kept, toolName)
 		}
 		if len(kept) > 0 {
@@ -339,7 +346,7 @@ func (m *MCPManager) GetClientByName(clientName string) *schemas.MCPClientState 
 //
 // It deliberately skips tools_to_execute and the request include lists that
 // GetToolPerClient applies: the provider config is the authorization. Only a client
-// that is missing or disabled, or a tool the client does not expose, is refused.
+// that is missing or disabled, a tool the client does not expose, or an app-only tool is refused.
 func (m *MCPManager) GetInjectedTool(ctx context.Context, clientName, toolName string) (schemas.ChatTool, error) {
 	// Find the client under the lock, then read its tools outside it: a ctx-aware
 	// discovery store may read through to slower backing, which must not run under m.mu.
@@ -364,6 +371,9 @@ func (m *MCPManager) GetInjectedTool(ctx context.Context, clientName, toolName s
 	tool, ok := m.discoveryStore.GetDiscovery(ctx, config).GetTools()[clientName+"-"+toolName]
 	if !ok {
 		return schemas.ChatTool{}, fmt.Errorf("mcp client %q does not expose tool %q", clientName, toolName)
+	}
+	if !tool.MCP.ModelVisible() {
+		return schemas.ChatTool{}, fmt.Errorf("mcp client %q tool %q is only callable from an MCP App", clientName, toolName)
 	}
 	// A deep copy: the caller owns the returned schema, and an edit to it must never
 	// reach the stored definition every later request is built from.
@@ -771,7 +781,38 @@ func isDeadSessionError(err error) bool {
 const unfulfilledInputPrefix = "multi round-trip: fulfilling input request "
 
 // relayedClientCapabilities are the client capabilities Bifrost can pass through to a gateway caller.
-var relayedClientCapabilities = mcp.ClientCapabilities{Elicitation: &mcp.ElicitationCapability{}}
+var relayedClientCapabilities = mcp.ClientCapabilities{
+	Elicitation: &mcp.ElicitationCapability{},
+	Extensions:  map[string]any{schemas.MCPAppsExtension: struct{}{}},
+}
+
+type modelToolsOnlyKey struct{}
+
+// WithModelToolsOnly hides app-only tools from listings on ctx. Code mode uses it, since a model writes its scripts.
+func WithModelToolsOnly(ctx context.Context) context.Context {
+	return context.WithValue(ctx, modelToolsOnlyKey{}, true)
+}
+
+// hostsApps reports whether the request is from a gateway caller that declared MCP Apps.
+func hostsApps(ctx context.Context) bool {
+	if gateway, _ := ctx.Value(schemas.BifrostContextKeyIsMCPGateway).(bool); !gateway {
+		return false
+	}
+	if modelOnly, _ := ctx.Value(modelToolsOnlyKey{}).(bool); modelOnly {
+		return false
+	}
+	caller, _ := ctx.Value(schemas.BifrostContextKeyMCPCallerCapabilities).(*mcp.ClientCapabilities)
+	if caller == nil {
+		return false
+	}
+	_, ok := caller.Extensions[schemas.MCPAppsExtension]
+	return ok
+}
+
+// bifrostClientCapabilities is declared at connect time so upstreams list their MCP Apps tools.
+var bifrostClientCapabilities = mcp.ClientCapabilities{
+	Extensions: map[string]any{schemas.MCPAppsExtension: map[string]any{"mimeTypes": []string{schemas.MCPAppsMimeType}}},
+}
 
 // manualInputRoundTrips leaves an upstream's input_required to CallUpstreamTool instead of mcp-go's loop.
 var manualInputRoundTrips = client.WithManualInputRoundTrips()
@@ -780,18 +821,18 @@ var manualInputRoundTrips = client.WithManualInputRoundTrips()
 // (input_required with no input requests), as mcp-go's own round-trip loop does.
 const maxRetryLaterRounds = 3
 
-// upstreamContext declares, on a 2026-07-28 request made for a gateway caller, what that caller can
-// answer: with relay, the capabilities it declared that Bifrost can pass through; without, none. A
-// request with no gateway caller keeps the client's own capabilities. answerable is what was declared.
-func upstreamContext(ctx context.Context, relay bool) (_ context.Context, answerable mcp.ClientCapabilities, hasCaller bool) {
+// upstreamContext sets the capabilities a 2026-07-28 request declares: what the gateway caller can
+// answer (relay only), otherwise none. Legacy connections declared theirs at initialize.
+func upstreamContext(ctx context.Context, conn *client.Client, relay bool) (_ context.Context, answerable mcp.ClientCapabilities, hasCaller bool) {
 	caller, _ := ctx.Value(schemas.BifrostContextKeyMCPCallerCapabilities).(*mcp.ClientCapabilities)
-	if caller == nil {
-		return ctx, answerable, false
-	}
-	if relay {
+	hasCaller = caller != nil
+	if hasCaller && relay {
 		answerable = relayableCapabilities(*caller, relayedClientCapabilities)
 	}
-	return client.WithRequestClientCapabilities(ctx, answerable), answerable, true
+	if version := conn.ProtocolVersion(); version != "" && !mcp.IsModernProtocol(version) {
+		return ctx, answerable, hasCaller
+	}
+	return client.WithRequestClientCapabilities(ctx, answerable), answerable, hasCaller
 }
 
 // CallUpstreamTool sends call on conn. With relay, a gateway caller gets an upstream's input_required
@@ -800,7 +841,7 @@ func upstreamContext(ctx context.Context, relay bool) (_ context.Context, answer
 // *UnservableInputError once Bifrost has retried a "retry later" answer itself. Exported for code
 // mode's nested tool calls, which cannot pass a request back mid-script.
 func CallUpstreamTool(ctx context.Context, conn *client.Client, call mcp.CallToolRequest, relay bool) (*mcp.CallToolResult, error) {
-	ctx, answerable, hasCaller := upstreamContext(ctx, relay)
+	ctx, answerable, hasCaller := upstreamContext(ctx, conn, relay)
 	relay = relay && hasCaller
 	if relay {
 		if resume, _ := ctx.Value(schemas.BifrostContextKeyMCPInputResumption).(*mcp.MultiRoundTripParams); resume != nil {
@@ -1449,10 +1490,36 @@ func toolMetadata(mcpTool *mcp.Tool) *schemas.MCPToolMetadata {
 			outputSchema, _ = sjson.DeleteBytes(outputSchema, "type")
 		}
 	}
-	if mcpTool.Title == "" && len(mcpTool.Icons) == 0 && outputSchema == nil {
+	var meta json.RawMessage
+	if mcpTool.Meta != nil && (mcpTool.Meta.ProgressToken != nil || len(mcpTool.Meta.AdditionalFields) > 0) {
+		meta, _ = json.Marshal(mcpTool.Meta)
+	}
+	if mcpTool.Title == "" && len(mcpTool.Icons) == 0 && outputSchema == nil && meta == nil {
 		return nil
 	}
-	return &schemas.MCPToolMetadata{Title: mcpTool.Title, Icons: mcpTool.Icons, OutputSchema: outputSchema}
+	metadata := &schemas.MCPToolMetadata{Title: mcpTool.Title, Icons: mcpTool.Icons, OutputSchema: outputSchema, Meta: meta}
+	if meta != nil {
+		metadata.UIResourceURI, metadata.Visibility = appsUIMeta(meta)
+	}
+	return metadata
+}
+
+// appsUIMeta reads ui.resourceUri (or the deprecated "ui/resourceUri") and ui.visibility from a tool's _meta.
+func appsUIMeta(meta json.RawMessage) (resourceURI string, visibility []string) {
+	ui := gjson.GetBytes(meta, "ui")
+	resourceURI = ui.Get("resourceUri").String()
+	if resourceURI == "" {
+		resourceURI = gjson.GetBytes(meta, "ui/resourceUri").String()
+	}
+	if !strings.HasPrefix(resourceURI, "ui://") {
+		resourceURI = ""
+	}
+	for _, v := range ui.Get("visibility").Array() {
+		if v.Type == gjson.String {
+			visibility = append(visibility, v.String())
+		}
+	}
+	return resourceURI, visibility
 }
 
 // declaresOutputSchema reports whether any part of the output schema is set; type is optional.
