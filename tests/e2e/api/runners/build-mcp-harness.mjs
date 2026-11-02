@@ -3447,7 +3447,7 @@ const LIB37 = folder("LIB-37 Valid interval", "Setup: PUT /api/config with frame
 
 const FAIL02 = folder("FAIL-02 SSE create against a closed port", "Setup: an SSE client named alpha at 127.0.0.1:9, where nothing listens.", [
   createExpect("FAIL-02", "create the SSE client", { client_id: "fail02-a", name: "alpha", connection_type: "sse", connection_string: "http://127.0.0.1:9/s/alpha/sse", auth_type: "none", tools_to_execute: ["*"] },
-    [A.status(500), A.msgContains("failed to start MCP client transport after 5 retries"), responseTime(30000, 40000)]),
+    [A.status(500), A.msgContains("failed to start MCP client transport: "), responseTime(30000, 40000)]),
 ]);
 
 const FAIL14 = folder("FAIL-14 refresh-tools during a list failure", "Setup: alpha (echo_tool, add_tool) as client alpha, sticky, tools_to_execute [\"*\"]; then alpha fails tools/list.", [
@@ -4121,7 +4121,7 @@ const FAIL07 = folder("FAIL-07 401 at create is not retried", "Setup: alpha (ech
   ...freshServer("FAIL-07", "alpha", ["echo_tool", "add_tool"]),
   saveMethods("FAIL-07", "alpha", "fail07"),
   mockPost("FAIL-07", "alpha", "faults", "setup: alpha answers every request with 401", { faults: { status: 401 } }),
-  createExpect("FAIL-07", "create the sticky client", httpClient("fail-07-a", "alpha", "alpha", { needs_session_stickiness: true, tools_to_execute: ["*"] }), [A.status(500), A.msgContains("authorization required"), responseTime(null, 5000)]),
+  createExpect("FAIL-07", "create the sticky client", httpClient("fail-07-a", "alpha", "alpha", { needs_session_stickiness: true, tools_to_execute: ["*"] }), [A.status(500), A.msgContains("authorization required"), A.custom("the message claims no retries", ["pm.expect(pm.response.json().error.message, 'body: ' + pm.response.text()).to.not.include('retries');"]), responseTime(null, 5000)]),
   mockGet("FAIL-07", "alpha", "initialize +1", [methodsPlus("fail07", 1)]),
   mockPost("FAIL-07", "alpha", "faults/clear", "teardown: clear alpha's faults"),
 ]);
