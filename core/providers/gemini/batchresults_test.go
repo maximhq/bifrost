@@ -567,6 +567,20 @@ func TestGeminiBatchCreateEmbeddingsInlineRequests(t *testing.T) {
 	assert.Nil(t, items[1].Request.OutputDimensionality)
 }
 
+func TestGeminiBatchCreateEmbeddingsReportsEmbeddingsEndpointWhenOmitted(t *testing.T) {
+	t.Parallel()
+	provider, _, _ := newEmbedBatchTestProvider(t)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	resp, err := provider.BatchCreate(ctx, schemas.Key{Value: *schemas.NewSecretVar("dummy-key")}, &schemas.BifrostBatchCreateRequest{
+		Provider: schemas.Gemini,
+		Model:    schemas.Ptr("gemini-embedding-2"),
+		Requests: []schemas.BatchRequestItem{{CustomID: "p0", Body: map[string]interface{}{"input": "red shoes"}}},
+	})
+	require.Nil(t, err)
+	assert.Equal(t, string(schemas.BatchEndpointEmbeddings), resp.Endpoint)
+}
+
 func TestGeminiBatchCreateEmbeddingsRequiresModel(t *testing.T) {
 	t.Parallel()
 	provider, gotPath, _ := newEmbedBatchTestProvider(t)

@@ -2810,11 +2810,18 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 		completedCount = len(inlinedResponses) - failedCount
 	}
 
+	// A detected embeddings job reports the logical endpoint even when the request omitted it,
+	// since accounting keeps this persisted value when results carry no endpoint of their own.
+	endpoint := request.Endpoint
+	if isEmbeddings {
+		endpoint = schemas.BatchEndpointEmbeddings
+	}
+
 	// Build response
 	result := &schemas.BifrostBatchCreateResponse{
 		ID:            geminiResp.Metadata.Name,
 		Object:        "batch",
-		Endpoint:      string(request.Endpoint),
+		Endpoint:      string(endpoint),
 		Status:        status,
 		CreatedAt:     parseGeminiTimestamp(geminiResp.Metadata.CreateTime),
 		OperationName: &geminiResp.Metadata.Name,
