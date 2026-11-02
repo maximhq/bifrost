@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 
 /** Every role the log detail Messages filter can show or hide, in menu order. */
 export const MESSAGE_ROLES = ["system", "user", "assistant", "tool", "reasoning"] as const;
@@ -47,24 +47,29 @@ const readStoredRoles = (): Set<MessageRole> => {
  * The log detail Messages filter, kept in localStorage so it survives reloads,
  * switching logs and new sessions. The stored value is read synchronously on
  * mount (the UI is a client-only SPA) so a filtered log never flashes unfiltered.
+ *
+ * The write happens in an effect on the committed selection, never inside a state
+ * updater: React may run an updater twice or discard its render, which would store
+ * a filter the view never showed. The value read on mount is not written back.
  */
-export function useMessageRoleFilterPreference(): [
-	Set<MessageRole>,
-	(update: Set<MessageRole> | ((prev: Set<MessageRole>) => Set<MessageRole>)) => void,
-] {
-	const [visibleRoles, setVisibleRolesState] = useState<Set<MessageRole>>(readStoredRoles);
+export function useMessageRoleFilterPreference(): [Set<MessageRole>, Dispatch<SetStateAction<Set<MessageRole>>>] {
+	const [visibleRoles, setVisibleRoles] = useState<Set<MessageRole>>(readStoredRoles);
+	const lastPersisted = useRef<string | null>(null);
 
-	const setVisibleRoles = useCallback((update: Set<MessageRole> | ((prev: Set<MessageRole>) => Set<MessageRole>)) => {
-		setVisibleRolesState((prev) => {
-			const next = typeof update === "function" ? update(prev) : update;
-			try {
-				localStorage.setItem(MESSAGE_ROLE_FILTER_STORAGE_KEY, serializeMessageRoles(next));
-			} catch {
-				// localStorage unavailable: the filter still applies, it just won't persist.
-			}
-			return next;
-		});
-	}, []);
+	useEffect(() => {
+		const serialized = serializeMessageRoles(visibleRoles);
+		if (lastPersisted.current === null) {
+			lastPersisted.current = serialized;
+			return;
+		}
+		if (serialized === lastPersisted.current) return;
+		lastPersisted.current = serialized;
+		try {
+			localStorage.setItem(MESSAGE_ROLE_FILTER_STORAGE_KEY, serialized);
+		} catch {
+			// localStorage unavailable: the filter still applies, it just won't persist.
+		}
+	}, [visibleRoles]);
 
 	return [visibleRoles, setVisibleRoles];
 }
