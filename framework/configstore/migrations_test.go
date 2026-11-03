@@ -5839,3 +5839,73 @@ func TestTableModelPricing_ColumnNamesFitPostgresLimit(t *testing.T) {
 		}
 	}
 }
+
+// TestMigrationAddBudgetBusinessUnitIDColumn pins the owner column a business unit's budgets name
+// it from: added with its index where it is missing, left alone where it is there, and never tied
+// to a business unit row by a constraint, since the config loader may write the budget first.
+func TestMigrationAddBudgetBusinessUnitIDColumn(t *testing.T) {
+	ctx := context.Background()
+	for _, backend := range budgetBusinessUnitColumnMigrationDBs(t) {
+		t.Run(backend.name, func(t *testing.T) {
+			db := backend.db
+			mig := db.Migrator()
+			require.False(t, mig.HasColumn(&tables.TableBudget{}, "business_unit_id"))
+
+			require.NoError(t, migrationAddBudgetBusinessUnitIDColumn(ctx, db, testMigrationLogger))
+			assert.True(t, mig.HasColumn(&tables.TableBudget{}, "business_unit_id"))
+			assert.True(t, mig.HasIndex(&tables.TableBudget{}, "idx_governance_budgets_business_unit_id"))
+			if backend.name == "postgres" {
+				valid, err := postgresIndexIsValid(db, "governance_budgets", "idx_governance_budgets_business_unit_id")
+				require.NoError(t, err)
+				assert.True(t, valid, "the concurrent build leaves a usable index")
+			}
+			assert.False(t, mig.HasConstraint(&tables.TableBudget{}, "fk_governance_budgets_business_unit"), "no constraint ties the owner column to a business unit row")
+
+			// A budget naming a unit that this store has no row for is accepted: the owner lives elsewhere.
+			buID := "bu-elsewhere"
+			require.NoError(t, db.Create(&tables.TableBudget{ID: "bud-bu", MaxLimit: 10, ResetDuration: "1M", BusinessUnitID: &buID}).Error)
+
+			require.NoError(t, migrationAddBudgetBusinessUnitIDColumn(ctx, db, testMigrationLogger), "running again is a no-op")
+		})
+	}
+}
+
+// budgetBusinessUnitColumnMigrationDBs returns a governance_budgets table without the
+// business_unit_id column on sqlite and, when the local test server is reachable, on postgres -
+// where the index is built concurrently, outside a transaction. The postgres copy lives in its own
+// schema so it cannot disturb another test's governance tables.
+func budgetBusinessUnitColumnMigrationDBs(t *testing.T) []namedDB {
+	t.Helper()
+	prepare := func(db *gorm.DB) error {
+		if err := db.AutoMigrate(&tables.TableBudget{}); err != nil {
+			return err
+		}
+		return db.Migrator().DropColumn(&tables.TableBudget{}, "BusinessUnitID")
+	}
+	sqliteDB := setupCalendarAlignedPreMigrationDB(t)
+	require.NoError(t, prepare(sqliteDB))
+	dbs := []namedDB{{"sqlite", sqliteDB}}
+
+	const schema = "configstore_bu_owner_test"
+	admin, err := gorm.Open(postgres.Open(postgresDSN), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		return dbs
+	}
+	if sqlDB, err := admin.DB(); err != nil || sqlDB.Ping() != nil {
+		return dbs
+	}
+	admin.Exec("DROP SCHEMA IF EXISTS " + schema + " CASCADE")
+	if admin.Exec("CREATE SCHEMA " + schema).Error != nil {
+		return dbs
+	}
+	pgDB, err := gorm.Open(postgres.Open(strings.Replace(postgresDSN, "search_path="+pgTestSchema, "search_path="+schema, 1)), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, prepare(pgDB))
+	t.Cleanup(func() {
+		if sqlDB, err := pgDB.DB(); err == nil {
+			_ = sqlDB.Close()
+		}
+		admin.Exec("DROP SCHEMA IF EXISTS " + schema + " CASCADE")
+	})
+	return append(dbs, namedDB{"postgres", pgDB})
+}

@@ -111,6 +111,12 @@ func lockClientConfigRow(tx *gorm.DB) error {
 	}
 }
 
+// budgetNamesNoOwner reports whether a budget write names none of the owner columns.
+func budgetNamesNoOwner(budget *tables.TableBudget) bool {
+	return budget.TeamID == nil && budget.VirtualKeyID == nil && budget.ProviderConfigID == nil &&
+		budget.ModelConfigID == nil && budget.CustomerID == nil && budget.BusinessUnitID == nil
+}
+
 // lockBudgetOwner locks the owning governance parent before mutating a budget row.
 func lockBudgetOwner(ctx context.Context, txDB *gorm.DB, budget tables.TableBudget) error {
 	switch {
@@ -6125,6 +6131,14 @@ func (s *RDBConfigStore) UpdateBudget(ctx context.Context, budget *tables.TableB
 		// applied by CreateBudget on first import, and inert thereafter.
 		budget.CurrentUsage = existing.CurrentUsage
 		budget.LastReset = existing.LastReset
+		// A write that names no owner at all keeps the business unit the row already has, as the
+		// columns above keep theirs: a budget's limits can be edited without restating who holds it,
+		// and saving the row as given would detach the budget from its unit with nothing on the
+		// unit's side to notice. A write that names any owner is an ownership change and is applied
+		// as given.
+		if budgetNamesNoOwner(budget) {
+			budget.BusinessUnitID = existing.BusinessUnitID
+		}
 		// Preserve MC ownership if already migrated; config.json sync would otherwise revert it.
 		if existing.ModelConfigID != nil {
 			budget.ModelConfigID = existing.ModelConfigID

@@ -589,6 +589,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_mcp_per_user_discoveries"}, run: migrationAddMCPPerUserDiscoveries},
 	{IDs: []string{"add_mcp_client_pending_verification_column"}, run: migrationAddMCPClientPendingVerificationColumn},
 	{IDs: []string{"add_cache_creation_above_12hr_pricing_columns"}, run: migrationAddCacheCreationAbove12hrPricingColumns},
+	{IDs: []string{"add_budget_business_unit_id_column"}, run: migrationAddBudgetBusinessUnitIDColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17103,6 +17104,86 @@ func migrationAddCacheCreationAbove12hrPricingColumns(ctx context.Context, db *g
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running cache creation above 12hr pricing columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddBudgetBusinessUnitIDColumn adds the business_unit_id owner column to
+// governance_budgets, so a business unit can hold one budget per reset window the
+// way a team or customer does (TableBudget.TeamID / CustomerID).
+//
+// Index only, no foreign key: the config loader may write a budget naming a business
+// unit before any row for that unit exists, so no database constraint ties the two.
+//
+// Two steps. The column is added in a transaction under the migration lock timeout; adding a
+// nullable column is a catalog change and does not rewrite the table. The index is then built
+// outside a transaction with CREATE INDEX CONCURRENTLY on postgres, so a large governance_budgets
+// table keeps taking writes - budget usage is written on every dump - while it builds. An INVALID
+// index left by an interrupted concurrent build is dropped and built again, since IF NOT EXISTS
+// alone would keep the unusable one. SQLite has no CONCURRENTLY and uses the plain form.
+func migrationAddBudgetBusinessUnitIDColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_budget_business_unit_id_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableBudget{}, "BusinessUnitID"); err != nil {
+				return fmt.Errorf("add business_unit_id column to governance_budgets: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableBudget{}, "BusinessUnitID"); err != nil {
+				return fmt.Errorf("drop business_unit_id column from governance_budgets: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+
+	indexMigrationName := "add_budget_business_unit_id_index"
+	const indexName = "idx_governance_budgets_business_unit_id"
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	if err := RunSingleMigration(ctx, &noTxOpts, db, logger, &migrator.Migration{
+		ID: indexMigrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Dialector.Name() == "sqlite" {
+				return tx.Exec("CREATE INDEX IF NOT EXISTS " + indexName + " ON governance_budgets (business_unit_id)").Error
+			}
+			valid, err := postgresIndexIsValid(tx, "governance_budgets", indexName)
+			if err != nil {
+				return fmt.Errorf("check %s: %w", indexName, err)
+			}
+			if valid {
+				return nil
+			}
+			if err := tx.Exec("DROP INDEX CONCURRENTLY IF EXISTS " + indexName).Error; err != nil {
+				return fmt.Errorf("drop invalid %s: %w", indexName, err)
+			}
+			if err := tx.Exec("CREATE INDEX CONCURRENTLY IF NOT EXISTS " + indexName + " ON governance_budgets (business_unit_id)").Error; err != nil {
+				return fmt.Errorf("create %s: %w", indexName, err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Dialector.Name() == "sqlite" {
+				return tx.Exec("DROP INDEX IF EXISTS " + indexName).Error
+			}
+			return tx.Exec("DROP INDEX CONCURRENTLY IF EXISTS " + indexName).Error
+		},
+	}); err != nil {
+		return fmt.Errorf("error running %s migration: %w", indexMigrationName, err)
 	}
 	return nil
 }
