@@ -11,6 +11,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { useSheetNavigation } from "@/hooks/useSheetNavigation";
 import { MCP_CREDENTIAL_STATUS_COLORS, MCP_STATUS_COLORS } from "@/lib/constants/config";
+import { getLocale } from "@/lib/i18n";
 import { getMCPClientAccessGrants, useMCPClientAccessGrantCount } from "@/lib/registries/mcpClientAccessGrants";
 import { useGetCoreConfigQuery, useGetMCPSessionsQuery, useGetVirtualMCPsQuery } from "@/lib/store";
 import { MCPClient, MCPClientTool } from "@/lib/types/mcp";
@@ -89,6 +90,8 @@ const STATUS_INK: Partial<Record<MCPSessionStatus, string>> = {
 	orphaned: "text-yellow-800 dark:text-yellow-300",
 };
 const CALLER_ROWS = 5;
+// Virtual MCPs listed on the Access tab; the server caps a page at 100, and the count is total_count.
+const VIRTUAL_MCP_ROWS = 100;
 const HERO_COPY_LABELS = {
 	endpoint: "registry.sheet.copyEndpointAria",
 	calls: "registry.view.copyBaseUrl",
@@ -158,10 +161,16 @@ export default function MCPClientDetailsSheet({
 	const promptItems = useMemo(() => promptExposeItems(mcpClient), [mcpClient]);
 	const resourceItems = useMemo(() => resourceExposeItems(mcpClient), [mcpClient]);
 
-	// Reverse lookup for the Access tab: which Virtual MCPs bundle this server's
-	// tools. There's no dedicated endpoint, but the list response already carries
-	// every vMCP's tools[].mcp_client_id, so membership is derived client-side.
-	const { data: virtualMcpsData, isLoading: virtualMcpsLoading, isError: virtualMcpsError } = useGetVirtualMCPsQuery({ limit: 1000 });
+	// Reverse lookup for the Access tab: which Virtual MCPs bundle this server's tools. The server
+	// filters by client_id, so total_count is exact however many Virtual MCPs exist; scanning one
+	// list page here missed every Virtual MCP past the page cap.
+	// currentData, not data: prev/next reuses this sheet, and data would keep the previous server's result
+	// (and isLoading stay false) until this server's answer arrives.
+	const { currentData: virtualMcpsData, isError: virtualMcpsError } = useGetVirtualMCPsQuery({
+		mcp_client_id: config.client_id,
+		limit: VIRTUAL_MCP_ROWS,
+	});
+	const virtualMcpsLoading = !virtualMcpsData && !virtualMcpsError;
 	const memberVirtualMcps = useMemo(() => {
 		const out: { vmcp: VirtualMCP; toolNames: string[] }[] = [];
 		for (const vmcp of virtualMcpsData?.virtual_mcps ?? []) {
@@ -170,7 +179,8 @@ export default function MCPClientDetailsSheet({
 		}
 		return out;
 	}, [virtualMcpsData, config.client_id]);
-	const virtualMcpCount: VirtualMcpCount = virtualMcpsLoading ? "loading" : virtualMcpsError ? "error" : memberVirtualMcps.length;
+	const virtualMcpTotal = virtualMcpsData?.total_count ?? memberVirtualMcps.length;
+	const virtualMcpCount: VirtualMcpCount = virtualMcpsLoading ? "loading" : virtualMcpsError ? "error" : virtualMcpTotal;
 	const vkConfigs = mcpClient.vk_configs ?? [];
 	// Grants a downstream build adds beside keys and Virtual MCPs; none in the base build.
 	const accessGrants = getMCPClientAccessGrants();
@@ -756,6 +766,15 @@ export default function MCPClientDetailsSheet({
 												))}
 											</TableBody>
 										</Table>
+										{virtualMcpTotal > memberVirtualMcps.length && (
+											<div className="text-muted-foreground border-t px-3 py-2 text-xs" data-testid="mcp-client-virtual-mcps-truncated">
+												{t("common.ofEntries", {
+													from: (1).toLocaleString(getLocale()),
+													to: memberVirtualMcps.length.toLocaleString(getLocale()),
+													total: virtualMcpTotal.toLocaleString(getLocale()),
+												})}
+											</div>
+										)}
 									</div>
 								) : (
 									<EmptyBox>{t("registry.sheet.notPartOfVirtualMcp")}</EmptyBox>
