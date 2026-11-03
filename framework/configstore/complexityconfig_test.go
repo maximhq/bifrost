@@ -1302,3 +1302,159 @@ func TestRDBConfigStore_ComplexityDecisionMinConfidencePersistence(t *testing.T)
 	require.NotNil(t, got.Decision)
 	assert.Equal(t, 0.8, got.Decision.MinConfidence)
 }
+
+func testSuggestionsAnalyzerConfig() *ComplexityAnalyzerConfig {
+	cfg := testSemanticAnalyzerConfig()
+	cfg.Suggestions = &ComplexitySuggestionsConfig{Enabled: true, SampleRate: 0.25, LookbackDays: 14}
+	return cfg
+}
+
+func TestComplexitySuggestionsConfigDecoding(t *testing.T) {
+	var cfg ComplexitySuggestionsConfig
+	require.NoError(t, json.Unmarshal([]byte(`{"enabled":true,"sample_rate":0.5,"lookback_days":3}`), &cfg))
+	assert.Equal(t, ComplexitySuggestionsConfig{Enabled: true, SampleRate: 0.5, LookbackDays: 3}, cfg)
+
+	require.ErrorContains(t, json.Unmarshal([]byte(`{"enabled":true,"samplerate":0.5}`), &cfg), `unknown complexity suggestions field "samplerate"`)
+	require.ErrorContains(t, json.Unmarshal([]byte(`{"sample_rate":0.5}`), &cfg), "requires enabled")
+}
+
+func TestComplexitySuggestionsConfigDefaultsAndValidation(t *testing.T) {
+	cfg := testSemanticAnalyzerConfig()
+	cfg.Suggestions = &ComplexitySuggestionsConfig{Enabled: true}
+	normalized := cfg.Normalized()
+	require.NoError(t, normalized.Validate())
+	assert.Equal(t, DefaultComplexitySuggestionsSampleRate, normalized.Suggestions.SampleRate)
+	assert.Equal(t, DefaultComplexitySuggestionsLookbackDays, normalized.Suggestions.LookbackDays)
+	assert.True(t, normalized.SuggestionsEnabled())
+
+	for _, bad := range []ComplexitySuggestionsConfig{
+		{Enabled: true, SampleRate: 1.5},
+		{Enabled: true, SampleRate: -0.1},
+		{Enabled: true, LookbackDays: MaxComplexitySuggestionsLookbackDays + 1},
+		{Enabled: true, LookbackDays: -1},
+	} {
+		cfg.Suggestions = &bad
+		n := cfg.Normalized()
+		assert.Error(t, n.Validate(), "%+v should be rejected", bad)
+	}
+
+	cfg.Suggestions = nil
+	n := cfg.Normalized()
+	assert.False(t, n.SuggestionsEnabled())
+	require.NoError(t, n.Validate())
+}
+
+// The suggestions block rides the semantic row as a top-level key, which the
+// row record decodes leniently; it must never land inside the strictly
+// decoded semantic block, or a rolled-back binary loses the whole row.
+func TestComplexitySuggestionsPersistOutsideTheStrictSemanticBlock(t *testing.T) {
+	cfg := testSuggestionsAnalyzerConfig()
+	data, err := encodeComplexitySemanticConfigRow(cfg.Normalized())
+	require.NoError(t, err)
+
+	var raw map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &raw))
+	require.Contains(t, raw, "suggestions")
+	var semantic map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(raw["semantic"], &semantic))
+	assert.NotContains(t, semantic, "suggestions")
+
+	// A binary predating suggestions decodes the row with this exact record
+	// minus the field; unknown top-level keys must not fail it.
+	type preSuggestionsRecord struct {
+		Keywords ComplexityEditableKeywordConfig `json:"keywords"`
+		Semantic *ComplexitySemanticConfig       `json:"semantic,omitempty"`
+	}
+	var old preSuggestionsRecord
+	require.NoError(t, json.Unmarshal(data, &old))
+	require.NotNil(t, old.Semantic)
+
+	row, err := decodeComplexitySemanticConfigRow(data)
+	require.NoError(t, err)
+	combined := applyComplexitySemanticConfigRow(&ComplexityAnalyzerConfig{TierBoundaries: cfg.TierBoundaries}, row)
+	assert.Equal(t, cfg.Normalized().Suggestions, combined.Suggestions)
+}
+
+func TestGenerateComplexityAnalyzerConfigHashesSuggestions(t *testing.T) {
+	on, err := GenerateComplexityAnalyzerConfigHashes(testSuggestionsAnalyzerConfig())
+	require.NoError(t, err)
+	require.NotEmpty(t, on.SuggestionsSettings)
+
+	changed := testSuggestionsAnalyzerConfig()
+	changed.Suggestions.SampleRate = 0.5
+	changedHashes, err := GenerateComplexityAnalyzerConfigHashes(changed)
+	require.NoError(t, err)
+	assert.NotEqual(t, on.SuggestionsSettings, changedHashes.SuggestionsSettings)
+	assert.Equal(t, on.SemanticSettings, changedHashes.SemanticSettings)
+
+	none, err := GenerateComplexityAnalyzerConfigHashes(testSemanticAnalyzerConfig())
+	require.NoError(t, err)
+	assert.Empty(t, none.SuggestionsSettings)
+}
+
+func TestMergeComplexityAnalyzerConfigByHashesSuggestions(t *testing.T) {
+	withHashes := func(cfg *ComplexityAnalyzerConfig) *ComplexityAnalyzerConfig {
+		hashes, err := GenerateComplexityAnalyzerConfigHashes(cfg)
+		require.NoError(t, err)
+		cfg.ConfigHashes = hashes
+		return cfg
+	}
+
+	t.Run("file omission preserves persisted suggestions", func(t *testing.T) {
+		base := withHashes(testSuggestionsAnalyzerConfig())
+		merged, err := MergeComplexityAnalyzerConfigByHashes(base, withHashes(testSemanticAnalyzerConfig()))
+		require.NoError(t, err)
+		require.NotNil(t, merged.Suggestions)
+		assert.Equal(t, 0.25, merged.Suggestions.SampleRate)
+	})
+
+	t.Run("changed file section overrides", func(t *testing.T) {
+		base := withHashes(testSuggestionsAnalyzerConfig())
+		file := testSuggestionsAnalyzerConfig()
+		file.Suggestions.Enabled = false
+		withHashes(file)
+		merged, err := MergeComplexityAnalyzerConfigByHashes(base, file)
+		require.NoError(t, err)
+		assert.False(t, merged.Suggestions.Enabled)
+		assert.Equal(t, file.ConfigHashes.SuggestionsSettings, merged.ConfigHashes.SuggestionsSettings)
+	})
+
+	t.Run("unchanged file section keeps a UI edit", func(t *testing.T) {
+		file := withHashes(testSuggestionsAnalyzerConfig())
+		base := testSuggestionsAnalyzerConfig()
+		base.Suggestions.SampleRate = 0.9 // edited in the UI after config.json was applied
+		base.ConfigHashes = file.ConfigHashes
+		merged, err := MergeComplexityAnalyzerConfigByHashes(base, file)
+		require.NoError(t, err)
+		assert.Equal(t, 0.9, merged.Suggestions.SampleRate)
+	})
+}
+
+func TestRDBConfigStore_ComplexitySuggestionsPersistenceAndReset(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	cfg := testSuggestionsAnalyzerConfig()
+	hashes, err := GenerateComplexityAnalyzerConfigHashes(cfg)
+	require.NoError(t, err)
+	cfg.ConfigHashes = hashes
+	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, cfg))
+
+	got, err := store.GetComplexityAnalyzerConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, got.Suggestions)
+	assert.Equal(t, ComplexitySuggestionsConfig{Enabled: true, SampleRate: 0.25, LookbackDays: 14}, *got.Suggestions)
+	assert.Equal(t, hashes.SuggestionsSettings, got.ConfigHashes.SuggestionsSettings)
+
+	// A UI-style update omits hashes; the carry-over keeps them with the block.
+	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, testSuggestionsAnalyzerConfig()))
+	got, err = store.GetComplexityAnalyzerConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, hashes.SuggestionsSettings, got.ConfigHashes.SuggestionsSettings)
+
+	// Resetting phrases and boundaries leaves suggestions as they were.
+	restored, err := store.ResetComplexityAnalyzerConfig(ctx, testComplexityAnalyzerConfig())
+	require.NoError(t, err)
+	require.NotNil(t, restored.Suggestions)
+	assert.True(t, restored.Suggestions.Enabled)
+}

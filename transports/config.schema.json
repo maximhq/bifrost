@@ -6969,6 +6969,9 @@
         },
         "session": {
           "$ref": "#/$defs/complexity_session_config"
+        },
+        "suggestions": {
+          "$ref": "#/$defs/complexity_suggestions_config"
         }
       },
       "required": [
@@ -7034,6 +7037,32 @@
             ]
           }
         }
+      ],
+      "additionalProperties": false
+    },
+    "complexity_suggestions_config": {
+      "type": "object",
+      "description": "Phrase suggestions for the semantic router. When enabled, a sample of the vectors the semantic classifier already computes for classified requests is kept, under each request's log ID, so suggestions can cluster real traffic in the router's embedding space. Only the vector and routing metadata are stored; request text stays in the logs. Captured vectors are deleted with their logs and are never kept longer than lookback_days or the log retention, whichever is shorter.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Capture a sample of classified requests for phrase suggestions; default false."
+        },
+        "sample_rate": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "description": "Share of classified requests captured; default 0.1."
+        },
+        "lookback_days": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 90,
+          "description": "Days of captured traffic suggestions draw on, and how long captured vectors are kept (never longer than the logs); default 7."
+        }
+      },
+      "required": [
+        "enabled"
       ],
       "additionalProperties": false
     },

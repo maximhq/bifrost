@@ -764,6 +764,96 @@ func (c *ComplexitySessionConfig) normalized() *ComplexitySessionConfig {
 	return &ComplexitySessionConfig{Enabled: c.Enabled}
 }
 
+// ComplexitySuggestionsConfig controls phrase suggestions for the semantic
+// router. Enabling it samples the vectors the semantic classifier already
+// computes for classified requests and keeps them for LookbackDays, so
+// suggestions can cluster real traffic in the router's own embedding space.
+// Only the vector and routing metadata are kept, under the request's log ID;
+// the text stays in the logs.
+//
+// The block is persisted as a top-level key of the semantic row, never inside
+// the semantic block: released binaries decode that block strictly, so a new
+// field there would make the whole row unreadable after a rollback.
+type ComplexitySuggestionsConfig struct {
+	Enabled bool `json:"enabled"`
+	// SampleRate is the share of classified requests captured, in (0, 1].
+	// Zero takes DefaultComplexitySuggestionsSampleRate.
+	SampleRate float64 `json:"sample_rate,omitempty"`
+	// LookbackDays is how much captured traffic suggestions draw on, and how
+	// long captured vectors are kept (never longer than the logs they belong
+	// to). Zero takes DefaultComplexitySuggestionsLookbackDays.
+	LookbackDays int `json:"lookback_days,omitempty"`
+}
+
+const (
+	// DefaultComplexitySuggestionsSampleRate captures one classified request
+	// in ten.
+	DefaultComplexitySuggestionsSampleRate = 0.1
+	// DefaultComplexitySuggestionsLookbackDays keeps a week of traffic.
+	DefaultComplexitySuggestionsLookbackDays = 7
+	// MaxComplexitySuggestionsLookbackDays bounds how long captured vectors
+	// can be kept.
+	MaxComplexitySuggestionsLookbackDays = 90
+)
+
+// UnmarshalJSON rejects unknown fields so a misspelled setting cannot be
+// accepted while silently doing nothing.
+func (c *ComplexitySuggestionsConfig) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	for field := range fields {
+		switch field {
+		case "enabled", "sample_rate", "lookback_days":
+		default:
+			return fmt.Errorf("unknown complexity suggestions field %q", field)
+		}
+	}
+	var decoded struct {
+		Enabled      *bool   `json:"enabled"`
+		SampleRate   float64 `json:"sample_rate"`
+		LookbackDays int     `json:"lookback_days"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	if decoded.Enabled == nil {
+		return fmt.Errorf("complexity suggestions config requires enabled")
+	}
+	*c = ComplexitySuggestionsConfig{Enabled: *decoded.Enabled, SampleRate: decoded.SampleRate, LookbackDays: decoded.LookbackDays}
+	return nil
+}
+
+// normalized returns a canonical copy with defaults filled in.
+func (c *ComplexitySuggestionsConfig) normalized() *ComplexitySuggestionsConfig {
+	if c == nil {
+		return nil
+	}
+	out := *c
+	if out.SampleRate == 0 {
+		out.SampleRate = DefaultComplexitySuggestionsSampleRate
+	}
+	if out.LookbackDays == 0 {
+		out.LookbackDays = DefaultComplexitySuggestionsLookbackDays
+	}
+	return &out
+}
+
+// Validate checks the suggestion settings.
+func (c *ComplexitySuggestionsConfig) Validate() error {
+	if c == nil {
+		return nil
+	}
+	if math.IsNaN(c.SampleRate) || c.SampleRate <= 0 || c.SampleRate > 1 {
+		return fmt.Errorf("suggestions sample_rate must be greater than 0 and at most 1, got %v", c.SampleRate)
+	}
+	if c.LookbackDays < 1 || c.LookbackDays > MaxComplexitySuggestionsLookbackDays {
+		return fmt.Errorf("suggestions lookback_days must be between 1 and %d, got %d", MaxComplexitySuggestionsLookbackDays, c.LookbackDays)
+	}
+	return nil
+}
+
 // ComplexityAnalyzerConfigHashes tracks the config.json hash for each editable
 // analyzer section. It is persisted with the config row, but not exposed through
 // API responses or config.json.
@@ -781,8 +871,9 @@ type ComplexityAnalyzerConfigHashes struct {
 	// LLMSettings covers the llm block (provider, model, timeout, prompt,
 	// history window, budgets flag). The fallback selector rides the
 	// SemanticSettings hash: it is a field of the semantic block.
-	LLMSettings     string `json:"llm_settings,omitempty"`
-	SessionSettings string `json:"session_settings,omitempty"`
+	LLMSettings         string `json:"llm_settings,omitempty"`
+	SessionSettings     string `json:"session_settings,omitempty"`
+	SuggestionsSettings string `json:"suggestions_settings,omitempty"`
 }
 
 type legacyComplexityAnalyzerConfigHashes struct {
@@ -870,7 +961,9 @@ type ComplexityAnalyzerConfig struct {
 	LLM *ComplexityLLMConfig `json:"llm,omitempty"`
 	// Session enables the built-in monotonic session tier. It is separate from
 	// semantic message_history_count: no message or turn history is persisted.
-	Session      *ComplexitySessionConfig       `json:"session,omitempty"`
+	Session *ComplexitySessionConfig `json:"session,omitempty"`
+	// Suggestions enables request capture for phrase suggestions.
+	Suggestions  *ComplexitySuggestionsConfig   `json:"suggestions,omitempty"`
 	ConfigHashes ComplexityAnalyzerConfigHashes `json:"-"`
 	// EmbeddingFingerprint is reserved for config-store implementations that
 	// persist routing state. The semantic classifier verifies a VectorStore-side
@@ -935,6 +1028,7 @@ type complexitySemanticConfigRecord struct {
 	DecisionMinConfidence float64                         `json:"decision_min_confidence,omitempty"`
 	LLM                   *ComplexityLLMConfig            `json:"llm,omitempty"`
 	Session               *ComplexitySessionConfig        `json:"session,omitempty"`
+	Suggestions           *ComplexitySuggestionsConfig    `json:"suggestions,omitempty"`
 	ConfigHashes          complexitySemanticRowHashes     `json:"_config_hashes,omitempty"`
 	EmbeddingFingerprint  string                          `json:"_embedding_fingerprint,omitempty"`
 }
@@ -942,14 +1036,15 @@ type complexitySemanticConfigRecord struct {
 // complexitySemanticRowHashes carries the section hashes for everything the
 // semantic row owns.
 type complexitySemanticRowHashes struct {
-	SimpleKeywords     string `json:"simple_keywords,omitempty"`
-	MediumKeywords     string `json:"medium_keywords,omitempty"`
-	ComplexKeywords    string `json:"complex_keywords,omitempty"`
-	SemanticSettings   string `json:"semantic_settings,omitempty"`
-	ClassifierSettings string `json:"classifier_settings,omitempty"`
-	DecisionSettings   string `json:"decision_settings,omitempty"`
-	LLMSettings        string `json:"llm_settings,omitempty"`
-	SessionSettings    string `json:"session_settings,omitempty"`
+	SimpleKeywords      string `json:"simple_keywords,omitempty"`
+	MediumKeywords      string `json:"medium_keywords,omitempty"`
+	ComplexKeywords     string `json:"complex_keywords,omitempty"`
+	SemanticSettings    string `json:"semantic_settings,omitempty"`
+	ClassifierSettings  string `json:"classifier_settings,omitempty"`
+	DecisionSettings    string `json:"decision_settings,omitempty"`
+	LLMSettings         string `json:"llm_settings,omitempty"`
+	SessionSettings     string `json:"session_settings,omitempty"`
+	SuggestionsSettings string `json:"suggestions_settings,omitempty"`
 }
 
 // LLMFallbackEnabled reports whether a semantic non-answer should be retried
@@ -960,6 +1055,12 @@ func (c *ComplexityAnalyzerConfig) LLMFallbackEnabled() bool {
 	return c != nil && c.Semantic != nil &&
 		c.Semantic.Fallback == ComplexitySemanticFallbackLLM &&
 		c.LLM != nil
+}
+
+// SuggestionsEnabled reports whether request capture for phrase suggestions
+// is on.
+func (c *ComplexityAnalyzerConfig) SuggestionsEnabled() bool {
+	return c != nil && c.Suggestions != nil && c.Suggestions.Enabled
 }
 
 // SessionRoutingEnabled reports whether monotonic session-tier retention is enabled.
@@ -1003,6 +1104,9 @@ func (c *ComplexityAnalyzerConfig) Validate() error {
 			return err
 		}
 	}
+	if err := c.Suggestions.Validate(); err != nil {
+		return err
+	}
 	if err := c.LLM.Validate(); err != nil {
 		return err
 	}
@@ -1044,6 +1148,7 @@ func (c *ComplexityAnalyzerConfig) Normalized() ComplexityAnalyzerConfig {
 		Decision:             decision,
 		LLM:                  c.LLM.normalized(),
 		Session:              c.Session.normalized(),
+		Suggestions:          c.Suggestions.normalized(),
 		ConfigHashes:         c.ConfigHashes,
 		EmbeddingFingerprint: c.EmbeddingFingerprint,
 	}
@@ -1144,6 +1249,7 @@ func MergeComplexityAnalyzerConfig(base, file *ComplexityAnalyzerConfig) (*Compl
 		Decision:             mergeComplexityDecisionConfig(normalizedBase.Decision, normalizedFile.Decision),
 		LLM:                  mergeComplexityLLMConfig(normalizedBase.LLM, normalizedFile.LLM),
 		Session:              mergeComplexitySessionConfig(normalizedBase.Session, normalizedFile.Session),
+		Suggestions:          mergeComplexitySuggestionsConfig(normalizedBase.Suggestions, normalizedFile.Suggestions),
 		ConfigHashes:         normalizedFile.ConfigHashes,
 		EmbeddingFingerprint: normalizedBase.EmbeddingFingerprint,
 	}
@@ -1183,6 +1289,15 @@ func mergeComplexityLLMConfig(base, file *ComplexityLLMConfig) *ComplexityLLMCon
 // mergeComplexitySessionConfig overlays file session settings. A nil file
 // section keeps the persisted setting untouched.
 func mergeComplexitySessionConfig(base, file *ComplexitySessionConfig) *ComplexitySessionConfig {
+	if file == nil {
+		return base.normalized()
+	}
+	return file.normalized()
+}
+
+// mergeComplexitySuggestionsConfig overlays file suggestion settings. A nil
+// file section keeps the persisted setting untouched.
+func mergeComplexitySuggestionsConfig(base, file *ComplexitySuggestionsConfig) *ComplexitySuggestionsConfig {
 	if file == nil {
 		return base.normalized()
 	}
@@ -1257,6 +1372,13 @@ func MergeComplexityAnalyzerConfigByHashes(base, file *ComplexityAnalyzerConfig)
 		if merged.Session == nil || merged.ConfigHashes.SessionSettings != normalizedFile.ConfigHashes.SessionSettings {
 			merged.Session = normalizedFile.Session.normalized()
 			merged.ConfigHashes.SessionSettings = normalizedFile.ConfigHashes.SessionSettings
+		}
+	}
+	// Suggestions follow the same optional-section rule.
+	if normalizedFile.Suggestions != nil {
+		if merged.Suggestions == nil || merged.ConfigHashes.SuggestionsSettings != normalizedFile.ConfigHashes.SuggestionsSettings {
+			merged.Suggestions = normalizedFile.Suggestions.normalized()
+			merged.ConfigHashes.SuggestionsSettings = normalizedFile.ConfigHashes.SuggestionsSettings
 		}
 	}
 	normalizedMerged := merged.Normalized()
@@ -1352,15 +1474,17 @@ func encodeComplexitySemanticConfigRow(config ComplexityAnalyzerConfig) ([]byte,
 		DecisionMinConfidence: minConfidence,
 		LLM:                   config.LLM,
 		Session:               config.Session,
+		Suggestions:           config.Suggestions,
 		ConfigHashes: complexitySemanticRowHashes{
-			SimpleKeywords:     config.ConfigHashes.SimpleKeywords,
-			MediumKeywords:     config.ConfigHashes.MediumKeywords,
-			ComplexKeywords:    config.ConfigHashes.ComplexKeywords,
-			SemanticSettings:   config.ConfigHashes.SemanticSettings,
-			ClassifierSettings: config.ConfigHashes.ClassifierSettings,
-			DecisionSettings:   config.ConfigHashes.DecisionSettings,
-			LLMSettings:        config.ConfigHashes.LLMSettings,
-			SessionSettings:    config.ConfigHashes.SessionSettings,
+			SimpleKeywords:      config.ConfigHashes.SimpleKeywords,
+			MediumKeywords:      config.ConfigHashes.MediumKeywords,
+			ComplexKeywords:     config.ConfigHashes.ComplexKeywords,
+			SemanticSettings:    config.ConfigHashes.SemanticSettings,
+			ClassifierSettings:  config.ConfigHashes.ClassifierSettings,
+			DecisionSettings:    config.ConfigHashes.DecisionSettings,
+			LLMSettings:         config.ConfigHashes.LLMSettings,
+			SessionSettings:     config.ConfigHashes.SessionSettings,
+			SuggestionsSettings: config.ConfigHashes.SuggestionsSettings,
 		},
 		EmbeddingFingerprint: config.EmbeddingFingerprint,
 	}
@@ -1389,6 +1513,7 @@ func applyComplexitySemanticConfigRow(base *ComplexityAnalyzerConfig, row *compl
 	}
 	combined.LLM = row.LLM
 	combined.Session = row.Session
+	combined.Suggestions = row.Suggestions
 	combined.ConfigHashes.SimpleKeywords = row.ConfigHashes.SimpleKeywords
 	combined.ConfigHashes.MediumKeywords = row.ConfigHashes.MediumKeywords
 	combined.ConfigHashes.ComplexKeywords = row.ConfigHashes.ComplexKeywords
@@ -1397,6 +1522,7 @@ func applyComplexitySemanticConfigRow(base *ComplexityAnalyzerConfig, row *compl
 	combined.ConfigHashes.DecisionSettings = row.ConfigHashes.DecisionSettings
 	combined.ConfigHashes.LLMSettings = row.ConfigHashes.LLMSettings
 	combined.ConfigHashes.SessionSettings = row.ConfigHashes.SessionSettings
+	combined.ConfigHashes.SuggestionsSettings = row.ConfigHashes.SuggestionsSettings
 	combined.EmbeddingFingerprint = row.EmbeddingFingerprint
 	return &combined
 }
