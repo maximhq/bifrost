@@ -380,6 +380,20 @@ func TestSyncRawResponseTextLeavesTextAProviderEventDoesNotCarry(t *testing.T) {
 		require.ErrorIs(t, err, ErrRawResponseTextUnsupported)
 		assert.Equal(t, raw, synced)
 	})
+
+	t.Run("chat reasoning delta", func(t *testing.T) {
+		raw := `{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"check alex@example.com"}}`
+		reasoning := func(text string) *BifrostChatResponse {
+			return &BifrostChatResponse{Choices: []BifrostResponseChoice{{
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{Delta: &ChatStreamResponseChoiceDelta{Reasoning: Ptr(text)}},
+			}}}
+		}
+
+		synced, err := SyncRawResponseText(raw, RawResponseFormatAnthropicMessagesStreamEvent, reasoning("check alex@example.com"), reasoning("check [EMAIL-1]"))
+
+		require.ErrorIs(t, err, ErrRawResponseTextUnsupported)
+		assert.Equal(t, raw, synced)
+	})
 }
 
 // TestSyncRawResponseTextFillsEmptyMappedField verifies text released onto a provider text event whose field was

@@ -319,6 +319,11 @@ func splitRawJSONFrames(raw string) (*rawJSONFrames, error) {
 // apply rewrites one normalized string change into the frames after verifying the raw text it replaces.
 func (f *rawJSONFrames) apply(edit rawTextEdit, layout rawTextLayout) error {
 	if layout.carries != nil && !layout.carries(edit.path) {
+		// Reasoning these provider events do carry is never mirrored, so a change to it is unsupported rather than
+		// reported as synced while the raw event still holds the original.
+		if edit.before != "" && isChatReasoningPath(edit.path) {
+			return fmt.Errorf("%w: raw payload carries reasoning %q that cannot follow the edit", ErrRawResponseTextUnsupported, rawJSONPath(edit.path))
+		}
 		return nil
 	}
 	slots := layout.slots
@@ -438,6 +443,11 @@ func isStreamedTextPath(path []string) bool {
 	default:
 		return isToolArgumentsPath(path)
 	}
+}
+
+// isChatReasoningPath reports whether a normalized path is a Chat delta's reasoning text or reasoning details.
+func isChatReasoningPath(path []string) bool {
+	return len(path) >= 4 && path[0] == "choices" && path[2] == "delta" && (path[3] == "reasoning" || path[3] == "reasoning_details")
 }
 
 // isToolArgumentsPath reports whether a normalized path is a Chat tool-call arguments delta.
