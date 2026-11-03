@@ -303,27 +303,6 @@ func InferenceOuterMiddlewares(tm *TracingMiddleware, cors *CorsMiddleware) []sc
 	return []schemas.BifrostHTTPMiddleware{tm.Middleware(), RecoveryMiddleware(cors)}
 }
 
-// clientForwardedIP returns the client-supplied originating IP from reverse-proxy
-// headers, or "" if none are present. X-Forwarded-For may be a comma-separated list
-// (client, proxy1, proxy2); the leftmost entry is the original client.
-//
-// These headers are caller-controlled and unauthenticated unless Bifrost sits behind
-// a trusted proxy that overwrites them. The value is logged as http.forwarded_for —
-// separate from the authoritative http.remote_addr (the real TCP peer) — so a forged
-// header cannot mask the true peer in the access log.
-func clientForwardedIP(ctx *fasthttp.RequestCtx) string {
-	if xff := strings.TrimSpace(string(ctx.Request.Header.Peek("X-Forwarded-For"))); xff != "" {
-		if first, _, found := strings.Cut(xff, ","); found {
-			return strings.TrimSpace(first)
-		}
-		return xff
-	}
-	if xrip := strings.TrimSpace(string(ctx.Request.Header.Peek("X-Real-IP"))); xrip != "" {
-		return xrip
-	}
-	return ""
-}
-
 // corsMiddlewareConfig is an immutable snapshot of the CORS-relevant client config.
 // The slices are cloned at construction so a hot reload mutating the source
 // ClientConfig in place cannot race with in-flight requests reading these fields.
@@ -434,7 +413,7 @@ func (c *CorsMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 						Int64("http.request_duration_ms", time.Since(startTime).Milliseconds()).
 						Str("http.remote_addr", ctx.RemoteAddr().String()).
 						Str("http.user_agent", string(ctx.Request.Header.UserAgent()))
-					if forwarded := clientForwardedIP(ctx); forwarded != "" {
+					if forwarded := lib.ClientForwardedIP(ctx); forwarded != "" {
 						logBuilder = logBuilder.Str("http.forwarded_for", forwarded)
 					}
 					if traceID, ok := ctx.UserValue(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {

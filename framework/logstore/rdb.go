@@ -1705,7 +1705,7 @@ func (s *RDBLogStore) listSelectColumns() string {
 		"virtual_key_id", "virtual_key_name",
 		"routing_engines_used", "tool_call_names", "routing_rule_id", "routing_rule_name",
 		"complexity_tier", "complexity_mechanism", "session_id", "agent_correlation_id",
-		"user_id", "user_name", "team_id", "team_name", "customer_id", "customer_name",
+		"user_id", "user_name", "user_email", "team_id", "team_name", "customer_id", "customer_name",
 		"business_unit_id", "business_unit_name",
 		"team_ids", "team_names", "customer_ids", "customer_names", "business_unit_ids", "business_unit_names",
 		"project_id", "project_name",

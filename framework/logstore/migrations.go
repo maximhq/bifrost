@@ -349,6 +349,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_relay_logs_table"}, run: migrationCreateRelayLogsTable},
 	{IDs: []string{"relay_logs_add_object_columns"}, run: migrationAddRelayLogObjectColumns},
 	{IDs: []string{"logs_add_client_ip_column"}, run: migrationAddClientIPColumn},
+	{IDs: []string{"logs_add_user_email_column"}, run: migrationAddUserEmailColumn},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -6111,4 +6112,39 @@ func refuseRollbackWhileRecorded(tx *gorm.DB, migrationID string, models []any, 
 		}
 	}
 	return nil
+}
+
+// userEmailColumnModels are the log tables that carry user_email.
+var userEmailColumnModels = []any{&Log{}, &MCPToolLog{}, &RelayLog{}}
+
+// migrationAddUserEmailColumn adds user_email to logs, mcp_tool_logs and relay_logs.
+func migrationAddUserEmailColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	return migrator.New(db, &opts, []*migrator.Migration{userEmailColumnMigration(ctx, logger)}).Migrate()
+}
+
+func userEmailColumnMigration(ctx context.Context, logger schemas.Logger) *migrator.Migration {
+	eachTable := func(tx *gorm.DB, apply func(*gorm.DB, schemas.Logger, interface{}, string) error) error {
+		tx = tx.WithContext(ctx)
+		if err := boundDDLLockWait(tx); err != nil {
+			return err
+		}
+		for _, model := range userEmailColumnModels {
+			if err := apply(tx, logger, model, "UserEmail"); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return &migrator.Migration{
+		ID:      "logs_add_user_email_column",
+		Migrate: func(tx *gorm.DB) error { return eachTable(tx, addColumnIfNotExists) },
+		Rollback: func(tx *gorm.DB) error {
+			if err := refuseRollbackWhileRecorded(tx.WithContext(ctx), "logs_add_user_email_column", userEmailColumnModels, "user_email"); err != nil {
+				return err
+			}
+			return eachTable(tx, dropColumnIfExists)
+		},
+	}
 }

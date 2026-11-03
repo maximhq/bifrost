@@ -342,6 +342,7 @@ type Log struct {
 	SelectedPromptID        *string   `gorm:"type:varchar(36)" json:"selected_prompt_id"`
 	UserID                  *string   `gorm:"type:varchar(255);index:idx_logs_user_ts,priority:1" json:"user_id"` // (user_id, timestamp) composite; replaces the single-column idx_logs_user_id
 	UserName                *string   `gorm:"type:varchar(255)" json:"user_name"`
+	UserEmail               *string   `gorm:"type:varchar(255)" json:"user_email,omitempty"`
 	TeamID                  *string   `gorm:"type:varchar(255);index:idx_logs_team_ts,priority:1" json:"team_id"` // (team_id, timestamp) composite; replaces the single-column idx_logs_team_id
 	TeamName                *string   `gorm:"type:varchar(255)" json:"team_name"`
 	CustomerID              *string   `gorm:"type:varchar(255);index:idx_logs_customer_ts,priority:1" json:"customer_id"` // (customer_id, timestamp) composite; replaces idx_logs_customer_id
@@ -1926,6 +1927,7 @@ type MCPToolLog struct {
 	// way the logs table records them. They are what the entity was called when
 	// the call was made, so a later rename or deletion leaves the row readable.
 	UserName         *string `gorm:"type:varchar(255)" json:"user_name,omitempty"`
+	UserEmail        *string `gorm:"type:varchar(255)" json:"user_email,omitempty"`
 	TeamName         *string `gorm:"type:varchar(255)" json:"team_name,omitempty"`
 	CustomerName     *string `gorm:"type:varchar(255)" json:"customer_name,omitempty"`
 	BusinessUnitName *string `gorm:"type:varchar(255)" json:"business_unit_name,omitempty"`

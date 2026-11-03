@@ -1357,6 +1357,7 @@
     "config": {
       "path": "tests/integrations/python/logs.db"
     },
+    "capture_client_ip": true,
     "writer": {
       "max_batch_size": 100,
       "batch_interval": "1s",

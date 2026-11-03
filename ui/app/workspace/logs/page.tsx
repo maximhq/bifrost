@@ -729,6 +729,7 @@ export default function LogsPage() {
 			provider: t("labels.provider"),
 			model: t("labels.model"),
 			app: t("labels.app"),
+			client_ip: t("labels.clientIp"),
 			latency: t("labels.latency"),
 			tokens: t("labels.tokens"),
 			cost: t("labels.cost"),
@@ -745,7 +746,7 @@ export default function LogsPage() {
 	);
 
 	const DEFAULT_HIDDEN_COLUMNS = useMemo(
-		() => ["session", "service_tier", "virtual_key", "routing_rule", "team", "customer", "user", "business_unit", "project"],
+		() => ["session", "service_tier", "virtual_key", "routing_rule", "team", "customer", "user", "business_unit", "project", "client_ip"],
 		[],
 	);
 
