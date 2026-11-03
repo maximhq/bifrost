@@ -2444,6 +2444,93 @@ func TestToOpenAIResponsesRequest_GPT56CacheBreakpoint(t *testing.T) {
 	}
 }
 
+// TestToOpenAIResponsesRequest_CacheBreakpointTTLPreserved pins that a client's
+// prompt_cache_breakpoint.ttl ("12h", gpt-5.6+) reaches the wire; the field used to
+// be dropped at ingress, so every breakpoint fell back to the 30m default.
+func TestToOpenAIResponsesRequest_CacheBreakpointTTL(t *testing.T) {
+	inputJSON := `[{"role":"developer","content":[{"type":"input_text","text":"STABLE","prompt_cache_breakpoint":{"mode":"explicit","ttl":"12h"}}]},` +
+		`{"type":"function_call","call_id":"call_1","name":"echo","arguments":"{}"},` +
+		`{"type":"function_call_output","call_id":"call_1","output":[{"type":"input_text","text":"hello","prompt_cache_breakpoint":{"mode":"explicit","ttl":"30m"}}]},` +
+		`{"role":"user","content":[{"type":"input_text","text":"go"}]}]`
+	// Bedrock Mantle rejects ttl on every model (live 400 "Unknown parameter"), so
+	// it is dropped there and on Bedrock, which routes OpenAI models to Mantle.
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		keepTTL  bool
+	}{
+		{"openai", schemas.OpenAI, "gpt-5.6-sol", true},
+		{"azure", schemas.Azure, "gpt-6.1-luna", true},
+		{"bedrock mantle", schemas.BedrockMantle, "openai.gpt-5.6-terra", false},
+		{"bedrock", schemas.Bedrock, "openai.gpt-5.6-terra", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var input []schemas.ResponsesMessage
+			if err := sonic.Unmarshal([]byte(inputJSON), &input); err != nil {
+				t.Fatal(err)
+			}
+			req := &schemas.BifrostResponsesRequest{Provider: tc.provider, Model: tc.model, Input: input, Params: &schemas.ResponsesParameters{}}
+			_, raw := marshalResponses(t, req)
+			want12h, want30m := "12h", "30m"
+			if !tc.keepTTL {
+				want12h, want30m = "", ""
+			}
+			if got := gjson.Get(raw, "input.0.content.0.prompt_cache_breakpoint.mode").String(); got != "explicit" {
+				t.Errorf("developer block breakpoint dropped; raw=%s", raw)
+			}
+			if got := gjson.Get(raw, "input.0.content.0.prompt_cache_breakpoint.ttl").String(); got != want12h {
+				t.Errorf("developer block breakpoint ttl = %q, want %q; raw=%s", got, want12h, raw)
+			}
+			if got := gjson.Get(raw, "input.2.output.0.prompt_cache_breakpoint.ttl").String(); got != want30m {
+				t.Errorf("function_call_output block breakpoint ttl = %q, want %q; raw=%s", got, want30m, raw)
+			}
+			if input[0].Content.ContentBlocks[0].PromptCacheBreakpoint.TTL == nil {
+				t.Error("caller input must not be mutated")
+			}
+		})
+	}
+}
+
+// Bedrock Mantle accepts only "30m" for prompt_cache_options.ttl (live 400 "Invalid
+// value: '12h'"), so a request-level 12h is dropped there and on Bedrock; 30m passes.
+func TestToOpenAIResponsesRequest_RequestLevelCacheTTL(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		ttl      string
+		wantTTL  string
+	}{
+		{"openai 12h", schemas.OpenAI, "gpt-5.6-sol", "12h", "12h"},
+		{"azure 12h", schemas.Azure, "gpt-6.1-luna", "12h", "12h"},
+		{"bedrock mantle 12h", schemas.BedrockMantle, "openai.gpt-5.6-terra", "12h", ""},
+		{"bedrock mantle 30m", schemas.BedrockMantle, "openai.gpt-5.6-terra", "30m", "30m"},
+		{"bedrock 12h", schemas.Bedrock, "openai.gpt-5.6-terra", "12h", ""},
+		{"bedrock 30m", schemas.Bedrock, "openai.gpt-5.6-terra", "30m", "30m"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := &schemas.PromptCacheOptions{Mode: schemas.Ptr("explicit"), TTL: schemas.Ptr(tc.ttl)}
+			req := &schemas.BifrostResponsesRequest{
+				Provider: tc.provider,
+				Model:    tc.model,
+				Input:    []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}},
+				Params:   &schemas.ResponsesParameters{PromptCacheOptions: opts},
+			}
+			_, raw := marshalResponses(t, req)
+			if got := gjson.Get(raw, "prompt_cache_options.ttl").String(); got != tc.wantTTL {
+				t.Errorf("prompt_cache_options.ttl = %q, want %q; raw=%s", got, tc.wantTTL, raw)
+			}
+			if got := gjson.Get(raw, "prompt_cache_options.mode").String(); got != "explicit" {
+				t.Errorf("prompt_cache_options.mode dropped; raw=%s", raw)
+			}
+			if opts.TTL == nil || *opts.TTL != tc.ttl {
+				t.Error("caller PromptCacheOptions must not be mutated")
+			}
+		})
+	}
+}
+
 // TestToOpenAIResponsesRequest_PreGPT56Unaffected pins the negative. Earlier OpenAI
 // models have no prompt_cache_breakpoint field at all, so translating into it would
 // send an unknown key; the serializer's existing strip is the right behaviour there.

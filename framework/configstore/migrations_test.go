@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -5824,4 +5825,17 @@ func TestMigrationAddAnthropicWorkloadIdentityColumn(t *testing.T) {
 	require.NoError(t, db.Where("key_id = ?", seed.KeyID).First(&found).Error)
 	require.True(t, found.AnthropicKeyConfig.HasWorkloadIdentity(), "the stored federation config must survive the refused rollback")
 	assert.Equal(t, "svac_01def", found.AnthropicKeyConfig.WorkloadIdentity.ServiceAccountID.GetValue())
+}
+
+// Postgres silently truncates identifiers past 63 bytes, so a longer column is
+// created under a different name than GORM reads and writes.
+func TestTableModelPricing_ColumnNamesFitPostgresLimit(t *testing.T) {
+	typ := reflect.TypeOf(tables.TableModelPricing{})
+	for i := 0; i < typ.NumField(); i++ {
+		for _, part := range strings.Split(typ.Field(i).Tag.Get("gorm"), ";") {
+			if col, ok := strings.CutPrefix(part, "column:"); ok && len(col) > 63 {
+				t.Errorf("%s: column %q is %d bytes, Postgres limit is 63", typ.Field(i).Name, col, len(col))
+			}
+		}
+	}
 }
