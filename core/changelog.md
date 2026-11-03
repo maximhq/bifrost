@@ -1,2 +1,3 @@
 - fix: Gemini chat requests replay the thought signature of a function call from `extra_content.google.thought_signature` instead of writing skip_thought_signature_validator over it (#8149) [@pcbeingused333](https://github.com/pcbeingused333)
 - fix: anthropic - Responses requests drop empty text blocks instead of forwarding them for a 400 (#9318) [@david-choi-querypie](https://github.com/david-choi-querypie)
+- fix: anthropic - preserve explicit web search and web fetch versions, and keep a declared code execution tool beside versions that do not auto-inject it (#9258) [@ykakade](https://github.com/ykakade)
