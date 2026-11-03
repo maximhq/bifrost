@@ -112,7 +112,7 @@ export function CELRuleBuilder({
 		hideCELExpression: false,
 	},
 }: CELRuleBuilderProps) {
-	const { t } = useTranslation("observability");
+	const { t, i18n } = useTranslation("observability");
 	const { t: tc } = useTranslation("common");
 	const normalizedInitial = normalizeRoutingRuleGroupQuery(initialQuery ?? defaultQuery);
 	const [query, setQuery] = useState<RuleGroupType>(normalizedInitial);
@@ -147,7 +147,7 @@ export function CELRuleBuilder({
 			...field,
 			value: field.name,
 		})) as Field[];
-	}, [fieldDefinitions]);
+	}, [fieldDefinitions, i18n.language]); // spreading evaluates translated getters, so rebuild on language change
 
 	useEffect(() => {
 		const expression = convertToCELRef.current(query);
@@ -298,7 +298,7 @@ export function CELRuleBuilder({
 								onChange={(e) => handleCelTextChange(e.target.value)}
 								className={cn("font-mono text-sm", celError && "border-destructive focus-visible:ring-destructive")}
 								rows={4}
-								placeholder='e.g. model == "claude-sonnet-4-6"'
+								placeholder={t("celBuilder.celPlaceholder")}
 								aria-invalid={!!celError}
 								data-testid="cel-builder-cel-textarea"
 							/>

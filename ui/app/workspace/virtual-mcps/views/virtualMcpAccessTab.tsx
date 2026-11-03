@@ -16,9 +16,17 @@ import { useGetVirtualKeysQuery, useLazyGetVirtualKeyQuery } from "@/lib/store";
 import VirtualMcpAccessProfiles from "@enterprise/components/virtual-mcps/virtualMcpAccessProfiles";
 import { Plus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
+import type { ParseKeys } from "i18next";
 import { toast } from "sonner";
 import { type PickedVirtualKey, type VirtualKeyOwner, resolvePickedVirtualKey } from "./virtualMcpAccessTab.utils";
+
+const OWNER_KIND_KEYS: Record<VirtualKeyOwner["kind"], ParseKeys<"mcp">> = {
+	team: "virtualMcps.access.ownerKind.team",
+	"business unit": "virtualMcps.access.ownerKind.businessUnit",
+	customer: "virtualMcps.access.ownerKind.customer",
+	user: "virtualMcps.access.ownerKind.user",
+};
 
 interface VirtualMCPAccessTabProps {
 	vmcpId: number;
@@ -34,6 +42,7 @@ interface VirtualMCPAccessTabProps {
 
 export default function VirtualMCPAccessTab({ vmcpId, value, onChange, isCreate, active, stagedCreate = false }: VirtualMCPAccessTabProps) {
 	const { t } = useTranslation("mcp");
+	const { t: tCommon } = useTranslation("common");
 	// A user's access-profile managed key derives its MCP access from that profile, so it cannot be
 	// assigned directly here (the API rejects it too). A key a team, business unit or customer owns can
 	// be, and so can one assigned to a user, after a confirmation that names who it belongs to.
@@ -103,7 +112,7 @@ export default function VirtualMCPAccessTab({ vmcpId, value, onChange, isCreate,
 			setCheckingOwner(false);
 		}
 		if (picked.outcome === "lookupFailed") {
-			toast.error(`Could not check who owns "${label}", so it was not assigned. Try again.`);
+			toast.error(t("virtualMcps.access.ownerLookupFailed", { name: label }));
 			return;
 		}
 		if (picked.outcome === "owned") {
@@ -171,15 +180,24 @@ export default function VirtualMCPAccessTab({ vmcpId, value, onChange, isCreate,
 			>
 				<AlertDialogContent data-testid="virtual-mcp-assign-owned-vk-dialog">
 					<AlertDialogHeader>
-						<AlertDialogTitle>Assign virtual key?</AlertDialogTitle>
+						<AlertDialogTitle>{t("virtualMcps.access.assignOwnedTitle")}</AlertDialogTitle>
 						<AlertDialogDescription>
-							<strong>{pendingOwnedVk?.name}</strong> belongs to the {pendingOwnedVk?.owner.kind}{" "}
-							<strong>{pendingOwnedVk?.owner.name}</strong>. Assigning it lets that {pendingOwnedVk?.owner.kind}&apos;s key reach this
-							Virtual MCP.
+							{pendingOwnedVk && (
+								<Trans
+									i18nKey="virtualMcps.access.assignOwnedDescription"
+									ns="mcp"
+									values={{
+										name: pendingOwnedVk.name,
+										kind: t(OWNER_KIND_KEYS[pendingOwnedVk.owner.kind]),
+										owner: pendingOwnedVk.owner.name,
+									}}
+									components={{ strong: <strong /> }}
+								/>
+							)}
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
-						<AlertDialogCancel data-testid="virtual-mcp-assign-owned-vk-cancel">Cancel</AlertDialogCancel>
+						<AlertDialogCancel data-testid="virtual-mcp-assign-owned-vk-cancel">{tCommon("cancel")}</AlertDialogCancel>
 						<AlertDialogAction
 							data-testid="virtual-mcp-assign-owned-vk-confirm"
 							onClick={() => {
@@ -187,7 +205,7 @@ export default function VirtualMCPAccessTab({ vmcpId, value, onChange, isCreate,
 								setPendingOwnedVk(null);
 							}}
 						>
-							Assign
+							{t("virtualMcps.access.assignOwnedConfirm")}
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>

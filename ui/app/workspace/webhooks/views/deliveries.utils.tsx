@@ -1,5 +1,6 @@
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import type { ParseKeys } from "i18next";
 import i18n from "@/lib/i18n";
 import { WebhookDelivery, WebhookDeliveryOutcome } from "@/lib/types/webhooks";
 import { Fragment } from "react";
@@ -11,7 +12,7 @@ export const OUTCOME_COLORS: Record<WebhookDeliveryOutcome, string> = {
 	exhausted: "bg-red-100 text-red-800",
 };
 
-const OUTCOME_LABEL_KEYS: Record<WebhookDeliveryOutcome, string> = {
+const OUTCOME_LABEL_KEYS: Record<WebhookDeliveryOutcome, ParseKeys<"governance">> = {
 	delivered: "webhooks.outcomes.delivered",
 	retryable_failure: "webhooks.outcomes.retrying",
 	permanent_failure: "webhooks.outcomes.failed",

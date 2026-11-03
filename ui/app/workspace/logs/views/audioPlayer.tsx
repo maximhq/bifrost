@@ -153,12 +153,12 @@ const AudioPlayer = ({ src, format }: AudioPlayerProps) => {
 			<div className="flex items-center gap-2">
 				<Button onClick={handlePlayPause} variant="outline" size="sm" className="flex items-center gap-2" disabled={!!error}>
 					{isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-					{isPlaying ? "Pause" : "Play"}
+					{isPlaying ? t("logs.media.pause") : t("logs.media.play")}
 				</Button>
 
 				<Button onClick={handleDownload} variant="outline" size="sm" className="flex items-center gap-2" disabled={!!error}>
 					<Download className="h-4 w-4" />
-					Download
+					{t("logs.detail.download")}
 				</Button>
 			</div>
 			{error && <div className="text-sm text-red-500">{error}</div>}

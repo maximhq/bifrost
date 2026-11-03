@@ -1,5 +1,5 @@
 import type { WarpTurn, WarpTurnToolCall } from "@/lib/contexts/warpContext";
-import i18n from "@/lib/i18n";
+import i18n, { getLocale } from "@/lib/i18n";
 import type { WarpLogIndexStatus, WarpStoredMessage } from "@/lib/types/warp";
 /** SSE frame parsing for Warp, kept out of the hook so it is testable without a DOM or network. */
 
@@ -121,7 +121,7 @@ export function isUsableWarpEvent(event: WarpEvent | null | undefined): event is
 
 export function warpToolLabel(name: string, isRunning = false): string {
 	// Unknown tools show their raw name, so a new server-side tool stays legible instead of mislabelled.
-	if (!WARP_TOOLS.includes(name)) return name;
+	if (!isWarpTool(name)) return name;
 	return i18n.t(`warp.tools.${name}.${isRunning ? "running" : "done"}`, { ns: "shell" });
 }
 
@@ -148,7 +148,13 @@ const WARP_TOOLS = [
 	"describe_scope",
 	"list_topics",
 	"ask_user",
-];
+] as const;
+
+type WarpTool = (typeof WARP_TOOLS)[number];
+
+function isWarpTool(name: string): name is WarpTool {
+	return (WARP_TOOLS as readonly string[]).includes(name);
+}
 
 /** Whether a link in an answer is a root-relative dashboard path to follow with the router. */
 export function isInternalWarpLink(href: string | undefined): boolean {
@@ -314,6 +320,27 @@ export function shouldDrainQueue(
 	return wasStreaming && !isStreaming && queued > 0;
 }
 
+export interface WarpHandoffGate {
+	isConfigLoading: boolean;
+	isConfigFetching: boolean;
+	isConfigError: boolean;
+	isConfigured: boolean;
+	isBusy: boolean; // the render's view: an answer in flight, a stored load, or queued follow-ups
+	isStreamingNow: boolean; // the session's live state, which a replayed effect sees before the render does
+}
+
+/** The handed-over question to send now, or null. Calls `take` only once the panel can act on what it removes. */
+export function nextWarpHandoff(gate: WarpHandoffGate, take: () => string | null): string | null {
+	// Only a finished, successful fetch: a failed one keeps the question for a retry, and a cached
+	// config may name a model the opening refetch is about to drop.
+	const isConfigSettled = !gate.isConfigLoading && !gate.isConfigFetching && !gate.isConfigError;
+	if (!isConfigSettled || gate.isBusy || gate.isStreamingNow) return null;
+	if (gate.isConfigured) return take();
+	// Not set up: the panel shows how to set it up, and every question is dropped rather than sent after setup.
+	while (take() !== null);
+	return null;
+}
+
 export const WARP_FINISH_QUESTION = "question";
 
 export function isWarpQuestionFinish(finishReason: string | undefined): boolean {
@@ -368,20 +395,37 @@ export function warpErrorDetail(code: string | undefined, message: string | unde
 			return {
 				summary: raw ?? i18n.t("warp.errors.unknown.summary", { ns: "shell" }),
 				cause: i18n.t("warp.errors.unknown.cause", { ns: "shell" }),
-				suggestions: i18n.t("warp.errors.unknown.suggestions", {
-					ns: "shell",
-					returnObjects: true,
-				}) as string[],
+				suggestions: warpSuggestions("unknown"),
 				raw,
 			};
 	}
 }
 
-function warpErrorCopy(code: string, raw: string | undefined): WarpErrorDetail {
+type WarpErrorCode =
+	| "not_configured"
+	| "max_iterations"
+	| "timeout"
+	| "upstream_error"
+	| "access_denied"
+	| "budget_exceeded"
+	| "rate_limited"
+	| "model_blocked"
+	| "tool_error"
+	| "cancelled"
+	| "unknown";
+
+// Suggestions are a string array in shell.json; the typed catalog treats arrays as
+// leaves (see i18next.d.ts), so check the shape here rather than cast it.
+function warpSuggestions(code: WarpErrorCode): string[] {
+	const value: unknown = i18n.t(`warp.errors.${code}.suggestions`, { ns: "shell", returnObjects: true });
+	return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function warpErrorCopy(code: Exclude<WarpErrorCode, "unknown">, raw: string | undefined): WarpErrorDetail {
 	return {
 		summary: i18n.t(`warp.errors.${code}.summary`, { ns: "shell" }),
 		cause: i18n.t(`warp.errors.${code}.cause`, { ns: "shell" }),
-		suggestions: i18n.t(`warp.errors.${code}.suggestions`, { ns: "shell", returnObjects: true }) as string[],
+		suggestions: warpSuggestions(code),
 		raw,
 	};
 }
@@ -457,7 +501,7 @@ export function formatWarpUsage(usage: WarpUsage | undefined): string | null {
 
 	const parts: string[] = [];
 	const total = usage.total_tokens ?? (usage.prompt_tokens ?? 0) + (usage.completion_tokens ?? 0);
-	if (total > 0) parts.push(`${total.toLocaleString()} tokens`);
+	if (total > 0) parts.push(i18n.t("warp.usage.tokens", { ns: "shell", count: total, formattedCount: total.toLocaleString(getLocale()) }));
 
 	const cost = usage.cost?.total_cost;
 	if (typeof cost === "number" && cost > 0) {
@@ -611,7 +655,7 @@ export function formatWarpChartValue(unit: WarpChartSpec["unit"], value: number)
 		case "percent":
 			return `${Number(value.toFixed(2))}%`;
 		default:
-			return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(value);
+			return new Intl.NumberFormat(getLocale(), { notation: "compact", maximumFractionDigits: 1 }).format(value);
 	}
 }
 
@@ -621,11 +665,14 @@ export function formatWarpChartX(spec: Pick<WarpChartSpec, "kind" | "interval">,
 	const date = new Date(point.x);
 	if (Number.isNaN(date.getTime())) return point.x;
 	if (spec.interval === "week") {
-		return `Wk of ${new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: "UTC" }).format(date)}`;
+		return i18n.t("warp.chart.weekOf", {
+			ns: "shell",
+			date: new Intl.DateTimeFormat(getLocale(), { month: "short", day: "numeric", timeZone: "UTC" }).format(date),
+		});
 	}
 	const options: Intl.DateTimeFormatOptions =
 		spec.interval === "hour"
 			? { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: "UTC" }
 			: { month: "short", day: "numeric", timeZone: "UTC" };
-	return new Intl.DateTimeFormat("en-US", options).format(date);
+	return new Intl.DateTimeFormat(getLocale(), options).format(date);
 }

@@ -30,8 +30,10 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { OverheadBreakdown } from "@/components/logs/overheadBreakdown";
 import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
+import { MESSAGE_ROLES, useMessageRoleFilterPreference } from "@/lib/hooks/useMessageRoleFilterPreference";
+import type { ParseKeys } from "i18next";
 import { useTranslation } from "react-i18next";
-import i18n from "@/lib/i18n";
+import i18n, { getLocale } from "@/lib/i18n";
 import { ProviderIconType, RenderProviderIcon, RoutingEngineUsedIcons } from "@/lib/constants/icons";
 import {
 	ComplexityTierColors,
@@ -122,6 +124,7 @@ import {
 	messageToneClass,
 	type MessageRole,
 } from "../views/responsesItemRow";
+import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 
 // Full-precision cost for the detail view; per-request costs are often < $0.01,
 // where formatCost's 2-4 dp rounding would hide the value.
@@ -135,7 +138,7 @@ const formatRealtimeTransport = (value: unknown): string => {
 		case "webrtc":
 			return "WebRTC";
 		default:
-			return transport || "Unknown";
+			return transport || i18n.t("logs.detail.unknown", { ns: "observability" });
 	}
 };
 
@@ -154,11 +157,11 @@ const formatRealtimeSource = (value: unknown): string => {
 	const source = String(value ?? "").trim();
 	switch (source.toLowerCase()) {
 		case "ei":
-			return "Event Initiated";
+			return i18n.t("logs.detail.sourceEventInitiated", { ns: "observability" });
 		case "lm":
-			return "Language Model";
+			return i18n.t("logs.detail.sourceLanguageModel", { ns: "observability" });
 		default:
-			return source || "Unknown";
+			return source || i18n.t("logs.detail.unknown", { ns: "observability" });
 	}
 };
 
@@ -290,8 +293,8 @@ const formatToolChoice = (value: unknown): string => {
 // sets them, and a 0 is a real, useful count — e.g. "no failures yet"), so they
 // always render. The remaining states are Anthropic-specific and simply absent
 // for other providers, so those are dropped when not reported.
-const batchRequestStates = (counts: BatchRequestCounts): [string, number][] => {
-	const optional: [string, number | undefined][] = [
+const batchRequestStates = (counts: BatchRequestCounts): [ParseKeys<"observability">, number][] => {
+	const optional: [ParseKeys<"observability">, number | undefined][] = [
 		["logs.detail.batchStates.succeeded", counts.succeeded],
 		["logs.detail.batchStates.expired", counts.expired],
 		["logs.detail.batchStates.canceled", counts.canceled],
@@ -300,11 +303,11 @@ const batchRequestStates = (counts: BatchRequestCounts): [string, number][] => {
 	return [
 		["logs.detail.batchStates.completed", counts.completed],
 		["logs.detail.batchStates.failed", counts.failed],
-		...optional.filter((entry): entry is [string, number] => Boolean(entry[1])),
+		...optional.filter((entry): entry is [ParseKeys<"observability">, number] => Boolean(entry[1])),
 	];
 };
 
-const formatExactNumber = (value: number) => value.toLocaleString("en-US");
+const formatExactNumber = (value: number) => value.toLocaleString(getLocale());
 
 // Input tokens are normalized to include cache read/write tokens, so break the total down.
 const getInputTokensTooltip = (usage?: LLMUsage): string | undefined => {
@@ -326,7 +329,7 @@ const getInputTokensTooltip = (usage?: LLMUsage): string | undefined => {
 	return lines.join("\n");
 };
 
-const INPUT_COST_LABELS: [keyof InputCostDetails, string][] = [
+const INPUT_COST_LABELS: [keyof InputCostDetails, ParseKeys<"observability">][] = [
 	["text_cost", "logs.detail.costDetails.text"],
 	["audio_cost", "logs.detail.costDetails.audio"],
 	["image_cost", "logs.detail.costDetails.image"],
@@ -335,7 +338,7 @@ const INPUT_COST_LABELS: [keyof InputCostDetails, string][] = [
 	["request_cost", "logs.detail.costDetails.perRequestFee"],
 ];
 
-const OUTPUT_COST_LABELS: [keyof OutputCostDetails, string][] = [
+const OUTPUT_COST_LABELS: [keyof OutputCostDetails, ParseKeys<"observability">][] = [
 	["text_cost", "logs.detail.costDetails.text"],
 	["audio_cost", "logs.detail.costDetails.audio"],
 	["image_cost", "logs.detail.costDetails.image"],
@@ -347,7 +350,7 @@ const OUTPUT_COST_LABELS: [keyof OutputCostDetails, string][] = [
 // Lists the non-zero cost categories; undefined when there are none or text is the only one.
 const getCostDetailsTooltip = <T extends InputCostDetails | OutputCostDetails>(
 	details: T | undefined,
-	labels: [keyof T, string][],
+	labels: [keyof T, ParseKeys<"observability">][],
 ): string | undefined => {
 	if (!details) return undefined;
 	const set = labels.filter(([key]) => ((details[key] as number | undefined) ?? 0) > 0);
@@ -718,8 +721,9 @@ export function LogDetailView({
 		setShowRevealedValues(false);
 	}, [log?.id, revealAvailable]);
 
-	const allRoles: MessageRole[] = ["system", "user", "assistant", "tool", "reasoning"];
-	const [visibleRoles, setVisibleRoles] = useState<Set<MessageRole>>(new Set(allRoles));
+	const allRoles = MESSAGE_ROLES;
+	// Kept in localStorage so a filter such as "reasoning only" survives reloads and new sessions.
+	const [visibleRoles, setVisibleRoles] = useMessageRoleFilterPreference();
 	// Kept in the URL so the open section and active tab survive switching logs, which remounts this view.
 	const [moreDetailsOpen, setMoreDetailsOpen] = useQueryState(
 		"log_more",
@@ -876,9 +880,11 @@ export function LogDetailView({
 				}
 				const errorMessage: string | null =
 					item?.error?.message ||
-					(item?.result?.type && item.result.type !== "succeeded" ? `Batch item ${item.result.type}` : null) ||
+					(item?.result?.type && item.result.type !== "succeeded"
+						? i18n.t("logs.detail.batchItemResult", { ns: "observability", type: item.result.type })
+						: null) ||
 					(typeof item?.response?.status_code === "number" && item.response.status_code >= 400
-						? `Provider returned HTTP ${item.response.status_code}`
+						? i18n.t("logs.detail.providerReturnedHttp", { ns: "observability", status: item.response.status_code })
 						: null);
 				return { customId, model, message, rawFallback, errorMessage };
 			})
@@ -1328,7 +1334,9 @@ export function LogDetailView({
 									label={t("logs.detail.startTimestamp")}
 									value={(() => {
 										const d = log.timestamp ? new Date(log.timestamp) : null;
-										return d && !isNaN(d.getTime()) ? format(d, "yyyy-MM-dd hh:mm:ss aa") : t("labels.nA");
+										return d && !isNaN(d.getTime())
+											? format(d, "yyyy-MM-dd hh:mm:ss aa", { locale: dateFnsLocale(getLocale()) })
+											: t("labels.nA");
 									})()}
 								/>
 								<LogEntryDetailsView
@@ -1337,7 +1345,7 @@ export function LogDetailView({
 									value={(() => {
 										const d = log.timestamp ? new Date(log.timestamp) : null;
 										return d && !isNaN(d.getTime())
-											? format(addMilliseconds(d, log.latency || 0), "yyyy-MM-dd hh:mm:ss aa")
+											? format(addMilliseconds(d, log.latency || 0), "yyyy-MM-dd hh:mm:ss aa", { locale: dateFnsLocale(getLocale()) })
 											: t("labels.nA");
 									})()}
 								/>
@@ -2731,6 +2739,7 @@ export function LogDetailView({
 								<DropdownMenuTrigger asChild>
 									<button
 										type="button"
+										data-testid="log-messages-filter-trigger"
 										className={cn(
 											"inline-flex items-center gap-1.5 rounded-sm border px-2.5 py-1 text-[11.5px] font-medium transition",
 											visibleRoles.size < allRoles.length
@@ -2740,7 +2749,10 @@ export function LogDetailView({
 									>
 										{t("logs.detail.messages")}
 										{visibleRoles.size < allRoles.length && (
-											<span className="bg-primary text-primary-foreground rounded-sm px-1 py-0.5 text-[10px] tabular-nums">
+											<span
+												data-testid="log-messages-filter-count"
+												className="bg-primary text-primary-foreground rounded-sm px-1 py-0.5 text-[10px] tabular-nums"
+											>
 												{visibleRoles.size}/{allRoles.length}
 											</span>
 										)}
@@ -2749,6 +2761,7 @@ export function LogDetailView({
 								</DropdownMenuTrigger>
 								<DropdownMenuContent align="end" className="w-48">
 									<DropdownMenuCheckboxItem
+										data-testid="log-messages-filter-all"
 										checked={visibleRoles.size === allRoles.length}
 										onCheckedChange={(checked) => setVisibleRoles(checked ? new Set(allRoles) : new Set())}
 									>
@@ -2762,10 +2775,11 @@ export function LogDetailView({
 											["assistant", "logs.detail.roles.assistant"],
 											["tool", "mcpLogs.detail.tool"],
 											["reasoning", "logs.detail.roles.reasoning"],
-										] as [MessageRole, string][]
+										] as [MessageRole, ParseKeys<"observability">][]
 									).map(([role, label]) => (
 										<DropdownMenuCheckboxItem
 											key={role}
+											data-testid={`log-messages-filter-role-${role}`}
 											checked={visibleRoles.has(role)}
 											onCheckedChange={(checked) =>
 												setVisibleRoles((prev) => {
@@ -2780,7 +2794,11 @@ export function LogDetailView({
 										</DropdownMenuCheckboxItem>
 									))}
 									<DropdownMenuSeparator />
-									<DropdownMenuItem onClick={() => setVisibleRoles(new Set())} className="text-muted-foreground justify-center text-[12px]">
+									<DropdownMenuItem
+										data-testid="log-messages-filter-clear"
+										onClick={() => setVisibleRoles(new Set())}
+										className="text-muted-foreground justify-center text-[12px]"
+									>
 										{t("logs.detail.clearAll")}
 									</DropdownMenuItem>
 								</DropdownMenuContent>

@@ -405,7 +405,7 @@ export function ProviderSelector(props: ProviderSelectorProps) {
 										<span
 											role="button"
 											tabIndex={-1}
-											aria-label={`Remove ${optionFor(value).label}`}
+											aria-label={t("combobox.removeAria", { label: optionFor(value).label })}
 											className="text-muted-foreground hover:text-foreground flex shrink-0 cursor-pointer items-center"
 											onClick={(e) => {
 												e.preventDefault();
@@ -450,7 +450,7 @@ export function ProviderSelector(props: ProviderSelectorProps) {
 
 					{pinned.length > 0 && (
 						<ComboboxGroup>
-							<ComboboxLabel>Selected</ComboboxLabel>
+							<ComboboxLabel>{t("entityAssociation.selected")}</ComboboxLabel>
 							{pinned.map(renderOption)}
 						</ComboboxGroup>
 					)}
@@ -461,7 +461,7 @@ export function ProviderSelector(props: ProviderSelectorProps) {
 							{base.map(renderOption)}
 							{custom.length > 0 && (
 								<ComboboxGroup>
-									<ComboboxLabel>Custom Providers</ComboboxLabel>
+									<ComboboxLabel>{t("providerSelect.customProviders")}</ComboboxLabel>
 									{custom.map(renderOption)}
 								</ComboboxGroup>
 							)}

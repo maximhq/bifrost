@@ -27,23 +27,25 @@ type KeyPoolFilter func(ctx *BifrostContext, provider ModelProvider, model strin
 // It contains the necessary components for setting up the system including account details,
 // plugins, logging, and initial pool size.
 type BifrostConfig struct {
-	Account            Account
-	LLMPlugins         []LLMPlugin
-	MCPPlugins         []MCPPlugin
-	A2APlugins         []A2APlugin
-	RelayPlugins       []RelayPlugin
-	OAuth2Provider     OAuth2Provider
-	MCPHeadersProvider MCPHeadersProvider // Backend for MCPAuthTypePerUserHeaders credential storage; nil disables per-user-headers auth (resolver errors at use)
-	Logger             Logger
-	Tracer             Tracer          // Tracer for distributed tracing (nil = NoOpTracer)
-	InitialPoolSize    int             // Initial pool size for sync pools in Bifrost. Higher values will reduce memory allocations but will increase memory usage.
-	DropExcessRequests bool            // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
-	MCPConfig          *MCPConfig      // MCP (Model Context Protocol) configuration for tool integration
-	KeySelector        KeySelector     // Custom key selector function
-	KeyPoolFilter      KeyPoolFilter   // Optional hook to filter available keys before selection; nil = all keys eligible
-	KVStore            KVStore         // shared KV store for clustering/session stickiness; nil = disabled
-	SessionAffinity    SessionAffinity // Decides which key a session stays on; nil = Bifrost's own default, which needs KVStore to bind anything
-	ModelCatalog       ModelInfoProvider
+	Account                  Account
+	LLMPlugins               []LLMPlugin
+	MCPPlugins               []MCPPlugin
+	A2APlugins               []A2APlugin
+	RelayPlugins             []RelayPlugin
+	OAuth2Provider           OAuth2Provider
+	MCPHeadersProvider       MCPHeadersProvider // Backend for MCPAuthTypePerUserHeaders credential storage; nil disables per-user-headers auth (resolver errors at use)
+	Logger                   Logger
+	Tracer                   Tracer          // Tracer for distributed tracing (nil = NoOpTracer)
+	InitialPoolSize          int             // Initial pool size for sync pools in Bifrost. Higher values will reduce memory allocations but will increase memory usage.
+	DropExcessRequests       bool            // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
+	MCPConfig                *MCPConfig      // MCP (Model Context Protocol) configuration for tool integration
+	KeySelector              KeySelector     // Custom key selector function
+	KeyPoolFilter            KeyPoolFilter   // Optional hook to filter available keys before selection; nil = all keys eligible
+	KVStore                  KVStore         // shared KV store for clustering/session stickiness; nil = disabled
+	SessionAffinity          SessionAffinity // Decides which key a session stays on; nil = Bifrost's own default, which needs KVStore to bind anything
+	ModelCatalog             ModelInfoProvider
+	MCPSharedDiscoveryStore  MCPDiscoveryStore
+	MCPPerUserDiscoveryStore MCPDiscoveryStore
 }
 
 // ModelProvider represents the different AI model providers supported by Bifrost.
@@ -1974,10 +1976,9 @@ type BifrostMCPPingResponse struct {
 }
 
 type BifrostMCPListToolsResponse struct {
-	Tools           map[string]ChatTool // Discovered tools keyed by client-prefixed name
-	ToolNameMapping map[string]string   // sanitized_name -> original_mcp_name
-	RawToolCount    int                 // Count returned by the MCP server before Bifrost-side filtering
-	SkippedTools    []SkippedMCPTool    // Tools Bifrost dropped during conversion + reason
+	Tools        map[string]ChatTool // Discovered tools keyed by client-prefixed name
+	RawToolCount int                 // Count returned by the MCP server before Bifrost-side filtering
+	SkippedTools []SkippedMCPTool    // Tools Bifrost dropped during conversion + reason
 }
 
 type BifrostMCPListResourcesResponse struct {
@@ -2032,6 +2033,24 @@ func (r *BifrostMCPResponse) PopulateExtraFields(mcpRequestType MCPRequestType, 
 	}
 	if r.ExtraFields.ToolName == "" {
 		r.ExtraFields.ToolName = toolName
+	}
+}
+
+// PopulateMCPExtraFields backfills ExtraFields.{MCPRequestType, MCPClientName, MCPToolName}
+// when they aren't already set: the error counterpart of BifrostMCPResponse.PopulateExtraFields,
+// used by the MCP gate so a PostMCPHook can tell which call failed.
+func (e *BifrostError) PopulateMCPExtraFields(mcpRequestType MCPRequestType, clientName, toolName string) {
+	if e == nil {
+		return
+	}
+	if e.ExtraFields.MCPRequestType == "" {
+		e.ExtraFields.MCPRequestType = mcpRequestType
+	}
+	if e.ExtraFields.MCPClientName == "" {
+		e.ExtraFields.MCPClientName = clientName
+	}
+	if e.ExtraFields.MCPToolName == "" {
+		e.ExtraFields.MCPToolName = toolName
 	}
 }
 
@@ -2467,6 +2486,11 @@ type BifrostErrorExtraFields struct {
 	ResolvedModelUsed string         `json:"resolved_model_used,omitempty"`
 	RequestType       RequestType    `json:"request_type,omitempty"`
 	MCPRequestType    MCPRequestType `json:"mcp_request_type,omitempty"`
+	// MCPClientName and MCPToolName are stamped by the MCP plugin gate on every
+	// error it hands PostMCPHook, as the request named them (the tool with its
+	// client prefix), so a hook can tell which call failed. In-process only.
+	MCPClientName string `json:"-"`
+	MCPToolName   string `json:"-"`
 	// A2ARequestType and A2AAgentName are stamped by the Agent Gateway plugin gate
 	// on every wrapped error so PostA2AHook can discriminate the operation and its
 	// authorization resource from the failure path too, exactly as MCPRequestType does.

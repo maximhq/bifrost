@@ -13,6 +13,7 @@ import AddNewPluginSheet from "./sheets/addNewPluginSheet";
 import PluginSequenceSheet from "./sheets/pluginSequenceSheet";
 import { PluginsEmptyState } from "./views/pluginsEmptyState";
 import PluginsView from "./views/pluginsView";
+import { useActionParam } from "@/hooks/useActionParam";
 
 export default function PluginsPage() {
 	const { t } = useTranslation("governance");
@@ -31,6 +32,7 @@ export default function PluginsPage() {
 	const handleAddNew = () => {
 		setIsSheetOpen(true);
 	};
+	useActionParam("create", handleAddNew, { isOpen: isSheetOpen, enabled: hasCreatePluginAccess });
 
 	const handleCloseSheet = () => {
 		setIsSheetOpen(false);

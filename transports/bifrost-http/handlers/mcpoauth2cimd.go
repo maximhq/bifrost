@@ -170,7 +170,18 @@ func (r *oauth2ClientMetadataResolver) fetch(ctx context.Context, store *lib.Con
 	if strings.TrimSpace(doc.ClientName) == "" {
 		return nil, 0, invalid("has no client_name")
 	}
-	grantTypes, _, scope, metadataErr := validateOAuth2ClientMetadata(store, doc.dcrRequest)
+	// A client publishes one document for every authorization server it talks to, so it can list
+	// grants this server does not offer (claude.ai lists the jwt-bearer grant). Keep the offered
+	// ones, the way a server narrows a registration (RFC 7591 §3.2.1), and refuse the document
+	// only when none are left.
+	metadata := doc.dcrRequest
+	if len(metadata.GrantTypes) > 0 {
+		metadata.GrantTypes = offeredOAuth2GrantTypes(metadata.GrantTypes)
+		if len(metadata.GrantTypes) == 0 {
+			return nil, 0, invalid("unsupported grant_type")
+		}
+	}
+	grantTypes, _, scope, metadataErr := validateOAuth2ClientMetadata(store, metadata)
 	if metadataErr != nil {
 		return nil, 0, invalid("%s", metadataErr.description)
 	}

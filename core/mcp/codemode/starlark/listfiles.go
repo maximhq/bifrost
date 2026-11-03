@@ -89,7 +89,7 @@ func (s *StarlarkCodeMode) handleListToolFiles(ctx context.Context, toolCall sch
 			continue
 		}
 		codeModeServerCount++
-		if client.ServerInstructions != "" {
+		if s.clientManager.GetInstructionsForClient(ctx, client.ExecutionConfig.ID) != "" {
 			serversWithInstructions = append(serversWithInstructions, clientName)
 		}
 

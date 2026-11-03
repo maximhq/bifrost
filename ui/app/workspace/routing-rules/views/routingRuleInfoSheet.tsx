@@ -12,9 +12,10 @@ import { getProviderLabel } from "@/lib/constants/logs";
 import { useGetCustomerQuery, useGetTeamQuery, useGetVirtualKeyQuery } from "@/lib/store/apis/governanceApi";
 import { RoutingFallbackWire, RoutingRule } from "@/lib/types/routingRules";
 import { getScopeLabel } from "@/lib/utils/labels";
-import { formatTargetsTTFT, normalizeFallback } from "@/lib/utils/routingRules";
+import { normalizeFallback, summarizeTargetsTTFT } from "@/lib/utils/routingRules";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { formatDistanceToNow } from "date-fns";
+import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 import { Check, Copy, GitMerge, Key } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -275,7 +276,12 @@ function FallbackChain({ fallbacks }: { fallbacks: RoutingFallbackWire[] }) {
 // ─── main sheet ──────────────────────────────────────────────────────────────
 
 export function RoutingRuleInfoSheet({ rule, open, onOpenChange, onNavigate, hasPrev = false, hasNext = false }: Props) {
-	const { t } = useTranslation("models");
+	const { t, i18n } = useTranslation("models");
+	const formatTTFT = (targets: RoutingRule["targets"] | undefined) => {
+		const { ms, mixed } = summarizeTargetsTTFT(targets);
+		if (mixed) return t("routing.ttftMixed");
+		return ms ? t("routing.ttftValue", { ms }) : t("routing.off");
+	};
 	const targets = rule?.targets ?? [];
 	const fallbacks = rule?.fallbacks ?? [];
 	const hasQuery = rule?.query && (rule.query.rules?.length ?? 0) > 0;
@@ -405,9 +411,9 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange, onNavigate, has
 
 							{/* TTFT cutoff */}
 							<div className="grid grid-cols-1 items-center gap-4 md:grid-cols-3">
-								<span className="text-muted-foreground text-sm">Time to first token cutoff</span>
+								<span className="text-muted-foreground text-sm">{t("routing.ttftCutoff")}</span>
 								<span className="col-span-2 text-sm" data-testid="routing-rule-info-ttft-timeout">
-									{formatTargetsTTFT(rule.targets)}
+									{formatTTFT(rule.targets)}
 								</span>
 							</div>
 
@@ -420,6 +426,7 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange, onNavigate, has
 									<span className="text-sm">
 										{formatDistanceToNow(new Date(rule.created_at), {
 											addSuffix: true,
+											locale: dateFnsLocale(i18n.language),
 										})}
 									</span>
 								</div>
@@ -428,6 +435,7 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange, onNavigate, has
 									<span className="text-sm">
 										{formatDistanceToNow(new Date(rule.updated_at), {
 											addSuffix: true,
+											locale: dateFnsLocale(i18n.language),
 										})}
 									</span>
 								</div>

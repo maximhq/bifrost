@@ -10,15 +10,21 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	bifrost "github.com/maximhq/bifrost/core"
+	coremcp "github.com/maximhq/bifrost/core/mcp"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/mcp_headers"
 	"github.com/maximhq/bifrost/framework/oauth2"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
@@ -103,11 +109,16 @@ func (as *reregisterAuthServer) registrationCount() int {
 // one under test panics rather than passing unnoticed.
 type recordingCredentialCache struct {
 	MCPCredentialCacheManager
-	evictedClients []string
+	evictedClients          []string
+	evictedDiscoveryClients []string
 }
 
 func (c *recordingCredentialCache) EvictOauthTokenCacheByMCPClient(_ context.Context, mcpClientID string) {
 	c.evictedClients = append(c.evictedClients, mcpClientID)
+}
+
+func (c *recordingCredentialCache) EvictMCPPerUserDiscoveryCacheByMCPClient(_ context.Context, mcpClientID string) {
+	c.evictedDiscoveryClients = append(c.evictedDiscoveryClients, mcpClientID)
 }
 
 // recordingMCPManager embeds the interface for the same reason.
@@ -252,6 +263,25 @@ func TestReregisterMCPClient_InvalidatesInMemoryStateWhenItRotates(t *testing.T)
 		"cached tokens issued under the replaced client must be evicted, or they keep being served over a needs_reauth row")
 	assert.Equal(t, []string{reregisterMCPClientID}, f.manager.closedClients,
 		"the live connection still carries the replaced client's bearer and must be closed")
+}
+
+// TestReregisterMCPClient_DropsCallersDiscoveriesWhenItRotates: for a client
+// that keeps a discovery per caller, the rotation's needs_reauth cascade deletes
+// every caller's discovery too, and every node drops its cached copies.
+func TestReregisterMCPClient_DropsCallersDiscoveriesWhenItRotates(t *testing.T) {
+	f := newReregisterFixture(t)
+	ctx := context.Background()
+	row, err := f.store.GetMCPClientByID(ctx, reregisterMCPClientID)
+	require.NoError(t, err)
+	row.PerUserDiscovery = schemas.Ptr(true)
+	require.NoError(t, f.store.UpdateMCPClientConfig(ctx, reregisterMCPClientID, row))
+	seedDiscovery(t, f.store, schemas.MCPAuthModeUser, "alice", reregisterMCPClientID)
+
+	status, _, raw := f.call(t, f.handler.reregisterMCPClient)
+	require.Equal(t, fasthttp.StatusOK, status, raw)
+
+	assert.Nil(t, storedDiscovery(f.store, schemas.MCPAuthModeUser, "alice", reregisterMCPClientID))
+	assert.Equal(t, []string{reregisterMCPClientID}, f.cache.evictedDiscoveryClients)
 }
 
 // TestReregisterMCPClient_LeavesInMemoryStateAloneWhenNothingRotated is the
@@ -439,13 +469,15 @@ func TestAddMCPClient_OAuthOnLoopbackFollowsPrivateAllowlist(t *testing.T) {
 
 	for _, tc := range []struct {
 		name         string
+		authType     string
 		allow        []string
 		authBypassed bool
 		wantStatus   int
 		wantBody     string
 	}{
 		{name: "authenticated, loopback allowlisted", allow: []string{"127.0.0.1"}, wantStatus: fasthttp.StatusOK, wantBody: "authorize_url"},
-		{name: "authenticated, no allowlist", wantStatus: fasthttp.StatusInternalServerError, wantBody: "blocked connection to non-public address"},
+		{name: "authenticated, no allowlist", wantStatus: fasthttp.StatusBadRequest, wantBody: "blocked connection to non-public address"},
+		{name: "authenticated, no allowlist, per-user OAuth", authType: "per_user_oauth", wantStatus: fasthttp.StatusBadRequest, wantBody: "blocked connection to non-public address"},
 		{name: "auth bypassed, loopback allowlisted", allow: []string{"127.0.0.1"}, authBypassed: true, wantStatus: fasthttp.StatusForbidden, wantBody: "unauthenticated callers cannot register MCP clients"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -455,13 +487,17 @@ func TestAddMCPClient_OAuthOnLoopbackFollowsPrivateAllowlist(t *testing.T) {
 			store := newRealOAuth2Store(t)
 			provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 			cfg := &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, OAuthProvider: provider}
-			h := &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg)}
+			h := &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg, nil)}
 
 			var req fasthttp.Request
 			req.Header.SetMethod(fasthttp.MethodPost)
 			req.Header.SetContentType("application/json")
 			req.Header.SetHost("bifrost.example.com")
-			req.SetBodyString(`{"name":"local_oauth","connection_type":"http","connection_string":"` + server.URL + `/mcp","auth_type":"oauth","oauth_config":{}}`)
+			authType := tc.authType
+			if authType == "" {
+				authType = "oauth"
+			}
+			req.SetBodyString(`{"name":"local_oauth","connection_type":"http","connection_string":"` + server.URL + `/mcp","auth_type":"` + authType + `","oauth_config":{}}`)
 			ctx := initCtx(&req)
 			if tc.authBypassed {
 				ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
@@ -506,7 +542,7 @@ func TestAddMCPClient_OAuthUsesClientIDMetadataDocument(t *testing.T) {
 			cfg := &lib.Config{ConfigStore: store, OAuthProvider: provider, ClientConfig: &configstore.ClientConfig{
 				MCPExternalClientURL: schemas.NewSecretVar("https://bifrost.example.com"),
 			}}
-			h := &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg)}
+			h := &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg, nil)}
 
 			var req fasthttp.Request
 			req.Header.SetMethod(fasthttp.MethodPost)
@@ -580,6 +616,86 @@ func TestDeleteMCPClient_UnknownIDIsNotFound(t *testing.T) {
 	assert.Equal(t, []string{"mcp-delete-known"}, manager.removed)
 	_, err := store.GetMCPClientByID(context.Background(), "mcp-delete-known")
 	assert.ErrorIs(t, err, configstore.ErrNotFound)
+}
+
+// TestDeleteMCPClient_ReloadsTheKeysThatGrantedIt pins that deleting a client reloads every virtual key
+// that granted it. The delete cascades over those grants in the store, but the keys cached in memory
+// kept them, so a client created again under the same client_id was granted to them once more.
+func TestDeleteMCPClient_ReloadsTheKeysThatGrantedIt(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := newRealOAuth2Store(t)
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID:               "mcp-delete-granted",
+		Name:             "delete_granted",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://example.invalid/mcp"),
+	}))
+	row, err := store.GetMCPClientByID(ctx, "mcp-delete-granted")
+	require.NoError(t, err)
+	active := true
+	for _, id := range []string{"vk-grant-a", "vk-grant-b", "vk-no-grant"} {
+		require.NoError(t, store.CreateVirtualKey(ctx, &configtables.TableVirtualKey{ID: id, Name: id, Value: *schemas.NewSecretVar("sk-bf-" + id), IsActive: &active}))
+	}
+	for _, id := range []string{"vk-grant-a", "vk-grant-b"} {
+		require.NoError(t, store.CreateVirtualKeyMCPConfig(ctx, &configtables.TableVirtualKeyMCPConfig{VirtualKeyID: id, MCPClientID: row.ID, ToolsToExecute: []string{"*"}}))
+	}
+
+	governance := &reloadCountingGovernanceManager{}
+	h := &MCPHandler{store: &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}, mcpManager: &removeRecordingMCPManager{}, governanceManager: governance}
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodDelete)
+	reqCtx := initCtx(&req)
+	reqCtx.SetUserValue("id", "mcp-delete-granted")
+	h.deleteMCPClient(reqCtx)
+	require.Equal(t, fasthttp.StatusOK, reqCtx.Response.StatusCode(), string(reqCtx.Response.Body()))
+
+	var reloaded []string
+	for _, batch := range governance.reloadedBatches {
+		reloaded = append(reloaded, batch...)
+	}
+	reloaded = append(reloaded, governance.reloaded...)
+	sort.Strings(reloaded)
+	assert.Equal(t, []string{"vk-grant-a", "vk-grant-b"}, reloaded, "exactly the keys that granted the client are reloaded")
+	remaining, err := store.GetVirtualKeyMCPConfigsByMCPClientID(ctx, row.ID)
+	require.NoError(t, err)
+	assert.Empty(t, remaining, "the grants are gone from the store, so the reload drops them from memory")
+}
+
+// grantReadFailingStore is a config store whose read of a client's virtual key grants fails.
+type grantReadFailingStore struct{ configstore.ConfigStore }
+
+// GetVirtualKeyMCPConfigsByMCPClientID always fails.
+func (grantReadFailingStore) GetVirtualKeyMCPConfigsByMCPClientID(context.Context, uint) ([]configtables.TableVirtualKeyMCPConfig, error) {
+	return nil, errors.New("database unavailable")
+}
+
+// TestDeleteMCPClient_RefusesWhenItsGrantsCannotBeRead pins that a delete whose granting keys cannot
+// be read deletes nothing. It used to go ahead with no keys to reload: the grants left the store but
+// stayed cached on the keys, where they applied again to a client created later under the same id.
+func TestDeleteMCPClient_RefusesWhenItsGrantsCannotBeRead(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := newRealOAuth2Store(t)
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID:               "mcp-delete-unread",
+		Name:             "delete_unread",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://example.invalid/mcp"),
+	}))
+	mgr := &removeRecordingMCPManager{}
+	h := &MCPHandler{store: &lib.Config{ConfigStore: grantReadFailingStore{store}, ClientConfig: &configstore.ClientConfig{}}, mcpManager: mgr, governanceManager: &reloadCountingGovernanceManager{}}
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodDelete)
+	reqCtx := initCtx(&req)
+	reqCtx.SetUserValue("id", "mcp-delete-unread")
+	h.deleteMCPClient(reqCtx)
+
+	assert.Equal(t, fasthttp.StatusInternalServerError, reqCtx.Response.StatusCode(), string(reqCtx.Response.Body()))
+	assert.Contains(t, string(reqCtx.Response.Body()), "nothing was deleted")
+	_, err := store.GetMCPClientByID(ctx, "mcp-delete-unread")
+	assert.NoError(t, err, "the client is still stored")
+	assert.Empty(t, mgr.removed, "the runtime client is untouched")
 }
 
 // =============================================================================
@@ -744,7 +860,7 @@ func TestSanitizeMCPLibraryServerName(t *testing.T) {
 // The use_client_metadata_document toggle reaches the provider on every bootstrap path: the create
 // request (through InitiateOAuthFlow) and a config.json client's stored pending config.
 func TestUseClientMetadataDocument_ReachesTheProvider(t *testing.T) {
-	handler := NewOAuthHandler(oauth2.NewOAuth2Provider(nil, bifrost.NewDefaultLogger(schemas.LogLevelError)), nil, nil)
+	handler := NewOAuthHandler(oauth2.NewOAuth2Provider(nil, bifrost.NewDefaultLogger(schemas.LogLevelError)), nil, nil, nil)
 	_, err := handler.InitiateOAuthFlow(context.Background(), OAuthInitiationRequest{
 		ClientID:                  schemas.NewSecretVar("preset"),
 		ClientMetadataURL:         "https://bifrost.example.com/api/oauth/client-metadata.json",
@@ -760,6 +876,8 @@ func TestUseClientMetadataDocument_ReachesTheProvider(t *testing.T) {
 func TestOAuthBootstrapErrorStatus(t *testing.T) {
 	assert.Equal(t, fasthttp.StatusBadRequest, oauthBootstrapErrorStatus(fmt.Errorf("x: %w", oauth2.ErrClientMetadataDocumentWithClientID)))
 	assert.Equal(t, fasthttp.StatusBadRequest, oauthBootstrapErrorStatus(fmt.Errorf("x: %w", oauth2.ErrClientMetadataDocumentUnavailable)))
+	assert.Equal(t, fasthttp.StatusBadRequest, oauthBootstrapErrorStatus(fmt.Errorf("x: %w", &network.PrivateTargetNotAllowedError{Host: "127.0.0.1", IP: net.ParseIP("127.0.0.1")})))
+	assert.Equal(t, fasthttp.StatusBadRequest, oauthBootstrapErrorStatus(fmt.Errorf("x: %w", oauth2.ErrOAuthDiscoveryFailed)), "endpoints the caller has to provide")
 	assert.Equal(t, fasthttp.StatusInternalServerError, oauthBootstrapErrorStatus(errors.New("discovery failed")))
 }
 
@@ -1170,4 +1288,1742 @@ func TestMCPClientResponse_ResourcesAndPromptsAreAlwaysArrays(t *testing.T) {
 	assert.Contains(t, string(data), `"uri":"file:///handbook.md"`)
 	assert.Contains(t, string(data), `"name":"docs-review"`)
 	assert.Contains(t, string(data), `"resource_templates":[]`)
+}
+
+// decodeSyncInterval runs a raw JSON value through the request field exactly
+// as a handler would, so these tests exercise the real decode path rather than
+// a restatement of it.
+func decodeSyncInterval(t *testing.T, raw string) (*MCPSyncInterval, error) {
+	t.Helper()
+	var body struct {
+		ToolSyncInterval *MCPSyncInterval `json:"tool_sync_interval,omitempty"`
+	}
+	err := json.Unmarshal([]byte(`{"tool_sync_interval":`+raw+`}`), &body)
+	return body.ToolSyncInterval, err
+}
+
+func TestSyncIntervalAcceptsDurationStrings(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want time.Duration
+	}{
+		{`"1s"`, time.Second},
+		{`"30s"`, 30 * time.Second},
+		{`"5m"`, 5 * time.Minute},
+		{`"1h30m"`, 90 * time.Minute},
+		{`"90s"`, 90 * time.Second},
+		{`"10m"`, 10 * time.Minute},
+	} {
+		got, err := decodeSyncInterval(t, tc.raw)
+		if err != nil {
+			t.Errorf("tool_sync_interval=%s should decode, got %v", tc.raw, err)
+			continue
+		}
+		if got.Duration != tc.want {
+			t.Errorf("tool_sync_interval=%s: expected %v, got %v", tc.raw, tc.want, got.Duration)
+		}
+		if err := got.Validate(); err != nil {
+			t.Errorf("tool_sync_interval=%s should validate, got %v", tc.raw, err)
+		}
+	}
+}
+
+// TestSyncIntervalBareNumberStillMeansMinutes is the compatibility guarantee.
+// Every deployment already sending a plain number means minutes by it, and
+// reinterpreting those values would change how often each of them checks its
+// MCP servers without anyone asking for it.
+func TestSyncIntervalBareNumberStillMeansMinutes(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want time.Duration
+	}{
+		{`0`, 0},
+		{`1`, time.Minute},
+		{`10`, 10 * time.Minute},
+		{`60`, time.Hour},
+		{`1440`, 24 * time.Hour},
+	} {
+		got, err := decodeSyncInterval(t, tc.raw)
+		if err != nil {
+			t.Errorf("tool_sync_interval=%s should decode, got %v", tc.raw, err)
+			continue
+		}
+		if got.Duration != tc.want {
+			t.Errorf("tool_sync_interval=%s: expected %v, got %v", tc.raw, tc.want, got.Duration)
+		}
+	}
+}
+
+// TestSyncIntervalRejectsFractionalSeconds covers the trap the string form
+// introduces, across its whole range rather than just the tail. The column
+// stores whole seconds, so "500ms" truncates to 0 and means "follow the global
+// setting", the opposite of what a caller asking for a short interval wants,
+// while "90500ms" keeps its seconds and silently drops the rest. Both are the
+// same loss.
+func TestSyncIntervalRejectsFractionalSeconds(t *testing.T) {
+	for _, raw := range []string{`"1ms"`, `"500ms"`, `"999ms"`, `"1ns"`, `"1500ms"`, `"90500ms"`} {
+		got, err := decodeSyncInterval(t, raw)
+		if err != nil {
+			continue // rejected at decode is equally acceptable
+		}
+		if err := got.Validate(); err == nil {
+			t.Errorf("tool_sync_interval=%s loses precision on persistence and must be rejected", raw)
+		}
+	}
+}
+
+func TestSyncIntervalRejectsNegatives(t *testing.T) {
+	for _, raw := range []string{`-1`, `-10`, `"-5m"`, `"-1s"`} {
+		got, err := decodeSyncInterval(t, raw)
+		if err != nil {
+			continue
+		}
+		if err := got.Validate(); err == nil {
+			t.Errorf("tool_sync_interval=%s is negative and must be rejected", raw)
+		}
+	}
+}
+
+// TestSyncIntervalRejectsNanosecondEchoes keeps the protection that predates
+// the string form: a caller echoing back a nanosecond count as a bare number
+// must still be refused, since it would otherwise be read as that many minutes
+// and park tool sync centuries out.
+func TestSyncIntervalRejectsNanosecondEchoes(t *testing.T) {
+	for _, override := range []time.Duration{time.Minute, 10 * time.Minute, time.Hour} {
+		nanos := int64(override) // what an older GET response carried for this override
+		got, err := decodeSyncInterval(t, jsonInt(nanos))
+		if err != nil {
+			continue
+		}
+		if err := got.Validate(); err == nil {
+			t.Errorf("tool_sync_interval=%d (nanoseconds for a %v override) must be rejected as a bare number", nanos, override)
+		}
+	}
+}
+
+// TestSyncIntervalRejectsFractionalBareNumbers pins that a fractional number is
+// an error rather than being truncated, so "5.5" cannot quietly become five
+// minutes.
+func TestSyncIntervalRejectsFractionalBareNumbers(t *testing.T) {
+	for _, raw := range []string{`5.5`, `0.5`, `1e3`} {
+		if _, err := decodeSyncInterval(t, raw); err == nil {
+			t.Errorf("tool_sync_interval=%s must be rejected; a bare number has to be whole minutes", raw)
+		}
+	}
+}
+
+func TestSyncIntervalRejectsUnparseableStrings(t *testing.T) {
+	for _, raw := range []string{`"soon"`, `"5 minutes"`, `"m5"`, `"5x"`} {
+		if _, err := decodeSyncInterval(t, raw); err == nil {
+			t.Errorf("tool_sync_interval=%s must be rejected as an invalid duration", raw)
+		}
+	}
+}
+
+// TestSyncIntervalSurvivesPersistence asserts an accepted value round-trips
+// through the seconds column it is stored in, which is the conversion that
+// makes sub-second values meaningless in the first place.
+func TestSyncIntervalSurvivesPersistence(t *testing.T) {
+	for _, raw := range []string{`"1s"`, `"30s"`, `"5m"`, `10`, `1440`} {
+		got, err := decodeSyncInterval(t, raw)
+		if err != nil {
+			t.Fatalf("tool_sync_interval=%s should decode, got %v", raw, err)
+		}
+		if err := got.Validate(); err != nil {
+			t.Fatalf("tool_sync_interval=%s should validate, got %v", raw, err)
+		}
+		seconds := int(got.Duration / time.Second)
+		if restored := time.Duration(seconds) * time.Second; restored != got.Duration {
+			t.Errorf("tool_sync_interval=%s does not round-trip through the seconds column: %v became %v",
+				raw, got.Duration, restored)
+		}
+	}
+}
+
+// TestResolveSyncIntervalKeepsExistingWhenAbsent pins the PATCH semantics the
+// update endpoint documents: a field the caller did not send must not change.
+// It also pins that Resolve is nil-safe, since an absent field is exactly a
+// nil pointer and every call site relies on not having to check for it.
+func TestResolveSyncIntervalKeepsExistingWhenAbsent(t *testing.T) {
+	existing := 7 * time.Minute
+	var absent *MCPSyncInterval
+	got, err := absent.Resolve(existing)
+	if err != nil {
+		t.Fatalf("absent field should resolve cleanly, got %v", err)
+	}
+	if got != existing {
+		t.Errorf("expected the existing %v to survive an absent field, got %v", existing, got)
+	}
+
+	// Zero is a value, not an absence: it hands the client back to the global
+	// setting and must override an existing override.
+	sent := &MCPSyncInterval{Duration: 0}
+	got, err = sent.Resolve(existing)
+	if err != nil {
+		t.Fatalf("zero should resolve cleanly, got %v", err)
+	}
+	if got != 0 {
+		t.Errorf("expected an explicit 0 to clear the override, got %v", got)
+	}
+}
+
+func TestSyncIntervalMarshalsAsDurationString(t *testing.T) {
+	out, err := json.Marshal(MCPSyncInterval{Duration: 90 * time.Second})
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if string(out) != `"1m30s"` {
+		t.Errorf(`expected "1m30s", got %s`, out)
+	}
+}
+
+// jsonInt renders an int64 as a JSON number literal.
+func jsonInt(v int64) string {
+	b, _ := json.Marshal(v)
+	return string(b)
+}
+
+// TestCreateRequestShadowedFieldReceivesTheValue is the one that matters for
+// the create path. MCPClientRequest embeds TableMCPClient, which carries its
+// own tool_sync_interval column field, and the request field shadows it. Go
+// resolves the shallower field, so the value must land on the request field
+// and the embedded column field must stay untouched. Getting that backwards
+// would silently drop the caller's interval on every create.
+func TestCreateRequestShadowedFieldReceivesTheValue(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want time.Duration
+	}{
+		{`"30s"`, 30 * time.Second},
+		{`"5m"`, 5 * time.Minute},
+		{`10`, 10 * time.Minute},
+	} {
+		var req MCPClientRequest
+		body := `{"name":"c","connection_type":"http","tool_sync_interval":` + tc.raw + `}`
+		if err := json.Unmarshal([]byte(body), &req); err != nil {
+			t.Fatalf("%s should decode, got %v", body, err)
+		}
+		if req.ToolSyncInterval == nil {
+			t.Fatalf("%s: the request field is nil, so the value was lost", body)
+		}
+		if req.ToolSyncInterval.Duration != tc.want {
+			t.Errorf("%s: expected %v, got %v", body, tc.want, req.ToolSyncInterval.Duration)
+		}
+		// The embedded column field is written from the resolved duration at
+		// the persistence boundary, not by the decoder, so it stays zero here.
+		if req.TableMCPClient.ToolSyncInterval != 0 {
+			t.Errorf("%s: the embedded column field should stay untouched, got %d",
+				body, req.TableMCPClient.ToolSyncInterval)
+		}
+		// The value the handler resolves is what a create would persist.
+		got, err := req.ToolSyncInterval.Resolve(0)
+		if err != nil {
+			t.Fatalf("%s should resolve, got %v", body, err)
+		}
+		if got != tc.want {
+			t.Errorf("%s: resolved to %v, expected %v", body, got, tc.want)
+		}
+	}
+}
+
+// TestCreateRequestAbsentFieldResolvesToZero pins that omitting the field
+// still means "use the global setting", which is what the create path relied
+// on when the embedded int defaulted to 0.
+func TestCreateRequestAbsentFieldResolvesToZero(t *testing.T) {
+	var req MCPClientRequest
+	if err := json.Unmarshal([]byte(`{"name":"c","connection_type":"http"}`), &req); err != nil {
+		t.Fatalf("should decode, got %v", err)
+	}
+	if req.ToolSyncInterval != nil {
+		t.Fatalf("expected an absent field to stay nil, got %+v", req.ToolSyncInterval)
+	}
+	got, err := req.ToolSyncInterval.Resolve(0)
+	if err != nil || got != 0 {
+		t.Errorf("expected an absent field to resolve to 0, got %v (%v)", got, err)
+	}
+}
+
+// TestUpdateRequestDecodesBothForms covers the update struct, whose field was
+// a plain *int before and where a nil pointer still has to mean "unchanged".
+func TestUpdateRequestDecodesBothForms(t *testing.T) {
+	var withValue MCPClientUpdateRequest
+	if err := json.Unmarshal([]byte(`{"tool_sync_interval":"45s"}`), &withValue); err != nil {
+		t.Fatalf("should decode, got %v", err)
+	}
+	got, err := withValue.ToolSyncInterval.Resolve(9 * time.Minute)
+	if err != nil {
+		t.Fatalf("should resolve, got %v", err)
+	}
+	if got != 45*time.Second {
+		t.Errorf("expected 45s to override the existing value, got %v", got)
+	}
+
+	var absent MCPClientUpdateRequest
+	if err := json.Unmarshal([]byte(`{"name":"n"}`), &absent); err != nil {
+		t.Fatalf("should decode, got %v", err)
+	}
+	got, err = absent.ToolSyncInterval.Resolve(9 * time.Minute)
+	if err != nil {
+		t.Fatalf("should resolve, got %v", err)
+	}
+	if got != 9*time.Minute {
+		t.Errorf("expected an absent field to keep the existing 9m, got %v", got)
+	}
+}
+
+func TestSyncIntervalHTTPValidationErrors(t *testing.T) {
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	existing := &schemas.MCPClientConfig{ID: "interval-client", Name: "interval-client", ToolSyncInterval: 7 * time.Minute}
+	cfg.MCPConfig = &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{existing}}
+	h := &MCPHandler{store: cfg}
+	for _, tc := range []struct{ raw, want string }{
+		{`""`, "tool_sync_interval must not be blank"},
+		{`"   "`, "tool_sync_interval must not be blank"},
+		{`"soon"`, "expected a duration"},
+		{`5.5`, "whole number of minutes"},
+		{jsonInt(maxToolSyncIntervalMinutes + 1), "must be at most"},
+		{`true`, "duration string or a number of minutes"},
+	} {
+		for _, update := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/update=%t", tc.raw, update), func(t *testing.T) {
+				ctx := &fasthttp.RequestCtx{}
+				ctx.Request.SetBodyString(`{"name":"interval-client","connection_type":"http","connection_string":"https://example.com/mcp","tool_sync_interval":` + tc.raw + `}`)
+				if update {
+					ctx.SetUserValue("id", existing.ID)
+					h.updateMCPClient(ctx)
+				} else {
+					h.addMCPClient(ctx)
+				}
+				require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+				assert.Contains(t, string(ctx.Response.Body()), "tool_sync_interval")
+				assert.Contains(t, string(ctx.Response.Body()), tc.want)
+				assert.Equal(t, 7*time.Minute, existing.ToolSyncInterval)
+			})
+		}
+	}
+	// Unrelated decoder errors must retain the generic response.
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBodyString(`{"name":true}`)
+	h.addMCPClient(ctx)
+	assert.Contains(t, string(ctx.Response.Body()), "Invalid request payload")
+}
+
+func TestSyncIntervalBlankUpdateKeepsOverride(t *testing.T) {
+	for _, raw := range []string{`""`, `"   "`} {
+		field, err := decodeSyncInterval(t, raw)
+		if err == nil {
+			resolved, resolveErr := field.Resolve(7 * time.Minute)
+			t.Fatalf("blank update must fail decoding; got interval %v, error %v", resolved, resolveErr)
+		}
+	}
+}
+
+func TestParseRequestDurationUnits(t *testing.T) {
+	for _, tc := range []struct {
+		field, label string
+		unit         time.Duration
+	}{
+		{"sync_interval", "minutes", time.Minute},
+		{"execution_timeout", "seconds", time.Second},
+		{"retry_backoff", "milliseconds", time.Millisecond},
+	} {
+		t.Run(tc.field, func(t *testing.T) {
+			got, err := parseRequestDuration([]byte(`2`), tc.field, tc.unit, tc.label)
+			require.NoError(t, err)
+			assert.Equal(t, 2*tc.unit, got)
+			got, err = parseRequestDuration([]byte(`"1500ms"`), tc.field, tc.unit, tc.label)
+			require.NoError(t, err)
+			assert.Equal(t, 1500*time.Millisecond, got) // Precision is field-specific.
+			max := int64(1<<63-1) / int64(tc.unit)
+			got, err = parseRequestDuration([]byte(jsonInt(max)), tc.field, tc.unit, tc.label)
+			require.NoError(t, err)
+			assert.Equal(t, time.Duration(max)*tc.unit, got)
+			for _, raw := range []string{`""`, `"  "`, `"soon"`, `-1`, `"-1s"`, `1.5`, `1e3`, `true`, jsonInt(max + 1)} {
+				_, err := parseRequestDuration([]byte(raw), tc.field, tc.unit, tc.label)
+				require.Error(t, err, raw)
+				assert.Contains(t, requestDurationDecodeError(err), tc.field)
+			}
+			for _, raw := range []string{`0`, `"0s"`, `null`} {
+				got, err := parseRequestDuration([]byte(raw), tc.field, tc.unit, tc.label)
+				require.NoError(t, err)
+				assert.Zero(t, got)
+			}
+		})
+	}
+}
+
+// TestAddMCPClient_PerUserHeadersKeepsAdminCredential: creating a per_user_headers
+// client keeps the admin's sample values as its admin credential, the one periodic
+// tool discovery connects with, just as verify-headers keeps them. Without it the
+// client's first discovery check finds no credential and marks it unstable.
+func TestAddMCPClient_PerUserHeadersKeepsAdminCredential(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	h.store.MCPHeadersProvider = mcp_headers.NewProvider(h.store.ConfigStore, &mockLogger{})
+
+	body, err := json.Marshal(map[string]any{
+		"name": "acme_h", "connection_type": "http", "connection_string": "http://127.0.0.1:1/mcp",
+		"auth_type": "per_user_headers", "per_user_header_keys": []string{"X-Api-Key"},
+		"user_headers": map[string]string{"X-Api-Key": "sample-key"}, "tools_to_execute": []string{"*"},
+	})
+	require.NoError(t, err)
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(body), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	require.Len(t, mgr.added, 1)
+
+	cred, err := h.store.MCPHeadersProvider.GetCredentialByMode(context.Background(), schemas.MCPAuthModeAdmin, "", mgr.added[0].ID)
+	require.NoError(t, err, "the create call keeps an admin credential")
+	require.NotNil(t, cred)
+	assert.Equal(t, map[string]string{"x-api-key": "sample-key"}, cred.Headers, "the sample value, under its canonical key")
+	assert.Equal(t, schemas.MCPHeadersUserCredentialStatusActive, cred.Status)
+}
+
+// failingHeaderCredentialStore is a config store whose header credential writes fail.
+type failingHeaderCredentialStore struct{ configstore.ConfigStore }
+
+// UpsertMCPPerUserHeaderCredential always fails.
+func (failingHeaderCredentialStore) UpsertMCPPerUserHeaderCredential(context.Context, *configtables.TableMCPPerUserHeaderCredential) error {
+	return errors.New("credential table unavailable")
+}
+
+// TestAddMCPClient_PerUserHeadersCreatesWhenTheCredentialCannotBeKept: keeping the
+// sample values is best effort, so a failed credential write leaves the verified
+// client created and registered; verify-headers can store the credential later.
+func TestAddMCPClient_PerUserHeadersCreatesWhenTheCredentialCannotBeKept(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	h.store.MCPHeadersProvider = mcp_headers.NewProvider(failingHeaderCredentialStore{h.store.ConfigStore}, &mockLogger{})
+
+	body, err := json.Marshal(map[string]any{
+		"name": "acme_h", "connection_type": "http", "connection_string": "http://127.0.0.1:1/mcp",
+		"auth_type": "per_user_headers", "per_user_header_keys": []string{"X-Api-Key"},
+		"user_headers": map[string]string{"X-Api-Key": "sample-key"}, "tools_to_execute": []string{"*"},
+	})
+	require.NoError(t, err)
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(body), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	require.Len(t, mgr.added, 1, "the client is registered without the credential")
+	_, err = h.store.MCPHeadersProvider.GetCredentialByMode(context.Background(), schemas.MCPAuthModeAdmin, "", mgr.added[0].ID)
+	assert.Error(t, err, "no admin credential was kept")
+}
+
+// TestAddMCPClient_MissingConnectionTargetIs400 pins that a client created without
+// the target its connection type needs is a caller error: 400 with the reason, and
+// nothing is stored or handed to the runtime. It was a 500 after a create and a
+// rollback.
+func TestAddMCPClient_MissingConnectionTargetIs400(t *testing.T) {
+	for _, tc := range []struct {
+		body, name, want string
+	}{
+		{body: `{"name":"no_url","connection_type":"http","auth_type":"none"}`, name: "no_url", want: "connection_string is required for http connection type"},
+		{body: `{"name":"no_command","connection_type":"stdio","auth_type":"none"}`, name: "no_command", want: "stdio_config is required for stdio connection type"},
+		{body: `{"name":"empty_command","connection_type":"stdio","auth_type":"none","stdio_config":{"command":""}}`, name: "empty_command", want: "stdio_config.command is required for stdio connection type"},
+		{body: `{"name":"blank_command","connection_type":"stdio","auth_type":"none","stdio_config":{"command":"  "}}`, name: "blank_command", want: "stdio_config.command is required for stdio connection type"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, mgr := newOpenAPITestHandler(t)
+			status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, tc.body, "", false)
+			require.Equal(t, fasthttp.StatusBadRequest, status, respBody)
+			assert.Contains(t, respBody, tc.want)
+			assert.Empty(t, mgr.added, "the runtime is not asked to connect")
+			_, err := h.store.ConfigStore.GetMCPClientByName(context.Background(), tc.name)
+			assert.ErrorIs(t, err, configstore.ErrNotFound, "no row is stored")
+		})
+	}
+}
+
+// TestAddMCPClient_UnknownAuthTypeIs400 pins that an auth_type no credential
+// resolver handles is refused at create with the accepted values, and nothing is
+// stored or handed to the runtime.
+func TestAddMCPClient_UnknownAuthTypeIs400(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	body := `{"name":"bogus_auth","connection_type":"http","connection_string":"http://127.0.0.1:9/mcp","auth_type":"bogus"}`
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, body, "", false)
+	require.Equal(t, fasthttp.StatusBadRequest, status, respBody)
+	assert.Contains(t, respBody, `Invalid auth_type \"bogus\": must be one of none, headers, oauth, per_user_oauth, per_user_headers, token_exchange`)
+	assert.Empty(t, mgr.added, "the runtime is not asked to connect")
+	_, err := h.store.ConfigStore.GetMCPClientByName(context.Background(), "bogus_auth")
+	assert.ErrorIs(t, err, configstore.ErrNotFound, "no row is stored")
+}
+
+// TestAddMCPClient_OmittedAuthTypeRunsAsStored pins that a client created
+// without an auth_type reaches the runtime with the auth_type its stored row
+// carries, headers, so it connects the same way before and after a restart. The
+// runtime used to get an empty auth_type, which connects with a persistent
+// connection, while the reloaded row connects per call.
+func TestAddMCPClient_OmittedAuthTypeRunsAsStored(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	body := `{"name":"no_auth_type","connection_type":"http","connection_string":"http://127.0.0.1:9/mcp","tools_to_execute":["*"]}`
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, body, "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	require.Len(t, mgr.added, 1)
+	stored, err := h.store.ConfigStore.GetMCPClientByName(context.Background(), "no_auth_type")
+	require.NoError(t, err)
+	assert.Equal(t, string(schemas.MCPAuthTypeHeaders), stored.AuthType, "the stored row")
+	assert.Equal(t, stored.AuthType, string(mgr.added[0].AuthType), "the runtime config matches the stored row")
+}
+
+// TestAddMCPClient_PerUserAuthTypeNeedsHTTP pins that the per-user auth types,
+// which open a new streamable HTTP connection for each call, are refused at
+// create on SSE and STDIO, where that connection cannot be made, before anything
+// is stored or verified.
+func TestAddMCPClient_PerUserAuthTypeNeedsHTTP(t *testing.T) {
+	targets := map[string]string{
+		"sse":   `"connection_string":"http://127.0.0.1:9/sse"`,
+		"stdio": `"stdio_config":{"command":"true"}`,
+	}
+	for _, authType := range []string{"per_user_oauth", "per_user_headers", "token_exchange"} {
+		for connectionType, target := range targets {
+			t.Run(authType+"_"+connectionType, func(t *testing.T) {
+				h, mgr := newOpenAPITestHandler(t)
+				name := authType + "_" + connectionType
+				body := fmt.Sprintf(`{"name":%q,"connection_type":%q,%s,"auth_type":%q,"per_user_header_keys":["x-key"],"user_headers":{"x-key":"v"}}`, name, connectionType, target, authType)
+				status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, body, "", false)
+				require.Equal(t, fasthttp.StatusBadRequest, status, respBody)
+				assert.Contains(t, respBody, fmt.Sprintf(`auth_type \"%s\" is not supported for connection_type '%s' (use connection_type 'http')`, authType, connectionType))
+				assert.Empty(t, mgr.added, "the runtime is not asked to connect")
+				_, err := h.store.ConfigStore.GetMCPClientByName(context.Background(), name)
+				assert.ErrorIs(t, err, configstore.ErrNotFound, "no row is stored")
+			})
+		}
+	}
+}
+
+// TestUpdateMCPClient_RenameToATakenNameIs409 pins that renaming a client to
+// another client's name answers 409, like creating one with that name, and
+// applies nothing. It was a 500.
+func TestUpdateMCPClient_RenameToATakenNameIs409(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	for _, name := range []string{"petstore", "petstore_b"} {
+		createBody, _ := json.Marshal(map[string]any{
+			"name": name, "connection_type": "openapi", "auth_type": "none",
+			"tools_to_execute": []string{"listPets"},
+			"openapi_config":   map[string]any{"spec": petstoreSpecJSON, "base_url": "https://petstore.example.com/v1/"},
+		})
+		status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(createBody), "", false)
+		require.Equal(t, fasthttp.StatusOK, status, respBody)
+	}
+	h.store.MCPConfig.ClientConfigs = mgr.added
+	second := mgr.added[1]
+
+	status, respBody := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"name":"petstore"}`, second.ID, false)
+	require.Equal(t, fasthttp.StatusConflict, status, respBody)
+	assert.Contains(t, respBody, "An MCP client with this name already exists")
+	assert.Empty(t, mgr.updated, "the runtime client is not touched")
+	stored, err := h.store.ConfigStore.GetMCPClientByID(context.Background(), second.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "petstore_b", stored.Name, "the stored row keeps its name")
+}
+
+// TestAddMCPClient_IgnoresToolPricing pins that create does not take
+// tool_pricing; prices are set with an update. A price taken from the create
+// body was never stored, yet sat in the running config until the next edit
+// stored and applied it.
+func TestAddMCPClient_IgnoresToolPricing(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	createBody, _ := json.Marshal(map[string]any{
+		"name": "petstore", "connection_type": "openapi", "auth_type": "none",
+		"tools_to_execute": []string{"listPets"},
+		"tool_pricing":     map[string]float64{"listPets": 0.25},
+		"openapi_config":   map[string]any{"spec": petstoreSpecJSON, "base_url": "https://petstore.example.com/v1/"},
+	})
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(createBody), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	require.Len(t, mgr.added, 1)
+	assert.Empty(t, mgr.added[0].ToolPricing)
+}
+
+// TestGetMCPClients_ReturnsMaxInstructionsLength pins that the client list carries
+// a client's max_instructions_length, so a reader sees the stored cap and an edit
+// that sends the listed config back keeps it. The list used to leave it out.
+func TestGetMCPClients_ReturnsMaxInstructionsLength(t *testing.T) {
+	h, _ := newOpenAPITestHandler(t)
+	h.client = &bifrost.Bifrost{MCPManager: coremcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &mockLogger{}, nil)}
+	createBody, _ := json.Marshal(map[string]any{
+		"name": "petstore", "connection_type": "openapi", "auth_type": "none",
+		"tools_to_execute":        []string{"listPets"},
+		"max_instructions_length": 50,
+		"openapi_config":          map[string]any{"spec": petstoreSpecJSON, "base_url": "https://petstore.example.com/v1/"},
+	})
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(createBody), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+
+	status, respBody = doMCPRequest(t, h.getMCPClients, fasthttp.MethodGet, "", "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	var list struct {
+		Clients []MCPClientResponse `json:"clients"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(respBody), &list), respBody)
+	require.Len(t, list.Clients, 1)
+	assert.Equal(t, 50, list.Clients[0].Config.MaxInstructionsLength)
+}
+
+// dialFailingUpdateManager applies every update and then reports the dial that
+// followed as failed, as the runtime does for an enable whose upstream is down.
+type dialFailingUpdateManager struct {
+	*openAPIRecordingManager
+}
+
+// UpdateMCPClient records the update and reports its dial as failed.
+func (m *dialFailingUpdateManager) UpdateMCPClient(ctx context.Context, id string, c *schemas.MCPClientConfig) error {
+	_ = m.openAPIRecordingManager.UpdateMCPClient(ctx, id, c)
+	return fmt.Errorf("%w for '%s': connection refused", coremcp.ErrMCPEnableConnectFailed, c.Name)
+}
+
+// TestUpdateMCPClient_PartialSuccessMessageIsTwoSentences pins that an update
+// whose dial failed after it applied reads as two sentences: "MCP client edited
+// successfully. However, establishing the shared connection failed: ...". It
+// used to read "edited successfully However".
+func TestUpdateMCPClient_PartialSuccessMessageIsTwoSentences(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	createBody, _ := json.Marshal(map[string]any{
+		"name": "petstore", "connection_type": "openapi", "auth_type": "none",
+		"tools_to_execute": []string{"listPets"},
+		"openapi_config":   map[string]any{"spec": petstoreSpecJSON, "base_url": "https://petstore.example.com/v1/"},
+	})
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(createBody), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	h.store.MCPConfig.ClientConfigs = mgr.added
+	h.mcpManager = &dialFailingUpdateManager{openAPIRecordingManager: mgr}
+
+	status, respBody = doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"name":"petstore_renamed"}`, mgr.added[0].ID, false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	var resp struct {
+		Status  string `json:"status"`
+		Message string `json:"message"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(respBody), &resp))
+	assert.Equal(t, "partial_success", resp.Status)
+	assert.True(t, strings.HasPrefix(resp.Message, "MCP client edited successfully. However, establishing the shared connection failed: "), resp.Message)
+}
+
+// reconnectRecordingMCPManager records reconnect calls and answers them as the
+// server does for an id it has no config for.
+type reconnectRecordingMCPManager struct {
+	MCPManager
+	reconnected []string
+}
+
+// ReconnectMCPClient records the id and reports it unknown.
+func (m *reconnectRecordingMCPManager) ReconnectMCPClient(_ context.Context, id string) error {
+	m.reconnected = append(m.reconnected, id)
+	return fmt.Errorf("MCP client '%s' not found", id)
+}
+
+// TestReconnectMCPClient_UnknownIDIsNotFound pins that reconnecting an id no
+// client has answers 404, like refreshing its tools, without reaching the
+// runtime. It was a 500.
+func TestReconnectMCPClient_UnknownIDIsNotFound(t *testing.T) {
+	SetLogger(&mockLogger{})
+	mgr := &reconnectRecordingMCPManager{}
+	h := &MCPHandler{
+		store:      &lib.Config{ConfigStore: newRealOAuth2Store(t), ClientConfig: &configstore.ClientConfig{}, MCPConfig: &schemas.MCPConfig{}},
+		mcpManager: mgr,
+	}
+	status, respBody := doMCPRequest(t, h.reconnectMCPClient, fasthttp.MethodPost, "", "no-such-client", false)
+	require.Equal(t, fasthttp.StatusNotFound, status, respBody)
+	assert.Contains(t, respBody, "mcp client not found")
+	assert.Empty(t, mgr.reconnected)
+}
+
+// newLoopbackOAuthMCPHandler returns an MCP handler whose OAuth creates discover
+// against a loopback authorization server the private allowlist permits.
+func newLoopbackOAuthMCPHandler(t *testing.T) (*MCPHandler, *oauth2.OAuth2Provider, *httptest.Server) {
+	t.Helper()
+	SetLogger(&mockLogger{})
+	oauth2.SetDiscoveryDialContextForTests(nil)
+	t.Cleanup(func() {
+		oauth2.SetDiscoveryDialContextForTests((&net.Dialer{}).DialContext)
+		require.NoError(t, lib.ApplyMCPOAuthPrivateAllowlist(nil))
+	})
+	require.NoError(t, lib.ApplyMCPOAuthPrivateAllowlist([]string{"127.0.0.1"}))
+	server := newLoopbackOAuthMCPServer(t)
+	store := newRealOAuth2Store(t)
+	provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	cfg := &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, OAuthProvider: provider, MCPConfig: &schemas.MCPConfig{}}
+	return &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg, nil)}, provider, server
+}
+
+// TestAddMCPClient_OAuthRefusesATakenNameOrSlugBeforeAuthorizing pins that an
+// OAuth create whose name or endpoint slug is already taken answers 409 at
+// create, before anyone is sent to consent. The conflict used to surface only
+// when the flow was completed.
+func TestAddMCPClient_OAuthRefusesATakenNameOrSlugBeforeAuthorizing(t *testing.T) {
+	for _, tc := range []struct {
+		name, authType, body, want string
+	}{
+		{name: "oauth, same name", authType: "oauth", body: `"name":"taken"`, want: "An MCP endpoint with this slug already exists"},
+		{name: "per-user OAuth, same name", authType: "per_user_oauth", body: `"name":"taken"`, want: "An MCP endpoint with this slug already exists"},
+		{name: "oauth, another name with the taken slug", authType: "oauth", body: `"name":"other","endpoint_slug":"taken"`, want: "An MCP endpoint with this slug already exists"},
+		{name: "oauth, same name with another slug", authType: "oauth", body: `"name":"taken","endpoint_slug":"other"`, want: "An MCP client with this name already exists"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _, server := newLoopbackOAuthMCPHandler(t)
+			require.NoError(t, h.store.ConfigStore.CreateMCPClientConfig(context.Background(), &schemas.MCPClientConfig{
+				ID: "taken-id", Name: "taken", ConnectionType: schemas.MCPConnectionTypeHTTP,
+				ConnectionString: schemas.NewSecretVar("https://taken.example.com/mcp"), AuthType: schemas.MCPAuthTypeNone,
+			}))
+			body := `{` + tc.body + `,"connection_type":"http","connection_string":"` + server.URL + `/mcp","auth_type":"` + tc.authType + `","oauth_config":{}}`
+			status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, body, "", false)
+			require.Equal(t, fasthttp.StatusConflict, status, respBody)
+			assert.Contains(t, respBody, tc.want)
+			assert.NotContains(t, respBody, "authorize_url")
+		})
+	}
+}
+
+// TestAddMCPClient_OAuthKeepsTheEndpointSlug pins that an OAuth create's
+// endpoint_slug is kept for the client its completion creates. It was dropped,
+// so the client got the slug derived from its name.
+func TestAddMCPClient_OAuthKeepsTheEndpointSlug(t *testing.T) {
+	for _, authType := range []string{"oauth", "per_user_oauth"} {
+		t.Run(authType, func(t *testing.T) {
+			h, provider, server := newLoopbackOAuthMCPHandler(t)
+			body := `{"name":"slugged","endpoint_slug":"custom-slug","connection_type":"http","connection_string":"` + server.URL + `/mcp","auth_type":"` + authType + `","oauth_config":{}}`
+			status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, body, "", false)
+			require.Equal(t, fasthttp.StatusOK, status, respBody)
+			var resp struct {
+				OauthConfigID string `json:"oauth_config_id"`
+			}
+			require.NoError(t, json.Unmarshal([]byte(respBody), &resp))
+			pending, err := provider.GetPendingMCPClient(resp.OauthConfigID)
+			require.NoError(t, err)
+			require.NotNil(t, pending)
+			assert.Equal(t, "custom-slug", pending.EndpointSlug)
+		})
+	}
+}
+
+// TestRevokeOAuthConfig_UnknownIDIsNotFound pins that deleting an OAuth config
+// id that does not exist answers 404. It was a 500 reading
+// "oauth config not found: %!w(<nil>)".
+func TestRevokeOAuthConfig_UnknownIDIsNotFound(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	cfg := &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, OAuthProvider: provider}
+	h := NewOAuthHandler(provider, nil, cfg, nil)
+	status, respBody := doMCPRequest(t, h.revokeOAuthConfig, fasthttp.MethodDelete, "", "no-such-config", false)
+	require.Equal(t, fasthttp.StatusNotFound, status, respBody)
+	assert.Contains(t, respBody, "oauth config not found")
+	assert.NotContains(t, respBody, "%!w")
+}
+
+// TestAddMCPClient_OAuthURLsCarryBasePath pins that the complete_url and status_url
+// handed back from an OAuth bootstrap are prefixed with server.base_path: an API
+// client behind a prefix-routing proxy follows them as given, so a root-relative
+// path would land outside the prefix and 404. At the domain root they are unchanged.
+func TestAddMCPClient_OAuthURLsCarryBasePath(t *testing.T) {
+	oauth2.SetDiscoveryDialContextForTests(nil)
+	t.Cleanup(func() {
+		oauth2.SetDiscoveryDialContextForTests((&net.Dialer{}).DialContext)
+		require.NoError(t, lib.ApplyMCPOAuthPrivateAllowlist(nil))
+	})
+	require.NoError(t, lib.ApplyMCPOAuthPrivateAllowlist([]string{"127.0.0.1"}))
+
+	for _, tc := range []struct {
+		basePath, wantPrefix string
+	}{
+		{basePath: "", wantPrefix: ""},
+		{basePath: "/bifrost", wantPrefix: "/bifrost"},
+	} {
+		t.Run("base_path="+tc.basePath, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			lib.SetBasePath(tc.basePath)
+			t.Cleanup(func() { lib.SetBasePath("") })
+			server, _ := newLoopbackOAuthMCPServerWithCIMD(t, true)
+			store := newRealOAuth2Store(t)
+			provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+			cfg := &lib.Config{ConfigStore: store, OAuthProvider: provider, ClientConfig: &configstore.ClientConfig{
+				MCPExternalClientURL: schemas.NewSecretVar("https://bifrost.example.com" + tc.basePath),
+			}}
+			h := &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg, nil)}
+
+			var req fasthttp.Request
+			req.Header.SetMethod(fasthttp.MethodPost)
+			req.Header.SetContentType("application/json")
+			req.Header.SetHost("bifrost.example.com")
+			req.SetBodyString(`{"name":"bp_oauth","connection_type":"http","connection_string":"` + server.URL + `/mcp","auth_type":"oauth","oauth_config":{}}`)
+			ctx := initCtx(&req)
+			h.addMCPClient(ctx)
+
+			body := string(ctx.Response.Body())
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), body)
+			var resp struct {
+				OAuthConfigID string `json:"oauth_config_id"`
+				CompleteURL   string `json:"complete_url"`
+				StatusURL     string `json:"status_url"`
+			}
+			require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+			assert.Equal(t, tc.wantPrefix+"/api/mcp/client/"+resp.OAuthConfigID+"/complete-oauth", resp.CompleteURL)
+			assert.True(t, strings.HasPrefix(resp.StatusURL, tc.wantPrefix+"/api/oauth/config/"+resp.OAuthConfigID+"/status"), resp.StatusURL)
+		})
+	}
+}
+
+// TestAddMCPClient_PerUserHeadersKeepsTLSConfig: a per_user_headers client keeps
+// its tls_config. Verification dials with the config handed to the runtime, so
+// without it a server behind a custom CA failed verification and the client
+// could not be created.
+func TestAddMCPClient_PerUserHeadersKeepsTLSConfig(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	const caPEM = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+
+	body, err := json.Marshal(map[string]any{
+		"name": "acme_tls", "connection_type": "http", "connection_string": "https://127.0.0.1:1/mcp",
+		"auth_type": "per_user_headers", "per_user_header_keys": []string{"X-Api-Key"},
+		"user_headers": map[string]string{"X-Api-Key": "sample-key"}, "tools_to_execute": []string{"*"},
+		"tls_config": map[string]any{"ca_cert_pem": caPEM},
+	})
+	require.NoError(t, err)
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(body), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	require.Len(t, mgr.added, 1)
+	require.NotNil(t, mgr.added[0].TLSConfig, "verification and the runtime see the tls_config")
+	assert.Equal(t, caPEM, mgr.added[0].TLSConfig.CACertPEM.GetValue())
+
+	stored, err := h.store.ConfigStore.GetMCPClientByID(context.Background(), mgr.added[0].ID)
+	require.NoError(t, err)
+	require.NotNil(t, stored.TLSConfig, "the stored client keeps the tls_config")
+	assert.Equal(t, caPEM, stored.TLSConfig.CACertPEM.GetValue())
+}
+
+// connectionEditRecorder stands in for the runtime on a client edit: it answers
+// VerifyHeadersConnection with verifyErr and records the configs the pre-flight
+// and the live-client update were handed.
+type connectionEditRecorder struct {
+	*openAPIRecordingManager
+	verifyErr error
+	applyErr  error
+	verified  []*schemas.MCPClientConfig
+	applied   []*schemas.MCPClientConfig
+}
+
+// VerifyHeadersConnection records the config it was asked to try and answers verifyErr.
+func (m *connectionEditRecorder) VerifyHeadersConnection(_ context.Context, c *schemas.MCPClientConfig, _ map[string]string) (*schemas.MCPDiscovery, error) {
+	m.verified = append(m.verified, c)
+	if m.verifyErr != nil {
+		return nil, m.verifyErr
+	}
+	return &schemas.MCPDiscovery{}, nil
+}
+
+// UpdateMCPClientCredentials records the config the live client was updated with and answers applyErr.
+func (m *connectionEditRecorder) UpdateMCPClientCredentials(_ context.Context, _ string, c *schemas.MCPClientConfig) error {
+	m.applied = append(m.applied, c)
+	return m.applyErr
+}
+
+// newConnectionEditHandler creates a sticky headers client of connectionType
+// through the handler, then puts a connectionEditRecorder answering verifyErr
+// in front of the runtime. It returns the handler, the recorder and the id.
+func newConnectionEditHandler(t *testing.T, connectionType string, verifyErr error) (*MCPHandler, *connectionEditRecorder, string) {
+	t.Helper()
+	h, mgr := newOpenAPITestHandler(t)
+	url := "https://upstream.example/mcp"
+	if connectionType == "sse" {
+		url = "https://upstream.example/sse"
+	}
+	createBody, _ := json.Marshal(map[string]any{
+		"name": "edited", "connection_type": connectionType, "connection_string": url, "auth_type": "headers",
+		"headers": map[string]string{"X-Key": "v1"}, "tools_to_execute": []string{"*"},
+	})
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(createBody), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	h.store.MCPConfig.ClientConfigs = mgr.added
+	rec := &connectionEditRecorder{openAPIRecordingManager: mgr, verifyErr: verifyErr}
+	h.mcpManager = rec
+	return h, rec, mgr.added[0].ID
+}
+
+// TestUpdateMCPClient_TLSEditIsTriedThenApplied: a TLS edit on a client with a
+// live connection is tried against the upstream first, then applied to the
+// live client by redialing, as a header edit is. It used to be stored only, so
+// the open connection kept the old settings until something else redialed.
+func TestUpdateMCPClient_TLSEditIsTriedThenApplied(t *testing.T) {
+	h, rec, id := newConnectionEditHandler(t, "http", nil)
+	status, respBody := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"tls_config":{"ca_cert_pem":"PEM-B"}}`, id, false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	require.Len(t, rec.verified, 1, "the edit is tried first")
+	assert.Equal(t, "PEM-B", rec.verified[0].TLSConfig.CACertPEM.GetValue())
+	require.Len(t, rec.applied, 1, "then applied to the live client")
+	assert.Equal(t, "PEM-B", rec.applied[0].TLSConfig.CACertPEM.GetValue())
+}
+
+// TestUpdateMCPClient_RejectedTLSEditChangesNothing: a TLS edit the upstream
+// cannot be reached with is refused with 422 and nothing is stored or applied.
+func TestUpdateMCPClient_RejectedTLSEditChangesNothing(t *testing.T) {
+	h, rec, id := newConnectionEditHandler(t, "http", errors.New("x509: certificate signed by unknown authority"))
+	status, respBody := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"tls_config":{"ca_cert_pem":"PEM-B"}}`, id, false)
+	require.Equal(t, fasthttp.StatusUnprocessableEntity, status, respBody)
+	assert.Contains(t, respBody, "The new TLS settings were rejected by the MCP server, so nothing was changed")
+	assert.Empty(t, rec.updated, "the runtime was not updated")
+	assert.Empty(t, rec.applied, "the live client was not redialed")
+	stored, err := h.store.ConfigStore.GetMCPClientByID(context.Background(), id)
+	require.NoError(t, err)
+	assert.Nil(t, stored.TLSConfig, "the stored client keeps its TLS settings")
+}
+
+// TestUpdateMCPClient_FailedTLSApplyIsStoredAsPartialSuccess: a TLS edit that
+// passed its pre-flight but could not be applied to the live client is still
+// stored, and the answer is 200 with status partial_success rather than a 422.
+func TestUpdateMCPClient_FailedTLSApplyIsStoredAsPartialSuccess(t *testing.T) {
+	h, rec, id := newConnectionEditHandler(t, "http", nil)
+	rec.applyErr = errors.New("dial tcp: connection refused")
+	status, respBody := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"tls_config":{"ca_cert_pem":"PEM-B"}}`, id, false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	var resp struct {
+		Status string `json:"status"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(respBody), &resp))
+	assert.Equal(t, "partial_success", resp.Status, respBody)
+	require.Len(t, rec.applied, 1, "the live client was tried")
+	stored, err := h.store.ConfigStore.GetMCPClientByID(context.Background(), id)
+	require.NoError(t, err)
+	require.NotNil(t, stored.TLSConfig, "the edit is stored")
+	assert.Equal(t, "PEM-B", stored.TLSConfig.CACertPEM.GetValue())
+}
+
+// TestUpdateMCPClient_UnchangedTLSIsNotReapplied: sending TLS settings that dial
+// the same way, as an editor saving an untouched form does, neither tries nor
+// redials anything.
+func TestUpdateMCPClient_UnchangedTLSIsNotReapplied(t *testing.T) {
+	h, rec, id := newConnectionEditHandler(t, "http", nil)
+	status, respBody := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"tls_config":{"insecure_skip_verify":false}}`, id, false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	assert.Empty(t, rec.verified)
+	assert.Empty(t, rec.applied)
+}
+
+// TestUpdateMCPClient_SSEHeaderEditIsTriedThenApplied: a header edit on an SSE
+// client is tried over SSE and then applied to the live client by redialing,
+// as on an HTTP client. SSE clients used to store the new headers only.
+func TestUpdateMCPClient_SSEHeaderEditIsTriedThenApplied(t *testing.T) {
+	h, rec, id := newConnectionEditHandler(t, "sse", nil)
+	status, respBody := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"headers":{"X-Key":"v2"}}`, id, false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	require.Len(t, rec.verified, 1, "the edit is tried first")
+	assert.Equal(t, schemas.MCPConnectionTypeSSE, rec.verified[0].ConnectionType)
+	verifiedKey := rec.verified[0].Headers["X-Key"]
+	assert.Equal(t, "v2", verifiedKey.GetValue())
+	require.Len(t, rec.applied, 1, "then applied to the live client")
+	appliedKey := rec.applied[0].Headers["X-Key"]
+	assert.Equal(t, "v2", appliedKey.GetValue())
+}
+
+// TestUpdateMCPClient_DropsCallersCachedDiscoveriesOfAPerUserDiscoveryClient:
+// an update of a client that keeps a discovery per caller may delete their
+// discoveries (here, by adding a required header key), so every node drops its
+// cached copies. Any other client's update evicts nothing.
+func TestUpdateMCPClient_DropsCallersCachedDiscoveriesOfAPerUserDiscoveryClient(t *testing.T) {
+	for _, perUser := range []bool{true, false} {
+		t.Run(fmt.Sprintf("per_user_discovery=%v", perUser), func(t *testing.T) {
+			h, _ := newOpenAPITestHandler(t)
+			log := &evictionLog{}
+			h.mcpCredentialCacheManager = log
+			client := headersNotesClient()
+			createSignInClient(t, h.store.ConfigStore, client, perUser)
+			h.store.MCPConfig.ClientConfigs = []*schemas.MCPClientConfig{client}
+			if perUser {
+				seedDiscovery(t, h.store.ConfigStore, schemas.MCPAuthModeUser, "alice", client.ID)
+			}
+
+			status, body := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"per_user_header_keys":["x-api-key","x-team"]}`, client.ID, false)
+			require.Equal(t, fasthttp.StatusOK, status, body)
+
+			if perUser {
+				assert.Nil(t, storedDiscovery(h.store.ConfigStore, schemas.MCPAuthModeUser, "alice", client.ID), "callers resubmit their headers, then rediscover")
+				assert.Contains(t, log.logged(), "discoveries of "+client.ID)
+			} else {
+				assert.NotContains(t, log.logged(), "discoveries of "+client.ID)
+			}
+		})
+	}
+}
+
+// TestUpdateMCPClient_TurningPerUserDiscoveryOnOrOff: an update turns
+// per_user_discovery on or off. The store applies what the change deletes,
+// every node drops its cached copies, and the runtime is handed the record of
+// the admin step the store reset. The flag is refused where it cannot apply.
+func TestUpdateMCPClient_TurningPerUserDiscoveryOnOrOff(t *testing.T) {
+	ctx := context.Background()
+	setup := func(t *testing.T, client *schemas.MCPClientConfig, perUser bool) (*MCPHandler, *openAPIRecordingManager, *evictionLog) {
+		h, mgr := newOpenAPITestHandler(t)
+		log := &evictionLog{}
+		h.mcpCredentialCacheManager = log
+		createSignInClient(t, h.store.ConfigStore, client, perUser)
+		h.store.MCPConfig.ClientConfigs = []*schemas.MCPClientConfig{client}
+		return h, mgr, log
+	}
+
+	t.Run("on", func(t *testing.T) {
+		client := headersNotesClient()
+		h, mgr, log := setup(t, client, false)
+		tools := map[string]schemas.ChatTool{"notes-search": {Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "notes-search"}}}
+		require.NoError(t, h.store.ConfigStore.UpdateMCPClientDiscovery(ctx, client.ID, &schemas.MCPDiscovery{Tools: tools}))
+		require.NoError(t, h.store.ConfigStore.UpsertMCPPerUserHeaderCredential(ctx, &configtables.TableMCPPerUserHeaderCredential{MCPClientID: client.ID, AuthMode: "admin", Status: "active", HeadersJSON: `{"x-api-key":"sample"}`}))
+
+		status, body := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"per_user_discovery":true}`, client.ID, false)
+		require.Equal(t, fasthttp.StatusOK, status, body)
+
+		stored, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, client.ID)
+		require.NoError(t, err)
+		assert.Equal(t, schemas.Ptr(true), stored.PerUserDiscovery)
+		assert.Nil(t, stored.DiscoveredTools, "the admin's tools are not kept")
+		admin, err := h.store.ConfigStore.GetAdminMCPPerUserHeaderCredentialsByClientIDs(ctx, []string{client.ID})
+		require.NoError(t, err)
+		assert.Empty(t, admin, "nor is the admin's credential")
+		require.Len(t, mgr.updated, 1)
+		assert.Equal(t, schemas.Ptr(true), mgr.updated[0].PerUserDiscovery)
+		assert.False(t, mgr.updated[0].PendingVerification, "still verified")
+		assert.Contains(t, log.logged(), "tokens of "+client.ID)
+		assert.Contains(t, log.logged(), "header credentials of "+client.ID)
+	})
+
+	t.Run("off", func(t *testing.T) {
+		client := headersNotesClient()
+		h, mgr, log := setup(t, client, true)
+		seedDiscovery(t, h.store.ConfigStore, schemas.MCPAuthModeUser, "alice", client.ID)
+
+		status, body := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"per_user_discovery":false}`, client.ID, false)
+		require.Equal(t, fasthttp.StatusOK, status, body)
+
+		assert.Nil(t, storedDiscovery(h.store.ConfigStore, schemas.MCPAuthModeUser, "alice", client.ID))
+		require.Len(t, mgr.updated, 1)
+		assert.Equal(t, schemas.Ptr(false), mgr.updated[0].PerUserDiscovery)
+		assert.True(t, mgr.updated[0].PendingVerification, "back to its admin step: it stored no tools while the flag was on")
+		assert.Contains(t, log.logged(), "discoveries of "+client.ID)
+	})
+
+	t.Run("refused for a shared auth type", func(t *testing.T) {
+		client := headersNotesClient()
+		client.AuthType = schemas.MCPAuthTypeHeaders
+		client.PerUserHeaderKeys = nil
+		h, mgr, _ := setup(t, client, false)
+
+		status, body := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"per_user_discovery":true}`, client.ID, false)
+		assert.Equal(t, fasthttp.StatusBadRequest, status, body)
+		assert.Contains(t, body, "per_user_discovery is only valid for per-user auth types")
+		stored, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, client.ID)
+		require.NoError(t, err)
+		assert.Equal(t, schemas.Ptr(false), stored.PerUserDiscovery)
+		assert.Empty(t, mgr.updated)
+	})
+
+	// failures are the steps after a flip commits that can fail.
+	failures := []struct {
+		name   string
+		breaks func(h *MCPHandler, mgr *openAPIRecordingManager) (repair func())
+	}{
+		{name: "reading it back", breaks: func(h *MCPHandler, _ *openAPIRecordingManager) func() {
+			store := &readBackFailingStore{ConfigStore: h.store.ConfigStore}
+			h.store.ConfigStore = store
+			return func() { h.store.ConfigStore = store.ConfigStore }
+		}},
+		{name: "the runtime update", breaks: func(h *MCPHandler, mgr *openAPIRecordingManager) func() {
+			mgr.updateErr = errors.New("reconnect already in progress for this client")
+			return func() { mgr.updateErr = nil }
+		}},
+	}
+	// failAFlipOn turns the flag on with one of those steps broken, so the store
+	// holds the flip while the runtime still has the flag off.
+	failAFlipOn := func(t *testing.T, breaks func(h *MCPHandler, mgr *openAPIRecordingManager) func()) (*schemas.MCPClientConfig, *MCPHandler, *openAPIRecordingManager, *evictionLog) {
+		client := headersNotesClient()
+		h, mgr, log := setup(t, client, false)
+		tools := map[string]schemas.ChatTool{"notes-search": {Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "notes-search"}}}
+		require.NoError(t, h.store.ConfigStore.UpdateMCPClientDiscovery(ctx, client.ID, &schemas.MCPDiscovery{Tools: tools}))
+		require.NoError(t, h.store.ConfigStore.UpsertMCPPerUserHeaderCredential(ctx, &configtables.TableMCPPerUserHeaderCredential{MCPClientID: client.ID, AuthMode: "admin", Status: "active", HeadersJSON: `{"x-api-key":"sample"}`}))
+		repair := breaks(h, mgr)
+
+		status, body := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"per_user_discovery":true}`, client.ID, false)
+		require.Equal(t, fasthttp.StatusInternalServerError, status, body)
+		repair()
+		stored, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, client.ID)
+		require.NoError(t, err)
+		assert.Equal(t, schemas.Ptr(true), stored.PerUserDiscovery, "the flip that deleted the admin's credential stands")
+		return client, h, mgr, log
+	}
+
+	// A flip that committed has deleted what the client kept, which no rollback
+	// brings back: a failure after it keeps the flip, and the same request sent
+	// again finds the store already flipped and brings the runtime up to it.
+	t.Run("a failure after the flip commits keeps it", func(t *testing.T) {
+		for _, tc := range failures {
+			t.Run(tc.name, func(t *testing.T) {
+				client, h, mgr, _ := failAFlipOn(t, tc.breaks)
+
+				status, body := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"per_user_discovery":true}`, client.ID, false)
+				require.Equal(t, fasthttp.StatusOK, status, body)
+				require.NotEmpty(t, mgr.updated)
+				last := mgr.updated[len(mgr.updated)-1]
+				assert.Equal(t, schemas.Ptr(true), last.PerUserDiscovery, "sending it again brings the runtime up to the store")
+				assert.False(t, last.PendingVerification, "still verified: no second flip ran over the first")
+			})
+		}
+	})
+
+	// Undoing that flip instead of resending it is a flip too, though the runtime
+	// already has the value asked for: the store holds the other one, so it runs
+	// the reverse flip, and the runtime takes the admin step it reset from the
+	// read-back, with every node's cached discoveries dropped.
+	t.Run("undoing a flip whose runtime update failed runs the reverse flip", func(t *testing.T) {
+		for _, tc := range failures {
+			t.Run(tc.name, func(t *testing.T) {
+				client, h, mgr, log := failAFlipOn(t, tc.breaks)
+
+				status, body := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"per_user_discovery":false}`, client.ID, false)
+				require.Equal(t, fasthttp.StatusOK, status, body)
+				stored, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, client.ID)
+				require.NoError(t, err)
+				assert.Equal(t, schemas.Ptr(false), stored.PerUserDiscovery)
+				assert.True(t, stored.PendingVerification, "the reverse flip reset the admin step")
+				require.NotEmpty(t, mgr.updated)
+				last := mgr.updated[len(mgr.updated)-1]
+				assert.Equal(t, schemas.Ptr(false), last.PerUserDiscovery)
+				assert.True(t, last.PendingVerification, "the runtime awaits verification like the store")
+				assert.Contains(t, log.logged(), "discoveries of "+client.ID)
+			})
+		}
+	})
+}
+
+// An update that leaves per_user_discovery out writes nothing for it. A runtime
+// that missed a committed flip (its read-back or its own update failed) would
+// otherwise hand its stale value to the store, which runs the reverse flip and
+// deletes what callers hold, while the runtime never learns of it.
+func TestUpdateMCPClient_AnUpdateWithoutTheFlagLeavesAStoredFlipAlone(t *testing.T) {
+	ctx := context.Background()
+	h, _ := newOpenAPITestHandler(t)
+	h.mcpCredentialCacheManager = &evictionLog{}
+	client := headersNotesClient()
+	createSignInClient(t, h.store.ConfigStore, client, true)
+	seedDiscovery(t, h.store.ConfigStore, schemas.MCPAuthModeUser, "alice", client.ID)
+	missed := *client
+	missed.PerUserDiscovery = schemas.Ptr(false)
+	h.store.MCPConfig.ClientConfigs = []*schemas.MCPClientConfig{&missed}
+
+	status, body := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"tools_to_execute":["*"]}`, client.ID, false)
+	require.Equal(t, fasthttp.StatusOK, status, body)
+
+	stored, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, client.ID)
+	require.NoError(t, err)
+	assert.Equal(t, schemas.Ptr(true), stored.PerUserDiscovery, "the stored flip stands")
+	assert.NotNil(t, storedDiscovery(h.store.ConfigStore, schemas.MCPAuthModeUser, "alice", client.ID), "and the caller keeps their discovery")
+}
+
+// readBackFailingStore fails every read of an MCP client's config once the
+// client has been written, as a database that drops out right after a commit.
+type readBackFailingStore struct {
+	configstore.ConfigStore
+	written bool
+}
+
+func (s *readBackFailingStore) UpdateMCPClientConfig(ctx context.Context, id string, client *configtables.TableMCPClient) error {
+	if err := s.ConfigStore.UpdateMCPClientConfig(ctx, id, client); err != nil {
+		return err
+	}
+	s.written = true
+	return nil
+}
+
+func (s *readBackFailingStore) GetMCPClientConfigByID(ctx context.Context, id string) (*schemas.MCPClientConfig, error) {
+	if s.written {
+		return nil, errors.New("connection reset by peer")
+	}
+	return s.ConfigStore.GetMCPClientConfigByID(ctx, id)
+}
+
+// TestGetMCPClients_APerUserDiscoveryClientListsTheToolNamesItsCallersSee: a
+// client with per_user_discovery on has no tools of its own, so the list gives
+// the names seen in its callers' discoveries with how many callers see each,
+// none until someone connects, and no credential of its own to show or to
+// project a state from.
+func TestGetMCPClients_APerUserDiscoveryClientListsTheToolNamesItsCallersSee(t *testing.T) {
+	ctx := context.Background()
+	notes := headersNotesClient()
+	notes.PerUserDiscovery = schemas.Ptr(true)
+	wiki := headersNotesClient()
+	wiki.ID, wiki.Name, wiki.PerUserDiscovery = "client-wiki", "wiki", schemas.Ptr(true)
+	h, _ := newVerificationHandler(t, newVerificationRuntime(t, notes, wiki))
+	for _, client := range []*schemas.MCPClientConfig{notes, wiki} {
+		require.NoError(t, h.store.ConfigStore.CreateMCPClientConfig(ctx, client))
+	}
+	tool := func(names ...string) map[string]schemas.ChatTool {
+		tools := make(map[string]schemas.ChatTool, len(names))
+		for _, name := range names {
+			tools[name] = schemas.ChatTool{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: name, Description: schemas.Ptr("seen by one caller")}}
+		}
+		return tools
+	}
+	for _, discovery := range []*configtables.TableMCPPerUserDiscovery{
+		{MCPClientID: notes.ID, AuthMode: "user", UserID: schemas.Ptr("alice"), Tools: tool("search", "read"), DiscoveryHash: "hash-shared"},
+		{MCPClientID: notes.ID, AuthMode: "user", UserID: schemas.Ptr("bob"), Tools: tool("search", "read"), DiscoveryHash: "hash-shared"},
+		{MCPClientID: notes.ID, AuthMode: "vk", VirtualKeyID: schemas.Ptr("vk-1"), Tools: tool("search"), DiscoveryHash: "hash-vk-1"},
+	} {
+		require.NoError(t, h.store.ConfigStore.UpsertMCPPerUserDiscovery(ctx, discovery))
+	}
+	// An admin credential left from before the flag was on is not the client's.
+	require.NoError(t, h.store.ConfigStore.UpsertMCPPerUserHeaderCredential(ctx, &configtables.TableMCPPerUserHeaderCredential{MCPClientID: notes.ID, AuthMode: "admin", Status: "needs_update", HeadersJSON: `{"x-api-key":"old"}`}))
+
+	status, body := doMCPRequest(t, h.getMCPClients, fasthttp.MethodGet, "", "", false)
+	require.Equal(t, fasthttp.StatusOK, status, body)
+	var list struct {
+		Clients []MCPClientResponse `json:"clients"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(body), &list), body)
+	listed := map[string]MCPClientResponse{}
+	for _, client := range list.Clients {
+		listed[client.Config.ID] = client
+	}
+
+	got := listed[notes.ID]
+	assert.Equal(t, []schemas.MCPClientTool{{ChatToolFunction: schemas.ChatToolFunction{Name: "read"}}, {ChatToolFunction: schemas.ChatToolFunction{Name: "search"}}}, got.Tools, "names only, sorted")
+	assert.Equal(t, map[string]int{"search": 3, "read": 2}, got.CallersByTool)
+	assert.Nil(t, got.Credential)
+	assert.Equal(t, schemas.MCPConnectionStateHealthy, got.State, "no credential state is projected")
+	assert.NotContains(t, body, "seen by one caller", "no caller's description is shown")
+
+	assert.Empty(t, listed[wiki.ID].Tools, "no tools until someone connects")
+	assert.Nil(t, listed[wiki.ID].CallersByTool)
+}
+
+// verificationRecorder stands in for the runtime on the admin verification
+// routes: verification finds one tool, and it records whether the result was
+// handed over as tools or as a config recording the verification.
+type verificationRecorder struct {
+	MCPManager
+	mu        sync.Mutex
+	toolsSet  []string
+	verified  []string
+	activated []*schemas.MCPClientConfig // configs handed over as recording the verification
+	added     []*schemas.MCPClientConfig
+}
+
+// verifiedDiscovery is what verification finds: a tool, the server's instructions, a resource and
+// a prompt.
+func (r *verificationRecorder) verifiedDiscovery(config *schemas.MCPClientConfig) (*schemas.MCPDiscovery, error) {
+	name := config.Name + "-search"
+	return &schemas.MCPDiscovery{
+		Tools:        map[string]schemas.ChatTool{name: {Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: name}}},
+		Instructions: "Search before you write.",
+		Resources:    []mcpgo.Resource{mcpgo.NewResource("file:///handbook.md", "handbook")},
+		Prompts:      []mcpgo.Prompt{mcpgo.NewPrompt(config.Name + "-review")},
+	}, nil
+}
+
+func (r *verificationRecorder) VerifyHeadersConnection(_ context.Context, config *schemas.MCPClientConfig, _ map[string]string) (*schemas.MCPDiscovery, error) {
+	return r.verifiedDiscovery(config)
+}
+
+func (r *verificationRecorder) VerifyPerUserOAuthConnection(_ context.Context, config *schemas.MCPClientConfig, _ string) (*schemas.MCPDiscovery, error) {
+	return r.verifiedDiscovery(config)
+}
+
+func (r *verificationRecorder) UpdateMCPClient(context.Context, string, *schemas.MCPClientConfig) error {
+	return nil
+}
+
+func (r *verificationRecorder) AddMCPClient(_ context.Context, config *schemas.MCPClientConfig) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.added = append(r.added, config)
+	return nil
+}
+
+func (r *verificationRecorder) RequiresPerCallConnection(*schemas.MCPClientConfig) bool { return true }
+
+func (r *verificationRecorder) SetClientDiscovery(clientID string, _ *schemas.MCPDiscovery) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.toolsSet = append(r.toolsSet, clientID)
+}
+
+func (r *verificationRecorder) UpdateMCPClientCredentials(_ context.Context, id string, config *schemas.MCPClientConfig) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !config.PendingVerification {
+		r.verified = append(r.verified, id)
+		r.activated = append(r.activated, config)
+	}
+	return nil
+}
+
+// exchangeIdP is an identity-provider integration whose token endpoint is
+// stubbed to issue "exchanged-admin".
+type exchangeIdP struct{ tokenEndpoint string }
+
+func (exchangeIdP) Available() bool { return true }
+
+func (e exchangeIdP) Resolve(context.Context, *schemas.MCPClientConfig) (*schemas.TokenExchangeIdP, error) {
+	return &schemas.TokenExchangeIdP{TokenEndpoint: e.tokenEndpoint, GrantShape: schemas.TokenExchangeGrantRFC8693}, nil
+}
+
+func (exchangeIdP) StoredSubjectToken(context.Context, string, bool) (string, error) {
+	return "", errors.New("no stored sign-in")
+}
+
+// recordFailingStore is the real store with recording a verification failing.
+type recordFailingStore struct {
+	configstore.ConfigStore
+}
+
+func (recordFailingStore) ClearMCPClientPendingVerification(context.Context, string) error {
+	return errors.New("database is locked")
+}
+
+// newVerificationHandler returns an MCP handler over a real store, with the
+// providers the verification routes use and runtime as its engine.
+func newVerificationHandler(t *testing.T, runtime *bifrost.Bifrost) (*MCPHandler, *verificationRecorder) {
+	t.Helper()
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
+	provider := oauth2.NewOAuth2Provider(store, logger)
+	tokens := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "exchanged-admin", "issued_token_type": "urn:ietf:params:oauth:token-type:access_token", "token_type": "Bearer", "expires_in": 3600})
+	}))
+	t.Cleanup(tokens.Close)
+	provider.SetTokenExchangeIdPResolver(exchangeIdP{tokenEndpoint: tokens.URL})
+	cfg := &lib.Config{
+		ConfigStore:        store,
+		ClientConfig:       &configstore.ClientConfig{},
+		MCPConfig:          &schemas.MCPConfig{},
+		OAuthProvider:      provider,
+		MCPHeadersProvider: mcp_headers.NewProvider(store, logger),
+	}
+	recorder := &verificationRecorder{}
+	h := &MCPHandler{store: cfg, mcpManager: recorder, client: runtime, mcpCredentialCacheManager: &evictionLog{}}
+	h.oauthHandler = NewOAuthHandler(provider, runtime, cfg, recorder)
+	return h, recorder
+}
+
+// newVerificationRuntime returns an engine holding clients.
+func newVerificationRuntime(t *testing.T, clients ...*schemas.MCPClientConfig) *bifrost.Bifrost {
+	t.Helper()
+	runtime, err := bifrost.Init(t.Context(), schemas.BifrostConfig{
+		Account:   wsSpanTestAccount{},
+		Logger:    bifrost.NewDefaultLogger(schemas.LogLevelError),
+		MCPConfig: &schemas.MCPConfig{ClientConfigs: clients},
+	})
+	require.NoError(t, err)
+	t.Cleanup(runtime.Shutdown)
+	runtime.ConnectConfiguredMCPClients(t.Context(), nil)
+	return runtime
+}
+
+// withInboundBearer has the request carry the admin's identity-provider token,
+// as the auth layer sets it.
+func withInboundBearer(t *testing.T, ctx *fasthttp.RequestCtx, token string) {
+	t.Helper()
+	bctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bctx.SetValue(schemas.BifrostContextKeyMCPInboundBearer, token)
+	ctx.SetUserValue(lib.FastHTTPUserValueBifrostContext, bctx)
+	ctx.SetUserValue(lib.FastHTTPUserValueBifrostCancel, context.CancelFunc(func() {}))
+}
+
+// TestAdminVerification_RecordsTheStepAndKeepsOnlyWhatTheClientUses runs each
+// admin verification route on a client still pending it. Every route records
+// the step on the row. A client without per_user_discovery keeps the admin's
+// credential and the tools found; a client with it keeps neither, and the
+// runtime is handed the config recording the step rather than tools.
+func TestAdminVerification_RecordsTheStepAndKeepsOnlyWhatTheClientUses(t *testing.T) {
+	ctx := context.Background()
+	for _, perUser := range []bool{false, true} {
+		t.Run(fmt.Sprintf("per_user_headers/per_user_discovery=%v", perUser), func(t *testing.T) {
+			client := &schemas.MCPClientConfig{
+				ID: "client-notes", Name: "notes", ConnectionType: schemas.MCPConnectionTypeHTTP,
+				ConnectionString: schemas.NewSecretVar("http://upstream.invalid/mcp"), AuthType: schemas.MCPAuthTypePerUserHeaders,
+				PerUserHeaderKeys: []string{"x-api-key"}, ToolsToExecute: []string{"*"}, PendingVerification: true, PerUserDiscovery: schemas.Ptr(perUser),
+			}
+			h, recorder := newVerificationHandler(t, newVerificationRuntime(t, client))
+			require.NoError(t, h.store.ConfigStore.CreateMCPClientConfig(ctx, client))
+
+			status, body := doMCPRequest(t, h.verifyMCPClientHeaders, fasthttp.MethodPost, `{"user_headers":{"x-api-key":"sample"}}`, client.ID, false)
+			require.Equal(t, fasthttp.StatusOK, status, body)
+
+			stored, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, client.ID)
+			require.NoError(t, err)
+			assert.False(t, stored.PendingVerification, "the step is recorded")
+			admin, err := h.store.ConfigStore.GetAdminMCPPerUserHeaderCredentialsByClientIDs(ctx, []string{client.ID})
+			require.NoError(t, err)
+			if perUser {
+				assert.Nil(t, stored.DiscoveredTools)
+				assert.Nil(t, stored.DiscoveredResources, "nor the resources and prompts the admin's credential found")
+				assert.Nil(t, stored.DiscoveredPrompts)
+				assert.Empty(t, stored.DiscoveredInstructions)
+				require.Len(t, recorder.activated, 1)
+				assert.Nil(t, recorder.activated[0].DiscoveredResources, "the runtime is not handed them either")
+				assert.Nil(t, recorder.activated[0].DiscoveredPrompts)
+				assert.Empty(t, recorder.activated[0].DiscoveredInstructions)
+				assert.Empty(t, admin, "the admin's sample headers are not kept")
+				assert.Equal(t, []string{client.ID}, recorder.verified)
+				assert.Empty(t, recorder.toolsSet)
+			} else {
+				assert.Contains(t, stored.DiscoveredTools, "notes-search")
+				assert.Len(t, admin, 1)
+				assert.Equal(t, []string{client.ID}, recorder.toolsSet)
+				assert.Empty(t, recorder.verified)
+			}
+		})
+
+		t.Run(fmt.Sprintf("token_exchange/per_user_discovery=%v", perUser), func(t *testing.T) {
+			h, recorder := newVerificationHandler(t, newVerificationRuntime(t))
+			client := &schemas.MCPClientConfig{
+				ID: "client-jira", Name: "jira", ConnectionType: schemas.MCPConnectionTypeHTTP,
+				ConnectionString: schemas.NewSecretVar("http://upstream.invalid/mcp"), AuthType: schemas.MCPAuthTypeTokenExchange,
+				TokenExchange:  &schemas.MCPTokenExchangeConfig{Audience: "api://jira", ClientID: schemas.NewSecretVar("exchange-app")},
+				ToolsToExecute: []string{"*"}, PendingVerification: true, PerUserDiscovery: schemas.Ptr(perUser),
+			}
+			require.NoError(t, h.store.ConfigStore.CreateMCPClientConfig(ctx, client))
+
+			var req fasthttp.Request
+			req.Header.SetMethod(fasthttp.MethodPost)
+			rctx := initCtx(&req)
+			rctx.SetUserValue("id", client.ID)
+			withInboundBearer(t, rctx, "admin-idp-token")
+			h.verifyMCPClientExchange(rctx)
+			require.Equal(t, fasthttp.StatusOK, rctx.Response.StatusCode(), string(rctx.Response.Body()))
+
+			stored, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, client.ID)
+			require.NoError(t, err)
+			assert.False(t, stored.PendingVerification, "the step is recorded")
+			admin, err := h.store.ConfigStore.GetAdminOauthTokenByMCPClientID(ctx, client.ID)
+			require.NoError(t, err)
+			if perUser {
+				assert.Nil(t, stored.DiscoveredTools)
+				assert.Nil(t, stored.DiscoveredResources, "nor the resources and prompts the admin's credential found")
+				assert.Nil(t, stored.DiscoveredPrompts)
+				assert.Empty(t, stored.DiscoveredInstructions)
+				require.Len(t, recorder.activated, 1)
+				assert.Nil(t, recorder.activated[0].DiscoveredResources, "the runtime is not handed them either")
+				assert.Nil(t, recorder.activated[0].DiscoveredPrompts)
+				assert.Empty(t, recorder.activated[0].DiscoveredInstructions)
+				assert.Nil(t, admin, "the admin's exchanged token is not kept")
+				assert.Equal(t, []string{client.ID}, recorder.verified)
+				assert.Empty(t, recorder.toolsSet)
+			} else {
+				assert.Contains(t, stored.DiscoveredTools, "jira-search")
+				assert.NotNil(t, admin)
+				assert.Equal(t, []string{client.ID}, recorder.toolsSet)
+				assert.Empty(t, recorder.verified)
+			}
+		})
+
+		t.Run(fmt.Sprintf("per_user_oauth/per_user_discovery=%v", perUser), func(t *testing.T) {
+			h, recorder := newVerificationHandler(t, newVerificationRuntime(t))
+			require.NoError(t, h.store.ConfigStore.CreateOauthConfig(ctx, &configtables.TableOauthConfig{
+				ID: "oauth-wiki", ClientID: schemas.NewSecretVar("bifrost"), TokenURL: "https://idp.invalid/token",
+				AuthorizeURL: "https://idp.invalid/authorize", RedirectURI: "http://localhost/api/oauth/callback", Status: "authorized",
+			}))
+			client := &schemas.MCPClientConfig{
+				ID: "client-wiki", Name: "wiki", ConnectionType: schemas.MCPConnectionTypeHTTP,
+				ConnectionString: schemas.NewSecretVar("http://upstream.invalid/mcp"), AuthType: schemas.MCPAuthTypePerUserOauth,
+				OauthConfigID: schemas.Ptr("oauth-wiki"), PendingOAuthConfig: &schemas.OAuth2Config{}, ToolsToExecute: []string{"*"},
+				// Without the flag the stash alone marks it pending, as a client
+				// created by a node from before the record would be.
+				PendingVerification: perUser, PerUserDiscovery: schemas.Ptr(perUser),
+			}
+			require.NoError(t, h.store.ConfigStore.CreateMCPClientConfig(ctx, client))
+			// The admin's sign-in, as the OAuth callback stores it.
+			require.NoError(t, h.store.ConfigStore.CreateOauthToken(ctx, &configtables.TableMCPOauthToken{
+				ID: "token-admin", AuthMode: "shared", OauthConfigID: "oauth-wiki", Status: "active", AccessToken: "admin-token", TokenType: "Bearer",
+			}))
+
+			status, body := doMCPRequest(t, h.completeMCPClientOAuth, fasthttp.MethodPost, "", "oauth-wiki", false)
+			require.Equal(t, fasthttp.StatusOK, status, body)
+
+			stored, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, client.ID)
+			require.NoError(t, err)
+			assert.False(t, stored.PendingVerification, "the step is recorded")
+			assert.Nil(t, stored.PendingOAuthConfig)
+			admin, err := h.store.ConfigStore.GetAdminOauthTokenByMCPClientID(ctx, client.ID)
+			require.NoError(t, err)
+			staging, err := h.store.ConfigStore.GetSharedOauthTokenByConfigID(ctx, "oauth-wiki")
+			require.NoError(t, err)
+			assert.Nil(t, staging, "the sign-in is promoted or deleted, never left behind")
+			if perUser {
+				assert.Nil(t, stored.DiscoveredTools)
+				assert.Nil(t, stored.DiscoveredResources, "nor the resources and prompts the admin's credential found")
+				assert.Nil(t, stored.DiscoveredPrompts)
+				assert.Empty(t, stored.DiscoveredInstructions)
+				require.Len(t, recorder.activated, 1)
+				assert.Nil(t, recorder.activated[0].DiscoveredResources, "the runtime is not handed them either")
+				assert.Nil(t, recorder.activated[0].DiscoveredPrompts)
+				assert.Empty(t, recorder.activated[0].DiscoveredInstructions)
+				assert.Nil(t, admin, "the admin's sign-in is not kept")
+				assert.Equal(t, []string{client.ID}, recorder.verified)
+				assert.Empty(t, recorder.toolsSet)
+			} else {
+				assert.Contains(t, stored.DiscoveredTools, "wiki-search")
+				assert.NotNil(t, admin)
+				assert.Equal(t, []string{client.ID}, recorder.toolsSet)
+				assert.Empty(t, recorder.verified)
+			}
+		})
+	}
+}
+
+// TestReauthorizeMCPClient_RefusesAClientStillPendingVerification: a client
+// still needing its first sign-in is sent to initiate-verification.
+func TestReauthorizeMCPClient_RefusesAClientStillPendingVerification(t *testing.T) {
+	f := newReregisterFixture(t)
+	ctx := context.Background()
+	row, err := f.store.GetMCPClientByID(ctx, reregisterMCPClientID)
+	require.NoError(t, err)
+	require.NoError(t, f.store.DB().Model(row).Updates(map[string]any{"pending_verification": true, "pending_oauth_config_json": `{}`}).Error)
+
+	status, _, raw := f.call(t, f.handler.reauthorizeMCPClient)
+	assert.Equal(t, fasthttp.StatusBadRequest, status, raw)
+	assert.Contains(t, raw, "use initiate-verification instead")
+}
+
+// TestAddMCPClient_TokenExchangeWithoutTheAdminsTokenIsStoredPending: with no
+// identity-provider token to verify as, the client is created pending its admin
+// step, and that is what the row and the runtime are given.
+func TestAddMCPClient_TokenExchangeWithoutTheAdminsTokenIsStoredPending(t *testing.T) {
+	h, recorder := newVerificationHandler(t, newVerificationRuntime(t))
+	ctx := context.Background()
+	body := `{"name":"jira","connection_type":"http","connection_string":"http://upstream.invalid/mcp","auth_type":"token_exchange",` +
+		`"token_exchange":{"audience":"api://jira","client_id":"exchange-app"},"tools_to_execute":["*"]}`
+	// A deployment that supports token exchange, and no identity-provider token
+	// on the request.
+	bctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bctx.SetValue(schemas.BifrostContextKeyIsEnterprise, true)
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodPost)
+	req.Header.SetContentType("application/json")
+	req.SetBodyString(body)
+	rctx := initCtx(&req)
+	rctx.SetUserValue(lib.FastHTTPUserValueBifrostContext, bctx)
+	rctx.SetUserValue(lib.FastHTTPUserValueBifrostCancel, context.CancelFunc(func() {}))
+	h.addMCPClient(rctx)
+	require.Equal(t, fasthttp.StatusOK, rctx.Response.StatusCode(), string(rctx.Response.Body()))
+
+	require.Len(t, recorder.added, 1)
+	assert.True(t, recorder.added[0].PendingVerification, "the runtime parks it")
+	stored, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, recorder.added[0].ID)
+	require.NoError(t, err)
+	assert.True(t, stored.PendingVerification, "and the row records it")
+}
+
+// TestVerifyMCPClientHeaders_AFailedRecordFailsOnlyAClientReadFromIt: a client
+// without per_user_discovery is read from the tools verification stores, so a
+// failure to also record the step is logged and the verification succeeds. A
+// client with it is read from the record alone, so the same failure fails the
+// request, leaving the client pending and the retry open.
+func TestVerifyMCPClientHeaders_AFailedRecordFailsOnlyAClientReadFromIt(t *testing.T) {
+	ctx := context.Background()
+	for _, perUser := range []bool{false, true} {
+		t.Run(fmt.Sprintf("per_user_discovery=%v", perUser), func(t *testing.T) {
+			client := &schemas.MCPClientConfig{
+				ID: "client-notes", Name: "notes", ConnectionType: schemas.MCPConnectionTypeHTTP,
+				ConnectionString: schemas.NewSecretVar("http://upstream.invalid/mcp"), AuthType: schemas.MCPAuthTypePerUserHeaders,
+				PerUserHeaderKeys: []string{"x-api-key"}, ToolsToExecute: []string{"*"}, PendingVerification: true, PerUserDiscovery: schemas.Ptr(perUser),
+			}
+			h, recorder := newVerificationHandler(t, newVerificationRuntime(t, client))
+			require.NoError(t, h.store.ConfigStore.CreateMCPClientConfig(ctx, client))
+			h.store.ConfigStore = recordFailingStore{h.store.ConfigStore}
+
+			status, body := doMCPRequest(t, h.verifyMCPClientHeaders, fasthttp.MethodPost, `{"user_headers":{"x-api-key":"sample"}}`, client.ID, false)
+
+			stored, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, client.ID)
+			require.NoError(t, err)
+			if perUser {
+				assert.Equal(t, fasthttp.StatusInternalServerError, status, body)
+				assert.True(t, stored.PendingVerification, "still pending, so a retry re-runs verification")
+				assert.Empty(t, recorder.verified)
+			} else {
+				assert.Equal(t, fasthttp.StatusOK, status, body)
+				assert.False(t, stored.PendingVerification, "the stored tools record the step")
+				assert.Equal(t, []string{client.ID}, recorder.toolsSet)
+			}
+		})
+	}
+}
+
+// TestAdminCredentialRoutes_RefuseAVerifiedPerUserDiscoveryClient: a verified
+// client with per_user_discovery on keeps no admin credential, so the routes that
+// refresh one refuse it: reauthorize, and verify-headers or verify-exchange once
+// the client is verified. Reregister still runs, since callers need the new
+// client registration it makes.
+func TestAdminCredentialRoutes_RefuseAVerifiedPerUserDiscoveryClient(t *testing.T) {
+	ctx := context.Background()
+	t.Run("reauthorize", func(t *testing.T) {
+		f := newReregisterFixture(t)
+		row, err := f.store.GetMCPClientByID(ctx, reregisterMCPClientID)
+		require.NoError(t, err)
+		require.NoError(t, f.store.DB().Model(row).Updates(map[string]any{"auth_type": string(schemas.MCPAuthTypePerUserOauth), "per_user_discovery": true}).Error)
+
+		status, _, raw := f.call(t, f.handler.reauthorizeMCPClient)
+		assert.Equal(t, fasthttp.StatusBadRequest, status, raw)
+		assert.Contains(t, raw, "keeps no admin credential")
+
+		status, _, raw = f.call(t, f.handler.reregisterMCPClient)
+		assert.Equal(t, fasthttp.StatusOK, status, raw)
+	})
+
+	t.Run("verify-headers", func(t *testing.T) {
+		h, recorder := newVerificationHandler(t, newVerificationRuntime(t))
+		client := headersNotesClient()
+		createSignInClient(t, h.store.ConfigStore, client, true)
+
+		status, body := doMCPRequest(t, h.verifyMCPClientHeaders, fasthttp.MethodPost, `{"user_headers":{"x-api-key":"sample"}}`, client.ID, false)
+		assert.Equal(t, fasthttp.StatusBadRequest, status, body)
+		assert.Contains(t, body, "keeps no admin credential")
+		assert.Empty(t, recorder.verified)
+	})
+
+	t.Run("verify-exchange", func(t *testing.T) {
+		h, recorder := newVerificationHandler(t, newVerificationRuntime(t))
+		client := &schemas.MCPClientConfig{
+			ID: "client-jira", Name: "jira", ConnectionType: schemas.MCPConnectionTypeHTTP,
+			ConnectionString: schemas.NewSecretVar("http://upstream.invalid/mcp"), AuthType: schemas.MCPAuthTypeTokenExchange,
+			TokenExchange:  &schemas.MCPTokenExchangeConfig{Audience: "api://jira", ClientID: schemas.NewSecretVar("exchange-app")},
+			ToolsToExecute: []string{"*"}, PerUserDiscovery: schemas.Ptr(true),
+		}
+		require.NoError(t, h.store.ConfigStore.CreateMCPClientConfig(ctx, client))
+
+		var req fasthttp.Request
+		req.Header.SetMethod(fasthttp.MethodPost)
+		rctx := initCtx(&req)
+		rctx.SetUserValue("id", client.ID)
+		withInboundBearer(t, rctx, "admin-idp-token")
+		h.verifyMCPClientExchange(rctx)
+		assert.Equal(t, fasthttp.StatusBadRequest, rctx.Response.StatusCode(), string(rctx.Response.Body()))
+		assert.Contains(t, string(rctx.Response.Body()), "keeps no admin credential")
+		assert.Empty(t, recorder.verified)
+	})
+}
+
+// TestCompleteMCPClientOAuth_ARepairSignInOfAPerUserDiscoveryClientKeepsNothing:
+// an admin sign-in completing for a verified client with per_user_discovery on
+// (after a new client registration, say) only verifies it: the sign-in is
+// deleted and nothing found with it is kept.
+func TestCompleteMCPClientOAuth_ARepairSignInOfAPerUserDiscoveryClientKeepsNothing(t *testing.T) {
+	ctx := context.Background()
+	h, recorder := newVerificationHandler(t, newVerificationRuntime(t))
+	require.NoError(t, h.store.ConfigStore.CreateOauthConfig(ctx, &configtables.TableOauthConfig{
+		ID: "oauth-wiki", ClientID: schemas.NewSecretVar("bifrost"), TokenURL: "https://idp.invalid/token",
+		AuthorizeURL: "https://idp.invalid/authorize", RedirectURI: "http://localhost/api/oauth/callback", Status: "authorized",
+	}))
+	require.NoError(t, h.store.ConfigStore.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID: "client-wiki", Name: "wiki", ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("http://upstream.invalid/mcp"), AuthType: schemas.MCPAuthTypePerUserOauth,
+		OauthConfigID: schemas.Ptr("oauth-wiki"), ToolsToExecute: []string{"*"}, PerUserDiscovery: schemas.Ptr(true),
+	}))
+	require.NoError(t, h.store.ConfigStore.CreateOauthToken(ctx, &configtables.TableMCPOauthToken{
+		ID: "token-admin", AuthMode: "shared", OauthConfigID: "oauth-wiki", Status: "active", AccessToken: "admin-token", TokenType: "Bearer",
+	}))
+
+	status, body := doMCPRequest(t, h.completeMCPClientOAuth, fasthttp.MethodPost, "", "oauth-wiki", false)
+	require.Equal(t, fasthttp.StatusOK, status, body)
+
+	staging, err := h.store.ConfigStore.GetSharedOauthTokenByConfigID(ctx, "oauth-wiki")
+	require.NoError(t, err)
+	assert.Nil(t, staging, "the sign-in is deleted")
+	admin, err := h.store.ConfigStore.GetAdminOauthTokenByMCPClientID(ctx, "client-wiki")
+	require.NoError(t, err)
+	assert.Nil(t, admin, "and not kept as the admin credential")
+	stored, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, "client-wiki")
+	require.NoError(t, err)
+	assert.Nil(t, stored.DiscoveredTools)
+	assert.Empty(t, recorder.toolsSet)
+}
+
+// assertKeepsNoDiscovery checks config keeps nothing the admin's verification found: no tools,
+// instructions, resources or prompts.
+func assertKeepsNoDiscovery(t *testing.T, config *schemas.MCPClientConfig) {
+	t.Helper()
+	assert.Nil(t, config.DiscoveredTools)
+	assert.Empty(t, config.DiscoveredInstructions)
+	assert.Nil(t, config.DiscoveredResources)
+	assert.Nil(t, config.DiscoveredResourceTemplates)
+	assert.Nil(t, config.DiscoveredPrompts)
+}
+
+// TestAddMCPClient_WithPerUserDiscoveryKeepsNothingFromVerification: a client
+// created with per_user_discovery on is verified the same way, and keeps neither
+// the tools found nor the admin's credential. The flag is refused where it
+// cannot apply.
+func TestAddMCPClient_WithPerUserDiscoveryKeepsNothingFromVerification(t *testing.T) {
+	ctx := context.Background()
+	create := func(t *testing.T, h *MCPHandler, body string, values map[schemas.BifrostContextKey]any) (int, string) {
+		t.Helper()
+		bctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		for key, value := range values {
+			bctx.SetValue(key, value)
+		}
+		var req fasthttp.Request
+		req.Header.SetMethod(fasthttp.MethodPost)
+		req.Header.SetContentType("application/json")
+		req.SetBodyString(body)
+		rctx := initCtx(&req)
+		rctx.SetUserValue(lib.FastHTTPUserValueBifrostContext, bctx)
+		rctx.SetUserValue(lib.FastHTTPUserValueBifrostCancel, context.CancelFunc(func() {}))
+		h.addMCPClient(rctx)
+		return rctx.Response.StatusCode(), string(rctx.Response.Body())
+	}
+
+	t.Run("per_user_headers", func(t *testing.T) {
+		h, recorder := newVerificationHandler(t, newVerificationRuntime(t))
+		status, body := create(t, h, `{"name":"notes","connection_type":"http","connection_string":"http://upstream.invalid/mcp","auth_type":"per_user_headers",`+
+			`"per_user_header_keys":["x-api-key"],"user_headers":{"x-api-key":"sample"},"tools_to_execute":["*"],"per_user_discovery":true}`, nil)
+		require.Equal(t, fasthttp.StatusOK, status, body)
+
+		require.Len(t, recorder.added, 1)
+		assert.Equal(t, schemas.Ptr(true), recorder.added[0].PerUserDiscovery)
+		assertKeepsNoDiscovery(t, recorder.added[0])
+		stored, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, recorder.added[0].ID)
+		require.NoError(t, err)
+		assert.Equal(t, schemas.Ptr(true), stored.PerUserDiscovery)
+		assertKeepsNoDiscovery(t, stored)
+		assert.False(t, stored.PendingVerification, "verified")
+		_, err = h.store.MCPHeadersProvider.GetCredentialByMode(ctx, schemas.MCPAuthModeAdmin, "", recorder.added[0].ID)
+		assert.Error(t, err, "the admin's sample headers are not kept as a credential")
+	})
+
+	t.Run("token_exchange", func(t *testing.T) {
+		h, recorder := newVerificationHandler(t, newVerificationRuntime(t))
+		status, body := create(t, h, `{"name":"jira","connection_type":"http","connection_string":"http://upstream.invalid/mcp","auth_type":"token_exchange",`+
+			`"token_exchange":{"audience":"api://jira","client_id":"exchange-app"},"tools_to_execute":["*"],"per_user_discovery":true}`,
+			map[schemas.BifrostContextKey]any{schemas.BifrostContextKeyIsEnterprise: true, schemas.BifrostContextKeyMCPInboundBearer: "admin-idp-token"})
+		require.Equal(t, fasthttp.StatusOK, status, body)
+
+		require.Len(t, recorder.added, 1)
+		assertKeepsNoDiscovery(t, recorder.added[0])
+		stored, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, recorder.added[0].ID)
+		require.NoError(t, err)
+		assert.Equal(t, schemas.Ptr(true), stored.PerUserDiscovery)
+		assertKeepsNoDiscovery(t, stored)
+		assert.False(t, stored.PendingVerification, "verified")
+		admin, err := h.store.ConfigStore.GetAdminOauthTokenByMCPClientID(ctx, recorder.added[0].ID)
+		require.NoError(t, err)
+		assert.Nil(t, admin, "the admin's exchanged token is not kept")
+	})
+
+	t.Run("per_user_oauth", func(t *testing.T) {
+		h, _ := newVerificationHandler(t, newVerificationRuntime(t))
+		status, body := create(t, h, `{"name":"wiki","connection_type":"http","connection_string":"http://upstream.invalid/mcp","auth_type":"per_user_oauth",`+
+			`"oauth_config":{"client_id":"bifrost","authorize_url":"https://idp.invalid/authorize","token_url":"https://idp.invalid/token"},"tools_to_execute":["*"],"per_user_discovery":true}`, nil)
+		require.Equal(t, fasthttp.StatusOK, status, body)
+
+		// Created once the admin's sign-in completes, from the config kept until then.
+		var started struct {
+			OauthConfigID string `json:"oauth_config_id"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(body), &started))
+		pending, err := h.oauthHandler.GetPendingMCPClient(started.OauthConfigID)
+		require.NoError(t, err)
+		require.NotNil(t, pending)
+		assert.Equal(t, schemas.Ptr(true), pending.PerUserDiscovery)
+	})
+
+	t.Run("refused for a shared auth type", func(t *testing.T) {
+		h, recorder := newVerificationHandler(t, newVerificationRuntime(t))
+		status, body := create(t, h, `{"name":"notes","connection_type":"http","connection_string":"http://upstream.invalid/mcp","auth_type":"headers",`+
+			`"tools_to_execute":["*"],"per_user_discovery":true}`, nil)
+		assert.Equal(t, fasthttp.StatusBadRequest, status, body)
+		assert.Contains(t, body, "per_user_discovery is only valid for per-user auth types")
+		assert.Empty(t, recorder.added)
+	})
 }

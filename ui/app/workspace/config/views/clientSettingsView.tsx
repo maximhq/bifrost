@@ -1,3 +1,5 @@
+import BetaBadge from "@/components/betaBadge";
+import { LanguageSelect } from "@/components/language-switcher";
 import PageTitle from "@/components/pageTitle";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
@@ -69,6 +71,7 @@ function largePayloadConfigEqual(a: LargePayloadConfig, b: LargePayloadConfig): 
 
 export default function ClientSettingsView() {
 	const { t } = useTranslation("config");
+	const { t: tCommon } = useTranslation("common");
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
 	const [droppedRequests, setDroppedRequests] = useState<number>(0);
 	const { data: droppedRequestsData } = useGetDroppedRequestsQuery();
@@ -307,6 +310,18 @@ export default function ClientSettingsView() {
 			<PageTitle title={t("clientSettings.title")}>{t("clientSettings.description")}</PageTitle>
 
 			<div className="space-y-4">
+				{/* Language: per-browser preference, applied immediately (not part of Save) */}
+				<div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
+					<div className="space-y-0.5">
+						<label htmlFor="client-settings-language" className="flex items-center gap-2 text-sm font-medium">
+							{tCommon("language")}
+							<BetaBadge />
+						</label>
+						<p className="text-muted-foreground text-sm">{t("clientSettings.languageHelp")}</p>
+					</div>
+					<LanguageSelect id="client-settings-language" />
+				</div>
+
 				{/* Drop Excess Requests */}
 				<div className="flex items-center justify-between space-x-2">
 					<div className="space-y-0.5">
@@ -373,19 +388,14 @@ export default function ClientSettingsView() {
 				<div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
 					<div className="space-y-0.5">
 						<label htmlFor="extra-fields-placement" className="text-sm font-medium">
-							Extra Fields Placement
+							{t("clientSettings.extraFieldsPlacement")}
 						</label>
 						<p className="text-muted-foreground text-sm">
-							Where inference responses carry Bifrost&apos;s <b>extra_fields</b> metadata. <b>Body</b> keeps the extra_fields object in the
-							JSON response. <b>Headers</b> removes it from the body and from every streaming chunk, and sends its scalar fields as{" "}
-							<b>x-bifrost-*</b> response headers.
+							<Trans t={t} i18nKey="clientSettings.extraFieldsPlacementHelp" components={{ b: <b /> }} />
 						</p>
 						{(localConfig.extra_fields_placement ?? "body") === "headers" && (
 							<p className="text-muted-foreground text-sm" data-testid="client-settings-extra-fields-placement-dropped-note">
-								In Headers mode these fields are dropped and not sent anywhere: raw request, raw response, routing metadata, guardrail
-								debug, parse errors, and on errors key statuses, billed usage and MCP auth details. Streaming responses only carry what is
-								known before the first chunk (routing, fallback, cache lookup), so per-chunk latency, chunk index and final totals are
-								dropped too.
+								{t("clientSettings.extraFieldsPlacementDroppedNote")}
 							</p>
 						)}
 					</div>
@@ -405,10 +415,10 @@ export default function ClientSettingsView() {
 						</SelectTrigger>
 						<SelectContent>
 							<SelectItem value="body" data-testid="client-settings-extra-fields-placement-option-body">
-								Body
+								{t("clientSettings.extraFieldsBody")}
 							</SelectItem>
 							<SelectItem value="headers" data-testid="client-settings-extra-fields-placement-option-headers">
-								Headers
+								{t("clientSettings.extraFieldsHeaders")}
 							</SelectItem>
 						</SelectContent>
 					</Select>
@@ -552,10 +562,7 @@ export default function ClientSettingsView() {
 						</AccordionTrigger>
 						<AccordionContent>
 							<p className="text-sm">{t("clientSettings.securityNoteBody")}</p>
-							<p className="text-muted-foreground mt-1 font-mono text-xs">
-								proxy-authorization, cookie, host, content-length, connection, transfer-encoding, x-api-key, x-goog-api-key, x-bf-api-key,
-								x-bf-vk
-							</p>
+							<p className="text-muted-foreground mt-1 font-mono text-xs">{SECURITY_HEADERS.join(", ")}</p>
 						</AccordionContent>
 					</AccordionItem>
 				</Accordion>
@@ -675,8 +682,10 @@ export default function ClientSettingsView() {
 							</span>
 						</TooltipTrigger>
 						<TooltipContent>
-							Remove security header
-							{invalidSecurityHeaders.length > 1 ? "s" : ""}: {invalidSecurityHeaders.join(", ")}
+							{t("clientSettings.removeSecurityHeader", {
+								count: invalidSecurityHeaders.length,
+								headers: invalidSecurityHeaders.join(", "),
+							})}
 						</TooltipContent>
 					</Tooltip>
 				) : (

@@ -48,10 +48,11 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { toast } from "sonner";
+import type { ParseKeys } from "i18next";
 import { Trans, useTranslation } from "react-i18next";
 import { formatFileSize } from "./helpers";
 
-const FILE_SOURCE_OPTIONS = [
+const FILE_SOURCE_OPTIONS: { value: string; labelKey: ParseKeys<"config"> }[] = [
 	{ value: "text", labelKey: "skillsRepo.viaText" },
 	{ value: "url", labelKey: "skillsRepo.viaUrl" },
 	{ value: "dataurl", labelKey: "skillsRepo.viaDataUrl" },
@@ -758,7 +759,7 @@ export function FileManagerSection({
 
 				const fullPath = joinPath(targetFolderPath, relativePath);
 				if (files.some((f) => f.path === fullPath) || entries.some((e) => e.path === fullPath))
-					throw new Error(`${fullPath}: a file already exists at that path`);
+					throw new Error(`${fullPath}: ${t("skillsRepo.fileExists")}`);
 				const pathErr = validateFilePath(fullPath);
 				if (pathErr) throw new Error(`${fullPath}: ${pathErr}`);
 				const sizeErr = validateSkillFileSize(file.size);

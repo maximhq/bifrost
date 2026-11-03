@@ -27,9 +27,7 @@ import { ModelProvider } from "@/lib/types/config";
 import { DBKey } from "@/lib/types/governance";
 import { z } from "zod";
 
-function complexityT(key: string, opts?: Record<string, unknown>) {
-	return i18n.t(`routing.complexityUi.${key}`, { ns: "models", ...opts });
-}
+const complexityT = i18n.getFixedT(null, "models", "routing.complexityUi");
 
 function tierLabel(key: KeywordListKey) {
 	if (key === "simple_keywords") return complexityT("tierSimple");
@@ -88,22 +86,32 @@ const semanticSchema = z.object({
 // The editors always hold what the gateway will send, so an emptied field is
 // rejected rather than saved: it would reload as the shipped default, silently
 // undoing the deletion. Reset to default is the way back.
-const decisionCriteriaListSchema = (label: string) =>
-	z
+const decisionCriteriaListSchema = (kind: "signal" | "example") => {
+	const signal = kind === "signal";
+	return z
 		.array(
-			z
-				.string()
-				.max(MAX_DECISION_CRITERIA_ITEM_CHARACTERS, `Each ${label} must be at most ${MAX_DECISION_CRITERIA_ITEM_CHARACTERS} characters`),
+			z.string().max(MAX_DECISION_CRITERIA_ITEM_CHARACTERS, {
+				error: () =>
+					signal
+						? complexityT("criteriaSignalItemMax", { max: MAX_DECISION_CRITERIA_ITEM_CHARACTERS })
+						: complexityT("criteriaExampleItemMax", { max: MAX_DECISION_CRITERIA_ITEM_CHARACTERS }),
+			}),
 		)
-		.min(1, `Add at least one ${label}`)
-		.max(MAX_DECISION_CRITERIA_ITEMS, `At most ${MAX_DECISION_CRITERIA_ITEMS} ${label}s`);
+		.min(1, { error: () => (signal ? complexityT("criteriaSignalMin") : complexityT("criteriaExampleMin")) })
+		.max(MAX_DECISION_CRITERIA_ITEMS, {
+			error: () =>
+				signal
+					? complexityT("criteriaSignalMax", { count: MAX_DECISION_CRITERIA_ITEMS })
+					: complexityT("criteriaExampleMax", { count: MAX_DECISION_CRITERIA_ITEMS }),
+		});
+};
 
 const decisionTierCriteriaSchema = z.object({
 	definition: z
 		.string()
 		.trim()
-		.min(1, "Enter a definition")
-		.max(MAX_DECISION_DEFINITION_CHARACTERS, `Must be at most ${MAX_DECISION_DEFINITION_CHARACTERS} characters`),
+		.min(1, { error: () => complexityT("enterDefinition") })
+		.max(MAX_DECISION_DEFINITION_CHARACTERS, { error: () => complexityT("promptMaxChars", { max: MAX_DECISION_DEFINITION_CHARACTERS }) }),
 	signals: decisionCriteriaListSchema("signal"),
 	examples: decisionCriteriaListSchema("example"),
 });
@@ -125,17 +133,29 @@ const decisionGuidanceSchema = z.object({
 });
 
 const decisionSchema = z.object({
-	provider: z.string().trim().min(1, "Select the provider serving the decision model"),
-	model: z.string().trim().min(1, "Select the decision model"),
+	provider: z
+		.string()
+		.trim()
+		.min(1, { error: () => complexityT("selectDecisionProvider") }),
+	model: z
+		.string()
+		.trim()
+		.min(1, { error: () => complexityT("selectDecisionModel") }),
 	previous_message_count: z
 		.number()
-		.int("Must be a whole number")
-		.min(0, "Must be at least 0")
-		.max(MAX_DECISION_PREVIOUS_MESSAGE_COUNT, `Must be at most ${MAX_DECISION_PREVIOUS_MESSAGE_COUNT}`),
+		.int({ error: () => complexityT("mustBeWholeNumber") })
+		.min(0, { error: () => complexityT("mustBeAtLeast", { min: 0 }) })
+		.max(MAX_DECISION_PREVIOUS_MESSAGE_COUNT, {
+			error: () => complexityT("mustBeAtMost", { max: MAX_DECISION_PREVIOUS_MESSAGE_COUNT }),
+		}),
 	timeout: z
 		.string()
-		.min(1, "Enter a decision-model timeout")
-		.refine((value) => isPositiveDurationString(value), "Enter a timeout greater than 0"),
+		.min(1, { error: () => complexityT("enterDecisionTimeout") })
+		.refine((value) => isPositiveDurationString(value), { error: () => complexityT("timeoutGtZero") }),
+	min_confidence: z
+		.number({ error: () => complexityT("similarityNumber") })
+		.min(0, { error: () => complexityT("mustBeZeroOrGreater") })
+		.max(1, { error: () => complexityT("mustBeAtMost", { max: 1 }) }),
 });
 
 const llmSchema = z.object({
@@ -182,6 +202,7 @@ export const analyzerConfigSchema = z
 			model: z.string(),
 			previous_message_count: z.number().or(z.nan()),
 			timeout: z.string(),
+			min_confidence: z.number().or(z.nan()),
 			criteria: z.object({
 				SIMPLE: decisionTierFormShape,
 				MEDIUM: decisionTierFormShape,
@@ -426,6 +447,7 @@ export function toFormValues(config: AnalyzerConfig, decisionDefaults?: Decision
 				: { provider: DEFAULT_DECISION_CONFIG.provider, model: DEFAULT_DECISION_CONFIG.model }),
 			previous_message_count: config.decision?.previous_message_count ?? DEFAULT_DECISION_CONFIG.previous_message_count,
 			timeout: config.decision?.timeout ?? DEFAULT_DECISION_CONFIG.timeout,
+			min_confidence: config.decision?.min_confidence ?? DEFAULT_DECISION_CONFIG.min_confidence,
 			...decisionGuidanceFormValues(config.decision, decisionDefaults),
 		},
 		session: config.session ?? { enabled: false },
@@ -492,6 +514,7 @@ function toDecisionPayload(decision: AnalyzerFormValues["decision"]): NonNullabl
 		model: decision.model.trim(),
 		previous_message_count: decision.previous_message_count,
 		timeout: decision.timeout,
+		...(decision.min_confidence > 0 ? { min_confidence: decision.min_confidence } : {}),
 		...(Object.keys(criteria).length ? { criteria } : {}),
 	};
 }

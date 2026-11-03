@@ -26,7 +26,7 @@ import { useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { z } from "zod";
-import i18n from "@/lib/i18n";
+import i18n, { getLocale } from "@/lib/i18n";
 
 interface GovernanceFormFragmentProps {
 	provider: ModelProvider;
@@ -291,8 +291,8 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 									<div className="space-y-1">
 										<p className="text-muted-foreground text-xs">{t("providers.tokenUsage")}</p>
 										<p className="text-sm font-medium">
-											{providerGovernance.rate_limit.token_current_usage.toLocaleString()} /{" "}
-											{providerGovernance.rate_limit.token_max_limit.toLocaleString()}
+											{providerGovernance.rate_limit.token_current_usage.toLocaleString(getLocale())} /{" "}
+											{providerGovernance.rate_limit.token_max_limit.toLocaleString(getLocale())}
 										</p>
 									</div>
 								)}
@@ -300,8 +300,8 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 									<div className="space-y-1">
 										<p className="text-muted-foreground text-xs">{t("providers.requestUsage")}</p>
 										<p className="text-sm font-medium">
-											{providerGovernance.rate_limit.request_current_usage.toLocaleString()} /{" "}
-											{providerGovernance.rate_limit.request_max_limit.toLocaleString()}
+											{providerGovernance.rate_limit.request_current_usage.toLocaleString(getLocale())} /{" "}
+											{providerGovernance.rate_limit.request_max_limit.toLocaleString(getLocale())}
 										</p>
 									</div>
 								)}

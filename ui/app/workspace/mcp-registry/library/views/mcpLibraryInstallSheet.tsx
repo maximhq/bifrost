@@ -12,6 +12,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { ShieldCheck } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
+import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import {
 	authScopeOf,
@@ -80,7 +81,7 @@ function buildInitialValues(server: MCPLibraryEntry): CreateMCPClientRequest {
 	};
 }
 
-function authHelpText(authType: MCPAuthType | string | undefined, t: (key: string) => string): string {
+function authHelpText(authType: MCPAuthType | string | undefined, t: TFunction<"mcp">): string {
 	switch (authType) {
 		case "headers":
 			return t("library.install.helpHeaders");
@@ -109,6 +110,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 		oauthConfigId: string;
 		mcpClientId: string;
 		isPerUserOauth?: boolean;
+		perUserDiscovery?: boolean;
 	} | null>(null);
 	const [headersFlow, setHeadersFlow] = useState<{ payload: CreateMCPClientRequest } | null>(null);
 
@@ -200,6 +202,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 					oauthConfigId: response.oauth_config_id,
 					mcpClientId: response.mcp_client_id,
 					isPerUserOauth: data.auth_type === "per_user_oauth",
+					perUserDiscovery: payload.per_user_discovery === true,
 				});
 				return;
 			}
@@ -372,6 +375,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 					oauthConfigId={oauthFlow.oauthConfigId}
 					mcpClientId={oauthFlow.mcpClientId}
 					isPerUserOauth={oauthFlow.isPerUserOauth}
+					perUserDiscovery={oauthFlow.perUserDiscovery}
 				/>
 			)}
 
@@ -393,6 +397,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 						setError("name", { message: error });
 					}}
 					perUserHeaderKeys={satellites.perUserHeaderKeys}
+					perUserDiscovery={headersFlow.payload.per_user_discovery === true}
 					submitHandler={async (values) => {
 						await createMCPClient({ ...headersFlow.payload, user_headers: values }).unwrap();
 					}}

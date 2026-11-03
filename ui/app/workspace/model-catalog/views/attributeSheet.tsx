@@ -6,7 +6,7 @@ import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
 import { RenderProviderIcon } from "@/lib/constants/icons";
-import { ProviderLabels, ProviderName, RequestTypeLabels } from "@/lib/constants/logs";
+import { getRequestTypeLabel, ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import {
 	getErrorMessage,
 	ModelDetails,
@@ -24,7 +24,7 @@ import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import i18n from "@/lib/i18n";
-import { fieldLabelByKey, PricingFieldKey, pricingFieldUnit } from "../../custom-pricing/overrides/pricingFields";
+import { fieldLabelKeyByKey, PricingFieldKey, pricingFieldUnit } from "../../custom-pricing/overrides/pricingFields";
 import OverriddenPrice from "./overriddenPrice";
 
 const DEFAULT_PRICING_SOURCE_URL = "https://getbifrost.ai/datasheet";
@@ -32,6 +32,8 @@ const DEFAULT_PRICING_SOURCE_URL = "https://getbifrost.ai/datasheet";
 // Scopes whose overrides can't be resolved from the model catalog alone — they
 // only apply to requests carrying the matching virtual key, user, or provider
 // key, so they are listed here but never change the displayed price.
+type ScopeCaveatKind = Exclude<PricingOverrideScopeKind, "global" | "provider">;
+
 const SCOPE_CAVEAT_KINDS = new Set<PricingOverrideScopeKind>([
 	"provider_key",
 	"virtual_key",
@@ -41,6 +43,10 @@ const SCOPE_CAVEAT_KINDS = new Set<PricingOverrideScopeKind>([
 	"user_provider",
 	"user_provider_key",
 ]);
+
+function isScopeCaveatKind(kind: PricingOverrideScopeKind): kind is ScopeCaveatKind {
+	return SCOPE_CAVEAT_KINDS.has(kind);
+}
 
 interface AttributeSheetProps {
 	model: ModelDetails;
@@ -101,7 +107,7 @@ function formatPeakHours(value: PeakHoursSchedule): string {
 			if (!w || typeof w !== "object") return null;
 			const days = (Array.isArray(w.days) ? w.days : [])
 				.filter((d) => typeof d === "number" && d >= 0 && d <= 6)
-				.map((d) => i18n.t(`modelCatalog.weekday.${d}`, { ns: "models" }))
+				.map((d) => i18n.t(`modelCatalog.weekday.${d as 0 | 1 | 2 | 3 | 4 | 5 | 6}`, { ns: "models" }))
 				.join(",");
 			const start = typeof w.start === "string" ? w.start : "?";
 			const end = typeof w.end === "string" ? w.end : "?";
@@ -138,6 +144,7 @@ function formatPatchValue(key: string, value: unknown): string {
 export default function AttributeSheet({ model, overrides, onClose }: AttributeSheetProps) {
 	const { t } = useTranslation("models");
 	const { t: tc } = useTranslation("common");
+	const { t: tObs } = useTranslation("observability");
 	const [isOpen, setIsOpen] = useState(true);
 	const hasUpdateAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
@@ -343,7 +350,7 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 										</Link>
 									</div>
 									{matchingOverrides.map((override) => {
-										const caveat = SCOPE_CAVEAT_KINDS.has(override.scope_kind)
+										const caveat = isScopeCaveatKind(override.scope_kind)
 											? t(`modelCatalog.scopeCaveat.${override.scope_kind}`)
 											: undefined;
 										const patchEntries = Object.entries(override.patch).filter(([, value]) => value !== undefined && value !== null);
@@ -366,7 +373,7 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 													<div className="flex flex-wrap gap-1">
 														{override.request_types.map((rt) => (
 															<Badge key={rt} variant="outline" className="text-[10px]">
-																{RequestTypeLabels[rt as keyof typeof RequestTypeLabels] ?? rt}
+																{getRequestTypeLabel(rt, tObs)}
 															</Badge>
 														))}
 													</div>
@@ -375,7 +382,9 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 													<div className="space-y-1">
 														{patchEntries.map(([key, value]) => (
 															<div key={key} className="flex items-baseline justify-between gap-3 text-xs">
-																<span className="text-muted-foreground">{fieldLabelByKey[key as PricingFieldKey] || key}</span>
+																<span className="text-muted-foreground">
+																	{fieldLabelKeyByKey[key as PricingFieldKey] ? t(fieldLabelKeyByKey[key as PricingFieldKey]) : key}
+																</span>
 																<span className="font-mono">{formatPatchValue(key, value)}</span>
 															</div>
 														))}
@@ -423,14 +432,14 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 											<Input
 												value={row.key}
 												onChange={(e) => handleRowChange(row.id, "key", e.target.value)}
-												placeholder="key"
+												placeholder={t("modelCatalog.attributeKeyPlaceholder")}
 												className="flex-1"
 												data-testid={`model-catalog-attribute-key-${i}`}
 											/>
 											<Input
 												value={row.value}
 												onChange={(e) => handleRowChange(row.id, "value", e.target.value)}
-												placeholder="value"
+												placeholder={t("modelCatalog.attributeValuePlaceholder")}
 												className="flex-1"
 												data-testid={`model-catalog-attribute-value-${i}`}
 											/>

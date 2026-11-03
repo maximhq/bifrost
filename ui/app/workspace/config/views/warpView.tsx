@@ -547,6 +547,7 @@ export default function WarpView() {
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4" data-testid="warp-config-view">
 			<form onSubmit={onSubmit} className="space-y-4">
+				{/* i18n-ignore: product name */}
 				<PageTitle title="Warp">{t("warp.pageDescription")}</PageTitle>
 
 				{isLoadingConfig ? (
@@ -568,7 +569,7 @@ export default function WarpView() {
 									    maturity signal actually informs a decision. */}
 									<div className="flex items-center gap-2">
 										<Label htmlFor="warp-enabled">{t("warp.enable")}</Label>
-										<Badge variant="secondary">ALPHA</Badge>
+										<Badge variant="secondary">{t("warp.alphaBadge")}</Badge>
 									</div>
 									<p className="text-muted-foreground text-sm">{t("warp.enableHelp")}</p>
 								</div>
@@ -1117,13 +1118,13 @@ export default function WarpView() {
 								hasChanges={hasChanges}
 								discoveryField={
 									<WarpField
-										label="New topic threshold"
+										label={t("warp.topics.thresholdLabel")}
 										htmlFor="warp-topic-discovery-min-requests"
 										className="max-w-xs"
-										hint={`How many requests that matched no topic have to be waiting before Warp groups them into new topics, checked hourly. Lower finds new subjects sooner from fewer examples; higher waits for clearer patterns. ${MIN_TOPIC_DISCOVERY_MIN_REQUESTS} to ${MAX_TOPIC_DISCOVERY_MIN_REQUESTS}.`}
+										hint={t("warp.topics.thresholdHint", { min: MIN_TOPIC_DISCOVERY_MIN_REQUESTS, max: MAX_TOPIC_DISCOVERY_MIN_REQUESTS })}
 										error={
 											discoveryInvalid
-												? `Must be a whole number from ${MIN_TOPIC_DISCOVERY_MIN_REQUESTS} to ${MAX_TOPIC_DISCOVERY_MIN_REQUESTS}`
+												? t("warp.topics.thresholdError", { min: MIN_TOPIC_DISCOVERY_MIN_REQUESTS, max: MAX_TOPIC_DISCOVERY_MIN_REQUESTS })
 												: undefined
 										}
 									>
@@ -1379,6 +1380,7 @@ interface WarpFieldProps {
 }
 
 function WarpField({ label, htmlFor, hint, error, className, children }: WarpFieldProps) {
+	const { t } = useTranslation("config");
 	return (
 		<div className={cn("flex min-w-0 flex-col gap-1.5", className)}>
 			<div className="flex items-center gap-1.5">
@@ -1389,7 +1391,7 @@ function WarpField({ label, htmlFor, hint, error, className, children }: WarpFie
 							<button
 								type="button"
 								className="text-muted-foreground hover:text-foreground inline-flex"
-								aria-label={`About ${label}`}
+								aria-label={t("warp.aboutAria", { label })}
 								data-testid={`${htmlFor}-info`}
 							>
 								<Info className="size-3.5" />

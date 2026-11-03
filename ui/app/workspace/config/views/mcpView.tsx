@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { MCP_MAX_PROTOCOL_VERSION_OPTIONS } from "@/lib/constants/mcp";
+import { MCP_MAX_PROTOCOL_VERSION_OPTIONS, mcpMaxProtocolVersionLabel } from "@/lib/constants/mcp";
 import { Switch } from "@/components/ui/switch";
 import { TagInput } from "@/components/ui/tagInput";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
@@ -401,12 +401,9 @@ export default function MCPView() {
 				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
 						<label htmlFor="mcp-max-protocol-version" className="text-sm font-medium">
-							Max Protocol Version
+							{t("mcpSettings.maxProtocolVersion")}
 						</label>
-						<p className="text-muted-foreground text-sm">
-							Newest MCP protocol version Bifrost offers to MCP servers. Auto uses the latest Bifrost supports. Each server can override
-							this.
-						</p>
+						<p className="text-muted-foreground text-sm">{t("mcpSettings.maxProtocolVersionHelp")}</p>
 					</div>
 					<Select
 						value={localConfig.mcp_max_protocol_version || "auto"}
@@ -419,7 +416,7 @@ export default function MCPView() {
 						<SelectContent>
 							{MCP_MAX_PROTOCOL_VERSION_OPTIONS.map((option) => (
 								<SelectItem key={option.value} value={option.value} data-testid={`mcp-max-protocol-version-${option.value}`}>
-									{option.label}
+									{mcpMaxProtocolVersionLabel(option.value)}
 								</SelectItem>
 							))}
 						</SelectContent>

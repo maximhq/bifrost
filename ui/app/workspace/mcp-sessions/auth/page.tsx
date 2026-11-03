@@ -44,6 +44,9 @@ import React from "react";
 import { useEffect, useMemo, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import i18n from "@/lib/i18n";
+import { getCurrentAppPath } from "@/lib/utils/basePath";
+import { buildLoginHref } from "@/lib/utils/loginGoto";
+import { ToolsPendingNotice } from "../views/toolsPendingNotice";
 
 // Mirrors handlers.TempTokenRejectedCode: a presented token was refused.
 const TEMP_TOKEN_REJECTED_CODE = "temp_token_rejected";
@@ -61,6 +64,7 @@ export default function MCPSessionsAuthPage() {
 	return <OAuthAuthView />;
 }
 
+/** Landing page for an MCP OAuth flow: starts the provider authorization for the `flow` query param. */
 function OAuthAuthView() {
 	const { t } = useTranslation("mcp");
 	const { toast } = useToast();
@@ -72,14 +76,14 @@ function OAuthAuthView() {
 	const [usingTempToken] = useState(() => getActiveTempToken() !== null);
 	const loginGoto = useMemo(() => {
 		if (typeof window !== "undefined") {
-			return `${window.location.pathname}${window.location.search}`;
+			return getCurrentAppPath();
 		}
 		if (flowId) {
 			return `/workspace/mcp-sessions/auth?flow=${encodeURIComponent(flowId)}`;
 		}
 		return "/workspace/mcp-sessions/auth";
 	}, [flowId]);
-	const loginHref = useMemo(() => `/login?goto=${encodeURIComponent(loginGoto)}`, [loginGoto]);
+	const loginHref = useMemo(() => buildLoginHref(loginGoto), [loginGoto]);
 	const signedOut = authState?.is_auth_enabled === true && authState.has_valid_token === false;
 	const showLoginOption = usingTempToken && signedOut;
 	const showTempTokenSSOWarning = showLoginOption && authState.auth_type === "sso";
@@ -224,6 +228,9 @@ function HeadersAuthView({ flowId }: { flowId: string }) {
 	// "expired" view on top of a freshly successful submission.
 	const { data: detail, isLoading, isError, error } = useGetMCPPerUserHeadersFlowQuery(flowId, { skip: submitted === "true" });
 	const [submit, { isLoading: submitting }] = useSubmitMCPPerUserHeadersFlowMutation();
+	// Kept from the submit response, which is the only place it is reported:
+	// the flow row is gone once the submit succeeds.
+	const [toolsPending, setToolsPending] = useState<{ clientName: string; error: string } | null>(null);
 
 	if (submitted === "true") {
 		return (
@@ -233,6 +240,7 @@ function HeadersAuthView({ flowId }: { flowId: string }) {
 				</div>
 				<h1 className="text-xl font-semibold tracking-tight">{t("sessions.auth.headersSaved")}</h1>
 				<p className="text-muted-foreground mt-2 text-sm">{t("sessions.auth.headersSavedBody")}</p>
+				{toolsPending && <ToolsPendingNotice clientName={toolsPending.clientName} error={toolsPending.error} className="mt-6" />}
 				<div className="mt-6 flex gap-3">
 					<SessionsTabLink />
 				</div>
@@ -251,7 +259,7 @@ function HeadersAuthView({ flowId }: { flowId: string }) {
 			const signedOut = authState?.is_auth_enabled === true && authState.has_valid_token === false;
 			if (getErrorCode(error) !== TEMP_TOKEN_REJECTED_CODE && signedOut) {
 				const returnPath = `/workspace/mcp-sessions/auth?flow=${encodeURIComponent(flowId)}&kind=headers`;
-				return <RedirectToSignIn loginHref={`/login?goto=${encodeURIComponent(returnPath)}`} />;
+				return <RedirectToSignIn loginHref={buildLoginHref(returnPath)} />;
 			}
 			return <InvalidLinkView />;
 		}
@@ -289,9 +297,14 @@ function HeadersAuthView({ flowId }: { flowId: string }) {
 		);
 	}
 
+	const mcpClientName = detail.mcp_client?.name || detail.mcp_client?.client_id || t("sessions.auth.fallbackServer");
+
 	const handleSubmit = async (values: Record<string, string>) => {
 		try {
-			await submit({ flowId, body: { headers: values } }).unwrap();
+			const result = await submit({ flowId, body: { headers: values } }).unwrap();
+			if (result.discovery_error) {
+				setToolsPending({ clientName: mcpClientName, error: result.discovery_error });
+			}
 			void setSubmitted("true");
 		} catch (err) {
 			toast({
@@ -302,7 +315,6 @@ function HeadersAuthView({ flowId }: { flowId: string }) {
 		}
 	};
 
-	const mcpClientName = detail.mcp_client?.name || detail.mcp_client?.client_id || t("sessions.auth.fallbackServer");
 	const isEdit = detail.has_active_credential;
 	const title = isEdit
 		? t("sessions.auth.updateCredentials", { name: mcpClientName })

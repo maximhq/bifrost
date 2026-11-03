@@ -3,6 +3,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import type { ShortcutKey } from "@/hooks/useSheetNavigation";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import React from "react";
+import type { ParseKeys } from "i18next";
 import { useTranslation } from "react-i18next";
 
 const kbdClass =
@@ -17,7 +18,7 @@ interface SheetNavigationButtonsProps {
 	entityLabel?: string;
 }
 
-const ENTITY_NOUN_KEYS: Record<string, string> = {
+const ENTITY_NOUN_KEYS: Partial<Record<string, ParseKeys<"common">>> = {
 	item: "entities.item",
 	log: "entities.log",
 	"virtual key": "entities.virtualKey",

@@ -2,7 +2,8 @@ import { ExternalLink, Video } from "lucide-react";
 
 import { CopyableId } from "@/components/copyableId";
 import { Badge } from "@/components/ui/badge";
-import { RequestTypeLabels } from "@/lib/constants/logs";
+import { getRequestTypeLabel, RequestTypeLabels } from "@/lib/constants/logs";
+import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import {
 	BifrostVideoDeleteOutput,
@@ -28,9 +29,10 @@ interface VideoViewProps {
 	requestType?: string;
 }
 
-function getMethodTypeLabel(requestType: string | undefined, fallback: string): string {
+function getMethodTypeLabel(requestType: string | undefined, fallback: string, t: TFunction<"observability">): string {
 	if (!requestType) return fallback;
-	return RequestTypeLabels[requestType.toLowerCase() as keyof typeof RequestTypeLabels] || fallback;
+	const normalizedType = requestType.toLowerCase();
+	return Object.hasOwn(RequestTypeLabels, normalizedType) ? getRequestTypeLabel(normalizedType, t) : fallback;
 }
 
 function isImageOutput(video: VideoAsset): boolean {
@@ -45,7 +47,7 @@ function getVideoSrc(video: VideoAsset): string | null {
 
 export default function VideoView({ videoInput, videoOutput, videoListOutput, requestType }: VideoViewProps) {
 	const { t } = useTranslation("observability");
-	const methodTypeLabel = getMethodTypeLabel(requestType, t("logs.media.video"));
+	const methodTypeLabel = getMethodTypeLabel(requestType, t("logs.media.video"), t);
 	const normalizedType = requestType?.toLowerCase() ?? "";
 	const isDownload = normalizedType.includes("video_download");
 	const isDelete = normalizedType.includes("video_delete");
@@ -122,7 +124,7 @@ export default function VideoView({ videoInput, videoOutput, videoListOutput, re
 								<div className="space-y-1">
 									<div className="text-muted-foreground text-xs font-medium">{t("logs.video.deleted")}</div>
 									<Badge variant="secondary" className="uppercase">
-										{deleteOutput.deleted ? "true" : "false"}
+										{deleteOutput.deleted ? t("yes", { ns: "common" }) : t("no", { ns: "common" })}
 									</Badge>
 								</div>
 							</div>
@@ -218,7 +220,7 @@ export default function VideoView({ videoInput, videoOutput, videoListOutput, re
 											<img
 												className="max-h-96 w-full rounded-sm border object-contain"
 												src={src}
-												alt="Video output frame"
+												alt={t("logs.video.outputFrameAlt")}
 												data-testid="video-view-output-image"
 											/>
 											{image.url && (
@@ -229,7 +231,7 @@ export default function VideoView({ videoInput, videoOutput, videoListOutput, re
 													data-testid="video-view-open-image-url-link"
 													className="text-primary inline-flex items-center gap-1 text-xs underline"
 												>
-													Open image URL
+													{t("logs.video.openImageUrl")}
 													<ExternalLink className="h-3 w-3" />
 												</a>
 											)}

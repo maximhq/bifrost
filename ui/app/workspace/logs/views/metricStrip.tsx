@@ -6,8 +6,9 @@ import { cn } from "@/lib/utils";
 import { COMPACT_NUMBER_FORMAT, formatCurrencyNumber } from "@/lib/utils/numbers";
 import NumberFlow from "@number-flow/react";
 import { useMemo, useState } from "react";
+import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
-import i18n from "@/lib/i18n";
+import i18n, { getLocale } from "@/lib/i18n";
 import { Line, LineChart, XAxis, YAxis } from "recharts";
 import {
 	buildSparkPoints,
@@ -168,7 +169,7 @@ export function Sparkline({ points, className, bucketSizeSeconds, rows }: Sparkl
 export function averaged(
 	point: SparkPoint,
 	text: string,
-	translate: (key: string, options: { value: string }) => string = (key, options) => i18n.t(key, { ...options, ns: "observability" }),
+	translate: TFunction<"observability"> = i18n.getFixedT(null, "observability"),
 ): string {
 	return point.buckets > 1 ? translate("logs.stats.averaged", { value: text }) : text;
 }
@@ -219,7 +220,7 @@ export function splitByRate(total: number, rate: number): { passed: number; fail
 const FOOTER_NUMBER_FORMAT = { ...COMPACT_NUMBER_FORMAT, maximumFractionDigits: 1 } as const;
 
 /** Exact figures for the readouts, where the strip itself shows compact ones. */
-export const formatCount = (n: number) => Math.round(n).toLocaleString();
+export const formatCount = (n: number) => Math.round(n).toLocaleString(getLocale());
 
 interface MetricStripProps {
 	stats?: LogStatsResponse;

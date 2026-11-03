@@ -32,6 +32,8 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import TeamSheet from "./teamSheet";
 import { TeamsEmptyState } from "./teamsEmptyState";
+import { useActionParam } from "@/hooks/useActionParam";
+import { getLocale } from "@/lib/i18n";
 
 // Helper to format reset duration for display
 const formatResetDuration = (duration: string) => {
@@ -66,7 +68,7 @@ function TeamActionsMenu({
 						variant="ghost"
 						size="icon"
 						className="h-8 w-8"
-						aria-label={`Team actions for ${team.name}`}
+						aria-label={t("teams.actionsAria", { name: team.name })}
 						data-testid={`team-actions-btn-${team.name}`}
 					>
 						<MoreHorizontal className="h-4 w-4" />
@@ -186,6 +188,7 @@ export default function TeamsTable({
 	const handleAddTeam = () => {
 		onTeamAdd();
 	};
+	useActionParam("create", handleAddTeam, { isOpen: selectedTeamId !== null, enabled: hasCreateAccess });
 
 	const handleEditTeam = (team: Team) => {
 		onTeamSelect(team);
@@ -339,7 +342,7 @@ export default function TeamsTable({
 																						<span className="text-muted-foreground text-xs">{formatResetDuration(b.reset_duration)}</span>
 																					</div>
 																					<Progress
-																						aria-label="Budget usage"
+																						aria-label={t("usage.budgetAria")}
 																						value={budgetPercentage}
 																						className={cn(
 																							"bg-muted/70 dark:bg-muted/30 h-1.5",
@@ -356,7 +359,9 @@ export default function TeamsTable({
 																				<p className="font-medium">
 																					{formatCurrency(b.current_usage)} / {formatCurrency(b.max_limit)}
 																				</p>
-																				<p className="text-primary-foreground/80 text-xs">Resets {formatResetDuration(b.reset_duration)}</p>
+																				<p className="text-primary-foreground/80 text-xs">
+																					{t("usage.resets", { period: formatResetDuration(b.reset_duration) })}
+																				</p>
 																			</TooltipContent>
 																		</Tooltip>
 																	);
@@ -374,13 +379,15 @@ export default function TeamsTable({
 																		<TooltipTrigger asChild>
 																			<div className="space-y-1.5">
 																				<div className="flex items-center justify-between gap-4 text-xs">
-																					<span className="font-medium">{team.rate_limit.token_max_limit.toLocaleString()} tokens</span>
+																					<span className="font-medium">
+																						{t("usage.tokens", { value: team.rate_limit.token_max_limit.toLocaleString(getLocale()) })}
+																					</span>
 																					<span className="text-muted-foreground">
 																						{formatResetDuration(team.rate_limit.token_reset_duration || "1h")}
 																					</span>
 																				</div>
 																				<Progress
-																					aria-label="Token usage"
+																					aria-label={t("usage.tokenAria")}
 																					value={tokenPercentage}
 																					className={cn(
 																						"bg-muted/70 dark:bg-muted/30 h-1",
@@ -395,11 +402,13 @@ export default function TeamsTable({
 																		</TooltipTrigger>
 																		<TooltipContent>
 																			<p className="font-medium">
-																				{team.rate_limit.token_current_usage.toLocaleString()} /{" "}
-																				{team.rate_limit.token_max_limit.toLocaleString()} tokens
+																				{t("usage.tokenTooltip", {
+																					used: team.rate_limit.token_current_usage.toLocaleString(getLocale()),
+																					max: team.rate_limit.token_max_limit.toLocaleString(getLocale()),
+																				})}
 																			</p>
 																			<p className="text-primary-foreground/80 text-xs">
-																				Resets {formatResetDuration(team.rate_limit.token_reset_duration || "1h")}
+																				{t("usage.resets", { period: formatResetDuration(team.rate_limit.token_reset_duration || "1h") })}
 																			</p>
 																		</TooltipContent>
 																	</Tooltip>
@@ -409,13 +418,15 @@ export default function TeamsTable({
 																		<TooltipTrigger asChild>
 																			<div className="space-y-1.5">
 																				<div className="flex items-center justify-between gap-4 text-xs">
-																					<span className="font-medium">{team.rate_limit.request_max_limit.toLocaleString()} req</span>
+																					<span className="font-medium">
+																						{t("usage.req", { value: team.rate_limit.request_max_limit.toLocaleString(getLocale()) })}
+																					</span>
 																					<span className="text-muted-foreground">
 																						{formatResetDuration(team.rate_limit.request_reset_duration || "1h")}
 																					</span>
 																				</div>
 																				<Progress
-																					aria-label="Request usage"
+																					aria-label={t("usage.requestAria")}
 																					value={requestPercentage}
 																					className={cn(
 																						"bg-muted/70 dark:bg-muted/30 h-1",
@@ -430,11 +441,13 @@ export default function TeamsTable({
 																		</TooltipTrigger>
 																		<TooltipContent>
 																			<p className="font-medium">
-																				{team.rate_limit.request_current_usage.toLocaleString()} /{" "}
-																				{team.rate_limit.request_max_limit.toLocaleString()} requests
+																				{t("usage.requestTooltip", {
+																					used: team.rate_limit.request_current_usage.toLocaleString(getLocale()),
+																					max: team.rate_limit.request_max_limit.toLocaleString(getLocale()),
+																				})}
 																			</p>
 																			<p className="text-primary-foreground/80 text-xs">
-																				Resets {formatResetDuration(team.rate_limit.request_reset_duration || "1h")}
+																				{t("usage.resets", { period: formatResetDuration(team.rate_limit.request_reset_duration || "1h") })}
 																			</p>
 																		</TooltipContent>
 																	</Tooltip>
@@ -448,7 +461,7 @@ export default function TeamsTable({
 														{vkCount > 0 ? (
 															<div className="flex items-center gap-2">
 																<Badge variant="outline" className="text-xs">
-																	{vkCount} {vkCount === 1 ? "key" : "keys"}
+																	{t("usage.keyCount", { count: vkCount })}
 																</Badge>
 															</div>
 														) : (
@@ -479,8 +492,11 @@ export default function TeamsTable({
 						{totalCount > 0 && (
 							<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 								<div className="text-muted-foreground flex items-center gap-2">
-									{(offset + 1).toLocaleString()}-{Math.min(offset + limit, totalCount).toLocaleString()} of {totalCount.toLocaleString()}{" "}
-									entries
+									{t("webhooks.pagination.entries", {
+										from: (offset + 1).toLocaleString(getLocale()),
+										to: Math.min(offset + limit, totalCount).toLocaleString(getLocale()),
+										total: totalCount.toLocaleString(getLocale()),
+									})}
 								</div>
 
 								<div className="flex items-center gap-2">
@@ -490,15 +506,15 @@ export default function TeamsTable({
 										onClick={() => onOffsetChange(Math.max(0, offset - limit))}
 										disabled={offset === 0}
 										data-testid="teams-pagination-prev-btn"
-										aria-label="Previous page"
+										aria-label={t("webhooks.pagination.previousPage")}
 									>
 										<ChevronLeft className="size-3" />
 									</Button>
 
 									<div className="flex items-center gap-1">
-										<span>Page</span>
+										<span>{t("webhooks.pagination.page")}</span>
 										<span>{Math.floor(offset / limit) + 1}</span>
-										<span>of {Math.ceil(totalCount / limit)}</span>
+										<span>{t("webhooks.pagination.ofPages", { total: Math.ceil(totalCount / limit) })}</span>
 									</div>
 
 									<Button
@@ -507,7 +523,7 @@ export default function TeamsTable({
 										onClick={() => onOffsetChange(offset + limit)}
 										disabled={offset + limit >= totalCount}
 										data-testid="teams-pagination-next-btn"
-										aria-label="Next page"
+										aria-label={t("webhooks.pagination.nextPage")}
 									>
 										<ChevronRight className="size-3" />
 									</Button>

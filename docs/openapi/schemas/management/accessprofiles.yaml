@@ -196,6 +196,17 @@ MCPToolOverride:
         - include
         - exclude
 
+AccessProfileRelayGrant:
+  type: object
+  description: One relay the holder may call at /relay/{relay_name}/....
+  required:
+    - relay_name
+  properties:
+    relay_name:
+      type: string
+      description: Name of an existing relay.
+  additionalProperties: false
+
 AccessProfile:
   type: object
   properties:
@@ -250,6 +261,11 @@ AccessProfile:
       type: array
       items:
         $ref: '#/AccessProfileVirtualMCPLink'
+    relay_grants:
+      type: array
+      description: Relays that keys governed by this profile may call. With no grants, they may call no relay.
+      items:
+        $ref: '#/AccessProfileRelayGrant'
     mcp_configs:
       type: array
       items:
@@ -340,6 +356,11 @@ CreateAccessProfileRequest:
       type: array
       items:
         $ref: '#/AccessProfileVirtualMCPLink'
+    relay_grants:
+      type: array
+      description: Relays that keys governed by this profile may call. Each relay_name must name an existing relay.
+      items:
+        $ref: '#/AccessProfileRelayGrant'
     mcp_configs:
       type: array
       items:
@@ -416,6 +437,11 @@ UpdateAccessProfileRequest:
       type: array
       items:
         $ref: '#/AccessProfileVirtualMCPLink'
+    relay_grants:
+      type: array
+      description: Replaces the profile's relay grants. Omit to leave them unchanged; [] clears them. Each relay_name must name an existing relay.
+      items:
+        $ref: '#/AccessProfileRelayGrant'
     mcp_configs:
       type: array
       items:
@@ -513,9 +539,16 @@ PropagateRequest:
           - provider_configs
           - budgets
           - rate_limit
-          - mcp_tool_groups
+          - virtual_mcps
+          - mcp_configs
+          - agent_grants
+          - relay_grants
           - mcp_servers
           - mcp_tool_overrides
+        description: >-
+          mcp_configs is the current MCP field; mcp_servers and mcp_tool_overrides are
+          retired aliases for it, accepted for back-compat. An unrecognized value, including
+          the removed mcp_tool_groups, is refused.
       minItems: 1
     user_ids:
       type: array

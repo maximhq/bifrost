@@ -17,13 +17,7 @@ import { getErrorMessage } from "@/lib/store";
 import { useCancelRecalculateCostJobMutation, useGetRecalculateCostStatusQuery } from "@/lib/store/apis/logsApi";
 import { getActiveTempToken } from "@/lib/store/apis/tempToken";
 import type { LogEntry, LogFilters as LogFiltersType, RecalcJobStatus } from "@/lib/types/logs";
-import {
-	formatLogSearchInput,
-	isLogIdSearch,
-	LOG_SEARCH_MODE_LABELS,
-	type LogSearchMode,
-	parseLogSearchInput,
-} from "@/lib/utils/logSearch";
+import { formatLogSearchInput, isLogIdSearch, type LogSearchMode, parseLogSearchInput } from "@/lib/utils/logSearch";
 import { getApiBaseUrl } from "@/lib/utils/port";
 import { getRangeForPeriod, TIME_PERIODS, withPeriodTimezone } from "@/lib/utils/timeRange";
 import { Calculator, ChevronDown, Download, ListTree, MoreVertical, Radio, RefreshCw, Search } from "lucide-react";
@@ -32,6 +26,7 @@ import { toast } from "sonner";
 import { LogsExportDialog } from "./logsExportDialog";
 import { RecalculateCostDialog, type RecalculateCostMode } from "./recalculateCostDialog";
 import { useTranslation } from "react-i18next";
+import i18n from "@/lib/i18n";
 
 // One id for the whole recalculation lifecycle, so the start / progress / cancelling
 // / result updates all land on the same toast instead of stacking.
@@ -164,7 +159,7 @@ export function LogsHeaderView({
 				// already running); the status query below polls it to a terminal state.
 				const { status, alreadyRunning } = await startRecalculateCostJob(filters, missingCostOnly);
 				if (!status.id) {
-					throw new Error("Recalculation job did not start");
+					throw new Error(t("logs.recalc.toastDidNotStart"));
 				}
 				if (alreadyRunning) {
 					toast.loading(t("logs.recalc.toastAlreadyRunning"), { id: RECALC_TOAST_ID });
@@ -242,13 +237,17 @@ export function LogsHeaderView({
 				// report the partial result rather than framing it as a failure.
 				toast.info(t("logs.recalc.toastCancelled"), {
 					id: RECALC_TOAST_ID,
-					description: recalcJobStatus.message || `Stopped after ${recalcJobStatus.updated} updated, ${recalcJobStatus.skipped} skipped`,
+					description:
+						recalcJobStatus.message ||
+						t("logs.recalc.toastStopped", { updated: recalcJobStatus.updated, skipped: recalcJobStatus.skipped }),
 					duration: 5000,
 				});
 			} else {
 				toast.success(t("logs.recalc.toastComplete"), {
 					id: RECALC_TOAST_ID,
-					description: recalcJobStatus.message || `${recalcJobStatus.updated} updated, ${recalcJobStatus.skipped} skipped`,
+					description:
+						recalcJobStatus.message ||
+						t("logs.recalc.toastUpdatedSkipped", { updated: recalcJobStatus.updated, skipped: recalcJobStatus.skipped }),
 					duration: 5000,
 				});
 			}
@@ -271,8 +270,17 @@ export function LogsHeaderView({
 			id: RECALC_TOAST_ID,
 			description:
 				total > 0
-					? `${processed}/${total} checked, ${recalcJobStatus.updated} updated, ${recalcJobStatus.skipped} skipped`
-					: `${recalcJobStatus.processed} checked, ${recalcJobStatus.updated} updated, ${recalcJobStatus.skipped} skipped`,
+					? t("logs.recalc.toastCheckedOfTotal", {
+							processed,
+							total,
+							updated: recalcJobStatus.updated,
+							skipped: recalcJobStatus.skipped,
+						})
+					: t("logs.recalc.toastChecked", {
+							processed: recalcJobStatus.processed,
+							updated: recalcJobStatus.updated,
+							skipped: recalcJobStatus.skipped,
+						}),
 			action: {
 				label: t("labels.cancel"),
 				// preventDefault keeps the toast mounted so it can report the cancellation;
@@ -396,7 +404,7 @@ export function LogsHeaderView({
 							</Badge>
 						</TooltipTrigger>
 						<TooltipContent sideOffset={6} className="max-w-64">
-							Looking up this request ID exactly. The selected time range is ignored so the request is found wherever it falls.
+							{t("logs.exactIdSearchHint")}
 						</TooltipContent>
 					</Tooltip>
 				)}
@@ -406,23 +414,23 @@ export function LogsHeaderView({
 							variant="ghost"
 							size="sm"
 							className="text-muted-foreground h-7 shrink-0 rounded-none text-xs"
-							title="Choose whether the box searches log content or looks up a request ID"
+							title={t("logs.searchModeHint")}
 							data-testid="logs-search-mode-trigger"
 						>
-							{LOG_SEARCH_MODE_LABELS[searchMode]}
+							{t(`logs.searchModes.${searchMode}`)}
 							<ChevronDown className="size-3" />
 						</Button>
 					</DropdownMenuTrigger>
 					<DropdownMenuContent align="end" className="w-44">
 						<DropdownMenuRadioGroup value={searchMode} onValueChange={(value) => handleSearchModeChange(value as LogSearchMode)}>
 							<DropdownMenuRadioItem value="auto" className="text-xs" data-testid="logs-search-mode-auto">
-								Auto detect
+								{t("logs.searchModeOptions.auto")}
 							</DropdownMenuRadioItem>
 							<DropdownMenuRadioItem value="content" className="text-xs" data-testid="logs-search-mode-content">
-								Content search
+								{t("logs.searchModeOptions.content")}
 							</DropdownMenuRadioItem>
 							<DropdownMenuRadioItem value="request_id" className="text-xs" data-testid="logs-search-mode-request-id">
-								Request ID search
+								{t("logs.searchModeOptions.request_id")}
 							</DropdownMenuRadioItem>
 						</DropdownMenuRadioGroup>
 					</DropdownMenuContent>
@@ -454,7 +462,13 @@ export function LogsHeaderView({
 			/>
 			<DropdownMenu>
 				<DropdownMenuTrigger asChild>
-					<Button variant="outline" size="sm" className="h-7.5 w-7.5" aria-label={t("logs.moreActions")} data-testid="logs-more-actions-btn">
+					<Button
+						variant="outline"
+						size="sm"
+						className="h-7.5 w-7.5"
+						aria-label={t("logs.moreActions")}
+						data-testid="logs-more-actions-btn"
+					>
 						<MoreVertical className="h-4 w-4" aria-hidden="true" />
 					</Button>
 				</DropdownMenuTrigger>
@@ -462,8 +476,8 @@ export function LogsHeaderView({
 					<DropdownMenuItem className="cursor-pointer items-start" onSelect={() => setExportDialogOpen(true)} data-testid="logs-export-btn">
 						<Download className="mt-0.5" />
 						<div className="flex flex-col">
-							<span>{t("logs.exportCsv")}</span>
-							<span className="text-muted-foreground text-xs">{t("logs.exportCsvDesc")}</span>
+							<span>{t("logs.export.exportCsv")}</span>
+							<span className="text-muted-foreground text-xs">{t("logs.export.menuDescription")}</span>
 						</div>
 					</DropdownMenuItem>
 					{/* While a job runs this doubles as the cancel control, so the run can
@@ -563,15 +577,15 @@ async function readRecalculateCostError(response: Response): Promise<Error> {
 	try {
 		return parseRecalculateCostStreamError(await response.text());
 	} catch {
-		return new Error(`Failed to recalculate costs (${response.status})`);
+		return new Error(i18n.t("logs.recalc.errorGenericStatus", { ns: "observability", status: response.status }));
 	}
 }
 
 function parseRecalculateCostStreamError(data: string): Error {
 	try {
 		const parsed = JSON.parse(data) as { error?: { message?: string }; message?: string };
-		return new Error(parsed.error?.message || parsed.message || "Failed to recalculate costs");
+		return new Error(parsed.error?.message || parsed.message || i18n.t("logs.recalc.errorGeneric", { ns: "observability" }));
 	} catch {
-		return new Error(data || "Failed to recalculate costs");
+		return new Error(data || i18n.t("logs.recalc.errorGeneric", { ns: "observability" }));
 	}
 }

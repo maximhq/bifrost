@@ -51,6 +51,7 @@ export default function Providers() {
 	const hasProviderCreateAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Create);
 
 	const { t } = useTranslation("models");
+	const { t: tCommon } = useTranslation("common");
 
 	// Redirect Settings-only users to Custom pricing tab
 	useEffect(() => {
@@ -189,7 +190,12 @@ export default function Providers() {
 	if (showLoadError(providersError, savedProviders)) {
 		return (
 			<div className="mx-auto w-full max-w-7xl">
-				<LoadErrorView entity="providers" error={providersError} onRetry={() => void refetchProviders()} testId="providers-load-error" />
+				<LoadErrorView
+					entity={tCommon("entities.providers")}
+					error={providersError}
+					onRetry={() => void refetchProviders()}
+					testId="providers-load-error"
+				/>
 			</div>
 		);
 	}

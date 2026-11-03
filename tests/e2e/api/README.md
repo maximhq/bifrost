@@ -383,6 +383,66 @@ The cases are skipped unless `bedrockEndpointFixture=1`.
 
 Stop the fixture and isolated gateway with Ctrl+C after testing.
 
+## Workload identity federation
+
+These deterministic cases run Anthropic Workload Identity Federation end to end against a local
+stand-in for the token endpoint and the Messages API. They make no live call and need no key and no
+federation rule. Folder 297 pins what real Anthropic answers to an unregistered federation; this
+folder pins the success path, the token lifecycle and the failure modes. Run the following commands
+from the repository root.
+
+The gateway reads identity token files only from `BIFROST_OIDC_ALLOWED_CREDENTIAL_DIRS`, an
+environment variable on purpose, so the cases run on their own gateway rather than on `make dev`.
+
+Start the fixture in one terminal. It writes the identity token files the config names under
+`tmp/wif-fixture`, so start it before the gateway:
+
+```bash
+node tests/e2e/api/runners/wif-fixture.mjs
+```
+
+Start a separate gateway in another terminal:
+
+```bash
+wif_dir=$(pwd)/tmp/wif-fixture
+wif_app_dir=$(mktemp -d)
+sed "s#__WIF_FIXTURE_DIR__#$wif_dir#g" tests/e2e/api/provider_config/workload-identity.config.json > "$wif_app_dir/config.json"
+BIFROST_OIDC_ALLOWED_CREDENTIAL_DIRS="$wif_dir/tokens" WIF_FIXTURE_TOKEN_FILE="$wif_dir/tokens/config-file.jwt" \
+  go run ./transports/bifrost-http -app-dir "$wif_app_dir" -host 127.0.0.1 -port 8801
+```
+
+Run the cases in a third terminal:
+
+```bash
+newman run tests/e2e/api/collections/provider-harness.json \
+  --folder "298. Workload identity federation against a local token endpoint (workload identity fixture)" \
+  --env-var baseUrl=http://127.0.0.1:8801 \
+  --env-var workloadIdentityFixture=1
+```
+
+Every provider in the config is an `anthropic`-based custom provider whose base URL is the fixture's
+`/anthropic` profile. The main key, `wif-config-file`, reads its token from a file named by an `env.`
+reference, the shape a Kubernetes deployment uses. The other keys each pin one behaviour, chosen by
+an `fx` claim inside their identity token: a denied or unavailable exchange, a 200 without a token,
+a redirect, a file outside the allowlist, a rotating file and a single-use (`jti`) file. Cases that
+need a cold credential add a run-scoped inline key and select it with `x-bf-api-key`.
+
+Assertions read what the fixture recorded for an identity (`GET /__wif/hits?sub=...`): exchanges,
+the assertion each one presented, the API routes it reached, and the credential and betas each call
+carried. Cases compare counts before and after, so they rerun against a warm gateway. Three cases
+wait for a short-lived token to reach its refresh window, so the folder takes about 30 seconds.
+
+The fixture's logic is in `runners/lib/wif-fixture.mjs` and is covered offline by
+`runners/lib/wif-fixture.test.mjs` (`make test-harness-runner-lib`): it refuses what Anthropic
+refuses (an exchange without both betas, a reused single-use token, a bearer without the OAuth beta
+or beside `x-api-key`), so a green case means the gateway sent what the real endpoint accepts.
+Another provider gaining workload identity adds a profile there, its providers to the config, and
+cases to the folder named after it.
+
+The cases are skipped unless `workloadIdentityFixture=1`.
+
+Stop the fixture and isolated gateway with Ctrl+C after testing.
+
 ## Contents
 
 ### V1 Endpoint Tests
@@ -829,46 +889,6 @@ Run locally (from this directory):
 ```bash
 ./runners/individual/run-newman-auth-matrix-tests.sh --binary /path/to/bifrost-http
 # options: --port <port> (default 8090), --html, --json, --verbose, --bail
-```
-
-### MCP Auth Tests
-
-| Path | Description |
-|------|-------------|
-| `collections/bifrost-v1-mcp-auth.postman_collection.json` | Asserts inbound `/mcp` authentication across the three server auth modes (`headers` / `both` / `oauth`): discovery gating, the credential connect matrix, the full issuance flow, refresh rotation + family revocation, the revocation window, and the runtime `headers`→`both` upgrade. |
-| `runners/individual/run-newman-mcp-auth-tests.sh` | Builds + starts the upstream MCP server, then boots a fresh server per `client.mcp_server_auth_mode` and runs the collection against each. |
-
-Like the auth-matrix runner, this one **boots its own servers** — each mode needs a
-different boot config. It also builds and starts the upstream MCP server
-(`examples/mcps/http-no-ping-server`) so `/mcp` exposes real tools, and pre-seeds it
-as an MCP client plus two virtual keys (one active, one inactive). It requires a
-built `bifrost-http` binary.
-
-The collection's test scripts branch on the `auth_mode` env-var, so a single
-collection encodes the full matrix. Per mode it asserts:
-
-- **`headers` (default):** discovery endpoints 404; every virtual-key credential
-  (`x-bf-vk`, `Authorization: Bearer <vk>`, `x-api-key`) connects exactly as before;
-  anonymous connects when auth is not enforced; an inactive key never connects. The
-  OAuth surface is invisible.
-- **`both`:** every header-credential outcome is identical to `headers`, and only
-  *adds* JWT acceptance + live discovery; an invalid JWT is rejected with
-  `WWW-Authenticate`.
-- **`oauth`:** header credentials and anonymous are rejected (401 +
-  `WWW-Authenticate`); only issued JWTs connect.
-
-In `both`/`oauth` it also runs the end-to-end issuance flow (dynamic client
-registration, PKCE-S256 authorize, consent bound to a virtual key or to a
-server-minted session, token exchange, JWT connect), then refresh rotation with
-stolen-token family revocation, the revocation window (a revoked grant stops refresh
-while its already-issued access token keeps working until expiry), and — from the
-`headers` boot — the runtime `headers`→`both` upgrade.
-
-Run locally (from this directory):
-
-```bash
-./runners/individual/run-newman-mcp-auth-tests.sh --binary /path/to/bifrost-http
-# options: --port <port> (default 8090), --mcp-port <port> (default 3001), --html, --json, --verbose, --bail
 ```
 
 ### Warp Tests

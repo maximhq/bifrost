@@ -147,7 +147,7 @@ export function MCPUsageGuideSheet() {
 
 	const authMethodCopy: Record<AuthMethod, { label: string; description: string }> = {
 		virtual_key: { label: t("usageGuide.virtualKey"), description: t("usageGuide.virtualKeyDesc") },
-		oauth: { label: "OAuth", description: t("usageGuide.oauthDesc") },
+		oauth: { label: "OAuth", description: t("usageGuide.oauthDesc") }, // i18n-ignore: protocol name
 		idp_token: { label: t("usageGuide.idp"), description: t("usageGuide.idpDesc") },
 	};
 

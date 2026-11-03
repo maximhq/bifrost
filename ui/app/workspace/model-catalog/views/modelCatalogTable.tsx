@@ -10,6 +10,7 @@ import { ProviderLabels } from "@/lib/constants/logs";
 import { Info } from "lucide-react";
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
+import { getLocale } from "@/lib/i18n";
 
 function formatCost(dollars: number) {
 	return `$${dollars.toFixed(4)}`;
@@ -52,9 +53,9 @@ export default function ModelCatalogTable({
 	const { t } = useTranslation("models");
 	const allProvidersOption = useMemo(() => ({ value: ALL_PROVIDERS_VALUE, label: t("modelCatalog.allProviders") }), [t]);
 	const summaryCards = [
-		{ label: t("modelCatalog.totalProviders"), value: totalProviders.toLocaleString() },
-		{ label: t("modelCatalog.totalModels"), value: totalModels.toLocaleString() },
-		{ label: t("modelCatalog.totalRequests24h"), value: totalRequests24h.toLocaleString() },
+		{ label: t("modelCatalog.totalProviders"), value: totalProviders.toLocaleString(getLocale()) },
+		{ label: t("modelCatalog.totalModels"), value: totalModels.toLocaleString(getLocale()) },
+		{ label: t("modelCatalog.totalRequests24h"), value: totalRequests24h.toLocaleString(getLocale()) },
 		{ label: t("modelCatalog.totalCost24h"), value: formatCost(totalCost24h) },
 	];
 
@@ -77,7 +78,7 @@ export default function ModelCatalogTable({
 				<PageTitle title={t("modelCatalog.title")}>{t("modelCatalog.subtitle")}</PageTitle>
 				<ProviderSelector
 					data-testid="model-catalog-provider-trigger"
-					ariaLabel="Filter by provider"
+					ariaLabel={t("modelCatalog.filterProviderAria")}
 					className="w-[200px]"
 					allOption={allProvidersOption}
 					value={providerFilter || ALL_PROVIDERS_VALUE}
@@ -102,7 +103,7 @@ export default function ModelCatalogTable({
 									<div className="flex items-center gap-1">
 										{t("modelCatalog.models")}
 										<Tooltip>
-											<TooltipTrigger aria-label="About the models column" data-testid="model-catalog-models-info-trigger">
+											<TooltipTrigger aria-label={t("modelCatalog.aboutModelsColumn")} data-testid="model-catalog-models-info-trigger">
 												<Info className="text-muted-foreground h-3.5 w-3.5" aria-hidden="true" />
 											</TooltipTrigger>
 											<TooltipContent side="bottom">{t("modelCatalog.modelsUsed30d")}</TooltipContent>
@@ -138,7 +139,7 @@ export default function ModelCatalogTable({
 											</span>
 											{row.isCustom && (
 												<Badge variant="secondary" className="text-muted-foreground shrink-0 px-1.5 py-0.5 text-[10px] font-bold">
-													CUSTOM
+													{t("modelCatalog.customBadge")}
 												</Badge>
 											)}
 										</div>
@@ -154,7 +155,7 @@ export default function ModelCatalogTable({
 											<ModelsUsedCell models={row.modelsUsed} />
 										)}
 									</TableCell>
-									<TableCell className="text-right font-mono text-sm">{row.totalTraffic24h.toLocaleString()}</TableCell>
+									<TableCell className="text-right font-mono text-sm">{row.totalTraffic24h.toLocaleString(getLocale())}</TableCell>
 									<TableCell className="text-right font-mono text-sm">{formatCost(row.totalCost24h)}</TableCell>
 								</TableRow>
 							))

@@ -10,7 +10,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { Eye, EyeOff, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm, type Resolver } from "react-hook-form";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 
 interface MaximFormFragmentProps {
 	initialConfig?: {
@@ -72,7 +72,7 @@ export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting 
 							name="maxim_config.api_key"
 							render={({ field }) => (
 								<FormItem>
-									<FormLabel>API Key</FormLabel>
+									<FormLabel>{t("connectors.maxim.apiKey")}</FormLabel>
 									<FormControl>
 										<div className="relative">
 											<Input
@@ -104,7 +104,7 @@ export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting 
 							name="maxim_config.log_repo_id"
 							render={({ field }) => (
 								<FormItem>
-									<FormLabel>Log Repository ID (Optional)</FormLabel>
+									<FormLabel>{t("connectors.maxim.logRepoIdOptional")}</FormLabel>
 									<FormControl>
 										<Input
 											placeholder={t("connectors.enterLogRepositoryId")}
@@ -124,13 +124,19 @@ export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting 
 							render={({ field }) => (
 								<FormItem>
 									<FormLabel>
-										Request Headers <span className="text-muted-foreground font-normal">(Optional)</span>
+										{t("connectors.otel.requestHeaders")}{" "}
+										<span className="text-muted-foreground font-normal">{t("connectors.otel.optional")}</span>
 									</FormLabel>
 									<FormDescription>
-										Comma-separated list of request headers to capture and attach as trace tags. Supports exact names and wildcard patterns
-										(e.g. <code className="text-xs">x-custom-*</code> captures all headers with that prefix,{" "}
-										<code className="text-xs">*</code> captures all headers; note that <code className="text-xs">*</code> will capture
-										sensitive headers like Authorization).
+										<Trans
+											t={t}
+											i18nKey="connectors.maxim.requestHeadersHelp"
+											components={{
+												code0: <code className="text-xs" />,
+												code1: <code className="text-xs" />,
+												code2: <code className="text-xs" />,
+											}}
+										/>
 									</FormDescription>
 									<FormControl>
 										<RequestHeadersTextarea
@@ -156,7 +162,7 @@ export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting 
 						name="enabled"
 						render={({ field }) => (
 							<FormItem className="flex items-center gap-2 py-2">
-								<FormLabel className="text-muted-foreground text-sm font-medium">Enabled</FormLabel>
+								<FormLabel className="text-muted-foreground text-sm font-medium">{t("connectors.enabled")}</FormLabel>
 								<FormControl>
 									<Switch
 										checked={field.value}
@@ -196,7 +202,7 @@ export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting 
 							}}
 							disabled={!hasMaximAccess || isLoading || !form.formState.isDirty}
 						>
-							Reset
+							{t("connectors.reset")}
 						</Button>
 						<TooltipProvider>
 							<Tooltip>

@@ -59,8 +59,8 @@ const (
 	//
 	// Written under a distributed lock because every node updates the same row.
 	ConfigComplexitySemanticGenerationsKey = "complexity_semantic_generations"
-	ConfigRestartRequiredKey              = "restart_required"
-	ConfigHeaderFilterKey                 = "header_filter_config"
+	ConfigRestartRequiredKey               = "restart_required"
+	ConfigHeaderFilterKey                  = "header_filter_config"
 	// ConfigProxyHashKey stores the hash of the proxy_config config.json last applied. It is its own
 	// row because the proxy row is saved whole by the dashboard, which would wipe a hash kept inside it.
 	ConfigProxyHashKey = "proxy_config_hash"
@@ -91,7 +91,10 @@ type GlobalProxyConfig struct {
 	Password      string                  `json:"password,omitempty"`        // Optional authentication password
 	NoProxy       string                  `json:"no_proxy,omitempty"`        // Comma-separated list of hosts to bypass proxy
 	Timeout       int                     `json:"timeout"`                   // Connection timeout in seconds
-	SkipTLSVerify bool                    `json:"skip_tls_verify,omitempty"` // Skip TLS certificate verification
+	SkipTLSVerify bool                    `json:"skip_tls_verify,omitempty"` // Skip verifying the certificate of an https:// proxy itself (never the targets)
+	// CACertPEM is the proxy's CA: trusted for the TLS hop to an https:// proxy and for
+	// TLS through a TLS-inspecting proxy, on top of the system roots.
+	CACertPEM string `json:"ca_cert_pem,omitempty"`
 	// Entity enablement flags
 	EnableForSCIM      bool `json:"enable_for_scim"`      // Enable proxy for SCIM requests (enterprise only)
 	EnableForInference bool `json:"enable_for_inference"` // Enable proxy for inference requests
@@ -113,6 +116,7 @@ func (c *GlobalProxyConfig) ToNetwork() *network.GlobalProxyConfig {
 		NoProxy:            c.NoProxy,
 		Timeout:            c.Timeout,
 		SkipTLSVerify:      c.SkipTLSVerify,
+		CACertPEM:          c.CACertPEM,
 		EnableForSCIM:      c.EnableForSCIM,
 		EnableForInference: c.EnableForInference,
 		EnableForAPI:       c.EnableForAPI,

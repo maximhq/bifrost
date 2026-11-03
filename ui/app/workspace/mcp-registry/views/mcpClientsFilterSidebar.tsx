@@ -53,34 +53,7 @@ const CONNECTION_TYPE_OPTIONS: FilterOption[] = [
 	{ value: "http", label: "HTTP" },
 	{ value: "sse", label: "SSE" },
 	{ value: "stdio", label: "STDIO" },
-	{ value: "openapi", label: "OpenAPI" },
-];
-
-const AUTH_TYPE_OPTIONS: FilterOption[] = [
-	{ value: "none", label: "None" },
-	{ value: "headers", label: "Headers" },
-	{ value: "oauth", label: "OAuth" },
-	{ value: "per_user_oauth", label: "Per-User OAuth" },
-	{ value: "per_user_headers", label: "Per-User Headers" },
-	{ value: "token_exchange", label: "Token Exchange" },
-];
-
-// Connection state is runtime, not a column — the backend resolves these
-// against live engine state. "unstable" covers everything not healthy.
-const STATE_OPTIONS: FilterOption[] = [
-	{ value: "healthy", label: "Healthy" },
-	{ value: "unstable", label: "Unstable" },
-];
-
-const CODE_MODE_OPTIONS: FilterOption[] = [
-	{ value: "true", label: "Enabled" },
-	{ value: "false", label: "Disabled" },
-];
-
-// Status maps to the `disabled` column: an enabled client has disabled=false.
-const STATUS_OPTIONS: FilterOption[] = [
-	{ value: "false", label: "Enabled" },
-	{ value: "true", label: "Disabled" },
+	{ value: "openapi", label: "OpenAPI" }, // i18n-ignore
 ];
 
 interface SidebarProps {
@@ -134,7 +107,7 @@ export function MCPClientsFilterSidebar({ filters, onFiltersChange }: SidebarPro
 		() => [
 			{ value: "none", label: t("registry.filter.none") },
 			{ value: "headers", label: t("registry.filter.headers") },
-			{ value: "oauth", label: "OAuth" },
+			{ value: "oauth", label: "OAuth" }, // i18n-ignore
 			{ value: "per_user_oauth", label: t("registry.filter.perUserOauth") },
 			{ value: "per_user_headers", label: t("registry.filter.perUserHeaders") },
 			{ value: "token_exchange", label: t("registry.filter.tokenExchange") },

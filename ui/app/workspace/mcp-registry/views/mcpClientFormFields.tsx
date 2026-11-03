@@ -27,10 +27,11 @@ import {
 	isHTTPSOrLoopbackURL,
 	isSecretVarSet,
 	mcpOpenAPIConfigSchema,
-	PRIVATE_KEY_REQUIRED_MESSAGE,
-	SECRET_REQUIRED_FOR_METHOD_MESSAGE,
+	privateKeyRequiredMessage,
+	secretRequiredForMethodMessage,
 } from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
+import { supportsPerUserDiscovery } from "@/lib/utils/mcpPerUserDiscovery";
 import { buildOAuthConfigPayload } from "./mcpClientOAuthPayload";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetSCIMProvidersQuery } from "@enterprise/lib/store/apis/scimApi";
@@ -89,6 +90,20 @@ export function authKindOf(authType: MCPAuthType | undefined): MCPAuthKind {
 
 export function authScopeOf(authType: MCPAuthType | undefined): MCPAuthScope {
 	return authType === "per_user_oauth" || authType === "per_user_headers" ? "per_user" : "shared";
+}
+
+// authScopeLabel is how the servers table and the server view name a scope.
+// token_exchange carries the caller's own token on every call, so it is
+// per-user even though the form does not expose a scope dropdown for it.
+// Everything else, including "none", resolves through authScopeOf so the
+// label agrees with the form.
+export function authScopeLabel(authType: MCPAuthType | undefined): string {
+	if (authType === "token_exchange") {
+		return i18n.t("registry.form.perUser", { ns: "mcp" });
+	}
+	return authScopeOf(authType) === "per_user"
+		? i18n.t("registry.form.perUser", { ns: "mcp" })
+		: i18n.t("registry.form.shared", { ns: "mcp" });
 }
 
 /**
@@ -386,11 +401,11 @@ export function validateMCPClientForm({
 				hasErrors = true;
 			}
 			if (hasPrivateKeySettingsWithoutKey(data.token_exchange)) {
-				setError("token_exchange.resource_private_key", { message: PRIVATE_KEY_REQUIRED_MESSAGE });
+				setError("token_exchange.resource_private_key", { message: privateKeyRequiredMessage() });
 				hasErrors = true;
 			}
 			if (hasSendMethodWithoutSecret(data.token_exchange)) {
-				setError("token_exchange.resource_client_secret", { message: SECRET_REQUIRED_FOR_METHOD_MESSAGE });
+				setError("token_exchange.resource_client_secret", { message: secretRequiredForMethodMessage() });
 				hasErrors = true;
 			}
 			const endpoint = data.token_exchange?.resource_token_endpoint?.trim();
@@ -534,6 +549,9 @@ export function buildMCPClientPayload(data: CreateMCPClientRequest, satellites: 
 		// request headers to send.
 		headers: !isStdio && data.headers && Object.keys(data.headers).length > 0 ? data.headers : undefined,
 		per_user_header_keys: authType === "per_user_headers" ? effectivePerUserHeaderKeys(data, satellites) : undefined,
+		// The switch only renders where the flag applies; a value chosen before
+		// switching to an auth type it does not apply to is dropped here.
+		per_user_discovery: supportsPerUserDiscovery(authType, connectionType) ? data.per_user_discovery : undefined,
 		token_exchange:
 			authType === "token_exchange"
 				? {
@@ -667,6 +685,11 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 
 	const isRemote = connectionType === "http" || connectionType === "sse";
 	const isOpenAPI = connectionType === "openapi";
+	// Per-user auth and token exchange open a new streamable HTTP connection for each
+	// call, which an SSE stream cannot serve, so SSE offers the shared variants only. A
+	// library entry can still seed one of them on SSE: its option then stays listed so
+	// the trigger shows what will be submitted, and the server's refusal explains it.
+	const isSSE = connectionType === "sse";
 	// Auth and header sections apply to every transport that speaks HTTP to its
 	// target, which includes a synthesized openapi server's upstream API.
 	const hasNetworkAuth = isRemote || isOpenAPI;
@@ -683,6 +706,14 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 			setValue("auth_type", "none");
 			setValue("headers", undefined);
 			setValue("oauth_config", undefined);
+		}
+		if (value === "sse") {
+			if (authKind === "token_exchange") {
+				setValue("auth_type", "none");
+				setValue("token_exchange", undefined);
+			} else if (authScope === "per_user") {
+				applyAuthScope("shared");
+			}
 		}
 		if (value === "openapi") {
 			// The upstream is the API described by the spec, not an
@@ -795,137 +826,6 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 
 	return (
 		<>
-			{/* Server Behavior */}
-			<div className="space-y-4">
-				<SectionHeader title={t("registry.form.serverBehavior")} description={t("registry.form.serverBehaviorDesc")} />
-				<div className="divide-y rounded-md border">
-					<FormField
-						control={control}
-						name="is_code_mode_client"
-						render={({ field }) => (
-							<FormItem className="flex flex-row items-center justify-between gap-4 px-4 py-3">
-								<div className="flex items-center gap-2">
-									<FormLabel htmlFor="code-mode">{t("registry.form.codeModeServer")}</FormLabel>
-									<TooltipProvider>
-										<Tooltip>
-											<TooltipTrigger asChild>
-												<a
-													href="https://docs.getbifrost.ai/mcp/code-mode"
-													target="_blank"
-													rel="noopener noreferrer"
-													data-testid="code-mode-link-help"
-													className="text-muted-foreground hover:text-foreground focus-visible:ring-ring rounded focus-visible:ring-2 focus-visible:outline-none"
-													aria-label={t("registry.form.learnCodeModeAria")}
-												>
-													<Info className="h-4 w-4 cursor-help" />
-												</a>
-											</TooltipTrigger>
-											<TooltipContent>
-												<p>{t("registry.form.learnCodeMode")}</p>
-											</TooltipContent>
-										</Tooltip>
-									</TooltipProvider>
-								</div>
-								<FormControl>
-									<Switch id="code-mode" data-testid="code-mode-switch" checked={field.value || false} onCheckedChange={field.onChange} />
-								</FormControl>
-							</FormItem>
-						)}
-					/>
-					<FormField
-						control={control}
-						name="is_ping_available"
-						render={({ field }) => (
-							<FormItem className="flex flex-row items-center justify-between gap-4 px-4 py-3">
-								<div className="flex items-center gap-2">
-									<FormLabel htmlFor="ping-available">{t("registry.form.pingAvailable")}</FormLabel>
-									<TooltipProvider>
-										<Tooltip>
-											<TooltipTrigger asChild>
-												<Info className="text-muted-foreground h-4 w-4 cursor-help" />
-											</TooltipTrigger>
-											<TooltipContent className="max-w-xs">
-												<p>{t("registry.form.pingAvailableHelp")}</p>
-											</TooltipContent>
-										</Tooltip>
-									</TooltipProvider>
-								</div>
-								<FormControl>
-									<Switch
-										id="ping-available"
-										data-testid="mcp-is-ping-available"
-										checked={field.value === true}
-										onCheckedChange={field.onChange}
-									/>
-								</FormControl>
-							</FormItem>
-						)}
-					/>
-					{connectionType === "http" &&
-						authType !== "per_user_oauth" &&
-						authType !== "per_user_headers" &&
-						authType !== "token_exchange" && (
-							<FormField
-								control={control}
-								name="needs_session_stickiness"
-								render={({ field }) => (
-									<FormItem className="flex flex-row items-center justify-between gap-4 px-4 py-3">
-										<div className="flex items-center gap-2">
-											<FormLabel htmlFor="needs-session-stickiness">{t("registry.form.persistentConnection")}</FormLabel>
-											<TooltipProvider>
-												<Tooltip>
-													<TooltipTrigger asChild>
-														<Info className="text-muted-foreground h-4 w-4 cursor-help" />
-													</TooltipTrigger>
-													<TooltipContent className="max-w-xs">
-														<p>{t("registry.form.persistentConnectionHelp")}</p>
-													</TooltipContent>
-												</Tooltip>
-											</TooltipProvider>
-										</div>
-										<FormControl>
-											<Switch
-												id="needs-session-stickiness"
-												data-testid="mcp-needs-session-stickiness"
-												checked={field.value === true}
-												onCheckedChange={field.onChange}
-											/>
-										</FormControl>
-									</FormItem>
-								)}
-							/>
-						)}
-					{!isOpenAPI && (
-						<FormField
-							control={control}
-							name="max_protocol_version"
-							render={({ field }) => (
-								<FormItem className="flex flex-row items-center justify-between gap-4 px-4 py-3">
-									<div className="flex items-center gap-2">
-										<FormLabel>{t("registry.form.maxProtocolVersion")}</FormLabel>
-										<TooltipProvider>
-											<Tooltip>
-												<TooltipTrigger asChild>
-													<Info className="text-muted-foreground h-4 w-4 cursor-help" />
-												</TooltipTrigger>
-												<TooltipContent className="max-w-xs">
-													<p>{t("registry.form.maxProtocolVersionTooltip")}</p>
-												</TooltipContent>
-											</Tooltip>
-										</TooltipProvider>
-									</div>
-									<FormControl>
-										<MaxProtocolVersionSelect value={field.value} onChange={field.onChange} />
-									</FormControl>
-								</FormItem>
-							)}
-						/>
-					)}
-				</div>
-			</div>
-
-			<DottedSeparator />
-
 			{/* Connection & Authentication */}
 			<div className="space-y-4">
 				<SectionHeader
@@ -938,7 +838,7 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 								: t("registry.form.connectionAuthOpen")
 					}
 				/>
-				<div className="space-y-4 rounded-md border p-4">
+				<div className="space-y-4">
 					{!lockConnection && (
 						<FormItem className="w-full">
 							<FormLabel>{t("registry.form.serverSource")}</FormLabel>
@@ -1078,11 +978,13 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 										)}
 										{/* Also rendered when it is already the selected value, so the
 										    trigger shows the real auth type rather than a placeholder. */}
-										{!isOpenAPI && ((IS_ENTERPRISE && idpConfigured) || tokenExchangeUnavailable) && (
-											<SelectItem value="token_exchange" data-testid="auth-type-token-exchange">
-												{t("registry.form.tokenExchangeObo")}
-											</SelectItem>
-										)}
+										{!isOpenAPI &&
+											(!isSSE || authKind === "token_exchange") &&
+											((IS_ENTERPRISE && idpConfigured) || tokenExchangeUnavailable) && (
+												<SelectItem value="token_exchange" data-testid="auth-type-token-exchange">
+													{t("registry.form.tokenExchangeObo")}
+												</SelectItem>
+											)}
 									</SelectContent>
 								</Select>
 								{tokenExchangeUnavailable && (
@@ -1111,9 +1013,11 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 											<SelectItem value="shared" data-testid="auth-scope-shared">
 												{t("registry.form.shared")}
 											</SelectItem>
-											<SelectItem value="per_user" data-testid="auth-scope-per-user">
-												{t("registry.form.perUser")}
-											</SelectItem>
+											{(!isSSE || authScope === "per_user") && (
+												<SelectItem value="per_user" data-testid="auth-scope-per-user">
+													{t("registry.form.perUser")}
+												</SelectItem>
+											)}
 										</SelectContent>
 									</Select>
 								</FormItem>
@@ -1356,20 +1260,6 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 							data-testid="allowed-extra-headers-input"
 						/>
 					</div>
-
-					<DottedSeparator />
-
-					{/* TLS / Certificate */}
-					<div className="space-y-4">
-						<SectionHeader
-							title={t("registry.form.tlsCertificate")}
-							description={t("registry.form.tlsCertificateDesc")}
-							testId="tls-config-heading"
-						/>
-						<div className="space-y-4 rounded-md border p-4">
-							<TLSConfigFields control={control} />
-						</div>
-					</div>
 				</>
 			)}
 
@@ -1446,6 +1336,186 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 									label=""
 								/>
 							</div>
+						</div>
+					</div>
+				</>
+			)}
+
+			<DottedSeparator />
+
+			{/* Server Behavior */}
+			<div className="space-y-4">
+				<SectionHeader title={t("registry.form.serverBehavior")} description={t("registry.form.serverBehaviorDesc")} />
+				<div className="divide-y rounded-md border">
+					<FormField
+						control={control}
+						name="is_code_mode_client"
+						render={({ field }) => (
+							<FormItem className="flex flex-row items-center justify-between gap-4 px-4 py-3">
+								<div className="flex items-center gap-2">
+									<FormLabel htmlFor="code-mode">{t("registry.form.codeModeServer")}</FormLabel>
+									<TooltipProvider>
+										<Tooltip>
+											<TooltipTrigger asChild>
+												<a
+													href="https://docs.getbifrost.ai/mcp/code-mode"
+													target="_blank"
+													rel="noopener noreferrer"
+													data-testid="code-mode-link-help"
+													className="text-muted-foreground hover:text-foreground focus-visible:ring-ring rounded focus-visible:ring-2 focus-visible:outline-none"
+													aria-label={t("registry.form.learnCodeModeAria")}
+												>
+													<Info className="h-4 w-4 cursor-help" />
+												</a>
+											</TooltipTrigger>
+											<TooltipContent>
+												<p>{t("registry.form.learnCodeMode")}</p>
+											</TooltipContent>
+										</Tooltip>
+									</TooltipProvider>
+								</div>
+								<FormControl>
+									<Switch id="code-mode" data-testid="code-mode-switch" checked={field.value || false} onCheckedChange={field.onChange} />
+								</FormControl>
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name="is_ping_available"
+						render={({ field }) => (
+							<FormItem className="flex flex-row items-center justify-between gap-4 px-4 py-3">
+								<div className="flex items-center gap-2">
+									<FormLabel htmlFor="ping-available">{t("registry.form.pingAvailable")}</FormLabel>
+									<TooltipProvider>
+										<Tooltip>
+											<TooltipTrigger asChild>
+												<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+											</TooltipTrigger>
+											<TooltipContent className="max-w-xs">
+												<p>{t("registry.form.pingAvailableHelp")}</p>
+											</TooltipContent>
+										</Tooltip>
+									</TooltipProvider>
+								</div>
+								<FormControl>
+									<Switch
+										id="ping-available"
+										data-testid="mcp-is-ping-available"
+										checked={field.value === true}
+										onCheckedChange={field.onChange}
+									/>
+								</FormControl>
+							</FormItem>
+						)}
+					/>
+					{connectionType === "http" &&
+						authType !== "per_user_oauth" &&
+						authType !== "per_user_headers" &&
+						authType !== "token_exchange" && (
+							<FormField
+								control={control}
+								name="needs_session_stickiness"
+								render={({ field }) => (
+									<FormItem className="flex flex-row items-center justify-between gap-4 px-4 py-3">
+										<div className="flex items-center gap-2">
+											<FormLabel htmlFor="needs-session-stickiness">{t("registry.form.persistentConnection")}</FormLabel>
+											<TooltipProvider>
+												<Tooltip>
+													<TooltipTrigger asChild>
+														<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+													</TooltipTrigger>
+													<TooltipContent className="max-w-xs">
+														<p>{t("registry.form.persistentConnectionHelp")}</p>
+													</TooltipContent>
+												</Tooltip>
+											</TooltipProvider>
+										</div>
+										<FormControl>
+											<Switch
+												id="needs-session-stickiness"
+												data-testid="mcp-needs-session-stickiness"
+												checked={field.value === true}
+												onCheckedChange={field.onChange}
+											/>
+										</FormControl>
+									</FormItem>
+								)}
+							/>
+						)}
+					{supportsPerUserDiscovery(authType, connectionType) && (
+						<FormField
+							control={control}
+							name="per_user_discovery"
+							render={({ field }) => (
+								<FormItem className="flex flex-row items-center justify-between gap-4 px-4 py-3">
+									<div className="flex items-center gap-2">
+										<FormLabel htmlFor="per-user-discovery">{t("registry.form.perUserDiscovery")}</FormLabel>
+										<TooltipProvider>
+											<Tooltip>
+												<TooltipTrigger asChild>
+													<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+												</TooltipTrigger>
+												<TooltipContent className="max-w-xs">
+													<p>{t("registry.form.perUserDiscoveryHelp")}</p>
+												</TooltipContent>
+											</Tooltip>
+										</TooltipProvider>
+									</div>
+									<FormControl>
+										<Switch
+											id="per-user-discovery"
+											data-testid="mcp-per-user-discovery"
+											checked={field.value === true}
+											onCheckedChange={field.onChange}
+										/>
+									</FormControl>
+								</FormItem>
+							)}
+						/>
+					)}
+					{!isOpenAPI && (
+						<FormField
+							control={control}
+							name="max_protocol_version"
+							render={({ field }) => (
+								<FormItem className="flex flex-row items-center justify-between gap-4 px-4 py-3">
+									<div className="flex items-center gap-2">
+										<FormLabel>{t("registry.form.maxProtocolVersion")}</FormLabel>
+										<TooltipProvider>
+											<Tooltip>
+												<TooltipTrigger asChild>
+													<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+												</TooltipTrigger>
+												<TooltipContent className="max-w-xs">
+													<p>{t("registry.form.maxProtocolVersionTooltip")}</p>
+												</TooltipContent>
+											</Tooltip>
+										</TooltipProvider>
+									</div>
+									<FormControl>
+										<MaxProtocolVersionSelect value={field.value} onChange={field.onChange} />
+									</FormControl>
+								</FormItem>
+							)}
+						/>
+					)}
+				</div>
+			</div>
+
+			{hasNetworkAuth && (
+				<>
+					<DottedSeparator />
+
+					{/* TLS / Certificate */}
+					<div className="space-y-4">
+						<SectionHeader
+							title={t("registry.form.tlsCertificate")}
+							description={t("registry.form.tlsCertificateDesc")}
+							testId="tls-config-heading"
+						/>
+						<div className="space-y-4 rounded-md border p-4">
+							<TLSConfigFields control={control} />
 						</div>
 					</div>
 				</>

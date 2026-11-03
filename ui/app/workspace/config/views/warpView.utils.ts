@@ -59,7 +59,8 @@ export function validateWarpRetentionDays(value: unknown): true | string {
  * form submit 1 and surface that as a failed save instead of an inline error.
  */
 export function validateWarpMaxIterations(value: unknown): true | string {
-	if (!isFiniteNumber(value) || !Number.isInteger(value) || value < 2 || value > 20) return "Must be a whole number between 2 and 20";
+	if (!isFiniteNumber(value) || !Number.isInteger(value) || value < 2 || value > 20)
+		return i18n.t("warp.iterationsError", { ns: "config" });
 	return true;
 }
 

@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { createInstance } from "i18next";
-import { resources } from "@/lib/i18n/resources";
+import { loadCatalog, resources } from "@/lib/i18n/resources";
 
 import { ModelProvider, ModelProviderKey } from "@/lib/types/config";
 import {
@@ -23,6 +23,7 @@ import {
 const locale = createInstance();
 beforeAll(async () => {
 	await locale.init({ lng: "en", fallbackLng: false, resources, interpolation: { escapeValue: false } });
+	locale.addResourceBundle("zh-CN", "models", await loadCatalog("zh-CN", "models"));
 });
 const render = (value: MigrationMessage, language = "en") => formatMigrationMessage(value, locale.getFixedT(language, "models"));
 

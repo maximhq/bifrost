@@ -64,7 +64,7 @@ export default function WarpLauncher() {
 				</button>
 			</TooltipTrigger>
 			<TooltipContent sideOffset={8} className="flex items-center gap-1.5 px-2 py-1 text-xs">
-				Ask Warp
+				{t("warp.ask")}
 				<span className="inline-flex items-center gap-1">
 					<kbd className={kbdClass}>{isAppleDevice() ? "⌘" : "Ctrl"}</kbd>
 					<kbd className={kbdClass}>I</kbd>

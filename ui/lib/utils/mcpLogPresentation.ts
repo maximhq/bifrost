@@ -4,7 +4,7 @@ import type { TFunction } from "i18next";
 import type { MCPToolLogEntry } from "@/lib/types/logs";
 
 // Policy approval confirms permission, never successful execution.
-export function getMCPLogPresentation(log: MCPToolLogEntry, t?: TFunction) {
+export function getMCPLogPresentation(log: MCPToolLogEntry, t?: TFunction<"observability">) {
 	const policy = log.metadata?.inspection_phase === "pre_execution";
 	const approved = policy && log.decision === "allow";
 	const blocked = policy && log.decision === "deny";

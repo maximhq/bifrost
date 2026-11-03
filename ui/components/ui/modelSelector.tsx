@@ -16,6 +16,7 @@ import { useGetBaseModelsQuery, useGetModelsQuery } from "@/lib/store/apis/provi
 import { cn } from "@/lib/utils";
 import { isSentinelValue } from "@/lib/utils/strings";
 import { ChevronDownIcon, Loader2Icon, PlusIcon, SearchIcon, XIcon } from "lucide-react";
+import type { ParseKeys } from "i18next";
 import type React from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
@@ -24,6 +25,8 @@ import { Trans, useTranslation } from "react-i18next";
 export interface ModelSelectorOption {
 	value: string;
 	label: string;
+	/** When set, rendered translated in place of `label` (for module-level constants that cannot call `t`). */
+	labelKey?: ParseKeys<"common">;
 	provider?: string;
 	isDeprecated?: boolean;
 	/** Non-selectable. The row still renders, greyed, with `disabledReason` beside it. */
@@ -114,7 +117,7 @@ export type ModelSelectorProps = ModelSelectorSingleProps | ModelSelectorMultiPr
  * The wildcard row, for the surfaces whose list accepts "*" as "every model". Ready to hand
  * to `extraOptions`; module level so its identity is stable across renders.
  */
-export const ALL_MODELS_OPTION: ModelSelectorOption[] = [{ value: "*", label: "All Models" }];
+export const ALL_MODELS_OPTION: ModelSelectorOption[] = [{ value: "*", label: "All Models", labelKey: "modelAccess.allModels" }]; // i18n-ignore: translated via labelKey
 
 /** A catalog row. Base models carry only a name, so everything past it is optional. */
 interface ListedModel {
@@ -153,7 +156,7 @@ export function ModelSelector(props: ModelSelectorProps) {
 		disableDeprecated = true,
 		getOptionState,
 		emptyMessage,
-		extraOptions,
+		extraOptions: extraOptionsProp,
 		renderValueLabel,
 		hideSearchIcon = false,
 		openWithEmptySearch = false,
@@ -162,6 +165,10 @@ export function ModelSelector(props: ModelSelectorProps) {
 		ariaDescribedBy,
 		ariaInvalid,
 	} = props;
+	const extraOptions = useMemo(
+		() => extraOptionsProp?.map((o) => (o.labelKey ? { ...o, label: t(o.labelKey) } : o)),
+		[extraOptionsProp, t],
+	);
 	const placeholder = placeholderProp ?? t("modelAccess.selectModel");
 	const searchPlaceholder = searchPlaceholderProp ?? t("modelAccess.searchModels");
 
@@ -453,7 +460,7 @@ export function ModelSelector(props: ModelSelectorProps) {
 									<span
 										role="button"
 										tabIndex={-1}
-										aria-label={`Remove ${labelFor(value)}`}
+										aria-label={t("combobox.removeAria", { label: labelFor(value) })}
 										className="text-muted-foreground hover:text-foreground flex shrink-0 cursor-pointer items-center"
 										onClick={(e) => {
 											e.preventDefault();
@@ -514,7 +521,7 @@ export function ModelSelector(props: ModelSelectorProps) {
 
 					{pinned.length > 0 && (
 						<ComboboxGroup>
-							<ComboboxLabel>Selected</ComboboxLabel>
+							<ComboboxLabel>{t("entityAssociation.selected")}</ComboboxLabel>
 							{pinned.map(renderOption)}
 						</ComboboxGroup>
 					)}

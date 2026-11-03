@@ -21,10 +21,11 @@
 
 import { CheckIcon, ChevronDownIcon, PlusIcon } from "lucide-react";
 import { type ComponentType, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ParseKeys } from "i18next";
 import { useTranslation } from "react-i18next";
 import { components } from "react-select";
 
-const ENTITY_NOUN_KEYS: Record<string, string> = {
+const ENTITY_NOUN_KEYS: Partial<Record<string, ParseKeys<"common">>> = {
 	team: "entities.team",
 	teams: "entities.teams",
 	customer: "entities.customer",
@@ -35,6 +36,10 @@ const ENTITY_NOUN_KEYS: Record<string, string> = {
 	"MCP servers": "entities.mcpServers",
 	"Virtual MCP": "entities.virtualMcp",
 	"Virtual MCPs": "entities.virtualMcps",
+	agent: "entities.agent",
+	agents: "entities.agents",
+	relay: "entities.relay",
+	relays: "entities.relays",
 };
 
 import { AsyncMultiSelect } from "@/components/ui/asyncMultiselect";

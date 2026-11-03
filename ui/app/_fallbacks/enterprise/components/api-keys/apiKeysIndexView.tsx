@@ -2,10 +2,11 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { useGetCoreConfigQuery } from "@/lib/store";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
+import { getExampleBaseUrl } from "@/lib/utils/port";
 import { Link } from "@tanstack/react-router";
 import { Copy, InfoIcon, KeyRound } from "lucide-react";
 import { useMemo } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import ContactUsView from "../views/contactUsView";
 
 export default function APIKeysView() {
@@ -17,7 +18,7 @@ export default function APIKeysView() {
 
 	const curlExample = `# Base64 encode your username:password
 # Example: echo -n "username:password" | base64
-curl --location 'http://localhost:8080/v1/chat/completions'
+curl --location '${getExampleBaseUrl()}/v1/chat/completions'
 --header 'Content-Type: application/json' 
 --header 'Accept: application/json' 
 --header 'Authorization: Basic <base64_encoded_username:password>' 
@@ -55,6 +56,7 @@ curl --location 'http://localhost:8080/v1/chat/completions'
 		);
 	}
 
+	const codeTag = <code className="bg-muted rounded px-1 py-0.5 text-sm" />;
 	const isInferenceAuthDisabled = !(bifrostConfig?.client_config?.enforce_auth_on_inference ?? false);
 
 	return (
@@ -64,16 +66,9 @@ curl --location 'http://localhost:8080/v1/chat/completions'
 				<AlertDescription>
 					<p className="text-md text-muted-foreground">
 						{isInferenceAuthDisabled ? (
-							<>
-								Authentication is currently <strong>disabled for inference API calls</strong>. You can make inference requests without
-								authentication. Dashboard and admin API calls still require Basic auth with your admin credentials encoded in the standard{" "}
-								<code className="bg-muted rounded px-1 py-0.5 text-sm">username:password</code> format with base64 encoding.
-							</>
+							<Trans t={t} i18nKey="apiKeys.inferenceAuthDisabled" components={{ strong: <strong />, code: codeTag }} />
 						) : (
-							<>
-								Use Basic auth with your admin credentials when making API calls to Bifrost. Encode your credentials in the standard{" "}
-								<code className="bg-muted rounded px-1 py-0.5 text-sm">username:password</code> format with base64 encoding.
-							</>
+							<Trans t={t} i18nKey="apiKeys.useBasicAuth" components={{ code: codeTag }} />
 						)}
 					</p>
 					{!isInferenceAuthDisabled && (

@@ -157,10 +157,10 @@ export function SkillDetailView({
 	if (!skill) {
 		return (
 			<div className="flex w-full flex-1 flex-col items-center justify-center p-4">
-				<p className="text-muted-foreground text-sm">Skill not found</p>
+				<p className="text-muted-foreground text-sm">{t("skillsRepo.skillNotFound")}</p>
 				<Button variant="outline" size="sm" className="mt-3" onClick={onBack}>
 					<ArrowLeft className="h-3.5 w-3.5" />
-					Back to list
+					{t("skillsRepo.backToList")}
 				</Button>
 			</div>
 		);

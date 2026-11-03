@@ -198,7 +198,7 @@ export function ValueEditor({
 					values={options}
 					value={selectedValues}
 					onChange={handleMultiselectChange}
-					placeholder="Select providers..."
+					placeholder={t("celBuilder.selectProviders")}
 					className="w-[360px]"
 					noPortal
 				/>
@@ -221,7 +221,7 @@ export function ValueEditor({
 				values={options}
 				value={value || ""}
 				onChange={(newValue: string) => handleOnChange(newValue)}
-				placeholder={fieldData.placeholder || "Select..."}
+				placeholder={fieldData.placeholder || t("celBuilder.selectPlaceholder")}
 				className="w-[360px]"
 				noPortal
 			/>

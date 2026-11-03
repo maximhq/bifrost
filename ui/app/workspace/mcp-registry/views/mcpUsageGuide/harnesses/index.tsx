@@ -7,6 +7,7 @@ import { CursorHarnessInstall } from "./cursorHarnessInstall";
 import { OpenCodeHarnessInstall } from "./opencodeHarnessInstall";
 import { VSCodeHarnessInstall } from "./vscodeHarnessInstall";
 import { WindsurfHarnessInstall } from "./windsurfHarnessInstall";
+import { withBasePath } from "@/lib/utils/basePath";
 
 export { AntigravityHarnessInstall, AntigravityIcon } from "./antigravityHarnessInstall";
 export { ClaudeCodeHarnessInstall } from "./claudeCodeHarnessInstall";
@@ -25,6 +26,7 @@ export interface HarnessDefinition {
 	Install: ComponentType<HarnessInstallProps>;
 }
 
+/** Renders a harness logo image as a tab icon. */
 function logoIcon(src: string): ReactNode {
 	return <img src={src} alt="" aria-hidden="true" className="size-4 rounded-[2px]" />;
 }
@@ -33,49 +35,49 @@ function logoIcon(src: string): ReactNode {
 export const HARNESSES: HarnessDefinition[] = [
 	{
 		id: "claude-code",
-		label: "Claude Code",
-		icon: logoIcon("/images/harness/claudecode.svg"),
+		label: "Claude Code", // i18n-ignore: product name
+		icon: logoIcon(withBasePath("/images/harness/claudecode.svg")),
 		Install: ClaudeCodeHarnessInstall,
 	},
 	{
 		id: "cursor",
-		label: "Cursor",
-		icon: logoIcon("/images/harness/cursor.svg"),
+		label: "Cursor", // i18n-ignore: product name
+		icon: logoIcon(withBasePath("/images/harness/cursor.svg")),
 		usesPlatform: true,
 		Install: CursorHarnessInstall,
 	},
 	{
 		id: "codex",
-		label: "Codex",
-		icon: logoIcon("/images/harness/codex.svg"),
+		label: "Codex", // i18n-ignore: product name
+		icon: logoIcon(withBasePath("/images/harness/codex.svg")),
 		usesPlatform: true,
 		Install: CodexHarnessInstall,
 	},
 	{
 		id: "vscode",
-		label: "VS Code",
-		icon: logoIcon("/images/harness/vscode.svg"),
+		label: "VS Code", // i18n-ignore: product name
+		icon: logoIcon(withBasePath("/images/harness/vscode.svg")),
 		usesPlatform: true,
 		Install: VSCodeHarnessInstall,
 	},
 	{
 		id: "opencode",
-		label: "OpenCode",
-		icon: logoIcon("/images/harness/opencode.svg"),
+		label: "OpenCode", // i18n-ignore: product name
+		icon: logoIcon(withBasePath("/images/harness/opencode.svg")),
 		usesPlatform: true,
 		Install: OpenCodeHarnessInstall,
 	},
 	{
 		id: "windsurf",
-		label: "Windsurf (Devin)",
-		icon: logoIcon("/images/harness/windsurf.svg"),
+		label: "Windsurf (Devin)", // i18n-ignore: product name
+		icon: logoIcon(withBasePath("/images/harness/windsurf.svg")),
 		usesPlatform: true,
 		Install: WindsurfHarnessInstall,
 	},
 	{
 		id: "antigravity",
-		label: "Antigravity",
-		icon: logoIcon("/images/harness/antigravity.svg"),
+		label: "Antigravity", // i18n-ignore: product name
+		icon: logoIcon(withBasePath("/images/harness/antigravity.svg")),
 		usesPlatform: true,
 		Install: AntigravityHarnessInstall,
 	},

@@ -100,7 +100,7 @@ const supportsChat = (provider: ModelProvider): boolean => {
 export default function ComplexityRouterPage() {
 	const { t } = useTranslation("models");
 	const { t: tc } = useTranslation("common");
-	const tcpx = (key: string, opts?: Record<string, unknown>) => t(`routing.complexityUi.${key}`, opts);
+	const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" });
 	const canUpdate = useRbac(RbacResource.RoutingRules, RbacOperation.Update);
 	const { data, isLoading, isFetching, error, refetch } = useGetComplexityAnalyzerConfigQuery(undefined, {
 		refetchOnMountOrArgChange: true,
@@ -203,7 +203,8 @@ export default function ComplexityRouterPage() {
 		dirtyFields.decision?.provider ||
 		dirtyFields.decision?.model ||
 		dirtyFields.decision?.previous_message_count ||
-		dirtyFields.decision?.timeout,
+		dirtyFields.decision?.timeout ||
+		dirtyFields.decision?.min_confidence,
 	);
 	const hasUnsavedEmbeddingConfigChanges =
 		Object.values(dirtyFields.semantic ?? {}).some(Boolean) || Object.values(dirtyFields.llm ?? {}).some(Boolean);
@@ -435,7 +436,8 @@ export default function ComplexityRouterPage() {
 			formErrors.decision?.provider ||
 			formErrors.decision?.model ||
 			formErrors.decision?.previous_message_count ||
-			formErrors.decision?.timeout,
+			formErrors.decision?.timeout ||
+			formErrors.decision?.min_confidence,
 		);
 		setEmbeddingSheetOpen(Boolean(formErrors.semantic || formErrors.llm || (decisionSheetError && liveClassifier === "semantic")));
 		setDecisionSheetOpen(decisionSheetError && liveClassifier === "decision");

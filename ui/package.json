@@ -14,7 +14,10 @@
 		"lint:a11y:enterprise": "oxlint -c .oxlintrc.a11y.json app/enterprise/",
 		"format": "oxfmt",
 		"format:check": "oxfmt --check",
-		"format:enterprise": "oxfmt app/enterprise/"
+		"format:changed": "sh scripts/formatChanged.sh",
+		"format:changed:check": "sh scripts/formatChanged.sh --check",
+		"format:enterprise": "oxfmt app/enterprise/",
+		"i18n:check": "node scripts/i18nCheck.mjs"
 	},
 	"dependencies": {
 		"@bprogress/core": "1.3.4",
@@ -107,7 +110,7 @@
 	"overrides": {
 		"dompurify": "3.4.17",
 		"esbuild": "0.28.1",
-		"follow-redirects": "1.16.1",
+		"follow-redirects": "1.16.2",
 		"seroval": "1.6.11",
 		"tar": "7.5.3",
 		"tinypool": "2.1.2",

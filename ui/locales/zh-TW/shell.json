@@ -9,6 +9,8 @@
 		"llmLogs": "LLM 日誌",
 		"mcpLogs": "MCP 日誌",
 		"connectors": "聯結器",
+		"relayLogs": "轉送日誌",
+		"relays": "轉送",
 		"logsSettings": "日誌設定",
 		"models": "模型",
 		"modelCatalog": "模型目錄",
@@ -83,6 +85,8 @@
 		"skillsSettings": "技能設定"
 	},
 	"navDesc": {
+		"relayLogs": "轉送呼叫及其成本",
+		"relays": "以依路由計價的方式轉送非 LLM API",
 		"home": "你的用量、金鑰、預算和存取權限",
 		"observability": "請求日誌與監控",
 		"dashboard": "儀表板",
@@ -169,6 +173,74 @@
 		"unlockTitle": "解鎖你的個人主頁",
 		"unlockDescription": "此功能屬於 Bifrost 企業版許可證。主頁會向每位使用者展示自己的用量、金鑰、預算和存取權限。"
 	},
+	"commandPalette": {
+		"title": "命令選單",
+		"placeholder": "搜尋頁面或跳至…",
+		"empty": "沒有符合「{{query}}」的結果",
+		"groups": {
+			"general": "一般",
+			"results": "結果",
+			"actions": "操作",
+			"thisPage": "本頁"
+		},
+		"current": "目前",
+		"footer": {
+			"navigate": "導覽",
+			"open": "開啟",
+			"newTab": "新分頁",
+			"back": "返回"
+		},
+		"openHint": "開啟命令選單",
+		"actions": {
+			"create": "建立…",
+			"copyLink": "複製本頁連結",
+			"changeTheme": "變更主題…",
+			"changeLanguage": "變更語言…"
+		},
+		"pages": {
+			"create": {
+				"title": "建立",
+				"placeholder": "搜尋要建立的內容…"
+			},
+			"theme": {
+				"title": "主題",
+				"placeholder": "搜尋主題…"
+			},
+			"language": {
+				"title": "語言",
+				"placeholder": "搜尋語言…"
+			}
+		},
+		"create": {
+			"virtualKey": "建立虛擬金鑰",
+			"team": "建立團隊",
+			"customer": "建立客戶",
+			"user": "建立使用者",
+			"routingRule": "建立路由規則",
+			"mcpServer": "新增 MCP 伺服器",
+			"modelLimit": "建立模型限制",
+			"webhook": "建立 Webhook",
+			"mcpLibraryServer": "將伺服器新增至 MCP 程式庫",
+			"virtualMcp": "建立虛擬 MCP",
+			"agent": "建立代理程式",
+			"relay": "新增轉送端點",
+			"plugin": "新增外掛程式",
+			"alertChannel": "新增告警渠道",
+			"alertRule": "建立告警規則",
+			"businessUnit": "建立業務單位",
+			"role": "建立角色",
+			"accessProfile": "建立存取設定檔",
+			"project": "建立專案",
+			"prompt": "建立提示詞",
+			"promptFolder": "建立提示詞資料夾",
+			"skill": "建立技能",
+			"apiKey": "建立 API 金鑰"
+		},
+		"toast": {
+			"linkCopied": "已複製連結",
+			"linkCopyFailed": "無法複製連結"
+		}
+	},
 	"search": {
 		"placeholder": "搜尋…",
 		"ariaLabel": "搜尋側欄導航"
@@ -212,6 +284,8 @@
 		"accountMenu": "帳戶選單",
 		"openMenu": "開啟選單",
 		"signOut": "退出登入",
+		"viewAsUser": "以使用者身分檢視",
+		"closeView": "關閉檢視",
 		"version": "版本",
 		"userFallback": "使用者",
 		"discord": "Discord 伺服器",
@@ -305,7 +379,8 @@
 			"Security": "安全",
 			"Provider Setup": "供應商設定",
 			"Everything Else": "其他設定"
-		}
+		},
+		"completedSr": "已完成："
 	},
 	"warp": {
 		"ask": "詢問 Warp",
@@ -360,12 +435,17 @@
 			"followUp": "提出追問，目前回答結束後會傳送…",
 			"placeholder": "詢問你的 Bifrost 資料…",
 			"stop": "停止",
-			"send": "傳送"
+			"send": "傳送",
+			"commandClear": "開始新對話",
+			"settings": "Warp 設定",
+			"switchModel": "切換模型",
+			"defaultModel": "預設"
 		},
 		"question": {
 			"label": "問題",
 			"skip": "跳過",
-			"orType": "或在下方輸入你自己的回答。"
+			"orType": "或在下方輸入你自己的回答。",
+			"skipAnswer": "請自行判斷，並說明你的假設。"
 		},
 		"message": {
 			"whatThisCovers": "涵蓋內容",
@@ -449,6 +529,10 @@
 			"render_chart": {
 				"running": "繪製圖表",
 				"done": "畫了一個圖表"
+			},
+			"list_topics": {
+				"running": "正在列出主題",
+				"done": "已列出主題"
 			}
 		},
 		"errors": {
@@ -542,7 +626,69 @@
 					"請管理員允許你的帳戶使用 Warp 的模型。",
 					"或在 Warp 設定中改用你的帳戶獲准使用的模型。"
 				]
-			}
+			},
+			"requestFailedStatus": "Warp 請求失敗（{{status}}）",
+			"noResponseBody": "Warp 未傳回回應內容",
+			"connectionClosed": "連線在 Warp 完成回答前已關閉。",
+			"requestFailed": "Warp 請求失敗"
+		},
+		"dock": {
+			"resize": "調整 Warp 面板大小",
+			"description": "向 Warp 詢問有關此部署的日誌、用量和花費的問題。"
+		},
+		"chart": {
+			"openInLogs": "在日誌中開啟",
+			"empty": "此時間範圍內沒有資料。",
+			"weekOf": "{{date}} 當週"
+		},
+		"usage": {
+			"tokens_other": "{{formattedCount}} 個 Token"
 		}
+	},
+	"rssSources": {
+		"newsOn": "已開啟新聞",
+		"newsOff": "已為此閘道關閉新聞",
+		"updateSettingsFailed": "無法更新新聞設定",
+		"updateFeedFailed": "無法更新 {{name}}",
+		"updatedLogo": "已更新 {{name}} 的標誌",
+		"removedLogo": "已移除 {{name}} 的標誌",
+		"updateLogoFailed": "無法更新 {{name}} 的標誌",
+		"removed": "已移除 {{name}}",
+		"removeFailed": "無法移除 {{name}}",
+		"title": "新聞來源",
+		"description": "選擇要在此閘道上所有人的通知匣「新聞」分頁中顯示哪些 RSS 訂閱源。",
+		"showNews": "在通知匣中顯示新聞",
+		"showNewsHelp": "關閉後，此閘道上所有人都將看不到「新聞」分頁，並停止擷取新聞項目。下方的來源會被保留。",
+		"settingLoadFailed": "無法載入此設定。",
+		"tryAgain": "重試",
+		"loading": "正在載入來源",
+		"loadFailed": "無法載入來源。",
+		"builtinFeeds": "內建訂閱源",
+		"customFeeds": "自訂訂閱源",
+		"noCustomFeeds": "尚無自訂訂閱源。請在下方新增任意 RSS 或 Atom URL。",
+		"removeAria": "移除 {{name}}",
+		"disableAria": "停用 {{name}}",
+		"enableAria": "啟用 {{name}}",
+		"changeLogoAria": "更換 {{name}} 的標誌",
+		"uploadLogo": "上傳標誌",
+		"removeLogo": "移除標誌",
+		"addedFeed": "已新增 {{name}}",
+		"addFeedTitle": "新增訂閱源",
+		"name": "名稱",
+		"namePlaceholder": "Bifrost releases",
+		"feedUrl": "訂閱源 URL",
+		"logo": "標誌",
+		"optional": "（選填）",
+		"logoPreviewName": "標誌預覽",
+		"uploadedImage": "已上傳的圖片",
+		"upload": "上傳",
+		"logoHelp": "圖片 URL，或不超過 96 KB 的 PNG、JPEG、GIF、WebP、SVG 或 ICO。預設為網站的 favicon。",
+		"addFeed": "新增訂閱源"
+	},
+	"agentHandover": {
+		"completeTitle": "Bifrost Agent 登入完成",
+		"title": "Bifrost Agent 登入",
+		"completeBody": "你可以關閉此視窗並返回 Bifrost Agent。",
+		"status": "登入狀態：{{status}}"
 	}
 }

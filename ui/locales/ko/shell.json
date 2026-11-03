@@ -9,6 +9,8 @@
 		"llmLogs": "LLM 로그",
 		"mcpLogs": "MCP 로그",
 		"connectors": "커넥터",
+		"relayLogs": "릴레이 로그",
+		"relays": "릴레이",
 		"logsSettings": "로그 설정",
 		"models": "모델",
 		"modelCatalog": "모델 카탈로그",
@@ -83,6 +85,8 @@
 		"skillsSettings": "스킬 설정"
 	},
 	"navDesc": {
+		"relayLogs": "릴레이 호출과 비용",
+		"relays": "라우트별 가격으로 비 LLM API 릴레이",
 		"home": "내 사용량, 키, 예산, 접근 권한",
 		"observability": "요청 로그 및 모니터링",
 		"dashboard": "대시보드",
@@ -169,6 +173,74 @@
 		"unlockTitle": "개인 홈 잠금 해제",
 		"unlockDescription": "이 기능은 Bifrost 엔터프라이즈 라이선스의 일부입니다. 홈에서는 각 사용자 자신의 사용량, 키, 예산, 접근 권한을 보여 줍니다."
 	},
+	"commandPalette": {
+		"title": "명령 메뉴",
+		"placeholder": "페이지 검색 또는 이동…",
+		"empty": "“{{query}}”에 대한 결과가 없습니다",
+		"groups": {
+			"general": "일반",
+			"results": "결과",
+			"actions": "작업",
+			"thisPage": "이 페이지"
+		},
+		"current": "현재",
+		"footer": {
+			"navigate": "이동",
+			"open": "열기",
+			"newTab": "새 탭",
+			"back": "뒤로"
+		},
+		"openHint": "명령 메뉴 열기",
+		"actions": {
+			"create": "만들기…",
+			"copyLink": "이 페이지 링크 복사",
+			"changeTheme": "테마 변경…",
+			"changeLanguage": "언어 변경…"
+		},
+		"pages": {
+			"create": {
+				"title": "만들기",
+				"placeholder": "만들 항목 검색…"
+			},
+			"theme": {
+				"title": "테마",
+				"placeholder": "테마 검색…"
+			},
+			"language": {
+				"title": "언어",
+				"placeholder": "언어 검색…"
+			}
+		},
+		"create": {
+			"virtualKey": "가상 키 만들기",
+			"team": "팀 만들기",
+			"customer": "고객 만들기",
+			"user": "사용자 만들기",
+			"routingRule": "라우팅 규칙 만들기",
+			"mcpServer": "MCP 서버 추가",
+			"modelLimit": "모델 한도 만들기",
+			"webhook": "웹훅 만들기",
+			"mcpLibraryServer": "MCP 라이브러리에 서버 추가",
+			"virtualMcp": "가상 MCP 만들기",
+			"agent": "에이전트 만들기",
+			"relay": "릴레이 엔드포인트 추가",
+			"plugin": "플러그인 추가",
+			"alertChannel": "알림 채널 추가",
+			"alertRule": "알림 규칙 만들기",
+			"businessUnit": "사업부 만들기",
+			"role": "역할 만들기",
+			"accessProfile": "액세스 프로필 만들기",
+			"project": "프로젝트 만들기",
+			"prompt": "프롬프트 만들기",
+			"promptFolder": "프롬프트 폴더 만들기",
+			"skill": "스킬 만들기",
+			"apiKey": "API 키 만들기"
+		},
+		"toast": {
+			"linkCopied": "링크를 복사했습니다",
+			"linkCopyFailed": "링크를 복사하지 못했습니다"
+		}
+	},
 	"search": {
 		"placeholder": "검색...",
 		"ariaLabel": "사이드바 탐색 검색"
@@ -212,6 +284,8 @@
 		"accountMenu": "계정 메뉴",
 		"openMenu": "메뉴 열기",
 		"signOut": "로그아웃",
+		"viewAsUser": "사용자로 보기",
+		"closeView": "보기 닫기",
 		"version": "버전",
 		"userFallback": "사용자",
 		"discord": "Discord 서버",
@@ -305,7 +379,8 @@
 			"Security": "보안",
 			"Provider Setup": "공급자 설정",
 			"Everything Else": "기타"
-		}
+		},
+		"completedSr": "완료:"
 	},
 	"warp": {
 		"ask": "Warp에 질문",
@@ -360,12 +435,17 @@
 			"followUp": "후속 질문을 입력하세요. 이 답변이 끝나면 전송됩니다...",
 			"placeholder": "Bifrost 데이터에 대해 질문...",
 			"stop": "중지",
-			"send": "전송"
+			"send": "전송",
+			"commandClear": "새 대화 시작",
+			"settings": "Warp 설정",
+			"switchModel": "모델 전환",
+			"defaultModel": "기본값"
 		},
 		"question": {
 			"label": "질문",
 			"skip": "건너뛰기",
-			"orType": "또는 아래에 직접 답변을 입력하세요."
+			"orType": "또는 아래에 직접 답변을 입력하세요.",
+			"skipAnswer": "최선의 판단으로 진행하고 어떤 가정을 했는지 알려 주세요."
 		},
 		"message": {
 			"whatThisCovers": "다루는 내용",
@@ -449,6 +529,10 @@
 			"render_chart": {
 				"running": "차트 그리기",
 				"done": "차트를 그렸습니다"
+			},
+			"list_topics": {
+				"running": "주제 목록을 불러오는 중",
+				"done": "주제 목록을 불러왔습니다"
 			}
 		},
 		"errors": {
@@ -542,7 +626,69 @@
 					"관리자에게 계정에서 Warp 모델을 허용해 달라고 요청하세요.",
 					"또는 Warp 설정에서 계정에 허용된 모델을 선택하세요."
 				]
-			}
+			},
+			"requestFailedStatus": "Warp 요청 실패({{status}})",
+			"noResponseBody": "Warp가 응답 본문을 반환하지 않았습니다",
+			"connectionClosed": "Warp가 답변을 마치기 전에 연결이 닫혔습니다.",
+			"requestFailed": "Warp 요청 실패"
+		},
+		"dock": {
+			"resize": "Warp 패널 크기 조정",
+			"description": "이 배포의 로그, 사용량, 지출에 대해 Warp에 질문하세요."
+		},
+		"chart": {
+			"openInLogs": "로그에서 열기",
+			"empty": "이 기간에는 데이터가 없어요.",
+			"weekOf": "{{date}} 주"
+		},
+		"usage": {
+			"tokens_other": "{{formattedCount}}개 토큰"
 		}
+	},
+	"rssSources": {
+		"newsOn": "뉴스를 켰어요",
+		"newsOff": "이 게이트웨이의 뉴스를 껐어요",
+		"updateSettingsFailed": "뉴스 설정을 업데이트하지 못했어요",
+		"updateFeedFailed": "{{name}}을(를) 업데이트하지 못했어요",
+		"updatedLogo": "{{name}}의 로고를 업데이트했어요",
+		"removedLogo": "{{name}}에서 로고를 제거했어요",
+		"updateLogoFailed": "{{name}}의 로고를 업데이트하지 못했어요",
+		"removed": "{{name}}을(를) 제거했어요",
+		"removeFailed": "{{name}}을(를) 제거하지 못했어요",
+		"title": "뉴스 소스",
+		"description": "이 게이트웨이를 사용하는 모든 사용자의 알림 트레이 뉴스 탭에 표시할 RSS 피드를 선택하세요.",
+		"showNews": "알림 트레이에 뉴스 표시",
+		"showNewsHelp": "이 기능을 끄면 이 게이트웨이를 사용하는 모든 사용자에게서 뉴스 탭이 숨겨지고 뉴스 항목 가져오기도 중단돼요. 아래의 소스는 그대로 유지돼요.",
+		"settingLoadFailed": "이 설정을 불러오지 못했어요.",
+		"tryAgain": "다시 시도",
+		"loading": "소스 불러오는 중",
+		"loadFailed": "소스를 불러올 수 없어요.",
+		"builtinFeeds": "기본 제공 피드",
+		"customFeeds": "커스텀 피드",
+		"noCustomFeeds": "아직 커스텀 피드가 없어요. 아래에 RSS 또는 Atom URL을 추가하세요.",
+		"removeAria": "{{name}} 제거",
+		"disableAria": "{{name}} 비활성화",
+		"enableAria": "{{name}} 활성화",
+		"changeLogoAria": "{{name}}의 로고 변경",
+		"uploadLogo": "로고 업로드",
+		"removeLogo": "로고 제거",
+		"addedFeed": "{{name}}을(를) 추가했어요",
+		"addFeedTitle": "피드 추가",
+		"name": "이름",
+		"namePlaceholder": "Bifrost 릴리스",
+		"feedUrl": "피드 URL",
+		"logo": "로고",
+		"optional": "(선택 사항)",
+		"logoPreviewName": "로고 미리보기",
+		"uploadedImage": "업로드한 이미지",
+		"upload": "업로드",
+		"logoHelp": "이미지 URL 또는 96KB 이하의 PNG, JPEG, GIF, WebP, SVG, ICO 파일이에요. 기본값은 사이트의 파비콘이에요.",
+		"addFeed": "피드 추가"
+	},
+	"agentHandover": {
+		"completeTitle": "Bifrost Agent 로그인 완료",
+		"title": "Bifrost Agent 로그인",
+		"completeBody": "이 창을 닫고 Bifrost Agent로 돌아가세요.",
+		"status": "로그인 상태: {{status}}"
 	}
 }

@@ -340,12 +340,17 @@ agent-push-configs:
       required: false
       schema:
         type: integer
-      description: Page size. Nonpositive values default to 25; values above 100 are clamped to 100.
+        minimum: 0
+        maximum: 100
+        default: 25
+      description: Page size. Nonpositive values default to 25; values above 100 are clamped to 100 without an error. Page with `offset` until `offset >= total_count`.
     - name: offset
       in: query
       required: false
       schema:
         type: integer
+        minimum: 0
+        default: 0
       description: Page offset. Negative values are clamped to zero.
     x-mint:
       content: '**Required Permissions**

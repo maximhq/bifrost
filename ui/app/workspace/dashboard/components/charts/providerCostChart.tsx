@@ -18,6 +18,7 @@ import { CappedBarStack } from "./barShape";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 import { NoChartData } from "./noChartData";
+import { useLocale } from "@/lib/i18n/useLocale";
 
 interface ProviderCostChartProps {
 	data: ProviderCostHistogramResponse | null;
@@ -76,6 +77,7 @@ function CustomTooltip({ active, payload, selectedProvider, displayProviders }: 
 }
 
 function ProviderCostChartImpl({ data, chartType, startTime, endTime, selectedProvider }: ProviderCostChartProps) {
+	useLocale();
 	const { chartData, displayProviders } = useMemo(() => {
 		if (!data?.buckets || !data.bucket_size_seconds) {
 			return { chartData: [], displayProviders: [] };
