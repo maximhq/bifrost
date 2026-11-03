@@ -796,10 +796,12 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			message.ID = nil
 		}
 
-		// Gemini sets Name on function_call_output items (the tool name), but OpenAI's
-		// function_call_output does not accept this field. Strip it. message is a value copy.
+		// Preserve the name on unsolicited outputs: OpenAI requires it when there is
+		// no call_id. Keep stripping Gemini's redundant name on paired outputs for
+		// compatibility with backends that reject it. message is a value copy.
 		if message.Type != nil && *message.Type == schemas.ResponsesMessageTypeFunctionCallOutput &&
-			message.ResponsesToolMessage != nil && message.ResponsesToolMessage.Name != nil {
+			message.ResponsesToolMessage != nil && message.ResponsesToolMessage.Name != nil &&
+			message.ResponsesToolMessage.CallID != nil && *message.ResponsesToolMessage.CallID != "" {
 			// Clone to avoid mutating the caller's input
 			toolMsgCopy := *message.ResponsesToolMessage
 			toolMsgCopy.Name = nil

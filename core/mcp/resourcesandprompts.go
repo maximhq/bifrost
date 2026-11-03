@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -208,7 +209,9 @@ type reachableClient struct {
 //
 // The clients are copied under m.mu and each caller's discovery is read outside it: a per-user store
 // may read through to a database.
+// An aggregate gateway request sees ui:// resources as ui://<client>/..., so two servers' apps never collide.
 func (m *MCPManager) reachableClients(ctx context.Context) []*reachableClient {
+	aggregate := GatewayAggregate(ctx)
 	m.mu.RLock()
 	states := make([]schemas.MCPClientState, 0, len(m.clientMap))
 	for _, state := range m.clientMap {
@@ -232,10 +235,15 @@ func (m *MCPManager) reachableClients(ctx context.Context) []*reachableClient {
 		}
 		clients = append(clients, &reachableClient{
 			state:             state,
-			prompts:           exposed(discovery.Prompts, config.PromptsToExpose, func(p mcp.Prompt) string { return stripClientPrefix(p.Name, config.Name) }),
+			prompts:           exposed(discovery.Prompts, config.PromptsToExpose, func(p mcp.Prompt) string { return StripClientPrefix(p.Name, config.Name) }),
 			resources:         exposed(discovery.Resources, config.ResourcesToExpose, resourceURI),
 			resourceTemplates: exposed(discovery.ResourceTemplates, config.ResourcesToExpose, ResourceTemplateURI),
 		})
+		if aggregate {
+			last := clients[len(clients)-1]
+			last.resources = namespaceUIResources(last.resources, config.Name)
+			last.resourceTemplates = namespaceUITemplates(last.resourceTemplates, config.Name)
+		}
 	}
 	sortByName(clients)
 	return clients
@@ -284,6 +292,58 @@ func exposed[T any](items []T, allow schemas.WhiteList, key func(T) string) []T 
 }
 
 func resourceURI(r mcp.Resource) string { return r.URI }
+
+// namespaceUIResources returns resources with ui:// URIs under clientName, copying only when one is.
+func namespaceUIResources(resources []mcp.Resource, clientName string) []mcp.Resource {
+	i := slices.IndexFunc(resources, func(r mcp.Resource) bool { return strings.HasPrefix(r.URI, "ui://") })
+	if i < 0 {
+		return resources
+	}
+	namespaced := slices.Clone(resources)
+	for j := i; j < len(namespaced); j++ {
+		namespaced[j].URI = GatewayUIResourceURI(clientName, namespaced[j].URI)
+	}
+	return namespaced
+}
+
+// namespaceUITemplates is namespaceUIResources for resource templates.
+func namespaceUITemplates(templates []mcp.ResourceTemplate, clientName string) []mcp.ResourceTemplate {
+	i := slices.IndexFunc(templates, func(t mcp.ResourceTemplate) bool { return strings.HasPrefix(ResourceTemplateURI(t), "ui://") })
+	if i < 0 {
+		return templates
+	}
+	namespaced := slices.Clone(templates)
+	for j := i; j < len(namespaced); j++ {
+		raw := ResourceTemplateURI(namespaced[j])
+		if !strings.HasPrefix(raw, "ui://") {
+			continue
+		}
+		quoted, _ := json.Marshal(GatewayUIResourceURI(clientName, raw))
+		parsed := &mcp.URITemplate{}
+		if json.Unmarshal(quoted, parsed) == nil {
+			namespaced[j].URITemplate = parsed
+		}
+	}
+	return namespaced
+}
+
+// withGatewayUIResourceURI renames the contents of a ui:// read back to the URI the caller asked for.
+func withGatewayUIResourceURI(result *mcp.ReadResourceResult, upstreamURI, gatewayURI string) {
+	for i, content := range result.Contents {
+		switch c := content.(type) {
+		case mcp.TextResourceContents:
+			if c.URI == upstreamURI {
+				c.URI = gatewayURI
+				result.Contents[i] = c
+			}
+		case mcp.BlobResourceContents:
+			if c.URI == upstreamURI {
+				c.URI = gatewayURI
+				result.Contents[i] = c
+			}
+		}
+	}
+}
 
 func sortByName(clients []*reachableClient) {
 	slices.SortFunc(clients, func(a, b *reachableClient) int {
@@ -345,9 +405,13 @@ func (m *MCPManager) GetPrompt(ctx *schemas.BifrostContext, name string, argumen
 		func(clients []*reachableClient) *schemas.MCPClientState { return promptOwner(clients, name) },
 		func(ctx context.Context, conn *client.Client, req *schemas.BifrostMCPRequest) (*mcp.GetPromptResult, error) {
 			get := mcp.GetPromptRequest{}
-			get.Params.Name = stripClientPrefix(req.BifrostMCPGetPromptRequest.Name, req.ClientName)
+			get.Params.Name = StripClientPrefix(req.BifrostMCPGetPromptRequest.Name, req.ClientName)
 			get.Params.Arguments = req.BifrostMCPGetPromptRequest.Arguments
-			return conn.GetPrompt(ctx, get)
+			result, err := conn.GetPrompt(ctx, get)
+			if err == nil && result.NeedsInput() {
+				return nil, &UnservableInputError{Requests: result.InputRequests, ServerName: req.ClientName}
+			}
+			return result, err
 		},
 		func(r *mcp.GetPromptResult) *schemas.BifrostMCPResponse {
 			return &schemas.BifrostMCPResponse{BifrostMCPGetPromptResponse: &schemas.BifrostMCPGetPromptResponse{Prompt: r}}
@@ -376,7 +440,18 @@ func (m *MCPManager) ReadResource(ctx *schemas.BifrostContext, uri string) (*mcp
 		func(ctx context.Context, conn *client.Client, req *schemas.BifrostMCPRequest) (*mcp.ReadResourceResult, error) {
 			read := mcp.ReadResourceRequest{}
 			read.Params.URI = req.BifrostMCPReadResourceRequest.URI
-			return conn.ReadResource(ctx, read)
+			namespaced := false
+			if GatewayAggregate(ctx) {
+				read.Params.URI, namespaced = upstreamUIResourceURI(req.ClientName, read.Params.URI)
+			}
+			result, err := conn.ReadResource(ctx, read)
+			if err == nil && result.NeedsInput() {
+				return nil, &UnservableInputError{Requests: result.InputRequests, ServerName: req.ClientName}
+			}
+			if err == nil && namespaced {
+				withGatewayUIResourceURI(result, read.Params.URI, req.BifrostMCPReadResourceRequest.URI)
+			}
+			return result, err
 		},
 		func(r *mcp.ReadResourceResult) *schemas.BifrostMCPResponse {
 			return &schemas.BifrostMCPResponse{BifrostMCPReadResourceResponse: &schemas.BifrostMCPReadResourceResponse{Resource: r}}
@@ -411,9 +486,15 @@ func (m *MCPManager) Complete(ctx *schemas.BifrostContext, params mcp.CompletePa
 				return emptyCompletion(), nil
 			}
 			complete := mcp.CompleteRequest{Params: req.BifrostMCPCompleteRequest.Params}
-			if ref, ok := complete.Params.Ref.(mcp.PromptReference); ok {
-				ref.Name = stripClientPrefix(ref.Name, req.ClientName)
+			switch ref := complete.Params.Ref.(type) {
+			case mcp.PromptReference:
+				ref.Name = StripClientPrefix(ref.Name, req.ClientName)
 				complete.Params.Ref = ref
+			case mcp.ResourceReference:
+				if GatewayAggregate(ctx) {
+					ref.URI, _ = upstreamUIResourceURI(req.ClientName, ref.URI)
+					complete.Params.Ref = ref
+				}
 			}
 			return conn.Complete(ctx, complete)
 		},
@@ -455,7 +536,8 @@ func runOnClient[T any](m *MCPManager, ctx *schemas.BifrostContext, req *schemas
 		if err != nil {
 			return zero, err
 		}
-		result, err := call(callCtx, conn, preReq)
+		upstreamCtx, _, _ := upstreamContext(callCtx, conn, readRelayedCapabilities)
+		result, err := call(upstreamCtx, conn, preReq)
 		recoverable := err != nil && (isAuthFailure(err) || (isDeadSessionError(err) && hasProtocolSession(conn)))
 		release()
 		if !recoverable {
@@ -465,7 +547,8 @@ func runOnClient[T any](m *MCPManager, ctx *schemas.BifrostContext, req *schemas
 		if recovered, _ := m.toolsManager.recoverCall(recoveryCtx, req.RequestType.OTelMethodName(), state, state.ExecutionConfig, timeout, false, nil,
 			func(retryCtx context.Context, conn *client.Client) error {
 				var retryErr error
-				result, retryErr = call(retryCtx, conn, preReq)
+				retryUpstreamCtx, _, _ := upstreamContext(retryCtx, conn, readRelayedCapabilities)
+				result, retryErr = call(retryUpstreamCtx, conn, preReq)
 				return retryErr
 			}); recovered {
 			return result, nil

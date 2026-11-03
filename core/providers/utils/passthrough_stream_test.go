@@ -47,7 +47,7 @@ func (b *hangupBody) Read(p []byte) (int, error) {
 // the connection open, like an upstream that parks after response.completed. With hangUp set the
 // request is cancelled as soon as the client reads response.completed, the way Codex hangs up. It
 // returns every post-hook call and whether the stream channel closed within the deadline.
-func runParkedPassthroughStream(t *testing.T, endsStream func([]byte) bool, hangUp bool) (finals []*schemas.BifrostPassthroughResponse, errs []*schemas.BifrostError, closed bool) {
+func runParkedPassthroughStream(t *testing.T, endsStream func([]byte) bool, hangUp bool, finalize func(*schemas.BifrostPassthroughResponse)) (finals []*schemas.BifrostPassthroughResponse, errs []*schemas.BifrostError, closed bool) {
 	t.Helper()
 	hold := make(chan struct{})
 	t.Cleanup(func() { close(hold) })
@@ -84,6 +84,7 @@ func runParkedPassthroughStream(t *testing.T, endsStream func([]byte) bool, hang
 			}
 			return nil
 		},
+		Finalize: finalize,
 	})
 
 	done := make(chan struct{})
@@ -105,7 +106,7 @@ func runParkedPassthroughStream(t *testing.T, endsStream func([]byte) bool, hang
 
 func TestStreamPassthrough_EndsStreamAbandonsParkedUpstream(t *testing.T) {
 	// No client hangup: release must not drain a body the upstream never closes.
-	finals, errs, closed := runParkedPassthroughStream(t, endsResponsesStream, false)
+	finals, errs, closed := runParkedPassthroughStream(t, endsResponsesStream, false, nil)
 	if !closed {
 		t.Fatal("stream channel did not close: release is draining the parked upstream body")
 	}
@@ -118,7 +119,7 @@ func TestStreamPassthrough_EndsStreamAbandonsParkedUpstream(t *testing.T) {
 }
 
 func TestStreamPassthrough_EndsStreamFinalizesBeforeClientHangup(t *testing.T) {
-	finals, errs, closed := runParkedPassthroughStream(t, endsResponsesStream, true)
+	finals, errs, closed := runParkedPassthroughStream(t, endsResponsesStream, true, nil)
 	if !closed {
 		t.Fatal("stream channel did not close")
 	}
@@ -127,5 +128,51 @@ func TestStreamPassthrough_EndsStreamFinalizesBeforeClientHangup(t *testing.T) {
 	}
 	if len(finals) != 1 || finals[0].PassthroughUsage == nil {
 		t.Fatalf("expected one final chunk with usage from response.completed, got %d", len(finals))
+	}
+}
+
+// A stream the client cuts off ends on the cancellation path, which never calls Finalize: no final
+// response reaches the post hooks, so a provider job the stream reported (an Interactions run) is
+// never recorded. The passthrough docs state this limit; this pins it.
+func TestStreamPassthrough_ClientHangupSkipsFinalize(t *testing.T) {
+	finalized := false
+	finals, errs, closed := runParkedPassthroughStream(t, nil, true, func(*schemas.BifrostPassthroughResponse) {
+		finalized = true
+	})
+	if !closed {
+		t.Fatal("stream channel did not close")
+	}
+	if finalized {
+		t.Fatal("Finalize ran on a stream the client cut off")
+	}
+	if len(finals) != 0 {
+		t.Fatalf("expected no final response, got %d", len(finals))
+	}
+	if len(errs) == 0 {
+		t.Fatal("expected the cancellation error to reach the post hooks")
+	}
+}
+
+// Finalize completes the final response once the stream ends: it sees the observed usage and can
+// move it onto a provider job and name the model the stream reported, all carried on the final chunk.
+func TestStreamPassthrough_FinalizeCompletesFinalResponse(t *testing.T) {
+	var seen *schemas.BifrostPassthroughUsage
+	finals, errs, closed := runParkedPassthroughStream(t, endsResponsesStream, false, func(resp *schemas.BifrostPassthroughResponse) {
+		seen = resp.PassthroughUsage
+		resp.ProviderJob = &schemas.BifrostPassthroughJob{ID: "int_1", Usage: resp.PassthroughUsage}
+		resp.PassthroughUsage = nil
+		resp.ServedModel = "deep-research-preview-04-2026"
+	})
+	if !closed || len(errs) != 0 {
+		t.Fatalf("closed=%v errs=%d", closed, len(errs))
+	}
+	if seen == nil {
+		t.Fatal("Finalize did not receive the observed usage")
+	}
+	if len(finals) != 1 || finals[0].PassthroughUsage != nil || finals[0].ServedModel != "deep-research-preview-04-2026" {
+		t.Fatalf("final chunk = %+v, want no usage and the served model", finals)
+	}
+	if finals[0].ProviderJob == nil || finals[0].ProviderJob.Usage != seen {
+		t.Fatalf("final chunk job = %+v, want the observed usage on the job", finals[0].ProviderJob)
 	}
 }

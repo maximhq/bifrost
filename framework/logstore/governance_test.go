@@ -203,3 +203,34 @@ func assertStrings(t *testing.T, field string, got, want []string) {
 		}
 	}
 }
+
+// TestApplyGovernanceContextRecordsUserEmail pins that MCP and relay rows keep the email beside the user id it was read with.
+func TestApplyGovernanceContextRecordsUserEmail(t *testing.T) {
+	values := map[schemas.BifrostContextKey]any{
+		schemas.BifrostContextKeyUserID:    "user-1",
+		schemas.BifrostContextKeyUserEmail: "ada@example.com",
+	}
+	mcp := &MCPToolLog{}
+	mcp.ApplyGovernanceContext(governanceCtx(t, values))
+	if mcp.UserEmail == nil || *mcp.UserEmail != "ada@example.com" {
+		t.Fatalf("mcp user_email = %v, want ada@example.com", mcp.UserEmail)
+	}
+	relay := &RelayLog{}
+	relay.ApplyGovernanceContext(governanceCtx(t, values))
+	if relay.UserEmail == nil || *relay.UserEmail != "ada@example.com" {
+		t.Fatalf("relay user_email = %v, want ada@example.com", relay.UserEmail)
+	}
+
+	staleID, staleEmail := "user-old", "old@example.com"
+	changed := &MCPToolLog{UserID: &staleID, UserEmail: &staleEmail}
+	changed.ApplyGovernanceContext(governanceCtx(t, map[schemas.BifrostContextKey]any{schemas.BifrostContextKeyUserID: "user-new"}))
+	if changed.UserEmail != nil {
+		t.Fatalf("user_email = %q, want the stale email cleared when the user id changes", *changed.UserEmail)
+	}
+
+	kept := &MCPToolLog{UserID: &staleID, UserEmail: &staleEmail}
+	kept.ApplyGovernanceContext(governanceCtx(t, map[schemas.BifrostContextKey]any{schemas.BifrostContextKeyUserEmail: "late@example.com"}))
+	if kept.UserEmail == nil || *kept.UserEmail != staleEmail {
+		t.Fatalf("user_email = %v, want the recorded email kept when the context names no user", kept.UserEmail)
+	}
+}

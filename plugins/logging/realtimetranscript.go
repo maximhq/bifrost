@@ -36,6 +36,9 @@ func applyGrantAttribution(ctx *schemas.BifrostContext, entry *logstore.Log) {
 	}
 	if user := identity.User(); user != nil && entry.UserID == nil {
 		entry.UserID, entry.UserName = schemas.Ptr(user.ID), schemas.Ptr(user.Name)
+		if user.Email != "" {
+			entry.UserEmail = schemas.Ptr(clampString(user.Email, maxPersistedUserEmailLen))
+		}
 	}
 	teams := identity.Teams()
 	if len(entry.TeamIDsParsed) == 0 && entry.TeamIDs == nil && len(teams) > 0 {
@@ -196,7 +199,7 @@ func (p *LoggerPlugin) writeRealtimeInputUpdate(ctx context.Context, update *rea
 	}
 	found, err := p.store.SearchLogs(ctx, logstore.SearchFilters{
 		StartTime:           &update.sessionStartedAt,
-		MetadataFilters:     map[string]string{realtimeConnectionMetadata: update.connectionID},
+		MetadataFilters:     map[string][]string{realtimeConnectionMetadata: {update.connectionID}},
 		RealtimeInputItemID: update.itemID,
 	}, logstore.PaginationOptions{Limit: 2, SkipCount: true})
 	if err != nil {

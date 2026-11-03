@@ -171,6 +171,28 @@ func TestHandleRegister_DCR(t *testing.T) {
 		assert.Equal(t, longScope, stored.Scope)
 	})
 
+	// Registration bodies real DCR clients send, as built by their source on 2026-11-03.
+	for _, tc := range []struct{ name, body string }{
+		// gemini-cli packages/core/src/mcp/oauth-provider.ts registerClient (scope is "" with no configured scopes)
+		{"Gemini CLI", `{"client_name":"Gemini CLI MCP Client","redirect_uris":["http://localhost:7777/oauth/callback"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none","scope":""}`},
+		// zed crates/context_server/src/oauth.rs dcr_registration_body (scope omitted with no advertised scopes)
+		{"Zed", `{"client_name":"Zed","redirect_uris":["http://127.0.0.1:12345/callback"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none"}`},
+	} {
+		t.Run("real client "+tc.name+" registers", func(t *testing.T) {
+			h, _, _ := newIssuanceHandler(t)
+			ctx := formPostCtx("")
+			ctx.Request.SetBodyString(tc.body)
+			ctx.Request.Header.SetContentType("application/json")
+
+			h.handleRegister(ctx)
+			require.Equal(t, fasthttp.StatusCreated, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			var resp map[string]any
+			require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+			assert.Equal(t, []any{"authorization_code", "refresh_token"}, resp["grant_types"])
+			assert.Equal(t, "mcp", resp["scope"])
+		})
+	}
+
 	t.Run("missing redirect_uris is rejected", func(t *testing.T) {
 		h, _, _ := newIssuanceHandler(t)
 		ctx := formPostCtx("")

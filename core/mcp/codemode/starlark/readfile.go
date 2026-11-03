@@ -89,7 +89,7 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 	serverName, toolName, isToolLevel := parseVFSFilePath(fileName)
 
 	// Get available tools per client
-	availableToolsPerClient := s.clientManager.GetToolPerClient(ctx)
+	availableToolsPerClient := s.clientManager.GetToolPerClient(codemcp.WithModelToolsOnly(ctx))
 
 	// Find matching client
 	var matchedClientName string
