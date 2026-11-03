@@ -38,6 +38,7 @@ type endpoint struct {
 	usage              resolvedUsage // endpoint-level usage mapping
 	routes             []compiledRoute
 	streamGlobs        []routeGlob
+	authHeaderLower    string                    // lower-cased authHeader(), computed once at build time
 	awsKey             *schemas.BedrockKeyConfig // aws_sigv4 credential in the shape the signer reads
 	awsRegion          string
 	streamIdle         int // seconds
@@ -76,6 +77,7 @@ func newEndpoint(cfg *schemas.RelayConfig, proxy *schemas.ProxyConfig) (*endpoin
 		streamGlobs:        compileStreamGlobs(cfg),
 		streamIdle:         schemas.DefaultEndpointStreamIdleTimeoutSeconds,
 	}
+	e.authHeaderLower = strings.ToLower(e.authHeader())
 	if cfg.Network != nil && cfg.Network.StreamIdleTimeoutInSeconds > 0 {
 		e.streamIdle = cfg.Network.StreamIdleTimeoutInSeconds
 	}
