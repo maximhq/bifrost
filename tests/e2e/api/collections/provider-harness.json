@@ -294730,6 +294730,125 @@
               }
             },
             {
+              "name": "a streaming route whose SSE event passes the 10 MiB ceiling fails like an LLM stream, logged as an error with the usage read before it - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id (the Relay Logs row id) and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-p7o');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var BASE = pm.variables.get('baseUrl');",
+                      "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                      "var ID = pm.variables.get('relayReqId');",
+                      "function near(a, b) { return typeof a === 'number' && Math.abs(a - b) < 1e-9; }",
+                      "// The Relay Logs row carries the caller's x-request-id as request_id and is written by the batching writer, so poll.",
+                      "function relayLog(check, attempt) {",
+                      "  attempt = attempt || 0;",
+                      "  pm.sendRequest({ url: BASE + '/api/relay-logs?request_id=' + encodeURIComponent(ID) + '&limit=5', method: 'GET' }, function (err, res) {",
+                      "    var logs = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+                      "    if (logs.length) { return check(logs[0]); }",
+                      "    if (attempt < 20) { setTimeout(function () { relayLog(check, attempt + 1); }, 500); return; }",
+                      "    pm.test('Relay Logs row for request ' + ID + ' was written', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); });",
+                      "  });",
+                      "}",
+                      "// How many requests carrying this case's tag reached the local upstream fixture.",
+                      "function upstreamHits(cb) {",
+                      "  pm.sendRequest({ url: UPSTREAM + '/__relay/hits?tag=' + encodeURIComponent(ID), method: 'GET' }, function (err, res) {",
+                      "    var ok = !err && res && res.code === 200;",
+                      "    pm.test('the relay upstream fixture answers on ' + UPSTREAM, function () {",
+                      "      pm.expect(ok, 'start it with: node tests/e2e/api/runners/relay-upstream-fixture.mjs (' + (err ? String(err) : res.code) + ')').to.be.true;",
+                      "    });",
+                      "    cb(ok ? res.json().hits : -1);",
+                      "  });",
+                      "}",
+                      "// Reads a virtual key through the governance API until pred(vk) holds, then calls cb(vk, matched).",
+                      "function waitForKey(id, pred, cb, attempt) {",
+                      "  attempt = attempt || 0;",
+                      "  pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + encodeURIComponent(id), method: 'GET' }, function (err, res) {",
+                      "    var vk = (!err && res.code === 200) ? (res.json().virtual_key || {}) : null;",
+                      "    if (vk && pred(vk)) { return cb(vk, true); }",
+                      "    if (attempt < 20) { setTimeout(function () { waitForKey(id, pred, cb, attempt + 1); }, 500); return; }",
+                      "    cb(vk || {}, false, err ? String(err) : res.code + ' ' + res.text());",
+                      "  });",
+                      "}",
+                      "function budgetUsage(vk) { return (vk.budgets || []).reduce(function (s, b) { return s + (b.current_usage || 0); }, 0); }",
+                      "function rateLimit(vk) { return vk.rate_limit || {}; }",
+                      "// The headers are already sent when the oversized event arrives, so the caller sees 200 and the bytes forwarded before it.",
+                      "pm.test('oversized stream: HTTP 200 with the first event forwarded', function () {",
+                      "  var t = pm.response.text();",
+                      "  pm.expect(pm.response.code, 'expected 200, got ' + pm.response.code + ': ' + t.slice(0, 500)).to.eql(200);",
+                      "  pm.expect(t.slice(0, 200)).to.include('\"delta\":\"a\"');",
+                      "});",
+                      "relayLog(function (row) {",
+                      "  pm.test('oversized stream: the Relay Logs row is an error, as an LLM stream past the ceiling is', function () {",
+                      "    var dump = JSON.stringify({ status: row.status, error_details: row.error_details, cost: row.cost, units: row.units, route_path: row.route_path, streamed: row.streamed });",
+                      "    pm.expect(row.route_path, 'route_path: ' + dump).to.eql(\"/v1/stream-oversized\");",
+                      "    pm.expect(row.streamed, 'streamed: ' + dump).to.eql(true);",
+                      "    pm.expect(row.status, 'status: ' + dump).to.eql('error');",
+                      "    pm.expect(JSON.stringify(row.error_details || ''), 'error_details: ' + dump).to.include('token too long');",
+                      "    pm.expect(near(row.units, 1), 'the usage read before the oversized event is still charged, units 1: ' + dump).to.be.true;",
+                      "    pm.expect(near(row.cost, 0.009), 'cost should be 0.009: ' + dump).to.be.true;",
+                      "  });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "sk-bf-harness-relay-all"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "text/event-stream"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-pricing/v1/stream-oversized?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-pricing",
+                    "v1",
+                    "stream-oversized"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{}"
+                }
+              }
+            },
+            {
               "name": "a GET route is relayed but not billable by default, so it costs nothing - relays-e2e",
               "event": [
                 {

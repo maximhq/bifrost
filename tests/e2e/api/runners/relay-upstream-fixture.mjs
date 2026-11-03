@@ -89,6 +89,14 @@ const server = http.createServer(async (req, res) => {
 			res.write(`data: ${JSON.stringify({ delta: "c", usage: { credits: 3 } })}\n\n`);
 			res.end();
 			return;
+		case "POST /v1/stream-oversized":
+			// A usage event, then one event past the 10 MiB SSE ceiling: the relay must fail the stream
+			// as the native LLM scanner does, not drop the event unread and log a clean success.
+			res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+			res.write(`data: ${JSON.stringify({ delta: "a", usage: { credits: 1 } })}\n\n`);
+			res.write(`data: ${"x".repeat(11 * 1024 * 1024)}\n\n`);
+			res.end();
+			return;
 		case "POST /v1/pages":
 			send(res, 200, { data: [{ page: 1 }], usage: { chars: Number(body.chars) || 0 } });
 			return;

@@ -1824,6 +1824,11 @@
         },
         {
           "method": "POST",
+          "path": "/v1/stream-oversized",
+          "stream": true
+        },
+        {
+          "method": "POST",
           "path": "/v1/disabled",
           "enabled": false
         },

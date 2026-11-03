@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -1266,6 +1267,36 @@ func TestStreamUsagePanicIsAnInternalError(t *testing.T) {
 	require.True(t, finished)
 	require.NotNil(t, gotErr)
 	assert.Equal(t, schemas.ErrorTypeBifrostInternal, schemas.ClassifyErrorType(gotErr, schemas.RelayRequest))
+}
+
+// An event past the SSE line ceiling fails the stream, as the native LLM scanner fails a stream
+// with bufio.ErrTooLong, instead of being dropped unread and the call charged the default fee.
+func TestStreamOversizedEventFailsTheStream(t *testing.T) {
+	var gotErr *schemas.BifrostError
+	finished := false
+	s := &Stream{
+		ctx:     testCtx(t),
+		body:    io.NopCloser(strings.NewReader("")),
+		reader:  strings.NewReader("data: {\"usage\":1}\n\ndata: " + strings.Repeat("x", 11<<20) + "\n\n"),
+		stop:    func() {},
+		counted: true,
+		framer:  &providerUtils.SSEFramer{},
+		observe: func([]byte) *schemas.RelayUsage { return &schemas.RelayUsage{Cost: 1} },
+		finish: func(_ *schemas.BifrostRelayResponse, err *schemas.BifrostError) {
+			finished, gotErr = true, err
+		},
+	}
+	buf := make([]byte, 64<<10)
+	var err error
+	for err == nil {
+		_, err = s.Read(buf)
+	}
+	require.ErrorIs(t, err, bufio.ErrTooLong)
+	require.True(t, finished)
+	require.NotNil(t, gotErr)
+	assert.True(t, gotErr.IsBifrostError, "classified as the LLM scanner's error is")
+	assert.Contains(t, gotErr.Error.Message, "Error reading stream")
+	assert.ErrorIs(t, gotErr.Error.Error, bufio.ErrTooLong)
 }
 
 // TestStreamUsagePanicAtEOFIsAnInternalError pins the same for the last event, which only completes

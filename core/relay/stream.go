@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -158,7 +159,8 @@ func (s *Stream) Read(p []byte) (int, error) {
 			parseErr := s.observeChunk(p[:n])
 			schemas.AddStreamParse(s.ctx, time.Since(parseStart))
 			if parseErr != nil {
-				// The bytes read are still handed over; the stream ends with an internal error.
+				// The bytes read are still handed over; the stream ends with the error (a panic in
+				// the usage mapping, or an event past the SSE ceiling).
 				s.complete(parseErr)
 				return n, parseErr
 			}
@@ -218,17 +220,19 @@ func (s *Stream) flushFramer() (err error) {
 }
 
 // observeChunk feeds a chunk's complete events to the usage mapping. A panic in it is Bifrost's own
-// fault, not the caller's or the upstream's, so it comes back as a streamPanic.
+// fault, not the caller's or the upstream's, so it comes back as a streamPanic. An event past the
+// SSE ceiling comes back as ErrSSEEventTooLarge, so the stream fails rather than going unpriced.
 func (s *Stream) observeChunk(chunk []byte) (err error) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			err = streamPanic{value: rec}
 		}
 	}()
-	for _, event := range s.framer.Write(chunk) {
+	events, err := s.framer.Write(chunk)
+	for _, event := range events {
 		s.observeEvent(event)
 	}
-	return nil
+	return err
 }
 
 // streamPanic is a panic recovered while reading a stream's usage.
@@ -304,6 +308,10 @@ func (s *Stream) complete(readErr error) {
 		var panicked streamPanic
 		switch {
 		case readErr == nil:
+		case errors.Is(readErr, bufio.ErrTooLong):
+			// An event the framer cannot hold, failed as the native scanner fails an LLM stream
+			// (ProcessAndSendError), so the call is never charged the default fee unnoticed.
+			bifrostErr = &schemas.BifrostError{IsBifrostError: true, Error: &schemas.ErrorField{Message: fmt.Sprintf("Error reading stream: %v", readErr), Error: readErr}}
 		case errors.As(readErr, &panicked):
 			// Bifrost's own fault: classified bifrost_internal, never a caller cancellation.
 			bifrostErr = &schemas.BifrostError{IsBifrostError: true, Error: &schemas.ErrorField{Message: "failed to read the relay stream's usage", Error: readErr}}

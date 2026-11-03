@@ -1,22 +1,29 @@
 package utils
 
 import (
+	"bufio"
 	"bytes"
+	"fmt"
 	"unicode/utf8"
 	"unsafe"
 )
 
 // SSEFramer splits a byte stream into SSE events incrementally, for relays that forward a body
 // unchanged and only observe its events. Each Write returns the data payloads of the events it
-// completed. The buffer is bounded by the same ceiling as the native SSE scanner: an event that
-// grows past it is dropped rather than buffered without limit.
+// completed. The buffer is bounded by the same ceiling as the native SSE scanner, and an event that
+// grows past it fails the stream with bufio.ErrTooLong, as that scanner fails an LLM stream.
 type SSEFramer struct {
 	pending bytes.Buffer
 }
 
+// ErrSSEEventTooLarge reports an SSE event past the native scanner's ceiling (sseMaxBufSize); it
+// wraps bufio.ErrTooLong, the error that scanner fails an LLM stream with.
+var ErrSSEEventTooLarge = fmt.Errorf("sse event exceeds %d bytes: %w", sseMaxBufSize, bufio.ErrTooLong)
+
 // Write appends chunk and returns the data payload of every event it completed. The returned
-// slices are copies and stay valid after the next call.
-func (f *SSEFramer) Write(chunk []byte) [][]byte {
+// slices are copies and stay valid after the next call. An event that grows past the ceiling
+// returns ErrSSEEventTooLarge with the events completed before it.
+func (f *SSEFramer) Write(chunk []byte) ([][]byte, error) {
 	f.pending.Write(chunk)
 	var out [][]byte
 	for {
@@ -32,8 +39,9 @@ func (f *SSEFramer) Write(chunk []byte) [][]byte {
 	}
 	if f.pending.Len() > sseMaxBufSize {
 		f.pending.Reset()
+		return out, ErrSSEEventTooLarge
 	}
-	return out
+	return out, nil
 }
 
 // Flush returns the payload of a trailing event the stream ended without delimiting, if any.
@@ -54,10 +62,14 @@ func isSSEEventPayload(p []byte) bool {
 
 // SplitSSEPayloads frames a buffered SSE body the way SSEFramer frames a live one and returns each
 // event's data payload, a trailing event without its delimiter included. It serves config-time
-// checks (the usage preview); relays frame incrementally.
+// checks (the usage preview); relays frame incrementally. The events before one past the ceiling
+// are returned, the preview reading what a live stream would have read before failing.
 func SplitSSEPayloads(body []byte) [][]byte {
 	var f SSEFramer
-	out := f.Write(body)
+	out, err := f.Write(body)
+	if err != nil {
+		return out
+	}
 	if p := f.Flush(); p != nil {
 		out = append(out, p)
 	}
