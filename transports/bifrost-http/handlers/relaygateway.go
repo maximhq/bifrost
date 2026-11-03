@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/fasthttp/router"
+	ws "github.com/fasthttp/websocket"
 	"github.com/maximhq/bifrost/core/relay"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
@@ -35,11 +37,27 @@ type RelayGatewayHandler struct {
 	manager      *relay.Manager
 	handlerStore lib.HandlerStore
 	logger       schemas.Logger
+	config       *lib.Config
+
+	// sockets counts open WebSocket sessions against websocket.max_connections_per_user, the
+	// bound the Realtime and GPT Live handlers each apply to their own sessions.
+	sockets atomic.Int64
 }
 
 // NewRelayGatewayHandler builds the data-plane handler.
-func NewRelayGatewayHandler(manager *relay.Manager, handlerStore lib.HandlerStore, logger schemas.Logger) *RelayGatewayHandler {
-	return &RelayGatewayHandler{manager: manager, handlerStore: handlerStore, logger: logger}
+func NewRelayGatewayHandler(manager *relay.Manager, config *lib.Config, logger schemas.Logger) *RelayGatewayHandler {
+	h := &RelayGatewayHandler{manager: manager, config: config, logger: logger}
+	if config != nil {
+		h.handlerStore = config // a nil *lib.Config must stay a nil HandlerStore
+	}
+	return h
+}
+
+// Close ends every open WebSocket session, for shutdown; each runs its post-hooks as it ends.
+func (r *RelayGatewayHandler) Close() {
+	if r != nil && r.manager != nil {
+		r.manager.CloseSockets()
+	}
 }
 
 // RegisterRoutes mounts the relay for every method an endpoint route may use.
@@ -92,7 +110,7 @@ func endpointRequestPath(full string) (string, string, bool) {
 // The Connection header is read in place (Peek returns the header's own bytes) and each key is
 // lowercased into one reused buffer, so a header that is dropped, including Connection itself and
 // any header it names, allocates nothing; only a forwarded header's name and value are copied.
-func relayForwardHeaders(header *fasthttp.RequestHeader) map[string]string {
+func relayForwardHeaders(header *fasthttp.RequestHeader, upgrade bool) map[string]string {
 	headers := make(map[string]string)
 	connection := header.Peek(fasthttp.HeaderConnection)
 	var lowerBuf [64]byte
@@ -115,6 +133,11 @@ func relayForwardHeaders(header *fasthttp.RequestHeader) map[string]string {
 		}
 		name := string(lower)
 		if schemas.IsSensitiveHeader(name) {
+			return true
+		}
+		// A WebSocket handshake is the relay's own with the upstream: the dialer sets the
+		// handshake headers, and the caller's Origin names Bifrost's caller, not the upstream's.
+		if upgrade && (strings.HasPrefix(name, "sec-websocket-") || name == "origin") {
 			return true
 		}
 		headers[name] = string(value)
@@ -178,8 +201,15 @@ func (r *RelayGatewayHandler) handle(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	upgrade := ws.FastHTTPIsWebSocketUpgrade(ctx)
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, r.handlerStore)
-	headers := relayForwardHeaders(&ctx.Request.Header)
+	headers := relayForwardHeaders(&ctx.Request.Header, upgrade)
+	if upgrade {
+		// The session owns the request context from here, and releases it.
+		r.handleSocket(ctx, bifrostCtx, cancel, name, path, headers)
+		return
+	}
+
 	result, bifrostErr := r.manager.Serve(bifrostCtx, relay.Request{
 		Endpoint: name,
 		Method:   string(ctx.Method()),
@@ -414,6 +444,163 @@ func relayHeartbeatEligible(headers map[string]string) bool {
 	}
 	return eventStream
 }
+
+// handleSocket serves a WebSocket upgrade on a relay route. The session is admitted before the
+// caller is upgraded: the pre-hooks run and the upstream handshake is made, so a refusal from
+// either is a plain HTTP status. The session then runs on a context detached from the request
+// (fasthttp recycles the request once the handler returns), and the request's trace and transport
+// post-hooks are deferred to the session's end, as they are for a relayed stream.
+func (r *RelayGatewayHandler) handleSocket(ctx *fasthttp.RequestCtx, requestCtx *schemas.BifrostContext, cancelRequest context.CancelFunc, name, path string, headers map[string]string) {
+	// The session context carries everything the request context had; the request-scoped one
+	// (and its client-disconnect watcher) is no longer needed once the handler returns.
+	defer cancelRequest()
+	if limit := r.maxSockets(); r.sockets.Add(1) > limit {
+		r.sockets.Add(-1)
+		sendRelayError(ctx, requestCtx, relayGatewayError(nil, fmt.Sprintf("too many open relay WebSocket sessions (limit %d)", limit), fasthttp.StatusTooManyRequests))
+		return
+	}
+	reserved := true
+	defer func() {
+		if reserved {
+			r.sockets.Add(-1)
+		}
+	}()
+	sessionCtx, cancelSession := detachRelaySessionContext(ctx, requestCtx)
+	sock, bifrostErr := r.manager.OpenSocket(sessionCtx, relay.SocketRequest{
+		Request: relay.Request{
+			Endpoint: name,
+			Method:   string(ctx.Method()),
+			Path:     path,
+			RawQuery: string(ctx.URI().QueryString()),
+			Headers:  headers,
+		},
+		Subprotocols: offeredSubprotocols(ctx),
+	})
+	if bifrostErr != nil {
+		cancelSession()
+		sendRelayError(ctx, requestCtx, bifrostErr)
+		return
+	}
+	ctx.SetUserValue(schemas.BifrostContextKeyDeferTraceCompletion, true)
+	var completerSlot atomic.Value
+	ctx.SetUserValue(schemas.BifrostContextKeyTransportPostHookCompleter, &completerSlot)
+	traceCompleter, _ := ctx.UserValue(schemas.BifrostContextKeyTraceCompleter).(func([]schemas.PluginLogEntry))
+	for k, v := range sock.Headers() {
+		if lib.IsGatewayOwnedResponseHeader(k) {
+			continue
+		}
+		ctx.Response.Header.Set(k, v)
+	}
+	upgrader := ws.FastHTTPUpgrader{
+		ReadBufferSize:  4096,
+		WriteBufferSize: 4096,
+		CheckOrigin: func(ctx *fasthttp.RequestCtx) bool {
+			origin := string(ctx.Request.Header.Peek("Origin"))
+			if origin == "" || r.config == nil || r.config.ClientConfig == nil {
+				return true
+			}
+			return IsOriginAllowed(origin, r.config.ClientConfig.AllowedOrigins)
+		},
+	}
+	if protocol := sock.Subprotocol(); protocol != "" {
+		upgrader.Subprotocols = []string{protocol}
+	}
+	reserved = false // the session releases its slot when it ends
+	err := upgrader.Upgrade(ctx, func(conn *ws.Conn) {
+		defer r.sockets.Add(-1)
+		defer conn.Close()
+		defer recoverWebSocketSession(conn)
+		if limit := sock.MaxMessageBytes(); limit > 0 {
+			conn.SetReadLimit(limit)
+		}
+		client := newRealtimeClientConn(conn)
+		client.startHeartbeat()
+		sock.Run(relaySocketClient{conn: client})
+		client.stopHeartbeat()
+		transportLogs := runTransportPostHookCompleter(&completerSlot, r.logger)
+		cancelSession()
+		if traceCompleter != nil {
+			traceCompleter(transportLogs)
+		}
+	})
+	if err != nil {
+		r.sockets.Add(-1)
+		sock.Abort(relayGatewayError(err, "the WebSocket upgrade with the caller failed", fasthttp.StatusBadRequest))
+		cancelSession()
+		if traceCompleter != nil {
+			traceCompleter(runTransportPostHookCompleter(&completerSlot, r.logger))
+		}
+	}
+}
+
+// maxSockets is the open-session bound: websocket.max_connections_per_user, as for Realtime.
+func (r *RelayGatewayHandler) maxSockets() int64 {
+	if r.config != nil && r.config.WebSocketConfig != nil && r.config.WebSocketConfig.MaxConnections > 0 {
+		return int64(r.config.WebSocketConfig.MaxConnections)
+	}
+	return schemas.DefaultWSMaxConnections
+}
+
+// offeredSubprotocols reads the subprotocols the caller offered on its handshake.
+func offeredSubprotocols(ctx *fasthttp.RequestCtx) []string {
+	raw := string(ctx.Request.Header.Peek("Sec-WebSocket-Protocol"))
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, protocol := range strings.Split(raw, ",") {
+		if protocol = strings.TrimSpace(protocol); protocol != "" {
+			out = append(out, protocol)
+		}
+	}
+	return out
+}
+
+// detachRelaySessionContext copies the request's identity, grant, governance values and trace onto
+// a context that outlives the request: the values the transport middleware stored on the fasthttp
+// request, then the request context's own, which win. The trace is kept, since the relay defers
+// its completion to the session's end.
+func detachRelaySessionContext(ctx *fasthttp.RequestCtx, requestCtx *schemas.BifrostContext) (*schemas.BifrostContext, context.CancelFunc) {
+	sessionCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	ctx.VisitUserValuesAll(func(key, value any) {
+		if _, ok := key.(schemas.BifrostContextKey); ok && value != nil {
+			sessionCtx.SetValue(key, value)
+		}
+	})
+	for _, key := range realtimeMiddlewareKeys {
+		if value := ctx.UserValue(key); value != nil {
+			sessionCtx.SetValue(key, value)
+		}
+	}
+	for key, value := range requestCtx.GetUserValues() {
+		if value != nil {
+			sessionCtx.SetValue(key, value)
+		}
+	}
+	if g := requestCtx.Grant(); g != nil {
+		sessionCtx.SetGrant(g)
+	}
+	return sessionCtx, cancel
+}
+
+// relaySocketClient adapts the upgraded caller connection to relay.SocketClient, reusing the
+// Realtime connection wrapper for serialized writes, write deadlines and the heartbeat.
+type relaySocketClient struct {
+	conn *realtimeClientConn
+}
+
+func (c relaySocketClient) ReadMessage() (int, []byte, error) { return c.conn.ReadMessage() }
+
+func (c relaySocketClient) WriteMessage(messageType int, data []byte) error {
+	return c.conn.WriteMessage(messageType, data)
+}
+
+func (c relaySocketClient) WriteClose(code int, reason string) error {
+	return c.conn.conn.WriteControl(ws.CloseMessage, ws.FormatCloseMessage(code, reason), time.Now().Add(realtimeCloseHandshakeGrace))
+}
+
+// Interrupt forces the pending read to return: closing a hijacked connection cannot interrupt it.
+func (c relaySocketClient) Interrupt() { _ = c.conn.conn.SetReadDeadline(time.Now()) }
 
 // runTransportPostHookCompleter runs the deferred transport post-hooks once a relay stream ends and
 // returns their logs. The middleware publishes the completer just after the handler returns, which

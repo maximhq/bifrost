@@ -60,6 +60,8 @@ type Manager struct {
 	// globalProxy returns the proxy an endpoint without its own inherits, nil for none.
 	globalProxy func() (*schemas.ProxyConfig, error)
 	logger      schemas.Logger
+
+	sockets sync.Map // *Socket -> struct{}: open WebSocket sessions, ended by CloseSockets at shutdown
 }
 
 // NewManager returns an empty manager. store may be nil, in which case endpoints can only be made
@@ -434,71 +436,123 @@ func (m *Manager) Serve(ctx *schemas.BifrostContext, in Request) (*Result, *sche
 	return m.run(ctx, e, p, req)
 }
 
-// run is the hook gate: pre-hooks, the relay, then post-hooks for exactly the plugins whose
-// pre-hooks ran. A streamed call keeps the pipeline until the stream ends.
-func (m *Manager) run(ctx *schemas.BifrostContext, e *endpoint, p plan, req *schemas.BifrostRelayRequest) (result *Result, finalErr *schemas.BifrostError) {
-	// Latency is the wall-clock the call spends in Bifrost, from the pre-hooks to the end of the
-	// reply, and the upstream socket time accumulates on the context as it does for an LLM call
-	// (DoHTTPRequest adds to it), so the row and the trace can split the two. A call the pre-hooks
-	// answer (an access denial) never reaches the upstream and still records the time it took.
-	start := time.Now()
+// callGate runs the Relays hooks around one call: the pre-hooks, the operation span, then the
+// post-hooks exactly once for the plugins whose pre-hooks ran, and the pooled pipeline is released
+// once. An HTTP call, a WebSocket session and each of a session's billing windows go through one.
+type callGate struct {
+	ctx         *schemas.BifrostContext
+	req         *schemas.BifrostRelayRequest
+	start       time.Time
+	entrySpanID any
+	pipeline    PluginPipeline
+	release     func(PluginPipeline)
+	released    bool
+	preCount    int
+	postRun     bool
+	span        *relaySpan
+	noSpan      bool // a billing window: relay metrics count spans, so a window must not emit one
+}
+
+// openGate starts timing the call and acquires a plugin pipeline. Latency is the wall-clock the call
+// spends in Bifrost, from the pre-hooks to the end of the reply, and the upstream socket time
+// accumulates on the context as it does for an LLM call (DoHTTPRequest adds to it), so the row and
+// the trace can split the two. A call the pre-hooks answer (an access denial) never reaches the
+// upstream and still records the time it took.
+func (m *Manager) openGate(ctx *schemas.BifrostContext, req *schemas.BifrostRelayRequest, noSpan bool) *callGate {
+	g := &callGate{ctx: ctx, req: req, start: time.Now(), entrySpanID: ctx.Value(schemas.BifrostContextKeySpanID), noSpan: noSpan}
 	ctx.ResetUpstreamLatency()
-	entrySpanID := ctx.Value(schemas.BifrostContextKeySpanID)
-	var span *relaySpan
 	m.pipelineMu.RLock()
 	acquire, release := m.acquirePipeline, m.releasePipeline
 	m.pipelineMu.RUnlock()
-	var pipeline PluginPipeline
 	if acquire != nil {
-		pipeline = acquire()
+		g.pipeline = acquire()
 	}
-	released := false
-	releaseOnce := func() {
-		if !released && pipeline != nil && release != nil {
-			released = true
-			release(pipeline)
-		}
-	}
+	g.release = release
+	return g
+}
 
-	preCount := 0
-	postRun := false
-	runPost := func(resp *schemas.BifrostRelayResponse, bErr *schemas.BifrostError) (*schemas.BifrostRelayResponse, *schemas.BifrostError) {
-		if postRun {
-			return resp, bErr
-		}
-		postRun = true
-		if resp != nil {
-			resp.Latency = time.Since(start).Milliseconds()
-			if upstream, ok := schemas.GetUpstreamLatency(ctx); ok {
-				resp.UpstreamLatency = upstream.Milliseconds()
+// pre runs the pre-hooks and opens the operation span. A short-circuit is returned with the span
+// already started, so the relay metrics derived from it count denied grants, exhausted budgets and
+// rate limits in the request and error totals, as the MCP post-hook counts a refused tool call.
+func (g *callGate) pre() *schemas.RelayPluginShortCircuit {
+	if g.pipeline != nil {
+		preReq, shortCircuit, preCount := g.pipeline.RunRelayPreHooks(g.ctx, g.req, func(entered int) { g.preCount = entered })
+		g.preCount = preCount
+		if shortCircuit != nil {
+			if shortCircuit.Response != nil {
+				shortCircuit.Response.RelayName = g.req.RelayName
 			}
-		}
-		if bErr != nil {
-			// An error carries the whole call's time, as a reply does, not only the upstream
-			// attempt the transport timed; and it names its request type for the error headers,
-			// the span and the error classification.
-			bErr.ExtraFields.Latency = time.Since(start).Milliseconds()
-			if bErr.ExtraFields.RequestType == "" {
-				bErr.ExtraFields.RequestType = schemas.RelayRequest
+			if shortCircuit.Error != nil && shortCircuit.Error.ExtraFields.Latency == 0 {
+				shortCircuit.Error.ExtraFields.Latency = time.Since(g.start).Milliseconds()
 			}
+			g.startSpan()
+			return shortCircuit
 		}
-		// The call is timed and its span ended whether or not hooks run: a manager with no plugin
-		// pipeline still traces. The operation span ends before the post-hooks, as for MCP tools,
-		// so its duration is the call and the hooks nest after it under the same parent.
-		span.end(ctx, resp, bErr)
-		if entrySpanID != nil {
-			// The post-hooks' spans are siblings of the ended relay span, not its children.
-			ctx.SetValue(schemas.BifrostContextKeySpanID, entrySpanID)
+		if preReq != nil {
+			g.req = preReq
 		}
-		// The root span takes the upstream figure so the tracer can stamp Bifrost's overhead and
-		// the logging plugin can backfill the row from the trace, as it does for LLM rows.
-		ctx.StampUpstreamLatency()
-		ctx.StampStreamOverhead()
-		if pipeline == nil {
-			return resp, bErr
-		}
-		return pipeline.RunRelayPostHooks(ctx, resp, bErr, preCount)
 	}
+	g.startSpan()
+	return nil
+}
+
+func (g *callGate) startSpan() {
+	if !g.noSpan {
+		g.span = startRelaySpan(g.ctx, g.entrySpanID, g.req, g.start)
+	}
+}
+
+// post times the call, ends its span and runs the post-hooks, once. The call is timed and its span
+// ended whether or not hooks run: a manager with no plugin pipeline still traces. The operation
+// span ends before the post-hooks, as for MCP tools, so its duration is the call and the hooks
+// nest after it under the same parent.
+func (g *callGate) post(resp *schemas.BifrostRelayResponse, bErr *schemas.BifrostError) (*schemas.BifrostRelayResponse, *schemas.BifrostError) {
+	if g.postRun {
+		return resp, bErr
+	}
+	g.postRun = true
+	if resp != nil {
+		resp.Latency = time.Since(g.start).Milliseconds()
+		if upstream, ok := schemas.GetUpstreamLatency(g.ctx); ok {
+			resp.UpstreamLatency = upstream.Milliseconds()
+		}
+	}
+	if bErr != nil {
+		// An error carries the whole call's time, as a reply does, not only the upstream attempt
+		// the transport timed; and it names its request type for the error headers, the span and
+		// the error classification.
+		bErr.ExtraFields.Latency = time.Since(g.start).Milliseconds()
+		if bErr.ExtraFields.RequestType == "" {
+			bErr.ExtraFields.RequestType = schemas.RelayRequest
+		}
+	}
+	g.span.end(g.ctx, resp, bErr)
+	if g.entrySpanID != nil {
+		// The post-hooks' spans are siblings of the ended relay span, not its children.
+		g.ctx.SetValue(schemas.BifrostContextKeySpanID, g.entrySpanID)
+	}
+	// The root span takes the upstream figure so the tracer can stamp Bifrost's overhead and the
+	// logging plugin can backfill the row from the trace, as it does for LLM rows.
+	g.ctx.StampUpstreamLatency()
+	g.ctx.StampStreamOverhead()
+	if g.pipeline == nil {
+		return resp, bErr
+	}
+	return g.pipeline.RunRelayPostHooks(g.ctx, resp, bErr, g.preCount)
+}
+
+// releaseOnce returns the pooled pipeline.
+func (g *callGate) releaseOnce() {
+	if !g.released && g.pipeline != nil && g.release != nil {
+		g.released = true
+		g.release(g.pipeline)
+	}
+}
+
+// run is the hook gate around one HTTP call: pre-hooks, the relay, then post-hooks for exactly the
+// plugins whose pre-hooks ran. A streamed call keeps the pipeline until the stream ends.
+func (m *Manager) run(ctx *schemas.BifrostContext, e *endpoint, p plan, req *schemas.BifrostRelayRequest) (result *Result, finalErr *schemas.BifrostError) {
+	g := m.openGate(ctx, req, false)
 	streaming := false
 	defer func() {
 		if r := recover(); r != nil {
@@ -506,8 +560,8 @@ func (m *Manager) run(ctx *schemas.BifrostContext, e *endpoint, p plan, req *sch
 				m.logger.Error("recovered from panic in relay %s: %v", req.RelayName, r)
 			}
 			bErr := statusError(http.StatusInternalServerError, fmt.Sprintf("panic in relay: %v", r))
-			bErr.ExtraFields.Latency = time.Since(start).Milliseconds()
-			_, postErr := runPost(nil, bErr)
+			bErr.ExtraFields.Latency = time.Since(g.start).Milliseconds()
+			_, postErr := g.post(nil, bErr)
 			if postErr == nil {
 				postErr = bErr
 			}
@@ -515,40 +569,22 @@ func (m *Manager) run(ctx *schemas.BifrostContext, e *endpoint, p plan, req *sch
 			streaming = false
 		}
 		if !streaming {
-			releaseOnce()
+			g.releaseOnce()
 		}
 	}()
 
-	if pipeline != nil {
-		var shortCircuit *schemas.RelayPluginShortCircuit
-		var preReq *schemas.BifrostRelayRequest
-		preReq, shortCircuit, preCount = pipeline.RunRelayPreHooks(ctx, req, func(entered int) { preCount = entered })
-		if shortCircuit != nil {
-			if shortCircuit.Response != nil {
-				shortCircuit.Response.RelayName = req.RelayName
-			}
-			if shortCircuit.Error != nil && shortCircuit.Error.ExtraFields.Latency == 0 {
-				shortCircuit.Error.ExtraFields.Latency = time.Since(start).Milliseconds()
-			}
-			// A refused call still gets its operation span, so the relay metrics derived from it
-			// count denied grants, exhausted budgets and rate limits in the request and error
-			// totals, as the MCP post-hook counts a refused tool call.
-			span = startRelaySpan(ctx, entrySpanID, req, start)
-			resp, bErr := runPost(shortCircuit.Response, shortCircuit.Error)
-			if bErr != nil {
-				return nil, bErr
-			}
-			if resp == nil {
-				return nil, statusError(http.StatusInternalServerError, "relay short-circuit carried no response")
-			}
-			return &Result{Response: resp}, nil
+	if shortCircuit := g.pre(); shortCircuit != nil {
+		resp, bErr := g.post(shortCircuit.Response, shortCircuit.Error)
+		if bErr != nil {
+			return nil, bErr
 		}
-		if preReq != nil {
-			req = preReq
+		if resp == nil {
+			return nil, statusError(http.StatusInternalServerError, "relay short-circuit carried no response")
 		}
+		return &Result{Response: resp}, nil
 	}
+	req = g.req
 
-	span = startRelaySpan(ctx, entrySpanID, req, start)
 	upstream := upstreamRequest{method: req.Method, path: req.Path, rawQuery: req.RawQuery, headers: req.Headers, body: req.Body}
 	requestUnits := p.usage.requestUnits(req.Body)
 
@@ -566,7 +602,7 @@ func (m *Manager) run(ctx *schemas.BifrostContext, e *endpoint, p plan, req *sch
 	} else {
 		resp, start, releaseOpen, openErr := e.openStream(ctx, upstream)
 		if openErr != nil {
-			return recovered(runPost(nil, openErr))
+			return recovered(g.post(nil, openErr))
 		}
 		// Until a stream owns the reply, it is released here, whatever happens below (a panic
 		// included): the header bound and the upstream connection are never left open.
@@ -580,10 +616,10 @@ func (m *Manager) run(ctx *schemas.BifrostContext, e *endpoint, p plan, req *sch
 		finish := func(final *schemas.BifrostRelayResponse, bErr *schemas.BifrostError) {
 			// Released whatever the post-hooks do, a panic included, so the pooled pipeline and
 			// the open reply are never lost.
-			defer releaseOnce()
+			defer g.releaseOnce()
 			defer releaseOpen()
 			final.RelayName = req.RelayName
-			runPost(final, bErr)
+			g.post(final, bErr)
 		}
 		// Any status is streamed as the upstream sent it, an error reply included, as a passthrough
 		// stream is; the stream reports the status and its post-hooks log it as an error.
@@ -617,7 +653,7 @@ func (m *Manager) run(ctx *schemas.BifrostContext, e *endpoint, p plan, req *sch
 		}
 	}
 	if bErr != nil {
-		return recovered(runPost(nil, bErr))
+		return recovered(g.post(nil, bErr))
 	}
 	resp := &schemas.BifrostRelayResponse{
 		RelayName:  req.RelayName,
@@ -635,7 +671,7 @@ func (m *Manager) run(ctx *schemas.BifrostContext, e *endpoint, p plan, req *sch
 		resp.Usage.Job = p.route.jobHandle(reply.contentType, reply.body)
 	}
 	// A post-hook that clears the response without an error is refused like an empty recovery.
-	return recovered(runPost(resp, nil))
+	return recovered(g.post(resp, nil))
 }
 
 // recovered turns a post-hook outcome into a result: a post-hook may replace an error with a

@@ -7122,6 +7122,9 @@
         "streaming": {
           "$ref": "#/$defs/relay_streaming_config"
         },
+        "websocket": {
+          "$ref": "#/$defs/relay_websocket_config"
+        },
         "routes": {
           "type": "array",
           "items": {
@@ -7190,6 +7193,35 @@
       },
       "additionalProperties": false
     },
+    "relay_websocket_config": {
+      "type": "object",
+      "description": "Bounds and billing for the routes a relay serves as WebSocket sessions. The handshake is bounded by network.timeout_seconds and an open session by network.stream_idle_timeout_in_seconds (no data frame either way)",
+      "properties": {
+        "max_message_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Largest frame read in either direction. 0 (default) sets no bound of the relay's own, as no HTTP reply has one"
+        },
+        "max_session_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Longest a session may stay open before the relay closes it with 1008. 0 (default) sets no bound"
+        },
+        "billing_window_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How often an open session settles its usage to the caller's budgets; a window the budgets refuse closes the session with 1008. 0 settles only at close. Default 60"
+        },
+        "subprotocols": {
+          "type": "array",
+          "description": "Caller subprotocols (Sec-WebSocket-Protocol) that may be offered to the upstream. None by default",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "relay_route_config": {
       "type": "object",
       "description": "Overrides for one upstream operation",
@@ -7227,6 +7259,10 @@
         "stream": {
           "type": "boolean",
           "description": "Forces the streaming or buffered relay for this route"
+        },
+        "websocket": {
+          "type": "boolean",
+          "description": "Serve an upgrade request on this route as a WebSocket session relayed to the upstream (wss:// from base_url). Opt-in per route: the method must be GET, stream and a job cannot be set, and a request-side quantity can only be body_bytes or body_chars (what the caller sends). A WebSocket route is billable unless billable is false"
         },
         "usage": {
           "$ref": "#/$defs/relay_usage_config"

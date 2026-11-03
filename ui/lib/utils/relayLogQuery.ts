@@ -38,6 +38,7 @@ export function buildRelayLogQuery(filters: RelayLogFilters, pagination?: RelayL
 	const apps = (filters.apps ?? []).filter(Boolean);
 	if (apps.length > 0) params.set("apps", JSON.stringify(apps));
 	if (filters.billable !== undefined) params.set("billable", String(filters.billable));
+	if (filters.websocket !== undefined) params.set("websocket", String(filters.websocket));
 	// 0 is a real bound (max_cost=0 is "free calls only"), so only undefined and NaN mean unset.
 	if (filters.min_cost !== undefined && Number.isFinite(filters.min_cost)) params.set("min_cost", String(filters.min_cost));
 	if (filters.max_cost !== undefined && Number.isFinite(filters.max_cost)) params.set("max_cost", String(filters.max_cost));

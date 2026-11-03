@@ -337,6 +337,8 @@ A normal (not streamed) reply can be up to 64 MB. For larger replies, make the r
 
 ---
 
+The same tab holds **WebSocket Sessions**, the `websocket` block for routes served as [WebSocket sessions](./websockets): `max_message_bytes`, `max_session_seconds`, `billing_window_seconds` (default `60`) and `subprotocols`. A session's handshake is bounded by `timeout_seconds`, and an open session by `stream_idle_timeout_in_seconds`.
+
 ## Proxy
 
 The **Proxy** tab sends this relay's traffic through a forward proxy.

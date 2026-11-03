@@ -37,6 +37,7 @@ type compiledRoute struct {
 	billable bool
 	disabled bool // matched requests are refused rather than falling through to a later route
 	stream   *bool
+	socket   bool // upgrade requests are served as WebSocket sessions
 	usage    resolvedUsage
 	// job, jobParams and jobInterval are set for a route that starts an upstream job: the
 	// block itself, its settlement snapshot (built once here, attached to every start response)
@@ -246,13 +247,21 @@ func compileRoutesWithCostPolicy(cfg *schemas.RelayConfig, ignoreUpstreamCost bo
 	}
 	routes := make([]compiledRoute, 0, len(cfg.Routes))
 	for _, route := range cfg.Routes {
+		socket := route.WebSocket != nil && *route.WebSocket
+		billable := billableByDefault(route.Method, route.Billable)
+		if socket && route.Billable == nil {
+			// An upgrade is always a GET, but a session is the operation an API bills on (a
+			// speech-to-text stream), so a WebSocket route is billable unless it says otherwise.
+			billable = true
+		}
 		compiled := compiledRoute{
 			method:   strings.ToUpper(route.Method),
 			glob:     compileGlob(route.Path),
 			headers:  compileHeaders(route.Headers),
-			billable: billableByDefault(route.Method, route.Billable),
+			billable: billable,
 			disabled: route.Enabled != nil && !*route.Enabled,
 			stream:   route.Stream,
+			socket:   socket,
 			usage:    resolveUsage(cfg.Usage, route.Usage),
 		}
 		if route.Job != nil {

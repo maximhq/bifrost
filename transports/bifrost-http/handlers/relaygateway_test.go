@@ -11,8 +11,10 @@ import (
 	"testing"
 	"time"
 
+	ws "github.com/fasthttp/websocket"
 	"github.com/maximhq/bifrost/core/relay"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -392,7 +394,7 @@ func TestRelayForwardHeadersDropsConnectionTokens(t *testing.T) {
 	h.Set("X-Hop-One", "1")
 	h.Set("X-Hop-Two", "2")
 	h.Set("X-Hop-Three", "3")
-	got := relayForwardHeaders(h)
+	got := relayForwardHeaders(h, false)
 	assert.NotContains(t, got, "x-hop-one")
 	assert.NotContains(t, got, "x-hop-two")
 	assert.Equal(t, "3", got["x-hop-three"], "a header the Connection header does not name is forwarded")
@@ -410,9 +412,9 @@ func TestRelayForwardHeadersConnectionParseDoesNotAllocate(t *testing.T) {
 	without := relayHeadersRequest("")
 	keepAlive := relayHeadersRequest("keep-alive")
 	closing := relayHeadersRequest("close")
-	base := testing.AllocsPerRun(100, func() { _ = relayForwardHeaders(without) })
-	assert.Equal(t, base, testing.AllocsPerRun(100, func() { _ = relayForwardHeaders(keepAlive) }), "Connection: keep-alive allocates nothing extra")
-	assert.Equal(t, base, testing.AllocsPerRun(100, func() { _ = relayForwardHeaders(closing) }), "Connection: close allocates nothing extra")
+	base := testing.AllocsPerRun(100, func() { _ = relayForwardHeaders(without, false) })
+	assert.Equal(t, base, testing.AllocsPerRun(100, func() { _ = relayForwardHeaders(keepAlive, false) }), "Connection: keep-alive allocates nothing extra")
+	assert.Equal(t, base, testing.AllocsPerRun(100, func() { _ = relayForwardHeaders(closing, false) }), "Connection: close allocates nothing extra")
 }
 
 // BenchmarkRelayForwardHeaders measures collecting the forwarded headers for a typical relay call,
@@ -428,7 +430,7 @@ func BenchmarkRelayForwardHeaders(b *testing.B) {
 			h.Set("X-Hop", "1")
 			b.ReportAllocs()
 			for b.Loop() {
-				_ = relayForwardHeaders(h)
+				_ = relayForwardHeaders(h, false)
 			}
 		})
 	}
@@ -532,4 +534,139 @@ func TestRelayStreamAbortsCallerWhenUpstreamFails(t *testing.T) {
 			assert.ErrorIs(t, err, io.ErrUnexpectedEOF)
 		})
 	}
+}
+
+// serveRelayGateway serves the relay data plane on a real listener, so an upgrade can hijack the
+// connection, and returns its ws:// base.
+func serveRelayGateway(t *testing.T, handler *RelayGatewayHandler) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	srv := &fasthttp.Server{Handler: handler.handle}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Shutdown() })
+	return "ws://" + ln.Addr().String()
+}
+
+// wsEchoUpstream echoes frames and records the handshake request.
+func wsEchoUpstream(t *testing.T) (*httptest.Server, *atomic.Value) {
+	t.Helper()
+	var handshake atomic.Value
+	upgrader := ws.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handshake.Store(r.Clone(r.Context()))
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for {
+			messageType, data, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			if err := conn.WriteMessage(messageType, data); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &handshake
+}
+
+func socketRelayManager(t *testing.T, baseURL string, socket bool) *relay.Manager {
+	t.Helper()
+	manager := relay.NewManager(nil, nil)
+	route := schemas.RelayRouteConfig{Method: "GET", Path: "/v1/listen"}
+	if socket {
+		route.WebSocket = schemas.Ptr(true)
+	}
+	require.NoError(t, manager.Upsert(&schemas.RelayConfig{
+		Name: "stt", BaseURL: baseURL,
+		Auth:       schemas.RelayAuthConfig{Type: schemas.RelayAuthBearer},
+		Credential: &schemas.RelayCredential{Value: schemas.NewSecretVar("sk-endpoint")},
+		Routes:     []schemas.RelayRouteConfig{route},
+	}))
+	return manager
+}
+
+// A relay upgrade is served end to end: the caller is upgraded, frames are relayed both ways, and
+// the upstream sees the relay's credential, never the caller's, and no caller handshake headers.
+func TestRelayGatewayRelaysWebSocketSession(t *testing.T) {
+	upstream, handshake := wsEchoUpstream(t)
+	base := serveRelayGateway(t, NewRelayGatewayHandler(socketRelayManager(t, upstream.URL, true), nil, nil))
+
+	header := http.Header{}
+	header.Set("Authorization", "Bearer sk-bf-virtual-key")
+	header.Set("Origin", "https://caller.example")
+	header.Set("X-Custom", "kept")
+	conn, resp, err := ws.DefaultDialer.Dial(base+"/relay/stt/v1/listen?model=nova-3", header)
+	require.NoError(t, err)
+	defer conn.Close()
+	assert.Equal(t, http.StatusSwitchingProtocols, resp.StatusCode)
+
+	require.NoError(t, conn.WriteMessage(ws.TextMessage, []byte("hello")))
+	messageType, data, err := conn.ReadMessage()
+	require.NoError(t, err)
+	assert.Equal(t, ws.TextMessage, messageType)
+	assert.Equal(t, "hello", string(data))
+	require.NoError(t, conn.WriteMessage(ws.CloseMessage, ws.FormatCloseMessage(ws.CloseNormalClosure, "")))
+
+	got, _ := handshake.Load().(*http.Request)
+	require.NotNil(t, got)
+	assert.Equal(t, "Bearer sk-endpoint", got.Header.Get("Authorization"), "the caller's virtual key never reaches the upstream")
+	assert.Empty(t, got.Header.Get("Origin"), "the caller's Origin is not the upstream's")
+	assert.Equal(t, "kept", got.Header.Get("X-Custom"))
+	assert.Equal(t, "/v1/listen", got.URL.Path)
+	assert.Equal(t, "model=nova-3", got.URL.RawQuery)
+}
+
+// An upgrade on a route that is not served as WebSocket sessions is refused with a plain status.
+func TestRelayGatewayRefusesUpgradeOnHTTPRoute(t *testing.T) {
+	upstream, handshake := wsEchoUpstream(t)
+	base := serveRelayGateway(t, NewRelayGatewayHandler(socketRelayManager(t, upstream.URL, false), nil, nil))
+	_, resp, err := ws.DefaultDialer.Dial(base+"/relay/stt/v1/listen", nil)
+	require.Error(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Nil(t, handshake.Load(), "the upstream is never dialed")
+}
+
+// Open sessions are bounded by websocket.max_connections_per_user; a session past it is refused with
+// 429 before any hook runs, and the slot is freed when a session ends.
+func TestRelayGatewayBoundsOpenSessions(t *testing.T) {
+	upstream, _ := wsEchoUpstream(t)
+	cfg := &lib.Config{ClientConfig: &configstore.ClientConfig{}, WebSocketConfig: &schemas.WebSocketConfig{MaxConnections: 1}}
+	handler := NewRelayGatewayHandler(socketRelayManager(t, upstream.URL, true), cfg, nil)
+	base := serveRelayGateway(t, handler)
+
+	first, _, err := ws.DefaultDialer.Dial(base+"/relay/stt/v1/listen", nil)
+	require.NoError(t, err)
+	_, resp, err := ws.DefaultDialer.Dial(base+"/relay/stt/v1/listen", nil)
+	require.Error(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, http.StatusTooManyRequests, resp.StatusCode)
+
+	require.NoError(t, first.WriteMessage(ws.CloseMessage, ws.FormatCloseMessage(ws.CloseNormalClosure, "")))
+	_ = first.Close()
+	require.Eventually(t, func() bool { return handler.sockets.Load() == 0 }, 5*time.Second, 20*time.Millisecond, "the slot is released when the session ends")
+	second, _, err := ws.DefaultDialer.Dial(base+"/relay/stt/v1/listen", nil)
+	require.NoError(t, err)
+	_ = second.Close()
+}
+
+// Shutdown ends open sessions with 1012, so a caller can reconnect elsewhere.
+func TestRelayGatewayCloseEndsSessions(t *testing.T) {
+	upstream, _ := wsEchoUpstream(t)
+	handler := NewRelayGatewayHandler(socketRelayManager(t, upstream.URL, true), nil, nil)
+	base := serveRelayGateway(t, handler)
+	conn, _, err := ws.DefaultDialer.Dial(base+"/relay/stt/v1/listen", nil)
+	require.NoError(t, err)
+	defer conn.Close()
+	handler.Close()
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, _, err = conn.ReadMessage()
+	var closeErr *ws.CloseError
+	require.ErrorAs(t, err, &closeErr)
+	assert.Equal(t, ws.CloseServiceRestart, closeErr.Code)
 }

@@ -60,7 +60,7 @@ type relayInjectEntry struct {
 // PreRelayHook records the request side of a relay call. The row is completed and written by the
 // post-hook, which runs once the reply (or the stream) has ended.
 func (p *LoggerPlugin) PreRelayHook(ctx *schemas.BifrostContext, req *schemas.BifrostRelayRequest) (*schemas.BifrostRelayRequest, *schemas.RelayPluginShortCircuit, error) {
-	if ctx == nil || req == nil {
+	if ctx == nil || req == nil || relaySessionContinuation(ctx) {
 		return req, nil, nil
 	}
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
@@ -134,7 +134,9 @@ func (p *LoggerPlugin) PreRelayHook(ctx *schemas.BifrostContext, req *schemas.Bi
 // persistEvictedRelayPartial) reconciles its outcome onto that row with an update, as PostLLMHook
 // reconciles onto an evicted LLM partial.
 func (p *LoggerPlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *schemas.BifrostRelayResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostRelayResponse, *schemas.BifrostError, error) {
-	if ctx == nil {
+	if ctx == nil || relaySessionContinuation(ctx) {
+		// A WebSocket session's billing window writes no row: the session is one row, written
+		// with the whole session's usage when it ends, as a GPT Live session is.
 		return resp, bifrostErr, nil
 	}
 	if resp != nil && resp.OversizedEvents > 0 {
@@ -209,6 +211,16 @@ func (p *LoggerPlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *schemas.
 			entry.ResponseBody = textBody(resp.Body)
 		}
 		applyEndpointUsage(entry, resp.Usage)
+		if resp.WebSocket {
+			entry.WebSocket = true
+			entry.BytesIn, entry.FramesIn, entry.FramesOut = resp.BytesIn, resp.FramesIn, resp.FramesOut
+			entry.SocketParsed = resp.Socket
+			// A session has no request body at the pre-hook; the caller's text frames arrive with
+			// the reply and follow the same content policy below.
+			if len(resp.RequestBody) > 0 {
+				entry.RequestBody = textBody(resp.RequestBody)
+			}
+		}
 	}
 	if entry.Latency == nil {
 		// No reply to time: the upstream failed or a pre-hook refused the call. The error carries
@@ -369,6 +381,17 @@ func relayLogUpdateColumns(entry *logstore.RelayLog, dropRequestBody bool) map[s
 		"error_details":             entry.ErrorDetails,
 		"plugin_logs":               entry.PluginLogs,
 		"content_hidden":            entry.ContentHidden,
+	}
+	if entry.WebSocket {
+		updates["websocket"] = true
+		updates["bytes_in"] = entry.BytesIn
+		updates["frames_in"] = entry.FramesIn
+		updates["frames_out"] = entry.FramesOut
+		updates["socket"] = entry.Socket
+		if entry.RequestBody != nil && !dropRequestBody {
+			// A session's client frames arrive with the reply, so the partial row never held them.
+			updates["request_body"] = entry.RequestBody
+		}
 	}
 	if dropRequestBody {
 		updates["request_body"] = nil
@@ -711,4 +734,11 @@ func relayMatchedHeaders(req *schemas.BifrostRelayRequest) map[string]string {
 	}
 	// Values are stored whole, as LLM rows store their logging headers.
 	return schemas.RedactSensitiveHeaders(kept)
+}
+
+// relaySessionContinuation reports a billing window of an open WebSocket session, which carries the
+// continuation flag core/relay sets on the window's own context.
+func relaySessionContinuation(ctx *schemas.BifrostContext) bool {
+	continuation, _ := ctx.Value(schemas.BifrostContextKeySessionContinuation).(bool)
+	return continuation
 }

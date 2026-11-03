@@ -513,8 +513,10 @@ func parseRelayLogFilters(ctx *fasthttp.RequestCtx) (logstore.RelayLogFilters, e
 	}
 	// A value that does not parse is ignored, as /api/logs ignores one, rather than refusing the
 	// whole query. period is the exception (below).
-	if b, err := strconv.ParseBool(value("billable")); err == nil {
-		f.Billable = &b
+	for name, target := range map[string]**bool{"billable": &f.Billable, "websocket": &f.WebSocket} {
+		if b, err := strconv.ParseBool(value(name)); err == nil {
+			*target = &b
+		}
 	}
 	for name, target := range map[string]**time.Time{"start_time": &f.StartTime, "end_time": &f.EndTime} {
 		if raw := value(name); raw != "" {

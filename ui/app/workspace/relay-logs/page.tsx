@@ -59,6 +59,7 @@ export default function RelayLogsPage() {
 			project_ids: arr,
 			apps: arr,
 			billable: parseAsString.withDefault(""),
+			websocket: parseAsString.withDefault(""),
 			// No default: 0 is a legitimate bound ("max_cost=0" is free calls only), which a zero
 			// default would make indistinguishable from no filter at all.
 			min_cost: parseAsFloat,
@@ -101,6 +102,7 @@ export default function RelayLogsPage() {
 			project_ids: urlState.project_ids,
 			apps: urlState.apps,
 			billable: urlState.billable === "" ? undefined : urlState.billable === "true",
+			websocket: urlState.websocket === "" ? undefined : urlState.websocket === "true",
 			min_cost: urlState.min_cost ?? undefined,
 			max_cost: urlState.max_cost ?? undefined,
 			min_latency: urlState.min_latency ?? undefined,
@@ -214,6 +216,7 @@ export default function RelayLogsPage() {
 				project_ids: next.project_ids ?? [],
 				apps: next.apps ?? [],
 				billable: next.billable === undefined ? "" : String(next.billable),
+				websocket: next.websocket === undefined ? "" : String(next.websocket),
 				min_cost: next.min_cost ?? null,
 				max_cost: next.max_cost ?? null,
 				min_latency: next.min_latency ?? null,

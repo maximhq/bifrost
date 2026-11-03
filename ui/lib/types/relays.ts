@@ -121,8 +121,19 @@ export interface RelayRouteConfig {
 	enabled?: boolean;
 	billable?: boolean;
 	stream?: boolean;
+	/** Upgrade requests on this route are relayed as WebSocket sessions (GET only). */
+	websocket?: boolean;
 	usage?: RelayUsageConfig;
 	job?: RelayJobConfig;
+}
+
+/** Bounds and billing for the routes a relay serves as WebSocket sessions. */
+export interface RelayWebSocketConfig {
+	max_message_bytes?: number;
+	max_session_seconds?: number;
+	/** 0 settles only at close; unset takes the default of 60. */
+	billing_window_seconds?: number;
+	subprotocols?: string[];
 }
 
 export interface RelayNetworkConfig {
@@ -152,6 +163,7 @@ export interface Relay {
 	proxy_config?: RelayProxyConfig;
 	usage?: RelayUsageConfig;
 	streaming?: RelayStreamingConfig;
+	websocket?: RelayWebSocketConfig;
 	routes?: RelayRouteConfig[];
 	skip_route_check?: boolean;
 	ignore_upstream_cost?: boolean;
@@ -224,6 +236,15 @@ export interface UsagePreview {
 
 export type RelayLogStatus = "success" | "error" | "cancelled" | "processing";
 
+/** How a relayed WebSocket session ended. */
+export interface RelaySocketSummary {
+	subprotocol?: string;
+	close_code?: number;
+	close_reason?: string;
+	closed_by?: "client" | "upstream" | "gateway";
+	windows?: number;
+}
+
 export interface RelayLog {
 	id: string;
 	timestamp: string;
@@ -244,6 +265,11 @@ export interface RelayLog {
 	overhead_latency?: number; // Bifrost overhead (total minus upstream), ms
 	overhead_breakdown?: OverheadBucket[]; // per-span self-time decomposition of overhead (microseconds)
 	bytes_out: number;
+	websocket?: boolean;
+	bytes_in?: number;
+	frames_in?: number;
+	frames_out?: number;
+	socket?: RelaySocketSummary;
 	cost?: number;
 	cost_per_request?: number;
 	cost_per_unit?: number;
@@ -300,6 +326,8 @@ export interface RelayLogFilters {
 	project_ids?: string[];
 	apps?: string[];
 	billable?: boolean;
+	/** true for WebSocket sessions only, false for HTTP calls only. */
+	websocket?: boolean;
 	min_cost?: number;
 	max_cost?: number;
 	min_latency?: number;

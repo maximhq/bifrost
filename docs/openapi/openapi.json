@@ -111453,6 +111453,14 @@
             }
           },
           {
+            "name": "websocket",
+            "in": "query",
+            "description": "true for WebSocket sessions only, false for HTTP calls only.",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
             "name": "start_time",
             "in": "query",
             "description": "Start of the time range (RFC3339).",
@@ -111965,6 +111973,14 @@
             }
           },
           {
+            "name": "websocket",
+            "in": "query",
+            "description": "true for WebSocket sessions only, false for HTTP calls only.",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
             "name": "start_time",
             "in": "query",
             "description": "Start of the time range (RFC3339).",
@@ -112343,6 +112359,14 @@
             }
           },
           {
+            "name": "websocket",
+            "in": "query",
+            "description": "true for WebSocket sessions only, false for HTTP calls only.",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
             "name": "start_time",
             "in": "query",
             "description": "Start of the time range (RFC3339).",
@@ -112637,6 +112661,14 @@
             "name": "billable",
             "in": "query",
             "description": "Keep only billable (`true`) or non-billable (`false`) calls.",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "websocket",
+            "in": "query",
+            "description": "true for WebSocket sessions only, false for HTTP calls only.",
             "schema": {
               "type": "boolean"
             }
@@ -146041,6 +146073,35 @@
           }
         }
       },
+      "RelayWebSocketConfig": {
+        "type": "object",
+        "description": "Bounds and billing for the routes a relay serves as WebSocket sessions. The handshake is bounded by network.timeout_seconds and an open session by network.stream_idle_timeout_in_seconds.",
+        "properties": {
+          "max_message_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "Largest frame read in either direction; 0 (default) sets no bound of the relay's own."
+          },
+          "max_session_seconds": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Longest a session may stay open before the relay closes it with 1008; 0 (default) sets no bound."
+          },
+          "billing_window_seconds": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "How often an open session settles its usage to the caller's budgets; a refused window closes the session with 1008. 0 settles only at close. Default 60."
+          },
+          "subprotocols": {
+            "type": "array",
+            "description": "Caller subprotocols that may be offered to the upstream. None by default.",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "RelayRouteConfig": {
         "type": "object",
         "description": "One upstream operation. Routes are matched in order, first match wins. Without `skip_route_check`, a request matching no route is refused with 404.\n",
@@ -146079,6 +146140,10 @@
           "stream": {
             "type": "boolean",
             "description": "Forces the streaming (true) or buffered (false) relay for this route."
+          },
+          "websocket": {
+            "type": "boolean",
+            "description": "Serve an upgrade request on this route as a WebSocket session relayed to the upstream (wss:// from base_url). The method must be GET, stream cannot be set, and a request-side quantity can only be body_bytes or body_chars. A WebSocket route is billable unless billable is false."
           },
           "usage": {
             "$ref": "#/components/schemas/RelayUsageConfig"
@@ -146299,6 +146364,9 @@
           },
           "streaming": {
             "$ref": "#/components/schemas/RelayStreamingConfig"
+          },
+          "websocket": {
+            "$ref": "#/components/schemas/RelayWebSocketConfig"
           },
           "routes": {
             "type": "array",
@@ -146607,6 +146675,37 @@
           "duration_us"
         ]
       },
+      "RelaySocketSummary": {
+        "type": "object",
+        "description": "How a relayed WebSocket session ended.",
+        "properties": {
+          "subprotocol": {
+            "type": "string",
+            "description": "Negotiated with the upstream."
+          },
+          "close_code": {
+            "type": "integer",
+            "description": "The close code the caller was sent."
+          },
+          "close_reason": {
+            "type": "string",
+            "description": "The close reason the caller was sent."
+          },
+          "closed_by": {
+            "type": "string",
+            "enum": [
+              "client",
+              "upstream",
+              "gateway"
+            ],
+            "description": "Who ended the session."
+          },
+          "windows": {
+            "type": "integer",
+            "description": "Billing windows settled while the session was open."
+          }
+        }
+      },
       "RelayLog": {
         "type": "object",
         "description": "One relayed call, or the job row a relayed call started.",
@@ -146685,6 +146784,28 @@
             "type": "integer",
             "format": "int64",
             "description": "Response body bytes forwarded to the caller."
+          },
+          "websocket": {
+            "type": "boolean",
+            "description": "The call was a WebSocket session; status_code is 101."
+          },
+          "bytes_in": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Payload bytes the caller sent during a session."
+          },
+          "frames_in": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Data frames the caller sent during a session."
+          },
+          "frames_out": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Data frames forwarded to the caller during a session."
+          },
+          "socket": {
+            "$ref": "#/components/schemas/RelaySocketSummary"
           },
           "cost": {
             "type": "number",

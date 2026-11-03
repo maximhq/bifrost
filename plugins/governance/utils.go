@@ -350,10 +350,11 @@ func AppendAllProviderPermits(permits []schemas.ProviderPermit, configured []str
 	return permits
 }
 
-// isLiveSessionContinuation reports a billing unit of an admitted live session: the continuation
-// flag counts only on a live request, so no other path can skip request limits by setting it.
-func isLiveSessionContinuation(ctx context.Context) bool {
+// isSessionContinuation reports a billing unit of an admitted session: a GPT Live window, or a
+// window of a relayed WebSocket session. The flag counts only on those two request types, which
+// Bifrost itself sets on a unit's context, so no other path can skip request limits by setting it.
+func isSessionContinuation(ctx context.Context) bool {
 	continuation, _ := ctx.Value(schemas.BifrostContextKeySessionContinuation).(bool)
 	requestType, _ := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType)
-	return continuation && requestType == schemas.LiveRequest
+	return continuation && (requestType == schemas.LiveRequest || requestType == schemas.RelayRequest)
 }

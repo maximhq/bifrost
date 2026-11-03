@@ -124,7 +124,9 @@ export const createRelayColumns = (
 			const secondary =
 				log.kind === "job"
 					? t("relayLogs.columns.settled", { status: log.job_status ?? "-" })
-					: [routeLabel, log.billable ? "" : t("relayLogs.columns.notBillable")].filter(Boolean).join(" · ");
+					: [log.websocket ? t("relayLogs.fields.websocket") : "", routeLabel, log.billable ? "" : t("relayLogs.columns.notBillable")]
+							.filter(Boolean)
+							.join(" · ");
 			return (
 				<div className="flex min-w-0 flex-col leading-tight">
 					<TruncatedLabel truncateFrom="start" className="font-mono text-[12px]">

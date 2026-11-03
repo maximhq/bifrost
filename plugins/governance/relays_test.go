@@ -2,6 +2,7 @@ package governance
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -203,4 +204,62 @@ func TestReportEndpointUsageIsIdempotent(t *testing.T) {
 	data := store.GetGovernanceData(context.Background())
 	assert.InDelta(t, 0.15, data.Budgets["pte-budget"].CurrentUsage, 1e-9, "a retried settlement charges once")
 	assert.EqualValues(t, 0, data.RateLimits["pte-rl"].RequestCurrentUsage, "a settlement counts no request; the start call did")
+}
+
+// TestRelaySocketWindowsChargeWithoutCountingRequests pins how a relayed WebSocket session is
+// governed: its billing windows (continuation units, each with its own request id) charge their
+// cost without counting a request, and the final settlement counts the session once and charges
+// only what the windows have not, so the session is charged its total exactly once.
+func TestRelaySocketWindowsChargeWithoutCountingRequests(t *testing.T) {
+	p, store := newPluginForEndpoints(t, "tavily")
+	session := a2aVKCtx(pteTestVKValue)
+	session.SetValue(schemas.BifrostContextKeyRequestID, "req-socket")
+	_, short, err := p.PreRelayHook(session, endpointReq("tavily"))
+	require.NoError(t, err)
+	require.Nil(t, short)
+
+	for i, cost := range []float64{0.2, 0.3} {
+		unit := a2aVKCtx(pteTestVKValue)
+		unit.SetValue(schemas.BifrostContextKeyRequestID, fmt.Sprintf("req-socket-window-%d", i))
+		unit.SetValue(schemas.BifrostContextKeySessionContinuation, true)
+		unit.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.RelayRequest)
+		_, short, err := p.PreRelayHook(unit, endpointReq("tavily"))
+		require.NoError(t, err)
+		require.Nil(t, short)
+		_, _, err = p.PostRelayHook(unit, &schemas.BifrostRelayResponse{RelayName: "tavily", StatusCode: 101, WebSocket: true, Usage: &schemas.RelayUsage{Cost: cost}}, nil)
+		require.NoError(t, err)
+	}
+	_, _, err = p.PostRelayHook(session, &schemas.BifrostRelayResponse{
+		RelayName: "tavily", StatusCode: 101, WebSocket: true, Usage: &schemas.RelayUsage{Cost: 0.6}, SettledCost: 0.5,
+	}, nil)
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		return store.GetGovernanceData(context.Background()).Budgets["pte-budget"].CurrentUsage >= 0.6-1e-9
+	}, 2*time.Second, 20*time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
+	data := store.GetGovernanceData(context.Background())
+	assert.InDelta(t, 0.6, data.Budgets["pte-budget"].CurrentUsage, 1e-9, "the windows and the final settlement charge the session's total once")
+	assert.EqualValues(t, 1, data.RateLimits["pte-rl"].RequestCurrentUsage, "the session counts one request; its windows count none")
+}
+
+// TestSessionContinuationOnlyForSessionTypes pins that the continuation flag skips request limits
+// only on the two request types Bifrost sets it for.
+func TestSessionContinuationOnlyForSessionTypes(t *testing.T) {
+	for _, tc := range []struct {
+		requestType schemas.RequestType
+		want        bool
+	}{
+		{schemas.LiveRequest, true},
+		{schemas.RelayRequest, true},
+		{schemas.ChatCompletionRequest, false},
+		{"", false},
+	} {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeySessionContinuation, true)
+		if tc.requestType != "" {
+			ctx.SetValue(schemas.BifrostContextKeyHTTPRequestType, tc.requestType)
+		}
+		assert.Equal(t, tc.want, isSessionContinuation(ctx), "request type %q", tc.requestType)
+	}
 }

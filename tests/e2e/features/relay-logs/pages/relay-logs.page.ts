@@ -18,6 +18,7 @@ export type RelayLogsUrlKey =
   | "min_cost"
   | "max_cost"
   | "billable"
+  | "websocket"
   | "request_id"
   | "search"
   | "start_time"

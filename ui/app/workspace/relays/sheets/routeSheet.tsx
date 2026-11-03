@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button";
-import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -20,6 +20,7 @@ import type { RouteForm } from "../routes.utils";
 import { InfoLabel } from "../fragments/infoLabel";
 
 const STREAM_AUTO = "auto";
+const STREAM_WEBSOCKET = "websocket";
 
 interface RouteSheetProps {
 	show: boolean;
@@ -46,9 +47,10 @@ export function RouteSheet({ show, route, isNew, endpointUsage, ignoreUpstreamCo
 	}, [route, form]);
 	const method = form.watch("method");
 	const job = form.watch("job");
+	const websocket = form.watch("websocket");
 	const usage = form.watch("usage");
 	// A route that is not billed has nothing to price, so its override is hidden.
-	const billableNow = form.watch("billable") ?? routeBillableByDefault(method);
+	const billableNow = form.watch("billable") ?? routeBillableByDefault(method, websocket);
 	const hasOverride = !!cleanUsage(usage, true);
 	// Collapsed on every open; the summary line says whether the route overrides anything.
 	const [pricingOpen, setPricingOpen] = useState(false);
@@ -60,7 +62,7 @@ export function RouteSheet({ show, route, isNew, endpointUsage, ignoreUpstreamCo
 	// A route that is not billed is never priced and hides its pricing, so the pricing is dropped rather
 	// than left to fail a check the person cannot see; its model and token mapping stays.
 	const save = (values: RouteForm) => {
-		if (!(values.billable ?? routeBillableByDefault(values.method))) {
+		if (!(values.billable ?? routeBillableByDefault(values.method, values.websocket))) {
 			onSave({ ...values, usage: withoutPricing(values.usage ?? undefined) });
 			return;
 		}
@@ -97,7 +99,7 @@ export function RouteSheet({ show, route, isNew, endpointUsage, ignoreUpstreamCo
 									render={({ field }) => (
 										<FormItem className="w-32">
 											<FormLabel>{t("relays.fields.method")}</FormLabel>
-											<Select onValueChange={field.onChange} value={field.value} disabled={disabled}>
+											<Select onValueChange={field.onChange} value={field.value} disabled={disabled || !!websocket}>
 												<FormControl>
 													<SelectTrigger className="w-full" data-testid="relay-route-method">
 														<SelectValue />
@@ -135,10 +137,7 @@ export function RouteSheet({ show, route, isNew, endpointUsage, ignoreUpstreamCo
 								name="headers"
 								render={({ field }) => (
 									<FormItem>
-										<InfoLabel
-											label={t("relays.routeSheet.headersLabel")}
-											info={t("relays.routeSheet.headersInfo")}
-										/>
+										<InfoLabel label={t("relays.routeSheet.headersLabel")} info={t("relays.routeSheet.headersInfo")} />
 										<HeaderPairsTable
 											value={field.value}
 											onChange={field.onChange}
@@ -159,8 +158,18 @@ export function RouteSheet({ show, route, isNew, endpointUsage, ignoreUpstreamCo
 									<FormItem>
 										<InfoLabel label={t("relays.routeSheet.streamingLabel")} info={t("relays.routeSheet.streamingInfo")} />
 										<Select
-											value={field.value === undefined ? STREAM_AUTO : field.value ? "on" : "off"}
-											onValueChange={(v) => field.onChange(v === STREAM_AUTO ? undefined : v === "on")}
+											value={websocket ? STREAM_WEBSOCKET : field.value === undefined ? STREAM_AUTO : field.value ? "on" : "off"}
+											onValueChange={(v) => {
+												// A WebSocket route is a GET upgrade served as a session: never a stream as well.
+												if (v === STREAM_WEBSOCKET) {
+													form.setValue("websocket", true, { shouldDirty: true });
+													form.setValue("method", "GET", { shouldDirty: true });
+													field.onChange(undefined);
+													return;
+												}
+												form.setValue("websocket", undefined, { shouldDirty: true });
+												field.onChange(v === STREAM_AUTO ? undefined : v === "on");
+											}}
 											disabled={disabled || !!job}
 										>
 											<FormControl>
@@ -172,8 +181,12 @@ export function RouteSheet({ show, route, isNew, endpointUsage, ignoreUpstreamCo
 												<SelectItem value={STREAM_AUTO}>{t("relays.routeSheet.streamAuto")}</SelectItem>
 												<SelectItem value="on">{t("relays.routeSheet.streamOn")}</SelectItem>
 												<SelectItem value="off">{t("relays.routeSheet.streamOff")}</SelectItem>
+												<SelectItem value={STREAM_WEBSOCKET} data-testid="relay-route-stream-websocket">
+													{t("relays.routeSheet.streamWebSocket")}
+												</SelectItem>
 											</SelectContent>
 										</Select>
+										{websocket && <FormDescription>{t("relays.routeSheet.websocketHelp")}</FormDescription>}
 										<FormMessage />
 									</FormItem>
 								)}
@@ -186,12 +199,15 @@ export function RouteSheet({ show, route, isNew, endpointUsage, ignoreUpstreamCo
 										<div className="space-y-0.5">
 											<InfoLabel
 												label={t("relays.routeSheet.billableLabel")}
-												info={t("relays.routeSheet.billableInfo", { method, default: routeBillableByDefault(method) ? t("yes", { ns: "common" }) : t("no", { ns: "common" }) })}
+												info={t("relays.routeSheet.billableInfo", {
+													method,
+													default: routeBillableByDefault(method, websocket) ? t("yes", { ns: "common" }) : t("no", { ns: "common" }),
+												})}
 											/>
 										</div>
 										<FormControl>
 											<Switch
-												checked={field.value ?? routeBillableByDefault(method)}
+												checked={field.value ?? routeBillableByDefault(method, websocket)}
 												onCheckedChange={field.onChange}
 												disabled={disabled || !!job}
 												data-testid="relay-route-billable"
@@ -218,9 +234,7 @@ export function RouteSheet({ show, route, isNew, endpointUsage, ignoreUpstreamCo
 										</button>
 									</CollapsibleTrigger>
 									<CollapsibleContent className="space-y-4 border-t px-4 py-4">
-										<p className="text-muted-foreground text-sm">
-											{t("relays.routeSheet.pricingHint")}
-										</p>
+										<p className="text-muted-foreground text-sm">{t("relays.routeSheet.pricingHint")}</p>
 										<UsageFields
 											control={form.control as unknown as Control<FieldValues>}
 											name="usage"
@@ -237,8 +251,7 @@ export function RouteSheet({ show, route, isNew, endpointUsage, ignoreUpstreamCo
 
 						<div className="bg-card sticky bottom-0 z-10 flex justify-end gap-2 border-t px-4 py-4 md:px-8">
 							<Button type="button" variant="outline" onClick={onCancel}>
-									{t("cancel", { ns: "common" })}
-
+								{t("cancel", { ns: "common" })}
 							</Button>
 							<Button type="submit" disabled={disabled} isLoading={saving} data-testid="relay-route-save">
 								{isNew ? t("relays.routes.addRoute") : t("relays.routeSheet.saveRoute")}

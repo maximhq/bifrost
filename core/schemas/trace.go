@@ -1255,6 +1255,11 @@ const (
 	AttrBifrostRelayBytesOut           = "bifrost.relay.bytes_out"
 	AttrBifrostRelayUpstreamDurationMs = "bifrost.relay.upstream.duration_ms" // time blocked on the upstream socket
 	AttrBifrostRelayDurationMs         = "bifrost.relay.duration_ms"          // the whole call, pre-hooks to the end of the reply
+	AttrBifrostRelayWebSocket          = "bifrost.relay.websocket"            // the call was a WebSocket session
+	AttrBifrostRelayBytesIn            = "bifrost.relay.bytes_in"             // payload bytes the caller sent during a session
+	AttrBifrostRelayFramesIn           = "bifrost.relay.frames_in"
+	AttrBifrostRelayFramesOut          = "bifrost.relay.frames_out"
+	AttrBifrostRelayCloseCode          = "bifrost.relay.close_code" // the code that ended the session
 
 	// RelayMethodLabelOther is the method label for a request method outside the set a relay
 	// route can name, so a relay that skips the route check cannot grow a metric's series.

@@ -41,6 +41,7 @@ const FIELD_TAB: Record<string, string> = {
 	streaming: "advanced",
 	extra_headers: "advanced",
 	network: "network",
+	websocket: "network",
 	proxy: "proxy",
 };
 
@@ -501,6 +502,68 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 												</FormItem>
 											)}
 										/>
+										<div className="space-y-4 border-t pt-6" data-testid="relay-websocket-settings">
+											<InfoLabel label={t("relays.endpointConfig.websocketTitle")} info={t("relays.endpointConfig.websocketInfo")} />
+											<div className="flex w-full flex-row items-start gap-4">
+												{(
+													[
+														["websocket.max_message_bytes", "maxMessageBytes", ""],
+														["websocket.max_session_seconds", "maxSession", ""],
+														["websocket.billing_window_seconds", "billingWindow", "60"],
+													] as const
+												).map(([name, key, placeholder]) => (
+													<FormField
+														key={name}
+														control={form.control}
+														name={name}
+														render={({ field }) => (
+															<FormItem className="flex-1">
+																<FormLabel>{t(`relays.endpointConfig.${key}Label`)}</FormLabel>
+																<FormControl>
+																	<Input
+																		placeholder={placeholder}
+																		disabled={!canUpdate}
+																		data-testid={`relay-${name.replace(".", "-").replaceAll("_", "-")}`}
+																		value={field.value === undefined || Number.isNaN(field.value) ? "" : field.value}
+																		onChange={(e) => {
+																			const value = e.target.value;
+																			if (value === "") {
+																				field.onChange(undefined);
+																				return;
+																			}
+																			const parsed = Number(value);
+																			if (!Number.isNaN(parsed)) field.onChange(parsed);
+																		}}
+																	/>
+																</FormControl>
+																<FormDescription>{t(`relays.endpointConfig.${key}Help`)}</FormDescription>
+																<FormMessage />
+															</FormItem>
+														)}
+													/>
+												))}
+											</div>
+											<FormField
+												control={form.control}
+												name="websocket.subprotocols"
+												render={({ field }) => (
+													<FormItem>
+														<FormLabel>{t("relays.endpointConfig.subprotocolsLabel")}</FormLabel>
+														<FormControl>
+															<Input
+																placeholder="token, deepgram"
+																disabled={!canUpdate}
+																data-testid="relay-websocket-subprotocols"
+																{...field}
+																value={field.value ?? ""}
+															/>
+														</FormControl>
+														<FormDescription>{t("relays.endpointConfig.subprotocolsHelp")}</FormDescription>
+														<FormMessage />
+													</FormItem>
+												)}
+											/>
+										</div>
 										{saveButton("network")}
 									</TabsContent>
 

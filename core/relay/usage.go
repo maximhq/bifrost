@@ -519,6 +519,13 @@ func (u resolvedUsage) wholeBodyResponse() bool {
 		(u.unitsMeasure == schemas.RelayUnitsBodyBytes || u.unitsMeasure == schemas.RelayUnitsBodyChars)
 }
 
+// wholeBodyRequest reports a mapping priced by the size of what the caller sends (body_bytes or
+// body_chars read from the request). On a WebSocket session that is every frame the caller sends.
+func (u resolvedUsage) wholeBodyRequest() bool {
+	return u.billsUnits() && u.unitsSource == schemas.RelayUnitsFromRequest &&
+		(u.unitsMeasure == schemas.RelayUnitsBodyBytes || u.unitsMeasure == schemas.RelayUnitsBodyChars)
+}
+
 // streamUsage returns the per-event observer for one stream and, for a mapping priced by the
 // size of the reply, the end-of-stream builder that bills the bytes (or runes) forwarded. Both
 // share one accumulator, so tokens seen in events and the final size land in the same usage.

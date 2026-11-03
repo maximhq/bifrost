@@ -2170,7 +2170,7 @@ func (gs *LocalGovernanceStore) deleteVirtualKeyAlias(value string, vkID string)
 // CheckRateLimit checks rate limits for tokens and requests across categories
 func (gs *LocalGovernanceStore) CheckRateLimit(ctx context.Context, entityWiseRateLimits EntityWiseRateLimits, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error) {
 	// A live session's continuation was already counted as one request when the session was admitted.
-	sessionContinuation := isLiveSessionContinuation(ctx)
+	sessionContinuation := isSessionContinuation(ctx)
 	for entity, rateLimits := range entityWiseRateLimits {
 		for _, rateLimit := range rateLimits {
 			var violations []string

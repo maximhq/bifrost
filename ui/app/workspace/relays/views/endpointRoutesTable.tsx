@@ -57,14 +57,12 @@ function RouteActionsMenu({
 			<DropdownMenuContent align="end">
 				<DropdownMenuItem onSelect={onEdit} disabled={!hasUpdateAccess} data-testid={`relay-route-edit-${index}`}>
 					<PencilIcon className="mr-1 h-4 w-4" />
-						{t("edit", { ns: "common" })}
-
+					{t("edit", { ns: "common" })}
 				</DropdownMenuItem>
 				<DropdownMenuSeparator />
 				<DropdownMenuItem variant="destructive" onSelect={onDelete} disabled={!hasUpdateAccess} data-testid={`relay-route-remove-${index}`}>
 					<TrashIcon className="mr-1 h-4 w-4" />
-						{t("delete", { ns: "common" })}
-
+					{t("delete", { ns: "common" })}
 				</DropdownMenuItem>
 			</DropdownMenuContent>
 		</DropdownMenu>
@@ -177,14 +175,12 @@ export function EndpointRoutesTable({ endpoint, headerActions }: { endpoint: Rel
 						{routes.length === 0 && (
 							<TableRow data-testid="relay-routes-empty">
 								<TableCell colSpan={5} className="py-6 text-center">
-									{endpoint.skip_route_check
-										? t("relays.routes.emptyAnyPath")
-										: t("relays.routes.empty")}
+									{endpoint.skip_route_check ? t("relays.routes.emptyAnyPath") : t("relays.routes.empty")}
 								</TableCell>
 							</TableRow>
 						)}
 						{routes.map((route, index) => {
-							const billable = route.billable ?? routeBillableByDefault(route.method);
+							const billable = route.billable ?? routeBillableByDefault(route.method, route.websocket);
 							const enabled = route.enabled ?? true;
 							const override = cleanUsage(route.usage, true);
 							return (
@@ -202,6 +198,11 @@ export function EndpointRoutesTable({ endpoint, headerActions }: { endpoint: Rel
 										<div className="flex min-w-0 items-center gap-2">
 											<span className="truncate font-mono text-sm">{route.path}</span>
 											{route.job && <Badge variant="outline">{t("relays.routes.jobBadge")}</Badge>}
+											{route.websocket && (
+												<Badge variant="outline" data-testid={`relay-route-websocket-badge-${index}`}>
+													{t("relays.routes.websocketBadge")}
+												</Badge>
+											)}
 										</div>
 										{route.headers
 											.filter((h) => h.name)
@@ -219,8 +220,7 @@ export function EndpointRoutesTable({ endpoint, headerActions }: { endpoint: Rel
 										)}
 										{override && billable && (
 											<Badge variant="outline" className="ml-2">
-													{t("relays.routes.overrideBadge")}
-
+												{t("relays.routes.overrideBadge")}
 											</Badge>
 										)}
 									</TableCell>
@@ -277,8 +277,7 @@ export function EndpointRoutesTable({ endpoint, headerActions }: { endpoint: Rel
 					</AlertDialogHeader>
 					<AlertDialogFooter className="pt-4">
 						<AlertDialogCancel onClick={() => setDeleting(null)} disabled={saving}>
-								{t("cancel", { ns: "common" })}
-
+							{t("cancel", { ns: "common" })}
 						</AlertDialogCancel>
 						<AlertDialogAction
 							disabled={saving || !canUpdate}
@@ -294,8 +293,8 @@ export function EndpointRoutesTable({ endpoint, headerActions }: { endpoint: Rel
 									setDeleting(null);
 							}}
 						>
-								{t("delete", { ns: "common" })}
-							</AlertDialogAction>
+							{t("delete", { ns: "common" })}
+						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>
 			</AlertDialog>
@@ -306,12 +305,13 @@ export function EndpointRoutesTable({ endpoint, headerActions }: { endpoint: Rel
 						<AlertDialogTitle>{t("relays.routes.importReview.title")}</AlertDialogTitle>
 						<AlertDialogDescription asChild>
 							<div className="space-y-2">
-								<p>
-									{t("relays.routes.importReview.body", { count: pendingImport?.routes.length ?? 0 })}
-								</p>
+								<p>{t("relays.routes.importReview.body", { count: pendingImport?.routes.length ?? 0 })}</p>
 								{pendingImport && pendingImport.dropped.length > 0 && (
 									<p className="text-destructive">
-										{t("relays.routes.importReview.dropped", { count: pendingImport.dropped.length, routes: pendingImport.dropped.join(", ") })}
+										{t("relays.routes.importReview.dropped", {
+											count: pendingImport.dropped.length,
+											routes: pendingImport.dropped.join(", "),
+										})}
 									</p>
 								)}
 							</div>
@@ -330,9 +330,7 @@ export function EndpointRoutesTable({ endpoint, headerActions }: { endpoint: Rel
 								if (await save(imported, t("relays.routes.toastImported", { count: imported.length }))) setPendingImport(null);
 							}}
 						>
-							
-								{t("relays.routes.importReview.apply")}
-
+							{t("relays.routes.importReview.apply")}
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>
