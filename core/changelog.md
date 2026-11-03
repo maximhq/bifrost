@@ -1,1 +1,2 @@
+- fix: anthropic - Responses requests drop empty text blocks instead of forwarding them for a 400 (#9318) [@david-choi-querypie](https://github.com/david-choi-querypie)
 - fix: Perplexity, Cohere and HuggingFace converters no longer remove the keys they map from the caller's ExtraParams, so a retry or a fallback converts the same request, and HuggingFace speech no longer panics when the request has no params

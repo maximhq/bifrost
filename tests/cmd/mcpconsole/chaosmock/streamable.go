@@ -18,9 +18,10 @@ const sseKeepAlive = 15 * time.Second
 // DELETE ends a session.
 //
 // The ordering here is the whole design. A POST's body is read first, so the
-// request is counted and a fault scoped to its method is resolved before
-// anything can answer it; nothing is written yet, so a connection that is
-// going to be refused or reset still never looks like it worked. Transport
+// request is counted, held at any gate it matches, and a fault scoped to its
+// method and caller is resolved before anything can answer it; nothing is
+// written yet, so a connection that is going to be refused or reset still
+// never looks like it worked. Transport
 // faults come next, then HTTP faults, because a bare status is not a JSON-RPC
 // exchange and must not be mistaken for one. Credentials and session validity
 // come after that, since a 404 is the client's signal to re-initialize and has
@@ -36,7 +37,8 @@ func (s *Server) ServeStreamableHTTP(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet, http.MethodDelete:
 		// Neither carries a JSON-RPC method, so only an unscoped fault set
 		// reaches them.
-		if s.failRequest(w, s.faults.forRequest("")) {
+		caller := s.callerIdentity(r, "", r.Header.Get(HeaderSessionID))
+		if s.failRequest(w, s.faults.forRequest("", caller)) {
 			return
 		}
 		// Without OAuth these stay open to anyone, as they always have. With
@@ -118,10 +120,17 @@ func (s *Server) servePost(w http.ResponseWriter, r *http.Request) {
 
 	var req request
 	parsed := json.Unmarshal(body, &req) == nil
+	caller := ""
 	if parsed {
-		s.countMethod(req.Method, sessionID)
+		caller = s.callerIdentity(r, req.Method, sessionID)
+		s.countMethod(req.Method, sessionID, caller)
+		// A held request is answered against the server as it is when its
+		// gate lets it go. One whose client gave up gets no answer.
+		if !s.gates.holdMethod(r.Context(), req.Method, caller) {
+			return
+		}
 	}
-	f := s.faults.forRequest(req.Method)
+	f := s.faults.forRequest(req.Method, caller)
 	if s.failRequest(w, f) {
 		return
 	}
@@ -134,6 +143,14 @@ func (s *Server) servePost(w http.ResponseWriter, r *http.Request) {
 	if !parsed {
 		writeJSON(w, http.StatusOK, newError(nil, CodeParseError, "invalid JSON"))
 		return
+	}
+
+	// A request on the sessionless core skips sessions altogether, once the server speaks it.
+	if s.versions.supports(ProtocolVersion20260728) && r.Header.Get(HeaderStdioBridge) == "" {
+		if headerVersion, metaVersion, modern := requestEra(r, &req); modern || req.Method == MethodServerDiscover {
+			s.serveModern(w, r, &req, headerVersion, metaVersion, identity, f)
+			return
+		}
 	}
 
 	// Session validity is only meaningful once one has been issued. An
@@ -170,7 +187,12 @@ func (s *Server) servePost(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(HeaderSessionID, res.NewSession.ID)
 		w.Header().Set(HeaderProtocolVersion, res.NewSession.ProtocolVersion)
 	}
+	s.writeHandled(w, res, f, false)
+}
 
+// writeHandled renders what the protocol layer answered. A sessionless request's JSON-RPC error
+// carries the HTTP status 2026-07-28 gives it; a session-era one is always 200.
+func (s *Server) writeHandled(w http.ResponseWriter, res handleResult, f Faults, modern bool) {
 	switch {
 	case res.HTTPStatus != 0:
 		http.Error(w, res.Message, res.HTTPStatus)
@@ -199,6 +221,10 @@ func (s *Server) servePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if modern {
+		writeModern(w, res.Response)
+		return
+	}
 	writeJSON(w, http.StatusOK, res.Response)
 }
 
@@ -273,6 +299,7 @@ func (s *Server) serveListeningStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// writeJSON writes v as a JSON body with status.
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

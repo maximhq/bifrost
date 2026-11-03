@@ -424,6 +424,8 @@ When a tool call reaches the upstream MCP server but comes back with a clean aut
 - **Shared clients** (`oauth`, `headers`): Bifrost immediately force-refreshes the credential and starts reconnecting in the background. The failing call waits briefly for that reconnect (capped by its own deadline) and retries once on the healed connection; the caller usually sees a normal success. If the reconnect doesn't finish in time, the original error surfaces and later calls succeed once the background reconnect completes.
 - **Safety opt-out**: a tool that is not read-only and is destructive and not idempotent is never retried. A tool with no annotations counts as destructive and not idempotent, matching the MCP spec defaults. The original error always surfaces so a side effect cannot run twice. Bifrost still refreshes a per-user client's credential, or reconnects a shared client, in the background, so later calls use a fresh credential once that succeeds.
 
+Only the upstream's own HTTP rejection counts. An error the tool itself returns, as a JSON-RPC error or an `isError` result, is passed back to the caller as it is, even when its text says `401` or "forbidden", and the connection is left alone.
+
 This applies to `POST /v1/mcp/tool/execute`, [Agent Mode](./agent-mode) tool calls, and tool calls over the [MCP Gateway](./overview#bifrost-as-an-mcp-gateway) alike.
 
 ---

@@ -192,3 +192,51 @@ func TestDiscovery_ExtensionOnlyServer(t *testing.T) {
 		assert.Equal(t, fasthttp.StatusNotFound, ctx.Response.StatusCode(), name)
 	}
 }
+
+// TestDiscovery_ResourceMetadataUnderIssuerPath pins RFC 9728 §3.1 and RFC 8414 §3.1
+// for an issuer that carries a path (Bifrost behind server.base_path): the
+// well-known documents live at the origin root with the issuer path inserted after
+// the well-known segment, so WWW-Authenticate must point there, and both handlers
+// must answer at those paths. The resource itself stays under the issuer.
+func TestDiscovery_ResourceMetadataUnderIssuerPath(t *testing.T) {
+	const issuer = "https://bifrost.test/bifrost"
+	cfg := newTestOAuth2Config(&mockOAuth2Store{}, configtables.MCPServerAuthModeOAuth, false)
+	cfg.ClientConfig.OAuth2ServerConfig.IssuerURL = schemas.NewSecretVar(issuer)
+	h := NewOAuth2DiscoveryHandler(cfg)
+
+	assert.Equal(t, `Bearer resource_metadata="https://bifrost.test/.well-known/oauth-protected-resource/bifrost/mcp"`, wwwAuthenticateValue(&fasthttp.RequestCtx{}, cfg))
+
+	prm := &fasthttp.RequestCtx{}
+	prm.Request.SetRequestURI("/.well-known/oauth-protected-resource/bifrost/mcp")
+	h.handlePRM(prm)
+	require.Equal(t, fasthttp.StatusOK, prm.Response.StatusCode())
+	var prmDoc map[string]any
+	require.NoError(t, json.Unmarshal(prm.Response.Body(), &prmDoc))
+	assert.Equal(t, issuer+"/mcp", prmDoc["resource"])
+	assert.Equal(t, []any{issuer}, prmDoc["authorization_servers"])
+
+	as := &fasthttp.RequestCtx{}
+	as.Request.SetRequestURI("/.well-known/oauth-authorization-server/bifrost")
+	h.handleASMetadata(as)
+	require.Equal(t, fasthttp.StatusOK, as.Response.StatusCode())
+	var asDoc map[string]any
+	require.NoError(t, json.Unmarshal(as.Response.Body(), &asDoc))
+	assert.Equal(t, issuer, asDoc["issuer"])
+	assert.Equal(t, issuer+"/.well-known/jwks.json", asDoc["jwks_uri"])
+}
+
+// TestOAuth2ResourceMetadataURL pins the path-insertion rule on its own.
+func TestOAuth2ResourceMetadataURL(t *testing.T) {
+	for issuer, want := range map[string]string{
+		"https://bifrost.test":         "https://bifrost.test/.well-known/oauth-protected-resource/mcp",
+		"https://bifrost.test/bifrost": "https://bifrost.test/.well-known/oauth-protected-resource/bifrost/mcp",
+		"https://bifrost.test/a/b":     "https://bifrost.test/.well-known/oauth-protected-resource/a/b/mcp",
+		"http://localhost:8080":        "http://localhost:8080/.well-known/oauth-protected-resource/mcp",
+		"http://localhost:8080/gw":     "http://localhost:8080/.well-known/oauth-protected-resource/gw/mcp",
+		// Escaped delimiters in the issuer path stay escaped; a decoded "?" would
+		// turn the rest of the advertised URL into a query string.
+		"https://bifrost.test/tenant%3Fprod": "https://bifrost.test/.well-known/oauth-protected-resource/tenant%3Fprod/mcp",
+	} {
+		assert.Equal(t, want, oauth2ResourceMetadataURL(issuer), issuer)
+	}
+}

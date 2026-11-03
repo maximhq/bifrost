@@ -117,6 +117,21 @@ func (e *oauth2ClientMetadataError) httpStatus() int {
 	return fasthttp.StatusBadRequest
 }
 
+// oauth2ClientGrantTypes are the grants a registered or CIMD client can hold: the token endpoint
+// only implements the authorization-code and refresh-token grants for them.
+var oauth2ClientGrantTypes = []string{"authorization_code", "refresh_token"}
+
+// offeredOAuth2GrantTypes keeps the requested grant types this server offers, in their original order.
+func offeredOAuth2GrantTypes(requested []string) []string {
+	offered := make([]string, 0, len(requested))
+	for _, gt := range requested {
+		if slices.Contains(oauth2ClientGrantTypes, gt) && !slices.Contains(offered, gt) {
+			offered = append(offered, gt)
+		}
+	}
+	return offered
+}
+
 // validateOAuth2ClientMetadata validates DCR or CIMD client metadata and returns its grant types,
 // response types and scope with defaults applied. Redirects must be https or loopback http
 // (RFC 9700 §4.1.3), unless administrator-approved.
@@ -152,9 +167,8 @@ func validateOAuth2ClientMetadata(store *lib.Config, req dcrRequest) (grantTypes
 	if len(grantTypes) == 0 {
 		grantTypes = []string{"authorization_code"}
 	}
-	// The token endpoint only implements the authorization-code and refresh-token grants.
 	for _, gt := range grantTypes {
-		if gt != "authorization_code" && gt != "refresh_token" {
+		if !slices.Contains(oauth2ClientGrantTypes, gt) {
 			return reject("invalid_client_metadata", "unsupported grant_type")
 		}
 	}
@@ -872,6 +886,8 @@ func redirectWithParams(ctx *fasthttp.RequestCtx, base string, params map[string
 	}
 	u.RawQuery = q.Encode()
 	ctx.Response.Header.Set("Location", u.String())
+	// The client's redirect_uri may share this host; it must not be pulled under server.base_path.
+	markLocationExternal(ctx)
 	ctx.SetStatusCode(fasthttp.StatusFound)
 }
 

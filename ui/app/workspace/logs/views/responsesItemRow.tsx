@@ -7,13 +7,14 @@ import type { ParseKeys } from "i18next";
 import { ChevronDown } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
+import type { MessageRole } from "@/lib/hooks/useMessageRoleFilterPreference";
 import { hasNoToolArguments, isResponsesToolCallItem } from "../sheets/logDetailView.utils";
 
 // One item of a Responses conversation, rendered on the timeline the log sheet draws: a reasoning
 // item, a tool call and its result, an assistant message. The live session panel renders a
 // delegation's items with the same rows.
 
-export type MessageRole = "system" | "user" | "assistant" | "reasoning" | "tool";
+export type { MessageRole } from "@/lib/hooks/useMessageRoleFilterPreference";
 export const messageToneClass: Record<MessageRole, string> = {
 	system: "bg-zinc-50 border-zinc-200 dark:bg-zinc-900/40 dark:border-zinc-800",
 	user: "bg-blue-50/60 border-blue-200 dark:bg-blue-950/30 dark:border-blue-900",

@@ -108,7 +108,7 @@ func TestHandleOAuthCallback_ChecksIssuer(t *testing.T) {
 			SetLogger(&mockLogger{})
 			store := newRealOAuth2Store(t)
 			provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
-			h := NewOAuthHandler(provider, nil, &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, OAuthProvider: provider})
+			h := NewOAuthHandler(provider, nil, &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, OAuthProvider: provider}, nil)
 			ctx := bgCtx()
 			require.NoError(t, store.CreateOauthConfig(ctx, &tables.TableOauthConfig{
 				ID: "cfg-1", ClientID: schemas.NewSecretVar("client"), AuthorizeURL: issuer + "/authorize", TokenURL: "http://127.0.0.1:1/token",

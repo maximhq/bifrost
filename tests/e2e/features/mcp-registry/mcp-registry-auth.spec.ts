@@ -210,4 +210,128 @@ test.describe("MCP Registry - Authentication", () => {
       expect(exists).toBe(true);
     });
   });
+
+  test.describe("MCP Per-User Tool Discovery", () => {
+    test("should offer Per-Caller Discovery only for per-user auth types", async ({
+      mcpRegistryPage,
+    }) => {
+      await mcpRegistryPage.createBtn.click();
+      await expect(mcpRegistryPage.sheet).toBeVisible();
+
+      await mcpRegistryPage.selectAuthType("oauth");
+      await expect(mcpRegistryPage.perUserDiscoverySwitch).toBeHidden();
+      await mcpRegistryPage.selectAuthType("per_user_oauth");
+      await expect(mcpRegistryPage.perUserDiscoverySwitch).toBeVisible();
+      // The per-user scope carries over, so headers here is per-user headers.
+      await mcpRegistryPage.selectAuthType("headers");
+      await expect(mcpRegistryPage.perUserDiscoverySwitch).toBeVisible();
+      await mcpRegistryPage.selectAuthScope("shared");
+      await expect(mcpRegistryPage.perUserDiscoverySwitch).toBeHidden();
+
+      await mcpRegistryPage.cancelCreation();
+    });
+
+    test("should create a Per-User OAuth 2.0 client with per-caller discovery", async ({
+      mcpRegistryPage,
+    }) => {
+      const clientData = createPerUserOAuthClientData({ perUserDiscovery: true });
+      createdClients.push(clientData.name);
+
+      const flow = await mcpRegistryPage.createOAuthClient(clientData);
+      await completeOAuthFlow(mcpRegistryPage.page, flow);
+      await mcpRegistryPage.goto();
+      expect(await mcpRegistryPage.clientExists(clientData.name)).toBe(true);
+
+      // It keeps no admin credential and no tool list of its own, so nothing refreshes either.
+      const actions = await mcpRegistryPage.getClientActionLabels(clientData.name);
+      expect(actions).not.toContain("Refresh admin credential");
+      expect(actions).not.toContain("Refresh tools");
+
+      // A callers request that fails says so, with a retry, instead of reading as nobody having connected.
+      const sessionsRoute = "**/api/mcp/sessions**";
+      await mcpRegistryPage.page.route(sessionsRoute, (route) =>
+        route.fulfill({ status: 500, contentType: "application/json", body: '{"error":{"message":"sessions unavailable"}}' }),
+      );
+
+      // The view says what the server keeps: no admin credential, and only the tool names callers' discoveries return.
+      await mcpRegistryPage.viewClientDetails(clientData.name);
+      const view = mcpRegistryPage.viewSheet;
+      await expect(view.getByTestId("mcpclient-view-summary")).toContainText("Per-Caller Discovery");
+      await expect(view.getByTestId("mcpclient-view-row-per_user_discovery")).toHaveText("On");
+      await expect(view.getByTestId("mcpclient-view-row-tool_sync_interval")).toHaveText("Not used");
+      await expect(view.getByTestId("mcpclient-credential-section")).toHaveCount(0);
+      await expect(view.getByTestId("mcpclient-view-tab-callers")).toBeVisible();
+      await expect(view.getByTestId("mcpclient-view-stat-callers")).toContainText("couldn't load callers");
+      await view.getByTestId("mcpclient-view-tab-callers").click();
+      await expect(view.getByTestId("mcpclient-view-callers-error")).toBeVisible();
+      await mcpRegistryPage.page.unroute(sessionsRoute);
+
+      // Switching the filter never shows the previous filter's rows under the new one: while the
+      // Pending rows load only the rows table reads as loading; the filter grid and the Callers
+      // figure come from the counts, which are already in, so they stay put.
+      const activeRow = {
+        id: "e2e-active-row",
+        kind: "token",
+        auth_kind: "oauth",
+        auth_mode: "vk",
+        virtual_key: { id: "vk-e2e", name: "e2e-active-key" },
+        status: "active",
+        created_at: new Date().toISOString(),
+        can_reauth: true,
+      };
+      let releasePending = () => {};
+      const pendingHeld = new Promise<void>((resolve) => {
+        releasePending = resolve;
+      });
+      await mcpRegistryPage.page.route(sessionsRoute, async (route) => {
+        const params = new URL(route.request().url()).searchParams;
+        const status = params.get("status");
+        // Hold only the Pending rows page; the one-row count pages answer at once.
+        if (status === "pending" && params.get("limit") !== "1") await pendingHeld;
+        const sessions = status === null || status === "active" ? [activeRow] : [];
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ sessions, count: sessions.length, total_count: sessions.length, limit: 5, offset: 0 }),
+        });
+      });
+      await view.getByTestId("mcpclient-view-callers-retry").click();
+      await expect(view.getByTestId("mcpclient-view-callers-error")).toHaveCount(0);
+      await expect(view.getByTestId("mcpclient-view-callers-filter-active")).toBeVisible();
+      await expect(view.getByTestId("mcpclient-view-caller-e2e-active-row")).toBeVisible();
+      await view.getByTestId("mcpclient-view-callers-filter-pending").click();
+      await expect(view.getByTestId("mcpclient-view-caller-e2e-active-row")).toHaveCount(0);
+      await expect(view.getByTestId("mcpclient-view-callers-rows-loading")).toBeVisible();
+      // The Discovery column makes four, and the loading row spans them all.
+      await expect(view.getByTestId("mcpclient-view-callers-rows-loading").locator("td")).toHaveAttribute("colspan", "4");
+      await expect(view.getByTestId("mcpclient-view-callers-filter-pending")).toHaveAttribute("aria-pressed", "true");
+      await expect(view.getByTestId("mcpclient-view-callers-filter-pending")).toBeFocused();
+      await expect(view.getByTestId("mcpclient-view-stat-callers")).toContainText("1");
+      releasePending();
+      await expect(view.getByTestId("mcpclient-view-callers-filter-pending")).toHaveAttribute("aria-pressed", "true");
+      await expect(view.getByRole("tabpanel").getByText("No sessions yet.")).toBeVisible();
+      await mcpRegistryPage.page.unroute(sessionsRoute);
+      await view.getByTestId("mcpclient-view-tab-tools").click();
+      await expect(view.getByRole("tabpanel").getByText("No caller has connected yet")).toBeVisible();
+      await mcpRegistryPage.closeDetailSheet();
+
+      await mcpRegistryPage.openClientEditor(clientData.name);
+      const sheet = mcpRegistryPage.editSheet;
+      const discoverySwitch = sheet.getByTestId("mcpclient-per-user-discovery-switch");
+      await expect(discoverySwitch).toHaveAttribute("data-state", "checked");
+      await expect(sheet.getByTestId("mcpclient-tool-sync-interval-input")).toBeDisabled();
+
+      // Turning it off says what saving would delete, before anything is saved.
+      await discoverySwitch.click();
+      await expect(sheet.getByTestId("mcpclient-per-user-discovery-warning")).toContainText("Refresh admin credential");
+      await discoverySwitch.click();
+      await expect(sheet.getByTestId("mcpclient-per-user-discovery-warning")).toBeHidden();
+
+      // No caller has connected yet, so no tool names have been seen.
+      await sheet.getByTestId("mcpclient-tab-tools").click();
+      await expect(sheet.getByText("No caller has connected yet")).toBeVisible();
+
+      await mcpRegistryPage.closeDetailSheet();
+    });
+  });
 });

@@ -269,7 +269,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       - name: Build UI and bifrost-http binary
         run: |
@@ -425,7 +425,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       - name: Install jq
         run: |
@@ -701,7 +701,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       # The Ubuntu squid and microsocks packages start system services on the
       # ports the flow uses; stop them so the flow's own configured instances bind.
@@ -890,7 +890,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       # test-integrations.sh installs the Python suite with `uv sync --frozen`, and
       # silently degrades to `pip install -e .` when uv is absent. That fallback cannot
@@ -999,7 +999,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       # core/internal/mcptests drives real STDIO MCP servers as child processes.
       # fixtures.go's InitMCPServerPaths only computes their paths
@@ -1214,7 +1214,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       - name: Install jq
         run: |
@@ -1356,7 +1356,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       - name: Install jq
         run: |
@@ -1988,7 +1988,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       - name: Set up Docker Compose
         run: |
@@ -2184,7 +2184,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       # npm ci against .github/workflows/tools/package-lock.json, not `npm install -g`:
       # the lockfile carries an integrity hash for newman and every transitive dep, which
@@ -2338,7 +2338,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       - name: Install Newman (hash-pinned via lockfile)
         run: |
@@ -2671,7 +2671,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       # npm ci against .github/workflows/tools/package-lock.json, not `npm install -g`:
       # the lockfile carries an integrity hash for newman and every transitive dep, which
@@ -2835,7 +2835,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       # npm ci against .github/workflows/tools/package-lock.json, not `npm install -g`:
       # the lockfile carries an integrity hash for newman and every transitive dep, which
@@ -2964,7 +2964,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       - name: Configure Git
         run: |
@@ -3223,7 +3223,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       - name: Configure Git
         run: |
@@ -3362,7 +3362,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       - name: Configure Git
         run: |
@@ -3426,7 +3426,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       - name: Build UI
         run: make build-ui
@@ -3502,7 +3502,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       - name: Build UI
         run: make build-ui

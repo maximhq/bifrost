@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,6 +16,7 @@ import (
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -34,6 +36,10 @@ func TestIsAuthFailureErrorText(t *testing.T) {
 		{"lowercase forbidden text, no numeric code", "access forbidden for this resource", true},
 		{"mixed case still matches", "Upstream returned Unauthorized", true},
 		{"unrelated connectivity error", "connection refused", false},
+		{"status 401 inside a sentence", "request failed with status 401: invalid token", true},
+		{"a port that merely contains 401", "dial tcp 10.0.0.5:4010: connect: connection refused", false},
+		{"a port that merely contains 403", "dial tcp 10.0.0.5:4030: i/o timeout", false},
+		{"an id in the URL that merely contains 401", `Post "http://mcp.internal/tenants/84013/mcp": EOF`, false},
 		{"unrelated bad request", "400 bad request", false},
 		{"timeout text alone does not match", "context deadline exceeded", false},
 		{"empty string", "", false},
@@ -45,6 +51,18 @@ func TestIsAuthFailureErrorText(t *testing.T) {
 				t.Errorf("isAuthFailureErrorText(%q) = %v, want %v", tc.errStr, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestToolCallConnectionFailureOnAnAuthLikePortStaysTransient: a connection refused by an upstream
+// whose port contains 401 is a transport blip, retried as one, not an auth rejection.
+func TestToolCallConnectionFailureOnAnAuthLikePortStaysTransient(t *testing.T) {
+	refused := &transport.Error{Err: errors.New(`Post "http://10.0.0.5:4010/mcp": dial tcp 10.0.0.5:4010: connect: connection refused`)}
+	if isAuthFailure(refused) {
+		t.Errorf("isAuthFailure(%q) = true, want false", refused)
+	}
+	if !isTransientToolCallError(refused) {
+		t.Errorf("isTransientToolCallError(%q) = false, want true", refused)
 	}
 }
 
@@ -63,7 +81,9 @@ func TestIsAuthFailureErrorText_OpposesIsTransientErrorOnAuthText(t *testing.T) 
 	}
 }
 
-// isAuthFailure matches mcp-go's typed 401 through any wrapping, and falls back to the text.
+// isAuthFailure matches mcp-go's typed 401 through any wrapping, and auth-shaped text inside the
+// transport's error frame. A JSON-RPC error, which mcp-go hands back as plain text, is the tool's own
+// answer and never matches, whatever it says.
 func TestIsAuthFailure(t *testing.T) {
 	tests := []struct {
 		name string
@@ -74,8 +94,11 @@ func TestIsAuthFailure(t *testing.T) {
 		{"typed oauth 401", &transport.OAuthAuthorizationRequiredError{}, true},
 		{"transport-wrapped 401", transport.NewError(&transport.AuthorizationRequiredError{}), true},
 		{"fmt-wrapped 401", fmt.Errorf("call failed: %w", transport.NewError(&transport.AuthorizationRequiredError{})), true},
-		{"text only, chain lost", fmt.Errorf("call failed: %v", transport.NewError(&transport.AuthorizationRequiredError{})), true},
-		{"status text", errors.New("tool call failed: 401 Unauthorized"), true},
+		{"transport 403", transport.NewError(errors.New("request failed with status 403: Forbidden")), true},
+		{"fmt-wrapped transport 403", fmt.Errorf("call failed: %w", transport.NewError(errors.New("request failed with status 403: Forbidden"))), true},
+		{"a tool's own error saying forbidden", errors.New("forbidden: this caller may not use echo_tool"), false},
+		{"a tool's own error saying 401", errors.New("tool call failed: 401 Unauthorized"), false},
+		{"text only, chain lost", fmt.Errorf("call failed: %v", transport.NewError(&transport.AuthorizationRequiredError{})), false},
 		{"unrelated", errors.New("connection refused"), false},
 		{"nil", nil, false},
 	}
@@ -232,13 +255,19 @@ type authRetryClientManager struct {
 	// rerouteToolState, when non-nil, is what GetClientForTool returns
 	// instead of state — simulating global tool routing having picked a
 	// different client for this tool name by the time a stale lookup runs.
+	// Its discovery is rerouteDiscovery.
 	rerouteToolState *schemas.MCPClientState
+	rerouteDiscovery *schemas.MCPDiscovery
 	// byNameState, when non-nil, is what GetClientByName(state.Name) returns
 	// instead of state itself — simulating the reconnected client having a
 	// different identity (e.g. a different ExecutionConfig.ID, as if it was
 	// deleted and recreated under the same name) by the time the
 	// post-reconnect reacquire runs.
 	byNameState *schemas.MCPClientState
+
+	// stateDiscovery is state's discovery (client state itself carries no
+	// discovery data; the mock stands in for the discovery store too).
+	stateDiscovery *schemas.MCPDiscovery
 
 	inflightMu sync.Mutex
 	inflight   *inflightClientOp
@@ -254,29 +283,54 @@ func (m *authRetryClientManager) GetClientByName(clientName string) *schemas.MCP
 	return nil
 }
 
-func (m *authRetryClientManager) GetClientForTool(toolName string) *schemas.MCPClientState {
+func (m *authRetryClientManager) GetClientForTool(_ context.Context, toolName string) (*schemas.MCPClientState, *schemas.MCPDiscovery) {
 	if m.rerouteToolState != nil {
-		if _, ok := m.rerouteToolState.ToolMap[toolName]; ok {
-			return m.rerouteToolState
+		if _, ok := m.rerouteDiscovery.GetTools()[toolName]; ok {
+			return m.rerouteToolState, m.rerouteDiscovery
 		}
 	}
 	if m.state != nil {
-		if _, ok := m.state.ToolMap[toolName]; ok {
-			return m.state
+		if _, ok := m.stateDiscovery.GetTools()[toolName]; ok {
+			return m.state, m.stateDiscovery
 		}
 	}
+	return nil, nil
+}
+
+// discoveryFor resolves against whichever of the mock's states carries this
+// client ID, mirroring how the real manager reads its discovery store.
+func (m *authRetryClientManager) discoveryFor(clientID string) *schemas.MCPDiscovery {
+	if m.rerouteToolState != nil && m.rerouteToolState.ExecutionConfig != nil && m.rerouteToolState.ExecutionConfig.ID == clientID {
+		return m.rerouteDiscovery
+	}
+	if m.state != nil && m.state.ExecutionConfig != nil && m.state.ExecutionConfig.ID == clientID {
+		return m.stateDiscovery
+	}
 	return nil
+}
+
+func (m *authRetryClientManager) GetToolsForClient(_ context.Context, clientID string) map[string]schemas.ChatTool {
+	return m.discoveryFor(clientID).GetTools()
+}
+
+func (m *authRetryClientManager) GetInstructionsForClient(_ context.Context, clientID string) string {
+	return m.discoveryFor(clientID).GetInstructions()
 }
 
 func (m *authRetryClientManager) GetToolPerClient(_ context.Context) map[string][]schemas.ChatTool {
 	return nil
 }
 
-func (m *authRetryClientManager) InstructionCaps() InstructionCaps { return InstructionCaps{} }
+// GetCallerDiscovery serves the fake's tools, with no connect tools or instructions.
+func (m *authRetryClientManager) GetCallerDiscovery(ctx context.Context, _ bool) CallerDiscovery {
+	return CallerDiscovery{ToolsPerClient: m.GetToolPerClient(ctx)}
+}
 
-func (m *authRetryClientManager) GetServerInstructions(_ context.Context) []schemas.MCPServerInstructions {
+func (m *authRetryClientManager) ConnectToolClient(context.Context, string) *schemas.MCPClientState {
 	return nil
 }
+
+func (m *authRetryClientManager) InstructionCaps() InstructionCaps { return InstructionCaps{} }
 
 func (m *authRetryClientManager) GetPluginPipeline() PluginPipeline      { return nil }
 func (m *authRetryClientManager) ReleasePluginPipeline(_ PluginPipeline) {}
@@ -414,11 +468,12 @@ func (s *authRetryCredStore) AdminConnectionHeaders(_ context.Context, _ *schema
 	return http.Header{}, nil
 }
 
-// newAuthRetryClientState builds a minimal MCPClientState + prefixed tool
-// name pair for the tests below. destructive/idempotent (both optional,
-// nil = unset) populate the tool's MCPToolAnnotations so the opt-out gate
-// can be exercised.
-func newAuthRetryClientState(clientName, toolName string, destructive, idempotent *bool) (*schemas.MCPClientState, string) {
+// newAuthRetryClientState builds a minimal MCPClientState, its discovery
+// (client state carries no discovery data; the mock's stateDiscovery field
+// stands in for the discovery store), and the prefixed tool name for the tests below.
+// destructive/idempotent (both optional, nil = unset) populate the tool's
+// MCPToolAnnotations so the opt-out gate can be exercised.
+func newAuthRetryClientState(clientName, toolName string, destructive, idempotent *bool) (*schemas.MCPClientState, *schemas.MCPDiscovery, string) {
 	prefixedName := clientName + "-" + toolName
 	tool := schemas.ChatTool{
 		Type: schemas.ChatToolTypeFunction,
@@ -439,9 +494,11 @@ func newAuthRetryClientState(clientName, toolName string, destructive, idempoten
 	state := &schemas.MCPClientState{
 		Name:            clientName,
 		ExecutionConfig: config,
-		ToolMap:         map[string]schemas.ChatTool{prefixedName: tool},
 	}
-	return state, prefixedName
+	discovery := &schemas.MCPDiscovery{
+		Tools: map[string]schemas.ChatTool{prefixedName: tool},
+	}
+	return state, discovery, prefixedName
 }
 
 func newAuthRetryToolCallRequest(toolName string) *schemas.BifrostMCPRequest {
@@ -477,12 +534,12 @@ func TestExecuteTool_AuthFailureRetry_PerUser_SucceedsOnSecondAttempt(t *testing
 	// annotations (see TestExecuteTool_AuthFailureRetry_NoAnnotations_SkipsRetry),
 	// so this retry-mechanics test needs an explicitly-safe tool to reach the
 	// retry path at all.
-	state, toolName := newAuthRetryClientState("testclient", "dotool", nil, boolPtr(true))
+	state, stateDiscovery, toolName := newAuthRetryClientState("testclient", "dotool", nil, boolPtr(true))
 
 	ft := &fakeCallToolTransport{callErrs: []error{errors.New("tool call failed: 401 Unauthorized")}}
 	conn := client.NewClient(ft, client.WithSession())
 
-	cm := &authRetryClientManager{state: state, acquireConn: conn}
+	cm := &authRetryClientManager{state: state, stateDiscovery: stateDiscovery, acquireConn: conn}
 	cs := &authRetryCredStore{requiresPerCall: true}
 	tm := newAuthRetryToolsManager(cm, cs)
 
@@ -513,12 +570,12 @@ func TestExecuteTool_AuthFailureRetry_PerUser_SucceedsOnSecondAttempt(t *testing
 // The 401 mcp-go v1.3.0 returns carries no status code in its text, only "authorization
 // required"; it must still force a refresh and one retry.
 func TestExecuteTool_AuthFailureRetry_PerUser_AuthorizationRequiredError(t *testing.T) {
-	state, toolName := newAuthRetryClientState("testclient", "dotool", nil, boolPtr(true))
+	state, stateDiscovery, toolName := newAuthRetryClientState("testclient", "dotool", nil, boolPtr(true))
 
 	ft := &fakeCallToolTransport{callErrs: []error{transport.NewError(&transport.AuthorizationRequiredError{})}}
 	conn := client.NewClient(ft, client.WithSession())
 
-	cm := &authRetryClientManager{state: state, acquireConn: conn}
+	cm := &authRetryClientManager{state: state, stateDiscovery: stateDiscovery, acquireConn: conn}
 	cs := &authRetryCredStore{requiresPerCall: true}
 	tm := newAuthRetryToolsManager(cm, cs)
 
@@ -543,7 +600,7 @@ func TestExecuteTool_AuthFailureRetry_PerUser_AuthorizationRequiredError(t *test
 // separately from that path, so it must thread the same IsError bit through
 // rather than always reporting success once the retry call itself succeeds.
 func TestExecuteTool_AuthFailureRetry_PerUser_RetrySucceedsButReportsToolError(t *testing.T) {
-	state, toolName := newAuthRetryClientState("testclient", "dotool", nil, boolPtr(true))
+	state, stateDiscovery, toolName := newAuthRetryClientState("testclient", "dotool", nil, boolPtr(true))
 
 	ft := &fakeCallToolTransport{
 		callErrs:          []error{errors.New("tool call failed: 401 Unauthorized")},
@@ -551,7 +608,7 @@ func TestExecuteTool_AuthFailureRetry_PerUser_RetrySucceedsButReportsToolError(t
 	}
 	conn := client.NewClient(ft, client.WithSession())
 
-	cm := &authRetryClientManager{state: state, acquireConn: conn}
+	cm := &authRetryClientManager{state: state, stateDiscovery: stateDiscovery, acquireConn: conn}
 	cs := &authRetryCredStore{requiresPerCall: true}
 	tm := newAuthRetryToolsManager(cm, cs)
 
@@ -577,7 +634,7 @@ func TestExecuteTool_AuthFailureRetry_PerUser_RetrySucceedsButReportsToolError(t
 // (second) retry is attempted.
 func TestExecuteTool_AuthFailureRetry_PerUser_RetryAlsoFails(t *testing.T) {
 	// Explicit idempotent hint — see the sibling SucceedsOnSecondAttempt test.
-	state, toolName := newAuthRetryClientState("testclient", "dotool", nil, boolPtr(true))
+	state, stateDiscovery, toolName := newAuthRetryClientState("testclient", "dotool", nil, boolPtr(true))
 
 	ft := &fakeCallToolTransport{callErrs: []error{
 		errors.New("tool call failed: 401 Unauthorized"),
@@ -585,7 +642,7 @@ func TestExecuteTool_AuthFailureRetry_PerUser_RetryAlsoFails(t *testing.T) {
 	}}
 	conn := client.NewClient(ft, client.WithSession())
 
-	cm := &authRetryClientManager{state: state, acquireConn: conn}
+	cm := &authRetryClientManager{state: state, stateDiscovery: stateDiscovery, acquireConn: conn}
 	cs := &authRetryCredStore{requiresPerCall: true}
 	tm := newAuthRetryToolsManager(cm, cs)
 
@@ -610,6 +667,53 @@ func TestExecuteTool_AuthFailureRetry_PerUser_RetryAlsoFails(t *testing.T) {
 	}
 }
 
+// TestExecuteTool_AuthFailureRetry_PerUser_ClientReplacedDuringCall_RejectsRetry
+// pins the per-user twin of the shared branch's identity guard: the retry
+// re-resolves its client by tool name, and if the client was deleted and
+// re-added under the same name while the call was in flight, that lookup
+// returns the new client. The retry must not run against it, since the call
+// was permitted for the old one, and the original auth failure surfaces.
+func TestExecuteTool_AuthFailureRetry_PerUser_ClientReplacedDuringCall_RejectsRetry(t *testing.T) {
+	state, stateDiscovery, toolName := newAuthRetryClientState("testclient", "dotool", nil, boolPtr(true))
+
+	// Same name and tool, new ID: what the tool-name lookup finds once the
+	// client has been re-added.
+	replaced := &schemas.MCPClientState{
+		Name:            "testclient",
+		ExecutionConfig: &schemas.MCPClientConfig{ID: "testclient-id-v2", Name: "testclient"},
+	}
+
+	ft := &fakeCallToolTransport{callErrs: []error{errors.New("tool call failed: 401 Unauthorized")}}
+	conn := client.NewClient(ft, client.WithSession())
+
+	cm := &authRetryClientManager{
+		state:            state,
+		stateDiscovery:   stateDiscovery,
+		acquireConn:      conn,
+		rerouteToolState: replaced,
+		rerouteDiscovery: stateDiscovery,
+	}
+	cs := &authRetryCredStore{requiresPerCall: true}
+	tm := newAuthRetryToolsManager(cm, cs)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := newAuthRetryToolCallRequest(toolName)
+
+	_, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig)
+	if err == nil {
+		t.Fatal("expected the original auth failure to surface when the client was replaced, got no error")
+	}
+	if got := ft.CallCount(); got != 1 {
+		t.Errorf("must not retry against the replacement client: expected exactly 1 CallTool invocation (the original), got %d", got)
+	}
+	if got := cm.acquireCalls.Load(); got != 0 {
+		t.Errorf("must not acquire a connection for the replacement client, got %d AcquireClientConn calls", got)
+	}
+	if got := cs.forceRefreshCalls.Load(); got != 0 {
+		t.Errorf("must not refresh a credential for a client that no longer exists, got %d ForceRefresh calls", got)
+	}
+}
+
 // TestExecuteTool_AuthFailureRetry_Shared_RetriesAfterReconnectCompletes
 // covers the shared-connection happy path: the original call fails with a
 // 401, a background goroutine forces a refresh and reconnects, and because
@@ -620,12 +724,12 @@ func TestExecuteTool_AuthFailureRetry_Shared_RetriesAfterReconnectCompletes(t *t
 	// annotations (see TestExecuteTool_AuthFailureRetry_NoAnnotations_SkipsRetry),
 	// so this reconnect-mechanics test needs an explicitly-safe tool to reach
 	// the retry path at all.
-	state, toolName := newAuthRetryClientState("sharedclient", "dotool", nil, boolPtr(true))
+	state, stateDiscovery, toolName := newAuthRetryClientState("sharedclient", "dotool", nil, boolPtr(true))
 
 	ft := &fakeCallToolTransport{callErrs: []error{errors.New("tool call failed: 401 Unauthorized")}}
 	conn := client.NewClient(ft, client.WithSession())
 
-	cm := &authRetryClientManager{state: state, acquireConn: conn}
+	cm := &authRetryClientManager{state: state, stateDiscovery: stateDiscovery, acquireConn: conn}
 	cs := &authRetryCredStore{requiresPerCall: false}
 	tm := newAuthRetryToolsManager(cm, cs)
 
@@ -664,7 +768,7 @@ func TestExecuteTool_AuthFailureRetry_Shared_RetriesAfterReconnectCompletes(t *t
 // and refuse to proceed if the resolved state's ExecutionConfig.ID doesn't
 // match, surfacing the original auth failure instead of retrying nowhere.
 func TestExecuteTool_AuthFailureRetry_Shared_RoutingChangedDuringReconnect_RejectsRetry(t *testing.T) {
-	state, toolName := newAuthRetryClientState("sharedclient", "dotool", nil, boolPtr(true))
+	state, stateDiscovery, toolName := newAuthRetryClientState("sharedclient", "dotool", nil, boolPtr(true))
 
 	// What GetClientByName("sharedclient") resolves to by the time the
 	// post-reconnect reacquire runs: same name, but a different
@@ -675,13 +779,12 @@ func TestExecuteTool_AuthFailureRetry_Shared_RoutingChangedDuringReconnect_Rejec
 	mismatched := &schemas.MCPClientState{
 		Name:            "sharedclient",
 		ExecutionConfig: &schemas.MCPClientConfig{ID: "sharedclient-id-v2", Name: "sharedclient"},
-		ToolMap:         state.ToolMap,
 	}
 
 	ft := &fakeCallToolTransport{callErrs: []error{errors.New("tool call failed: 401 Unauthorized")}}
 	conn := client.NewClient(ft, client.WithSession())
 
-	cm := &authRetryClientManager{state: state, acquireConn: conn, byNameState: mismatched}
+	cm := &authRetryClientManager{state: state, stateDiscovery: stateDiscovery, acquireConn: conn, byNameState: mismatched}
 	cs := &authRetryCredStore{requiresPerCall: false}
 	tm := newAuthRetryToolsManager(cm, cs)
 
@@ -711,7 +814,7 @@ func TestExecuteTool_AuthFailureRetry_Shared_FallsBackWhenReconnectExceedsBudget
 	// so without it this test's "no retry" assertions would pass for the
 	// wrong reason (annotation fail-closed) instead of proving the budget
 	// give-up path this test is named for.
-	state, toolName := newAuthRetryClientState("sharedclient", "dotool", nil, boolPtr(true))
+	state, stateDiscovery, toolName := newAuthRetryClientState("sharedclient", "dotool", nil, boolPtr(true))
 
 	ft := &fakeCallToolTransport{callErrs: []error{errors.New("tool call failed: 401 Unauthorized")}}
 	conn := client.NewClient(ft, client.WithSession())
@@ -720,7 +823,7 @@ func TestExecuteTool_AuthFailureRetry_Shared_FallsBackWhenReconnectExceedsBudget
 	defer close(reconnectGate) // let the held reconnect goroutine finish after the test
 
 	reconnectSignal := make(chan struct{}, 1)
-	cm := &authRetryClientManager{state: state, acquireConn: conn, reconnectGate: reconnectGate, reconnectSignal: reconnectSignal}
+	cm := &authRetryClientManager{state: state, stateDiscovery: stateDiscovery, acquireConn: conn, reconnectGate: reconnectGate, reconnectSignal: reconnectSignal}
 	cs := &authRetryCredStore{requiresPerCall: false}
 	tm := newAuthRetryToolsManager(cm, cs)
 
@@ -771,12 +874,12 @@ func TestExecuteTool_AuthFailureRetry_Shared_ReconnectFails_OriginalErrorSurface
 	// annotations (see TestExecuteTool_AuthFailureRetry_NoAnnotations_SkipsRetry),
 	// so this reconnect-mechanics test needs an explicitly-safe tool to reach
 	// the retry path at all.
-	state, toolName := newAuthRetryClientState("sharedclient", "dotool", nil, boolPtr(true))
+	state, stateDiscovery, toolName := newAuthRetryClientState("sharedclient", "dotool", nil, boolPtr(true))
 
 	ft := &fakeCallToolTransport{callErrs: []error{errors.New("tool call failed: 401 Unauthorized")}}
 	conn := client.NewClient(ft, client.WithSession())
 
-	cm := &authRetryClientManager{state: state, acquireConn: conn, reconnectErr: errors.New("dial tcp: connection refused")}
+	cm := &authRetryClientManager{state: state, stateDiscovery: stateDiscovery, acquireConn: conn, reconnectErr: errors.New("dial tcp: connection refused")}
 	cs := &authRetryCredStore{requiresPerCall: false}
 	tm := newAuthRetryToolsManager(cm, cs)
 
@@ -806,7 +909,7 @@ func TestExecuteTool_AuthFailureRetry_Shared_ReconnectFails_OriginalErrorSurface
 // tool must never be auto-retried, but the connection healing (background
 // force-refresh + reconnect) must still run so subsequent calls succeed.
 func TestExecuteTool_AuthFailureRetry_Shared_DestructiveNonIdempotent_ReconnectsWithoutRetry(t *testing.T) {
-	state, toolName := newAuthRetryClientState("sharedclient", "dotool", boolPtr(true), nil)
+	state, stateDiscovery, toolName := newAuthRetryClientState("sharedclient", "dotool", boolPtr(true), nil)
 
 	ft := &fakeCallToolTransport{callErrs: []error{errors.New("tool call failed: 401 Unauthorized")}}
 	conn := client.NewClient(ft, client.WithSession())
@@ -814,7 +917,7 @@ func TestExecuteTool_AuthFailureRetry_Shared_DestructiveNonIdempotent_Reconnects
 	reconnectSignal := make(chan struct{}, 1)
 	forceRefreshSignal := make(chan struct{}, 1)
 
-	cm := &authRetryClientManager{state: state, acquireConn: conn, reconnectSignal: reconnectSignal}
+	cm := &authRetryClientManager{state: state, stateDiscovery: stateDiscovery, acquireConn: conn, reconnectSignal: reconnectSignal}
 	cs := &authRetryCredStore{requiresPerCall: false, forceRefreshSignal: forceRefreshSignal}
 	tm := newAuthRetryToolsManager(cm, cs)
 
@@ -861,7 +964,7 @@ func TestExecuteTool_AuthFailureRetry_Shared_Concurrent401sJoinOneReconnect(t *t
 	// annotations (see TestExecuteTool_AuthFailureRetry_NoAnnotations_SkipsRetry),
 	// so this reconnect-mechanics test needs an explicitly-safe tool to reach
 	// the retry path at all.
-	state, toolName := newAuthRetryClientState("sharedclient", "dotool", nil, boolPtr(true))
+	state, stateDiscovery, toolName := newAuthRetryClientState("sharedclient", "dotool", nil, boolPtr(true))
 
 	ft := &fakeCallToolTransport{callErrs: []error{
 		errors.New("tool call failed: 401 Unauthorized"),
@@ -871,7 +974,7 @@ func TestExecuteTool_AuthFailureRetry_Shared_Concurrent401sJoinOneReconnect(t *t
 
 	reconnectGate := make(chan struct{})
 	reconnectSignal := make(chan struct{}, 1)
-	cm := &authRetryClientManager{state: state, acquireConn: conn, reconnectGate: reconnectGate, reconnectSignal: reconnectSignal}
+	cm := &authRetryClientManager{state: state, stateDiscovery: stateDiscovery, acquireConn: conn, reconnectGate: reconnectGate, reconnectSignal: reconnectSignal}
 	cs := &authRetryCredStore{requiresPerCall: false}
 	tm := newAuthRetryToolsManager(cm, cs)
 
@@ -929,12 +1032,12 @@ func TestExecuteTool_AuthFailureRetry_Shared_Concurrent401sJoinOneReconnect(t *t
 // surfaces unchanged and no connection is re-acquired. The rejected
 // credential is still refreshed, so the next call does not reuse it.
 func TestExecuteTool_AuthFailureRetry_DestructiveNonIdempotent_SkipsRetry(t *testing.T) {
-	state, toolName := newAuthRetryClientState("testclient", "dotool", boolPtr(true), nil)
+	state, stateDiscovery, toolName := newAuthRetryClientState("testclient", "dotool", boolPtr(true), nil)
 
 	ft := &fakeCallToolTransport{callErrs: []error{errors.New("tool call failed: 401 Unauthorized")}}
 	conn := client.NewClient(ft, client.WithSession())
 
-	cm := &authRetryClientManager{state: state, acquireConn: conn}
+	cm := &authRetryClientManager{state: state, stateDiscovery: stateDiscovery, acquireConn: conn}
 	cs := &authRetryCredStore{requiresPerCall: true, forceRefreshSignal: make(chan struct{}, 1)}
 	tm := newAuthRetryToolsManager(cm, cs)
 
@@ -965,12 +1068,12 @@ func TestExecuteTool_AuthFailureRetry_DestructiveNonIdempotent_SkipsRetry(t *tes
 // that is BOTH destructive and idempotent is safe to retry (repeated calls
 // have no additional effect), so it must not be skipped.
 func TestExecuteTool_AuthFailureRetry_DestructiveButIdempotent_StillRetries(t *testing.T) {
-	state, toolName := newAuthRetryClientState("testclient", "dotool", boolPtr(true), boolPtr(true))
+	state, stateDiscovery, toolName := newAuthRetryClientState("testclient", "dotool", boolPtr(true), boolPtr(true))
 
 	ft := &fakeCallToolTransport{callErrs: []error{errors.New("tool call failed: 401 Unauthorized")}}
 	conn := client.NewClient(ft, client.WithSession())
 
-	cm := &authRetryClientManager{state: state, acquireConn: conn}
+	cm := &authRetryClientManager{state: state, stateDiscovery: stateDiscovery, acquireConn: conn}
 	cs := &authRetryCredStore{requiresPerCall: true}
 	tm := newAuthRetryToolsManager(cm, cs)
 
@@ -996,12 +1099,12 @@ func TestExecuteTool_AuthFailureRetry_DestructiveButIdempotent_StillRetries(t *t
 // than defaulting to "safe" because neither hint was set. Its rejected
 // credential is still refreshed, as for any skipped retry.
 func TestExecuteTool_AuthFailureRetry_NoAnnotations_SkipsRetry(t *testing.T) {
-	state, toolName := newAuthRetryClientState("testclient", "dotool", nil, nil)
+	state, stateDiscovery, toolName := newAuthRetryClientState("testclient", "dotool", nil, nil)
 
 	ft := &fakeCallToolTransport{callErrs: []error{errors.New("tool call failed: 401 Unauthorized")}}
 	conn := client.NewClient(ft, client.WithSession())
 
-	cm := &authRetryClientManager{state: state, acquireConn: conn}
+	cm := &authRetryClientManager{state: state, stateDiscovery: stateDiscovery, acquireConn: conn}
 	cs := &authRetryCredStore{requiresPerCall: true, forceRefreshSignal: make(chan struct{}, 1)}
 	tm := newAuthRetryToolsManager(cm, cs)
 
@@ -1032,12 +1135,12 @@ func TestExecuteTool_AuthFailureRetry_NoAnnotations_SkipsRetry(t *testing.T) {
 // fails, the caller gets the tool call's own error, not the refresh's, and no
 // connection is re-acquired.
 func TestExecuteTool_AuthFailureRetry_SkippedRetryRefreshFails_OriginalErrorSurfaces(t *testing.T) {
-	state, toolName := newAuthRetryClientState("testclient", "dotool", nil, nil)
+	state, stateDiscovery, toolName := newAuthRetryClientState("testclient", "dotool", nil, nil)
 
 	ft := &fakeCallToolTransport{callErrs: []error{errors.New("tool call failed: 401 Unauthorized")}}
 	conn := client.NewClient(ft, client.WithSession())
 
-	cm := &authRetryClientManager{state: state, acquireConn: conn}
+	cm := &authRetryClientManager{state: state, stateDiscovery: stateDiscovery, acquireConn: conn}
 	cs := &authRetryCredStore{requiresPerCall: true, forceRefreshErr: errors.New("identity provider unreachable"), forceRefreshSignal: make(chan struct{}, 1)}
 	tm := newAuthRetryToolsManager(cm, cs)
 
@@ -1074,13 +1177,13 @@ func awaitDetachedRefresh(t *testing.T, cs *authRetryCredStore) {
 // A slow or unreachable identity provider must not stretch the error to the
 // whole tool budget.
 func TestExecuteTool_AuthFailureRetry_SkippedRetryDoesNotWaitForRefresh(t *testing.T) {
-	state, toolName := newAuthRetryClientState("testclient", "dotool", nil, nil)
+	state, stateDiscovery, toolName := newAuthRetryClientState("testclient", "dotool", nil, nil)
 
 	ft := &fakeCallToolTransport{callErrs: []error{errors.New("tool call failed: 401 Unauthorized")}}
 	conn := client.NewClient(ft, client.WithSession())
 
 	hold := make(chan struct{})
-	cm := &authRetryClientManager{state: state, acquireConn: conn}
+	cm := &authRetryClientManager{state: state, stateDiscovery: stateDiscovery, acquireConn: conn}
 	cs := &authRetryCredStore{requiresPerCall: true, forceRefreshHold: hold, forceRefreshSignal: make(chan struct{}, 1)}
 	tm := newAuthRetryToolsManager(cm, cs)
 
@@ -1106,15 +1209,15 @@ func TestExecuteTool_AuthFailureRetry_SkippedRetryDoesNotWaitForRefresh(t *testi
 // destructiveHint/idempotentHint (both are only meaningful when
 // readOnlyHint is false per the MCP spec).
 func TestExecuteTool_AuthFailureRetry_ReadOnly_StillRetries(t *testing.T) {
-	state, toolName := newAuthRetryClientState("testclient", "dotool", nil, nil)
-	tool := state.ToolMap[toolName]
+	state, stateDiscovery, toolName := newAuthRetryClientState("testclient", "dotool", nil, nil)
+	tool := stateDiscovery.Tools[toolName]
 	tool.Annotations = &schemas.MCPToolAnnotations{ReadOnlyHint: boolPtr(true)}
-	state.ToolMap[toolName] = tool
+	stateDiscovery.Tools[toolName] = tool
 
 	ft := &fakeCallToolTransport{callErrs: []error{errors.New("tool call failed: 401 Unauthorized")}}
 	conn := client.NewClient(ft, client.WithSession())
 
-	cm := &authRetryClientManager{state: state, acquireConn: conn}
+	cm := &authRetryClientManager{state: state, stateDiscovery: stateDiscovery, acquireConn: conn}
 	cs := &authRetryCredStore{requiresPerCall: true}
 	tm := newAuthRetryToolsManager(cm, cs)
 
@@ -1135,13 +1238,13 @@ func TestExecuteTool_AuthFailureRetry_ReadOnly_StillRetries(t *testing.T) {
 // through the normal error path untouched — no forced refresh, no
 // reconnect attempt, no retry.
 func TestExecuteTool_NonAuthFailure_NeverTriggersRetryLogic(t *testing.T) {
-	state, toolName := newAuthRetryClientState("testclient", "dotool", nil, nil)
+	state, stateDiscovery, toolName := newAuthRetryClientState("testclient", "dotool", nil, nil)
 
 	ft := &fakeCallToolTransport{callErrs: []error{errors.New("tool execution panicked: division by zero")}}
 	conn := client.NewClient(ft, client.WithSession())
 
 	reconnectSignal := make(chan struct{}, 1)
-	cm := &authRetryClientManager{state: state, acquireConn: conn, reconnectSignal: reconnectSignal}
+	cm := &authRetryClientManager{state: state, stateDiscovery: stateDiscovery, acquireConn: conn, reconnectSignal: reconnectSignal}
 	cs := &authRetryCredStore{requiresPerCall: true}
 	tm := newAuthRetryToolsManager(cm, cs)
 
@@ -1189,7 +1292,7 @@ func TestExecuteTool_NonAuthFailure_NeverTriggersRetryLogic(t *testing.T) {
 // This test necessarily waits out MCPSharedAuthRetryReconnectBudget, because
 // the branch under test is precisely the one where nothing shortens it.
 func TestExecuteTool_AuthFailureRetry_Shared_ReconnectBudgetAloneIsNotAToolTimeout(t *testing.T) {
-	state, toolName := newAuthRetryClientState("sharedclient", "dotool", nil, boolPtr(true))
+	state, stateDiscovery, toolName := newAuthRetryClientState("sharedclient", "dotool", nil, boolPtr(true))
 
 	ft := &fakeCallToolTransport{callErrs: []error{errors.New("tool call failed: 401 Unauthorized")}}
 	conn := client.NewClient(ft, client.WithSession())
@@ -1198,7 +1301,7 @@ func TestExecuteTool_AuthFailureRetry_Shared_ReconnectBudgetAloneIsNotAToolTimeo
 	defer close(reconnectGate) // let the held reconnect goroutine finish after the test
 
 	reconnectSignal := make(chan struct{}, 1)
-	cm := &authRetryClientManager{state: state, acquireConn: conn, reconnectGate: reconnectGate, reconnectSignal: reconnectSignal}
+	cm := &authRetryClientManager{state: state, stateDiscovery: stateDiscovery, acquireConn: conn, reconnectGate: reconnectGate, reconnectSignal: reconnectSignal}
 	cs := &authRetryCredStore{requiresPerCall: false}
 	tm := newAuthRetryToolsManager(cm, cs)
 
@@ -1218,4 +1321,94 @@ func TestExecuteTool_AuthFailureRetry_Shared_ReconnectBudgetAloneIsNotAToolTimeo
 	if !errors.Is(err, ErrMCPToolCallFailed) {
 		t.Errorf("expected error to wrap ErrMCPToolCallFailed, got: %v", err)
 	}
+}
+
+// rotatingCredStore is a per-call credential store whose bearer a ForceRefresh
+// replaces with next, or, with refreshFails, cannot replace: the credential then
+// needs reauthorization, and resolving it returns reauth.
+type rotatingCredStore struct {
+	authRetryCredStore
+	mu           sync.Mutex
+	token, next  string
+	refreshFails bool
+	needsReauth  bool
+	reauth       error
+}
+
+// ConnectionHeaders returns the current bearer, or reauth once a refresh has failed.
+func (s *rotatingCredStore) ConnectionHeaders(_ *schemas.BifrostContext, _ *schemas.MCPClientConfig) (http.Header, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.needsReauth {
+		return nil, s.reauth
+	}
+	return http.Header{"Authorization": []string{"Bearer " + s.token}}, nil
+}
+
+// ForceRefresh rotates the bearer to next, or marks the credential as needing reauthorization.
+func (s *rotatingCredStore) ForceRefresh(_ *schemas.BifrostContext, _ *schemas.MCPClientConfig) error {
+	s.forceRefreshCalls.Add(1)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.refreshFails {
+		s.needsReauth = true
+		return errors.New("refresh token revoked")
+	}
+	s.token = s.next
+	return nil
+}
+
+// TestAcquireClientConn_RejectedPerCallConnectionRefreshesAndRedials: a per-user
+// token the upstream revoked before its stored expiry makes initialize answer
+// 401, before any tool runs. The connection refreshes the credential and dials
+// once more, so the call goes ahead. It used to fail with the 401 until the
+// stored expiry, since the refresh-and-retry only followed a failed tools/call.
+// When the refresh itself fails, the reauthorization the credential then needs
+// is returned at once, not the 401.
+func TestAcquireClientConn_RejectedPerCallConnectionRefreshesAndRedials(t *testing.T) {
+	upstream := server.NewStreamableHTTPServer(server.NewMCPServer("rotating", "1.0.0", server.WithToolCapabilities(true)))
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer fresh" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		upstream.ServeHTTP(w, r)
+	}))
+	t.Cleanup(ts.Close)
+	newState := func() *schemas.MCPClientState {
+		config := &schemas.MCPClientConfig{
+			ID: "rotating-id", Name: "rotating", ConnectionType: schemas.MCPConnectionTypeHTTP,
+			ConnectionString: schemas.NewSecretVar(ts.URL), AuthType: schemas.MCPAuthTypePerUserOauth,
+		}
+		return &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config}
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	t.Run("a refresh that succeeds", func(t *testing.T) {
+		store := &rotatingCredStore{authRetryCredStore: authRetryCredStore{requiresPerCall: true}, token: "revoked", next: "fresh"}
+		m := NewMCPManager(context.Background(), schemas.MCPConfig{}, store, &MockLogger{}, nil)
+		t.Cleanup(func() { _ = m.Cleanup() })
+		conn, release, err := m.AcquireClientConn(ctx, newState())
+		if err != nil {
+			t.Fatalf("AcquireClientConn: %v, want a connection on the refreshed token", err)
+		}
+		release()
+		if conn == nil {
+			t.Fatal("expected a connection")
+		}
+		if got := store.forceRefreshCalls.Load(); got != 1 {
+			t.Fatalf("ForceRefresh calls = %d, want 1", got)
+		}
+	})
+
+	t.Run("a refresh that fails", func(t *testing.T) {
+		reauth := &schemas.MCPAuthRequiredError{MCPClientName: "rotating"}
+		store := &rotatingCredStore{authRetryCredStore: authRetryCredStore{requiresPerCall: true}, token: "revoked", refreshFails: true, reauth: reauth}
+		m := NewMCPManager(context.Background(), schemas.MCPConfig{}, store, &MockLogger{}, nil)
+		t.Cleanup(func() { _ = m.Cleanup() })
+		_, _, err := m.AcquireClientConn(ctx, newState())
+		if !errors.Is(err, reauth) {
+			t.Fatalf("AcquireClientConn error = %v, want the reauthorization the credential now needs", err)
+		}
+	})
 }

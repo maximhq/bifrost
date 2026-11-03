@@ -18,18 +18,9 @@ const (
 	HeaderProtocolVersion = "Mcp-Protocol-Version"
 )
 
-// DefaultProtocolVersion is what the mock advertises when a client asks for
-// something it does not recognize.
-const DefaultProtocolVersion = "2025-06-18"
-
-// supportedProtocolVersions are echoed back verbatim when a client requests
-// one of them, so the mock does not force a downgrade on a client that is
-// merely newer than this list.
-var supportedProtocolVersions = map[string]bool{
-	"2024-11-05": true,
-	"2025-03-26": true,
-	"2025-06-18": true,
-}
+// DefaultProtocolVersion is the newest version a fresh server speaks, and the one a legacy SSE
+// session starts on before initialize negotiates.
+const DefaultProtocolVersion = ProtocolVersion20250618
 
 // Session is one client's connection state. Identity is resolved once at
 // initialize and carried for the session's life, which lets per-tool counters
@@ -51,10 +42,12 @@ type sessionStore struct {
 	live map[string]*Session
 }
 
+// newSessionStore starts with no sessions.
 func newSessionStore() *sessionStore {
 	return &sessionStore{live: map[string]*Session{}}
 }
 
+// create issues a new session for identity at protocolVersion.
 func (s *sessionStore) create(identity, protocolVersion string) *Session {
 	sess := &Session{
 		ID:              randomID(),
@@ -80,6 +73,7 @@ func (s *sessionStore) negotiated(id, protocolVersion string) {
 	}
 }
 
+// get returns a live session by id.
 func (s *sessionStore) get(id string) (*Session, bool) {
 	if id == "" {
 		return nil, false
@@ -102,6 +96,7 @@ func (s *sessionStore) killAll() int {
 	return n
 }
 
+// count reports how many sessions are live.
 func (s *sessionStore) count() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -145,16 +140,19 @@ type authState struct {
 	a  Auth
 }
 
+// newAuthState starts with no auth required.
 func newAuthState() *authState {
 	return &authState{}
 }
 
+// set replaces the auth requirements.
 func (as *authState) set(a Auth) {
 	as.mu.Lock()
 	as.a = a
 	as.mu.Unlock()
 }
 
+// get returns the current auth requirements.
 func (as *authState) get() Auth {
 	as.mu.Lock()
 	defer as.mu.Unlock()
@@ -238,6 +236,7 @@ func (as *authState) check(h http.Header) authResult {
 	return authResult{Identity: identity, OK: true}
 }
 
+// bearerToken returns the token of an Authorization: Bearer header, or "".
 func bearerToken(h http.Header) string {
 	v := h.Get("Authorization")
 	if v == "" {
@@ -250,6 +249,7 @@ func bearerToken(h http.Header) string {
 	return ""
 }
 
+// randomID returns a random hex id for a session or token.
 func randomID() string {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
