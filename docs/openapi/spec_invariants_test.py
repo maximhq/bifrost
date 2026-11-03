@@ -1122,6 +1122,38 @@ def test_clamped_list_endpoints_document_the_page_bounds():
     assert not problems, "clamped list endpoints drift from ClampPaginationParams:\n    " + "\n    ".join(problems)
 
 
+def test_pricing_patch_above_12hr_fields():
+    """The eight OpenAI 12h cache-creation rates on PricingPatch are non-negative numbers,
+    identical in governance.yaml and the bundled openapi.json."""
+    import json
+
+    keys = [
+        "cache_creation_input_token_cost_above_12hr",
+        "cache_creation_input_token_cost_above_12hr_above_272k_tokens",
+        "cache_creation_input_token_cost_above_12hr_priority",
+        "cache_creation_input_token_cost_above_12hr_above_272k_tokens_priority",
+        "cache_creation_input_token_cost_above_12hr_flex",
+        "cache_creation_input_token_cost_above_12hr_above_272k_tokens_flex",
+        "cache_creation_input_token_cost_above_12hr_ultrafast",
+        "cache_creation_input_token_cost_above_12hr_above_272k_tokens_ultrafast",
+    ]
+    source = load(HERE / "schemas" / "management" / "governance.yaml")["PricingPatch"]["properties"]
+    bundle = json.loads((HERE / "openapi.json").read_text(encoding="utf-8"))["components"]["schemas"][
+        "PricingPatch"
+    ]["properties"]
+    problems = []
+    for key in keys:
+        src, out = source.get(key), bundle.get(key)
+        if src is None or out is None:
+            problems.append(f"{key}: missing (governance.yaml={src is not None}, openapi.json={out is not None})")
+            continue
+        if src.get("type") != "number" or src.get("minimum") != 0:
+            problems.append(f"{key}: governance.yaml has type={src.get('type')} minimum={src.get('minimum')}")
+        if out != src:
+            problems.append(f"{key}: openapi.json {out} != governance.yaml {src}")
+    assert not problems, "PricingPatch 1hr+ tier drift:\n    " + "\n    ".join(problems)
+
+
 check("legacy aliases are mounted and their successors documented", test_legacy_aliases_mount_legacy_fragments)
 check("secret-capable values accept bare strings (EnvVar oneOf)", test_secret_capable_values_accept_bare_strings)
 check("vertex aws_workload_identity matches config.schema.json", test_vertex_aws_workload_identity_contract)
@@ -1142,6 +1174,7 @@ check("oauth token_url descriptions state the loopback and URL-part rules", test
 check("adaptive routing legacy alias declares Link and Warning on every response", test_adaptive_routing_legacy_alias_declares_deprecation_headers_on_every_response)
 check("adaptive routing PUT descriptions state that an empty reroute_target is stored as pool", test_adaptive_routing_put_descriptions_state_the_empty_reroute_target)
 
+check("pricing patch OpenAI 12h cache-creation rates are non-negative numbers in source and bundle", test_pricing_patch_above_12hr_fields)
 check("clamped list endpoints document limit maximum 100 and default 25", test_clamped_list_endpoints_document_the_page_bounds)
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(0 if failed == 0 else 1)
