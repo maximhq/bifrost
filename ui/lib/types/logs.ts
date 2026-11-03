@@ -796,6 +796,7 @@ export interface LogEntry {
 	project_name?: string;
 	user_id?: string;
 	user_name?: string;
+	user_email?: string;
 	virtual_key_id?: string;
 	virtual_key_name?: string;
 	routing_engines_used?: string[];
@@ -871,6 +872,7 @@ export interface LogEntry {
 	metadata?: Record<string, string>; // JSON metadata (e.g., isAsyncRequest)
 	redaction_mapping?: RedactionMapping; // Phase-scoped placeholder-to-original mappings, present only when caller has Logs:Reveal
 	user_agent?: string; // Raw HTTP User-Agent of the calling client
+	client_ip?: string; // Caller IP: leftmost X-Forwarded-For, else X-Real-IP, else the TCP peer
 	app?: string; // Backend-detected client app
 	// Aggregates over this log's fallback children (rows whose parent_request_id
 	// equals this log's id). Present only on roots_only list responses.
@@ -935,7 +937,7 @@ export interface LogFilters {
 	missing_cost_only?: boolean;
 	cache_hit_types?: string[]; // For filtering by local-cache hit type ("direct", "semantic")
 	content_search?: string;
-	metadata_filters?: Record<string, string>; // key=metadataKey, value=metadataValue for filtering by metadata
+	metadata_filters?: Record<string, string[]>; // metadata key to accepted values: any value per key, every key
 	user_ids?: string[];
 	team_ids?: string[];
 	customer_ids?: string[];
@@ -1471,6 +1473,7 @@ export interface MCPToolLogEntry {
 	request_id?: string;
 	user_id?: string | null;
 	user_name?: string | null;
+	user_email?: string | null;
 	team_id?: string | null;
 	team_name?: string | null;
 	customer_id?: string | null;
@@ -1513,6 +1516,7 @@ export interface MCPToolLogEntry {
 	created_at: string; // ISO string format
 	virtual_key?: VirtualKey;
 	user_agent?: string; // Raw HTTP User-Agent of the calling client
+	client_ip?: string; // Caller IP: leftmost X-Forwarded-For, else X-Real-IP, else the TCP peer
 	app?: string; // Backend-detected client app
 }
 

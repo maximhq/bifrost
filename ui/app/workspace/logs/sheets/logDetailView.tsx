@@ -1439,6 +1439,18 @@ export function LogDetailView({
 										}
 									/>
 								)}
+								{log.client_ip && (
+									<LogEntryDetailsView
+										className="w-full"
+										label={t("labels.clientIp")}
+										valueTooltip={log.client_ip}
+										value={
+											<span className="font-mono" data-testid="logdetails-client-ip">
+												{log.client_ip}
+											</span>
+										}
+									/>
+								)}
 								<LogEntryDetailsView
 									className="w-full"
 									label={t("labels.type")}
@@ -1689,6 +1701,14 @@ export function LogDetailView({
 												<TooltipContent sideOffset={6}>{log.user_name ? log.user_id : t("logs.detail.filterByUser")}</TooltipContent>
 											</Tooltip>
 										}
+									/>
+								)}
+								{log.user_email && (
+									<LogEntryDetailsView
+										className="w-full"
+										label={t("labels.userEmail")}
+										valueTooltip={log.user_email}
+										value={<span data-testid="logdetails-user-email">{log.user_email}</span>}
 									/>
 								)}
 								{log.fallback_index > 0 && (

@@ -8,6 +8,11 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 ## Changelog
 
+### Upcoming
+
+- Added `bifrost.mcp.clientConfigs[].oauthConfig.useClientMetadataDocument` (`mcp.client_configs[].oauth_config.use_client_metadata_document`): sign in with Bifrost's Client ID Metadata Document even when the authorization server does not advertise support. Needs Bifrost on a public HTTPS address; cannot be combined with `clientId`.
+- Added `bifrost.mcp.clientConfigs[].oauthConfig.resource` (`mcp.client_configs[].oauth_config.resource`): the OAuth resource indicator, discovered from the MCP server when omitted.
+
 ### 2.1.47
 
 - Added `bifrost.server.basePath` (`server.base_path`) to serve Bifrost under a URL path prefix behind an ingress (e.g. `https://abc.com/bifrost`). The UI, redirects and OAuth callback URLs use the prefix. Requests are accepted with or without it, so the ingress can forward or strip it and probes stay on `/health`.

@@ -1231,6 +1231,7 @@ func buildInitialLogEntry(pending *PendingLogData) *logstore.Log {
 		entry.RoutingEnginesUsed = pending.RoutingEnginesUsed
 	}
 	applyUserAgent(entry, pending.InitialData.UserAgent)
+	entry.ClientIP = optionalString(pending.InitialData.ClientIP)
 	applyApp(entry, pending.InitialData.App)
 	applyAgentCorrelationID(entry, pending.InitialData.AgentCorrelationID)
 	return entry
@@ -1271,6 +1272,7 @@ func buildCompleteLogEntryFromPending(pending *PendingLogData) *logstore.Log {
 		entry.RoutingEnginesUsed = pending.RoutingEnginesUsed
 	}
 	applyUserAgent(entry, pending.InitialData.UserAgent)
+	entry.ClientIP = optionalString(pending.InitialData.ClientIP)
 	applyApp(entry, pending.InitialData.App)
 	applyAgentCorrelationID(entry, pending.InitialData.AgentCorrelationID)
 	return entry
@@ -1292,6 +1294,8 @@ const (
 	maxPersistedAppLen                = 128
 	maxPersistedAgentCorrelationIDLen = 255
 	maxPersistedMCPToolNameLen        = 255 // mcp_tool_logs.tool_name; a resource read's URI is unbounded
+	maxPersistedClientIPLen           = 45  // client_ip; longest IPv6 text form
+	maxPersistedUserEmailLen          = 255 // user_email
 )
 
 // clampString truncates s to at most max bytes. The columns are sized in
@@ -1365,11 +1369,24 @@ func applyServedModel(entry *logstore.Log, result *schemas.BifrostResponse) {
 	if entry == nil {
 		return
 	}
+	// A passthrough that named no model (an Interactions poll) is recorded under the model or agent
+	// the upstream reports running, so its records can be filtered and priced by it.
+	if entry.Model == "" && result != nil && result.PassthroughResponse != nil && result.PassthroughResponse.ServedModel != "" {
+		entry.Model = result.PassthroughResponse.ServedModel
+		return
+	}
 	served := result.ServedModel()
 	if served == "" || served == entry.Model {
 		return
 	}
 	entry.ServedModel = &served
+}
+
+// applyUserEmail records the governance-stamped user email on an LLM row when the context carries one.
+func applyUserEmail(ctx *schemas.BifrostContext, entry *logstore.Log) {
+	if email, _ := ctx.Value(schemas.BifrostContextKeyUserEmail).(string); email != "" {
+		entry.UserEmail = new(clampString(email, maxPersistedUserEmailLen))
+	}
 }
 
 // applyOutputFieldsToEntry sets common output fields on a log entry.

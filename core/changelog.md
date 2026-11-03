@@ -1,2 +1,3 @@
 - fix: anthropic - Responses requests drop empty text blocks instead of forwarding them for a 400 (#9318) [@david-choi-querypie](https://github.com/david-choi-querypie)
 - fix: bedrock - the InvokeModel streaming message_start now carries stop_reason and stop_sequence as null, as Anthropic and Bedrock send them
+- fix: anthropic - preserve explicit web search and web fetch versions, and keep a declared code execution tool beside versions that do not auto-inject it (#9258) [@ykakade](https://github.com/ykakade)

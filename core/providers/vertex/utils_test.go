@@ -1460,6 +1460,102 @@ func TestVertexPassthroughUsesClientAPIVersion(t *testing.T) {
 	}
 }
 
+// TestVertexPassthroughInteractionsReportsRun pins the Vertex route for stored interactions: a
+// finished run's usage rides on ProviderJob, to be settled once, and never on PassthroughUsage,
+// which governance and the request row would bill on every read. The poll path keeps the project
+// prefix and version the client addressed, so the sweeper can read the run again.
+func TestVertexPassthroughInteractionsReportsRun(t *testing.T) {
+	const completed = `{"id":"i-1","agent":"deep-research-preview-04-2026","status":"completed","usage":{"total_input_tokens":1000,"total_output_tokens":50,"total_tokens":1050}}`
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("alt") == "sse" {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"event_type\":\"interaction.completed\",\"interaction\":" + completed + "}\n\n"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(completed))
+	}))
+	defer upstream.Close()
+
+	config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10}}
+	config.CheckAndSetDefaults()
+	provider, err := NewVertexProvider(config, nil)
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+	for _, client := range []*fasthttp.Client{provider.client, provider.streamingClient} {
+		client.Dial = func(string) (net.Conn, error) { return net.Dial("tcp", upstream.Listener.Addr().String()) }
+		client.TLSConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+	key := schemas.Key{VertexKeyConfig: &schemas.VertexKeyConfig{
+		ProjectID:       *schemas.NewSecretVar("proj"),
+		Region:          *schemas.NewSecretVar("global"),
+		AuthCredentials: *schemas.NewSecretVar("test-credentials"),
+	}}
+	provider.tokenSources.Store(getClientKey(vertexCredentialIdentity(key)), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"}))
+
+	const path = "/projects/client-proj/locations/global/interactions"
+	checkJob := func(label string, resp *schemas.BifrostPassthroughResponse) {
+		t.Helper()
+		if resp == nil {
+			t.Fatalf("%s: no response", label)
+		}
+		if resp.PassthroughUsage != nil {
+			t.Fatalf("%s: PassthroughUsage=%+v, want none billed on the request", label, resp.PassthroughUsage)
+		}
+		job := resp.ProviderJob
+		if job == nil || job.ID != "i-1" || !job.Created || !job.Terminal || job.PollPath != path+"/i-1" || job.APIVersion != "v1beta1" {
+			t.Fatalf("%s: job=%+v, want the created, finished run polled at %s/i-1 under v1beta1", label, job, path)
+		}
+		if job.Usage == nil || job.Usage.LLMUsage == nil || job.Usage.LLMUsage.TotalTokens != 1050 {
+			t.Fatalf("%s: job usage=%+v, want the run's usage", label, job.Usage)
+		}
+		if resp.ServedModel != "deep-research-preview-04-2026" {
+			t.Fatalf("%s: served model=%q", label, resp.ServedModel)
+		}
+	}
+
+	req := &schemas.BifrostPassthroughRequest{
+		Method:      http.MethodPost,
+		Path:        path,
+		APIVersion:  "v1beta1",
+		Body:        []byte(`{"agent":"deep-research-preview-04-2026","input":"hi"}`),
+		SafeHeaders: map[string]string{"content-type": "application/json"},
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.Passthrough(ctx, key, req)
+	if bifrostErr != nil {
+		t.Fatalf("Passthrough: %s", bifrostErr.GetErrorString())
+	}
+	checkJob("unary", resp)
+
+	streamReq := *req
+	streamReq.RawQuery = "alt=sse"
+	noHooks := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, err
+	}
+	stream, bifrostErr := provider.PassthroughStream(ctx, noHooks, nil, key, &streamReq)
+	if bifrostErr != nil {
+		t.Fatalf("PassthroughStream: %s", bifrostErr.GetErrorString())
+	}
+	var final *schemas.BifrostPassthroughResponse
+	for drained := false; !drained; {
+		select {
+		case chunk, ok := <-stream:
+			if !ok {
+				drained = true
+				break
+			}
+			if chunk.BifrostPassthroughResponse != nil && len(chunk.BifrostPassthroughResponse.Body) == 0 {
+				final = chunk.BifrostPassthroughResponse
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("PassthroughStream did not finish")
+		}
+	}
+	checkJob("stream", final)
+}
+
 func TestPassthroughWireFormat(t *testing.T) {
 	tests := []struct {
 		path string

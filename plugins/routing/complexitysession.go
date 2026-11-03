@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -17,16 +18,22 @@ const (
 	complexitySessionKind          = "complexity"
 	complexityTurnTierKind         = "complexity-turn-tier"
 	complexitySessionInactivityTTL = 24 * time.Hour
+
+	// Harness headers that tell a session's subagents apart; see complexityAgentID.
+	claudeCodeAgentIDHeader   = "x-claude-code-agent-id"
+	codexParentThreadIDHeader = "x-codex-parent-thread-id"
+	codexThreadIDHeader       = "thread-id"
 )
 
 var errInvalidComplexitySessionTier = errors.New("invalid stored complexity session tier")
 
-// complexitySessionStore retains one effective complexity tier per scoped
-// session. It stores no request content, classifier scores, model choices,
-// provider-cache information, or turn history. The router calculates the
-// highest tier before refreshing the entry's TTL. Because KVStore exposes the
-// read and write as separate operations, overlapping requests for the same
-// session are best-effort and resolve by last writer wins.
+// complexitySessionStore retains one effective complexity tier per agent of a
+// scoped session (see complexityStateKey). It stores no request content,
+// classifier scores, model choices, provider-cache information, or turn
+// history. The router calculates the highest tier before refreshing the
+// entry's TTL. Because KVStore exposes the read and write as separate
+// operations, overlapping requests for the same agent are best-effort and
+// resolve by last writer wins.
 type complexitySessionStore struct {
 	store schemas.KVStore
 	ttl   time.Duration
@@ -182,16 +189,48 @@ func decodeStoredComplexityTier(value any) (string, error) {
 	return tier, nil
 }
 
-// complexitySessionKey is where the request's session keeps its effective tier: the shared
+// complexitySessionKey is where the request's agent keeps its effective tier: the shared
 // session state key, scoped to the virtual key and user the request is attributed to, under
-// the complexity kind.
+// the complexity kind. See complexityStateKey for the agent scoping.
 func complexitySessionKey(ctx *schemas.BifrostContext) string {
-	return bifrost.SessionStateKey(ctx, complexitySessionKind)
+	return complexityStateKey(ctx, complexitySessionKind)
 }
 
-// complexityTurnTierKey scopes continuation tier state to the request's session and caller.
+// complexityTurnTierKey scopes continuation tier state to the request's session, caller and
+// agent, so a subagent's tool loop never resumes on a tier its parent served, or the reverse.
 func complexityTurnTierKey(ctx *schemas.BifrostContext) string {
-	return bifrost.SessionStateKey(ctx, complexityTurnTierKind)
+	return complexityStateKey(ctx, complexityTurnTierKind)
+}
+
+// complexityStateKey keys complexity state per agent rather than per session. Harnesses run
+// subagents under their parent's session id, yet each subagent works from its own prompt and
+// transcript: sharing one entry would route every subagent on its parent's tier and let a
+// subagent's tier escalate the parent. The main conversation adds no key part, so its keys
+// stay identical to those written before agents were told apart.
+func complexityStateKey(ctx *schemas.BifrostContext, kind string) string {
+	if agentID := complexityAgentID(ctx); agentID != "" {
+		return bifrost.SessionStateKey(ctx, kind, agentID)
+	}
+	return bifrost.SessionStateKey(ctx, kind)
+}
+
+// complexityAgentID names the subagent that issued the request, or "" for a session's main
+// conversation and for clients that do not identify their agents. Claude Code sends an agent
+// id only from agents it spawned; Codex names every thread, so its thread id counts only on a
+// request that also names a parent thread. OpenCode needs no entry because it gives each
+// subagent a session of its own.
+func complexityAgentID(ctx *schemas.BifrostContext) string {
+	if ctx == nil {
+		return ""
+	}
+	headers, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
+	if agentID := strings.TrimSpace(headers[claudeCodeAgentIDHeader]); agentID != "" {
+		return agentID
+	}
+	if strings.TrimSpace(headers[codexParentThreadIDHeader]) != "" {
+		return strings.TrimSpace(headers[codexThreadIDHeader])
+	}
+	return ""
 }
 
 // complexityTurnTierTTL honors the request's session TTL, matching provider stickiness.

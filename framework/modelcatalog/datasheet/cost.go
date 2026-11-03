@@ -570,6 +570,11 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 	}
 
 	if result.PassthroughResponse != nil {
+		// A passthrough that named no model (an Interactions poll) is priced at the model or agent the
+		// upstream reports running.
+		if routingInfo.Model == "" && result.PassthroughResponse.ServedModel != "" {
+			routingInfo.Model = result.PassthroughResponse.ServedModel
+		}
 		// Infer request type from usage fields + path; passthrough bypasses stream normalization.
 		requestType = inferPassthroughRequestType(routingInfo.Provider, extraFields.PassthroughPath, result.PassthroughResponse.PassthroughUsage)
 	} else {

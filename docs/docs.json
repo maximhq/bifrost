@@ -175,6 +175,7 @@
                   "providers/supported-providers/replicate",
                   "providers/supported-providers/runware",
                   "providers/supported-providers/runway",
+                  "providers/supported-providers/sagemaker",
                   "providers/supported-providers/sarvam",
                   "providers/supported-providers/sgl",
                   "providers/supported-providers/typesafe",
@@ -567,7 +568,8 @@
                 "group": "GenAI SDK",
                 "icon": "diamond",
                 "pages": [
-                  "integrations/genai-sdk/overview"
+                  "integrations/genai-sdk/overview",
+                  "integrations/genai-sdk/files-and-batch"
                 ]
               },
               {
@@ -602,7 +604,8 @@
                 "icon": "microsoft",
                 "collapsed": true,
                 "pages": [
-                  "enterprise/setting-up-entra/oidc"
+                  "enterprise/setting-up-entra/oidc",
+                  "enterprise/setting-up-entra/scim"
                 ]
               },
               {
@@ -626,7 +629,8 @@
                 "icon": "google",
                 "collapsed": true,
                 "pages": [
-                  "enterprise/setting-up-google-workspace"
+                  "enterprise/setting-up-google-workspace/oidc",
+                  "enterprise/setting-up-google-workspace/scim"
                 ]
               },
               {
