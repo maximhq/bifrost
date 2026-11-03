@@ -7053,6 +7053,9 @@
         },
         "session": {
           "$ref": "#/$defs/complexity_session_config"
+        },
+        "suggestions": {
+          "$ref": "#/$defs/complexity_suggestions_config"
         }
       },
       "required": [
@@ -7118,6 +7121,32 @@
             ]
           }
         }
+      ],
+      "additionalProperties": false
+    },
+    "complexity_suggestions_config": {
+      "type": "object",
+      "description": "Phrase suggestions for the semantic router. When enabled, a sample of the vectors the semantic classifier already computes for classified requests is kept, under each request's log ID, so suggestions can cluster real traffic in the router's embedding space. Only the vector and routing metadata are stored; request text stays in the logs. Capture requires a top-level vector_store: vectors are written only there, never to the embedded storage the semantic classifier can use, so without one nothing is captured. Captured vectors are deleted with their logs, and an hourly cleanup removes those older than lookback_days or the log retention, whichever is shorter. A vector can therefore outlast that limit until the next cleanup, up to an hour, and longer while the vector store is unavailable, since failed deletes are only retried at later cleanups. Turning suggestions off stops sampling but keeps cleaning up what was captured on the configured lookback_days. Removing or disabling the routing plugin deletes every captured vector.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Capture a sample of classified requests for phrase suggestions; default false."
+        },
+        "sample_rate": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "description": "Share of classified requests captured; default 0.1."
+        },
+        "lookback_days": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 90,
+          "description": "Days of captured traffic suggestions draw on, and how long captured vectors are kept (capped at the log retention, and enforced by the hourly cleanup); default 7."
+        }
+      },
+      "required": [
+        "enabled"
       ],
       "additionalProperties": false
     },

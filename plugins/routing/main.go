@@ -80,6 +80,9 @@ type RoutingPlugin struct {
 	sessionStore       *complexitySessionStore
 	turnTierStore      *complexityTurnTierStore
 	sessionEnabled     atomic.Bool
+	// capture samples classified requests' vectors for phrase suggestions;
+	// see complexitycapture.go.
+	capture *complexityCapture
 
 	// governance supplies the virtual key, its live budget/rate-limit usage, and the provider
 	// materialization that runs once rules have decided. Required: rules address budgets and
@@ -216,6 +219,10 @@ func InitFromStore(
 		}()
 	}
 
+	// Before the first config is stored, so the suggestions block it carries
+	// turns capture on.
+	plugin.startComplexityCapture(ctx, captureUpkeepInterval, captureUpkeepFirstDelay)
+
 	var analyzerOverride *complexity.AnalyzerConfig
 	if config != nil {
 		analyzerOverride = config.ComplexityAnalyzerConfig
@@ -270,6 +277,7 @@ func (p *RoutingPlugin) storeComplexityAnalyzerConfig(config *complexity.Analyze
 	if p.llmClassifier != nil {
 		p.llmClassifier.Configure(resolved)
 	}
+	p.configureComplexityCapture(resolved)
 	return nil
 }
 
@@ -631,6 +639,9 @@ func (p *RoutingPlugin) Cleanup() error {
 			p.generationsCancel()
 			p.generationsWg.Wait()
 		}
+		// Capture first: its writer may still be writing to a store the
+		// classifier owns.
+		p.closeComplexityCapture()
 		if p.semanticClassifier != nil {
 			if err := p.semanticClassifier.Close(); err != nil {
 				p.logger.Warn("[Routing] failed to close semantic classifier: %v", err)
