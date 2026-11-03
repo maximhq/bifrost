@@ -395,6 +395,10 @@ func (e *endpoint) responseHeaders(resp *http.Response) map[string]string {
 func (e *endpoint) streamResponseHeaders(resp *http.Response) map[string]string {
 	headers := e.responseHeaders(resp)
 	if coding := resp.Header.Get("Content-Encoding"); coding != "" && !strings.EqualFold(strings.TrimSpace(coding), "identity") {
+		if headers == nil {
+			// The header filter returns nil when nothing else is left for the caller.
+			headers = make(map[string]string, 1)
+		}
 		headers["Content-Encoding"] = coding
 	}
 	return headers

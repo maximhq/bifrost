@@ -627,6 +627,26 @@ func TestServeStreamKeepsContentEncodingOnBytesItForwardsEncoded(t *testing.T) {
 		_, hasEncoding := headers["Content-Encoding"]
 		assert.False(t, hasEncoding)
 	})
+	t.Run("encoded stream with no other header the caller may see", func(t *testing.T) {
+		// The header filter leaves nothing (no Content-Type, no Date), so the headers start out nil.
+		bare := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header()["Content-Type"] = nil
+			w.Header()["Date"] = nil
+			w.Header().Set("Content-Encoding", "br")
+			_, _ = w.Write(encodeBody(t, "br", events))
+		}))
+		t.Cleanup(bare.Close)
+		bareCfg := bearerConfig("enc-bare", bare.URL)
+		bareCfg.Routes = []schemas.RelayRouteConfig{{Method: "POST", Path: "/chat", Stream: schemas.Ptr(true)}}
+		mb, _ := newTestManager(t, bareCfg)
+		res, bErr := mb.Serve(testCtx(t), Request{Endpoint: "enc-bare", Method: "POST", Path: "/chat", Headers: map[string]string{}})
+		require.Nil(t, bErr)
+		require.NotNil(t, res.Stream)
+		_, err := io.ReadAll(res.Stream)
+		require.NoError(t, err)
+		require.NoError(t, res.Stream.Close())
+		assert.Equal(t, map[string]string{"Content-Encoding": "br"}, res.Stream.Headers)
+	})
 }
 
 func TestServeUnknownRelay(t *testing.T) {
