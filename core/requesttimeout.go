@@ -81,6 +81,28 @@ func asRequestTimeoutError(ctx *schemas.BifrostContext, err *schemas.BifrostErro
 	return timeoutErr
 }
 
+// finishAgentCall reports an MCP agent call whose declared x-bf-request-timeout
+// fired before it returned. An error becomes the timeout. A result the loop
+// built after the deadline (tool results gathered past it, possibly cut short
+// by the cancellation) is not delivered as a success either. first is the
+// first-turn response: when the loop hands it back untouched, no agent work ran
+// and it is the provider's in-time result, which is delivered as for any
+// request.
+func finishAgentCall[T any](ctx *schemas.BifrostContext, requestType schemas.RequestType, provider schemas.ModelProvider, model string, first, result *T, err *schemas.BifrostError) (*T, *schemas.BifrostError) {
+	if !requestTimeoutFired(ctx) {
+		return result, err
+	}
+	if err != nil {
+		return nil, asRequestTimeoutError(ctx, err)
+	}
+	if result == first {
+		return result, nil
+	}
+	timeoutErr := newBifrostCtxDoneError(ctx, "during MCP agent execution")
+	timeoutErr.PopulateExtraFields(requestType, provider, model, model)
+	return nil, timeoutErr
+}
+
 // requestTimeoutArmedKey holds the *requestTimeoutArm live on a ctx.
 type requestTimeoutArmedKey struct{}
 

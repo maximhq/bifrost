@@ -1090,3 +1090,51 @@ func TestWrapStreamForRequestTimeout_TimeoutChunkWaitsForProducer(t *testing.T) 
 		t.Fatal("timeout chunk never arrived")
 	}
 }
+
+// TestFinishAgentCall covers how an MCP agent call is reported once its
+// declared deadline has fired.
+func TestFinishAgentCall(t *testing.T) {
+	first := &schemas.BifrostChatResponse{ID: "turn-1"}
+	built := &schemas.BifrostChatResponse{ID: "built-after-tools"}
+	fired := func() *schemas.BifrostContext {
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		ctx.SetValue(schemas.BifrostContextKeyRequestTimeoutFired, true)
+		cancel()
+		return ctx
+	}
+	isTimeout := func(err *schemas.BifrostError) bool {
+		return err != nil && err.StatusCode != nil && *err.StatusCode == 504 &&
+			err.Error != nil && err.Error.Type != nil && *err.Error.Type == schemas.RequestTimedOut
+	}
+
+	t.Run("result built after the deadline is a timeout", func(t *testing.T) {
+		got, err := finishAgentCall(fired(), schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-x", first, built, nil)
+		if got != nil || !isTimeout(err) {
+			t.Fatalf("expected a 504 timeout and no result, got %+v, %+v", got, err)
+		}
+		if err.ExtraFields.Provider != schemas.OpenAI || err.ExtraFields.OriginalModelRequested != "gpt-x" {
+			t.Fatalf("expected provider and model on the timeout error, got %+v", err.ExtraFields)
+		}
+	})
+	t.Run("untouched first-turn response is delivered", func(t *testing.T) {
+		got, err := finishAgentCall(fired(), schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-x", first, first, nil)
+		if got != first || err != nil {
+			t.Fatalf("the in-time first-turn response must be delivered, got %+v, %+v", got, err)
+		}
+	})
+	t.Run("agent error after the deadline is a timeout", func(t *testing.T) {
+		status := 500
+		got, err := finishAgentCall(fired(), schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-x", first, nil, &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Message: "tool failed"}})
+		if got != nil || !isTimeout(err) {
+			t.Fatalf("expected a 504 timeout, got %+v, %+v", got, err)
+		}
+	})
+	t.Run("deadline not fired", func(t *testing.T) {
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+		got, err := finishAgentCall(ctx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-x", first, built, nil)
+		if got != built || err != nil {
+			t.Fatalf("an agent result before the deadline must pass through, got %+v, %+v", got, err)
+		}
+	})
+}

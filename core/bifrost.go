@@ -1084,12 +1084,13 @@ func (bifrost *Bifrost) ChatCompletionRequest(ctx *schemas.BifrostContext, req *
 
 	// Check if we should enter agent mode.
 	if bifrost.MCPManager != nil {
-		return bifrost.MCPManager.CheckAndExecuteAgentForChatRequest(
+		result, agentErr := bifrost.MCPManager.CheckAndExecuteAgentForChatRequest(
 			ctx,
 			req,
 			response,
 			bifrost.makeChatCompletionRequest,
 		)
+		return finishAgentCall(ctx, schemas.ChatCompletionRequest, req.Provider, req.Model, response, result, agentErr)
 	}
 
 	return response, nil
@@ -1194,12 +1195,13 @@ func (bifrost *Bifrost) ResponsesRequest(ctx *schemas.BifrostContext, req *schem
 
 	// Check if we should enter agent mode.
 	if bifrost.MCPManager != nil {
-		return bifrost.MCPManager.CheckAndExecuteAgentForResponsesRequest(
+		result, agentErr := bifrost.MCPManager.CheckAndExecuteAgentForResponsesRequest(
 			ctx,
 			req,
 			response,
 			bifrost.makeResponsesRequest,
 		)
+		return finishAgentCall(ctx, schemas.ResponsesRequest, req.Provider, req.Model, response, result, agentErr)
 	}
 
 	return response, nil
