@@ -40477,6 +40477,93 @@
         }
       }
     },
+    "/api/session/me": {
+      "get": {
+        "operationId": "getCaller",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| None | Any authenticated caller - exempt from RBAC |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Describe the caller",
+        "description": "Returns who this request acts for and what it may read: whether a known\nuser is identified, their user ID, whether anything narrows what the\ncaller may read, and for a restricted caller which slice of the\ndeployment they may see.\n\nCall it before answering \"my\" or \"our\" questions about traffic. For the\ncaller's own traffic, pass `user_id` in the `user_ids` filter of the log\nendpoints. An unrestricted caller reads the whole deployment, so a total\nwith no filter is everyone's. A restricted caller's reads are narrowed by\nthe server whatever filters are passed.\n\nAn admin login, the setup token, or a deployment without dashboard\nauthentication is unrestricted and identifies no user.\n",
+        "tags": [
+          "Session"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Who a request acts for and what it may read",
+                  "required": [
+                    "identified",
+                    "unrestricted"
+                  ],
+                  "properties": {
+                    "identified": {
+                      "type": "boolean",
+                      "description": "Whether the request acts for a known user"
+                    },
+                    "user_id": {
+                      "type": "string",
+                      "description": "The user the request acts for, when identified"
+                    },
+                    "unrestricted": {
+                      "type": "boolean",
+                      "description": "Whether no row-level scope narrows which traffic (logs and usage) the caller reads, so their totals cover the whole deployment. It is not a permission grant: what the caller may access is still decided per route by their role or API key scopes."
+                    },
+                    "visibility": {
+                      "type": "string",
+                      "description": "For a restricted caller, which slice of the deployment they may read, when the deployment can say"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Wrong setup token in X-Bifrost-Setup-Token (OSS, while dashboard auth is not active)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/session/is-auth-enabled": {
       "get": {
         "operationId": "isAuthEnabled",
@@ -102099,7 +102186,7 @@
                 "minimum": 0,
                 "maximum": 256,
                 "default": 0,
-                "description": "Size limit, in MiB, on the spec of an openapi MCP client, whether inline, uploaded or fetched from spec_url. Applies to previews, creates, updates and connects. 0 uses the built-in default of 32. Omit the field to keep the stored value. An inline or uploaded spec travels inside the JSON request body, so it is also capped by max_request_body_size_mb (100 by default): uploads larger than about 100 MiB need max_request_body_size_mb raised above the spec size, with headroom for JSON escaping, and a server restart. A spec fetched from spec_url is not affected.\n"
+                "description": "Size limit, in MiB, on the spec of an openapi MCP client, whether inline, uploaded or fetched from spec_url. Applies to previews, creates, updates and connects. 0 uses the built-in default of 32. Omit the field to keep the stored value. An inline or uploaded spec travels inside the JSON request body, so it is also capped by max_request_body_size_mb (100 by default): uploads larger than about 100 MiB need max_request_body_size_mb raised above the spec size, with headroom for JSON escaping, and a server restart. A request that sends only spec_url is not subject to that cap, since the server fetches the document itself; the dashboard, however, saves a URL import as the inline document its preview fetched, so a URL import larger than max_request_body_size_mb fails there.\n"
               },
               "mcp_oauth_private_allowlist": {
                 "type": "array",
@@ -102767,7 +102854,7 @@
                 "minimum": 0,
                 "maximum": 256,
                 "default": 0,
-                "description": "Size limit, in MiB, on the spec of an openapi MCP client, whether inline, uploaded or fetched from spec_url. Applies to previews, creates, updates and connects. 0 uses the built-in default of 32. Omit the field to keep the stored value. An inline or uploaded spec travels inside the JSON request body, so it is also capped by max_request_body_size_mb (100 by default): uploads larger than about 100 MiB need max_request_body_size_mb raised above the spec size, with headroom for JSON escaping, and a server restart. A spec fetched from spec_url is not affected.\n"
+                "description": "Size limit, in MiB, on the spec of an openapi MCP client, whether inline, uploaded or fetched from spec_url. Applies to previews, creates, updates and connects. 0 uses the built-in default of 32. Omit the field to keep the stored value. An inline or uploaded spec travels inside the JSON request body, so it is also capped by max_request_body_size_mb (100 by default): uploads larger than about 100 MiB need max_request_body_size_mb raised above the spec size, with headroom for JSON escaping, and a server restart. A request that sends only spec_url is not subject to that cap, since the server fetches the document itself; the dashboard, however, saves a URL import as the inline document its preview fetched, so a URL import larger than max_request_body_size_mb fails there.\n"
               },
               "mcp_oauth_private_allowlist": {
                 "type": "array",
