@@ -98,6 +98,8 @@ type HandlerStore interface {
 	ShouldAllowDirectKeys() bool
 	// ShouldSendExtraFieldsInHeaders returns whether inference responses carry extra_fields as headers instead of in the body
 	ShouldSendExtraFieldsInHeaders() bool
+	// ShouldCaptureClientIP returns whether request logs record the caller's IP (logs_store.capture_client_ip)
+	ShouldCaptureClientIP() bool
 	// IsProviderConfigured reports whether provider has a configuration on this gateway
 	IsProviderConfigured(provider schemas.ModelProvider) bool
 	// GetCustomProviderPassthrough returns a custom provider's base provider type and whether it
@@ -7984,6 +7986,11 @@ func (c *Config) ShouldSendExtraFieldsInHeaders() bool {
 	c.Mu.RLock()
 	defer c.Mu.RUnlock()
 	return c.ClientConfig != nil && c.ClientConfig.ExtraFieldsPlacement == configstoreTables.ExtraFieldsPlacementHeaders
+}
+
+// ShouldCaptureClientIP returns whether request logs record client_ip; LogsStoreConfig is only set at startup.
+func (c *Config) ShouldCaptureClientIP() bool {
+	return c.LogsStoreConfig != nil && c.LogsStoreConfig.CaptureClientIP
 }
 
 // ShouldAllowDirectKeys returns whether callers may bypass the registered key pool via x-bf-direct-key header.

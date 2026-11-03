@@ -290626,7 +290626,7 @@
                   "pm.sendRequest({",
                   "  url: pm.variables.get('baseUrl') + '/mcp',",
                   "  method: 'POST',",
-                  "  header: { 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream', 'MCP-Protocol-Version': '2025-06-18' },",
+                  "  header: { 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream', 'MCP-Protocol-Version': '2025-06-18', 'X-Forwarded-For': '203.0.113.8, 10.0.0.1' },",
                   "  body: { mode: 'raw', raw: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'resources/read', params: { uri: uri } }) }",
                   "}, function (err, res) {",
                   "  var text = res ? res.text() : '';",
@@ -290656,6 +290656,7 @@
                   "  pm.expect(rows.length, 'no row for ' + uri + ' since ' + startedAt.toISOString() + ': ' + pm.response.text()).to.be.above(0);",
                   "  pm.expect(rows[0].method).to.equal('resources/read');",
                   "  pm.expect(rows[0].server_label).to.equal('sse_mcp');",
+                  "  pm.expect(rows[0].client_ip, 'the MCP row records the leftmost X-Forwarded-For as client_ip: ' + JSON.stringify(rows[0])).to.equal('203.0.113.8');",
                   "  pm.expect(rows[0].status, 'row: ' + JSON.stringify(rows[0])).to.equal('success');",
                   "});",
                   "['resourceReadURI', 'resourceReadURIQuery', 'resourceReadStartedAt', 'resourceReadError'].forEach(function (k) { pm.collectionVariables.unset(k); });"
@@ -292598,6 +292599,7 @@
                       "    pm.expect(row.billable, 'billable: ' + dump).to.eql(true);",
                       "    pm.expect(near(row.cost, 0.003), 'cost should be 0.003: ' + dump).to.be.true;",
                       "    pm.expect(row.virtual_key_id, 'virtual_key_id: ' + dump).to.eql(\"vk-harness-relay-all\");",
+                      "    pm.expect(row.client_ip, 'client_ip comes from X-Real-IP when there is no X-Forwarded-For: ' + dump).to.eql(\"203.0.113.9\");",
                       "  });",
                       "});"
                     ]
@@ -292614,6 +292616,10 @@
                   {
                     "key": "x-bf-vk",
                     "value": "sk-bf-harness-relay-all"
+                  },
+                  {
+                    "key": "X-Real-IP",
+                    "value": "203.0.113.9"
                   },
                   {
                     "key": "Content-Type",
@@ -302953,7 +302959,187 @@
       ]
     },
     {
-      "name": "302. Gemini chat sends {} for tool calls without args (PR #8778) (empty tool args)",
+      "name": "302. Request logs capture the client IP (client ip logging)",
+      "description": "LLM request logs record the caller's address in client_ip, in the same order enterprise audit logs use: the leftmost X-Forwarded-For entry, else X-Real-IP, else the TCP peer Bifrost accepted the connection from (set in transports/bifrost-http/lib/ctx.go ConvertToBifrostContext). There is no separate forwarded_for field. The logging plugin copies client_ip from the context onto the row (plugins/logging main.go and writer.go), and /api/logs/{id} returns it. Cases with a forwarding header send 203.0.113.7 and check that client_ip is that address; the case without one checks that client_ip is the peer. Red before the change: client_ip is always the peer, and forwarded_for is returned.",
+      "item": [
+        {
+          "name": "POST /v1/chat/completions openai gpt-4o-mini: leftmost X-Forwarded-For becomes client_ip",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('client ip xff: request succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('client ip xff: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// The row is written by the batching writer, so poll until it appears.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.client_ip !== undefined) {",
+                  "      pm.test('client ip xff: client_ip is the leftmost forwarded address', function () { pm.expect(j.client_ip, JSON.stringify(j)).to.eql('203.0.113.7'); });",
+                  "      pm.test('client ip xff: no separate forwarded_for field', function () { pm.expect(j.forwarded_for, JSON.stringify(j.forwarded_for)).to.be.undefined; });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('client ip xff: log row with client_ip appeared', function () { pm.expect.fail('log ' + reqId + ' has no client_ip after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "203.0.113.7, 10.0.0.1"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi\"\n    }\n  ],\n  \"max_tokens\": 5\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "POST /v1/chat/completions openai gpt-4o-mini stream: X-Real-IP becomes client_ip",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('client ip stream x-real-ip: request succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('client ip stream x-real-ip: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// The row is written by the batching writer, so poll until it appears.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.client_ip !== undefined) {",
+                  "      pm.test('client ip stream x-real-ip: client_ip is the leftmost forwarded address', function () { pm.expect(j.client_ip, JSON.stringify(j)).to.eql('203.0.113.7'); });",
+                  "      pm.test('client ip stream x-real-ip: no separate forwarded_for field', function () { pm.expect(j.forwarded_for, JSON.stringify(j.forwarded_for)).to.be.undefined; });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('client ip stream x-real-ip: log row with client_ip appeared', function () { pm.expect.fail('log ' + reqId + ' has no client_ip after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Real-IP",
+                "value": "203.0.113.7"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi\"\n    }\n  ],\n  \"max_tokens\": 5,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "POST /v1/chat/completions openai gpt-4o-mini: no forwarding headers records the TCP peer as client_ip",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('client ip no forwarding: request succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('client ip no forwarding: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// The row is written by the batching writer, so poll until it appears.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.client_ip !== undefined) {",
+                  "      pm.test('client ip no forwarding: client_ip is the TCP peer', function () { pm.expect(j.client_ip, JSON.stringify(j.client_ip)).to.be.a('string').and.match(/^[0-9a-fA-F:.]+$/); });",
+                  "      pm.test('client ip no forwarding: client_ip is not taken from forwarding headers', function () { pm.expect(j.client_ip).to.not.eql('203.0.113.7'); });",
+                  "      pm.test('client ip no forwarding: no separate forwarded_for field', function () { pm.expect(j.forwarded_for, JSON.stringify(j.forwarded_for)).to.be.undefined; });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('client ip no forwarding: log row with client_ip appeared', function () { pm.expect.fail('log ' + reqId + ' has no client_ip after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi\"\n    }\n  ],\n  \"max_tokens\": 5\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "303. Gemini chat sends {} for tool calls without args (PR #8778) (empty tool args)",
       "description": "Gemini omits `args` for a function call to a tool that takes no parameters. The chat completion converters (final response and stream) left the tool call arguments as an empty string, which OpenAI-shaped clients cannot json-parse; the Responses path already defaulted them to {}. Both rows force a call to a tool declared without parameters and pin that the arguments the client receives parse as a JSON object.",
       "item": [
         {
