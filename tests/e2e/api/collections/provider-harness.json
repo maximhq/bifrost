@@ -302898,6 +302898,434 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "300. Bifrost MCP on /v1/mcp (bifrost-mcp)",
+      "description": "Bifrost's own HTTP API served as MCP tools on /v1/mcp, behind the same auth chain as /api: every MCP method takes a management credential (here the python profile's setup token), a request with none is a 401, and a virtual key alone is refused with a message saying why. initialize and tools/list describe the published spec; every operation is a tool except deprecated ones and the credential, browser-flow, streaming, WebSocket and binary-download operations; /api writes are on by default (BIFROST_MCP_ALLOW_WRITES=false turns them off). A tools/call re-enters the gateway in process with the caller's forwarded credential, so the route it reaches authorizes it again; a virtual key sent alongside the management credential reaches inference routes, and GET has no SSE stream. The openai keyword in case names is only a harness filter label.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// The Bifrost MCP loads its spec in the background after boot and answers 503 until it has.",
+              "// Every case in this folder, whichever ones a filter keeps, waits here: poll tools/list (with the",
+              "// setup token every row carries) until it stops answering 503. The sandbox holds the request until",
+              "// the pending sendRequest and timers finish, so the case runs only after the poll ends.",
+              "if (pm.collectionVariables.get('bifrostMcpReady') === '1') { return; }",
+              "var __token = pm.variables.get('setupToken');",
+              "function __poll(attempt) {",
+              "  pm.sendRequest({",
+              "    url: pm.variables.replaceIn('{{baseUrl}}') + '/v1/mcp', method: 'POST',",
+              "    header: { 'Content-Type': 'application/json', 'X-Bifrost-Setup-Token': __token || '' },",
+              "    body: { mode: 'raw', raw: JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'tools/list' }) }",
+              "  }, function (err, res) {",
+              "    if ((err || res.code === 503) && attempt < 30) { setTimeout(function () { __poll(attempt + 1); }, 1000); return; }",
+              "    if (!err && res.code !== 503) { pm.collectionVariables.set('bifrostMcpReady', '1'); }",
+              "  });",
+              "}",
+              "__poll(0);"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "openai bifrost-mcp initialize answers with the server's tool capability",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('initialize is a 200', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('the server advertises tools', function () {",
+                  "  pm.expect(body.result, pm.response.text()).to.be.an('object');",
+                  "  pm.expect(body.result.capabilities.tools, pm.response.text()).to.be.an('object');",
+                  "  pm.expect(body.result.serverInfo.name, pm.response.text()).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"initialize\",\n  \"params\": {\n    \"protocolVersion\": \"2025-06-18\",\n    \"capabilities\": {},\n    \"clientInfo\": {\n      \"name\": \"provider-harness\",\n      \"version\": \"1\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai bifrost-mcp tools/list exposes the gateway's operations and withholds the denied ones",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('tools/list is a 200', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});",
+                  "var tools = (pm.response.json().result || {}).tools || [];",
+                  "var byName = {}; tools.forEach(function (t) { byName[t.name] = t; });",
+                  "pm.test('/api operations are tools named after their operationId', function () {",
+                  "  pm.expect(Object.keys(byName), 'tool names').to.include.members(['listProviders', 'getVersion', 'listVirtualKeys']);",
+                  "});",
+                  "pm.test('inference routes are tools too, and open-world', function () {",
+                  "  pm.expect(byName, 'listModels').to.have.property('listModels');",
+                  "  pm.expect(byName.listModels.annotations.openWorldHint, 'openWorldHint').to.eql(true);",
+                  "});",
+                  "pm.test('credential, browser-flow and streaming operations are not tools', function () {",
+                  "  ['login', 'startSetupSession', 'handleOAuthCallback', 'warpSession', 'websocketConnect', 'connectRealtime', 'mcpServerSSE'].forEach(function (n) { pm.expect(byName, n).to.not.have.property(n); });",
+                  "});",
+                  "pm.test('reads are annotated read-only and closed-world', function () {",
+                  "  pm.expect(byName.listProviders.annotations.readOnlyHint, 'readOnlyHint').to.eql(true);",
+                  "  pm.expect(byName.listProviders.annotations.openWorldHint, 'openWorldHint').to.eql(false);",
+                  "});",
+                  "pm.test('writes are on by default, so /api mutations such as createVirtualKey are served', function () {",
+                  "  pm.expect(byName, 'createVirtualKey').to.have.property('createVirtualKey');",
+                  "  pm.expect(byName.createVirtualKey.annotations.readOnlyHint, 'readOnlyHint').to.eql(false);",
+                  "  pm.expect(byName.createVirtualKey.annotations.openWorldHint, 'openWorldHint').to.eql(false);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 2,\n  \"method\": \"tools/list\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai bifrost-mcp tools/list serves inference whatever the writes switch says, since it gates only /api",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('tools/list is a 200', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});",
+                  "var tools = (pm.response.json().result || {}).tools || [];",
+                  "var byName = {}; tools.forEach(function (t) { byName[t.name] = t; });",
+                  "pm.test('createChatCompletion is served whatever the writes switch says: it only gates /api mutations', function () {",
+                  "  pm.expect(byName, 'createChatCompletion missing from ' + tools.length + ' tools').to.have.property('createChatCompletion');",
+                  "});",
+                  "pm.test('it is a write that reaches past the gateway: not read-only, open-world', function () {",
+                  "  pm.expect(byName.createChatCompletion.annotations.readOnlyHint, 'readOnlyHint').to.eql(false);",
+                  "  pm.expect(byName.createChatCompletion.annotations.openWorldHint, 'openWorldHint').to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 22,\n  \"method\": \"tools/list\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai bifrost-mcp tools/call runs listProviders through /api with the caller's setup token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('tools/call is a 200', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});",
+                  "var result = pm.response.json().result || {};",
+                  "pm.test('the call succeeded', function () {",
+                  "  pm.expect(result.isError, pm.response.text()).to.not.eql(true);",
+                  "});",
+                  "pm.test('the result is the /api/providers body', function () {",
+                  "  var payload = JSON.parse(result.content[0].text);",
+                  "  pm.expect(payload.providers, pm.response.text()).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 3,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"listProviders\",\n    \"arguments\": {}\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-401] openai bifrost-mcp /v1/mcp refuses a call without a credential, like /api",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No credential: drop the setup token the collection adds to every row.",
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('/v1/mcp itself is a 401 without a credential', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(401);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 4,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"listProviders\",\n    \"arguments\": {}\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-401] openai bifrost-mcp a virtual key alone is refused by /v1/mcp with a message saying why",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The virtual key alone: drop the setup token the collection adds to every row.",
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a virtual key alone is a 401', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(401);",
+                  "});",
+                  "pm.test('the refusal names the virtual key', function () {",
+                  "  pm.expect(pm.response.text()).to.include('virtual key');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer sk-bf-provider-harness-unknown-key"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 5,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"listProviders\",\n    \"arguments\": {}\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai bifrost-mcp tools/call to listModels carries a virtual key sent alongside the management credential to the inference route",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the JSON-RPC exchange is a 200', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});",
+                  "var result = pm.response.json().result || {};",
+                  "pm.test('the inference route refused the unknown key: the call carried it, so it did not run key-less', function () {",
+                  "  pm.expect(result.isError, pm.response.text()).to.eql(true);",
+                  "  pm.expect(result.content, pm.response.text()).to.be.an('array');",
+                  "  var text = result.content[0].text;",
+                  "  pm.expect(text.split('\\n')[0], pm.response.text()).to.eql('HTTP 401 Unauthorized');",
+                  "  var upstream = JSON.parse(text.slice(text.indexOf('\\n') + 1));",
+                  "  pm.expect(upstream.type, pm.response.text()).to.eql('access_not_found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer sk-bf-provider-harness-unknown-key"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 6,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"listModels\",\n    \"arguments\": {}\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-405] openai bifrost-mcp GET /v1/mcp has no SSE stream",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('GET is a 405', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(405);",
+                  "});",
+                  "pm.test('Allow names POST', function () {",
+                  "  pm.expect(pm.response.headers.get('Allow'), pm.response.text()).to.eql('POST');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

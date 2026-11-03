@@ -1,20 +1,31 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/bytedance/sonic"
+	"github.com/fasthttp/router"
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/openapimcp"
+	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/valyala/fasthttp"
+	"github.com/valyala/fasthttp/fasthttputil"
 )
 
 // The Bifrost MCP serves Bifrost's own HTTP surface as MCP tools on /v1/mcp.
@@ -50,6 +61,8 @@ const (
 	bifrostMCPRetryInitial   = 5 * time.Second
 	bifrostMCPRetryMax       = 5 * time.Minute
 	bifrostMCPUnavailableMsg = "Bifrost MCP spec unavailable"
+	// bifrostMCPCallTimeout bounds one tool call's trip through /api.
+	bifrostMCPCallTimeout = 2 * time.Minute
 )
 
 // BifrostMCPEdition is the build the Bifrost MCP serves: it decides which
@@ -114,7 +127,8 @@ var bifrostMCPDeniedRoutes = bifrostMCPRouteSet(
 	"GET /api/skills/serve/codex/.agents/plugins/marketplace.json",
 )
 
-// bifrostMCPPathParam matches one path parameter, {name}.
+// bifrostMCPPathParam matches a path parameter in either a spec path
+// ({vk_id}) or a router template ({id}, {filepath:*}, {id?}, {id:[0-9]+}).
 var bifrostMCPPathParam = regexp.MustCompile(`\{[^}]*\}`)
 
 // bifrostMCPRouteKey is "METHOD path" with every path parameter written {}, so
@@ -142,8 +156,16 @@ type BifrostMCPOptions struct {
 	Served      func(method, path string) bool // nil serves every operation; else only those it accepts
 	SpecClient  *http.Client                   // fetches a URL spec; carries the proxy policy
 	ExecClient  *http.Client                   // serves tool calls through the /api chain
-	Headers     openapimcp.HeaderResolver
+	ToolAccess  BifrostMCPToolAccess           // which /api tools a tools/list caller sees; nil lists them all
 }
+
+// BifrostMCPToolAccess resolves the caller of one tools/list and returns whether
+// they may call the /api operation at a method and path, or nil to list every
+// tool. caller is the /v1/mcp request after the /api auth chain has run on it,
+// so it carries the caller's resolved identity; it is called once per list, so
+// any lookup it needs happens once, not per tool. It only shapes the list; every
+// call is still authorized by its route.
+type BifrostMCPToolAccess func(caller *fasthttp.RequestCtx) func(method, path string) bool
 
 // BifrostMCP holds the Bifrost MCP server, which becomes available once
 // the spec has loaded. Until then Server returns nil.
@@ -315,8 +337,9 @@ func buildBifrostMCPServer(data []byte, specURL string, opts BifrostMCPOptions) 
 		BaseURL:         bifrostMCPBaseURL,
 		BaseURLExplicit: true,
 		HTTPClient:      opts.ExecClient,
-		Headers:         opts.Headers,
+		Headers:         bifrostMCPCallerHeaders,
 		Logger:          logger,
+		ToolFilter:      bifrostMCPToolListFilter(syn.Tools, opts.ToolAccess),
 	})
 	if err != nil {
 		return nil, report, fmt.Errorf("building server: %w", err)
@@ -372,6 +395,39 @@ func curateBifrostMCPOperations(ops []openapimcp.Operation, opts BifrostMCPOptio
 	return kept, unrouted, unknown
 }
 
+// bifrostMCPCatchAll matches a router template's trailing catch-all ({path:*}).
+var bifrostMCPCatchAll = regexp.MustCompile(`\{[^{}]*:\*\}$`)
+
+// BifrostMCPServedRoutes returns a Served filter for the routes a router
+// registers (fasthttp/router's List: method to path templates). Templates are
+// copied, so later registrations do not race with it; parameter names are
+// ignored, so /api/x/{id} serves the spec's /api/x/{x_id}. A catch-all serves
+// what sits under its prefix, which is how the SDK integrations route paths like
+// /genai/v1beta/models/{model}:generateContent; the dashboard's root catch-all
+// serves nothing, or every path would count as routed.
+func BifrostMCPServedRoutes(routes map[string][]string) func(method, path string) bool {
+	served := make(map[string]bool)
+	prefixes := make(map[string][]string)
+	for method, paths := range routes {
+		for _, path := range paths {
+			shape := bifrostMCPPathParam.ReplaceAllString(path, "{}")
+			served[method+" "+shape] = true
+			if bifrostMCPCatchAll.MatchString(path) {
+				if prefix := strings.TrimSuffix(shape, "{}"); prefix != "/" {
+					prefixes[method] = append(prefixes[method], prefix)
+				}
+			}
+		}
+	}
+	return func(method, path string) bool {
+		shape := bifrostMCPPathParam.ReplaceAllString(path, "{}")
+		if served[method+" "+shape] {
+			return true
+		}
+		return slices.ContainsFunc(prefixes[method], func(prefix string) bool { return strings.HasPrefix(shape, prefix) })
+	}
+}
+
 // bifrostMCPEnterpriseOnly reports whether the spec marks op enterprise-only.
 func bifrostMCPEnterpriseOnly(op openapimcp.Operation) bool {
 	mint, _ := op.Extensions["x-mint"].(map[string]any)
@@ -404,4 +460,250 @@ func enabledWord(on bool) string {
 		return "enabled"
 	}
 	return "disabled"
+}
+
+// bifrostMCPForwardedHeaders are the caller's headers a tool call carries to its
+// route: its credential, in each place the gateway reads one, and what a direct
+// call would also have said about where it came from. The route decides what the
+// credential may do. Cookies are never forwarded, so a web page cannot ride an
+// admin's browser session through /v1/mcp.
+var bifrostMCPForwardedHeaders = []string{
+	"Authorization", SetupTokenHeader, string(schemas.BifrostContextKeyVirtualKey), "x-api-key", "x-goog-api-key", "api-key",
+	"X-Forwarded-For", "X-Forwarded-Proto", "X-Forwarded-Host", "X-Real-IP", "User-Agent",
+}
+
+type bifrostMCPCallerKey struct{}
+
+// bifrostMCPCaller is who a tool call acts for: the headers forwarded into
+// /api, plus the Host and peer address the caller reached the gateway with, so
+// handlers that build URLs from the request and logs that record the peer see
+// the same values a direct call would.
+type bifrostMCPCaller struct {
+	headers http.Header
+	host    string
+	remote  net.Addr
+}
+
+// WithBifrostMCPCaller records on ctx who the Bifrost MCP's tool calls act
+// for. The /v1/mcp handler sets it from the inbound request; an in-process
+// client (Warp) sets it from its own caller's request.
+func WithBifrostMCPCaller(ctx context.Context, req *fasthttp.Request, remote net.Addr) context.Context {
+	caller := bifrostMCPCaller{headers: http.Header{}, host: string(req.Header.Host()), remote: remote}
+	for _, name := range bifrostMCPForwardedHeaders {
+		if v := req.Header.Peek(name); len(v) > 0 {
+			caller.headers.Set(name, string(v))
+		}
+	}
+	return context.WithValue(ctx, bifrostMCPCallerKey{}, caller)
+}
+
+// bifrostMCPCallerHeaders is the HeaderResolver of the Bifrost MCP: the
+// forwarded headers of the caller on ctx, none when there is no caller.
+func bifrostMCPCallerHeaders(ctx context.Context) (http.Header, error) {
+	caller, _ := ctx.Value(bifrostMCPCallerKey{}).(bifrostMCPCaller)
+	return caller.headers.Clone(), nil
+}
+
+// BifrostMCPExecutor serves tool calls in process: an in-memory listener in
+// front of the server's root handler, so each call runs the same middleware
+// chain (auth, RBAC, audit) as a request arriving from the network.
+type BifrostMCPExecutor struct {
+	Client   *http.Client
+	listener *fasthttputil.InmemoryListener
+	server   *fasthttp.Server
+}
+
+// NewBifrostMCPExecutor starts serving handler on an in-memory listener with
+// the main server's body and header-buffer limits, so a call /api would accept
+// over the network is accepted here too. Close stops it.
+func NewBifrostMCPExecutor(handler fasthttp.RequestHandler, maxRequestBodySize, readBufferSize int) *BifrostMCPExecutor {
+	ln := fasthttputil.NewInmemoryListener()
+	srv := &fasthttp.Server{Handler: handler, MaxRequestBodySize: maxRequestBodySize, ReadBufferSize: readBufferSize}
+	go func() {
+		if err := srv.Serve(ln); err != nil {
+			logger.Warn("[Bifrost MCP] in-process listener stopped: %v", err)
+		}
+	}()
+	transport := &http.Transport{
+		// One connection per call: its local address is the caller's peer
+		// address, which a pooled connection would carry over to the next call.
+		DisableKeepAlives: true,
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			caller, _ := ctx.Value(bifrostMCPCallerKey{}).(bifrostMCPCaller)
+			if caller.remote != nil {
+				return ln.DialWithLocalAddr(caller.remote)
+			}
+			return ln.Dial()
+		},
+	}
+	return &BifrostMCPExecutor{
+		Client:   &http.Client{Transport: bifrostMCPTransport{next: transport}, Timeout: bifrostMCPCallTimeout},
+		listener: ln,
+		server:   srv,
+	}
+}
+
+// Close stops the in-process listener, waiting for in-flight calls however long
+// they take. Shutdown bounds the wait.
+func (e *BifrostMCPExecutor) Close() error {
+	return e.Shutdown(context.Background())
+}
+
+// Shutdown stops the in-process listener and waits for in-flight calls until ctx
+// is done. Stopping the server cancels each call's RequestCtx.Done(), so a
+// handler that watches it returns early; one that does not is abandoned when
+// ctx expires. The listener is closed directly too, for a Serve that has not
+// started yet; its error (already closed, after a clean shutdown) is not the
+// result.
+func (e *BifrostMCPExecutor) Shutdown(ctx context.Context) error {
+	if e == nil {
+		return nil
+	}
+	err := e.server.ShutdownWithContext(ctx)
+	_ = e.listener.Close()
+	return err
+}
+
+// bifrostMCPTransport gives each call the caller's Host and drops any Cookie
+// header, whatever put it there: a call never carries a browser session.
+type bifrostMCPTransport struct{ next http.RoundTripper }
+
+func (t bifrostMCPTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req = req.Clone(req.Context())
+	req.Header.Del("Cookie")
+	if caller, _ := req.Context().Value(bifrostMCPCallerKey{}).(bifrostMCPCaller); caller.host != "" {
+		req.Host = caller.host
+	}
+	return t.next.RoundTrip(req)
+}
+
+// BifrostMCPHandler serves the Bifrost MCP on /v1/mcp.
+type BifrostMCPHandler struct {
+	mcp *BifrostMCP
+}
+
+// NewBifrostMCPHandler returns the /v1/mcp handler for m.
+func NewBifrostMCPHandler(m *BifrostMCP) *BifrostMCPHandler {
+	return &BifrostMCPHandler{mcp: m}
+}
+
+// RegisterRoutes registers /v1/mcp behind middlewares, which a gateway passes as
+// its /api auth chain: every MCP method, tools/list included, takes a management
+// credential, and the virtual-key refusal runs first. Each tools/call is then
+// authorized again by the route it reaches, with the caller's forwarded
+// credential.
+func (h *BifrostMCPHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
+	chain := append([]schemas.BifrostHTTPMiddleware{bifrostMCPVirtualKeyGuard}, middlewares...)
+	r.POST("/v1/mcp", lib.ChainMiddlewares(h.handlePost, chain...))
+	// Streamable HTTP lets a server refuse the SSE stream; POST carries every
+	// call. Registered explicitly, or the dashboard's catch-all would answer.
+	r.GET("/v1/mcp", lib.ChainMiddlewares(h.handleGet, chain...))
+}
+
+// bifrostMCPToolListFilter returns the tools/list filter for access, or nil when
+// there is none. On a tools/list it keeps every tool outside /api and the /api
+// tools access allows for the caller; on anything else (mcp-go also filters at
+// call time) it changes nothing, since each call is authorized by its route.
+func bifrostMCPToolListFilter(tools []openapimcp.Tool, access BifrostMCPToolAccess) func(context.Context, []mcp.Tool) []mcp.Tool {
+	if access == nil {
+		return nil
+	}
+	apiOps := make(map[string]openapimcp.Operation, len(tools))
+	for i := range tools {
+		if strings.HasPrefix(tools[i].Operation.Path, "/api/") {
+			apiOps[tools[i].Name] = tools[i].Operation
+		}
+	}
+	return func(ctx context.Context, listed []mcp.Tool) []mcp.Tool {
+		caller, listing := ctx.Value(bifrostMCPListingKey{}).(*fasthttp.RequestCtx)
+		if !listing || caller == nil {
+			return listed
+		}
+		allowed := access(caller)
+		if allowed == nil {
+			return listed
+		}
+		kept := make([]mcp.Tool, 0, len(listed))
+		for _, tool := range listed {
+			if op, isAPI := apiOps[tool.Name]; !isAPI || allowed(op.Method, op.Path) {
+				kept = append(kept, tool)
+			}
+		}
+		return kept
+	}
+}
+
+// bifrostMCPListingKey marks a tools/list on the context the MCP server sees,
+// carrying the authenticated /v1/mcp request for ToolAccess.
+type bifrostMCPListingKey struct{}
+
+const bifrostMCPVirtualKeyMsg = "/v1/mcp takes a management credential (the admin login, the setup token, or an API key), not a virtual key alone; to use a virtual key with inference tools, send it in x-bf-vk alongside one"
+
+// bifrostMCPVirtualKeyGuard runs ahead of the auth chain and refuses a request
+// whose only credential is a virtual key: the chain would refuse it too, with a
+// bare 401, so this says why. A virtual key sent alongside a management
+// credential passes, since inference tools use it.
+func bifrostMCPVirtualKeyGuard(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+	return func(ctx *fasthttp.RequestCtx) {
+		if bifrostMCPOnlyVirtualKey(&ctx.Request) {
+			SendError(ctx, fasthttp.StatusUnauthorized, bifrostMCPVirtualKeyMsg)
+			return
+		}
+		next(ctx)
+	}
+}
+
+// bifrostMCPOnlyVirtualKey reports whether a request presents a virtual key and
+// nothing that could be a management credential. Any other Authorization, the
+// setup token or a cookie leaves the decision to the auth chain.
+func bifrostMCPOnlyVirtualKey(req *fasthttp.Request) bool {
+	if len(req.Header.Peek(SetupTokenHeader)) > 0 || len(req.Header.Peek("Cookie")) > 0 {
+		return false
+	}
+	virtualKey := len(bytes.TrimSpace(req.Header.Peek(string(schemas.BifrostContextKeyVirtualKey)))) > 0
+	for _, name := range []string{"x-api-key", "x-goog-api-key", "api-key"} {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(string(req.Header.Peek(name)))), governance.VirtualKeyPrefix) {
+			virtualKey = true
+		}
+	}
+	if auth := strings.TrimSpace(string(req.Header.Peek("Authorization"))); auth != "" {
+		if len(auth) <= 7 || !strings.EqualFold(auth[:7], "bearer ") || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(auth[7:])), governance.VirtualKeyPrefix) {
+			return false
+		}
+		virtualKey = true
+	}
+	return virtualKey
+}
+
+func (h *BifrostMCPHandler) handlePost(ctx *fasthttp.RequestCtx) {
+	srv := h.mcp.Server()
+	if srv == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, bifrostMCPUnavailableMsg)
+		return
+	}
+	callCtx := WithBifrostMCPCaller(ctx, &ctx.Request, ctx.RemoteAddr())
+	if h.mcp.opts.ToolAccess != nil {
+		if method, err := sonic.Get(ctx.PostBody(), "method"); err == nil {
+			if name, _ := method.String(); name == "tools/list" {
+				callCtx = context.WithValue(callCtx, bifrostMCPListingKey{}, ctx)
+			}
+		}
+	}
+	response := srv.HandleMessage(callCtx, ctx.PostBody())
+	if response == nil {
+		ctx.SetStatusCode(fasthttp.StatusAccepted)
+		return
+	}
+	body, err := sonic.Marshal(response)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to encode response: %v", err))
+		return
+	}
+	ctx.SetContentType("application/json")
+	ctx.SetBody(body)
+}
+
+func (h *BifrostMCPHandler) handleGet(ctx *fasthttp.RequestCtx) {
+	ctx.Response.Header.Set("Allow", fasthttp.MethodPost)
+	SendError(ctx, fasthttp.StatusMethodNotAllowed, "/v1/mcp serves JSON-RPC over POST; it has no SSE stream")
 }
