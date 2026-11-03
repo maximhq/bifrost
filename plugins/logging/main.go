@@ -1224,6 +1224,7 @@ type InitialLogData struct {
 	PassthroughPath        string
 	UserAgent              string // Raw HTTP User-Agent of the calling client; mapped to a client app in the UI
 	App                    string // Backend-detected client app derived from UserAgent
+	ClientIP               string // Caller IP: leftmost X-Forwarded-For, else X-Real-IP, else the TCP peer
 }
 
 // LogCallback is a function that gets called when a new log entry is created
@@ -1808,6 +1809,20 @@ func userAgentFromContext(ctx *schemas.BifrostContext) string {
 	return ua
 }
 
+// clientIPFromContext returns the caller IP the transport set, clamped to the client_ip column.
+func clientIPFromContext(ctx *schemas.BifrostContext) string {
+	clientIP, _ := ctx.Value(schemas.BifrostContextKeyClientIP).(string)
+	return clampString(clientIP, maxPersistedClientIPLen)
+}
+
+// optionalString returns nil for "" so absent values stay NULL.
+func optionalString(v string) *string {
+	if v == "" {
+		return nil
+	}
+	return &v
+}
+
 // captureLoggingHeaders extracts configured logging headers and x-bf-lh-* prefixed headers
 // from the request context, dropping any key under schemas.LoadBalancerMetadataPrefix.
 // Returns a new metadata map, or nil if no headers were captured.
@@ -1939,6 +1954,7 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	// Capture the raw User-Agent of the calling client (stored verbatim; the UI
 	// maps it to a client app such as Claude Code, Codex, or Cursor).
 	initialData.UserAgent = userAgentFromContext(ctx)
+	initialData.ClientIP = clientIPFromContext(ctx)
 	initialData.AgentCorrelationID = requestHeaderFromContext(ctx, "x-bf-agent-correlation-id")
 	initialData.App = p.detectAppFromUserAgent(initialData.UserAgent)
 	if appKey := schemas.AppKeyFromName(initialData.App); appKey != "" {
@@ -2177,6 +2193,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 					entry.App = &app
 				}
 			}
+			entry.ClientIP = optionalString(clientIPFromContext(ctx))
 			entry.MetadataParsed = mergeVirtualKeyMetadata(mergeLoadBalancerMetadata(mergeRealtimeMetadata(p.captureLoggingHeaders(ctx), ctx), ctx), ctx)
 			if isAsync, ok := ctx.Value(schemas.BifrostIsAsyncRequest).(bool); ok && isAsync {
 				if entry.MetadataParsed == nil {
@@ -3611,6 +3628,7 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 			entry.App = &app
 		}
 	}
+	entry.ClientIP = optionalString(clientIPFromContext(ctx))
 
 	// Set arguments if content logging is enabled. Governance's PreMCPHook runs after ours, so a
 	// request that presents a virtual key or names a project governance has not stamped yet has no
