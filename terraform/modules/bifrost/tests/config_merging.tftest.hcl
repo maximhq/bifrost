@@ -128,3 +128,19 @@ run "multiple_overrides" {
     error_message = "Non-overridden base keys should be preserved"
   }
 }
+
+run "server_override" {
+  command = plan
+  module { source = "./tests/setup" }
+  variables {
+    cloud_provider = "aws"
+    service        = "ecs"
+    region         = "us-east-1"
+    config_json    = jsonencode({ server = { read_buffer_size = 65536 } })
+    server         = { base_path = "/bifrost" }
+  }
+  assert {
+    condition     = jsondecode(output.config_json)["server"]["base_path"] == "/bifrost"
+    error_message = "server variable should land in config.json as the server block"
+  }
+}

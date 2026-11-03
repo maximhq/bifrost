@@ -58,6 +58,7 @@ module "bifrost" {
   plugins              = var.plugins
   audit_logs           = var.audit_logs
   websocket            = var.websocket
+  server               = var.server
 
   # Image
   image_tag        = var.image_tag
@@ -105,4 +106,5 @@ module "bifrost" {
   storage_class_name  = var.storage_class_name
   ingress_class_name  = var.ingress_class_name
   ingress_annotations = var.ingress_annotations
+  ingress_path        = var.ingress_path
 }

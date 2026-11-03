@@ -14,7 +14,7 @@ import (
 )
 
 // TestUpdateMCPClientDiscovery_TargetedColumnUpdate pins that UpdateMCPClientDiscovery
-// only ever touches discovered_tools_json/tool_name_mapping_json — unlike
+// only ever touches the discovery columns. Unlike
 // UpdateMCPClientConfig's full-row overwrite, a periodic tool-sync writer
 // using this method can never clobber an unrelated field a concurrent config
 // edit just wrote (e.g. Name).
@@ -32,16 +32,45 @@ func TestUpdateMCPClientDiscovery_TargetedColumnUpdate(t *testing.T) {
 	tools := map[string]schemas.ChatTool{
 		"echo": {Type: "function"},
 	}
-	mapping := map[string]string{"echo": "echo-server"}
 
-	require.NoError(t, s.UpdateMCPClientDiscovery(ctx, "mcp-tools-client", &schemas.MCPDiscovery{Tools: tools, ToolNameMapping: mapping}))
+	require.NoError(t, s.UpdateMCPClientDiscovery(ctx, "mcp-tools-client", &schemas.MCPDiscovery{Tools: tools}))
 
 	got, err := s.GetMCPClientByID(ctx, "mcp-tools-client")
 	require.NoError(t, err)
 	assert.Equal(t, tools, got.DiscoveredTools)
-	assert.Equal(t, mapping, got.DiscoveredToolNameMapping)
 	// Untouched column proves this was a targeted update, not a full-row one.
 	assert.Equal(t, "original_name", got.Name)
+}
+
+// TestMCPClientWrites_LeaveStoredToolNameMappingInPlace pins that tool_name_mapping_json is no
+// longer written: a row that already holds a value keeps it through a discovery update and a full
+// config update, and is never cleared.
+func TestMCPClientWrites_LeaveStoredToolNameMappingInPlace(t *testing.T) {
+	s := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, s.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID:               "mcp-mapping-client",
+		Name:             "mapping_client",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://example.invalid/mcp"),
+	}))
+	stored := `{"a_b":"a-b"}`
+	require.NoError(t, s.DB().Model(&tables.TableMCPClient{}).Where("client_id = ?", "mcp-mapping-client").Update("tool_name_mapping_json", stored).Error)
+	column := func() string {
+		var value string
+		require.NoError(t, s.DB().Model(&tables.TableMCPClient{}).Where("client_id = ?", "mcp-mapping-client").Select("tool_name_mapping_json").Scan(&value).Error)
+		return value
+	}
+
+	require.NoError(t, s.UpdateMCPClientDiscovery(ctx, "mcp-mapping-client", &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"mapping_client-echo": {Type: "function"}}}))
+	assert.Equal(t, stored, column(), "a discovery update leaves the column alone")
+
+	row, err := s.GetMCPClientByName(ctx, "mapping_client")
+	require.NoError(t, err)
+	row.Name = "mapping_client_renamed"
+	require.NoError(t, s.UpdateMCPClientConfig(ctx, "mcp-mapping-client", row))
+	assert.Equal(t, stored, column(), "a full config update leaves the column alone")
 }
 
 // TestUpdateMCPClientDiscovery_EmptyMapPersistsAsLegitimateZeroTools confirms an
@@ -60,7 +89,7 @@ func TestUpdateMCPClientDiscovery_EmptyMapPersistsAsLegitimateZeroTools(t *testi
 		DiscoveredTools:  map[string]schemas.ChatTool{"stale": {Type: "function"}},
 	}))
 
-	require.NoError(t, s.UpdateMCPClientDiscovery(ctx, "mcp-empty-tools-client", &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}, ToolNameMapping: map[string]string{}}))
+	require.NoError(t, s.UpdateMCPClientDiscovery(ctx, "mcp-empty-tools-client", &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}}))
 
 	got, err := s.GetMCPClientByID(ctx, "mcp-empty-tools-client")
 	require.NoError(t, err)
@@ -74,7 +103,7 @@ func TestUpdateMCPClientDiscovery_UnknownClientReturnsNotFound(t *testing.T) {
 	s := setupRDBTestStore(t)
 	ctx := context.Background()
 
-	err := s.UpdateMCPClientDiscovery(ctx, "does-not-exist", &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}, ToolNameMapping: map[string]string{}})
+	err := s.UpdateMCPClientDiscovery(ctx, "does-not-exist", &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}})
 	assert.ErrorIs(t, err, ErrNotFound)
 }
 

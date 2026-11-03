@@ -1,1 +1,2 @@
 - fix: Bedrock InvokeModel ingress keeps Anthropic-native document blocks (base64 and text sources) instead of silently dropping them
+- fix: anthropic - Responses requests drop empty text blocks instead of forwarding them for a 400 (#9318) [@david-choi-querypie](https://github.com/david-choi-querypie)

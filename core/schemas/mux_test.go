@@ -299,6 +299,41 @@ func TestToResponsesMessages_ToolResultBlocksUseResponsesInputTypes(t *testing.T
 	check(t, "ToResponsesMessages", &msgs[0])
 }
 
+// TestToResponsesToolMessage_MarksAFailedToolResult pins that a tool result the chat surface marks
+// failed keeps that mark in the Responses format: status "incomplete", the signal ToResponsesMessages
+// already writes and ToChatMessages reads back as is_error. MCP's Responses-format execute converts
+// through ToResponsesToolMessage, which dropped it, so a failed call came back looking successful.
+func TestToResponsesToolMessage_MarksAFailedToolResult(t *testing.T) {
+	failed := ChatMessage{
+		Role:            ChatMessageRoleTool,
+		ChatToolMessage: &ChatToolMessage{ToolCallID: Ptr("call_1"), IsError: Ptr(true)},
+		Content:         &ChatMessageContent{ContentStr: Ptr("upstream refused")},
+	}
+	msg := failed.ToResponsesToolMessage()
+	if msg == nil || msg.Status == nil || *msg.Status != "incomplete" {
+		t.Fatalf("expected status \"incomplete\" on a failed tool result, got %#v", msg)
+	}
+	if out := msg.ResponsesToolMessage.Output; out == nil || out.ResponsesToolCallOutputStr == nil || *out.ResponsesToolCallOutputStr != "upstream refused" {
+		t.Fatalf("expected the error text to stay the output, got %#v", out)
+	}
+	if general := failed.ToResponsesMessages(); len(general) != 1 || general[0].Status == nil || *general[0].Status != *msg.Status {
+		t.Fatalf("expected ToResponsesMessages to mark it the same way, got %#v", general)
+	}
+	back := ToChatMessages([]ResponsesMessage{*msg})
+	if len(back) != 1 || back[0].ChatToolMessage == nil || back[0].ChatToolMessage.IsError == nil || !*back[0].ChatToolMessage.IsError {
+		t.Fatalf("expected the mark to read back as is_error, got %#v", back)
+	}
+
+	succeeded := ChatMessage{
+		Role:            ChatMessageRoleTool,
+		ChatToolMessage: &ChatToolMessage{ToolCallID: Ptr("call_2")},
+		Content:         &ChatMessageContent{ContentStr: Ptr("18C")},
+	}
+	if msg := succeeded.ToResponsesToolMessage(); msg.Status != nil {
+		t.Fatalf("expected no status on a successful tool result, got %q", *msg.Status)
+	}
+}
+
 func TestToResponsesRequest_EmptyToolContentKeepsOutput(t *testing.T) {
 	// A tool that ran but printed nothing sends content "". OpenAI and Azure reject a
 	// function_call_output without output: "Missing required parameter: 'input[N].output'".

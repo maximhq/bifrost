@@ -29,7 +29,7 @@ func (s *Server) ServeSSE(w http.ResponseWriter, r *http.Request) {
 
 	// The stream carries no JSON-RPC method, so only an unscoped fault set
 	// reaches it.
-	if s.failRequest(w, s.faults.forRequest("")) {
+	if s.failRequest(w, s.faults.forRequest("", s.callerIdentity(r, "", ""))) {
 		return
 	}
 	if r.Method != http.MethodGet {
@@ -125,10 +125,17 @@ func (s *Server) ServeSSEMessage(w http.ResponseWriter, r *http.Request) {
 
 	var req request
 	parsed := json.Unmarshal(body, &req) == nil
-	if parsed {
-		s.countMethod(req.Method, sessionID)
+	caller := ""
+	if sess, ok := s.sessions.get(sessionID); ok {
+		caller = sess.Identity
 	}
-	f := s.faults.forRequest(req.Method)
+	if parsed {
+		s.countMethod(req.Method, sessionID, caller)
+		if !s.gates.holdMethod(r.Context(), req.Method, caller) {
+			return
+		}
+	}
+	f := s.faults.forRequest(req.Method, caller)
 	if s.failRequest(w, f) {
 		return
 	}

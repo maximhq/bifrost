@@ -37,6 +37,7 @@
 		"dumpErrorsHelp": "Si cette option est activée, les détails complets des erreurs sont écrits dans les journaux console du serveur. Utile pour le débogage, mais peut être bruyant en production.",
 		"asyncJobTtl": "TTL des résultats de tâches asynchrones (secondes)",
 		"asyncJobTtlHelp": "Durée de vie par défaut des résultats de tâches asynchrones, en secondes. Les résultats sont automatiquement nettoyés à expiration.",
+		"languageHelp": "Langue d'affichage du tableau de bord. Enregistrée dans ce navigateur et appliquée immédiatement.",
 		"headerForwarding": "Transfert d’en-têtes",
 		"headerForwardingHelp": "Contrôlez quels en-têtes supplémentaires sont transférés aux fournisseurs LLM.",
 		"aboutHeaderForwarding": "À propos du transfert d’en-têtes",
@@ -220,7 +221,7 @@
 		"directKeysHelp": "Lorsque cette option est activée, les appelants peuvent transmettre une clé API de fournisseur directement dans l’en-tête <b0>Authorization</b0>, <b1>x-api-key</b1> ou  <b2>x-goog-api-key</b2> avec <b3>x-bf-direct-key: true</b3>. Bifrost utilisera cette clé directement, en contournant le pool de clés enregistré.",
 		"originsHelp": "Liste d’origines autorisées pour les connexions CORS et WebSocket, séparées par des virgules. Les origines localhost sont toujours autorisées. Chaque origine doit être une URL complète avec protocole (par ex. https://app.example.com, http://10.0.0.100:3000). Les jokers sont pris en charge pour les sous-domaines (par ex. https://*.example.com) ou utilisez « * » pour autoriser toutes les origines.",
 		"requiredHeadersHelp": "Liste d’en-têtes qui doivent être présents sur chaque requête, séparés par des virgules. Les requêtes auxquelles il manque l’un de ces en-têtes seront rejetées avec une erreur 400. Les noms d’en-tête sont insensibles à la casse.",
-		"routesHelp": "Liste de routes qui contournent le middleware d’authentification, séparées par des virgules. Les requêtes vers ces routes n’exigeront pas d’authentification. Les routes système comme <b0>/health</b0>, <b1>/api/session/login</b1> et <b2>/api/session/is-auth-enabled</b2> sont toujours en liste blanche, indépendamment de ce paramètre.",
+		"routesHelp": "Liste de routes qui contournent le middleware d’authentification, séparées par des virgules. Les requêtes vers ces routes n’exigeront pas d’authentification. Les routes système comme <b0>/health</b0>, <b1>/api/session/login</b1> et <b2>/api/session/is-auth-enabled</b2> sont toujours en liste blanche, indépendamment de ce paramètre. Les routes sont comparées après suppression du préfixe server.base_path ; indiquez-les sans le préfixe.",
 		"see": "Voir la",
 		"documentation": "doc",
 		"forDetails": "pour plus de détails.",
@@ -370,7 +371,7 @@
 		"disableAutoToolInjectionHelp": "Lorsque cette option est activée, les outils MCP ne sont pas automatiquement inclus dans chaque requête. Les outils ne sont injectés que lorsqu’ils sont explicitement spécifiés via les en-têtes de requête (<code0>x-bf-mcp-include-tools</code0>) et doivent toujours être autorisés par la configuration MCP de la clé virtuelle.",
 		"tempTokenHelp": "Lorsque cette option est activée, les liens OAuth MCP par utilisateur peuvent inclure un jeton à durée limitée et à périmètre restreint, afin qu’une personne sans session active sur le tableau de bord Bifrost puisse terminer le flux. Laissez désactivé pour exiger l’authentification normale du tableau de bord.",
 		"bindingHelp": "Comment les outils sont exposés dans le VFS : niveau serveur (tous les outils par serveur) ou niveau outil (outils individuels).",
-		"externalClientUrlHelp": "Remplacez l’URL de base publique de Bifrost lorsqu’il s’exécute derrière un reverse proxy. <b0>Laissez vide pour dériver l’URL</b0> de l’en-tête <code1>Host</code1> entrant. Utilisée comme <code2>redirect_uri</code2> que Bifrost enregistre auprès des fournisseurs OAuth en amont lorsqu’il agit comme client d’un serveur MCP (par ex. Notion ou Jira redirigent le navigateur vers <code3>&lt;URL&gt;/api/oauth/callback</code3> après connexion). Prend en charge la syntaxe de variable d’environnement (par ex.  <code4>env.BIFROST_EXTERNAL_URL</code4>).",
+		"externalClientUrlHelp": "Remplacez l’URL de base publique de Bifrost lorsqu’il s’exécute derrière un reverse proxy. <b0>Laissez vide pour dériver l’URL</b0> de l’en-tête <code1>Host</code1> entrant. Utilisée comme <code2>redirect_uri</code2> que Bifrost enregistre auprès des fournisseurs OAuth en amont lorsqu’il agit comme client d’un serveur MCP (par ex. Notion ou Jira redirigent le navigateur vers <code3>&lt;URL&gt;/api/oauth/callback</code3> après connexion). Prend en charge la syntaxe de variable d’environnement (par ex.  <code4>env.BIFROST_EXTERNAL_URL</code4>). Derrière un préfixe d’URL (server.base_path), incluez le préfixe, par exemple https://host/bifrost.",
 		"externalClientUrlWarningHelp": "Les fournisseurs OAuth en amont verrouillent le <code0>redirect_uri</code0> sur celui enregistré initialement, donc les clients MCP ayant déjà terminé OAuth échoueront avec <em1>« Invalid redirect URI »</em1>. Pour récupérer, effacez les identifiants client OAuth stockés pour les serveurs MCP concernés et ré-autorisez afin que Bifrost relance l’enregistrement dynamique de client avec la nouvelle URL.",
 		"authModeHelp": "Contrôle comment les clients MCP entrants (par ex. Claude Code, Cursor) s’authentifient auprès du point de terminaison <code0>/mcp</code0>. <b1>headers</b1> (par défaut) — en-têtes VK / api-key / session uniquement, découverte OAuth désactivée. <b2>both</b2> — accepte les identifiants d’en-tête et les JWT émis par Bifrost ; les intégrations existantes ne sont pas affectées. <b3>oauth</b3> — JWT uniquement ; l’accès VK et par en-tête est désactivé.",
 		"issuerUrlHelp": "URL publique stable annoncée dans les documents de découverte et intégrée comme revendication <code0>iss</code0> dans chaque JWT. Obligatoire en modes OAuth et Both : Bifrost ne déduit jamais l’émetteur de l’en-tête <code1>Host</code1> de la requête, car cet en-tête est contrôlé par l’appelant. Prend en charge la syntaxe des variables d’environnement (par ex. <code2>env.BIFROST_ISSUER_URL</code2>).",
@@ -491,7 +492,7 @@
 		"proxyConfiguration": "Configuration du proxy",
 		"proxyType": "Type de proxy",
 		"httpHttps": "HTTP / HTTPS",
-		"proxyTypeHelp": "Sélectionnez le type de protocole de proxy. Seul le proxy HTTP est actuellement pris en charge.",
+		"proxyTypeHelp": "HTTP / HTTPS accepte une URL de proxy http:// ou https:// (https:// chiffre la connexion vers le proxy). SOCKS5 accepte une URL socks5://.",
 		"selectType": "Sélectionner le type",
 		"proxyUrl": "URL du proxy",
 		"proxyUrlHelp": "URL complète du serveur proxy, y compris le protocole et le port.",
@@ -512,16 +513,16 @@
 		"scimHelp": "Utiliser le proxy pour les requêtes de synchronisation d’annuaire SCIM.",
 		"scimEnterpriseOnly": "La prise en charge du proxy SCIM est disponible dans Bifrost Enterprise.",
 		"inference": "Inférence",
-		"inferenceHelp": "Utiliser le proxy pour les requêtes d’inférence LLM vers les fournisseurs de modèles.",
+		"inferenceHelp": "Utiliser le proxy pour les requêtes d’inférence LLM vers les fournisseurs de modèles. Un fournisseur ayant ses propres paramètres de proxy les conserve.",
 		"comingSoon": "Bientôt disponible",
 		"api": "API",
-		"apiHelp": "Utiliser le proxy pour les appels d’API externes et les webhooks.",
+		"apiHelp": "Utiliser le proxy pour les appels API sortants : serveurs MCP, OAuth, webhooks, téléchargements de plugins, synchronisation du catalogue de modèles et export OpenTelemetry.",
 		"noPermission": "Vous n’avez pas la permission de mettre à jour les paramètres",
 		"toastSaved": "Configuration du proxy mise à jour avec succès.",
 		"connectionTimeoutHelp": "Délai pour établir les connexions proxy. 0 signifie aucun délai. La valeur par défaut est 60 secondes.",
 		"caCertificateHelp": "Certificat CA encodé en PEM à faire confiance pour les connexions TLS via des proxies d’interception SSL.",
 		"skipTlsHelp": "Désactiver la vérification des certificats TLS pour les proxies HTTPS. Non recommandé en production.",
-		"unsupportedType": "Le proxy {{type}} n’est pas encore pris en charge. Veuillez utiliser un proxy HTTP."
+		"unsupportedType": "Le proxy {{type}} n’est pas encore pris en charge. Veuillez utiliser un proxy HTTP ou SOCKS5."
 	},
 	"userAgent": {
 		"title": "Correspondances User-Agent",
@@ -1230,7 +1231,7 @@
 		"toastSaved": "Paramètres d’Agent Gateway mis à jour avec succès.",
 		"loadFailed": "Échec du chargement des paramètres d’Agent Gateway.",
 		"externalClientUrl": "URL du client externe",
-		"externalClientUrlHelp": "URL de base publique de Bifrost, utilisée pour les cartes d’agent servies et les URL de rappel des notifications push. Si elle est laissée vide, tous les points de terminaison du protocole d’agent sont désactivés. La gestion des agents reste disponible. Prend en charge la syntaxe des variables d’environnement (par ex. <code>env.BIFROST_EXTERNAL_URL</code>).",
+		"externalClientUrlHelp": "URL de base publique de Bifrost, utilisée pour les cartes d’agent servies et les URL de rappel des notifications push. Si elle est laissée vide, tous les points de terminaison du protocole d’agent sont désactivés. La gestion des agents reste disponible. Prend en charge la syntaxe des variables d’environnement (par ex. <code>env.BIFROST_EXTERNAL_URL</code>). Derrière un préfixe d’URL (server.base_path), incluez le préfixe, par exemple https://host/bifrost.",
 		"privateAllowlist": "Liste d’autorisation du réseau privé",
 		"privateAllowlistHelp": "Hôtes, adresses IP ou plages CIDR, sans schéma ni port, que la découverte, l’OAuth et les requêtes d’exécution d’Agent Gateway peuvent atteindre lorsqu’ils se résolvent vers une adresse privée ou de bouclage. Les adresses link-local et de métadonnées cloud sont toujours bloquées.",
 		"privateAllowlistPlaceholder": "Ajouter un hôte, une IP ou un CIDR (Entrée ou virgule)",
@@ -1619,6 +1620,6 @@
 		"loadFailed": "Échec du chargement des paramètres des Skills.",
 		"retry": "Réessayer",
 		"externalClientUrl": "URL du client externe",
-		"externalClientUrlHelp": "URL de base publique de Bifrost pour les places de marché Claude Code et Codex. Laissez vide pour désactiver la diffusion et l’enregistrement de la place de marché. La gestion et le téléchargement des Skills restent disponibles. Prend en charge les variables d’environnement et les références vault."
+		"externalClientUrlHelp": "URL de base publique de Bifrost pour les places de marché Claude Code et Codex. Laissez vide pour désactiver la diffusion et l’enregistrement de la place de marché. La gestion et le téléchargement des Skills restent disponibles. Prend en charge les variables d’environnement et les références vault. Derrière un préfixe d’URL (server.base_path), incluez le préfixe, par exemple https://host/bifrost."
 	}
 }

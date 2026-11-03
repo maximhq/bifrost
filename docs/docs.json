@@ -223,6 +223,7 @@
               },
               "mcp/sessions",
               "mcp/tool-execution",
+              "mcp/resources-and-prompts",
               "mcp/agent-mode",
               "mcp/code-mode",
               "mcp/gateway-auth",
@@ -250,15 +251,12 @@
           },
           {
             "group": "Relays",
-            "icon": "waypoints",
+            "icon": "/media/relays-icon.svg",
             "pages": [
               "relays/overview",
               "relays/configuration",
               "relays/routes",
               "relays/pricing",
-              "relays/access",
-              "relays/streaming",
-              "relays/logs",
               "relays/troubleshooting"
             ]
           },
@@ -406,6 +404,7 @@
                       "integrations/guardrails/checkpoint",
                       "integrations/guardrails/repello-argus",
                       "integrations/guardrails/singulr-ai",
+                      "integrations/guardrails/noma-security",
                       "integrations/guardrails/a10"
                     ]
                   }
@@ -677,6 +676,7 @@
               "integrations/guardrails/checkpoint",
               "integrations/guardrails/repello-argus",
               "integrations/guardrails/singulr-ai",
+              "integrations/guardrails/noma-security",
               "integrations/guardrails/a10"
             ]
           },
@@ -2285,6 +2285,7 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v2.4.0",
               "changelogs/ent-v2.3.2",
               "changelogs/ent-v2.3.1",
               "changelogs/ent-v2.3.0",
@@ -2393,6 +2394,7 @@
             "item": "Edge",
             "icon": "grip",
             "pages": [
+              "changelogs/edge-v1.0.0",
               "changelogs/edge-v0.9.4",
               "changelogs/edge-v0.9.3",
               "changelogs/edge-v0.9.2",
@@ -2456,6 +2458,7 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.47",
               "changelogs/helm-v2.1.46",
               "changelogs/helm-v2.1.45",
               "changelogs/helm-v2.1.44",
@@ -2561,6 +2564,18 @@
     ]
   },
   "redirects": [
+    {
+      "source": "/relays/access",
+      "destination": "/features/governance/virtual-keys#relay-access"
+    },
+    {
+      "source": "/relays/logs",
+      "destination": "/relays/overview#see-every-call"
+    },
+    {
+      "source": "/relays/streaming",
+      "destination": "/relays/routes#streaming"
+    },
     {
       "source": "/features/governance/complexity-router",
       "destination": "/features/complexity-router"

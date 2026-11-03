@@ -5,6 +5,7 @@ import {
 	MCPFlowDetail,
 	MCPFlowStartResponse,
 	MCPSessionReauthResponse,
+	MCPSessionRefreshResponse,
 	MCPSessionsListResponse,
 	MCPSessionsQueryParams,
 } from "@/lib/types/mcpSessions";
@@ -55,6 +56,13 @@ export const mcpSessionsApi = baseApi.injectEndpoints({
 			query: (rowId) => ({ url: `/mcp/sessions/${rowId}/reauth`, method: "POST" }),
 		}),
 
+		// Discovers the row's caller's tools again with its stored credential. The
+		// row's discovery counts change, so every keyed list entry refetches.
+		refreshMCPSession: builder.mutation<MCPSessionRefreshResponse, string>({
+			query: (rowId) => ({ url: `/mcp/sessions/${rowId}/refresh`, method: "POST" }),
+			invalidatesTags: ["MCPSessions"],
+		}),
+
 		// Best-effort upstream revoke + hard-delete the row. Invalidates the
 		// MCPSessions tag so all keyed cache entries (per filter combo)
 		// refetch. The previous optimistic patch only worked when the cache
@@ -86,6 +94,7 @@ export const mcpSessionsApi = baseApi.injectEndpoints({
 export const {
 	useGetMCPSessionsQuery,
 	useReauthMCPSessionMutation,
+	useRefreshMCPSessionMutation,
 	useRevokeMCPSessionMutation,
 	useGetMCPFlowDetailQuery,
 	useStartMCPFlowMutation,

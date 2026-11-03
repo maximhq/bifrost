@@ -42,6 +42,13 @@ type CountersSnapshot struct {
 	// SessionRequests counts requests per session id, which distinguishes one
 	// long-lived connection from many short ones without inspecting sockets.
 	SessionRequests map[string]int64 `json:"session_requests"`
+	// Handshakes lists every negotiation the server answered, in order, with the version the
+	// client asked for and the one it got, which is how a version cap becomes checkable.
+	Handshakes []Handshake `json:"handshakes"`
+	// MethodsByIdentity counts every JSON-RPC method by the identity that
+	// sent it, identity first, so a test can prove which credential a
+	// discovery used. Requests from no identity are only in Methods.
+	MethodsByIdentity map[string]map[string]int64 `json:"methods_by_identity"`
 }
 
 // TotalCalls sums Calls across every tool.
@@ -70,58 +77,83 @@ type Counters struct {
 	d  CountersSnapshot
 }
 
+// newCounters starts a server's counters at zero.
 func newCounters() *Counters {
 	return &Counters{d: newSnapshot()}
 }
 
+// newSnapshot is an all-zero snapshot with its maps and lists allocated.
 func newSnapshot() CountersSnapshot {
 	return CountersSnapshot{
-		Calls:           map[string]int64{},
-		CallsByIdentity: map[string]int64{},
-		Methods:         map[string]int64{},
-		SessionRequests: map[string]int64{},
+		Calls:             map[string]int64{},
+		CallsByIdentity:   map[string]int64{},
+		Methods:           map[string]int64{},
+		SessionRequests:   map[string]int64{},
+		MethodsByIdentity: map[string]map[string]int64{},
+		Handshakes:        []Handshake{},
 	}
 }
 
+// request counts one request received.
 func (c *Counters) request() {
 	c.mu.Lock()
 	c.d.Requests++
 	c.mu.Unlock()
 }
 
+// initialize counts one successful initialize.
 func (c *Counters) initialize() {
 	c.mu.Lock()
 	c.d.Initializes++
 	c.mu.Unlock()
 }
 
+// session counts one session issued.
 func (c *Counters) session() {
 	c.mu.Lock()
 	c.d.Sessions++
 	c.mu.Unlock()
 }
 
-func (c *Counters) method(m, sessionID string) {
+// method counts one JSON-RPC method, the request against its session when it has one, and the
+// method against the identity that sent it when it has one.
+func (c *Counters) method(m, sessionID, identity string) {
 	c.mu.Lock()
 	c.d.Methods[m]++
 	if sessionID != "" {
 		c.d.SessionRequests[sessionID]++
 	}
+	if identity != "" {
+		if c.d.MethodsByIdentity[identity] == nil {
+			c.d.MethodsByIdentity[identity] = map[string]int64{}
+		}
+		c.d.MethodsByIdentity[identity][m]++
+	}
 	c.mu.Unlock()
 }
 
+// handshake records one answered negotiation.
+func (c *Counters) handshake(h Handshake) {
+	c.mu.Lock()
+	c.d.Handshakes = append(c.d.Handshakes, h)
+	c.mu.Unlock()
+}
+
+// toolsList counts one tools/list answered.
 func (c *Counters) toolsList() {
 	c.mu.Lock()
 	c.d.ToolsList++
 	c.mu.Unlock()
 }
 
+// ping counts one ping answered.
 func (c *Counters) ping() {
 	c.mu.Lock()
 	c.d.Pings++
 	c.mu.Unlock()
 }
 
+// call counts one tools/call by the tool it resolved to and the identity that made it.
 func (c *Counters) call(tool, identity string) {
 	c.mu.Lock()
 	c.d.Calls[tool]++
@@ -131,12 +163,14 @@ func (c *Counters) call(tool, identity string) {
 	c.mu.Unlock()
 }
 
+// faulted counts one injected failure.
 func (c *Counters) faulted() {
 	c.mu.Lock()
 	c.d.Faulted++
 	c.mu.Unlock()
 }
 
+// streamOpened counts a server-to-client stream opening and raises the high-water mark.
 func (c *Counters) streamOpened() {
 	c.mu.Lock()
 	c.d.OpenStreams++
@@ -146,6 +180,7 @@ func (c *Counters) streamOpened() {
 	c.mu.Unlock()
 }
 
+// streamClosed counts a server-to-client stream closing.
 func (c *Counters) streamClosed() {
 	c.mu.Lock()
 	if c.d.OpenStreams > 0 {
@@ -163,6 +198,11 @@ func (c *Counters) Snapshot() CountersSnapshot {
 	out.CallsByIdentity = copyCounts(c.d.CallsByIdentity)
 	out.Methods = copyCounts(c.d.Methods)
 	out.SessionRequests = copyCounts(c.d.SessionRequests)
+	out.Handshakes = append([]Handshake{}, c.d.Handshakes...)
+	out.MethodsByIdentity = make(map[string]map[string]int64, len(c.d.MethodsByIdentity))
+	for identity, methods := range c.d.MethodsByIdentity {
+		out.MethodsByIdentity[identity] = copyCounts(methods)
+	}
 	return out
 }
 
@@ -179,6 +219,7 @@ func (c *Counters) Reset() {
 	c.d.MaxStreams = open
 }
 
+// copyCounts copies a tally map.
 func copyCounts(in map[string]int64) map[string]int64 {
 	out := make(map[string]int64, len(in))
 	for k, v := range in {

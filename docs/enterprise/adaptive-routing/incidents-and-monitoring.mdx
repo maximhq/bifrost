@@ -157,7 +157,7 @@ The **Logs** filters have an **Adaptive Routing** group to find requests by thes
   <img src="/media/adaptive-routing/ui-logs-filter.png" alt="The LLM Logs page with the Adaptive Routing filter group open in the Filters panel, listing provider decisions such as Chosen by adaptive routing and key decisions such as Chosen by weight, next to the request table" />
 </Frame>
 
-These values are stored in the log's metadata, under keys that start with `bifrost_alb_`. You can filter on them through the [logs API](/api-reference) with a `metadata_` parameter, such as `metadata_bifrost_alb_decision=pinned_rerouted`, or read them from [log exports](/enterprise/log-exports).
+These values are stored in the log's metadata, under keys that start with `bifrost_alb_`. You can filter on them through the [logs API](/api-reference/logging/get-logs) with a `metadata_` parameter, such as `metadata_bifrost_alb_decision=pinned_rerouted`, or read them from [log exports](/enterprise/log-exports).
 
 | Metadata key | Values |
 |--------------|--------|

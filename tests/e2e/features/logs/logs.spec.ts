@@ -322,6 +322,93 @@ test.describe("LLM Logs", () => {
         expect(sheetVisible).toBe(false);
       }
     });
+
+    test("should keep the messages role filter across reloads", async ({ page, logsPage }) => {
+      const timestamp = new Date().toISOString();
+      const logId = `synthetic-role-filter-${Date.now()}`;
+      const userText = `role filter user message ${logId}`;
+      const assistantText = `role filter assistant reply ${logId}`;
+      const log = {
+        id: logId,
+        object: "chat.completion",
+        timestamp,
+        created_at: timestamp,
+        provider: "openai",
+        model: "synthetic-model",
+        number_of_retries: 0,
+        fallback_index: 0,
+        status: "success",
+        stream: false,
+        latency: 120,
+        cost: 0,
+        input_history: [{ role: "user", content: userText }],
+        output_message: { role: "assistant", content: assistantText },
+        responses_input_history: [],
+      };
+      await page.route((url) => url.pathname === "/api/logs", async (route) => {
+        if (route.request().method() !== "GET") return route.continue();
+        await route.fulfill({ json: {
+          logs: [log],
+          pagination: { limit: 50, offset: 0, sort_by: "timestamp", order: "desc" },
+          stats: {
+            total_requests: 1,
+            success_rate: 100,
+            user_facing_success_rate: 100,
+            user_facing_total_requests: 1,
+            average_latency: 120,
+            total_tokens: 0,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_cost: 0,
+          },
+          has_logs: true,
+        } });
+      });
+      await page.route((url) => url.pathname === `/api/logs/${logId}`, async (route) => {
+        if (route.request().method() !== "GET") return route.continue();
+        await route.fulfill({ json: log });
+      });
+      await page.evaluate(() => localStorage.removeItem("bifrost.logs.visibleMessageRoles"));
+      await logsPage.goto();
+
+      const trigger = page.getByTestId("log-messages-filter-trigger");
+      const count = page.getByTestId("log-messages-filter-count");
+      const sheet = logsPage.logDetailSheet;
+
+      await logsPage.viewLogDetails(0);
+      await expect(sheet.getByText(userText)).toBeVisible();
+      await expect(count).toHaveCount(0);
+
+      // Narrow the filter to reasoning only.
+      await trigger.click();
+      await page.getByTestId("log-messages-filter-clear").click();
+      await trigger.click();
+      await page.getByTestId("log-messages-filter-role-reasoning").click();
+      await page.keyboard.press("Escape");
+      await expect(count).toHaveText("1/5");
+      await expect(sheet.getByText(userText)).toHaveCount(0);
+      await expect(sheet.getByText(assistantText)).toHaveCount(0);
+
+      // A reload and a freshly opened log keep the same filter.
+      await logsPage.closeLogDetails();
+      await page.reload();
+      await logsPage.viewLogDetails(0);
+      await expect(count).toHaveText("1/5");
+      await expect(sheet.getByText(userText)).toHaveCount(0);
+      await trigger.click();
+      await expect(page.getByTestId("log-messages-filter-role-reasoning")).toHaveAttribute("data-state", "checked");
+      await expect(page.getByTestId("log-messages-filter-role-user")).toHaveAttribute("data-state", "unchecked");
+
+      // Show all is persisted too, so the next open is unfiltered again.
+      await page.getByTestId("log-messages-filter-all").click();
+      await page.keyboard.press("Escape");
+      await expect(sheet.getByText(userText)).toBeVisible();
+      await logsPage.closeLogDetails();
+      await page.reload();
+      await logsPage.viewLogDetails(0);
+      await expect(count).toHaveCount(0);
+      await expect(sheet.getByText(assistantText)).toBeVisible();
+    });
   });
 
   test.describe("Pagination", () => {
@@ -1218,6 +1305,16 @@ test.describe("LLM Logs", () => {
       await expect(rows.filter({ hasText: 'Key A' })).toContainText('rate_limit_error · 429')
       await expect(rows.filter({ hasText: 'Key B' })).toContainText('cancelled · 499')
       await expect(rows.filter({ hasText: 'Key B' })).not.toContainText('success')
+    })
+
+    // The detail fetch carries the row's timestamp, which a ClickHouse log store needs to look the
+    // row up without scanning every partition (#9316).
+    test('should send the row timestamp with the detail lookup', async ({ logsPage, page }) => {
+      await page.goto('/workspace/logs')
+      await expect(logsPage.tableRows).toHaveCount(1)
+      const detail = page.waitForRequest((req) => new URL(req.url()).pathname === `/api/logs/${log.id}`)
+      await logsPage.viewLogDetails(0)
+      expect(new URL((await detail).url()).searchParams.get('timestamp')).toBe(log.timestamp)
     })
   })
 

@@ -167,3 +167,32 @@ func TestTableMCPClient_OpenAPIConfigPlaintextWithoutEncryptionKey(t *testing.T)
 	assert.Contains(t, stored, "literal-secret", "without an encryption key the credentials are stored as written")
 	assert.NotEqual(t, EncryptionStatusEncrypted, raw["encryption_status"])
 }
+
+// TestTableMCPClient_AwaitsAdminVerification: a client with per_user_discovery on
+// is read from its record; any other is read from what its admin step changes,
+// the OAuth bootstrap stash or the stored tools, whatever its record says.
+func TestTableMCPClient_AwaitsAdminVerification(t *testing.T) {
+	on := schemas.Ptr(true)
+	cases := []struct {
+		name string
+		row  TableMCPClient
+		want bool
+	}{
+		{name: "oauth with a stash", row: TableMCPClient{AuthType: "oauth", ConnectionType: "http", PendingOAuthConfig: &schemas.OAuth2Config{}}, want: true},
+		{name: "oauth with no stash, recorded pending", row: TableMCPClient{AuthType: "oauth", ConnectionType: "http", PendingVerification: true}},
+		{name: "per_user_oauth with a stash, not recorded", row: TableMCPClient{AuthType: "per_user_oauth", ConnectionType: "http", PendingOAuthConfig: &schemas.OAuth2Config{}}, want: true},
+		{name: "per_user_headers with no tools", row: TableMCPClient{AuthType: "per_user_headers", ConnectionType: "http"}, want: true},
+		{name: "per_user_headers with tools, recorded pending", row: TableMCPClient{AuthType: "per_user_headers", ConnectionType: "http", DiscoveredTools: map[string]schemas.ChatTool{}, PendingVerification: true}},
+		{name: "per_user_headers over openapi", row: TableMCPClient{AuthType: "per_user_headers", ConnectionType: "openapi"}},
+		{name: "token_exchange with no tools", row: TableMCPClient{AuthType: "token_exchange", ConnectionType: "http"}, want: true},
+		{name: "headers", row: TableMCPClient{AuthType: "headers", ConnectionType: "http", PendingVerification: true}},
+		{name: "per_user_discovery, recorded pending", row: TableMCPClient{AuthType: "per_user_headers", ConnectionType: "http", PerUserDiscovery: on, DiscoveredTools: map[string]schemas.ChatTool{}, PendingVerification: true}, want: true},
+		{name: "per_user_discovery, verified with no tools", row: TableMCPClient{AuthType: "per_user_headers", ConnectionType: "http", PerUserDiscovery: on}},
+		{name: "per_user_discovery oauth, verified with a stash left", row: TableMCPClient{AuthType: "per_user_oauth", ConnectionType: "http", PerUserDiscovery: on, PendingOAuthConfig: &schemas.OAuth2Config{}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, tc.row.AwaitsAdminVerification())
+		})
+	}
+}
