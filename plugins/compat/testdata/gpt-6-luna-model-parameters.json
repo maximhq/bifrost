@@ -1,0 +1,46 @@
+{
+  "gpt-6-luna": {
+    "provider": "openai",
+    "mode": "chat",
+    "base_model": "gpt-6-luna",
+    "supported_endpoints": ["/v1/chat/completions", "/v1/responses"],
+    "supports_reasoning": true,
+    "supports_none_reasoning_effort": true,
+    "supports_reasoning_effort": true,
+    "is_reasoning_model": true,
+    "reasoning_effort_levels": ["none", "low", "medium", "high", "xhigh", "max"],
+    "default_reasoning_effort": "medium",
+    "model_parameters": [
+      {"id": "reasoning_effort", "label": "Reasoning Effort"},
+      {"id": "max_completion_tokens", "label": "Max Completion Tokens"}
+    ],
+    "unsupported_fields": {
+      "stop": true,
+      "presence_penalty": true,
+      "frequency_penalty": true,
+      "logit_bias": true,
+      "web_search_options": true
+    },
+    "conditionally_unsupported_fields": {
+      "temperature": "when_effort_none",
+      "top_p": "when_effort_none",
+      "logprobs": "when_effort_none",
+      "top_logprobs": "when_effort_none"
+    }
+  },
+  "gpt-6-luna-locked": {
+    "provider": "openai",
+    "mode": "chat",
+    "base_model": "gpt-6-luna-locked",
+    "supported_endpoints": ["/v1/chat/completions"],
+    "supports_reasoning": true,
+    "model_parameters": [
+      {"id": "reasoning_effort", "label": "Reasoning Effort"}
+    ],
+    "unsupported_fields": {
+      "logprobs": true,
+      "top_logprobs": true,
+      "temperature": true
+    }
+  }
+}

@@ -363,6 +363,35 @@ func TestExtractSupportedParams_NoneReasoningEffort(t *testing.T) {
 	}
 }
 
+// TestExtractSupportedParams_ConditionallyUnsupportedFields guards the gpt-6-luna
+// class of rows (issue #8848): the datasheet marks logprobs/top_logprobs (and
+// temperature/top_p) as conditionally unsupported — accepted only while reasoning
+// is off — and leaves them out of model_parameters. The derived list feeds the
+// compat plugin's condition-blind parameter drop, which then stripped logprobs
+// even at reasoning_effort "none", where OpenAI accepts them. Enforcing the
+// condition is the provider request shaper's job (it reads the same record via
+// FieldCondition), so every conditionally-gated field must stay in the allowlist.
+func TestExtractSupportedParams_ConditionallyUnsupportedFields(t *testing.T) {
+	parsed := &schemas.ModelCapabilities{
+		ModelParameters: []schemas.ModelParameterDescriptor{
+			{ID: "reasoning_effort"},
+			{ID: "max_completion_tokens"},
+		},
+		ConditionallyUnsupportedFields: map[string]string{
+			"temperature":            schemas.ConditionWhenEffortNone,
+			schemas.FieldTopP:        schemas.ConditionWhenEffortNone,
+			schemas.FieldLogprobs:    schemas.ConditionWhenEffortNone,
+			schemas.FieldTopLogprobs: schemas.ConditionWhenEffortNone,
+		},
+	}
+	got := extractSupportedParams(parsed)
+	for _, want := range []string{"temperature", "top_p", schemas.FieldLogprobs, schemas.FieldTopLogprobs} {
+		if !slices.Contains(got, want) {
+			t.Errorf("conditionally-gated field %q must stay in the compat allowlist (the provider gate enforces the condition), got %v", want, got)
+		}
+	}
+}
+
 // TestExtractSupportedParams_ReasoningSummaryFlags guards the per-value summary flags:
 // each is listed unless the datasheet sets it explicitly false.
 func TestExtractSupportedParams_ReasoningSummaryFlags(t *testing.T) {
