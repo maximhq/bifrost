@@ -698,6 +698,15 @@ func TestSyncRawResponseTextEditsSkipsUnchangedEdits(t *testing.T) {
 	require.ErrorIs(t, err, ErrRawResponseTextUnsupported)
 }
 
+// TestSyncRawResponseTextEditsRejectsAnEditWithoutAPath verifies a changing edit that names no field is reported as
+// unsupported, with raw returned as it was, rather than panicking.
+func TestSyncRawResponseTextEditsRejectsAnEditWithoutAPath(t *testing.T) {
+	synced, err := SyncRawResponseTextEdits(syncContentFrame, RawResponseFormatOpenAIChatCompletionChunk, syncChatChunk(nil, nil), []RawTextEdit{{After: "released"}})
+
+	require.ErrorIs(t, err, ErrRawResponseTextUnsupported)
+	assert.Equal(t, syncContentFrame, synced)
+}
+
 // TestSyncRawResponseTextReturnsUnchangedRawForAnyFormat verifies a chunk whose text did not change needs no format:
 // it returns raw as it was with no error, so callers can tell an unchanged chunk from one raw cannot follow.
 func TestSyncRawResponseTextReturnsUnchangedRawForAnyFormat(t *testing.T) {

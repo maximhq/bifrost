@@ -159,8 +159,8 @@ func SyncRawResponseText(raw any, format RawResponseFormat, before, after any) (
 // SyncRawResponseTextEdits is SyncRawResponseText for a caller that already knows which normalized fields it
 // changed: it applies edits to raw directly instead of diffing two copies of the payload. payload is the chunk's
 // normalized payload (either copy) and only selects how the format lays out its text. Edits whose Before equals
-// their After change nothing and are skipped, so raw is returned unchanged when no edit changes text. Field lookup,
-// verification, and errors are those of SyncRawResponseText.
+// their After change nothing and are skipped, so raw is returned unchanged when no edit changes text; a changing edit
+// with no Path is unsupported. Field lookup, verification, and errors are those of SyncRawResponseText.
 func SyncRawResponseTextEdits(raw any, format RawResponseFormat, payload any, edits []RawTextEdit) (any, error) {
 	kind := rawPayloadKindOf(payload)
 	if kind == 0 {
@@ -172,6 +172,9 @@ func SyncRawResponseTextEdits(raw any, format RawResponseFormat, payload any, ed
 	changed := edits
 	if slices.ContainsFunc(edits, func(edit RawTextEdit) bool { return edit.Before == edit.After }) {
 		changed = slices.DeleteFunc(slices.Clone(edits), func(edit RawTextEdit) bool { return edit.Before == edit.After })
+	}
+	if slices.ContainsFunc(changed, func(edit RawTextEdit) bool { return len(edit.Path) == 0 }) {
+		return raw, fmt.Errorf("%w: an edit names no field", ErrRawResponseTextUnsupported)
 	}
 	return applyRawTextEdits(raw, format, kind, changed)
 }
