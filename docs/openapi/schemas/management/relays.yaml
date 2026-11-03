@@ -519,6 +519,10 @@ RelayLog:
       type: string
     user_name:
       type: string
+    user_email:
+      type: string
+      description: Email of the user the request was attributed to, recorded at request time. Set by enterprise governance for user sessions and for virtual keys assigned to a user.
+      nullable: true
     virtual_key_id:
       type: string
     virtual_key_name:
@@ -570,6 +574,10 @@ RelayLog:
     app:
       type: string
       description: Client application detected from `user_agent`.
+    client_ip:
+      type: string
+      description: The caller's IP, taken from the leftmost `X-Forwarded-For` entry, else `X-Real-IP`, else the TCP peer address. The headers are sent by the caller and not verified.
+      nullable: true
     request_id:
       type: string
     request_body:

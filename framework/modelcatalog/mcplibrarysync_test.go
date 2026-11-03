@@ -62,6 +62,18 @@ func TestFetchMCPLibraryFromRelativeFileURL(t *testing.T) {
 	}
 }
 
+// TestSyncMCPLibraryMissingFileFailsAtOnce checks that a file:// catalog path that does not exist
+// fails the sync with the open error on the first attempt. Boot logs it and carries on with an
+// empty library; retrying with backoff would only delay that by about 7s.
+func TestSyncMCPLibraryMissingFileFailsAtOnce(t *testing.T) {
+	missing := "file://" + filepath.Join(t.TempDir(), "missing.json")
+	start := time.Now()
+	// The fetch fails before the store is used, so none is passed.
+	_, err := SyncMCPLibrary(context.Background(), missing, nil)
+	require.ErrorContains(t, err, "failed to open MCP library file")
+	require.Less(t, time.Since(start), time.Second, "a missing catalog file must not be retried")
+}
+
 // TestIsFileURL guards the retry carve-out: a local catalog file either exists
 // or it does not, so retrying with backoff only adds boot latency.
 func TestIsFileURL(t *testing.T) {

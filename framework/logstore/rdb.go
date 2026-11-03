@@ -1404,6 +1404,12 @@ func applyKeysetCursor(query *gorm.DB, dialect string, pagination PaginationOpti
 // whose children all fail the filters reports ChildCount 0 and offers nothing
 // to expand.
 func (s *RDBLogStore) attachChildAggregates(ctx context.Context, logs []Log, filters SearchFilters) error {
+	return s.attachChildAggregatesWhere(ctx, logs, filters, nil)
+}
+
+// attachChildAggregatesWhere is attachChildAggregates with an extra predicate
+// (nil for none) that narrows which child rows the rollup reads.
+func (s *RDBLogStore) attachChildAggregatesWhere(ctx context.Context, logs []Log, filters SearchFilters, narrow func(*gorm.DB) *gorm.DB) error {
 	if len(logs) == 0 {
 		return nil
 	}
@@ -1427,7 +1433,11 @@ func (s *RDBLogStore) attachChildAggregates(ctx context.Context, logs []Log, fil
 	childFilters.GroupSessions = false
 	childFilters.ParentRequestID = ""
 
-	err := s.applyFilters(s.scopedLogsDB(ctx).Model(&Log{}), childFilters).
+	query := s.applyFilters(s.scopedLogsDB(ctx).Model(&Log{}), childFilters)
+	if narrow != nil {
+		query = narrow(query)
+	}
+	err := query.
 		Select("parent_request_id, COUNT(*) AS child_count, COALESCE(SUM(cost), 0) AS children_cost, COALESCE(SUM(total_tokens), 0) AS children_tokens").
 		Where("parent_request_id IN ? AND id <> parent_request_id", ids).
 		Group("parent_request_id").
@@ -1695,11 +1705,11 @@ func (s *RDBLogStore) listSelectColumns() string {
 		"virtual_key_id", "virtual_key_name",
 		"routing_engines_used", "tool_call_names", "routing_rule_id", "routing_rule_name",
 		"complexity_tier", "complexity_mechanism", "session_id", "agent_correlation_id",
-		"user_id", "user_name", "team_id", "team_name", "customer_id", "customer_name",
+		"user_id", "user_name", "user_email", "team_id", "team_name", "customer_id", "customer_name",
 		"business_unit_id", "business_unit_name",
 		"team_ids", "team_names", "customer_ids", "customer_names", "business_unit_ids", "business_unit_names",
 		"project_id", "project_name",
-		"user_agent", "app",
+		"user_agent", "app", "client_ip",
 		"speech_input", "transcription_input", "image_generation_input", "video_generation_input",
 		// error_details is intentionally excluded from the list select: for status=error
 		// rows it can carry the provider's full (unbounded) error payload, and 25+ such
@@ -4676,17 +4686,22 @@ func (s *RDBLogStore) FindByID(ctx context.Context, id string) (*Log, error) {
 		}
 		return nil, err
 	}
-	// The list rolls a row's children up into ChildrenCost, and a request whose cost
-	// was settled onto a child row has none of its own — so without this the detail
-	// view of a video generation or a batch shows no cost at all while the list
-	// beside it shows one. No filters here: a single row is addressed by id, so the
-	// rollup covers every child rather than only those in some window.
+	return s.withChildAggregates(ctx, log), nil
+}
+
+// withChildAggregates returns a single row found by id with its child rollup
+// attached. The list rolls a row's children up into ChildrenCost, and a request
+// whose cost was settled onto a child row has none of its own — so without this
+// the detail view of a video generation or a batch shows no cost at all while
+// the list beside it shows one. No filters here: a single row is addressed by
+// id, so the rollup covers every child rather than only those in some window.
+func (s *RDBLogStore) withChildAggregates(ctx context.Context, log Log) *Log {
 	rows := []Log{log}
 	if err := s.attachChildAggregates(ctx, rows, SearchFilters{}); err != nil {
-		s.logger.Warn(fmt.Sprintf("logstore: child aggregates unavailable for log %s, returning it without them: %s", id, err))
-		return &log, nil
+		s.logger.Warn(fmt.Sprintf("logstore: child aggregates unavailable for log %s, returning it without them: %s", log.ID, err))
+		return &log
 	}
-	return &rows[0], nil
+	return &rows[0]
 }
 
 // IsLogEntryPresent checks if a log entry is present in the database.

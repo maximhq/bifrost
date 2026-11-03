@@ -22,6 +22,7 @@
 		"provider": "Anbieter",
 		"model": "Modell",
 		"app": "App",
+		"clientIp": "Client-IP",
 		"server": "Server",
 		"toolName": "Tool-Name",
 		"serviceTier": "Service-Tarif",

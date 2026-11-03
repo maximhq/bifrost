@@ -22,6 +22,7 @@
 		"provider": "供應商",
 		"model": "模型",
 		"app": "應用",
+		"clientIp": "用戶端 IP",
 		"server": "伺服器",
 		"toolName": "工具名稱",
 		"serviceTier": "服務層級",

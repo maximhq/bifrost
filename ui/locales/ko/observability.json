@@ -22,6 +22,7 @@
 		"provider": "공급자",
 		"model": "모델",
 		"app": "앱",
+		"clientIp": "클라이언트 IP",
 		"server": "서버",
 		"toolName": "도구 이름",
 		"serviceTier": "서비스 계층",

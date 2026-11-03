@@ -342,6 +342,7 @@ type Log struct {
 	SelectedPromptID        *string   `gorm:"type:varchar(36)" json:"selected_prompt_id"`
 	UserID                  *string   `gorm:"type:varchar(255);index:idx_logs_user_ts,priority:1" json:"user_id"` // (user_id, timestamp) composite; replaces the single-column idx_logs_user_id
 	UserName                *string   `gorm:"type:varchar(255)" json:"user_name"`
+	UserEmail               *string   `gorm:"type:varchar(255)" json:"user_email,omitempty"`
 	TeamID                  *string   `gorm:"type:varchar(255);index:idx_logs_team_ts,priority:1" json:"team_id"` // (team_id, timestamp) composite; replaces the single-column idx_logs_team_id
 	TeamName                *string   `gorm:"type:varchar(255)" json:"team_name"`
 	CustomerID              *string   `gorm:"type:varchar(255);index:idx_logs_customer_ts,priority:1" json:"customer_id"` // (customer_id, timestamp) composite; replaces idx_logs_customer_id
@@ -358,6 +359,7 @@ type Log struct {
 	BusinessUnitNames       *string   `gorm:"type:text" json:"-"`
 	UserAgent               *string   `gorm:"type:varchar(512);index:idx_logs_user_agent" json:"user_agent,omitempty"` // Raw HTTP User-Agent of the calling client
 	App                     *string   `gorm:"type:varchar(128);index:idx_logs_app" json:"app,omitempty"`               // Backend-detected client app derived from user_agent
+	ClientIP                *string   `gorm:"type:varchar(45)" json:"client_ip,omitempty"`                             // Caller IP: leftmost X-Forwarded-For, else X-Real-IP, else the TCP peer
 	InputHistory            string    `gorm:"type:text" json:"-"`                                                      // JSON serialized []schemas.ChatMessage
 	ResponsesInputHistory   string    `gorm:"type:text" json:"-"`                                                      // JSON serialized []schemas.ResponsesMessage
 	OutputMessage           string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.ChatMessage
@@ -1925,6 +1927,7 @@ type MCPToolLog struct {
 	// way the logs table records them. They are what the entity was called when
 	// the call was made, so a later rename or deletion leaves the row readable.
 	UserName         *string `gorm:"type:varchar(255)" json:"user_name,omitempty"`
+	UserEmail        *string `gorm:"type:varchar(255)" json:"user_email,omitempty"`
 	TeamName         *string `gorm:"type:varchar(255)" json:"team_name,omitempty"`
 	CustomerName     *string `gorm:"type:varchar(255)" json:"customer_name,omitempty"`
 	BusinessUnitName *string `gorm:"type:varchar(255)" json:"business_unit_name,omitempty"`
@@ -1961,6 +1964,7 @@ type MCPToolLog struct {
 	ProjectName        *string   `gorm:"type:varchar(255)" json:"project_name"`
 	UserAgent          *string   `gorm:"type:varchar(512);index:idx_mcp_logs_user_agent" json:"user_agent,omitempty"` // Raw HTTP User-Agent of the calling client
 	App                *string   `gorm:"type:varchar(128);index:idx_mcp_logs_app" json:"app,omitempty"`               // Backend-detected client app derived from user_agent
+	ClientIP           *string   `gorm:"type:varchar(45)" json:"client_ip,omitempty"`                                 // Caller IP: leftmost X-Forwarded-For, else X-Real-IP, else the TCP peer
 	Arguments          string    `gorm:"type:text" json:"-"`                                                          // JSON serialized tool arguments
 	Result             string    `gorm:"type:text" json:"-"`                                                          // JSON serialized tool result
 	ErrorDetails       string    `gorm:"type:text" json:"-"`                                                          // JSON serialized *schemas.BifrostError
