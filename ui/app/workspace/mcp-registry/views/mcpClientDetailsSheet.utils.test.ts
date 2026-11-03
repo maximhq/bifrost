@@ -178,20 +178,37 @@ describe("authRows", () => {
 		expect(row(rows, "headers")).toMatchObject({ chips: ["Authorization", "X-Org"] });
 		expect(JSON.stringify(rows)).not.toContain("Bearer secret");
 		expect(row(rows, "allowed_extra_headers")).toMatchObject({ value: "All" });
-		expect(row(rows, "tls_verification")).toMatchObject({ value: "On" });
-		expect(row(rows, "tls_ca")).toMatchObject({ value: "None" });
 	});
 
-	it("reads empty lists as none, and shows TLS only for http and sse", () => {
+	it("reads empty lists as none", () => {
 		const rows = authRows(config({ connection_type: "stdio", allowed_extra_headers: ["x-user-id", "x-team"] }), "Shared");
 		expect(row(rows, "auth_type")).toMatchObject({ value: "None · Shared" });
 		expect(row(rows, "headers")).toMatchObject({ value: "None" });
 		expect(row(rows, "allowed_extra_headers")).toMatchObject({ chips: ["x-user-id", "x-team"] });
-		expect(keysOf(rows)).not.toContain("tls_verification");
+	});
 
-		const tls = authRows(config({ tls_config: { insecure_skip_verify: true, ca_cert_pem: { ref: "env.CA_PEM", type: "env" } } }), "Shared");
+	// The TLS settings come last, and a plain HTTP URL involves no TLS.
+	it("ends with TLS for http and sse servers, not used for a plain HTTP URL", () => {
+		expect(row(authRows(config(), "Shared"), "tls_verification")).toMatchObject({ value: "On" });
+		expect(row(authRows(config(), "Shared"), "tls_ca")).toMatchObject({ value: "None" });
+		const tls = authRows(
+			config({ connection_type: "sse", tls_config: { insecure_skip_verify: true, ca_cert_pem: { ref: "env.CA_PEM", type: "env" } } }),
+			"Shared",
+		);
 		expect(row(tls, "tls_verification")).toMatchObject({ value: "Skipped" });
 		expect(row(tls, "tls_ca")).toMatchObject({ value: "Set" });
+
+		const plain = authRows(config({ connection_string: { value: "http://localhost:3004/mcp", type: "plain_text" } }), "Shared");
+		expect(row(plain, "tls_verification")).toMatchObject({
+			value: "Not used",
+			hint: "This server's URL uses plain HTTP, so no TLS is involved.",
+		});
+		expect(keysOf(plain)).not.toContain("tls_ca");
+		// A URL behind an env reference could be either, so it reads as configured.
+		const ref = authRows(config({ connection_string: { ref: "env.MCP_URL", type: "env" } }), "Shared");
+		expect(row(ref, "tls_verification")).toMatchObject({ value: "On" });
+		expect(keysOf(authRows(config({ connection_type: "stdio" }), "Shared"))).not.toContain("tls_verification");
+		expect(keysOf(settingsRows(config(), globals))).not.toContain("tls_verification");
 	});
 
 	it("adds the OAuth endpoints and scopes", () => {
@@ -464,6 +481,11 @@ describe("alertFor", () => {
 			title: "Reauthorization required",
 			action: { kind: "reauthorize", label: "Reauthorize" },
 		});
+		// The repair is one short line; what failed is there to open, not in the way.
+		const repair = alertFor(client({ state: "needs_reauth", last_failure: failure }, { auth_type: "per_user_oauth" }), false);
+		expect(repair?.lines).toEqual(["Bifrost's admin credential for this server needs refreshing. Callers aren't affected."]);
+		expect(repair?.detail).toBe("Credential: refresh token rejected: invalid_grant");
+		expect(repair?.timing).toMatch(/^Last failed /);
 		expect(alertFor(client({ state: "needs_reauth" }, { auth_type: "per_user_oauth" }), false)?.action).toEqual({
 			kind: "reauthorize",
 			label: "Refresh admin credential",
@@ -488,7 +510,10 @@ describe("alertFor", () => {
 			title: "Last connection check failed",
 			action: { kind: "reconnect", label: "Reconnect" },
 		});
-		expect(unstable?.lines[0]).toBe("Connecting: i/o timeout");
+		// The title says what happened; the raw error is there to open, and nothing else is added.
+		expect(unstable?.lines).toEqual([]);
+		expect(unstable?.detail).toBe("Connecting: i/o timeout");
+		expect(unstable?.timing).toMatch(/^Last failed /);
 		expect(alertFor(client({ state: "unstable" }), false)?.action).toBeUndefined();
 	});
 
