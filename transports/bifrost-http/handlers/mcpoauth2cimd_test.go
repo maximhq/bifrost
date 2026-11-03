@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
@@ -425,5 +426,43 @@ func TestOAuth2ClientMetadataResolver_RealClientDocuments(t *testing.T) {
 			assert.Equal(t, redirects, client.RedirectURIs)
 			assert.Equal(t, []string{"authorization_code", "refresh_token"}, client.GrantTypes)
 		})
+	}
+}
+
+// The harness build's private allowlist lets documents come from an allow-listed private host,
+// over http too, and nowhere else; unset, such a client_id is not a document at all.
+func TestOAuth2ClientMetadataResolver_PrivateAllowlist(t *testing.T) {
+	_, _, cfg := newIssuanceHandler(t)
+	var fetches atomic.Int32
+	var docServer *httptest.Server
+	docServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetches.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"client_id": docServer.URL + r.URL.Path, "client_name": "Private host client", "redirect_uris": []string{"http://127.0.0.1:3000/callback"}})
+	}))
+	t.Cleanup(docServer.Close)
+	clientID := docServer.URL + "/client.json"
+	resolver := newOAuth2ClientMetadataResolver(docServer.Client())
+
+	assert.False(t, isClientMetadataDocumentID(clientID), "unset, an http client_id is not a document")
+	_, metadataErr, err := lookupOAuth2Client(context.Background(), cfg, resolver, clientID)
+	assert.Nil(t, metadataErr)
+	assert.Error(t, err, "it is looked up as a registered client, of which there is none")
+	assert.Zero(t, fetches.Load())
+
+	allow, err := network.ValidatePrivateTargetAllowlist([]string{"127.0.0.1"})
+	require.NoError(t, err)
+	setClientMetadataPrivateAllowlist(allow)
+	t.Cleanup(func() { setClientMetadataPrivateAllowlist(nil) })
+
+	assert.True(t, isClientMetadataDocumentID(clientID))
+	client, metadataErr, err := lookupOAuth2Client(context.Background(), cfg, resolver, clientID)
+	require.NoError(t, err)
+	require.Nil(t, metadataErr)
+	assert.Equal(t, "Private host client", client.ClientName)
+	assert.Equal(t, int32(1), fetches.Load())
+
+	for _, other := range []string{"http://localhost:1/client.json", "http://10.0.0.1/client.json", "http://example.com/client.json"} {
+		assert.False(t, isClientMetadataDocumentID(other), "%s is not on the allowlist", other)
 	}
 }

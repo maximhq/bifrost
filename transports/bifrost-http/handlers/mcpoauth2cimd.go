@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -37,6 +39,50 @@ const (
 // defaultClientMetadataResolver refuses private and loopback addresses, and through a proxy any
 // destination it cannot resolve itself: the URL is chosen by an unauthenticated caller.
 var defaultClientMetadataResolver = newOAuth2ClientMetadataResolver(network.NewStrictSSRFSafeHTTPClient(clientMetadataFetchTimeout))
+
+// clientMetadataPrivateHosts are private hosts documents may also be fetched from, over http too. Only a
+// binary built with the harness tag sets it (mcpoauth2cimdharness.go); nil, always in a release, permits none.
+var clientMetadataPrivateHosts atomic.Pointer[network.Allowlist]
+
+// privateClientMetadataHTTP fetches documents from clientMetadataPrivateHosts; nil while unset.
+var privateClientMetadataHTTP atomic.Pointer[http.Client]
+
+// setClientMetadataPrivateAllowlist lets documents be fetched from allow's private hosts, over http as
+// well as https: anyone who can reach /oauth2/authorize can then make Bifrost GET those hosts, so only
+// tests and the harness build call it. Build allow with network.ValidatePrivateTargetAllowlist; nil
+// restores the default.
+func setClientMetadataPrivateAllowlist(allow *network.Allowlist) {
+	clientMetadataPrivateHosts.Store(allow)
+	if allow == nil {
+		privateClientMetadataHTTP.Store(nil)
+		return
+	}
+	privateClientMetadataHTTP.Store(&http.Client{
+		Timeout:       clientMetadataFetchTimeout,
+		Transport:     &http.Transport{DialContext: network.AllowlistedPrivateDialContext(clientMetadataFetchTimeout, clientMetadataPrivateHosts.Load)},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	})
+}
+
+// isClientMetadataDocumentID reports whether clientID names a document: an https URL, or an http URL
+// on an allow-listed private host.
+func isClientMetadataDocumentID(clientID string) bool {
+	if oauth2.IsClientMetadataURL(clientID) {
+		return true
+	}
+	rest, ok := strings.CutPrefix(clientID, "http://")
+	return ok && privateClientMetadataHost(clientID) && oauth2.IsClientMetadataURL("https://"+rest)
+}
+
+// privateClientMetadataHost reports whether the document at clientID is on an allow-listed private host.
+func privateClientMetadataHost(clientID string) bool {
+	allow := clientMetadataPrivateHosts.Load()
+	if allow == nil {
+		return false
+	}
+	host := urlHost(clientID)
+	return allow.Permits(host, net.ParseIP(host))
+}
 
 // oauth2ClientMetadataResolver fetches, validates and caches Client ID Metadata Documents.
 type oauth2ClientMetadataResolver struct {
@@ -142,7 +188,11 @@ func (r *oauth2ClientMetadataResolver) fetch(ctx context.Context, store *lib.Con
 		return nil, 0, invalid("URL is invalid")
 	}
 	req.Header.Set("Accept", "application/json")
-	resp, err := r.client.Do(req)
+	httpClient := r.client
+	if private := privateClientMetadataHTTP.Load(); private != nil && privateClientMetadataHost(clientID) {
+		httpClient = private
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, 0, invalid("could not be fetched")
 	}
@@ -220,7 +270,7 @@ func clientMetadataTTL(cacheControl string) time.Duration {
 
 // lookupOAuth2Client resolves clientID as a Client ID Metadata Document URL or a registered client.
 func lookupOAuth2Client(ctx context.Context, store *lib.Config, resolver *oauth2ClientMetadataResolver, clientID string) (*configtables.TableOAuth2Client, *oauth2ClientMetadataError, error) {
-	if oauth2.IsClientMetadataURL(clientID) {
+	if isClientMetadataDocumentID(clientID) {
 		client, metadataErr := resolver.resolve(ctx, store, clientID)
 		return client, metadataErr, nil
 	}
