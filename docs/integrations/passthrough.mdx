@@ -24,12 +24,14 @@ When you use passthrough endpoints, the request still flows through Bifrost core
   Default provider: `gemini` (with automatic Vertex detection for clients configured to use Vertex)
 - `/bedrock_passthrough`
   Default provider: `bedrock` (restricted to three operations, see [Bedrock Passthrough](#bedrock-passthrough))
+- `/sagemaker_passthrough`
+  Default provider: `sagemaker` (restricted to endpoint invocations, see [SageMaker Passthrough](#sagemaker-passthrough))
 
 ---
 
 ## How It Works
 
-1. Send your request to a passthrough endpoint (OpenAI, Anthropic, Azure, or GenAI passthrough).
+1. Send your request to a passthrough endpoint (OpenAI, Anthropic, Azure, GenAI, Bedrock, or SageMaker passthrough).
 2. The integration strips the passthrough prefix and forwards the remaining provider-native path/body.
 3. **Bifrost picks the provider key.** Client-supplied provider credentials (`authorization`, `api-key`, `x-api-key`, `x-goog-api-key`) are stripped from the request, and Bifrost selects a key from its own key config for the resolved provider and model.
 4. Bifrost handles provider execution through core inference and plugin pipelines.
@@ -80,6 +82,24 @@ Claude Code OAuth sign-in (`Authorization: Bearer sk-ant-oat…`) is handled sep
 - Identifiers follow the character sets AWS documents for each parameter: agent, alias, knowledge-base and guardrail ids are alphanumeric, a session id may also contain `.`, `_`, `:` and `-` (but never consists only of dots), and a guardrail version is `DRAFT` or a number from 1 to 8 digits. An ARN is not accepted in place of an id.
 - The host comes from the key's `region` (or its `endpoints` overrides). Credentials in the incoming request are never forwarded. `InvokeAgent` and `Retrieve` are always signed with the key's AWS credentials (SigV4, service `bedrock`), because AWS does not accept Bedrock API keys for Agents Runtime operations: a key that holds only an API key is refused with a `400` for those two operations, so select a key that has an access key and secret key or a role (for example with `x-bf-api-key`). `ApplyGuardrail` sends the key's Bedrock API key as a bearer token when it has one, and is SigV4-signed otherwise.
 - The AWS status and body come back unchanged, together with the response headers Bifrost forwards, including `Content-Type` and `X-Amzn-*` such as `X-Amzn-Errortype` and `X-Amzn-Requestid`. Transport-level headers (for example `Content-Length`, `Content-Encoding`, `Transfer-Encoding`, `Connection` and `Date`) and credential-bearing ones (`Set-Cookie`, anything that looks like an API key or secret, and `X-Amzn-Oidc-*`) are removed, so an upstream `ResourceNotFoundException` still reaches the caller with its exception type. `InvokeAgent` is forwarded to the client as AWS produces it, so a long agent run is not buffered and is not bound by the gateway's whole-response timeout (only a stalled connection ends it, via the stream idle timeout). `Retrieve` and `ApplyGuardrail` are returned as a single response.
+
+### SageMaker Passthrough
+
+- Uses `sagemaker` as the default provider.
+- Covers containers the [SageMaker provider](../providers/supported-providers/sagemaker) has no native route for, such as TEI, LMI's native format and custom images. The request body and the response are whatever the container defines.
+- **Not a general AWS proxy.** Only these two operations are forwarded. Any other method, path or malformed name is refused with a `400` before anything reaches AWS:
+
+  | Operation | Method and path (after `/sagemaker_passthrough`) |
+  |---|---|
+  | InvokeEndpoint | `POST /endpoints/{endpoint}[/inference-components/{component}]/invocations` |
+  | InvokeEndpointWithResponseStream | `POST /endpoints/{endpoint}[/inference-components/{component}]/invocations-response-stream` |
+
+- Endpoint and component names follow SageMaker's naming rules (up to 63 letters, digits and hyphens, starting and ending with a letter or digit). The inference component is sent to AWS in the `X-Amzn-SageMaker-Inference-Component` header, since `/invocations` has no inference-component path form.
+- **The endpoint in the path is the model.** Bifrost uses `{endpoint}` (or `{endpoint}/{component}`) for key selection, governance and logs, in the same shape as a [SageMaker model id](../providers/supported-providers/sagemaker#model-ids) without the region prefix. Key `models` lists and virtual-key model restrictions apply to it. A `model` field in the body is the container's own served name and is never used for routing.
+- The runtime host comes from the key's `region` (or its `endpoints.runtime` override). Requests are always SigV4-signed with the key's AWS credentials. A key that holds only a bearer token is refused with a `400`, so select a key with an access key and secret key, a role, or inherited credentials (for example with `x-bf-api-key`).
+- Only these client headers are forwarded: `Content-Type`, `Accept`, and the SageMaker headers `X-Amzn-SageMaker-Custom-Attributes`, `-Target-Model`, `-Target-Variant`, `-Target-Container-Hostname`, `-Inference-Id`, `-Enable-Explanations` and `-Session-Id`. `Authorization`, `Host` and every other `x-amz-*` header are dropped.
+- The container's status code, headers and body come back unchanged, including non-2xx container errors.
+- **Streaming:** Bifrost unpacks AWS's event-stream framing and relays only the payload bytes, so the container's own format (SSE, JSON lines, and so on) reaches any HTTP client unchanged. `X-Amzn-SageMaker-Content-Type` is returned as the response `Content-Type`. A `ModelStreamError` or `InternalStreamFailure` ends the stream with an error, and a non-200 answer from SageMaker is returned as plain JSON. Token usage is not parsed, because the payload format is unknown to Bifrost.
 
 ### GenAI Passthrough
 
@@ -258,6 +278,24 @@ curl -X POST "http://localhost:8080/bedrock_passthrough/knowledgebases/KB1234567
 curl -X POST "http://localhost:8080/bedrock_passthrough/guardrail/gr1a2b3c4d5e/version/DRAFT/apply" \
   -H "Content-Type: application/json" \
   -d '{"source":"INPUT","content":[{"text":{"text":"hello"}}]}'
+```
+
+### SageMaker Passthrough
+
+A TEI embeddings container on an endpoint:
+
+```bash
+curl -X POST "http://localhost:8080/sagemaker_passthrough/endpoints/my-tei-endpoint/invocations" \
+  -H "Content-Type: application/json" \
+  -d '{"inputs":"what is bifrost"}'
+```
+
+A streaming response from an inference component:
+
+```bash
+curl -N -X POST "http://localhost:8080/sagemaker_passthrough/endpoints/my-endpoint/inference-components/my-component/invocations-response-stream" \
+  -H "Content-Type: application/json" \
+  -d '{"inputs":"hi","parameters":{"max_new_tokens":64},"stream":true}'
 ```
 
 ### GenAI Passthrough (Gemini)
