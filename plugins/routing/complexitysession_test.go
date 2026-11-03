@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/grant"
@@ -206,6 +207,36 @@ func TestComplexitySessionKeyScopesByIdentityAndHidesIt(t *testing.T) {
 	ungoverned := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ungoverned.SetValue(schemas.BifrostContextKeySessionID, sessionID)
 	require.NotEqual(t, base, complexitySessionKey(ungoverned))
+}
+
+func TestComplexityStateKeysScopeSubagents(t *testing.T) {
+	withHeaders := func(headers map[string]string) *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeySessionID, "shared-session")
+		ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, headers)
+		return ctx
+	}
+
+	parent := withHeaders(nil)
+	// The main conversation keeps the keys it had before agents were told apart.
+	require.Equal(t, bifrost.SessionStateKey(parent, complexitySessionKind), complexitySessionKey(parent))
+	require.Equal(t, bifrost.SessionStateKey(parent, complexityTurnTierKind), complexityTurnTierKey(parent))
+	// A Codex root thread names itself but no parent, so it is the main conversation.
+	require.Equal(t, complexitySessionKey(parent), complexitySessionKey(withHeaders(map[string]string{"thread-id": "root"})))
+
+	agents := []*schemas.BifrostContext{
+		withHeaders(map[string]string{"x-claude-code-agent-id": "agent-a"}),
+		withHeaders(map[string]string{"x-claude-code-agent-id": "agent-b"}),
+		withHeaders(map[string]string{"x-codex-parent-thread-id": "root", "thread-id": "child"}),
+	}
+	seen := map[string]bool{complexitySessionKey(parent): true, complexityTurnTierKey(parent): true}
+	for _, agent := range agents {
+		for _, key := range []string{complexitySessionKey(agent), complexityTurnTierKey(agent)} {
+			require.False(t, seen[key], "each agent keeps its own complexity state")
+			seen[key] = true
+		}
+	}
+	require.Equal(t, complexitySessionKey(agents[0]), complexitySessionKey(withHeaders(map[string]string{"x-claude-code-agent-id": "agent-a"})))
 }
 
 func TestPublishLocalSessionFallbackPreservesProposalEvidence(t *testing.T) {
