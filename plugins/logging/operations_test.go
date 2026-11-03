@@ -6051,6 +6051,24 @@ func TestRelayLogClampsUserAgent(t *testing.T) {
 	require.Equal(t, "Claude Code", *entry.App, "the app is still detected from the full header")
 }
 
+// A custom mapping's app name is clamped to the app column, as applyUserAgent clamps it on LLM rows,
+// so an oversized name never fails the insert and drops the row with its cost.
+func TestRelayLogClampsApp(t *testing.T) {
+	plugin := policyTestPlugin(nil, nil, true)
+	plugin.writeQueue = make(chan *writeQueueEntry, 2)
+	plugin.userAgentMappings.Store([]compiledUserAgentMapping{{Pattern: "acme-agent/", MatchType: schemas.UserAgentMappingMatchTypeContains, App: strings.Repeat("a", 2*maxPersistedAppLen)}})
+	ctx := policyCtx(false, nil)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-long-app")
+	ctx.SetValue(schemas.BifrostContextKeyUserAgent, "acme-agent/1.0")
+	_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search"})
+	require.NoError(t, err)
+	_, _, err = plugin.PostRelayHook(ctx, &schemas.BifrostRelayResponse{RelayName: "tavily", StatusCode: 200}, nil)
+	require.NoError(t, err)
+	entry := (<-plugin.writeQueue).endpointLog
+	require.NotNil(t, entry.App)
+	require.Len(t, *entry.App, maxPersistedAppLen, "the stored app fits its column")
+}
+
 // A row carries the same metadata LLM and MCP rows do (the Logging Headers setting's headers, every
 // x-bf-lh-* label with its prefix stripped, the x-bf-dim-* dimensions, and the key's metadata), and
 // beside it only the headers the matched route matches on; never the reply's headers. Both are
