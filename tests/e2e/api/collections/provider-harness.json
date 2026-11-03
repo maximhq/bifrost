@@ -303819,7 +303819,229 @@
       ]
     },
     {
-      "name": "305. Bedrock InvokeModel (Anthropic shape) reports max_tokens when truncated (PR #9383)",
+      "name": "305. OpenAI named tool output without call ID (function calling) (PR #9571)",
+      "description": "Pins Codex cross-thread and automation function outputs with name and no call_id, on all Responses aliases and both streaming modes.",
+      "item": [
+        {
+          "name": "OpenAI gpt-6.1-sol named tool output /v1/responses unary - #9571",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('Named output accepted', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+                  "pm.test('Missing-name error absent', function () { pm.expect(text).not.to.include('A function call output without a call_id requires a name'); });",
+                  "pm.test('Response completed', function () { pm.expect(pm.response.json().status, text).to.equal('completed'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6.1-sol\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"name\": \"aaaaaa\",\n      \"output\": \"hi\"\n    }\n  ],\n  \"max_output_tokens\": 512\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/responses"
+          }
+        },
+        {
+          "name": "OpenAI gpt-6.1-sol named tool output /v1/responses streaming - #9571",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('Named output accepted', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+                  "pm.test('Missing-name error absent', function () { pm.expect(text).not.to.include('A function call output without a call_id requires a name'); });",
+                  "pm.test('Response completed', function () { pm.expect(text).to.include('response.completed'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6.1-sol\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"name\": \"aaaaaa\",\n      \"output\": \"hi\"\n    }\n  ],\n  \"max_output_tokens\": 512,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/responses"
+          }
+        },
+        {
+          "name": "OpenAI gpt-6.1-sol named tool output /responses unary - #9571",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('Named output accepted', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+                  "pm.test('Missing-name error absent', function () { pm.expect(text).not.to.include('A function call output without a call_id requires a name'); });",
+                  "pm.test('Response completed', function () { pm.expect(pm.response.json().status, text).to.equal('completed'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6.1-sol\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"name\": \"aaaaaa\",\n      \"output\": \"hi\"\n    }\n  ],\n  \"max_output_tokens\": 512\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/responses"
+          }
+        },
+        {
+          "name": "OpenAI gpt-6.1-sol named tool output /responses streaming - #9571",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('Named output accepted', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+                  "pm.test('Missing-name error absent', function () { pm.expect(text).not.to.include('A function call output without a call_id requires a name'); });",
+                  "pm.test('Response completed', function () { pm.expect(text).to.include('response.completed'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6.1-sol\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"name\": \"aaaaaa\",\n      \"output\": \"hi\"\n    }\n  ],\n  \"max_output_tokens\": 512,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/responses"
+          }
+        },
+        {
+          "name": "OpenAI gpt-6.1-sol named tool output /openai/responses unary - #9571",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('Named output accepted', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+                  "pm.test('Missing-name error absent', function () { pm.expect(text).not.to.include('A function call output without a call_id requires a name'); });",
+                  "pm.test('Response completed', function () { pm.expect(pm.response.json().status, text).to.equal('completed'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6.1-sol\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"name\": \"aaaaaa\",\n      \"output\": \"hi\"\n    }\n  ],\n  \"max_output_tokens\": 512\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/openai/responses"
+          }
+        },
+        {
+          "name": "OpenAI gpt-6.1-sol named tool output /openai/responses streaming - #9571",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('Named output accepted', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+                  "pm.test('Missing-name error absent', function () { pm.expect(text).not.to.include('A function call output without a call_id requires a name'); });",
+                  "pm.test('Response completed', function () { pm.expect(text).to.include('response.completed'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6.1-sol\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"name\": \"aaaaaa\",\n      \"output\": \"hi\"\n    }\n  ],\n  \"max_output_tokens\": 512,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/openai/responses"
+          }
+        }
+      ]
+    },
+    {
+      "name": "306. Bedrock InvokeModel (Anthropic shape) reports max_tokens when truncated (PR #9383)",
       "description": "On the Bedrock /invoke route with the direct Anthropic request shape, a response cut off by the token limit carries Bifrost's internal incomplete reason max_output_tokens. The Anthropic-shaped invoke response used to copy that reason into stop_reason verbatim, a value the Anthropic vocabulary does not contain. The case sets a tiny max_tokens so the reply is truncated and pins stop_reason to max_tokens. Refusal and content-filter reasons are not covered here; they are pinned by the Go unit tests.",
       "item": [
         {
