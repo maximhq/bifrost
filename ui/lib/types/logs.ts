@@ -937,7 +937,7 @@ export interface LogFilters {
 	missing_cost_only?: boolean;
 	cache_hit_types?: string[]; // For filtering by local-cache hit type ("direct", "semantic")
 	content_search?: string;
-	metadata_filters?: Record<string, string>; // key=metadataKey, value=metadataValue for filtering by metadata
+	metadata_filters?: Record<string, string[]>; // metadata key to accepted values: any value per key, every key
 	user_ids?: string[];
 	team_ids?: string[];
 	customer_ids?: string[];

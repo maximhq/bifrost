@@ -4794,6 +4794,8 @@ func (provider *VertexProvider) Passthrough(
 	}
 
 	var passthroughUsage *schemas.BifrostPassthroughUsage
+	var servedModel string
+	var providerJob *schemas.BifrostPassthroughJob
 	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
 		switch PassthroughWireFormat(req.Path) {
 		case schemas.Anthropic:
@@ -4803,7 +4805,11 @@ func (provider *VertexProvider) Passthrough(
 		case schemas.OpenAI:
 			passthroughUsage = openai.ExtractOpenAIPassthroughUsage(req.Method, req.Path, req.Body, body)
 		default:
-			passthroughUsage = gemini.ExtractGeminiPassthroughUsage(req.Path, req.Body, body)
+			if gemini.IsInteractionsPassthroughPath(req.Path) {
+				passthroughUsage, servedModel, providerJob = gemini.InteractionsPassthroughResult(req, body)
+			} else {
+				passthroughUsage = gemini.ExtractGeminiPassthroughUsage(req.Path, req.Body, body)
+			}
 		}
 	}
 
@@ -4818,6 +4824,8 @@ func (provider *VertexProvider) Passthrough(
 			RawRequest:              req.Body,
 		},
 		PassthroughUsage: passthroughUsage,
+		ServedModel:      servedModel,
+		ProviderJob:      providerJob,
 	}
 
 	return bifrostResponse, nil
@@ -4976,6 +4984,7 @@ func (provider *VertexProvider) PassthroughStream(
 	observe := func(event []byte) *schemas.BifrostPassthroughUsage {
 		return gemini.ExtractGeminiPassthroughUsage(req.Path, req.Body, event)
 	}
+	var finalize func(*schemas.BifrostPassthroughResponse)
 	switch PassthroughWireFormat(req.Path) {
 	case schemas.Anthropic:
 		messagesUsage := &anthropic.AnthropicPassthroughStreamUsage{}
@@ -4990,6 +4999,12 @@ func (provider *VertexProvider) PassthroughStream(
 		hasUsage = openai.HasOpenAIPassthroughUsage
 		observe = func(event []byte) *schemas.BifrostPassthroughUsage {
 			return openai.ExtractOpenAIPassthroughUsage(req.Method, req.Path, req.Body, event)
+		}
+	default:
+		if gemini.IsInteractionsPassthroughPath(req.Path) {
+			observer := gemini.NewInteractionsStreamObserver(req)
+			observe, finalize = observer.Observe, observer.Finalize
+			hasUsage = gemini.HasInteractionsStreamInfo
 		}
 	}
 
@@ -5006,6 +5021,7 @@ func (provider *VertexProvider) PassthroughStream(
 			Logger:              provider.logger,
 			HasUsage:            hasUsage,
 			Observe:             observe,
+			Finalize:            finalize,
 		},
 	), nil
 }
