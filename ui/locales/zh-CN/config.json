@@ -1229,7 +1229,15 @@
 			"editConfigAria": "编辑中继配置",
 			"viewConfigAria": "查看中继配置",
 			"testSheetTitle": "测试定价",
-			"testSheetDescription": "使用 {{name}} 已保存的路由和定价运行一次示例调用。不会向上游发送任何内容。"
+			"testSheetDescription": "使用 {{name}} 已保存的路由和定价运行一次示例调用。不会向上游发送任何内容。",
+			"gatewayPath": "网关路径",
+			"upstream": "上游",
+			"auth": "认证",
+			"pricing": "默认定价",
+			"anyPath": "任意路径",
+			"moreActionsAria": "更多中继操作",
+			"deleteRelay": "删除中继",
+			"copyPathAria": "复制网关路径"
 		},
 		"deleteDialog": {
 			"title": "删除中继",
@@ -1257,6 +1265,7 @@
 			"title": "路由",
 			"importOpenapi": "导入 OpenAPI",
 			"addRoute": "添加路由",
+			"description": "请求使用第一个匹配的路由；更具体的路由排在前面。",
 			"columns": {
 				"method": "方法",
 				"route": "路由",
