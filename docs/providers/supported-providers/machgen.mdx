@@ -12,6 +12,7 @@ icon: "film"
 
 | Operation | Supported | Endpoint |
 |-----------|-----------|----------|
+| List Models | ✅ | `/api/v0/models` |
 | Video Generation | ✅ | `/api/v0/generate` (`T2V`, `I2V`, `R2V`) |
 | Video Retrieve | ✅ | `/api/v0/tasks/{task_id}` |
 | Video Download | ✅ | `/api/v0/assets/{task_id}` |
@@ -21,7 +22,7 @@ icon: "film"
 | Video List | ❌ | - |
 | Video Remix | ❌ | - |
 
-Model IDs are MachGen's own, for example `machgen/MiniMax-H3` or `machgen/Kling-v3`. See [MachGen models](https://www.machgen.ai/docs/models) for the full list and what each model accepts.
+Model IDs are MachGen's own, for example `machgen/MiniMax-H3` or `machgen/Kling-v3`. `GET /v1/models` lists the models your MachGen key can use, with each one's task types (`T2V`, `I2V`, `T2I`, ...) in `supported_methods`. See [MachGen models](https://www.machgen.ai/docs/models) for what each model accepts.
 
 ---
 

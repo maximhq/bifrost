@@ -389,9 +389,61 @@ func (provider *MachGenProvider) VideoDownload(ctx *schemas.BifrostContext, key 
 	return bifrostResp, nil
 }
 
-// ListModels is not supported by the MachGen provider.
+// ListModels lists the MachGen models each key may use.
 func (provider *MachGenProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ListModelsRequest, provider.GetProviderKey())
+	startTime := time.Now()
+
+	response, bifrostErr := providerUtils.HandleMultipleListModelsRequests(ctx, keys, request, provider.listModelsByKey)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
+	return response, nil
+}
+
+// listModelsByKey fetches the catalog for one key. MachGen scopes it to the key's account, so
+// private or org-restricted models only appear for keys that can submit to them.
+func (provider *MachGenProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, modelsPath))
+	req.Header.SetMethod(http.MethodGet)
+	provider.setAuth(req, key)
+
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, providerUtils.SetErrorLatency(parseMachGenError(resp), latency)
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), latency)
+	}
+
+	var catalog MachGenModelListResponse
+	if _, _, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, body, &catalog, nil, false, false); bifrostErr != nil {
+		return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
+	}
+
+	return ToBifrostListModelsResponse(
+		catalog.Models,
+		provider.GetProviderKey(),
+		key.Models,
+		key.BlacklistedModels,
+		key.Aliases,
+		request.Unfiltered,
+	), nil
 }
 
 // TextCompletion is not supported by the MachGen provider.

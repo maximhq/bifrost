@@ -188,6 +188,11 @@ func fakeMachGen(t *testing.T, apiKey string, asset []byte, assetType string) (*
 				return
 			}
 			_, _ = w.Write([]byte(`{"task_id":"t-abc","status":"COMPLETED","metadata":{"prompt":"p","model":"FLUX.2-dev","width":1024,"height":1024},"task_output":{"image":"x","video":"x"}}`))
+		case r.Method == http.MethodGet && r.URL.Path == modelsPath:
+			_, _ = w.Write([]byte(`{"models":[
+				{"model":"FLUX.2-dev","aliases":[],"kind":"image","surfaces":[{"task_type":"T2I"},{"task_type":"I2I"}]},
+				{"model":"MiniMax-H3","aliases":[],"kind":"video","supports_audio":true,"surfaces":[{"task_type":"T2V","heights":[768]},{"task_type":"I2V"},{"task_type":"R2V"}]}
+			]}`))
 		case r.Method == http.MethodGet && r.URL.Path == assetsPath+"t-abc":
 			w.Header().Set("Content-Type", assetType)
 			_, _ = w.Write(asset)
@@ -273,6 +278,34 @@ func TestMachGenSurfacesAPIErrorDetail(t *testing.T) {
 	require.NotNil(t, bErr.StatusCode)
 	assert.Equal(t, http.StatusUnauthorized, *bErr.StatusCode)
 	assert.Equal(t, "Invalid API key", bErr.Error.Message)
+}
+
+func TestMachGenListModels_ReportsTaskTypesAndHonorsKeyAllowlist(t *testing.T) {
+	server, _ := fakeMachGen(t, "MGA_test", nil, "")
+	provider := newTestProvider(t, server.URL)
+
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, bErr := provider.ListModels(ctx, []schemas.Key{testKey("MGA_test")}, &schemas.BifrostListModelsRequest{Provider: schemas.MachGen})
+	require.Nil(t, bErr)
+	require.Len(t, resp.Data, 2)
+	byID := map[string]schemas.Model{}
+	for _, m := range resp.Data {
+		byID[m.ID] = m
+	}
+	h3 := byID["machgen/MiniMax-H3"]
+	assert.Equal(t, []string{"T2V", "I2V", "R2V"}, h3.SupportedMethods)
+	require.NotNil(t, h3.Architecture)
+	assert.Equal(t, []string{"video"}, h3.Architecture.OutputModalities)
+	assert.Equal(t, []string{"image"}, byID["machgen/FLUX.2-dev"].Architecture.OutputModalities)
+
+	restricted := testKey("MGA_test")
+	restricted.Models = schemas.WhiteList{"MiniMax-H3"}
+	resp, bErr = provider.ListModels(ctx, []schemas.Key{restricted}, &schemas.BifrostListModelsRequest{Provider: schemas.MachGen})
+	require.Nil(t, bErr)
+	require.Len(t, resp.Data, 1)
+	assert.Equal(t, "machgen/MiniMax-H3", resp.Data[0].ID)
 }
 
 // TestMachGenLive runs a real text-to-image task when MACHGEN_API_KEY is set.

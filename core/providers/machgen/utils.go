@@ -14,6 +14,7 @@ const (
 	generatePath = "/api/v0/generate"
 	tasksPath    = "/api/v0/tasks/"
 	assetsPath   = "/api/v0/assets/"
+	modelsPath   = "/api/v0/models"
 )
 
 const (

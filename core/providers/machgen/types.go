@@ -91,3 +91,21 @@ type MachGenTaskStatusResponse struct {
 type MachGenAPIError struct {
 	Detail interface{} `json:"detail"`
 }
+
+// # MODELS TYPES
+
+// MachGenModelSurface is one task type a model serves, e.g. T2V or I2I.
+type MachGenModelSurface struct {
+	TaskType string `json:"task_type"`
+}
+
+// MachGenModel is one entry of GET /api/v0/models: a model the API key may use.
+type MachGenModel struct {
+	Model    string                `json:"model"`
+	Surfaces []MachGenModelSurface `json:"surfaces"`
+}
+
+// MachGenModelListResponse is the response of GET /api/v0/models.
+type MachGenModelListResponse struct {
+	Models []MachGenModel `json:"models"`
+}
