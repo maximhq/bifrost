@@ -1273,6 +1273,7 @@ func TestStreamUsagePanicIsAnInternalError(t *testing.T) {
 // with bufio.ErrTooLong, instead of being dropped unread and the call charged the default fee.
 func TestStreamOversizedEventFailsTheStream(t *testing.T) {
 	var gotErr *schemas.BifrostError
+	var gotResp *schemas.BifrostRelayResponse
 	finished := false
 	s := &Stream{
 		ctx:     testCtx(t),
@@ -1282,15 +1283,23 @@ func TestStreamOversizedEventFailsTheStream(t *testing.T) {
 		counted: true,
 		framer:  &providerUtils.SSEFramer{},
 		observe: func([]byte) *schemas.RelayUsage { return &schemas.RelayUsage{Cost: 1} },
-		finish: func(_ *schemas.BifrostRelayResponse, err *schemas.BifrostError) {
-			finished, gotErr = true, err
+		capture: make([]byte, 0, 4096),
+		finish: func(resp *schemas.BifrostRelayResponse, err *schemas.BifrostError) {
+			finished, gotResp, gotErr = true, resp, err
 		},
 	}
 	buf := make([]byte, 64<<10)
 	var err error
+	var forwarded int
 	for err == nil {
-		_, err = s.Read(buf)
+		var n int
+		n, err = s.Read(buf)
+		forwarded += n
 	}
+	// The row logs what the caller received, as an LLM row logs the chunks its caller was sent: the
+	// chunk that failed the stream is forwarded, so it is in the logged body too.
+	require.NotNil(t, gotResp)
+	assert.Equal(t, forwarded, len(gotResp.Body), "the logged body holds every byte forwarded, the failing chunk included")
 	require.ErrorIs(t, err, bufio.ErrTooLong)
 	require.True(t, finished)
 	require.NotNil(t, gotErr)
