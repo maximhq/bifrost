@@ -67,6 +67,7 @@ type RelayLog struct {
 	ProjectName      *string `gorm:"type:varchar(255)" json:"project_name,omitempty"`
 	UserAgent        *string `gorm:"type:varchar(512);index:idx_relay_logs_user_agent" json:"user_agent,omitempty"` // Raw HTTP User-Agent of the calling client
 	App              *string `gorm:"type:varchar(128);index:idx_relay_logs_app" json:"app,omitempty"`               // Backend-detected client app derived from user_agent
+	ClientIP         *string `gorm:"type:varchar(45)" json:"client_ip,omitempty"`                                   // Caller IP: leftmost X-Forwarded-For, else X-Real-IP, else the TCP peer
 	// Every team, customer and business unit the call settled, as on logs and mcp_tool_logs: the
 	// scalar columns keep the first, these keep them all, and the dimension filters read both.
 	TeamIDs                 *string               `gorm:"type:text" json:"-"` // JSON serialized []string
@@ -85,6 +86,8 @@ type RelayLog struct {
 	ResponseBody            *string               `gorm:"type:text" json:"response_body,omitempty"`
 	ErrorDetails            string                `gorm:"type:text" json:"-"`
 	ContentHidden           bool                  `gorm:"default:false" json:"content_hidden"`
+	PayloadReference        *string               `gorm:"type:varchar(1024)" json:"-"` // object key of the full bodies in hybrid mode
+	HasObject               bool                  `gorm:"default:false" json:"-"`
 	PluginLogs              string                `gorm:"type:text" json:"plugin_logs,omitempty"`
 	BudgetIDsParsed         []string              `gorm:"-" json:"budget_ids,omitempty"`
 	RateLimitIDsParsed      []string              `gorm:"-" json:"rate_limit_ids,omitempty"`
@@ -695,6 +698,31 @@ func (s *RDBLogStore) GetRelayFilterData(ctx context.Context, dimensions []strin
 		}
 	}
 	return out, nil
+}
+
+// FindRelayLogsForDeletion loads the rows DeleteRelayLogs removes for these ids: the rows
+// themselves and the job rows that settle them.
+func (s *RDBLogStore) FindRelayLogsForDeletion(ctx context.Context, ids []string) ([]*RelayLog, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var entries []*RelayLog
+	if err := s.ScopedDB(ctx).Where("id IN ? OR parent_log_id IN ?", ids, ids).Find(&entries).Error; err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+// UpdateRelayLog applies column updates to one row, ErrNotFound when it does not exist.
+func (s *RDBLogStore) UpdateRelayLog(ctx context.Context, id string, updates map[string]any) error {
+	result := s.db.WithContext(ctx).Model(&RelayLog{}).Where("id = ?", id).Updates(updates)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // DeleteRelayLogs deletes the identified rows, with the job rows that settle them.

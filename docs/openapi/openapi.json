@@ -20,7 +20,7 @@
       "variables": {
         "baseUrl": {
           "default": "http://localhost:8080",
-          "description": "Base URL of your Bifrost instance (e.g. https://bifrost.mycompany.com)"
+          "description": "Base URL of your Bifrost instance (e.g. https://bifrost.mycompany.com, or https://mycompany.com/bifrost when served under server.base_path)"
         }
       }
     }
@@ -43834,7 +43834,7 @@
           {
             "name": "unfiltered",
             "in": "query",
-            "description": "If true, return all models including those filtered out by provider-level restrictions",
+            "description": "If true, return the provider's whole catalog, including models filtered out by provider-level restrictions or by what the caller's virtual key or access allows",
             "schema": {
               "type": "boolean",
               "default": false
@@ -43953,7 +43953,7 @@
           {
             "name": "unfiltered",
             "in": "query",
-            "description": "If true, return all models including those filtered out by provider-level restrictions",
+            "description": "If true, return the provider's whole catalog, including models filtered out by provider-level restrictions or by what the caller's virtual key or access allows",
             "schema": {
               "type": "boolean",
               "default": false
@@ -45532,7 +45532,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPGateway:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Add MCP client",
-        "description": "Adds a new MCP client with the specified configuration.\nNote: tool_pricing is not available when creating a new client; tool\npricing can only be set once the tool list is known. For shared-connection\nclients tools are fetched after client creation; for per-user auth types\nthey are discovered during the create/verify flow itself.\n\nTwo cases require a genuinely authenticated admin session and are refused\nwith 403 when dashboard authentication is disabled or unconfigured, even\nthough other management endpoints stay reachable in that state:\nconnection_type \"stdio\" (which runs the supplied command as a gateway\nsubprocess), and connection_type \"http\"/\"sse\" whose connection_string\nresolves to a loopback, private-network, link-local, or CGNAT address.\nPublic http/sse targets are unaffected.\n\nFor auth_type \"token_exchange\", verification and tool discovery run\nduring the create as the signed-in admin: Bifrost exchanges the\nidentity-provider token on the request or, when it carries none, the\naccess token from the admin's own Bifrost sign-in. A request with\nneither (for example one made with an API key) creates the client in\npending_verification; finish it with\nPOST /api/mcp/client/{id}/verify-exchange.\n",
+        "description": "Adds a new MCP client with the specified configuration.\nNote: tool_pricing is not available when creating a new client; tool\npricing can only be set once the tool list is known. For shared-connection\nclients tools are fetched after client creation; for per-user auth types\nthey are discovered during the create/verify flow itself.\n\nTwo cases require a genuinely authenticated admin session and are refused\nwith 403 when dashboard authentication is disabled or unconfigured, even\nthough other management endpoints stay reachable in that state:\nconnection_type \"stdio\" (which runs the supplied command as a gateway\nsubprocess), and connection_type \"http\"/\"sse\" whose connection_string\nresolves to a loopback, private-network, link-local, or CGNAT address.\nPublic http/sse targets are unaffected.\n\nFor auth_type \"token_exchange\", verification and tool discovery run\nduring the create as the signed-in admin: Bifrost exchanges the\nidentity-provider token on the request or, when it carries none, the\naccess token from the admin's own Bifrost sign-in. A request with\nneither (for example one made with an API key) creates the client in\npending_verification; finish it with\nPOST /api/mcp/client/{id}/verify-exchange.\n\nFor auth_type \"oauth\" and \"per_user_oauth\", the name and endpoint slug\nare checked before the OAuth flow starts, so a conflict returns 409 at\ncreate rather than when the flow is completed, and endpoint_slug is kept\nfor the client the completion creates. OAuth discovery against a private\naddress that mcp_oauth_private_allowlist does not permit returns 400.\n\nauth_type must be one of the MCPAuthType values; any other value returns\n400. per_user_oauth and token_exchange need connection_type \"http\", and\nper_user_headers needs \"http\" or \"openapi\": each call opens its own\nconnection, so all three return 400 on \"sse\" and \"stdio\". An omitted\nauth_type is \"headers\".\n",
         "tags": [
           "MCP"
         ],
@@ -45617,6 +45617,38 @@
                                 ]
                               },
                               "description": "A `token_exchange` block only applies to auth_type \"token_exchange\";\nreject it for every other auth_type instead of silently ignoring it.\n"
+                            }
+                          },
+                          {
+                            "if": {
+                              "required": [
+                                "per_user_discovery"
+                              ],
+                              "properties": {
+                                "per_user_discovery": {
+                                  "const": true
+                                }
+                              }
+                            },
+                            "then": {
+                              "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "enum": [
+                                    "per_user_oauth",
+                                    "per_user_headers",
+                                    "token_exchange"
+                                  ]
+                                },
+                                "connection_type": {
+                                  "not": {
+                                    "const": "openapi"
+                                  }
+                                }
+                              },
+                              "description": "`per_user_discovery` discovers each caller's tools with their own\ncredential, so it only applies to the per-user auth types, and not to\nan openapi client, whose tools come from its document.\n"
                             }
                           }
                         ],
@@ -45758,7 +45790,7 @@
                               },
                               "ca_cert_pem": {
                                 "type": "string",
-                                "description": "PEM-encoded CA certificate to trust for MCP server connections.\nUse when the MCP server uses a self-signed or private CA certificate.\nSupports env.VAR_NAME syntax to read the certificate from an environment variable.\n"
+                                "description": "PEM-encoded CA certificate to trust for MCP server connections.\nUse when the MCP server uses a self-signed or private CA certificate.\nSupports env.VAR_NAME syntax to read the certificate from an environment variable.\nA value that does not parse as a PEM certificate is refused when the client is\ncreated or edited, unless insecure_skip_verify is set.\n"
                               }
                             }
                           },
@@ -45830,12 +45862,17 @@
                             "additionalProperties": false,
                             "description": "Required when creating a client with auth_type \"token_exchange\".\nVerification runs automatically as the signed-in admin, exchanging the\nidentity-provider token on the request or, when it carries none, the\naccess token from the admin's own Bifrost sign-in (see\nPOST /api/mcp/client/{id}/verify-exchange). A request with neither,\nsuch as one made with an API key, creates the client in\npending_verification. There is no sample-token field on this request.\n"
                           },
+                          "per_user_discovery": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Per-user auth types only (`per_user_oauth`, `per_user_headers`,\n`token_exchange`), and not for connection_type \"openapi\". When true,\neach caller's tools, prompts and resources are discovered with their\nown credential when they connect, and the client keeps no admin\ncredential or discovery of its own: the admin's verification only\nchecks the server. Every caller is served their own tools, prompts,\nresources and resource templates, the MCP gateway (`/mcp`) included, and a caller who has not\nconnected yet is offered the client's `<name>-connect` tool. When false\nor omitted, every caller is served what was discovered with the admin\ncredential.\n"
+                          },
                           "user_headers": {
                             "type": "object",
                             "additionalProperties": {
                               "type": "string"
                             },
-                            "description": "Used only at create time when `auth_type` is `per_user_headers`. A sample\nset of header values the admin supplies so Bifrost can run a one-time\nupstream verify and discover the tool list. Not persisted by the create\ncall; each end-user submits their own values at runtime. To have Bifrost\nretain an admin discovery credential for periodic tool-list refresh,\nuse POST /api/mcp/client/{id}/verify-headers, which stores the sample\nvalues as that credential.\n"
+                            "description": "Used only at create time when `auth_type` is `per_user_headers`. A sample\nset of header values the admin supplies so Bifrost can run a one-time\nupstream verify and discover the tool list. The create call also keeps\nthem as the client's admin discovery credential, as\nPOST /api/mcp/client/{id}/verify-headers does, used only for periodic\nand on-demand (POST /api/mcp/client/{id}/refresh-tools) tool-list\nrefresh. Keeping them is best effort: if storing the credential fails,\nthe client is still created. Each end-user submits their own values at\nruntime.\n"
                           }
                         }
                       },
@@ -45935,6 +45972,38 @@
                               },
                               "description": "A `token_exchange` block only applies to auth_type \"token_exchange\";\nreject it for every other auth_type instead of silently ignoring it.\n"
                             }
+                          },
+                          {
+                            "if": {
+                              "required": [
+                                "per_user_discovery"
+                              ],
+                              "properties": {
+                                "per_user_discovery": {
+                                  "const": true
+                                }
+                              }
+                            },
+                            "then": {
+                              "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "enum": [
+                                    "per_user_oauth",
+                                    "per_user_headers",
+                                    "token_exchange"
+                                  ]
+                                },
+                                "connection_type": {
+                                  "not": {
+                                    "const": "openapi"
+                                  }
+                                }
+                              },
+                              "description": "`per_user_discovery` discovers each caller's tools with their own\ncredential, so it only applies to the per-user auth types, and not to\nan openapi client, whose tools come from its document.\n"
+                            }
                           }
                         ],
                         "properties": {
@@ -46075,7 +46144,7 @@
                               },
                               "ca_cert_pem": {
                                 "type": "string",
-                                "description": "PEM-encoded CA certificate to trust for MCP server connections.\nUse when the MCP server uses a self-signed or private CA certificate.\nSupports env.VAR_NAME syntax to read the certificate from an environment variable.\n"
+                                "description": "PEM-encoded CA certificate to trust for MCP server connections.\nUse when the MCP server uses a self-signed or private CA certificate.\nSupports env.VAR_NAME syntax to read the certificate from an environment variable.\nA value that does not parse as a PEM certificate is refused when the client is\ncreated or edited, unless insecure_skip_verify is set.\n"
                               }
                             }
                           },
@@ -46147,12 +46216,17 @@
                             "additionalProperties": false,
                             "description": "Required when creating a client with auth_type \"token_exchange\".\nVerification runs automatically as the signed-in admin, exchanging the\nidentity-provider token on the request or, when it carries none, the\naccess token from the admin's own Bifrost sign-in (see\nPOST /api/mcp/client/{id}/verify-exchange). A request with neither,\nsuch as one made with an API key, creates the client in\npending_verification. There is no sample-token field on this request.\n"
                           },
+                          "per_user_discovery": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Per-user auth types only (`per_user_oauth`, `per_user_headers`,\n`token_exchange`), and not for connection_type \"openapi\". When true,\neach caller's tools, prompts and resources are discovered with their\nown credential when they connect, and the client keeps no admin\ncredential or discovery of its own: the admin's verification only\nchecks the server. Every caller is served their own tools, prompts,\nresources and resource templates, the MCP gateway (`/mcp`) included, and a caller who has not\nconnected yet is offered the client's `<name>-connect` tool. When false\nor omitted, every caller is served what was discovered with the admin\ncredential.\n"
+                          },
                           "user_headers": {
                             "type": "object",
                             "additionalProperties": {
                               "type": "string"
                             },
-                            "description": "Used only at create time when `auth_type` is `per_user_headers`. A sample\nset of header values the admin supplies so Bifrost can run a one-time\nupstream verify and discover the tool list. Not persisted by the create\ncall; each end-user submits their own values at runtime. To have Bifrost\nretain an admin discovery credential for periodic tool-list refresh,\nuse POST /api/mcp/client/{id}/verify-headers, which stores the sample\nvalues as that credential.\n"
+                            "description": "Used only at create time when `auth_type` is `per_user_headers`. A sample\nset of header values the admin supplies so Bifrost can run a one-time\nupstream verify and discover the tool list. The create call also keeps\nthem as the client's admin discovery credential, as\nPOST /api/mcp/client/{id}/verify-headers does, used only for periodic\nand on-demand (POST /api/mcp/client/{id}/refresh-tools) tool-list\nrefresh. Keeping them is best effort: if storing the credential fails,\nthe client is still created. Each end-user submits their own values at\nruntime.\n"
                           }
                         }
                       },
@@ -46171,6 +46245,15 @@
                           "connection_string": {
                             "type": "string",
                             "description": "SSE URL (required for SSE connection type)"
+                          },
+                          "auth_type": {
+                            "type": "string",
+                            "enum": [
+                              "none",
+                              "headers",
+                              "oauth"
+                            ],
+                            "description": "The per-user auth types open a new connection for each call, which an\nSSE stream does not allow, so SSE takes the shared auth types only.\n"
                           }
                         }
                       }
@@ -46252,6 +46335,38 @@
                               },
                               "description": "A `token_exchange` block only applies to auth_type \"token_exchange\";\nreject it for every other auth_type instead of silently ignoring it.\n"
                             }
+                          },
+                          {
+                            "if": {
+                              "required": [
+                                "per_user_discovery"
+                              ],
+                              "properties": {
+                                "per_user_discovery": {
+                                  "const": true
+                                }
+                              }
+                            },
+                            "then": {
+                              "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "enum": [
+                                    "per_user_oauth",
+                                    "per_user_headers",
+                                    "token_exchange"
+                                  ]
+                                },
+                                "connection_type": {
+                                  "not": {
+                                    "const": "openapi"
+                                  }
+                                }
+                              },
+                              "description": "`per_user_discovery` discovers each caller's tools with their own\ncredential, so it only applies to the per-user auth types, and not to\nan openapi client, whose tools come from its document.\n"
+                            }
                           }
                         ],
                         "properties": {
@@ -46392,7 +46507,7 @@
                               },
                               "ca_cert_pem": {
                                 "type": "string",
-                                "description": "PEM-encoded CA certificate to trust for MCP server connections.\nUse when the MCP server uses a self-signed or private CA certificate.\nSupports env.VAR_NAME syntax to read the certificate from an environment variable.\n"
+                                "description": "PEM-encoded CA certificate to trust for MCP server connections.\nUse when the MCP server uses a self-signed or private CA certificate.\nSupports env.VAR_NAME syntax to read the certificate from an environment variable.\nA value that does not parse as a PEM certificate is refused when the client is\ncreated or edited, unless insecure_skip_verify is set.\n"
                               }
                             }
                           },
@@ -46464,12 +46579,17 @@
                             "additionalProperties": false,
                             "description": "Required when creating a client with auth_type \"token_exchange\".\nVerification runs automatically as the signed-in admin, exchanging the\nidentity-provider token on the request or, when it carries none, the\naccess token from the admin's own Bifrost sign-in (see\nPOST /api/mcp/client/{id}/verify-exchange). A request with neither,\nsuch as one made with an API key, creates the client in\npending_verification. There is no sample-token field on this request.\n"
                           },
+                          "per_user_discovery": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Per-user auth types only (`per_user_oauth`, `per_user_headers`,\n`token_exchange`), and not for connection_type \"openapi\". When true,\neach caller's tools, prompts and resources are discovered with their\nown credential when they connect, and the client keeps no admin\ncredential or discovery of its own: the admin's verification only\nchecks the server. Every caller is served their own tools, prompts,\nresources and resource templates, the MCP gateway (`/mcp`) included, and a caller who has not\nconnected yet is offered the client's `<name>-connect` tool. When false\nor omitted, every caller is served what was discovered with the admin\ncredential.\n"
+                          },
                           "user_headers": {
                             "type": "object",
                             "additionalProperties": {
                               "type": "string"
                             },
-                            "description": "Used only at create time when `auth_type` is `per_user_headers`. A sample\nset of header values the admin supplies so Bifrost can run a one-time\nupstream verify and discover the tool list. Not persisted by the create\ncall; each end-user submits their own values at runtime. To have Bifrost\nretain an admin discovery credential for periodic tool-list refresh,\nuse POST /api/mcp/client/{id}/verify-headers, which stores the sample\nvalues as that credential.\n"
+                            "description": "Used only at create time when `auth_type` is `per_user_headers`. A sample\nset of header values the admin supplies so Bifrost can run a one-time\nupstream verify and discover the tool list. The create call also keeps\nthem as the client's admin discovery credential, as\nPOST /api/mcp/client/{id}/verify-headers does, used only for periodic\nand on-demand (POST /api/mcp/client/{id}/refresh-tools) tool-list\nrefresh. Keeping them is best effort: if storing the credential fails,\nthe client is still created. Each end-user submits their own values at\nruntime.\n"
                           }
                         }
                       },
@@ -46508,6 +46628,15 @@
                                 "description": "Environment variables required"
                               }
                             }
+                          },
+                          "auth_type": {
+                            "type": "string",
+                            "enum": [
+                              "none",
+                              "headers",
+                              "oauth"
+                            ],
+                            "description": "A STDIO subprocess is one connection for every caller, so STDIO takes\nthe shared auth types only.\n"
                           }
                         }
                       }
@@ -46588,6 +46717,38 @@
                                 ]
                               },
                               "description": "A `token_exchange` block only applies to auth_type \"token_exchange\";\nreject it for every other auth_type instead of silently ignoring it.\n"
+                            }
+                          },
+                          {
+                            "if": {
+                              "required": [
+                                "per_user_discovery"
+                              ],
+                              "properties": {
+                                "per_user_discovery": {
+                                  "const": true
+                                }
+                              }
+                            },
+                            "then": {
+                              "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "enum": [
+                                    "per_user_oauth",
+                                    "per_user_headers",
+                                    "token_exchange"
+                                  ]
+                                },
+                                "connection_type": {
+                                  "not": {
+                                    "const": "openapi"
+                                  }
+                                }
+                              },
+                              "description": "`per_user_discovery` discovers each caller's tools with their own\ncredential, so it only applies to the per-user auth types, and not to\nan openapi client, whose tools come from its document.\n"
                             }
                           }
                         ],
@@ -46729,7 +46890,7 @@
                               },
                               "ca_cert_pem": {
                                 "type": "string",
-                                "description": "PEM-encoded CA certificate to trust for MCP server connections.\nUse when the MCP server uses a self-signed or private CA certificate.\nSupports env.VAR_NAME syntax to read the certificate from an environment variable.\n"
+                                "description": "PEM-encoded CA certificate to trust for MCP server connections.\nUse when the MCP server uses a self-signed or private CA certificate.\nSupports env.VAR_NAME syntax to read the certificate from an environment variable.\nA value that does not parse as a PEM certificate is refused when the client is\ncreated or edited, unless insecure_skip_verify is set.\n"
                               }
                             }
                           },
@@ -46801,12 +46962,17 @@
                             "additionalProperties": false,
                             "description": "Required when creating a client with auth_type \"token_exchange\".\nVerification runs automatically as the signed-in admin, exchanging the\nidentity-provider token on the request or, when it carries none, the\naccess token from the admin's own Bifrost sign-in (see\nPOST /api/mcp/client/{id}/verify-exchange). A request with neither,\nsuch as one made with an API key, creates the client in\npending_verification. There is no sample-token field on this request.\n"
                           },
+                          "per_user_discovery": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Per-user auth types only (`per_user_oauth`, `per_user_headers`,\n`token_exchange`), and not for connection_type \"openapi\". When true,\neach caller's tools, prompts and resources are discovered with their\nown credential when they connect, and the client keeps no admin\ncredential or discovery of its own: the admin's verification only\nchecks the server. Every caller is served their own tools, prompts,\nresources and resource templates, the MCP gateway (`/mcp`) included, and a caller who has not\nconnected yet is offered the client's `<name>-connect` tool. When false\nor omitted, every caller is served what was discovered with the admin\ncredential.\n"
+                          },
                           "user_headers": {
                             "type": "object",
                             "additionalProperties": {
                               "type": "string"
                             },
-                            "description": "Used only at create time when `auth_type` is `per_user_headers`. A sample\nset of header values the admin supplies so Bifrost can run a one-time\nupstream verify and discover the tool list. Not persisted by the create\ncall; each end-user submits their own values at runtime. To have Bifrost\nretain an admin discovery credential for periodic tool-list refresh,\nuse POST /api/mcp/client/{id}/verify-headers, which stores the sample\nvalues as that credential.\n"
+                            "description": "Used only at create time when `auth_type` is `per_user_headers`. A sample\nset of header values the admin supplies so Bifrost can run a one-time\nupstream verify and discover the tool list. The create call also keeps\nthem as the client's admin discovery credential, as\nPOST /api/mcp/client/{id}/verify-headers does, used only for periodic\nand on-demand (POST /api/mcp/client/{id}/refresh-tools) tool-list\nrefresh. Keeping them is best effort: if storing the credential fails,\nthe client is still created. Each end-user submits their own values at\nruntime.\n"
                           }
                         }
                       },
@@ -46888,6 +47054,16 @@
           },
           "400": {
             "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Another MCP client already has the name, or an MCP client or Virtual MCP already serves the endpoint slug.",
             "content": {
               "application/json": {
                 "schema": {
@@ -47066,6 +47242,10 @@
                     },
                     "description": "For `per_user_headers` clients only. Cannot be set to an empty list.\nUpdating this list flips every existing active per-user credential row\nto `needs_update`; callers will be sent back to the submission form on\ntheir next tool call to satisfy the new schema. The retained admin\ndiscovery credential is flipped the same way; repair it by calling\nPOST /api/mcp/client/{id}/verify-headers with fresh sample values.\n"
                   },
+                  "per_user_discovery": {
+                    "type": "boolean",
+                    "description": "Per-user auth types only, and not for openapi clients. Omitted\npreserves the stored value. Turning it on deletes the admin credential\nand the discovery the client keeps; each caller's tools, prompts and\nresources are then discovered with their own credential. Turning it\noff deletes every caller's discovery: a `per_user_headers` or\n`token_exchange` client goes back to pending_verification, and a\n`per_user_oauth` client needs its admin credential again through\nPOST /api/mcp/client/{id}/reauthorize.\nWhile it is on, POST /api/mcp/client/{id}/refresh-tools and\nPOST /api/mcp/client/{id}/reauthorize return 400, as do\nPOST /api/mcp/client/{id}/verify-headers and\nPOST /api/mcp/client/{id}/verify-exchange on a verified client.\n"
+                  },
                   "token_exchange": {
                     "type": "object",
                     "required": [
@@ -47134,7 +47314,7 @@
                   },
                   "tls_config": {
                     "type": "object",
-                    "description": "TLS configuration for HTTP and SSE connections.\nNot applicable to stdio or inprocess connection types.\n",
+                    "description": "TLS configuration for HTTP, SSE and OpenAPI connections (for OpenAPI, the HTTP\nclient that calls the API). Not applicable to stdio or inprocess connection types.\nOn an enabled client a change applies at once: a client with a persistent\nconnection reconnects with it, a per-call client uses it from its next call, and\nan OpenAPI client rebuilds the HTTP client that calls the API.\nA per-call client with none, headers or oauth auth also refreshes its tool list\nwith it; a per-user client's tool list picks it up at its next periodic check.\nFor headers and none auth the change is first tried against the server, and a\nfailure answers 422 with nothing changed. If applying it to the live client then\nfails, the change is still stored and the answer is 200 with status\npartial_success. A client with a persistent connection then keeps serving on its\ncurrent connection and uses the stored change from its next reconnect; call\nPOST /api/mcp/client/{id}/reconnect to apply it now. The exception is a redial\nthat finds the client's OAuth credential needs re-authorization: the connection\nis closed and the client moves to needs_reauth until it is reauthorized. A\ndisabled client stores the change and connects with it when it is enabled again.\n",
                     "properties": {
                       "insecure_skip_verify": {
                         "type": "boolean",
@@ -47142,7 +47322,7 @@
                       },
                       "ca_cert_pem": {
                         "type": "string",
-                        "description": "PEM-encoded CA certificate to trust for MCP server connections.\nUse when the MCP server uses a self-signed or private CA certificate.\nSupports env.VAR_NAME syntax to read the certificate from an environment variable.\n"
+                        "description": "PEM-encoded CA certificate to trust for MCP server connections.\nUse when the MCP server uses a self-signed or private CA certificate.\nSupports env.VAR_NAME syntax to read the certificate from an environment variable.\nA value that does not parse as a PEM certificate is refused when the client is\ncreated or edited, unless insecure_skip_verify is set.\n"
                       }
                     }
                   },
@@ -47197,6 +47377,16 @@
           },
           "400": {
             "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Nothing is applied. Either another MCP client already has the requested name, or the request changes oauth_config on a client whose OAuth verification has not completed.\n",
             "content": {
               "application/json": {
                 "schema": {
@@ -47323,6 +47513,16 @@
           },
           "400": {
             "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -48166,7 +48366,7 @@
     "/api/mcp/sessions/{id}": {
       "delete": {
         "summary": "Revoke an MCP session",
-        "description": "Revokes a session by primary key. Accepts these row kinds:\n- OAuth token rows → hard-deletes the token plus any pending OAuth flow\n  for the same binding (so an in-flight callback can't undo the revoke)\n- Header credential rows → hard-deletes the credential plus any pending\n  header submission flow for the same binding\n- Pending per-user-headers flow rows → hard-deletes just the flow\n\nNote: pending per-user OAuth flow rows are **not** revocable by this\nendpoint — they expire naturally or are cleared when the bound token\nrow is revoked. To cancel a pending OAuth flow, revoke its parent token\n(if one exists) or wait for expiry.\n\nBifrost does **not** call the upstream provider's revoke endpoint —\nrevocation is local. Per-user-headers credentials never call upstream.\n",
+        "description": "Revokes a session by primary key. Accepts these row kinds:\n- OAuth token rows → hard-deletes the token plus any pending OAuth flow\n  for the same binding, so a callback that has not yet claimed that flow\n  cannot undo the revoke\n- Header credential rows → hard-deletes the credential plus any pending\n  header submission flow for the same binding\n- Pending per-user-headers flow rows → hard-deletes just the flow\n- Pending per-user OAuth flow rows → hard-deletes just the flow, so a\n  callback that has not yet claimed it can no longer mint a token. A\n  callback already completing at that moment can still save its token,\n  which then appears as a session that can be revoked\n\nBifrost does **not** call the upstream provider's revoke endpoint —\nrevocation is local. Per-user-headers credentials never call upstream.\n",
         "operationId": "revokeMcpSession",
         "x-mint": {
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPGateway:Delete` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
@@ -48303,6 +48503,117 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/api/mcp/sessions/{id}/refresh": {
+      "post": {
+        "summary": "Refresh the tools of an MCP session's caller",
+        "description": "Discovers the tools, prompts and resources of the caller a session row\nbelongs to again, with the credential the row stores, and keeps what it\nfinds as that caller's discovery of the row's MCP client. Use it after the\nupstream server adds or removes tools, so the caller is served them\nwithout signing in again.\n\nOnly an `active` OAuth token or header credential of a `user` or `vk`\ncaller can be refreshed, on an MCP client with `per_user_discovery` on\nthat is not awaiting admin verification. A `user` row can be refreshed\nonly by that user; the row's `can_refresh` says whether the caller may.\n\nA refresh that cannot discover answers 502 and keeps the caller's\nexisting discovery. If the row is revoked or replaced while discovery\nruns, nothing is stored and the refresh answers 409.\n",
+        "operationId": "refreshMcpSession",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPGateway:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "tags": [
+          "MCP"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Session row ID (OAuth token or header credential)"
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The caller's tools were discovered again",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Response for POST /api/mcp/sessions/{id}/refresh, with what the new discovery holds.",
+                  "required": [
+                    "status",
+                    "tool_count",
+                    "prompt_count",
+                    "resource_count"
+                  ],
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "success"
+                    },
+                    "tool_count": {
+                      "type": "integer",
+                      "description": "Tools the caller's new discovery holds"
+                    },
+                    "prompt_count": {
+                      "type": "integer",
+                      "description": "Prompts the caller's new discovery holds"
+                    },
+                    "resource_count": {
+                      "type": "integer",
+                      "description": "Resources plus resource templates the caller's new discovery holds"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The row cannot be refreshed: its client keeps one tool list for every\ncaller, it belongs to a session-bound caller, its client is awaiting\nadmin verification, or its credential needs reauthorizing or updated\nheaders first\n"
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A user's session, refreshed by someone other than that user"
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The row was revoked or replaced while its tools were being discovered"
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Discovery with the stored credential failed; the caller keeps their existing discovery"
           }
         }
       }
@@ -48921,6 +49232,16 @@
               }
             }
           },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -48941,7 +49262,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `VirtualKeys:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "List virtual keys",
-        "description": "Returns a list of all virtual keys with their configurations.\n\n**Metadata filters:** add one `metadata_<key>=<value>` query parameter per metadata\nkey to match, where `<key>` is the metadata key itself (for example\n`?metadata_cost_center=cc-42&metadata_environment=prod`). Only virtual keys whose\nmetadata has every given key set to exactly the given value are returned. A key that\nis not 1-256 characters of letters, digits, '.', '_' and '-' is rejected with a 400.\nThese parameters have dynamic names, so they are described here rather than declared\nas individual parameters.\n",
+        "description": "Returns a list of all virtual keys with their configurations.\n\n**Pagination:** with none of `limit`, `offset`, `search`, `export`, `sort_by` or a\nfilter parameter, the response holds every virtual key, including each key's `value`.\nAny of those parameters switches to the paged path: one page of at most 100 keys,\n25 by default, ordered by `created_at` ascending unless `sort_by` says otherwise. A\n`limit` above 100 is clamped to 100 without an error, so `?limit=1000` returns the\noldest 100 keys. Read `limit` and `total_count` from the response and page with\n`offset` until `offset >= total_count`. `export=true` raises the cap to 10,000 keys\nper page and defaults `limit` to 10,000.\n\n**Metadata filters:** add one `metadata_<key>=<value>` query parameter per metadata\nkey to match, where `<key>` is the metadata key itself (for example\n`?metadata_cost_center=cc-42&metadata_environment=prod`). Only virtual keys whose\nmetadata has every given key set to exactly the given value are returned. A key that\nis not 1-256 characters of letters, digits, '.', '_' and '-' is rejected with a 400.\nThese parameters have dynamic names, so they are described here rather than declared\nas individual parameters.\n",
         "tags": [
           "Governance"
         ],
@@ -48958,10 +49279,12 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Maximum number of virtual keys to return",
+            "description": "Page size, 0 to 100 (default 25). Values above 100 are clamped to 100 without an error, and 0 uses the default, so read `limit` back from the response. Page with `offset` until `offset >= total_count`. With `export=true` the bound is 10,000 and the default is 10,000.",
             "schema": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "maximum": 100,
+              "default": 25
             }
           },
           {
@@ -48970,7 +49293,8 @@
             "description": "Number of virtual keys to skip",
             "schema": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "default": 0
             }
           },
           {
@@ -49034,7 +49358,7 @@
           {
             "name": "export",
             "in": "query",
-            "description": "If true, enables export pagination limits",
+            "description": "If true, uses the export page bounds: `limit` defaults to 10,000 and is capped at 10,000 instead of 100.",
             "schema": {
               "type": "boolean",
               "default": false
@@ -49467,7 +49791,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `VirtualKeys:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Rotate virtual key",
-        "description": "Generates a new value for the virtual key. When the client vk_rotation_cooldown setting is non-zero, the retired value keeps authenticating until previous_value_expires_at; otherwise it stops working immediately.\n",
+        "description": "Generates a new credential value for the virtual key while leaving its configuration,\nassignments, budgets, and rate limits unchanged.\n\nWhen the client `vk_rotation_cooldown` setting is non-zero, the previous value keeps\nauthenticating until `previous_value_expires_at`. Otherwise, on the node handling the\nrequest, the previous value is invalidated before a successful response is returned.\nIf the cooldown setting cannot be read, rotation proceeds with a zero cooldown, so check\n`previous_value_expires_at` in the response before relying on a grace period. Only the\nmost recently retired value is kept: rotating again during the cooldown replaces it, and\nthe older value stops authenticating immediately.\n\nRotation also revokes the key's MCP OAuth grants (pending authorization codes and active\nrefresh tokens) in the same transaction, regardless of the cooldown. MCP clients that\nauthorized with this virtual key must authorize again.\n\nIn a clustered deployment, peer invalidation is asynchronous. Until each peer processes the\ncluster update and reloads the virtual key, that peer may continue to accept the previous\nvalue. There is no fixed upper bound when a peer is unavailable, so wait for cluster\nconvergence before treating the previous credential as revoked cluster-wide.\n\nThe new credential is returned in `virtual_key.value`. Store it securely and update clients\nthat use the previous value.\n",
         "tags": [
           "Governance"
         ],
@@ -49493,19 +49817,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "required": [
-                    "message",
-                    "virtual_key"
-                  ],
-                  "properties": {
-                    "message": {
-                      "type": "string"
-                    },
-                    "virtual_key": {
-                      "$ref": "#/components/schemas/VirtualKey"
-                    }
-                  }
+                  "$ref": "#/components/schemas/VirtualKeyResponse"
                 }
               }
             }
@@ -50046,7 +50358,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `VirtualKeys:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Rotate multiple virtual keys",
-        "description": "Generates a new value for each listed virtual key. When the client vk_rotation_cooldown setting is non-zero, each retired value keeps authenticating until previous_value_expires_at; otherwise it stops working immediately.\n",
+        "description": "Generates a new value for each listed virtual key. When the client vk_rotation_cooldown setting is non-zero, each retired value keeps authenticating until previous_value_expires_at; otherwise it stops working immediately. If the cooldown setting cannot be read, the keys rotate with a zero cooldown, so check each key's previous_value_expires_at. Only the most recently retired value of a key is kept; rotating it again during the cooldown replaces that value. Each rotation also revokes the key's MCP OAuth grants (pending authorization codes and active refresh tokens), so MCP clients that authorized with it must authorize again. In a clustered deployment, peer invalidation is asynchronous: until each peer processes the cluster update and reloads the key, it may still accept the retired value, with no fixed upper bound while a peer is unavailable, so wait for cluster convergence before treating a previous credential as revoked cluster-wide.\n",
         "tags": [
           "Governance"
         ],
@@ -50165,7 +50477,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Teams:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "List teams",
-        "description": "Returns a list of all teams.\n",
+        "description": "Returns a list of all teams.\n\n**Pagination:** without `limit`, `offset` or `search`, the response holds every\nteam. Any of the three switches to the paged path: one page of at most 100 teams,\n25 by default, ordered by `created_at` ascending. A `limit` above 100 is clamped\nto 100 without an error. Page with `offset` until `offset >= total_count`.\n",
         "tags": [
           "Governance"
         ],
@@ -50174,6 +50486,35 @@
             "name": "customer_id",
             "in": "query",
             "description": "Filter teams by customer ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, 0 to 100 (default 25). Values above 100 are clamped to 100 without an error, and 0 uses the default, so read `limit` back from the response. Page with `offset` until `offset >= total_count`.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100,
+              "default": 25
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Number of teams to skip",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "Case-insensitive substring match against the team name",
             "schema": {
               "type": "string"
             }
@@ -50688,11 +51029,40 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Customers:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "List customers",
-        "description": "Returns a list of all customers.\n",
+        "description": "Returns a list of all customers.\n\n**Pagination:** without `limit`, `offset` or `search`, the response holds every\ncustomer. Any of the three switches to the paged path: one page of at most 100\ncustomers, 25 by default, ordered by `created_at` ascending. A `limit` above 100\nis clamped to 100 without an error. Page with `offset` until `offset >= total_count`.\n",
         "tags": [
           "Governance"
         ],
         "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, 0 to 100 (default 25). Values above 100 are clamped to 100 without an error, and 0 uses the default, so read `limit` back from the response. Page with `offset` until `offset >= total_count`.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100,
+              "default": 25
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Number of customers to skip",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "Case-insensitive substring match against the customer name",
+            "schema": {
+              "type": "string"
+            }
+          },
           {
             "name": "from_memory",
             "in": "query",
@@ -52819,10 +53189,12 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Maximum number of results to return",
+            "description": "Page size, 0 to 100 (default 25). Values above 100 are clamped to 100 without an error, and 0 uses the default, so read `limit` back from the response. Page with `offset` until `offset >= total_count`. Without `limit`, `offset`, `search`, `scope`, `scope_id` or `provider`, every model limit is returned. With `from_memory=true` the 100 cap does not apply and an omitted `limit` returns every match.",
             "schema": {
               "type": "integer",
-              "minimum": 1
+              "minimum": 0,
+              "maximum": 100,
+              "default": 25
             }
           },
           {
@@ -52831,7 +53203,8 @@
             "description": "Number of results to skip (for pagination)",
             "schema": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "default": 0
             }
           },
           {
@@ -53436,10 +53809,12 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Maximum number of results to return. A non-empty `limit`, `offset`, or `search` value switches the response to the paginated shape.",
+            "description": "Page size, 0 to 100 (default 25). Values above 100 are clamped to 100 without an error, and 0 uses the default, so read `limit` back from the response. Page with `offset` until `offset >= total_count`. A non-empty `limit`, `offset`, or `search` value switches the response to the paginated shape.",
             "schema": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "maximum": 100,
+              "default": 25
             }
           },
           {
@@ -53448,7 +53823,8 @@
             "description": "Number of results to skip",
             "schema": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "default": 0
             }
           }
         ],
@@ -55006,6 +55382,24 @@
                               }
                             }
                           },
+                          "relay_grants": {
+                            "type": "array",
+                            "description": "Relays that keys governed by this profile may call. With no grants, they may call no relay.",
+                            "items": {
+                              "type": "object",
+                              "description": "One relay the holder may call at /relay/{relay_name}/....",
+                              "required": [
+                                "relay_name"
+                              ],
+                              "properties": {
+                                "relay_name": {
+                                  "type": "string",
+                                  "description": "Name of an existing relay."
+                                }
+                              },
+                              "additionalProperties": false
+                            }
+                          },
                           "mcp_configs": {
                             "type": "array",
                             "items": {
@@ -55480,6 +55874,24 @@
                       }
                     }
                   },
+                  "relay_grants": {
+                    "type": "array",
+                    "description": "Relays that keys governed by this profile may call. Each relay_name must name an existing relay.",
+                    "items": {
+                      "type": "object",
+                      "description": "One relay the holder may call at /relay/{relay_name}/....",
+                      "required": [
+                        "relay_name"
+                      ],
+                      "properties": {
+                        "relay_name": {
+                          "type": "string",
+                          "description": "Name of an existing relay."
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
                   "mcp_configs": {
                     "type": "array",
                     "items": {
@@ -55919,6 +56331,24 @@
                                 "description": "Virtual MCP ID, as an alternative to virtual_mcp_name. Wins when both are set."
                               }
                             }
+                          }
+                        },
+                        "relay_grants": {
+                          "type": "array",
+                          "description": "Relays that keys governed by this profile may call. With no grants, they may call no relay.",
+                          "items": {
+                            "type": "object",
+                            "description": "One relay the holder may call at /relay/{relay_name}/....",
+                            "required": [
+                              "relay_name"
+                            ],
+                            "properties": {
+                              "relay_name": {
+                                "type": "string",
+                                "description": "Name of an existing relay."
+                              }
+                            },
+                            "additionalProperties": false
                           }
                         },
                         "mcp_configs": {
@@ -56421,6 +56851,24 @@
                                 "description": "Virtual MCP ID, as an alternative to virtual_mcp_name. Wins when both are set."
                               }
                             }
+                          }
+                        },
+                        "relay_grants": {
+                          "type": "array",
+                          "description": "Relays that keys governed by this profile may call. With no grants, they may call no relay.",
+                          "items": {
+                            "type": "object",
+                            "description": "One relay the holder may call at /relay/{relay_name}/....",
+                            "required": [
+                              "relay_name"
+                            ],
+                            "properties": {
+                              "relay_name": {
+                                "type": "string",
+                                "description": "Name of an existing relay."
+                              }
+                            },
+                            "additionalProperties": false
                           }
                         },
                         "mcp_configs": {
@@ -56941,6 +57389,24 @@
                       }
                     }
                   },
+                  "relay_grants": {
+                    "type": "array",
+                    "description": "Replaces the profile's relay grants. Omit to leave them unchanged; [] clears them. Each relay_name must name an existing relay.",
+                    "items": {
+                      "type": "object",
+                      "description": "One relay the holder may call at /relay/{relay_name}/....",
+                      "required": [
+                        "relay_name"
+                      ],
+                      "properties": {
+                        "relay_name": {
+                          "type": "string",
+                          "description": "Name of an existing relay."
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
                   "mcp_configs": {
                     "type": "array",
                     "items": {
@@ -57380,6 +57846,24 @@
                                 "description": "Virtual MCP ID, as an alternative to virtual_mcp_name. Wins when both are set."
                               }
                             }
+                          }
+                        },
+                        "relay_grants": {
+                          "type": "array",
+                          "description": "Relays that keys governed by this profile may call. With no grants, they may call no relay.",
+                          "items": {
+                            "type": "object",
+                            "description": "One relay the holder may call at /relay/{relay_name}/....",
+                            "required": [
+                              "relay_name"
+                            ],
+                            "properties": {
+                              "relay_name": {
+                                "type": "string",
+                                "description": "Name of an existing relay."
+                              }
+                            },
+                            "additionalProperties": false
                           }
                         },
                         "mcp_configs": {
@@ -57951,6 +58435,24 @@
                             }
                           }
                         },
+                        "relay_grants": {
+                          "type": "array",
+                          "description": "Relays that keys governed by this profile may call. With no grants, they may call no relay.",
+                          "items": {
+                            "type": "object",
+                            "description": "One relay the holder may call at /relay/{relay_name}/....",
+                            "required": [
+                              "relay_name"
+                            ],
+                            "properties": {
+                              "relay_name": {
+                                "type": "string",
+                                "description": "Name of an existing relay."
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        },
                         "mcp_configs": {
                           "type": "array",
                           "items": {
@@ -58440,6 +58942,24 @@
                                 "description": "Virtual MCP ID, as an alternative to virtual_mcp_name. Wins when both are set."
                               }
                             }
+                          }
+                        },
+                        "relay_grants": {
+                          "type": "array",
+                          "description": "Relays that keys governed by this profile may call. With no grants, they may call no relay.",
+                          "items": {
+                            "type": "object",
+                            "description": "One relay the holder may call at /relay/{relay_name}/....",
+                            "required": [
+                              "relay_name"
+                            ],
+                            "properties": {
+                              "relay_name": {
+                                "type": "string",
+                                "description": "Name of an existing relay."
+                              }
+                            },
+                            "additionalProperties": false
                           }
                         },
                         "mcp_configs": {
@@ -58954,6 +59474,24 @@
                             }
                           }
                         },
+                        "relay_grants": {
+                          "type": "array",
+                          "description": "Relays that keys governed by this profile may call. With no grants, they may call no relay.",
+                          "items": {
+                            "type": "object",
+                            "description": "One relay the holder may call at /relay/{relay_name}/....",
+                            "required": [
+                              "relay_name"
+                            ],
+                            "properties": {
+                              "relay_name": {
+                                "type": "string",
+                                "description": "Name of an existing relay."
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        },
                         "mcp_configs": {
                           "type": "array",
                           "items": {
@@ -59129,10 +59667,14 @@
                         "provider_configs",
                         "budgets",
                         "rate_limit",
-                        "mcp_tool_groups",
+                        "virtual_mcps",
+                        "mcp_configs",
+                        "agent_grants",
+                        "relay_grants",
                         "mcp_servers",
                         "mcp_tool_overrides"
-                      ]
+                      ],
+                      "description": "mcp_configs is the current MCP field; mcp_servers and mcp_tool_overrides are retired aliases for it, accepted for back-compat. An unrecognized value, including the removed mcp_tool_groups, is refused."
                     },
                     "minItems": 1
                   },
@@ -61137,6 +61679,24 @@
                               "additionalProperties": false
                             }
                           },
+                          "relay_grants": {
+                            "type": "array",
+                            "description": "Relays that requests scoped to this project may call. With access_rule intersect, no grants allow no relay; with union, the caller's own relay access remains available and these grants only add to it.",
+                            "items": {
+                              "type": "object",
+                              "description": "One relay the holder may call at /relay/{relay_name}/....",
+                              "required": [
+                                "relay_name"
+                              ],
+                              "properties": {
+                                "relay_name": {
+                                  "type": "string",
+                                  "description": "Name of an existing relay."
+                                }
+                              },
+                              "additionalProperties": false
+                            }
+                          },
                           "members": {
                             "type": "array",
                             "readOnly": true,
@@ -62197,6 +62757,24 @@
                       },
                       "additionalProperties": false
                     }
+                  },
+                  "relay_grants": {
+                    "type": "array",
+                    "description": "Relays that requests scoped to this project may call. Each relay_name must name an existing relay.",
+                    "items": {
+                      "type": "object",
+                      "description": "One relay the holder may call at /relay/{relay_name}/....",
+                      "required": [
+                        "relay_name"
+                      ],
+                      "properties": {
+                        "relay_name": {
+                          "type": "string",
+                          "description": "Name of an existing relay."
+                        }
+                      },
+                      "additionalProperties": false
+                    }
                   }
                 },
                 "additionalProperties": false
@@ -62871,6 +63449,24 @@
                                 "type": "integer",
                                 "minimum": 1,
                                 "description": "Virtual MCP ID, as an alternative to virtual_mcp_name. Wins when both are set."
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        },
+                        "relay_grants": {
+                          "type": "array",
+                          "description": "Relays that requests scoped to this project may call. With access_rule intersect, no grants allow no relay; with union, the caller's own relay access remains available and these grants only add to it.",
+                          "items": {
+                            "type": "object",
+                            "description": "One relay the holder may call at /relay/{relay_name}/....",
+                            "required": [
+                              "relay_name"
+                            ],
+                            "properties": {
+                              "relay_name": {
+                                "type": "string",
+                                "description": "Name of an existing relay."
                               }
                             },
                             "additionalProperties": false
@@ -63949,6 +64545,24 @@
                             "additionalProperties": false
                           }
                         },
+                        "relay_grants": {
+                          "type": "array",
+                          "description": "Relays that requests scoped to this project may call. With access_rule intersect, no grants allow no relay; with union, the caller's own relay access remains available and these grants only add to it.",
+                          "items": {
+                            "type": "object",
+                            "description": "One relay the holder may call at /relay/{relay_name}/....",
+                            "required": [
+                              "relay_name"
+                            ],
+                            "properties": {
+                              "relay_name": {
+                                "type": "string",
+                                "description": "Name of an existing relay."
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        },
                         "members": {
                           "type": "array",
                           "readOnly": true,
@@ -65010,6 +65624,25 @@
                       "additionalProperties": false
                     }
                   },
+                  "relay_grants": {
+                    "type": "array",
+                    "nullable": true,
+                    "description": "Replaces the project's relay grants. Omit to leave them unchanged; [] clears them.",
+                    "items": {
+                      "type": "object",
+                      "description": "One relay the holder may call at /relay/{relay_name}/....",
+                      "required": [
+                        "relay_name"
+                      ],
+                      "properties": {
+                        "relay_name": {
+                          "type": "string",
+                          "description": "Name of an existing relay."
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
                   "reset_budget_usage": {
                     "type": "boolean",
                     "description": "Clears recorded spend on the budgets this body restates that the project already held, and on each member's slice of them. A budget the edit introduces has no spend to clear, and one the body does not name is left alone."
@@ -65687,6 +66320,24 @@
                                 "type": "integer",
                                 "minimum": 1,
                                 "description": "Virtual MCP ID, as an alternative to virtual_mcp_name. Wins when both are set."
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        },
+                        "relay_grants": {
+                          "type": "array",
+                          "description": "Relays that requests scoped to this project may call. With access_rule intersect, no grants allow no relay; with union, the caller's own relay access remains available and these grants only add to it.",
+                          "items": {
+                            "type": "object",
+                            "description": "One relay the holder may call at /relay/{relay_name}/....",
+                            "required": [
+                              "relay_name"
+                            ],
+                            "properties": {
+                              "relay_name": {
+                                "type": "string",
+                                "description": "Name of an existing relay."
                               }
                             },
                             "additionalProperties": false
@@ -68437,6 +69088,24 @@
                                   "type": "integer",
                                   "minimum": 1,
                                   "description": "Virtual MCP ID, as an alternative to virtual_mcp_name. Wins when both are set."
+                                }
+                              },
+                              "additionalProperties": false
+                            }
+                          },
+                          "relay_grants": {
+                            "type": "array",
+                            "description": "Relays that requests scoped to this project may call. With access_rule intersect, no grants allow no relay; with union, the caller's own relay access remains available and these grants only add to it.",
+                            "items": {
+                              "type": "object",
+                              "description": "One relay the holder may call at /relay/{relay_name}/....",
+                              "required": [
+                                "relay_name"
+                              ],
+                              "properties": {
+                                "relay_name": {
+                                  "type": "string",
+                                  "description": "Name of an existing relay."
                                 }
                               },
                               "additionalProperties": false
@@ -71976,7 +72645,7 @@
           }
         },
         "summary": "List teams (deprecated path)",
-        "description": "Returns a list of all teams.\n",
+        "description": "Legacy alias that lists teams one page at a time. `page` is 1-based and `limit`\ndefaults to 20 with a maximum of 100. Use `/api/governance/teams` for new\nintegrations.\n",
         "tags": [
           "Governance"
         ],
@@ -73070,6 +73739,24 @@
                               }
                             }
                           },
+                          "relay_grants": {
+                            "type": "array",
+                            "description": "Relays that keys governed by this profile may call. With no grants, they may call no relay.",
+                            "items": {
+                              "type": "object",
+                              "description": "One relay the holder may call at /relay/{relay_name}/....",
+                              "required": [
+                                "relay_name"
+                              ],
+                              "properties": {
+                                "relay_name": {
+                                  "type": "string",
+                                  "description": "Name of an existing relay."
+                                }
+                              },
+                              "additionalProperties": false
+                            }
+                          },
                           "mcp_configs": {
                             "type": "array",
                             "items": {
@@ -73547,6 +74234,24 @@
                       }
                     }
                   },
+                  "relay_grants": {
+                    "type": "array",
+                    "description": "Relays that keys governed by this profile may call. Each relay_name must name an existing relay.",
+                    "items": {
+                      "type": "object",
+                      "description": "One relay the holder may call at /relay/{relay_name}/....",
+                      "required": [
+                        "relay_name"
+                      ],
+                      "properties": {
+                        "relay_name": {
+                          "type": "string",
+                          "description": "Name of an existing relay."
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
                   "mcp_configs": {
                     "type": "array",
                     "items": {
@@ -73986,6 +74691,24 @@
                                 "description": "Virtual MCP ID, as an alternative to virtual_mcp_name. Wins when both are set."
                               }
                             }
+                          }
+                        },
+                        "relay_grants": {
+                          "type": "array",
+                          "description": "Relays that keys governed by this profile may call. With no grants, they may call no relay.",
+                          "items": {
+                            "type": "object",
+                            "description": "One relay the holder may call at /relay/{relay_name}/....",
+                            "required": [
+                              "relay_name"
+                            ],
+                            "properties": {
+                              "relay_name": {
+                                "type": "string",
+                                "description": "Name of an existing relay."
+                              }
+                            },
+                            "additionalProperties": false
                           }
                         },
                         "mcp_configs": {
@@ -74491,6 +75214,24 @@
                                 "description": "Virtual MCP ID, as an alternative to virtual_mcp_name. Wins when both are set."
                               }
                             }
+                          }
+                        },
+                        "relay_grants": {
+                          "type": "array",
+                          "description": "Relays that keys governed by this profile may call. With no grants, they may call no relay.",
+                          "items": {
+                            "type": "object",
+                            "description": "One relay the holder may call at /relay/{relay_name}/....",
+                            "required": [
+                              "relay_name"
+                            ],
+                            "properties": {
+                              "relay_name": {
+                                "type": "string",
+                                "description": "Name of an existing relay."
+                              }
+                            },
+                            "additionalProperties": false
                           }
                         },
                         "mcp_configs": {
@@ -75014,6 +75755,24 @@
                       }
                     }
                   },
+                  "relay_grants": {
+                    "type": "array",
+                    "description": "Replaces the profile's relay grants. Omit to leave them unchanged; [] clears them. Each relay_name must name an existing relay.",
+                    "items": {
+                      "type": "object",
+                      "description": "One relay the holder may call at /relay/{relay_name}/....",
+                      "required": [
+                        "relay_name"
+                      ],
+                      "properties": {
+                        "relay_name": {
+                          "type": "string",
+                          "description": "Name of an existing relay."
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
                   "mcp_configs": {
                     "type": "array",
                     "items": {
@@ -75453,6 +76212,24 @@
                                 "description": "Virtual MCP ID, as an alternative to virtual_mcp_name. Wins when both are set."
                               }
                             }
+                          }
+                        },
+                        "relay_grants": {
+                          "type": "array",
+                          "description": "Relays that keys governed by this profile may call. With no grants, they may call no relay.",
+                          "items": {
+                            "type": "object",
+                            "description": "One relay the holder may call at /relay/{relay_name}/....",
+                            "required": [
+                              "relay_name"
+                            ],
+                            "properties": {
+                              "relay_name": {
+                                "type": "string",
+                                "description": "Name of an existing relay."
+                              }
+                            },
+                            "additionalProperties": false
                           }
                         },
                         "mcp_configs": {
@@ -76030,6 +76807,24 @@
                             }
                           }
                         },
+                        "relay_grants": {
+                          "type": "array",
+                          "description": "Relays that keys governed by this profile may call. With no grants, they may call no relay.",
+                          "items": {
+                            "type": "object",
+                            "description": "One relay the holder may call at /relay/{relay_name}/....",
+                            "required": [
+                              "relay_name"
+                            ],
+                            "properties": {
+                              "relay_name": {
+                                "type": "string",
+                                "description": "Name of an existing relay."
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        },
                         "mcp_configs": {
                           "type": "array",
                           "items": {
@@ -76522,6 +77317,24 @@
                                 "description": "Virtual MCP ID, as an alternative to virtual_mcp_name. Wins when both are set."
                               }
                             }
+                          }
+                        },
+                        "relay_grants": {
+                          "type": "array",
+                          "description": "Relays that keys governed by this profile may call. With no grants, they may call no relay.",
+                          "items": {
+                            "type": "object",
+                            "description": "One relay the holder may call at /relay/{relay_name}/....",
+                            "required": [
+                              "relay_name"
+                            ],
+                            "properties": {
+                              "relay_name": {
+                                "type": "string",
+                                "description": "Name of an existing relay."
+                              }
+                            },
+                            "additionalProperties": false
                           }
                         },
                         "mcp_configs": {
@@ -77039,6 +77852,24 @@
                             }
                           }
                         },
+                        "relay_grants": {
+                          "type": "array",
+                          "description": "Relays that keys governed by this profile may call. With no grants, they may call no relay.",
+                          "items": {
+                            "type": "object",
+                            "description": "One relay the holder may call at /relay/{relay_name}/....",
+                            "required": [
+                              "relay_name"
+                            ],
+                            "properties": {
+                              "relay_name": {
+                                "type": "string",
+                                "description": "Name of an existing relay."
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        },
                         "mcp_configs": {
                           "type": "array",
                           "items": {
@@ -77217,10 +78048,14 @@
                         "provider_configs",
                         "budgets",
                         "rate_limit",
-                        "mcp_tool_groups",
+                        "virtual_mcps",
+                        "mcp_configs",
+                        "agent_grants",
+                        "relay_grants",
                         "mcp_servers",
                         "mcp_tool_overrides"
-                      ]
+                      ],
+                      "description": "mcp_configs is the current MCP field; mcp_servers and mcp_tool_overrides are retired aliases for it, accepted for back-compat. An unrecognized value, including the removed mcp_tool_groups, is refused."
                     },
                     "minItems": 1
                   },
@@ -80202,10 +81037,12 @@
           {
             "name": "limit",
             "in": "query",
+            "description": "Page size, 0 to 100 (default 25). Values above 100 are clamped to 100 without an error, and 0 uses the default, so read `limit` back from the response. Page with `offset` until `offset >= total_count`.",
             "schema": {
               "type": "integer",
-              "default": 25,
-              "maximum": 100
+              "minimum": 0,
+              "maximum": 100,
+              "default": 25
             }
           },
           {
@@ -80213,6 +81050,7 @@
             "in": "query",
             "schema": {
               "type": "integer",
+              "minimum": 0,
               "default": 0
             }
           },
@@ -80290,7 +81128,7 @@
                               "properties": {
                                 "mcp_client_id": {
                                   "type": "string",
-                                  "description": "ID of a deployed MCP client."
+                                  "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                                 },
                                 "tool_names": {
                                   "type": "array",
@@ -80418,7 +81256,7 @@
                       "properties": {
                         "mcp_client_id": {
                           "type": "string",
-                          "description": "ID of a deployed MCP client."
+                          "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                         },
                         "tool_names": {
                           "type": "array",
@@ -80490,7 +81328,7 @@
                             "properties": {
                               "mcp_client_id": {
                                 "type": "string",
-                                "description": "ID of a deployed MCP client."
+                                "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                               },
                               "tool_names": {
                                 "type": "array",
@@ -80641,7 +81479,7 @@
                             "properties": {
                               "mcp_client_id": {
                                 "type": "string",
-                                "description": "ID of a deployed MCP client."
+                                "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                               },
                               "tool_names": {
                                 "type": "array",
@@ -80781,7 +81619,7 @@
                       "properties": {
                         "mcp_client_id": {
                           "type": "string",
-                          "description": "ID of a deployed MCP client."
+                          "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                         },
                         "tool_names": {
                           "type": "array",
@@ -80853,7 +81691,7 @@
                             "properties": {
                               "mcp_client_id": {
                                 "type": "string",
-                                "description": "ID of a deployed MCP client."
+                                "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                               },
                               "tool_names": {
                                 "type": "array",
@@ -81266,7 +82104,7 @@
                               "properties": {
                                 "mcp_client_id": {
                                   "type": "string",
-                                  "description": "ID of a deployed MCP client."
+                                  "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                                 },
                                 "tool_names": {
                                   "type": "array",
@@ -81401,7 +82239,7 @@
                       "properties": {
                         "mcp_client_id": {
                           "type": "string",
-                          "description": "ID of a deployed MCP client."
+                          "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                         },
                         "tool_names": {
                           "type": "array",
@@ -81500,7 +82338,7 @@
                             "properties": {
                               "mcp_client_id": {
                                 "type": "string",
-                                "description": "ID of a deployed MCP client."
+                                "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                               },
                               "tool_names": {
                                 "type": "array",
@@ -81650,7 +82488,7 @@
                             "properties": {
                               "mcp_client_id": {
                                 "type": "string",
-                                "description": "ID of a deployed MCP client."
+                                "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                               },
                               "tool_names": {
                                 "type": "array",
@@ -81783,7 +82621,7 @@
                       "properties": {
                         "mcp_client_id": {
                           "type": "string",
-                          "description": "ID of a deployed MCP client."
+                          "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                         },
                         "tool_names": {
                           "type": "array",
@@ -81882,7 +82720,7 @@
                             "properties": {
                               "mcp_client_id": {
                                 "type": "string",
-                                "description": "ID of a deployed MCP client."
+                                "description": "ID of a deployed MCP client (its `client_id`, not its name). A value that names no client is rejected with 400."
                               },
                               "tool_names": {
                                 "type": "array",
@@ -83620,10 +84458,12 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Page size (default 25, maximum 100). Sending limit, offset or search returns one page. Ignored when scope is set.",
+            "description": "Page size, 0 to 100 (default 25). Values above 100 are clamped to 100 without an error, and 0 uses the default, so read `limit` back from the response. Page with `offset` until `offset >= total_count`. Sending limit, offset or search returns one page; without them every rule is returned. Ignored when scope is set.",
             "schema": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "maximum": 100,
+              "default": 25
             }
           },
           {
@@ -83632,7 +84472,8 @@
             "description": "Number of rules to skip.",
             "schema": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "default": 0
             }
           },
           {
@@ -84246,6 +85087,13 @@
                             }
                           ]
                         },
+                        "min_confidence": {
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 1,
+                          "default": 0,
+                          "description": "Confidence an answer must reach to publish its tier. An answer below it publishes no tier. A missing confidence is derived from the tier probabilities; an answer with neither is kept. 0 keeps every answer."
+                        },
                         "criteria": {
                           "type": "object",
                           "description": "Per-tier overrides of the shipped decision-model definitions, signals, and examples. Any tier or field left out sends the default.",
@@ -84688,6 +85536,13 @@
                           }
                         ]
                       },
+                      "min_confidence": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1,
+                        "default": 0,
+                        "description": "Confidence an answer must reach to publish its tier. An answer below it publishes no tier. A missing confidence is derived from the tier probabilities; an answer with neither is kept. 0 keeps every answer."
+                      },
                       "criteria": {
                         "type": "object",
                         "description": "Per-tier overrides of the shipped decision-model definitions, signals, and examples. Any tier or field left out sends the default.",
@@ -85106,6 +85961,13 @@
                               "minimum": 0
                             }
                           ]
+                        },
+                        "min_confidence": {
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 1,
+                          "default": 0,
+                          "description": "Confidence an answer must reach to publish its tier. An answer below it publishes no tier. A missing confidence is derived from the tier probabilities; an answer with neither is kept. 0 keeps every answer."
                         },
                         "criteria": {
                           "type": "object",
@@ -85569,6 +86431,13 @@
                               "minimum": 0
                             }
                           ]
+                        },
+                        "min_confidence": {
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 1,
+                          "default": 0,
+                          "description": "Confidence an answer must reach to publish its tier. An answer below it publishes no tier. A missing confidence is derived from the tier probabilities; an answer with neither is kept. 0 keeps every answer."
                         },
                         "criteria": {
                           "type": "object",
@@ -86261,10 +87130,12 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Page size (default 25, maximum 100). Sending limit, offset or search returns one page. Ignored when scope is set.",
+            "description": "Page size, 0 to 100 (default 25). Values above 100 are clamped to 100 without an error, and 0 uses the default, so read `limit` back from the response. Page with `offset` until `offset >= total_count`. Sending limit, offset or search returns one page; without them every rule is returned. Ignored when scope is set.",
             "schema": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "maximum": 100,
+              "default": 25
             }
           },
           {
@@ -86273,7 +87144,8 @@
             "description": "Number of rules to skip.",
             "schema": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "default": 0
             }
           },
           {
@@ -86917,6 +87789,13 @@
                             }
                           ]
                         },
+                        "min_confidence": {
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 1,
+                          "default": 0,
+                          "description": "Confidence an answer must reach to publish its tier. An answer below it publishes no tier. A missing confidence is derived from the tier probabilities; an answer with neither is kept. 0 keeps every answer."
+                        },
                         "criteria": {
                           "type": "object",
                           "description": "Per-tier overrides of the shipped decision-model definitions, signals, and examples. Any tier or field left out sends the default.",
@@ -87365,6 +88244,13 @@
                           }
                         ]
                       },
+                      "min_confidence": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1,
+                        "default": 0,
+                        "description": "Confidence an answer must reach to publish its tier. An answer below it publishes no tier. A missing confidence is derived from the tier probabilities; an answer with neither is kept. 0 keeps every answer."
+                      },
                       "criteria": {
                         "type": "object",
                         "description": "Per-tier overrides of the shipped decision-model definitions, signals, and examples. Any tier or field left out sends the default.",
@@ -87783,6 +88669,13 @@
                               "minimum": 0
                             }
                           ]
+                        },
+                        "min_confidence": {
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 1,
+                          "default": 0,
+                          "description": "Confidence an answer must reach to publish its tier. An answer below it publishes no tier. A missing confidence is derived from the tier probabilities; an answer with neither is kept. 0 keeps every answer."
                         },
                         "criteria": {
                           "type": "object",
@@ -88252,6 +89145,13 @@
                               "minimum": 0
                             }
                           ]
+                        },
+                        "min_confidence": {
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 1,
+                          "default": 0,
+                          "description": "Confidence an answer must reach to publish its tier. An answer below it publishes no tier. A missing confidence is derived from the tier probabilities; an answer with neither is kept. 0 keeps every answer."
                         },
                         "criteria": {
                           "type": "object",
@@ -88880,6 +89780,16 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "timestamp",
+            "in": "query",
+            "required": false,
+            "description": "The log entry's `timestamp` as returned by `GET /api/logs`, in RFC 3339 format. Optional:\nthe ClickHouse log store uses it to look the entry up without scanning every partition,\nand still finds the entry by ID alone when the timestamp does not match. Other log stores ignore it.\n",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
           }
         ],
         "security": [
@@ -88897,6 +89807,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/LogEntry"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
                 }
               }
             }
@@ -102989,16 +103909,23 @@
             "name": "limit",
             "in": "query",
             "required": false,
+            "description": "Page size, 0 to 100 (default 25). Values above 100 are clamped to 100 without an error, and 0 uses the default, so read `limit` back from the response. Page with `offset` until `offset >= total_count`. A negative value is rejected with a 400.",
             "schema": {
-              "type": "integer"
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100,
+              "default": 25
             }
           },
           {
             "name": "offset",
             "in": "query",
             "required": false,
+            "description": "Number of rows to skip. A negative value is rejected with a 400.",
             "schema": {
-              "type": "integer"
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
             }
           }
         ],
@@ -103438,16 +104365,23 @@
             "name": "limit",
             "in": "query",
             "required": false,
+            "description": "Page size, 0 to 100 (default 25). Values above 100 are clamped to 100 without an error, and 0 uses the default, so read `limit` back from the response. Page with `offset` until `offset >= total_count`. A negative value is rejected with a 400.",
             "schema": {
-              "type": "integer"
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100,
+              "default": 25
             }
           },
           {
             "name": "offset",
             "in": "query",
             "required": false,
+            "description": "Number of rows to skip. A negative value is rejected with a 400.",
             "schema": {
-              "type": "integer"
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
             }
           }
         ],
@@ -103611,16 +104545,23 @@
             "name": "limit",
             "in": "query",
             "required": false,
+            "description": "Page size, 0 to 100 (default 25). Values above 100 are clamped to 100 without an error, and 0 uses the default, so read `limit` back from the response. Page with `offset` until `offset >= total_count`. A negative value is rejected with a 400.",
             "schema": {
-              "type": "integer"
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100,
+              "default": 25
             }
           },
           {
             "name": "offset",
             "in": "query",
             "required": false,
+            "description": "Number of rows to skip. A negative value is rejected with a 400.",
             "schema": {
-              "type": "integer"
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
             }
           }
         ],
@@ -106077,16 +107018,21 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "integer"
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100,
+              "default": 25
             },
-            "description": "Page size. Nonpositive values default to 25; values above 100 are clamped to 100."
+            "description": "Page size. Nonpositive values default to 25; values above 100 are clamped to 100 without an error. Page with `offset` until `offset >= total_count`."
           },
           {
             "name": "offset",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "integer"
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
             },
             "description": "Page offset. Negative values are clamped to zero."
           }
@@ -110145,6 +111091,111 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/relays/openapi-spec": {
+      "post": {
+        "operationId": "fetchRelayOpenAPISpec",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Relays:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Fetch an OpenAPI document for route import",
+        "description": "Fetches an OpenAPI or Swagger document (JSON or YAML) from `spec_url` and returns its text unparsed, with the URL it was\nread from after redirects, so the route import can read a document the browser cannot fetch itself. The fetch uses the\nsame timeout, size cap and private-network guard as the MCP OpenAPI preview: an unauthenticated caller may not reach\nloopback or private addresses. Nothing is stored.\n",
+        "tags": [
+          "Relays"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "spec_url"
+                ],
+                "properties": {
+                  "spec_url": {
+                    "type": "string",
+                    "description": "Absolute http(s) URL of the document."
+                  }
+                }
+              },
+              "example": {
+                "spec_url": "https://exa.ai/docs/exa-spec.json"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The fetched document",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "spec": {
+                      "type": "string",
+                      "description": "The document text as served."
+                    },
+                    "spec_url": {
+                      "type": "string",
+                      "description": "The URL the document was read from, after redirects."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted, or `spec_url` points at a private address for an unauthenticated caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The document is larger than the size cap",
             "content": {
               "application/json": {
                 "schema": {
@@ -130179,7 +131230,7 @@
                         "additionalProperties": false
                       }
                     ],
-                    "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and the JWT iss claim. Required whenever mcp_server_auth_mode is 'both' or 'oauth'. A config.json that enables one of those modes without it fails validation at startup; a PUT /api/config that does the same is refused with HTTP 400. The issuer is never derived from the request Host header while OAuth is enabled. Supports env var syntax (\"env.MY_VAR\").\n"
+                    "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and the JWT iss claim. A trailing slash is ignored. Required whenever mcp_server_auth_mode is 'both' or 'oauth'. A config.json that enables one of those modes without it fails validation at startup; a PUT /api/config that does the same is refused with HTTP 400. The issuer is never derived from the request Host header while OAuth is enabled. Supports env var syntax (\"env.MY_VAR\").\n"
                   },
                   "auth_code_ttl": {
                     "type": "integer",
@@ -130720,7 +131771,7 @@
                         "additionalProperties": false
                       }
                     ],
-                    "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and the JWT iss claim. Required whenever mcp_server_auth_mode is 'both' or 'oauth'. A config.json that enables one of those modes without it fails validation at startup; a PUT /api/config that does the same is refused with HTTP 400. The issuer is never derived from the request Host header while OAuth is enabled. Supports env var syntax (\"env.MY_VAR\").\n"
+                    "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and the JWT iss claim. A trailing slash is ignored. Required whenever mcp_server_auth_mode is 'both' or 'oauth'. A config.json that enables one of those modes without it fails validation at startup; a PUT /api/config that does the same is refused with HTTP 400. The issuer is never derived from the request Host header while OAuth is enabled. Supports env var syntax (\"env.MY_VAR\").\n"
                   },
                   "auth_code_ttl": {
                     "type": "integer",
@@ -134040,6 +135091,14 @@
               }
             }
           },
+          "callers_by_tool": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": "Set for a client with `per_user_discovery` on, whose `tools` are the\nnames seen in its callers' discoveries, names only, since descriptions\nand schemas can differ from one caller to another: how many callers'\ndiscoveries include each. Absent until a caller holds one.\n"
+          },
           "state": {
             "type": "string",
             "enum": [
@@ -134087,6 +135146,76 @@
               }
             },
             "description": "Virtual key assignments for this MCP client"
+          },
+          "credential": {
+            "type": "object",
+            "description": "Read-only view of the credential the client holds on its own behalf, as\nopposed to the per-caller credentials listed under /api/mcp/sessions: the\nshared token of an `oauth` client, the retained admin token of a\n`per_user_oauth` or `token_exchange` client, or the retained admin header\nvalues of a `per_user_headers` client. Absent for auth types that hold no\nsuch credential (`none`, `headers`), while none has been issued yet (a\nclient still pending its one-time authorization), and for a client with\n`per_user_discovery` on, which keeps none. Secret material never appears:\na refresh token is reported as present or absent, and header values only\nby name.\n",
+            "required": [
+              "kind",
+              "status",
+              "has_refresh_token",
+              "created_at",
+              "updated_at"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "oauth",
+                  "headers"
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "orphaned",
+                  "needs_reauth",
+                  "needs_update"
+                ],
+                "description": "`oauth` credentials are `active`, `orphaned` or `needs_reauth`;\n`headers` credentials are `active`, `orphaned` or `needs_update`.\n"
+              },
+              "status_reason": {
+                "type": "string",
+                "description": "Why an `oauth` credential left `active`: the provider's rejection of\nthe last refresh (HTTP status plus the OAuth error and description), a\ncredential rotation, or a failed admin exchange. Absent while `active`\nand for `headers` credentials.\n"
+              },
+              "expires_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "When the access token of an `oauth` credential expires. Absent when\nthe provider did not report an expiry, and for `headers` credentials.\n"
+              },
+              "last_refreshed_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "Set on an `oauth` credential once its access token has been refreshed\nor the credential re-authorized at least once.\n"
+              },
+              "has_refresh_token": {
+                "type": "boolean",
+                "description": "Whether the provider issued a refresh token, so the access token can\nbe renewed without another consent. Always false for `headers`\ncredentials.\n"
+              },
+              "scopes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "The scopes the provider reported at consent time. Absent when it\nreported none.\n"
+              },
+              "header_keys": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "The names of the headers the stored admin values of a `headers`\ncredential cover, sorted. Absent when the stored values hold no\nheaders or could not be read. A name in the client's\n`per_user_header_keys` that is missing from a present list is one the\nstored values predate.\n"
+              },
+              "created_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "updated_at": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
           }
         }
       },
@@ -134296,6 +135425,11 @@
             ],
             "additionalProperties": false,
             "description": "For `token_exchange` clients only. `client_id` and `client_secret` are\nredacted in this response.\n"
+          },
+          "per_user_discovery": {
+            "type": "boolean",
+            "default": false,
+            "description": "When true, each caller's tools, prompts and resources are discovered\nwith their own credential, and the client keeps no admin credential or\ndiscovery of its own. The list response's `tools` are then the names\nseen in callers' discoveries (see `callers_by_tool`).\n"
           },
           "disabled": {
             "type": "boolean",
@@ -135094,6 +136228,10 @@
           },
           "name": {
             "type": "string"
+          },
+          "per_user_discovery": {
+            "type": "boolean",
+            "description": "Set on sessions list rows. True when each caller keeps their own\ndiscovery on this client; absent when the client keeps one discovery\nevery caller shares.\n"
           }
         }
       },
@@ -135131,7 +136269,8 @@
           "auth_mode",
           "status",
           "created_at",
-          "can_reauth"
+          "can_reauth",
+          "can_refresh"
         ],
         "properties": {
           "id": {
@@ -135228,6 +136367,38 @@
           "can_reauth": {
             "type": "boolean",
             "description": "Mirrors the server-side identity gate on POST /api/mcp/sessions/{id}/reauth.\nAlways true for vk- and session-mode rows. For user-mode rows, true only\nwhen the calling user matches the row's bound user — admin DAC scope is\nenough to see the row, but reauthing mints credentials under whoever clicks\nthe URL, so the server returns 403 to non-bound callers. The UI hides the\nRe-authenticate / Edit values action when this is false.\n"
+          },
+          "can_refresh": {
+            "type": "boolean",
+            "description": "Whether POST /api/mcp/sessions/{id}/refresh accepts this row for the\ncalling user: an active OAuth token or header credential of a `user` or\n`vk` caller on an MCP client with `per_user_discovery` on that is not\nawaiting admin verification, and, for a `user` row, only when the calling\nuser is the row's user. The UI offers Refresh tools only when this is true.\n"
+          },
+          "discovery": {
+            "type": "object",
+            "description": "What Bifrost discovered with this credential's binding on a client with\nper_user_discovery on. Token and header rows of user and virtual-key\ncallers only; absent when the binding holds none.\n",
+            "required": [
+              "discovered_at",
+              "tool_count",
+              "prompt_count",
+              "resource_count"
+            ],
+            "properties": {
+              "discovered_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "When the upstream last answered tools/list for this caller"
+              },
+              "tool_count": {
+                "type": "integer"
+              },
+              "prompt_count": {
+                "type": "integer"
+              },
+              "resource_count": {
+                "type": "integer",
+                "description": "Resources plus resource templates"
+              }
+            },
+            "nullable": true
           }
         }
       },
@@ -135397,6 +136568,10 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "discovery_error": {
+            "type": "string",
+            "description": "Present when the credential was stored but the MCP client's tools could not be loaded with it. Connecting to the client again retries."
           }
         }
       },
@@ -136409,7 +137584,20 @@
             }
           },
           "count": {
-            "type": "integer"
+            "type": "integer",
+            "description": "Number of teams in this response"
+          },
+          "total_count": {
+            "type": "integer",
+            "description": "Number of teams matching the query before `limit` and `offset`. Equals `count` on the unpaged path."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Page size applied after clamping (default 25, maximum 100). On the unpaged path, the number of teams returned."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Offset applied; 0 on the unpaged path."
           }
         }
       },
@@ -136530,7 +137718,20 @@
             }
           },
           "count": {
-            "type": "integer"
+            "type": "integer",
+            "description": "Number of customers in this response"
+          },
+          "total_count": {
+            "type": "integer",
+            "description": "Number of customers matching the query before `limit` and `offset`. Equals `count` on the unpaged path."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Page size applied after clamping (default 25, maximum 100). On the unpaged path, the number of customers returned."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Offset applied; 0 on the unpaged path."
           }
         }
       },
@@ -138389,9 +139590,21 @@
               "$ref": "#/components/schemas/ModelConfig"
             }
           },
+          "count": {
+            "type": "integer",
+            "description": "Number of model configs in this response"
+          },
           "total_count": {
             "type": "integer",
-            "description": "Total number of model configs matching the filter (used for pagination)"
+            "description": "Number of model configs matching the query before `limit` and `offset`. Equals `count` on the unpaged path."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Page size applied after clamping (default 25, maximum 100). On the unpaged path, the number of model configs returned."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Offset applied; 0 on the unpaged path."
           }
         }
       },
@@ -139030,6 +140243,45 @@
             "type": "number",
             "minimum": 0
           },
+          "input_cost_per_token_voice_live": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Azure Voice Live input rate per text token, used on Voice Live turns in place of input_cost_per_token. Each _voice_live rate falls back to its normal rate when unset."
+          },
+          "output_cost_per_token_voice_live": {
+            "type": "number",
+            "minimum": 0
+          },
+          "cache_read_input_token_cost_voice_live": {
+            "type": "number",
+            "minimum": 0
+          },
+          "input_cost_per_audio_token_voice_live": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_audio_token_voice_live": {
+            "type": "number",
+            "minimum": 0
+          },
+          "input_cost_per_standard_speech_audio_token_voice_live": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Azure Voice Live rate per input audio token handled by Azure speech to text."
+          },
+          "output_cost_per_standard_speech_audio_token_voice_live": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Azure Voice Live rate per output audio token from an Azure standard voice."
+          },
+          "input_cost_per_custom_speech_audio_token_voice_live": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_custom_speech_audio_token_voice_live": {
+            "type": "number",
+            "minimum": 0
+          },
           "output_cost_per_video_per_second_480p": {
             "type": "number",
             "minimum": 0,
@@ -139054,6 +140306,11 @@
             "type": "number",
             "minimum": 0,
             "description": "Per-second output rate for 4K video. Matched on the short edge of the generated video's size; falls back to output_cost_per_video_per_second when unset."
+          },
+          "output_cost_per_video_token": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per-token output rate for video, for providers that meter generated video in tokens (BytePlus Seedance bills on the task's completion_tokens). Takes precedence over output_cost_per_token for video output tokens. When no token rate applies (unset or zero), video output falls back to the per-second video rates."
           },
           "web_search_cost_per_request": {
             "type": "number",

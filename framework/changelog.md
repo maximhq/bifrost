@@ -1,6 +1,1 @@
-- feat: added Azure Blob object storage for logs and skills with connection-string or default Azure identity authentication, JSON/gzip and Parquet support
-- fix: MCP OAuth discovery uses protected resource metadata only when its resource matches the MCP server URL (RFC 9728)
-- fix: logstore builds without cgo again [@jeremym-tanium](https://github.com/jeremym-tanium)
-- chore: upgraded Go to 1.27.3 and core to v1.13.1
-- [fix]: MiniMax video jobs are settled and priced by the video job sweeper instead of being skipped
-- [feat]: BytePlus video jobs are settled and priced by the video job sweeper
+- fix: ClickHouse log store looks single logs up by id without scanning the whole logs table: `FindByID` takes an optional timestamp hint (sent by `GET /api/logs/{id}?timestamp=`) to prune to the row's partition and granule, `id` and `parent_request_id` get bloom-filter skip indexes (backfilled once onto existing tables with a background `MATERIALIZE INDEX`), and id reads in the update path use them under `FINAL` (#9316)

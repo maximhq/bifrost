@@ -52,11 +52,11 @@ var azureEndpointStarters = map[string]bool{
 	"models":      true,
 }
 
-// isAzureSDKRequest reports whether the request originates from the Azure OpenAI
+// IsAzureSDKRequest reports whether the request originates from the Azure OpenAI
 // SDK by inspecting the User-Agent header directly from the HTTP request, or arrives
 // on the /azure resource mount, whose URL already names Azure.
 // This avoids any ordering dependency on AzureEndpointPreHook.
-func isAzureSDKRequest(ctx *fasthttp.RequestCtx) bool {
+func IsAzureSDKRequest(ctx *fasthttp.RequestCtx) bool {
 	return strings.Contains(string(ctx.UserAgent()), "AzureOpenAI") || bytes.HasPrefix(ctx.Path(), azureOpenAIMountPrefix)
 }
 
@@ -783,7 +783,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 				hydrateOpenAIRequestFromLargePayloadMetadata(ctx, bifrostCtx, req)
 				schemas.ExtractAndSetUserAgentFromHeaders(extractHeadersFromRequest(ctx), bifrostCtx)
-				if isAzureSDKRequest(ctx) {
+				if IsAzureSDKRequest(ctx) {
 					bifrostCtx.SetValue(schemas.BifrostContextKeyIsAzureUserAgent, true)
 				}
 				return nil
@@ -988,7 +988,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 				hydrateOpenAIRequestFromLargePayloadMetadata(ctx, bifrostCtx, req)
 				schemas.ExtractAndSetUserAgentFromHeaders(extractHeadersFromRequest(ctx), bifrostCtx)
-				if isAzureSDKRequest(ctx) {
+				if IsAzureSDKRequest(ctx) {
 					bifrostCtx.SetValue(schemas.BifrostContextKeyIsAzureUserAgent, true)
 				}
 				return nil
@@ -1393,7 +1393,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			},
 			PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 				hydrateOpenAIRequestFromLargePayloadMetadata(ctx, bifrostCtx, req)
-				if isAzureSDKRequest(ctx) {
+				if IsAzureSDKRequest(ctx) {
 					bifrostCtx.SetValue(schemas.BifrostContextKeyIsAzureUserAgent, true)
 				}
 				return nil
@@ -1939,7 +1939,7 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 				// Provider is parsed from JSON body (extra_body), default to OpenAI if not set
 				if createReq, ok := req.(*schemas.BifrostBatchCreateRequest); ok {
 					if createReq.Provider == "" {
-						if isAzureSDKRequest(ctx) {
+						if IsAzureSDKRequest(ctx) {
 							createReq.Provider = schemas.Azure
 						} else {
 							createReq.Provider = schemas.OpenAI
@@ -2259,7 +2259,7 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 				// Default to OpenAI if provider not set from extra_body
 				if bifrostReq, ok := req.(*schemas.BifrostFileUploadRequest); ok {
 					if bifrostReq.Provider == "" {
-						if isAzureSDKRequest(ctx) {
+						if IsAzureSDKRequest(ctx) {
 							bifrostReq.Provider = schemas.Azure
 						} else {
 							bifrostReq.Provider = schemas.OpenAI
@@ -2491,7 +2491,7 @@ func extractBatchListQueryParams(_ lib.HandlerStore) PreRequestCallback {
 				listReq.Provider = schemas.ModelProvider(provider)
 			}
 			if listReq.Provider == "" {
-				if isAzureSDKRequest(ctx) {
+				if IsAzureSDKRequest(ctx) {
 					listReq.Provider = schemas.Azure
 				} else {
 					listReq.Provider = schemas.OpenAI
@@ -2534,7 +2534,7 @@ func extractBatchIDFromPath(_ lib.HandlerStore) PreRequestCallback {
 		// Extract provider from extra_query (for GET requests)
 		provider := schemas.ModelProvider(string(ctx.QueryArgs().Peek("provider")))
 		if provider == "" {
-			if isAzureSDKRequest(ctx) {
+			if IsAzureSDKRequest(ctx) {
 				provider = schemas.Azure
 			} else {
 				provider = schemas.OpenAI
@@ -2615,7 +2615,7 @@ func extractFileListQueryParams(_ lib.HandlerStore) PreRequestCallback {
 				listReq.Provider = schemas.ModelProvider(provider)
 			}
 			if listReq.Provider == "" {
-				if isAzureSDKRequest(ctx) {
+				if IsAzureSDKRequest(ctx) {
 					listReq.Provider = schemas.Azure
 				} else {
 					listReq.Provider = schemas.OpenAI
@@ -2719,7 +2719,7 @@ func extractFileIDFromPath(_ lib.HandlerStore) PreRequestCallback {
 		// Extract provider from extra_query
 		provider := schemas.ModelProvider(string(ctx.QueryArgs().Peek("provider")))
 		if provider == "" {
-			if isAzureSDKRequest(ctx) {
+			if IsAzureSDKRequest(ctx) {
 				provider = schemas.Azure
 			} else {
 				provider = schemas.OpenAI
@@ -2804,7 +2804,7 @@ func extractResponsesLifecycleFromPath(_ lib.HandlerStore) PreRequestCallback {
 		}
 		provider := schemas.ModelProvider(string(ctx.QueryArgs().Peek("provider")))
 		if provider == "" {
-			if isAzureSDKRequest(ctx) {
+			if IsAzureSDKRequest(ctx) {
 				provider = schemas.Azure
 			} else {
 				provider = schemas.OpenAI

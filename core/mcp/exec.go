@@ -6,7 +6,7 @@ import (
 	"sync"
 
 	"github.com/mark3labs/mcp-go/client"
-	"github.com/maximhq/bifrost/core/internal/injectedauth"
+	"github.com/maximhq/bifrost/core/internal/mcpvouch"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -82,7 +82,33 @@ func (m *MCPManager) executeToolWithHooks(
 		}
 	}
 
+	// A call named like a client's connect tool is marked on a context of its own
+	// before the gate, so a policy plugin can authorize a connect by the caller's
+	// access to the client (see mcpvouch) and the mark covers this call only.
+	// Whether it is Bifrost's connect or an upstream tool of that name in the
+	// caller's discovery is settled once the caller is known: a direct tool
+	// execution names its caller only when a policy plugin resolves its
+	// credential, after this point.
+	// A call already vouched for as injected runs a tool from the caller's own
+	// discovery, so it is never Bifrost's connect and keeps its mark.
+	var connectState *schemas.MCPClientState
+	if toolName := request.GetToolName(); strings.HasSuffix(toolName, connectToolSuffix) {
+		if state := m.connectCandidate(toolName); state != nil && mcpvouch.Kind(ctx, state.ExecutionConfig.Name, toolName) != schemas.MCPToolCallKindInjected {
+			connectState = state
+			ctx = schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			mcpvouch.SetConnect(ctx, connectState.ExecutionConfig.Name, toolName, func(callCtx *schemas.BifrostContext) (bool, bool) {
+				return m.ConnectToolClient(callCtx, toolName) != nil, connectCaller(callCtx)
+			})
+		}
+	}
+
 	resp, bErr := m.RunWithPluginPipeline(ctx, request, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
+		// A plugin may have retargeted the request; connect runs only for the
+		// tool it was decided on, and only as the plugins were told it would.
+		if connectState != nil && preReq.GetToolName() == ConnectToolName(connectState.ExecutionConfig.Name) &&
+			mcpvouch.Kind(ctx, connectState.ExecutionConfig.Name, preReq.GetToolName()) == schemas.MCPToolCallKindConnect {
+			return m.runConnect(ctx, preReq, connectState)
+		}
 		// Resolve and acquire after PreMCPHook so policy plugins can reject denied
 		// MCP clients before any auth or transport work.
 		state, conn, release, prepErr := m.prepareToolExecution(ctx, preReq)
@@ -91,16 +117,14 @@ func (m *MCPManager) executeToolWithHooks(
 		}
 		defer release()
 
-		// state == nil signals a code-mode tool: pass nil conn/config/mapping and
+		// state == nil signals a code-mode tool: pass nil conn/config and
 		// ToolsManager.ExecuteTool routes directly to CodeMode.
 		var executionConfig *schemas.MCPClientConfig
-		var toolNameMapping map[string]string
 		if state != nil {
 			executionConfig = state.ExecutionConfig
-			toolNameMapping = state.ToolNameMapping
 		}
 
-		result, opErr := m.toolsManager.ExecuteTool(ctx, preReq, conn, executionConfig, toolNameMapping)
+		result, opErr := m.toolsManager.ExecuteTool(ctx, preReq, conn, executionConfig)
 		if opErr != nil {
 			return nil, opErr
 		}
@@ -122,7 +146,7 @@ func (m *MCPManager) executeToolWithHooks(
 //   - For regular MCP tools: state non-nil, conn is the live transport, release
 //     must be called by the caller (defer).
 //   - For code-mode tools: state nil, conn nil, release is a no-op. The caller
-//     forwards nil conn/config/mapping to ToolsManager.ExecuteTool which
+//     forwards nil conn/config to ToolsManager.ExecuteTool which
 //     dispatches via the CodeMode implementation.
 //
 // Errors here mean the call should NOT run — neither the envelope plugin
@@ -134,13 +158,17 @@ func (m *MCPManager) prepareToolExecution(ctx *schemas.BifrostContext, request *
 		return nil, nil, nil, fmt.Errorf("tool call missing function name")
 	}
 
-	// Code-mode tools have no upstream client — skip client lookup.
+	// Code-mode tools have no upstream client — skip client lookup. A narrowed request is refused
+	// them unless it can reach a code-mode client, the rule that lists them.
 	codeMode := m.toolsManager.GetCodeMode()
 	if codeMode != nil && codeMode.IsCodeModeTool(toolName) {
+		if requestNarrowed(ctx) && !m.codeModeClientReachable(ctx) {
+			return nil, nil, nil, fmt.Errorf("tool '%s' is not permitted (no code mode client available to this request)", toolName)
+		}
 		return nil, nil, func() {}, nil
 	}
 
-	state := m.GetClientForTool(toolName)
+	state, _ := m.GetClientForTool(ctx, toolName)
 	if state == nil {
 		return nil, nil, nil, fmt.Errorf("tool '%s' is not available or not permitted", toolName)
 	}
@@ -178,6 +206,23 @@ func (m *MCPManager) prepareToolExecution(ctx *schemas.BifrostContext, request *
 	return state, conn, release, nil
 }
 
+// requestNarrowed reports whether the request carries an include list (virtual key, slug or
+// include headers). An unnarrowed request may use every tool, code mode included.
+func requestNarrowed(ctx *schemas.BifrostContext) bool {
+	return ctx.Value(schemas.MCPContextKeyIncludeClients) != nil || ctx.Value(schemas.MCPContextKeyIncludeTools) != nil
+}
+
+// codeModeClientReachable reports whether the request can see a code-mode client, the rule
+// GetAvailableTools uses to list the code-mode tools.
+func (m *MCPManager) codeModeClientReachable(ctx *schemas.BifrostContext) bool {
+	for clientName := range m.GetToolPerClient(ctx) {
+		if client := m.GetClientByName(clientName); client != nil && client.ExecutionConfig.IsCodeModeClient {
+			return true
+		}
+	}
+	return false
+}
+
 // checkToolExecutionPermitted enforces the same filters that GetToolPerClient applies
 // for tool discovery, in the same order. Without these a caller could invoke a tool by
 // name that was deliberately hidden from the tool list.
@@ -187,7 +232,7 @@ func (m *MCPManager) prepareToolExecution(ctx *schemas.BifrostContext, request *
 //  3. Tool allow-list   — client-level ToolsToExecute (most restrictive).
 //  4. Tool narrowing    — request-context MCPContextKeyIncludeTools.
 //
-// A provider-injected tool (core's injectedauth marker names it) skips 2-4.
+// A provider-injected tool (core's mcpvouch mark names it) skips 2-4.
 // The operator chose it in the provider config, and the caller never saw it in the
 // request, so neither the client's allow-list nor the caller's include lists apply.
 // The marker names one client and one exact prefixed tool, and both must match, so it
@@ -197,7 +242,10 @@ func checkToolExecutionPermitted(ctx *schemas.BifrostContext, state *schemas.MCP
 	if state.State == schemas.MCPConnectionStateDisabled {
 		return fmt.Errorf("tool '%s' is not permitted (client %s is disabled)", toolName, clientName)
 	}
-	if injectedauth.Authorizes(ctx, clientName, toolName) {
+	if withheldFromCallers(state.State, state.ExecutionConfig) {
+		return fmt.Errorf("tool '%s' is not permitted (client %s awaits admin verification)", toolName, clientName)
+	}
+	if mcpvouch.Kind(ctx, clientName, toolName) == schemas.MCPToolCallKindInjected {
 		return nil
 	}
 	var includeClients []string

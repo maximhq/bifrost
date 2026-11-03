@@ -146,20 +146,20 @@ func TestExtractRealtimeTokenFromAuth(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		auth *authHeaders
-		want string
+		setupHeaders *sessionHeaders
+		want         string
 	}{
-		"authorization bearer": {auth: &authHeaders{authorization: "Bearer ek_auth"}, want: "ek_auth"},
-		"virtual key header":   {auth: &authHeaders{virtualKey: "ek_vk"}, want: "ek_vk"},
-		"api key header":       {auth: &authHeaders{apiKey: "ek_api"}, want: "ek_api"},
-		"google api key":       {auth: &authHeaders{googAPIKey: "ek_google"}, want: "ek_google"},
-		"authorization wins":   {auth: &authHeaders{authorization: "Bearer ek_auth", virtualKey: "ek_vk"}, want: "ek_auth"},
-		"nil":                  {auth: nil, want: ""},
+		"authorization bearer": {setupHeaders: &sessionHeaders{authorization: "Bearer ek_auth"}, want: "ek_auth"},
+		"virtual key header":   {setupHeaders: &sessionHeaders{virtualKey: "ek_vk"}, want: "ek_vk"},
+		"api key header":       {setupHeaders: &sessionHeaders{apiKey: "ek_api"}, want: "ek_api"},
+		"google api key":       {setupHeaders: &sessionHeaders{googAPIKey: "ek_google"}, want: "ek_google"},
+		"authorization wins":   {setupHeaders: &sessionHeaders{authorization: "Bearer ek_auth", virtualKey: "ek_vk"}, want: "ek_auth"},
+		"nil":                  {setupHeaders: nil, want: ""},
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			if got := extractRealtimeTokenFromAuth(test.auth); got != test.want {
+			if got := extractRealtimeTokenFromAuth(test.setupHeaders); got != test.want {
 				t.Fatalf("extractRealtimeTokenFromAuth() = %q, want %q", got, test.want)
 			}
 		})

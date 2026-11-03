@@ -60,6 +60,8 @@ export interface MCPClientConfig {
   openapiCredentials?: Record<string, string>
   /** Custom base URL typed into the preview panel */
   openapiBaseUrl?: string
+  /** "Per-Caller Discovery" switch; only rendered for per-user auth types */
+  perUserDiscovery?: boolean
 }
 
 /**
@@ -70,6 +72,10 @@ export class MCPRegistryPage extends BasePage {
   readonly createBtn: Locator
   readonly sheet: Locator
   readonly detailSheet: Locator
+  /** Read-only sheet a row click opens */
+  readonly viewSheet: Locator
+  /** Settings sheet the row menu's Edit opens */
+  readonly editSheet: Locator
   readonly nameInput: Locator
   readonly saveBtn: Locator
   readonly cancelBtn: Locator
@@ -79,6 +85,7 @@ export class MCPRegistryPage extends BasePage {
   readonly connectionUrlInput: Locator
   readonly codeModeSwitch: Locator
   readonly pingAvailableSwitch: Locator
+  readonly perUserDiscoverySwitch: Locator
   // STDIO inputs
   readonly commandInput: Locator
   readonly argsInput: Locator
@@ -99,6 +106,8 @@ export class MCPRegistryPage extends BasePage {
     )
     this.sheet = page.locator('[role="dialog"]')
     this.detailSheet = page.locator('[role="dialog"]')
+    this.viewSheet = page.getByTestId('mcpclient-view-sheet')
+    this.editSheet = page.getByTestId('mcpclient-edit-sheet')
     this.nameInput = page.locator('[data-testid="client-name-input"]').or(
       this.sheet.getByLabel(/Name/i).first()
     )
@@ -123,6 +132,7 @@ export class MCPRegistryPage extends BasePage {
     // Switches (Radix UI switches)
     this.codeModeSwitch = page.locator('[data-testid="code-mode-switch"]')
     this.pingAvailableSwitch = this.sheet.locator('#ping-available')
+    this.perUserDiscoverySwitch = this.sheet.locator('[data-testid="mcp-per-user-discovery"]')
 
     // STDIO inputs
     this.commandInput = page.locator('[data-testid="stdio-command-input"]')
@@ -328,10 +338,15 @@ export class MCPRegistryPage extends BasePage {
     return JSON.parse(frame ?? text)
   }
 
-  /** Opens the named client's Prompts & Resources tab. */
-  async openPromptsAndResources(name: string): Promise<void> {
-    await this.viewClientDetails(name)
-    await this.detailSheet.getByTestId('mcpclient-tab-resources').click()
+  /** Opens the named client's edit sheet on its Prompts or Resources tab. */
+  async openExposeList(name: string, kind: 'prompts' | 'resources'): Promise<void> {
+    await this.openClientEditor(name)
+    await this.showEditorTab(kind)
+  }
+
+  /** Switches the open edit sheet to one of its tabs; unsaved changes on the others are kept. */
+  async showEditorTab(tab: 'general' | 'authentication' | 'tools' | 'prompts' | 'resources' | 'access'): Promise<void> {
+    await this.editSheet.getByTestId(`mcpclient-tab-${tab}`).click()
   }
 
   /** The serve switch of one prompt (by the server's own name) or resource (by URI or URI template). */
@@ -464,6 +479,14 @@ export class MCPRegistryPage extends BasePage {
           await this.oauthScopesInput.fill(config.oauthScopes)
         }
       }
+
+      if (config.perUserDiscovery !== undefined) {
+        await expect(this.perUserDiscoverySwitch).toBeVisible({ timeout: 5000 })
+        const checked = (await this.perUserDiscoverySwitch.getAttribute('data-state')) === 'checked'
+        if (checked !== config.perUserDiscovery) {
+          await this.perUserDiscoverySwitch.click()
+        }
+      }
     } else if (config.connectionType === 'openapi') {
       await this.parseOpenAPISpec({ supply: () => this.fillOpenAPISource(config) })
       for (const tool of config.openapiDeselectTools ?? []) {
@@ -507,18 +530,22 @@ export class MCPRegistryPage extends BasePage {
     await tab.click()
   }
 
-  /** Type a document into the Paste editor (Monaco), replacing its content */
-  async pasteOpenAPISpec(text: string): Promise<void> {
-    const editor = this.sheet.getByTestId('openapi-spec-paste-editor')
+  /** Set the Paste editor's (Monaco) document under `root`, replacing its content */
+  async pasteOpenAPISpec(text: string, root: Locator = this.sheet): Promise<void> {
+    const editor = root.getByTestId('openapi-spec-paste-editor')
     await expect(editor).toBeVisible({ timeout: 10000 })
-    const textarea = editor.locator('textarea.inputarea')
-    await textarea.waitFor({ state: 'attached', timeout: 10000 })
-    await editor.locator('.monaco-editor').first().click()
-    await this.page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A')
-    await this.page.keyboard.press('Backspace')
-    // insertText bypasses Monaco's auto-closing brackets/quotes, which would
-    // otherwise corrupt a typed JSON document.
-    await this.page.keyboard.insertText(text)
+    await editor.locator('textarea.inputarea').waitFor({ state: 'attached', timeout: 10000 })
+    // The replace panel keeps the editor read-only while it loads the stored document.
+    await expect(root.getByTestId('openapi-replace-spec-loading')).toHaveCount(0, { timeout: 10000 })
+    // Keystrokes and insertText go through Monaco's typing path, where auto-indent and
+    // auto-closing brackets rewrite a JSON document, so the model is set directly.
+    await editor.evaluate(async (el, value) => {
+      // Two frames let React register the editor's change listener, which runs in an effect after mount.
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+      const monaco = (window as any).monaco
+      const target = monaco.editor.getEditors().find((e: any) => el.contains(e.getContainerDomNode()))
+      target.setValue(value)
+    }, text)
   }
 
   async fillOpenAPISpecUrl(url: string): Promise<void> {
@@ -631,7 +658,7 @@ export class MCPRegistryPage extends BasePage {
     await input.fill(url)
   }
 
-  /** Summary line of the stored document on the edit sheet's General tab */
+  /** Summary line of the stored document: the Spec row on the view sheet, or the General tab of the edit sheet */
   async getOpenAPISummaryText(): Promise<string> {
     const summary = this.detailSheet.getByTestId('mcp-client-sheet-openapi-summary')
     await expect(summary).toBeVisible({ timeout: 10000 })
@@ -799,14 +826,53 @@ export class MCPRegistryPage extends BasePage {
   }
 
   /**
-   * View client details from the actions menu
+   * The labels of the items in a client's actions menu, read with the menu
+   * open and closed again afterwards.
+   */
+  async getClientActionLabels(name: string): Promise<string[]> {
+    await this.openClientActions(name)
+    const items = this.page.getByRole('menuitem')
+    await expect(items.first()).toBeVisible({ timeout: 5000 })
+    const labels = (await items.allTextContents()).map((label) => label.trim())
+    await this.page.keyboard.press('Escape')
+    return labels
+  }
+
+  /**
+   * Open the read-only view sheet by clicking the client's row (its name
+   * cell, clear of the row's own controls)
    */
   async viewClientDetails(name: string): Promise<void> {
+    const row = this.getClientRow(name)
+    await expect(row).toBeVisible({ timeout: 10000 })
+    await row.locator('td').first().click()
+    await expect(this.viewSheet).toBeVisible({ timeout: 5000 })
+  }
+
+  /**
+   * Open the read-only view sheet from the client's actions menu, with the
+   * keyboard only
+   */
+  async viewClientDetailsFromKeyboard(name: string): Promise<void> {
+    const row = this.getClientRow(name)
+    await expect(row).toBeVisible({ timeout: 10000 })
+    await row.getByRole('button', { name: /MCP server actions/i }).focus()
+    await this.page.keyboard.press('Enter')
+    const viewItem = this.page.getByRole('menuitem', { name: 'View details', exact: true })
+    await expect(viewItem).toBeFocused({ timeout: 5000 })
+    await this.page.keyboard.press('Enter')
+    await expect(this.viewSheet).toBeVisible({ timeout: 5000 })
+  }
+
+  /**
+   * Open the edit sheet from the client's actions menu
+   */
+  async openClientEditor(name: string): Promise<void> {
     await this.openClientActions(name)
-    const editItem = this.page.getByRole('menuitem', { name: /Edit/i })
+    const editItem = this.page.getByRole('menuitem', { name: 'Edit', exact: true })
     await expect(editItem).toBeVisible({ timeout: 5000 })
     await editItem.click()
-    await expect(this.detailSheet).toBeVisible({ timeout: 5000 })
+    await expect(this.editSheet).toBeVisible({ timeout: 5000 })
   }
 
   /**
@@ -875,7 +941,7 @@ export class MCPRegistryPage extends BasePage {
    * Edit an existing client
    */
   async editClient(name: string, updates: Partial<MCPClientConfig>): Promise<void> {
-    await this.viewClientDetails(name)
+    await this.openClientEditor(name)
 
     // Update name if provided
     if (updates.name) {
@@ -929,10 +995,10 @@ export class MCPRegistryPage extends BasePage {
   }
 
   /**
-   * Toggle tool enabled state in the detail sheet
+   * Toggle tool enabled state in the edit sheet
    */
   async toggleToolEnabled(clientName: string, toolName: string): Promise<void> {
-    await this.viewClientDetails(clientName)
+    await this.openClientEditor(clientName)
 
     // Find the tool row and toggle its enabled switch
     const toolRow = this.detailSheet.locator('tr').filter({ hasText: toolName })
@@ -947,10 +1013,10 @@ export class MCPRegistryPage extends BasePage {
   }
 
   /**
-   * Toggle auto-execute for a tool in the detail sheet
+   * Toggle auto-execute for a tool in the edit sheet
    */
   async toggleAutoExecute(clientName: string, toolName: string): Promise<void> {
-    await this.viewClientDetails(clientName)
+    await this.openClientEditor(clientName)
 
     // Find the tool row and toggle its auto-execute switch (second switch)
     const toolRow = this.detailSheet.locator('tr').filter({ hasText: toolName })
@@ -968,7 +1034,7 @@ export class MCPRegistryPage extends BasePage {
    * Toggle code mode for a client
    */
   async toggleCodeMode(clientName: string): Promise<void> {
-    await this.viewClientDetails(clientName)
+    await this.openClientEditor(clientName)
 
     // Find and toggle the code mode switch
     const codeModeSwitch = this.detailSheet
@@ -1039,13 +1105,13 @@ export class MCPRegistryPage extends BasePage {
   }
 
   /**
-   * Get tools count from the client details sheet
-   * Assumes the detail sheet is already open
+   * Get tools count from the client's view sheet
+   * Assumes the view sheet is already open
    */
   async getToolsCount(): Promise<number> {
-    // Tools live in a table on the detail sheet's Tools tab.
-    await this.detailSheet.getByTestId('mcpclient-tab-tools').click()
-    const toolRows = this.detailSheet.locator('table tbody tr')
+    // Tools live in a table on the view sheet's Tools tab.
+    await this.viewSheet.getByTestId('mcpclient-view-tab-tools').click()
+    const toolRows = this.viewSheet.locator('table tbody tr')
     await toolRows.first().waitFor({ timeout: 10000 }).catch(() => {})
     return await toolRows.count()
   }
@@ -1072,6 +1138,8 @@ export class MCPRegistryPage extends BasePage {
    * Cancel client creation
    */
   async cancelCreation(): Promise<void> {
+    // A toast from the last action can sit over the Cancel button.
+    await this.dismissToasts()
     await this.cancelBtn.click()
     await expect(this.sheet).not.toBeVisible({ timeout: 5000 })
   }

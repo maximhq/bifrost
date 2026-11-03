@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -98,6 +99,120 @@ func (f *fakeInstructionsToolManager) ExecuteChatMCPTool(context.Context, *schem
 
 func (f *fakeInstructionsToolManager) ExecuteResponsesMCPTool(context.Context, *schemas.ResponsesToolMessage) (*schemas.ResponsesMessage, *schemas.BifrostError) {
 	return nil, nil
+}
+
+// fakeResultToolManager serves one tool and answers every call with the configured message.
+type fakeResultToolManager struct {
+	fakeInstructionsToolManager
+	result *schemas.ChatMessage
+}
+
+// ExecuteChatMCPTool returns the configured tool result.
+func (f *fakeResultToolManager) ExecuteChatMCPTool(context.Context, *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
+	return f.result, nil
+}
+
+// callToolResult drives a real tools/call for alpha-echo through a server built with that one
+// tool and returns the decoded result.
+func callToolResult(t *testing.T, tm MCPToolManager) map[string]any {
+	t.Helper()
+	h := &MCPServerHandler{
+		toolManager: tm,
+		config:      &lib.Config{ClientConfig: &configstore.ClientConfig{}},
+	}
+	h.mcpServer = h.buildServer()
+	h.mcpServer.SetTools(h.serverTools([]schemas.ChatTool{{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "alpha-echo"}}})...)
+
+	raw := h.server().HandleMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"alpha-echo","arguments":{}}}`))
+	require.NotNil(t, raw)
+	encoded, err := json.Marshal(raw)
+	require.NoError(t, err)
+	var envelope struct {
+		Result map[string]any `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(encoded, &envelope))
+	require.NotNil(t, envelope.Result, "tools/call answered with a result: %s", encoded)
+	return envelope.Result
+}
+
+// TestToolsCallCarriesTheToolErrorFlag pins that a tool result marked failed reaches the /mcp
+// caller as isError true, with its text. The handler returned every result as a plain text
+// result, so an upstream's isError was dropped and the call looked successful.
+func TestToolsCallCarriesTheToolErrorFlag(t *testing.T) {
+	text := "upstream refused"
+	failed := callToolResult(t, &fakeResultToolManager{result: &schemas.ChatMessage{
+		Role:            schemas.ChatMessageRoleTool,
+		Content:         &schemas.ChatMessageContent{ContentStr: &text},
+		ChatToolMessage: &schemas.ChatToolMessage{IsError: schemas.Ptr(true)},
+	}})
+	assert.Equal(t, true, failed["isError"])
+	content, _ := failed["content"].([]any)
+	require.Len(t, content, 1)
+	assert.Equal(t, text, content[0].(map[string]any)["text"])
+
+	ok := "18C"
+	succeeded := callToolResult(t, &fakeResultToolManager{result: &schemas.ChatMessage{
+		Role:            schemas.ChatMessageRoleTool,
+		Content:         &schemas.ChatMessageContent{ContentStr: &ok},
+		ChatToolMessage: &schemas.ChatToolMessage{},
+	}})
+	assert.NotEqual(t, true, succeeded["isError"], "a successful result is not marked failed")
+}
+
+// syncCtxToolManager records the context SyncMCPServer reads the tool list with.
+type syncCtxToolManager struct {
+	fakeInstructionsToolManager
+	toolsCtx context.Context
+}
+
+func (f *syncCtxToolManager) GetAvailableMCPTools(ctx context.Context) []schemas.ChatTool {
+	f.toolsCtx = ctx
+	return nil
+}
+
+// syncCtxServed records the ctx each resources and prompts list is read with.
+type syncCtxServed struct {
+	MCPResourcesAndPromptsServer
+	ctxs []context.Context
+}
+
+func (f *syncCtxServed) GetAvailableMCPPrompts(ctx context.Context) []mcp.Prompt {
+	f.ctxs = append(f.ctxs, ctx)
+	return nil
+}
+
+func (f *syncCtxServed) GetAvailableMCPResources(ctx context.Context) []mcp.Resource {
+	f.ctxs = append(f.ctxs, ctx)
+	return nil
+}
+
+func (f *syncCtxServed) GetAvailableMCPResourceTemplates(ctx context.Context) []mcp.ResourceTemplate {
+	f.ctxs = append(f.ctxs, ctx)
+	return nil
+}
+
+// Some syncs run on an admin's request. The shared server is built from no caller's identity,
+// or a client with per_user_discovery on would publish that admin's own discovery (its tools,
+// resources and prompts) to everyone.
+func TestSyncMCPServer_ReadsToolsWithoutTheTriggersIdentity(t *testing.T) {
+	tm := &syncCtxToolManager{}
+	served := &syncCtxServed{}
+	h := &MCPServerHandler{
+		toolManager: tm,
+		served:      served,
+		config:      &lib.Config{ClientConfig: &configstore.ClientConfig{}},
+	}
+	h.mcpServer = h.buildServer()
+	admin := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	admin.SetValue(schemas.BifrostContextKeyUserID, "admin-user")
+
+	require.NoError(t, h.SyncMCPServer(admin))
+	require.NotNil(t, tm.toolsCtx)
+	assert.Nil(t, tm.toolsCtx.Value(schemas.BifrostContextKeyUserID), "the shared tool list must not be read as the admin who triggered the sync")
+	require.Len(t, served.ctxs, 3)
+	for _, ctx := range served.ctxs {
+		assert.Nil(t, ctx.Value(schemas.BifrostContextKeyUserID), "the shared resources and prompts must not be read as the admin who triggered the sync")
+	}
 }
 
 // initializeResult drives a real initialize through the built server and returns the decoded
@@ -576,6 +691,54 @@ func TestMCPGateway_SlugEndpoint(t *testing.T) {
 	}
 }
 
+// refusingToolManager refuses a call the request may not make, as core does after the MCP pre-hooks,
+// and counts the calls that reached it.
+type refusingToolManager struct {
+	echoToolManager
+	calls atomic.Int32
+}
+
+func (r *refusingToolManager) ExecuteChatMCPTool(ctx context.Context, call *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
+	r.calls.Add(1)
+	if len(r.GetAvailableMCPTools(ctx)) == 0 {
+		return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "tool 'gw-echo' is not permitted (filtered by request context)"}}
+	}
+	return r.echoToolManager.ExecuteChatMCPTool(ctx, call)
+}
+
+// A narrowed caller's tools/call for a tool it cannot see still reaches Bifrost, so the pre-hooks
+// (governance, logging) run and the refusal says why, instead of mcp-go answering "not found".
+func TestMCPGateway_NarrowedToolCallReachesBifrost(t *testing.T) {
+	tm := &refusingToolManager{echoToolManager: echoToolManager{fakeInstructionsToolManager{}}}
+	h, err := NewMCPServerHandler(context.Background(), &lib.Config{ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil, nil)
+	require.NoError(t, err)
+	h.admitter = slugAdmitter{vmcps: map[string][]string{"nothing": {"other-tool"}}}
+	baseURL := startGateway(t, h)
+
+	ctx := context.Background()
+	tr, err := transport.NewStreamableHTTP(baseURL + "/mcp/nothing")
+	require.NoError(t, err)
+	c := client.NewClient(tr)
+	require.NoError(t, c.Start(ctx))
+	t.Cleanup(func() { _ = c.Close() })
+	_, err = c.Initialize(ctx, mcp.InitializeRequest{})
+	require.NoError(t, err)
+
+	tools, err := c.ListTools(ctx, mcp.ListToolsRequest{})
+	require.NoError(t, err)
+	assert.Empty(t, tools.Tools, "tools/list stays narrowed")
+	assert.Empty(t, tools.NextCursor, "tools/list is not paginated: narrowListedTools narrows the one page")
+
+	call := mcp.CallToolRequest{}
+	call.Params.Name = "gw-echo"
+	res, err := c.CallTool(ctx, call)
+	require.NoError(t, err, "the refusal is a tool result, not a JSON-RPC error")
+	assert.True(t, res.IsError)
+	require.Len(t, res.Content, 1)
+	assert.Contains(t, res.Content[0].(mcp.TextContent).Text, "filtered by request context")
+	assert.Equal(t, int32(1), tm.calls.Load(), "the call reached Bifrost")
+}
+
 // servingToolManager adds one prompt, resource and resource template from the "gw" client, visible
 // exactly when gw-echo is.
 type servingToolManager struct {
@@ -821,6 +984,9 @@ func TestMCPGateway_ToolMetadataAndResultFidelity(t *testing.T) {
 func BenchmarkMCPGateway(b *testing.B) {
 	handlers := map[string]*MCPServerHandler{"tools-only": newGatewayHandler(b), "serving": newServingGatewayHandler(b)}
 	legacy := map[string]string{"Content-Type": "application/json", "Accept": "application/json, text/event-stream", "MCP-Protocol-Version": "2025-11-25"}
+	narrowed := func(tools string) map[string]string {
+		return map[string]string{"Content-Type": "application/json", "Accept": "application/json, text/event-stream", "MCP-Protocol-Version": "2025-11-25", "x-bf-mcp-include-tools": tools}
+	}
 	modernMeta := `"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"bench","version":"0"}}`
 	modern := func(method, name string) map[string]string {
 		headers := map[string]string{"Content-Type": "application/json", "Accept": "application/json, text/event-stream", "MCP-Protocol-Version": "2026-07-28", "Mcp-Method": method}
@@ -837,6 +1003,8 @@ func BenchmarkMCPGateway(b *testing.B) {
 		{"initialize/2025-11-25", map[string]string{"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"bench","version":"0"}}}`},
 		{"tools-list/2025-11-25", legacy, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`},
 		{"tools-call/2025-11-25", legacy, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gw-echo","arguments":{"text":"hi"}}}`},
+		{"tools-list-narrowed/2025-11-25", narrowed("gw-echo"), `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`},
+		{"tools-call-hidden/2025-11-25", narrowed("other-tool"), `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gw-echo","arguments":{"text":"hi"}}}`},
 		{"discover/2026-07-28", modern("server/discover", ""), `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{` + modernMeta + `}}`},
 		{"tools-list/2026-07-28", modern("tools/list", ""), `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{` + modernMeta + `}}`},
 		{"tools-call/2026-07-28", modern("tools/call", "gw-echo"), `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gw-echo","arguments":{"text":"hi"},` + modernMeta + `}}`},
@@ -955,4 +1123,512 @@ func TestGatewayToolResult_RebuiltAudioIsBareBase64(t *testing.T) {
 	require.Len(t, result.Content, 2)
 	assert.Equal(t, mcp.NewAudioContent("SUQz", "audio/mpeg"), result.Content[0])
 	assert.Equal(t, mcp.NewAudioContent("UklGRg==", "audio/wav"), result.Content[1])
+}
+
+// perCallerToolManager serves the shared gw-echo and a client "notes" with per_user_discovery on,
+// whose tools, prompts and resources are each caller's own: alice and bob hold notes-search with
+// their own descriptions, bob also notes-export, and carol, who has not connected, is offered
+// notes-connect. alice holds the notes-review prompt and file:///alice.md, bob file:///bob.md.
+type perCallerToolManager struct {
+	echoToolManager
+	mu    sync.Mutex
+	calls []string // "<tool> as <caller>", for every call that reached Bifrost
+	// bobArchives says bob has since discovered notes-archive.
+	bobArchives atomic.Bool
+}
+
+func callerOf(ctx context.Context) string {
+	caller, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string)
+	return caller
+}
+
+func (p *perCallerToolManager) GetAvailableMCPTools(ctx context.Context) []schemas.ChatTool {
+	tools := p.echoToolManager.GetAvailableMCPTools(ctx)
+	include, narrowed := ctx.Value(schemas.MCPContextKeyIncludeTools).([]string)
+	add := func(name, description string, outputSchema bool) {
+		if narrowed && !slices.Contains(include, name) && !slices.Contains(include, "notes-*") {
+			return
+		}
+		tool := schemas.ChatTool{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{
+			Name:        name,
+			Description: schemas.Ptr(description),
+			Parameters: &schemas.ToolFunctionParameters{
+				Type:       "object",
+				Properties: schemas.NewOrderedMapFromPairs(schemas.KV(callerOf(ctx)+"_query", map[string]any{"type": "string"})),
+			},
+		}}
+		if outputSchema {
+			tool.MCP = &schemas.MCPToolMetadata{OutputSchema: json.RawMessage(`{"type":"object"}`)}
+		}
+		tools = append(tools, tool)
+	}
+	switch callerOf(ctx) {
+	case "alice":
+		add("notes-search", "Search alice's notes", true)
+	case "bob":
+		add("notes-search", "Search bob's notes", false)
+		add("notes-export", "Export bob's notes", false)
+		if p.bobArchives.Load() {
+			add("notes-archive", "Archive bob's notes", false)
+		}
+	case "carol":
+		add("notes-connect", "Connect your notes account", false)
+	case "dave":
+		add("listToolFiles", "List dave's tool files", false)
+		add("executeToolCode", "Run code against dave's tools", false)
+	}
+	return tools
+}
+
+func (p *perCallerToolManager) ExecuteChatMCPTool(ctx context.Context, call *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
+	p.mu.Lock()
+	p.calls = append(p.calls, *call.Function.Name+" as "+callerOf(ctx))
+	p.mu.Unlock()
+	text := fmt.Sprintf(`{"ran":%q,"as":%q}`, *call.Function.Name, callerOf(ctx))
+	return &schemas.ChatMessage{Content: &schemas.ChatMessageContent{ContentStr: &text}}, nil
+}
+
+func (p *perCallerToolManager) reachedBifrost() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.calls)
+}
+
+func (p *perCallerToolManager) GetAvailableMCPPrompts(ctx context.Context) []mcp.Prompt {
+	if callerOf(ctx) == "alice" {
+		return []mcp.Prompt{mcp.NewPrompt("notes-review", mcp.WithPromptDescription("Review alice's notes"))}
+	}
+	return nil
+}
+
+func (p *perCallerToolManager) GetAvailableMCPResources(ctx context.Context) []mcp.Resource {
+	switch callerOf(ctx) {
+	case "alice":
+		return []mcp.Resource{mcp.NewResource("file:///alice.md", "alice's handbook")}
+	case "bob":
+		return []mcp.Resource{mcp.NewResource("file:///bob.md", "bob's handbook")}
+	}
+	return nil
+}
+
+func (p *perCallerToolManager) GetAvailableMCPResourceTemplates(ctx context.Context) []mcp.ResourceTemplate {
+	switch callerOf(ctx) {
+	case "erin":
+		return []mcp.ResourceTemplate{mcp.NewResourceTemplate("file:///{name}.md", "erin's notes")}
+	case "frank":
+		return []mcp.ResourceTemplate{mcp.NewResourceTemplate("file:///{+path}", "frank's files")}
+	}
+	return nil
+}
+
+func (p *perCallerToolManager) GetMCPPrompt(ctx context.Context, name string, _ map[string]string) (*mcp.GetPromptResult, *schemas.BifrostError) {
+	if callerOf(ctx) != "alice" || name != "notes-review" {
+		return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "prompt not found", Error: coremcp.ErrNotFound}}
+	}
+	return mcp.NewGetPromptResult("review", []mcp.PromptMessage{mcp.NewPromptMessage(mcp.RoleUser, mcp.NewTextContent("review as alice"))}), nil
+}
+
+func (p *perCallerToolManager) ReadMCPResource(ctx context.Context, uri string) (*mcp.ReadResourceResult, *schemas.BifrostError) {
+	read := &mcp.ReadResourceResult{Contents: []mcp.ResourceContents{mcp.TextResourceContents{URI: uri, Text: "read as " + callerOf(ctx)}}}
+	for _, resource := range p.GetAvailableMCPResources(ctx) {
+		if resource.URI == uri {
+			return read, nil
+		}
+	}
+	for _, template := range p.GetAvailableMCPResourceTemplates(ctx) {
+		if template.URITemplate.Regexp().MatchString(uri) {
+			return read, nil
+		}
+	}
+	return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "resource not found", Error: coremcp.ErrNotFound}}
+}
+
+func (p *perCallerToolManager) CompleteMCPArgument(context.Context, mcp.CompleteParams) (*mcp.CompleteResult, *schemas.BifrostError) {
+	return &mcp.CompleteResult{}, nil
+}
+
+// perCallerNamesStore answers the names in the callers' discoveries of each client.
+type perCallerNamesStore struct {
+	configstore.ConfigStore
+	mu    sync.Mutex
+	names map[string]configstore.MCPPerUserDiscoveryNames
+	err   error // answers every read while set
+}
+
+func (s *perCallerNamesStore) GetMCPPerUserDiscoveryNames(_ context.Context, mcpClientIDs []string) (map[string]configstore.MCPPerUserDiscoveryNames, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return nil, s.err
+	}
+	out := make(map[string]configstore.MCPPerUserDiscoveryNames)
+	for _, id := range mcpClientIDs {
+		if names, ok := s.names[id]; ok {
+			out[id] = names
+		}
+	}
+	return out, nil
+}
+
+func (s *perCallerNamesStore) setTools(clientID string, tools ...string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	names := s.names[clientID]
+	names.Tools = tools
+	s.names[clientID] = names
+}
+
+func (s *perCallerNamesStore) setTemplates(clientID string, templates ...string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	names := s.names[clientID]
+	names.ResourceTemplates = templates
+	s.names[clientID] = names
+}
+
+func (s *perCallerNamesStore) setErr(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.err = err
+}
+
+func newPerCallerGatewayHandler(t testing.TB) (*MCPServerHandler, *perCallerToolManager, *perCallerNamesStore) {
+	t.Helper()
+	store := &perCallerNamesStore{names: map[string]configstore.MCPPerUserDiscoveryNames{
+		"notes-id": {Tools: []string{"export", "search"}, Prompts: []string{"review"}, Resources: []string{"file:///alice.md", "file:///bob.md"}},
+	}}
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{},
+		ConfigStore:  store,
+		MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+			{ID: "gw-id", Name: "gw"},
+			{ID: "notes-id", Name: "notes", PerUserDiscovery: schemas.Ptr(true)},
+		}},
+	}
+	tm := &perCallerToolManager{}
+	h, err := NewMCPServerHandler(context.Background(), config, tm, nil, nil, nil)
+	require.NoError(t, err)
+	return h, tm, store
+}
+
+func callerContext(caller string) *schemas.BifrostContext {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if caller != "" {
+		ctx.SetValue(schemas.BifrostContextKeyUserID, caller)
+	}
+	return ctx
+}
+
+// gatewayRequest sends one JSON-RPC request through h's server as the caller on ctx and returns its
+// result, or its JSON-RPC error.
+func gatewayRequest(t testing.TB, h *MCPServerHandler, ctx context.Context, method string, params any) (json.RawMessage, *mcp.JSONRPCErrorDetails) {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+	require.NoError(t, err)
+	raw := h.server().HandleMessage(ctx, body)
+	require.NotNil(t, raw)
+	encoded, err := json.Marshal(raw)
+	require.NoError(t, err)
+	var envelope struct {
+		Result json.RawMessage          `json:"result"`
+		Error  *mcp.JSONRPCErrorDetails `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(encoded, &envelope))
+	return envelope.Result, envelope.Error
+}
+
+func listedTools(t testing.TB, h *MCPServerHandler, ctx context.Context) map[string]mcp.Tool {
+	t.Helper()
+	raw, rpcErr := gatewayRequest(t, h, ctx, "tools/list", map[string]any{})
+	require.Nil(t, rpcErr)
+	var result mcp.ListToolsResult
+	require.NoError(t, json.Unmarshal(raw, &result))
+	tools := make(map[string]mcp.Tool, len(result.Tools))
+	for _, tool := range result.Tools {
+		tools[tool.Name] = tool
+	}
+	return tools
+}
+
+func toolNamesOf(tools map[string]mcp.Tool) []string {
+	names := make([]string, 0, len(tools))
+	for name := range tools {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
+}
+
+// A client with per_user_discovery on has no tool list of its own, only each caller's. /mcp lists
+// every caller exactly their own: their tools with their own descriptions and schemas, or the
+// connect tool until they have connected, and nothing of another caller's.
+func TestMCPGateway_ListsEachCallerTheirOwnPerCallerTools(t *testing.T) {
+	h, _, _ := newPerCallerGatewayHandler(t)
+
+	alice := listedTools(t, h, callerContext("alice"))
+	assert.Equal(t, []string{"gw-echo", "notes-search"}, toolNamesOf(alice))
+	assert.Equal(t, "Search alice's notes", alice["notes-search"].Description)
+	assert.Contains(t, alice["notes-search"].InputSchema.Properties, "alice_query", "alice's own schema")
+	assert.Equal(t, "object", alice["notes-search"].OutputSchema.Type, "and her own output schema")
+
+	bob := listedTools(t, h, callerContext("bob"))
+	assert.Equal(t, []string{"gw-echo", "notes-export", "notes-search"}, toolNamesOf(bob))
+	assert.Equal(t, "Search bob's notes", bob["notes-search"].Description)
+	assert.Contains(t, bob["notes-search"].InputSchema.Properties, "bob_query")
+
+	assert.Equal(t, []string{"gw-echo", "notes-connect"}, toolNamesOf(listedTools(t, h, callerContext("carol"))), "a caller with no discovery is offered connect")
+	assert.Equal(t, []string{"gw-echo"}, toolNamesOf(listedTools(t, h, callerContext(""))), "a request naming no caller sees no per-caller tool")
+
+	narrowed := callerContext("alice")
+	narrowed.SetValue(schemas.MCPContextKeyIncludeTools, []string{"gw-echo"})
+	assert.Equal(t, []string{"gw-echo"}, toolNamesOf(listedTools(t, h, narrowed)), "a narrowed request stays narrowed")
+}
+
+// A per-caller tool runs as the caller who calls it, its result shaped by that caller's own tool.
+func TestMCPGateway_RunsPerCallerToolsAsTheirCaller(t *testing.T) {
+	h, tm, _ := newPerCallerGatewayHandler(t)
+
+	raw, rpcErr := gatewayRequest(t, h, callerContext("alice"), "tools/call", map[string]any{"name": "notes-search", "arguments": map[string]any{"alice_query": "x"}})
+	require.Nil(t, rpcErr)
+	var result mcp.CallToolResult
+	require.NoError(t, json.Unmarshal(raw, &result))
+	assert.False(t, result.IsError)
+	assert.Equal(t, map[string]any{"ran": "notes-search", "as": "alice"}, result.StructuredContent, "alice's tool declares an output schema")
+
+	_, rpcErr = gatewayRequest(t, h, callerContext("carol"), "tools/call", map[string]any{"name": "notes-connect", "arguments": map[string]any{}})
+	require.Nil(t, rpcErr)
+	assert.Equal(t, []string{"notes-search as alice", "notes-connect as carol"}, tm.reachedBifrost())
+}
+
+// A per-caller tool name another caller holds answers exactly like a name nobody holds, without
+// reaching Bifrost, so calling names cannot tell anyone what another caller's account has.
+func TestMCPGateway_APerCallerToolTheCallerLacksReadsAsUnknown(t *testing.T) {
+	h, tm, _ := newPerCallerGatewayHandler(t)
+
+	_, held := gatewayRequest(t, h, callerContext("carol"), "tools/call", map[string]any{"name": "notes-export", "arguments": map[string]any{}})
+	_, unknown := gatewayRequest(t, h, callerContext("carol"), "tools/call", map[string]any{"name": "notes-nothing", "arguments": map[string]any{}})
+	require.NotNil(t, held)
+	require.NotNil(t, unknown)
+	assert.Equal(t, unknown.Code, held.Code)
+	assert.Equal(t, strings.ReplaceAll(unknown.Message, "notes-nothing", "notes-export"), held.Message)
+	assert.Empty(t, tm.reachedBifrost())
+}
+
+// A caller who has connected no longer lists the connect tool, but a client that kept its list from
+// before signing in may still call it. That call reaches Bifrost, which answers it as it does on
+// every other path, rather than reading as an unknown name. Only the client's own connect name is
+// answered this way: an upstream tool another caller holds whose name merely ends in -connect still
+// reads as unknown.
+func TestMCPGateway_ACallerWhoHasConnectedCanStillCallConnect(t *testing.T) {
+	h, tm, store := newPerCallerGatewayHandler(t)
+	assert.NotContains(t, toolNamesOf(listedTools(t, h, callerContext("alice"))), "notes-connect", "alice has connected")
+
+	_, rpcErr := gatewayRequest(t, h, callerContext("alice"), "tools/call", map[string]any{"name": "notes-connect", "arguments": map[string]any{}})
+	require.Nil(t, rpcErr)
+	assert.Equal(t, []string{"notes-connect as alice"}, tm.reachedBifrost())
+
+	store.setTools("notes-id", "export", "search", "sync-connect")
+	require.NoError(t, h.ResyncPerCallerEntries(context.Background()))
+	_, held := gatewayRequest(t, h, callerContext("alice"), "tools/call", map[string]any{"name": "notes-sync-connect", "arguments": map[string]any{}})
+	_, unknown := gatewayRequest(t, h, callerContext("alice"), "tools/call", map[string]any{"name": "notes-nothing", "arguments": map[string]any{}})
+	require.NotNil(t, held)
+	require.NotNil(t, unknown)
+	assert.Equal(t, unknown.Code, held.Code)
+	assert.Equal(t, strings.ReplaceAll(unknown.Message, "notes-nothing", "notes-sync-connect"), held.Message)
+	assert.Equal(t, []string{"notes-connect as alice"}, tm.reachedBifrost(), "the -connect upstream name never reached Bifrost")
+}
+
+// Prompts and resources follow the same rules: each caller lists and reads their own, and one
+// another caller holds answers like one nobody holds.
+func TestMCPGateway_ServesPerCallerPromptsAndResourcesToTheirOwnCallers(t *testing.T) {
+	h, _, _ := newPerCallerGatewayHandler(t)
+
+	raw, rpcErr := gatewayRequest(t, h, callerContext("alice"), "prompts/list", map[string]any{})
+	require.Nil(t, rpcErr)
+	var prompts mcp.ListPromptsResult
+	require.NoError(t, json.Unmarshal(raw, &prompts))
+	require.Len(t, prompts.Prompts, 1)
+	assert.Equal(t, "Review alice's notes", prompts.Prompts[0].Description)
+
+	raw, rpcErr = gatewayRequest(t, h, callerContext("alice"), "resources/list", map[string]any{})
+	require.Nil(t, rpcErr)
+	var resources mcp.ListResourcesResult
+	require.NoError(t, json.Unmarshal(raw, &resources))
+	require.Len(t, resources.Resources, 1)
+	assert.Equal(t, "file:///alice.md", resources.Resources[0].URI)
+	assert.Equal(t, "alice's handbook", resources.Resources[0].Name)
+
+	raw, rpcErr = gatewayRequest(t, h, callerContext("alice"), "resources/read", map[string]any{"uri": "file:///alice.md"})
+	require.Nil(t, rpcErr)
+	assert.Contains(t, string(raw), "read as alice")
+	_, rpcErr = gatewayRequest(t, h, callerContext("alice"), "prompts/get", map[string]any{"name": "notes-review"})
+	require.Nil(t, rpcErr)
+
+	_, held := gatewayRequest(t, h, callerContext("carol"), "resources/read", map[string]any{"uri": "file:///bob.md"})
+	_, unknown := gatewayRequest(t, h, callerContext("carol"), "resources/read", map[string]any{"uri": "file:///nothing.md"})
+	require.NotNil(t, held)
+	require.NotNil(t, unknown)
+	assert.Equal(t, unknown.Code, held.Code)
+	assert.Equal(t, strings.ReplaceAll(unknown.Message, "file:///nothing.md", "file:///bob.md"), held.Message)
+
+	_, held = gatewayRequest(t, h, callerContext("carol"), "prompts/get", map[string]any{"name": "notes-review"})
+	_, unknown = gatewayRequest(t, h, callerContext("carol"), "prompts/get", map[string]any{"name": "notes-nothing"})
+	require.NotNil(t, held)
+	require.NotNil(t, unknown)
+	assert.Equal(t, unknown.Code, held.Code)
+	assert.Equal(t, strings.ReplaceAll(unknown.Message, "notes-nothing", "notes-review"), held.Message)
+}
+
+// A caller reads a URI through any of their own resources and templates, whichever placeholder the
+// read lands on: mcp-go hands a read to an exact placeholder before any template, and to one of
+// several templates that match, so that placeholder can be another caller's entry. A URI none of
+// the caller's own entries covers still reads exactly like one nobody holds.
+func TestMCPGateway_ACallerReadsThroughTheirOwnTemplateWhicheverPlaceholderTheReadLandsOn(t *testing.T) {
+	h, _, store := newPerCallerGatewayHandler(t)
+	store.setTemplates("notes-id", "file:///{name}.md", "file:///{+path}")
+	require.NoError(t, h.ResyncPerCallerEntries(context.Background()))
+
+	raw, rpcErr := gatewayRequest(t, h, callerContext("erin"), "resources/read", map[string]any{"uri": "file:///bob.md"})
+	assert.Nil(t, rpcErr, "bob holds file:///bob.md exactly; erin reads it through her own template")
+	assert.Contains(t, string(raw), "read as erin")
+	for _, caller := range []string{"erin", "frank"} {
+		raw, rpcErr = gatewayRequest(t, h, callerContext(caller), "resources/read", map[string]any{"uri": "file:///x.md"})
+		assert.Nil(t, rpcErr, "%s reads through their own template, whichever of the two templates the read lands on", caller)
+		assert.Contains(t, string(raw), "read as "+caller)
+	}
+
+	_, held := gatewayRequest(t, h, callerContext("carol"), "resources/read", map[string]any{"uri": "file:///x.md"})
+	_, unknown := gatewayRequest(t, h, callerContext("carol"), "resources/read", map[string]any{"uri": "other:///x"})
+	require.NotNil(t, held)
+	require.NotNil(t, unknown)
+	assert.Equal(t, unknown.Code, held.Code)
+	assert.Equal(t, strings.ReplaceAll(unknown.Message, "other:///x", "file:///x.md"), held.Message, "carol holds neither template")
+}
+
+// A name a caller's discovery brings after the last sync is registered by a resync, so the caller
+// can list and call it. A resync that finds no name added or dropped leaves the server as it is.
+func TestMCPGateway_ResyncRegistersPerCallerNamesWrittenSinceTheLastSync(t *testing.T) {
+	h, tm, store := newPerCallerGatewayHandler(t)
+	installed := h.perCaller.Load()
+	require.NoError(t, h.ResyncPerCallerEntries(context.Background()))
+	assert.Same(t, installed, h.perCaller.Load(), "nothing changed, so nothing is replaced")
+
+	tm.bobArchives.Store(true)
+	store.setTools("notes-id", "archive", "export", "search")
+	assert.NotContains(t, toolNamesOf(listedTools(t, h, callerContext("bob"))), "notes-archive", "not registered before the resync")
+
+	require.NoError(t, h.ResyncPerCallerEntries(context.Background()))
+	assert.Contains(t, toolNamesOf(listedTools(t, h, callerContext("bob"))), "notes-archive")
+	_, rpcErr := gatewayRequest(t, h, callerContext("bob"), "tools/call", map[string]any{"name": "notes-archive", "arguments": map[string]any{}})
+	require.Nil(t, rpcErr)
+	assert.Contains(t, tm.reachedBifrost(), "notes-archive as bob")
+}
+
+// A sign-in or revoke whose names other callers already hold adds and drops no placeholder, yet it
+// changes what that caller lists. So every resync tells listening clients that tools, prompts and
+// resources changed, on every protocol revision, even when the placeholders stay as they are.
+func TestMCPGateway_AResyncTellsListenersEvenWhenNoPlaceholderChanged(t *testing.T) {
+	h, _, _ := newPerCallerGatewayHandler(t)
+	baseURL := startGateway(t, h)
+	installed := h.perCaller.Load()
+	for _, version := range []string{mcp.ProtocolVersion20251125, mcp.ProtocolVersion20260728} {
+		t.Run(version, func(t *testing.T) {
+			ctx := context.Background()
+			var opts []transport.StreamableHTTPCOption
+			if !mcp.IsModernProtocol(version) {
+				opts = append(opts, transport.WithContinuousListening())
+			}
+			tr, err := transport.NewStreamableHTTP(baseURL+"/mcp", opts...)
+			require.NoError(t, err)
+			c := client.NewClient(tr, client.WithProtocolVersion(version))
+			var tools, prompts, resources atomic.Bool
+			c.OnNotification(func(n mcp.JSONRPCNotification) {
+				switch n.Method {
+				case string(mcp.MethodNotificationToolsListChanged):
+					tools.Store(true)
+				case string(mcp.MethodNotificationPromptsListChanged):
+					prompts.Store(true)
+				case string(mcp.MethodNotificationResourcesListChanged):
+					resources.Store(true)
+				}
+			})
+			require.NoError(t, c.Start(ctx))
+			t.Cleanup(func() { _ = c.Close() })
+			init := mcp.InitializeRequest{}
+			init.Params.ProtocolVersion = version
+			_, err = c.Initialize(ctx, init)
+			require.NoError(t, err)
+			if mcp.IsModernProtocol(version) {
+				stop, err := c.ListenAsync(ctx, mcp.SubscriptionFilter{ToolsListChanged: true, PromptsListChanged: true, ResourcesListChanged: true}, nil)
+				require.NoError(t, err)
+				t.Cleanup(stop)
+			}
+
+			// The stream opens asynchronously, so keep resyncing until the notifications land.
+			assert.Eventually(t, func() bool {
+				return assert.NoError(t, h.ResyncPerCallerEntries(ctx)) &&
+					tools.Load() && prompts.Load() && resources.Load()
+			}, 5*time.Second, 50*time.Millisecond, "tools, prompts and resources list_changed")
+			assert.Same(t, installed, h.perCaller.Load(), "no placeholder changed, so none is replaced")
+		})
+	}
+}
+
+// A failed read of the discovery names keeps the placeholders already installed: a resync reports
+// the error and replaces nothing, and a full sync keeps the names it knew, so connected callers keep
+// their tools until a read succeeds.
+func TestMCPGateway_AFailedNamesReadKeepsTheInstalledPlaceholders(t *testing.T) {
+	h, tm, store := newPerCallerGatewayHandler(t)
+	installed := h.perCaller.Load()
+	store.setErr(errors.New("database is locked"))
+
+	require.Error(t, h.ResyncPerCallerEntries(context.Background()))
+	assert.Same(t, installed, h.perCaller.Load(), "a failed read replaces nothing")
+	assert.Contains(t, toolNamesOf(listedTools(t, h, callerContext("bob"))), "notes-export")
+
+	require.NoError(t, h.SyncMCPServer(context.Background()))
+	assert.Contains(t, toolNamesOf(listedTools(t, h, callerContext("bob"))), "notes-export", "a sync during the failure keeps the names it knew")
+	_, rpcErr := gatewayRequest(t, h, callerContext("bob"), "tools/call", map[string]any{"name": "notes-export", "arguments": map[string]any{}})
+	require.Nil(t, rpcErr)
+	assert.Contains(t, tm.reachedBifrost(), "notes-export as bob")
+}
+
+// A code-mode client with per_user_discovery on is reached through the code-mode tools, which the
+// shared list never holds while no caller is known. They are registered as placeholders too, so a
+// connected caller lists and calls them, and a caller who has not connected is offered connect only.
+func TestMCPGateway_ServesTheCodeModeToolsOfAPerCallerClient(t *testing.T) {
+	h, tm, _ := newPerCallerGatewayHandler(t)
+	h.config.MCPConfig.ClientConfigs[1].IsCodeModeClient = true
+	require.NoError(t, h.SyncMCPServer(context.Background()))
+
+	assert.Contains(t, toolNamesOf(listedTools(t, h, callerContext("dave"))), "executeToolCode")
+	_, rpcErr := gatewayRequest(t, h, callerContext("dave"), "tools/call", map[string]any{"name": "executeToolCode", "arguments": map[string]any{}})
+	require.Nil(t, rpcErr)
+	assert.Contains(t, tm.reachedBifrost(), "executeToolCode as dave")
+	assert.NotContains(t, toolNamesOf(listedTools(t, h, callerContext("carol"))), "executeToolCode")
+}
+
+// BenchmarkMCPGatewayToolsList measures tools/list through the shared server: the common case (no
+// include list, no client with per_user_discovery on), a narrowed request, and a caller of a client
+// with per_user_discovery on.
+func BenchmarkMCPGatewayToolsList(b *testing.B) {
+	list := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
+	run := func(b *testing.B, h *MCPServerHandler, ctx context.Context) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = h.server().HandleMessage(ctx, list)
+		}
+	}
+	b.Run("shared/unrestricted", func(b *testing.B) {
+		run(b, newGatewayHandler(b), callerContext("alice"))
+	})
+	b.Run("shared/narrowed", func(b *testing.B) {
+		ctx := callerContext("alice")
+		ctx.SetValue(schemas.MCPContextKeyIncludeTools, []string{"gw-echo"})
+		run(b, newGatewayHandler(b), ctx)
+	})
+	b.Run("per-caller", func(b *testing.B) {
+		h, _, _ := newPerCallerGatewayHandler(b)
+		run(b, h, callerContext("alice"))
+	})
 }

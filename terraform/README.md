@@ -48,8 +48,10 @@ Bifrost config can come from two sources simultaneously. Terraform variables ove
 1. **File-based**: Set `config_json_file` to a path or `config_json` to a raw JSON string.
 2. **Variable-based**: Set individual variables (`config_store`, `logs_store`, `providers_config`, `auth_config`, etc.) corresponding to top-level keys in [config.schema.json](../transports/config.schema.json).
 
-All 17 top-level config properties from the schema are supported as variables:
-`encryption_key`, `auth_config`, `client`, `framework`, `providers_config`, `governance`, `mcp`, `vector_store`, `config_store`, `logs_store`, `cluster_config`, `scim_config`, `load_balancer_config`, `guardrails_config`, `plugins`, `audit_logs`, `websocket`.
+The following 18 top-level sections of the schema are exposed as Terraform variables (the schema defines more; pass any other section through `config_json_file` or `config_json`):
+`encryption_key`, `auth_config`, `client`, `framework`, `providers_config`, `governance`, `mcp`, `vector_store`, `config_store`, `logs_store`, `cluster_config`, `scim_config`, `load_balancer_config`, `guardrails_config`, `plugins`, `audit_logs`, `websocket`, `server`.
+
+To serve Bifrost under a URL prefix, set `server = { base_path = "/bifrost" }`. Variables replace the matching top-level key of the base file, not individual fields, so if your `config.json` already has a `server` section (for example `read_buffer_size`), repeat those fields in the override alongside `base_path` or set `base_path` in the file instead. On the Kubernetes targets (EKS, GKE, AKS, generic Kubernetes) also set `ingress_path = "/bifrost"` so the ingress routes the prefix; ECS, Cloud Run and ACI ignore `ingress_path`, so route the prefix on your own load balancer or proxy there. Probes keep using `/health`.
 
 For `scim_config` with `provider = "okta"`, include `config.issuerUrl`, `config.clientId`, `config.clientSecret`, and `config.apiToken`.
 
@@ -123,6 +125,7 @@ terraform apply
 | `storage_class_name` | `"standard"` | K8s StorageClass for PVC (generic K8s only) |
 | `ingress_class_name` | `"nginx"` | Ingress controller class (generic K8s only) |
 | `ingress_annotations` | `{}` | Ingress annotations (generic K8s only) |
+| `ingress_path` | `"/"` | Ingress path prefix routed to Bifrost (EKS, GKE, AKS, generic K8s); match `server.base_path` to serve under a prefix |
 
 ## Outputs
 

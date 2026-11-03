@@ -581,6 +581,79 @@ func TestValidateKeyOAuthKeyConfig(t *testing.T) {
 	})
 }
 
+func TestValidateKeyAnthropicWorkloadIdentity(t *testing.T) {
+	wif := func(mutate func(*schemas.AnthropicWorkloadIdentityConfig)) *schemas.AnthropicKeyConfig {
+		c := &schemas.AnthropicWorkloadIdentityConfig{
+			FederationRuleID: *schemas.NewSecretVar("fdrl_rule"),
+			OrganizationID:   *schemas.NewSecretVar("00000000-0000-0000-0000-000000000000"),
+			ServiceAccountID: *schemas.NewSecretVar("svac_account"),
+			IdentitySource:   &schemas.IdentitySource{Type: schemas.IdentitySourceFile, Path: schemas.NewSecretVar("/var/run/secrets/anthropic.com/token")},
+		}
+		if mutate != nil {
+			mutate(c)
+		}
+		return &schemas.AnthropicKeyConfig{WorkloadIdentity: c}
+	}
+
+	tests := []struct {
+		name      string
+		key       schemas.Key
+		wantError string
+	}{
+		{name: "a token file is sufficient", key: schemas.Key{AnthropicKeyConfig: wif(nil)}},
+		{name: "an inline token is sufficient", key: schemas.Key{AnthropicKeyConfig: wif(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.IdentitySource = &schemas.IdentitySource{Type: schemas.IdentitySourceInline, Token: schemas.NewSecretVar("eyJ.eyJ.sig")}
+		})}},
+		{name: "env-backed references count as present", key: schemas.Key{AnthropicKeyConfig: wif(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.FederationRuleID = *schemas.NewSecretVar("env.ANTHROPIC_FEDERATION_RULE_ID_UNSET_IN_TEST")
+			c.IdentitySource = &schemas.IdentitySource{Type: schemas.IdentitySourceInline, Token: schemas.NewSecretVar("env.ANTHROPIC_IDENTITY_TOKEN_UNSET_IN_TEST")}
+		})}},
+		{name: "a value alongside an incomplete config keeps the key usable", key: schemas.Key{Value: *schemas.NewSecretVar("sk-ant"), AnthropicKeyConfig: wif(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.ServiceAccountID = schemas.SecretVar{}
+		})}},
+		{name: "an empty anthropic_key_config is ignored", key: schemas.Key{Value: *schemas.NewSecretVar("sk-ant"), AnthropicKeyConfig: &schemas.AnthropicKeyConfig{}}},
+		{name: "missing rule", key: schemas.Key{AnthropicKeyConfig: wif(func(c *schemas.AnthropicWorkloadIdentityConfig) { c.FederationRuleID = *schemas.NewSecretVar(" ") })}, wantError: "federation_rule_id is required"},
+		{name: "missing organization", key: schemas.Key{AnthropicKeyConfig: wif(func(c *schemas.AnthropicWorkloadIdentityConfig) { c.OrganizationID = schemas.SecretVar{} })}, wantError: "organization_id is required"},
+		{name: "missing service account", key: schemas.Key{AnthropicKeyConfig: wif(func(c *schemas.AnthropicWorkloadIdentityConfig) { c.ServiceAccountID = schemas.SecretVar{} })}, wantError: "service_account_id is required"},
+		{name: "no identity source", key: schemas.Key{AnthropicKeyConfig: wif(func(c *schemas.AnthropicWorkloadIdentityConfig) { c.IdentitySource = nil })}, wantError: "identity_source is required"},
+		{name: "a file source without a path", key: schemas.Key{AnthropicKeyConfig: wif(func(c *schemas.AnthropicWorkloadIdentityConfig) { c.IdentitySource.Path = nil })}, wantError: "of type file needs path and no token"},
+		{name: "a file source that also carries a token", key: schemas.Key{AnthropicKeyConfig: wif(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.IdentitySource.Token = schemas.NewSecretVar("eyJ.eyJ.sig")
+		})}, wantError: "of type file needs path and no token"},
+		{name: "an inline source without a token", key: schemas.Key{AnthropicKeyConfig: wif(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.IdentitySource = &schemas.IdentitySource{Type: schemas.IdentitySourceInline, Token: schemas.NewSecretVar(" ")}
+		})}, wantError: "of type inline needs token and no path"},
+		{name: "an unknown source type", key: schemas.Key{AnthropicKeyConfig: wif(func(c *schemas.AnthropicWorkloadIdentityConfig) { c.IdentitySource.Type = "gcp_metadata" })}, wantError: "identity_source.type must be file or inline"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key := tt.key
+			err := validateKey(schemas.Anthropic, &key)
+			if tt.wantError == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantError)
+		})
+	}
+
+	t.Run("a federated key may have no value only on an anthropic-based provider", func(t *testing.T) {
+		assert.True(t, keyValueMayBeEmpty(schemas.Anthropic, &schemas.Key{AnthropicKeyConfig: wif(nil)}))
+		assert.False(t, keyValueMayBeEmpty(schemas.Anthropic, &schemas.Key{}))
+		assert.False(t, keyValueMayBeEmpty(schemas.Anthropic, &schemas.Key{AnthropicKeyConfig: &schemas.AnthropicKeyConfig{}}))
+		assert.False(t, keyValueMayBeEmpty(schemas.OpenAI, &schemas.Key{AnthropicKeyConfig: wif(nil)}))
+	})
+
+	t.Run("workload identity is refused on a provider that does not federate", func(t *testing.T) {
+		key := schemas.Key{AnthropicKeyConfig: wif(nil)}
+		err := validateKey(schemas.OpenAI, &key)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "only supported on anthropic")
+	})
+}
+
 // A request cancelled at the same instant its backoff expires must still be
 // reported as cancelled: Go's select picks uniformly among ready cases, so a
 // timer-only check lets roughly half of such requests run one more attempt
@@ -803,6 +876,109 @@ func TestWrapConvertedStreamPostHookRunnerMarksConvertedChunks(t *testing.T) {
 			require.NotNil(t, got)
 			assert.Equal(t, tt.targetType, tt.extra(got).ConvertedRequestType)
 		})
+	}
+}
+
+// A plugin-owned sub-request is built on a context DERIVED from the caller's,
+// and BifrostContext.Value reads through to its parent. So every piece of
+// caller-request state that a provider egress consults has to be shed here, or
+// the sub-request is answered with the caller's parameters instead of its own.
+//
+// The Anthropic native-request surface is exactly such a witness: it records an
+// inbound Anthropic Messages caller's own thinking and sampling scalars so the
+// Anthropic egress can rebuild them verbatim. Inherited by a fresh internal
+// Sonnet 5.5 request, it would apply one caller's temperature/top_p/top_k and
+// thinking mode to a request that never had them --- external parameters
+// steering a plugin-owned call. The provider half (a shed witness means the
+// egress restores nothing) is asserted in
+// core/providers/anthropic/requestbuilder_test.go.
+func TestPrepareContextForInternalRequestShedsAnthropicNativeSurface(t *testing.T) {
+	caller := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	caller.SetValue(schemas.BifrostContextKeyAnthropicNativeRequestSurface, "caller-surface")
+
+	internal := schemas.NewBifrostContext(caller, schemas.NoDeadline)
+	require.Equal(t, "caller-surface", internal.Value(schemas.BifrostContextKeyAnthropicNativeRequestSurface),
+		"a derived context reads the caller's witness through to the parent; that is the state under test")
+
+	PrepareContextForInternalRequest(internal)
+
+	assert.Nil(t, internal.Value(schemas.BifrostContextKeyAnthropicNativeRequestSurface),
+		"an internal sub-request must not inherit the caller's native Anthropic request surface")
+	assert.Equal(t, "caller-surface", caller.Value(schemas.BifrostContextKeyAnthropicNativeRequestSurface),
+		"shedding it on the derived context must not disarm the caller's own request")
+}
+
+// ClearContextForInternalRequest is public and documented to shed caller-request
+// state on its own; PrepareContextForInternalRequest is the variant that ALSO
+// skips the plugin pipeline. A plugin that wants its sub-request to run the
+// pipeline is expected to call the clearing helper directly, so that entry point
+// has to shed just as completely.
+//
+// It is the hostile ordering for a shed: ClearValue only shadows a parent's
+// value through the derived context's OWN value map, and NewBifrostContext
+// leaves that map unallocated until something is written to it. Prepare's
+// skip-pipeline write happens to allocate it first; called directly on a fresh
+// child, nothing has. A shed that relies on that incidental write leaves the
+// caller's witness readable on a sub-request that never carried it.
+func TestClearContextForInternalRequestShedsAnthropicNativeSurfaceOnFreshChild(t *testing.T) {
+	caller := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	caller.SetValue(schemas.BifrostContextKeyAnthropicNativeRequestSurface, "caller-surface")
+
+	// No write of any kind on the child before the shed: this is what
+	// NewBifrostContext hands a plugin.
+	internal := schemas.NewBifrostContext(caller, schemas.NoDeadline)
+	require.Equal(t, "caller-surface", internal.Value(schemas.BifrostContextKeyAnthropicNativeRequestSurface),
+		"a derived context reads the caller's witness through to the parent; that is the state under test")
+
+	ClearContextForInternalRequest(internal)
+
+	assert.Nil(t, internal.Value(schemas.BifrostContextKeyAnthropicNativeRequestSurface),
+		"the documented clearing helper must shed the caller's native Anthropic request surface "+
+			"even on a child whose value map no write has allocated yet")
+	assert.Equal(t, "caller-surface", caller.Value(schemas.BifrostContextKeyAnthropicNativeRequestSurface),
+		"shedding it on the derived context must not disarm the caller's own request")
+}
+
+// TestClearContextForInternalRequestShedsEveryKeyOnFreshChild is the general
+// case of the test above. ClearValue shadows a parent's value through this
+// context's OWN value map, and NewBifrostContext leaves that map unallocated
+// until something is written, so until the allocating write was moved to the top
+// of ClearContextForInternalRequest every ClearValue in it was a no-op on a
+// fresh child and the caller's credentials and headers stayed readable through
+// to the parent. These are the keys where that mattered most.
+func TestClearContextForInternalRequestShedsEveryKeyOnFreshChild(t *testing.T) {
+	sensitive := map[schemas.BifrostContextKey]any{
+		schemas.BifrostContextKeyDirectKey:             "caller-direct-key",
+		schemas.BifrostContextKeyAPIKeyID:              "caller-api-key-id",
+		schemas.BifrostContextKeyAPIKeyName:            "caller-api-key-name",
+		schemas.BifrostContextKeyRoutingPinnedAPIKeyID: "caller-pinned-key",
+		schemas.BifrostContextKeyExtraHeaders:          map[string]string{"x-caller": "secret"},
+		schemas.BifrostContextKeyPassthroughHeaders:    map[string]string{"x-caller": "secret"},
+		schemas.BifrostContextKeyURLPath:               "/v1/caller/path",
+	}
+
+	caller := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	for k, v := range sensitive {
+		caller.SetValue(k, v)
+	}
+
+	// No write of any kind on the child before the shed: this is what
+	// NewBifrostContext hands a plugin.
+	internal := schemas.NewBifrostContext(caller, schemas.NoDeadline)
+	for k := range sensitive {
+		require.NotNil(t, internal.Value(k),
+			"a derived context reads the caller's value through to the parent; that is the state under test")
+	}
+
+	ClearContextForInternalRequest(internal)
+
+	for k := range sensitive {
+		assert.Nil(t, internal.Value(k),
+			"ClearContextForInternalRequest must shed %s on a child whose value map no write has allocated yet", k)
+	}
+	for k, v := range sensitive {
+		assert.Equal(t, v, caller.Value(k),
+			"shedding %s on the derived context must not disarm the caller's own request", k)
 	}
 }
 

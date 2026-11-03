@@ -919,6 +919,50 @@ func TestBedrockTransportTLSInsecureSkipVerify(t *testing.T) {
 	assert.True(t, transport.ForceAttemptHTTP2)
 }
 
+// TestBedrockTransportInsecureTargetsStillVerifyHTTPSProxy pins that
+// network_config.insecure_skip_verify only reaches targets: net/http would handshake
+// with an https:// proxy using TLSClientConfig, so without the hop dialer the proxy's
+// certificate would go unchecked although proxy_config.skip_tls_verify is off.
+func TestBedrockTransportInsecureTargetsStillVerifyHTTPSProxy(t *testing.T) {
+	recorder := proxytest.NewHTTPSRecorder(t, "bedrock-tls")
+	for _, enforceHTTP2 := range []bool{true, false} {
+		recorder.Reset()
+		config := &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 30,
+				InsecureSkipVerify:             true,
+				EnforceHTTP2:                   enforceHTTP2,
+			},
+			ProxyConfig: &schemas.ProxyConfig{
+				Type: schemas.HTTPProxy,
+				URL:  schemas.NewSecretVar("https://127.0.0.1:" + recorder.Port()),
+			},
+		}
+		config.CheckAndSetDefaults()
+
+		provider, err := NewBedrockProvider(config, noopLogger{})
+		require.NoError(t, err)
+
+		for name, client := range map[string]*http.Client{"client": provider.client, "realtime": provider.realtimeClient} {
+			resp, err := client.Get("http://bedrock-runtime.us-east-1.amazonaws.com/")
+			if err == nil {
+				resp.Body.Close()
+				t.Errorf("enforce_http2=%v %s: an https proxy whose certificate is not trusted was used", enforceHTTP2, name)
+			}
+		}
+		assert.Empty(t, recorder.Seen(), "enforce_http2=%v: the unverified proxy saw traffic", enforceHTTP2)
+
+		// With the proxy's CA in proxy_config, the same proxy is verified and used.
+		config.ProxyConfig.CACertPEM = schemas.NewSecretVar(recorder.CAPEM)
+		trusted, err := NewBedrockProvider(config, noopLogger{})
+		require.NoError(t, err)
+		resp, err := trusted.client.Get("http://bedrock-runtime.us-east-1.amazonaws.com/")
+		require.NoError(t, err, "enforce_http2=%v: the trusted https proxy was refused", enforceHTTP2)
+		resp.Body.Close()
+		assert.NotEmpty(t, recorder.Seen(), "enforce_http2=%v: the trusted proxy saw no traffic", enforceHTTP2)
+	}
+}
+
 func TestBedrockTransportTLSCACert(t *testing.T) {
 	testCACert := generateTestCACert(t)
 

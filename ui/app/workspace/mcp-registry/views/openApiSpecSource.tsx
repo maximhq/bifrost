@@ -4,7 +4,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Info, Upload } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import {
 	detectSpecLanguage,
 	formatBytes,
@@ -45,10 +46,11 @@ export interface OpenAPISpecSourceProps {
 	compact?: boolean;
 	/** Which sources to offer; a surface without a server-side fetch leaves out "url". */
 	modes?: OpenAPISourceMode[];
+	/** What happens to a fetched document on this surface, under the URL field; defaults to the MCP wording. */
+	urlHint?: ReactNode;
 }
 
 const ALL_SOURCE_MODES: OpenAPISourceMode[] = ["paste", "url", "upload"];
-const SOURCE_MODE_LABELS: Record<OpenAPISourceMode, string> = { paste: "Paste", url: "URL", upload: "Upload" };
 
 /**
  * The three ways to hand Bifrost an OpenAPI document: paste it, point at a URL,
@@ -77,7 +79,11 @@ export function OpenAPISpecSource({
 	disabled,
 	compact,
 	modes = ALL_SOURCE_MODES,
+	urlHint,
 }: OpenAPISpecSourceProps) {
+	const { t } = useTranslation("mcp");
+	const sourceModeLabel = (m: OpenAPISourceMode) =>
+		m === "paste" ? t("openapi.source.tabPaste") : m === "upload" ? t("openapi.source.tabUpload") : "URL";
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const sourceEmpty = mode === "url" ? !specUrl.trim() : !specText.trim();
 	const uploadTooLarge = mode === "upload" && specText && isSpecTooLarge(new TextEncoder().encode(specText).length);
@@ -147,18 +153,33 @@ export function OpenAPISpecSource({
 		return () => clearTimeout(timer);
 	}, [shouldAutoParse, sourceKey]);
 
+	// A URL is fetched from the button beside it; the other sources keep their retry button below.
+	const parseButton = (
+		<Button
+			type="button"
+			size="sm"
+			className={mode === "url" ? "h-9 shrink-0" : undefined}
+			onClick={onParse}
+			disabled={disabled || isParsing || sourceEmpty || !!uploadTooLarge}
+			isLoading={isParsing}
+			data-testid="openapi-parse-btn"
+		>
+			{controls.buttonLabel}
+		</Button>
+	);
+
 	return (
 		<div className="space-y-3" data-testid="openapi-spec-source">
 			<Tabs value={mode} onValueChange={(value) => handleModeChange(value as OpenAPISourceMode)}>
 				<TabsList data-testid="openapi-spec-source-tabs">
 					{modes.map((m) => (
 						<TabsTrigger key={m} value={m} data-testid={`openapi-spec-source-tab-${m}`} disabled={disabled}>
-							{SOURCE_MODE_LABELS[m]}
+							{sourceModeLabel(m)}
 						</TabsTrigger>
 					))}
 				</TabsList>
 
-				<TabsContent value="paste" className="space-y-2">
+				<TabsContent value="paste" className="mt-2 space-y-2">
 					<div className={specError ? "border-destructive rounded-sm border" : "rounded-sm border"} data-testid="openapi-spec-paste-editor">
 						<CodeEditor
 							className="z-0 w-full"
@@ -172,28 +193,32 @@ export function OpenAPISpecSource({
 							readonly={disabled}
 						/>
 					</div>
+					<p className="text-muted-foreground text-xs">{t("openapi.source.pasteHelp")}</p>
+				</TabsContent>
+
+				<TabsContent value="url" className="mt-2 space-y-2">
+					<div className="flex items-center gap-3">
+						<Label htmlFor="openapi-spec-url" className="shrink-0">
+							{t("openapi.source.specUrl")}
+						</Label>
+						<Input
+							id="openapi-spec-url"
+							className="min-w-0 flex-1"
+							data-testid="openapi-spec-url-input"
+							placeholder="https://api.example.com/openapi.json"
+							value={specUrl}
+							disabled={disabled}
+							onChange={(e) => onSpecUrlChange(e.target.value)}
+							aria-invalid={!!specUrlError}
+						/>
+						{controls.showButton && parseButton}
+					</div>
 					<p className="text-muted-foreground text-xs">
-						Paste the OpenAPI or Swagger document as JSON or YAML (2.0, 3.0, 3.1 and 3.2 are supported).
+						{urlHint ?? t("openapi.source.urlHelp")}
 					</p>
 				</TabsContent>
 
-				<TabsContent value="url" className="space-y-2">
-					<Label htmlFor="openapi-spec-url">Spec URL</Label>
-					<Input
-						id="openapi-spec-url"
-						data-testid="openapi-spec-url-input"
-						placeholder="https://api.example.com/openapi.json"
-						value={specUrl}
-						disabled={disabled}
-						onChange={(e) => onSpecUrlChange(e.target.value)}
-						aria-invalid={!!specUrlError}
-					/>
-					<p className="text-muted-foreground text-xs">
-						Bifrost fetches the document once and stores it with the server; the URL is kept as its source.
-					</p>
-				</TabsContent>
-
-				<TabsContent value="upload" className="space-y-2">
+				<TabsContent value="upload" className="mt-2 space-y-2">
 					<div className="flex flex-wrap items-center gap-3">
 						<Button
 							type="button"
@@ -204,7 +229,7 @@ export function OpenAPISpecSource({
 							data-testid="openapi-spec-upload-btn"
 						>
 							<Upload className="mr-2 h-4 w-4" />
-							Choose file
+							{t("openapi.source.chooseFile")}
 						</Button>
 						<input
 							ref={fileInputRef}
@@ -226,12 +251,10 @@ export function OpenAPISpecSource({
 					</div>
 					{shownUploadError || uploadTooLarge ? (
 						<p className="text-destructive text-xs" data-testid="openapi-spec-upload-error">
-							{shownUploadError ?? `The file exceeds the ${formatBytes(OPENAPI_MAX_SPEC_BYTES)} limit for OpenAPI documents.`}
+							{shownUploadError ?? t("openapi.source.fileTooLarge", { size: formatBytes(OPENAPI_MAX_SPEC_BYTES) })}
 						</p>
 					) : (
-						<p className="text-muted-foreground text-xs">
-							JSON or YAML, up to {formatBytes(OPENAPI_MAX_SPEC_BYTES)}. The file is read in your browser and stored with the server.
-						</p>
+						<p className="text-muted-foreground text-xs">{t("openapi.source.uploadHelp", { size: formatBytes(OPENAPI_MAX_SPEC_BYTES) })}</p>
 					)}
 				</TabsContent>
 			</Tabs>
@@ -251,7 +274,7 @@ export function OpenAPISpecSource({
 				<div className="min-w-0 flex-1">
 					{controls.showPending && (
 						<p className="text-muted-foreground text-xs" data-testid="openapi-parse-pending">
-							Parsing the document…
+							{t("openapi.source.parsing")}
 						</p>
 					)}
 					{mode === "url" && isStale && !parseError && (
@@ -260,7 +283,7 @@ export function OpenAPISpecSource({
 							data-testid="openapi-spec-stale-notice"
 						>
 							<Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600" />
-							<p>The URL or server name changed since the document was fetched. Fetch it again to refresh the operations below.</p>
+							<p>{t("openapi.source.staleNotice")}</p>
 						</div>
 					)}
 					{parseError && (
@@ -269,18 +292,7 @@ export function OpenAPISpecSource({
 						</p>
 					)}
 				</div>
-				{controls.showButton && (
-					<Button
-						type="button"
-						size="sm"
-						onClick={onParse}
-						disabled={disabled || isParsing || sourceEmpty || !!uploadTooLarge}
-						isLoading={isParsing}
-						data-testid="openapi-parse-btn"
-					>
-						{controls.buttonLabel}
-					</Button>
-				)}
+				{controls.showButton && mode !== "url" && parseButton}
 			</div>
 		</div>
 	);

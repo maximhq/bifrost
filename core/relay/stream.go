@@ -37,12 +37,16 @@ type Stream struct {
 	usage        *schemas.RelayUsage
 	bytesOut     int64
 
+	capture []byte // bounded body prefix for the log row; nil when content logging is off
+
 	once   sync.Once
 	finish func(resp *schemas.BifrostRelayResponse, err *schemas.BifrostError)
 }
 
 // newStream wraps an open upstream reply. mapping and requestUnits decide what is read; finish runs
-// the post-hooks.
+// the post-hooks. The returned stream buffers up to maxBufferedResponseBytes response bytes in
+// capture for the log row, but only when the content-logging policy would keep the body, so a
+// stream nobody logs the body of never allocates the buffer.
 func newStream(ctx *schemas.BifrostContext, e *endpoint, resp *http.Response, start time.Time, mapping resolvedUsage, billable bool, requestUnits usageFields, finish func(*schemas.BifrostRelayResponse, *schemas.BifrostError)) *Stream {
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, e.streamIdle)
 	reader, stop := providerUtils.NewIdleTimeoutReader(resp.Body, resp.Body, providerUtils.GetStreamIdleTimeout(ctx), ctx)
@@ -56,6 +60,9 @@ func newStream(ctx *schemas.BifrostContext, e *endpoint, resp *http.Response, st
 		start:      start,
 		counted:    billable && resp.StatusCode >= 200 && resp.StatusCode < 300,
 		finish:     finish,
+	}
+	if relayContentCaptureEnabled(ctx) {
+		s.capture = make([]byte, 0, 4096)
 	}
 	if !s.counted {
 		return s
@@ -76,6 +83,39 @@ func newStream(ctx *schemas.BifrostContext, e *endpoint, resp *http.Response, st
 	return s
 }
 
+// relayContentCaptureEnabled resolves whether a streamed reply's bytes should be buffered for the
+// log row, mirroring the logging plugin's resolveContentPolicy precedence (plugin default,
+// overridden by governance's per-key decision, overridden by the per-request header) without
+// importing plugins/logging: core/relay/span.go already reads
+// BifrostContextKeyGovernanceDisableContentLogging directly for the same reason. Called from
+// newStream, which runs after RunRelayPreHooks has completed every pre-hook including governance's,
+// so this sees the final decision rather than the early, plugin-only one PreRelayHook could offer.
+func relayContentCaptureEnabled(ctx *schemas.BifrostContext) bool {
+	enabled, pluginPresent := ctx.Value(schemas.BifrostContextKeyRelayContentLoggingEnabledByDefault).(bool)
+	if !pluginPresent {
+		// No logging plugin stamped a default at all — either it is not registered, or its
+		// PreRelayHook did not run. Governance's or the per-request key being present on ctx for
+		// unrelated reasons must not turn capture on by itself; without a plugin to ever read the
+		// buffer, that would just retain up to maxBufferedResponseBytes per stream for nothing.
+		return false
+	}
+	if disabled, ok := ctx.Value(schemas.BifrostContextKeyGovernanceDisableContentLogging).(bool); ok {
+		enabled = !disabled
+	}
+	if allowed, _ := ctx.Value(schemas.BifrostContextKeyAllowPerRequestStorageOverride).(bool); allowed {
+		if disabled, ok := ctx.Value(schemas.BifrostContextKeyDisableContentLogging).(bool); ok {
+			enabled = !disabled
+		}
+	}
+	if !enabled {
+		// Content logging is off for this call, but the logging plugin may still retain it hidden
+		// in object storage; the reply is then captured for that offload, as a buffered one is.
+		retained, _ := ctx.Value(schemas.BifrostContextKeyRelayContentRetainedWhenDisabled).(bool)
+		return retained
+	}
+	return enabled
+}
+
 // Read forwards the next bytes of the reply.
 func (s *Stream) Read(p []byte) (int, error) {
 	// The body DoHTTPRequest handed over counts each chunk wait as upstream time itself.
@@ -89,6 +129,16 @@ func (s *Stream) Read(p []byte) (int, error) {
 			for _, event := range s.framer.Write(p[:n]) {
 				s.observeEvent(event)
 			}
+		}
+		// The capture keeps the whole reply for the post-hooks, as a buffered reply's body does, and
+		// stops at the same bound the buffered relay holds (maxBufferedResponseBytes).
+		if s.capture != nil && int64(len(s.capture)) < maxBufferedResponseBytes {
+			remaining := int(maxBufferedResponseBytes) - len(s.capture)
+			chunk := p[:n]
+			if len(chunk) > remaining {
+				chunk = chunk[:remaining]
+			}
+			s.capture = append(s.capture, chunk...)
 		}
 	}
 	switch {
@@ -131,6 +181,9 @@ func (s *Stream) complete(readErr error) {
 			Streamed:   true,
 			BytesOut:   s.bytesOut,
 			Latency:    time.Since(s.start).Milliseconds(),
+		}
+		if len(s.capture) > 0 {
+			resp.Body = s.capture
 		}
 		if s.counted {
 			usage := s.usage

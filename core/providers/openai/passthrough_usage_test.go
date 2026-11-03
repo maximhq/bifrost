@@ -382,3 +382,38 @@ func TestClassifyPassthroughPathMethods(t *testing.T) {
 		}
 	}
 }
+
+func TestEndsOpenAIPassthroughStream(t *testing.T) {
+	cases := map[string]bool{
+		`{"type":"response.completed","response":{}}`:                 true,
+		`{"type":"response.failed","response":{}}`:                    true,
+		`{"type":"response.incomplete","response":{}}`:                true,
+		`{"type":"error","message":"boom"}`:                           true,
+		`{"type":"response.output_text.delta","delta":"hi"}`:          false,
+		`{"type":"response.created","response":{}}`:                   false,
+		`{"choices":[{"delta":{},"finish_reason":"stop"}]}`:           false,
+		`{"choices":[],"usage":{"prompt_tokens":1,"total_tokens":2}}`: false,
+		`[DONE]`: false,
+	}
+	for event, want := range cases {
+		if got := openai.EndsOpenAIPassthroughStream([]byte(event)); got != want {
+			t.Errorf("EndsOpenAIPassthroughStream(%s) = %v, want %v", event, got, want)
+		}
+	}
+}
+
+func BenchmarkEndsOpenAIPassthroughStream(b *testing.B) {
+	events := map[string][]byte{
+		"delta":     []byte(`{"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":"hello"}`),
+		"completed": []byte(`{"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":5,"output_tokens":3,"total_tokens":8}}}`),
+		"chat":      []byte(`{"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hi"}}]}`),
+	}
+	for name, event := range events {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				openai.EndsOpenAIPassthroughStream(event)
+			}
+		})
+	}
+}

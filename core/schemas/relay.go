@@ -38,17 +38,6 @@ func ValidRelayName(name string) bool {
 
 var endpointAWSServiceRe = regexp.MustCompile(`^[a-z0-9-]+$`)
 
-// endpointUnmatchableHeaders are request headers a route matcher may not name: hop-by-hop headers
-// and the Google key header, which the transport drops before the routes are consulted, and the
-// credential headers IsSensitiveHeader misses, which it drops before forwarding. With
-// IsSensitiveHeader they are the names whose caller value never reaches the upstream.
-var endpointUnmatchableHeaders = map[string]struct{}{
-	"host": {}, "connection": {}, "transfer-encoding": {}, "accept-encoding": {}, "x-goog-api-key": {},
-	"keep-alive": {}, "te": {}, "trailer": {}, "upgrade": {}, "proxy-connection": {}, "proxy-authenticate": {}, // hop-by-hop: the transport drops them before the routes are consulted
-	"ocp-apim-subscription-key": {}, "subscription-key": {}, "x-functions-key": {},
-	"content-length": {}, // the relay sends the body's real length, never the caller's
-}
-
 // endpointCredentialHeaders are the credential headers IsSensitiveHeader does not name: Azure
 // Functions and API Management keys. A caller's value is dropped before forwarding, and an
 // operator's extra header under these names is a credential that management responses mask.
@@ -427,15 +416,6 @@ func (c *RelayConfig) Validate() error {
 		for name, glob := range route.Headers {
 			if !httpguts.ValidHeaderFieldName(name) {
 				return fmt.Errorf("routes[%d].headers: %q is not a valid header name", i, name)
-			}
-			injected := c.Auth.Type == RelayAuthHeader && strings.EqualFold(name, c.Auth.HeaderName)
-			if _, dropped := endpointUnmatchableHeaders[strings.ToLower(name)]; dropped || injected || IsSensitiveHeader(name) || strings.HasPrefix(strings.ToLower(name), "x-bf-") {
-				return fmt.Errorf("routes[%d].headers: %q is never presented to route matching (credentials, gateway and hop-by-hop headers are dropped before the routes are consulted)", i, name)
-			}
-			// Under SigV4 the relay forwards no caller x-amz-* header but X-Amz-Target, so a matcher on
-			// another one would pick a route (and its price) from a header the upstream never receives.
-			if lower := strings.ToLower(name); c.Auth.Type == RelayAuthAWSSigV4 && strings.HasPrefix(lower, "x-amz-") && lower != "x-amz-target" {
-				return fmt.Errorf("routes[%d].headers: %q is not forwarded under aws_sigv4 (only X-Amz-Target is), so it cannot select a route", i, name)
 			}
 			// Names match case-insensitively, so two spellings of one header would both have to
 			// match a single value and the route would silently never fire.

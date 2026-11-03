@@ -921,6 +921,11 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			redactedConfig.Keys[i].CloudflareKeyConfig = cloudflareConfig
 		}
 
+		if key.AnthropicKeyConfig != nil {
+			// Identifiers readable unless secret-backed; the identity token always masked.
+			redactedConfig.Keys[i].AnthropicKeyConfig = key.AnthropicKeyConfig.Redacted()
+		}
+
 		// Redact Databricks key config if present
 		if key.DatabricksKeyConfig != nil {
 			databricksConfig := &schemas.DatabricksKeyConfig{
@@ -1187,6 +1192,35 @@ func oauthKeyConfigHashView(cfg *schemas.OAuthKeyConfig) *schemas.OAuthKeyConfig
 	return &view
 }
 
+// anthropicKeyConfigHashView is oauthKeyConfigHashView for anthropic_key_config: every field
+// hashes by its source, so a rotated env identity token does not read as a config.json edit.
+func anthropicKeyConfigHashView(cfg *schemas.AnthropicKeyConfig) *schemas.AnthropicKeyConfig {
+	view := &schemas.AnthropicKeyConfig{}
+	wif := cfg.WorkloadIdentity
+	if wif == nil {
+		return view
+	}
+	source := func(v *schemas.SecretVar) *schemas.SecretVar {
+		if v == nil {
+			return nil
+		}
+		if v.IsFromSecret() {
+			return &schemas.SecretVar{Val: "ref:" + v.GetRawRef()}
+		}
+		return &schemas.SecretVar{Val: "val:" + v.Val}
+	}
+	view.WorkloadIdentity = &schemas.AnthropicWorkloadIdentityConfig{
+		FederationRuleID: *source(&wif.FederationRuleID),
+		OrganizationID:   *source(&wif.OrganizationID),
+		ServiceAccountID: *source(&wif.ServiceAccountID),
+		WorkspaceID:      source(wif.WorkspaceID),
+	}
+	if src := wif.IdentitySource; src != nil {
+		view.WorkloadIdentity.IdentitySource = &schemas.IdentitySource{Type: src.Type, Path: source(src.Path), Token: source(src.Token)}
+	}
+	return view
+}
+
 func generateKeyHash(key schemas.Key, aliases []byte) (string, error) {
 	hash := sha256.New()
 	// Hash Name
@@ -1305,6 +1339,14 @@ func generateKeyHash(key schemas.Key, aliases []byte) (string, error) {
 	// Hash CloudflareKeyConfig
 	if key.CloudflareKeyConfig != nil {
 		data, err := sonic.Marshal(key.CloudflareKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+	// Hash AnthropicKeyConfig by source, as OAuthKeyConfig below.
+	if key.AnthropicKeyConfig != nil {
+		data, err := providerUtils.MarshalSorted(anthropicKeyConfigHashView(key.AnthropicKeyConfig))
 		if err != nil {
 			return "", err
 		}
@@ -2279,6 +2321,14 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 		}
 	}
 
+	// Hash PerUserDiscovery so flipping it in config.json drifts the hash. Only
+	// true contributes: false is the default every row and every file entry
+	// written before the field existed already has, and a stored hash from
+	// that time must keep matching a file that still omits the field.
+	if m.PerUserDiscovery != nil && *m.PerUserDiscovery {
+		hash.Write([]byte("per_user_discovery:true"))
+	}
+
 	// will enable it in the future with a migration
 	// hash.Write([]byte("disabled:" + strconv.FormatBool(m.Disabled)))
 	return hex.EncodeToString(hash.Sum(nil)), nil
@@ -2433,6 +2483,132 @@ func GenerateAgentRegistrationHash(r *schemas.AgentRegistration) (string, error)
 	hashAgentUpstreamAuth(hash, "discovery_auth", r.DiscoveryAuth)
 	hashAgentUpstreamAuth(hash, "runtime_auth", r.RuntimeAuth)
 	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// GenerateRelayHash generates a SHA256 hash of a relay as config.json declares it, the way
+// ProviderConfig.GenerateConfigHash hashes a provider: each field is written on its own and each
+// optional block only when set, so a field added to RelayConfig does not move the hash of every
+// stored relay on upgrade. This is used to detect changes between config.json and the stored row.
+func GenerateRelayHash(cfg *schemas.RelayConfig) (string, error) {
+	hash := sha256.New()
+
+	// Hash Name, BaseURL and Description
+	hash.Write([]byte(cfg.Name))
+	hash.Write([]byte("baseURL:" + cfg.BaseURL))
+	if cfg.Description != "" {
+		hash.Write([]byte("description:" + cfg.Description))
+	}
+
+	// Hash Auth
+	data, err := sonic.Marshal(cfg.Auth)
+	if err != nil {
+		return "", err
+	}
+	hash.Write([]byte("auth:"))
+	hash.Write(data)
+
+	// Hash Credential. Every secret here and below hashes its reference, like a provider key's
+	// value: the row stores the reference and resolves it on read, so a rotated value is not a change.
+	if cfg.Credential != nil {
+		hashRelaySecret(hash, "credential", cfg.Credential.Value)
+		if aws := cfg.Credential.AWS; aws != nil {
+			hash.Write([]byte("credentialAWS:"))
+			hashRelaySecret(hash, "credentialAWS:accessKey", aws.AccessKey)
+			hashRelaySecret(hash, "credentialAWS:secretKey", aws.SecretKey)
+			hashRelaySecret(hash, "credentialAWS:sessionToken", aws.SessionToken)
+			hashRelaySecret(hash, "credentialAWS:region", aws.Region)
+			hashRelaySecret(hash, "credentialAWS:roleARN", aws.RoleARN)
+			hashRelaySecret(hash, "credentialAWS:externalID", aws.ExternalID)
+			hashRelaySecret(hash, "credentialAWS:sessionName", aws.SessionName)
+		}
+	}
+
+	// Hash ExtraHeaders (sorted for deterministic hashing)
+	if len(cfg.ExtraHeaders) > 0 {
+		names := make([]string, 0, len(cfg.ExtraHeaders))
+		for name := range cfg.ExtraHeaders {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			value := cfg.ExtraHeaders[name]
+			hashRelaySecret(hash, "extraHeader:"+name, &value)
+		}
+	}
+
+	// Hash Network
+	if cfg.Network != nil {
+		data, err := sonic.Marshal(cfg.Network)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("network:"))
+		hash.Write(data)
+	}
+
+	// Hash ProxyConfig
+	if p := cfg.ProxyConfig; p != nil {
+		hash.Write([]byte("proxyConfig:" + string(p.Type)))
+		hashRelaySecret(hash, "proxyConfig:url", p.URL)
+		hashRelaySecret(hash, "proxyConfig:username", p.Username)
+		hashRelaySecret(hash, "proxyConfig:password", p.Password)
+		hashRelaySecret(hash, "proxyConfig:caCertPEM", p.CACertPEM)
+	}
+
+	// Hash Usage
+	if cfg.Usage != nil {
+		data, err := sonic.Marshal(cfg.Usage)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("usage:"))
+		hash.Write(data)
+	}
+
+	// Hash Streaming
+	if cfg.Streaming != nil {
+		data, err := sonic.Marshal(cfg.Streaming)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("streaming:"))
+		hash.Write(data)
+	}
+
+	// Hash Routes in file order (the first match wins); route headers are a map, so sort keys
+	if len(cfg.Routes) > 0 {
+		data, err := providerUtils.MarshalSorted(cfg.Routes)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("routes:"))
+		hash.Write(data)
+	}
+
+	// Hash SkipRouteCheck
+	if cfg.SkipRouteCheck {
+		hash.Write([]byte("skipRouteCheck"))
+	}
+
+	// Hash IgnoreUpstreamCost
+	if cfg.IgnoreUpstreamCost {
+		hash.Write([]byte("ignoreUpstreamCost"))
+	}
+
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// hashRelaySecret contributes one relay secret to a relay hash, prefixed with its source type like a
+// provider key's value so a reference and a literal never collide. A nil secret contributes nothing.
+func hashRelaySecret(h hash.Hash, label string, v *schemas.SecretVar) {
+	if v == nil {
+		return
+	}
+	if v.IsFromSecret() {
+		h.Write([]byte(label + ":ref:" + v.GetRawRef()))
+	} else {
+		h.Write([]byte(label + ":val:" + v.Val))
+	}
 }
 
 // GeneratePluginHash generates a SHA256 hash for a plugin.

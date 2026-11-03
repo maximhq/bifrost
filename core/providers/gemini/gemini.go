@@ -61,9 +61,9 @@ func setGeminiRequestBody(req *fasthttp.Request, bodyReader io.Reader, bodySize 
 	req.SetBody(jsonData)
 }
 
-func normalizeRawGenerateContentBody(ctx *schemas.BifrostContext, body []byte) []byte {
+func normalizeRawGenerateContentBody(ctx *schemas.BifrostContext, body []byte, providerName schemas.ModelProvider, model string) []byte {
 	if rawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && rawBody {
-		body = NormalizeRawGenerateContentRequestForCompatibility(body)
+		body = NormalizeRawGenerateContentRequestForCompatibility(ctx, body, providerName, model)
 	}
 	if updated, err := providerUtils.DeleteJSONField(body, "fallbacks"); err == nil {
 		body = updated
@@ -144,7 +144,7 @@ func (provider *GeminiProvider) completeRequest(ctx *schemas.BifrostContext, mod
 	// Normal mode: use converted JSON body.
 	usedLargePayloadBody := providerUtils.ApplyLargePayloadRequestBody(ctx, req)
 	if !usedLargePayloadBody {
-		jsonBody = normalizeRawGenerateContentBody(ctx, jsonBody)
+		jsonBody = normalizeRawGenerateContentBody(ctx, jsonBody, provider.GetProviderKey(), model)
 		req.SetBody(jsonBody)
 	}
 
@@ -519,7 +519,7 @@ func HandleGeminiChatCompletionStream(
 
 	// Large payload mode: stream original request bytes directly from ingress.
 	if !providerUtils.ApplyLargePayloadRequestBody(ctx, req) {
-		jsonBody = normalizeRawGenerateContentBody(ctx, jsonBody)
+		jsonBody = normalizeRawGenerateContentBody(ctx, jsonBody, providerName, model)
 		req.SetBody(jsonBody)
 	}
 
@@ -859,7 +859,7 @@ func (provider *GeminiProvider) responsesWithLargeResponseDetection(
 
 	// Large payload mode streams request bytes directly to upstream; normal mode sends marshaled bytes.
 	if bodyReader == nil {
-		jsonData = normalizeRawGenerateContentBody(ctx, jsonData)
+		jsonData = normalizeRawGenerateContentBody(ctx, jsonData, provider.GetProviderKey(), request.Model)
 	}
 	setGeminiRequestBody(req, bodyReader, bodySize, jsonData)
 
@@ -1051,7 +1051,7 @@ func HandleGeminiResponsesStream(
 
 	// Large payload mode: stream original request body to upstream.
 	if !providerUtils.ApplyLargePayloadRequestBody(ctx, req) {
-		jsonBody = normalizeRawGenerateContentBody(ctx, jsonBody)
+		jsonBody = normalizeRawGenerateContentBody(ctx, jsonBody, providerName, model)
 		req.SetBody(jsonBody)
 	}
 
@@ -2367,7 +2367,7 @@ func (provider *GeminiProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 		return nil, bifrostErr
 	}
 
-	jsonData = normalizeRawGenerateContentBody(ctx, jsonData)
+	jsonData = normalizeRawGenerateContentBody(ctx, jsonData, provider.GetProviderKey(), model)
 
 	// Create HTTP request
 	req := fasthttp.AcquireRequest()
@@ -2633,9 +2633,14 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 		return nil, err
 	}
 
+	var model string
+	if request.Model != nil {
+		_, model = schemas.ParseModelString(*request.Model, schemas.Gemini)
+	}
+
 	var jsonData []byte
 	if rawBody, ok := providerUtils.CheckAndGetRawRequestBody(ctx, request); ok && len(rawBody) > 0 {
-		jsonData = NormalizeRawGenerateContentRequestForCompatibility(rawBody)
+		jsonData = NormalizeRawGenerateContentRequestForCompatibility(ctx, rawBody, provider.GetProviderKey(), model)
 	}
 
 	// Validate that either InputFileID or Requests is provided, but not both
@@ -2717,10 +2722,6 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 	defer fasthttp.ReleaseResponse(resp)
 
 	// Build URL - use batchGenerateContent endpoint
-	var model string
-	if request.Model != nil {
-		_, model = schemas.ParseModelString(*request.Model, schemas.Gemini)
-	}
 	// We default gemini 2.5 flash
 	if model == "" {
 		model = "gemini-2.5-flash"
@@ -4096,7 +4097,7 @@ func (provider *GeminiProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 			return nil, bifrostErr
 		}
 
-		jsonData = normalizeRawGenerateContentBody(ctx, jsonData)
+		jsonData = normalizeRawGenerateContentBody(ctx, jsonData, provider.GetProviderKey(), model)
 		jsonData = wrapGeminiCountTokensBody(jsonData, model)
 	}
 

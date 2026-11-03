@@ -3325,6 +3325,115 @@ func TestParseModelListQuery_LeavesListingUnfilteredWhenNothingResolved(t *testi
 	}
 }
 
+// An unfiltered listing is what the dashboard pickers that configure the gateway ask for (a key's
+// allowed models, deployments), so it is the provider's whole catalog whoever asks, not the part
+// the caller's access reaches. A listing that is not unfiltered is still narrowed to that access.
+// Both listing routes parse the same query, so every case runs against each of them.
+func TestListModels_UnfilteredListingSkipsCallerAccess(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	sessionAccess := func(permits ...schemas.ProviderPermit) schemas.Access {
+		permit := grant.NewPermit(grant.PermitAccessProfile, "profile-test", "Test Profile", true, false, permits, nil)
+		return grant.NewAccess([]schemas.Permit{permit}, nil, "", nil)
+	}
+	signedIn := func(ctx *fasthttp.RequestCtx) {
+		ctx.SetUserValue(schemas.BifrostContextKeyAuthCredential, grant.NewCredential(grant.CredentialSessionToken, "session-token"))
+	}
+	withVirtualKey := func(ctx *fasthttp.RequestCtx) {
+		ctx.Request.Header.Set("x-bf-vk", "sk-bf-test-virtual-key")
+	}
+
+	for _, tc := range []struct {
+		name   string
+		access schemas.Access
+		caller func(*fasthttp.RequestCtx)
+		query  string
+		want   []string
+	}{
+		{
+			name:   "signed-in caller, unfiltered listing",
+			access: sessionAccess(schemas.ProviderPermit{Provider: "openai", AllowedModels: []string{"gpt-4o"}}),
+			caller: signedIn,
+			query:  "provider=openai&unfiltered=true&limit=10",
+			want:   []string{"gpt-4.1", "gpt-4o", "gpt-4o-mini"},
+		},
+		{
+			name:   "signed-in caller not granted the provider, unfiltered listing",
+			access: sessionAccess(schemas.ProviderPermit{Provider: "anthropic", AllowedModels: []string{"*"}}),
+			caller: signedIn,
+			query:  "provider=openai&unfiltered=true&limit=10",
+			want:   []string{"gpt-4.1", "gpt-4o", "gpt-4o-mini"},
+		},
+		{
+			name:   "signed-in caller, filtered listing",
+			access: sessionAccess(schemas.ProviderPermit{Provider: "openai", AllowedModels: []string{"gpt-4o"}}),
+			caller: signedIn,
+			query:  "provider=openai&limit=10",
+			want:   []string{"gpt-4o"},
+		},
+		{
+			name:   "virtual key, unfiltered listing",
+			access: accessForProviderPermits(schemas.ProviderPermit{Provider: "openai", AllowedModels: []string{"gpt-4o"}}),
+			caller: withVirtualKey,
+			query:  "provider=openai&unfiltered=true&limit=10",
+			want:   []string{"gpt-4.1", "gpt-4o", "gpt-4o-mini"},
+		},
+		{
+			name:   "virtual key, filtered listing",
+			access: accessForProviderPermits(schemas.ProviderPermit{Provider: "openai", AllowedModels: []string{"gpt-4o"}}),
+			caller: withVirtualKey,
+			query:  "provider=openai&limit=10",
+			want:   []string{"gpt-4o"},
+		},
+	} {
+		for _, route := range []struct {
+			name   string
+			path   string
+			handle func(*ProviderHandler, *fasthttp.RequestCtx)
+		}{
+			{name: "models", path: "/api/models", handle: (*ProviderHandler).listModels},
+			{name: "model details", path: "/api/models/details", handle: (*ProviderHandler).listModelDetails},
+		} {
+			t.Run(route.name+", "+tc.name, func(t *testing.T) {
+				h := providerHandlerForTest(
+					schemas.OpenAI,
+					[]schemas.Key{{ID: "key-a", Models: []string{"gpt-4o", "gpt-4o-mini"}}},
+					[]string{"gpt-4o", "gpt-4o-mini"},
+					[]string{"gpt-4.1", "gpt-4o", "gpt-4o-mini"},
+				)
+				h.inMemoryStore.ModelCatalog = modelcatalog.NewTestCatalog(nil)
+				h.modelsManager.(*mockModelsManager).access = tc.access
+
+				ctx := &fasthttp.RequestCtx{}
+				ctx.Request.Header.SetMethod("GET")
+				ctx.Request.SetRequestURI(route.path + "?" + tc.query)
+				tc.caller(ctx)
+
+				route.handle(h, ctx)
+
+				if ctx.Response.StatusCode() != fasthttp.StatusOK {
+					t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+				}
+				var resp struct {
+					Models []struct {
+						Name string `json:"name"`
+					} `json:"models"`
+				}
+				if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+					t.Fatalf("failed to unmarshal response: %v", err)
+				}
+				got := make([]string, 0, len(resp.Models))
+				for _, model := range resp.Models {
+					got = append(got, model.Name)
+				}
+				if !slices.Equal(got, tc.want) {
+					t.Fatalf("models = %v, want %v", got, tc.want)
+				}
+			})
+		}
+	}
+}
+
 // TestListModels_NoVKFilterReturnsAll verifies that without a VK filter the endpoint
 // returns all providers and models as normal.
 func TestListModels_NoVKFilterReturnsAll(t *testing.T) {

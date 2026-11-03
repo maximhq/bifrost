@@ -151,6 +151,35 @@ func TestCreateLiveWebRTCSession(t *testing.T) {
 	}
 }
 
+// Azure answers 400 "Unknown parameter: 'session.client'." to any session.client, even {} or null.
+func TestCreateLiveWebRTCSessionDropsClientPermissions(t *testing.T) {
+	t.Parallel()
+
+	for _, client := range []string{
+		`{"data_channel":{"allowed_client_events":["session.close"],"allowed_server_events":[{"type":"session.started"}]}}`,
+		`{}`,
+		`null`,
+	} {
+		body := []byte(`{"session":{"model":"live-voice","client":` + client + `,"future":{"b":2,"a":1}},"transport":{"type":"webrtc","sdp":"v=0 offer"}}`)
+		var got []byte
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			got, _ = io.ReadAll(r.Body)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"session":{"id":"sess_123"},"transport":{"type":"webrtc","sdp":"v=0 answer"}}`))
+		}))
+		provider := &AzureProvider{client: &fasthttp.Client{}}
+		_, bifrostErr := provider.CreateLiveWebRTCSession(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), liveTestKey(srv.URL), body)
+		srv.Close()
+		if bifrostErr != nil {
+			t.Fatalf("client %s: CreateLiveWebRTCSession() error = %v", client, bifrostErr.Error)
+		}
+		if want := `{"session":{"model":"live-voice","future":{"b":2,"a":1}},"transport":{"type":"webrtc","sdp":"v=0 offer"}}`; string(got) != want {
+			t.Fatalf("client %s: upstream body = %s, want %s", client, got, want)
+		}
+	}
+}
+
 func TestLiveSessionContentIsUnsupported(t *testing.T) {
 	t.Parallel()
 

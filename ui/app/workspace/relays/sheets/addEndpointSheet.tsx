@@ -1,7 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { Separator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { getErrorMessage, useCreateRelayMutation } from "@/lib/store";
 import { relayFormSchema, type RelayFormValues } from "@/lib/types/schemas";
@@ -11,6 +10,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { Waypoints } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
+import { useTranslation } from "react-i18next";
 import { CredentialFields } from "../fragments/credentialFields";
 import { InfoLabel } from "../fragments/infoLabel";
 
@@ -24,6 +24,7 @@ export function AddEndpointSheet({
 	onCancel: () => void;
 	onCreated: (name: string) => void;
 }) {
+	const { t } = useTranslation("config");
 	const canCreate = useRbac(RbacResource.Relays, RbacOperation.Create);
 	const [createEndpoint, { isLoading }] = useCreateRelayMutation();
 	const form = useForm<RelayFormValues>({
@@ -40,11 +41,11 @@ export function AddEndpointSheet({
 	const onSubmit = async (values: RelayFormValues) => {
 		try {
 			const created = await createEndpoint(toRelayConfig(values)).unwrap();
-			toast.success("Relay added successfully");
+			toast.success(t("relays.addSheet.toastAdded"));
 			onCreated(created.name);
 			close();
 		} catch (e) {
-			toast.error("Failed to add relay", { description: getErrorMessage(e) });
+			toast.error(t("relays.addSheet.toastFailed"), { description: getErrorMessage(e) });
 		}
 	};
 
@@ -55,49 +56,50 @@ export function AddEndpointSheet({
 					<SheetTitle>
 						<div className="font-lg flex items-center gap-2">
 							<Waypoints className="h-5 w-5" />
-							Add relay
+							{t("relays.addSheet.title")}
 						</div>
 					</SheetTitle>
 				</SheetHeader>
 				<Form {...form}>
-					<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4 px-4 pb-6 md:px-8">
-						<FormField
-							control={form.control}
-							name="name"
-							render={({ field }) => (
-								<FormItem>
-									<InfoLabel label="Name (Required)" info={<>Callers use /relay/&lt;name&gt;. It cannot be changed later.</>} />
-									<FormControl>
-										<Input placeholder="tavily" data-testid="relay-name" {...field} />
-									</FormControl>
-									<FormMessage />
-								</FormItem>
-							)}
-						/>
-						<FormField
-							control={form.control}
-							name="base_url"
-							render={({ field }) => (
-								<FormItem>
-									<InfoLabel
-										label="Base URL (Required)"
-										info="Every request is pinned under this origin and path; callers cannot reach another host."
-									/>
-									<FormControl>
-										<Input placeholder="https://api.tavily.com" data-testid="relay-new-base-url" {...field} />
-									</FormControl>
-									<FormMessage />
-								</FormItem>
-							)}
-						/>
-						<Separator className="my-6" />
-						<CredentialFields form={form} />
-						<div className="flex justify-end space-x-2 pt-4">
+					<form onSubmit={form.handleSubmit(onSubmit)} className="flex grow flex-col gap-6 pt-4">
+						<div className="grow space-y-4 px-4 md:px-8">
+							<FormField
+								control={form.control}
+								name="name"
+								render={({ field }) => (
+									<FormItem>
+										<InfoLabel label={t("relays.addSheet.nameLabel")} info={t("relays.addSheet.nameInfo")} />
+										<FormControl>
+											<Input placeholder="tavily" data-testid="relay-name" {...field} />
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={form.control}
+								name="base_url"
+								render={({ field }) => (
+									<FormItem>
+										<InfoLabel
+											label={t("relays.fields.baseUrlLabel")}
+											info={t("relays.fields.baseUrlInfo")}
+										/>
+										<FormControl>
+											<Input placeholder="https://api.tavily.com" data-testid="relay-new-base-url" {...field} />
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<CredentialFields form={form} />
+						</div>
+						<div className="bg-card sticky bottom-0 z-10 flex justify-end gap-2 border-t px-4 py-4 md:px-8">
 							<Button type="button" variant="outline" onClick={close} disabled={isLoading}>
-								Cancel
+									{t("cancel", { ns: "common" })}
 							</Button>
 							<Button type="submit" disabled={!canCreate || isLoading} isLoading={isLoading} data-testid="relay-create">
-								Add Relay
+									{t("relays.page.addRelay")}
 							</Button>
 						</div>
 					</form>

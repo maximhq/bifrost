@@ -86,22 +86,23 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	// Bedrock's runtime client is net/http, so proxy_config has to be applied here
 	// explicitly; ConfigureProxy below only covers the fasthttp Mantle clients. With
 	// no proxy configured, keep proxying from the environment as before.
-	proxy, proxyTLS, err := providerUtils.NetHTTPProxy(config.ProxyConfig)
+	proxy, proxyTLS, proxyHopTLS, err := providerUtils.NetHTTPProxyWithHopTLS(config.ProxyConfig)
 	if err != nil {
 		return nil, err
 	}
-	if proxy == nil {
+	proxyFromConfig := proxy != nil
+	if !proxyFromConfig {
 		proxy = providerUtils.EnvProxyFunc()
 	}
 
-	transport, err := newBedrockHTTPTransport(config, proxy, proxyTLS, requestTimeout, config.NetworkConfig.EnforceHTTP2)
+	transport, err := newBedrockHTTPTransport(config, proxy, proxyFromConfig, proxyTLS, proxyHopTLS, requestTimeout, config.NetworkConfig.EnforceHTTP2)
 	if err != nil {
 		return nil, err
 	}
 	// Nova Sonic's bidirectional stream is HTTP/2 only, so it needs its own transport unless enforce_http2 is on.
 	realtimeTransport := transport
 	if !config.NetworkConfig.EnforceHTTP2 {
-		if realtimeTransport, err = newBedrockHTTPTransport(config, proxy, proxyTLS, requestTimeout, true); err != nil {
+		if realtimeTransport, err = newBedrockHTTPTransport(config, proxy, proxyFromConfig, proxyTLS, proxyHopTLS, requestTimeout, true); err != nil {
 			return nil, err
 		}
 	}
@@ -157,7 +158,7 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 }
 
 // newBedrockHTTPTransport returns an independent transport; enabling HTTP/2 mutates it and its TLS config.
-func newBedrockHTTPTransport(config *schemas.ProviderConfig, proxy func(*http.Request) (*url.URL, error), proxyTLS *tls.Config, requestTimeout time.Duration, enforceHTTP2 bool) (*http.Transport, error) {
+func newBedrockHTTPTransport(config *schemas.ProviderConfig, proxy func(*http.Request) (*url.URL, error), proxyFromConfig bool, proxyTLS, proxyHopTLS *tls.Config, requestTimeout time.Duration, enforceHTTP2 bool) (*http.Transport, error) {
 	transport := &http.Transport{
 		Proxy:                 proxy,
 		TLSClientConfig:       proxyTLS.Clone(), // HTTP/2 setup appends to NextProtos, so never share it
@@ -206,9 +207,14 @@ func newBedrockHTTPTransport(config *schemas.ProviderConfig, proxy func(*http.Re
 			}
 			tlsConfig.RootCAs = certPool
 		}
-		// Keep an inherited proxy's skip_tls_verify scoped to proxied traffic, now
-		// checked against the merged roots.
-		transport.TLSClientConfig = providerUtils.RescopeProxySkipVerify(proxyTLS, tlsConfig, config.NetworkConfig.InsecureSkipVerify)
+		transport.TLSClientConfig = tlsConfig
+	}
+
+	// An https:// proxy from proxy_config is dialed with its own TLS config (proxy CA,
+	// skip_tls_verify), separate from the target's, which net/http would otherwise share
+	// through TLSClientConfig. skip_tls_verify covers only that hop: targets are verified.
+	if proxyFromConfig {
+		providerUtils.DialHTTPSProxyWithHopTLS(transport, proxyHopTLS)
 	}
 
 	// When HTTP/2 is enforced and a ping interval is configured, send client-initiated

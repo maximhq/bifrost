@@ -2022,6 +2022,10 @@ type ChatPromptTokensDetails struct {
 	CachedReadTokens        int                          `json:"cached_read_tokens,omitempty"`
 	CachedWriteTokens       int                          `json:"cached_write_tokens,omitempty"`
 	CachedWriteTokenDetails *ChatCachedWriteTokenDetails `json:"cached_write_token_details,omitempty"`
+
+	// Parts of AudioTokens that Azure Voice Live handled with Azure Speech, which it bills at their own rates.
+	StandardSpeechAudioTokens int `json:"standard_speech_audio_tokens,omitempty"`
+	CustomSpeechAudioTokens   int `json:"custom_speech_audio_tokens,omitempty"`
 }
 
 type ChatCachedWriteTokenDetails struct {
@@ -2040,6 +2044,9 @@ func (d *ChatPromptTokensDetails) UnmarshalJSON(data []byte) error {
 		CachedWriteTokenDetails *ChatCachedWriteTokenDetails `json:"cached_write_token_details"`
 		CachedTokens            *int                         `json:"cached_tokens"`
 		CacheWriteTokens        *int                         `json:"cache_write_tokens"`
+
+		StandardSpeechAudioTokens int `json:"standard_speech_audio_tokens"`
+		CustomSpeechAudioTokens   int `json:"custom_speech_audio_tokens"`
 	}
 	if err := Unmarshal(data, &raw); err != nil {
 		return err
@@ -2050,6 +2057,8 @@ func (d *ChatPromptTokensDetails) UnmarshalJSON(data []byte) error {
 	d.CachedReadTokens = raw.CachedReadTokens
 	d.CachedWriteTokens = raw.CachedWriteTokens
 	d.CachedWriteTokenDetails = raw.CachedWriteTokenDetails
+	d.StandardSpeechAudioTokens = raw.StandardSpeechAudioTokens
+	d.CustomSpeechAudioTokens = raw.CustomSpeechAudioTokens
 	// OpenAI spec providers send just cached_tokens, not separate read and write tokens and we handle them as read tokens in pricing calculations.
 	if raw.CachedTokens != nil && raw.CachedReadTokens == 0 && raw.CachedWriteTokens == 0 {
 		d.CachedReadTokens = *raw.CachedTokens
@@ -2076,6 +2085,9 @@ func (d ChatPromptTokensDetails) MarshalJSON() ([]byte, error) {
 		// OpenAI's field name for cache writes (mirrors cached_tokens for reads) so the
 		// OpenAI SDK — which reads cache_write_tokens, not cached_write_tokens — finds it.
 		CacheWriteTokens int `json:"cache_write_tokens"`
+
+		StandardSpeechAudioTokens int `json:"standard_speech_audio_tokens,omitempty"`
+		CustomSpeechAudioTokens   int `json:"custom_speech_audio_tokens,omitempty"`
 	}
 	return MarshalSorted(raw{
 		TextTokens:              d.TextTokens,
@@ -2086,6 +2098,9 @@ func (d ChatPromptTokensDetails) MarshalJSON() ([]byte, error) {
 		CachedWriteTokenDetails: d.CachedWriteTokenDetails,
 		CachedTokens:            d.CachedReadTokens,
 		CacheWriteTokens:        d.CachedWriteTokens,
+
+		StandardSpeechAudioTokens: d.StandardSpeechAudioTokens,
+		CustomSpeechAudioTokens:   d.CustomSpeechAudioTokens,
 	})
 }
 
@@ -2099,6 +2114,10 @@ type ChatCompletionTokensDetails struct {
 	ReasoningTokens          int  `json:"reasoning_tokens,omitempty"`
 	ImageTokens              *int `json:"image_tokens,omitempty"`
 	RejectedPredictionTokens int  `json:"rejected_prediction_tokens,omitempty"`
+
+	// Parts of AudioTokens that Azure Voice Live handled with Azure Speech, which it bills at their own rates.
+	StandardSpeechAudioTokens int `json:"standard_speech_audio_tokens,omitempty"`
+	CustomSpeechAudioTokens   int `json:"custom_speech_audio_tokens,omitempty"`
 }
 
 // BifrostCost splits a request's cost into an input side, an output side, and an
@@ -2151,6 +2170,9 @@ func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
 			ImageTokens:       baseDetails.ImageTokens + addDetails.ImageTokens,
 			CachedReadTokens:  baseDetails.CachedReadTokens + addDetails.CachedReadTokens,
 			CachedWriteTokens: baseDetails.CachedWriteTokens + addDetails.CachedWriteTokens,
+
+			StandardSpeechAudioTokens: baseDetails.StandardSpeechAudioTokens + addDetails.StandardSpeechAudioTokens,
+			CustomSpeechAudioTokens:   baseDetails.CustomSpeechAudioTokens + addDetails.CustomSpeechAudioTokens,
 		}
 		if baseDetails.CachedWriteTokenDetails != nil || addDetails.CachedWriteTokenDetails != nil {
 			merged.PromptTokensDetails.CachedWriteTokenDetails = &ChatCachedWriteTokenDetails{
@@ -2175,6 +2197,9 @@ func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
 			AudioTokens:              baseDetails.AudioTokens + addDetails.AudioTokens,
 			ReasoningTokens:          baseDetails.ReasoningTokens + addDetails.ReasoningTokens,
 			RejectedPredictionTokens: baseDetails.RejectedPredictionTokens + addDetails.RejectedPredictionTokens,
+
+			StandardSpeechAudioTokens: baseDetails.StandardSpeechAudioTokens + addDetails.StandardSpeechAudioTokens,
+			CustomSpeechAudioTokens:   baseDetails.CustomSpeechAudioTokens + addDetails.CustomSpeechAudioTokens,
 		}
 		merged.CompletionTokensDetails.CitationTokens = sumOptionalInts(baseDetails.CitationTokens, addDetails.CitationTokens)
 		merged.CompletionTokensDetails.NumSearchQueries = sumOptionalInts(baseDetails.NumSearchQueries, addDetails.NumSearchQueries)

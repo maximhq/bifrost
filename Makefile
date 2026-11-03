@@ -67,7 +67,7 @@ define EXPOSE_ENV
 	fi
 endef
 
-.PHONY: test-memory all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations test-integrations-py test-integrations-ts install-playwright run-e2e run-a11y-audit run-e2e-ui run-e2e-headed e2e-ui-down run-e2e-api run-mcp-codemode-test run-warp-test format ui install-newman run-provider-harness-test smoke-provider-harness-test run-cli-harness-test cli-harness-report test-harness-runner-lib run-video-costing-test list-video-costing-cases test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index install-microsocks socks5-proxy install-tinyproxy http-proxy
+.PHONY: test-memory all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations test-integrations-py test-integrations-ts install-playwright run-e2e run-a11y-audit run-e2e-ui run-e2e-headed e2e-ui-down run-e2e-api run-mcp-codemode-test run-warp-test format ui install-newman run-provider-harness-test smoke-provider-harness-test run-cli-harness-test cli-harness-report test-harness-runner-lib run-video-costing-test list-video-costing-cases test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index install-microsocks socks5-proxy install-tinyproxy http-proxy install-squid install-stunnel run-e2e-api-proxy run-mcp-harness-test
 
 all: help
 
@@ -177,6 +177,14 @@ http-proxy: install-tinyproxy ## Run a local HTTP proxy for testing provider pro
 	$(ECHO) "$(YELLOW)Point a provider's proxy_config at http://$$PROXY_HOST:$$PROXY_PORT to test$(NC)"; \
 	tinyproxy -d -c "$$CONF"
 
+install-squid: ## Install squid HTTP proxy for the proxy e2e flow (if not already installed)
+	@command -v squid > /dev/null || [ -x /usr/sbin/squid ] || (command -v brew > /dev/null && $(ECHO) "$(YELLOW)Installing squid via Homebrew...$(NC)" && brew install squid) || ($(ECHO) "$(RED)Error: squid not found and Homebrew is unavailable. Install it with your package manager (apt install squid)$(NC)" && exit 1)
+	@$(ECHO) "$(GREEN)squid is ready$(NC)"
+
+install-stunnel: ## Install stunnel (TLS in front of squid for https:// proxies) for the proxy e2e flow (if not already installed)
+	@command -v stunnel > /dev/null || command -v stunnel4 > /dev/null || (command -v brew > /dev/null && $(ECHO) "$(YELLOW)Installing stunnel via Homebrew...$(NC)" && brew install stunnel) || ($(ECHO) "$(RED)Error: stunnel not found and Homebrew is unavailable. Install it with your package manager (apt install stunnel4)$(NC)" && exit 1)
+	@$(ECHO) "$(GREEN)stunnel is ready$(NC)"
+
 dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Start complete development environment (UI + API with proxy)
 	@$(EXPOSE_ENV); \
 	set +m; \
@@ -246,6 +254,7 @@ dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Star
 			-log-style "$(LOG_STYLE)" \
 			-log-level "$(LOG_LEVEL)" \
 			$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)") \
+			$(if $(BASE_PATH),-base-path "$(BASE_PATH)") \
 			$(if $(APP_DIR),-app-dir "$(abspath $(APP_DIR))")) & \
 	else \
 		(cd transports/bifrost-http && BIFROST_UI_DEV=true air -c .air.toml -- \
@@ -254,6 +263,7 @@ dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Star
 			-log-style "$(LOG_STYLE)" \
 			-log-level "$(LOG_LEVEL)" \
 			$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)") \
+			$(if $(BASE_PATH),-base-path "$(BASE_PATH)") \
 			$(if $(APP_DIR),-app-dir "$(abspath $(APP_DIR))")) & \
 	fi; \
 	api_pid="$$!"; \
@@ -501,6 +511,7 @@ run: build ## Build and run bifrost-http (no hot reload)
 		-log-style "$(LOG_STYLE)" \
 		-log-level "$(LOG_LEVEL)" \
 		$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)") \
+		$(if $(BASE_PATH),-base-path "$(BASE_PATH)") \
 		$(if $(APP_DIR),-app-dir "$(abspath $(APP_DIR))")
 
 run-cli: build-cli ## Run bifrost CLI (Usage: make run-cli [ARGS="--config ~/.bifrost/config.json"])
@@ -1768,8 +1779,8 @@ run-e2e-headed: install-playwright ## Run the UI E2E suite with visible browsers
 e2e-ui-down: ## Stop servers left running by run-e2e-ui KEEP=1 and remove the e2e Postgres
 	@$(USE_NODE); node tests/e2e/scripts/run-e2e.mjs --down
 
-run-e2e-api: install-newman ## Run E2E API management tests (/api/* and /health)
-	@$(ECHO) "$(GREEN)Running E2E API management tests...$(NC)"
+run-e2e-api: install-newman ## Run E2E API management tests (/api/* and /health). PROXY=1 runs the proxy e2e flow instead: real provider calls through squid/stunnel/microsocks for every proxy mode (Usage: make run-e2e-api PROXY=1 [PROXY_CELLS="provider-http env-socks5"] [PORT=8080])
+	@if [ -n "$(PROXY)" ]; then $(ECHO) "$(GREEN)Running proxy e2e (tests/e2e/api/runners/proxy/run-proxy-matrix.sh)...$(NC)"; else $(ECHO) "$(GREEN)Running E2E API management tests...$(NC)"; fi
 	@BASH4="$${BIFROST_BASH:-}"; \
 	if [ -z "$$BASH4" ]; then \
 		for candidate in \
@@ -1788,7 +1799,15 @@ run-e2e-api: install-newman ## Run E2E API management tests (/api/* and /health)
 		$(ECHO) "$(YELLOW)Install a newer Bash with 'brew install bash', or pass BIFROST_BASH=/path/to/bash.$(NC)"; \
 		exit 1; \
 	fi; \
+	if [ -n "$(PROXY)" ]; then \
+		$(MAKE) --no-print-directory install-squid install-stunnel install-microsocks || exit 1; \
+		$(EXPOSE_ENV); \
+		exec "$$BASH4" ./tests/e2e/api/runners/proxy/run-proxy-matrix.sh; \
+	fi; \
 	cd tests/e2e/api && "$$BASH4" ./runners/run-newman-api-tests.sh --all-reports
+
+run-e2e-api-proxy: ## Proxy e2e flow, same as make run-e2e-api PROXY=1
+	@$(MAKE) run-e2e-api PROXY=1
 
 run-mcp-codemode-test: install-newman ## Run the hermetic MCP Code Mode E2E suite (no API keys, no paid calls). Builds tmp/bifrost-http from local code unless BINARY is given (Usage: make run-mcp-codemode-test [BINARY=path/to/bifrost-http])
 	@BINARY="$(BINARY)"; \
@@ -1803,6 +1822,21 @@ run-mcp-codemode-test: install-newman ## Run the hermetic MCP Code Mode E2E suit
 	BINARY="$$(cd "$$(dirname "$$BINARY")" && pwd)/$$(basename "$$BINARY")"; \
 	$(ECHO) "$(GREEN)Running MCP Code Mode E2E tests against $$BINARY...$(NC)"; \
 	./tests/e2e/api/runners/individual/run-newman-mcp-codemode-tests.sh --binary "$$BINARY"
+
+run-mcp-harness-test: install-newman ## Run the MCP harness (generated by tests/e2e/api/runners/build-mcp-harness.mjs), one folder per test case. Hermetic: boots its own Bifrost and an mcpchaos fleet. Builds tmp/bifrost-http from local code unless BINARY is given (Usage: make run-mcp-harness-test [BINARY=path/to/bifrost-http] [FOLDER="ADM"] [HARNESS_PORT=8093] [CHAOS_PORT=8494])
+	@BINARY="$(BINARY)"; \
+	if [ -z "$$BINARY" ]; then \
+		$(MAKE) build LOCAL=1 || exit 1; \
+		BINARY=tmp/bifrost-http; \
+	fi; \
+	if [ ! -x "$$BINARY" ]; then \
+		$(ECHO) "$(RED)Error: bifrost-http binary not found or not executable: $$BINARY$(NC)"; \
+		exit 1; \
+	fi; \
+	BINARY="$$(cd "$$(dirname "$$BINARY")" && pwd)/$$(basename "$$BINARY")"; \
+	$(ECHO) "$(GREEN)Running MCP harness against $$BINARY...$(NC)"; \
+	./tests/e2e/api/runners/individual/run-newman-mcp-harness-tests.sh --binary "$$BINARY" \
+		$(if $(FOLDER),--folder "$(FOLDER)") $(if $(HARNESS_PORT),--port "$(HARNESS_PORT)") $(if $(CHAOS_PORT),--chaos-port "$(CHAOS_PORT)")
 
 run-warp-test: install-newman ## Run the Warp E2E suite: boots Bifrost on a throwaway Postgres DB, seeds it (tests/cmd/seed/warpseed) and asks Warp questions with a live model. Needs OPENAI_API_KEY (or WARP_UPSTREAM_BIFROST=<url> to use a running Bifrost's key), Postgres and Weaviate (tests/docker-compose.yml). Builds tmp/bifrost-http unless BINARY is given (Usage: make run-warp-test [BINARY=path/to/bifrost-http] [FOLDER="Guardrails"] [WARP_UPSTREAM_BIFROST=http://localhost:8080] [WEAVIATE_HOST=localhost:9000] [POSTGRES_PORT=5432] [USE_INFISICAL=1])
 	@$(EXPOSE_ENV); \
@@ -2312,6 +2346,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-30s %s\n' "tmp/harness-failures.md"     "Categorized failure analyzer output + coverage matrices."; \
 		printf '  %-30s %s\n' "tmp/bifrost-dev.log"         "Bifrost runtime log (only if we auto-started it)."; \
 		printf '  %-30s %s\n' "tmp/harness-mcp-fixture.log" "MCP test server log (sse_mcp on 3012; only if we started it)."; \
+		printf '  %-30s %s\n' "tmp/harness-relay-fixture.log" "Relay upstream fixture log (relays-e2e rows, 127.0.0.1:8783; only if we started it)."; \
 		printf '  %-30s %s\n' "tmp/harness-augmented.json"  "Provider harness plus generated streaming/thinking rows."; \
 		printf '  %-30s %s\n' "tmp/harness-filtered.json"   "Filtered collection (only if PROVIDER/FEATURE/RERUN_FAILED set)."; \
 		printf '  %-30s %s\n' "tmp/harness-timings.json"    "Measured median ms per request name, merged across runs. Drives both the shard sizing and the"; \
@@ -2532,6 +2567,10 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			kill $$(cat tmp/harness-mcp-fixture.pid) 2>/dev/null; \
 			rm -f tmp/harness-mcp-fixture.pid; \
 		fi; \
+		if [ -f tmp/harness-relay-fixture.pid ]; then \
+			kill $$(cat tmp/harness-relay-fixture.pid) 2>/dev/null; \
+			rm -f tmp/harness-relay-fixture.pid; \
+		fi; \
 	}; \
 	preempt_viewer_port() { \
 		if [ -f tmp/harness-viewer.pid ]; then \
@@ -2594,6 +2633,26 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			else \
 				say "$(RED)MCP test server did not open 3012. See tmp/harness-mcp-fixture.log$(NC)"; \
 			fi; \
+		fi; \
+	fi; \
+	: "The profile's relays (harness-relay-*) point at a local upstream on 127.0.0.1:8783, so the"; \
+	: "relays-e2e rows never reach a third party. The gateway dials it per request, not at boot."; \
+	if nc -z 127.0.0.1 8783 2>/dev/null; then \
+		if curl -fsS --max-time 2 http://127.0.0.1:8783/__relay/health 2>/dev/null | grep -q '"fixture":"relay-upstream"'; then \
+			say "$(GREEN)Relay upstream fixture already listening on 8783$(NC)"; \
+		else \
+			say "$(RED)Port 8783 is taken by something other than the relay upstream fixture (no /__relay/health match); relays-e2e rows will fail until it is freed.$(NC)"; \
+			case "$(FEATURE)" in *relay*) exit 1;; esac; \
+		fi; \
+	else \
+		$(USE_NODE); RELAY_UPSTREAM_FIXTURE_PORT=8783 node tests/e2e/api/runners/relay-upstream-fixture.mjs > tmp/harness-relay-fixture.log 2>&1 & \
+		echo $$! > tmp/harness-relay-fixture.pid; \
+		for i in $$(seq 1 40); do nc -z 127.0.0.1 8783 2>/dev/null && break; sleep 0.25; done; \
+		if nc -z 127.0.0.1 8783 2>/dev/null; then \
+			say "$(GREEN)Relay upstream fixture up on 8783 (log: tmp/harness-relay-fixture.log)$(NC)"; \
+		else \
+			say "$(RED)Relay upstream fixture did not open 8783; relays-e2e rows will fail. See tmp/harness-relay-fixture.log$(NC)"; \
+			case "$(FEATURE)" in *relay*) exit 1;; esac; \
 		fi; \
 	fi; \
 	if curl -fsS --max-time 2 "$$BASE_URL_VAL/health" > /dev/null 2>&1; then \
@@ -2822,13 +2881,13 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		: "the failure it is meant to clear. Args: <shard> <collection> <report-out> <provider>."; \
 		: "Runs in the foreground and returns the PIPELINE status (pipefail is set above), so the"; \
 		: "caller can record it; backgrounding stays at the call site so pids remain trackable."; \
-		: "Running SHARD jobs, excluding the monitor. start_monitor backgrounds the monitor into"; \
-		: "this same shell, so a plain 'jobs -pr | wc -l' counts it as a shard. At the default cap"; \
-		: "that is only an off-by-one, but with a low HARNESS_JOBS the count would sit at the cap"; \
-		: "with only the monitor running and 'wait -n' would block on a process that never exits."; \
+		: "Running SHARD jobs, excluding every long-lived helper this shell backgrounded: the"; \
+		: "monitor, the MCP and relay fixtures and a gateway started by 'make dev'. A plain"; \
+		: "'jobs -pr | wc -l' counts them as shards, and with a low HARNESS_JOBS the count would"; \
+		: "sit at the cap while 'wait -n' blocks on a process that never exits."; \
 		shard_jobs() { \
-			SJ_MON="$$(cat tmp/harness-monitor.pid 2>/dev/null)"; \
-			jobs -pr | grep -v -x -F "$${SJ_MON:-__none__}" | wc -l | tr -d ' '; \
+			SJ_SKIP="$$(cat tmp/harness-monitor.pid tmp/harness-mcp-fixture.pid tmp/harness-relay-fixture.pid tmp/bifrost-dev.pid 2>/dev/null)"; \
+			jobs -pr | grep -v -x -F "$${SJ_SKIP:-__none__}" | wc -l | tr -d ' '; \
 		}; \
 		newman_shard() { \
 			NS_SHARD="$$1"; NS_COLLECTION="$$2"; NS_REPORT="$$3"; NS_PROV="$$4"; \

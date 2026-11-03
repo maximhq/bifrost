@@ -220,6 +220,18 @@ func validateKey(providerKey schemas.ModelProvider, key *schemas.Key) error {
 			}
 		}
 	}
+	// anthropic_key_config.workload_identity follows the same rules as oauth_key_config: only
+	// the Anthropic provider federates, and a static value wins over the config.
+	if key.AnthropicKeyConfig.HasWorkloadIdentity() {
+		if !ProviderSupportsAnthropicWorkloadIdentity(providerKey) {
+			return fmt.Errorf("anthropic_key_config.workload_identity is only supported on anthropic and on custom providers whose base_provider_type is anthropic")
+		}
+		if strings.TrimSpace(key.Value.GetValue()) == "" {
+			if err := key.AnthropicKeyConfig.WorkloadIdentity.Validate(); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
@@ -229,11 +241,19 @@ func ProviderSupportsOAuthKeyConfig(providerKey schemas.ModelProvider) bool {
 	return providerKey == schemas.OpenAI
 }
 
+// ProviderSupportsAnthropicWorkloadIdentity reports whether a provider (the base provider for a
+// custom one) exchanges anthropic_key_config.workload_identity for a bearer token.
+func ProviderSupportsAnthropicWorkloadIdentity(providerKey schemas.ModelProvider) bool {
+	return providerKey == schemas.Anthropic
+}
+
 // keyValueMayBeEmpty reports whether a key with no value is still usable: either the provider
 // carries its credentials in its own key config (CanProviderKeyValueBeEmpty), or the key
-// mints its bearer from oauth_key_config on a provider that honours it.
+// mints its bearer from oauth_key_config or workload identity on a provider that honours it.
 func keyValueMayBeEmpty(providerKey schemas.ModelProvider, key *schemas.Key) bool {
-	return CanProviderKeyValueBeEmpty(providerKey) || (key.OAuthKeyConfig != nil && ProviderSupportsOAuthKeyConfig(providerKey))
+	return CanProviderKeyValueBeEmpty(providerKey) ||
+		(key.OAuthKeyConfig != nil && ProviderSupportsOAuthKeyConfig(providerKey)) ||
+		(key.AnthropicKeyConfig.HasWorkloadIdentity() && ProviderSupportsAnthropicWorkloadIdentity(providerKey))
 }
 
 // routingErrorSummary produces a sanitized, audit-safe one-line summary of a
@@ -458,6 +478,12 @@ func restoreProviderResponseHeaders(ctx *schemas.BifrostContext, headers map[str
 //     raw or streamed body instead of marshaling the internal request, route
 //     it to the caller's endpoint path instead of the internal request's own,
 //     and forward the caller's headers on a call the caller doesn't own.
+//   - Inbound-dialect witness: the surface an Anthropic Messages caller sent
+//     natively (their own thinking mode and sampling scalars), recorded at
+//     ingress so the Anthropic egress can rebuild what the neutral request
+//     shape cannot carry. Inherited, it would answer a plugin's own Sonnet 5.5
+//     request with the caller's parameters rather than the ones that request
+//     actually carries.
 //
 // Deliberately not cleared: tracing/observability keys (the sub-request
 // should stay tied to the caller's trace) and
@@ -488,6 +514,15 @@ func extraHeaderSpanAttribute(name string, values []string) (any, bool) {
 }
 
 func ClearContextForInternalRequest(ctx *schemas.BifrostContext) {
+	// This write is load-bearing for every ClearValue below it, not just for the
+	// witness it parks. ClearValue shadows a parent's value through this context's
+	// OWN value map, and NewBifrostContext leaves that map unallocated until
+	// something is written; on a fresh derived context every ClearValue is
+	// therefore a no-op and the caller's values - their direct key, api-key id and
+	// extra headers among them - stay visible to the sub-request. SetValue
+	// allocates the map, so it has to come first. The egress type assertion treats
+	// the nil it parks here as no witness at all.
+	ctx.SetValue(schemas.BifrostContextKeyAnthropicNativeRequestSurface, nil)
 	// Key routing.
 	ctx.ClearValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys)
 	ctx.ClearValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID)

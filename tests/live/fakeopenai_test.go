@@ -394,6 +394,11 @@ func (f *fakeOpenAI) serveWebRTCCreate(w http.ResponseWriter, r *http.Request, u
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "transport.sdp is required")
 		return
 	}
+	// Azure's session config is strict and has no client field, whatever its value.
+	if upstream == "azure" && gjson.GetBytes(body.Session, "client").Exists() {
+		writeOpenAIError(w, http.StatusBadRequest, "unknown_parameter", "Unknown parameter: 'session.client'.")
+		return
+	}
 	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())

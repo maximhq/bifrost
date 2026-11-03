@@ -203,6 +203,14 @@ func (v *RealtimeVoice) GetName() string {
 	return ""
 }
 
+// GetType returns the object voice's type, such as Azure Voice Live's "azure-standard", or empty.
+func (v *RealtimeVoice) GetType() string {
+	if v == nil || v.VoiceObject == nil {
+		return ""
+	}
+	return v.VoiceObject.Type
+}
+
 // MarshalJSON writes id, name and type next to the preserved fields.
 func (o RealtimeVoiceObject) MarshalJSON() ([]byte, error) {
 	out := make(map[string]json.RawMessage, len(o.ExtraParams)+3)

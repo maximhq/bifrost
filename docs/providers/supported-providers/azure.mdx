@@ -1200,9 +1200,12 @@ Azure serves [GPT-Live](https://learn.microsoft.com/en-us/azure/foundry/openai/c
 }
 ```
 
+A voice model without a prefix runs on Azure when the request comes from the Azure OpenAI SDK, and on OpenAI otherwise on `/openai/v1/live/sessions`, the same provider the session's attach and content routes default to.
+
 Bifrost connects to `{endpoint}/openai/v1/live/sessions` with the key's API key or Entra ID token. Both `session.model` and `delegation.responses.model` are deployment names on Azure, and Bifrost maps each through the key's aliases. Azure runs the backend on the voice deployment's resource, so one key must serve both models, and the key's `endpoint` is used even when an alias sets its own.
 
-- **Sidebands**: `/v1/live/sessions/{session_id}/attach` takes `?provider=azure` or the `x-model-provider: azure` header. Without either, the route uses OpenAI when OpenAI is configured.
+- **Sidebands**: `/v1/live/sessions/{session_id}/attach` and `/openai/v1/live/sessions/{session_id}/attach` take `?provider=azure` or the `x-model-provider: azure` header, and the Azure OpenAI SDK's user agent selects Azure too. Without any of these, the route uses OpenAI when OpenAI is configured.
+- **Browser permissions**: Azure rejects `session.client` on WebRTC create, so Bifrost drops it upstream and applies `allowed_client_events` and `allowed_server_events` itself on the browser's data channel. A browser event outside the list gets OpenAI's `event_not_allowed` error and never reaches Azure. Sidebands are not restricted.
 - **Recordings**: `/v1/live/sessions/{session_id}/content` answers `400 unsupported_operation`. Azure does not store GPT-Live sessions yet and rejects `session.store`.
 - **Pricing overrides** match the deployment name Bifrost sends, not the alias.
 
