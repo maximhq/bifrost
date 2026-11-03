@@ -1176,11 +1176,9 @@
 		},
 		"access": {
 			"createFirst": "Créez d’abord ce MCP virtuel, puis assignez-le à des clés virtuelles ici.",
-			"loadFailed": "Impossible de charger les clés virtuelles.",
 			"virtualKeys": "Clés virtuelles",
 			"virtualKeysHelp": "Les clés assignées ici peuvent atteindre ce MCP virtuel à son point de terminaison.",
 			"assign": "Assigner une clé virtuelle",
-			"loading": "Chargement des clés virtuelles…",
 			"empty": "Aucune clé virtuelle assignée pour le moment. Assignez-en une pour que les appelants puissent atteindre ce MCP virtuel.",
 			"unassignAria": "Désassigner la clé virtuelle",
 			"ownerLookupFailed": "Impossible de vérifier à qui appartient « {{name}} » ; la clé n’a donc pas été attribuée. Réessayez.",
