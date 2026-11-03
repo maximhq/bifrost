@@ -164,6 +164,9 @@ type UsageReport struct {
 	UserID       string
 	VirtualKeyID string
 	ModelUsage   []ModelUsage
+	// SkipRequestCount reports tokens and cost without a request: the job's create already
+	// counted as one (an interaction run), so its settlement must not count a second.
+	SkipRequestCount bool
 }
 
 // ModelUsage is one model's share of a settled job.
@@ -311,6 +314,10 @@ type Settlement struct {
 	UnpricedCount int
 	FailedCount   int
 	UnpricedModel string
+
+	// SkipRequestCount carries onto the usage report: the job's create already counted against
+	// the request limits, so the settlement charges only tokens and cost.
+	SkipRequestCount bool
 }
 
 // JobRequest is one settlement attempt.

@@ -175,7 +175,10 @@ func (s *InteractionSettler) Settle(ctx context.Context, pricing PricingManager,
 	if model == "" {
 		model = jobReq.FallbackModel
 	}
-	settlement := &Settlement{Model: model, Object: schemas.ResponsesRequest}
+	// Unlike a batch, whose create is not a request, an interaction's create names the agent and
+	// was counted against the request limits when it ran. Its settlement charges tokens and cost
+	// only, or every run would count as two requests.
+	settlement := &Settlement{Model: model, Object: schemas.ResponsesRequest, SkipRequestCount: true}
 
 	var usage *schemas.BifrostPassthroughUsage
 	var status string

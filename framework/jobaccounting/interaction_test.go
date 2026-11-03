@@ -118,6 +118,7 @@ func TestAccountInteractionJob_BillsARunOnceAcrossReadsAndNodes(t *testing.T) {
 	require.Len(t, reporter.reports, 1, "governance is told exactly once")
 	assert.Equal(t, logID, reporter.reports[0].RequestID)
 	assert.Equal(t, int64(361700+33400), reporter.reports[0].TokensUsed)
+	assert.True(t, reporter.reports[0].SkipRequestCount, "the create already counted as the run's request")
 	assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, store.jobs[job.ID].AccountingStatus)
 }
 

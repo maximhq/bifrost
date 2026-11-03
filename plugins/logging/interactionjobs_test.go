@@ -33,6 +33,13 @@ func newInteractionPricingManager(t *testing.T) *modelcatalog.ModelCatalog {
 // with the response reporting the stored run it read.
 func sendInteractionRead(t *testing.T, plugin *LoggerPlugin, requestID, method, path string, run *schemas.BifrostPassthroughJob) {
 	t.Helper()
+	sendInteraction(t, plugin, requestID, method, path, run, schemas.PassthroughRequest)
+}
+
+// sendInteraction is sendInteractionRead for either request type. A stream is delivered as its
+// final chunk, the one the provider's Finalize hook put the run on.
+func sendInteraction(t *testing.T, plugin *LoggerPlugin, requestID, method, path string, run *schemas.BifrostPassthroughJob, requestType schemas.RequestType) {
+	t.Helper()
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
 	// Key selection always names the key that served the read; the job keeps the create's.
@@ -42,7 +49,7 @@ func sendInteractionRead(t *testing.T, plugin *LoggerPlugin, requestID, method, 
 		model = testInteractionAgent
 	}
 	_, _, err := plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
-		RequestType: schemas.PassthroughRequest,
+		RequestType: requestType,
 		PassthroughRequest: &schemas.BifrostPassthroughRequest{
 			Provider: schemas.Gemini,
 			Model:    model,
@@ -51,6 +58,9 @@ func sendInteractionRead(t *testing.T, plugin *LoggerPlugin, requestID, method, 
 		},
 	})
 	require.NoError(t, err)
+	if requestType == schemas.PassthroughStreamRequest {
+		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	}
 	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{
 		PassthroughResponse: &schemas.BifrostPassthroughResponse{
 			StatusCode:  200,
@@ -58,7 +68,7 @@ func sendInteractionRead(t *testing.T, plugin *LoggerPlugin, requestID, method, 
 			ServedModel: testInteractionAgent,
 			ProviderJob: run,
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:     schemas.PassthroughRequest,
+				RequestType:     requestType,
 				Provider:        schemas.Gemini,
 				PassthroughPath: path,
 			},
@@ -180,4 +190,38 @@ func TestPostLLMHookLateReadLeavesASettledInteractionAlone(t *testing.T) {
 	assert.Equal(t, "completed", after.ProviderStatus, "a late in-progress read must not rewrite a settled run's status")
 	assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, after.AccountingStatus)
 	assert.Equal(t, settledCheck, after.NextCheckAt, "a late read must not reschedule a settled run")
+}
+
+// A streaming create that ends on interaction.completed reports the finished run on its final
+// chunk. The stream branch of the post hook records the run and settles it right there, without
+// waiting for a poll or the sweeper, and the stream's own row is not billed for it.
+func TestPostLLMHookSettlesAStreamedInteractionWhenItEnds(t *testing.T) {
+	store := newTestStore(t)
+	bs := newFakeBatchStore()
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, bs, newInteractionPricingManager(t), nil)
+	require.NoError(t, err)
+
+	sendInteraction(t, plugin, "req-int-stream", "POST", "/interactions", &schemas.BifrostPassthroughJob{
+		ID: "int_stream", Status: "completed", Terminal: true, Created: true, PollPath: "/interactions/int_stream", APIVersion: "v1beta",
+		Usage: &schemas.BifrostPassthroughUsage{LLMUsage: &schemas.BifrostLLMUsage{PromptTokens: 1141649, CompletionTokens: 69527, TotalTokens: 1211176}},
+	}, schemas.PassthroughStreamRequest)
+	require.NoError(t, plugin.Cleanup())
+
+	job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindInteraction, string(schemas.Gemini), "int_stream"))
+	require.NoError(t, err)
+	assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, job.AccountingStatus, "the run is settled when the stream ends")
+	assert.Zero(t, job.PollAttempts, "no poll was needed")
+
+	row, err := store.FindByID(context.Background(), jobaccounting.AccountingLogID(jobaccounting.ProviderJobKindInteraction, schemas.Gemini, "int_stream"))
+	require.NoError(t, err)
+	require.NotNil(t, row.Cost)
+	assert.InDelta(t, 1141649*2e-06+69527*1.2e-05, *row.Cost, 1e-9)
+	require.NotNil(t, row.ParentRequestID)
+	assert.Equal(t, "req-int-stream", *row.ParentRequestID)
+
+	streamRow, err := store.FindByID(context.Background(), "req-int-stream")
+	require.NoError(t, err)
+	assert.True(t, streamRow.Stream)
+	assert.Equal(t, testInteractionAgent, streamRow.Model)
+	assert.True(t, streamRow.Cost == nil || *streamRow.Cost == 0, "the stream's own row is not billed for the run: cost=%v", streamRow.Cost)
 }

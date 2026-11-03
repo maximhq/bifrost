@@ -303288,7 +303288,9 @@
                   "pm.collectionVariables.unset('iagCreateRequestId');",
                   "pm.collectionVariables.set('iagBody', JSON.stringify({",
                   "  name: 'harness-iag-vk-run-' + Date.now(),",
-                  "  provider_configs: [{ provider: 'gemini', allowed_models: [pm.variables.get('genaiModel'), 'deep-research-preview-04-2026'], key_ids: ['*'], weight: 1 }]",
+                  "  provider_configs: [{ provider: 'gemini', allowed_models: [pm.variables.get('genaiModel'), 'deep-research-preview-04-2026'], key_ids: ['*'], weight: 1 }],",
+                  "  // Limits high enough never to refuse a case; they exist so the run's request and token counts can be read back.",
+                  "  rate_limit: { request_max_limit: 100000, request_reset_duration: '1d', token_max_limit: 1000000000, token_reset_duration: '1d' }",
                   "}));"
                 ]
               }
@@ -303530,6 +303532,25 @@
           "name": "gemini genai-model interactions create via /genai_passthrough/v1beta: the allowed model runs, is logged and billed - interactions agent governance",
           "event": [
             {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Snapshot the key's rate-limit counters, so the poll case can check what this run added to them.",
+                  "pm.collectionVariables.unset('iagRateBaseRequests');",
+                  "pm.collectionVariables.unset('iagRateBaseTokens');",
+                  "pm.collectionVariables.unset('iagRunTokens');",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/governance/virtual-keys/' + encodeURIComponent(pm.collectionVariables.get('iagVKID')), method: 'GET' }, function (err, res) {",
+                  "  var rl = (!err && res.code === 200) ? ((res.json().virtual_key || {}).rate_limit || null) : null;",
+                  "  if (rl) {",
+                  "    pm.collectionVariables.set('iagRateBaseRequests', String(rl.request_current_usage || 0));",
+                  "    pm.collectionVariables.set('iagRateBaseTokens', String(rl.token_current_usage || 0));",
+                  "  }",
+                  "});"
+                ]
+              }
+            },
+            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
@@ -303548,6 +303569,7 @@
                   "  pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
                   "});",
                   "if (j.id) { pm.collectionVariables.set('iagInteractionId', j.id); }",
+                  "if (j.usage && typeof j.usage.total_tokens === 'number') { pm.collectionVariables.set('iagRunTokens', String(j.usage.total_tokens)); }",
                   "if (reqId) { pm.collectionVariables.set('iagCreateRequestId', reqId); }",
                   "// The run is stored, so every later read repeats its full usage. It is billed once, as its own",
                   "// settlement row under this create, and never on the request rows that read it.",
@@ -303662,7 +303684,42 @@
                   "    pm.test('gemini interactions poll: log row written', function () { pm.expect.fail('log ' + reqId + ' not written after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
                   "  });",
                   "}",
-                  "checkLog(0);"
+                  "checkLog(0);",
+                  "// A run is one request, however many reads it takes: its create counted as one, the polls are",
+                  "// model-free and count nothing, and the settlement adds only the run's tokens. Before: the",
+                  "// settlement counted a second request. Wait for the tokens, since before the fix they landed in the",
+                  "// same update as that second request, then read the request count.",
+                  "var RATE_BASE_REQ = Number(pm.collectionVariables.get('iagRateBaseRequests'));",
+                  "var RATE_BASE_TOK = Number(pm.collectionVariables.get('iagRateBaseTokens'));",
+                  "var RUN_TOKENS = Number(pm.collectionVariables.get('iagRunTokens'));",
+                  "pm.test('gemini interactions rate limit: the create recorded a baseline and the run reported its tokens', function () {",
+                  "  pm.expect(isNaN(RATE_BASE_REQ) || isNaN(RATE_BASE_TOK), 'baseline requests=' + pm.collectionVariables.get('iagRateBaseRequests') + ' tokens=' + pm.collectionVariables.get('iagRateBaseTokens')).to.eql(false);",
+                  "  pm.expect(RUN_TOKENS, 'iagRunTokens=' + pm.collectionVariables.get('iagRunTokens')).to.be.above(0);",
+                  "});",
+                  "function readRate(cb) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/governance/virtual-keys/' + encodeURIComponent(pm.collectionVariables.get('iagVKID')), method: 'GET' }, function (err, res) {",
+                  "    cb((!err && res.code === 200) ? ((res.json().virtual_key || {}).rate_limit || {}) : {}, err);",
+                  "  });",
+                  "}",
+                  "// The create's own request is counted asynchronously and may land after the settlement's tokens,",
+                  "// so wait for both counters to move, then read once more after a pause and assert exact values.",
+                  "function checkRate(attempt) {",
+                  "  readRate(function (rl) {",
+                  "    var moved = (rl.token_current_usage || 0) - RATE_BASE_TOK >= RUN_TOKENS && (rl.request_current_usage || 0) - RATE_BASE_REQ >= 1;",
+                  "    if (!moved && attempt < 20) { setTimeout(function () { checkRate(attempt + 1); }, 500); return; }",
+                  "    setTimeout(function () {",
+                  "      readRate(function (final, err) {",
+                  "        pm.test('gemini interactions rate limit: the run is charged its reported tokens once', function () {",
+                  "          pm.expect((final.token_current_usage || 0) - RATE_BASE_TOK, 'rate limit: ' + JSON.stringify(final) + (err ? ' ' + String(err) : '')).to.eql(RUN_TOKENS);",
+                  "        });",
+                  "        pm.test('gemini interactions rate limit: the run counts as one request', function () {",
+                  "          pm.expect((final.request_current_usage || 0) - RATE_BASE_REQ, 'rate limit: ' + JSON.stringify(final)).to.eql(1);",
+                  "        });",
+                  "      });",
+                  "    }, 1500);",
+                  "  });",
+                  "}",
+                  "if (!isNaN(RATE_BASE_REQ) && RUN_TOKENS > 0) { checkRate(0); }"
                 ]
               }
             }
