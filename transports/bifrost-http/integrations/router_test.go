@@ -1860,6 +1860,118 @@ func TestChatGPTPassthroughForwardsCodexModelList(t *testing.T) {
 	require.NotContains(t, req.SafeHeaders, "cookie")
 }
 
+// geminiPassthroughAccount initializes only Gemini for the synthetic Interactions passthrough tests.
+type geminiPassthroughAccount struct{}
+
+// GetConfiguredProviders keeps the test independent of installed provider configuration.
+func (geminiPassthroughAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.Gemini}, nil
+}
+
+// GetKeysForProvider supplies a synthetic key; the receipt plugin short-circuits before any upstream call.
+func (geminiPassthroughAccount) GetKeysForProvider(context.Context, schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{{ID: "synthetic-gemini-key", Value: *schemas.NewSecretVar("synthetic-gemini-key"), Models: schemas.WhiteList{"*"}, Weight: 1}}, nil
+}
+
+// GetConfigForProvider uses defaults.
+func (geminiPassthroughAccount) GetConfigForProvider(schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	return &schemas.ProviderConfig{}, nil
+}
+
+// TestGenAIPassthroughInteractionsAgentIsTheModel covers Deep Research runs on /genai_passthrough: the
+// create names an agent instead of a model, and the polls, cancels and deletes that follow name none.
+// The agent has to reach key selection, the model allowlist and pricing as the request's model, and
+// the follow-up calls must not be refused by a restricted allowlist for naming no model.
+func TestGenAIPassthroughInteractionsAgentIsTheModel(t *testing.T) {
+	tests := []struct {
+		name          string
+		method        string
+		uri           string
+		body          string
+		wantStatus    int
+		wantModel     string
+		wantModelFree bool
+		wantBodyHas   string
+		wantProvider  schemas.ModelProvider
+	}{
+		{name: "create with agent names the agent", method: "POST", uri: "/genai_passthrough/v1beta/interactions", body: `{"agent":"deep-research-preview-04-2026","input":"x","background":true}`, wantStatus: 403, wantModel: "deep-research-preview-04-2026"},
+		{name: "create with model still names the model", method: "POST", uri: "/genai_passthrough/v1beta/interactions", body: `{"model":"gemini-3.8-flash","input":"x"}`, wantStatus: 403, wantModel: "gemini-3.8-flash"},
+		{name: "agent wins over model", method: "POST", uri: "/genai_passthrough/v1beta/interactions", body: `{"agent":"deep-research-max-preview-04-2026","model":"gemini-3.8-flash","input":"x"}`, wantStatus: 403, wantModel: "deep-research-max-preview-04-2026"},
+		{name: "non-string agent is refused", method: "POST", uri: "/genai_passthrough/v1beta/interactions", body: `{"agent":5,"input":"x"}`, wantStatus: 400, wantBodyHas: "agent must be a string"},
+		{name: "duplicate agent is refused", method: "POST", uri: "/genai_passthrough/v1beta/interactions", body: `{"agent":"deep-research-preview-04-2026","Agent":"deep-research-max-preview-04-2026","input":"x"}`, wantStatus: 400, wantBodyHas: "agent key at most once"},
+		{name: "agent outside interactions is ignored", method: "POST", uri: "/genai_passthrough/v1beta/models/gemini-2.5-flash:generateContent", body: `{"agent":"deep-research-preview-04-2026","contents":[]}`, wantStatus: 403, wantModel: "gemini-2.5-flash"},
+		{name: "poll runs no model", method: "GET", uri: "/genai_passthrough/v1beta/interactions/int_123", wantStatus: 403, wantModelFree: true},
+		{name: "cancel runs no model", method: "POST", uri: "/genai_passthrough/v1beta/interactions/int_123/cancel", wantStatus: 403, wantModelFree: true},
+		{name: "delete runs no model", method: "DELETE", uri: "/genai_passthrough/v1beta/interactions/int_123", wantStatus: 403, wantModelFree: true},
+		// A Vertex project may be named "models" (or "deployments"), which path model parsing reads as
+		// a model segment. An Interactions path names no model, so the project id must never become one.
+		{name: "vertex create on a project named models names the agent", method: "POST", uri: "/genai_passthrough/v1beta1/projects/models/locations/global/interactions", body: `{"agent":"deep-research-preview-04-2026","input":"x","background":true}`, wantStatus: 403, wantModel: "deep-research-preview-04-2026", wantProvider: schemas.Vertex},
+		{name: "vertex poll on a project named models runs no model", method: "GET", uri: "/genai_passthrough/v1beta1/projects/models/locations/global/interactions/int_123", wantStatus: 403, wantModelFree: true, wantProvider: schemas.Vertex},
+		{name: "a project whose name only contains interactions keeps its path model", method: "POST", uri: "/genai_passthrough/v1beta1/projects/interactions-lab/locations/global/publishers/google/models/gemini-2.5-flash:generateContent", body: `{"contents":[]}`, wantStatus: 403, wantModel: "gemini-2.5-flash", wantProvider: schemas.Vertex},
+		{name: "vertex cancel on a project named deployments runs no model", method: "POST", uri: "/genai_passthrough/v1beta1/projects/deployments/locations/global/interactions/int_123:cancel", wantStatus: 403, wantModelFree: true, wantProvider: schemas.Vertex},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			plugin := &codexPassthroughReceipt{}
+			client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: geminiPassthroughAccount{}, LLMPlugins: []schemas.LLMPlugin{plugin}, Logger: bifrost.NewNoOpLogger()})
+			require.NoError(t, err)
+			defer client.Shutdown()
+			r := router.New()
+			NewGenAIPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r)
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod(tc.method)
+			ctx.Request.SetRequestURI(tc.uri)
+			if tc.body != "" {
+				ctx.Request.Header.SetContentType("application/json")
+				ctx.Request.SetBodyString(tc.body)
+			}
+			r.Handler(&ctx)
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			if tc.wantStatus == 400 {
+				require.Contains(t, string(ctx.Response.Body()), tc.wantBodyHas)
+				require.Nil(t, plugin.request, "a refused body must not reach the core")
+				return
+			}
+			require.NotNil(t, plugin.request)
+			wantProvider := tc.wantProvider
+			if wantProvider == "" {
+				wantProvider = schemas.Gemini
+			}
+			require.Equal(t, wantProvider, plugin.request.PassthroughRequest.Provider)
+			require.Equal(t, tc.wantModel, plugin.request.PassthroughRequest.Model)
+			require.Equal(t, tc.wantModelFree, plugin.skipModelCheck)
+			require.Equal(t, tc.body, string(plugin.request.PassthroughRequest.Body), "the body is forwarded unchanged")
+		})
+	}
+}
+
+// BenchmarkGenAIPassthroughBodyModelKey measures the Interactions agent lookup every GenAI passthrough
+// request runs: a route predicate on non-Interactions paths, one strict key read on a create.
+func BenchmarkGenAIPassthroughBodyModelKey(b *testing.B) {
+	cfg := NewGenAIPassthroughRouter(nil, nil, nil, &testLogger{}).passthroughCfg
+	body := []byte(`{"agent":"deep-research-preview-04-2026","input":"Research the history of lighthouses.","background":true}`)
+	b.Run("generateContent", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = cfg.BodyModelKey("POST", "/models/gemini-2.5-flash:generateContent")
+		}
+	})
+	b.Run("no path model predicate on generateContent", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = cfg.NoPathModel("POST", "/projects/p/locations/global/publishers/google/models/gemini-2.5-flash:generateContent")
+		}
+	})
+	b.Run("interactions create", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if key := cfg.BodyModelKey("POST", "/interactions"); key != "" {
+				_, _ = passthroughBodyKeyModel(body, key)
+			}
+		}
+	})
+}
+
 // BenchmarkChatGPTPassthroughStreamDecision measures the route predicate without touching provider execution.
 func BenchmarkChatGPTPassthroughStreamDecision(b *testing.B) {
 	cfg := NewChatGPTPassthroughRouter(nil, nil, nil, &testLogger{}).passthroughCfg

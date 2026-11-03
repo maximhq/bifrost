@@ -27,6 +27,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useLocation } from "@tanstack/react-router";
 import { AlertCircle } from "lucide-react";
 import { parseAsSafeArrayOf, parseAsSafeString } from "@/lib/queryParamsParser";
+import { parseMetadataFiltersParam } from "@/lib/utils/metadataFilters";
 import { getLiveToggleState } from "@/lib/utils/timeRange";
 import { parseAsBoolean, parseAsFloat, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -181,15 +182,7 @@ export default function LogsPage() {
 			max_tokens: urlState.max_tokens ?? undefined,
 			missing_cost_only: urlState.missing_cost_only,
 			cache_hit_types: urlState.cache_hit_types,
-			metadata_filters: urlState.metadata_filters
-				? (() => {
-						try {
-							return JSON.parse(urlState.metadata_filters);
-						} catch {
-							return undefined;
-						}
-					})()
-				: undefined,
+			metadata_filters: parseMetadataFiltersParam(urlState.metadata_filters),
 			// Use a period if present
 			...(urlState.period
 				? { period: urlState.period }

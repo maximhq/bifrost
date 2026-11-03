@@ -199,7 +199,7 @@ func (p *LoggerPlugin) writeRealtimeInputUpdate(ctx context.Context, update *rea
 	}
 	found, err := p.store.SearchLogs(ctx, logstore.SearchFilters{
 		StartTime:           &update.sessionStartedAt,
-		MetadataFilters:     map[string]string{realtimeConnectionMetadata: update.connectionID},
+		MetadataFilters:     map[string][]string{realtimeConnectionMetadata: {update.connectionID}},
 		RealtimeInputItemID: update.itemID,
 	}, logstore.PaginationOptions{Limit: 2, SkipCount: true})
 	if err != nil {
