@@ -253,7 +253,8 @@ func (f *rawJSONFrames) apply(edit rawTextEdit) error {
 	var joined strings.Builder
 	for index, frame := range f.frames {
 		field := gjson.GetBytes(frame, path)
-		if !field.Exists() {
+		// A null field holds no text (OpenAI-compatible upstreams send "content":null), so it is a place to put text.
+		if !field.Exists() || field.Type == gjson.Null {
 			continue
 		}
 		if field.Type != gjson.String {

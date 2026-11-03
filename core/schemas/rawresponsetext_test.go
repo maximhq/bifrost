@@ -67,6 +67,19 @@ func TestSyncRawResponseTextPlacesReleasedTextOnFinishFrame(t *testing.T) {
 	assert.Equal(t, `{"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Contact [EMAIL-1] now."},"finish_reason":"stop"}],"obfuscation":"f1"}`+"\n\n"+syncUsageFrame, synced)
 }
 
+// TestSyncRawResponseTextPlacesReleasedTextOnNullField verifies a raw field sent as null, as some OpenAI-compatible
+// upstreams do for an empty delta, takes released text instead of failing the sync.
+func TestSyncRawResponseTextPlacesReleasedTextOnNullField(t *testing.T) {
+	raw := `{"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":null},"finish_reason":"stop"}]}`
+	before := syncChatChunk(nil, Ptr("stop"))
+	after := syncChatChunk(Ptr("Contact [EMAIL-1] now."), Ptr("stop"))
+
+	synced, err := SyncRawResponseText(raw, RawResponseFormatOpenAIChatCompletionChunk, before, after)
+
+	require.NoError(t, err)
+	assert.Equal(t, `{"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Contact [EMAIL-1] now."},"finish_reason":"stop"}]}`, synced)
+}
+
 // TestSyncRawResponseTextMovesTextSpreadOverFrames verifies text split across bundled frames is verified as a
 // whole and rewritten into the last frame that carried part of it.
 func TestSyncRawResponseTextMovesTextSpreadOverFrames(t *testing.T) {
