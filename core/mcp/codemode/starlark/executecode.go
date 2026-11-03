@@ -214,7 +214,7 @@ func (s *StarlarkCodeMode) executeCode(ctx *schemas.BifrostContext, code string)
 		return ExecutionResult{Logs: []string{}, Environment: ExecutionEnvironment{ServerKeys: []string{}}}
 	}
 	bindings := map[string][]string{}
-	for clientName, tools := range s.clientManager.GetToolPerClient(ctx) {
+	for clientName, tools := range s.clientManager.GetToolPerClient(codemcp.WithModelToolsOnly(ctx)) {
 		client := s.clientManager.GetClientByName(clientName)
 		if client == nil || !client.ExecutionConfig.IsCodeModeClient {
 			continue
@@ -253,7 +253,7 @@ func completionLine(failedCalls int) string {
 // answers with an error result that is handed to the script rather than raised.
 func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, toolName string, args map[string]interface{}, appendLog func(string), onToolError func()) (interface{}, error) {
 	// Get available tools per client
-	availableToolsPerClient := s.clientManager.GetToolPerClient(ctx)
+	availableToolsPerClient := s.clientManager.GetToolPerClient(codemcp.WithModelToolsOnly(ctx))
 
 	// Find the client by name
 	tools, exists := availableToolsPerClient[clientName]

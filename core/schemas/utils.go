@@ -1036,9 +1036,12 @@ func DeepCopyChatTool(original ChatTool) ChatTool {
 
 	if original.MCP != nil {
 		copyTool.MCP = &MCPToolMetadata{
-			Title:        original.MCP.Title,
-			Icons:        slices.Clone(original.MCP.Icons),
-			OutputSchema: slices.Clone(original.MCP.OutputSchema),
+			Title:         original.MCP.Title,
+			Icons:         slices.Clone(original.MCP.Icons),
+			OutputSchema:  slices.Clone(original.MCP.OutputSchema),
+			Meta:          slices.Clone(original.MCP.Meta),
+			UIResourceURI: original.MCP.UIResourceURI,
+			Visibility:    slices.Clone(original.MCP.Visibility),
 		}
 	}
 
