@@ -5309,9 +5309,12 @@ func (s *RDBLogStore) deleteExpiredBatchByKey(ctx context.Context, table, key, c
 		return 0, nil
 	}
 	var stmt string
-	if s.db.Dialector.Name() == "mysql" {
+	switch s.db.Dialector.Name() {
+	case "mysql":
 		stmt = fmt.Sprintf("DELETE FROM %s WHERE %s < ? ORDER BY %s LIMIT ?", table, column, column)
-	} else {
+	case "postgres":
+		return s.deleteExpiredBatchPostgres(ctx, table, key, column, cutoff, batchSize)
+	default:
 		stmt = fmt.Sprintf("DELETE FROM %s WHERE %s IN (SELECT %s FROM %s WHERE %s < ? ORDER BY %s LIMIT ?)", table, key, key, table, column, column)
 	}
 	result := s.db.WithContext(ctx).Exec(stmt, cutoff, batchSize)
@@ -5319,6 +5322,47 @@ func (s *RDBLogStore) deleteExpiredBatchByKey(ctx context.Context, table, key, c
 		return 0, result.Error
 	}
 	return result.RowsAffected, nil
+}
+
+// retentionAdvisoryLockKeys gives each retention table its own lock, so replicas can drain different tables at once.
+var retentionAdvisoryLockKeys = map[string]int64{
+	"logs":                   1000030,
+	"mcp_tool_logs":          1000031,
+	"relay_logs":             1000032,
+	"warp_topic_assignments": 1000033,
+	"warp_topic_unmatched":   1000034,
+}
+
+// retentionAdvisoryLockKeyOther covers any retention table missing from retentionAdvisoryLockKeys.
+const retentionAdvisoryLockKeyOther int64 = 1000039
+
+// deleteExpiredBatchPostgres deletes one batch under the table's xact advisory lock (PgBouncer-safe), or returns ErrRetentionBusy.
+func (s *RDBLogStore) deleteExpiredBatchPostgres(ctx context.Context, table, key, column string, cutoff time.Time, batchSize int) (int64, error) {
+	lockKey, ok := retentionAdvisoryLockKeys[table]
+	if !ok {
+		lockKey = retentionAdvisoryLockKeyOther
+	}
+	stmt := fmt.Sprintf("DELETE FROM %s WHERE %s IN (SELECT %s FROM %s WHERE %s < ? ORDER BY %s LIMIT ? FOR UPDATE SKIP LOCKED)", table, key, key, table, column, column)
+	var deleted int64
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var acquired bool
+		if err := tx.Raw("SELECT pg_try_advisory_xact_lock(?)", lockKey).Row().Scan(&acquired); err != nil {
+			return err
+		}
+		if !acquired {
+			return ErrRetentionBusy
+		}
+		result := tx.Exec(stmt, cutoff, batchSize)
+		if result.Error != nil {
+			return result.Error
+		}
+		deleted = result.RowsAffected
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return deleted, nil
 }
 
 // matViewShutdownWait bounds how long Close waits for cancelled matview
