@@ -1691,8 +1691,8 @@ func TestConvertBifrostToolsToAnthropicTranslatesProgrammaticCaller(t *testing.T
 		}
 	})
 
-	// Beside web search the interpreter is never sent (Anthropic injects its own code
-	// execution), so its legacy version must not block the request.
+	// Beside an auto-injecting web search version the interpreter is never sent (Anthropic
+	// injects its own code execution), so its legacy version must not block the request.
 	legacyInterpreter := func(callers ...string) schemas.ResponsesTool {
 		return schemas.ResponsesTool{
 			Type:                         schemas.ResponsesToolTypeCodeInterpreter,
@@ -1700,7 +1700,10 @@ func TestConvertBifrostToolsToAnthropicTranslatesProgrammaticCaller(t *testing.T
 			ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{Version: schemas.Ptr("code_execution_20250522")},
 		}
 	}
-	webSearch := schemas.ResponsesTool{Type: schemas.ResponsesToolTypeWebSearch}
+	webSearch := schemas.ResponsesTool{
+		Type:                   schemas.ResponsesToolTypeWebSearch,
+		ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{Version: schemas.Ptr(string(AnthropicToolTypeWebSearch20260209))},
+	}
 
 	t.Run("a dropped legacy interpreter with a programmatic caller does not block the request", func(t *testing.T) {
 		tools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{webSearch, legacyInterpreter("programmatic")}, schemas.Anthropic)

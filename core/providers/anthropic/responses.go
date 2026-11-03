@@ -4836,7 +4836,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 	if bifrostReq.Params != nil {
 		requestTools = bifrostReq.Params.Tools
 	}
-	input, err := prepareInlineToolDefinitions(bifrostReq.Input, requestTools)
+	input, err := prepareInlineToolDefinitions(bifrostReq.Input, requestTools, caps, bifrostReq.Provider)
 	if err != nil {
 		return nil, err
 	}
@@ -7425,7 +7425,7 @@ func normalizeInlineFunctionTool(tool *schemas.ResponsesTool) (*schemas.Response
 //     caller value the request fails, exactly as it does for a tools[] entry.
 //
 // The returned input is the caller's slice unless a rewrite was needed.
-func prepareInlineToolDefinitions(input []schemas.ResponsesMessage, tools []schemas.ResponsesTool) ([]schemas.ResponsesMessage, error) {
+func prepareInlineToolDefinitions(input []schemas.ResponsesMessage, tools []schemas.ResponsesTool, caps schemas.ModelCaps, provider schemas.ModelProvider) ([]schemas.ResponsesMessage, error) {
 	needsCaller := false
 	var validate func(blocks []schemas.ResponsesMessageContentBlock) error
 	validate = func(blocks []schemas.ResponsesMessageContentBlock) error {
@@ -7459,16 +7459,13 @@ func prepareInlineToolDefinitions(input []schemas.ResponsesMessage, tools []sche
 		return input, nil
 	}
 
-	// Same resolution as convertBifrostToolsToAnthropic: beside web search / fetch a
-	// code_interpreter is not sent, so it must not count as the declared version.
+	// Same resolution as convertBifrostToolsToAnthropic: beside an auto-injecting web
+	// tool a code_interpreter is not sent, so it must not count as the declared version.
 	sentTools := tools
-	for _, tool := range tools {
-		if tool.Type == schemas.ResponsesToolTypeWebSearch || tool.Type == schemas.ResponsesToolTypeWebFetch {
-			sentTools = slices.DeleteFunc(slices.Clone(tools), func(t schemas.ResponsesTool) bool {
-				return t.Type == schemas.ResponsesToolTypeCodeInterpreter
-			})
-			break
-		}
+	if webToolsSupplyCodeExecution(caps, tools, provider) {
+		sentTools = slices.DeleteFunc(slices.Clone(tools), func(t schemas.ResponsesTool) bool {
+			return t.Type == schemas.ResponsesToolTypeCodeInterpreter
+		})
 	}
 	declaredVersion, hasCodeExecution := declaredCodeExecutionVersion(sentTools)
 	caller, emitVersion := resolveAnthropicProgrammaticCaller(declaredVersion, hasCodeExecution)
@@ -10039,21 +10036,16 @@ func convertToolOutputToAnthropicContent(output *schemas.ResponsesToolMessageOut
 
 // convertBifrostToolsToAnthropic converts all Bifrost tools to Anthropic tools and MCP servers.
 // It handles context-dependent conversions like code_interpreter, which must be skipped when
-// web_search or web_fetch is present (Anthropic auto-injects code_execution in that case).
+// a web_search or web_fetch version that auto-injects code_execution is sent.
 func convertBifrostToolsToAnthropic(caps schemas.ModelCaps, tools []schemas.ResponsesTool, provider schemas.ModelProvider) ([]AnthropicTool, []AnthropicMCPServerV2, error) {
-	// Check if web search or web fetch is present — when they are, Anthropic
-	// auto-injects code_execution so we must skip it to avoid conflicts.
-	hasWebSearchOrFetch := false
-	for _, tool := range tools {
-		if tool.Type == schemas.ResponsesToolTypeWebSearch || tool.Type == schemas.ResponsesToolTypeWebFetch {
-			hasWebSearchOrFetch = true
-			break
-		}
-	}
+	// Anthropic auto-injects code_execution beside the 2026 web tool versions, so an
+	// explicit one conflicts there. Older versions inject nothing and keep the declared tool.
+	hasWebSearchOrFetch := webToolsSupplyCodeExecution(caps, tools, provider)
 
 	// An OpenAI-origin "programmatic" caller has to be renamed to the code execution
 	// version this request runs on, and that version may have to be raised to reach it.
-	// Resolve against the tools actually sent: beside web search a code_interpreter is dropped.
+	// Resolve against the tools actually sent: beside an auto-injecting web tool a
+	// code_interpreter is dropped.
 	sentTools := tools
 	if hasWebSearchOrFetch {
 		sentTools = slices.DeleteFunc(slices.Clone(tools), func(t schemas.ResponsesTool) bool {
@@ -10225,6 +10217,79 @@ func requestedServerToolVersion(version *string, fallback AnthropicToolType, pro
 	return AnthropicToolType(*version)
 }
 
+// resolveWebSearchToolType returns the web_search version sent for tool.
+func resolveWebSearchToolType(caps schemas.ModelCaps, tool *schemas.ResponsesTool, provider schemas.ModelProvider) AnthropicToolType {
+	webSearchType := AnthropicToolTypeWebSearch20250305
+	// Prefer the datasheet's pinned version; otherwise dynamic filtering
+	// (web_search_20260209) is available on Anthropic + Azure for Opus 4.6+, Sonnet 4.6+.
+	features, ok := ProviderFeatures[provider]
+	model := caps.Model()
+	if version, pinned := caps.ServerTool(ServerToolWebSearch); pinned {
+		webSearchType = AnthropicToolType(version)
+	} else if ok && features.WebSearchDynamic &&
+		(strings.Contains(model, "4.6") || strings.Contains(model, "4-6") || IsOpus47Plus(model) || IsSonnet5Plus(model) || IsFableFamily(model)) {
+		webSearchType = AnthropicToolTypeWebSearch20260209
+	}
+	// A client-selected version takes precedence over model defaults.
+	if tool.ResponsesToolWebSearch != nil {
+		webSearchType = requestedServerToolVersion(tool.ResponsesToolWebSearch.Version, webSearchType, provider)
+	}
+	return webSearchType
+}
+
+// resolveWebFetchToolType returns the web_fetch version sent for tool.
+func resolveWebFetchToolType(caps schemas.ModelCaps, tool *schemas.ResponsesTool, provider schemas.ModelProvider) AnthropicToolType {
+	webFetchType := AnthropicToolTypeWebFetch20250910
+	// Prefer the datasheet's pinned version; otherwise the dynamic-filtering
+	// versions are only available on Anthropic + Azure.
+	features, ok := ProviderFeatures[provider]
+	model := caps.Model()
+	if version, pinned := caps.ServerTool(ServerToolWebFetch); pinned {
+		webFetchType = AnthropicToolType(version)
+	} else if ok && features.WebSearchDynamic &&
+		(strings.Contains(model, "4.6") || strings.Contains(model, "4-6")) {
+		webFetchType = AnthropicToolTypeWebFetch20260309
+	}
+	if tool.ResponsesToolWebFetch != nil && tool.ResponsesToolWebFetch.ResponseInclusion != nil {
+		webFetchType = AnthropicToolTypeWebFetch20260318
+	} else if tool.ResponsesToolWebFetch != nil && tool.ResponsesToolWebFetch.UseCache != nil &&
+		webFetchType == AnthropicToolTypeWebFetch20250910 {
+		webFetchType = AnthropicToolTypeWebFetch20260309
+	}
+	// A client-selected version takes precedence over model defaults and option upgrades.
+	if tool.ResponsesToolWebFetch != nil {
+		webFetchType = requestedServerToolVersion(tool.ResponsesToolWebFetch.Version, webFetchType, provider)
+	}
+	return webFetchType
+}
+
+// webToolsSupplyCodeExecution reports whether a declared code_interpreter must be omitted
+// because a web search or web fetch tool already supplies code execution. Only the
+// 2026 web tool versions auto-inject it, so the decision uses the version actually sent.
+// Hosts without code execution keep the earlier omission instead of failing the request.
+func webToolsSupplyCodeExecution(caps schemas.ModelCaps, tools []schemas.ResponsesTool, provider schemas.ModelProvider) bool {
+	for i := range tools {
+		var toolType AnthropicToolType
+		switch tools[i].Type {
+		case schemas.ResponsesToolTypeWebSearch:
+			toolType = resolveWebSearchToolType(caps, &tools[i], provider)
+		case schemas.ResponsesToolTypeWebFetch:
+			toolType = resolveWebFetchToolType(caps, &tools[i], provider)
+		default:
+			continue
+		}
+		if !providerSupportsCodeExecution(provider) || doesWebSearchOrFetchAutoInjectCodeExecution(string(toolType)) {
+			return true
+		}
+	}
+	return false
+}
+
+// providerSupportsCodeExecution reports whether the host accepts a code_execution tool.
+func providerSupportsCodeExecution(provider schemas.ModelProvider) bool {
+	return !slices.Contains(unsupportedRawToolTypes[provider], "code_execution")
+}
+
 // Helper function to convert Tool back to AnthropicTool
 func convertBifrostToolToAnthropic(caps schemas.ModelCaps, tool *schemas.ResponsesTool, provider schemas.ModelProvider, hasWebSearchOrFetch bool) *AnthropicTool {
 	if tool == nil {
@@ -10274,21 +10339,7 @@ func convertBifrostToolToAnthropic(caps schemas.ModelCaps, tool *schemas.Respons
 	case schemas.ResponsesToolTypeComputerUsePreview, schemas.ResponsesToolTypeComputer:
 		return convertResponsesToAnthropicComputerTool(caps, tool)
 	case schemas.ResponsesToolTypeWebSearch:
-		webSearchType := AnthropicToolTypeWebSearch20250305
-		// Prefer the datasheet's pinned version; otherwise dynamic filtering
-		// (web_search_20260209) is available on Anthropic + Azure for Opus 4.6+, Sonnet 4.6+.
-		features, ok := ProviderFeatures[provider]
-		model := caps.Model()
-		if version, pinned := caps.ServerTool(ServerToolWebSearch); pinned {
-			webSearchType = AnthropicToolType(version)
-		} else if ok && features.WebSearchDynamic &&
-			(strings.Contains(model, "4.6") || strings.Contains(model, "4-6") || IsOpus47Plus(model) || IsSonnet5Plus(model) || IsFableFamily(model)) {
-			webSearchType = AnthropicToolTypeWebSearch20260209
-		}
-		// A client-selected version takes precedence over model defaults.
-		if tool.ResponsesToolWebSearch != nil {
-			webSearchType = requestedServerToolVersion(tool.ResponsesToolWebSearch.Version, webSearchType, provider)
-		}
+		webSearchType := resolveWebSearchToolType(caps, tool, provider)
 		anthropicTool := &AnthropicTool{
 			Type:                   schemas.Ptr(webSearchType),
 			Name:                   string(AnthropicToolNameWebSearch),
@@ -10314,26 +10365,7 @@ func convertBifrostToolToAnthropic(caps schemas.ModelCaps, tool *schemas.Respons
 
 		return anthropicTool
 	case schemas.ResponsesToolTypeWebFetch:
-		webFetchType := AnthropicToolTypeWebFetch20250910
-		// Prefer the datasheet's pinned version; otherwise the dynamic-filtering
-		// versions are only available on Anthropic + Azure.
-		features, ok := ProviderFeatures[provider]
-		model := caps.Model()
-		if version, pinned := caps.ServerTool(ServerToolWebFetch); pinned {
-			webFetchType = AnthropicToolType(version)
-		} else if ok && features.WebSearchDynamic &&
-			(strings.Contains(model, "4.6") || strings.Contains(model, "4-6")) {
-			webFetchType = AnthropicToolTypeWebFetch20260309
-		}
-		if tool.ResponsesToolWebFetch != nil && tool.ResponsesToolWebFetch.ResponseInclusion != nil {
-			webFetchType = AnthropicToolTypeWebFetch20260318
-		} else if tool.ResponsesToolWebFetch != nil && tool.ResponsesToolWebFetch.UseCache != nil &&
-			webFetchType == AnthropicToolTypeWebFetch20250910 {
-			webFetchType = AnthropicToolTypeWebFetch20260309
-		}
-		if tool.ResponsesToolWebFetch != nil {
-			webFetchType = requestedServerToolVersion(tool.ResponsesToolWebFetch.Version, webFetchType, provider)
-		}
+		webFetchType := resolveWebFetchToolType(caps, tool, provider)
 		anthropicTool := &AnthropicTool{
 			Type:                  schemas.Ptr(webFetchType),
 			Name:                  string(AnthropicToolNameWebFetch),
