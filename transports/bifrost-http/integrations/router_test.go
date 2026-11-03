@@ -25,9 +25,13 @@ import (
 	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/maximhq/bifrost/framework/tracing"
+	"github.com/maximhq/bifrost/plugins/compat"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -2552,6 +2556,68 @@ func TestAnthropicHeldStreamBlockedAtEndIsInStreamError(t *testing.T) {
 	require.Contains(t, res.body, "blocked by guardrail")
 	require.NotContains(t, res.body, `"text":"Hello"`, "blocked content reached the client")
 	require.Equal(t, 1, res.upstreamHits, "a guardrail block must not re-run the upstream")
+}
+
+func TestAnthropicMessagesRoute_ToolChoiceDisableParallelToolUse_Forwarded(t *testing.T) {
+	var capturedBody []byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		fmt.Fprintf(w, "event: message_start\ndata: %s\n\n", heldMessageStart)
+		flusher.Flush()
+		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+		flusher.Flush()
+	}))
+	defer upstream.Close()
+
+	ds := datasheet.NewTestStore(map[string]string{"claude-sonnet-5": "claude-sonnet-5"})
+	// Simulate when an external catalog feed lists tools and tool_choice but omits parallel_tool_calls,
+	// causing compat ShouldDropParams to drop ParallelToolCalls: the native Anthropic Messages request
+	// must still restore disable_parallel_tool_use on egress.
+	ds.SetSupportedParamsForTest(map[string][]string{"claude-sonnet-5": {"tools", "tool_choice", "max_tokens", "temperature"}})
+	mc := modelcatalog.NewTestCatalogWithDatasheet(ds)
+	compatPlugin, err := compat.Init(compat.Config{ShouldDropParams: true}, bifrost.NewNoOpLogger(), mc)
+	require.NoError(t, err)
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account:      passthroughTestAccount{baseURL: upstream.URL},
+		LLMPlugins:   []schemas.LLMPlugin{compatPlugin},
+		ModelCatalog: mc,
+		Logger:       bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	NewAnthropicRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	body := `{
+		"model": "anthropic/claude-sonnet-5",
+		"max_tokens": 256,
+		"stream": true,
+		"messages": [{"role": "user", "content": "hi"}],
+		"tools": [
+			{"name": "probe_tool", "description": "probe", "input_schema": {"type": "object"}},
+			{"name": "other_tool", "description": "other", "input_schema": {"type": "object"}}
+		],
+		"tool_choice": {"type": "tool", "name": "probe_tool", "disable_parallel_tool_use": true}
+	}`
+
+	var ctx fasthttp.RequestCtx
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI("/anthropic/v1/messages")
+	ctx.Request.Header.SetContentType("application/json")
+	ctx.Request.SetBodyString(body)
+
+	r.Handler(&ctx)
+
+	t.Logf("response status: %d, body: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	t.Logf("captured upstream body: %s", string(capturedBody))
+	disable := gjson.GetBytes(capturedBody, "tool_choice.disable_parallel_tool_use")
+	require.True(t, disable.Exists(), "disable_parallel_tool_use was dropped: %s", string(capturedBody))
+	require.True(t, disable.Bool(), "disable_parallel_tool_use should be true: %s", string(capturedBody))
 }
 
 // When the upstream's first events carry no output (an OpenAI-family model, whose startup
