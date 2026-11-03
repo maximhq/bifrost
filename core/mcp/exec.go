@@ -6,7 +6,7 @@ import (
 	"sync"
 
 	"github.com/mark3labs/mcp-go/client"
-	"github.com/maximhq/bifrost/core/internal/injectedauth"
+	"github.com/maximhq/bifrost/core/internal/mcpvouch"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -75,14 +75,36 @@ func (m *MCPManager) executeToolWithHooks(
 	// Populate top-level ClientName from the prefixed tool name so the gate can
 	// attribute short-circuit responses without depending on prefix parsing.
 	if request.ClientName == "" {
-		if toolName := request.GetToolName(); toolName != "" {
-			if idx := strings.IndexByte(toolName, '-'); idx > 0 {
-				request.ClientName = toolName[:idx]
-			}
+		request.ClientName = ToolClientName(request.GetToolName())
+	}
+
+	// A call named like a client's connect tool is marked on a context of its own
+	// before the gate, so a policy plugin can authorize a connect by the caller's
+	// access to the client (see mcpvouch) and the mark covers this call only.
+	// Whether it is Bifrost's connect or an upstream tool of that name in the
+	// caller's discovery is settled once the caller is known: a direct tool
+	// execution names its caller only when a policy plugin resolves its
+	// credential, after this point.
+	// A call already vouched for as injected runs a tool from the caller's own
+	// discovery, so it is never Bifrost's connect and keeps its mark.
+	var connectState *schemas.MCPClientState
+	if toolName := request.GetToolName(); strings.HasSuffix(toolName, connectToolSuffix) {
+		if state := m.connectCandidate(toolName); state != nil && mcpvouch.Kind(ctx, state.ExecutionConfig.Name, toolName) != schemas.MCPToolCallKindInjected {
+			connectState = state
+			ctx = schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			mcpvouch.SetConnect(ctx, connectState.ExecutionConfig.Name, toolName, func(callCtx *schemas.BifrostContext) (bool, bool) {
+				return m.ConnectToolClient(callCtx, toolName) != nil, connectCaller(callCtx)
+			})
 		}
 	}
 
 	resp, bErr := m.RunWithPluginPipeline(ctx, request, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
+		// A plugin may have retargeted the request; connect runs only for the
+		// tool it was decided on, and only as the plugins were told it would.
+		if connectState != nil && preReq.GetToolName() == ConnectToolName(connectState.ExecutionConfig.Name) &&
+			mcpvouch.Kind(ctx, connectState.ExecutionConfig.Name, preReq.GetToolName()) == schemas.MCPToolCallKindConnect {
+			return m.runConnect(ctx, preReq, connectState)
+		}
 		// Resolve and acquire after PreMCPHook so policy plugins can reject denied
 		// MCP clients before any auth or transport work.
 		state, conn, release, prepErr := m.prepareToolExecution(ctx, preReq)
@@ -91,16 +113,14 @@ func (m *MCPManager) executeToolWithHooks(
 		}
 		defer release()
 
-		// state == nil signals a code-mode tool: pass nil conn/config/mapping and
+		// state == nil signals a code-mode tool: pass nil conn/config and
 		// ToolsManager.ExecuteTool routes directly to CodeMode.
 		var executionConfig *schemas.MCPClientConfig
-		var toolNameMapping map[string]string
 		if state != nil {
 			executionConfig = state.ExecutionConfig
-			toolNameMapping = state.ToolNameMapping
 		}
 
-		result, opErr := m.toolsManager.ExecuteTool(ctx, preReq, conn, executionConfig, toolNameMapping)
+		result, opErr := m.toolsManager.ExecuteTool(ctx, preReq, conn, executionConfig)
 		if opErr != nil {
 			return nil, opErr
 		}
@@ -122,7 +142,7 @@ func (m *MCPManager) executeToolWithHooks(
 //   - For regular MCP tools: state non-nil, conn is the live transport, release
 //     must be called by the caller (defer).
 //   - For code-mode tools: state nil, conn nil, release is a no-op. The caller
-//     forwards nil conn/config/mapping to ToolsManager.ExecuteTool which
+//     forwards nil conn/config to ToolsManager.ExecuteTool which
 //     dispatches via the CodeMode implementation.
 //
 // Errors here mean the call should NOT run — neither the envelope plugin
@@ -144,13 +164,16 @@ func (m *MCPManager) prepareToolExecution(ctx *schemas.BifrostContext, request *
 		return nil, nil, func() {}, nil
 	}
 
-	state := m.GetClientForTool(toolName)
+	state, discovery := m.GetClientForTool(ctx, toolName)
 	if state == nil {
 		return nil, nil, nil, fmt.Errorf("tool '%s' is not available or not permitted", toolName)
 	}
 	clientName := state.ExecutionConfig.Name
 	if err := checkToolExecutionPermitted(ctx, state, toolName, m.logger); err != nil {
 		return nil, nil, nil, err
+	}
+	if !AppToolsAllowed(ctx) && !discovery.GetTools()[toolName].MCP.ModelVisible() {
+		return nil, nil, nil, fmt.Errorf("tool '%s' is not permitted (it is only callable from an MCP App)", toolName)
 	}
 	// NeedsReauth is the one hard gate left besides Disabled: the credential
 	// is confirmed permanently dead (see connectToMCPClient's typed
@@ -208,7 +231,9 @@ func (m *MCPManager) codeModeClientReachable(ctx *schemas.BifrostContext) bool {
 //  3. Tool allow-list   — client-level ToolsToExecute (most restrictive).
 //  4. Tool narrowing    — request-context MCPContextKeyIncludeTools.
 //
-// A provider-injected tool (core's injectedauth marker names it) skips 2-4.
+// The app-only rule is enforced in prepareToolExecution.
+//
+// A provider-injected tool (core's mcpvouch mark names it) skips 2-4.
 // The operator chose it in the provider config, and the caller never saw it in the
 // request, so neither the client's allow-list nor the caller's include lists apply.
 // The marker names one client and one exact prefixed tool, and both must match, so it
@@ -218,7 +243,10 @@ func checkToolExecutionPermitted(ctx *schemas.BifrostContext, state *schemas.MCP
 	if state.State == schemas.MCPConnectionStateDisabled {
 		return fmt.Errorf("tool '%s' is not permitted (client %s is disabled)", toolName, clientName)
 	}
-	if injectedauth.Authorizes(ctx, clientName, toolName) {
+	if withheldFromCallers(state.State, state.ExecutionConfig) {
+		return fmt.Errorf("tool '%s' is not permitted (client %s awaits admin verification)", toolName, clientName)
+	}
+	if mcpvouch.Kind(ctx, clientName, toolName) == schemas.MCPToolCallKindInjected {
 		return nil
 	}
 	var includeClients []string

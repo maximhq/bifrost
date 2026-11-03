@@ -1453,6 +1453,7 @@ config_agent_registrations|require_public_target|false|name = 'migration-test-ag
 config_client|skills_external_client_url|''|id = 1
 config_client|a2a_private_allowlist_json|'[]'|id = 1
 config_keys|vertex_use_session_routing|NULL|name = 'migration-test-key-anthropic'
+config_keys|anthropic_workload_identity_json|NULL|name = 'migration-test-key-anthropic'
 config_mcp_clients|openapi_spec|''|client_id = 'mcp-migration-test-001'
 config_mcp_clients|openapi_config_json|NULL|client_id = 'mcp-migration-test-001'
 governance_virtual_keys|metadata|'{"cost_center":"migration-test","owner":"platform"}'|id = 'vk-migration-test-1'
@@ -5984,7 +5985,7 @@ compare_postgres_snapshots() {
   # Tables to skip entirely (system/tracking tables that change during migration)
   # governance_model_pricing, governance_model_parameters: synced from remote model catalog URL
   # during startup (see framework/modelcatalog/sync.go) - row count grows from seed-only to full catalog
-  local skip_tables="gorp_migrations schema_migrations migrations governance_config governance_model_pricing governance_model_parameters"
+  local skip_tables="gorp_migrations schema_migrations migrations governance_config governance_model_pricing governance_model_parameters matview_refresh_state"
 
   # Tables whose row count is allowed to GROW during migration (rows added by design) but
   # whose pre-existing seeded rows must still be value-compared. Unlike skip_tables (which

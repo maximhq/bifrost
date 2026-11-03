@@ -22,7 +22,7 @@ func TestRealtimeInputLookup(t *testing.T) {
 			"realtime_connection_id": test.connection, "realtime_input_items": []map[string]interface{}{{"id": test.item, "index": 0}},
 		}}))
 	}
-	result, err := inner.SearchLogs(ctx, SearchFilters{RealtimeInputItemID: itemID, MetadataFilters: map[string]string{"realtime_connection_id": "one"}}, PaginationOptions{Limit: 2, SkipCount: true})
+	result, err := inner.SearchLogs(ctx, SearchFilters{RealtimeInputItemID: itemID, MetadataFilters: map[string][]string{"realtime_connection_id": {"one"}}}, PaginationOptions{Limit: 2, SkipCount: true})
 	require.NoError(t, err)
 	require.Len(t, result.Logs, 1)
 	require.Equal(t, "match", result.Logs[0].ID)

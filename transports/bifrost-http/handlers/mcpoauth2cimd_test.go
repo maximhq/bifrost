@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/network"
+	"github.com/maximhq/bifrost/core/schemas"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -86,6 +88,36 @@ func TestOAuth2ClientMetadataResolver(t *testing.T) {
 		assert.Equal(t, []string{"http://127.0.0.1:3000/callback"}, client.RedirectURIs)
 		assert.Equal(t, []string{"authorization_code"}, client.GrantTypes)
 		assert.Equal(t, "mcp", client.Scope)
+	})
+
+	t.Run("grants this server does not offer are dropped", func(t *testing.T) {
+		clientID := host.document("/extra-grant.json", map[string]any{
+			"grant_types": []string{"authorization_code", "urn:ietf:params:oauth:grant-type:jwt-bearer", "refresh_token"},
+		}, nil)
+		client, err := resolver.resolve(context.Background(), cfg, clientID)
+		require.Nil(t, err)
+		assert.Equal(t, []string{"authorization_code", "refresh_token"}, client.GrantTypes)
+	})
+
+	// ChatGPT's document prefers private_key_jwt and also lists none among the methods it supports.
+	t.Run("another auth method is accepted when the document also supports none", func(t *testing.T) {
+		clientID := host.document("/prefers-jwt.json", map[string]any{
+			"token_endpoint_auth_method":            "private_key_jwt",
+			"token_endpoint_auth_methods_supported": []string{"none", "private_key_jwt"},
+		}, nil)
+		_, err := resolver.resolve(context.Background(), cfg, clientID)
+		require.Nil(t, err)
+	})
+
+	t.Run("another auth method is refused when the document does not support none", func(t *testing.T) {
+		for path, extra := range map[string]map[string]any{
+			"/jwt-only.json":      {"token_endpoint_auth_method": "private_key_jwt"},
+			"/jwt-and-basic.json": {"token_endpoint_auth_method": "private_key_jwt", "token_endpoint_auth_methods_supported": []string{"private_key_jwt", "client_secret_basic"}},
+		} {
+			_, err := resolver.resolve(context.Background(), cfg, host.document(path, extra, nil))
+			require.NotNil(t, err, path)
+			assert.Contains(t, err.description, "only token_endpoint_auth_method=none is supported", path)
+		}
 	})
 
 	t.Run("long URL is accepted", func(t *testing.T) {
@@ -267,6 +299,64 @@ func TestHandleAuthorize_ClientIDMetadataDocument(t *testing.T) {
 	ctx = getCtx("/oauth2/authorize?" + query("http://127.0.0.1:3000/elsewhere"))
 	h.handleAuthorize(ctx)
 	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "a redirect_uri the document does not list is refused")
+
+	// claude.ai's document also lists the jwt-bearer grant, which this server does not offer.
+	clientID = host.document("/extra-grant.json", map[string]any{
+		"grant_types": []string{"authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:jwt-bearer"},
+	}, nil)
+	ctx = getCtx("/oauth2/authorize?" + query("http://127.0.0.1:3000/callback"))
+	h.handleAuthorize(ctx)
+	require.Equal(t, fasthttp.StatusFound, ctx.Response.StatusCode(), "a document listing a grant this server does not offer still authorizes: %s", ctx.Response.Body())
+
+	// ChatGPT's document prefers private_key_jwt and also supports none.
+	clientID = host.document("/prefers-jwt.json", map[string]any{
+		"token_endpoint_auth_method":            "private_key_jwt",
+		"token_endpoint_auth_methods_supported": []string{"none", "private_key_jwt"},
+	}, nil)
+	ctx = getCtx("/oauth2/authorize?" + query("http://127.0.0.1:3000/callback"))
+	h.handleAuthorize(ctx)
+	require.Equal(t, fasthttp.StatusFound, ctx.Response.StatusCode(), "a document preferring another auth method but supporting none still authorizes: %s", ctx.Response.Body())
+	assert.Contains(t, string(ctx.Response.Header.Peek("Location")), "/oauth/consent?flow=")
+}
+
+// TestHandleToken_RefreshAsAMetadataDocumentClient pins that a client identified by a Client ID
+// Metadata Document refreshes by the grant types its document lists, as a registered client does by
+// the ones it registered. Such a client is never in the store, so a store-only lookup refused every
+// one of its refreshes.
+func TestHandleToken_RefreshAsAMetadataDocumentClient(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		grantTypes any
+		wantStatus int
+	}{
+		{name: "document lists refresh_token", grantTypes: []string{"authorization_code", "refresh_token"}, wantStatus: fasthttp.StatusOK},
+		{name: "document also lists a grant this server does not offer", grantTypes: []string{"authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:jwt-bearer"}, wantStatus: fasthttp.StatusOK},
+		{name: "document omits grant_types", grantTypes: nil, wantStatus: fasthttp.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, store, _ := newIssuanceHandler(t)
+			host := newMetadataHost(t)
+			h.clientMetadata = newOAuth2ClientMetadataResolver(host.server.Client())
+			clientID := host.document("/client.json", map[string]any{"grant_types": tc.grantTypes}, nil)
+			require.NoError(t, store.CreateVirtualKey(context.Background(), &configtables.TableVirtualKey{
+				ID: "vk-1", Name: "vk-1", Value: *schemas.NewSecretVar("sk-bf-vk-1"), IsActive: new(true),
+			}))
+			seedConsentedRequest(t, store, "fam-vk", clientID, "auth-code-vk", pkceChallenge("v"), "vk", "vk-1", time.Now().Add(time.Minute))
+			require.NoError(t, store.ConsumeOAuth2AuthorizeRequest(context.Background(), "fam-vk", &configtables.TableOAuth2RefreshToken{
+				ID: "rt-vk", TokenHash: hashSHA256Hex("refresh-vk-1"), FamilyID: "fam-vk", ClientID: clientID,
+				BfMode: "vk", BfSub: "vk-1", Scope: "mcp", Resource: testMCPResource, CreatedAt: time.Now(),
+			}))
+
+			ctx := formPostCtx(url.Values{
+				"grant_type": {"refresh_token"}, "refresh_token": {"refresh-vk-1"}, "client_id": {clientID},
+			}.Encode())
+			h.handleToken(ctx)
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			if tc.wantStatus == fasthttp.StatusBadRequest {
+				assert.Contains(t, string(ctx.Response.Body()), "client is not registered for the refresh_token grant")
+			}
+		})
+	}
 }
 
 // BenchmarkOAuth2ClientMetadataResolver_Cached measures a cached lookup, the per-request cost once a
@@ -280,5 +370,99 @@ func BenchmarkOAuth2ClientMetadataResolver_Cached(b *testing.B) {
 		if _, err := resolver.resolve(context.Background(), nil, clientID); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// realClientDocuments are Client ID Metadata Documents real MCP clients publish, verbatim as fetched
+// on 2026-11-03 from the URL in each comment. A client publishes one document for every authorization
+// server, so it can list grants this server does not offer (claude.ai: jwt-bearer, VS Code:
+// device_code); each must still resolve.
+var realClientDocuments = []struct {
+	name     string
+	document string
+}{
+	// https://claude.ai/oauth/mcp-oauth-client-metadata
+	{"claude.ai", `{"client_id":"https://claude.ai/oauth/mcp-oauth-client-metadata","client_name":"Claude","client_uri":"https://claude.ai","redirect_uris":["https://claude.ai/api/mcp/auth_callback"],"grant_types":["authorization_code","refresh_token","urn:ietf:params:oauth:grant-type:jwt-bearer"],"response_types":["code"],"token_endpoint_auth_method":"none"}`},
+	// https://claude.ai/oauth/claude-code-client-metadata
+	{"Claude Code", `{"client_id":"https://claude.ai/oauth/claude-code-client-metadata","client_name":"Claude Code","client_uri":"https://claude.ai","redirect_uris":["http://localhost/callback","http://127.0.0.1/callback"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none"}`},
+	// https://chatgpt.com/oauth/codex/client.json
+	{"Codex", `{"client_id":"https://chatgpt.com/oauth/codex/client.json","client_uri":"https://chatgpt.com/codex","application_type":"native","redirect_uris":["http://127.0.0.1/callback","http://localhost/callback"],"token_endpoint_auth_method":"none","token_endpoint_auth_methods_supported":["none"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"client_name":"Codex","logo_uri":"https://persistent.oaistatic.com/sonic/misc/openai-logo.png"}`},
+	// https://vscode.dev/oauth/client-metadata.json
+	{"VS Code", `{"client_name":"Visual Studio Code","logo_uri":"https://code.visualstudio.com/assets/branding/code-stable.png","grant_types":["authorization_code","refresh_token","urn:ietf:params:oauth:grant-type:device_code"],"response_types":["code"],"token_endpoint_auth_method":"none","application_type":"native","client_id":"https://vscode.dev/oauth/client-metadata.json","client_uri":"https://vscode.dev/product","redirect_uris":["http://127.0.0.1:33418/","https://vscode.dev/redirect"]}`},
+	// https://cursor.com/oauth/mcp-client.json
+	{"Cursor", `{"client_id":"https://cursor.com/oauth/mcp-client.json","client_name":"Cursor","client_uri":"https://cursor.com","logo_uri":"https://ptht05hbb1ssoooe.public.blob.vercel-storage.com/assets/uploads/cursorlogomcpv3.svg","redirect_uris":["https://www.cursor.com/agents/mcp/oauth/callback","https://www.cursor.com/bot/mcp/oauth/callback","https://grok.com/connectors-oauth-exchange-code/","http://localhost:8787/callback","http://127.0.0.1:8787/callback"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none"}`},
+	// https://chatgpt.com/oauth/client.json
+	{"ChatGPT", `{"client_id":"https://chatgpt.com/oauth/client.json","client_uri":"https://chatgpt.com/","redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"],"token_endpoint_auth_method":"private_key_jwt","token_endpoint_auth_methods_supported":["none","private_key_jwt"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"client_name":"ChatGPT","logo_uri":"https://persistent.oaistatic.com/sonic/misc/openai-logo.png","token_endpoint_auth_signing_alg":"RS256","jwks_uri":"https://chatgpt.com/oauth/jwks.json"}`},
+	// https://zed.dev/oauth/client-metadata.json
+	{"Zed", `{"client_id":"https://zed.dev/oauth/client-metadata.json","client_name":"Zed","client_uri":"https://zed.dev","redirect_uris":["http://127.0.0.1/callback"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none","logo_uri":"https://cdn.zed.dev/images/logo-dark.png"}`},
+}
+
+// TestOAuth2ClientMetadataResolver_RealClientDocuments resolves each real client's document, served from
+// a test host (so its client_id names that host, the one change), with its remote callbacks approved as
+// an operator using that client would. Each becomes a public client with the grants this server offers.
+func TestOAuth2ClientMetadataResolver_RealClientDocuments(t *testing.T) {
+	_, _, cfg := newIssuanceHandler(t)
+	host := newMetadataHost(t)
+	resolver := newOAuth2ClientMetadataResolver(host.server.Client())
+	for i, tc := range realClientDocuments {
+		t.Run(tc.name, func(t *testing.T) {
+			var doc map[string]any
+			require.NoError(t, json.Unmarshal([]byte(tc.document), &doc))
+			var redirects []string
+			for _, uri := range doc["redirect_uris"].([]any) {
+				redirects = append(redirects, uri.(string))
+			}
+			cfg.ClientConfig.OAuth2ServerConfig.AllowedRedirectURIs = redirects
+			path := fmt.Sprintf("/real-%d.json", i)
+			host.docs[path] = func(base string) (int, http.Header, string) {
+				doc["client_id"] = base + path
+				body, _ := json.Marshal(doc)
+				return http.StatusOK, http.Header{"Content-Type": []string{"application/json"}}, string(body)
+			}
+
+			client, err := resolver.resolve(context.Background(), cfg, host.server.URL+path)
+			require.Nil(t, err, "the %s document must resolve", tc.name)
+			assert.Equal(t, doc["client_name"], client.ClientName)
+			assert.Equal(t, redirects, client.RedirectURIs)
+			assert.Equal(t, []string{"authorization_code", "refresh_token"}, client.GrantTypes)
+		})
+	}
+}
+
+// The harness build's private allowlist lets documents come from an allow-listed private host,
+// over http too, and nowhere else; unset, such a client_id is not a document at all.
+func TestOAuth2ClientMetadataResolver_PrivateAllowlist(t *testing.T) {
+	_, _, cfg := newIssuanceHandler(t)
+	var fetches atomic.Int32
+	var docServer *httptest.Server
+	docServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetches.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"client_id": docServer.URL + r.URL.Path, "client_name": "Private host client", "redirect_uris": []string{"http://127.0.0.1:3000/callback"}})
+	}))
+	t.Cleanup(docServer.Close)
+	clientID := docServer.URL + "/client.json"
+	resolver := newOAuth2ClientMetadataResolver(docServer.Client())
+
+	assert.False(t, isClientMetadataDocumentID(clientID), "unset, an http client_id is not a document")
+	_, metadataErr, err := lookupOAuth2Client(context.Background(), cfg, resolver, clientID)
+	assert.Nil(t, metadataErr)
+	assert.Error(t, err, "it is looked up as a registered client, of which there is none")
+	assert.Zero(t, fetches.Load())
+
+	allow, err := network.ValidatePrivateTargetAllowlist([]string{"127.0.0.1"})
+	require.NoError(t, err)
+	setClientMetadataPrivateAllowlist(allow)
+	t.Cleanup(func() { setClientMetadataPrivateAllowlist(nil) })
+
+	assert.True(t, isClientMetadataDocumentID(clientID))
+	client, metadataErr, err := lookupOAuth2Client(context.Background(), cfg, resolver, clientID)
+	require.NoError(t, err)
+	require.Nil(t, metadataErr)
+	assert.Equal(t, "Private host client", client.ClientName)
+	assert.Equal(t, int32(1), fetches.Load())
+
+	for _, other := range []string{"http://localhost:1/client.json", "http://10.0.0.1/client.json", "http://example.com/client.json"} {
+		assert.False(t, isClientMetadataDocumentID(other), "%s is not on the allowlist", other)
 	}
 }

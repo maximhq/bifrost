@@ -2398,6 +2398,174 @@ func TestMigrationAddMCPCodeModeLimitsClientColumn(t *testing.T) {
 	require.NoError(t, migrationAddMCPCodeModeLimitsClientColumn(ctx, db, testMigrationLogger))
 }
 
+// TestMigrationAddMCPPerUserDiscoveries pins the upgrade path: the per_user_discovery flag column,
+// the mcp_per_user_discoveries table with its instructions column (a discovery carries the
+// server's instructions alongside its tools) and the count columns a sessions listing reads, the
+// per-mode partial unique indexes that keep one row per (identity, client) binding, and the
+// (client, hash) index callers holding the same discovery are grouped by.
+func TestMigrationAddMCPPerUserDiscoveries(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	ctx := context.Background()
+	mg := db.Migrator()
+
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`).Error)
+	require.NoError(t, db.AutoMigrate(&tables.TableMCPClient{}))
+
+	// Simulate the pre-migration schema
+	require.NoError(t, mg.DropColumn(&tables.TableMCPClient{}, "per_user_discovery"))
+	require.False(t, mg.HasColumn(&tables.TableMCPClient{}, "per_user_discovery"))
+	require.False(t, mg.HasTable(&tables.TableMCPPerUserDiscovery{}))
+
+	require.NoError(t, migrationAddMCPPerUserDiscoveries(ctx, db, testMigrationLogger))
+
+	assert.True(t, mg.HasColumn(&tables.TableMCPClient{}, "per_user_discovery"))
+	require.True(t, mg.HasTable(&tables.TableMCPPerUserDiscovery{}))
+	for _, column := range []string{"tools_json", "instructions", "discovery_hash", "tool_count", "prompt_count", "resource_count", "discovered_at"} {
+		assert.True(t, mg.HasColumn(&tables.TableMCPPerUserDiscovery{}, column), "%s column should exist after migration", column)
+	}
+	for _, index := range []string{
+		"idx_mcp_per_user_discoveries_user_mcp",
+		"idx_mcp_per_user_discoveries_vk_mcp",
+		"idx_mcp_per_user_discoveries_client_hash",
+	} {
+		assert.True(t, mg.HasIndex(&tables.TableMCPPerUserDiscovery{}, index), "%s should exist after migration", index)
+	}
+	// Only users and virtual keys keep a discovery, so there is no session binding to key one by.
+	assert.False(t, mg.HasColumn(&tables.TableMCPPerUserDiscovery{}, "session_id"))
+	assert.False(t, mg.HasIndex(&tables.TableMCPPerUserDiscovery{}, "idx_mcp_per_user_discoveries_session_mcp"))
+
+	// Idempotent: a re-run on an already-migrated schema is a no-op.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_mcp_per_user_discoveries").Error)
+	require.NoError(t, migrationAddMCPPerUserDiscoveries(ctx, db, testMigrationLogger))
+}
+
+// TestMigrationAddMCPPerUserDiscoveriesBoundsLockWait pins that on postgres the per_user_discovery
+// column's ALTER on config_mcp_clients gives up on a held lock instead of queueing every later query
+// on the table behind it.
+func TestMigrationAddMCPPerUserDiscoveriesBoundsLockWait(t *testing.T) {
+	var db *gorm.DB
+	for _, ndb := range indexMigrationDBs(t) {
+		if ndb.name == "postgres" {
+			db = ndb.db
+		}
+	}
+	if db == nil {
+		t.Skip("local test Postgres is not reachable")
+	}
+	require.NoError(t, db.Exec("CREATE TABLE config_mcp_clients (id SERIAL PRIMARY KEY, client_id VARCHAR(255) NOT NULL UNIQUE)").Error)
+
+	ctx := context.Background()
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	reader, err := sqlDB.Conn(ctx)
+	require.NoError(t, err)
+	defer reader.Close()
+	_, err = reader.ExecContext(ctx, "BEGIN")
+	require.NoError(t, err)
+	defer reader.ExecContext(ctx, "ROLLBACK") //nolint:errcheck
+	// A long reader's ACCESS SHARE lock conflicts with the ACCESS EXCLUSIVE lock ALTER TABLE needs.
+	_, err = reader.ExecContext(ctx, "SELECT * FROM config_mcp_clients")
+	require.NoError(t, err)
+
+	migrateCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	err = migrationAddMCPPerUserDiscoveries(migrateCtx, db, testMigrationLogger)
+	require.Error(t, err)
+	assert.True(t, postgresconn.IsLockNotAvailableError(err), "expected lock_not_available, got: %v", err)
+}
+
+// TestMigrationAddMCPClientPendingVerificationColumn backfills the record from
+// the signals it replaces, so no client changes state on upgrade: an OAuth
+// client still carrying its bootstrap stash, and a per_user_headers or
+// token_exchange client over a real upstream that never stored its tools.
+func TestMigrationAddMCPClientPendingVerificationColumn(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	ctx := context.Background()
+	mg := db.Migrator()
+
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`).Error)
+	require.NoError(t, db.AutoMigrate(&tables.TableMCPClient{}))
+	require.NoError(t, mg.DropColumn(&tables.TableMCPClient{}, "pending_verification"))
+
+	rows := []struct {
+		name, authType, connectionType string
+		stash, tools                   *string
+		want                           bool
+	}{
+		{name: "oauth_stashed", authType: "oauth", connectionType: "http", stash: schemas.Ptr(`{}`), want: true},
+		{name: "oauth_authorized", authType: "oauth", connectionType: "http"},
+		{name: "oauth_empty_stash", authType: "oauth", connectionType: "http", stash: schemas.Ptr("")},
+		{name: "per_user_oauth_stashed", authType: "per_user_oauth", connectionType: "http", stash: schemas.Ptr(`{}`), want: true},
+		{name: "headers_never_verified", authType: "per_user_headers", connectionType: "http", want: true},
+		{name: "headers_verified_no_tools", authType: "per_user_headers", connectionType: "http", tools: schemas.Ptr(`{}`)},
+		{name: "headers_openapi", authType: "per_user_headers", connectionType: "openapi"},
+		{name: "exchange_blank_tools", authType: "token_exchange", connectionType: "http", tools: schemas.Ptr(""), want: true},
+		{name: "exchange_null_tools", authType: "token_exchange", connectionType: "http", tools: schemas.Ptr("null"), want: true},
+		{name: "exchange_verified", authType: "token_exchange", connectionType: "http", tools: schemas.Ptr(`{"a":{}}`)},
+		{name: "shared_headers", authType: "headers", connectionType: "http"},
+	}
+	now := time.Now()
+	for _, row := range rows {
+		require.NoError(t, db.Exec(
+			`INSERT INTO config_mcp_clients (client_id, name, endpoint_slug, connection_type, auth_type, pending_oauth_config_json, discovered_tools_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			row.name, row.name, row.name, row.connectionType, row.authType, row.stash, row.tools, now, now).Error)
+	}
+
+	require.NoError(t, migrationAddMCPClientPendingVerificationColumn(ctx, db, testMigrationLogger))
+
+	require.True(t, mg.HasColumn(&tables.TableMCPClient{}, "pending_verification"))
+	for _, row := range rows {
+		var pending bool
+		require.NoError(t, db.Table("config_mcp_clients").Select("pending_verification").Where("client_id = ?", row.name).Scan(&pending).Error)
+		assert.Equal(t, row.want, pending, row.name)
+	}
+
+	// Idempotent: a re-run on an already-migrated schema is a no-op.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_mcp_client_pending_verification_column").Error)
+	require.NoError(t, migrationAddMCPClientPendingVerificationColumn(ctx, db, testMigrationLogger))
+}
+
+// TestMigrationAddMCPClientPendingVerificationColumnBoundsLockWait pins that on postgres the
+// pending_verification column's ALTER on config_mcp_clients gives up on a held lock instead of
+// queueing every later query on the table behind it.
+func TestMigrationAddMCPClientPendingVerificationColumnBoundsLockWait(t *testing.T) {
+	var db *gorm.DB
+	for _, ndb := range indexMigrationDBs(t) {
+		if ndb.name == "postgres" {
+			db = ndb.db
+		}
+	}
+	if db == nil {
+		t.Skip("local test Postgres is not reachable")
+	}
+	require.NoError(t, db.Exec("CREATE TABLE config_mcp_clients (id SERIAL PRIMARY KEY, client_id VARCHAR(255) NOT NULL UNIQUE)").Error)
+
+	ctx := context.Background()
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	reader, err := sqlDB.Conn(ctx)
+	require.NoError(t, err)
+	defer reader.Close()
+	_, err = reader.ExecContext(ctx, "BEGIN")
+	require.NoError(t, err)
+	defer reader.ExecContext(ctx, "ROLLBACK") //nolint:errcheck
+	// A long reader's ACCESS SHARE lock conflicts with the ACCESS EXCLUSIVE lock ALTER TABLE needs.
+	_, err = reader.ExecContext(ctx, "SELECT * FROM config_mcp_clients")
+	require.NoError(t, err)
+
+	migrateCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	err = migrationAddMCPClientPendingVerificationColumn(migrateCtx, db, testMigrationLogger)
+	require.Error(t, err)
+	assert.True(t, postgresconn.IsLockNotAvailableError(err), "expected lock_not_available, got: %v", err)
+}
+
 func TestMigrationAddCompatForceReasoningOnlyModelsToResponsesColumn(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
@@ -5618,4 +5786,42 @@ func TestMigrationAddVoiceLivePricingColumns_RunsOnContext(t *testing.T) {
 		tx.AddError(errProbe)
 	}))
 	require.ErrorIs(t, migrationAddVoiceLivePricingColumns(ctx, failing, testMigrationLogger), errProbe)
+}
+
+// TestMigrationAddAnthropicWorkloadIdentityColumn pins the upgrade path of
+// add_anthropic_workload_identity_column: a config_keys table from before the release gains the
+// column, a replay is a no-op, and a rollback refuses so stored federation configs survive.
+func TestMigrationAddAnthropicWorkloadIdentityColumn(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	const column = "anthropic_workload_identity_json"
+
+	require.NoError(t, db.AutoMigrate(&tables.TableKey{}))
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableKey{}, column))
+	require.False(t, db.Migrator().HasColumn(&tables.TableKey{}, column), "precondition: the column must be absent")
+
+	require.NoError(t, migrationAddAnthropicWorkloadIdentityColumn(ctx, db, testMigrationLogger))
+	assert.True(t, db.Migrator().HasColumn(&tables.TableKey{}, column))
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_anthropic_workload_identity_column").Error)
+	require.NoError(t, migrationAddAnthropicWorkloadIdentityColumn(ctx, db, testMigrationLogger), "a replay with the column present must not fail")
+
+	seed := tables.TableKey{
+		Name: "anthropic-wif", ProviderID: 1, Provider: "anthropic", KeyID: "anthropic-wif-migration",
+		AnthropicKeyConfig: &schemas.AnthropicKeyConfig{WorkloadIdentity: &schemas.AnthropicWorkloadIdentityConfig{
+			FederationRuleID: *schemas.NewSecretVar("fdrl_01abc"),
+			OrganizationID:   *schemas.NewSecretVar("org-uuid"),
+			ServiceAccountID: *schemas.NewSecretVar("svac_01def"),
+			IdentitySource:   &schemas.IdentitySource{Type: schemas.IdentitySourceFile, Path: schemas.NewSecretVar("/var/run/secrets/anthropic/token")},
+		}},
+	}
+	require.NoError(t, db.Create(&seed).Error)
+
+	err := rollbackAnthropicWorkloadIdentityColumn(db)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	assert.True(t, db.Migrator().HasColumn(&tables.TableKey{}, column), "a refused rollback must leave the column intact")
+	var found tables.TableKey
+	require.NoError(t, db.Where("key_id = ?", seed.KeyID).First(&found).Error)
+	require.True(t, found.AnthropicKeyConfig.HasWorkloadIdentity(), "the stored federation config must survive the refused rollback")
+	assert.Equal(t, "svac_01def", found.AnthropicKeyConfig.WorkloadIdentity.ServiceAccountID.GetValue())
 }

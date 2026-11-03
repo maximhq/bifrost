@@ -3,8 +3,8 @@ module github.com/maximhq/bifrost/plugins/prompts
 go 1.27.3
 
 require (
-	github.com/maximhq/bifrost/core v1.13.1
-	github.com/maximhq/bifrost/framework v1.10.1
+	github.com/maximhq/bifrost/core v1.14.1
+	github.com/maximhq/bifrost/framework v1.11.1
 	github.com/stretchr/testify v1.12.1
 )
 
@@ -41,7 +41,6 @@ require (
 	github.com/canonical/starlark v0.0.0-20260428155828-9a81051fac39 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
-	github.com/dlclark/regexp2 v1.11.4 // indirect
 	github.com/fasthttp/websocket v1.5.12 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/google/jsonschema-go v0.4.2 // indirect
@@ -51,7 +50,7 @@ require (
 	github.com/klauspost/compress v1.20.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
-	github.com/mark3labs/mcp-go v1.3.0 // indirect
+	github.com/mark3labs/mcp-go v1.5.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/molecule-man/go-brrr v1.0.1 // indirect
@@ -77,3 +76,5 @@ require (
 	golang.org/x/text v0.43.0 // indirect
 	gorm.io/gorm v1.31.1 // indirect
 )
+
+replace github.com/mark3labs/mcp-go => github.com/maximhq/mcp-go v0.0.0-20261102181017-b7da3bc145a1

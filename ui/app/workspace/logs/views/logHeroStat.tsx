@@ -3,6 +3,7 @@ import type { Status } from "@/lib/constants/logs";
 import { cn } from "@/lib/utils";
 import { Clipboard } from "lucide-react";
 import type { ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 
 // Shared header primitives for the log detail sheets (LLM, MCP, relay), so every
 // kind of log renders the same hero card, status pill and copy affordance.
@@ -21,6 +22,7 @@ const statusDotStyles: Record<string, string> = {
 };
 
 export function StatusPill({ status }: { status: Status }) {
+	const { t } = useTranslation("observability");
 	return (
 		<span
 			className={cn(
@@ -29,7 +31,7 @@ export function StatusPill({ status }: { status: Status }) {
 			)}
 		>
 			<span className={cn("h-1.5 w-1.5 rounded-sm", statusDotStyles[status] ?? statusDotStyles.cancelled)} />
-			{status}
+			{t(`logs.statuses.${status}`, { defaultValue: status })}
 		</span>
 	);
 }
@@ -71,7 +73,8 @@ export function HeroStat({
 }
 
 export function CopyInlineButton({ text, testId }: { text: string; testId?: string }) {
-	const { copy } = useCopyToClipboard({ successMessage: "Copied" });
+	const { t } = useTranslation("observability");
+	const { copy } = useCopyToClipboard({ successMessage: t("labels.copied") });
 	return (
 		<button
 			type="button"
@@ -80,7 +83,7 @@ export function CopyInlineButton({ text, testId }: { text: string; testId?: stri
 				copy(text);
 			}}
 			className="text-muted-foreground hover:bg-muted hover:text-foreground inline-flex h-6 w-6 items-center justify-center rounded-sm transition"
-			aria-label="Copy"
+			aria-label={t("labels.copy")}
 			data-testid={testId}
 		>
 			<Clipboard className="h-3.5 w-3.5" />

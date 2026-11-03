@@ -422,9 +422,9 @@
             },
             "type": {
               "type": "string",
-              "enum": ["http"],
+              "enum": ["http", "socks5"],
               "default": "http",
-              "description": "Proxy type. Only http is supported."
+              "description": "Proxy type: http (an http:// or https:// proxy URL) or socks5 (a socks5:// or socks5h:// proxy URL). A bare host:port takes its scheme from the type."
             },
             "url": {
               "type": "string",
@@ -1016,7 +1016,7 @@
               "properties": {
                 "issuerUrl": {
                   "type": "string",
-                  "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. Required when mcpServerAuthMode is 'both' or 'oauth': the chart fails to render without it and Bifrost exits at startup. Supports env var syntax: \"env.MY_VAR\"."
+                  "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. A trailing slash is ignored. Required when mcpServerAuthMode is 'both' or 'oauth': the chart fails to render without it and Bifrost exits at startup. Supports env var syntax: \"env.MY_VAR\"."
                 },
                 "authCodeTtl": {
                   "type": "integer",
@@ -1066,6 +1066,11 @@
               "type": "integer",
               "description": "Read buffer size in bytes. This controls the size of the buffer used for reading HTTP headers.",
               "default": 65536
+            },
+            "basePath": {
+              "type": "string",
+              "pattern": "^(/([A-Za-z0-9._~-]*[A-Za-z0-9_~-][A-Za-z0-9._~-]*|\\.{3,}))*/?$",
+              "description": "URL path prefix Bifrost is served under behind an ingress or reverse proxy, e.g. \"/bifrost\". Requests are accepted with or without the prefix. Segments may not be \".\" or \"..\", and surrounding whitespace is not allowed. The first segment must not match a Bifrost route (such as api, v1, or openai) or a top-level UI path (such as assets or images). Renders into server.base_path."
             },
             "bodyBufferPoolLimitBytes": {
               "type": "integer",
@@ -2997,6 +3002,7 @@
                     "model": {"type": "string", "description": "Decision model on that provider, e.g. jev-latest, nimble-latest, english, clef. Set together with provider; leave both empty for typesafe/jev-latest."},
                     "previous_message_count": {"type": "integer", "minimum": 0, "maximum": 5, "default": 1, "description": "Number of preceding user messages sent with the current request. Assistant messages are excluded."},
                     "timeout": {"description": "Maximum decision-model classification latency; duration string or milliseconds (default: 1500ms).", "oneOf": [{"type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"}, {"type": "number", "minimum": 0}], "default": "1500ms"},
+                    "min_confidence": {"type": "number", "minimum": 0, "maximum": 1, "default": 0, "description": "Confidence an answer must reach to publish its tier. An answer below it publishes no tier. A missing confidence is derived from the tier probabilities; an answer with neither is kept. 0 keeps every answer."},
                     "criteria": {
                       "type": "object",
                       "description": "Per-tier overrides of the shipped decision-model definitions, signals, and examples. Any tier or field left out sends the default.",
@@ -6977,6 +6983,41 @@
     }
   },
   "$defs": {
+    "identity_source": {
+      "type": "object",
+      "description": "Where a federated key gets the OIDC identity token it exchanges. Shared by every provider that supports workload identity federation.",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["file", "inline"],
+          "description": "file: read the token from path on every exchange, so a token the platform rotates on disk is picked up. inline: use token as given"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Absolute path of the identity token, for type file (can use env. prefix). Must be under /var/run/secrets or /run/secrets, or a directory listed in the BIFROST_OIDC_ALLOWED_CREDENTIAL_DIRS environment variable"
+        },
+        "token": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The identity token itself, for type inline (can use env. prefix)"
+        }
+      },
+      "required": ["type"],
+      "oneOf": [
+        {
+          "properties": {"type": {"const": "file"}},
+          "required": ["path"],
+          "not": {"required": ["token"]}
+        },
+        {
+          "properties": {"type": {"const": "inline"}},
+          "required": ["token"],
+          "not": {"required": ["path"]}
+        }
+      ],
+      "additionalProperties": false
+    },
     "relay": {
       "type": "object",
       "description": "A Relay: a raw HTTP relay to a non-LLM API served at /relay/{name}/{path}. Bifrost injects the relay's single credential, prices each counted call with the usage mapping (cost_per_request + cost_path + billed units x cost_per_unit, overridable per route) and charges the result to the caller's overall budgets. Virtual keys reach it through relay_grants.",
@@ -8576,6 +8617,42 @@
           ],
           "additionalProperties": false
         },
+        "anthropic_key_config": {
+          "type": "object",
+          "description": "Anthropic key configuration, for anthropic and custom providers built on the anthropic base.",
+          "properties": {
+            "workload_identity": {
+              "type": "object",
+              "description": "Workload Identity Federation. Set this and leave value empty: Bifrost exchanges an OIDC identity token for a short-lived Anthropic access token. A non-empty value always wins.",
+              "properties": {
+                "federation_rule_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Federation rule ID, fdrl_... (can use env. prefix)"
+                },
+                "organization_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Anthropic organization UUID (can use env. prefix)"
+                },
+                "service_account_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Service account the minted token acts as, svac_... (can use env. prefix)"
+                },
+                "workspace_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Workspace ID, wrkspc_...; required when the rule spans several workspaces (can use env. prefix)"
+                },
+                "identity_source": {"$ref": "#/$defs/identity_source"}
+              },
+              "required": ["federation_rule_id", "organization_id", "service_account_id", "identity_source"],
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
         "aliases": {
           "type": "object",
           "additionalProperties": {
@@ -8943,11 +9020,73 @@
         },
         "connectionType": {
           "type": "string",
-          "enum": ["stdio", "websocket", "http", "sse"]
+          "enum": ["stdio", "websocket", "http", "sse", "openapi"],
+          "description": "Connection type. 'openapi' synthesizes an in-process MCP server from an OpenAPI/Swagger document (see openapiConfig); its tools proxy HTTP calls to the described API."
         },
         "connectionString": {
           "type": "string",
           "description": "HTTP or SSE URL (required for HTTP or SSE connections)"
+        },
+        "openapiConfig": {
+          "type": "object",
+          "description": "Configuration for connectionType 'openapi'. At least one of spec, specFile or specUrl supplies the document, in that order of precedence. Supports Swagger 2.0 and OpenAPI 3.0, 3.1 and 3.2. Renders into openapi_config.",
+          "properties": {
+            "spec": {
+              "type": "string",
+              "description": "Inline OpenAPI/Swagger document (JSON or YAML text). Renders into spec."
+            },
+            "specFile": {
+              "type": "string",
+              "description": "Path to the document, relative to the config.json directory (bifrost.appDir) or absolute. Mount the file into the pod with volumes/volumeMounts. Read once at load. Renders into spec_file."
+            },
+            "specUrl": {
+              "type": "string",
+              "format": "uri",
+              "pattern": "^https?://[^@/?#\\s]+(?:[/?#].*)?$",
+              "description": "http(s) URL of the document, fetched at connect time when spec and specFile are not given. Renders into spec_url."
+            },
+            "baseUrl": {
+              "type": "string",
+              "format": "uri",
+              "pattern": "^https?://[^@/?#\\s]+(?:[/?#].*)?$",
+              "description": "Upstream API base URL. Defaults to the document's first server entry; required when the document declares none or only relative ones. Renders into base_url."
+            },
+            "securityCredentials": {
+              "type": "object",
+              "description": "Credentials keyed by the document's securitySchemes name. apiKey and http-bearer schemes take value; http-basic takes username and password. Values support env.VAR and vault.path references. Renders into security_credentials.",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  },
+                  "username": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "includeDeprecated": {
+              "type": "boolean",
+              "default": false,
+              "description": "Expose operations the document marks deprecated. Renders into include_deprecated."
+            },
+            "maxResponseBytes": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Cap on the upstream response body returned to the model (0 = default 64 KiB). Renders into max_response_bytes."
+            }
+          },
+          "anyOf": [
+            { "required": ["spec"] },
+            { "required": ["specFile"] },
+            { "required": ["specUrl"] }
+          ],
+          "additionalProperties": false
         },
         "secretRef": {
           "type": "object",
@@ -9361,6 +9500,28 @@
           },
           "then": {
             "required": ["connectionString"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "connectionType": {
+                "const": "openapi"
+              }
+            }
+          },
+          "then": {
+            "required": ["openapiConfig"],
+            "properties": {
+              "authType": {
+                "enum": ["none", "headers", "per_user_headers"]
+              }
+            }
+          },
+          "else": {
+            "not": {
+              "required": ["openapiConfig"]
+            }
           }
         },
         {

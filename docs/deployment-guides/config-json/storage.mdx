@@ -308,6 +308,23 @@ Set `retention_days` to automatically purge old log entries. `0` disables retent
 }
 ```
 
+### Client IP capture
+
+Set `capture_client_ip` to `true` to record the caller's IP on LLM, MCP and relay logs in the `client_ip` field. Bifrost takes the leftmost `X-Forwarded-For` value, then `X-Real-IP`, and falls back to the TCP peer address when neither header is present. This is the same order enterprise audit logs use. The caller sends these headers and Bifrost does not verify them. For an address you can trust, put Bifrost behind a proxy that overwrites both headers, and block direct access to Bifrost so no request can skip the proxy.
+
+It defaults to `false`. When it's off, new logs leave `client_ip` empty in the logs database, the API, CSV exports and object storage. Turning it off doesn't clear addresses already recorded: logs written while it was on keep their values until log retention deletes those rows. With log retention off, the addresses stay until you delete the logs yourself. The setting is read at startup, so restart Bifrost after changing it. The user email field doesn't depend on this setting.
+
+```json
+{
+  "logs_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": { "...": "..." },
+    "capture_client_ip": true
+  }
+}
+```
+
 ### Materialized View Refresh Interval (PostgreSQL only)
 
 The PostgreSQL logs store backs the dashboard's stats and histograms with materialized views, refreshed in the background. The default cadence is **1 minute**, which keeps dashboard data near real-time but issues a `REFRESH MATERIALIZED VIEW CONCURRENTLY` every minute — an expensive operation that can be too aggressive on smaller or CPU-constrained database instances.

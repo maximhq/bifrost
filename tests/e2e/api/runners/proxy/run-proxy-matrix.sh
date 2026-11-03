@@ -8,11 +8,9 @@ set -euo pipefail
 # microsocks (socks5://), all requiring credentials, then runs one cell per
 # (mode, proxy):
 #
-#   global-http  global-https                        PUT /api/proxy-config, Inference + API on
+#   global-http  global-https  global-socks5         PUT /api/proxy-config, Inference + API on
 #   provider-http  provider-https  provider-socks5   proxy_config on every provider
 #   env-http  env-https  env-socks5                  proxy_config type environment + HTTPS_PROXY
-#
-# The global proxy API does not accept socks5 yet, so there is no global-socks5 cell.
 #
 # Each cell boots a fresh gateway (harness-gateway.sh), runs the provider harness on
 # proxy-smoke-manifest.json (one upstream-reaching row per provider), and then requires
@@ -26,7 +24,7 @@ set -euo pipefail
 # the proxy fails the request outright. CI turns this on.
 #
 # Environment:
-#   PROXY_CELLS               cells to run (default: all eight)
+#   PROXY_CELLS               cells to run (default: all nine)
 #   PORT                      gateway port (default 8080; must be free)
 #   SKIP_GATEWAY_BUILD=1      reuse tmp/bifrost-http (or HARNESS_BINARY)
 #   HARNESS_BINARY            gateway binary to boot (bifrost-enterprise passes its own)
@@ -50,7 +48,7 @@ WORK_DIR="$REPO_ROOT/$WORK_DIR_REL"
 APP_DIR_REL="$WORK_DIR_REL/app"
 APP_DIR="$REPO_ROOT/$APP_DIR_REL"
 MANIFEST="tests/e2e/api/collections/proxy-smoke-manifest.json"
-ALL_CELLS="global-http global-https provider-http provider-https provider-socks5 env-http env-https env-socks5"
+ALL_CELLS="global-http global-https global-socks5 provider-http provider-https provider-socks5 env-http env-https env-socks5"
 PROXY_CELLS="${PROXY_CELLS:-$ALL_CELLS}"
 RERUN_ATTEMPTS="${RERUN_ATTEMPTS:-1}"
 EGRESS_GROUP="bifrost-egress"
@@ -96,18 +94,6 @@ harness_build_gateway
 
 proxy_setup "$WORK_DIR/proxies"
 proxy_start
-
-# The system roots plus the proxy CA. Go honours SSL_CERT_FILE on Linux, which is how
-# the global-https cell trusts its proxy there (the global proxy has no CA field).
-CA_BUNDLE="$WORK_DIR/ca-bundle.pem"
-: > "$CA_BUNDLE"
-for system_bundle in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
-  if [ -f "$system_bundle" ]; then
-    cat "$system_bundle" >> "$CA_BUNDLE"
-    break
-  fi
-done
-cat "$PROXY_DIR/ca.pem" >> "$CA_BUNDLE"
 
 if [ "${PROXY_E2E_STRICT_EGRESS:-0}" = "1" ]; then
   if [ "$(uname -s)" != "Linux" ]; then
@@ -162,9 +148,6 @@ seed_cell() {
     global)
       jq 'del(.providers[].proxy_config)' "$config" > "$config.tmp"
       gateway_env="$gateway_env HTTPS_PROXY=$INFRA_PROXY HTTP_PROXY=$INFRA_PROXY"
-      if [ "$kind" = "https" ] && [ "$(uname -s)" = "Linux" ]; then
-        gateway_env="$gateway_env SSL_CERT_FILE=$CA_BUNDLE"
-      fi
       ;;
     provider)
       jq --arg type "$([ "$kind" = socks5 ] && echo socks5 || echo http)" \
@@ -196,18 +179,16 @@ api_curl() {
 
 # enable_global_proxy <kind> turns the global proxy on for Inference and API traffic.
 enable_global_proxy() {
-  local kind="$1" skip_verify=false
-  if [ "$kind" = "https" ] && [ "$(uname -s)" != "Linux" ]; then
-    # Go ignores SSL_CERT_FILE on macOS and the global proxy has no CA field, so a
-    # local run can only trust the private proxy CA by skipping verification.
-    echo "⚠️  global-https on $(uname -s): skip_tls_verify=true (Linux runs verify the proxy through SSL_CERT_FILE)"
-    skip_verify=true
-  fi
+  local kind="$1" ca=""
+  # An https:// global proxy is trusted through its CA (ca_cert_pem), the way an
+  # operator configures a private proxy; skip_tls_verify stays off.
+  [ "$kind" = "https" ] && ca="$(cat "$PROXY_DIR/ca.pem")"
   # run_cell calls this inside "if !", where errexit is off: check every step.
   local payload
-  if ! payload="$(jq -n --arg url "$(cell_proxy_url "$kind")" --arg user "$PROXY_USER" --arg pass "$PROXY_PASS" \
-    --arg no_proxy "$NO_PROXY_LIST" --argjson skip "$skip_verify" \
-    '{enabled: true, type: "http", url: $url, username: $user, password: $pass, no_proxy: $no_proxy, timeout: 30, skip_tls_verify: $skip, enable_for_scim: false, enable_for_inference: true, enable_for_api: true}')"; then
+  if ! payload="$(jq -n --arg type "$([ "$kind" = socks5 ] && echo socks5 || echo http)" \
+    --arg url "$(cell_proxy_url "$kind")" --arg user "$PROXY_USER" --arg pass "$PROXY_PASS" \
+    --arg no_proxy "$NO_PROXY_LIST" --arg ca "$ca" \
+    '{enabled: true, type: $type, url: $url, username: $user, password: $pass, no_proxy: $no_proxy, timeout: 30, skip_tls_verify: false, ca_cert_pem: $ca, enable_for_scim: false, enable_for_inference: true, enable_for_api: true}')"; then
     echo "❌ could not build the global proxy payload" >&2
     return 1
   fi
