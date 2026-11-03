@@ -303819,7 +303819,229 @@
       ]
     },
     {
-      "name": "305. Gemini chat sends {} for tool calls without args (PR #8778) (empty tool args)",
+      "name": "305. OpenAI named tool output without call ID (function calling) (PR #9571)",
+      "description": "Pins Codex cross-thread and automation function outputs with name and no call_id, on all Responses aliases and both streaming modes.",
+      "item": [
+        {
+          "name": "OpenAI gpt-6.1-sol named tool output /v1/responses unary - #9571",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('Named output accepted', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+                  "pm.test('Missing-name error absent', function () { pm.expect(text).not.to.include('A function call output without a call_id requires a name'); });",
+                  "pm.test('Response completed', function () { pm.expect(pm.response.json().status, text).to.equal('completed'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6.1-sol\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"name\": \"aaaaaa\",\n      \"output\": \"hi\"\n    }\n  ],\n  \"max_output_tokens\": 512\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/responses"
+          }
+        },
+        {
+          "name": "OpenAI gpt-6.1-sol named tool output /v1/responses streaming - #9571",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('Named output accepted', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+                  "pm.test('Missing-name error absent', function () { pm.expect(text).not.to.include('A function call output without a call_id requires a name'); });",
+                  "pm.test('Response completed', function () { pm.expect(text).to.include('response.completed'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6.1-sol\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"name\": \"aaaaaa\",\n      \"output\": \"hi\"\n    }\n  ],\n  \"max_output_tokens\": 512,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/responses"
+          }
+        },
+        {
+          "name": "OpenAI gpt-6.1-sol named tool output /responses unary - #9571",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('Named output accepted', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+                  "pm.test('Missing-name error absent', function () { pm.expect(text).not.to.include('A function call output without a call_id requires a name'); });",
+                  "pm.test('Response completed', function () { pm.expect(pm.response.json().status, text).to.equal('completed'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6.1-sol\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"name\": \"aaaaaa\",\n      \"output\": \"hi\"\n    }\n  ],\n  \"max_output_tokens\": 512\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/responses"
+          }
+        },
+        {
+          "name": "OpenAI gpt-6.1-sol named tool output /responses streaming - #9571",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('Named output accepted', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+                  "pm.test('Missing-name error absent', function () { pm.expect(text).not.to.include('A function call output without a call_id requires a name'); });",
+                  "pm.test('Response completed', function () { pm.expect(text).to.include('response.completed'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6.1-sol\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"name\": \"aaaaaa\",\n      \"output\": \"hi\"\n    }\n  ],\n  \"max_output_tokens\": 512,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/responses"
+          }
+        },
+        {
+          "name": "OpenAI gpt-6.1-sol named tool output /openai/responses unary - #9571",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('Named output accepted', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+                  "pm.test('Missing-name error absent', function () { pm.expect(text).not.to.include('A function call output without a call_id requires a name'); });",
+                  "pm.test('Response completed', function () { pm.expect(pm.response.json().status, text).to.equal('completed'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6.1-sol\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"name\": \"aaaaaa\",\n      \"output\": \"hi\"\n    }\n  ],\n  \"max_output_tokens\": 512\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/openai/responses"
+          }
+        },
+        {
+          "name": "OpenAI gpt-6.1-sol named tool output /openai/responses streaming - #9571",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('Named output accepted', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+                  "pm.test('Missing-name error absent', function () { pm.expect(text).not.to.include('A function call output without a call_id requires a name'); });",
+                  "pm.test('Response completed', function () { pm.expect(text).to.include('response.completed'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6.1-sol\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"name\": \"aaaaaa\",\n      \"output\": \"hi\"\n    }\n  ],\n  \"max_output_tokens\": 512,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/openai/responses"
+          }
+        }
+      ]
+    },
+    {
+      "name": "306. Gemini chat sends {} for tool calls without args (PR #8778) (empty tool args)",
       "description": "Gemini omits `args` for a function call to a tool that takes no parameters. The chat completion converters (final response and stream) left the tool call arguments as an empty string, which OpenAI-shaped clients cannot json-parse; the Responses path already defaulted them to {}. Both rows force a call to a tool declared without parameters and pin that the arguments the client receives parse as a JSON object.",
       "item": [
         {
