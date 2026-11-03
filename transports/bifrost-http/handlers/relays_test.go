@@ -101,6 +101,17 @@ func TestRelaysHandlerCRUD(t *testing.T) {
 	require.NoError(t, json.Unmarshal(get.Response.Body(), &view))
 	assert.Equal(t, "/relay/tavily", view["url"])
 
+	// Mounted under server.base_path, the path callers use carries the prefix.
+	lib.SetBasePath("/bifrost")
+	t.Cleanup(func() { lib.SetBasePath("") })
+	prefixed := pteRequest(fasthttp.MethodGet, "", "tavily")
+	h.get(prefixed)
+	require.Equal(t, fasthttp.StatusOK, prefixed.Response.StatusCode())
+	var prefixedView map[string]any
+	require.NoError(t, json.Unmarshal(prefixed.Response.Body(), &prefixedView))
+	assert.Equal(t, "/bifrost/relay/tavily", prefixedView["url"])
+	lib.SetBasePath("")
+
 	// The UI sends back what it read: the redacted credential keeps the stored secret.
 	view["description"] = "edited"
 	edited, _ := json.Marshal(view)
