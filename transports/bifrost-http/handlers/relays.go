@@ -129,11 +129,11 @@ func (h *RelaysHandler) RegisterLogRoutes(r *router.Router, middlewares ...schem
 // redacted.
 type relayView struct {
 	*schemas.RelayConfig
-	URL string `json:"url"` // the path callers use, /relay/{name}
+	URL string `json:"url"` // the path callers use, {server.base_path}/relay/{name}
 }
 
 func endpointView(cfg *schemas.RelayConfig) relayView {
-	return relayView{RelayConfig: cfg.Redacted(), URL: "/relay/" + cfg.Name}
+	return relayView{RelayConfig: cfg.Redacted(), URL: lib.WithBasePath(relayPrefix + cfg.Name)}
 }
 
 func (h *RelaysHandler) list(ctx *fasthttp.RequestCtx) {
