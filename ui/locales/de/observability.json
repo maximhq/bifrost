@@ -933,7 +933,7 @@
 		},
 		"grants": {
 			"label": "Relay-Zugriff",
-			"tooltip": "Erlaube diesem Schlüssel, Relays unter <strong>/relay/&lt;name&gt;/...</strong> aufzurufen. Die Kosten jedes Aufrufs werden den Budgets des Schlüssels belastet. Ohne freigegebenes Relay darf der Schlüssel keines aufrufen.",
+			"tooltip": "Erlaube diesem Schlüssel, Relays unter <strong>{{path}}</strong> aufzurufen. Die Kosten jedes Aufrufs werden den Budgets des Schlüssels belastet. Ohne freigegebenes Relay darf der Schlüssel keines aufrufen.",
 			"selectRelay": "Relay zum Hinzufügen auswählen",
 			"remove": "{{name}} entfernen"
 		}

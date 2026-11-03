@@ -342,7 +342,7 @@
 			"servedByFallback": "Servido por (regresso)",
 			"servedModel": "Modelo servido",
 			"stopReason": "Parar Razão",
-			"parentRequestID": "ID do pedido principal",
+			"parentRequestID": "ID do pedido pai",
 			"filterThisSession": "· Filtrar esta sessão",
 			"selectedKey": "Chave selecionada",
 			"selectedPrompt": "Pedido Seleccionado",
@@ -904,7 +904,7 @@
 			"tokensNotPriced": "Tokens (sem preço)",
 			"tokensNotPricedValue": "{{input}} entrada / {{output}} saída",
 			"matchedRoute": "Rota correspondida",
-			"parentLog": "Registo principal",
+			"parentLog": "Registo pai",
 			"responseBodyPreview": "Corpo da resposta (pré-visualização)",
 			"filterByValue": "Mostrar chamadas de relay com este valor",
 			"queryParameters": "Parâmetros de consulta",
@@ -929,11 +929,11 @@
 			"minimumCost": "Custo mínimo",
 			"maximumCost": "Custo máximo",
 			"exactJobID": "ID de tarefa exato",
-			"exactParentRequestID": "ID exato do pedido principal"
+			"exactParentRequestID": "ID exato do pedido pai"
 		},
 		"grants": {
 			"label": "Acesso a relays",
-			"tooltip": "Permite que esta chave chame relays em <strong>/relay/&lt;name&gt;/...</strong>. O custo de cada chamada é cobrado aos orçamentos da chave. Sem nenhum relay concedido, a chave não pode chamar nenhum.",
+			"tooltip": "Permite que esta chave chame relays em <strong>{{path}}</strong>. O custo de cada chamada é cobrado aos orçamentos da chave. Sem nenhum relay concedido, a chave não pode chamar nenhum.",
 			"selectRelay": "Selecione um relay para adicionar",
 			"remove": "Remover {{name}}"
 		}

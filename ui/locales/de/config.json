@@ -1263,7 +1263,7 @@
 		},
 		"deleteDialog": {
 			"title": "Relay löschen",
-			"description": "Möchtest du dieses Relay wirklich löschen? Aufrufe an /relay/{{name}} funktionieren dann nicht mehr, und die zugehörigen Freigaben für virtuelle Schlüssel werden entfernt. Diese Aktion kann nicht rückgängig gemacht werden.",
+			"description": "Möchtest du dieses Relay wirklich löschen? Aufrufe an {{path}} funktionieren dann nicht mehr, und die zugehörigen Freigaben für virtuelle Schlüssel werden entfernt. Diese Aktion kann nicht rückgängig gemacht werden.",
 			"toastDeleted": "Relay erfolgreich gelöscht",
 			"toastFailed": "Relay konnte nicht gelöscht werden",
 			"deleting": "Wird gelöscht..."
@@ -1273,7 +1273,7 @@
 			"toastFailed": "Relay konnte nicht hinzugefügt werden",
 			"title": "Relay hinzufügen",
 			"nameLabel": "Name (Erforderlich)",
-			"nameInfo": "Aufrufer verwenden /relay/<name>. Der Name kann später nicht geändert werden."
+			"nameInfo": "Aufrufer verwenden {{path}}. Der Name kann später nicht geändert werden."
 		},
 		"fields": {
 			"baseUrlLabel": "Basis-URL (Erforderlich)",

@@ -928,7 +928,7 @@
 		},
 		"grants": {
 			"label": "轉送存取",
-			"tooltip": "允許此金鑰呼叫位於 <strong>/relay/&lt;name&gt;/...</strong> 的轉送。每次呼叫的成本會向該金鑰的預算收費。未授權任何轉送時，此金鑰無法呼叫任何轉送。",
+			"tooltip": "允許此金鑰呼叫位於 <strong>{{path}}</strong> 的轉送。每次呼叫的成本會向該金鑰的預算收費。未授權任何轉送時，此金鑰無法呼叫任何轉送。",
 			"selectRelay": "選擇要新增的轉送",
 			"remove": "移除 {{name}}"
 		}

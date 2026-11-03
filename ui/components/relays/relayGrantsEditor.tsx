@@ -2,6 +2,7 @@ import { RelaySelector } from "@/components/entitySelectors/relaySelector";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { relayPath } from "@/lib/utils/relayPath";
 import { Info, Trash2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { Trans, useTranslation } from "react-i18next";
@@ -22,19 +23,13 @@ interface RelayGrantsEditorProps {
  * Grants access to relays one by one. Mirrors the agent and MCP editors beside it: a picker on
  * top, removable rows beneath. There is no allow-all row, as there is none for agents.
  */
-export function RelayGrantsEditor({
-	value,
-	onChange,
-	label,
-	tooltip,
-	testIdPrefix = "vk-relays",
-}: RelayGrantsEditorProps) {
+export function RelayGrantsEditor({ value, onChange, label, tooltip, testIdPrefix = "vk-relays" }: RelayGrantsEditorProps) {
 	const { t } = useTranslation("observability");
 	const { t: tCommon } = useTranslation("common");
 	const resolvedLabel = label ?? t("relayLogs.grants.label");
 	const resolvedTooltip = tooltip ?? (
 		<p>
-			<Trans t={t} i18nKey="relayLogs.grants.tooltip" components={{ strong: emphasis }} />
+			<Trans t={t} i18nKey="relayLogs.grants.tooltip" values={{ path: `${relayPath("<name>")}/...` }} components={{ strong: emphasis }} />
 		</p>
 	);
 	const add = (option: { value: string }) => {
@@ -66,9 +61,15 @@ export function RelayGrantsEditor({
 						<div key={name} className="flex items-center justify-between gap-2 px-3 py-2" data-testid={`${testIdPrefix}-grant-${name}`}>
 							<div className="flex min-w-0 flex-col">
 								<span className="truncate text-sm font-medium">{name}</span>
-								<span className="text-muted-foreground truncate text-xs">/relay/{name}</span>
+								<span className="text-muted-foreground truncate text-xs">{relayPath(name)}</span>
 							</div>
-							<Button type="button" variant="ghost" size="sm" aria-label={t("relayLogs.grants.remove", { name })} onClick={() => remove(name)}>
+							<Button
+								type="button"
+								variant="ghost"
+								size="sm"
+								aria-label={t("relayLogs.grants.remove", { name })}
+								onClick={() => remove(name)}
+							>
 								<Trash2 className="h-4 w-4" />
 							</Button>
 						</div>

@@ -1270,7 +1270,7 @@
 		},
 		"deleteDialog": {
 			"title": "刪除轉送",
-			"description": "確定要刪除此轉送嗎？對 /relay/{{name}} 的呼叫將停止運作，且其虛擬金鑰授權也會一併移除。此操作無法復原。",
+			"description": "確定要刪除此轉送嗎？對 {{path}} 的呼叫將停止運作，且其虛擬金鑰授權也會一併移除。此操作無法復原。",
 			"toastDeleted": "轉送已成功刪除",
 			"toastFailed": "刪除轉送失敗",
 			"deleting": "刪除中..."
@@ -1280,7 +1280,7 @@
 			"toastFailed": "新增轉送失敗",
 			"title": "新增轉送",
 			"nameLabel": "名稱（必填）",
-			"nameInfo": "呼叫端使用 /relay/<name>。建立後無法變更。"
+			"nameInfo": "呼叫端使用 {{path}}。建立後無法變更。"
 		},
 		"fields": {
 			"baseUrlLabel": "基礎 URL（必填）",

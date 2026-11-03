@@ -1242,7 +1242,7 @@
 		},
 		"deleteDialog": {
 			"title": "Delete Relay",
-			"description": "Are you sure you want to delete this relay? Calls to /relay/{{name}} stop working and its virtual key grants are removed. This action cannot be undone.",
+			"description": "Are you sure you want to delete this relay? Calls to {{path}} stop working and its virtual key grants are removed. This action cannot be undone.",
 			"toastDeleted": "Relay deleted successfully",
 			"toastFailed": "Failed to delete relay",
 			"deleting": "Deleting..."
@@ -1252,7 +1252,7 @@
 			"toastFailed": "Failed to add relay",
 			"title": "Add relay",
 			"nameLabel": "Name (Required)",
-			"nameInfo": "Callers use /relay/<name>. It cannot be changed later."
+			"nameInfo": "Callers use {{path}}. It cannot be changed later."
 		},
 		"fields": {
 			"baseUrlLabel": "Base URL (Required)",

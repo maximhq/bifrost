@@ -5,6 +5,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { getErrorMessage, useCreateRelayMutation } from "@/lib/store";
 import { relayFormSchema, type RelayFormValues } from "@/lib/types/schemas";
 import { emptyRelayForm, toRelayConfig } from "@/lib/utils/relayForm";
+import { relayPath } from "@/lib/utils/relayPath";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Waypoints } from "lucide-react";
@@ -68,7 +69,7 @@ export function AddEndpointSheet({
 								name="name"
 								render={({ field }) => (
 									<FormItem>
-										<InfoLabel label={t("relays.addSheet.nameLabel")} info={t("relays.addSheet.nameInfo")} />
+										<InfoLabel label={t("relays.addSheet.nameLabel")} info={t("relays.addSheet.nameInfo", { path: relayPath("<name>") })} />
 										<FormControl>
 											<Input placeholder="tavily" data-testid="relay-name" {...field} />
 										</FormControl>
@@ -81,10 +82,7 @@ export function AddEndpointSheet({
 								name="base_url"
 								render={({ field }) => (
 									<FormItem>
-										<InfoLabel
-											label={t("relays.fields.baseUrlLabel")}
-											info={t("relays.fields.baseUrlInfo")}
-										/>
+										<InfoLabel label={t("relays.fields.baseUrlLabel")} info={t("relays.fields.baseUrlInfo")} />
 										<FormControl>
 											<Input placeholder="https://api.tavily.com" data-testid="relay-new-base-url" {...field} />
 										</FormControl>
@@ -96,10 +94,10 @@ export function AddEndpointSheet({
 						</div>
 						<div className="bg-card sticky bottom-0 z-10 flex justify-end gap-2 border-t px-4 py-4 md:px-8">
 							<Button type="button" variant="outline" onClick={close} disabled={isLoading}>
-									{t("cancel", { ns: "common" })}
+								{t("cancel", { ns: "common" })}
 							</Button>
 							<Button type="submit" disabled={!canCreate || isLoading} isLoading={isLoading} data-testid="relay-create">
-									{t("relays.page.addRelay")}
+								{t("relays.page.addRelay")}
 							</Button>
 						</div>
 					</form>

@@ -933,7 +933,7 @@
 		},
 		"grants": {
 			"label": "Accès aux relais",
-			"tooltip": "Autorise cette clé à appeler les relais sur <strong>/relay/&lt;name&gt;/...</strong>. Le coût de chaque appel est imputé aux budgets de la clé. Sans relais autorisé, la clé n’en peut appeler aucun.",
+			"tooltip": "Autorise cette clé à appeler les relais sur <strong>{{path}}</strong>. Le coût de chaque appel est imputé aux budgets de la clé. Sans relais autorisé, la clé n’en peut appeler aucun.",
 			"selectRelay": "Sélectionner un relais à ajouter",
 			"remove": "Supprimer {{name}}"
 		}
