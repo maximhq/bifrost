@@ -23,6 +23,7 @@
 		"model": "模型",
 		"app": "應用",
 		"clientIp": "用戶端 IP",
+		"userEmail": "使用者電子郵件",
 		"server": "伺服器",
 		"toolName": "工具名稱",
 		"serviceTier": "服務層級",

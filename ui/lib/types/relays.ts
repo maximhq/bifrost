@@ -256,6 +256,7 @@ export interface RelayLog {
 	parent_log_id?: string;
 	user_id?: string;
 	user_name?: string;
+	user_email?: string;
 	virtual_key_id?: string;
 	virtual_key_name?: string;
 	team_id?: string;

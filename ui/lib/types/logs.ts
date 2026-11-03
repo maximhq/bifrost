@@ -796,6 +796,7 @@ export interface LogEntry {
 	project_name?: string;
 	user_id?: string;
 	user_name?: string;
+	user_email?: string;
 	virtual_key_id?: string;
 	virtual_key_name?: string;
 	routing_engines_used?: string[];
@@ -1472,6 +1473,7 @@ export interface MCPToolLogEntry {
 	request_id?: string;
 	user_id?: string | null;
 	user_name?: string | null;
+	user_email?: string | null;
 	team_id?: string | null;
 	team_name?: string | null;
 	customer_id?: string | null;

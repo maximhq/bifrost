@@ -23,6 +23,7 @@
 		"model": "Modèle",
 		"app": "Application",
 		"clientIp": "IP du client",
+		"userEmail": "E-mail de l'utilisateur",
 		"server": "Serveur",
 		"toolName": "Nom de l’outil",
 		"serviceTier": "Niveau de service",

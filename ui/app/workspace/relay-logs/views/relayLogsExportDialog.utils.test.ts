@@ -32,6 +32,7 @@ const sampleLog: RelayLog = {
 	billed_units: 125,
 	user_agent: "curl/8.0",
 	client_ip: "10.0.0.5",
+	user_email: "ada@example.com",
 	virtual_key_id: "vk-1",
 	virtual_key_name: "prod",
 	team_id: "team-1",
@@ -52,6 +53,7 @@ describe("relayLogsToCSV", () => {
 		expect(row).toHaveLength(RELAY_LOGS_CSV_HEADERS.length);
 		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("Client IP")]).toBe("10.0.0.5");
 		expect(RELAY_LOGS_CSV_HEADERS).not.toContain("Forwarded For");
+		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("User Email")]).toBe("ada@example.com");
 		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("Relay")]).toBe("voice");
 		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("Status")]).toBe("success");
 		// The HTTP code stays in the detail sheet; the export carries the status only, as the LLM export does.
@@ -64,6 +66,13 @@ describe("relayLogsToCSV", () => {
 		// Absent optional numbers are empty cells, not "undefined".
 		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("Input Tokens")]).toBe("");
 		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("Job ID")]).toBe("");
+	});
+
+	it("leaves the caller identity cells empty when the row has none", () => {
+		const row = relayLogToCSVRow({ ...sampleLog, user_email: undefined, client_ip: undefined });
+		expect(row).toHaveLength(RELAY_LOGS_CSV_HEADERS.length);
+		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("User Email")]).toBe("");
+		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("Client IP")]).toBe("");
 	});
 
 	it("starts with the header row and never includes bodies or headers", () => {

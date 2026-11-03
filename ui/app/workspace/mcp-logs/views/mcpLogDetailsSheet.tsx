@@ -595,6 +595,14 @@ export function MCPLogDetailSheet({
 											</div>
 										}
 									/>
+									{displayLog.user_email && (
+										<LogEntryDetailsView
+											className="w-full"
+											label={t("labels.userEmail")}
+											valueTooltip={displayLog.user_email}
+											value={<span data-testid="mcplogdetails-user-email">{displayLog.user_email}</span>}
+										/>
+									)}
 									{displayLog.client_ip && (
 										<LogEntryDetailsView
 											className="w-full"

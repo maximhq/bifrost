@@ -23,6 +23,7 @@
 		"model": "モデル",
 		"app": "アプリ",
 		"clientIp": "クライアント IP",
+		"userEmail": "ユーザーのメールアドレス",
 		"server": "サーバー",
 		"toolName": "ツール名",
 		"serviceTier": "サービス層",

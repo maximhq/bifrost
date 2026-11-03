@@ -23,6 +23,7 @@
 		"model": "Модель",
 		"app": "Приложение",
 		"clientIp": "IP клиента",
+		"userEmail": "Email пользователя",
 		"server": "Сервер",
 		"toolName": "Имя инструмента",
 		"serviceTier": "Уровень сервиса",
