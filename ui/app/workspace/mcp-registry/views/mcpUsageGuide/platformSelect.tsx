@@ -1,17 +1,19 @@
 import { cn } from "@/lib/utils";
 import { Check } from "lucide-react";
 import type { HarnessPlatform } from "./types";
+import { withBasePath } from "@/lib/utils/basePath";
 
 interface PlatformSelectProps {
 	platform: HarnessPlatform;
 	onPlatformChange: (platform: HarnessPlatform) => void;
 }
 
+/** Picker for the OS the harness install commands are generated for. */
 export function PlatformSelect({ platform, onPlatformChange }: PlatformSelectProps) {
 	const platforms: Array<{ value: HarnessPlatform; label: string; icon: string }> = [
-		{ value: "macos", label: "macOS", icon: "/images/platforms/mac.svg" }, // i18n-ignore: OS name
-		{ value: "windows", label: "Windows", icon: "/images/platforms/windows.svg" }, // i18n-ignore: OS name
-		{ value: "linux", label: "Linux", icon: "/images/platforms/linux.svg" }, // i18n-ignore: OS name
+		{ value: "macos", label: "macOS", icon: withBasePath("/images/platforms/mac.svg") }, // i18n-ignore: OS name
+		{ value: "windows", label: "Windows", icon: withBasePath("/images/platforms/windows.svg") }, // i18n-ignore: OS name
+		{ value: "linux", label: "Linux", icon: withBasePath("/images/platforms/linux.svg") }, // i18n-ignore: OS name
 	];
 
 	return (

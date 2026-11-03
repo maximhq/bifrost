@@ -609,6 +609,81 @@ export const oauthKeyConfigSchema = z
 		}
 	});
 
+// Anthropic Workload Identity Federation block. Values are not shape-checked: each one may be a
+// reference, and the server is the authority on ID formats.
+export const anthropicWorkloadIdentitySchema = z.object({
+	federation_rule_id: secretVarSchema.optional(),
+	organization_id: secretVarSchema.optional(),
+	service_account_id: secretVarSchema.optional(),
+	workspace_id: secretVarSchema.optional(),
+	identity_source: z
+		.object({
+			type: z.enum(["file", "inline"]).optional(),
+			path: secretVarSchema.optional(),
+			token: secretVarSchema.optional(),
+		})
+		.optional(),
+});
+
+type IdentitySourceInput = NonNullable<z.input<typeof anthropicWorkloadIdentitySchema>["identity_source"]>;
+
+// identitySourceType is the source's type, or the one its fields imply when a reset dropped it.
+export const identitySourceType = (src: IdentitySourceInput | undefined): "file" | "inline" =>
+	src?.type ?? (isSecretVarSet(src?.token) && !isSecretVarSet(src?.path) ? "inline" : "file");
+
+// anthropicWorkloadIdentityComplete reports whether the block can federate on its own: the three
+// IDs plus the field its identity source type needs. The outer key schema uses it to decide whether
+// an empty key value is fine when the UI discriminator is absent.
+export const anthropicWorkloadIdentityComplete = (data: Record<string, unknown> | null | undefined): boolean => {
+	if (!data) return false;
+	const d = data as z.input<typeof anthropicWorkloadIdentitySchema>;
+	if (!isSecretVarSet(d.federation_rule_id) || !isSecretVarSet(d.organization_id) || !isSecretVarSet(d.service_account_id)) {
+		return false;
+	}
+	const src = d.identity_source;
+	return identitySourceType(src) === "file" ? isSecretVarSet(src?.path) : isSecretVarSet(src?.token);
+};
+
+// Anthropic key config schema. On the workload identity method the key value is empty, so the
+// block must be whole: the server rejects a missing ID or an identity source without its field.
+export const anthropicKeyConfigSchema = z
+	.object({
+		_auth_type: z.enum(["api_key", "workload_identity"]).optional(),
+		workload_identity: anthropicWorkloadIdentitySchema.optional(),
+	})
+	.superRefine((data, ctx) => {
+		// The API-key tab leaves the block inert; it is dropped on save.
+		if (data._auth_type === "api_key") return;
+		if (data._auth_type !== "workload_identity" && !data.workload_identity) return;
+		const wif = data.workload_identity;
+		const required = [
+			["federation_rule_id", "validation.federationRuleIdIsRequired"],
+			["organization_id", "validation.organizationIdIsRequired"],
+			["service_account_id", "validation.serviceAccountIdIsRequired"],
+		] as const;
+		for (const [field, key] of required) {
+			if (!isSecretVarSet(wif?.[field])) {
+				ctx.addIssue({ code: "custom", path: ["workload_identity", field], message: i18n.t(key) });
+			}
+		}
+		const src = wif?.identity_source;
+		if (identitySourceType(src) === "file") {
+			if (!isSecretVarSet(src?.path)) {
+				ctx.addIssue({
+					code: "custom",
+					path: ["workload_identity", "identity_source", "path"],
+					message: i18n.t("validation.tokenFilePathIsRequired"),
+				});
+			}
+		} else if (!isSecretVarSet(src?.token)) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["workload_identity", "identity_source", "token"],
+				message: i18n.t("validation.identityTokenIsRequired"),
+			});
+		}
+	});
+
 // Ollama key config schema
 export const ollamaKeyConfigSchema = z
 	.object({
@@ -765,6 +840,7 @@ export const modelProviderKeySchema = z
 		databricks_key_config: databricksKeyConfigSchema.optional(),
 		cloudflare_key_config: cloudflareKeyConfigSchema.optional(),
 		oauth_key_config: oauthKeyConfigSchema.optional(),
+		anthropic_key_config: anthropicKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),
 		use_anthropic_endpoints: z.boolean().optional(),
 		use_openai_endpoints: z.boolean().optional(),
@@ -782,6 +858,19 @@ export const modelProviderKeySchema = z
 					return true;
 				}
 				if (data.oauth_key_config._auth_type === undefined && oauthKeyConfigComplete(data.oauth_key_config)) {
+					return true;
+				}
+			}
+			// A workload identity key federates its credential and carries no value; same
+			// discriminator-absent inference as OAuth above.
+			if (data.anthropic_key_config) {
+				if (data.anthropic_key_config._auth_type === "workload_identity") {
+					return true;
+				}
+				if (
+					data.anthropic_key_config._auth_type === undefined &&
+					anthropicWorkloadIdentityComplete(data.anthropic_key_config.workload_identity)
+				) {
 					return true;
 				}
 			}
@@ -1823,6 +1912,7 @@ export const mcpClientUpdateSchema = z
 		is_code_mode_client: z.boolean().optional(),
 		is_ping_available: z.boolean().optional(),
 		needs_session_stickiness: z.boolean().optional(),
+		per_user_discovery: z.boolean().optional(),
 		allow_by_default: z.boolean().optional(),
 		disabled: z.boolean().optional(),
 		// openapi clients only; undefined = leave the stored document alone.
@@ -2033,11 +2123,16 @@ export const globalProxyConfigSchema = z
 	)
 	.refine(
 		(data) => {
-			// Validate URL format when provided and enabled
+			// Validate URL format when provided and enabled. A bare host:port takes the type's
+			// scheme, as on the server: "10.0.0.5:1080" is not a URL on its own.
 			if (data.enabled && data.url && data.url.trim().length > 0) {
+				// The server trims the URL before reading it.
+				const url = data.url.trim();
 				try {
-					new URL(data.url);
-					return true;
+					// socks5 is not a special scheme, so its URLs can parse with an empty host. Parsing
+					// accepts port 0, which the server refuses.
+					const parsed = new URL(url.includes("://") ? url : `${data.type === "socks5" ? "socks5" : "http"}://${url}`);
+					return parsed.hostname !== "" && parsed.port !== "0";
 				} catch {
 					return false;
 				}
@@ -2046,6 +2141,34 @@ export const globalProxyConfigSchema = z
 		},
 		{
 			error: () => i18n.t("validation.mustBeAValidUrlEGHttpProxyExample"),
+			path: ["url"],
+		},
+	)
+	.refine(
+		(data) => {
+			// The dialer follows the URL's scheme, so a SOCKS5 proxy must be named by a socks5 URL.
+			// A bare host:port takes its scheme from the type, as on the server.
+			if (data.enabled && data.type === "socks5" && data.url && data.url.includes("://")) {
+				return /^socks5h?:\/\//i.test(data.url.trim());
+			}
+			return true;
+		},
+		{
+			message: "A SOCKS5 proxy URL must start with socks5:// or socks5h://",
+			path: ["url"],
+		},
+	)
+	.refine(
+		(data) => {
+			// Switching the type keeps the URL, and the server refuses an http proxy named by
+			// another scheme. A bare host:port takes the type's scheme.
+			if (data.enabled && data.type === "http" && data.url && data.url.includes("://")) {
+				return /^https?:\/\//i.test(data.url.trim());
+			}
+			return true;
+		},
+		{
+			message: "An HTTP proxy URL must start with http:// or https://",
 			path: ["url"],
 		},
 	);

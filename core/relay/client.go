@@ -31,11 +31,12 @@ func newHTTPClient(network *schemas.RelayNetworkConfig, proxyConfig *schemas.Pro
 		insecure, caCertPEM = network.InsecureSkipVerify, network.CACertPEM
 	}
 
-	proxy, proxyTLS, err := providerUtils.NetHTTPProxy(proxyConfig)
+	proxy, proxyTLS, proxyHopTLS, err := providerUtils.NetHTTPProxyWithHopTLS(proxyConfig)
 	if err != nil {
 		return nil, err
 	}
-	if proxy == nil {
+	proxyFromConfig := proxy != nil
+	if !proxyFromConfig {
 		proxy = providerUtils.EnvProxyFunc()
 	}
 	transport := &http.Transport{
@@ -56,7 +57,7 @@ func newHTTPClient(network *schemas.RelayNetworkConfig, proxyConfig *schemas.Pro
 		if proxyTLS != nil {
 			tlsConfig = proxyTLS.Clone()
 		}
-		tlsConfig.InsecureSkipVerify = tlsConfig.InsecureSkipVerify || insecure
+		tlsConfig.InsecureSkipVerify = insecure
 		if caCertPEM != "" {
 			var pool *x509.CertPool
 			if tlsConfig.RootCAs != nil {
@@ -69,7 +70,12 @@ func newHTTPClient(network *schemas.RelayNetworkConfig, proxyConfig *schemas.Pro
 			}
 			tlsConfig.RootCAs = pool
 		}
-		transport.TLSClientConfig = providerUtils.RescopeProxySkipVerify(proxyTLS, tlsConfig, insecure)
+		transport.TLSClientConfig = tlsConfig
+	}
+	// An https:// proxy from proxy_config is dialed with its own TLS config, so its
+	// skip_tls_verify never relaxes verification of the target.
+	if proxyFromConfig {
+		providerUtils.DialHTTPSProxyWithHopTLS(transport, proxyHopTLS)
 	}
 	return &http.Client{
 		Transport:     transport,

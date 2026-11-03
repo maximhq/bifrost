@@ -150,6 +150,8 @@ type Bifrost struct {
 	MCPManager                 mcp.MCPManagerInterface               // MCP integration manager (nil if MCP not configured)
 	mcpCredStore               schemas.MCPCredentialStore            // Per-call credential resolver for MCP tool execution (wraps oauth2Provider for OAuth-flavored auth types)
 	mcpInProcessServerFactory  schemas.InProcessServerFactory        // Carried from MCPConfig so a lazily created manager still synthesizes openapi servers
+	mcpSharedDiscoveryStore    schemas.MCPDiscoveryStore             // From BifrostConfig, so a lazily created manager still keeps shared discoveries there
+	mcpPerUserDiscoveryStore   schemas.MCPDiscoveryStore             // From BifrostConfig, so a lazily created manager still serves per-user discoveries
 	mcpInitOnce                sync.Once                             // Ensures MCP manager is initialized only once
 	mcpFactoryMu               sync.Mutex                            // Orders factory registration against lazy MCP manager creation
 	mcpDiscoveryChangeCallback mcpDiscoveryChangeFunc                // Installed on a lazily created or injected manager; guarded by mcpFactoryMu
@@ -314,6 +316,9 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 		logger:        config.Logger,
 		kvStore:       config.KVStore,
 		modelCatalog:  config.ModelCatalog,
+
+		mcpSharedDiscoveryStore:  config.MCPSharedDiscoveryStore,
+		mcpPerUserDiscoveryStore: config.MCPPerUserDiscoveryStore,
 	}
 	bifrost.tracer.Store(&tracerWrapper{tracer: tracer})
 	if config.LLMPlugins == nil {
@@ -408,6 +413,12 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 		bifrost.mcpInitOnce.Do(func() {
 			// Set up plugin pipeline provider functions for executeCode tool hooks
 			mcpConfig := *config.MCPConfig
+			if mcpConfig.SharedDiscoveryStore == nil {
+				mcpConfig.SharedDiscoveryStore = bifrost.mcpSharedDiscoveryStore
+			}
+			if mcpConfig.PerUserDiscoveryStore == nil {
+				mcpConfig.PerUserDiscoveryStore = bifrost.mcpPerUserDiscoveryStore
+			}
 			mcpConfig.PluginPipelineProvider = func() interface{} {
 				return bifrost.getPluginPipeline()
 			}
@@ -4678,8 +4689,10 @@ func (bifrost *Bifrost) SetMCPStateChangeCallback(cb func(clientID, name string,
 // mcpDiscoveryChangeFunc is the MCP manager's discovery-change callback.
 type mcpDiscoveryChangeFunc = func(clientID, name string, discovery *schemas.MCPDiscovery)
 
-// SetMCPDiscoveryChangeCallback registers cb to run whenever an MCP client's discovery changes; the
-// transport persists through it. nil clears it. Kept for a manager created later, like the factory.
+// SetMCPDiscoveryChangeCallback registers cb to run whenever an MCP client's discovery changes.
+// Persisting the discovery is the discovery store's job (BifrostConfig.MCPSharedDiscoveryStore); the
+// callback is for reacting to the change, such as re-syncing a hosted MCP server. nil clears it. Kept
+// for a manager created later, like the factory.
 func (bifrost *Bifrost) SetMCPDiscoveryChangeCallback(cb func(clientID, name string, discovery *schemas.MCPDiscovery)) {
 	bifrost.mcpFactoryMu.Lock()
 	defer bifrost.mcpFactoryMu.Unlock()
@@ -4703,8 +4716,15 @@ func (bifrost *Bifrost) GetMCPClients() ([]schemas.MCPClient, error) {
 	clientsInConfig := make([]schemas.MCPClient, 0, len(clients))
 
 	for _, client := range clients {
-		tools := make([]schemas.MCPClientTool, 0, len(client.ToolMap))
-		for _, tool := range client.ToolMap {
+		// Client snapshots carry connection state only; the discovery comes from
+		// the manager's discovery store. Read with the manager's own context: this
+		// is the admin surface, which always shows the client-wide baseline.
+		discovery := bifrost.MCPManager.GetClientDiscovery(bifrost.ctx, client.ExecutionConfig.ID)
+		if discovery == nil {
+			discovery = &schemas.MCPDiscovery{}
+		}
+		tools := make([]schemas.MCPClientTool, 0, len(discovery.Tools))
+		for _, tool := range discovery.Tools {
 			if tool.Function != nil {
 				// A deep copy: the caller owns what it gets, annotations, icons and output schema included.
 				tool = schemas.DeepCopyChatTool(tool)
@@ -4723,13 +4743,15 @@ func (bifrost *Bifrost) GetMCPClients() ([]schemas.MCPClient, error) {
 		})
 
 		clientsInConfig = append(clientsInConfig, schemas.MCPClient{
-			Config:            client.ExecutionConfig,
-			Tools:             tools,
-			State:             client.State,
-			LastFailure:       client.LastFailure,
-			Resources:         client.Resources,
-			ResourceTemplates: client.ResourceTemplates,
-			Prompts:           client.Prompts,
+			Config:      client.ExecutionConfig,
+			Tools:       tools,
+			State:       client.State,
+			LastFailure: client.LastFailure,
+			// Copied so a caller that sorts or edits a list cannot change what is served; the
+			// entries' nested fields are shared, since discoveries are replaced, never edited.
+			Resources:         slices.Clone(discovery.Resources),
+			ResourceTemplates: slices.Clone(discovery.ResourceTemplates),
+			Prompts:           slices.Clone(discovery.Prompts),
 		})
 	}
 
@@ -4776,11 +4798,14 @@ func (bifrost *Bifrost) GetMCPServerInstructions(ctx *schemas.BifrostContext) st
 //
 // ConnectConfiguredMCPClients dials the MCP clients supplied to Init. Construction
 // no longer auto-connects, so callers invoke this after all plugins are registered
-// (so every PreMCPConnectionHook participates in the connection). No-op if MCP is
-// not configured.
-func (bifrost *Bifrost) ConnectConfiguredMCPClients(ctx context.Context) {
+// (so every PreMCPConnectionHook participates in the connection). It returns once
+// every client has been attempted; onClientDone, when not nil, is called as each
+// attempt finishes, one call at a time, so a caller running the dial in the
+// background can act on each client as soon as it is ready. No-op if MCP is not
+// configured.
+func (bifrost *Bifrost) ConnectConfiguredMCPClients(ctx context.Context, onClientDone func(clientID string)) {
 	if bifrost.MCPManager != nil {
-		bifrost.MCPManager.ConnectConfiguredClients(ctx)
+		bifrost.MCPManager.ConnectConfiguredClients(ctx, onClientDone)
 	}
 }
 
@@ -4800,6 +4825,8 @@ func (bifrost *Bifrost) lazyMCPConfig() schemas.MCPConfig {
 			}
 		},
 		InProcessServerFactory: bifrost.mcpInProcessServerFactory,
+		SharedDiscoveryStore:   bifrost.mcpSharedDiscoveryStore,
+		PerUserDiscoveryStore:  bifrost.mcpPerUserDiscoveryStore,
 	}
 }
 

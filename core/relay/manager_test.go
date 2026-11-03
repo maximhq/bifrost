@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -730,4 +731,24 @@ func BenchmarkServeStreamBodyCapture(b *testing.B) {
 
 	b.Run("CaptureDisabled", func(b *testing.B) { run(b, false) })
 	b.Run("CaptureEnabled", func(b *testing.B) { run(b, true) })
+}
+
+// TestGlobalProxyErrorRefusesEndpoint pins that an endpoint with no proxy_config of its own
+// is refused when the global proxy it would inherit cannot be read, instead of going direct
+// around a proxy the admin turned on. An endpoint with its own proxy_config is unaffected.
+func TestGlobalProxyErrorRefusesEndpoint(t *testing.T) {
+	m := NewManager(nil, nil)
+	m.SetGlobalProxy(func() (*schemas.ProxyConfig, error) { return nil, errors.New("proxy URL names no host") })
+
+	err := m.Upsert(bearerConfig("tavily", "https://search.example.com"))
+	assert.ErrorIs(t, err, ErrInvalidConfig)
+	assert.ErrorContains(t, err, "global proxy")
+	assert.Empty(t, m.Names(), "an endpoint that would go direct must not go live")
+
+	assert.ErrorContains(t, m.Replace([]*schemas.RelayConfig{bearerConfig("tavily", "https://search.example.com")}), "global proxy")
+	assert.Empty(t, m.Names())
+
+	own := bearerConfig("own", "https://search.example.com")
+	own.ProxyConfig = &schemas.ProxyConfig{Type: schemas.EnvProxy}
+	require.NoError(t, m.Upsert(own), "an endpoint with its own proxy_config never reads the global proxy")
 }

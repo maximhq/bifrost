@@ -3481,6 +3481,19 @@ func (p *LoggerPlugin) SetMCPToolLogCallback(callback MCPToolLogCallback) {
 	p.mcpToolLogCallback = callback
 }
 
+// isMCPConnectCall reports whether core marked this call as a client's connect tool (see
+// bifrost.MCPToolCallKindOf). toolName may come with or without the client prefix: responses name
+// the tool the upstream way, requests and errors with the prefix.
+func isMCPConnectCall(ctx *schemas.BifrostContext, clientName, toolName string) bool {
+	if clientName == "" || toolName == "" {
+		return false
+	}
+	if !strings.HasPrefix(toolName, clientName+"-") {
+		toolName = clientName + "-" + toolName
+	}
+	return bifrost.MCPToolCallKindOf(ctx, clientName, toolName) == schemas.MCPToolCallKindConnect
+}
+
 // PreMCPHook is called before an MCP tool execution - creates initial log entry
 // Parameters:
 //   - ctx: The Bifrost context
@@ -3501,6 +3514,9 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	if !req.RequestType.IsExecuteTool() && !isRead {
 		return req, nil, nil
 	}
+	// A call named like a client's connect tool is recorded here like any other: whether it is
+	// Bifrost's connect tool or an upstream tool of that name can depend on a caller that a policy
+	// plugin registered after logging names later. PostMCPHook drops a confirmed connect call.
 
 	requestID, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
 	if !ok || requestID == "" {
@@ -3653,6 +3669,20 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 	if !mcpReqType.IsExecuteTool() && !mcpReqType.IsPromptOrResourceRead() {
 		return resp, bifrostErr, nil
 	}
+	// A client's connect tool only signs the caller in and discovers their tools, and its result
+	// can carry the sign-in link, so its calls are not logged, whether they answered or failed. The
+	// caller is known by now, so the mark is settled. Only core can mark one, so an upstream tool
+	// named "connect" is still logged.
+	var connectCall bool
+	if mcpReqType.IsExecuteTool() {
+		var clientName, toolName string
+		if resp != nil {
+			clientName, toolName = resp.ExtraFields.ClientName, resp.ExtraFields.ToolName
+		} else {
+			clientName, toolName = bifrostErr.ExtraFields.MCPClientName, bifrostErr.ExtraFields.MCPToolName
+		}
+		connectCall = isMCPConnectCall(ctx, clientName, toolName)
+	}
 	// Skip logging for codemode tools (executeToolCode, listToolFiles, readToolFile)
 	if resp != nil && bifrost.IsCodemodeTool(resp.ExtraFields.ToolName) {
 		return resp, bifrostErr, nil
@@ -3668,6 +3698,16 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 	mcpLogID, ok := ctx.Value(schemas.BifrostContextKeyMCPLogID).(string)
 	if !ok || mcpLogID == "" {
 		mcpLogID = requestID
+	}
+
+	// A sign-in prompt is not a failed call: the caller still has to connect
+	// their account, and the sign-in link it carries must stay out of the store.
+	// Drop what PreMCPHook held so the stale sweeper does not write it either.
+	// The same goes for a connect call.
+	if connectCall || (bifrostErr != nil && bifrostErr.ExtraFields.MCPAuthRequired != nil) {
+		p.pendingMCPLogsToInject.Delete(mcpLogID)
+		p.provisionalMCPArguments.Delete(mcpLogID)
+		return resp, bifrostErr, nil
 	}
 
 	pendingVal, hasPending := p.pendingMCPLogsToInject.LoadAndDelete(mcpLogID)

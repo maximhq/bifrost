@@ -5,6 +5,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { Info, Trash2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { Trans, useTranslation } from "react-i18next";
+import { withBasePath } from "@/lib/utils/basePath";
 
 interface AgentGrantsEditorProps {
 	/** Granted agent names. Agents are keyed by name, so the name is the grant. */
@@ -48,7 +49,7 @@ export function AgentGrantsEditor({ value, onChange, label, tooltip }: AgentGran
 									<Trans
 										t={t}
 										i18nKey="agentGrants.tooltip"
-										values={{ path: "/agents/a2a/<name>" }}
+										values={{ path: withBasePath("/agents/a2a/<name>") }}
 										components={{ path0: <span className="font-medium" /> }}
 									/>
 								</p>
@@ -66,7 +67,7 @@ export function AgentGrantsEditor({ value, onChange, label, tooltip }: AgentGran
 						<div key={name} className="flex items-center justify-between gap-2 px-3 py-2">
 							<div className="flex min-w-0 flex-col">
 								<span className="truncate text-sm font-medium">{name}</span>
-								<span className="text-muted-foreground truncate text-xs">/agents/a2a/{name}</span>
+								<span className="text-muted-foreground truncate text-xs">{withBasePath(`/agents/a2a/${name}`)}</span>
 							</div>
 							<Button
 								type="button"

@@ -373,8 +373,19 @@ virtual-keys-rotate-by-id:
     summary: Rotate virtual key
     description: |
       Generates a new credential value for the virtual key while leaving its configuration,
-      assignments, budgets, and rate limits unchanged. On the node handling the request, the
-      previous credential value is invalidated before a successful response is returned.
+      assignments, budgets, and rate limits unchanged.
+
+      When the client `vk_rotation_cooldown` setting is non-zero, the previous value keeps
+      authenticating until `previous_value_expires_at`. Otherwise, on the node handling the
+      request, the previous value is invalidated before a successful response is returned.
+      If the cooldown setting cannot be read, rotation proceeds with a zero cooldown, so check
+      `previous_value_expires_at` in the response before relying on a grace period. Only the
+      most recently retired value is kept: rotating again during the cooldown replaces it, and
+      the older value stops authenticating immediately.
+
+      Rotation also revokes the key's MCP OAuth grants (pending authorization codes and active
+      refresh tokens) in the same transaction, regardless of the cooldown. MCP clients that
+      authorized with this virtual key must authorize again.
 
       In a clustered deployment, peer invalidation is asynchronous. Until each peer processes the
       cluster update and reloads the virtual key, that peer may continue to accept the previous
@@ -538,7 +549,7 @@ virtual-keys-rotate:
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Rotate multiple virtual keys
     description: |
-      Generates a new value for each listed virtual key. When the client vk_rotation_cooldown setting is non-zero, each retired value keeps authenticating until previous_value_expires_at; otherwise it stops working immediately.
+      Generates a new value for each listed virtual key. When the client vk_rotation_cooldown setting is non-zero, each retired value keeps authenticating until previous_value_expires_at; otherwise it stops working immediately. If the cooldown setting cannot be read, the keys rotate with a zero cooldown, so check each key's previous_value_expires_at. Only the most recently retired value of a key is kept; rotating it again during the cooldown replaces that value. Each rotation also revokes the key's MCP OAuth grants (pending authorization codes and active refresh tokens), so MCP clients that authorized with it must authorize again. In a clustered deployment, peer invalidation is asynchronous: until each peer processes the cluster update and reloads the key, it may still accept the retired value, with no fixed upper bound while a peer is unavailable, so wait for cluster convergence before treating a previous credential as revoked cluster-wide.
     tags:
       - Governance
     security:
@@ -609,56 +620,6 @@ virtual-keys-rotate:
                   description: Map of virtual key ID to failure reason
                   additionalProperties:
                     type: string
-
-virtual-keys-by-id-rotate:
-  post:
-    operationId: rotateVirtualKey
-    x-mint:
-      content: |
-        **Required Permissions**
-
-        | Permission | Granted via |
-        | --- | --- |
-        | `VirtualKeys:Create` | RBAC role or API key scope |
-
-        [How permissions work](/api/procuring-api-keys#required-permissions)
-    summary: Rotate virtual key
-    description: |
-      Generates a new value for the virtual key. When the client vk_rotation_cooldown setting is non-zero, the retired value keeps authenticating until previous_value_expires_at; otherwise it stops working immediately.
-    tags:
-      - Governance
-    parameters:
-      - name: vk_id
-        in: path
-        required: true
-        description: Virtual key ID
-        schema:
-          type: string
-    security:
-      - ManagementBearerAuth: []
-    responses:
-      "200":
-        description: Virtual key rotated successfully
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-                - message
-                - virtual_key
-              properties:
-                message:
-                  type: string
-                virtual_key:
-                  $ref: "../../schemas/management/governance.yaml#/VirtualKey"
-      "404":
-        description: Virtual key not found
-        content:
-          application/json:
-            schema:
-              $ref: "../../schemas/inference/common.yaml#/BifrostError"
-      "500":
-        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 # Teams CRUD
 

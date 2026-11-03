@@ -43,6 +43,12 @@ variable "health_check_path" {
   type        = string
 }
 
+variable "ingress_path" {
+  description = "Path prefix the ingress routes to Bifrost; \"/\" owns the whole host. Match server.base_path when serving under a prefix."
+  type        = string
+  default     = "/"
+}
+
 # --- Compute ---
 variable "desired_count" {
   description = "Number of K8s pod replicas."
