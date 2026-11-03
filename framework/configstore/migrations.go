@@ -588,6 +588,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_anthropic_workload_identity_column"}, run: migrationAddAnthropicWorkloadIdentityColumn},
 	{IDs: []string{"add_mcp_per_user_discoveries"}, run: migrationAddMCPPerUserDiscoveries},
 	{IDs: []string{"add_mcp_client_pending_verification_column"}, run: migrationAddMCPClientPendingVerificationColumn},
+	{IDs: []string{"add_budget_business_unit_id_column"}, run: migrationAddBudgetBusinessUnitIDColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17051,6 +17052,58 @@ func migrationAddMCPClientPendingVerificationColumn(ctx context.Context, db *gor
 			tx = tx.WithContext(ctx)
 			if err := dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "PendingVerification"); err != nil {
 				return fmt.Errorf("drop pending_verification column from config_mcp_clients: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddBudgetBusinessUnitIDColumn adds the business_unit_id owner column to
+// governance_budgets, so a business unit can hold one budget per reset window the
+// way a team or customer does (TableBudget.TeamID / CustomerID).
+//
+// Index only, no foreign key: the rows the column points at belong to a table this
+// build does not manage, and the config loader may write a budget naming a unit
+// before that unit's own row exists. The build that owns business units backfills
+// the column from its previous single-budget link and deletes a unit's budgets
+// when the unit goes.
+func migrationAddBudgetBusinessUnitIDColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_budget_business_unit_id_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableBudget{}, "BusinessUnitID"); err != nil {
+				return fmt.Errorf("add business_unit_id column to governance_budgets: %w", err)
+			}
+			mg := tx.Migrator()
+			if !mg.HasIndex(&tables.TableBudget{}, "idx_governance_budgets_business_unit_id") {
+				logger.Info("[configstore] %s: creating index BusinessUnitID on TableBudget", migrationName)
+				if err := mg.CreateIndex(&tables.TableBudget{}, "BusinessUnitID"); err != nil {
+					return fmt.Errorf("create index on governance_budgets.business_unit_id: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasIndex(&tables.TableBudget{}, "idx_governance_budgets_business_unit_id") {
+				if err := mg.DropIndex(&tables.TableBudget{}, "BusinessUnitID"); err != nil {
+					return fmt.Errorf("drop index on governance_budgets.business_unit_id: %w", err)
+				}
+			}
+			if err := dropColumnIfExists(tx, logger, &tables.TableBudget{}, "BusinessUnitID"); err != nil {
+				return fmt.Errorf("drop business_unit_id column from governance_budgets: %w", err)
 			}
 			return nil
 		},

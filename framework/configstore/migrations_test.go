@@ -5825,3 +5825,27 @@ func TestMigrationAddAnthropicWorkloadIdentityColumn(t *testing.T) {
 	require.True(t, found.AnthropicKeyConfig.HasWorkloadIdentity(), "the stored federation config must survive the refused rollback")
 	assert.Equal(t, "svac_01def", found.AnthropicKeyConfig.WorkloadIdentity.ServiceAccountID.GetValue())
 }
+
+// TestMigrationAddBudgetBusinessUnitIDColumn pins the owner column a business unit's budgets name
+// it from: added with its index where it is missing, left alone where it is there, and never tied
+// to the unit's table by a constraint, since that table is another build's and the config loader
+// may write the budget first.
+func TestMigrationAddBudgetBusinessUnitIDColumn(t *testing.T) {
+	ctx := context.Background()
+	db := setupCalendarAlignedPreMigrationDB(t)
+	mig := db.Migrator()
+	require.NoError(t, mig.AutoMigrate(&tables.TableBudget{}))
+	require.NoError(t, mig.DropColumn(&tables.TableBudget{}, "BusinessUnitID"))
+	require.False(t, mig.HasColumn(&tables.TableBudget{}, "business_unit_id"))
+
+	require.NoError(t, migrationAddBudgetBusinessUnitIDColumn(ctx, db, testMigrationLogger))
+	assert.True(t, mig.HasColumn(&tables.TableBudget{}, "business_unit_id"))
+	assert.True(t, mig.HasIndex(&tables.TableBudget{}, "idx_governance_budgets_business_unit_id"))
+	assert.False(t, mig.HasConstraint(&tables.TableBudget{}, "fk_governance_budgets_business_unit"), "no constraint ties the column to a table this build does not own")
+
+	// A budget naming a unit that this store has no row for is accepted: the owner lives elsewhere.
+	buID := "bu-elsewhere"
+	require.NoError(t, db.Create(&tables.TableBudget{ID: "bud-bu", MaxLimit: 10, ResetDuration: "1M", BusinessUnitID: &buID}).Error)
+
+	require.NoError(t, migrationAddBudgetBusinessUnitIDColumn(ctx, db, testMigrationLogger), "running again is a no-op")
+}
