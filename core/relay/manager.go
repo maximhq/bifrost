@@ -391,8 +391,9 @@ func (m *Manager) Serve(ctx *schemas.BifrostContext, in Request) (*Result, *sche
 	if name, dup := ambiguousHeader(in.Headers); dup {
 		return nil, statusError(http.StatusBadRequest, fmt.Sprintf("header %s is set under two spellings; send it once", name))
 	}
-	// Routes match, and the model is read, on the headers the upstream receives: the caller's, its
-	// x-bf-eh-* headers beneath them, then the operator's (see buildRequest).
+	// Routes match, and the model is read, on the headers the upstream receives: the operator's
+	// extra headers, then for any other name the caller's, its x-bf-eh-* headers beneath them (see
+	// buildRequest).
 	headers := e.routeHeaders(in.Headers, callerExtraHeaders(ctx))
 	contentType, _ := headerValue("content-type", headers, e.operatorHeaders)
 	p := e.plan(in.Method, in.Path, headers)

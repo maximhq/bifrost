@@ -937,17 +937,23 @@ func TestServeReadsModelUnderSentContentType(t *testing.T) {
 	require.Len(t, pipeline.pre, 1)
 	assert.Equal(t, "gpt-x", pipeline.pre[0].Model, "with no caller Content-Type the upstream receives the operator's JSON one")
 
-	// The caller's Content-Type replaces the operator's on the wire, as on a passthrough call, so
-	// the body is read under it.
+	// The operator's Content-Type is the one sent, so a caller's copy, plain or x-bf-eh-*, does not
+	// change how the body is read.
 	_, bErr = m.Serve(testCtx(t), Request{Endpoint: "llm", Method: "POST", Path: "/chat", Headers: map[string]string{"content-type": "text/plain"}, Body: []byte(`{"model":"gpt-x"}`)})
 	require.Nil(t, bErr)
 	require.Len(t, pipeline.pre, 2)
-	assert.Empty(t, pipeline.pre[1].Model, "a text/plain body is not read as JSON")
+	assert.Equal(t, "gpt-x", pipeline.pre[1].Model, "the caller's text/plain is dropped; the upstream reads the body as JSON")
+	ctx := testCtx(t)
+	ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{"content-type": {"text/plain"}})
+	_, bErr = m.Serve(ctx, Request{Endpoint: "llm", Method: "POST", Path: "/chat", Body: []byte(`{"model":"gpt-x"}`)})
+	require.Nil(t, bErr)
+	require.Len(t, pipeline.pre, 3)
+	assert.Equal(t, "gpt-x", pipeline.pre[2].Model, "so is an x-bf-eh-* copy")
 }
 
 // The pre-hook sees, for each header the matched route matches on, the value that selected the
-// route: the caller's copy beats the relay's own extra header, as on a passthrough call, a missing
-// caller header still shows the operator's value, and a value read from the environment is handed
+// route: the relay's own extra header beats a caller's copy, since it is what is sent, a header
+// only the caller sets shows the caller's value, and a value read from the environment is handed
 // over redacted.
 func TestServeReportsMatchedHeaderValues(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "{}") }))
@@ -964,12 +970,12 @@ func TestServeReportsMatchedHeaderValues(t *testing.T) {
 	}
 	m, pipeline := newTestManager(t, cfg)
 
-	_, bErr := m.Serve(testCtx(t), Request{Endpoint: "textract", Method: "POST", Path: "/", Headers: map[string]string{"x-amz-target": "Textract.GetDocumentAnalysis", "content-type": "application/x-amz-json-1.1"}})
+	_, bErr := m.Serve(testCtx(t), Request{Endpoint: "textract", Method: "POST", Path: "/", Headers: map[string]string{"x-amz-target": "Textract.GetDocumentAnalysis", "x-tenant": "other", "content-type": "application/x-amz-json-1.1"}})
 	require.Nil(t, bErr)
 	require.Len(t, pipeline.pre, 1)
 	assert.Equal(t, map[string]string{
-		"x-amz-target": "Textract.GetDocumentAnalysis", // the caller's value replaces the operator's, as on a passthrough call
-		"x-tenant":     schemas.RedactedAttrValue,      // set by the relay from the environment: never copied into a row
+		"x-amz-target": "Textract.AnalyzeDocument", // the operator's value is sent, the caller's copy dropped
+		"x-tenant":     schemas.RedactedAttrValue,  // set by the relay from the environment: never copied into a row
 		"content-type": "application/x-amz-json-1.1",
 	}, pipeline.pre[0].RouteHeaders)
 
@@ -1171,14 +1177,18 @@ func TestLargeReplyStaysBufferedWhenReadForUsage(t *testing.T) {
 	}
 }
 
-// TestServeAppliesHeadersInPassthroughOrder pins the header precedence a provider passthrough call
-// has (SetExtraHeaders, then the caller's safe headers, then the key): the operator's extra header,
-// the caller's x-bf-eh-* header over it, the caller's own header over both, and the credential
-// last. x-bf-eh-* headers are forwarded whatever their name, each value on its own line.
-func TestServeAppliesHeadersInPassthroughOrder(t *testing.T) {
+// TestServeAppliesHeadersOperatorFirst pins relay header precedence: a header the operator set
+// under extra_headers is the operator's, so the caller's copy of it is dropped whether it arrives
+// plain or as x-bf-eh-* and whatever its spelling; any other caller header is forwarded (its own
+// value over its x-bf-eh-* copy), and the credential is applied last. x-bf-eh-* headers are
+// forwarded whatever their name, each value on its own line.
+func TestServeAppliesHeadersOperatorFirst(t *testing.T) {
+	var mu sync.Mutex
 	var got http.Header
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		got = r.Header.Clone()
+		mu.Unlock()
 		_, _ = io.WriteString(w, "{}")
 	}))
 	defer upstream.Close()
@@ -1195,19 +1205,152 @@ func TestServeAppliesHeadersInPassthroughOrder(t *testing.T) {
 		"x-version":        {"extra"},
 		"x-tenant":         {"extra"},
 		"x-trace":          {"a", "b"},
+		"x-mode":           {"extra"},
 		"x-upstream-token": {"tok"},
 		"authorization":    {"Bearer extra"},
 		"keep-alive":       {"timeout=5"},
 	})
-	_, bErr := m.Serve(ctx, Request{Endpoint: "docs", Method: "POST", Path: "/", Headers: map[string]string{"x-tenant": "caller"}})
+	_, bErr := m.Serve(ctx, Request{Endpoint: "docs", Method: "POST", Path: "/", Headers: map[string]string{"X-TENANT": "caller", "x-mode": "caller", "x-caller": "caller"}})
 	require.Nil(t, bErr)
+	mu.Lock()
+	defer mu.Unlock()
 	assert.Equal(t, "operator", got.Get("X-Region"), "an operator header nobody overrides is sent")
-	assert.Equal(t, "extra", got.Get("X-Version"), "x-bf-eh-* replaces the operator's header, as on a passthrough call")
-	assert.Equal(t, "caller", got.Get("X-Tenant"), "the caller's own header replaces both")
+	assert.Equal(t, []string{"operator"}, got.Values("X-Version"), "an x-bf-eh-* copy of an operator header is dropped")
+	assert.Equal(t, []string{"operator"}, got.Values("X-Tenant"), "so is the caller's own copy, whatever its spelling")
+	assert.Equal(t, "caller", got.Get("X-Mode"), "on a header the operator did not set, the caller's own value replaces its x-bf-eh-* copy")
+	assert.Equal(t, "caller", got.Get("X-Caller"), "a caller header the operator did not set is forwarded")
 	assert.Equal(t, []string{"a", "b"}, got.Values("X-Trace"), "each x-bf-eh-* value is sent on its own line")
 	assert.Equal(t, "tok", got.Get("X-Upstream-Token"), "an x-bf-eh-* header is forwarded whatever its name looks like")
 	assert.Equal(t, "Bearer sk-endpoint", got.Get("Authorization"), "the credential is applied last and always wins")
 	assert.Empty(t, got.Get("Keep-Alive"), "connection-level x-bf-eh-* headers are dropped, as SetExtraHeaders drops them")
+}
+
+// A caller cannot replace the operator's copy of a header a route matches on, plain, under another
+// spelling, or as x-bf-eh-*: the upstream receives the operator's value, so that value selects the
+// route, decides billing, and is the one the pre-hook is shown.
+func TestServeCallerCannotSteerRouteThroughOperatorHeader(t *testing.T) {
+	var mu sync.Mutex
+	var sent []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		sent = r.Header.Values("X-Amz-Target")
+		mu.Unlock()
+		_, _ = io.WriteString(w, "{}")
+	}))
+	defer upstream.Close()
+	cfg := bearerConfig("textract", upstream.URL)
+	cfg.ExtraHeaders = map[string]schemas.SecretVar{"X-Amz-Target": *schemas.NewSecretVar("Textract.AnalyzeDocument")}
+	cfg.Routes = []schemas.RelayRouteConfig{
+		{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.Get*"}, Billable: schemas.Ptr(false)},
+		{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.AnalyzeDocument"}, Usage: &schemas.RelayUsageConfig{CostPerRequest: schemas.Ptr(0.05)}},
+	}
+	m, pipeline := newTestManager(t, cfg)
+	for _, tc := range []struct {
+		name    string
+		headers map[string]string
+		extra   map[string][]string
+	}{
+		{name: "plain", headers: map[string]string{"x-amz-target": "Textract.GetDocumentAnalysis"}},
+		{name: "sdk spelling", headers: map[string]string{"X-Amz-Target": "Textract.GetDocumentAnalysis"}},
+		{name: "x-bf-eh", extra: map[string][]string{"x-amz-target": {"Textract.GetDocumentAnalysis"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pipeline.mu.Lock()
+			pipeline.pre = nil
+			pipeline.mu.Unlock()
+			ctx := testCtx(t)
+			if tc.extra != nil {
+				ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, tc.extra)
+			}
+			_, bErr := m.Serve(ctx, Request{Endpoint: "textract", Method: "POST", Path: "/", Headers: tc.headers})
+			require.Nil(t, bErr)
+			mu.Lock()
+			assert.Equal(t, []string{"Textract.AnalyzeDocument"}, sent, "the operator's value is the one sent")
+			mu.Unlock()
+			require.Len(t, pipeline.pre, 1)
+			assert.Equal(t, 1, pipeline.pre[0].RouteIndex, "the route is the one the sent value selects")
+			assert.True(t, pipeline.pre[0].Billable)
+			assert.Equal(t, map[string]string{"x-amz-target": "Textract.AnalyzeDocument"}, pipeline.pre[0].RouteHeaders)
+		})
+	}
+}
+
+// An x-bf-eh-authorization header is a token the caller chose to forward; like a passthrough call's
+// caller Authorization it is not sent in cleartext to an upstream that is neither HTTPS nor
+// loopback. An HTTPS or loopback upstream still receives it, and the shared context map is left as
+// it is.
+func TestBuildRequestDropsExtraAuthorizationToInsecureUpstream(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		auth    schemas.RelayAuthConfig
+		baseURL string
+		sent    bool
+	}{
+		{"none over http", schemas.RelayAuthConfig{Type: schemas.RelayAuthNone}, "http://api.example.com", false},
+		{"query over http", schemas.RelayAuthConfig{Type: schemas.RelayAuthQuery, QueryParam: "key"}, "http://api.example.com", false},
+		{"custom header over http", schemas.RelayAuthConfig{Type: schemas.RelayAuthHeader, HeaderName: "X-Api-Key"}, "http://api.example.com", false},
+		{"none over https", schemas.RelayAuthConfig{Type: schemas.RelayAuthNone}, "https://api.example.com", true},
+		{"query over https", schemas.RelayAuthConfig{Type: schemas.RelayAuthQuery, QueryParam: "key"}, "https://api.example.com", true},
+		{"custom header over https", schemas.RelayAuthConfig{Type: schemas.RelayAuthHeader, HeaderName: "X-Api-Key"}, "https://api.example.com", true},
+		{"none over loopback http", schemas.RelayAuthConfig{Type: schemas.RelayAuthNone}, "http://127.0.0.1:9", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &schemas.RelayConfig{Name: "r", BaseURL: tc.baseURL, Auth: tc.auth, SkipRouteCheck: true}
+			if tc.auth.Type != schemas.RelayAuthNone {
+				cfg.Credential = &schemas.RelayCredential{Value: schemas.NewSecretVar("sk-endpoint")}
+			}
+			e, err := newEndpoint(cfg, nil)
+			require.NoError(t, err)
+			ctx := testCtx(t)
+			extra := map[string][]string{"authorization": {"Bearer caller"}, "x-trace": {"t"}}
+			ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, extra)
+			httpReq, bErr := e.buildRequest(ctx, upstreamRequest{method: "POST", path: "/x", headers: map[string]string{}})
+			require.Nil(t, bErr)
+			_, routed := e.routeHeaders(nil, extra)["authorization"]
+			if tc.sent {
+				assert.Equal(t, []string{"Bearer caller"}, httpReq.Header.Values("Authorization"))
+				assert.True(t, routed, "a header that is sent takes part in route matching")
+			} else {
+				assert.Empty(t, httpReq.Header.Values("Authorization"), "no cleartext token to a non-loopback http upstream")
+				assert.False(t, routed, "a header that is not sent selects no route")
+			}
+			assert.Equal(t, "t", httpReq.Header.Get("X-Trace"), "other x-bf-eh-* headers are still sent")
+			assert.Equal(t, []string{"Bearer caller"}, extra["authorization"], "the shared context map is not mutated")
+		})
+	}
+}
+
+// BenchmarkBuildRequestHeaders measures the header path of buildRequest: a relay with two
+// operator extra headers and a caller sending five headers, with and without x-bf-eh-* headers
+// (one of which names an operator header and is dropped).
+func BenchmarkBuildRequestHeaders(b *testing.B) {
+	cfg := bearerConfig("docs", "https://api.example.com")
+	cfg.SkipRouteCheck = true
+	cfg.ExtraHeaders = map[string]schemas.SecretVar{"X-Tenant": *schemas.NewSecretVar("operator"), "X-Version": *schemas.NewSecretVar("2024-01")}
+	e, err := newEndpoint(cfg, nil)
+	require.NoError(b, err)
+	headers := map[string]string{"content-type": "application/json", "accept": "application/json", "user-agent": "sdk/1.0", "x-request-id": "r-1", "x-tenant": "caller"}
+	for _, bc := range []struct {
+		name  string
+		extra map[string][]string
+	}{
+		{"no-extra", nil},
+		{"extra", map[string][]string{"x-trace": {"a", "b"}, "x-version": {"caller"}, "authorization": {"Bearer caller"}}},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			ctx := testCtx(b)
+			if bc.extra != nil {
+				ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, bc.extra)
+			}
+			req := upstreamRequest{method: "POST", path: "/search", headers: headers}
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, bErr := e.buildRequest(ctx, req); bErr != nil {
+					b.Fatal(bErr.Error.Message)
+				}
+			}
+		})
+	}
 }
 
 // rawSpanRecorder is a spanRecorder whose connector asks for raw payloads, keeping the one span
