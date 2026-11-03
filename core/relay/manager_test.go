@@ -1,7 +1,9 @@
 package relay
 
 import (
-	"bufio"
+	"bytes"
+	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"errors"
 	"fmt"
@@ -12,12 +14,17 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"time"
+	"unicode/utf8"
 
+	"github.com/andybalholm/brotli"
+	"github.com/klauspost/compress/zstd"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func testCtx(t testing.TB) *schemas.BifrostContext {
@@ -462,6 +469,108 @@ func TestServeBufferedPricesAndInjectsCredential(t *testing.T) {
 	assert.Equal(t, "tavily", pipeline.post[0].RelayName)
 	assert.GreaterOrEqual(t, pipeline.post[0].UpstreamLatency, int64(5), "the upstream socket time is accumulated on the context, as for an LLM call")
 	assert.GreaterOrEqual(t, pipeline.post[0].Latency, pipeline.post[0].UpstreamLatency, "latency covers the whole call, so Bifrost's own time is the difference")
+}
+
+// encodeBody compresses data with one HTTP content coding, for upstreams that answer compressed.
+func encodeBody(t *testing.T, encoding string, data []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	var w io.WriteCloser
+	switch encoding {
+	case "br":
+		w = brotli.NewWriter(&buf)
+	case "zstd":
+		enc, err := zstd.NewWriter(&buf)
+		require.NoError(t, err)
+		w = enc
+	case "deflate":
+		w = zlib.NewWriter(&buf)
+	case "gzip":
+		w = gzip.NewWriter(&buf)
+	default:
+		t.Fatalf("no encoder for %q", encoding)
+	}
+	_, err := w.Write(data)
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+	return buf.Bytes()
+}
+
+// net/http decodes a gzip reply itself, but an upstream may answer br, zstd or deflate whatever the
+// request offered. Usage is read from a decoded copy, as the LLM path decodes a provider reply,
+// while the caller still receives the bytes and headers the upstream sent. A body that does not
+// decode is measured as it came.
+func TestServeBufferedReadsUsageThroughContentEncoding(t *testing.T) {
+	// Text that compresses for real (low-entropy, few repeats), so every encoder Huffman-codes its
+	// literals: a small or repetitive body can come out of zstd as raw literals gjson still reads.
+	text := make([]rune, 4096)
+	seed := uint32(1)
+	for i := range text {
+		seed = seed*1664525 + 1013904223
+		text[i] = []rune("abcdefgé")[seed>>29]
+	}
+	plain := []byte(`{"text":"` + string(text) + `","usage":{"in":3,"out":7},"cost":0.25}`)
+	var reply []byte
+	var encoding string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Encoding", encoding)
+		_, _ = w.Write(reply)
+	}))
+	t.Cleanup(upstream.Close)
+	cfg := bearerConfig("enc", upstream.URL)
+	cfg.Routes = []schemas.RelayRouteConfig{
+		{Method: "POST", Path: "/tokens", Usage: &schemas.RelayUsageConfig{CostPerRequest: schemas.Ptr(0.5), InputTokensPath: "usage.in", OutputTokensPath: "usage.out", CostPath: "cost"}},
+		{Method: "POST", Path: "/chars", Usage: &schemas.RelayUsageConfig{UnitsMeasure: schemas.RelayUnitsBodyChars, CostPerUnit: schemas.Ptr(1.0)}},
+		{Method: "POST", Path: "/bytes", Usage: &schemas.RelayUsageConfig{UnitsMeasure: schemas.RelayUnitsBodyBytes, CostPerUnit: schemas.Ptr(1.0)}},
+	}
+	m, _ := newTestManager(t, cfg)
+	serve := func(path string) *schemas.BifrostRelayResponse {
+		t.Helper()
+		res, bErr := m.Serve(testCtx(t), Request{Endpoint: "enc", Method: "POST", Path: path, Headers: map[string]string{}})
+		require.Nil(t, bErr)
+		require.NotNil(t, res.Response)
+		require.NotNil(t, res.Response.Usage)
+		return res.Response
+	}
+	for _, enc := range []string{"br", "zstd", "deflate"} {
+		t.Run(enc, func(t *testing.T) {
+			encoding, reply = enc, encodeBody(t, enc, plain)
+			require.False(t, gjson.GetBytes(reply, "usage.in").Exists(), "the encoded reply must not be readable as it is")
+			resp := serve("/tokens")
+			assert.Equal(t, reply, resp.Body, "the caller receives the bytes the upstream sent")
+			assert.Equal(t, 3, resp.Usage.InputTokens)
+			assert.Equal(t, 7, resp.Usage.OutputTokens)
+			require.NotNil(t, resp.Usage.ExtractedCost)
+			assert.InDelta(t, 0.75, resp.Usage.Cost, 1e-12)
+
+			resp = serve("/chars")
+			require.NotNil(t, resp.Usage.Units)
+			assert.Equal(t, float64(utf8.RuneCount(plain)), *resp.Usage.Units, "body_chars counts the decoded reply")
+			resp = serve("/bytes")
+			require.NotNil(t, resp.Usage.Units)
+			assert.Equal(t, float64(len(plain)), *resp.Usage.Units, "body_bytes measures the decoded reply")
+		})
+	}
+	t.Run("stacked codings", func(t *testing.T) {
+		encoding, reply = "deflate, br", encodeBody(t, "br", encodeBody(t, "deflate", plain))
+		resp := serve("/tokens")
+		assert.Equal(t, reply, resp.Body)
+		assert.Equal(t, 3, resp.Usage.InputTokens)
+	})
+	t.Run("undecodable body is measured raw", func(t *testing.T) {
+		encoding, reply = "br", []byte("not brotli at all")
+		resp := serve("/bytes")
+		assert.Equal(t, reply, resp.Body)
+		require.NotNil(t, resp.Usage.Units)
+		assert.Equal(t, float64(len(reply)), *resp.Usage.Units)
+	})
+	t.Run("gzip is decoded by net/http", func(t *testing.T) {
+		encoding, reply = "gzip", encodeBody(t, "gzip", plain)
+		resp := serve("/tokens")
+		assert.Equal(t, plain, resp.Body, "net/http hands over the decoded body, as before")
+		assert.Equal(t, 3, resp.Usage.InputTokens)
+	})
 }
 
 func TestServeUnknownRelay(t *testing.T) {
@@ -1027,6 +1136,47 @@ func BenchmarkServeStreamBodyCapture(b *testing.B) {
 	b.Run("CaptureEnabled", func(b *testing.B) { run(b, true) })
 }
 
+// BenchmarkServeBufferedUsage is a buffered reply priced from its body: identity is the common case,
+// which must add nothing for the content-coding check; br is the reply decoded into a copy.
+func BenchmarkServeBufferedUsage(b *testing.B) {
+	plain := []byte(`{"results":[1,2,3],"usage":{"credits":4}}`)
+	var brBody bytes.Buffer
+	w := brotli.NewWriter(&brBody)
+	_, _ = w.Write(plain)
+	_ = w.Close()
+	run := func(b *testing.B, encoding string, body []byte) {
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if encoding != "" {
+				w.Header().Set("Content-Encoding", encoding)
+			}
+			_, _ = w.Write(body)
+		}))
+		defer upstream.Close()
+		cfg := bearerConfig("buf", upstream.URL)
+		cfg.Usage = &schemas.RelayUsageConfig{UnitsPath: "usage.credits", CostPerUnit: schemas.Ptr(0.01)}
+		cfg.Routes = []schemas.RelayRouteConfig{{Method: "POST", Path: "/search", Stream: schemas.Ptr(false)}}
+		m, pipeline := newTestManager(b, cfg)
+		ctx := testCtx(b)
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			res, bErr := m.Serve(ctx, Request{Endpoint: "buf", Method: "POST", Path: "/search", Headers: map[string]string{}})
+			if bErr != nil {
+				b.Fatal(bErr)
+			}
+			if res.Response.Usage == nil {
+				b.Fatal("no usage")
+			}
+			pipeline.mu.Lock()
+			pipeline.pre, pipeline.post, pipeline.postErr = pipeline.pre[:0], pipeline.post[:0], pipeline.postErr[:0]
+			pipeline.mu.Unlock()
+		}
+	}
+	b.Run("Identity", func(b *testing.B) { run(b, "", plain) })
+	b.Run("Brotli", func(b *testing.B) { run(b, "br", brBody.Bytes()) })
+}
+
 // TestGlobalProxyErrorRefusesEndpoint pins that an endpoint with no proxy_config of its own
 // is refused when the global proxy it would inherit cannot be read, instead of going direct
 // around a proxy the admin turned on. An endpoint with its own proxy_config is unaffected.
@@ -1412,43 +1562,114 @@ func TestStreamUsagePanicIsAnInternalError(t *testing.T) {
 	assert.Equal(t, schemas.ErrorTypeBifrostInternal, schemas.ClassifyErrorType(gotErr, schemas.RelayRequest))
 }
 
-// An event past the SSE line ceiling fails the stream, as the native LLM scanner fails a stream
-// with bufio.ErrTooLong, instead of being dropped unread and the call charged the default fee.
-func TestStreamOversizedEventFailsTheStream(t *testing.T) {
-	var gotErr *schemas.BifrostError
+// A relay sets no size cap of its own: an event past the native SSE scanner's ceiling is held until
+// its delimiter arrives and its usage is read, and the stream ends normally with every byte forwarded.
+func TestStreamEventPastScannerCeilingIsRead(t *testing.T) {
+	pad := strings.Repeat("x", 11<<20)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		_, _ = io.WriteString(w, "data: {\"usage\":{\"in\":1}}\n\ndata: {\"pad\":\"")
+		flusher.Flush()
+		for i := 0; i < len(pad); i += 1 << 20 {
+			_, _ = io.WriteString(w, pad[i:min(i+1<<20, len(pad))])
+			flusher.Flush()
+		}
+		_, _ = io.WriteString(w, "\",\"usage\":{\"in\":5,\"out\":9}}\n\n")
+	}))
+	t.Cleanup(upstream.Close)
+	cfg := bearerConfig("big", upstream.URL)
+	cfg.Usage = &schemas.RelayUsageConfig{CostPerRequest: schemas.Ptr(0.002), InputTokensPath: "usage.in", OutputTokensPath: "usage.out"}
+	cfg.Routes = []schemas.RelayRouteConfig{{Method: "POST", Path: "/s", Stream: schemas.Ptr(true)}}
+	m, pipeline := newTestManager(t, cfg)
+
+	res, bErr := m.Serve(testCtx(t), Request{Endpoint: "big", Method: "POST", Path: "/s", Headers: map[string]string{}})
+	require.Nil(t, bErr)
+	require.NotNil(t, res.Stream)
+	forwarded, err := io.Copy(io.Discard, res.Stream)
+	require.NoError(t, err, "the stream is never failed for an event's size")
+	require.NoError(t, res.Stream.Close())
+	require.Len(t, pipeline.post, 1)
+	require.Nil(t, pipeline.postErr[0])
+	assert.Equal(t, forwarded, pipeline.post[0].BytesOut)
+	assert.Greater(t, forwarded, int64(11<<20))
+	require.NotNil(t, pipeline.post[0].Usage)
+	assert.Equal(t, 5, pipeline.post[0].Usage.InputTokens, "the oversized event's usage is read")
+	assert.Equal(t, 9, pipeline.post[0].Usage.OutputTokens)
+}
+
+// Only a route that reads usage from the events frames the stream: a flat fee, request-side units
+// and a whole-body measure never look inside an event, so they pay nothing to frame it and are
+// still billed as before.
+func TestStreamFramesOnlyWhenEventsCarryUsage(t *testing.T) {
+	const body = "data: {\"usage\":{\"in\":3}}\n\ndata: {\"usage\":{\"in\":4}}\n\n"
+	for _, tc := range []struct {
+		name     string
+		usage    *schemas.RelayUsageConfig
+		framed   bool
+		wantCost float64
+	}{
+		{"flat fee", &schemas.RelayUsageConfig{CostPerRequest: schemas.Ptr(0.5)}, false, 0.5},
+		{"request units", &schemas.RelayUsageConfig{UnitsSource: schemas.RelayUnitsFromRequest, UnitsMeasure: schemas.RelayUnitsBodyBytes, CostPerUnit: schemas.Ptr(0.1)}, false, 0.4},
+		{"response body bytes", &schemas.RelayUsageConfig{UnitsMeasure: schemas.RelayUnitsBodyBytes, CostPerUnit: schemas.Ptr(0.01)}, false, float64(len(body)) * 0.01},
+		{"response body chars", &schemas.RelayUsageConfig{UnitsMeasure: schemas.RelayUnitsBodyChars, CostPerUnit: schemas.Ptr(0.01)}, false, float64(len(body)) * 0.01},
+		{"event tokens", &schemas.RelayUsageConfig{CostPerRequest: schemas.Ptr(0.5), InputTokensPath: "usage.in"}, true, 0.5},
+		{"event units", &schemas.RelayUsageConfig{UnitsPath: "usage.in", CostPerUnit: schemas.Ptr(1.0)}, true, 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := bearerConfig("frame", sseUpstream(t, body).URL)
+			cfg.Usage = tc.usage
+			cfg.Routes = []schemas.RelayRouteConfig{{Method: "POST", Path: "/s", Stream: schemas.Ptr(true)}}
+			m, pipeline := newTestManager(t, cfg)
+			res, bErr := m.Serve(testCtx(t), Request{Endpoint: "frame", Method: "POST", Path: "/s", Headers: map[string]string{}, Body: []byte("abcd")})
+			require.Nil(t, bErr)
+			require.NotNil(t, res.Stream)
+			assert.Equal(t, tc.framed, res.Stream.framer != nil)
+			_, err := io.Copy(io.Discard, res.Stream)
+			require.NoError(t, err)
+			require.NoError(t, res.Stream.Close())
+			require.Len(t, pipeline.post, 1)
+			require.NotNil(t, pipeline.post[0].Usage)
+			assert.InDelta(t, tc.wantCost, pipeline.post[0].Usage.Cost, 1e-12)
+		})
+	}
+}
+
+// A reader that hangs up once the upstream has ended, while the last bytes are being handed over,
+// still has the trailing event the upstream left undelimited read: its usage is billed, as it is
+// when the reader goes on to read EOF. The stream still ends as cancelled.
+func TestStreamCloseAfterUpstreamEOFReadsTrailingEvent(t *testing.T) {
 	var gotResp *schemas.BifrostRelayResponse
-	finished := false
+	var gotErr *schemas.BifrostError
+	mapping := resolveUsage(&schemas.RelayUsageConfig{CostPerRequest: schemas.Ptr(0.5), InputTokensPath: "usage.in", OutputTokensPath: "usage.out"}, nil)
+	mapping.eventPaths = mapping.collectEventPaths()
+	observe, _ := mapping.streamUsage(usageFields{})
 	s := &Stream{
-		ctx:     testCtx(t),
-		body:    io.NopCloser(strings.NewReader("")),
-		reader:  strings.NewReader("data: {\"usage\":1}\n\ndata: " + strings.Repeat("x", 11<<20) + "\n\n"),
-		stop:    func() {},
-		counted: true,
-		framer:  &providerUtils.SSEFramer{},
-		observe: func([]byte) *schemas.RelayUsage { return &schemas.RelayUsage{Cost: 1} },
-		capture: make([]byte, 0, 4096),
+		ctx:  testCtx(t),
+		body: io.NopCloser(strings.NewReader("")),
+		// DataErrReader returns the last bytes together with EOF, as an upstream body of known length does.
+		reader:       iotest.DataErrReader(strings.NewReader("data: {\"usage\":{\"in\":1}}\n\ndata: {\"usage\":{\"in\":3,\"out\":7}}")),
+		stop:         func() {},
+		counted:      true,
+		framer:       &providerUtils.SSEFramer{},
+		hasUsage:     mapping.hasUsageEvent,
+		observe:      observe,
+		defaultUsage: mapping.defaultUsage(usageFields{}),
 		finish: func(resp *schemas.BifrostRelayResponse, err *schemas.BifrostError) {
-			finished, gotResp, gotErr = true, resp, err
+			gotResp, gotErr = resp, err
 		},
 	}
-	buf := make([]byte, 64<<10)
-	var err error
-	var forwarded int
-	for err == nil {
-		var n int
-		n, err = s.Read(buf)
-		forwarded += n
-	}
-	// The row logs what the caller received, as an LLM row logs the chunks its caller was sent: the
-	// chunk that failed the stream is forwarded, so it is in the logged body too.
+	n, err := s.Read(make([]byte, 1024))
+	require.NoError(t, err, "the last bytes come without EOF")
+	require.Positive(t, n)
+	require.True(t, s.eofPending)
+	require.NoError(t, s.Close())
 	require.NotNil(t, gotResp)
-	assert.Equal(t, forwarded, len(gotResp.Body), "the logged body holds every byte forwarded, the failing chunk included")
-	require.ErrorIs(t, err, bufio.ErrTooLong)
-	require.True(t, finished)
+	require.NotNil(t, gotResp.Usage)
+	assert.Equal(t, 3, gotResp.Usage.InputTokens, "the trailing event is read on Close")
+	assert.Equal(t, 7, gotResp.Usage.OutputTokens)
 	require.NotNil(t, gotErr)
-	assert.True(t, gotErr.IsBifrostError, "classified as the LLM scanner's error is")
-	assert.Contains(t, gotErr.Error.Message, "Error reading stream")
-	assert.ErrorIs(t, gotErr.Error.Error, bufio.ErrTooLong)
+	assert.Equal(t, schemas.RequestCancelled, *gotErr.Error.Type)
 }
 
 // TestStreamUsagePanicAtEOFIsAnInternalError pins the same for the last event, which only completes

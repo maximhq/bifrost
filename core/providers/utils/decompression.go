@@ -1,10 +1,13 @@
 package utils
 
 import (
+	"bytes"
 	"compress/gzip"
 	"compress/zlib"
 	"errors"
+	"fmt"
 	"io"
+	"strings"
 	"sync"
 
 	"github.com/andybalholm/brotli"
@@ -226,4 +229,77 @@ func ReleaseZstdDecoder(dec *zstd.Decoder) {
 	}
 	_ = dec.Reset(nil)
 	zstdDecoderPool.Put(dec)
+}
+
+// ---- whole-body decoding ----
+
+// DecodeContentEncodedBody decodes body per a Content-Encoding header value, undoing the codings in
+// reverse application order as RFC 9110 requires, with the pooled readers above. body is never
+// modified, and it is returned as is when the header names no coding (empty or identity). gzip,
+// deflate and br are decoded without a size bound of their own, as a provider reply is; zstd keeps
+// the decoder's window and memory bounds. An unknown coding is an error.
+func DecodeContentEncodedBody(body []byte, contentEncoding string) ([]byte, error) {
+	contentEncoding = strings.ToLower(strings.TrimSpace(contentEncoding))
+	if contentEncoding == "" || contentEncoding == "identity" {
+		return body, nil
+	}
+	result := body
+	encodings := strings.Split(contentEncoding, ",")
+	for i := len(encodings) - 1; i >= 0; i-- {
+		encoding := strings.TrimSpace(encodings[i])
+		reader := bytes.NewReader(result)
+
+		// Release on the Acquire error paths too: zstd.NewReader's contract is to
+		// return the decoder alongside its error, so a bare return could drop one
+		// from the pool. The gzip and deflate constructors return nil there, where
+		// Release is a no-op.
+		switch encoding {
+		case "", "identity":
+			continue
+		case "gzip", "x-gzip":
+			gz, err := AcquireGzipReader(reader)
+			if err != nil {
+				ReleaseGzipReader(gz)
+				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
+			}
+			result, err = io.ReadAll(gz)
+			ReleaseGzipReader(gz)
+			if err != nil {
+				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
+			}
+		case "deflate":
+			fr, err := AcquireFlateReader(reader)
+			if err != nil {
+				ReleaseFlateReader(fr)
+				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
+			}
+			result, err = io.ReadAll(fr)
+			ReleaseFlateReader(fr)
+			if err != nil {
+				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
+			}
+		case "br":
+			br := AcquireBrotliReader(reader)
+			var err error
+			result, err = io.ReadAll(br)
+			ReleaseBrotliReader(br)
+			if err != nil {
+				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
+			}
+		case "zstd":
+			dec, err := AcquireZstdDecoder(reader)
+			if err != nil {
+				ReleaseZstdDecoder(dec)
+				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
+			}
+			result, err = io.ReadAll(dec)
+			ReleaseZstdDecoder(dec)
+			if err != nil {
+				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
+			}
+		default:
+			return nil, fmt.Errorf("unsupported Content-Encoding %q", encoding)
+		}
+	}
+	return result, nil
 }
