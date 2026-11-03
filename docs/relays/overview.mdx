@@ -7,7 +7,7 @@ icon: "circle-info"
 
 Your application probably calls more than LLMs. It may search the web, read text out of a PDF, turn text into speech or translate a message. Each of those APIs needs its own secret, costs money per call and usually sits outside the budgets you already set up for model usage.
 
-A **relay** puts one of those APIs behind Bifrost. You register the API once with its base URL and secret. Your application then calls `/relay/<name>/...` on Bifrost with a virtual key, and Bifrost forwards the call to the API, signs it in with the stored secret, prices it and records it.
+A **relay** puts one of those APIs behind Bifrost. You register the API once with its base URL and secret. Your application then calls `/relay/<name>/...` on Bifrost (`/<prefix>/relay/<name>/...` under a `server.base_path`) with a virtual key, and Bifrost forwards the call to the API, signs it in with the stored secret, prices it and records it.
 
 <Frame>
   <img src="/media/relays/ui-relays-page.png" alt="The Relays page with a web-search relay selected and its list of routes" />
@@ -64,6 +64,8 @@ A relay forwards plain HTTP requests. It does not translate formats, pick betwee
   </Step>
   <Step title="Send a request">
     Call `/relay/<name>/<path>` with the virtual key in `x-bf-vk`. The reply is the upstream API's reply, unchanged. See [Relay a POST request](/api-reference/relays/relay-a-post-request) in the API reference.
+
+    When Bifrost is served under a path prefix ([`server.base_path`](/deployment-guides/config-json/schema-reference#server)), callers that reach it through the proxy use `https://<your-bifrost-domain>/<prefix>/relay/<name>/<path>`. See [Serving under a path prefix](/deployment-guides/how-to/nginx-reverse-proxy#serving-under-a-path-prefix).
   </Step>
 </Steps>
 

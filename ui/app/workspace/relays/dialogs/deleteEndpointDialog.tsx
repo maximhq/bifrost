@@ -9,6 +9,7 @@ import {
 	AlertDialogTitle,
 } from "@/components/ui/alertDialog";
 import { getErrorMessage, useDeleteRelayMutation } from "@/lib/store";
+import { relayPath } from "@/lib/utils/relayPath";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
@@ -33,9 +34,7 @@ export function DeleteEndpointDialog({
 			<AlertDialogContent>
 				<AlertDialogHeader>
 					<AlertDialogTitle>{t("relays.deleteDialog.title")}</AlertDialogTitle>
-					<AlertDialogDescription>
-						{t("relays.deleteDialog.description", { name })}
-					</AlertDialogDescription>
+					<AlertDialogDescription>{t("relays.deleteDialog.description", { path: relayPath(name) })}</AlertDialogDescription>
 				</AlertDialogHeader>
 				<AlertDialogFooter>
 					<AlertDialogCancel onClick={onCancel}>{t("cancel", { ns: "common" })}</AlertDialogCancel>
