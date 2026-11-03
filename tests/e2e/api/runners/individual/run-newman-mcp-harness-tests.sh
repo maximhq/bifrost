@@ -37,6 +37,11 @@
 # resets the servers it uses through the control API, so tests do not depend on
 # one another.
 #
+# Tools that ask the caller for input mid-call (2026-07-28 input_required) come from
+# examples/mcps/input-required-server, a real mcp-go server built and started here
+# beside the fleet, since the fleet's hand-rolled protocol predates 2026-07-28. Tests
+# reach it through input_url and register their own client against it.
+#
 # Requires a built bifrost-http binary; this runner boots its own server so the
 # state each test starts from is exactly what its assertions expect.
 
@@ -59,6 +64,7 @@ BIFROST_BINARY=""
 PORT="8093"
 CHAOS_PORT="8494"
 CHAOS_TLS_PORT=""
+INPUT_PORT="8496"
 FOLDER=""
 REPORTERS="cli"
 VERBOSE=""
@@ -74,6 +80,7 @@ while [[ $# -gt 0 ]]; do
         --port) PORT="$2"; shift 2 ;;
         --chaos-port) CHAOS_PORT="$2"; shift 2 ;;
         --chaos-tls-port) CHAOS_TLS_PORT="$2"; shift 2 ;;
+        --input-port) INPUT_PORT="$2"; shift 2 ;;
         --folder) FOLDER="$2"; shift 2 ;;
         --html) REPORTERS="${REPORTERS},html"; shift ;;
         --json) REPORTERS="${REPORTERS},json"; shift ;;
@@ -87,6 +94,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --port <port>     Port to boot the server on (default: 8093)"
             echo "  --chaos-port <p>  Port for the mcpchaos fleet (default: 8494)"
             echo "  --chaos-tls-port <p>  HTTPS fleet port (default: fleet port + 1)"
+            echo "  --input-port <p>  Port for the input-required MCP server (default: 8496)"
             echo "  --folder <name>   Run only this collection folder (e.g. \"ADM\" or \"ADM-05 ...\")"
             echo "  --html            Generate HTML report"
             echo "  --json            Generate JSON report"
@@ -127,9 +135,10 @@ SERVER_PID=""
 SERVER_DIR=""
 CHAOS_PID=""
 CHAOS_DIR=""
+INPUT_PID=""
 
 cleanup() {
-    for pid in "$SERVER_PID" "$CHAOS_PID"; do
+    for pid in "$SERVER_PID" "$CHAOS_PID" "$INPUT_PID"; do
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null || true
             wait "$pid" 2>/dev/null || true
@@ -153,10 +162,18 @@ if port_in_use "$CHAOS_PORT"; then
     echo -e "${RED}Error: port $CHAOS_PORT is already in use; pass --chaos-port to use another${NC}"
     exit 1
 fi
+if port_in_use "$INPUT_PORT"; then
+    echo -e "${RED}Error: port $INPUT_PORT is already in use; pass --input-port to use another${NC}"
+    exit 1
+fi
 
 CHAOS_TLS_PORT="${CHAOS_TLS_PORT:-$((CHAOS_PORT + 1))}"
 if port_in_use "$CHAOS_TLS_PORT"; then
     echo "Error: TLS port $CHAOS_TLS_PORT is already in use; pass --chaos-tls-port"
+    exit 1
+fi
+if [[ "$INPUT_PORT" == "$CHAOS_PORT" || "$INPUT_PORT" == "$CHAOS_TLS_PORT" ]]; then
+    echo -e "${RED}Error: --input-port $INPUT_PORT is also an mcpchaos fleet port; pass another${NC}"
     exit 1
 fi
 
@@ -214,6 +231,29 @@ start_chaos() {
         echo -e "${RED}mcpchaos did not become ready${NC}"; cat "$log"; exit 1
     fi
     echo -e "${GREEN}mcpchaos ready on :$CHAOS_PORT${NC}"
+}
+
+# start_input_server builds examples/mcps/input-required-server and starts it on INPUT_PORT.
+start_input_server() {
+    echo -e "${YELLOW}Building input-required-server...${NC}"
+    # GOWORK=off: the example has its own module and pins the mcp-go release it needs.
+    ( cd "$REPO_ROOT/examples/mcps/input-required-server" && GOWORK=off go build -o "$CHAOS_DIR/input-required-server" . ) || {
+        echo -e "${RED}Error: failed to build input-required-server${NC}"; exit 1; }
+    local log="$API_DIR/$REPORT_DIR/input-required-server.log"
+    MCP_HTTP_PORT="$INPUT_PORT" "$CHAOS_DIR/input-required-server" > "$log" 2>&1 &
+    INPUT_PID=$!
+    local waited=0
+    while [ $waited -lt 40 ]; do
+        port_in_use "$INPUT_PORT" && break
+        if ! kill -0 "$INPUT_PID" 2>/dev/null; then
+            echo -e "${RED}input-required-server exited during startup${NC}"; cat "$log"; exit 1
+        fi
+        sleep 0.5; waited=$((waited + 1))
+    done
+    if ! port_in_use "$INPUT_PORT"; then
+        echo -e "${RED}input-required-server did not become ready${NC}"; cat "$log"; exit 1
+    fi
+    echo -e "${GREEN}input-required-server ready on :$INPUT_PORT${NC}"
 }
 
 write_config() {
@@ -301,6 +341,7 @@ enable_dashboard_auth() {
 }
 
 start_chaos
+start_input_server
 start_bifrost
 enable_dashboard_auth
 
@@ -311,6 +352,7 @@ cmd=(newman run "$COLLECTION"
     --env-var "admin_auth_header=$ADMIN_AUTH_HEADER"
     --env-var "chaos_url=http://127.0.0.1:$CHAOS_PORT"
     --env-var "chaos_bin=$CHAOS_DIR/mcpchaos"
+    --env-var "input_url=http://127.0.0.1:$INPUT_PORT"
     --env-var "setup_token=$SETUP_TOKEN"
     --timeout-script 60000 --timeout-request 120000
     -r "$REPORTERS")
