@@ -235,7 +235,7 @@ func (m *MCPManager) reachableClients(ctx context.Context) []*reachableClient {
 		}
 		clients = append(clients, &reachableClient{
 			state:             state,
-			prompts:           exposed(discovery.Prompts, config.PromptsToExpose, func(p mcp.Prompt) string { return stripClientPrefix(p.Name, config.Name) }),
+			prompts:           exposed(discovery.Prompts, config.PromptsToExpose, func(p mcp.Prompt) string { return StripClientPrefix(p.Name, config.Name) }),
 			resources:         exposed(discovery.Resources, config.ResourcesToExpose, resourceURI),
 			resourceTemplates: exposed(discovery.ResourceTemplates, config.ResourcesToExpose, ResourceTemplateURI),
 		})
@@ -405,7 +405,7 @@ func (m *MCPManager) GetPrompt(ctx *schemas.BifrostContext, name string, argumen
 		func(clients []*reachableClient) *schemas.MCPClientState { return promptOwner(clients, name) },
 		func(ctx context.Context, conn *client.Client, req *schemas.BifrostMCPRequest) (*mcp.GetPromptResult, error) {
 			get := mcp.GetPromptRequest{}
-			get.Params.Name = stripClientPrefix(req.BifrostMCPGetPromptRequest.Name, req.ClientName)
+			get.Params.Name = StripClientPrefix(req.BifrostMCPGetPromptRequest.Name, req.ClientName)
 			get.Params.Arguments = req.BifrostMCPGetPromptRequest.Arguments
 			result, err := conn.GetPrompt(ctx, get)
 			if err == nil && result.NeedsInput() {
@@ -488,7 +488,7 @@ func (m *MCPManager) Complete(ctx *schemas.BifrostContext, params mcp.CompletePa
 			complete := mcp.CompleteRequest{Params: req.BifrostMCPCompleteRequest.Params}
 			switch ref := complete.Params.Ref.(type) {
 			case mcp.PromptReference:
-				ref.Name = stripClientPrefix(ref.Name, req.ClientName)
+				ref.Name = StripClientPrefix(ref.Name, req.ClientName)
 				complete.Params.Ref = ref
 			case mcp.ResourceReference:
 				if GatewayAggregate(ctx) {

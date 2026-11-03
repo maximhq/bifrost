@@ -1196,6 +1196,14 @@ func BenchmarkMCPGateway(b *testing.B) {
 	benchmarkGatewayRequest(b, apps, "apps/tools-list/slug/2026-07-28", "apps", modern("tools/list", ""), toolsList)
 	benchmarkGatewayRequest(b, apps, "apps/resources-list/aggregate/2026-07-28", "", modern("resources/list", ""), resourcesList)
 	benchmarkGatewayRequest(b, apps, "apps/resources-list/slug/2026-07-28", "apps", modern("resources/list", ""), resourcesList)
+
+	// Server-given names: the exact name skips alias resolution; the bare one resolves first.
+	callView := func(name string) string {
+		return `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"` + name + `","arguments":{},` + appsMeta + `}}`
+	}
+	benchmarkGatewayRequest(b, apps, "apps/tools-call-exact/aggregate/2026-07-28", "", modern("tools/call", "apps-view"), callView("apps-view"))
+	benchmarkGatewayRequest(b, apps, "apps/tools-call-alias/aggregate/2026-07-28", "", modern("tools/call", "view"), callView("view"))
+	benchmarkGatewayRequest(b, apps, "apps/tools-call-alias/slug/2026-07-28", "apps", modern("tools/call", "view"), callView("view"))
 }
 
 func benchmarkGatewayRequest(b *testing.B, h *MCPServerHandler, name, slug string, headers map[string]string, body string) {
@@ -1360,8 +1368,10 @@ func (p *perCallerToolManager) GetAvailableMCPTools(ctx context.Context) []schem
 		// MCP Apps, as core serves them: board's UI, and refresh only for callers AppToolsAllowed admits.
 		add("notes-board", "Show gina's board", false)
 		tools[len(tools)-1].MCP = &schemas.MCPToolMetadata{Meta: json.RawMessage(`{"ui":{"resourceUri":"ui://notes/board"}}`), UIResourceURI: "ui://notes/board"}
-		if coremcp.AppToolsAllowed(ctx) {
+		// Core lists an app-only tool to a caller AppToolsAllowed admits, and to a WithAllTools listing.
+		if coremcp.AppToolsAllowed(ctx) || ctx.Value(schemas.BifrostContextKeyMCPToolListing) == "all" {
 			add("notes-refresh", "Refresh gina's board", false)
+			tools[len(tools)-1].MCP = &schemas.MCPToolMetadata{Visibility: []string{schemas.MCPToolVisibilityApp}}
 		}
 	}
 	return tools
@@ -2070,4 +2080,237 @@ func TestMCPGateway_MCPAppsForPerCallerClients(t *testing.T) {
 	assert.NotContains(t, aggregate, "notes-refresh", "/mcp never lists an app-only tool")
 	assert.Equal(t, []string{"ui://notes/notes/board"}, listedResources(gateway("", hostsApps)))
 	read(gateway("", hostsApps), "ui://notes/notes/board")
+}
+
+// recordingGatewayManager records the tool names the gateway executes.
+type recordingGatewayManager struct {
+	coreGatewayManager
+	mu    sync.Mutex
+	names []string
+}
+
+func (r *recordingGatewayManager) ExecuteChatMCPTool(ctx context.Context, call *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
+	r.mu.Lock()
+	r.names = append(r.names, *call.Function.Name)
+	r.mu.Unlock()
+	return r.coreGatewayManager.ExecuteChatMCPTool(ctx, call)
+}
+
+// startNamedUpstream serves tools that answer "<server>:<tool>", so a test can tell which server ran.
+func startNamedUpstream(tb testing.TB, serverName string, tools ...mcp.Tool) string {
+	tb.Helper()
+	upstream := server.NewMCPServer(serverName, "1.0.0", server.WithToolCapabilities(true))
+	for _, tool := range tools {
+		answer := serverName + ":" + tool.Name
+		upstream.AddTool(tool, func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return mcp.NewToolResultText(answer), nil
+		})
+	}
+	ts := httptest.NewServer(server.NewStreamableHTTPServer(upstream))
+	tb.Cleanup(ts.Close)
+	return ts.URL
+}
+
+// MCP Apps call tools by the names their own server gave them. /mcp/<slug> resolves such a name to
+// that server's tool; /mcp and Virtual MCPs resolve it only when exactly one reachable tool that
+// models and apps may both call has it. Exact (prefixed) names always win, aliases are never listed,
+// and Bifrost runs the call under the prefixed name.
+func TestMCPGateway_ServerGivenToolNames(t *testing.T) {
+	ctx := context.Background()
+	refresh := mcp.NewTool("refresh")
+	refresh.Meta = &mcp.Meta{AdditionalFields: map[string]any{"ui": map[string]any{"visibility": []any{"app"}}}}
+	appsURL := startNamedUpstream(t, "apps", mcp.NewTool("view"), refresh, mcp.NewTool("status"))
+	// other's "apps-view" is installed as other-apps-view; the name apps-view stays apps's view.
+	otherURL := startNamedUpstream(t, "other", mcp.NewTool("status"), mcp.NewTool("apps-view"))
+
+	m := coremcp.NewMCPManager(ctx, schemas.MCPConfig{}, nil, bifrost.NewDefaultLogger(schemas.LogLevelError), nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+	for name, url := range map[string]string{"apps": appsURL, "other": otherURL} {
+		require.NoError(t, m.AddClient(ctx, &schemas.MCPClientConfig{
+			ID: name, Name: name, EndpointSlug: name, ConnectionType: schemas.MCPConnectionTypeHTTP,
+			ConnectionString: schemas.NewSecretVar(url), ToolsToExecute: []string{"*"},
+		}))
+	}
+	cfg := &lib.Config{ClientConfig: &configstore.ClientConfig{}, MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+		{ID: "apps", Name: "apps", EndpointSlug: "apps"}, {ID: "other", Name: "other", EndpointSlug: "other"},
+	}}}
+	admitter := slugAdmitter{
+		vmcps:   map[string][]string{"bundle": {"apps-status", "apps-view"}},
+		clients: map[string][]string{"apps": {"apps-*"}, "other": {"other-*"}},
+	}
+	tm := &recordingGatewayManager{coreGatewayManager: coreGatewayManager{m}}
+	h, err := NewMCPServerHandler(ctx, cfg, tm, admitter, nil, nil)
+	require.NoError(t, err)
+	baseURL := startGateway(t, h)
+
+	hostsApps := mcp.ClientCapabilities{Extensions: map[string]any{schemas.MCPAppsExtension: map[string]any{}}}
+	connect := func(t *testing.T, path string) *client.Client {
+		tr, err := transport.NewStreamableHTTP(baseURL + path)
+		require.NoError(t, err)
+		c := client.NewClient(tr, client.WithProtocolVersion(mcp.ProtocolVersion20260728), client.WithClientCapabilities(hostsApps))
+		require.NoError(t, c.Start(ctx))
+		t.Cleanup(func() { _ = c.Close() })
+		init := mcp.InitializeRequest{}
+		init.Params.ProtocolVersion = mcp.ProtocolVersion20260728
+		_, err = c.Initialize(ctx, init)
+		require.NoError(t, err)
+		return c
+	}
+	call := func(t *testing.T, c *client.Client, name string) *mcp.CallToolResult {
+		req := mcp.CallToolRequest{}
+		req.Params.Name = name
+		result, err := c.CallTool(ctx, req)
+		require.NoError(t, err, name)
+		return result
+	}
+
+	// A name the caller cannot reach fails exactly like a name no server has, so it reveals nothing.
+	const notFound = "not found"
+	cases := []struct {
+		name, path, tool string
+		want             string // the answering server and tool, or the refusal text
+		refused          bool
+		runs             string // the prefixed name Bifrost executes
+	}{
+		{"slug resolves its server's tool", "/mcp/apps", "status", "apps:status", false, "apps-status"},
+		{"slug resolves an app-only tool for an apps caller", "/mcp/apps", "refresh", "apps:refresh", false, "apps-refresh"},
+		{"other slug resolves its own tool", "/mcp/other", "status", "other:status", false, "other-status"},
+		{"aggregate resolves a unique name", "/mcp", "view", "apps:view", false, "apps-view"},
+		{"aggregate refuses an ambiguous name", "/mcp", "status", "call one of apps-status, other-status", true, ""},
+		{"aggregate refuses an app-only tool", "/mcp", "refresh", "only callable from an MCP App", true, ""},
+		{"aggregate refuses an unknown name", "/mcp", "nothing", notFound, true, ""},
+		{"a slug cannot see another server's tool", "/mcp/other", "refresh", notFound, true, ""},
+		{"a virtual mcp cannot see a tool outside it", "/mcp/bundle", "refresh", notFound, true, ""},
+		{"virtual mcp resolves among its own tools", "/mcp/bundle", "status", "apps:status", false, "apps-status"},
+		{"exact name wins over another server's same-named tool", "/mcp", "apps-view", "apps:view", false, "apps-view"},
+		{"another server's tool named like a prefix keeps its full name", "/mcp", "other-apps-view", "other:apps-view", false, "other-apps-view"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := connect(t, tc.path)
+			tm.mu.Lock()
+			tm.names = nil
+			tm.mu.Unlock()
+			if tc.want == notFound {
+				req := mcp.CallToolRequest{}
+				req.Params.Name = tc.tool
+				_, err := c.CallTool(ctx, req)
+				require.Error(t, err)
+				req.Params.Name = "nope"
+				_, unknown := c.CallTool(ctx, req)
+				require.Error(t, unknown)
+				assert.Equal(t, strings.ReplaceAll(unknown.Error(), "nope", tc.tool), err.Error(), "same answer as a name no server has")
+				tm.mu.Lock()
+				defer tm.mu.Unlock()
+				assert.Empty(t, tm.names)
+				return
+			}
+			result := call(t, c, tc.tool)
+			text := resultText(result)
+			assert.Equal(t, tc.refused, result.IsError, text)
+			assert.Contains(t, text, tc.want)
+			tm.mu.Lock()
+			defer tm.mu.Unlock()
+			if tc.runs == "" {
+				assert.Empty(t, tm.names, "a refused alias never reaches Bifrost's executor")
+			} else {
+				assert.Equal(t, []string{tc.runs}, tm.names, "plugins and logs see the prefixed name")
+			}
+		})
+	}
+
+	t.Run("aliases are never listed", func(t *testing.T) {
+		for _, path := range []string{"/mcp", "/mcp/apps", "/mcp/bundle"} {
+			tools, err := connect(t, path).ListTools(ctx, mcp.ListToolsRequest{})
+			require.NoError(t, err)
+			for _, tool := range tools.Tools {
+				assert.NotEqual(t, "", coremcp.ToolClientName(tool.Name), "%s lists %q", path, tool.Name)
+			}
+		}
+	})
+}
+
+func resultText(result *mcp.CallToolResult) string {
+	var sb strings.Builder
+	for _, content := range result.Content {
+		if text, ok := content.(mcp.TextContent); ok {
+			sb.WriteString(text.Text)
+		}
+	}
+	return sb.String()
+}
+
+// A refusal tool whose name became resolvable after the call-time hook ran (a sync in between) answers
+// not found, never an empty refusal.
+func TestRefusalTool_AnswersNotFoundOnceTheNameResolves(t *testing.T) {
+	h := &MCPServerHandler{}
+	shared := &gatewayToolIndex{aliases: map[string][]gatewayToolAlias{
+		"status": {{name: "apps-status", client: "apps"}, {name: "other-status", client: "other"}},
+	}}
+	tools := h.refusalTools(shared, nil)
+	require.Len(t, tools, 1)
+	h.toolIndex.Store(shared)
+	result, err := tools[0].Handler(context.Background(), mcp.CallToolRequest{})
+	require.NoError(t, err)
+	assert.True(t, result.IsError)
+	assert.Contains(t, resultText(result), "call one of apps-status, other-status")
+
+	h.toolIndex.Store(&gatewayToolIndex{aliases: map[string][]gatewayToolAlias{"status": {{name: "apps-status", client: "apps"}}}})
+	result, err = tools[0].Handler(context.Background(), mcp.CallToolRequest{})
+	assert.Nil(t, result)
+	require.Error(t, err)
+	assert.Equal(t, "tool 'status' not found: tool not found", err.Error())
+}
+
+// Server-given names for a client with per_user_discovery on resolve against the caller's own tools:
+// a name the caller holds runs as that caller, one it does not hold looks unknown, and an app-only
+// tool of the caller's is refused on /mcp and runs on the client's slug for a caller hosting apps.
+func TestMCPGateway_ServerGivenNamesForPerCallerClients(t *testing.T) {
+	h, tm, store := newPerCallerGatewayHandler(t)
+	store.mu.Lock()
+	names := store.names["notes-id"]
+	names.Tools = append(names.Tools, "board", "refresh")
+	store.names["notes-id"] = names
+	store.mu.Unlock()
+	require.NoError(t, h.ResyncPerCallerEntries(context.Background()))
+
+	hostsApps := &mcp.ClientCapabilities{Extensions: map[string]any{schemas.MCPAppsExtension: map[string]any{}}}
+	as := func(caller, slug string) *schemas.BifrostContext {
+		ctx := callerContext(caller)
+		ctx.SetValue(schemas.BifrostContextKeyIsMCPGateway, true)
+		ctx.SetValue(schemas.BifrostContextKeyMCPCallerCapabilities, hostsApps)
+		if slug != "" {
+			ctx.SetValue(schemas.BifrostContextKeyMCPGatewayClient, slug)
+			ctx.SetValue(schemas.MCPContextKeyIncludeTools, []string{slug + "-*"})
+		}
+		return ctx
+	}
+	call := func(ctx context.Context, name string) (string, *mcp.JSONRPCErrorDetails) {
+		raw, rpcErr := gatewayRequest(t, h, ctx, "tools/call", map[string]any{"name": name, "arguments": map[string]any{}})
+		return string(raw), rpcErr
+	}
+	notFound := func(name string) string { return fmt.Sprintf("tool '%s' not found: tool not found", name) }
+
+	out, rpcErr := call(as("alice", ""), "search")
+	require.Nil(t, rpcErr)
+	assert.Contains(t, out, `\"ran\":\"notes-search\",\"as\":\"alice\"`)
+	out, rpcErr = call(as("bob", ""), "export")
+	require.Nil(t, rpcErr)
+	assert.Contains(t, out, `\"ran\":\"notes-export\",\"as\":\"bob\"`)
+
+	_, rpcErr = call(as("alice", ""), "export")
+	require.NotNil(t, rpcErr, "alice holds no notes-export")
+	assert.Equal(t, notFound("export"), rpcErr.Message, "a per-caller tool the caller lacks reads as unknown")
+
+	out, rpcErr = call(as("gina", ""), "refresh")
+	require.Nil(t, rpcErr)
+	assert.Contains(t, out, "only callable from an MCP App", "/mcp refuses the caller's app-only tool")
+	out, rpcErr = call(as("gina", "notes"), "refresh")
+	require.Nil(t, rpcErr)
+	assert.Contains(t, out, `\"ran\":\"notes-refresh\",\"as\":\"gina\"`, "the client's slug runs it")
+
+	assert.Equal(t, []string{"notes-search as alice", "notes-export as bob", "notes-refresh as gina"}, tm.reachedBifrost())
+	for name := range listedTools(t, h, as("alice", "")) {
+		assert.NotEqual(t, "", coremcp.ToolClientName(name), "tools/list carries no server-given name: %q", name)
+	}
 }
