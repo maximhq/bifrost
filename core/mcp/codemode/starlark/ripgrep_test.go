@@ -3,12 +3,17 @@
 package starlark
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -280,5 +285,194 @@ func BenchmarkRipgrep(b *testing.B) {
 		if r.Errors != nil {
 			b.Fatal(r.Errors.Message)
 		}
+	}
+}
+
+// TestRipgrepFilesystemWorkerProtocol pins the isolated filesystem boundary used by real searches.
+func TestRipgrepFilesystemWorkerProtocol(t *testing.T) {
+	root := t.TempDir()
+	writeRipgrepFile(t, filepath.Join(root, "log.txt"), "timeout\n")
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, executable, "--bifrost-ripgrep-files-v1")
+	request, _ := json.Marshal(map[string]interface{}{"root": root, "path": ".", "max_bytes": 8 << 20})
+	cmd.Stdin = bytes.NewReader(request)
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("filesystem helper must return a bounded snapshot: %v: %s", err, output)
+	}
+	var response struct {
+		Files []struct {
+			Path    string
+			Content []byte
+		}
+		Error string
+	}
+	if err := json.Unmarshal(output, &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Error != "" || len(response.Files) != 1 || response.Files[0].Path != "log.txt" || string(response.Files[0].Content) != "timeout\n" {
+		t.Fatalf("unexpected snapshot: %+v", response)
+	}
+}
+
+// TestRipgrepToolsManagerConfiguration checks observable searches through manager updates,
+// including omitted roots on both a no-op update and an update of another Code Mode field.
+func TestRipgrepToolsManagerConfiguration(t *testing.T) {
+	mode, original := ripgrepTestMode(t)
+	writeRipgrepFile(t, filepath.Join(original, "log"), "original\n")
+	replacement := t.TempDir()
+	writeRipgrepFile(t, filepath.Join(replacement, "log"), "replacement\nreplacement\n")
+	manager := mcp.NewToolsManagerWithCodeMode(nil, &testClientManager{}, nil, mode, nil, defaultLogger)
+	empty := ""
+	for _, tc := range []struct {
+		name     string
+		config   *schemas.MCPToolManagerConfig
+		want     int64
+		disabled bool
+	}{
+		{"enable", &schemas.MCPToolManagerConfig{CodeModeRipgrepRoot: &original}, 1, false},
+		{"omitted root on no-op", &schemas.MCPToolManagerConfig{}, 1, false},
+		{"omitted root with binding update", &schemas.MCPToolManagerConfig{CodeModeBindingLevel: schemas.CodeModeBindingLevelTool}, 1, false},
+		{"replace root", &schemas.MCPToolManagerConfig{CodeModeRipgrepRoot: &replacement}, 2, false},
+		{"disable", &schemas.MCPToolManagerConfig{CodeModeRipgrepRoot: &empty}, 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manager.UpdateConfig(tc.config)
+			result := runRipgrep(mode, `result = len(ripgrep("original|replacement")["matches"])`)
+			if tc.disabled {
+				if result.Errors == nil || !strings.Contains(result.Errors.Message, "undefined") {
+					t.Fatalf("not disabled: %+v", result.Errors)
+				}
+			} else if result.Errors != nil || result.Result != tc.want {
+				t.Fatalf("got result %v, error %+v", result.Result, result.Errors)
+			}
+		})
+	}
+}
+
+// blockingRipgrepDirectory simulates a ReadDir syscall stalled in a remote filesystem.
+type blockingRipgrepDirectory struct{ reader *os.File }
+
+// ReadDir deliberately waits in a real pipe read; only terminating the helper can release it.
+func (d blockingRipgrepDirectory) ReadDir(int) ([]os.DirEntry, error) {
+	var data [1]byte
+	_, err := d.reader.Read(data[:])
+	return nil, err
+}
+
+// TestRipgrepBlockingFilesystemHelper runs only in a dedicated test child. Blocking
+// calls ignore context intentionally, reproducing the limitation of network/FUSE I/O.
+func TestRipgrepBlockingFilesystemHelper(t *testing.T) {
+	operation := os.Getenv("BIFROST_TEST_BLOCKED_FS")
+	if operation == "" {
+		return
+	}
+	if operation == "output" {
+		fmt.Print(strings.Repeat("x", 1<<20))
+		return
+	}
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	if err := os.WriteFile(os.Getenv("BIFROST_TEST_FS_READY"), []byte("ready"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if operation == "read" {
+		_, err = io.ReadFull(reader, make([]byte, 1))
+	} else {
+		_, err = (blockingRipgrepDirectory{reader}).ReadDir(32)
+	}
+	runtime.KeepAlive(writer)
+	t.Fatalf("blocking filesystem unexpectedly returned: %v", err)
+}
+
+// TestRipgrepFilesystemCancellation proves that read and directory stalls cannot
+// hold the gateway's execution beyond cancellation and that children are reaped.
+func TestRipgrepFilesystemCancellation(t *testing.T) {
+	for _, operation := range []string{"read", "readdir"} {
+		t.Run(operation, func(t *testing.T) {
+			ready := filepath.Join(t.TempDir(), "ready")
+			executable, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command(executable, "-test.run=^TestRipgrepBlockingFilesystemHelper$")
+			cmd.Env = append(os.Environ(), "BIFROST_TEST_BLOCKED_FS="+operation, "BIFROST_TEST_FS_READY="+ready)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { _, err := runRipgrepFilesystemWorker(ctx, cmd, 1024); done <- err }()
+			for {
+				if _, err := os.Stat(ready); err == nil {
+					break
+				}
+				select {
+				case err := <-done:
+					t.Fatalf("helper did not enter blocking operation: %v", err)
+				case <-time.After(5 * time.Millisecond):
+				}
+			}
+			started := time.Now()
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("got %v", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("filesystem cancellation blocked the caller")
+			}
+			if time.Since(started) > time.Second {
+				t.Fatal("cancellation was not prompt")
+			}
+			deadline := time.Now().Add(3 * time.Second)
+			for len(ripgrepFilesystemSlots) != 0 && time.Now().Before(deadline) {
+				time.Sleep(5 * time.Millisecond)
+			}
+			if len(ripgrepFilesystemSlots) != 0 {
+				t.Fatal("helper was not reaped; worker slot leaked")
+			}
+		})
+	}
+}
+
+// TestRipgrepFilesystemWorkerSaturation checks that unreaped children cannot grow without bound.
+func TestRipgrepFilesystemWorkerSaturation(t *testing.T) {
+	for i := 0; i < cap(ripgrepFilesystemSlots); i++ {
+		ripgrepFilesystemSlots <- struct{}{}
+	}
+	defer func() {
+		for i := 0; i < cap(ripgrepFilesystemSlots); i++ {
+			<-ripgrepFilesystemSlots
+		}
+	}()
+	cmd := exec.Command("must-not-be-started")
+	_, err := runRipgrepFilesystemWorker(context.Background(), cmd, 1024)
+	if err == nil || !strings.Contains(err.Error(), "workers busy") || cmd.Process != nil {
+		t.Fatalf("saturation was not refused: %v", err)
+	}
+}
+
+// TestRipgrepFilesystemWorkerOutputLimit checks the pipe limit before snapshot decoding.
+func TestRipgrepFilesystemWorkerOutputLimit(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(executable, "-test.run=^TestRipgrepBlockingFilesystemHelper$")
+	cmd.Env = append(os.Environ(), "BIFROST_TEST_BLOCKED_FS=output")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, err = runRipgrepFilesystemWorker(ctx, cmd, 1024)
+	if err == nil || !strings.Contains(err.Error(), "output byte limit") {
+		t.Fatalf("got %v", err)
 	}
 }
