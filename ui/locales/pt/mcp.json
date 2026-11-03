@@ -305,7 +305,8 @@
 		},
 		"sheet": {
 			"statePendingTokenExchange": "Este servidor precisa de uma verificação única: o Bifrost troca o seu token de identidade com sessão iniciada, testa a ligação e descobre ferramentas. Os autores das chamadas passam então a ter os seus próprios tokens de identidade trocados automaticamente em cada chamada de ferramenta.",
-			"statePendingPerUserOauth": "Este cliente foi declarado em config.json. É necessário um início de sessão de administrador para verificar a configuração OAuth e descobrir ferramentas; o Bifrost mantém-no em ficheiro para atualizar periodicamente a lista de ferramentas. Cada utilizador continua a autenticar-se individualmente quando usa este servidor.",
+			"statePendingPerUserOauth": "É necessário um início de sessão de administrador para verificar este servidor e descobrir as suas ferramentas. Cada utilizador continua a autenticar-se individualmente.",
+			"statePendingPerUserHeaders": "Verifique este servidor com valores de cabeçalho de exemplo para descobrir as suas ferramentas. Cada utilizador continua a fornecer os seus próprios cabeçalhos.",
 			"statePendingOauth": "Este cliente foi declarado em config.json e precisa de uma autorização OAuth única antes de poder ser usado.",
 			"stateNeedsReauthTokenExchange": "A credencial de administrador que o Bifrost mantém em ficheiro para atualizar a lista de ferramentas deste servidor precisa de reparação. As chamadas de ferramentas dos autores das chamadas não são afetadas. Use {{action}} no menu de ações do servidor para a corrigir.",
 			"stateNeedsReauthPerUser": "A credencial de administrador que o Bifrost mantém em ficheiro para atualizar a lista de ferramentas deste servidor precisa de reparação. As credenciais e chamadas de ferramentas dos utilizadores finais não são afetadas. Use {{action}} no menu de ações do servidor para a corrigir.",

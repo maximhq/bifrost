@@ -305,7 +305,8 @@
 		},
 		"sheet": {
 			"statePendingTokenExchange": "이 서버에는 일회성 확인이 필요해요. Bifrost는 로그인된 ID 토큰을 교환하고 연결을 테스트하며 도구를 검색해요. 그러면 호출자는 모든 도구 호출에서 자동으로 교환되는 자체 ID 토큰을 갖게 돼요.",
-			"statePendingPerUserOauth": "이 클라이언트는 config.json에 선언되었어요. OAuth 설정을 확인하고 도구를 검색하려면 관리자 로그인이 필요해요. Bifrost는 도구 목록을 주기적으로 새로 고치기 위해 파일에 보관해요. 각 사용자는 이 서버를 사용할 때 개별적으로 인증돼요.",
+			"statePendingPerUserOauth": "이 서버를 확인하고 도구를 검색하려면 관리자 로그인이 필요해요. 각 사용자는 계속 개별적으로 인증돼요.",
+			"statePendingPerUserHeaders": "샘플 헤더 값으로 이 서버를 확인해 도구를 검색하세요. 각 사용자는 계속 본인의 헤더를 입력해요.",
 			"statePendingOauth": "이 클라이언트는 config.json에 선언되었으며 사용하려면 일회성 OAuth 인증이 필요해요.",
 			"stateNeedsReauthTokenExchange": "이 서버의 도구 목록을 새로 고치려면 관리자 자격 증명 Bifrost을 파일에 보관해야 해요. 호출자의 도구 호출은 영향을 받지 않어요. 서버 작업 메뉴에서 {{action}}를 사용하여 문제를 해결하세요.",
 			"stateNeedsReauthPerUser": "이 서버의 도구 목록을 새로 고치려면 관리자 자격 증명 Bifrost을 파일에 보관해야 해요. 최종 사용자 자격 증명 및 도구 호출은 영향을 받지 않어요. 서버 작업 메뉴에서 {{action}}를 사용하여 문제를 해결하세요.",

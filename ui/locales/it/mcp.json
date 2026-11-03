@@ -305,7 +305,8 @@
 		},
 		"sheet": {
 			"statePendingTokenExchange": "Questo server richiede una verifica una tantum: Bifrost scambia il tuo token di identità con cui hai effettuato l'accesso, testa la connessione e rileva gli strumenti. I token di identità dei chiamanti verranno quindi scambiati automaticamente a ogni chiamata agli strumenti.",
-			"statePendingPerUserOauth": "Questo client è stato dichiarato in config.json. È necessario l'accesso di un amministratore per verificare la configurazione OAuth e rilevare gli strumenti; Bifrost lo conserva per aggiornare periodicamente l'elenco degli strumenti. Ciascun utente si autenticherà comunque individualmente quando utilizzerà questo server.",
+			"statePendingPerUserOauth": "È necessario l'accesso di un amministratore per verificare questo server e rilevarne gli strumenti. Ciascun utente si autentica comunque individualmente.",
+			"statePendingPerUserHeaders": "Verifica questo server con valori di header di esempio per rilevarne gli strumenti. Ciascun utente fornisce comunque i propri header.",
 			"statePendingOauth": "Questo client è stato dichiarato in config.json e richiede un'autorizzazione OAuth una tantum prima di poter essere utilizzato.",
 			"stateNeedsReauthTokenExchange": "La credenziale di amministratore che Bifrost conserva per aggiornare l'elenco degli strumenti di questo server deve essere riparata. Le chiamate agli strumenti dei chiamanti non sono interessate. Usa {{action}} dal menu delle azioni del server per risolverla.",
 			"stateNeedsReauthPerUser": "La credenziale di amministratore che Bifrost conserva per aggiornare l'elenco degli strumenti di questo server deve essere riparata. Le credenziali degli utenti finali e le chiamate agli strumenti non sono interessate. Usa {{action}} dal menu delle azioni del server per risolverla.",

@@ -826,7 +826,9 @@ export default function MCPClientsTable({
 							{reregisterTarget?.config.auth_type === "per_user_oauth" ? t("registry.reregister.perUser") : t("registry.reregister.shared")}{" "}
 							{perUserDiscoveryOn(reregisterTarget?.config)
 								? t("registry.reregister.perUserDiscovery")
-								: t("registry.reregister.otherwise")}
+								: reregisterTarget?.state === "pending_verification"
+									? null
+									: t("registry.reregister.otherwise")}
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
@@ -902,6 +904,18 @@ export default function MCPClientsTable({
 												expiresAt: response.expires_at,
 											},
 									);
+								}
+							: undefined
+					}
+					onRegisterNewClient={
+						bootstrapAuthorize.flowId
+							? () => {
+									// Signing in on the client the server kept fails for good
+									// once its provider forgets that client, so a failed sign-in
+									// offers the reregister confirmation the menu would.
+									const target = mcpClients.find((c) => c.config.client_id === bootstrapAuthorize.mcpClientId);
+									setBootstrapAuthorize(null);
+									if (target) setReregisterTarget(target);
 								}
 							: undefined
 					}

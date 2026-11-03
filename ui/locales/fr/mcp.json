@@ -291,7 +291,8 @@
 		},
 		"sheet": {
 			"statePendingTokenExchange": "Ce serveur nécessite une vérification unique : Bifrost échange votre jeton d’identité connecté, teste la connexion et découvre les outils. Les appelants voient ensuite leurs propres jetons d’identité échangés automatiquement à chaque appel d’outil.",
-			"statePendingPerUserOauth": "Ce client a été déclaré dans config.json. Une connexion admin est nécessaire pour vérifier la configuration OAuth et découvrir les outils ; Bifrost la conserve pour rafraîchir périodiquement la liste d’outils. Chaque utilisateur s’authentifie toujours individuellement lorsqu’il utilise ce serveur.",
+			"statePendingPerUserOauth": "Une connexion admin est nécessaire pour vérifier ce serveur et découvrir ses outils. Chaque utilisateur s’authentifie toujours individuellement.",
+			"statePendingPerUserHeaders": "Vérifiez ce serveur avec des valeurs d’en-tête d’exemple pour découvrir ses outils. Chaque utilisateur fournit toujours ses propres en-têtes.",
 			"statePendingOauth": "Ce client a été déclaré dans config.json et nécessite une autorisation OAuth unique avant de pouvoir être utilisé.",
 			"stateNeedsReauthTokenExchange": "L’identifiant admin que Bifrost conserve pour rafraîchir la liste d’outils de ce serveur doit être réparé. Les appels d’outils des appelants ne sont pas affectés. Utilisez {{action}} dans le menu d’actions du serveur pour le corriger.",
 			"stateNeedsReauthPerUser": "L’identifiant admin que Bifrost conserve pour rafraîchir la liste d’outils de ce serveur doit être réparé. Les identifiants et appels d’outils des utilisateurs finaux ne sont pas affectés. Utilisez {{action}} dans le menu d’actions du serveur pour le corriger.",

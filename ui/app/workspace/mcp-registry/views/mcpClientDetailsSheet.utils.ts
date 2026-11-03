@@ -65,11 +65,19 @@ export function stateDescription(mcpClient: MCPClient, isPerUserAuth: boolean): 
 	}
 	switch (mcpClient.state) {
 		case "pending_verification":
-			return mcpClient.config.auth_type === "token_exchange"
-				? i18n.t("registry.sheet.statePendingTokenExchange", { ns: "mcp" })
-				: mcpClient.config.auth_type === "per_user_oauth"
-					? i18n.t("registry.sheet.statePendingPerUserOauth", { ns: "mcp" })
-					: i18n.t("registry.sheet.statePendingOauth", { ns: "mcp" });
+			// Only a shared OAuth server is pending solely because config.json
+			// declared it; a per-user one is also pending after per_user_discovery
+			// is turned off, so its wording names only how it is verified.
+			switch (mcpClient.config.auth_type) {
+				case "token_exchange":
+					return i18n.t("registry.sheet.statePendingTokenExchange", { ns: "mcp" });
+				case "per_user_oauth":
+					return i18n.t("registry.sheet.statePendingPerUserOauth", { ns: "mcp" });
+				case "per_user_headers":
+					return i18n.t("registry.sheet.statePendingPerUserHeaders", { ns: "mcp" });
+				default:
+					return i18n.t("registry.sheet.statePendingOauth", { ns: "mcp" });
+			}
 		case "needs_reauth": {
 			// Each auth type names the repair action the actions menu actually
 			// offers for it, matching the credential block below.

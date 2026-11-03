@@ -305,7 +305,8 @@
 		},
 		"sheet": {
 			"statePendingTokenExchange": "此伺服器需要一次性驗證：Bifrost 交換你已登入身份的令牌、測試連線並發現工具。之後呼叫方會在每次工具呼叫時自動交換各自的身份令牌。",
-			"statePendingPerUserOauth": "此客戶端在 config.json 中宣告。需要管理員登入以驗證 OAuth 配置並發現工具；Bifrost 會將其留存以便定期重新整理工具列表。每位使用者使用此伺服器時仍會單獨驗證。",
+			"statePendingPerUserOauth": "需要管理員登入以驗證此伺服器並發現其工具。每位使用者仍會單獨驗證。",
+			"statePendingPerUserHeaders": "使用範例請求頭值驗證此伺服器以發現其工具。每位使用者仍會提供自己的請求頭。",
 			"statePendingOauth": "此客戶端在 config.json 中宣告，需要一次性 OAuth 授權後才能使用。",
 			"stateNeedsReauthTokenExchange": "Bifrost 為重新整理此伺服器工具列表而保留的管理員憑證需要修復。呼叫方的工具呼叫不受影響。請使用伺服器操作選單中的{{action}}來修復。",
 			"stateNeedsReauthPerUser": "Bifrost 為重新整理此伺服器工具列表而保留的管理員憑證需要修復。終端使用者憑證和工具呼叫不受影響。請使用伺服器操作選單中的{{action}}來修復。",
