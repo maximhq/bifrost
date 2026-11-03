@@ -816,12 +816,7 @@ func AppToolsAllowed(ctx context.Context) bool {
 	if client, _ := ctx.Value(schemas.BifrostContextKeyMCPGatewayClient).(string); client == "" {
 		return false
 	}
-	caller, _ := ctx.Value(schemas.BifrostContextKeyMCPCallerCapabilities).(*mcp.ClientCapabilities)
-	if caller == nil {
-		return false
-	}
-	_, ok := caller.Extensions[schemas.MCPAppsExtension]
-	return ok
+	return CallerDeclaresApps(ctx)
 }
 
 // InputRequiredForLog returns, for the MCP log, what a relayed input_required result asked the caller;
@@ -890,6 +885,17 @@ func UnwrapRoundTripState(state string) (id, upstream string) {
 		}
 	}
 	return rest[:roundTripIDLen], rest[roundTripIDLen+1:]
+}
+
+// CallerDeclaresApps reports whether ctx carries a gateway caller's capabilities that declare MCP Apps,
+// on any gateway endpoint.
+func CallerDeclaresApps(ctx context.Context) bool {
+	caller, _ := ctx.Value(schemas.BifrostContextKeyMCPCallerCapabilities).(*mcp.ClientCapabilities)
+	if caller == nil {
+		return false
+	}
+	_, ok := caller.Extensions[schemas.MCPAppsExtension]
+	return ok
 }
 
 // listsAppTools reports whether a tool listing on ctx includes app-only tools.
