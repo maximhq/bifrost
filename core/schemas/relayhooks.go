@@ -39,6 +39,7 @@ type BifrostRelayResponse struct {
 	BytesOut        int64 // body bytes forwarded to the caller
 	Latency         int64 // milliseconds the call spent in Bifrost, pre-hooks to the end of the reply (or the stream)
 	UpstreamLatency int64 // milliseconds blocked on the upstream socket, 0 when the upstream was never called
+	OversizedEvents int   // SSE events past the 10 MiB framing ceiling: forwarded, not read for usage
 	Usage           *RelayUsage
 }
 

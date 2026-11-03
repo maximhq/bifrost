@@ -1638,9 +1638,10 @@ func TestStreamUsagePanicIsAnInternalError(t *testing.T) {
 	assert.Equal(t, schemas.ErrorTypeBifrostInternal, schemas.ClassifyErrorType(gotErr, schemas.RelayRequest))
 }
 
-// A relay sets no size cap of its own: an event past the native SSE scanner's ceiling is held until
-// its delimiter arrives and its usage is read, and the stream ends normally with every byte forwarded.
-func TestStreamEventPastScannerCeilingIsRead(t *testing.T) {
+// An event past the 10 MiB SSE framing ceiling (the native scanner's, which passthrough streams also
+// use) never fails the stream: it ends normally with every byte forwarded, the oversized event is
+// skipped for usage, and the skip is counted for the log row.
+func TestStreamEventPastScannerCeilingIsForwardedNotRead(t *testing.T) {
 	pad := strings.Repeat("x", 11<<20)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -1667,11 +1668,12 @@ func TestStreamEventPastScannerCeilingIsRead(t *testing.T) {
 	require.NoError(t, res.Stream.Close())
 	require.Len(t, pipeline.post, 1)
 	require.Nil(t, pipeline.postErr[0])
-	assert.Equal(t, forwarded, pipeline.post[0].BytesOut)
+	assert.Equal(t, forwarded, pipeline.post[0].BytesOut, "every byte reaches the caller")
 	assert.Greater(t, forwarded, int64(11<<20))
 	require.NotNil(t, pipeline.post[0].Usage)
-	assert.Equal(t, 5, pipeline.post[0].Usage.InputTokens, "the oversized event's usage is read")
-	assert.Equal(t, 9, pipeline.post[0].Usage.OutputTokens)
+	assert.Equal(t, 1, pipeline.post[0].Usage.InputTokens, "the event past the 10 MiB ceiling is not read, as on passthrough")
+	assert.Equal(t, 0, pipeline.post[0].Usage.OutputTokens)
+	assert.Equal(t, 1, pipeline.post[0].OversizedEvents, "the skipped event is reported for the log row")
 }
 
 // Only a route that reads usage from the events frames the stream: a flat fee, request-side units

@@ -295044,7 +295044,7 @@
               }
             },
             {
-              "name": "a streaming route forwards an SSE event past 10 MiB whole and bills the usage that event carries - relays-e2e",
+              "name": "a streaming route forwards an SSE event past 10 MiB whole, bills without its usage and warns on the row - relays-e2e",
               "event": [
                 {
                   "listen": "prerequest",
@@ -295097,7 +295097,7 @@
                       "}",
                       "function budgetUsage(vk) { return (vk.budgets || []).reduce(function (s, b) { return s + (b.current_usage || 0); }, 0); }",
                       "function rateLimit(vk) { return vk.rate_limit || {}; }",
-                      "// Relays enforce no size cap: an event past the native scanner's 10 MiB ceiling is held until its delimiter, forwarded whole and its usage read.",
+                      "// An event past the 10 MiB SSE framing ceiling (the native scanner's, which passthrough also uses) is forwarded whole, as passthrough forwards it, but not read for usage; the row warns about it.",
                       "var t = pm.response.text();",
                       "var BIG = 11 * 1024 * 1024;",
                       "pm.test('oversized stream: HTTP 200', function () {",
@@ -295115,13 +295115,14 @@
                       "  pm.expect(t.slice(-2), 'the stream ends with the event delimiter').to.eql('\\n\\n');",
                       "});",
                       "relayLog(function (row) {",
-                      "  pm.test('oversized stream: the Relay Logs row is a success billed from the oversized event', function () {",
-                      "    var dump = JSON.stringify({ status: row.status, error_details: row.error_details, cost: row.cost, units: row.units, billed_units: row.billed_units, route_path: row.route_path, streamed: row.streamed });",
+                      "  pm.test('oversized stream: the Relay Logs row is a success billed without the oversized event, with a warning', function () {",
+                      "    var dump = JSON.stringify({ status: row.status, error_details: row.error_details, cost: row.cost, units: row.units, billed_units: row.billed_units, route_path: row.route_path, streamed: row.streamed, plugin_logs: row.plugin_logs });",
                       "    pm.expect(row.route_path, 'route_path: ' + dump).to.eql(\"/v1/stream-oversized\");",
                       "    pm.expect(row.streamed, 'streamed: ' + dump).to.eql(true);",
                       "    pm.expect(row.status, 'status: ' + dump).to.eql('success');",
-                      "    pm.expect(near(row.units, 3), 'units come from the oversized event, 3: ' + dump).to.be.true;",
-                      "    pm.expect(near(row.cost, 0.025), 'cost should be 0.001 + 3 x 0.008 = 0.025: ' + dump).to.be.true;",
+                      "    pm.expect(near(row.units, 1), 'units come from the first event only, 1: ' + dump).to.be.true;",
+                      "    pm.expect(near(row.cost, 0.009), 'cost should be 0.001 + 1 x 0.008 = 0.009: ' + dump).to.be.true;",
+                      "    pm.expect(JSON.stringify(row.plugin_logs || ''), 'the row warns that an event passed the framing limit: ' + dump).to.include('exceeded the 10 MiB framing limit');",
                       "  });",
                       "});"
                     ]

@@ -6683,6 +6683,24 @@ func TestRelayLogMarksLargePayloadResponse(t *testing.T) {
 	require.Equal(t, "preview", *entry.ResponseBody)
 }
 
+// A stream whose SSE event passed the 10 MiB framing ceiling was forwarded whole but not read for
+// usage; the row says so in its plugin logs, so an operator can see why the call was priced lower.
+func TestRelayLogWarnsOnOversizedStreamEvents(t *testing.T) {
+	plugin := policyTestPlugin(nil, nil, true)
+	plugin.writeQueue = make(chan *writeQueueEntry, 1)
+	ctx := policyCtx(false, nil)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-oversized")
+	name := PluginName
+	scoped := ctx.WithPluginScope(&name)
+	defer scoped.ReleasePluginScope()
+	_, _, err := plugin.PreRelayHook(scoped, &schemas.BifrostRelayRequest{RelayName: "sse", Method: "POST", Path: "/s"})
+	require.NoError(t, err)
+	_, _, err = plugin.PostRelayHook(scoped, &schemas.BifrostRelayResponse{RelayName: "sse", StatusCode: 200, Streamed: true, OversizedEvents: 2}, nil)
+	require.NoError(t, err)
+	entry := (<-plugin.writeQueue).endpointLog
+	require.Contains(t, entry.PluginLogs, "2 SSE events exceeded the 10 MiB framing limit")
+}
+
 // TestRelayLogStatusFollowsLLMRule pins that a relay row's status comes from the same rule as an
 // LLM row's: a hung-up, 499 or client-deadline call is cancelled, any other failure is an error.
 func TestRelayLogStatusFollowsLLMRule(t *testing.T) {
