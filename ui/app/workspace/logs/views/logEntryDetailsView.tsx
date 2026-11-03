@@ -11,6 +11,8 @@ interface Props {
 	label: string;
 	value: React.ReactNode | null;
 	tooltip?: string;
+	/** Full text for the value's tooltip when it truncates, for values passed as elements rather than strings. */
+	valueTooltip?: string;
 	hideExpandable?: boolean;
 	orientation?: "horizontal" | "vertical";
 	align?: "left" | "right";
@@ -67,7 +69,7 @@ export default function LogEntryDetailsView(props: Props) {
 					<TruncatedLabel
 						className="text-bifrost-gray-300 max-w-full min-w-0 flex-1 text-sm"
 						tooltipSide="top"
-						tooltip={isPrimitive(props.value) ? String(props.value) : undefined}
+						tooltip={props.valueTooltip ?? (isPrimitive(props.value) ? String(props.value) : undefined)}
 					>
 						{typeof props.value === "boolean" ? String(props.value) : props.value}
 					</TruncatedLabel>

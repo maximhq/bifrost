@@ -22,6 +22,7 @@
 		"provider": "プロバイダー",
 		"model": "モデル",
 		"app": "アプリ",
+		"clientIp": "クライアント IP",
 		"server": "サーバー",
 		"toolName": "ツール名",
 		"serviceTier": "サービス層",

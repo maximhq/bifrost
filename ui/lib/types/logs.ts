@@ -871,6 +871,7 @@ export interface LogEntry {
 	metadata?: Record<string, string>; // JSON metadata (e.g., isAsyncRequest)
 	redaction_mapping?: RedactionMapping; // Phase-scoped placeholder-to-original mappings, present only when caller has Logs:Reveal
 	user_agent?: string; // Raw HTTP User-Agent of the calling client
+	client_ip?: string; // Caller IP: leftmost X-Forwarded-For, else X-Real-IP, else the TCP peer
 	app?: string; // Backend-detected client app
 	// Aggregates over this log's fallback children (rows whose parent_request_id
 	// equals this log's id). Present only on roots_only list responses.
@@ -1513,6 +1514,7 @@ export interface MCPToolLogEntry {
 	created_at: string; // ISO string format
 	virtual_key?: VirtualKey;
 	user_agent?: string; // Raw HTTP User-Agent of the calling client
+	client_ip?: string; // Caller IP: leftmost X-Forwarded-For, else X-Real-IP, else the TCP peer
 	app?: string; // Backend-detected client app
 }
 
