@@ -56,14 +56,23 @@ const mcpDialTimeout = 10 * time.Second
 // tool. A refresh that fails leaves the credential needing reauthorization,
 // which the second resolution reports as such.
 func (m *MCPManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schemas.MCPClientState) (*client.Client, func(), error) {
-	conn, release, err := m.acquireClientConn(ctx, state)
+	conn, release, _, err := m.acquireClientConn(ctx, state)
+	return conn, release, err
+}
+
+// acquireClientConn is AcquireClientConn that also returns the instructions the
+// upstream's initialize answered with on a per-call connection, which a caller's
+// discovery keeps; "" on a shared connection. A caller's connect discovers
+// through it too, so a credential its upstream rejects is refreshed there as well.
+func (m *MCPManager) acquireClientConn(ctx *schemas.BifrostContext, state *schemas.MCPClientState) (*client.Client, func(), string, error) {
+	conn, release, instructions, err := m.dialClientConn(ctx, state)
 	if err == nil || !isAuthRequiredError(err) || !refreshesOnConnectRejection(m.credStore, state.ExecutionConfig) {
-		return conn, release, err
+		return conn, release, instructions, err
 	}
 	if refreshErr := m.credStore.ForceRefresh(ctx, state.ExecutionConfig); refreshErr != nil {
 		m.logger.Debug("%s Refreshing the credential of MCP client %s after its connection was rejected failed: %v", MCPLogPrefix, state.ExecutionConfig.Name, refreshErr)
 	}
-	return m.acquireClientConn(ctx, state)
+	return m.dialClientConn(ctx, state)
 }
 
 // refreshesOnConnectRejection reports whether a per-call connection rejected with
@@ -80,17 +89,17 @@ func refreshesOnConnectRejection(credStore schemas.MCPCredentialStore, config *s
 	return false
 }
 
-// acquireClientConn is AcquireClientConn without the refresh-and-redial on a
+// dialClientConn is acquireClientConn without the refresh-and-redial on a
 // rejected per-call connection.
-func (m *MCPManager) acquireClientConn(ctx *schemas.BifrostContext, state *schemas.MCPClientState) (*client.Client, func(), error) {
+func (m *MCPManager) dialClientConn(ctx *schemas.BifrostContext, state *schemas.MCPClientState) (*client.Client, func(), string, error) {
 	if state == nil || state.ExecutionConfig == nil {
-		return nil, nil, fmt.Errorf("client state is required")
+		return nil, nil, "", fmt.Errorf("client state is required")
 	}
 	config := state.ExecutionConfig
 
 	if !m.credStore.RequiresPerCallConnection(config) {
 		if state.Conn == nil {
-			return nil, nil, fmt.Errorf("MCP client %s has no active connection", config.Name)
+			return nil, nil, "", fmt.Errorf("MCP client %s has no active connection", config.Name)
 		}
 		// An openapi client with per-user headers is sticky (its server is
 		// in-process) but still needs the caller's credential on every call.
@@ -100,16 +109,16 @@ func (m *MCPManager) acquireClientConn(ctx *schemas.BifrostContext, state *schem
 		// JSON-RPC error string. The handler resolves again at send time.
 		if config.ConnectionType == schemas.MCPConnectionTypeOpenAPI && config.AuthType == schemas.MCPAuthTypePerUserHeaders {
 			if _, credErr := m.credStore.ConnectionHeaders(ctx, config); credErr != nil {
-				return nil, nil, credErr
+				return nil, nil, "", credErr
 			}
 		}
-		return state.Conn, func() {}, nil
+		return state.Conn, func() {}, "", nil
 	}
 
 	// Per-user: open an ephemeral transport per call, wrapped in the
 	// connect-plugin gate for parity with shared-connection setup.
 	if config.ConnectionString == nil || config.ConnectionString.GetValue() == "" {
-		return nil, nil, fmt.Errorf("connection URL is required for ephemeral MCP execution")
+		return nil, nil, "", fmt.Errorf("connection URL is required for ephemeral MCP execution")
 	}
 	url := config.ConnectionString.GetValue()
 
@@ -130,6 +139,7 @@ func (m *MCPManager) acquireClientConn(ctx *schemas.BifrostContext, state *schem
 	// covers both per-user-OAuth (Kind=oauth) and per-user-headers
 	// (Kind=headers) surfaces.
 	var authRequiredErr *schemas.MCPAuthRequiredError
+	var instructions string
 	start := time.Now()
 
 	_, gateErr := m.runConnectWithPluginPipeline(ctx, connectReq, func(preReq *schemas.BifrostMCPConnectRequest) (*schemas.BifrostMCPConnectResponse, error) {
@@ -272,6 +282,7 @@ func (m *MCPManager) acquireClientConn(ctx *schemas.BifrostContext, state *schem
 			},
 		}
 		if initResult != nil {
+			instructions = initResult.Instructions
 			resp.ProtocolVersion = initResult.ProtocolVersion
 			resp.Instructions = initResult.Instructions
 			resp.ServerInfo = &schemas.MCPServerInfo{
@@ -293,23 +304,24 @@ func (m *MCPManager) acquireClientConn(ctx *schemas.BifrostContext, state *schem
 			_ = tempClient.Close()
 		}
 		if authRequiredErr != nil {
-			return nil, nil, authRequiredErr
+			m.dropCallerDiscovery(ctx, config)
+			return nil, nil, "", authRequiredErr
 		}
 		if gateErr.Error != nil {
 			// The dial's own error when no plugin rewrote it, so its type survives: an
-			// upstream 401 is what AcquireClientConn refreshes the credential for.
+			// upstream 401 is what acquireClientConn refreshes the credential for.
 			if gateErr.Error.Error != nil && gateErr.Error.Message == gateErr.Error.Error.Error() {
-				return nil, nil, gateErr.Error.Error
+				return nil, nil, "", gateErr.Error.Error
 			}
-			return nil, nil, fmt.Errorf("%s", gateErr.Error.Message)
+			return nil, nil, "", fmt.Errorf("%s", gateErr.Error.Message)
 		}
-		return nil, nil, fmt.Errorf("ephemeral connection setup failed for %s", config.Name)
+		return nil, nil, "", fmt.Errorf("ephemeral connection setup failed for %s", config.Name)
 	}
 
 	if tempClient == nil {
 		// Plugin short-circuited connect with a synthetic success response and
 		// no live transport — we have nothing to execute against.
-		return nil, nil, fmt.Errorf("ephemeral MCP connection was short-circuited by plugin for %s", config.Name)
+		return nil, nil, "", fmt.Errorf("ephemeral MCP connection was short-circuited by plugin for %s", config.Name)
 	}
 
 	release := func() {
@@ -317,7 +329,7 @@ func (m *MCPManager) acquireClientConn(ctx *schemas.BifrostContext, state *schem
 			m.logger.Warn("%s Failed to close ephemeral client for %s: %v", MCPLogPrefix, config.Name, err)
 		}
 	}
-	return tempClient, release, nil
+	return tempClient, release, instructions, nil
 }
 
 // perCallConn is what one client's per-call connections share: an HTTP client, so calls reuse
@@ -429,6 +441,22 @@ func (m *MCPManager) dropPerCallConn(clientID string) {
 	}
 }
 
+// dropCallerDiscovery deletes the caller's discovery of config once their
+// credential turns out to need sign-in, so their next request offers the
+// client's connect tool rather than tools that cannot be called. A discovery is
+// deleted with its credential wherever Bifrost changes the credential; this
+// covers what no such write sees, such as a token read as expired before
+// anything has marked it. It runs only on that error path, and writes only
+// when the caller has a discovery.
+func (m *MCPManager) dropCallerDiscovery(ctx *schemas.BifrostContext, config *schemas.MCPClientConfig) {
+	if !perUserDiscoveryOn(config) || m.discoveryStore.GetDiscovery(ctx, config) == nil {
+		return
+	}
+	if err := m.discoveryStore.DeleteDiscovery(ctx, config); err != nil {
+		m.logger.Warn("%s Failed to delete the discovery of MCP client %s for a caller who must sign in again: %v", MCPLogPrefix, config.Name, err)
+	}
+}
+
 // GetClients returns all MCP clients managed by the manager.
 //
 // Returns:
@@ -439,21 +467,13 @@ func (m *MCPManager) GetClients() []schemas.MCPClientState {
 
 	clients := make([]schemas.MCPClientState, 0, len(m.clientMap))
 	for _, client := range m.clientMap {
-		// A struct copy: ToolMap is cloned below because callers may range
-		// over it while a discovery write-back replaces the original.
-		// LastFailure is shared as-is on purpose — the record is only ever
-		// replaced, never mutated (see MCPConnectionFailure), so the copied
-		// pointer keeps describing the failure this snapshot was taken with.
+		// A struct copy. LastFailure is shared as-is on purpose — the record
+		// is only ever replaced, never mutated (see MCPConnectionFailure), so
+		// the copied pointer keeps describing the failure this snapshot was
+		// taken with. Snapshots carry connection state only; a caller that
+		// needs a client's tools, instructions, resources or prompts reads
+		// them from the discovery store.
 		snapshot := *client
-		if client.ToolMap != nil {
-			snapshot.ToolMap = make(map[string]schemas.ChatTool, len(client.ToolMap))
-			maps.Copy(snapshot.ToolMap, client.ToolMap)
-		}
-		// The lists are copied so a caller that sorts or edits one cannot change what is served; the
-		// entries' nested fields are shared, since the manager replaces entries and never edits them.
-		snapshot.Resources = slices.Clone(client.Resources)
-		snapshot.ResourceTemplates = slices.Clone(client.ResourceTemplates)
-		snapshot.Prompts = slices.Clone(client.Prompts)
 		clients = append(clients, snapshot)
 	}
 
@@ -681,8 +701,7 @@ func (m *MCPManager) reconnect(id string, dialCtx context.Context) error {
 	// with; a reconnect attempt would only flip them out of
 	// pending_verification into an error state and hide the authorization
 	// prompt in the UI.
-	if client.ExecutionConfig != nil && client.ExecutionConfig.PendingOAuthConfig != nil &&
-		(client.ExecutionConfig.AuthType == schemas.MCPAuthTypeOauth || client.ExecutionConfig.AuthType == schemas.MCPAuthTypePerUserOauth) {
+	if awaitsAdminVerification(client.ExecutionConfig) {
 		m.mu.Unlock()
 		return fmt.Errorf("client is awaiting admin OAuth authorization; complete authorization instead of reconnecting: %w", schemas.ErrMCPReconnectNotApplicable)
 	}
@@ -718,18 +737,26 @@ func (m *MCPManager) writeBackDiscovery(clientID string, connGeneration uint64, 
 		m.logger.Debug("%s Skipping tool write-back for %s: connection was replaced during discovery", MCPLogPrefix, clientID)
 		return false
 	}
-	clientState.ToolMap = discovery.Tools
-	if instructionsKnown {
-		clientState.ServerInstructions = discovery.Instructions
+	installed := &schemas.MCPDiscovery{
+		Tools:             discovery.Tools,
+		Instructions:      m.discoveryStore.GetDiscovery(m.ctx, clientState.ExecutionConfig).GetInstructions(),
+		Resources:         discovery.Resources,
+		ResourceTemplates: discovery.ResourceTemplates,
+		Prompts:           discovery.Prompts,
+		DiscoveredAt:      time.Now(),
 	}
-	clientState.Resources, clientState.ResourceTemplates, clientState.Prompts = discovery.Resources, discovery.ResourceTemplates, discovery.Prompts
+	if instructionsKnown {
+		installed.Instructions = discovery.Instructions
+	}
+	m.discoveryStore.SetDiscovery(m.ctx, clientState.ExecutionConfig, installed)
 	fire := m.discoveryChanged(clientState, clientID)
 	m.mu.Unlock()
 
 	// Fired outside the lock — see discoveryChangeCallback's field doc. This is
-	// what persists the new set to the DB and re-syncs the hosted /mcp
-	// surface. Gated on genuine content change: the periodic checker reaches
-	// here on every tick, and most ticks rediscover identical tools.
+	// what re-syncs the hosted /mcp surface (writing the new set to the DB is
+	// the discovery store's job, above). Gated on genuine content change: the
+	// periodic checker reaches here on every tick, and most ticks rediscover
+	// identical tools.
 	if fire != nil {
 		fire()
 	}
@@ -781,10 +808,10 @@ func (m *MCPManager) refreshServerInstructions(ctx context.Context, config *sche
 	return true
 }
 
-// writeBackInstructions installs a re-read `instructions` string without touching
-// tools — the two arrive on different paths for a sticky client. Same connGeneration
-// staleness rule as writeBackDiscovery. Fires the change callback only on a
-// genuine change, passing the tool set through so the hash sees instructions alone.
+// writeBackInstructions installs a re-read `instructions` string without re-listing
+// tools — the two arrive on different paths for a sticky client — by swapping in a copy
+// of the client's discovery with the new text. Same connGeneration staleness rule as
+// writeBackDiscovery. Fires the change callback only on a genuine change.
 func (m *MCPManager) writeBackInstructions(clientID string, connGeneration uint64, instructions string) {
 	m.mu.Lock()
 	clientState, exists := m.clientMap[clientID]
@@ -797,11 +824,20 @@ func (m *MCPManager) writeBackInstructions(clientID string, connGeneration uint6
 		m.logger.Debug("%s Skipping instructions write-back for %s: connection was replaced during the read", MCPLogPrefix, clientID)
 		return
 	}
-	if clientState.ServerInstructions == instructions {
+	// Read under the lock so the new text lands on the discovery it was compared
+	// against, not one a concurrent write-back swaps in after.
+	current := m.discoveryStore.GetDiscovery(m.ctx, clientState.ExecutionConfig)
+	if current.GetInstructions() == instructions {
 		m.mu.Unlock()
 		return
 	}
-	clientState.ServerInstructions = instructions
+	// Nothing else was re-listed, so the tools, resources, prompts and discovery time carry over.
+	updated := &schemas.MCPDiscovery{}
+	if current != nil {
+		*updated = *current
+	}
+	updated.Instructions = instructions
+	m.discoveryStore.SetDiscovery(m.ctx, clientState.ExecutionConfig, updated)
 	fire := m.discoveryChanged(clientState, clientID)
 	m.mu.Unlock()
 
@@ -811,16 +847,6 @@ func (m *MCPManager) writeBackInstructions(clientID string, connGeneration uint6
 	}
 }
 
-// installedDiscoveryByID returns clientID's installed discovery, the starting point a re-list keeps on failure.
-func (m *MCPManager) installedDiscoveryByID(clientID string) *schemas.MCPDiscovery {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if state, ok := m.clientMap[clientID]; ok {
-		return installedDiscovery(state)
-	}
-	return nil
-}
-
 // installedToolCount reports how many tools clientID is currently serving.
 // Used when a discovery is dropped as stale: the caller's own result describes
 // a tool set that was never installed, so the live map is the honest answer.
@@ -828,7 +854,8 @@ func (m *MCPManager) installedToolCount(clientID string) int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if clientState, ok := m.clientMap[clientID]; ok {
-		return len(clientState.ToolMap)
+		// The store directly: m.mu is held, and GetToolsForClient takes it.
+		return len(m.discoveryStore.GetDiscovery(m.ctx, clientState.ExecutionConfig).GetTools())
 	}
 	return 0
 }
@@ -890,18 +917,18 @@ func (m *MCPManager) RefreshClientTools(ctx context.Context, clientID string) (i
 		// would fail on auth. Say so plainly instead of surfacing a raw 401.
 		return 0, fmt.Errorf("mcp client %s needs reauthorization before its tools can be refreshed: %w", config.Name, schemas.ErrMCPRefreshNotApplicable)
 	}
-	// A client still awaiting its one-time admin flow must not be refreshed,
-	// and the reason is stronger than "it would fail": for token_exchange it
-	// would SUCCEED. That auth type resolves its own client-credentials token,
-	// so discovery needs no admin at all — and because awaitsAdminVerification
-	// reads DiscoveredTools == nil as the pending signal for it, a successful
-	// refresh would persist tools through the tools-change callback and quietly
-	// promote the client out of pending_verification for good, taking the
-	// Verify CTA with it. Checked against the config rather than State alone
-	// for the same reason EnableClient does: State is the thing automatic
-	// paths keep losing, the config predicate is the durable truth.
+	// A client still awaiting its one-time admin flow must not be refreshed:
+	// a refresh is not that flow, and must not stand in for it. Checked against
+	// the config rather than State alone for the same reason EnableClient does:
+	// State is the thing automatic paths keep losing, the config's record of
+	// the step is the durable truth.
 	if awaitsAdminVerification(config) || state == schemas.MCPConnectionStatePendingVerification {
 		return 0, fmt.Errorf("mcp client %s is awaiting admin verification, complete that instead of refreshing its tools: %w", config.Name, schemas.ErrMCPRefreshNotApplicable)
+	}
+	// A client with per_user_discovery on has no tool list of its own to
+	// refresh, and no admin credential to discover one with.
+	if perUserDiscoveryOn(config) {
+		return 0, fmt.Errorf("mcp client %s keeps a discovery per caller, so it has no shared tool list to refresh; refresh a caller's tools from their session instead: %w", config.Name, schemas.ErrMCPRefreshNotApplicable)
 	}
 
 	if config.ConnectionType == schemas.MCPConnectionTypeOpenAPI {
@@ -924,7 +951,7 @@ func (m *MCPManager) RefreshClientTools(ctx context.Context, clientID string) (i
 			return 0, fmt.Errorf("failed to list tools for MCP client %s: %w", config.Name, err)
 		}
 		discovery := &schemas.MCPDiscovery{Tools: tools}
-		m.listResourcesAndPrompts(bfCtx, ConnectionCheckTimeout, conn, config.Name, conn.GetServerCapabilities(), discovery, m.installedDiscoveryByID(clientID))
+		m.listResourcesAndPrompts(bfCtx, ConnectionCheckTimeout, conn, config.Name, conn.GetServerCapabilities(), discovery, m.installedDiscovery(config))
 		if !m.writeBackDiscovery(clientID, connGeneration, discovery, false) {
 			// Dropped as stale: a reconnect swapped the connection while this
 			// list was in flight, so these tools were never installed and the
@@ -1030,16 +1057,25 @@ func (m *MCPManager) addClient(requestCtx context.Context, config *schemas.MCPCl
 			Name:            config.Name,
 			ExecutionConfig: config,
 			State:           schemas.MCPConnectionStateDisabled,
-			ToolMap:         make(map[string]schemas.ChatTool),
 			ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
 		}
 		// Persisted tools for per-user auth types survive restarts in ExecutionConfig.
 		if m.credStore.RequiresPerCallConnection(config) && len(config.DiscoveredTools) > 0 {
+			restored := make(map[string]schemas.ChatTool, len(config.DiscoveredTools))
 			for toolName, tool := range config.DiscoveredTools {
 				_ = tool.EnsureSerialized() // cache serialized JSON at the source (see precomputeToolSerialization)
-				clientState.ToolMap[toolName] = tool
+				restored[toolName] = tool
 			}
-			clientState.Resources, clientState.ResourceTemplates, clientState.Prompts = config.DiscoveredResources, config.DiscoveredResourceTemplates, config.DiscoveredPrompts
+			// Zero DiscoveredAt: restored from persisted config, not a fresh
+			// upstream answer. What was persisted with the tools comes back
+			// with them.
+			m.discoveryStore.SetDiscovery(m.ctx, config, &schemas.MCPDiscovery{
+				Tools:             restored,
+				Instructions:      config.DiscoveredInstructions,
+				Resources:         config.DiscoveredResources,
+				ResourceTemplates: config.DiscoveredResourceTemplates,
+				Prompts:           config.DiscoveredPrompts,
+			})
 			if config.ConnectionString != nil {
 				url := config.ConnectionString.GetValue()
 				clientState.ConnectionInfo.ConnectionURL = &url
@@ -1055,7 +1091,6 @@ func (m *MCPManager) addClient(requestCtx context.Context, config *schemas.MCPCl
 	placeholder := &schemas.MCPClientState{
 		Name:            config.Name,
 		ExecutionConfig: config,
-		ToolMap:         make(map[string]schemas.ChatTool),
 		ConnectionInfo: &schemas.MCPClientConnectionInfo{
 			Type: config.ConnectionType,
 		},
@@ -1084,19 +1119,14 @@ func (m *MCPManager) addClient(requestCtx context.Context, config *schemas.MCPCl
 	// This is to avoid deadlocks when the connection attempt is made
 	m.mu.Unlock()
 
-	// OAuth-type clients with PendingOAuthConfig set carry the inline
-	// `oauth_config` block from config.json but have not yet been
-	// authorized by an admin. For shared OAuth there is no oauth_configs
-	// row or token; for per-user OAuth admin verification + tool discovery
-	// has not run. In both cases the normal connect / per-call paths would
-	// either fail or land the client in a state that misrepresents the
-	// missing admin step. Park them in pending_verification until an admin
-	// completes the browser flow via
-	// POST /api/mcp/client/{id}/initiate-verification. PendingOAuthConfig
-	// is cleared once the OAuth callback completes; the subsequent
-	// reconnect skips this branch and the normal path runs.
-	if config.PendingOAuthConfig != nil &&
-		(config.AuthType == schemas.MCPAuthTypeOauth || config.AuthType == schemas.MCPAuthTypePerUserOauth) {
+	// A client created before its one-time admin step (an OAuth sign-in, or
+	// verification of per-user headers or a token exchange) has nothing the
+	// normal connect or per-call paths could run with: they would fail, or land
+	// the client in a state that hides the missing step. Park it in
+	// pending_verification until an admin completes the step (initiate-
+	// verification, verify-headers or verify-exchange); the client's record of
+	// that step is cleared then, and the next load takes the normal path.
+	if awaitsAdminVerification(config) {
 		m.mu.Lock()
 		if client, exists := m.clientMap[config.ID]; exists {
 			if config.ConnectionString != nil {
@@ -1106,53 +1136,7 @@ func (m *MCPManager) addClient(requestCtx context.Context, config *schemas.MCPCl
 			client.State = schemas.MCPConnectionStatePendingVerification
 		}
 		m.mu.Unlock()
-		m.logger.Debug("%s OAuth MCP client '%s' (auth_type=%s) registered in pending_verification (awaiting admin authorization)", MCPLogPrefix, config.Name, config.AuthType)
-		return false, nil
-	}
-
-	// Per-user-headers clients whose DiscoveredTools has never been set
-	// have not had the one-time admin verification + discovery run yet.
-	// The UI Create flow runs that synchronously during create, so any
-	// per-user-headers row arriving here with a nil map was either
-	// declared in config.json or had its tools cleared by schema drift /
-	// manual edit. A verified server that legitimately exposes zero tools
-	// persists a non-nil empty map (see BeforeSave/AfterFind in
-	// framework/configstore/tables/mcp.go), so nil-check rather than
-	// len-check to avoid re-parking it in pending_verification on every
-	// reload. Park in pending_verification so the UI surfaces an admin
-	// "Verify" CTA that hits POST /api/mcp/client/{id}/verify-headers; the
-	// normal per-call path takes over once DiscoveredTools is set.
-	// An openapi client has nothing upstream to verify: its tools are
-	// synthesized from the spec, so it connects straight away.
-	if config.AuthType == schemas.MCPAuthTypePerUserHeaders && config.DiscoveredTools == nil && config.ConnectionType != schemas.MCPConnectionTypeOpenAPI {
-		m.mu.Lock()
-		if client, exists := m.clientMap[config.ID]; exists {
-			if config.ConnectionString != nil {
-				url := config.ConnectionString.GetValue()
-				client.ConnectionInfo.ConnectionURL = &url
-			}
-			client.State = schemas.MCPConnectionStatePendingVerification
-		}
-		m.mu.Unlock()
-		m.logger.Debug("%s Per-user-headers MCP client '%s' registered in pending_verification (awaiting admin verification)", MCPLogPrefix, config.Name)
-		return false, nil
-	}
-
-	// Token-exchange clients with no DiscoveredTools have not had their
-	// one-time admin verification run yet (which also retains the admin
-	// discovery credential). Park in pending_verification like
-	// per-user-headers; the per-call path takes over once verified.
-	if config.AuthType == schemas.MCPAuthTypeTokenExchange && config.DiscoveredTools == nil {
-		m.mu.Lock()
-		if client, exists := m.clientMap[config.ID]; exists {
-			if config.ConnectionString != nil {
-				url := config.ConnectionString.GetValue()
-				client.ConnectionInfo.ConnectionURL = &url
-			}
-			client.State = schemas.MCPConnectionStatePendingVerification
-		}
-		m.mu.Unlock()
-		m.logger.Debug("%s Token-exchange MCP client '%s' registered in pending_verification (awaiting admin verification)", MCPLogPrefix, config.Name)
+		m.logger.Debug("%s MCP client '%s' (auth_type=%s) registered in pending_verification (awaiting its admin step)", MCPLogPrefix, config.Name, config.AuthType)
 		return false, nil
 	}
 
@@ -1170,33 +1154,46 @@ func (m *MCPManager) addClient(requestCtx context.Context, config *schemas.MCPCl
 			// Applies to every per-call-connection auth type — currently per-user
 			// OAuth and per-user headers — since both populate DiscoveredTools at
 			// admin-test time and never hold a persistent client.Conn.
+			var restored map[string]schemas.ChatTool
 			if len(config.DiscoveredTools) > 0 {
+				restored = make(map[string]schemas.ChatTool, len(config.DiscoveredTools))
 				for toolName, tool := range config.DiscoveredTools {
 					_ = tool.EnsureSerialized() // cache serialized JSON at the source (see precomputeToolSerialization)
-					client.ToolMap[toolName] = tool
+					restored[toolName] = tool
 				}
 				markClientHealthy(client)
 				m.logger.Debug("%s Per-user (%s) MCP client '%s' restored with %d tools", MCPLogPrefix, config.AuthType, config.Name, len(config.DiscoveredTools))
 			} else {
 				// No dedicated "pending tools" state: Healthy + an empty
-				// ToolMap already says "no tools discovered yet" on its own —
+				// discovery already says "no tools discovered yet" on its own —
 				// nothing downstream (execution gating, GetToolPerClient)
 				// ever treated the two differently.
 				markClientHealthy(client)
 				m.logger.Debug("%s Per-user (%s) MCP client '%s' registered (connection deferred to runtime)", MCPLogPrefix, config.AuthType, config.Name)
 			}
-			// Restored from the DB for the same reason the tools are, even when there are no tools:
-			// a per-call client holds no connection to re-run initialize against.
-			client.ServerInstructions = config.DiscoveredInstructions
-			client.Resources, client.ResourceTemplates, client.Prompts = config.DiscoveredResources, config.DiscoveredResourceTemplates, config.DiscoveredPrompts
-			// Seed the change hash from what was restored (restoring is not a change), so an identical
-			// rediscovery no-ops. Left empty when nothing was saved, so the first discovery persists.
-			if len(config.DiscoveredTools) > 0 || config.DiscoveredInstructions != "" || len(config.DiscoveredResources) > 0 ||
+			// The instructions, resources and prompts are restored for the same reason the tools
+			// are, even when there are no tools: a per-call client holds no connection to re-run
+			// initialize against. Zero DiscoveredAt: restored, not freshly discovered. The change
+			// hash is seeded from what was restored (restoring is not a change), so an identical
+			// rediscovery no-ops; nothing saved leaves it empty, so the first discovery persists.
+			if len(restored) > 0 || config.DiscoveredInstructions != "" || len(config.DiscoveredResources) > 0 ||
 				len(config.DiscoveredResourceTemplates) > 0 || len(config.DiscoveredPrompts) > 0 {
-				client.LastDiscoveryHash = computeDiscoveryHash(installedDiscovery(client))
+				m.discoveryStore.SetDiscovery(m.ctx, config, &schemas.MCPDiscovery{
+					Tools:             restored,
+					Instructions:      config.DiscoveredInstructions,
+					Resources:         config.DiscoveredResources,
+					ResourceTemplates: config.DiscoveredResourceTemplates,
+					Prompts:           config.DiscoveredPrompts,
+				})
+				client.LastDiscoveryHash = computeDiscoveryHash(m.installedDiscovery(config))
 			}
 		}
 		m.mu.Unlock()
+		// A client with per_user_discovery on keeps no admin credential to
+		// discover or check with: each caller discovers with their own.
+		if perUserDiscoveryOn(config) {
+			return false, nil
+		}
 		// A client with nothing to restore gets its first discovery pass
 		// synchronously here — mirrors per_user_headers/token_exchange's own
 		// admin-verify-at-setup-time step (VerifyHeadersConnection /
@@ -1219,15 +1216,7 @@ func (m *MCPManager) addClient(requestCtx context.Context, config *schemas.MCPCl
 		// going forward. Released BEFORE this, mirroring connectToMCPClient's
 		// own success path (StartMonitoring -> Start() takes m.mu.RLock
 		// internally, so calling it under the write lock above would deadlock).
-		if config.ID != BifrostMCPClientKey {
-			isPingAvailable := true
-			if config.IsPingAvailable != nil {
-				isPingAvailable = *config.IsPingAvailable
-			}
-			syncInterval := ResolveToolSyncInterval(config, m.checkerManager.GetGlobalInterval())
-			checker := NewClientConnectionChecker(m, config.ID, syncInterval, isPingAvailable, m.logger)
-			m.checkerManager.StartChecking(checker)
-		}
+		m.startPerCallChecker(config)
 		return false, nil
 	}
 
@@ -1464,7 +1453,7 @@ func (m *MCPManager) verifyPerUserOAuthConnection(ctx context.Context, config *s
 	discovery := &schemas.MCPDiscovery{Tools: tools, Instructions: serverInstructions}
 	// Without tools, tools/list never reached the server; its resources and prompts lists did.
 	caps := tempClient.GetServerCapabilities()
-	if err := m.listResourcesAndPrompts(verifyCtx, eachList, tempClient, config.Name, caps, discovery, m.installedDiscoveryByID(config.ID)); err != nil && caps.Tools == nil {
+	if err := m.listResourcesAndPrompts(verifyCtx, eachList, tempClient, config.Name, caps, discovery, m.installedDiscovery(config)); err != nil && caps.Tools == nil {
 		return nil, fmt.Errorf("failed to list the server's resources and prompts during verification: %w", err)
 	}
 
@@ -1645,7 +1634,7 @@ func (m *MCPManager) verifyHeadersConnection(ctx context.Context, config *schema
 	discovery := &schemas.MCPDiscovery{Tools: tools, Instructions: serverInstructions}
 	// Without tools, tools/list never reached the server; its resources and prompts lists did.
 	caps := tempClient.GetServerCapabilities()
-	if err := m.listResourcesAndPrompts(verifyCtx, eachList, tempClient, config.Name, caps, discovery, m.installedDiscoveryByID(config.ID)); err != nil && caps.Tools == nil {
+	if err := m.listResourcesAndPrompts(verifyCtx, eachList, tempClient, config.Name, caps, discovery, m.installedDiscovery(config)); err != nil && caps.Tools == nil {
 		return nil, fmt.Errorf("failed to list the server's resources and prompts during verification: %w", err)
 	}
 
@@ -1727,31 +1716,32 @@ func (m *MCPManager) SetClientDiscovery(clientID string, discovery *schemas.MCPD
 	// the checker's writeBackTools: every caller passes a complete discovery
 	// result, and merging into the existing map would keep tools the upstream
 	// has since removed alive in memory (and on the hosted /mcp surface) while
-	// the DB, persisted from the passed-in set via the tools-change callback,
-	// has already dropped them.
+	// the DB, which the discovery store writes from the passed-in set, has
+	// already dropped them.
 	if tools == nil {
 		tools = make(map[string]schemas.ChatTool)
 	}
 	precomputeToolSerialization(tools)
-	client.ToolMap = tools
+	m.discoveryStore.SetDiscovery(m.ctx, client.ExecutionConfig, &schemas.MCPDiscovery{
+		Tools:             tools,
+		Instructions:      instructions,
+		Resources:         discovery.Resources,
+		ResourceTemplates: discovery.ResourceTemplates,
+		Prompts:           discovery.Prompts,
+		DiscoveredAt:      time.Now(),
+	})
 	// Only the admin's own verification moves a pending client here (the
 	// checker stays quiet for one and a refresh refuses it), and a pending
 	// client has no checker: AddClient and EnableClient start none until the
 	// admin acts. Leaving pending is when it needs one, or its tools are never
 	// synced again.
 	leftPending := client.State == schemas.MCPConnectionStatePendingVerification
-	// Record the discovery on the config too. The callback below persists these
-	// same tools to the client's row, and that row is what makes the client
-	// verified after the next restart; until then awaitsAdminVerification reads
-	// THIS config, where DiscoveredTools == nil means "never verified" for
-	// per_user_headers and token_exchange. Left untouched, a server verified a
-	// moment ago went on reading as unverified for the life of the process:
-	// healthy, serving tools, refused by every path that consults the predicate.
-	// Swapped in as a copy rather than written into, for the same reason
-	// UpdateClient does: readers may still hold the old pointer. Cloned so the
-	// config never aliases the live tool map, and tools is non-nil by this point,
-	// so a verification that found nothing records an empty map, not nil.
-	client.ServerInstructions = instructions
+	// Record the discovery on the config too, and that the client is past its
+	// admin step: a verification ends here, and the store's record of it is
+	// cleared by the caller, so this process must stop reading the client as
+	// unverified too. Swapped in as a copy rather than written into, for the
+	// same reason UpdateClient does: readers may still hold the old pointer.
+	// Cloned so the config never aliases the stored discovery.
 	if client.ExecutionConfig != nil {
 		recorded := *client.ExecutionConfig
 		recorded.DiscoveredTools = maps.Clone(tools)
@@ -1759,9 +1749,9 @@ func (m *MCPManager) SetClientDiscovery(clientID string, discovery *schemas.MCPD
 		recorded.DiscoveredResources = slices.Clone(discovery.Resources)
 		recorded.DiscoveredResourceTemplates = slices.Clone(discovery.ResourceTemplates)
 		recorded.DiscoveredPrompts = slices.Clone(discovery.Prompts)
+		recorded.PendingVerification = false
 		client.ExecutionConfig = &recorded
 	}
-	client.Resources, client.ResourceTemplates, client.Prompts = discovery.Resources, discovery.ResourceTemplates, discovery.Prompts
 	markClientHealthy(client)
 	m.logger.Debug("%s Set %d tools on client '%s'", MCPLogPrefix, len(tools), client.Name)
 	fire := m.discoveryChanged(client, clientID)
@@ -1775,7 +1765,7 @@ func (m *MCPManager) SetClientDiscovery(clientID string, discovery *schemas.MCPD
 	// callback above can take a while (it persists), so the client is read again:
 	// an edit made meanwhile applies, and a client removed, replaced or disabled
 	// meanwhile is left to whatever checker it has now.
-	if !leftPending || clientID == BifrostMCPClientKey {
+	if !leftPending {
 		return
 	}
 	m.mu.RLock()
@@ -1785,12 +1775,7 @@ func (m *MCPManager) SetClientDiscovery(clientID string, discovery *schemas.MCPD
 	}
 	m.mu.RUnlock()
 	if config != nil {
-		isPingAvailable := true
-		if config.IsPingAvailable != nil {
-			isPingAvailable = *config.IsPingAvailable
-		}
-		syncInterval := ResolveToolSyncInterval(config, m.checkerManager.GetGlobalInterval())
-		m.checkerManager.StartChecking(NewClientConnectionChecker(m, clientID, syncInterval, isPingAvailable, m.logger))
+		m.startPerCallChecker(config)
 	}
 }
 
@@ -1841,8 +1826,8 @@ func (m *MCPManager) removeClientUnsafe(id string) error {
 		client.Conn = nil
 	}
 	m.logger.Debug("%s Closed client transport connection for MCP server '%s'", MCPLogPrefix, client.ExecutionConfig.Name)
-	// Clear client tool map
-	client.ToolMap = make(map[string]schemas.ChatTool)
+	// Drop the client's discovery from the store
+	m.discoveryStore.DeleteDiscovery(m.ctx, client.ExecutionConfig)
 
 	delete(m.clientMap, id)
 	m.dropPerCallConn(id)
@@ -1897,12 +1882,12 @@ func (m *MCPManager) DisableClient(id string) (retErr error) {
 		clientState.Conn = nil
 	}
 
-	// Per-user auth clients have no persistent connection — their ToolMap
-	// holds tools discovered via the admin verification step that can only
-	// be recovered by re-running it. Preserve the ToolMap so re-enabling
-	// restores tools immediately.
+	// Per-user auth clients have no persistent connection — their discovery
+	// holds tools and instructions found by the admin verification step that
+	// can only be recovered by re-running it. Preserve it so re-enabling
+	// restores them immediately.
 	if !m.credStore.RequiresPerCallConnection(clientState.ExecutionConfig) {
-		clientState.ToolMap = make(map[string]schemas.ChatTool)
+		m.discoveryStore.DeleteDiscovery(m.ctx, clientState.ExecutionConfig)
 	}
 	clientState.State = schemas.MCPConnectionStateDisabled
 	clientState.ExecutionConfig.Disabled = true
@@ -1928,36 +1913,36 @@ func isEnableable(clientState *schemas.MCPClientState) bool {
 	return clientState.ExecutionConfig != nil && clientState.ExecutionConfig.Disabled
 }
 
-// awaitsAdminVerification reports whether config still needs the one-time
-// admin flow that AddClient parks clients in pending_verification for: an
-// OAuth client carrying an unauthorized inline oauth_config block, or a
-// per-user-headers / token-exchange client whose admin verification has never
-// populated DiscoveredTools. AddClient owns the canonical branches (each does
-// its own per-type bookkeeping and logging); this is the shared predicate for
-// callers that only need the yes/no.
+// awaitsAdminVerification reports whether config still needs the one-time admin
+// step AddClient parks clients in pending_verification for, as recorded on the
+// client when it was created before the step and cleared once the step passed.
 func awaitsAdminVerification(config *schemas.MCPClientConfig) bool {
-	if config == nil {
-		return false
+	return config != nil && config.PendingVerification
+}
+
+// withheldFromCallers reports whether no caller may see or call a client's
+// tools or its connect tool: the client is disabled, or it keeps discoveries
+// per caller and awaits its admin verification. A caller's own credential and
+// discovery do not stand in for that verification, so they wait for it too.
+func withheldFromCallers(state schemas.MCPConnectionState, config *schemas.MCPClientConfig) bool {
+	return state == schemas.MCPConnectionStateDisabled || (perUserDiscoveryOn(config) && awaitsAdminVerification(config))
+}
+
+// startPerCallChecker starts the periodic checker that keeps a per-call
+// client's tools current by discovering with its admin credential. A client
+// with per_user_discovery on keeps no admin credential and gets none: each
+// caller discovers with their own. Must be called without m.mu held, since the
+// checker's Start takes it.
+func (m *MCPManager) startPerCallChecker(config *schemas.MCPClientConfig) {
+	if config.ID == BifrostMCPClientKey || perUserDiscoveryOn(config) {
+		return
 	}
-	// Synthesized servers have no upstream MCP handshake to verify.
-	if config.ConnectionType == schemas.MCPConnectionTypeOpenAPI {
-		return false
+	isPingAvailable := true
+	if config.IsPingAvailable != nil {
+		isPingAvailable = *config.IsPingAvailable
 	}
-	switch config.AuthType {
-	case schemas.MCPAuthTypeOauth, schemas.MCPAuthTypePerUserOauth:
-		return config.PendingOAuthConfig != nil
-	case schemas.MCPAuthTypePerUserHeaders, schemas.MCPAuthTypeTokenExchange:
-		// Nil, not merely empty. The store is what makes nil-ness the
-		// discriminator: BeforeSave marshals DiscoveredTools only when it is
-		// non-nil, so a verified server that legitimately exposes zero tools
-		// persists "{}" and AfterFind loads it back as a non-nil empty map,
-		// while a client that never completed verification round-trips as nil.
-		// A len-check would therefore send a verified zero-tool client back
-		// through admin verification on every reload.
-		return config.DiscoveredTools == nil
-	default:
-		return false
-	}
+	syncInterval := ResolveToolSyncInterval(config, m.checkerManager.GetGlobalInterval())
+	m.checkerManager.StartChecking(NewClientConnectionChecker(m, config.ID, syncInterval, isPingAvailable, m.logger))
 }
 
 // EnableClient re-enables a previously disabled MCP client by reconnecting it
@@ -2032,8 +2017,8 @@ func (m *MCPManager) EnableClient(id string) (retErr error) {
 
 	// A client that was disabled before its one-time admin flow ever ran is
 	// enabled but not yet usable. AddClient's disabled branch runs ahead of
-	// its pending_verification branches, so such a client is registered as
-	// Disabled with its PendingOAuthConfig (or empty DiscoveredTools) intact,
+	// its pending_verification branch, so such a client is registered as
+	// Disabled with its PendingVerification intact,
 	// and enabling it took the ordinary route from here: the per-call branch
 	// below marked it Healthy outright, and the sticky one dialled with a
 	// credential that does not exist yet and parked it back at Disabled.
@@ -2073,14 +2058,7 @@ func (m *MCPManager) EnableClient(id string) (retErr error) {
 			markClientHealthy(cs)
 		}
 		m.mu.Unlock()
-		if id != BifrostMCPClientKey {
-			isPingAvailable := true
-			if configCopy.IsPingAvailable != nil {
-				isPingAvailable = *configCopy.IsPingAvailable
-			}
-			syncInterval := ResolveToolSyncInterval(configCopy, m.checkerManager.GetGlobalInterval())
-			m.checkerManager.StartChecking(NewClientConnectionChecker(m, id, syncInterval, isPingAvailable, m.logger))
-		}
+		m.startPerCallChecker(configCopy)
 		m.logger.Debug("%s Per-call MCP client '%s' enabled (no persistent connection)", MCPLogPrefix, configCopy.Name)
 		return nil
 	}
@@ -2180,9 +2158,8 @@ var ErrMCPEnableConnectFailed = errors.New("mcp client enabled, but establishing
 // its Function.Name, so a client rename has to rewrite both. Tools are copied,
 // never edited in place, because snapshots of the old map may still be read.
 //
-// Nil in, nil out. For a client's DiscoveredTools nil-ness is data
-// (awaitsAdminVerification reads nil as "verification never ran" and an empty
-// map as "ran and found nothing"), so the two must not be collapsed.
+// Nil in, nil out: a client that never discovered stays without tools rather
+// than gaining an empty set.
 func rebindToolsToClientName(tools map[string]schemas.ChatTool, clientName string) map[string]schemas.ChatTool {
 	if tools == nil {
 		return nil
@@ -2236,7 +2213,7 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 	// released; connectToMCPClient acquires m.mu itself, so calling it while
 	// still holding the lock here would deadlock.
 	var newConfig *schemas.MCPClientConfig
-	var becamePerCall, becameSticky, rebuildOpenAPI, wasDisabled, renegotiate bool
+	var becamePerCall, becameSticky, rebuildOpenAPI, wasDisabled, renegotiate, perUserDiscoveryChanged bool
 	var fireDiscovery func()
 	var clientName string
 	startPerCallChecker := false
@@ -2293,19 +2270,36 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		// regardless of the field, e.g. per-user, never show a transition here).
 		wasPerCall := m.credStore.RequiresPerCallConnection(client.ExecutionConfig)
 
-		// The record of the last admin verification is not an editable field, so an
-		// ordinary edit arrives without it (the update handler only sets it when the
-		// same request re-ran verification) and it has to be carried forward. It is
-		// not bookkeeping: awaitsAdminVerification reads DiscoveredTools == nil as
-		// "never verified" for per_user_headers and token_exchange, so dropping it
-		// here left a verified, healthy client reading as unverified after any edit,
-		// refused by every path that consults the predicate. It is also what a
-		// per-call client's tools are restored from, hence the rebinding: carried
+		// The tools of the last admin verification are not an editable field, so an
+		// ordinary edit arrives without them (the update handler only sets them when
+		// the same request re-ran verification) and they have to be carried forward.
+		// They are what a per-call client's tools are restored from, hence the rebinding: carried
 		// forward under the old name, a rename followed by a restore would reinstall
-		// tools the rebound ToolMap below no longer has. The resources, templates and
-		// prompts belong to the same discovery and travel with it.
+		// tools the rebound ToolMap below no longer has.
+		//
+		// Turning per_user_discovery on or off is the exception: the store cleared
+		// the stored tools and reset the record of the admin step along with it,
+		// so the update carries both, read back from the store, and nothing is
+		// carried forward. An update that leaves the flag unset keeps the stored
+		// value, the same rule the store applies.
+		perUserDiscovery := updatedConfig.PerUserDiscovery
+		if perUserDiscovery == nil {
+			perUserDiscovery = client.ExecutionConfig.PerUserDiscovery
+		}
+		// Held to AddClient's rule on the config the update leaves, whose auth
+		// and connection types are the client's own.
+		if err := ValidatePerUserDiscovery(&schemas.MCPClientConfig{Name: updatedConfig.Name, AuthType: oldAuthType, ConnectionType: client.ExecutionConfig.ConnectionType, PerUserDiscovery: perUserDiscovery}); err != nil {
+			return fmt.Errorf("invalid MCP client configuration: %w", err)
+		}
+		wasPerUserDiscovery := perUserDiscoveryOn(client.ExecutionConfig)
+		perUserDiscoveryChanged = wasPerUserDiscovery != (perUserDiscovery != nil && *perUserDiscovery)
+		pendingVerification := client.ExecutionConfig.PendingVerification
+		if perUserDiscoveryChanged {
+			pendingVerification = updatedConfig.PendingVerification
+		}
+		// The resources, templates and prompts belong to the same discovery and travel with it.
 		discovered := updatedConfig
-		if updatedConfig.DiscoveredTools == nil {
+		if updatedConfig.DiscoveredTools == nil && !perUserDiscoveryChanged {
 			discovered = client.ExecutionConfig
 		}
 		discoveredTools := discovered.DiscoveredTools
@@ -2370,17 +2364,23 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 			AllowedExtraHeaders:    slices.Clone(updatedConfig.AllowedExtraHeaders),
 			IsPingAvailable:        updatedConfig.IsPingAvailable,
 			NeedsSessionStickiness: updatedConfig.NeedsSessionStickiness,
-			ToolSyncInterval:       updatedConfig.ToolSyncInterval,
-			MaxProtocolVersion:     updatedConfig.MaxProtocolVersion,
-			ToolExecutionTimeout:   updatedConfig.ToolExecutionTimeout,
-			MaxInstructionsLength:  updatedConfig.MaxInstructionsLength,
-			AllowByDefault:         updatedConfig.AllowByDefault,
-			Disabled:               updatedConfig.Disabled,
-			TLSConfig:              updatedConfig.TLSConfig.Clone(),
-			PerUserHeaderKeys:      slices.Clone(updatedConfig.PerUserHeaderKeys),
-			PendingOAuthConfig:     updatedConfig.PendingOAuthConfig,
-			TokenExchange:          updatedConfig.TokenExchange,
-			OpenAPIConfig:          openAPIConfig,
+			PerUserDiscovery:       perUserDiscovery,
+			// Changed by the admin step itself and by turning per_user_discovery
+			// on or off (see above), never by an ordinary edit: an edit arrives
+			// without it, and taking that as "verified" un-parked a client still
+			// waiting for its step.
+			PendingVerification:   pendingVerification,
+			ToolSyncInterval:      updatedConfig.ToolSyncInterval,
+			MaxProtocolVersion:    updatedConfig.MaxProtocolVersion,
+			ToolExecutionTimeout:  updatedConfig.ToolExecutionTimeout,
+			MaxInstructionsLength: updatedConfig.MaxInstructionsLength,
+			AllowByDefault:        updatedConfig.AllowByDefault,
+			Disabled:              updatedConfig.Disabled,
+			TLSConfig:             updatedConfig.TLSConfig.Clone(),
+			PerUserHeaderKeys:     slices.Clone(updatedConfig.PerUserHeaderKeys),
+			PendingOAuthConfig:    updatedConfig.PendingOAuthConfig,
+			TokenExchange:         updatedConfig.TokenExchange,
+			OpenAPIConfig:         openAPIConfig,
 		}
 
 		// The resolver and guarded HTTP client handed to the factory are built
@@ -2390,6 +2390,7 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 			rebuildOpenAPI = true
 		}
 		wasDisabled = client.State == schemas.MCPConnectionStateDisabled
+		oldConfig := client.ExecutionConfig
 
 		// A changed protocol cap renegotiates: per-call clients forget their cached version, a
 		// shared connection the change affects is redialed below.
@@ -2401,22 +2402,50 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		// Atomically replace the config pointer
 		client.ExecutionConfig = newConfig
 		clientName = updatedConfig.Name
+		client.Name = updatedConfig.Name
+
+		if perUserDiscoveryChanged {
+			// The shared tools were discovered with the admin credential, which a
+			// client with the flag on does not keep, and a client turning it off
+			// has none yet. A check already in flight belongs to the old setting:
+			// bumping ConnGeneration drops its result.
+			if !wasPerUserDiscovery {
+				m.discoveryStore.DeleteDiscovery(m.ctx, oldConfig)
+			}
+			client.ConnGeneration++
+			if client.State != schemas.MCPConnectionStateDisabled {
+				if newConfig.PendingVerification {
+					client.State = schemas.MCPConnectionStatePendingVerification
+				} else {
+					markClientHealthy(client)
+				}
+			}
+			// Turning the flag on withdraws the shared tools the client had published.
+			fireDiscovery = m.discoveryChanged(client, id)
+			return nil
+		}
 
 		// Rebind ToolMap keys (and inner Function.Name) to the current client name.
-		newToolMap := rebindToolsToClientName(client.ToolMap, updatedConfig.Name)
+		oldDiscovery := m.discoveryStore.GetDiscovery(m.ctx, newConfig)
+		newToolMap := rebindToolsToClientName(oldDiscovery.GetTools(), updatedConfig.Name)
 		if newToolMap == nil {
 			newToolMap = make(map[string]schemas.ChatTool)
 		}
 
-		// Replace the old ToolMap with the new one
+		// Replace the old discovery with the rebound one (prompts are prefixed
+		// like tools); the instructions, resources and discovery time carry over
+		// unchanged.
 		precomputeToolSerialization(newToolMap)
-		client.ToolMap = newToolMap
+		newDiscovery := &schemas.MCPDiscovery{}
+		if oldDiscovery != nil {
+			*newDiscovery = *oldDiscovery
+		}
+		newDiscovery.Tools = newToolMap
+		newDiscovery.Prompts = rebindPromptsToClientName(newDiscovery.Prompts, updatedConfig.Name)
+		m.discoveryStore.SetDiscovery(m.ctx, newConfig, newDiscovery)
 
-		// Also update the client Name field
-		client.Name = updatedConfig.Name
-		client.Prompts = rebindPromptsToClientName(client.Prompts, updatedConfig.Name)
-		// Republish only a discovery that exists: persisting an empty one would mark an unverified
-		// per_user_headers or token_exchange client as verified.
+		// Re-sync only a discovery that exists: a per_user_headers or token_exchange client never
+		// verified has none to publish.
 		if client.LastDiscoveryHash != "" {
 			fireDiscovery = m.discoveryChanged(client, id)
 		}
@@ -2479,7 +2508,14 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		fireDiscovery()
 	}
 
-	if becamePerCall {
+	if perUserDiscoveryChanged {
+		// A client with the flag on keeps no admin credential to check with, and
+		// one parked for its admin step has nothing to check until it passes.
+		m.checkerManager.StopChecking(id)
+		if !wasDisabled && !newConfig.PendingVerification {
+			m.startPerCallChecker(newConfig)
+		}
+	} else if becamePerCall {
 		if startPerCallChecker {
 			// The persistent connection is gone, but discovery must keep
 			// running: a per-call client relies on the checker's ephemeral
@@ -2519,8 +2555,9 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		m.logger.Info("%s MCP client '%s' rebuilt its OpenAPI-synthesized server after a configuration change", MCPLogPrefix, clientName)
 		m.mu.RLock()
 		var unmatched []string
-		if state, ok := m.clientMap[id]; ok {
-			unmatched = unmatchedToolSelections(newConfig.ToolsToExecute, state.ToolMap, clientName)
+		if _, ok := m.clientMap[id]; ok {
+			// The store directly: m.mu is held, and GetToolsForClient takes it.
+			unmatched = unmatchedToolSelections(newConfig.ToolsToExecute, m.discoveryStore.GetDiscovery(m.ctx, newConfig).GetTools(), clientName)
 		}
 		m.mu.RUnlock()
 		if len(unmatched) > 0 {
@@ -2556,8 +2593,8 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 // rebuildOpenAPIClient is RefreshClientTools for an openapi client. Its tools
 // come from a server synthesized at connect time, so listing them again only
 // echoes the old document; instead the spec is re-resolved (a spec_url is
-// fetched again), re-synthesized and re-discovered, and the tools-change
-// callback persists the result. That is a reconnect, so it holds the same
+// fetched again), re-synthesized and re-discovered, and the discovery store
+// persists the result. That is a reconnect, so it holds the same
 // per-client guard as UpdateClient and ReconnectClient and reads the config
 // only once the guard is held: a refresh racing an update can neither dial
 // with the config the update replaces nor write it back over the saved one.
@@ -2753,7 +2790,7 @@ func (m *MCPManager) UpdateClientCredentials(id string, newConfig *schemas.MCPCl
 		// A client still in PendingVerification is completing its FIRST
 		// connection here — e.g. a config.json-bootstrapped OAuth client
 		// whose admin just finished the browser consent flow. AddClient's
-		// own per-call branch (see its PendingOAuthConfig early-return) is
+		// own per-call branch (after its pending_verification early-return) is
 		// what would normally perform this exact state transition, but it
 		// never gets a second chance to run for an already-registered
 		// client: the entry was created once, at boot, and parked here.
@@ -2771,14 +2808,21 @@ func (m *MCPManager) UpdateClientCredentials(id string, newConfig *schemas.MCPCl
 					// the persisted DiscoveredTools are the complete set, and
 					// a pending_verification entry holds no tools of its own
 					// worth keeping anyway. Copied into a fresh map so the
-					// entry never aliases the config's own map.
+					// store never aliases the config's own map.
 					restored := make(map[string]schemas.ChatTool, len(newConfig.DiscoveredTools))
 					for toolName, tool := range newConfig.DiscoveredTools {
 						_ = tool.EnsureSerialized() // cache serialized JSON at the source (see precomputeToolSerialization)
 						restored[toolName] = tool
 					}
-					cs.ToolMap = restored
-					cs.Resources, cs.ResourceTemplates, cs.Prompts = newConfig.DiscoveredResources, newConfig.DiscoveredResourceTemplates, newConfig.DiscoveredPrompts
+					// Zero DiscoveredAt: restored, not freshly discovered. What was
+					// persisted with the tools comes back with them.
+					m.discoveryStore.SetDiscovery(m.ctx, newConfig, &schemas.MCPDiscovery{
+						Tools:             restored,
+						Instructions:      newConfig.DiscoveredInstructions,
+						Resources:         newConfig.DiscoveredResources,
+						ResourceTemplates: newConfig.DiscoveredResourceTemplates,
+						Prompts:           newConfig.DiscoveredPrompts,
+					})
 				}
 				markClientHealthy(cs)
 			}
@@ -2792,7 +2836,7 @@ func (m *MCPManager) UpdateClientCredentials(id string, newConfig *schemas.MCPCl
 			// healthyInterval, not the fast Unstable one, for an
 			// already-Healthy client). A failure is recorded as the client's
 			// state, and the checker started below retries it.
-			if len(newConfig.DiscoveredTools) == 0 {
+			if len(newConfig.DiscoveredTools) == 0 && !perUserDiscoveryOn(newConfig) {
 				if discovery, discErr := m.performAdminToolDiscovery(m.ctx, newConfig, 0); discErr != nil {
 					m.recordFailedFirstDiscovery(id, newConfig.Name, discErr)
 				} else {
@@ -2803,15 +2847,21 @@ func (m *MCPManager) UpdateClientCredentials(id string, newConfig *schemas.MCPCl
 			// current going forward — mirrors AddClient's per-call branch
 			// (see its own comment): without this, nothing else ever
 			// revisits this client.
-			if id != BifrostMCPClientKey {
-				isPingAvailable := true
-				if newConfig.IsPingAvailable != nil {
-					isPingAvailable = *newConfig.IsPingAvailable
-				}
-				syncInterval := ResolveToolSyncInterval(newConfig, m.checkerManager.GetGlobalInterval())
-				checker := NewClientConnectionChecker(m, id, syncInterval, isPingAvailable, m.logger)
-				m.checkerManager.StartChecking(checker)
+			m.startPerCallChecker(newConfig)
+			return nil
+		}
+		// A client disabled before its admin step ran is registered Disabled
+		// with its record of that step intact (see EnableClient). The step
+		// completing now only takes the config that records it: the client
+		// stays Disabled, and enabling it later connects it instead of parking
+		// it in pending_verification again behind the step it already passed.
+		if client.State == schemas.MCPConnectionStateDisabled && awaitsAdminVerification(client.ExecutionConfig) && !awaitsAdminVerification(newConfig) {
+			m.mu.RUnlock()
+			m.mu.Lock()
+			if cs, exists := m.clientMap[id]; exists && cs.State == schemas.MCPConnectionStateDisabled {
+				cs.ExecutionConfig = newConfig
 			}
+			m.mu.Unlock()
 			return nil
 		}
 		// Already past that first connection (a plain reauthorize of an
@@ -2865,11 +2915,11 @@ func (m *MCPManager) UpdateClientCredentials(id string, newConfig *schemas.MCPCl
 	if newConfig.OauthConfigID != nil {
 		mergedConfig.OauthConfigID = newConfig.OauthConfigID
 	}
-	// PendingOAuthConfig is taken verbatim, not merged: nil is meaningful
-	// (authorization completed, stash cleared). Carrying the old value
-	// forward would make connectToMCPClient park the client back in
-	// pending_verification instead of connecting.
+	// PendingOAuthConfig and PendingVerification are taken verbatim, not
+	// merged: completing the admin step clears both. Carrying the old values
+	// forward would keep the client reading as unverified once connected.
 	mergedConfig.PendingOAuthConfig = newConfig.PendingOAuthConfig
+	mergedConfig.PendingVerification = newConfig.PendingVerification
 	m.mu.RUnlock()
 
 	// connectToMCPClient dials with the merged credentials and swaps them into the
@@ -2969,7 +3019,8 @@ func (m *MCPManager) RegisterTool(name, description string, toolFunction MCPTool
 	prefixedToolName := fmt.Sprintf("%s-%s", BifrostMCPClientKey, name)
 
 	// Check if tool name already exists to prevent silent overwrites
-	if _, exists := internalClient.ToolMap[prefixedToolName]; exists {
+	internalDiscovery := m.discoveryStore.GetDiscovery(m.ctx, internalClient.ExecutionConfig)
+	if _, exists := internalDiscovery.GetTools()[prefixedToolName]; exists {
 		return fmt.Errorf("tool '%s' is already registered", name)
 	}
 
@@ -2994,10 +3045,19 @@ func (m *MCPManager) RegisterTool(name, description string, toolFunction MCPTool
 	}
 
 	// Store tool definition with prefixed name for consistency with external tools
-	// Update the tool schema to use the prefixed name
+	// Update the tool schema to use the prefixed name. Discoveries handed out by
+	// the store are never mutated in place — build a replacement holding the
+	// existing tools plus the new one and swap it in wholesale.
 	toolSchema.Function.Name = prefixedToolName
 	_ = toolSchema.EnsureSerialized() // cache serialized JSON after the final name is set
-	internalClient.ToolMap[prefixedToolName] = toolSchema
+	newTools := make(map[string]schemas.ChatTool, len(internalDiscovery.GetTools())+1)
+	maps.Copy(newTools, internalDiscovery.GetTools())
+	newTools[prefixedToolName] = toolSchema
+	newDiscovery := &schemas.MCPDiscovery{Tools: newTools, Instructions: internalDiscovery.GetInstructions()}
+	if internalDiscovery != nil {
+		newDiscovery.DiscoveredAt = internalDiscovery.DiscoveredAt
+	}
+	m.discoveryStore.SetDiscovery(m.ctx, internalClient.ExecutionConfig, newDiscovery)
 
 	return nil
 }
@@ -3118,7 +3178,6 @@ func (m *MCPManager) connectToMCPClientWithin(dialCtx, requestCtx context.Contex
 			Name:            config.Name,
 			ExecutionConfig: config,
 			State:           schemas.MCPConnectionStateUnstable,
-			ToolMap:         make(map[string]schemas.ChatTool),
 			ConnectionInfo: &schemas.MCPClientConnectionInfo{
 				Type: config.ConnectionType,
 			},
@@ -3406,7 +3465,7 @@ func (m *MCPManager) connectToMCPClientWithin(dialCtx, requestCtx context.Contex
 		} else {
 			tools = t
 			m.mu.RLock()
-			previous := installedDiscovery(entry)
+			previous := *m.installedDiscovery(config) // a copy: the lists below must not land on the stored one
 			if entry.LastDiscoveryHash == "" {
 				// Nothing installed since restart: the saved lists are what a failed list call keeps.
 				previous.Resources, previous.ResourceTemplates, previous.Prompts = config.DiscoveredResources, config.DiscoveredResourceTemplates, config.DiscoveredPrompts
@@ -3414,7 +3473,7 @@ func (m *MCPManager) connectToMCPClientWithin(dialCtx, requestCtx context.Contex
 			m.mu.RUnlock()
 			// Without tools, tools/list never reached the server; its resources and prompts lists did.
 			caps := externalClient.GetServerCapabilities()
-			if err := m.listResourcesAndPrompts(toolRetrievalCtx, 0, externalClient, config.Name, caps, discovery, previous); err != nil && caps.Tools == nil {
+			if err := m.listResourcesAndPrompts(toolRetrievalCtx, 0, externalClient, config.Name, caps, discovery, &previous); err != nil && caps.Tools == nil {
 				listToolsErr = err
 			}
 		}
@@ -3470,10 +3529,9 @@ func (m *MCPManager) connectToMCPClientWithin(dialCtx, requestCtx context.Contex
 	// upstream advertises, so a server that dropped its instructions drops them here.
 	// nil initResult is the plugin short-circuit path, which brings no upstream truth
 	// (and no tools either), so it clears them for the same reason.
+	var instructions string
 	if initResult != nil {
-		client.ServerInstructions = initResult.Instructions
-	} else {
-		client.ServerInstructions = ""
+		instructions = initResult.Instructions
 	}
 	markClientHealthy(client)
 
@@ -3482,10 +3540,17 @@ func (m *MCPManager) connectToMCPClientWithin(dialCtx, requestCtx context.Contex
 		client.CancelFunc = cancel
 	}
 
-	// Replace the tool set wholesale (the entry may still hold the previous
+	// Replace the tool set wholesale (the store may still hold the previous
 	// connection's tools on the make-before-break path).
 	precomputeToolSerialization(tools)
-	client.ToolMap = tools
+	m.discoveryStore.SetDiscovery(m.ctx, config, &schemas.MCPDiscovery{
+		Tools:             tools,
+		Instructions:      instructions,
+		Resources:         discovery.Resources,
+		ResourceTemplates: discovery.ResourceTemplates,
+		Prompts:           discovery.Prompts,
+		DiscoveredAt:      time.Now(),
+	})
 
 	// Bump the connection generation: anything still bound to the previous
 	// connection (a tool-sync tick that snapshotted it, the old SSE
@@ -3504,7 +3569,6 @@ func (m *MCPManager) connectToMCPClientWithin(dialCtx, requestCtx context.Contex
 
 	// Release lock BEFORE starting monitors to prevent deadlock
 	// (StartMonitoring -> Start() tries to acquire RLock on the same mutex)
-	client.Resources, client.ResourceTemplates, client.Prompts = discovery.Resources, discovery.ResourceTemplates, discovery.Prompts
 	fire := m.discoveryChanged(client, config.ID)
 	m.mu.Unlock()
 
@@ -4267,7 +4331,6 @@ func (m *MCPManager) createLocalMCPClient() (*schemas.MCPClientState, error) {
 			Name:           BifrostMCPClientKey, // Use same value as ID for consistent prefixing
 			ToolsToExecute: []string{"*"},       // Allow all tools for internal client
 		},
-		ToolMap: make(map[string]schemas.ChatTool),
 		ConnectionInfo: &schemas.MCPClientConnectionInfo{
 			Type: schemas.MCPConnectionTypeInProcess, // Accurate: in-process (in-memory) transport
 		},

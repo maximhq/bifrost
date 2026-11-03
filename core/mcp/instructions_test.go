@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/mark3labs/mcp-go/server"
@@ -31,19 +32,21 @@ func newManagerWithInstructions(t *testing.T) *MCPManager {
 		{"beta-id", "beta", "beta-echo", "Beta rule: update the doc on relevant changes."},
 	} {
 		m.clientMap[c.id] = &schemas.MCPClientState{
-			Name:               c.name,
-			ExecutionConfig:    &schemas.MCPClientConfig{ID: c.id, Name: c.name, ToolsToExecute: []string{"*"}},
-			ToolMap:            map[string]schemas.ChatTool{c.tool: {Type: "function", Function: &schemas.ChatToolFunction{Name: c.tool}}},
-			ServerInstructions: c.instructions,
+			Name:            c.name,
+			ExecutionConfig: &schemas.MCPClientConfig{ID: c.id, Name: c.name, ToolsToExecute: []string{"*"}},
 		}
+		m.discoveryStore.SetDiscovery(context.Background(), &schemas.MCPClientConfig{ID: c.id}, &schemas.MCPDiscovery{
+			Tools:        map[string]schemas.ChatTool{c.tool: {Type: "function", Function: &schemas.ChatToolFunction{Name: c.tool}}},
+			Instructions: c.instructions,
+		})
 	}
 	return m
 }
 
-func TestGetServerInstructionsReturnsEveryVisibleClientSorted(t *testing.T) {
+func TestCallerDiscoveryInstructionsReturnsEveryVisibleClientSorted(t *testing.T) {
 	m := newManagerWithInstructions(t)
 
-	got := m.GetServerInstructions(context.Background())
+	got := m.GetCallerDiscovery(context.Background(), true).Instructions
 
 	require.Len(t, got, 2)
 	assert.Equal(t, "alpha", got[0].ClientName)
@@ -53,11 +56,11 @@ func TestGetServerInstructionsReturnsEveryVisibleClientSorted(t *testing.T) {
 // The security-relevant case: a caller narrowed to one client must not be handed the other
 // client's instructions. Scoping rides entirely on GetToolPerClient, so this pins that it
 // actually does.
-func TestGetServerInstructionsWithheldForClientsTheCallerCannotSee(t *testing.T) {
+func TestCallerDiscoveryInstructionsWithheldForClientsTheCallerCannotSee(t *testing.T) {
 	m := newManagerWithInstructions(t)
 	ctx := context.WithValue(context.Background(), schemas.MCPContextKeyIncludeClients, []string{"alpha"})
 
-	got := m.GetServerInstructions(ctx)
+	got := m.GetCallerDiscovery(ctx, true).Instructions
 
 	require.Len(t, got, 1)
 	assert.Equal(t, "alpha", got[0].ClientName)
@@ -66,25 +69,24 @@ func TestGetServerInstructionsWithheldForClientsTheCallerCannotSee(t *testing.T)
 
 // A client with no visible tool is a client this caller cannot reach at all, so it
 // contributes nothing — not even a bare heading.
-func TestGetServerInstructionsSkipsClientsWithNoVisibleTools(t *testing.T) {
+func TestCallerDiscoveryInstructionsSkipsClientsWithNoVisibleTools(t *testing.T) {
 	m := newManagerWithInstructions(t)
 	m.mu.Lock()
 	m.clientMap["beta-id"].ExecutionConfig.ToolsToExecute = []string{}
 	m.mu.Unlock()
 
-	got := m.GetServerInstructions(context.Background())
+	got := m.GetCallerDiscovery(context.Background(), true).Instructions
 
 	require.Len(t, got, 1)
 	assert.Equal(t, "alpha", got[0].ClientName)
 }
 
-func TestGetServerInstructionsSkipsClientsThatAdvertiseNone(t *testing.T) {
+func TestCallerDiscoveryInstructionsSkipsClientsThatAdvertiseNone(t *testing.T) {
 	m := newManagerWithInstructions(t)
-	m.mu.Lock()
-	m.clientMap["alpha-id"].ServerInstructions = ""
-	m.mu.Unlock()
+	alpha := m.discoveryStore.GetDiscovery(context.Background(), &schemas.MCPClientConfig{ID: "alpha-id"})
+	m.discoveryStore.SetDiscovery(context.Background(), &schemas.MCPClientConfig{ID: "alpha-id"}, &schemas.MCPDiscovery{Tools: alpha.Tools})
 
-	got := m.GetServerInstructions(context.Background())
+	got := m.GetCallerDiscovery(context.Background(), true).Instructions
 
 	require.Len(t, got, 1)
 	assert.Equal(t, "beta", got[0].ClientName)
@@ -150,6 +152,12 @@ func TestTruncateInstructionsCutsOnRuneBoundary(t *testing.T) {
 	assert.True(t, utf8.ValidString(got))
 	assert.Equal(t, 50, len(got))
 	assert.Equal(t, 150, omitted)
+
+	// A three-byte rune that straddles a ten-byte cap is dropped whole.
+	got, omitted = truncateInstructions(strings.Repeat("世", 4), 10)
+	assert.True(t, utf8.ValidString(got))
+	assert.Equal(t, strings.Repeat("世", 3), got)
+	assert.Equal(t, 3, omitted)
 }
 
 func TestTruncateInstructionsKeepsShortTextIntact(t *testing.T) {
@@ -305,11 +313,11 @@ func TestWriteBackInstructionsReplacesAndFiresCallback(t *testing.T) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{ID: "c", Name: "c", ToolsToExecute: []string{"*"}}
 	m.mu.Lock()
-	m.clientMap[config.ID] = &schemas.MCPClientState{
-		Name: config.Name, ExecutionConfig: config,
-		ToolMap:            map[string]schemas.ChatTool{"c-echo": {Type: "function"}},
-		ServerInstructions: "v1",
-	}
+	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config}
+	m.discoveryStore.SetDiscovery(context.Background(), config, &schemas.MCPDiscovery{
+		Tools:        map[string]schemas.ChatTool{"c-echo": {Type: "function"}},
+		Instructions: "v1",
+	})
 	m.mu.Unlock()
 
 	var seen []string
@@ -320,10 +328,7 @@ func TestWriteBackInstructionsReplacesAndFiresCallback(t *testing.T) {
 
 	m.writeBackInstructions(config.ID, 0, "v2")
 
-	m.mu.RLock()
-	got := m.clientMap[config.ID].ServerInstructions
-	m.mu.RUnlock()
-	assert.Equal(t, "v2", got)
+	assert.Equal(t, "v2", m.discoveryStore.GetDiscovery(context.Background(), config).GetInstructions())
 	assert.Equal(t, []string{"v2"}, seen, "a changed text must reach the persist seam")
 }
 
@@ -332,10 +337,8 @@ func TestWriteBackInstructionsNoOpWhenUnchanged(t *testing.T) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{ID: "c", Name: "c"}
 	m.mu.Lock()
-	m.clientMap[config.ID] = &schemas.MCPClientState{
-		Name: config.Name, ExecutionConfig: config,
-		ToolMap: map[string]schemas.ChatTool{}, ServerInstructions: "same",
-	}
+	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config}
+	m.discoveryStore.SetDiscovery(context.Background(), config, &schemas.MCPDiscovery{Instructions: "same"})
 	m.mu.Unlock()
 
 	fired := false
@@ -351,17 +354,58 @@ func TestWriteBackInstructionsDropsStaleGeneration(t *testing.T) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{ID: "c", Name: "c"}
 	m.mu.Lock()
-	m.clientMap[config.ID] = &schemas.MCPClientState{
-		Name: config.Name, ExecutionConfig: config,
-		ToolMap: map[string]schemas.ChatTool{}, ServerInstructions: "installed", ConnGeneration: 7,
-	}
+	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, ConnGeneration: 7}
+	m.discoveryStore.SetDiscovery(context.Background(), config, &schemas.MCPDiscovery{Instructions: "installed"})
 	m.mu.Unlock()
 
 	m.writeBackInstructions(config.ID, 3, "from-a-replaced-connection")
 
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	assert.Equal(t, "installed", m.clientMap[config.ID].ServerInstructions)
+	assert.Equal(t, "installed", m.discoveryStore.GetDiscovery(context.Background(), config).GetInstructions())
+}
+
+// A refresh re-reads instructions only, so the discovery it replaces keeps the tools and
+// discovery time it was written with.
+func TestWriteBackInstructionsKeepsTheToolsItWasDiscoveredWith(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	config := &schemas.MCPClientConfig{ID: "c", Name: "c", ToolsToExecute: []string{"*"}}
+	discoveredAt := time.Now().Add(-time.Hour)
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config}
+	m.discoveryStore.SetDiscovery(context.Background(), config, &schemas.MCPDiscovery{
+		Tools:        map[string]schemas.ChatTool{"c-echo": {Type: "function"}},
+		Instructions: "v1",
+		DiscoveredAt: discoveredAt,
+	})
+	m.mu.Unlock()
+
+	m.writeBackInstructions(config.ID, 0, "v2")
+
+	got := m.discoveryStore.GetDiscovery(context.Background(), config)
+	require.NotNil(t, got)
+	assert.Equal(t, "v2", got.Instructions)
+	assert.Contains(t, got.Tools, "c-echo", "an instructions refresh must not drop the tools")
+	assert.True(t, got.DiscoveredAt.Equal(discoveredAt), "tools/list was not re-run, so the discovery time must not move")
+}
+
+// Instructions ride the caller's own discovery: a client with per_user_discovery on serves
+// each caller the instructions that came with its own tools, and a caller with no discovery
+// of it gets none, while a shared client gives everyone the shared text.
+func TestCallerDiscoveryInstructionsComesFromTheCallersDiscovery(t *testing.T) {
+	store := newFakePerUserDiscoveryStore()
+	m, shared, perUser := newPerUserTestManager(t, store)
+	sharedDiscovery := discoveryOf("wiki", "read")
+	sharedDiscovery.Instructions = "Shared rule."
+	m.discoveryStore.SetDiscovery(context.Background(), shared, sharedDiscovery)
+	alices := discoveryOf("notes", "search")
+	alices.Instructions = "Alice's rule."
+	store.discoveries[perUserBinding(schemas.MCPAuthModeUser, "alice", perUser.ID)] = alices
+
+	assert.Equal(t, []schemas.MCPServerInstructions{
+		{ClientName: "notes", Instructions: "Alice's rule."},
+		{ClientName: "wiki", Instructions: "Shared rule."},
+	}, m.GetCallerDiscovery(userContext("alice"), true).Instructions)
+	assert.Equal(t, []schemas.MCPServerInstructions{{ClientName: "wiki", Instructions: "Shared rule."}},
+		m.GetCallerDiscovery(userContext("bob"), true).Instructions)
 }
 
 // A second STDIO subprocess would read the current config, not the running one's.
@@ -456,16 +500,18 @@ func addCodeModeClient(t *testing.T, m *MCPManager, name string) {
 		ExecutionConfig: &schemas.MCPClientConfig{
 			ID: name + "-id", Name: name, ToolsToExecute: []string{"*"}, IsCodeModeClient: true,
 		},
-		ToolMap:            map[string]schemas.ChatTool{tool: {Type: "function", Function: &schemas.ChatToolFunction{Name: tool}}},
-		ServerInstructions: name + " rule: read the stub first.",
 	}
+	m.discoveryStore.SetDiscovery(context.Background(), &schemas.MCPClientConfig{ID: name + "-id"}, &schemas.MCPDiscovery{
+		Tools:        map[string]schemas.ChatTool{tool: {Type: "function", Function: &schemas.ChatToolFunction{Name: tool}}},
+		Instructions: name + " rule: read the stub first.",
+	})
 }
 
-func TestGetServerInstructionsExcludesCodeModeClients(t *testing.T) {
+func TestCallerDiscoveryInstructionsExcludesCodeModeClients(t *testing.T) {
 	m := newManagerWithInstructions(t)
 	addCodeModeClient(t, m, "codey")
 
-	got := m.GetServerInstructions(context.Background())
+	got := m.GetCallerDiscovery(context.Background(), true).Instructions
 
 	names := make([]string, 0, len(got))
 	for _, p := range got {
@@ -476,29 +522,30 @@ func TestGetServerInstructionsExcludesCodeModeClients(t *testing.T) {
 }
 
 // Code-mode-only: the aggregate is empty, which callers must render as an absent field.
-func TestGetServerInstructionsEmptyWhenEveryClientIsCodeMode(t *testing.T) {
+func TestCallerDiscoveryInstructionsEmptyWhenEveryClientIsCodeMode(t *testing.T) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
 	addCodeModeClient(t, m, "codey")
 	addCodeModeClient(t, m, "scripty")
 
-	assert.Empty(t, m.GetServerInstructions(context.Background()))
-	assert.Empty(t, AggregateServerInstructions(m.GetServerInstructions(context.Background()), InstructionCaps{}))
+	assert.Empty(t, m.GetCallerDiscovery(context.Background(), true).Instructions)
+	assert.Empty(t, AggregateServerInstructions(m.GetCallerDiscovery(context.Background(), true).Instructions, InstructionCaps{}))
 }
 
 // The exclusion is about code mode, not instructions: a mixed deployment is not silenced.
-func TestGetServerInstructionsKeepsNonCodeModeClientsAlongsideCodeMode(t *testing.T) {
+func TestCallerDiscoveryInstructionsKeepsNonCodeModeClientsAlongsideCodeMode(t *testing.T) {
 	m := newManagerWithInstructions(t)
 	addCodeModeClient(t, m, "codey")
 
-	aggregate := AggregateServerInstructions(m.GetServerInstructions(context.Background()), InstructionCaps{})
+	aggregate := AggregateServerInstructions(m.GetCallerDiscovery(context.Background(), true).Instructions, InstructionCaps{})
 
 	assert.Contains(t, aggregate, `<mcp_server name="alpha">`)
 	assert.NotContains(t, aggregate, "codey", "code mode guidance leaked into the aggregate:\n%s", aggregate)
 }
 
-// BenchmarkGetServerInstructions measures the per-request cost on the inference path: 20 visible
-// clients, half with instructions.
-func BenchmarkGetServerInstructions(b *testing.B) {
+// BenchmarkGetCallerDiscovery_WithInstructions measures the per-request cost of reading the
+// caller's discovery with the instructions the request-injection path
+// (addServerInstructionsToRequest) adds: 20 visible clients, half with instructions.
+func BenchmarkGetCallerDiscovery_WithInstructions(b *testing.B) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
 	for i := range 20 {
 		name, tool := fmt.Sprintf("client%02d", i), fmt.Sprintf("client%02d-echo", i)
@@ -506,17 +553,17 @@ func BenchmarkGetServerInstructions(b *testing.B) {
 		if i%2 == 0 {
 			instructions = "Check permissions first."
 		}
-		m.clientMap[name] = &schemas.MCPClientState{
-			Name:               name,
-			ExecutionConfig:    &schemas.MCPClientConfig{ID: name, Name: name, ToolsToExecute: []string{"*"}},
-			ToolMap:            map[string]schemas.ChatTool{tool: {Type: "function", Function: &schemas.ChatToolFunction{Name: tool}}},
-			ServerInstructions: instructions,
-		}
+		config := &schemas.MCPClientConfig{ID: name, Name: name, ToolsToExecute: []string{"*"}}
+		m.clientMap[name] = &schemas.MCPClientState{Name: name, ExecutionConfig: config}
+		m.discoveryStore.SetDiscovery(context.Background(), config, &schemas.MCPDiscovery{
+			Tools:        map[string]schemas.ChatTool{tool: {Type: "function", Function: &schemas.ChatToolFunction{Name: tool}}},
+			Instructions: instructions,
+		})
 	}
 	ctx := context.Background()
 	b.ReportAllocs()
 	for b.Loop() {
-		_ = m.GetServerInstructions(ctx)
+		_ = m.GetCallerDiscovery(ctx, true).Instructions
 	}
 }
 

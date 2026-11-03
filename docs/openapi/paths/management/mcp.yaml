@@ -1128,6 +1128,71 @@ session-reauth:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+session-refresh:
+  post:
+    summary: Refresh the tools of an MCP session's caller
+    description: |
+      Discovers the tools, prompts and resources of the caller a session row
+      belongs to again, with the credential the row stores, and keeps what it
+      finds as that caller's discovery of the row's MCP client. Use it after the
+      upstream server adds or removes tools, so the caller is served them
+      without signing in again.
+
+      Only an `active` OAuth token or header credential of a `user` or `vk`
+      caller can be refreshed, on an MCP client with `per_user_discovery` on
+      that is not awaiting admin verification. A `user` row can be refreshed
+      only by that user; the row's `can_refresh` says whether the caller may.
+
+      A refresh that cannot discover answers 502 and keeps the caller's
+      existing discovery. If the row is revoked or replaced while discovery
+      runs, nothing is stored and the refresh answers 409.
+    operationId: refreshMcpSession
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    tags: [MCP]
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Session row ID (OAuth token or header credential)
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: The caller's tools were discovered again
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/mcp.yaml#/MCPSessionRefreshResponse'
+      '400':
+        description: |
+          The row cannot be refreshed: its client keeps one tool list for every
+          caller, it belongs to a session-bound caller, its client is awaiting
+          admin verification, or its credential needs reauthorizing or updated
+          headers first
+      '401':
+        $ref: '../../openapi.yaml#/components/responses/Unauthorized'
+      '403':
+        description: A user's session, refreshed by someone other than that user
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '409':
+        description: The row was revoked or replaced while its tools were being discovered
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '502':
+        description: Discovery with the stored credential failed; the caller keeps their existing discovery
+
 # ─── Per-User Headers submission flow ────────────────────────────────────────
 
 per-user-headers-flow:
