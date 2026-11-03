@@ -1968,6 +1968,65 @@ for uri in 'https://*.example.com/callback' 'https://app.example.com/*' '**'; do
 done
 
 ###############################################################################
+# mcp.client_configs[].oauth_config: resource and use_client_metadata_document render when set and
+# are absent when omitted; the values schema refuses wrong types and clientId together with
+# useClientMetadataDocument, which Bifrost would only refuse once an admin starts the OAuth flow.
+###############################################################################
+echo ""
+echo -e "${CYAN}📋 MCP client OAuth config${NC}"
+
+cat > "$TMPDIR/values-mcp-oauth.yaml" <<'VALS'
+bifrost:
+  encryptionKey: "test-encryption-key-1234567890ab"
+  mcp:
+    enabled: true
+    clientConfigs:
+      - name: "linear"
+        connectionType: "http"
+        httpConfig:
+          url: "https://mcp.linear.app/mcp"
+        authType: "oauth"
+        oauthConfig:
+          resource: "https://mcp.linear.app/mcp"
+          useClientMetadataDocument: true
+      - name: "notion"
+        connectionType: "http"
+        httpConfig:
+          url: "https://mcp.notion.com/mcp"
+        authType: "oauth"
+        oauthConfig:
+          scopes: ["read"]
+VALS
+
+render_config "$TMPDIR/values-mcp-oauth.yaml"
+assert_field_value 'mcp.client_configs[].oauth_config.resource' '.mcp.client_configs.[0].oauth_config.resource' '"https://mcp.linear.app/mcp"'
+assert_field_value 'mcp.client_configs[].oauth_config.use_client_metadata_document' '.mcp.client_configs.[0].oauth_config.use_client_metadata_document' 'true'
+absent=$(python3 -c "
+import json
+o = json.load(open('$TMPDIR/config.json'))['mcp']['client_configs'][1].get('oauth_config', {})
+print(','.join(k for k in ('resource', 'use_client_metadata_document') if k in o))
+" 2>/dev/null)
+report_result "mcp.client_configs[].oauth_config omits resource and use_client_metadata_document when unset" "$([ -z "$absent" ] && echo 0 || echo 1)"
+
+mcp_oauth_client='{"name":"linear","connectionType":"http","httpConfig":{"url":"https://mcp.linear.app/mcp"},"authType":"oauth","oauthConfig":'
+for case in 'useClientMetadataDocument "yes"|{"useClientMetadataDocument":"yes"}' 'resource 42|{"resource":42}' 'clientId with useClientMetadataDocument|{"clientId":"c1","useClientMetadataDocument":true}'; do
+  name=${case%%|*}
+  if helm template bifrost "$CHART_DIR" --set image.tag=v1.0.0 \
+       --set bifrost.encryptionKey=test-encryption-key-1234567890ab \
+       --set bifrost.mcp.enabled=true \
+       --set-json "bifrost.mcp.clientConfigs=[${mcp_oauth_client}${case#*|}}]" \
+       > "$TMPDIR/render-err.txt" 2>&1; then
+    report_result "mcp.client_configs[].oauth_config $name is rejected" 1
+    echo -e "${YELLOW}    render succeeded; expected the values schema to reject it${NC}"
+  elif grep -q "oauthConfig" "$TMPDIR/render-err.txt"; then
+    report_result "mcp.client_configs[].oauth_config $name is rejected" 0
+  else
+    report_result "mcp.client_configs[].oauth_config $name is rejected" 1
+    head -5 "$TMPDIR/render-err.txt" | sed 's/^/      /'
+  fi
+done
+
+###############################################################################
 # access_profiles[].auto_rotation_interval / next_rotation_at: string and integer forms render
 # unchanged, and next_rotation_at is refused unless the interval is enabled.
 ###############################################################################
