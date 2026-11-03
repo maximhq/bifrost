@@ -24,7 +24,6 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/framework/oauth2"
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -726,7 +725,7 @@ func (h *OAuth2IssuanceHandler) issueTokenPair(
 // consentedClientName is the name a metadata-document client was consented under, kept on its grant
 // because it has no client row to be listed by. Best effort: consent just resolved it, so this is cached.
 func (h *OAuth2IssuanceHandler) consentedClientName(ctx context.Context, clientID string) string {
-	if !oauth2.IsClientMetadataURL(clientID) {
+	if !isClientMetadataDocumentID(clientID) {
 		return ""
 	}
 	client, metadataErr, err := lookupOAuth2Client(ctx, h.store, h.clientMetadata, clientID)

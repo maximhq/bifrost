@@ -892,7 +892,7 @@ func (m *ToolsManager) executeToolInternal(
 
 	// Strip the client name prefix from tool name before calling MCP server. Tools are listed and
 	// resolved by their exact upstream names, so what remains is the name the server expects.
-	originalMCPToolName := stripClientPrefix(toolName, executionConfig.Name)
+	originalMCPToolName := StripClientPrefix(toolName, executionConfig.Name)
 
 	// Create timeout context for tool execution.
 	// Per-server timeout (executionConfig.ToolExecutionTimeout) takes precedence over the global.
@@ -937,7 +937,7 @@ func (m *ToolsManager) executeToolInternal(
 		toolCtx,
 		func() error {
 			var err error
-			toolResponse, err = CallToolWithin(toolCtx, clientConn, callRequest)
+			toolResponse, err = CallUpstreamTool(toolCtx, clientConn, callRequest, true)
 			return err
 		},
 		ToolCallRetryConfig,
@@ -1134,7 +1134,7 @@ func (m *ToolsManager) attemptCallFailureRecovery(
 		},
 		func(ctx context.Context, conn *client.Client) error {
 			var err error
-			retryResponse, err = CallToolWithin(ctx, conn, callRequest)
+			retryResponse, err = CallUpstreamTool(ctx, conn, callRequest, true)
 			return err
 		})
 	if !recovered {
