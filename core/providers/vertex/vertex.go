@@ -4795,6 +4795,7 @@ func (provider *VertexProvider) Passthrough(
 
 	var passthroughUsage *schemas.BifrostPassthroughUsage
 	var servedModel string
+	var providerJob *schemas.BifrostPassthroughJob
 	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
 		switch PassthroughWireFormat(req.Path) {
 		case schemas.Anthropic:
@@ -4805,7 +4806,7 @@ func (provider *VertexProvider) Passthrough(
 			passthroughUsage = openai.ExtractOpenAIPassthroughUsage(req.Method, req.Path, req.Body, body)
 		default:
 			if gemini.IsInteractionsPassthroughPath(req.Path) {
-				passthroughUsage, servedModel = gemini.InteractionsPassthroughUsage(body)
+				passthroughUsage, servedModel, providerJob = gemini.InteractionsPassthroughResult(req, body)
 			} else {
 				passthroughUsage = gemini.ExtractGeminiPassthroughUsage(req.Path, req.Body, body)
 			}
@@ -4824,6 +4825,7 @@ func (provider *VertexProvider) Passthrough(
 		},
 		PassthroughUsage: passthroughUsage,
 		ServedModel:      servedModel,
+		ProviderJob:      providerJob,
 	}
 
 	return bifrostResponse, nil
@@ -4982,7 +4984,7 @@ func (provider *VertexProvider) PassthroughStream(
 	observe := func(event []byte) *schemas.BifrostPassthroughUsage {
 		return gemini.ExtractGeminiPassthroughUsage(req.Path, req.Body, event)
 	}
-	var finalize func(*schemas.BifrostPassthroughUsage) (*schemas.BifrostPassthroughUsage, string)
+	var finalize func(*schemas.BifrostPassthroughResponse)
 	switch PassthroughWireFormat(req.Path) {
 	case schemas.Anthropic:
 		messagesUsage := &anthropic.AnthropicPassthroughStreamUsage{}
@@ -5000,8 +5002,9 @@ func (provider *VertexProvider) PassthroughStream(
 		}
 	default:
 		if gemini.IsInteractionsPassthroughPath(req.Path) {
-			observer := gemini.NewInteractionsStreamObserver()
+			observer := gemini.NewInteractionsStreamObserver(req)
 			observe, finalize = observer.Observe, observer.Finalize
+			hasUsage = gemini.HasInteractionsStreamInfo
 		}
 	}
 

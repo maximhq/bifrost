@@ -283,49 +283,120 @@ func TestInteractionsPassthroughPathKinds(t *testing.T) {
 	}
 }
 
-// TestInteractionsPassthroughUsageNamesAgent pins the Deep Research polling flow: every poll names
-// the agent, including an in-progress one that reports no usage, and a completed read carries the
-// run's usage.
-func TestInteractionsPassthroughUsageNamesAgent(t *testing.T) {
-	inProgress := []byte(`{"id":"int_named","agent":"deep-research-preview-04-2026","status":"in_progress"}`)
-	completed := []byte(`{"id":"int_named","agent":"deep-research-preview-04-2026","status":"completed","usage":{"total_input_tokens":361700,"total_output_tokens":20000,"total_thought_tokens":13400,"total_tokens":437000}}`)
+// TestInteractionsPassthroughResultReportsRun pins the Deep Research polling flow. Every read names
+// the agent and reports the stored run it reads, and no read carries usage billable on the request:
+// a finished run repeats its full usage on every read, so that usage rides on the job, to be settled
+// once, and a repeated read reports exactly what the first did.
+func TestInteractionsPassthroughResultReportsRun(t *testing.T) {
+	create := &schemas.BifrostPassthroughRequest{Method: "POST", Path: "/interactions", APIVersion: "v1beta"}
+	poll := &schemas.BifrostPassthroughRequest{Method: "GET", Path: "/interactions/int_run", APIVersion: "v1beta"}
+	inProgress := []byte(`{"id":"int_run","agent":"deep-research-preview-04-2026","status":"in_progress"}`)
+	completed := []byte(`{"id":"int_run","agent":"deep-research-preview-04-2026","status":"completed","usage":{"total_input_tokens":361700,"total_output_tokens":20000,"total_thought_tokens":13400,"total_tokens":437000}}`)
 
-	u, model := gemini.InteractionsPassthroughUsage(inProgress)
+	u, model, job := gemini.InteractionsPassthroughResult(create, inProgress)
 	if u != nil || model != "deep-research-preview-04-2026" {
-		t.Fatalf("in-progress poll: usage=%v model=%q, want nil usage and the agent", u, model)
+		t.Fatalf("background create: usage=%v model=%q, want no request usage and the agent", u, model)
 	}
-	u, model = gemini.InteractionsPassthroughUsage(completed)
-	if u == nil || u.LLMUsage.PromptTokens != 361700 || u.LLMUsage.CompletionTokens != 33400 || u.LLMUsage.TotalTokens != 437000 {
-		t.Fatalf("completed read: usage=%+v, want the run's usage", u)
+	if job == nil || !job.Created || job.Terminal || job.ID != "int_run" || job.PollPath != "/interactions/int_run" || job.APIVersion != "v1beta" {
+		t.Fatalf("background create: job=%+v, want a created, running run polled at /interactions/int_run", job)
 	}
-	if model != "deep-research-preview-04-2026" {
-		t.Fatalf("completed read: model=%q", model)
+
+	for i := range 2 {
+		u, model, job = gemini.InteractionsPassthroughResult(poll, completed)
+		if u != nil || model != "deep-research-preview-04-2026" {
+			t.Fatalf("completed read %d: usage=%v model=%q, want no request usage and the agent", i, u, model)
+		}
+		if job == nil || job.Created || !job.Terminal || job.Status != "completed" {
+			t.Fatalf("completed read %d: job=%+v, want a finished run this read did not create", i, job)
+		}
+		if job.Usage == nil || job.Usage.LLMUsage.PromptTokens != 361700 || job.Usage.LLMUsage.CompletionTokens != 33400 || job.Usage.LLMUsage.TotalTokens != 437000 {
+			t.Fatalf("completed read %d: job usage=%+v, want the run's usage", i, job.Usage)
+		}
 	}
 }
 
-func TestInteractionsPassthroughUsageModelFallback(t *testing.T) {
+// TestInteractionsPassthroughResultNoStoredRun pins the reads that report no stored run: a body
+// with no id keeps its usage billable on the request, and a list or delete reports no job.
+func TestInteractionsPassthroughResultNoStoredRun(t *testing.T) {
+	create := &schemas.BifrostPassthroughRequest{Method: "POST", Path: "/interactions"}
 	body := []byte(`{"model":"gemini-3.8-flash","status":"completed","usage":{"total_input_tokens":10,"total_output_tokens":5,"total_tokens":15}}`)
-	if u, model := gemini.InteractionsPassthroughUsage(body); u == nil || model != "gemini-3.8-flash" {
-		t.Fatalf("usage=%v model=%q, want the run's usage and the model", u, model)
+	if u, model, job := gemini.InteractionsPassthroughResult(create, body); u == nil || model != "gemini-3.8-flash" || job != nil {
+		t.Fatalf("usage=%v model=%q job=%+v: a run with no id cannot be settled later, so the request carries its usage", u, model, job)
+	}
+	list := &schemas.BifrostPassthroughRequest{Method: "GET", Path: "/interactions"}
+	if _, _, job := gemini.InteractionsPassthroughResult(list, []byte(`{"id":"int_x","status":"completed"}`)); job != nil {
+		t.Fatalf("a list reports no run, got %+v", job)
+	}
+	del := &schemas.BifrostPassthroughRequest{Method: "DELETE", Path: "/interactions/int_x"}
+	if _, _, job := gemini.InteractionsPassthroughResult(del, nil); job != nil {
+		t.Fatalf("a delete reports no run, got %+v", job)
 	}
 }
 
-// TestInteractionsStreamObserverNamesModel pins that a stream's final chunk names the agent from
-// the nested interaction.completed event and keeps the observed usage.
-func TestInteractionsStreamObserverNamesModel(t *testing.T) {
+// TestInteractionsPassthroughResultVertexCancel pins that a Vertex cancel reports the cancelled run
+// and that its poll path keeps the project and location prefix the request was sent with.
+func TestInteractionsPassthroughResultVertexCancel(t *testing.T) {
+	req := &schemas.BifrostPassthroughRequest{Method: "POST", Path: "/projects/p/locations/global/interactions/int_v:cancel", APIVersion: "v1beta1"}
+	_, _, job := gemini.InteractionsPassthroughResult(req, []byte(`{"id":"int_v","agent":"deep-research-preview-04-2026","status":"cancelled"}`))
+	if job == nil || !job.Terminal || job.Created || job.PollPath != "/projects/p/locations/global/interactions/int_v" || job.APIVersion != "v1beta1" {
+		t.Fatalf("job=%+v, want the cancelled run polled under its project path", job)
+	}
+}
+
+// TestInteractionsStreamObserverReportsRun pins the streaming side. A stream that ends on
+// interaction.completed reports the finished run with its usage and leaves none on the request; a
+// stream cut short reports a run still going, so it is settled from a later read rather than from
+// the partial usage; and a resumed stream (GET ?stream=true) reports the run without creating it.
+func TestInteractionsStreamObserverReportsRun(t *testing.T) {
+	created := []byte(`{"event_type":"interaction.created","interaction":{"id":"int_stream","agent":"deep-research-max-preview-04-2026","status":"in_progress"}}`)
+	statusUpdate := []byte(`{"event_type":"interaction.status_update","interaction_id":"int_stream","status":"in_progress","usage":{"total_input_tokens":100,"total_output_tokens":1,"total_tokens":101}}`)
 	completedEvt := []byte(`{"event_type":"interaction.completed","interaction":{"id":"int_stream","agent":"deep-research-max-preview-04-2026","status":"completed","usage":{"total_input_tokens":1000,"total_output_tokens":50,"total_tokens":1050}}}`)
-	o := gemini.NewInteractionsStreamObserver()
-	u, model := o.Finalize(o.Observe(completedEvt))
-	if u == nil || u.LLMUsage.TotalTokens != 1050 || model != "deep-research-max-preview-04-2026" {
-		t.Fatalf("usage=%+v model=%q", u, model)
+
+	run := func(req *schemas.BifrostPassthroughRequest, events ...[]byte) *schemas.BifrostPassthroughResponse {
+		o := gemini.NewInteractionsStreamObserver(req)
+		resp := &schemas.BifrostPassthroughResponse{}
+		for _, e := range events {
+			if !gemini.HasInteractionsStreamInfo(e) {
+				t.Fatalf("event skipped by the gate: %s", e)
+			}
+			if u := o.Observe(e); u != nil {
+				resp.PassthroughUsage = u
+			}
+		}
+		o.Finalize(resp)
+		return resp
+	}
+
+	create := &schemas.BifrostPassthroughRequest{Method: "POST", Path: "/interactions"}
+	resp := run(create, created, statusUpdate, completedEvt)
+	if resp.PassthroughUsage != nil || resp.ServedModel != "deep-research-max-preview-04-2026" {
+		t.Fatalf("finished stream: usage=%v model=%q, want no request usage and the agent", resp.PassthroughUsage, resp.ServedModel)
+	}
+	if job := resp.ProviderJob; job == nil || !job.Created || !job.Terminal || job.Usage == nil || job.Usage.LLMUsage.TotalTokens != 1050 {
+		t.Fatalf("finished stream: job=%+v, want the created, finished run with its full usage", resp.ProviderJob)
+	}
+
+	resp = run(create, created, statusUpdate)
+	if resp.PassthroughUsage != nil {
+		t.Fatalf("cut stream: usage=%v, want none billed on the request", resp.PassthroughUsage)
+	}
+	if job := resp.ProviderJob; job == nil || job.Terminal || job.ID != "int_stream" || job.PollPath != "/interactions/int_stream" {
+		t.Fatalf("cut stream: job=%+v, want a running run left for a poll to settle", resp.ProviderJob)
+	}
+
+	resume := &schemas.BifrostPassthroughRequest{Method: "GET", Path: "/interactions/int_stream"}
+	resp = run(resume, completedEvt)
+	if job := resp.ProviderJob; job == nil || job.Created || !job.Terminal {
+		t.Fatalf("resumed stream: job=%+v, want the finished run, not created by this read", resp.ProviderJob)
 	}
 }
 
-func BenchmarkInteractionsPassthroughUsage(b *testing.B) {
+func BenchmarkInteractionsPassthroughResult(b *testing.B) {
+	req := &schemas.BifrostPassthroughRequest{Method: "GET", Path: "/interactions/int_bench", APIVersion: "v1beta"}
 	body := []byte(`{"id":"int_bench","agent":"deep-research-preview-04-2026","status":"completed","usage":{"total_input_tokens":361700,"total_output_tokens":20000,"total_thought_tokens":13400,"total_tokens":437000}}`)
 	b.ReportAllocs()
 	for b.Loop() {
-		_, _ = gemini.InteractionsPassthroughUsage(body)
+		_, _, _ = gemini.InteractionsPassthroughResult(req, body)
 	}
 }
 
