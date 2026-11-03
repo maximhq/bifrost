@@ -109,6 +109,27 @@ Claude Code OAuth sign-in (`Authorization: Bearer sk-ant-oat…`) is handled sep
   - Request body `model` containing a Vertex resource path
   - OAuth token pattern typically used for Vertex (`Bearer ya29...`)
 
+#### Interactions and agents
+
+An Interactions create (`POST .../interactions`) can name an `agent`, such as `deep-research-preview-04-2026`, instead of a `model`. Bifrost treats the agent as the request's model for key selection, virtual-key model restrictions, and pricing. Polling, cancelling, or deleting a run (`GET`, `DELETE`, or `POST .../cancel` on `/interactions/{id}`) starts nothing new, so a virtual key with an allowed-models list can still do them.
+
+Google stores a run by default and reports its full usage on every read. Bifrost bills the run once, not once per read:
+
+- The create records the run. Its log row names the agent but carries no cost.
+- The first read that finds the run finished writes one cost row under the create. That read can be the create itself, a poll, a resumed stream, or a cancel. Budgets and rate limits are charged at that point, to the virtual key that created the run.
+- Later reads of the same run cost nothing.
+- If no client reads a run to the end, Bifrost polls it with the key that created it and bills it when it finishes. This covers a background Deep Research run you stopped polling, or a stream the upstream ended before the run finished.
+
+A create sent with `store: false` is not kept by Google, so nothing can read it again. It runs synchronously and is billed on the create response.
+
+Some runs are never charged to budgets or rate limits:
+
+- A run that finishes without reporting usage, or whose agent has no price yet. A run with no price is still logged with its tokens and no cost, and a later price backfill can fill the cost in.
+- A run deleted before Bifrost billed it. Once deleted, the run can no longer be read, so its usage is lost. Wait for a run to finish, or poll it once after it finishes, before you delete it.
+- A streaming create that the client disconnects from. Bifrost never sees the run finish or records it for polling.
+
+Billing a run needs a config store, the same as batch and video accounting. A run whose create did not go through Bifrost is never billed when you poll it.
+
 ---
 
 ## Usage Examples

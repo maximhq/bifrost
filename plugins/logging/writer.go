@@ -1369,6 +1369,12 @@ func applyServedModel(entry *logstore.Log, result *schemas.BifrostResponse) {
 	if entry == nil {
 		return
 	}
+	// A passthrough that named no model (an Interactions poll) is recorded under the model or agent
+	// the upstream reports running, so its records can be filtered and priced by it.
+	if entry.Model == "" && result != nil && result.PassthroughResponse != nil && result.PassthroughResponse.ServedModel != "" {
+		entry.Model = result.PassthroughResponse.ServedModel
+		return
+	}
 	served := result.ServedModel()
 	if served == "" || served == entry.Model {
 		return
