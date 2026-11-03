@@ -1434,3 +1434,48 @@ func TestClientIPColumnMigration_NonRollbackable(t *testing.T) {
 	require.NoError(t, db.Model(&MCPToolLog{}).Where("id = ?", "mcp-1").Pluck("client_ip", &stored).Error)
 	assert.Equal(t, "203.0.113.7", stored)
 }
+
+// TestUserEmailColumnMigration pins logs_add_user_email_column: existing tables gain user_email, a rerun is a no-op, and rollback drops it.
+func TestUserEmailColumnMigration(t *testing.T) {
+	ctx := context.Background()
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "user-email.db")}, testLogger{})
+	require.NoError(t, err)
+	db := store.db
+	for _, model := range userEmailColumnModels {
+		require.True(t, db.Migrator().HasColumn(model, "user_email"), "%T.user_email is created", model)
+		require.NoError(t, db.Migrator().DropColumn(model, "user_email"))
+	}
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "logs_add_user_email_column").Error)
+	require.NoError(t, migrationAddUserEmailColumn(ctx, db, testLogger{}))
+	for _, model := range userEmailColumnModels {
+		assert.True(t, db.Migrator().HasColumn(model, "user_email"), "%T.user_email is added to an existing table", model)
+	}
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "logs_add_user_email_column").Error)
+	require.NoError(t, migrationAddUserEmailColumn(ctx, db, testLogger{}), "a rerun over existing columns succeeds")
+
+	require.NoError(t, userEmailColumnMigration(ctx, testLogger{}).Rollback(db))
+	for _, model := range userEmailColumnModels {
+		assert.False(t, db.Migrator().HasColumn(model, "user_email"), "%T.user_email is dropped on rollback", model)
+	}
+}
+
+// TestUserEmailColumnMigration_NonRollbackable pins that rolling logs_add_user_email_column back is refused while any
+// table holds a recorded email: the snapshot cannot be rebuilt (relay exports carry only bodies), so the drop would delete it.
+func TestUserEmailColumnMigration_NonRollbackable(t *testing.T) {
+	ctx := context.Background()
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "user-email.db")}, testLogger{})
+	require.NoError(t, err)
+	db := store.db
+	require.NoError(t, db.Create(&MCPToolLog{ID: "mcp-1", ToolName: "echo", Status: "success", Timestamp: time.Now().UTC(), CreatedAt: time.Now().UTC()}).Error)
+	require.NoError(t, db.Model(&MCPToolLog{}).Where("id = ?", "mcp-1").Update("user_email", "ada@example.com").Error)
+
+	err = userEmailColumnMigration(ctx, testLogger{}).Rollback(db)
+	require.Error(t, err, "rollback must refuse while user_email holds a value")
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	for _, model := range userEmailColumnModels {
+		assert.True(t, db.Migrator().HasColumn(model, "user_email"), "%T.user_email survives a refused rollback", model)
+	}
+	var stored string
+	require.NoError(t, db.Model(&MCPToolLog{}).Where("id = ?", "mcp-1").Pluck("user_email", &stored).Error)
+	assert.Equal(t, "ada@example.com", stored)
+}

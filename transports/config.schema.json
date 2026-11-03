@@ -4080,6 +4080,11 @@
           "type": "integer",
           "minimum": 0,
           "description": "Days to retain log entries. 0 disables retention-based cleanup."
+        },
+        "capture_client_ip": {
+          "type": "boolean",
+          "default": false,
+          "description": "Record the caller's IP as client_ip on LLM, MCP and relay logs, in the order enterprise audit logs use: leftmost X-Forwarded-For, else X-Real-IP, else the TCP peer. The headers are caller-supplied and not verified; to trust the value, run behind a proxy that overwrites them and block direct access to Bifrost. Off by default. When off, new logs leave client_ip empty in the logs database and in object storage; turning it off does not clear values already recorded. Takes effect on restart."
         }
       },
       "additionalProperties": false
