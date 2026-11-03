@@ -968,6 +968,15 @@ func (h *LoggingHandler) getLogByID(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "log id is required")
 		return
 	}
+	// The row's timestamp from the list response, so a ClickHouse store can prune the lookup instead of scanning logs.
+	if raw := string(ctx.QueryArgs().Peek("timestamp")); raw != "" {
+		ts, err := time.Parse(time.RFC3339Nano, raw)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, "invalid timestamp: must be RFC 3339")
+			return
+		}
+		ctx.SetUserValue(logstore.LogTimestampContextKey, ts)
+	}
 
 	log, err := h.logManager.GetLog(ctx, id)
 	if err != nil {

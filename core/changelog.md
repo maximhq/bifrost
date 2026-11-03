@@ -1,1 +1,2 @@
+- fix: anthropic - Responses requests drop empty text blocks instead of forwarding them for a 400 (#9318) [@david-choi-querypie](https://github.com/david-choi-querypie)
 - [fix]: Cohere chat completion streams report the cached prompt tokens from the final message-end usage in `usage.prompt_tokens_details.cached_read_tokens`, as non-streaming Cohere chat and both Cohere Responses paths already do (thanks [@pcbeingused333](https://github.com/pcbeingused333)!) (#8672)

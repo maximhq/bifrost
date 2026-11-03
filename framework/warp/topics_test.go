@@ -666,6 +666,20 @@ func TestTopicPropertiesAreReadWhateverTheStoreReturns(t *testing.T) {
 	}
 	require.Zero(t, propertyInt(math.NaN()))
 	require.Zero(t, propertyInt("NaN"))
+	// Cover the integer and floating-point bounds on both 32-bit and 64-bit
+	// builds, including values that reach the final narrowing through int64.
+	require.Equal(t, math.MaxInt, propertyInt(int64(math.MaxInt64)))
+	require.Equal(t, math.MinInt, propertyInt(int64(math.MinInt64)))
+	require.Equal(t, math.MaxInt, propertyInt(int64(math.MaxInt)))
+	require.Equal(t, math.MinInt, propertyInt(int64(math.MinInt)))
+	require.Equal(t, math.MaxInt, propertyInt(float64(math.MaxInt)))
+	require.Equal(t, math.MinInt, propertyInt(float64(math.MinInt)))
+	belowUpper := math.Nextafter(float64(math.MaxInt), math.Inf(-1))
+	require.Equal(t, int(belowUpper), propertyInt(belowUpper))
+	aboveLower := math.Nextafter(float64(math.MinInt), math.Inf(1))
+	require.Equal(t, int(aboveLower), propertyInt(aboveLower))
+	require.Equal(t, math.MaxInt, propertyInt(math.Nextafter(float64(math.MaxInt), math.Inf(1))))
+	require.Equal(t, math.MinInt, propertyInt(math.Nextafter(float64(math.MinInt), math.Inf(-1))))
 	for _, value := range []interface{}{true, "true", "TRUE", "1", 1, int64(1), float64(1)} {
 		require.True(t, propertyBool(value), "%#v", value)
 	}
