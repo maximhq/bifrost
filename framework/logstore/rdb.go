@@ -617,47 +617,73 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	}
 	if len(filters.MetadataFilters) > 0 {
 		dialect := s.db.Dialector.Name()
-		// Guard must match the partial-index predicate so the planner uses the GIN index.
-		// SQLite does not support IS JSON OBJECT, so fall back to the equivalent json_type check.
-		switch dialect {
-		case "postgres":
-			baseQuery = baseQuery.Where("metadata IS NOT NULL AND metadata IS JSON OBJECT")
-		case "clickhouse":
-			baseQuery = baseQuery.Where("metadata IS NOT NULL AND isValidJSON(metadata)")
-		default:
-			baseQuery = baseQuery.Where("metadata IS NOT NULL AND json_valid(metadata) AND json_type(metadata) = 'object'")
-		}
-		for key, value := range filters.MetadataFilters {
-			if !isValidMetadataKey(key) {
+		// Values for one key are alternatives (OR); separate keys must all match (AND). Invalid keys
+		// are dropped before anything is added, so a filter that ends up empty adds no guard either.
+		var metadataConds []string
+		var metadataArgs [][]interface{}
+		for key, values := range filters.MetadataFilters {
+			if !isValidMetadataKey(key) || len(values) == 0 {
 				continue
 			}
+			if len(values) > MaxMetadataFilterValuesPerKey {
+				values = values[:MaxMetadataFilterValuesPerKey]
+			}
+			conds := make([]string, 0, len(values))
+			args := make([]interface{}, 0, len(values)*4)
+			for _, value := range values {
+				cond, condArgs := metadataValueCondition(dialect, key, value)
+				conds = append(conds, cond)
+				args = append(args, condArgs...)
+			}
+			metadataConds = append(metadataConds, "("+strings.Join(conds, " OR ")+")")
+			metadataArgs = append(metadataArgs, args)
+		}
+		if len(metadataConds) > 0 {
+			// Guard must match the partial-index predicate so the planner uses the GIN index.
+			// SQLite does not support IS JSON OBJECT, so fall back to the equivalent json_type check.
 			switch dialect {
 			case "postgres":
-				// Use @> containment operator to leverage GIN index on metadata::jsonb.
-				// Metadata values always originate from HTTP headers and are stored as JSON
-				// strings — always match as a string to avoid type mismatch with jsonb.
-				jsonFragment := fmt.Sprintf(`{%q: %q}`, key, value)
-				baseQuery = baseQuery.Where("metadata::jsonb @> ?::jsonb", jsonFragment)
+				baseQuery = baseQuery.Where("metadata IS NOT NULL AND metadata IS JSON OBJECT")
 			case "clickhouse":
-				// Metadata values are stored as JSON strings (see postgres note);
-				// match them as strings via JSONExtractString.
-				baseQuery = baseQuery.Where("JSONExtractString(metadata, ?) = ?", key, value)
+				baseQuery = baseQuery.Where("metadata IS NOT NULL AND isValidJSON(metadata)")
 			default:
-				// SQLite: quote the member name so dots/hyphens stay part of the key
-				path := `$."` + key + `"`
-				if value == "true" {
-					// json_extract returns 1 for true, but json_type returns 'true'
-					baseQuery = baseQuery.Where("json_type(metadata, ?) = 'true'", path)
-				} else if value == "false" {
-					baseQuery = baseQuery.Where("json_type(metadata, ?) = 'false'", path)
-				} else {
-					// Numeric and string values: compare both as-is and as text
-					baseQuery = baseQuery.Where("json_extract(metadata, ?) = ? OR CAST(json_extract(metadata, ?) AS TEXT) = ?", path, value, path, value)
-				}
+				baseQuery = baseQuery.Where("metadata IS NOT NULL AND json_valid(metadata) AND json_type(metadata) = 'object'")
+			}
+			for i, cond := range metadataConds {
+				baseQuery = baseQuery.Where(cond, metadataArgs[i]...)
 			}
 		}
 	}
 	return baseQuery
+}
+
+// metadataValueCondition is the SQL predicate (with its args) matching rows whose metadata holds
+// value under key. key must already have passed isValidMetadataKey.
+func metadataValueCondition(dialect, key, value string) (string, []interface{}) {
+	switch dialect {
+	case "postgres":
+		// Use @> containment operator to leverage GIN index on metadata::jsonb.
+		// Metadata values always originate from HTTP headers and are stored as JSON
+		// strings — always match as a string to avoid type mismatch with jsonb.
+		return "metadata::jsonb @> ?::jsonb", []interface{}{fmt.Sprintf(`{%q: %q}`, key, value)}
+	case "clickhouse":
+		// Metadata values are stored as JSON strings (see postgres note);
+		// match them as strings via JSONExtractString.
+		return "JSONExtractString(metadata, ?) = ?", []interface{}{key, value}
+	default:
+		// SQLite: quote the member name so dots/hyphens stay part of the key
+		path := `$."` + key + `"`
+		switch value {
+		case "true":
+			// json_extract returns 1 for true, but json_type returns 'true'
+			return "json_type(metadata, ?) = 'true'", []interface{}{path}
+		case "false":
+			return "json_type(metadata, ?) = 'false'", []interface{}{path}
+		default:
+			// Numeric and string values: compare both as-is and as text
+			return "(json_extract(metadata, ?) = ? OR CAST(json_extract(metadata, ?) AS TEXT) = ?)", []interface{}{path, value, path, value}
+		}
+	}
 }
 
 // Guardrail outcome values accepted by SearchFilters.GuardrailOutcomes.

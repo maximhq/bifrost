@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"database/sql/driver"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -168,12 +169,54 @@ type SearchFilters struct {
 	// detect-only match in guardrail_debug. Several values are OR-ed together.
 	GuardrailOutcomes []string          `json:"guardrail_outcomes,omitempty"`
 	ContentSearch     string            `json:"content_search,omitempty"`
-	MetadataFilters   map[string]string `json:"metadata_filters,omitempty"` // key=metadataKey, value=metadataValue for filtering by metadata
+	MetadataFilters   MetadataFilterMap `json:"metadata_filters,omitempty"` // metadata key to accepted values: any value per key, every key
 	// RankingLimit caps the number of rows returned by the ranking queries
 	// (GetModelRankings / GetUserRankings / GetDimensionRankings). nil means
 	// "use the store default" (defaultMaxRankingsLimit); a value <= 0 means
 	// "return every ranked entity", which is what the dashboard export uses.
 	RankingLimit *int `json:"ranking_limit,omitempty"`
+}
+
+// MaxMetadataFilterValuesPerKey caps the accepted values for one metadata key. Each value is one
+// OR term in the search, and SQLite fails a query whose expression tree is deeper than 1000.
+const MaxMetadataFilterValuesPerKey = 100
+
+// MetadataFilterMap maps a metadata key to the values a row may hold for it.
+type MetadataFilterMap map[string][]string
+
+// UnmarshalJSON reads each key as an array of strings or as one bare string. The bare form is how
+// metadata filters were written before a key could hold several values, and cost-recalc jobs queued
+// back then still carry it. Empty strings are dropped, and so is a key left with no values.
+func (m *MetadataFilterMap) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if raw == nil {
+		*m = nil
+		return nil
+	}
+	out := make(MetadataFilterMap, len(raw))
+	for key, value := range raw {
+		var values []string
+		var single string
+		if err := json.Unmarshal(value, &single); err == nil {
+			values = []string{single}
+		} else if err := json.Unmarshal(value, &values); err != nil {
+			return fmt.Errorf("metadata filter %q must be a string or an array of strings", key)
+		}
+		kept := values[:0]
+		for _, v := range values {
+			if v != "" {
+				kept = append(kept, v)
+			}
+		}
+		if len(kept) > 0 {
+			out[key] = kept
+		}
+	}
+	*m = out
+	return nil
 }
 
 // SessionGroupingActive reports whether this query should collapse each
