@@ -3521,17 +3521,10 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 				Name: schemas.Ptr(string(AnthropicToolNameWebSearch)),                  // "web_search"
 			}
 
-			// Deliver the query whole in content_block_start (no input_json_delta),
-			// matching native: a web_search is spawned atomically (in PTC, by the
-			// sandbox), so Anthropic never streams its input. Fall back to empty.
+			// Direct searches stream their query after this event; programmatic
+			// searches may already have it. Emit both at output_item.done so the
+			// client receives the complete input exactly once, before block stop.
 			contentBlock.Input = json.RawMessage("{}")
-			if tm := bifrostResp.Item.ResponsesToolMessage; tm != nil && tm.Action != nil &&
-				tm.Action.ResponsesWebSearchToolCallAction != nil &&
-				tm.Action.ResponsesWebSearchToolCallAction.Query != nil {
-				if inputBytes, err := providerUtils.MarshalSorted(map[string]interface{}{"query": *tm.Action.ResponsesWebSearchToolCallAction.Query}); err == nil {
-					contentBlock.Input = json.RawMessage(inputBytes)
-				}
-			}
 
 			// Preserve the caller (set when this search was spawned from inside the
 			// code execution sandbox — programmatic tool calling).
@@ -4011,8 +4004,25 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 				wsAction = tm.Action.ResponsesWebSearchToolCallAction
 			}
 
-			// 1. Stop the server_tool_use. The query was already delivered whole in
-			// content_block_start (no input_json_delta), matching native.
+			// Deliver the completed query before closing the server_tool_use.
+			// It may not have been available on output_item.added.
+			if wsAction != nil && wsAction.Query != nil {
+				input := struct {
+					Query string `json:"query"`
+				}{Query: *wsAction.Query}
+				if inputBytes, err := providerUtils.MarshalSorted(input); err == nil {
+					events = append(events, &AnthropicStreamEvent{
+						Type:  AnthropicStreamEventTypeContentBlockDelta,
+						Index: serverIdx,
+						Delta: &AnthropicStreamDelta{
+							Type:        AnthropicStreamDeltaTypeInputJSON,
+							PartialJSON: schemas.Ptr(string(inputBytes)),
+						},
+					})
+				}
+			}
+
+			// 1. Stop the server_tool_use after its input has been delivered.
 			events = append(events, &AnthropicStreamEvent{
 				Type:  AnthropicStreamEventTypeContentBlockStop,
 				Index: serverIdx,
