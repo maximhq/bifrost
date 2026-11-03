@@ -303261,7 +303261,7 @@
     },
     {
       "name": "304. Gemini Interactions agent runs on /genai_passthrough (interactions agent governance) [SERIAL]",
-      "description": "Google's Interactions API runs server-side agents such as Deep Research. The create names an agent (deep-research-preview-04-2026) instead of a model, runs in the background, and is followed by GET /interactions/{id} polls until it completes. Bifrost read only \"model\" from passthrough bodies, so agent runs logged no model, were never priced, and were never checked against a virtual key's allowed models (a restricted key refused them for naming no model; an open one ran any agent). Polls name no model at all, so a restricted key refused them too.\n\nThe genai passthrough router now reads \"agent\" as the model on an Interactions create and marks polls, cancels and deletes model-free.\n\nThe cases use a virtual key restricted to {{genaiModel}} and the deep-research-preview-04-2026 agent. The refused agent create and the malformed agent body never reach a paid model, and the allowed agent create sends a body Google rejects before any run starts. The billed create uses {{genaiModel}} with a one-word reply.",
+      "description": "Google's Interactions API runs server-side agents such as Deep Research. The create names an agent (deep-research-preview-04-2026) instead of a model, runs in the background, and is followed by GET /interactions/{id} polls until it completes. Bifrost read only \"model\" from passthrough bodies, so agent runs logged no model, were never priced, and were never checked against a virtual key's allowed models (a restricted key refused them for naming no model; an open one ran any agent). Polls name no model at all, so a restricted key refused them too.\n\nThe genai passthrough router now reads \"agent\" as the model on an Interactions create and marks polls, cancels and deletes model-free.\n\nThe Gemini provider names the agent or model each Interactions response reports, so poll records carry it and can be priced.\n\nThe cases use a virtual key restricted to {{genaiModel}} and the deep-research-preview-04-2026 agent. The refused agent create and the malformed agent body never reach a paid model, and the allowed agent create sends a body Google rejects before any run starts. The billed create uses {{genaiModel}} with a one-word reply.",
       "item": [
         {
           "name": "gemini interactions agent governance setup: create a virtual key that allows the genai model and one agent - interactions agent governance",
@@ -303602,7 +303602,7 @@
           }
         },
         {
-          "name": "gemini genai-model interactions poll via /genai_passthrough/v1beta: a restricted key can read the run - interactions agent governance",
+          "name": "gemini genai-model interactions poll via /genai_passthrough/v1beta: a restricted key can read the run, the row names the model - interactions agent governance",
           "event": [
             {
               "listen": "test",
@@ -303620,7 +303620,22 @@
                   "  pm.expect(j.status, txt.slice(0, 600)).to.eql('completed');",
                   "  pm.expect(j.usage, txt.slice(0, 600)).to.be.an('object');",
                   "});",
-                  "var reqId = pm.response.headers.get('x-bifrost-request-id');"
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + encodeURIComponent(reqId), method: 'GET' }, function (err, res) {",
+                  "    var row = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (row && row.status && row.status !== 'processing') {",
+                  "      // Before: the row had an empty model and no way to be priced.",
+                  "      pm.test('gemini interactions poll: the log row names the model the run reports', function () {",
+                  "        pm.expect(row.model, JSON.stringify(row).slice(0, 600)).to.eql(pm.variables.get('genaiModel'));",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('gemini interactions poll: log row written', function () { pm.expect.fail('log ' + reqId + ' not written after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
                 ]
               }
             }

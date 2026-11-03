@@ -289,31 +289,59 @@ type geminiInteractionsUsage struct {
 	CachedTokens  int `json:"total_cached_tokens"`
 }
 
-type geminiInteractionsWrapper struct {
+type geminiInteractionsRun struct {
+	Agent       string                   `json:"agent"`
+	Model       string                   `json:"model"`
 	Usage       *geminiInteractionsUsage `json:"usage"`
 	ServiceTier *string                  `json:"service_tier"`
-	// Streaming InteractionCompletedEvent nests the completed interaction object.
-	Interaction *struct {
-		Usage       *geminiInteractionsUsage `json:"usage"`
-		ServiceTier *string                  `json:"service_tier"`
-	} `json:"interaction"`
 }
 
-func extractGeminiInteractionsUsage(body []byte) *schemas.BifrostPassthroughUsage {
-	if len(body) == 0 {
-		return nil
-	}
+type geminiInteractionsWrapper struct {
+	geminiInteractionsRun
+	// Streaming interaction.created / interaction.completed events nest the interaction object.
+	Interaction *geminiInteractionsRun `json:"interaction"`
+}
 
+// InteractionsPassthroughInfo is what one Interactions response body or stream event says about
+// the run it belongs to. Usage is nil when the body reports none.
+type InteractionsPassthroughInfo struct {
+	Model string // the agent that ran, else the model
+	Usage *schemas.BifrostPassthroughUsage
+}
+
+// ParseInteractionsPassthrough decodes an Interactions response body or SSE event once, for its
+// agent or model and its usage.
+func ParseInteractionsPassthrough(body []byte) InteractionsPassthroughInfo {
+	var info InteractionsPassthroughInfo
+	if len(body) == 0 {
+		return info
+	}
 	var w geminiInteractionsWrapper
 	if err := sonic.Unmarshal(body, &w); err != nil {
-		return nil
+		return info
 	}
-
+	run := w.geminiInteractionsRun
+	if w.Interaction != nil {
+		run = *w.Interaction
+	}
+	info.Model = run.Agent
+	if info.Model == "" {
+		info.Model = run.Model
+	}
 	// Streaming takes priority: nested under "interaction" with a non-zero total.
 	u, tier := w.Usage, w.ServiceTier
 	if w.Interaction != nil && w.Interaction.Usage != nil && w.Interaction.Usage.TotalTokens > 0 {
 		u, tier = w.Interaction.Usage, w.Interaction.ServiceTier
 	}
+	info.Usage = interactionsUsage(u, tier)
+	return info
+}
+
+func extractGeminiInteractionsUsage(body []byte) *schemas.BifrostPassthroughUsage {
+	return ParseInteractionsPassthrough(body).Usage
+}
+
+func interactionsUsage(u *geminiInteractionsUsage, tier *string) *schemas.BifrostPassthroughUsage {
 	if u == nil || u.TotalTokens == 0 {
 		return nil
 	}
@@ -341,6 +369,39 @@ func extractGeminiInteractionsUsage(body []byte) *schemas.BifrostPassthroughUsag
 		result.ServiceTier = &t
 	}
 	return result
+}
+
+// InteractionsPassthroughUsage reads a non-streaming Interactions response for the usage to bill
+// and the agent or model that ran. The served model is returned even when the body reports no
+// usage, so every poll's record names what ran.
+func InteractionsPassthroughUsage(body []byte) (*schemas.BifrostPassthroughUsage, string) {
+	info := ParseInteractionsPassthrough(body)
+	return info.Usage, info.Model
+}
+
+// InteractionsStreamObserver follows an Interactions SSE stream (a create with stream=true, or a GET
+// resuming one) for the agent or model it reports running.
+type InteractionsStreamObserver struct {
+	model string
+}
+
+// NewInteractionsStreamObserver starts observing one stream.
+func NewInteractionsStreamObserver() *InteractionsStreamObserver {
+	return &InteractionsStreamObserver{}
+}
+
+// Observe records one usage-bearing event and returns its running usage.
+func (o *InteractionsStreamObserver) Observe(event []byte) *schemas.BifrostPassthroughUsage {
+	info := ParseInteractionsPassthrough(event)
+	if info.Model != "" {
+		o.model = info.Model
+	}
+	return info.Usage
+}
+
+// Finalize names the model the stream reported running; the observed usage is billed as is.
+func (o *InteractionsStreamObserver) Finalize(usage *schemas.BifrostPassthroughUsage) (*schemas.BifrostPassthroughUsage, string) {
+	return usage, o.model
 }
 
 // ---- :predictLongRunning (Veo video generation) ----
