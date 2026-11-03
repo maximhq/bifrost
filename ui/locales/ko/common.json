@@ -424,6 +424,8 @@
 		"bufferSizeMustBeLessThanOrEqualTo1000": "버퍼 크기는 1000 이하여야 해요",
 		"proxyUrlIsRequiredWhenUsingHttpOrSocks5Proxy": "HTTP 또는 SOCKS5 프록시를 사용할 때는 프록시 URL이 필요해요",
 		"mustBeAValidUrlEGHttpProxyExample": "올바른 URL이어야 해요 (예: http://proxy.example.com:8080)",
+		"socks5ProxyUrlMustStartWithSocks5Scheme": "SOCKS5 프록시 URL은 socks5:// 또는 socks5h://로 시작해야 해요",
+		"httpProxyUrlMustStartWithHttpScheme": "HTTP 프록시 URL은 http:// 또는 https://로 시작해야 해요",
 		"setARoleAnIndexOrBothAPointWith": "역할, 인덱스 또는 둘 다 설정하세요. 둘 다 없는 지점은 아무것과도 일치하지 않아요",
 		"use164LettersDigitsOr": "1~64자의 영문자, 숫자, _ 또는 -를 사용하세요",
 		"pickAnMcpServer": "MCP 서버를 선택하세요",
