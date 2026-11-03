@@ -476,6 +476,20 @@ func extractUsage(u resolvedUsage, contentType string, body []byte, initial usag
 	return u.build(f)
 }
 
+// usageBody returns the reply body usage is read from: body decoded per its Content-Encoding, as the
+// LLM path decodes a provider reply (CheckAndDecodeBody), or body itself when it names no coding or
+// does not decode, so it is measured as it came, as it was before. body is never modified.
+func usageBody(contentEncoding string, body []byte) []byte {
+	if contentEncoding == "" || len(body) == 0 {
+		return body
+	}
+	decoded, err := providerUtils.DecodeContentEncodedBody(body, contentEncoding)
+	if err != nil {
+		return body
+	}
+	return decoded
+}
+
 // hasUsageEvent is the cheap gate for streams: only events that carry one of the mapped fields are
 // fully parsed.
 func (u resolvedUsage) hasUsageEvent(event []byte) bool {

@@ -99,6 +99,12 @@ func (p plan) readsReplyBody() bool {
 	return p.billing && (len(p.usage.eventPaths) > 0 || (p.route != nil && p.route.job != nil))
 }
 
+// measuresReplyBody reports whether a billable call reads anything from its reply's body: what
+// readsReplyBody reads, or the reply's size (a response-side body_bytes or body_chars measure).
+func (p plan) measuresReplyBody() bool {
+	return p.readsReplyBody() || (p.billing && p.usage.wholeBodyResponse())
+}
+
 // streamMode is how a request's reply is relayed.
 type streamMode int
 
@@ -393,6 +399,7 @@ type bufferedResult struct {
 	status      int
 	headers     map[string]string
 	contentType string
+	encoding    string // the reply's Content-Encoding, left on it when net/http did not decode it
 	body        []byte
 	latency     time.Duration
 }
@@ -438,6 +445,7 @@ func (e *endpoint) readBuffered(resp *http.Response, start time.Time, bounded bo
 		status:      resp.StatusCode,
 		headers:     e.responseHeaders(resp),
 		contentType: resp.Header.Get("Content-Type"),
+		encoding:    resp.Header.Get("Content-Encoding"),
 		body:        body,
 		latency:     time.Since(start),
 	}, nil
@@ -491,6 +499,7 @@ func (e *endpoint) readOrHandOff(resp *http.Response, start time.Time, threshold
 		status:      resp.StatusCode,
 		headers:     e.responseHeaders(resp),
 		contentType: resp.Header.Get("Content-Type"),
+		encoding:    resp.Header.Get("Content-Encoding"),
 		body:        ahead,
 		latency:     latency,
 	}, nil, false, nil
