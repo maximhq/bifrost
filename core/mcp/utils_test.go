@@ -753,3 +753,35 @@ func BenchmarkDescribeUnservableInput(b *testing.B) {
 		})
 	}
 }
+
+// A gateway caller's capabilities are declared upstream only where Bifrost can relay them.
+func TestRelayableCapabilities(t *testing.T) {
+	const ui = "io.modelcontextprotocol/ui"
+	elicitation := &mcp.ElicitationCapability{}
+	sampling := &mcp.SamplingCapability{}
+	cases := []struct {
+		name            string
+		caller, relayed mcp.ClientCapabilities
+		want            mcp.ClientCapabilities
+	}{
+		{name: "nothing relayed", caller: mcp.ClientCapabilities{Elicitation: elicitation, Sampling: sampling}, want: mcp.ClientCapabilities{}},
+		{name: "relayed and declared",
+			caller:  mcp.ClientCapabilities{Elicitation: elicitation, Sampling: sampling},
+			relayed: mcp.ClientCapabilities{Elicitation: &mcp.ElicitationCapability{}},
+			want:    mcp.ClientCapabilities{Elicitation: elicitation}},
+		{name: "relayed but not declared", relayed: mcp.ClientCapabilities{Elicitation: &mcp.ElicitationCapability{}}, want: mcp.ClientCapabilities{}},
+		{name: "extensions by name",
+			caller:  mcp.ClientCapabilities{Extensions: map[string]any{ui: map[string]any{"mimeTypes": []any{"text/html;profile=mcp-app"}}, "other": map[string]any{}}},
+			relayed: mcp.ClientCapabilities{Extensions: map[string]any{ui: map[string]any{}}},
+			want:    mcp.ClientCapabilities{Extensions: map[string]any{ui: map[string]any{"mimeTypes": []any{"text/html;profile=mcp-app"}}}}},
+		{name: "experimental and tasks are never relayed",
+			caller:  mcp.ClientCapabilities{Experimental: map[string]any{"x": true}, Tasks: &mcp.TasksCapability{}},
+			relayed: mcp.ClientCapabilities{Experimental: map[string]any{"x": true}, Tasks: &mcp.TasksCapability{}},
+			want:    mcp.ClientCapabilities{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, relayableCapabilities(tc.caller, tc.relayed))
+		})
+	}
+}

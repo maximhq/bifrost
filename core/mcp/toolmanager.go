@@ -937,7 +937,7 @@ func (m *ToolsManager) executeToolInternal(
 		toolCtx,
 		func() error {
 			var err error
-			toolResponse, err = CallToolWithin(toolCtx, clientConn, callRequest)
+			toolResponse, err = CallToolWithin(UpstreamCallContext(toolCtx), clientConn, callRequest)
 			return err
 		},
 		ToolCallRetryConfig,
@@ -1134,7 +1134,7 @@ func (m *ToolsManager) attemptCallFailureRecovery(
 		},
 		func(ctx context.Context, conn *client.Client) error {
 			var err error
-			retryResponse, err = CallToolWithin(ctx, conn, callRequest)
+			retryResponse, err = CallToolWithin(UpstreamCallContext(ctx), conn, callRequest)
 			return err
 		})
 	if !recovered {
