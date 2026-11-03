@@ -72,6 +72,7 @@ type ChannelMessage struct {
 	Err            chan schemas.BifrostError
 	queueSpan      schemas.SpanHandle // "queue-wait" span opened at enqueue, closed when a worker dequeues (or on release if the send never landed)
 	sentAt         time.Time          // set by the worker immediately before sending the result/error, so tryRequest can measure the worker->caller goroutine-hop latency ("worker-handoff")
+	enqueuedAt     time.Time          // set when the message is built, just before the caller starts its (possibly blocking) send; the worker reads it on dequeue to record the attempt's queue wait
 	// firstTokenTimeout is this stream attempt's TTFT deadline, or 0 for none.
 	// handleStreamRequest decides it per attempt (never on the last one), so it
 	// travels on the message rather than on the context the attempts share.
@@ -8214,6 +8215,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		case r := <-pq.queue:
 			req = r
 			bifrost.endQueueWaitSpan(req)
+			schemas.RecordQueueWait(req.Context, time.Since(req.enqueuedAt))
 		case <-pq.done:
 			// Provider is shutting down. Drain any buffered requests and send
 			// back errors so callers are not left blocked on their response channel.
@@ -10849,6 +10851,8 @@ func (bifrost *Bifrost) getChannelMessage(req schemas.BifrostRequest) *ChannelMe
 	// stale worker-handoff duration on a path that never re-stamps it (e.g. the
 	// shutdown-drain error sends). The worker sets sentAt fresh before each normal send.
 	msg.sentAt = time.Time{}
+	// Both callers enqueue right after this; the clock covers a blocking send on a full queue.
+	msg.enqueuedAt = time.Now()
 
 	// Conditionally allocate ResponseStream for streaming requests only
 	if IsStreamRequestType(req.RequestType) {
@@ -10909,6 +10913,7 @@ func (bifrost *Bifrost) releaseChannelMessage(msg *ChannelMessage) {
 	// Close the queue-wait span if the message never reached a worker (send failed
 	// on a shutdown/drop path). No-op when the worker already closed it.
 	bifrost.endQueueWaitSpan(msg)
+	msg.enqueuedAt = time.Time{}
 
 	// Drain any undelivered values before pooling so an idle pooled channel
 	// doesn't pin a full response/error until its next reuse. getChannelMessage

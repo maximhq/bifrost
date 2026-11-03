@@ -52,7 +52,9 @@ These metrics track requests forwarded to AI providers:
 | `bifrost_upstream_requests_total`  | Counter   | Total requests forwarded to upstream providers                    | Base Labels, custom labels                            |
 | `bifrost_success_requests_total`   | Counter   | Total successful requests to upstream providers                   | Base Labels, custom labels                            |
 | `bifrost_error_requests_total`     | Counter   | Total failed requests, by effective status and normalized reason   | Base Labels, `status_code`, `error_type`, custom labels |
-| `bifrost_upstream_latency_seconds` | Histogram | Latency of upstream provider requests                             | Base Labels, `is_success`, custom labels              |
+| `bifrost_upstream_latency_seconds` | Histogram | Time one attempt spent in outbound HTTP calls and in reading the provider's stream, retries included, including media URL fetches. Excludes queue wait, retry backoff, key selection, plugin hooks and cost calculation | Base Labels, `is_success`, custom labels              |
+| `bifrost_upstream_queue_wait_seconds`       | Histogram | Time one attempt waited for a provider worker, including a blocking enqueue on a full queue | Base Labels, custom labels                            |
+| `bifrost_turn_duration_seconds` | Histogram | Time between the telemetry plugin's pre and post LLM hooks, for requests that open no attempt window (WebSocket and realtime turns). Not provider latency | Base Labels, `is_success`, custom labels |
 | `bifrost_overhead_latency_microseconds`   | Histogram | Total Bifrost overhead per request in microseconds (Bifrost's own work, excluding upstream provider time) | Base Labels, custom labels                            |
 | `bifrost_overhead_component_microseconds` | Histogram | Same overhead broken down by internal component. Opt-in via `overhead_breakdown_enabled`; populated only when tracing is active | Base Labels, `overhead_component`, custom labels      |
 | `bifrost_input_tokens_total`       | Counter   | Total input tokens sent to upstream providers                     | Base Labels, custom labels                            |
@@ -67,6 +69,10 @@ These metrics track requests forwarded to AI providers:
 | `bifrost_routing_embedding_cost_total` | Counter | Cost in USD of semantic complexity routing embeddings | `provider`, `model`, `phase` (`request` or `warmup`) |
 | `bifrost_routing_llm_requests_total` | Counter | Chat completions made by the semantic router's LLM fallback | `provider`, `model` |
 | `bifrost_routing_llm_cost_total` | Counter | Cost in USD of those LLM fallback completions | `provider`, `model` |
+
+<Warning>
+`bifrost_upstream_latency_seconds` now measures the time an attempt spends in outbound HTTP calls and in reading the provider's stream, which includes media URL fetches. It used to measure the whole time between the plugin's pre and post hooks, so it also included queue wait, retry backoff, other plugins' hooks and cost calculation, and it rose when a provider queue filled even though the provider was healthy. Individual values get lower. Averages and quantiles can move either way, because an attempt that made no outbound call (a cache hit or a request rejected before dispatch) used to add a fast sample and now adds none. Queue wait moved to `bifrost_upstream_queue_wait_seconds`. Alerts or panels that used the old metric to see queueing should read the new histogram. Requests that open no attempt window, such as native WebSocket and realtime turns, now report `bifrost_turn_duration_seconds`, which runs from the pre-hook to the post-hook and stops before the metric work that the old histogram also included. The metric name, labels and buckets are unchanged.
+</Warning>
 
 Base Labels:
 
