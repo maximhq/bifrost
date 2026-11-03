@@ -246,9 +246,9 @@ func (provider *MachGenProvider) handleImageTask(ctx *schemas.BifrostContext, ke
 
 	bifrostResp := ToBifrostImageGenerationResponse(task, image)
 	bifrostResp.Created = start.Unix()
-	if bifrostResp.Model == "" {
-		bifrostResp.Model = model
-	}
+	// MachGen reports a model's wire id, which differs from an alias the caller
+	// may have sent (MiniMax-H3-Turbo -> MiniMax-H3-MultiMax), so echo the request.
+	bifrostResp.Model = model
 	bifrostResp.ExtraFields.Latency = time.Since(start).Milliseconds()
 
 	if sendBackRawRequest {

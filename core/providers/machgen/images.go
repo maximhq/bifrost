@@ -107,8 +107,5 @@ func ToBifrostImageGenerationResponse(task *MachGenTaskStatusResponse, image []b
 			Index:   0,
 		}},
 	}
-	if task.Metadata != nil {
-		response.Model = task.Metadata.Model
-	}
 	return response
 }

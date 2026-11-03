@@ -88,6 +88,8 @@ curl http://localhost:8080/v1/videos \
 
 MachGen's native statuses are `PENDING`, `RUNNING`, `COMPLETED` and `FAILED`. A failed task carries MachGen's `error_msg` in `error.message`.
 
+A few MachGen models have a second name. For those, `model` on a retrieved video is MachGen's internal id, for example `MiniMax-H3-MultiMax` for a video requested as `MiniMax-H3-Turbo`. Image responses always echo the model you sent.
+
 ## Retrieve / Download
 
 | Operation | Endpoint | Notes |
