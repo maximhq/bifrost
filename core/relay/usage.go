@@ -181,12 +181,9 @@ func (u resolvedUsage) requestUnits(body []byte) usageFields {
 	return f
 }
 
-// maxRequestJSONDepth bounds the duplicate-key walk over a billed request body.
-const maxRequestJSONDepth = 64
-
 // requestBodyError refuses a request that a billable route reading its quantity at a path in the
 // caller's body (Translate's Text) cannot measure unambiguously: a body that is not JSON, which
-// would otherwise bill nothing, and a body naming one key twice in an object, case-insensitively,
+// would otherwise bill nothing, and a body naming a key on the billed path twice, case-insensitively,
 // which the relay would read first-wins while most upstream decoders read last-wins or fold case.
 // Whole-body measures need no check.
 func (u resolvedUsage) requestBodyError(body []byte) error {
@@ -197,8 +194,8 @@ func (u resolvedUsage) requestBodyError(body []byte) error {
 	if !gjson.ValidBytes(body) {
 		return errors.New("this route bills on " + u.unitsPath + " in the request body, which must be JSON")
 	}
-	if hasDuplicateKey(gjson.ParseBytes(body), 0) {
-		return errors.New("the request body names a key more than once (case-insensitively) or nests deeper than 64 levels, so the billed quantity is ambiguous")
+	if pathHasDuplicateKey(body, u.unitsPath) {
+		return errors.New("the request body names a key on " + u.unitsPath + " more than once (case-insensitively), so the billed quantity is ambiguous")
 	}
 	if caseVariantOnly(body, u.unitsPath) {
 		// gjson matches keys exactly while most upstream decoders fold case, so a lone "text" for a
@@ -280,32 +277,87 @@ func (u resolvedUsage) unitCharge(f usageFields) float64 {
 	return u.billedUnits(f.units) * u.costPerUnit
 }
 
-// hasDuplicateKey reports whether any object in v names a key twice, case-insensitively, or v
-// nests deeper than maxRequestJSONDepth.
-func hasDuplicateKey(v gjson.Result, depth int) bool {
-	if depth > maxRequestJSONDepth {
-		return true
+// pathHasDuplicateKey reports whether an object on the billed path names that path's next key twice,
+// case-insensitively, as parsePassthroughBody refuses a passthrough body naming model twice: the
+// relay reads first-wins with exact case, while most upstream decoders read last-wins or fold case.
+// Only the keys the path reads are checked, so a duplicate the bill never reads, and nesting of any
+// depth, are relayed as they came. A plain dotted path and a batch path with one "#" segment
+// ("#.Text", "docs.#.Text") are followed key by key; a path in other gjson syntax cannot be, so
+// every object in the body is checked for it.
+func pathHasDuplicateKey(body []byte, path string) bool {
+	root := gjson.ParseBytes(body)
+	if strings.ContainsAny(path, `\*?|@!`) || strings.Count(path, "#") > 1 {
+		return anyDuplicateKey(root)
 	}
-	dup := false
-	if v.IsObject() {
-		seen := make(map[string]struct{})
-		v.ForEach(func(k, val gjson.Result) bool {
-			name := strings.ToLower(k.Str)
-			if _, ok := seen[name]; ok {
-				dup = true
+	return segmentsHaveDuplicateKey(root, strings.Split(path, "."))
+}
+
+// segmentsHaveDuplicateKey follows segments from v, checking each object on the way for a second
+// key matching the next segment; a "#" segment follows every element of the array.
+func segmentsHaveDuplicateKey(v gjson.Result, segments []string) bool {
+	for i, segment := range segments {
+		if segment == "#" {
+			if !v.IsArray() {
 				return false
 			}
-			seen[name] = struct{}{}
-			dup = hasDuplicateKey(val, depth+1)
-			return !dup
+			dup := false
+			v.ForEach(func(_, element gjson.Result) bool {
+				dup = segmentsHaveDuplicateKey(element, segments[i+1:])
+				return !dup
+			})
+			return dup
+		}
+		if !v.IsObject() {
+			return false
+		}
+		var next gjson.Result
+		seen := 0
+		v.ForEach(func(key, value gjson.Result) bool {
+			if strings.EqualFold(key.Str, segment) {
+				seen++
+				next = value
+			}
+			return seen < 2
 		})
-	} else if v.IsArray() {
-		v.ForEach(func(_, val gjson.Result) bool {
-			dup = hasDuplicateKey(val, depth+1)
-			return !dup
-		})
+		if seen > 1 {
+			return true
+		}
+		v = next
 	}
-	return dup
+	return false
+}
+
+// anyDuplicateKey reports whether any object in v names a key twice, case-insensitively. It keeps
+// its own stack rather than recursing, so a deeply nested body is checked, not refused.
+func anyDuplicateKey(v gjson.Result) bool {
+	stack := []gjson.Result{v}
+	for len(stack) > 0 {
+		cur := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		var seen map[string]struct{}
+		if cur.IsObject() {
+			seen = make(map[string]struct{})
+		}
+		dup := false
+		cur.ForEach(func(key, value gjson.Result) bool {
+			if seen != nil {
+				name := strings.ToLower(key.Str)
+				if _, ok := seen[name]; ok {
+					dup = true
+					return false
+				}
+				seen[name] = struct{}{}
+			}
+			if value.IsObject() || value.IsArray() {
+				stack = append(stack, value)
+			}
+			return true
+		})
+		if dup {
+			return true
+		}
+	}
+	return false
 }
 
 // merge overlays the fields o carries onto f.
