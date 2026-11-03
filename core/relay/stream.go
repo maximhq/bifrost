@@ -152,6 +152,17 @@ func (s *Stream) Read(p []byte) (int, error) {
 		if s.runes != nil {
 			s.runes.Write(p[:n])
 		}
+		// The capture keeps the whole reply for the post-hooks, as a buffered reply's body does and
+		// as the stream accumulator keeps an LLM stream; there is no bound of the relay's own. It is
+		// taken before the events are read, so a chunk that fails the stream, which the caller still
+		// receives, is in the logged body too, as an LLM row logs every chunk its caller was sent.
+		if s.capture != nil {
+			chunk := p[:n]
+			if s.captureLimit > 0 {
+				chunk = chunk[:min(len(chunk), max(s.captureLimit-len(s.capture), 0))]
+			}
+			s.capture = append(s.capture, chunk...)
+		}
 		if s.framer != nil {
 			// Reading usage from the events is Bifrost's own work on the stream, as decoding an
 			// LLM stream's events is (the breakdown's response-parse bucket).
@@ -164,15 +175,6 @@ func (s *Stream) Read(p []byte) (int, error) {
 				s.complete(parseErr)
 				return n, parseErr
 			}
-		}
-		// The capture keeps the whole reply for the post-hooks, as a buffered reply's body does and
-		// as the stream accumulator keeps an LLM stream; there is no bound of the relay's own.
-		if s.capture != nil {
-			chunk := p[:n]
-			if s.captureLimit > 0 {
-				chunk = chunk[:min(len(chunk), max(s.captureLimit-len(s.capture), 0))]
-			}
-			s.capture = append(s.capture, chunk...)
 		}
 	}
 	switch {
