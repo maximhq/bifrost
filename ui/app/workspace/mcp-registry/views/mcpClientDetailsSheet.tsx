@@ -23,7 +23,7 @@ import { perUserDiscoveryOn, sessionDiscoveryCell, toolSubtitle } from "@/lib/ut
 import { titleCaseFromSnakeCase } from "@/lib/utils/strings";
 import { Link } from "@tanstack/react-router";
 import { ArrowUpRight, Braces, Check, ChevronDown, ChevronRight, CircleAlert, Copy, Info } from "lucide-react";
-import { Fragment, ReactNode, useEffect, useMemo, useState } from "react";
+import { Fragment, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { DefinitionList, DefinitionRow, MCPClientCredentialSection } from "./mcpClientCredentialSection";
 import {
@@ -116,6 +116,10 @@ export default function MCPClientDetailsSheet({
 	const { t } = useTranslation("mcp");
 	const config = mcpClient.config;
 	const [tab, setTab] = useState<DetailsTab>("overview");
+	const titleRef = useRef<HTMLHeadingElement>(null);
+	// What had focus when the sheet opened (the server's name, say). The sheet has no trigger for
+	// Radix to return focus to, so it is handed back here on close.
+	const openerRef = useRef<HTMLElement | null>(null);
 	const [toolFilter, setToolFilter] = useState<ToolFilter>("all");
 	const [expandedTool, setExpandedTool] = useState<string | null>(null);
 	const [callerFilter, setCallerFilter] = useState<MCPSessionStatus | null>(null);
@@ -239,11 +243,33 @@ export default function MCPClientDetailsSheet({
 
 	return (
 		<Sheet open onOpenChange={(open) => !open && onClose()}>
-			<SheetContent className="flex w-full flex-col overflow-hidden! pt-4 sm:max-w-[60%]" data-testid="mcpclient-view-sheet">
+			{/* The shared Sheet keeps focus where it was on open; this one moves it to its title, so the
+			    sheet is announced and Tab continues inside it, whichever way it was opened. */}
+			<SheetContent
+				className="flex w-full flex-col overflow-hidden! pt-4 sm:max-w-[60%]"
+				data-testid="mcpclient-view-sheet"
+				onOpenAutoFocus={() => {
+					openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+					titleRef.current?.focus();
+				}}
+				onCloseAutoFocus={(e) => {
+					const opener = openerRef.current;
+					openerRef.current = null;
+					if (opener?.isConnected && opener !== document.body) {
+						e.preventDefault();
+						opener.focus();
+					}
+				}}
+			>
 				<SheetHeader className="w-full p-0 py-4" showCloseButton={false} headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8">
 					<div className="flex w-full items-start justify-between gap-4">
 						<div className="min-w-0 space-y-2">
-							<SheetTitle className="flex w-fit items-center gap-2 font-medium" data-testid="mcpclient-view-title">
+							<SheetTitle
+								ref={titleRef}
+								tabIndex={-1}
+								className="flex w-fit items-center gap-2 font-medium outline-none"
+								data-testid="mcpclient-view-title"
+							>
 								{config.name}
 								<Badge className={MCP_STATUS_COLORS[mcpClient.state]} data-testid="mcpclient-view-state">
 									{titleCaseFromSnakeCase(mcpClient.state)}

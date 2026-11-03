@@ -95,7 +95,6 @@
 		},
 		"actions": {
 			"edit": "編集",
-			"viewDetails": "詳細を表示",
 			"authorize": "許可する",
 			"reconnect": "再接続",
 			"reauthorize": "再承認する",

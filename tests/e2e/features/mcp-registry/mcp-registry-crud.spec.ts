@@ -85,17 +85,27 @@ test.describe("MCP Registry", () => {
       expect(connectionType).toBe("HTTP");
     });
 
-    test("should open a client's view sheet from its actions menu with the keyboard", async ({
+    test("should open a client's view sheet from its name with the keyboard", async ({
       mcpRegistryPage,
     }) => {
       const clientData = createHTTPClientData();
       expect(await mcpRegistryPage.createClient(clientData)).toBe(true);
       createdClients.push(clientData.name);
 
+      // The row and its name open the view, so the actions menu no longer repeats it.
+      expect(await mcpRegistryPage.getClientActionLabels(clientData.name)).not.toContain("View details");
       await mcpRegistryPage.viewClientDetailsFromKeyboard(clientData.name);
-      await expect(mcpRegistryPage.viewSheet.getByTestId("mcpclient-view-title")).toContainText(
-        clientData.name,
-      );
+      const title = mcpRegistryPage.viewSheet.getByTestId("mcpclient-view-title");
+      await expect(title).toContainText(clientData.name);
+      // Focus moves into the sheet, to its title, so a screen reader announces it and Tab goes on from there.
+      await expect(title).toBeFocused();
+      await mcpRegistryPage.page.keyboard.press("Tab");
+      await expect(title).not.toBeFocused();
+      await expect(mcpRegistryPage.viewSheet.locator(":focus")).toHaveCount(1);
+      // Closing it hands focus back to the name that opened it.
+      await mcpRegistryPage.page.keyboard.press("Escape");
+      await expect(mcpRegistryPage.viewSheet).toBeHidden();
+      await expect(mcpRegistryPage.getClientRow(clientData.name).getByRole("button", { name: clientData.name, exact: true })).toBeFocused();
     });
 
     test("should hold the Access figure until the Virtual MCPs load, and say when they fail", async ({

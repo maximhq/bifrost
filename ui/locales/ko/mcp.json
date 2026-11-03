@@ -95,7 +95,6 @@
 		},
 		"actions": {
 			"edit": "편집",
-			"viewDetails": "세부 정보 보기",
 			"authorize": "승인하다",
 			"reconnect": "다시 연결",
 			"reauthorize": "재승인",
