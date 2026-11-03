@@ -5,8 +5,9 @@
 // the same way for billing and for logging.
 //
 // Everything here is a pure transformation of the bytes it is handed: no network, no logging,
-// no shared state. It is meant to run off the request path (the logging plugin calls it from its
-// batch writer).
+// no shared state. Classify and InferRequestType only read the route and suit the request path.
+// Parse and RedactStreamBody read whole bodies: the logging plugin parses from its batch writer,
+// and request-path callers use them on a complete body (a response, or a held stream's final chunk).
 package passthroughparse
 
 import (
@@ -85,6 +86,24 @@ func Classify(provider schemas.ModelProvider, model, method, path string) Route 
 		return Route{}
 	}
 	return Route{Wire: format.provider(), RequestType: requestType}
+}
+
+// StreamFormat names the declared format of the route's stream events, as RedactStreamBody and
+// schemas.RedactRawResponseText read it, or "" when Parse cannot assemble the route's stream.
+func (route Route) StreamFormat() schemas.RawResponseFormat {
+	switch route {
+	case Route{Wire: schemas.OpenAI, RequestType: schemas.ChatCompletionRequest}:
+		return schemas.RawResponseFormatOpenAIChatCompletionChunk
+	case Route{Wire: schemas.OpenAI, RequestType: schemas.TextCompletionRequest}:
+		return schemas.RawResponseFormatOpenAITextCompletionChunk
+	case Route{Wire: schemas.OpenAI, RequestType: schemas.ResponsesRequest}:
+		return schemas.RawResponseFormatOpenAIResponsesStreamEvent
+	case Route{Wire: schemas.Anthropic, RequestType: schemas.ResponsesRequest}:
+		return schemas.RawResponseFormatAnthropicMessagesStreamEvent
+	case Route{Wire: schemas.Gemini, RequestType: schemas.ResponsesRequest}:
+		return schemas.RawResponseFormatGeminiStreamChunk
+	}
+	return ""
 }
 
 // Parse decodes a passthrough call on a best-effort basis. It returns (nil, nil) for routes with no
