@@ -44,6 +44,7 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeyMCPHealthCheckRequest:   {},
 	BifrostContextKeyMCPCallerCapabilities:   {},
 	BifrostContextKeyMCPInputResumption:      {},
+	BifrostContextKeyMCPRoundTripID:          {},
 	BifrostContextKeyMCPGatewayClient:        {},
 	BifrostContextKeyMCPToolListing:          {},
 	BifrostContextKeyMCPUnattendedExecution:  {},

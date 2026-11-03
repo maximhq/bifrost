@@ -352,6 +352,43 @@ func applyMCPCorrelationFieldsToEntry(ctx *schemas.BifrostContext, entry *logsto
 	}
 }
 
+// applyMCPRoundTrip records an MCP multi round-trip on entry: an input_required round's status and what it
+// asked, the answers a retry carried (content-gated, like arguments), and round_trip_id, which every round
+// of one gateway tool call shares (see mcp.CallRoundTripID).
+func applyMCPRoundTrip(ctx *schemas.BifrostContext, entry *logstore.MCPToolLog, resp *schemas.BifrostMCPResponse, contentVisible bool) {
+	if carried, _ := ctx.Value(schemas.BifrostContextKeyMCPRoundTripID).(string); carried != "" {
+		entry.RoundTripID = &carried
+	}
+	if answers := mcp.InputResumptionForLog(ctx); answers != nil && contentVisible {
+		setMCPLogMetadata(entry, "input_responses", answers)
+	}
+	if resp == nil {
+		return
+	}
+	asked, ok := mcp.InputRequiredForLog(resp.ChatMessage)
+	if !ok {
+		return
+	}
+	entry.Status = logStatusInputRequired
+	entry.ResultParsed = nil
+	if asked == nil {
+		setMCPLogMetadata(entry, "retry_later", true)
+	} else if contentVisible {
+		entry.ResultParsed = asked
+	}
+	if entry.RoundTripID == nil {
+		id := mcp.CallRoundTripID(ctx)
+		entry.RoundTripID = &id
+	}
+}
+
+func setMCPLogMetadata(entry *logstore.MCPToolLog, key string, value any) {
+	if entry.MetadataParsed == nil {
+		entry.MetadataParsed = map[string]interface{}{}
+	}
+	entry.MetadataParsed[key] = value
+}
+
 // scheduleDeferredUsageUpdate schedules a deferred usage update for the request.
 // applyErrorBillingFromBilledUsage backfills a failed/cancelled request's log
 // entry from the usage the provider already processed before the failure
@@ -3886,6 +3923,7 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 			},
 		}
 	}
+	applyMCPRoundTrip(ctx, entry, resp, contentVisible)
 
 	p.mu.Lock()
 	callback := p.mcpToolLogCallback
