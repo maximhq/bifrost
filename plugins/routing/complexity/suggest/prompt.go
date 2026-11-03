@@ -30,7 +30,7 @@ import (
 // The tier calibration rules in step 2 target what the cluster framing got
 // wrong on real traffic: shown several long requests at once, the LLM called
 // long creative writing, role-play setups, prompt templates and homework
-// COMPLEX. Measured with cmd/complexitysuggesteval on 16k WildChat prompts
+// COMPLEX. Measured with tests/cmd/complexitysuggesteval on 16k WildChat prompts
 // (agreement of the suggested tier with per-request labels on the held-out
 // requests the suggestions match): 61% -> 68% where gpt-5 and gpt-4.1 agree on
 // the label. A blanket "prefer the lower tier" rule did as well on WildChat
