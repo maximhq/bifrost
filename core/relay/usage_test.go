@@ -410,6 +410,19 @@ func TestRequestBodyError(t *testing.T) {
 	}
 	assert.NoError(t, nested.requestBodyError([]byte(`{"Doc":{"Text":"a","Meta":{"k":1,"K":2}},"Other":{"x":1,"X":2}}`)), "duplicates off the path are relayed")
 
+	// An index segment steps into that element of the array, so a duplicate inside the indexed
+	// element is refused while one elsewhere in the body is not.
+	indexed := resolveUsage(&schemas.RelayUsageConfig{UnitsPath: "docs.0.Text", UnitsSource: schemas.RelayUnitsFromRequest, UnitsMeasure: schemas.RelayUnitsChars, CostPerUnit: schemas.Ptr(0.001)}, nil)
+	assert.Error(t, indexed.requestBodyError([]byte(`{"docs":[{"Text":"a","Text":"`+strings.Repeat("b", 100)+`"}]}`)), "a duplicate inside the indexed element is refused")
+	assert.Error(t, indexed.requestBodyError([]byte(`{"docs":[{"Text":"a","TEXT":"b"}]}`)), "a case variant inside the indexed element is refused")
+	assert.NoError(t, indexed.requestBodyError([]byte(`{"docs":[{"Text":"a"},{"Text":"b","TEXT":"c"}],"Opts":{"x":1,"X":2}}`)), "a duplicate in another element or off the path is relayed")
+
+	// Query and multipath forms cannot be followed key by key either, so they check the whole body.
+	for _, path := range []string{`docs.#(Lang=="en").Text`, `{Text,Lang}`} {
+		query := resolveUsage(&schemas.RelayUsageConfig{UnitsPath: path, UnitsSource: schemas.RelayUnitsFromRequest, UnitsMeasure: schemas.RelayUnitsChars, CostPerUnit: schemas.Ptr(0.001)}, nil)
+		assert.Errorf(t, query.requestBodyError([]byte(`{"docs":[{"Lang":"en","Text":"a"}],"Text":"a","Lang":"en","Opts":{"x":1,"X":2}}`)), "%s checks the whole body", path)
+	}
+
 	// A path in other gjson syntax cannot be followed key by key, so every object is checked, still
 	// to any depth.
 	wildcard := resolveUsage(&schemas.RelayUsageConfig{UnitsPath: "Te*t", UnitsSource: schemas.RelayUnitsFromRequest, UnitsMeasure: schemas.RelayUnitsChars, CostPerUnit: schemas.Ptr(0.001)}, nil)

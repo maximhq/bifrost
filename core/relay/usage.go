@@ -4,6 +4,7 @@ import (
 	"errors"
 	"math"
 	"net/url"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -281,19 +282,21 @@ func (u resolvedUsage) unitCharge(f usageFields) float64 {
 // case-insensitively, as parsePassthroughBody refuses a passthrough body naming model twice: the
 // relay reads first-wins with exact case, while most upstream decoders read last-wins or fold case.
 // Only the keys the path reads are checked, so a duplicate the bill never reads, and nesting of any
-// depth, are relayed as they came. A plain dotted path and a batch path with one "#" segment
-// ("#.Text", "docs.#.Text") are followed key by key; a path in other gjson syntax cannot be, so
-// every object in the body is checked for it.
+// depth, are relayed as they came. A dotted path, with index segments ("docs.0.Text") and at most
+// one "#" segment ("#.Text", "docs.#.Text"), is followed key by key; a path in other gjson syntax
+// (wildcards, queries, multipaths, modifiers, escapes) cannot be, so every object in the body is
+// checked for it.
 func pathHasDuplicateKey(body []byte, path string) bool {
 	root := gjson.ParseBytes(body)
-	if strings.ContainsAny(path, `\*?|@!`) || strings.Count(path, "#") > 1 {
+	if strings.ContainsAny(path, `\*?|@!(){}[]=<>%`) || strings.Count(path, "#") > 1 {
 		return anyDuplicateKey(root)
 	}
 	return segmentsHaveDuplicateKey(root, strings.Split(path, "."))
 }
 
 // segmentsHaveDuplicateKey follows segments from v, checking each object on the way for a second
-// key matching the next segment; a "#" segment follows every element of the array.
+// key matching the next segment; a "#" segment follows every element of the array, and a numeric
+// segment on an array the element at that index, as gjson reads it.
 func segmentsHaveDuplicateKey(v gjson.Result, segments []string) bool {
 	for i, segment := range segments {
 		if segment == "#" {
@@ -306,6 +309,24 @@ func segmentsHaveDuplicateKey(v gjson.Result, segments []string) bool {
 				return !dup
 			})
 			return dup
+		}
+		if v.IsArray() {
+			index, err := strconv.Atoi(segment)
+			if err != nil || index < 0 {
+				return false
+			}
+			var element gjson.Result
+			position := 0
+			v.ForEach(func(_, value gjson.Result) bool {
+				if position == index {
+					element = value
+					return false
+				}
+				position++
+				return true
+			})
+			v = element
+			continue
 		}
 		if !v.IsObject() {
 			return false
