@@ -1024,6 +1024,100 @@ func promoteDeprecatedCalendarAligned(configData *ConfigData) {
 	}
 }
 
+// skipDuplicateWindowBudgets drops, with a warning, every budget config.json gives a team or customer
+// on a reset window that owner already has a budget on. The API refuses such a budget outright
+// ("duplicate reset_duration in budgets"); the file is held to the same rule but skips rather than
+// fails, so one bad entry does not stop the rest of the file from applying.
+//
+// Per owner, inline budgets are considered first, in file order, then a customer's budget_id, then
+// governance.budgets rows naming the owner. The first budget on each window is kept. A skipped
+// governance.budgets row is removed from the file's list, so it is neither written nor kept beside
+// the one that won.
+func skipDuplicateWindowBudgets(configData *ConfigData, warn func(string, ...any)) {
+	if configData == nil || configData.Governance == nil {
+		return
+	}
+	gov := configData.Governance
+	windowOf := make(map[string]string, len(gov.Budgets))
+	for _, b := range gov.Budgets {
+		if b.ID != "" {
+			windowOf[b.ID] = b.ResetDuration
+		}
+	}
+	skippedRows := map[string]bool{}
+	// keepInline filters one owner's inline budgets and returns the windows they hold.
+	keepInline := func(kind, ownerID string, budgets []configstoreTables.TableBudget) ([]configstoreTables.TableBudget, map[string]string) {
+		windows := map[string]string{}
+		kept := budgets[:0:0]
+		for _, b := range budgets {
+			if first, taken := windows[b.ResetDuration]; taken && b.ResetDuration != "" {
+				warn("config.json declares two budgets on reset window %q for %s %s: one budget per window, so %s is kept and %s is skipped", b.ResetDuration, kind, ownerID, first, budgetLabel(b.ID))
+				continue
+			}
+			windows[b.ResetDuration] = budgetLabel(b.ID)
+			kept = append(kept, b)
+		}
+		return kept, windows
+	}
+	// checkRow reports whether a governance.budgets row may be given to the owner, recording its window.
+	checkRow := func(kind, ownerID, budgetID string, windows map[string]string) bool {
+		window := windowOf[budgetID]
+		if window == "" {
+			return true
+		}
+		if first, taken := windows[window]; taken && first != budgetLabel(budgetID) {
+			warn("config.json declares two budgets on reset window %q for %s %s: one budget per window, so %s is kept and %s is skipped", window, kind, ownerID, first, budgetLabel(budgetID))
+			return false
+		}
+		windows[window] = budgetLabel(budgetID)
+		return true
+	}
+	teamWindows := map[string]map[string]string{}
+	for i := range gov.Teams {
+		team := &gov.Teams[i]
+		team.Budgets, teamWindows[team.ID] = keepInline("team", team.ID, team.Budgets)
+	}
+	customerWindows := map[string]map[string]string{}
+	for i := range gov.Customers {
+		customer := &gov.Customers[i]
+		customer.Budgets, customerWindows[customer.ID] = keepInline("customer", customer.ID, customer.Budgets)
+		if customer.BudgetID != nil && *customer.BudgetID != "" && !checkRow("customer", customer.ID, *customer.BudgetID, customerWindows[customer.ID]) {
+			skippedRows[*customer.BudgetID] = true
+			customer.BudgetID = nil
+		}
+	}
+	for _, b := range gov.Budgets {
+		switch {
+		case b.TeamID != nil && teamWindows[*b.TeamID] != nil:
+			if !checkRow("team", *b.TeamID, b.ID, teamWindows[*b.TeamID]) {
+				skippedRows[b.ID] = true
+			}
+		case b.CustomerID != nil && customerWindows[*b.CustomerID] != nil:
+			if !checkRow("customer", *b.CustomerID, b.ID, customerWindows[*b.CustomerID]) {
+				skippedRows[b.ID] = true
+			}
+		}
+	}
+	if len(skippedRows) == 0 {
+		return
+	}
+	kept := gov.Budgets[:0:0]
+	for _, b := range gov.Budgets {
+		if !skippedRows[b.ID] {
+			kept = append(kept, b)
+		}
+	}
+	gov.Budgets = kept
+}
+
+// budgetLabel names a budget in a warning: by id when it has one.
+func budgetLabel(id string) string {
+	if id == "" {
+		return "a budget without an id"
+	}
+	return "budget " + id
+}
+
 // promoteCalendarAligned ORs each child's legacy calendar_aligned input into
 // the owner's flag and clears the child field. Treats a nil child pointer as
 // "not set" — only explicit true contributes.
@@ -1176,6 +1270,9 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		// owning VK / Team. Independent of config version — the deprecation
 		// predates the v1/v2 allow-list split.
 		promoteDeprecatedCalendarAligned(&configData)
+		// One budget per reset window per team and customer: the API refuses a second, and the file
+		// is held to the same rule, with a warning rather than a failed boot.
+		skipDuplicateWindowBudgets(&configData, logger.Warn)
 		// If version is 1, apply v1.4.x compatibility: empty allow-list arrays mean "allow all"
 		if configData.Version == 1 {
 			logger.Info("config version 1 detected, applying v1.4.x compatibility semantics (empty arrays = allow all)")
