@@ -2804,9 +2804,10 @@ func migrationAddLogsAndDashboardPerformanceIndexes(ctx context.Context, db *gor
 
 // performanceIndexDef is the table name, index name, and CREATE INDEX SQL for one Postgres index.
 type performanceIndexDef struct {
-	table string
-	name  string
-	sql   string
+	table    string
+	name     string
+	sql      string
+	replaces string // index this one supersedes, dropped once this one is valid; "" for none
 }
 
 // ftsInputCharLimit is the maximum number of characters fed to to_tsvector via left().
@@ -2815,6 +2816,20 @@ type performanceIndexDef struct {
 // must be used in both the index expression and the query predicate so the planner
 // recognises the expression match and uses the GIN index.
 const ftsInputCharLimit = 250000
+
+// relayContentSearchChars is how many leading characters of each relay body content_search reads:
+// the preview a hybrid row keeps, so every backend searches the same text. Relay bodies are raw
+// upstream payloads, far larger than an LLM row's content_summary, and the GIN index pays
+// to_tsvector over the whole indexed prefix on every write; the bound keeps that cost small.
+// Changing it changes the index expression, so the indexes need new names again (see
+// idx_relay_logs_request_body_prefix_fts), or a database keeps the old ones by name.
+const relayContentSearchChars = maxRelayBodyPreviewRunes
+
+// relayBodyFTSExpr is the tsvector expression over a relay body column. The index and the
+// content_search predicate both use it, so the planner matches the expression exactly.
+func relayBodyFTSExpr(column string) string {
+	return fmt.Sprintf("to_tsvector('simple', left(%s, %d))", column, relayContentSearchChars)
+}
 
 // performanceIndexes is the set of full-text and GIN indexes built by ensurePerformanceIndexes.
 // Each statement uses CREATE INDEX CONCURRENTLY to avoid blocking writes.
@@ -3122,15 +3137,20 @@ var performanceIndexes = []performanceIndexDef{
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_relay_logs_session_id ON relay_logs(session_id) WHERE session_id IS NOT NULL",
 	},
 	{
-		// Content search on relay rows, as idx_mcp_logs_arguments_fts / idx_mcp_logs_result_fts.
-		table: "relay_logs",
-		name:  "idx_relay_logs_request_body_fts",
-		sql:   fmt.Sprintf("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_relay_logs_request_body_fts ON relay_logs USING GIN (to_tsvector('simple', left(request_body, %d))) WHERE request_body IS NOT NULL", ftsInputCharLimit),
+		// Content search on relay rows over the first relayContentSearchChars of each body. They
+		// replace the ftsInputCharLimit-wide *_body_fts indexes a pre-release build created: the
+		// new names make the builder build them where the old ones exist, and the old ones are
+		// dropped once these are valid.
+		table:    "relay_logs",
+		name:     "idx_relay_logs_request_body_prefix_fts",
+		sql:      "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_relay_logs_request_body_prefix_fts ON relay_logs USING GIN (" + relayBodyFTSExpr("request_body") + ") WHERE request_body IS NOT NULL",
+		replaces: "idx_relay_logs_request_body_fts",
 	},
 	{
-		table: "relay_logs",
-		name:  "idx_relay_logs_response_body_fts",
-		sql:   fmt.Sprintf("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_relay_logs_response_body_fts ON relay_logs USING GIN (to_tsvector('simple', left(response_body, %d))) WHERE response_body IS NOT NULL", ftsInputCharLimit),
+		table:    "relay_logs",
+		name:     "idx_relay_logs_response_body_prefix_fts",
+		sql:      "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_relay_logs_response_body_prefix_fts ON relay_logs USING GIN (" + relayBodyFTSExpr("response_body") + ") WHERE response_body IS NOT NULL",
+		replaces: "idx_relay_logs_response_body_fts",
 	},
 	{
 		// relay_logs_add_correlation_columns adds only the columns on Postgres; see that migration.
@@ -3163,24 +3183,48 @@ func ensurePerformanceIndexes(ctx context.Context, conn *sql.Conn, logger schema
 		if err != nil {
 			return err
 		}
-		if indexValid {
-			continue
+		if !indexValid {
+			logger.Info("[logstore] building performance index %s on %s", idx.name, idx.table)
+
+			// Drop any INVALID remnant left by a prior interrupted CONCURRENTLY build.
+			if err := pgDropIndexConcurrently(ctx, conn, idx.name); err != nil {
+				return err
+			}
+
+			// Create the index concurrently (does not block writes).
+			if _, err := conn.ExecContext(ctx, idx.sql); err != nil {
+				return fmt.Errorf("failed to create index %s: %w", idx.name, err)
+			}
+			logger.Info("[logstore] built performance index %s on %s", idx.name, idx.table)
 		}
-
-		logger.Info("[logstore] building performance index %s on %s", idx.name, idx.table)
-
-		// Drop any INVALID remnant left by a prior interrupted CONCURRENTLY build.
-		if err := pgDropIndexConcurrently(ctx, conn, idx.name); err != nil {
+		if err := pgDropReplacedIndex(ctx, conn, idx); err != nil {
 			return err
 		}
-
-		// Create the index concurrently (does not block writes).
-		if _, err := conn.ExecContext(ctx, idx.sql); err != nil {
-			return fmt.Errorf("failed to create index %s: %w", idx.name, err)
-		}
-		logger.Info("[logstore] built performance index %s on %s", idx.name, idx.table)
 	}
 
+	return nil
+}
+
+// pgDropReplacedIndex drops the index idx supersedes with DROP INDEX CONCURRENTLY, only once idx
+// is confirmed valid, so the queries it serves are never left without an index. Idempotent.
+func pgDropReplacedIndex(ctx context.Context, conn *sql.Conn, idx performanceIndexDef) error {
+	if idx.replaces == "" {
+		return nil
+	}
+	valid, err := pgIndexValid(ctx, conn, idx.table, idx.name)
+	if err != nil {
+		return err
+	}
+	if !valid {
+		return fmt.Errorf("index %s is still invalid after build", idx.name)
+	}
+	qualified, err := pgQualifiedIndex(ctx, conn, idx.replaces)
+	if err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, "DROP INDEX CONCURRENTLY IF EXISTS "+qualified); err != nil {
+		return fmt.Errorf("failed to drop index %s replaced by %s: %w", idx.replaces, idx.name, err)
+	}
 	return nil
 }
 

@@ -3,6 +3,7 @@ package logstore
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -281,6 +282,32 @@ func TestRelayLogContentSearch(t *testing.T) {
 	page, err := store.SearchRelayLogs(ctx, RelayLogFilters{ContentSearch: "%"}, PaginationOptions{Limit: 10})
 	require.NoError(t, err)
 	require.Len(t, page.Logs, 1, "a %% in the term is literal")
+}
+
+// TestRelayLogContentSearchMatchesBodyPrefix pins that content_search reads only the first
+// relayContentSearchChars characters of each body on every backend: Postgres indexes that prefix
+// (idx_relay_logs_*_body_prefix_fts), a hybrid row keeps a preview of the same length, and the
+// LIKE fallback must agree so a search does not return different rows by backend.
+func TestRelayLogContentSearchMatchesBodyPrefix(t *testing.T) {
+	ctx := context.Background()
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "relay-content-prefix.db")}, testLogger{})
+	require.NoError(t, err)
+	now := time.Now().UTC().Truncate(time.Second)
+	// Multi-byte padding: the prefix is counted in characters, as Postgres left() counts them.
+	pad := strings.Repeat("é", relayContentSearchChars-len("wombat"))
+	_, err = store.BatchCreateRelayLogsIfNotExists(ctx, []*RelayLog{
+		{ID: "edge", RequestID: "edge", Timestamp: now, RelayName: "docs", Status: RelayLogStatusSuccess, RequestBody: schemas.Ptr(pad + "wombat" + "platypus")},
+		{ID: "deep", RequestID: "deep", Timestamp: now, RelayName: "docs", Status: RelayLogStatusSuccess, ResponseBody: schemas.Ptr(pad + "wombat" + "echidna")},
+	})
+	require.NoError(t, err)
+	page, err := store.SearchRelayLogs(ctx, RelayLogFilters{ContentSearch: "wombat"}, PaginationOptions{Limit: 10})
+	require.NoError(t, err)
+	assert.Len(t, page.Logs, 2, "a term ending on the last indexed character matches")
+	for _, term := range []string{"platypus", "echidna"} {
+		page, err = store.SearchRelayLogs(ctx, RelayLogFilters{ContentSearch: term}, PaginationOptions{Limit: 10})
+		require.NoError(t, err)
+		assert.Empty(t, page.Logs, "content_search %q past the indexed prefix must not match", term)
+	}
 }
 
 // TestFlushRelayLogsRemovesStaleProcessingRows pins the 30-minute reaper the LLM, MCP and A2A
