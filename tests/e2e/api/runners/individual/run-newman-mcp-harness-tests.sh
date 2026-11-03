@@ -30,6 +30,11 @@
 # only come from config.json. Each belongs to one test, which its id names, and
 # points at a fleet server of the same name that the test sets up.
 #
+# Bifrost is built with the harness tag and started with BIFROST_HARNESS_CLIENT_METADATA_PRIVATE_ALLOWLIST
+# 127.0.0.1, so its OAuth server fetches Client ID Metadata Documents from the fleet over http: real
+# clients' documents, served from fleet routes, then sign in as those clients. Any other private host
+# stays refused, and a release build has no such switch (a --binary built without the tag fails OAS-45).
+#
 # The upstream MCP servers are an mcpchaos fleet (tests/cmd/mcpconsole), built
 # and started here. Tests reach it through two collection variables: chaos_url,
 # the fleet's base URL for both its MCP endpoints and its control API, and
@@ -329,7 +334,7 @@ start_bifrost() {
     # SET-23 reads a header value from this variable; MCP_E2E_UNSET_KEY stays unset.
     # The admin password and setup token are well-known test values, so the server must not
     # inherit a wider BIFROST_HOST (such as 0.0.0.0) from the caller's environment.
-    MCP_E2E_HEADER_KEY="mcp-e2e-header-key" BIFROST_SETUP_TOKEN="$SETUP_TOKEN" "$BIFROST_BINARY" --app-dir "$SERVER_DIR" --host 127.0.0.1 --port "$PORT" --log-level info > "$log" 2>&1 &
+    MCP_E2E_HEADER_KEY="mcp-e2e-header-key" BIFROST_SETUP_TOKEN="$SETUP_TOKEN" BIFROST_HARNESS_CLIENT_METADATA_PRIVATE_ALLOWLIST="127.0.0.1" "$BIFROST_BINARY" --app-dir "$SERVER_DIR" --host 127.0.0.1 --port "$PORT" --log-level info > "$log" 2>&1 &
     SERVER_PID=$!
     local elapsed=0
     while [ $elapsed -lt 60 ]; do

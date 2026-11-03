@@ -8744,6 +8744,99 @@ const OAS43 = folder("OAS-43 Client metadata document client_ids on Bifrost's au
   restoreHeaders("OAS-43"),
 ]);
 
+// OAS-44: the registration bodies real DCR clients send, as built by their source on 2026-11-03, each run through
+// the whole sign-in: register, authorize, consent, exchange, list tools, refresh. Field order is kept as each client sends it.
+const REAL_DCR_CLIENTS = [
+  // gemini-cli packages/core/src/mcp/oauth-provider.ts registerClient; scope is "" with no configured scopes.
+  { key: "gemini", name: "Gemini CLI", redirect: "http://localhost:7777/oauth/callback", body: { client_name: "Gemini CLI MCP Client", redirect_uris: ["http://localhost:7777/oauth/callback"], grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none", scope: "" } },
+  // zed crates/context_server/src/oauth.rs dcr_registration_body; scope is left out with no advertised scopes.
+  { key: "zed", name: "Zed", redirect: "http://127.0.0.1:12345/callback", body: { client_name: "Zed", redirect_uris: ["http://127.0.0.1:12345/callback"], grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none" } },
+];
+const realDCRClient = (id, { key, name, redirect, body }) => {
+  const client = `oas44_${key}`;
+  return [
+    request(id, `${name}: register with its own body`, "POST", "/oauth2/register", {
+      noAuth: true, raw: JSON.stringify(body),
+      asserts: [A.status(201), A.custom("a public client with both grants, scope mcp and the client's redirect", [
+        "var b = pm.response.json();",
+        "pm.expect(b.client_id, 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+        "pm.expect(b.token_endpoint_auth_method).to.equal('none');",
+        `pm.expect(b.grant_types).to.eql(${lit(REFRESHABLE)});`,
+        "pm.expect(b.scope).to.equal('mcp');",
+        `pm.expect(b.redirect_uris).to.eql(${lit([redirect])});`,
+      ])],
+      extraTests: [`pm.collectionVariables.set(${lit(client)}, pm.response.json().client_id);`],
+    }),
+    authorize(id, client, `${client}_f`, `${name}: authorize`, { redirect_uri: redirect }),
+    consent(id, `${client}_f`, `${name}: consent with the full-access VK through the temp token`, "temp", vkBody(id), [A.status(200), codeIssued()], { extraTests: saveCode(`${client}_f`) }),
+    tokenReq(id, `${name}: exchange the code`, codeParams(`${client}_f`, client, { redirect_uri: redirect }), [A.status(200), tokensIssued()], { extraTests: saveTokens(`${client}_f`) }),
+    mcpWithToken(id, `${name}: the access token lists every tool`, `${client}_f_at`, [A.status(200), toolNamesInList(ALL_TOOLS)]),
+    tokenReq(id, `${name}: refresh`, refreshParams(`${client}_f_rt`, client), [A.status(200), tokensIssued()], { extraTests: saveTokens(`${client}_r`) }),
+    mcpWithToken(id, `${name}: the refreshed access token lists every tool`, `${client}_r_at`, [A.status(200), toolNamesInList(ALL_TOOLS)]),
+  ];
+};
+const OAS44 = folder("OAS-44 Real DCR clients sign in end to end", `Setup: ${GRANT_TEXT}; mcp_server_auth_mode oauth with issuer_url set to the base URL, temp-token auth on. Each client registers with the exact body it sends (${REAL_DCR_CLIENTS.map((c) => c.name).join(", ")}) and signs in on its own callback.`, [
+  ...fleetGrantSetup("OAS-44"), oauthConfig("OAS-44", "oauth"),
+  ...REAL_DCR_CLIENTS.flatMap((c) => realDCRClient("OAS-44", c)),
+  ...fleetGrantTeardown("OAS-44"),
+]);
+
+// OAS-45: the Client ID Metadata Documents real clients publish, verbatim as fetched on 2026-11-03 from the URL
+// beside each, served from fleet server oas45 with only client_id changed to the URL serving it. The harness builds
+// Bifrost with the harness tag and allows 127.0.0.1 for these fetches (run-newman-mcp-harness-tests.sh).
+const REAL_CIMD_CLIENTS = [
+  // https://claude.ai/oauth/mcp-oauth-client-metadata: also lists the jwt-bearer grant, which Bifrost does not offer.
+  { key: "claude-ai", name: "claude.ai", doc: { client_id: "", client_name: "Claude", client_uri: "https://claude.ai", redirect_uris: ["https://claude.ai/api/mcp/auth_callback"], grant_types: ["authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:jwt-bearer"], response_types: ["code"], token_endpoint_auth_method: "none" } },
+  // https://claude.ai/oauth/claude-code-client-metadata
+  { key: "claude-code", name: "Claude Code", doc: { client_id: "", client_name: "Claude Code", client_uri: "https://claude.ai", redirect_uris: ["http://localhost/callback", "http://127.0.0.1/callback"], grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none" } },
+  // https://chatgpt.com/oauth/codex/client.json
+  { key: "codex", name: "Codex", doc: { client_id: "", client_uri: "https://chatgpt.com/codex", application_type: "native", redirect_uris: ["http://127.0.0.1/callback", "http://localhost/callback"], token_endpoint_auth_method: "none", token_endpoint_auth_methods_supported: ["none"], grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], client_name: "Codex", logo_uri: "https://persistent.oaistatic.com/sonic/misc/openai-logo.png" } },
+  // https://vscode.dev/oauth/client-metadata.json: also lists the device_code grant.
+  { key: "vscode", name: "VS Code", doc: { client_name: "Visual Studio Code", logo_uri: "https://code.visualstudio.com/assets/branding/code-stable.png", grant_types: ["authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:device_code"], response_types: ["code"], token_endpoint_auth_method: "none", application_type: "native", client_id: "", client_uri: "https://vscode.dev/product", redirect_uris: ["http://127.0.0.1:33418/", "https://vscode.dev/redirect"] } },
+  // https://cursor.com/oauth/mcp-client.json
+  { key: "cursor", name: "Cursor", doc: { client_id: "", client_name: "Cursor", client_uri: "https://cursor.com", logo_uri: "https://ptht05hbb1ssoooe.public.blob.vercel-storage.com/assets/uploads/cursorlogomcpv3.svg", redirect_uris: ["https://www.cursor.com/agents/mcp/oauth/callback", "https://www.cursor.com/bot/mcp/oauth/callback", "https://grok.com/connectors-oauth-exchange-code/", "http://localhost:8787/callback", "http://127.0.0.1:8787/callback"], grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none" } },
+  // https://chatgpt.com/oauth/client.json: prefers private_key_jwt and also supports none.
+  { key: "chatgpt", name: "ChatGPT", doc: { client_id: "", client_uri: "https://chatgpt.com/", redirect_uris: ["https://chatgpt.com/connector_platform_oauth_redirect"], token_endpoint_auth_method: "private_key_jwt", token_endpoint_auth_methods_supported: ["none", "private_key_jwt"], grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], client_name: "ChatGPT", logo_uri: "https://persistent.oaistatic.com/sonic/misc/openai-logo.png", token_endpoint_auth_signing_alg: "RS256", jwks_uri: "https://chatgpt.com/oauth/jwks.json" } },
+  // https://zed.dev/oauth/client-metadata.json
+  { key: "zed", name: "Zed", doc: { client_id: "", client_name: "Zed", client_uri: "https://zed.dev", redirect_uris: ["http://127.0.0.1/callback"], grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none", logo_uri: "https://cdn.zed.dev/images/logo-dark.png" } },
+];
+// Documents no client can sign in with: no grant Bifrost offers, or no auth method it supports.
+const REFUSED_CIMD_DOCS = [
+  { key: "jwt-bearer-only", what: "only the jwt-bearer grant", desc: "client metadata document unsupported grant_type", doc: { client_id: "", client_name: "OAS-45 jwt-bearer only", redirect_uris: ["http://127.0.0.1/callback"], grant_types: ["urn:ietf:params:oauth:grant-type:jwt-bearer"], token_endpoint_auth_method: "none" } },
+  { key: "private-key-jwt-only", what: "only private_key_jwt", desc: "client metadata document only token_endpoint_auth_method=none is supported", doc: { client_id: "", client_name: "OAS-45 private_key_jwt only", redirect_uris: ["http://127.0.0.1/callback"], token_endpoint_auth_method: "private_key_jwt", token_endpoint_auth_methods_supported: ["private_key_jwt"] } },
+];
+const cimdURL = (key) => `${REST("oas45")}/${key}.json`;
+const cimdRoute = ({ key, doc }) => ({ method: "GET", path: `/${key}.json`, json: { ...doc, client_id: cimdURL(key) } });
+const isLoopbackURI = (uri) => /^http:\/\/(127\.0\.0\.1|localhost)[:/]/.test(uri);
+// The real clients' remote callbacks, approved as an operator using those clients would.
+const CIMD_REMOTE_CALLBACKS = [...new Set(REAL_CIMD_CLIENTS.flatMap((c) => c.doc.redirect_uris.filter((u) => !isLoopbackURI(u))))];
+const realCIMDClient = (id, { key, name, doc }) => {
+  const clientVar = `oas45_${key.replace(/-/g, "_")}`, flow = `${clientVar}_f`, redirect = doc.redirect_uris[0];
+  return [
+    request(id, `${name}: setup: keep its document URL`, "GET", `/s/oas45/rest/${key}.json`, {
+      base: CHAOS, noAuth: true, asserts: [A.status(200)],
+      extraTests: [`pm.collectionVariables.set(${lit(clientVar)}, pm.response.json().client_id);`],
+    }),
+    authorize(id, clientVar, flow, `${name}: authorize on ${redirect}`, { redirect_uri: redirect }),
+    consent(id, flow, `${name}: consent with the full-access VK through the temp token`, "temp", vkBody(id), [A.status(200), codeIssued()], { extraTests: saveCode(flow) }),
+    tokenReq(id, `${name}: exchange the code as a public client`, codeParams(flow, clientVar, { redirect_uri: redirect }), [A.status(200), tokensIssued()], { extraTests: saveTokens(flow) }),
+    mcpWithToken(id, `${name}: the access token lists every tool`, `${flow}_at`, [A.status(200), toolNamesInList(ALL_TOOLS)]),
+    tokenReq(id, `${name}: refresh`, refreshParams(`${flow}_rt`, clientVar), [A.status(200), tokensIssued()], { extraTests: saveTokens(`${clientVar}_r`) }),
+    mcpWithToken(id, `${name}: the refreshed access token lists every tool`, `${clientVar}_r_at`, [A.status(200), toolNamesInList(ALL_TOOLS)]),
+  ];
+};
+const OAS45 = folder("OAS-45 Real CIMD clients sign in end to end", `Setup: ${GRANT_TEXT.replace("each grant registers a client with grant_types authorization_code and refresh_token", "each grant is a client named by its Client ID Metadata Document")}; mcp_server_auth_mode oauth with issuer_url set to the base URL, temp-token auth on, allowed_redirect_uris the real clients' remote callbacks; fleet server oas45 serves, over http on 127.0.0.1 (allowed only in a harness build), the documents of ${REAL_CIMD_CLIENTS.map((c) => c.name).join(", ")}, plus one listing only the jwt-bearer grant and one supporting only private_key_jwt. Each real client signs in on its first redirect_uri.`, [
+  ...fleetGrantSetup("OAS-45"),
+  oauthConfig("OAS-45", "oauth", [`cc.oauth2_server_config.allowed_redirect_uris = ${lit(CIMD_REMOTE_CALLBACKS)};`], "setup: mcp_server_auth_mode oauth, issuer_url set to the base URL, temp-token auth on, the real clients' remote callbacks approved"),
+  ...freshServer("OAS-45", "oas45", ["echo"]),
+  mockPost("OAS-45", "oas45", "routes/set", "setup: oas45 serves the client documents", { routes: [...REAL_CIMD_CLIENTS, ...REFUSED_CIMD_DOCS].map(cimdRoute) }),
+  ...REAL_CIMD_CLIENTS.flatMap((c) => realCIMDClient("OAS-45", c)),
+  ...REFUSED_CIMD_DOCS.map(({ key, what, desc }) => request("OAS-45", `a document with ${what} is refused`, "GET", goodAuthorize("oas45_unused", { client_id: cimdURL(key) }), {
+    noAuth: true, noRedirect: true, asserts: [A.status(400), O.error("invalid_client"), O.descEquals(desc), O.noLocation()],
+  })),
+  ...fleetGrantTeardown("OAS-45"),
+]);
+
 // OAS-39: the mock drives a real mcp-go OAuth client against /mcp; the harness gives the consent it stops for.
 const OAS39_CLIENT = "/client/oas39";
 // sdkSteps keeps the driven client's OAuth requests (every request but /mcp), as "METHOD path grant_type", in s.
@@ -11296,7 +11389,7 @@ const collection = {
     section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH47, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57, AUTH58]),
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, GO18, CONN23, CONN24, CONN25, CONN27, CONN28, CONN29, GO34, GO36]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, EP66, EP67, EP68, EP69, EP70, EP71, EP72, EP73, EP74, EP75, GO01, GO02, GO03, GO06, GO07, GO08, GO09, GO10, GO11, GO12, GO13, GO14, GO33, GO35]),
-    section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43]),
+    section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43, OAS44, OAS45]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET26, SET27, SET28, SET29, SET30, SET31, SET32, SET04, SET05, SET10, SET11, SET15, SET23]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV36, GOV37, GOV38, GOV39]),
     section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66, INF76, INF77, INF67]),
