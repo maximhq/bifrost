@@ -2889,12 +2889,16 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		// caller discovers with their own credential, which stays. Off, its
 		// callers' discoveries go, and it discovers with an admin credential
 		// again once an admin provides one. Either way the stored discovery goes
-		// (tools, instructions, resources and prompts), and the record of its
+		// (tools, instructions, resources and prompts). On, the record of its
 		// admin step is taken from what that step leaves behind (see
-		// TableMCPClient.AdminStepSignalsPending).
+		// TableMCPClient.AdminStepSignalsPending), so the client stays as
+		// verified as it was. Off, it goes back to its admin step: that step is
+		// what gives it the admin discovery it has just lost.
 		wasPerUserDiscovery := existingClient.PerUserDiscovery != nil && *existingClient.PerUserDiscovery
 		if clientConfigCopy.PerUserDiscovery != nil && *clientConfigCopy.PerUserDiscovery != wasPerUserDiscovery {
+			updates["pending_verification"] = existingClient.HasAdminStep()
 			if *clientConfigCopy.PerUserDiscovery {
+				updates["pending_verification"] = existingClient.AdminStepSignalsPending()
 				if err := tx.WithContext(ctx).Where("mcp_client_id = ? AND auth_mode = ?", existingClient.ClientID, string(schemas.MCPAuthModeAdmin)).Delete(&tables.TableMCPOauthToken{}).Error; err != nil {
 					return fmt.Errorf("failed to delete the admin oauth credential of mcp client %s: %w", id, err)
 				}
@@ -2910,7 +2914,6 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 			updates["discovered_resources_json"] = ""
 			updates["discovered_resource_templates_json"] = ""
 			updates["discovered_prompts_json"] = ""
-			updates["pending_verification"] = existingClient.AdminStepSignalsPending()
 		}
 
 		if err := tx.WithContext(ctx).Model(&existingClient).Updates(updates).Error; err != nil {

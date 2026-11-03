@@ -10008,20 +10008,53 @@ const PUD07 = folder("PUD-07 Turning it off (headers)", `Setup: ${HDOOR_TEXT("pu
   pudVKDelete("PUD-07", "pud07", "a"), pudVKDelete("PUD-07", "pud07", "b"),
 ]);
 
-const PUD08 = folder("PUD-08 Turning it off (OAuth)", `Setup: ${ODOOR_TEXT("pud08")}; VK-A signed in as alice. Then per_user_discovery is turned off and the admin reauthorizes.`, [
+// A per_user_oauth client with per_user_discovery turned off is back in pending_verification with the registration it
+// was created with. initiate-verification then signs the admin in on that registration (no new registration, so callers
+// keep their sign-ins); its answer carries a flow_id that status_url includes, because the client's oauth_configs row
+// has read "authorized" since it was first verified. initiateOnRegistration keeps the authorize_url in <p>_au.
+const keepOauthConfig = (v) => [`pm.collectionVariables.set(${lit(v)}, pm.response.json().clients[0].config.oauth_config_id || '');`];
+const oauthConfigKept = (v) => A.custom("oauth_config_id is the one it had", [`pm.expect(pm.response.json().clients[0].config.oauth_config_id, 'body: ' + pm.response.text()).to.equal(pm.collectionVariables.get(${lit(v)}));`]);
+// signInOnRegistration is the same check for any route that opens that sign-in: initiate-verification, reauthorize, or
+// reregister, which also reports a registered_client_id other than its previous_client_id.
+const signInOnRegistration = (id, title, clientId, verb, p, v) => clientPost(id, title, clientId, verb, [A.status(200), A.custom(`status pending_oauth on the client's own oauth_config_id, with a flow_id that status_url carries${verb === "reregister" ? ", and a new client_id" : ""}`, [
+  "var b = pm.response.json();",
+  "pm.expect(b.status, 'body: ' + pm.response.text()).to.equal('pending_oauth');",
+  `pm.expect(b.oauth_config_id, 'body: ' + pm.response.text()).to.equal(pm.collectionVariables.get(${lit(v)}));`,
+  "pm.expect(b.flow_id, 'body: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+  "pm.expect(b.status_url, 'body: ' + pm.response.text()).to.include('flow_id=' + encodeURIComponent(b.flow_id));",
+  ...(verb === "reregister" ? [
+    "pm.expect(b.registered_client_id, 'body: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+    "pm.expect(b.registered_client_id, 'body: ' + pm.response.text()).to.not.equal(b.previous_client_id);",
+  ] : []),
+])], { extraTests: [`pm.collectionVariables.set('${p}_au', pm.response.json().authorize_url || '');`] });
+const initiateOnRegistration = (id, title, clientId, p, v) => signInOnRegistration(id, title, clientId, "initiate-verification", p, v);
+const PUD_ON_NO_ADMIN = "MCP client has per_user_discovery on and keeps no admin credential to refresh: each caller signs in with their own";
+const NOT_VERIFIED_YET = "MCP client has not completed initial OAuth authorization yet; use initiate-verification instead";
+const NOT_SIGNED_IN = "Authorization has not completed yet: the admin has not finished signing in. Wait for it to finish, or call initiate-verification again.";
+const VERIFIED_AGAIN = "OAuth credentials updated and verified successfully. 2 tools discovered.";
+
+const PUD08 = folder("PUD-08 Turning it off (OAuth)", `Setup: ${ODOOR_TEXT("pud08")}; VK-A signed in as alice. Then per_user_discovery is turned off, which sends pud08 back to pending_verification like the other per-user auth types, and the admin verifies it again with initiate-verification, signing in on the registration pud08 kept.`, [
   ...puConfig("PUD-08", false),
   ...odoor("PUD-08", "pud08"),
   pudVK("PUD-08", "pud08", "a"),
   ...signInO("PUD-08", "pud08", "a", "alice"),
+  getClient("PUD-08", "pud08-u", "setup: record pud08's oauth_config_id", [], { extraTests: keepOauthConfig("pud08_cfg") }),
   clientPut("PUD-08", "PUT per_user_discovery false", "pud08-u", { per_user_discovery: false }, [A.status(200)]),
-  getClient("PUD-08", "pud08-u", "no credential and tools []", [noCredential(), toolNamesAre([]), callersAre(null)]),
-  clientPost("PUD-08", "reauthorize as admin", "pud08-u", "reauthorize", [A.status(200)], { extraTests: ["pm.collectionVariables.set('pud08_au', pm.response.json().authorize_url);"] }),
+  getClient("PUD-08", "pud08-u", "pending_verification, flag off, no credential, tools [], no callers_by_tool", [clientState("pending_verification"), flagIs(false), noCredential(), toolNamesAre([]), callersAre(null)]),
+  rowOf("PUD-08", "VK-A's row is active and keeps no discovery", "pud08-u", "pud08", "a", "VK-A's token row: active, no discovery", [...ROW_STATUS("active"), ...NO_DISCOVERY]),
+  gwListNone("PUD-08", "while pending, VK-A's gw-list has no pud08-* tool", [vkOf("pud08", "a")], "pud08"),
+  initiateOnRegistration("PUD-08", "initiate-verification", "pud08-u", "pud08", "pud08_cfg"),
+  completeOAuth("PUD-08", "complete before the admin signs in", "pud08", [A.status(409), A.msgEquals(NOT_SIGNED_IN)]),
+  getClient("PUD-08", "pud08-u", "still pending_verification", [clientState("pending_verification")]),
   consentAs("PUD-08", "consent as admin", "pud08", "admin"),
   followCallback("PUD-08", "follow the callback", "pud08", callbackSuccess()),
-  completeOAuth("PUD-08", "complete", "pud08", [A.status(200), A.jsonMessage("Admin discovery credential repaired successfully. 2 tools discovered."), A.jsonEquals("tools_count", 2)]),
-  getClient("PUD-08", "pud08-u", "the client lists the shared tools", [toolNamesAre(["add_tool", "echo_tool"])]),
+  completeOAuth("PUD-08", "complete", "pud08", [A.status(200), A.jsonMessage(VERIFIED_AGAIN), A.jsonEquals("tools_count", 2)]),
+  getClient("PUD-08", "pud08-u", "healthy with the shared tools, an active admin credential and the same oauth_config_id", [clientState("healthy"), toolNamesAre(["add_tool", "echo_tool"]), credKind("oauth"), credStatus("active"), oauthConfigKept("pud08_cfg")]),
+  oauthCounters("PUD-08", "pud08", "the only registration is the one pud08 was created with", { register: 1 }),
+  completeOAuth("PUD-08", "complete again", "pud08", [A.status(409)]),
+  gwList("PUD-08", "VK-A's gw-list is the shared tools", [vkOf("pud08", "a")], ["pud08-add_tool", "pud08-echo_tool"]),
   resetCounters("PUD-08", "pud08"),
-  execAs("PUD-08", "VK-A calls pud08-echo_tool", "pud08-echo_tool", [vkOf("pud08", "a")], [A.status(200)]),
+  execAs("PUD-08", "VK-A calls pud08-echo_tool without signing in again", "pud08-echo_tool", [vkOf("pud08", "a")], [A.status(200)]),
   mockGet("PUD-08", "pud08", "the call ran under alice", [identityCallsAre({ alice: 1 })]),
   deleteClient("PUD-08", "pud08-u"),
   pudVKDelete("PUD-08", "pud08", "a"),
@@ -11372,6 +11405,165 @@ const INF67 = folder("INF-67 Models never get app-only tools", `Setup: ${APPS_TE
   deleteClient("INF-67", "inf-67-apps"),
 ]);
 
+const PUD65 = folder("PUD-65 Turning the flag on (OAuth)", `Setup: ${PU_TEXT(false)}; pud65, a per_user_oauth client with per_user_discovery unset (${PU_SERVER_TEXT("pud65")}), verified as admin, so it keeps an admin credential; VK-A signed in as alice through a per-user flow. Then per_user_discovery is turned on.`, [
+  ...puConfig("PUD-65", false),
+  ...puConnect("PUD-65", "pud65"),
+  pudVK("PUD-65", "pud65", "a"),
+  execAs("PUD-65", "setup: VK-A calls pud65-echo_tool and is sent to an OAuth flow", "pud65-echo_tool", [vkOf("pud65", "a")], [A.status(400), keepFlow("pud65_a_flow")]),
+  ...puFinish("PUD-65", "pud65_a_flow", "alice", "VK-A's flow"),
+  getClient("PUD-65", "pud65-u", "control: the admin credential is active and the client lists 2 tools", [credKind("oauth"), credStatus("active"), toolNamesAre(["add_tool", "echo_tool"])]),
+  clientPut("PUD-65", "PUT per_user_discovery true", "pud65-u", { per_user_discovery: true }, [A.status(200), A.jsonMessage("MCP client edited successfully")]),
+  getClient("PUD-65", "pud65-u", "healthy, flag on, no credential, tools [], no callers_by_tool", [clientState("healthy"), flagIs(true), noCredential(), toolNamesAre([]), callersAre(null)]),
+  rowOf("PUD-65", "VK-A's row is active and keeps no discovery", "pud65-u", "pud65", "a", "VK-A's token row: active, no discovery", [...ROW_STATUS("active"), ...NO_DISCOVERY]),
+  gwList("PUD-65", "VK-A's gw-list is [pud65-connect]", [vkOf("pud65", "a")], ["pud65-connect"]),
+  resetCounters("PUD-65", "pud65"),
+  connectExpect("PUD-65", "VK-A calls pud65-connect with the token it kept", "pud65", "a", connectedText("pud65", 2)),
+  mockGet("PUD-65", "pud65", "the discovery listed tools as alice", [identityMethod("alice", "tools/list", 1)]),
+  gwList("PUD-65", "VK-A's gw-list is pud65's two tools", [vkOf("pud65", "a")], ["pud65-add_tool", "pud65-echo_tool"]),
+  getClient("PUD-65", "pud65-u", "callers_by_tool counts VK-A once per tool", [callersAre({ add_tool: 1, echo_tool: 1 })]),
+  deleteClient("PUD-65", "pud65-u"),
+  pudVKDelete("PUD-65", "pud65", "a"),
+  restoreConfig("PUD-65"),
+]);
+
+const PUD66 = folder("PUD-66 Turning it off and on again (OAuth)", `Setup: ${ODOOR_TEXT("pud66")}; VK-A signed in as alice. Then per_user_discovery is turned off and on again, which leaves pud66 awaiting verification with the flag on, and the admin verifies it on the registration it kept; that sign-in only verifies.`, [
+  ...puConfig("PUD-66", false),
+  ...odoor("PUD-66", "pud66"),
+  pudVK("PUD-66", "pud66", "a"),
+  ...signInO("PUD-66", "pud66", "a", "alice"),
+  getClient("PUD-66", "pud66-u", "setup: record pud66's oauth_config_id", [], { extraTests: keepOauthConfig("pud66_cfg") }),
+  clientPut("PUD-66", "PUT per_user_discovery false", "pud66-u", { per_user_discovery: false }, [A.status(200)]),
+  clientPut("PUD-66", "PUT per_user_discovery true again", "pud66-u", { per_user_discovery: true }, [A.status(200)]),
+  getClient("PUD-66", "pud66-u", "pending_verification, flag on, no credential, tools []", [clientState("pending_verification"), flagIs(true), noCredential(), toolNamesAre([])]),
+  gwListNone("PUD-66", "while pending, VK-A's gw-list has no pud66-* tool", [vkOf("pud66", "a")], "pud66"),
+  clientPost("PUD-66", "reauthorize while pending, with the flag on, has no admin credential to refresh", "pud66-u", "reauthorize", [A.status(400), A.msgEquals(PUD_ON_NO_ADMIN)]),
+  initiateOnRegistration("PUD-66", "initiate-verification", "pud66-u", "pud66", "pud66_cfg"),
+  consentAs("PUD-66", "consent as admin", "pud66", "admin"),
+  followCallback("PUD-66", "follow the callback", "pud66", callbackSuccess()),
+  completeOAuth("PUD-66", "complete", "pud66", [A.status(200), A.jsonMessage(VERIFIED_AGAIN)]),
+  getClient("PUD-66", "pud66-u", "healthy, flag on, no credential, tools [], the same oauth_config_id", [clientState("healthy"), flagIs(true), noCredential(), toolNamesAre([]), oauthConfigKept("pud66_cfg")]),
+  gwList("PUD-66", "VK-A's gw-list is [pud66-connect]", [vkOf("pud66", "a")], ["pud66-connect"]),
+  connectExpect("PUD-66", "VK-A calls pud66-connect with the token it kept", "pud66", "a", connectedText("pud66", 2)),
+  gwList("PUD-66", "VK-A's gw-list is pud66's two tools", [vkOf("pud66", "a")], ["pud66-add_tool", "pud66-echo_tool"]),
+  deleteClient("PUD-66", "pud66-u"),
+  pudVKDelete("PUD-66", "pud66", "a"),
+  restoreConfig("PUD-66"),
+]);
+
+const PUD67 = folder("PUD-67 Disable then enable keeps a turned-off OAuth client pending", `Setup: ${ODOOR_TEXT("pud67")}; per_user_discovery turned off, so pud67 is pending verification. It is disabled, then enabled, then verified on the registration it kept.`, [
+  ...puConfig("PUD-67", false),
+  ...odoor("PUD-67", "pud67"),
+  getClient("PUD-67", "pud67-u", "setup: record pud67's oauth_config_id", [], { extraTests: keepOauthConfig("pud67_cfg") }),
+  clientPut("PUD-67", "setup: turn per_user_discovery off", "pud67-u", { per_user_discovery: false }, [A.status(200)]),
+  clientPut("PUD-67", "disable pud67", "pud67-u", { disabled: true }, [A.status(200)]),
+  getClient("PUD-67", "pud67-u", "disabled", [clientState("disabled")]),
+  clientPut("PUD-67", "enable pud67", "pud67-u", { disabled: false }, [A.status(200)]),
+  getClient("PUD-67", "pud67-u", "pending_verification again, not healthy", [clientState("pending_verification"), toolNamesAre([])]),
+  initiateOnRegistration("PUD-67", "initiate-verification", "pud67-u", "pud67", "pud67_cfg"),
+  consentAs("PUD-67", "consent as admin", "pud67", "admin"),
+  followCallback("PUD-67", "follow the callback", "pud67", callbackSuccess()),
+  completeOAuth("PUD-67", "complete", "pud67", [A.status(200), A.jsonMessage(VERIFIED_AGAIN)]),
+  getClient("PUD-67", "pud67-u", "healthy with the shared tools", [clientState("healthy"), toolNamesAre(["add_tool", "echo_tool"])]),
+  deleteClient("PUD-67", "pud67-u"),
+  restoreConfig("PUD-67"),
+]);
+
+const PUD68 = folder("PUD-68 config.json flagged OAuth client at boot", `Setup: ${PU_TEXT(false)}; the runner's config.json declares pud68_o, a per_user_oauth client on fleet server pud68 with per_user_discovery on and no oauth_config, so it boots pending verification; fleet server pud68 (echo_tool, add_tool) as an OAuth protected resource with dynamic registration; VK-A granted every tool of pud68_o. The admin verifies it with initiate-verification, which registers a client from the bootstrap stash, and that sign-in only verifies.`, [
+  ...puConfig("PUD-68", false),
+  ...asServer("PUD-68", "pud68"),
+  getClient("PUD-68", "pud68-o", "pud68_o booted pending verification, flag on, no credential", [clientState("pending_verification"), flagIs(true), noCredential()]),
+  pudVK("PUD-68", "pud68_o", "a"),
+  gwListNone("PUD-68", "while pending, VK-A's gw-list has no pud68_o-* tool", [vkOf("pud68_o", "a")], "pud68_o"),
+  ...["reauthorize", "reregister"].map((verb) => clientPost("PUD-68", `${verb} before any sign-in is refused`, "pud68-o", verb, [A.status(400), A.msgEquals(NOT_VERIFIED_YET)])),
+  clientPost("PUD-68", "initiate-verification", "pud68-o", "initiate-verification", [A.status(200), initiateSaves("pud68_oc")], { extraTests: ["pm.collectionVariables.set('pud68_au', pm.response.json().authorize_url || '');"] }),
+  ...["reauthorize", "reregister"].map((verb) => clientPost("PUD-68", `${verb} during the first sign-in is refused`, "pud68-o", verb, [A.status(400), A.msgEquals(NOT_VERIFIED_YET)])),
+  consentAs("PUD-68", "consent as admin, on the authorize URL initiate-verification gave", "pud68", "admin"),
+  followCallback("PUD-68", "follow the callback", "pud68", callbackSuccess()),
+  completeOAuth("PUD-68", "complete", "pud68", [A.status(200), A.jsonMessage(VERIFIED_AGAIN)]),
+  getClient("PUD-68", "pud68-o", "healthy, flag on, no credential, tools [], no callers_by_tool", [clientState("healthy"), flagIs(true), noCredential(), toolNamesAre([]), callersAre(null)]),
+  oauthCounters("PUD-68", "pud68", "one registration, from the bootstrap stash: the refused reregisters registered nothing", { register: 1 }),
+  gwList("PUD-68", "VK-A's gw-list is [pud68_o-connect]", [vkOf("pud68_o", "a")], ["pud68_o-connect"]),
+  ...signInO("PUD-68", "pud68_o", "a", "alice"),
+  gwList("PUD-68", "VK-A's gw-list is pud68_o's two tools", [vkOf("pud68_o", "a")], ["pud68_o-add_tool", "pud68_o-echo_tool"]),
+  deleteClient("PUD-68", "pud68-o"),
+  pudVKDelete("PUD-68", "pud68_o", "a"),
+  restoreConfig("PUD-68"),
+]);
+
+const PUD69 = folder("PUD-69 Turning it off (OAuth), verified again with reauthorize", `Setup: ${ODOOR_TEXT("pud69")}; VK-A signed in as alice. Then per_user_discovery is turned off, and the admin verifies pud69 again through reauthorize (Refresh admin credential), which signs in on the registration pud69 kept, as initiate-verification does.`, [
+  ...puConfig("PUD-69", false),
+  ...odoor("PUD-69", "pud69"),
+  pudVK("PUD-69", "pud69", "a"),
+  ...signInO("PUD-69", "pud69", "a", "alice"),
+  getClient("PUD-69", "pud69-u", "setup: record pud69's oauth_config_id", [], { extraTests: keepOauthConfig("pud69_cfg") }),
+  clientPut("PUD-69", "PUT per_user_discovery false", "pud69-u", { per_user_discovery: false }, [A.status(200)]),
+  getClient("PUD-69", "pud69-u", "pending_verification, flag off, tools []", [clientState("pending_verification"), flagIs(false), toolNamesAre([])]),
+  signInOnRegistration("PUD-69", "reauthorize while pending", "pud69-u", "reauthorize", "pud69", "pud69_cfg"),
+  completeOAuth("PUD-69", "complete before the admin signs in", "pud69", [A.status(409), A.msgEquals(NOT_SIGNED_IN)]),
+  consentAs("PUD-69", "consent as admin", "pud69", "admin"),
+  followCallback("PUD-69", "follow the callback", "pud69", callbackSuccess()),
+  completeOAuth("PUD-69", "complete", "pud69", [A.status(200), A.jsonMessage(VERIFIED_AGAIN), A.jsonEquals("tools_count", 2)]),
+  getClient("PUD-69", "pud69-u", "healthy with the shared tools, an active admin credential and the same oauth_config_id", [clientState("healthy"), toolNamesAre(["add_tool", "echo_tool"]), credKind("oauth"), credStatus("active"), oauthConfigKept("pud69_cfg")]),
+  oauthCounters("PUD-69", "pud69", "the only registration is the one pud69 was created with", { register: 1 }),
+  resetCounters("PUD-69", "pud69"),
+  execAs("PUD-69", "VK-A calls pud69-echo_tool without signing in again", "pud69-echo_tool", [vkOf("pud69", "a")], [A.status(200)]),
+  mockGet("PUD-69", "pud69", "the call ran under alice", [identityCallsAre({ alice: 1 })]),
+  deleteClient("PUD-69", "pud69-u"),
+  pudVKDelete("PUD-69", "pud69", "a"),
+  restoreConfig("PUD-69"),
+]);
+
+const PUD70 = folder("PUD-70 Turning it off (OAuth) after the provider forgot its client", `Setup: ${ODOOR_TEXT("pud70")}; VK-A signed in as alice. Then per_user_discovery is turned off, and pud70's authorization server forgets every client it registered (oauth/forget), as one that drops a registration once its tokens expire does. Verifying on the kept registration fails at consent; reregister, which pud70 takes while pending, registers a new client and the admin verifies on it. VK-A's sign-in was issued to the forgotten client, so VK-A signs in again.`, [
+  ...puConfig("PUD-70", false),
+  ...odoor("PUD-70", "pud70"),
+  pudVK("PUD-70", "pud70", "a"),
+  ...signInO("PUD-70", "pud70", "a", "alice"),
+  getClient("PUD-70", "pud70-u", "setup: record pud70's oauth_config_id", [], { extraTests: keepOauthConfig("pud70_cfg") }),
+  clientPut("PUD-70", "PUT per_user_discovery false", "pud70-u", { per_user_discovery: false }, [A.status(200)]),
+  mockPost("PUD-70", "pud70", "oauth/forget", "setup: pud70's authorization server forgets the clients it registered", {}),
+  initiateOnRegistration("PUD-70", "initiate-verification", "pud70-u", "pud70", "pud70_cfg"),
+  consentAs("PUD-70", "consent as admin is refused: the client is unknown", "pud70", "admin", [A.status(400)]),
+  completeOAuth("PUD-70", "complete without a sign-in", "pud70", [A.status(409), A.msgEquals(NOT_SIGNED_IN)]),
+  getClient("PUD-70", "pud70-u", "still pending_verification", [clientState("pending_verification"), toolNamesAre([])]),
+  signInOnRegistration("PUD-70", "reregister while pending", "pud70-u", "reregister", "pud70", "pud70_cfg"),
+  consentAs("PUD-70", "consent as admin on the new client", "pud70", "admin"),
+  followCallback("PUD-70", "follow the callback", "pud70", callbackSuccess()),
+  completeOAuth("PUD-70", "complete", "pud70", [A.status(200), A.jsonMessage(VERIFIED_AGAIN), A.jsonEquals("tools_count", 2)]),
+  getClient("PUD-70", "pud70-u", "healthy with the shared tools, an active admin credential and the same oauth_config_id", [clientState("healthy"), toolNamesAre(["add_tool", "echo_tool"]), credKind("oauth"), credStatus("active"), oauthConfigKept("pud70_cfg")]),
+  oauthCounters("PUD-70", "pud70", "two registrations: the first and the one reregister made", { register: 2 }),
+  execAs("PUD-70", "VK-A calls pud70-echo_tool and is sent to sign in again", "pud70-echo_tool", [vkOf("pud70", "a")], [A.status(400), keepFlow("pud70_a_again")]),
+  ...puFinish("PUD-70", "pud70_a_again", "alice", "VK-A's new flow"),
+  resetCounters("PUD-70", "pud70"),
+  execAs("PUD-70", "VK-A calls pud70-echo_tool", "pud70-echo_tool", [vkOf("pud70", "a")], [A.status(200)]),
+  mockGet("PUD-70", "pud70", "the call ran under alice", [identityCallsAre({ alice: 1 })]),
+  deleteClient("PUD-70", "pud70-u"),
+  pudVKDelete("PUD-70", "pud70", "a"),
+  restoreConfig("PUD-70"),
+]);
+
+const PUD71 = folder("PUD-71 Turning it off and on again (OAuth), then reregister", `Setup: ${ODOOR_TEXT("pud71")}; VK-A signed in as alice. Then per_user_discovery is turned off and on again, which leaves pud71 awaiting verification with the flag on; reregister, which pud71 takes while pending, registers a new client, and the admin's sign-in on it only verifies. VK-A's sign-in was issued to the replaced client, so VK-A signs in again.`, [
+  ...puConfig("PUD-71", false),
+  ...odoor("PUD-71", "pud71"),
+  pudVK("PUD-71", "pud71", "a"),
+  ...signInO("PUD-71", "pud71", "a", "alice"),
+  getClient("PUD-71", "pud71-u", "setup: record pud71's oauth_config_id", [], { extraTests: keepOauthConfig("pud71_cfg") }),
+  clientPut("PUD-71", "PUT per_user_discovery false", "pud71-u", { per_user_discovery: false }, [A.status(200)]),
+  clientPut("PUD-71", "PUT per_user_discovery true again", "pud71-u", { per_user_discovery: true }, [A.status(200)]),
+  getClient("PUD-71", "pud71-u", "pending_verification, flag on", [clientState("pending_verification"), flagIs(true), noCredential(), toolNamesAre([])]),
+  signInOnRegistration("PUD-71", "reregister while pending", "pud71-u", "reregister", "pud71", "pud71_cfg"),
+  consentAs("PUD-71", "consent as admin on the new client", "pud71", "admin"),
+  followCallback("PUD-71", "follow the callback", "pud71", callbackSuccess()),
+  completeOAuth("PUD-71", "complete", "pud71", [A.status(200), A.jsonMessage(VERIFIED_AGAIN)]),
+  getClient("PUD-71", "pud71-u", "healthy, flag on, no credential, tools [], the same oauth_config_id", [clientState("healthy"), flagIs(true), noCredential(), toolNamesAre([]), oauthConfigKept("pud71_cfg")]),
+  oauthCounters("PUD-71", "pud71", "two registrations: the first and the one reregister made", { register: 2 }),
+  gwList("PUD-71", "VK-A's gw-list is [pud71-connect]", [vkOf("pud71", "a")], ["pud71-connect"]),
+  ...signInO("PUD-71", "pud71", "a", "alice"),
+  gwList("PUD-71", "VK-A's gw-list is pud71's two tools", [vkOf("pud71", "a")], ["pud71-add_tool", "pud71-echo_tool"]),
+  deleteClient("PUD-71", "pud71-u"),
+  pudVKDelete("PUD-71", "pud71", "a"),
+  restoreConfig("PUD-71"),
+]);
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -11396,7 +11588,7 @@ const collection = {
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB12, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB27, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43, LOG49]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL01, FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL09, FAIL10, FAIL12, FAIL14, FAIL16, FAIL18, FAIL19, FAIL23, FAIL24, FAIL25, FAIL27, FAIL28]),
-    section("PUD Per-user discovery", "Per-user discovery tests.", [PUD01, PUD02, PUD03, PUD04, PUD05, PUD06, PUD07, PUD08, PUD09, PUD10, PUD11, PUD12, PUD13, PUD14, PUD15, PUD16, PUD17, PUD18, PUD19, PUD20, PUD21, PUD22, PUD23, PUD24, PUD25, PUD26, PUD27, PUD28, PUD29, PUD30, PUD31, PUD32, PUD33, PUD34, PUD35, PUD36, PUD37, PUD38, PUD39, PUD40, PUD41, PUD42, PUD43, PUD44, PUD45, PUD46, PUD47, PUD48, PUD49, PUD50, PUD51, PUD52, PUD53, PUD54, PUD55, PUD56, PUD57, PUD58, PUD59, PUD60, PUD61, PUD62, PUD63, PUD64]),
+    section("PUD Per-user discovery", "Per-user discovery tests.", [PUD01, PUD02, PUD03, PUD04, PUD05, PUD06, PUD07, PUD08, PUD09, PUD10, PUD11, PUD12, PUD13, PUD14, PUD15, PUD16, PUD17, PUD18, PUD19, PUD20, PUD21, PUD22, PUD23, PUD24, PUD25, PUD26, PUD27, PUD28, PUD29, PUD30, PUD31, PUD32, PUD33, PUD34, PUD35, PUD36, PUD37, PUD38, PUD39, PUD40, PUD41, PUD42, PUD43, PUD44, PUD45, PUD46, PUD47, PUD48, PUD49, PUD50, PUD51, PUD52, PUD53, PUD54, PUD55, PUD56, PUD57, PUD58, PUD59, PUD60, PUD61, PUD62, PUD63, PUD64, PUD65, PUD66, PUD67, PUD68, PUD69, PUD70, PUD71]),
   ],
 };
 
