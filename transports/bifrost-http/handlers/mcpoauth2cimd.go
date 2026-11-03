@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -159,7 +160,8 @@ func (r *oauth2ClientMetadataResolver) fetch(ctx context.Context, store *lib.Con
 
 	var doc struct {
 		dcrRequest
-		ClientID string `json:"client_id"`
+		ClientID                          string   `json:"client_id"`
+		TokenEndpointAuthMethodsSupported []string `json:"token_endpoint_auth_methods_supported"` // not standard; ChatGPT and Codex publish it
 	}
 	if err := sonic.Unmarshal(body, &doc); err != nil {
 		return nil, 0, invalid("is not valid JSON")
@@ -180,6 +182,11 @@ func (r *oauth2ClientMetadataResolver) fetch(ctx context.Context, store *lib.Con
 		if len(metadata.GrantTypes) == 0 {
 			return nil, 0, invalid("unsupported grant_type")
 		}
+	}
+	// Likewise a client can prefer an auth method this server lacks (ChatGPT: private_key_jwt) while
+	// also supporting none; it then uses none here, the only method this server advertises.
+	if slices.Contains(doc.TokenEndpointAuthMethodsSupported, "none") {
+		metadata.TokenEndpointAuthMethod = "none"
 	}
 	grantTypes, _, scope, metadataErr := validateOAuth2ClientMetadata(store, metadata)
 	if metadataErr != nil {
