@@ -98,6 +98,27 @@ func TestOAuth2ClientMetadataResolver(t *testing.T) {
 		assert.Equal(t, []string{"authorization_code", "refresh_token"}, client.GrantTypes)
 	})
 
+	// ChatGPT's document prefers private_key_jwt and also lists none among the methods it supports.
+	t.Run("another auth method is accepted when the document also supports none", func(t *testing.T) {
+		clientID := host.document("/prefers-jwt.json", map[string]any{
+			"token_endpoint_auth_method":            "private_key_jwt",
+			"token_endpoint_auth_methods_supported": []string{"none", "private_key_jwt"},
+		}, nil)
+		_, err := resolver.resolve(context.Background(), cfg, clientID)
+		require.Nil(t, err)
+	})
+
+	t.Run("another auth method is refused when the document does not support none", func(t *testing.T) {
+		for path, extra := range map[string]map[string]any{
+			"/jwt-only.json":      {"token_endpoint_auth_method": "private_key_jwt"},
+			"/jwt-and-basic.json": {"token_endpoint_auth_method": "private_key_jwt", "token_endpoint_auth_methods_supported": []string{"private_key_jwt", "client_secret_basic"}},
+		} {
+			_, err := resolver.resolve(context.Background(), cfg, host.document(path, extra, nil))
+			require.NotNil(t, err, path)
+			assert.Contains(t, err.description, "only token_endpoint_auth_method=none is supported", path)
+		}
+	})
+
 	t.Run("long URL is accepted", func(t *testing.T) {
 		clientID := host.document("/"+strings.Repeat("a", 4096)+"/client.json", nil, nil)
 		client, err := resolver.resolve(context.Background(), cfg, clientID)
@@ -285,6 +306,15 @@ func TestHandleAuthorize_ClientIDMetadataDocument(t *testing.T) {
 	ctx = getCtx("/oauth2/authorize?" + query("http://127.0.0.1:3000/callback"))
 	h.handleAuthorize(ctx)
 	require.Equal(t, fasthttp.StatusFound, ctx.Response.StatusCode(), "a document listing a grant this server does not offer still authorizes: %s", ctx.Response.Body())
+
+	// ChatGPT's document prefers private_key_jwt and also supports none.
+	clientID = host.document("/prefers-jwt.json", map[string]any{
+		"token_endpoint_auth_method":            "private_key_jwt",
+		"token_endpoint_auth_methods_supported": []string{"none", "private_key_jwt"},
+	}, nil)
+	ctx = getCtx("/oauth2/authorize?" + query("http://127.0.0.1:3000/callback"))
+	h.handleAuthorize(ctx)
+	require.Equal(t, fasthttp.StatusFound, ctx.Response.StatusCode(), "a document preferring another auth method but supporting none still authorizes: %s", ctx.Response.Body())
 	assert.Contains(t, string(ctx.Response.Header.Peek("Location")), "/oauth/consent?flow=")
 }
 
@@ -339,5 +369,61 @@ func BenchmarkOAuth2ClientMetadataResolver_Cached(b *testing.B) {
 		if _, err := resolver.resolve(context.Background(), nil, clientID); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// realClientDocuments are Client ID Metadata Documents real MCP clients publish, verbatim as fetched
+// on 2026-11-03 from the URL in each comment. A client publishes one document for every authorization
+// server, so it can list grants this server does not offer (claude.ai: jwt-bearer, VS Code:
+// device_code); each must still resolve.
+var realClientDocuments = []struct {
+	name     string
+	document string
+}{
+	// https://claude.ai/oauth/mcp-oauth-client-metadata
+	{"claude.ai", `{"client_id":"https://claude.ai/oauth/mcp-oauth-client-metadata","client_name":"Claude","client_uri":"https://claude.ai","redirect_uris":["https://claude.ai/api/mcp/auth_callback"],"grant_types":["authorization_code","refresh_token","urn:ietf:params:oauth:grant-type:jwt-bearer"],"response_types":["code"],"token_endpoint_auth_method":"none"}`},
+	// https://claude.ai/oauth/claude-code-client-metadata
+	{"Claude Code", `{"client_id":"https://claude.ai/oauth/claude-code-client-metadata","client_name":"Claude Code","client_uri":"https://claude.ai","redirect_uris":["http://localhost/callback","http://127.0.0.1/callback"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none"}`},
+	// https://chatgpt.com/oauth/codex/client.json
+	{"Codex", `{"client_id":"https://chatgpt.com/oauth/codex/client.json","client_uri":"https://chatgpt.com/codex","application_type":"native","redirect_uris":["http://127.0.0.1/callback","http://localhost/callback"],"token_endpoint_auth_method":"none","token_endpoint_auth_methods_supported":["none"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"client_name":"Codex","logo_uri":"https://persistent.oaistatic.com/sonic/misc/openai-logo.png"}`},
+	// https://vscode.dev/oauth/client-metadata.json
+	{"VS Code", `{"client_name":"Visual Studio Code","logo_uri":"https://code.visualstudio.com/assets/branding/code-stable.png","grant_types":["authorization_code","refresh_token","urn:ietf:params:oauth:grant-type:device_code"],"response_types":["code"],"token_endpoint_auth_method":"none","application_type":"native","client_id":"https://vscode.dev/oauth/client-metadata.json","client_uri":"https://vscode.dev/product","redirect_uris":["http://127.0.0.1:33418/","https://vscode.dev/redirect"]}`},
+	// https://cursor.com/oauth/mcp-client.json
+	{"Cursor", `{"client_id":"https://cursor.com/oauth/mcp-client.json","client_name":"Cursor","client_uri":"https://cursor.com","logo_uri":"https://ptht05hbb1ssoooe.public.blob.vercel-storage.com/assets/uploads/cursorlogomcpv3.svg","redirect_uris":["https://www.cursor.com/agents/mcp/oauth/callback","https://www.cursor.com/bot/mcp/oauth/callback","https://grok.com/connectors-oauth-exchange-code/","http://localhost:8787/callback","http://127.0.0.1:8787/callback"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none"}`},
+	// https://chatgpt.com/oauth/client.json
+	{"ChatGPT", `{"client_id":"https://chatgpt.com/oauth/client.json","client_uri":"https://chatgpt.com/","redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"],"token_endpoint_auth_method":"private_key_jwt","token_endpoint_auth_methods_supported":["none","private_key_jwt"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"client_name":"ChatGPT","logo_uri":"https://persistent.oaistatic.com/sonic/misc/openai-logo.png","token_endpoint_auth_signing_alg":"RS256","jwks_uri":"https://chatgpt.com/oauth/jwks.json"}`},
+	// https://zed.dev/oauth/client-metadata.json
+	{"Zed", `{"client_id":"https://zed.dev/oauth/client-metadata.json","client_name":"Zed","client_uri":"https://zed.dev","redirect_uris":["http://127.0.0.1/callback"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none","logo_uri":"https://cdn.zed.dev/images/logo-dark.png"}`},
+}
+
+// TestOAuth2ClientMetadataResolver_RealClientDocuments resolves each real client's document, served from
+// a test host (so its client_id names that host, the one change), with its remote callbacks approved as
+// an operator using that client would. Each becomes a public client with the grants this server offers.
+func TestOAuth2ClientMetadataResolver_RealClientDocuments(t *testing.T) {
+	_, _, cfg := newIssuanceHandler(t)
+	host := newMetadataHost(t)
+	resolver := newOAuth2ClientMetadataResolver(host.server.Client())
+	for i, tc := range realClientDocuments {
+		t.Run(tc.name, func(t *testing.T) {
+			var doc map[string]any
+			require.NoError(t, json.Unmarshal([]byte(tc.document), &doc))
+			var redirects []string
+			for _, uri := range doc["redirect_uris"].([]any) {
+				redirects = append(redirects, uri.(string))
+			}
+			cfg.ClientConfig.OAuth2ServerConfig.AllowedRedirectURIs = redirects
+			path := fmt.Sprintf("/real-%d.json", i)
+			host.docs[path] = func(base string) (int, http.Header, string) {
+				doc["client_id"] = base + path
+				body, _ := json.Marshal(doc)
+				return http.StatusOK, http.Header{"Content-Type": []string{"application/json"}}, string(body)
+			}
+
+			client, err := resolver.resolve(context.Background(), cfg, host.server.URL+path)
+			require.Nil(t, err, "the %s document must resolve", tc.name)
+			assert.Equal(t, doc["client_name"], client.ClientName)
+			assert.Equal(t, redirects, client.RedirectURIs)
+			assert.Equal(t, []string{"authorization_code", "refresh_token"}, client.GrantTypes)
+		})
 	}
 }
