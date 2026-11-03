@@ -1599,6 +1599,13 @@ func TestClickHouseWarpWritesWaitForTheSharedOwnerLock(t *testing.T) {
 			return replica.AppendWarpMessages(ctx, owner, owner+"-append", []WarpMessage{{ID: owner + "-append-m", Role: "user", Content: "q", CreatedAt: now}})
 		})
 	})
+	t.Run("swap question", func(t *testing.T) {
+		seed(owner+"-swap", now, 1)
+		waitsForLock(t, func() error {
+			_, err := replica.SwapWarpQuestion(ctx, owner, owner+"-swap", owner+"-swap-m0", "", `{}`)
+			return err
+		})
+	})
 	t.Run("delete if empty", func(t *testing.T) {
 		seed(owner+"-empty", now, 0)
 		waitsForLock(t, func() error {
@@ -1626,6 +1633,33 @@ func TestClickHouseWarpWritesWaitForTheSharedOwnerLock(t *testing.T) {
 			return err
 		})
 	})
+}
+
+// A question swap writes only while the stored value is the expected one, on
+// the owner's own thread, so a confirmation card is claimed once.
+func TestClickHouseWarpSwapQuestion(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	owner := fmt.Sprintf("user:swap-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	require.NoError(t, store.CreateWarpConversation(ctx, &WarpConversation{ID: owner + "-c", OwnerID: owner, Title: "t", CreatedAt: now, UpdatedAt: now}))
+	card := WarpMessage{ID: owner + "-card", Role: "assistant", Content: "a", QuestionJSON: `{"pending":{"token":"t"}}`, CreatedAt: now}
+	require.NoError(t, store.AppendWarpMessages(ctx, owner, owner+"-c", []WarpMessage{card}))
+
+	swapped, err := store.SwapWarpQuestion(ctx, "other", owner+"-c", card.ID, card.QuestionJSON, `{}`)
+	require.NoError(t, err)
+	require.False(t, swapped, "another owner's thread is not touched")
+	swapped, err = store.SwapWarpQuestion(ctx, owner, owner+"-c", card.ID, card.QuestionJSON, `{}`)
+	require.NoError(t, err)
+	require.True(t, swapped)
+	swapped, err = store.SwapWarpQuestion(ctx, owner, owner+"-c", card.ID, card.QuestionJSON, `{"again":true}`)
+	require.NoError(t, err)
+	require.False(t, swapped, "the second claim loses")
+
+	thread, err := store.GetWarpConversation(ctx, owner, owner+"-c")
+	require.NoError(t, err)
+	require.Len(t, thread.Messages, 1, "the re-insert replaces the card rather than adding a row")
+	require.Equal(t, `{}`, thread.Messages[0].QuestionJSON)
 }
 
 // lostLeaseLocker grants the lock but reports it lost at once, the way the

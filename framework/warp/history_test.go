@@ -86,6 +86,20 @@ func (m *memoryConversations) AppendWarpMessages(_ context.Context, ownerID, con
 	return nil
 }
 
+func (m *memoryConversations) SwapWarpQuestion(_ context.Context, ownerID, conversationID, messageID, expected, replacement string) (bool, error) {
+	thread, ok := m.threads[conversationID]
+	if !ok || thread.OwnerID != ownerID {
+		return false, nil
+	}
+	for i := range thread.Messages {
+		if thread.Messages[i].ID == messageID && thread.Messages[i].QuestionJSON == expected {
+			thread.Messages[i].QuestionJSON = replacement
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (m *memoryConversations) DeleteWarpConversation(_ context.Context, ownerID, id string) error {
 	if _, err := m.GetWarpConversation(context.Background(), ownerID, id); err != nil {
 		return err
