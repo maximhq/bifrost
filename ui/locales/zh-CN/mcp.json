@@ -332,7 +332,6 @@
 			"usingGlobal": "使用全局设置",
 			"syncIntervalNotUsed": "未使用：此服务器不保留需要同步的自身发现结果。每个调用方的工具、提示词和资源会在其连接时发现。",
 			"perUserDiscoveryOnWarning": "保存后将删除 Bifrost 为此服务器保留的管理员凭证和发现结果。每个调用方的工具、提示词和资源会在其下次连接时使用自己的凭证发现。",
-			"perUserDiscoveryOffWarningSignIn": "保存后将删除所有调用方已发现的工具、提示词和资源。之后请使用“{{action}}”，以便 Bifrost 通过管理员登录重新发现它们。",
 			"perUserDiscoveryOffWarningPending": "保存后将删除所有调用方已发现的工具、提示词和资源，服务器将回到待验证状态，直到管理员再次验证。",
 			"toolExecutionTimeout": "工具执行超时（秒）",
 			"disableClient": "禁用客户端",

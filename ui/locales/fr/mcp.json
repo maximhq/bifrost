@@ -318,7 +318,6 @@
 			"usingGlobal": "Utilisation du paramètre global",
 			"syncIntervalNotUsed": "Non utilisé : ce serveur ne conserve aucune découverte propre à synchroniser. Les outils, prompts et ressources de chaque appelant sont découverts lorsqu'il se connecte.",
 			"perUserDiscoveryOnWarning": "L'enregistrement supprime l'identifiant administrateur et la découverte que Bifrost conserve pour ce serveur. Les outils, prompts et ressources de chaque appelant sont découverts avec son propre identifiant à sa prochaine connexion.",
-			"perUserDiscoveryOffWarningSignIn": "L'enregistrement supprime les outils, prompts et ressources découverts de tous les appelants. Utilisez ensuite {{action}} pour que Bifrost puisse les redécouvrir avec une connexion administrateur.",
 			"perUserDiscoveryOffWarningPending": "L'enregistrement supprime les outils, prompts et ressources découverts de tous les appelants, et le serveur repasse en attente de vérification jusqu'à ce qu'un administrateur le vérifie à nouveau.",
 			"toolExecutionTimeout": "Délai d’exécution des outils (secondes)",
 			"disableClient": "Désactiver le client",

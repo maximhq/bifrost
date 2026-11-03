@@ -332,7 +332,6 @@
 			"usingGlobal": "전역 설정 사용",
 			"syncIntervalNotUsed": "사용 안 함: 이 서버는 동기화할 자체 검색 결과를 보관하지 않아요. 각 호출자의 도구, 프롬프트, 리소스는 연결할 때 검색돼요.",
 			"perUserDiscoveryOnWarning": "저장하면 Bifrost가 이 서버용으로 보관하는 관리자 자격 증명과 검색 결과가 삭제돼요. 각 호출자의 도구, 프롬프트, 리소스는 다음에 연결할 때 본인의 자격 증명으로 검색돼요.",
-			"perUserDiscoveryOffWarningSignIn": "저장하면 모든 호출자의 검색된 도구, 프롬프트, 리소스가 삭제돼요. 이후 {{action}}을(를) 사용하면 Bifrost가 관리자 로그인으로 다시 검색할 수 있어요.",
 			"perUserDiscoveryOffWarningPending": "저장하면 모든 호출자의 검색된 도구, 프롬프트, 리소스가 삭제되고, 관리자가 다시 확인할 때까지 서버는 확인 대기 상태로 돌아가요.",
 			"toolExecutionTimeout": "도구 실행 시간 초과(초)",
 			"disableClient": "클라이언트 비활성화",

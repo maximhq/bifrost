@@ -433,6 +433,8 @@ export default function MCPClientsTable({
 	const [bootstrapAuthorize, setBootstrapAuthorize] = useState<{
 		authorizeUrl: string;
 		oauthConfigId: string;
+		flowId?: string;
+		expiresAt?: string;
 		mcpClientId: string;
 		isPerUserOauth: boolean;
 		perUserDiscovery: boolean;
@@ -540,6 +542,10 @@ export default function MCPClientsTable({
 				setBootstrapAuthorize({
 					authorizeUrl: response.authorize_url,
 					oauthConfigId: response.oauth_config_id,
+					// A client verifying on the registration it already has (per-caller
+					// discovery turned off) signs in through a flow: its config already
+					// reads "authorized", so the dialog has to poll the flow instead.
+					...(response.flow_id ? { flowId: response.flow_id, expiresAt: response.expires_at } : {}),
 					mcpClientId: client.config.client_id,
 					isPerUserOauth,
 					perUserDiscovery: perUserDiscoveryOn(client.config),
@@ -880,8 +886,29 @@ export default function MCPClientsTable({
 						setBootstrapAuthorize(null);
 						toast({ title: t("registry.toast.authorizationFailed"), description: error, variant: "destructive" });
 					}}
+					onRetry={
+						bootstrapAuthorize.flowId
+							? async () => {
+									// As for reauthorize: a timed-out or denied flow is dead
+									// server-side, so Retry starts a fresh one.
+									const response = await initiateVerification(bootstrapAuthorize.mcpClientId).unwrap();
+									setBootstrapAuthorize(
+										(prev) =>
+											prev && {
+												...prev,
+												authorizeUrl: response.authorize_url,
+												oauthConfigId: response.oauth_config_id,
+												flowId: response.flow_id,
+												expiresAt: response.expires_at,
+											},
+									);
+								}
+							: undefined
+					}
 					authorizeUrl={bootstrapAuthorize.authorizeUrl}
 					oauthConfigId={bootstrapAuthorize.oauthConfigId}
+					flowId={bootstrapAuthorize.flowId}
+					expiresAt={bootstrapAuthorize.expiresAt}
 					mcpClientId={bootstrapAuthorize.mcpClientId}
 					isPerUserOauth={bootstrapAuthorize.isPerUserOauth}
 					perUserDiscovery={bootstrapAuthorize.perUserDiscovery}

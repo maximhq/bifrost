@@ -332,7 +332,6 @@
 			"usingGlobal": "グローバル設定を使用する",
 			"syncIntervalNotUsed": "使用されません: このサーバーは同期する独自の検出結果を保持しません。各呼び出し元のツール、プロンプト、リソースは接続時に検出されます。",
 			"perUserDiscoveryOnWarning": "保存すると、Bifrost がこのサーバー用に保持している管理者の認証情報と検出結果が削除されます。各呼び出し元のツール、プロンプト、リソースは、次回接続時に本人の認証情報で検出されます。",
-			"perUserDiscoveryOffWarningSignIn": "保存すると、すべての呼び出し元で検出されたツール、プロンプト、リソースが削除されます。その後 {{action}} を使用すると、Bifrost が管理者のサインインで再度検出できます。",
 			"perUserDiscoveryOffWarningPending": "保存すると、すべての呼び出し元で検出されたツール、プロンプト、リソースが削除され、管理者が再度確認するまでサーバーは確認待ちの状態に戻ります。",
 			"toolExecutionTimeout": "ツール実行タイムアウト（秒）",
 			"disableClient": "クライアントを無効にする",

@@ -332,7 +332,6 @@
 			"usingGlobal": "Using global setting",
 			"syncIntervalNotUsed": "Not used: this server keeps no discovery of its own to sync. Each caller's tools, prompts and resources are discovered when they connect.",
 			"perUserDiscoveryOnWarning": "Saving deletes the admin credential and the discovery Bifrost keeps for this server. Each caller's tools, prompts and resources are discovered with their own credential when they next connect.",
-			"perUserDiscoveryOffWarningSignIn": "Saving deletes every caller's discovered tools, prompts and resources. Use {{action}} afterwards so Bifrost can discover them with an admin sign-in again.",
 			"perUserDiscoveryOffWarningPending": "Saving deletes every caller's discovered tools, prompts and resources, and the server goes back to pending verification until an admin verifies it again.",
 			"toolExecutionTimeout": "Tool Execution Timeout (seconds)",
 			"disableClient": "Disable Client",

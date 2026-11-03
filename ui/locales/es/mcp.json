@@ -332,7 +332,6 @@
 			"usingGlobal": "Utilizando el entorno mundial",
 			"syncIntervalNotUsed": "No se usa: este servidor no guarda un descubrimiento propio que sincronizar. Las herramientas, los prompts y los recursos de cada solicitante se descubren cuando se conecta.",
 			"perUserDiscoveryOnWarning": "Al guardar se eliminan la credencial de administrador y el descubrimiento que Bifrost guarda para este servidor. Las herramientas, los prompts y los recursos de cada solicitante se descubren con su propia credencial la próxima vez que se conecte.",
-			"perUserDiscoveryOffWarningSignIn": "Al guardar se eliminan las herramientas, los prompts y los recursos descubiertos de todos los solicitantes. Usa {{action}} después para que Bifrost pueda volver a descubrirlos con un inicio de sesión de administrador.",
 			"perUserDiscoveryOffWarningPending": "Al guardar se eliminan las herramientas, los prompts y los recursos descubiertos de todos los solicitantes, y el servidor vuelve a quedar pendiente de verificación hasta que un administrador lo verifique de nuevo.",
 			"toolExecutionTimeout": "Tiempo de ejecución de herramientas (segundos)",
 			"disableClient": "Cliente deshabilitado",
