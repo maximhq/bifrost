@@ -426,6 +426,58 @@ func TestGetMCPLogByIDRedactionMapping(t *testing.T) {
 	}
 }
 
+// timestampHintLogManager records the timestamp hint GET /api/logs/{id} hands the store.
+type timestampHintLogManager struct {
+	loggingplugin.LogManager
+	calls int
+	hint  any
+}
+
+func (m *timestampHintLogManager) GetLog(ctx context.Context, id string) (*logstore.Log, error) {
+	m.calls++
+	m.hint = ctx.Value(logstore.LogTimestampContextKey)
+	return &logstore.Log{ID: id}, nil
+}
+
+// TestGetLogByIDTimestampHint covers #9316: the detail route forwards the row's
+// timestamp so a ClickHouse store can prune the lookup, and rejects a malformed one.
+func TestGetLogByIDTimestampHint(t *testing.T) {
+	SetLogger(&mockLogger{})
+	tests := []struct {
+		name       string
+		query      string
+		wantStatus int
+		wantHint   any
+		wantCalls  int
+	}{
+		{name: "no hint", wantStatus: fasthttp.StatusOK, wantCalls: 1},
+		{name: "rfc3339 millis", query: "timestamp=2026-09-30T17:34:19.870Z", wantStatus: fasthttp.StatusOK, wantHint: time.Date(2026, 9, 30, 17, 34, 19, 870_000_000, time.UTC), wantCalls: 1},
+		{name: "offset", query: "timestamp=2026-09-30T11:34:19-06:00", wantStatus: fasthttp.StatusOK, wantHint: time.Date(2026, 9, 30, 17, 34, 19, 0, time.UTC), wantCalls: 1},
+		{name: "malformed", query: "timestamp=yesterday", wantStatus: fasthttp.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mgr := &timestampHintLogManager{}
+			h := &LoggingHandler{logManager: mgr}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetRequestURI("/api/logs/log-1?" + tt.query)
+			ctx.SetUserValue("id", "log-1")
+
+			h.getLogByID(ctx)
+
+			require.Equal(t, tt.wantStatus, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			require.Equal(t, tt.wantCalls, mgr.calls)
+			if want, ok := tt.wantHint.(time.Time); ok {
+				got, isTime := mgr.hint.(time.Time)
+				require.True(t, isTime, "hint = %#v, want a time.Time", mgr.hint)
+				require.True(t, want.Equal(got), "hint = %s, want %s", got, want)
+			} else {
+				require.Nil(t, mgr.hint)
+			}
+		})
+	}
+}
+
 // TestShouldCacheFilterDimensions_NarrowsToRawScans verifies the cache is spent
 // only where it saves real work. Matview-backed dimensions are indexed lookups
 // and a cache entry serves exactly one caller, so they are not worth caching;

@@ -18,6 +18,14 @@
           "description": "Read buffer size in bytes. This controls the size of the buffer used for reading HTTP headers.",
           "default": 65536
         },
+        "base_path": {
+          "type": "string",
+          "pattern": "^(/([A-Za-z0-9._~-]*[A-Za-z0-9_~-][A-Za-z0-9._~-]*|\\.{3,}))*/?$",
+          "description": "URL path prefix Bifrost is served under behind a reverse proxy, e.g. \"/bifrost\" for https://abc.com/bifrost. Requests are accepted with or without the prefix, so proxies that strip it work too. The UI, redirects, and OAuth callback URLs use the prefix. Segments may not be \".\" or \"..\", and surrounding whitespace is not allowed. The first segment must not match a Bifrost route (such as api, v1, or openai) or a top-level UI path (such as assets or images). Overridden by the -base-path flag or BIFROST_BASE_PATH env var. Deploy-time only. Empty (default) serves at the domain root.",
+          "examples": [
+            "/bifrost"
+          ]
+        },
         "body_buffer_pool_limit_bytes": {
           "type": "integer",
           "minimum": 0,
@@ -574,7 +582,7 @@
                   "additionalProperties": false
                 }
               ],
-              "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. Required whenever mcp_server_auth_mode is 'both' or 'oauth' (config load and PUT /api/config reject an unset value in those modes); the issuer is never derived from the request Host header while OAuth is enabled. Supports env var syntax: \"env.MY_VAR\"."
+              "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. A trailing slash is ignored. Required whenever mcp_server_auth_mode is 'both' or 'oauth' (config load and PUT /api/config reject an unset value in those modes); the issuer is never derived from the request Host header while OAuth is enabled. Supports env var syntax: \"env.MY_VAR\"."
             },
             "auth_code_ttl": {
               "type": "integer",
@@ -5433,6 +5441,41 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "identity_source": {
+      "type": "object",
+      "description": "Where a federated key gets the OIDC identity token it exchanges. Shared by every provider that supports workload identity federation.",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["file", "inline"],
+          "description": "file: read the token from path on every exchange, so a token the platform rotates on disk is picked up. inline: use token as given"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Absolute path of the identity token, for type file (can use env. prefix). Must be under /var/run/secrets or /run/secrets, or a directory listed in the BIFROST_OIDC_ALLOWED_CREDENTIAL_DIRS environment variable"
+        },
+        "token": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The identity token itself, for type inline (can use env. prefix)"
+        }
+      },
+      "required": ["type"],
+      "oneOf": [
+        {
+          "properties": {"type": {"const": "file"}},
+          "required": ["path"],
+          "not": {"required": ["token"]}
+        },
+        {
+          "properties": {"type": {"const": "inline"}},
+          "required": ["token"],
+          "not": {"required": ["path"]}
+        }
+      ],
+      "additionalProperties": false
+    },
     "relay_secret": {
       "description": "A literal value, an env.VAR_NAME reference, or a structured secret reference (vault-backed secrets are stored as references).",
       "anyOf": [
@@ -6072,10 +6115,11 @@
         "type": {
           "type": "string",
           "enum": [
-            "http"
+            "http",
+            "socks5"
           ],
           "default": "http",
-          "description": "Proxy type. Only http is supported."
+          "description": "Proxy type: http (an http:// or https:// proxy URL) or socks5 (a socks5:// or socks5h:// proxy URL). A bare host:port takes its scheme from the type."
         },
         "url": {
           "type": "string",
@@ -7687,6 +7731,49 @@
               }
             }
           ],
+          "additionalProperties": false
+        },
+        "anthropic_key_config": {
+          "type": "object",
+          "description": "Anthropic key configuration, for anthropic and custom providers built on the anthropic base.",
+          "properties": {
+            "workload_identity": {
+              "type": "object",
+              "description": "Workload Identity Federation. Set this and leave value empty: Bifrost exchanges an OIDC identity token for a short-lived Anthropic access token. A non-empty value always wins.",
+              "properties": {
+                "federation_rule_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Federation rule ID, fdrl_... (can use env. prefix)"
+                },
+                "organization_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Anthropic organization UUID (can use env. prefix)"
+                },
+                "service_account_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Service account the minted token acts as, svac_... (can use env. prefix)"
+                },
+                "workspace_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Workspace ID, wrkspc_...; required when the rule spans several workspaces (can use env. prefix)"
+                },
+                "identity_source": {
+                  "$ref": "#/$defs/identity_source"
+                }
+              },
+              "required": [
+                "federation_rule_id",
+                "organization_id",
+                "service_account_id",
+                "identity_source"
+              ],
+              "additionalProperties": false
+            }
+          },
           "additionalProperties": false
         },
         "models": {
@@ -9856,6 +9943,11 @@
           "description": "Server-managed. Set to true when the client was registered over the management API with no admin credential check; every connection to the MCP server (initial, reconnect, per-call) must then resolve to a public address. Once stored as true it is never cleared by the API or by config.json reconciliation; declaring it true here is honored.",
           "default": false
         },
+        "per_user_discovery": {
+          "type": "boolean",
+          "description": "Only valid for per-user auth types (per_user_oauth, per_user_headers, token_exchange), and not for openapi clients: when true, each caller's discovery (its tools, prompts, resources and the server's instructions) is made with its own credential and kept per (auth mode, identity, client), and the client stores no admin credential and does no admin discovery. When false, every caller is served the discovery made with the admin credential. Turning it on deletes the stored admin credential and discovery; turning it off deletes every caller's discovery, and the client needs an admin credential again.",
+          "default": false
+        },
         "tool_pricing": {
           "type": "object",
           "description": "Tool pricing map (tool name to cost per execution)",
@@ -9902,6 +9994,33 @@
       ],
       "additionalProperties": false,
       "allOf": [
+        {
+          "$comment": "The per-user auth types open a new streamable HTTP connection for each call, which an SSE stream or a STDIO subprocess cannot serve, so SSE and STDIO take the shared auth types only. Bifrost skips such a client at boot with an error naming it.",
+          "if": {
+            "properties": {
+              "connection_type": {
+                "enum": [
+                  "sse",
+                  "stdio"
+                ]
+              }
+            },
+            "required": [
+              "connection_type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "auth_type": {
+                "enum": [
+                  "none",
+                  "headers",
+                  "oauth"
+                ]
+              }
+            }
+          }
+        },
         {
           "$comment": "per_user_headers requires the admin to declare which header names users must submit. OAuth-based types have no required input \u2014 the connection_string drives RFC 8414 discovery + RFC 7591 dynamic client registration when oauth_config is omitted or its inner fields are blank.",
           "if": {
@@ -10034,6 +10153,38 @@
                   "headers",
                   "per_user_headers"
                 ]
+              }
+            }
+          }
+        },
+        {
+          "$comment": "per_user_discovery discovers each caller's tools with their own credential, so it only applies to the per-user auth types, and not to an openapi client, whose tools come from its document.",
+          "if": {
+            "properties": {
+              "per_user_discovery": {
+                "const": true
+              }
+            },
+            "required": [
+              "per_user_discovery"
+            ]
+          },
+          "then": {
+            "required": [
+              "auth_type"
+            ],
+            "properties": {
+              "auth_type": {
+                "enum": [
+                  "per_user_oauth",
+                  "per_user_headers",
+                  "token_exchange"
+                ]
+              },
+              "connection_type": {
+                "not": {
+                  "const": "openapi"
+                }
               }
             }
           }
@@ -14513,6 +14664,13 @@
             }
           ],
           "default": "1500ms"
+        },
+        "min_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0,
+          "description": "Confidence an answer must reach to publish its tier. An answer below it publishes no tier. A missing confidence is derived from the tier probabilities; an answer with neither is kept. 0 keeps every answer."
         },
         "criteria": {
           "type": "object",
