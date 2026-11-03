@@ -128,6 +128,8 @@ func ExtractPayload(l *Log) map[string]string {
 	putIfPresent(m, "virtual_key_name", l.VirtualKeyName)
 	putIfPresent(m, "user_id", l.UserID)
 	putIfPresent(m, "user_name", l.UserName)
+	putIfPresent(m, "user_email", l.UserEmail)
+	putIfPresent(m, "client_ip", l.ClientIP)
 	putIfPresent(m, "team_id", l.TeamID)
 	putIfPresent(m, "team_name", l.TeamName)
 	putIfPresent(m, "team_ids", l.TeamIDs)

@@ -660,6 +660,20 @@ export const createColumns = (
 			cell: ({ row }) => <LogAppCell app={row.original.app} userAgent={row.original.user_agent} customAppIcons={customAppIcons} />,
 		},
 		{
+			id: "client_ip",
+			header: t("labels.clientIp"),
+			size: 150,
+			cell: ({ row }) => {
+				const clientIp = row.original.client_ip;
+				if (!clientIp) return <div className="font-mono text-xs">-</div>;
+				return (
+					<TruncatedLabel className="font-mono text-xs" data-testid="logs-client-ip-cell">
+						{clientIp}
+					</TruncatedLabel>
+				);
+			},
+		},
+		{
 			accessorKey: "latency",
 			header: ({ column }) => (
 				<Button variant="ghost" data-testid="logs-latency-sort-btn" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
