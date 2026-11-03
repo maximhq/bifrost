@@ -4048,7 +4048,8 @@ type ResponsesToolWebSearch struct {
 	UserLocation       *ResponsesToolWebSearchUserLocation `json:"user_location,omitempty"`        // The approximate location of the user
 
 	// Anthropic only
-	MaxUses *int `json:"max_uses,omitempty"` // Maximum number of uses for the search
+	MaxUses *int    `json:"max_uses,omitempty"`           // Maximum number of uses for the search
+	Version *string `json:"web_search_version,omitempty"` // Preserve an explicit Anthropic tool version
 }
 
 // ResponsesToolWebSearchFilters represents filters for web search
@@ -4390,6 +4391,7 @@ type ResponsesToolToolSearch struct {
 
 // ResponsesToolWebFetch represents a web fetch tool
 type ResponsesToolWebFetch struct {
+	Version           *string                        `json:"web_fetch_version,omitempty"` // Preserve an explicit Anthropic tool version
 	MaxUses           *int                           `json:"max_uses,omitempty"`
 	Filters           *ResponsesToolWebSearchFilters `json:"filters,omitempty"`
 	MaxContentTokens  *int                           `json:"max_content_tokens,omitempty"`
