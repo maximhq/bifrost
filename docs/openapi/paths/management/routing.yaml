@@ -328,6 +328,7 @@ complexity:
 complexity-reset:
   post:
     operationId: resetComplexityAnalyzerConfig
+    x-bifrost-destructive: true
     x-mint:
       content: |
         **Required Permissions**
