@@ -615,9 +615,9 @@ export const oauthKeyConfigSchema = z
 		if (data.grant_type === "token_exchange") {
 			const file = data.subject_token_file?.trim() ?? "";
 			if (!file) {
-				ctx.addIssue({ code: "custom", path: ["subject_token_file"], message: "Subject token file is required for token exchange" });
+				ctx.addIssue({ code: "custom", path: ["subject_token_file"], message: i18n.t("validation.subjectTokenFileIsRequiredForTokenExchange") });
 			} else if (!file.startsWith("/")) {
-				ctx.addIssue({ code: "custom", path: ["subject_token_file"], message: "Subject token file must be an absolute path" });
+				ctx.addIssue({ code: "custom", path: ["subject_token_file"], message: i18n.t("validation.subjectTokenFileMustBeAnAbsolutePath") });
 			}
 		}
 	});

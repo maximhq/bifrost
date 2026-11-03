@@ -165,6 +165,8 @@
 		"privateKeyMustBeAnRsaOrEcPemBlock": "私鑰必須是 RSA 或 EC PEM 區塊",
 		"issuerIsRequiredForJwtBearer": "JWT bearer 需要填寫 Issuer",
 		"audienceIsRequiredForJwtBearer": "JWT bearer 需要填寫 Audience",
+		"subjectTokenFileIsRequiredForTokenExchange": "權杖交換需要主體權杖檔案",
+		"subjectTokenFileMustBeAnAbsolutePath": "主體權杖檔案必須是絕對路徑",
 		"assertionLifetimeMustBeBetween1And3600Seconds0": "斷言有效期必須介於 1 到 3600 秒之間（0 表示使用預設值）",
 		"federationRuleIdIsRequired": "聯合規則 ID 為必填項",
 		"organizationIdIsRequired": "組織 ID 為必填項",

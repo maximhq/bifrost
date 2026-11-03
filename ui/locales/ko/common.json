@@ -369,6 +369,8 @@
 		"privateKeyMustBeAnRsaOrEcPemBlock": "프라이빗 키는 RSA 또는 EC PEM 블록이어야 해요",
 		"issuerIsRequiredForJwtBearer": "JWT bearer에는 발급자(issuer)가 필요해요",
 		"audienceIsRequiredForJwtBearer": "JWT bearer에는 대상(audience)이 필요해요",
+		"subjectTokenFileIsRequiredForTokenExchange": "토큰 교환에는 주체 토큰 파일이 필요합니다",
+		"subjectTokenFileMustBeAnAbsolutePath": "주체 토큰 파일은 절대 경로여야 합니다",
 		"assertionLifetimeMustBeBetween1And3600Seconds0": "어설션 수명은 1~3600초여야 해요 (0은 기본값)",
 		"federationRuleIdIsRequired": "페더레이션 규칙 ID는 필수예요",
 		"organizationIdIsRequired": "조직 ID는 필수예요",
