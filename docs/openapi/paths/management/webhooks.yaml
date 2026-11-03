@@ -29,7 +29,9 @@ webhooks:
       - name: event
         in: query
         required: false
-        description: Comma-separated events; returns endpoints subscribed to any of them.
+        description: |
+          Comma-separated events; returns endpoints subscribed to any of them.
+          Allowed values: `async_job.completed`, `async_job.failed`. Unknown values return 400.
         schema:
           type: string
       - name: disabled
@@ -41,13 +43,19 @@ webhooks:
       - name: limit
         in: query
         required: false
+        description: Page size. 0 or omitted uses the default of 25; values above 100 are clamped.
         schema:
           type: integer
+          minimum: 0
+          maximum: 100
+          default: 25
       - name: offset
         in: query
         required: false
         schema:
           type: integer
+          minimum: 0
+          default: 0
     responses:
       '200':
         description: A page of webhook endpoints
@@ -260,7 +268,7 @@ webhooks-test:
     parameters:
       - $ref: '#/components/parameters/WebhookEndpointId'
     requestBody:
-      required: true
+      required: false
       content:
         application/json:
           schema:
@@ -308,13 +316,19 @@ webhooks-deliveries:
       - name: limit
         in: query
         required: false
+        description: Page size. 0 or omitted uses the default of 25; values above 100 are clamped.
         schema:
           type: integer
+          minimum: 0
+          maximum: 100
+          default: 25
       - name: offset
         in: query
         required: false
         schema:
           type: integer
+          minimum: 0
+          default: 0
     responses:
       '200':
         description: A page of delivery history
@@ -439,13 +453,19 @@ webhooks-deliveries-search:
       - name: limit
         in: query
         required: false
+        description: Page size. 0 or omitted uses the default of 25; values above 100 are clamped.
         schema:
           type: integer
+          minimum: 0
+          maximum: 100
+          default: 25
       - name: offset
         in: query
         required: false
         schema:
           type: integer
+          minimum: 0
+          default: 0
     responses:
       '200':
         description: A page of delivery history

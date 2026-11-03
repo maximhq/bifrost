@@ -186,12 +186,6 @@ UpdatePromptRequest:
 
 CreateVersionRequest:
   type: object
-  required:
-    - commit_message
-    - messages
-    - model_params
-    - provider
-    - model
   properties:
     commit_message:
       type: string
@@ -208,14 +202,15 @@ CreateVersionRequest:
       type: string
     model:
       type: string
+    variables:
+      type: object
+      additionalProperties:
+        type: string
+      description: Template variables. Only the keys are stored on the version; values are discarded.
 
 CreateSessionRequest:
   type: object
-  required:
-    - name
-    - model_params
-    - provider
-    - model
+  description: When version_id is set, messages are copied from that version, and provider, model, model_params and variable keys default to the version's values when omitted.
   properties:
     name:
       type: string
@@ -234,15 +229,15 @@ CreateSessionRequest:
       type: string
     model:
       type: string
+    variables:
+      type: object
+      additionalProperties:
+        type: string
+      description: Template variable values keyed by variable name.
 
 UpdateSessionRequest:
   type: object
-  required:
-    - name
-    - messages
-    - model_params
-    - provider
-    - model
+  description: messages, model_params, provider and model replace the stored values (omitting one clears it). An empty name keeps the current name; variables are replaced only when present.
   properties:
     name:
       type: string
@@ -258,6 +253,11 @@ UpdateSessionRequest:
       type: string
     model:
       type: string
+    variables:
+      type: object
+      additionalProperties:
+        type: string
+      description: Template variable values keyed by variable name.
 
 RenameSessionRequest:
   type: object
@@ -274,3 +274,9 @@ CommitSessionRequest:
   properties:
     commit_message:
       type: string
+    message_indices:
+      type: array
+      items:
+        type: integer
+        minimum: 0
+      description: 0-based indices of session messages to include in the version (duplicates ignored). Omit to include all messages.

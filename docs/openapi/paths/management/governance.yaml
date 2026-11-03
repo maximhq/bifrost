@@ -65,11 +65,18 @@ virtual-keys:
         description: Filter virtual keys by team ID
         schema:
           type: string
+      - name: business_unit_id
+        in: query
+        description: >-
+          Filter virtual keys by owning business unit ID. Combined with
+          customer_id/team_id/user_id using OR.
+        schema:
+          type: string
       - name: user_id
         in: query
         description: >-
           Filter virtual keys by assigned user ID (enterprise only; matches no
-          virtual keys on OSS builds). Combined with customer_id/team_id using OR.
+          virtual keys on OSS builds). Combined with customer_id/team_id/business_unit_id using OR.
         schema:
           type: string
       - name: sort_by
@@ -93,6 +100,22 @@ virtual-keys:
       - name: exclude_access_profile_managed_virtual
         in: query
         description: If true, excludes virtual keys managed by access profiles
+        schema:
+          type: boolean
+          default: false
+      - name: exclude_assigned_virtual_keys
+        in: query
+        description: >-
+          If true, excludes virtual keys that already have a user assignment
+          (enterprise only; ignored on OSS builds).
+        schema:
+          type: boolean
+          default: false
+      - name: for_user_assignment
+        in: query
+        description: >-
+          If true, excludes virtual keys assigned to any team, customer, access
+          profile or user, for user-assignment pickers (enterprise only; ignored on OSS builds).
         schema:
           type: boolean
           default: false
@@ -648,12 +671,23 @@ teams:
         description: Filter teams by customer ID
         schema:
           type: string
-      - name: from_memory
+      - name: limit
         in: query
-        description: If true, returns teams from in-memory cache instead of database
+        description: Maximum number of teams to return. Setting limit, offset or search returns a paginated result. An omitted or zero limit returns 25; larger values are capped at 100.
         schema:
-          type: boolean
-          default: false
+          type: integer
+          minimum: 0
+      - name: offset
+        in: query
+        description: Number of teams to skip
+        schema:
+          type: integer
+          minimum: 0
+      - name: search
+        in: query
+        description: Search teams by name
+        schema:
+          type: string
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -728,12 +762,6 @@ teams-by-id:
         description: Team ID
         schema:
           type: string
-      - name: from_memory
-        in: query
-        description: If true, returns team from in-memory cache instead of database
-        schema:
-          type: boolean
-          default: false
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -868,12 +896,23 @@ customers:
     tags:
       - Governance
     parameters:
-      - name: from_memory
+      - name: limit
         in: query
-        description: If true, returns customers from in-memory cache instead of database
+        description: Maximum number of customers to return. Setting limit, offset or search returns a paginated result. An omitted or zero limit returns 25; larger values are capped at 100.
         schema:
-          type: boolean
-          default: false
+          type: integer
+          minimum: 0
+      - name: offset
+        in: query
+        description: Number of customers to skip
+        schema:
+          type: integer
+          minimum: 0
+      - name: search
+        in: query
+        description: Search customers by name
+        schema:
+          type: string
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -948,12 +987,6 @@ customers-by-id:
         description: Customer ID
         schema:
           type: string
-      - name: from_memory
-        in: query
-        description: If true, returns customer from in-memory cache instead of database
-        schema:
-          type: boolean
-          default: false
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -1084,16 +1117,9 @@ budgets:
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List budgets
     description: |
-      Returns a list of all budgets. Use the `from_memory` query parameter to get data from in-memory cache.
+      Returns a list of all budgets.
     tags:
       - Governance
-    parameters:
-      - name: from_memory
-        in: query
-        description: If true, returns budgets from in-memory cache instead of database
-        schema:
-          type: boolean
-          default: false
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -1121,16 +1147,9 @@ rate-limits:
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List rate limits
     description: |
-      Returns a list of all rate limits. Use the `from_memory` query parameter to get data from in-memory cache.
+      Returns a list of all rate limits.
     tags:
       - Governance
-    parameters:
-      - name: from_memory
-        in: query
-        description: If true, returns rate limits from in-memory cache instead of database
-        schema:
-          type: boolean
-          default: false
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -1426,6 +1445,13 @@ provider-governance:
       Returns a list of all providers with their governance settings (budget and rate limits).
     tags:
       - Governance
+    parameters:
+      - name: from_memory
+        in: query
+        description: If true, returns provider governance from in-memory cache instead of database
+        schema:
+          type: boolean
+          default: false
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
