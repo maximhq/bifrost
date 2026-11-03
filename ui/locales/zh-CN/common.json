@@ -424,6 +424,8 @@
 		"bufferSizeMustBeLessThanOrEqualTo1000": "缓冲区大小必须小于或等于 1000",
 		"proxyUrlIsRequiredWhenUsingHttpOrSocks5Proxy": "使用 HTTP 或 SOCKS5 代理时，代理 URL 为必填项",
 		"mustBeAValidUrlEGHttpProxyExample": "必须是有效的 URL（例如 http://proxy.example.com:8080）",
+		"socks5ProxyUrlMustStartWithSocks5OrSocks5h": "SOCKS5 代理 URL 必须以 socks5:// 或 socks5h:// 开头",
+		"httpProxyUrlMustStartWithHttpOrHttps": "HTTP 代理 URL 必须以 http:// 或 https:// 开头",
 		"setARoleAnIndexOrBothAPointWith": "请设置角色、索引或两者都设置，二者都没有的点不会匹配任何内容",
 		"use164LettersDigitsOr": "请使用 1-64 个字母、数字、_ 或 -",
 		"pickAnMcpServer": "请选择 MCP 服务器",

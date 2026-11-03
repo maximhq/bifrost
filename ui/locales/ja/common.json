@@ -424,6 +424,8 @@
 		"bufferSizeMustBeLessThanOrEqualTo1000": "バッファサイズは 1000 以下にしてください",
 		"proxyUrlIsRequiredWhenUsingHttpOrSocks5Proxy": "HTTP または SOCKS5 プロキシを使用する場合はプロキシ URL が必要です",
 		"mustBeAValidUrlEGHttpProxyExample": "有効な URL にしてください (例: http://proxy.example.com:8080)",
+		"socks5ProxyUrlMustStartWithSocks5OrSocks5h": "SOCKS5 プロキシの URL は socks5:// または socks5h:// で始まる必要があります",
+		"httpProxyUrlMustStartWithHttpOrHttps": "HTTP プロキシの URL は http:// または https:// で始まる必要があります",
 		"setARoleAnIndexOrBothAPointWith": "ロール、インデックス、またはその両方を設定してください。どちらもないポイントは何にも一致しません",
 		"use164LettersDigitsOr": "1 〜 64 文字の英字、数字、_ または - を使用してください",
 		"pickAnMcpServer": "MCP サーバーを選択してください",

@@ -105,9 +105,7 @@ function TopDimensionChart({
 			}
 			totalTooltip={
 				grandTotal === null ? undefined : actualTotal !== null ? (
-					<div className="max-w-[240px] text-xs opacity-80">
-						{t("dashboard.rankings.attributedTooltipShort", { dimension: dimensionLabel })}
-					</div>
+					<div className="max-w-[240px] text-xs opacity-80">{t("dashboard.rankings.actualTooltip")}</div>
 				) : attributed ? (
 					<div className="space-y-1">
 						<div className="max-w-[240px] text-xs opacity-80">

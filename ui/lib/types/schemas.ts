@@ -2154,7 +2154,7 @@ export const globalProxyConfigSchema = z
 			return true;
 		},
 		{
-			message: "A SOCKS5 proxy URL must start with socks5:// or socks5h://",
+			...msg("validation.socks5ProxyUrlMustStartWithSocks5OrSocks5h"),
 			path: ["url"],
 		},
 	)
@@ -2168,7 +2168,7 @@ export const globalProxyConfigSchema = z
 			return true;
 		},
 		{
-			message: "An HTTP proxy URL must start with http:// or https://",
+			...msg("validation.httpProxyUrlMustStartWithHttpOrHttps"),
 			path: ["url"],
 		},
 	);
