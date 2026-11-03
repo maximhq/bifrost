@@ -566,8 +566,8 @@
 			"hideSchemaAria": "隱藏 {{name}} 的結構描述",
 			"parameters": "參數",
 			"returns": "回傳",
-			"viewJsonSchema": "檢視 JSON 結構描述",
-			"hideJsonSchema": "隱藏 JSON 結構描述"
+			"viewAsJson": "以 JSON 檢視",
+			"viewAsTable": "以表格檢視"
 		},
 		"tls": {
 			"skipVerify": "跳過 TLS 校驗",

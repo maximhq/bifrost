@@ -552,8 +552,8 @@
 			"hideSchemaAria": "Masquer le schéma de {{name}}",
 			"parameters": "Paramètres",
 			"returns": "Retourne",
-			"viewJsonSchema": "Voir le schéma JSON",
-			"hideJsonSchema": "Masquer le schéma JSON"
+			"viewAsJson": "Afficher en JSON",
+			"viewAsTable": "Afficher en tableau"
 		},
 		"tls": {
 			"skipVerify": "Ignorer la vérification TLS",

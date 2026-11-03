@@ -102,6 +102,7 @@ export function MCPExposeList({
 												<ExpandableText
 													text={item.description}
 													lines={2}
+													inlineToggle
 													className="text-muted-foreground mt-0.5 text-xs whitespace-normal"
 												/>
 											)}

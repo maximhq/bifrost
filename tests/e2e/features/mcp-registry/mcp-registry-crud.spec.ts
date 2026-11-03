@@ -765,7 +765,26 @@ test.describe("MCP Registry", () => {
         auth_type: "none",
         tools_to_execute: ["*"],
       },
-      tools: [{ name: "analyze", description: longText, parameters: { type: "object", properties: { issue: { type: "string" } } } }],
+      tools: [
+        {
+          name: "analyze",
+          description: longText,
+          // Tall enough that its JSON outgrows the editor's 300px.
+          parameters: {
+            type: "object",
+            properties: Object.fromEntries([
+              ["issue", { type: "string", description: "The issue to analyze" }],
+              ...Array.from({ length: 30 }, (_, i) => [`field_${i}`, { type: "string" }]),
+            ]),
+          },
+        },
+        {
+          name: "report",
+          description: "Summarizes a period.",
+          parameters: { type: "object", properties: { period: { type: "string" } } },
+          output_schema: { type: "object", properties: { summary: { type: "string" } } },
+        },
+      ],
       prompts: [{ name: "summarize", description: longText }],
       state: "unstable",
       last_failure: {
@@ -801,17 +820,37 @@ test.describe("MCP Registry", () => {
       await expect(view.getByTestId("mcpclient-view-row-tls_verification")).toHaveText("Not used");
       await expect(view.getByTestId("mcpclient-view-row-tls_ca")).toHaveCount(0);
 
-      // A long tool description can be read in full, and the JSON schema sits behind a button.
+      // A long tool description can be read in full, and its parameters switch between the table and the JSON.
       await view.getByTestId("mcpclient-view-tab-tools").click();
       const toolRow = view.getByTestId("mcpclient-view-tool-analyze");
       await toolRow.getByRole("button", { name: "View more" }).click();
       await expect(toolRow.getByRole("button", { name: "View less" })).toBeVisible();
       await view.getByTestId("mcp-tool-expand-analyze").click();
       const schemaButton = view.getByTestId("mcp-tool-json-analyze");
-      await expect(schemaButton).toHaveText("View JSON schema");
+      const paramRow = view.getByText("issue", { exact: true });
+      await expect(schemaButton).toHaveText("View as JSON");
+      await expect(paramRow).toBeVisible();
       await schemaButton.click();
-      await expect(schemaButton).toHaveAttribute("aria-expanded", "true");
-      await expect(schemaButton).toHaveText("Hide JSON schema");
+      // The label names what the button does, so it carries no pressed state.
+      await expect(schemaButton).not.toHaveAttribute("aria-pressed");
+      await expect(schemaButton).toHaveText("View as table");
+      await expect(paramRow).toHaveCount(0);
+      const editor = view.locator(".monaco-editor").first();
+      await expect(editor.locator(".view-lines")).toContainText('"issue"');
+      await expect(editor.locator(".view-lines")).toContainText("The issue to analyze");
+      // A schema taller than the editor shows its scrollbar.
+      await editor.hover();
+      await mcpRegistryPage.page.mouse.wheel(0, 120);
+      await expect(editor.locator(".editor-scrollable > .scrollbar.vertical")).toHaveClass(/(^|\s)visible(\s|$)/);
+      await schemaButton.click();
+      await expect(paramRow).toBeVisible();
+
+      // A tool with an output schema shows it in its JSON too.
+      await view.getByTestId("mcp-tool-expand-report").click();
+      await view.getByTestId("mcp-tool-json-report").click();
+      const reportJson = view.locator(".monaco-editor").first().locator(".view-lines");
+      await expect(reportJson).toContainText('"output"');
+      await expect(reportJson).toContainText('"summary"');
 
       // So can a prompt's.
       await view.getByTestId("mcpclient-view-tab-prompts").click();

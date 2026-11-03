@@ -566,8 +566,8 @@
 			"hideSchemaAria": "Nascondi lo schema di {{name}}",
 			"parameters": "Parametri",
 			"returns": "Restituisce",
-			"viewJsonSchema": "Visualizza schema JSON",
-			"hideJsonSchema": "Nascondi schema JSON"
+			"viewAsJson": "Visualizza come JSON",
+			"viewAsTable": "Visualizza come tabella"
 		},
 		"tls": {
 			"skipVerify": "Salta verifica TLS",

@@ -566,8 +566,8 @@
 			"hideSchemaAria": "Ocultar o esquema de {{name}}",
 			"parameters": "Parâmetros",
 			"returns": "Devolve",
-			"viewJsonSchema": "Ver esquema JSON",
-			"hideJsonSchema": "Ocultar esquema JSON"
+			"viewAsJson": "Ver como JSON",
+			"viewAsTable": "Ver como tabela"
 		},
 		"tls": {
 			"skipVerify": "Ignorar verificação TLS",

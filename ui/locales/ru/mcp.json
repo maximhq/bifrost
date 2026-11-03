@@ -592,8 +592,8 @@
 			"hideSchemaAria": "Скрыть схему {{name}}",
 			"parameters": "Параметры",
 			"returns": "Возвращает",
-			"viewJsonSchema": "Показать JSON-схему",
-			"hideJsonSchema": "Скрыть JSON-схему"
+			"viewAsJson": "Показать как JSON",
+			"viewAsTable": "Показать таблицей"
 		},
 		"tls": {
 			"skipVerify": "Пропустить проверку TLS",
