@@ -59,6 +59,16 @@ func TestCELExpressionReferencesComplexityTierIdentifierOnly(t *testing.T) {
 			expression: `["SIMPLE"].exists(tier, complexity_tier == tier)`,
 			expected:   true,
 		},
+		{
+			name:       "leading-dot root identifier",
+			expression: `.complexity_tier == "SIMPLE"`,
+			expected:   true,
+		},
+		{
+			name:       "leading-dot root identifier bypasses comprehension local",
+			expression: `["SIMPLE"].exists(complexity_tier, .complexity_tier == complexity_tier)`,
+			expected:   true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -425,4 +435,32 @@ func complexityRoutingRule(id string, expression string) *configstoreTables.Tabl
 			{Provider: &provider, Model: &model, Weight: 1.0},
 		},
 	}
+}
+
+func TestEvaluateRoutingRules_LeadingDotComplexityTierComputesComplexity(t *testing.T) {
+	ctx := context.Background()
+	store, err := newTestRuleStore()
+	require.NoError(t, err)
+
+	rule := complexityRoutingRule("complexity-leading-dot", `.complexity_tier == "COMPLEX"`)
+	require.NoError(t, store.UpsertRule(ctx, rule))
+
+	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+	require.NoError(t, err)
+
+	computeCalls := 0
+	decision, err := engine.EvaluateRoutingRules(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &EvaluationContext{
+		Provider:    schemas.OpenAI,
+		Model:       "gpt-4o",
+		RequestType: "chat_completion",
+		ComputeComplexity: func() *complexity.ComplexityResult {
+			computeCalls++
+			return &complexity.ComplexityResult{Tier: "COMPLEX"}
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+
+	assert.Equal(t, 1, computeCalls)
+	assert.Equal(t, "anthropic", decision.Provider)
 }
