@@ -47849,6 +47849,189 @@
         }
       }
     },
+    "/api/mcp/portal": {
+      "get": {
+        "operationId": "getMCPPortal",
+        "summary": "List MCP servers accessible to the selected identity",
+        "description": "Lists effective MCP access and credential status for the verified current\nuser, or a scoped virtual key selected by row ID. Includes servers without\ncredentials. A session without a user identity returns a null identity and\nan empty server list until a virtual key is selected. Secret values are\nnever returned. user_id overrides are not accepted.\n",
+        "tags": [
+          "MCP"
+        ],
+        "parameters": [
+          {
+            "name": "virtual_key_id",
+            "in": "query",
+            "description": "Visible, active, unexpired virtual key row ID. Omit for the current user.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Accessible servers and their credential status.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MCPPortalResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key is inactive or expired, or access cannot be established."
+          },
+          "404": {
+            "description": "The selected virtual key does not exist or is not visible to the caller."
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Persistence or the access resolver is unavailable."
+          }
+        }
+      }
+    },
+    "/api/mcp/portal/{id}/authenticate": {
+      "post": {
+        "operationId": "authenticateMCPPortalServer",
+        "summary": "Start identity-bound OAuth consent or API-key submission",
+        "description": "Rechecks effective access and the current MCP server configuration, then\nstarts or reuses the existing per-user OAuth or header submission flow.\nReturns the authentication landing URL, not any stored credential.\nShared, disabled, unverified, or unavailable clients cannot be configured.\nOnly virtual_key_id is accepted in the request body; omit it for the\nverified current user.\n",
+        "tags": [
+          "MCP"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "MCP client ID.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "virtual_key_id": {
+                    "type": "string",
+                    "description": "Visible, active, unexpired virtual key row ID."
+                  }
+                }
+              },
+              "example": {}
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Identity-bound authentication landing URL.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "auth_url"
+                  ],
+                  "properties": {
+                    "auth_url": {
+                      "type": "string",
+                      "format": "uri",
+                      "description": "Existing per-user authentication page; may carry a scoped token in the fragment."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No verified user identity or selected virtual key."
+          },
+          "403": {
+            "description": "Inactive or expired key, unresolved access, or server not permitted."
+          },
+          "404": {
+            "description": "The server or selected virtual key does not exist or is outside the caller's scope."
+          },
+          "409": {
+            "description": "The server cannot currently be configured by this identity."
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Persistence or the required credential provider is unavailable."
+          }
+        }
+      }
+    },
     "/api/mcp/sessions": {
       "get": {
         "summary": "List MCP sessions",
@@ -130348,6 +130531,108 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "MCPPortalResponse": {
+        "type": "object",
+        "required": [
+          "identity",
+          "servers",
+          "count"
+        ],
+        "properties": {
+          "identity": {
+            "$ref": "#/components/schemas/MCPPortalIdentity"
+          },
+          "servers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MCPPortalServer"
+            }
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "MCPPortalIdentity": {
+        "type": "object",
+        "nullable": true,
+        "required": [
+          "mode",
+          "id",
+          "name"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "user",
+              "vk"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "MCPPortalServer": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "auth_type",
+          "connection_state",
+          "credential_status",
+          "can_configure"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "auth_type": {
+            "type": "string",
+            "enum": [
+              "none",
+              "headers",
+              "oauth",
+              "per_user_oauth",
+              "per_user_headers",
+              "token_exchange"
+            ],
+            "description": "Authentication type for MCP connections:\n- none: No authentication\n- headers: Static header-based authentication (admin sets API keys / custom headers once, shared by all callers)\n- oauth: OAuth 2.0 authentication (server-level, admin authenticates once)\n- per_user_oauth: Per-user OAuth 2.0 authentication (each user authenticates individually)\n- per_user_headers: Per-user headers (each user submits their own header values; admin declares the schema)\n- token_exchange: Delegated token exchange (each caller's own identity-provider token is\n  exchanged for a short-lived token scoped to this server on every call; nothing is\n  stored per caller). Requires an enabled identity-provider integration (enterprise).\n"
+          },
+          "connection_state": {
+            "type": "string",
+            "description": "Current runtime MCP connection state, or error if unavailable."
+          },
+          "credential_status": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "missing",
+              "needs_reauth",
+              "needs_update",
+              "admin_managed"
+            ]
+          },
+          "can_configure": {
+            "type": "boolean"
+          },
+          "required_header_keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Required per-user header names, never their stored values."
           }
         }
       },

@@ -1448,3 +1448,54 @@ MCPHeadersSubmitResponse:
     updated_at:
       type: string
       format: date-time
+
+MCPPortalIdentity:
+  type: object
+  nullable: true
+  required: [mode, id, name]
+  properties:
+    mode:
+      type: string
+      enum: [user, vk]
+    id:
+      type: string
+    name:
+      type: string
+
+MCPPortalServer:
+  type: object
+  required: [id, name, auth_type, connection_state, credential_status, can_configure]
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+    auth_type:
+      $ref: '#/MCPAuthType'
+    connection_state:
+      type: string
+      description: Current runtime MCP connection state, or error if unavailable.
+    credential_status:
+      type: string
+      enum: [ready, missing, needs_reauth, needs_update, admin_managed]
+    can_configure:
+      type: boolean
+    required_header_keys:
+      type: array
+      items:
+        type: string
+      description: Required per-user header names, never their stored values.
+
+MCPPortalResponse:
+  type: object
+  required: [identity, servers, count]
+  properties:
+    identity:
+      $ref: '#/MCPPortalIdentity'
+    servers:
+      type: array
+      items:
+        $ref: '#/MCPPortalServer'
+    count:
+      type: integer
+      minimum: 0

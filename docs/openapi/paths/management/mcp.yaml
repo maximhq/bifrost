@@ -1320,3 +1320,105 @@ client-openapi-spec:
         description: No openapi client with this ID, or the client stores no document.
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+portal:
+  get:
+    operationId: getMCPPortal
+    summary: List MCP servers accessible to the selected identity
+    description: |
+      Lists effective MCP access and credential status for the verified current
+      user, or a scoped virtual key selected by row ID. Includes servers without
+      credentials. A session without a user identity returns a null identity and
+      an empty server list until a virtual key is selected. Secret values are
+      never returned. user_id overrides are not accepted.
+    tags: [MCP]
+    parameters:
+      - name: virtual_key_id
+        in: query
+        description: Visible, active, unexpired virtual key row ID. Omit for the current user.
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Accessible servers and their credential status.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/mcp.yaml#/MCPPortalResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '401':
+        $ref: '../../openapi.yaml#/components/responses/Unauthorized'
+      '403':
+        description: The key is inactive or expired, or access cannot be established.
+      '404':
+        description: The selected virtual key does not exist or is not visible to the caller.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        description: Persistence or the access resolver is unavailable.
+
+portal-authenticate:
+  post:
+    operationId: authenticateMCPPortalServer
+    summary: Start identity-bound OAuth consent or API-key submission
+    description: |
+      Rechecks effective access and the current MCP server configuration, then
+      starts or reuses the existing per-user OAuth or header submission flow.
+      Returns the authentication landing URL, not any stored credential.
+      Shared, disabled, unverified, or unavailable clients cannot be configured.
+      Only virtual_key_id is accepted in the request body; omit it for the
+      verified current user.
+    tags: [MCP]
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: MCP client ID.
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            properties:
+              virtual_key_id:
+                type: string
+                description: Visible, active, unexpired virtual key row ID.
+          example: {}
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Identity-bound authentication landing URL.
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [auth_url]
+              properties:
+                auth_url:
+                  type: string
+                  format: uri
+                  description: Existing per-user authentication page; may carry a scoped token in the fragment.
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '401':
+        description: No verified user identity or selected virtual key.
+      '403':
+        description: Inactive or expired key, unresolved access, or server not permitted.
+      '404':
+        description: The server or selected virtual key does not exist or is outside the caller's scope.
+      '409':
+        description: The server cannot currently be configured by this identity.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        description: Persistence or the required credential provider is unavailable.

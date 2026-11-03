@@ -24,6 +24,31 @@ The table is **scoped to the caller's identity**: a signed-in admin sees rows vi
 
 ---
 
+## MCP Portal: configure credentials before the first tool call
+
+Open **MCP Servers → MCP Portal** (`/workspace/mcp-portal`) to see every MCP server the selected identity can access, including servers it has not authenticated with yet. The Sessions page lists existing credentials and flows; the portal starts a new configuration without requiring a failed tool call first.
+
+1. Keep **Current user** selected for your authenticated user identity, or select a **virtual key** you can access. Dashboard sessions without a user identity must select a virtual key.
+2. Review each server's connection state, credential status, and required header names.
+3. Click **Configure**, **Reauthenticate**, or **Update credentials**. OAuth consent or the API-key/header form opens in a new tab using the existing authentication flow.
+4. Complete authentication, return to the portal, and click **Refresh**. The page also refreshes when it regains focus.
+
+Credentials are bound to the selected identity. Configuring a virtual key does not configure another virtual key or your user identity. The portal never displays stored secret values. Shared OAuth and header credentials remain administrator-managed; servers without authentication require no credential submission.
+
+The list uses the same effective access resolver as tool execution, including named-tool grants, Virtual MCP assignments, default access, and explicit restrictions. Starting authentication checks access and the current server configuration again. Disabled, unverified, or unavailable servers cannot start a configuration flow.
+
+### Portal API
+
+These endpoints use dashboard/API authentication and the caller's scoped visibility of virtual keys:
+
+- `GET /api/mcp/portal`: list servers for the verified current user. Without a user identity, returns `{"identity":null,"servers":[],"count":0}`.
+- `GET /api/mcp/portal?virtual_key_id=…`: list servers and credential status for a visible, active, unexpired virtual key.
+- `POST /api/mcp/portal/{id}/authenticate`, with `{}` for the current user or `{"virtual_key_id":"…"}` for a virtual key: return `{"auth_url":"…"}` pointing to the existing OAuth/header landing page.
+
+`user_id` overrides are not accepted. A caller cannot start authentication for an inaccessible server. Credential submission and OAuth callbacks use the existing per-user flow endpoints; no new secrets belong in `config.json`.
+
+---
+
 ## Columns
 
 | Column           | Notes                                                                                                |

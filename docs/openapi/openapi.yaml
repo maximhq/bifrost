@@ -852,7 +852,11 @@ paths:
   /api/mcp/client/{id}/openapi-spec:
     $ref: "./paths/management/mcp.yaml#/client-openapi-spec"
 
-  # MCP — per-user sessions (OAuth tokens + headers credentials + pending flows)
+  # MCP — per-user portal and sessions (OAuth tokens + headers credentials + pending flows)
+  /api/mcp/portal:
+    $ref: "./paths/management/mcp.yaml#/portal"
+  /api/mcp/portal/{id}/authenticate:
+    $ref: "./paths/management/mcp.yaml#/portal-authenticate"
   /api/mcp/sessions:
     $ref: "./paths/management/mcp.yaml#/sessions"
   /api/mcp/sessions/{id}:
@@ -2168,6 +2172,12 @@ components:
     MCPHeadersSubmitResponse:
       $ref: "./schemas/management/mcp.yaml#/MCPHeadersSubmitResponse"
 
+    MCPPortalResponse:
+      $ref: "./schemas/management/mcp.yaml#/MCPPortalResponse"
+    MCPPortalIdentity:
+      $ref: "./schemas/management/mcp.yaml#/MCPPortalIdentity"
+    MCPPortalServer:
+      $ref: "./schemas/management/mcp.yaml#/MCPPortalServer"
     # Governance - Virtual Keys
     VirtualKey:
       $ref: "./schemas/management/governance.yaml#/VirtualKey"

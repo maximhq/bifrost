@@ -13,6 +13,7 @@ export * from "./logsApi";
 export * from "./mcpApi";
 export * from "./mcpLogsApi";
 export * from "./mcpPerUserHeadersApi";
+export * from "./mcpPortalApi";
 export * from "./mcpSessionsApi";
 export * from "./notificationsApi";
 export * from "./rssFeedsApi";

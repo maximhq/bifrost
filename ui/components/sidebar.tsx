@@ -803,6 +803,14 @@ export default function AppSidebar() {
 				hasAccess: hasMCPGatewayAccess || hasVirtualMCPsAccess,
 				subItems: [
 					{
+						title: "MCP Portal",
+						url: "/workspace/mcp-portal",
+						icon: KeyRound,
+						description: "Your accessible MCP servers and credentials",
+						hasAccess: hasMCPGatewayAccess,
+						testId: "mcp-portal",
+					},
+					{
 						title: "MCP Catalog",
 						url: "/workspace/mcp-registry",
 						icon: LayoutGrid,

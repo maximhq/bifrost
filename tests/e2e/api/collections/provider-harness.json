@@ -276696,6 +276696,100 @@
           }
         }
       ]
+    },
+    {
+      "name": "262. MCP Portal identity-scoped credentials (mcp-portal)",
+      "description": "Management-only portal regression. Creates a run-scoped OpenAPI MCP client and a virtual key with a single named-tool grant, lists that key’s accessible server before any credential exists, starts its per-user header flow, saves an API key through the existing flow endpoint and verifies the portal becomes ready without exposing secrets. A second key explicitly denied this server must neither list it nor start authentication. All resources are removed in the same case. No upstream tool or LLM calls; openai is only a harness filter label.",
+      "item": [
+        {
+          "name": "openai mcp-portal lists accessible servers and configures API keys only for the selected virtual key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var base = pm.variables.get('baseUrl');",
+                  "var run = pm.variables.replaceIn('{{$guid}}');",
+                  "var clientId = pm.variables.replaceIn('{{$guid}}');",
+                  "var name = 'portal_headers_' + run.replace(/-/g, '_');",
+                  "pm.variables.set('portalClientId', clientId);",
+                  "var spec = JSON.stringify({openapi:'3.0.3', info:{title:'Portal credentials',version:'1.0.0'}, servers:[{url:'https://petstore.swagger.io/v3'}], paths:{'/pet/findByStatus':{get:{operationId:'findPets',responses:{'200':{description:'Pets'}}}}}});",
+                  "pm.sendRequest({url:base+'/api/mcp/client',method:'POST',header:{'Content-Type':'application/json'},body:{mode:'raw',raw:JSON.stringify({client_id:clientId,name:name,connection_type:'openapi',auth_type:'per_user_headers',allow_by_default:false,per_user_header_keys:['x-api-key'],tools_to_execute:['*'],openapi_config:{spec:spec}})}}, function(err,res){",
+                  "  pm.test('portal setup creates the MCP server',function(){pm.expect(err).to.eql(null);pm.expect(res.code,res.text()).to.eql(200);});",
+                  "  if(err || res.code !== 200) { throw new Error('Portal server setup failed'); }",
+                  "  pm.sendRequest({url:base+'/api/governance/virtual-keys',method:'POST',header:{'Content-Type':'application/json'},body:{mode:'raw',raw:JSON.stringify({name:'portal_key_'+run,is_active:true,mcp_configs:[{mcp_client_name:name,tools_to_execute:['findPets']}]})}}, function(e,r){",
+                  "    pm.test('portal setup creates the selected key',function(){pm.expect(e).to.eql(null);pm.expect(r.code,r.text()).to.eql(200);});",
+                  "    if(e || r.code !== 200) { throw new Error('Portal virtual key setup failed'); }",
+                  "    pm.variables.set('portalKeyId',r.json().virtual_key.id);",
+                  "    pm.sendRequest({url:base+'/api/governance/virtual-keys',method:'POST',header:{'Content-Type':'application/json'},body:{mode:'raw',raw:JSON.stringify({name:'portal_denied_'+run,is_active:true,mcp_configs:[{mcp_client_name:name,tools_to_execute:[]}]})}}, function(e2,r2){",
+                  "      pm.test('portal setup creates the denied key',function(){pm.expect(e2).to.eql(null);pm.expect(r2.code,r2.text()).to.eql(200);});",
+                  "      if(e2 || r2.code !== 200) { throw new Error('Portal denied key setup failed'); }",
+                  "      pm.variables.set('portalDeniedKeyId',r2.json().virtual_key.id);",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var base=pm.variables.get('baseUrl'), cid=pm.variables.get('portalClientId'), kid=pm.variables.get('portalKeyId'), denied=pm.variables.get('portalDeniedKeyId');",
+                  "function cleanup(){[kid,denied].forEach(function(id){if(id){pm.sendRequest({url:base+'/api/governance/virtual-keys/'+id,method:'DELETE'},function(e,r){pm.test('portal cleanup removes virtual key '+id,function(){pm.expect(e).to.eql(null);pm.expect(r.code,r.text()).to.eql(200);});});}});pm.sendRequest({url:base+'/api/mcp/client/'+cid,method:'DELETE'},function(e,r){pm.test('portal cleanup removes the server',function(){pm.expect(e).to.eql(null);pm.expect(r.code,r.text()).to.eql(200);});});}",
+                  "pm.test('portal reports a named-tool-granted server before authentication',function(){pm.expect(pm.response.code,pm.response.text()).to.eql(200);var j=pm.response.json();pm.expect(j.identity.id).to.eql(kid);pm.expect(j.identity.mode).to.eql('vk');var row=j.servers.filter(function(s){return s.id===cid;})[0];pm.expect(row,pm.response.text()).to.be.an('object');pm.expect(row.credential_status).to.eql('missing');pm.expect(row.can_configure).to.eql(true);pm.expect(row.required_header_keys).to.eql(['x-api-key']);});",
+                  "pm.sendRequest({url:base+'/api/mcp/portal/'+cid+'/authenticate',method:'POST',header:{'Content-Type':'application/json'},body:{mode:'raw',raw:JSON.stringify({virtual_key_id:kid})}},function(e,r){",
+                  "  pm.test('portal starts the selected key header flow',function(){pm.expect(e).to.eql(null);pm.expect(r.code,r.text()).to.eql(200);pm.expect(r.json().auth_url).to.include('kind=headers');});",
+                  "  if(e || r.code!==200){cleanup();return;}",
+                  "  var flowMatch=r.json().auth_url.match(/[?&]flow=([^&#]+)/);",
+                  "  pm.test('portal authentication link identifies a flow',function(){pm.expect(flowMatch,r.text()).not.to.eql(null);});",
+                  "  if(!flowMatch){cleanup();return;}",
+                  "  var flow=decodeURIComponent(flowMatch[1]);",
+                  "  pm.sendRequest({url:base+'/api/mcp/per-user-headers/flows/'+flow,method:'GET'},function(e2,r2){",
+                  "    pm.test('portal flow is bound to the selected VK',function(){pm.expect(e2).to.eql(null);pm.expect(r2.code,r2.text()).to.eql(200);pm.expect(r2.json().flow_mode).to.eql('vk');pm.expect(r2.json().virtual_key.id).to.eql(kid);});",
+                  "    pm.sendRequest({url:base+'/api/mcp/per-user-headers/flows/'+flow,method:'PUT',header:{'Content-Type':'application/json'},body:{mode:'raw',raw:JSON.stringify({headers:{'x-api-key':'portal-harness-secret'}})}},function(e3,r3){",
+                  "      pm.test('portal credentials are saved through the existing headers flow',function(){pm.expect(e3).to.eql(null);pm.expect(r3.code,r3.text()).to.eql(200);});",
+                  "      pm.sendRequest(base+'/api/mcp/portal?virtual_key_id='+kid,function(e4,r4){",
+                  "        pm.test('portal shows ready without disclosing the API key',function(){pm.expect(e4).to.eql(null);pm.expect(r4.code,r4.text()).to.eql(200);var row=r4.json().servers.filter(function(s){return s.id===cid;})[0];pm.expect(row,r4.text()).to.be.an('object');pm.expect(row.credential_status).to.eql('ready');pm.expect(r4.text()).not.to.include('portal-harness-secret');});",
+                  "        pm.sendRequest(base+'/api/mcp/portal?virtual_key_id='+denied,function(e5,r5){",
+                  "          pm.test('portal hides explicitly denied servers',function(){pm.expect(e5).to.eql(null);pm.expect(r5.code,r5.text()).to.eql(200);pm.expect(r5.json().servers.filter(function(s){return s.id===cid;}),r5.text()).to.eql([]);});",
+                  "          pm.sendRequest({url:base+'/api/mcp/portal/'+cid+'/authenticate',method:'POST',header:{'Content-Type':'application/json'},body:{mode:'raw',raw:JSON.stringify({virtual_key_id:denied})}},function(e6,r6){",
+                  "            pm.test('portal cannot mint a flow for an explicitly denied server',function(){pm.expect(e6).to.eql(null);pm.expect(r6.code,r6.text()).to.eql(403);pm.expect(r6.text()).not.to.include('auth_url');});cleanup();",
+                  "          });",
+                  "        });",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/portal?virtual_key_id={{portalKeyId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "portal"
+              ],
+              "query": [
+                {
+                  "key": "virtual_key_id",
+                  "value": "{{portalKeyId}}"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
