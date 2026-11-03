@@ -11,10 +11,10 @@ import (
 )
 
 const (
-	cleanupInterval      = 24 * time.Hour
-	minJitter            = 15 * time.Minute
-	maxJitter            = 30 * time.Minute
-	defaultRetentionDays = 365
+	cleanupInterval = 24 * time.Hour
+	// postgresCleanupInterval is shorter because only the replica holding a table's retention lock does any work.
+	postgresCleanupInterval = time.Hour
+	defaultRetentionDays    = 365
 
 	// batchSize is how many expired rows one retention statement deletes. At
 	// ~5.6M expired rows per day, 100-row batches under a 30-minute cap could
@@ -26,7 +26,7 @@ const (
 	// cleanupRunCeiling bounds one retention pass. The pass normally runs until
 	// no expired rows remain; the ceiling only stops a pathological backlog
 	// (for example after retention was shortened) from holding a connection
-	// indefinitely. The next daily run continues where this one stopped.
+	// indefinitely. The next run continues where this one stopped.
 	cleanupRunCeiling = 6 * time.Hour
 
 	// cleanupLogsShareNum/cleanupLogsShareDen is the share of a pass's remaining
@@ -66,6 +66,11 @@ type RelayLogRetentionManager interface {
 type WarpTopicRetentionManager interface {
 	DeleteWarpTopicAssignmentsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
 	DeleteWarpTopicUnmatchedBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
+}
+
+// RetentionScheduler is how the cleaner reads a store's retention interval; every LogStore implements it.
+type RetentionScheduler interface {
+	RetentionInterval() time.Duration
 }
 
 // CleanerConfig holds configuration for the log cleaner
@@ -124,7 +129,7 @@ func (c *LogsCleaner) StartCleanupRoutine() {
 		// At the beginning, we will cleanup the logs
 		c.runCleanupPass(stopCh)
 		// Calculate initial delay with jitter
-		timer := time.NewTimer(calculateNextRunDuration())
+		timer := time.NewTimer(c.nextRunDuration())
 		defer timer.Stop()
 		for {
 			select {
@@ -133,7 +138,7 @@ func (c *LogsCleaner) StartCleanupRoutine() {
 				c.runCleanupPass(stopCh)
 
 				// Reset timer with new jitter for next run
-				timer.Reset(calculateNextRunDuration())
+				timer.Reset(c.nextRunDuration())
 
 			case <-stopCh:
 				c.logger.Info("log cleanup routine stopped")
@@ -328,8 +333,17 @@ func (c *LogsCleaner) waitForMigrationWindow(ctx context.Context) bool {
 	}
 }
 
-// calculateNextRunDuration returns 24 hours plus a random jitter between 15-30 minutes
-func calculateNextRunDuration() time.Duration {
-	jitter := minJitter + time.Duration(rand.Int63n(int64(maxJitter-minJitter)))
-	return cleanupInterval + jitter
+// nextRunDuration is the store's retention interval plus a jitter of 1/96 to 1/48 of it (15-30 minutes on a day).
+func (c *LogsCleaner) nextRunDuration() time.Duration {
+	interval := cleanupInterval
+	if scheduler, ok := c.manager.(RetentionScheduler); ok && scheduler.RetentionInterval() > 0 {
+		interval = scheduler.RetentionInterval()
+	}
+	return calculateNextRunDuration(interval)
+}
+
+// calculateNextRunDuration returns interval plus a random jitter between interval/96 and interval/48.
+func calculateNextRunDuration(interval time.Duration) time.Duration {
+	minJitter := interval / 96
+	return interval + minJitter + time.Duration(rand.Int63n(int64(minJitter)+1))
 }

@@ -441,6 +441,31 @@ func TestLogsCleanerStopsAfterOversizedBatch(t *testing.T) {
 	})
 }
 
+// The cleaner calls again after a short count. On a replicated cluster that
+// count can reach a replica that has not applied the first delete yet, so a
+// repeat call for a cutoff already deleted must not touch the database at all.
+// The store has no connection here: any query it sent would panic.
+func TestClickHouseRetentionDeleteRunsOncePerCutoff(t *testing.T) {
+	s := &ClickHouseLogStore{}
+	cutoff := time.Now().UTC().AddDate(0, 0, -30)
+	for _, table := range []string{"logs", "relay_logs", "warp_topic_assignments", "warp_topic_unmatched"} {
+		s.retentionCutoffs.Store(table, cutoff)
+	}
+	ctx := context.Background()
+	for name, deleteBatch := range map[string]func(context.Context, time.Time, int) (int64, error){
+		"logs":                   s.DeleteLogsBatch,
+		"relay_logs":             s.DeleteRelayLogsBatch,
+		"warp_topic_assignments": s.DeleteWarpTopicAssignmentsBatch,
+		"warp_topic_unmatched":   s.DeleteWarpTopicUnmatchedBatch,
+	} {
+		var deleted int64
+		var err error
+		require.NotPanics(t, func() { deleted, err = deleteBatch(ctx, cutoff, batchSize) }, "%s: a repeat call must not query", name)
+		require.NoError(t, err, name)
+		assert.Zero(t, deleted, name)
+	}
+}
+
 func TestChApplyUpdateMapSkipsDedupKeys(t *testing.T) {
 	ctx := context.Background()
 	st, err := chParseSchema(chUnitSchemaDB(), &Log{})
@@ -1207,7 +1232,8 @@ func TestClickHouseDeleteLogsBatchIsSingleLightweightMutation(t *testing.T) {
 		deleted, err := store.DeleteLogsBatch(ctx, cutoff, batchSize)
 		require.NoError(t, err)
 		total += deleted
-		if deleted != int64(batchSize) {
+		// The cleaner's stop rule: only an empty batch or one above batchSize ends the drain.
+		if deleted == 0 || deleted > int64(batchSize) {
 			break
 		}
 	}
