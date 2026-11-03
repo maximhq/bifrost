@@ -155,8 +155,8 @@ func isEventStream(contentType string) bool {
 	return strings.EqualFold(strings.TrimSpace(mediaType), "text/event-stream")
 }
 
-// lowerHeaderValues maps the configured extra headers by lower-cased name, for the caller header
-// loop and for route header matching, which must see the value that is actually sent.
+// lowerHeaderValues maps the configured extra headers by lower-cased name, for dropping a caller's
+// copy of one and for route header matching, which must see the value that is actually sent.
 func lowerHeaderValues(extra map[string]schemas.SecretVar) map[string]string {
 	if len(extra) == 0 {
 		return nil
@@ -219,15 +219,22 @@ func (e *endpoint) buildRequest(ctx *schemas.BifrostContext, req upstreamRequest
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("error creating request", err)
 	}
-	// Headers are applied in a passthrough call's order (SetExtraHeaders, then the caller's safe
-	// headers, then the key): the operator's extra headers, the caller's x-bf-eh-* headers over them,
-	// the caller's own headers over both, and the credential last, so it always wins. A job poll is
-	// the operator's own request and takes no caller headers.
+	// A header the operator set under extra_headers is the operator's to set: the caller's copy of
+	// it is dropped, whether plain or x-bf-eh-* and whatever its spelling, so a caller cannot replace
+	// a tenant, an API version or the operation a route is priced on. The caller's x-bf-eh-* headers
+	// and its own headers (its own over its x-bf-eh-* copy) add only names the operator left unset,
+	// and the credential is applied last, so it always wins. A job poll is the operator's own
+	// request: it takes no x-bf-eh-* headers, and its configured headers apply over the extra ones.
 	providerUtils.SetExtraHeadersHTTP(context.Background(), httpReq, e.cfg.ExtraHeaders, nil)
 	providerUtils.StripCallerAuthForInsecureURL(requestURL, req.headers)
 	if !req.internal {
 		for k, values := range callerExtraHeaders(ctx) {
-			if e.dropsCallerHeader(k, false, true) {
+			if e.dropsCallerHeader(k, false, true) || e.operatorSets(k) {
+				continue
+			}
+			// The context map is shared with the rest of the request, so an x-bf-eh-* Authorization
+			// bound for a cleartext upstream is skipped here rather than deleted from it.
+			if isAuthorization(k) && insecureUpstream(requestURL) {
 				continue
 			}
 			for i, v := range values {
@@ -240,7 +247,7 @@ func (e *endpoint) buildRequest(ctx *schemas.BifrostContext, req upstreamRequest
 		}
 	}
 	for k, v := range req.headers {
-		if e.dropsCallerHeader(k, req.internal, false) {
+		if e.dropsCallerHeader(k, req.internal, false) || (!req.internal && e.operatorSets(k)) {
 			continue
 		}
 		httpReq.Header.Set(k, v)
@@ -279,6 +286,36 @@ func (e *endpoint) dropsCallerHeader(name string, internal, extra bool) bool {
 	return !internal && e.cfg.Auth.Type == schemas.RelayAuthAWSSigV4 && strings.HasPrefix(lower, "x-amz-") && lower != "x-amz-target"
 }
 
+// operatorSets reports whether the operator configured name under extra_headers, whatever its
+// spelling. The transport lower-cases caller names, so only a Go SDK caller's name is lower-cased here.
+func (e *endpoint) operatorSets(name string) bool {
+	if len(e.operatorHeaders) == 0 {
+		return false
+	}
+	if _, ok := e.operatorHeaders[name]; ok {
+		return true
+	}
+	if !hasUpper(name) {
+		return false
+	}
+	_, ok := e.operatorHeaders[strings.ToLower(name)]
+	return ok
+}
+
+func isAuthorization(name string) bool {
+	return strings.EqualFold(name, "authorization")
+}
+
+// insecureUpstream reports whether a caller's Authorization must stay off a request to rawURL, by
+// the rule a provider passthrough applies to its caller's (StripCallerAuthForInsecureURL): the URL
+// is neither HTTPS nor a loopback address. Only reached when a caller forwards an x-bf-eh-*
+// Authorization, so the probe map costs the common case nothing.
+func insecureUpstream(rawURL string) bool {
+	probe := map[string]string{"authorization": ""}
+	providerUtils.StripCallerAuthForInsecureURL(rawURL, probe)
+	return len(probe) == 0
+}
+
 // relayHopByHopHeaders are the connection-level names SetExtraHeaders filters out of a passthrough
 // call's x-bf-eh-* headers; the transport already drops the caller's own copies.
 var relayHopByHopHeaders = map[string]struct{}{
@@ -298,12 +335,14 @@ func callerExtraHeaders(ctx context.Context) map[string][]string {
 }
 
 // routeHeaders returns the caller's headers as the upstream will see them for routing and model
-// reading: each x-bf-eh-* header the caller did not also send itself is added beneath them, as a
-// passthrough call's caller header replaces its x-bf-eh-* copy, and a header buildRequest keeps
-// off the upstream request is left out (a caller's x-amz-* on a SigV4 relay, its Authorization,
-// an x-bf-eh-* copy of the credential header), so no route is selected by a header the upstream
-// never receives. The caller's map is returned as is when there are no x-bf-eh-* headers and
-// none of its own is dropped, so the common case allocates nothing.
+// reading: each x-bf-eh-* header the caller did not also send itself is added beneath them, as
+// buildRequest applies the caller's own value over its x-bf-eh-* copy, and a header buildRequest
+// keeps off the upstream request is left out (a caller's x-amz-* on a SigV4 relay, its
+// Authorization, an x-bf-eh-* copy of the credential header, an x-bf-eh-* Authorization bound for
+// a cleartext upstream), so no route is selected by a header the upstream never receives. A
+// caller's copy of an operator extra header may stay in the map: headerValue reads the operator's
+// value first, which is the one sent. The caller's map is returned as is when there are no
+// x-bf-eh-* headers and none of its own is dropped, so the common case allocates nothing.
 func (e *endpoint) routeHeaders(headers map[string]string, extra map[string][]string) map[string]string {
 	if len(extra) == 0 && !e.dropsAnyCallerHeader(headers) {
 		return headers
@@ -312,14 +351,16 @@ func (e *endpoint) routeHeaders(headers map[string]string, extra map[string][]st
 	merged := make(map[string]string, len(headers)+len(extra))
 	for name, values := range extra {
 		// The credential is applied after every caller header, so an x-bf-eh-* copy of its header
-		// is never what the upstream reads.
-		if len(values) == 0 || e.dropsCallerHeader(name, false, true) || (authHeader != "" && strings.EqualFold(name, authHeader)) {
+		// is never what the upstream reads. The scheme and host of every request are the base URL's
+		// (BuildPassthroughURL pins them), so it decides whether an Authorization is sent.
+		if len(values) == 0 || e.dropsCallerHeader(name, false, true) || (authHeader != "" && strings.EqualFold(name, authHeader)) ||
+			(isAuthorization(name) && insecureUpstream(e.cfg.BaseURL)) {
 			continue
 		}
 		merged[strings.ToLower(name)] = strings.Join(values, ", ")
 	}
 	// Names are lowercased so a caller header replaces its x-bf-eh-* copy whatever the spelling (a Go
-	// SDK caller may send X-Amz-Target), as buildRequest applies the caller's value last.
+	// SDK caller may send X-Amz-Target), as buildRequest applies the caller's own value after it.
 	for name, value := range headers {
 		if !e.dropsCallerHeader(name, false, false) {
 			merged[strings.ToLower(name)] = value
@@ -345,6 +386,39 @@ func (e *endpoint) responseHeaders(resp *http.Response) map[string]string {
 	headers := providerUtils.ExtractPassthroughProviderResponseHeadersFromHTTP(resp)
 	redactKeyFromHeaders(headers, e.authQuery(), e.secret())
 	return headers
+}
+
+// streamResponseHeaders is responseHeaders for a reply forwarded as it arrives. A buffered reply is
+// handed over decoded (decodeReply), so the header filter rightly drops its Content-Encoding; a
+// streamed one is forwarded byte for byte, so a coding net/http left on it (it decodes gzip itself
+// and removes the header) goes with it, or the caller would receive bytes it cannot decode.
+func (e *endpoint) streamResponseHeaders(resp *http.Response) map[string]string {
+	headers := e.responseHeaders(resp)
+	if coding := resp.Header.Get("Content-Encoding"); coding != "" && !strings.EqualFold(strings.TrimSpace(coding), "identity") {
+		if headers == nil {
+			// The header filter returns nil when nothing else is left for the caller.
+			headers = make(map[string]string, 1)
+		}
+		headers["Content-Encoding"] = coding
+	}
+	return headers
+}
+
+// decodeReply decodes a buffered reply body net/http left content-encoded (br, zstd, deflate; it
+// decodes gzip itself), as the LLM path decodes a provider reply in CheckAndDecodeBody: the caller
+// is handed the decoded body, which carries no Content-Encoding since responseHeaders drops it, and
+// usage is read from the same bytes. A body that does not decode is refused as the LLM path refuses
+// it. A reply with no coding is returned as it is, so the common case decodes nothing.
+func decodeReply(resp *http.Response, body []byte, latency time.Duration) ([]byte, *schemas.BifrostError) {
+	coding := resp.Header.Get("Content-Encoding")
+	if coding == "" || len(body) == 0 {
+		return body, nil
+	}
+	decoded, err := providerUtils.DecodeContentEncodedBody(body, coding)
+	if err != nil {
+		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError("failed to decode response body", err), latency)
+	}
+	return decoded, nil
 }
 
 // bufferedResult is one relayed call's reply, read in full.
@@ -392,6 +466,10 @@ func (e *endpoint) readBuffered(resp *http.Response, start time.Time, bounded bo
 	}
 	if err != nil {
 		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError("error reading response body", err), latency)
+	}
+	body, bErr := decodeReply(resp, body, latency)
+	if bErr != nil {
+		return nil, bErr
 	}
 	return &bufferedResult{
 		status:      resp.StatusCode,
@@ -446,11 +524,15 @@ func (e *endpoint) readOrHandOff(resp *http.Response, start time.Time, threshold
 		return nil, ahead, true, nil
 	}
 	_ = resp.Body.Close()
+	body, bErr := decodeReply(resp, ahead, latency)
+	if bErr != nil {
+		return nil, nil, false, bErr
+	}
 	return &bufferedResult{
 		status:      resp.StatusCode,
 		headers:     e.responseHeaders(resp),
 		contentType: resp.Header.Get("Content-Type"),
-		body:        ahead,
+		body:        body,
 		latency:     latency,
 	}, nil, false, nil
 }

@@ -1233,7 +1233,7 @@
 		},
 		"deleteDialog": {
 			"title": "删除中继",
-			"description": "确定要删除此中继吗？对 /relay/{{name}} 的调用将停止工作，其虚拟密钥授权也会被移除。此操作无法撤销。",
+			"description": "确定要删除此中继吗？对 {{path}} 的调用将停止工作，其虚拟密钥授权也会被移除。此操作无法撤销。",
 			"toastDeleted": "中继已删除",
 			"toastFailed": "删除中继失败",
 			"deleting": "正在删除..."
@@ -1243,7 +1243,7 @@
 			"toastFailed": "添加中继失败",
 			"title": "添加中继",
 			"nameLabel": "名称（必填）",
-			"nameInfo": "调用方使用 /relay/<name>。创建后无法更改。"
+			"nameInfo": "调用方使用 {{path}}。创建后无法更改。"
 		},
 		"fields": {
 			"baseUrlLabel": "基础 URL（必填）",

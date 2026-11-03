@@ -435,20 +435,33 @@ func (s *RDBLogStore) applyRelayLogFilters(query *gorm.DB, f RelayLogFilters) *g
 		query = query.Where("(path LIKE ?"+escape+" OR route_path LIKE ?"+escape+" OR model LIKE ?"+escape+" OR request_id LIKE ?"+escape+")", like, like, like, like)
 	}
 	if search := strings.TrimSpace(f.ContentSearch); search != "" {
-		if query.Dialector != nil && query.Dialector.Name() == "postgres" {
-			// Must match idx_relay_logs_request_body_fts / idx_relay_logs_response_body_fts exactly
-			// (incl. the left() cap) so the planner uses the GIN expression indexes.
+		// Every backend reads the first relayContentSearchChars characters of each body: what the
+		// Postgres indexes cover and what a hybrid row keeps, so results do not differ by backend.
+		dialect := ""
+		if query.Dialector != nil {
+			dialect = query.Dialector.Name()
+		}
+		if dialect == "postgres" {
+			// relayBodyFTSExpr is the expression idx_relay_logs_*_body_prefix_fts are built on, so
+			// the planner uses the GIN expression indexes.
 			query = query.Where(
-				fmt.Sprintf("(to_tsvector('simple', left(request_body, %d)) @@ plainto_tsquery('simple', ?) OR to_tsvector('simple', left(response_body, %d)) @@ plainto_tsquery('simple', ?))", ftsInputCharLimit, ftsInputCharLimit),
+				"("+relayBodyFTSExpr("request_body")+" @@ plainto_tsquery('simple', ?) OR "+relayBodyFTSExpr("response_body")+" @@ plainto_tsquery('simple', ?))",
 				search, search,
 			)
 		} else {
 			like := "%" + escapeLike(search) + "%"
 			escape := ""
-			if query.Dialector != nil && query.Dialector.Name() == "sqlite" {
+			// substr counts characters on SQLite and MySQL; ClickHouse's counts bytes.
+			prefix := "substr(%s, 1, %d)"
+			switch dialect {
+			case "sqlite":
 				escape = ` ESCAPE '\'`
+			case "clickhouse":
+				prefix = "substringUTF8(%s, 1, %d)"
 			}
-			query = query.Where("(request_body LIKE ?"+escape+" OR response_body LIKE ?"+escape+")", like, like)
+			requestPrefix := fmt.Sprintf(prefix, "request_body", relayContentSearchChars)
+			responsePrefix := fmt.Sprintf(prefix, "response_body", relayContentSearchChars)
+			query = query.Where("("+requestPrefix+" LIKE ?"+escape+" OR "+responsePrefix+" LIKE ?"+escape+")", like, like)
 		}
 	}
 	return query

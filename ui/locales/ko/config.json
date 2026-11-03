@@ -1262,7 +1262,7 @@
 		},
 		"deleteDialog": {
 			"title": "릴레이 삭제",
-			"description": "이 릴레이를 삭제하시겠어요? /relay/{{name}}으로의 호출이 중단되고 가상 키 권한 부여도 제거돼요. 이 작업은 되돌릴 수 없어요.",
+			"description": "이 릴레이를 삭제하시겠어요? {{path}}으로의 호출이 중단되고 가상 키 권한 부여도 제거돼요. 이 작업은 되돌릴 수 없어요.",
 			"toastDeleted": "릴레이를 삭제했어요",
 			"toastFailed": "릴레이를 삭제하지 못했어요",
 			"deleting": "삭제 중..."
@@ -1272,7 +1272,7 @@
 			"toastFailed": "릴레이를 추가하지 못했어요",
 			"title": "릴레이 추가",
 			"nameLabel": "이름 (필수)",
-			"nameInfo": "호출자는 /relay/<name>을 사용해요. 나중에 변경할 수 없어요."
+			"nameInfo": "호출자는 {{path}}을 사용해요. 나중에 변경할 수 없어요."
 		},
 		"fields": {
 			"baseUrlLabel": "기본 URL (필수)",

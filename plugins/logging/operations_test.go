@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -27,6 +28,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttpadaptor"
+	gormschema "gorm.io/gorm/schema"
 )
 
 type testLogger struct{}
@@ -6051,6 +6053,24 @@ func TestRelayLogClampsUserAgent(t *testing.T) {
 	require.Equal(t, "Claude Code", *entry.App, "the app is still detected from the full header")
 }
 
+// A custom mapping's app name is clamped to the app column, as applyUserAgent clamps it on LLM rows,
+// so an oversized name never fails the insert and drops the row with its cost.
+func TestRelayLogClampsApp(t *testing.T) {
+	plugin := policyTestPlugin(nil, nil, true)
+	plugin.writeQueue = make(chan *writeQueueEntry, 2)
+	plugin.userAgentMappings.Store([]compiledUserAgentMapping{{Pattern: "acme-agent/", MatchType: schemas.UserAgentMappingMatchTypeContains, App: strings.Repeat("a", 2*maxPersistedAppLen)}})
+	ctx := policyCtx(false, nil)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-long-app")
+	ctx.SetValue(schemas.BifrostContextKeyUserAgent, "acme-agent/1.0")
+	_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search"})
+	require.NoError(t, err)
+	_, _, err = plugin.PostRelayHook(ctx, &schemas.BifrostRelayResponse{RelayName: "tavily", StatusCode: 200}, nil)
+	require.NoError(t, err)
+	entry := (<-plugin.writeQueue).endpointLog
+	require.NotNil(t, entry.App)
+	require.Len(t, *entry.App, maxPersistedAppLen, "the stored app fits its column")
+}
+
 // A row carries the same metadata LLM and MCP rows do (the Logging Headers setting's headers, every
 // x-bf-lh-* label with its prefix stripped, the x-bf-dim-* dimensions, and the key's metadata), and
 // beside it only the headers the matched route matches on; never the reply's headers. Both are
@@ -6663,6 +6683,24 @@ func TestRelayLogMarksLargePayloadResponse(t *testing.T) {
 	require.Equal(t, "preview", *entry.ResponseBody)
 }
 
+// A stream whose SSE event passed the 10 MiB framing ceiling was forwarded whole but not read for
+// usage; the row says so in its plugin logs, so an operator can see why the call was priced lower.
+func TestRelayLogWarnsOnOversizedStreamEvents(t *testing.T) {
+	plugin := policyTestPlugin(nil, nil, true)
+	plugin.writeQueue = make(chan *writeQueueEntry, 1)
+	ctx := policyCtx(false, nil)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-oversized")
+	name := PluginName
+	scoped := ctx.WithPluginScope(&name)
+	defer scoped.ReleasePluginScope()
+	_, _, err := plugin.PreRelayHook(scoped, &schemas.BifrostRelayRequest{RelayName: "sse", Method: "POST", Path: "/s"})
+	require.NoError(t, err)
+	_, _, err = plugin.PostRelayHook(scoped, &schemas.BifrostRelayResponse{RelayName: "sse", StatusCode: 200, Streamed: true, OversizedEvents: 2}, nil)
+	require.NoError(t, err)
+	entry := (<-plugin.writeQueue).endpointLog
+	require.Contains(t, entry.PluginLogs, "2 SSE events exceeded the 10 MiB framing limit")
+}
+
 // TestRelayLogStatusFollowsLLMRule pins that a relay row's status comes from the same rule as an
 // LLM row's: a hung-up, 499 or client-deadline call is cancelled, any other failure is an error.
 func TestRelayLogStatusFollowsLLMRule(t *testing.T) {
@@ -6784,4 +6822,69 @@ func TestRelayReconcileCarriesRetainedContent(t *testing.T) {
 
 	visible := relayLogUpdateColumns(&logstore.RelayLog{ID: "row", Path: "/search?q=1"}, false)
 	require.NotContains(t, visible, logstore.RelayRetainedPathUpdate, "a visible row carries nothing extra")
+}
+
+// relayReconcileSkippedColumns are the relay_logs columns the reconciling update deliberately
+// leaves as the evicted partial stored them. Everything else PostRelayHook can set must be in
+// relayLogUpdateColumns, or a call that outlives pendingLogTTL silently loses it.
+var relayReconcileSkippedColumns = map[string]string{
+	"id":                "the row identity the update is keyed by",
+	"request_id":        "request side, stored on the partial and used to find it",
+	"timestamp":         "the call's start, stored on the partial",
+	"created_at":        "restarted at eviction for the processing-row flush window, never by the finish",
+	"kind":              "always call for a reconciled row; job rows are inserted by recordEndpointJob",
+	"relay_name":        "request side, set by PreRelayHook",
+	"method":            "request side, set by PreRelayHook",
+	"route_path":        "request side, set by PreRelayHook",
+	"billable":          "request side, set by PreRelayHook",
+	"model":             "request side, set by PreRelayHook",
+	"user_agent":        "request side, set by PreRelayHook",
+	"app":               "request side, derived from user_agent by PreRelayHook",
+	"client_ip":         "request side, set by PreRelayHook",
+	"request_headers":   "request side, the matched headers PreRelayHook records",
+	"metadata":          "left as the partial stored it, as the LLM reconcile leaves it",
+	"parent_log_id":     "set only on job rows, never on a call row",
+	"payload_reference": "written by the hybrid store when it offloads the bodies, not by the plugin",
+	"has_object":        "written by the hybrid store when it offloads the bodies, not by the plugin",
+}
+
+// TestRelayReconcileUpdatesEveryNonRequestColumn guards relayLogUpdateColumns against drift from
+// the RelayLog model: every persisted column is either written by the reconcile or listed above
+// with the reason it is not, so a column added to relay_logs (as user_email was) cannot be missed
+// on the eviction path. LLM rows are not exposed to this, since they reconcile with the whole struct.
+func TestRelayReconcileUpdatesEveryNonRequestColumn(t *testing.T) {
+	parsed, err := gormschema.Parse(&logstore.RelayLog{}, &sync.Map{}, gormschema.NamingStrategy{})
+	require.NoError(t, err)
+	persisted := map[string]bool{}
+	for _, column := range parsed.DBNames {
+		persisted[column] = true
+	}
+
+	// Every optional key on: a hidden row with a query string, retained content and a dropped body.
+	updates := relayLogUpdateColumns(&logstore.RelayLog{
+		ID: "row", Path: "/search?q=1", ContentHidden: true,
+		RetainedPath:         schemas.Ptr("/search?q=1"),
+		RetainedErrorDetails: &schemas.BifrostError{Error: &schemas.ErrorField{Message: "boom"}},
+	}, true)
+	require.NotNil(t, updates)
+	written := map[string]bool{}
+	for key := range updates {
+		if key == logstore.RelayRetainedPathUpdate || key == logstore.RelayRetainedErrorDetailsUpdate {
+			require.False(t, persisted[key], "%s is a reserved object-only key and must not name a column", key)
+			continue
+		}
+		require.True(t, persisted[key], "relayLogUpdateColumns writes %q, which is not a relay_logs column", key)
+		written[key] = true
+	}
+	for column, reason := range relayReconcileSkippedColumns {
+		require.True(t, persisted[column], "relayReconcileSkippedColumns lists %q (%s), which is not a relay_logs column", column, reason)
+		require.False(t, written[column], "%q is written by the reconcile; drop it from relayReconcileSkippedColumns", column)
+	}
+	for column := range persisted {
+		if written[column] {
+			continue
+		}
+		_, skipped := relayReconcileSkippedColumns[column]
+		require.True(t, skipped, "relay_logs column %q is neither written by relayLogUpdateColumns nor listed in relayReconcileSkippedColumns: an evicted call that reconciles loses it", column)
+	}
 }

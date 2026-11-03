@@ -1263,7 +1263,7 @@
 		},
 		"deleteDialog": {
 			"title": "Supprimer le relais",
-			"description": "Voulez-vous vraiment supprimer ce relais ? Les appels vers /relay/{{name}} cesseront de fonctionner et ses accès par clé virtuelle seront supprimés. Cette action est irréversible.",
+			"description": "Voulez-vous vraiment supprimer ce relais ? Les appels vers {{path}} cesseront de fonctionner et ses accès par clé virtuelle seront supprimés. Cette action est irréversible.",
 			"toastDeleted": "Relais supprimé avec succès",
 			"toastFailed": "Échec de la suppression du relais",
 			"deleting": "Suppression…"
@@ -1273,7 +1273,7 @@
 			"toastFailed": "Échec de l’ajout du relais",
 			"title": "Ajouter un relais",
 			"nameLabel": "Nom (obligatoire)",
-			"nameInfo": "Les appelants utilisent /relay/<name>. Il ne peut pas être modifié par la suite."
+			"nameInfo": "Les appelants utilisent {{path}}. Il ne peut pas être modifié par la suite."
 		},
 		"fields": {
 			"baseUrlLabel": "URL de base (obligatoire)",

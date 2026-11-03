@@ -1824,6 +1824,11 @@
         },
         {
           "method": "POST",
+          "path": "/v1/stream-oversized",
+          "stream": true
+        },
+        {
+          "method": "POST",
           "path": "/v1/disabled",
           "enabled": false
         },
@@ -1845,6 +1850,17 @@
             "cost_per_request": 0,
             "units_source": "request",
             "units_path": "text",
+            "units_measure": "chars",
+            "cost_per_unit": 0.0001
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/v1/translate-batch",
+          "usage": {
+            "cost_per_request": 0,
+            "units_source": "request",
+            "units_path": "docs.0.text",
             "units_measure": "chars",
             "cost_per_unit": 0.0001
           }

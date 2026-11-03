@@ -933,7 +933,7 @@
 		},
 		"grants": {
 			"label": "Accesso ai relay",
-			"tooltip": "Permette a questa chiave di chiamare i relay su <strong>/relay/&lt;name&gt;/...</strong>. Il costo di ogni chiamata viene addebitato ai budget della chiave. Senza alcun relay concesso, la chiave non può chiamarne nessuno.",
+			"tooltip": "Permette a questa chiave di chiamare i relay su <strong>{{path}}</strong>. Il costo di ogni chiamata viene addebitato ai budget della chiave. Senza alcun relay concesso, la chiave non può chiamarne nessuno.",
 			"selectRelay": "Seleziona un relay da aggiungere",
 			"remove": "Rimuovi {{name}}"
 		}

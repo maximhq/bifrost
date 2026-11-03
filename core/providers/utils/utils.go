@@ -3067,71 +3067,8 @@ func CheckAndDecodeBody(resp *fasthttp.Response) ([]byte, error) {
 		return nil, nil
 	}
 
-	result := append([]byte(nil), body...)
-	contentEncoding := strings.ToLower(strings.TrimSpace(string(resp.Header.Peek("Content-Encoding"))))
-	if contentEncoding == "" || contentEncoding == "identity" {
-		return result, nil
-	}
-
-	encodings := strings.Split(contentEncoding, ",")
-	for i := len(encodings) - 1; i >= 0; i-- {
-		encoding := strings.TrimSpace(encodings[i])
-		reader := bytes.NewReader(result)
-
-		// Release on the Acquire error paths too: zstd.NewReader's contract is to
-		// return the decoder alongside its error, so a bare return could drop one
-		// from the pool. The gzip and deflate constructors return nil there, where
-		// Release is a no-op.
-		switch encoding {
-		case "", "identity":
-			continue
-		case "gzip", "x-gzip":
-			gz, err := AcquireGzipReader(reader)
-			if err != nil {
-				ReleaseGzipReader(gz)
-				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
-			}
-			result, err = io.ReadAll(gz)
-			ReleaseGzipReader(gz)
-			if err != nil {
-				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
-			}
-		case "deflate":
-			fr, err := AcquireFlateReader(reader)
-			if err != nil {
-				ReleaseFlateReader(fr)
-				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
-			}
-			result, err = io.ReadAll(fr)
-			ReleaseFlateReader(fr)
-			if err != nil {
-				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
-			}
-		case "br":
-			br := AcquireBrotliReader(reader)
-			var err error
-			result, err = io.ReadAll(br)
-			ReleaseBrotliReader(br)
-			if err != nil {
-				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
-			}
-		case "zstd":
-			dec, err := AcquireZstdDecoder(reader)
-			if err != nil {
-				ReleaseZstdDecoder(dec)
-				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
-			}
-			result, err = io.ReadAll(dec)
-			ReleaseZstdDecoder(dec)
-			if err != nil {
-				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
-			}
-		default:
-			return nil, fmt.Errorf("unsupported Content-Encoding %q", encoding)
-		}
-	}
-
-	return result, nil
+	// The copy is what an identity reply returns; DecodeContentEncodedBody hands it back as is.
+	return DecodeContentEncodedBody(append([]byte(nil), body...), string(resp.Header.Peek("Content-Encoding")))
 }
 
 // IsHTMLResponse checks if the response is HTML by examining the Content-Type header

@@ -229,6 +229,34 @@ test.describe('Base path: self URLs', () => {
     await expect(page.getByTestId('prometheus-metrics-endpoint')).toHaveText(`${origin}${basePath}/metrics`)
   })
 
+  test('a virtual key relay grant shows the prefixed relay path', async ({ page, request }, testInfo) => {
+    const basePath = basePathOf(testInfo)
+    const stamp = Date.now()
+    const relayName = `bp-relay-${stamp}`
+    const vkName = `base-path-relay-${stamp}`
+    const relayRes = await request.post(`${basePath}/api/relays`, {
+      data: { name: relayName, base_url: 'https://api.example.com', auth: { type: 'bearer' }, credential: { value: { value: 'sk-e2e' } } },
+    })
+    expect(relayRes.status(), await relayRes.text()).toBe(201)
+    let vkId: string | undefined
+    try {
+      const vkRes = await request.post(`${basePath}/api/governance/virtual-keys`, {
+        data: { name: vkName, is_active: true, relay_grants: [{ relay_name: relayName }] },
+      })
+      expect(vkRes.status(), await vkRes.text()).toBe(200)
+      vkId = ((await vkRes.json()) as { virtual_key: { id: string } }).virtual_key.id
+
+      await page.goto(`${basePath}/workspace/virtual-keys`)
+      await page.getByTestId('vk-search-input').fill(vkName)
+      await page.getByTestId(`vk-actions-btn-${vkName}`).click()
+      await page.getByTestId(`vk-edit-btn-${vkName}`).click()
+      await expect(page.getByTestId(`vk-relays-grant-${relayName}`)).toContainText(`${basePath}/relay/${relayName}`)
+    } finally {
+      if (vkId) await request.delete(`${basePath}/api/governance/virtual-keys/${vkId}`)
+      await request.delete(`${basePath}/api/relays/${relayName}`)
+    }
+  })
+
   test('the command palette keeps the prefix in the address bar and in new tabs', async ({ page, context }, testInfo) => {
     const basePath = basePathOf(testInfo)
     const origin = originOf(testInfo)

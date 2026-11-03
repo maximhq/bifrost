@@ -172,10 +172,13 @@ func TestRequestBodyErrorBatchCaseVariant(t *testing.T) {
 	assert.NoError(t, u.requestBodyError([]byte(`[{"Text":"a"},{"Text":"b"}]`)))
 	assert.Error(t, u.requestBodyError([]byte(`[{"text":"hidden"}]`)), "a lone case-variant element is refused")
 	assert.Error(t, u.requestBodyError([]byte(`[{"Text":"a"},{"text":"hidden"}]`)), "a mixed body is refused, since one element would go unbilled")
+	assert.Error(t, u.requestBodyError([]byte(`[{"Text":"a"},{"Text":"a","TEXT":"b"}]`)), "a duplicate inside one element is refused")
+	assert.NoError(t, u.requestBodyError([]byte(`[{"Text":"a","Opts":{"x":1,"X":2}}]`)), "a duplicate off the path inside an element is relayed")
 	assert.NoError(t, u.requestBodyError([]byte(`[{"Other":"x"}]`)), "a key that is simply absent is not a case variant")
 	nested := resolveUsage(&schemas.RelayUsageConfig{CostPerUnit: schemas.Ptr(0.001), UnitsPath: "docs.#.Text", UnitsSource: schemas.RelayUnitsFromRequest, UnitsMeasure: schemas.RelayUnitsChars}, nil)
 	assert.NoError(t, nested.requestBodyError([]byte(`{"docs":[{"Text":"a"}]}`)))
 	assert.Error(t, nested.requestBodyError([]byte(`{"Docs":[{"Text":"hidden"}]}`)), "a case variant on the path to the array is refused too")
+	assert.Error(t, nested.requestBodyError([]byte(`{"docs":[{"Text":"a"}],"Docs":[{"Text":"hidden"}]}`)), "a duplicate array on the path is refused")
 	assert.NoError(t, nested.requestBodyError([]byte(`{"other":[{"Text":"a"}]}`)), "an absent array is not a case variant")
 }
 
@@ -378,17 +381,53 @@ func TestRequestBodyError(t *testing.T) {
 	assert.InDelta(t, 5, got.units, 0)
 
 	for name, body := range map[string]string{
-		"not JSON":                     `Text=hello`,
-		"empty":                        ``,
-		"duplicate key":                `{"Text":"a","Text":"` + strings.Repeat("b", 100) + `"}`,
-		"case variant":                 `{"Text":"a","text":"` + strings.Repeat("b", 100) + `"}`,
-		"lone case variant":            `{"text":"` + strings.Repeat("b", 100) + `"}`,
-		"duplicate inside an array":    `[{"Text":"a"},{"Text":"a","TEXT":"b"}]`,
-		"duplicate in a nested object": `{"Options":{"x":1,"X":2},"Text":"a"}`,
-		"too deep":                     strings.Repeat(`{"a":`, 70) + `1` + strings.Repeat(`}`, 70),
+		"not JSON":          `Text=hello`,
+		"empty":             ``,
+		"duplicate key":     `{"Text":"a","Text":"` + strings.Repeat("b", 100) + `"}`,
+		"case variant":      `{"Text":"a","text":"` + strings.Repeat("b", 100) + `"}`,
+		"lone case variant": `{"text":"` + strings.Repeat("b", 100) + `"}`,
 	} {
 		assert.Errorf(t, translate.requestBodyError([]byte(body)), "%s must be refused", name)
 	}
+
+	// Only the keys the billed path reads are checked, as parsePassthroughBody checks only the model
+	// key: a duplicate the bill never reads, and nesting of any depth, are relayed as they came.
+	for name, body := range map[string]string{
+		"duplicate in a nested object": `{"Options":{"x":1,"X":2},"Text":"a"}`,
+		"duplicate beside the path":    `{"Lang":"de","lang":"fr","Text":"a"}`,
+		"deep nesting":                 `{"Text":"a","Doc":` + strings.Repeat(`{"a":`, 200) + `1` + strings.Repeat(`}`, 200) + `}`,
+	} {
+		assert.NoErrorf(t, translate.requestBodyError([]byte(body)), "%s must be relayed", name)
+	}
+
+	nested := resolveUsage(&schemas.RelayUsageConfig{UnitsPath: "Doc.Text", UnitsSource: schemas.RelayUnitsFromRequest, UnitsMeasure: schemas.RelayUnitsChars, CostPerUnit: schemas.Ptr(0.001)}, nil)
+	for name, body := range map[string]string{
+		"duplicate parent object":    `{"Doc":{"Text":"a"},"Doc":{"Text":"` + strings.Repeat("b", 100) + `"}}`,
+		"case-variant parent object": `{"Doc":{"Text":"a"},"doc":{"Text":"` + strings.Repeat("b", 100) + `"}}`,
+		"duplicate at the leaf":      `{"Doc":{"Text":"a","TEXT":"b"}}`,
+	} {
+		assert.Errorf(t, nested.requestBodyError([]byte(body)), "%s must be refused", name)
+	}
+	assert.NoError(t, nested.requestBodyError([]byte(`{"Doc":{"Text":"a","Meta":{"k":1,"K":2}},"Other":{"x":1,"X":2}}`)), "duplicates off the path are relayed")
+
+	// An index segment steps into that element of the array, so a duplicate inside the indexed
+	// element is refused while one elsewhere in the body is not.
+	indexed := resolveUsage(&schemas.RelayUsageConfig{UnitsPath: "docs.0.Text", UnitsSource: schemas.RelayUnitsFromRequest, UnitsMeasure: schemas.RelayUnitsChars, CostPerUnit: schemas.Ptr(0.001)}, nil)
+	assert.Error(t, indexed.requestBodyError([]byte(`{"docs":[{"Text":"a","Text":"`+strings.Repeat("b", 100)+`"}]}`)), "a duplicate inside the indexed element is refused")
+	assert.Error(t, indexed.requestBodyError([]byte(`{"docs":[{"Text":"a","TEXT":"b"}]}`)), "a case variant inside the indexed element is refused")
+	assert.NoError(t, indexed.requestBodyError([]byte(`{"docs":[{"Text":"a"},{"Text":"b","TEXT":"c"}],"Opts":{"x":1,"X":2}}`)), "a duplicate in another element or off the path is relayed")
+
+	// Query and multipath forms cannot be followed key by key either, so they check the whole body.
+	for _, path := range []string{`docs.#(Lang=="en").Text`, `{Text,Lang}`} {
+		query := resolveUsage(&schemas.RelayUsageConfig{UnitsPath: path, UnitsSource: schemas.RelayUnitsFromRequest, UnitsMeasure: schemas.RelayUnitsChars, CostPerUnit: schemas.Ptr(0.001)}, nil)
+		assert.Errorf(t, query.requestBodyError([]byte(`{"docs":[{"Lang":"en","Text":"a"}],"Text":"a","Lang":"en","Opts":{"x":1,"X":2}}`)), "%s checks the whole body", path)
+	}
+
+	// A path in other gjson syntax cannot be followed key by key, so every object is checked, still
+	// to any depth.
+	wildcard := resolveUsage(&schemas.RelayUsageConfig{UnitsPath: "Te*t", UnitsSource: schemas.RelayUnitsFromRequest, UnitsMeasure: schemas.RelayUnitsChars, CostPerUnit: schemas.Ptr(0.001)}, nil)
+	assert.Error(t, wildcard.requestBodyError([]byte(`{"Text":"a","Opts":{"x":1,"X":2}}`)), "a wildcard path checks the whole body")
+	assert.NoError(t, wildcard.requestBodyError([]byte(`{"Text":"a","Doc":`+strings.Repeat(`[`, 500)+`1`+strings.Repeat(`]`, 500)+`}`)), "and refuses no depth")
 
 	tts := resolveUsage(&schemas.RelayUsageConfig{UnitsSource: schemas.RelayUnitsFromRequest, UnitsMeasure: schemas.RelayUnitsBodyChars, CostPerUnit: schemas.Ptr(0.001)}, nil)
 	assert.NoError(t, tts.requestBodyError([]byte(`<speak>hi</speak>`)), "a whole-body measure reads any body")

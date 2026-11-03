@@ -3,6 +3,7 @@ package logging
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/url"
 	"strconv"
 	"strings"
@@ -97,7 +98,7 @@ func (p *LoggerPlugin) PreRelayHook(ctx *schemas.BifrostContext, req *schemas.Bi
 		// the row (and its cost and attribution) at insert time.
 		entry.UserAgent = new(clampString(ua, maxPersistedUserAgentLen))
 		if app := p.detectAppFromUserAgent(ua); app != "" {
-			entry.App = &app
+			entry.App = new(clampString(app, maxPersistedAppLen))
 			if appKey := schemas.AppKeyFromName(app); appKey != "" {
 				ctx.SetValue(schemas.BifrostContextKeyApp, appKey)
 			}
@@ -135,6 +136,11 @@ func (p *LoggerPlugin) PreRelayHook(ctx *schemas.BifrostContext, req *schemas.Bi
 func (p *LoggerPlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *schemas.BifrostRelayResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostRelayResponse, *schemas.BifrostError, error) {
 	if ctx == nil {
 		return resp, bifrostErr, nil
+	}
+	if resp != nil && resp.OversizedEvents > 0 {
+		// Recorded with the row's plugin logs, so a call priced without the usage of an event past
+		// the framing ceiling says why. Logged before the logs are read below and into the trace.
+		ctx.Log(schemas.LogLevelWarn, fmt.Sprintf("%d SSE events exceeded the 10 MiB framing limit; they were forwarded to the caller but not read for usage", resp.OversizedEvents))
 	}
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
 	// The claim is serialized with the stale sweep, as for LLM rows: either this hook takes the
@@ -337,6 +343,7 @@ func relayLogUpdateColumns(entry *logstore.RelayLog, dropRequestBody bool) map[s
 		"job_status":                entry.JobStatus,
 		"user_id":                   entry.UserID,
 		"user_name":                 entry.UserName,
+		"user_email":                entry.UserEmail,
 		"virtual_key_id":            entry.VirtualKeyID,
 		"virtual_key_name":          entry.VirtualKeyName,
 		"team_id":                   entry.TeamID,

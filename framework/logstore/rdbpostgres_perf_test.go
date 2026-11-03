@@ -829,11 +829,44 @@ func TestRelayLogContentSearchUsesFTSOnPostgres(t *testing.T) {
 		require.Len(t, page.Logs, 1, "content_search %q", term)
 		assert.Equal(t, want, page.Logs[0].ID)
 	}
+	// A body whose term sits past the indexed prefix is not matched, as on SQLite.
+	_, err = store.BatchCreateRelayLogsIfNotExists(ctx, []*RelayLog{
+		{ID: "deep", RequestID: "deep", Timestamp: now, RelayName: "docs", Status: RelayLogStatusSuccess, RequestBody: strPtr(strings.Repeat("é ", relayContentSearchChars) + "echidna")},
+	})
+	require.NoError(t, err)
+	page, err := store.SearchRelayLogs(ctx, RelayLogFilters{ContentSearch: "echidna"}, PaginationOptions{Limit: 10})
+	require.NoError(t, err)
+	assert.Empty(t, page.Logs, "a term past the first %d characters is not indexed", relayContentSearchChars)
+
+	// A database that built the unbounded indexes under their old names gets them swapped.
+	for _, column := range []string{"request_body", "response_body"} {
+		require.NoError(t, db.Exec(fmt.Sprintf("CREATE INDEX idx_relay_logs_%s_fts ON relay_logs USING GIN (to_tsvector('simple', left(%s, %d))) WHERE %s IS NOT NULL", column, column, ftsInputCharLimit, column)).Error)
+	}
 	conn := acquirePerfTestSQLConn(t, ctx, db)
 	require.NoError(t, ensurePerformanceIndexes(ctx, conn, testLogger{}))
-	for _, index := range []string{"idx_relay_logs_request_body_fts", "idx_relay_logs_response_body_fts"} {
+	for _, index := range []string{"idx_relay_logs_request_body_prefix_fts", "idx_relay_logs_response_body_prefix_fts"} {
 		valid, err := pgIndexValid(ctx, conn, "relay_logs", index)
 		require.NoError(t, err)
 		assert.True(t, valid, "%s is built", index)
 	}
+	for _, index := range []string{"idx_relay_logs_request_body_fts", "idx_relay_logs_response_body_fts"} {
+		var exists bool
+		require.NoError(t, db.Raw("SELECT to_regclass(?) IS NOT NULL", index).Scan(&exists).Error)
+		assert.False(t, exists, "the replaced index %s is dropped", index)
+	}
+	require.NoError(t, ensurePerformanceIndexes(ctx, conn, testLogger{}), "the swap is idempotent")
+
+	// The predicate is the indexed expression: with sequential scans off the planner must pick it.
+	var plan []string
+	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("SET LOCAL enable_seqscan = off").Error; err != nil {
+			return err
+		}
+		query := store.applyRelayLogFilters(tx.Model(&RelayLog{}), RelayLogFilters{ContentSearch: "wombat"})
+		sqlText := query.ToSQL(func(q *gorm.DB) *gorm.DB { return q.Select("id").Find(&[]RelayLog{}) })
+		return tx.Raw("EXPLAIN " + sqlText).Scan(&plan).Error
+	}))
+	joined := strings.Join(plan, "\n")
+	assert.Contains(t, joined, "idx_relay_logs_request_body_prefix_fts", "content_search uses the request body index:\n%s", joined)
+	assert.Contains(t, joined, "idx_relay_logs_response_body_prefix_fts", "content_search uses the response body index:\n%s", joined)
 }

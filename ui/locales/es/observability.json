@@ -342,7 +342,7 @@
 			"servedByFallback": "Servido por (después)",
 			"servedModel": "Modelo de servicio",
 			"stopReason": "Parar la razón",
-			"parentRequestID": "ID de la solicitud principal",
+			"parentRequestID": "ID de la solicitud padre",
 			"filterThisSession": "· Filtrar esta sesión",
 			"selectedKey": "Clave seleccionada",
 			"selectedPrompt": "Prompt seleccionado",
@@ -904,7 +904,7 @@
 			"tokensNotPriced": "Tokens (sin precio)",
 			"tokensNotPricedValue": "{{input}} de entrada / {{output}} de salida",
 			"matchedRoute": "Ruta coincidente",
-			"parentLog": "Log principal",
+			"parentLog": "Log padre",
 			"responseBodyPreview": "Cuerpo de la respuesta (vista previa)",
 			"filterByValue": "Mostrar las llamadas de relay con este valor",
 			"queryParameters": "Parámetros de consulta",
@@ -929,11 +929,11 @@
 			"minimumCost": "Costo mínimo",
 			"maximumCost": "Costo máximo",
 			"exactJobID": "ID de trabajo exacto",
-			"exactParentRequestID": "ID exacto de la solicitud principal"
+			"exactParentRequestID": "ID exacto de la solicitud padre"
 		},
 		"grants": {
 			"label": "Acceso a relays",
-			"tooltip": "Permite que esta clave llame a relays en <strong>/relay/&lt;name&gt;/...</strong>. El costo de cada llamada se carga a los presupuestos de la clave. Sin ningún relay concedido, la clave no puede llamar a ninguno.",
+			"tooltip": "Permite que esta clave llame a relays en <strong>{{path}}</strong>. El costo de cada llamada se carga a los presupuestos de la clave. Sin ningún relay concedido, la clave no puede llamar a ninguno.",
 			"selectRelay": "Selecciona un relay para agregar",
 			"remove": "Quitar {{name}}"
 		}

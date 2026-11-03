@@ -933,7 +933,7 @@
 		},
 		"grants": {
 			"label": "Relay access",
-			"tooltip": "Let this key call relays at <strong>/relay/&lt;name&gt;/...</strong>. Each call's cost is charged to the key's budgets. With no relay granted the key may call none.",
+			"tooltip": "Let this key call relays at <strong>{{path}}</strong>. Each call's cost is charged to the key's budgets. With no relay granted the key may call none.",
 			"selectRelay": "Select a relay to add",
 			"remove": "Remove {{name}}"
 		}

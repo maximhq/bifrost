@@ -1239,7 +1239,7 @@
 		},
 		"deleteDialog": {
 			"title": "Eliminar relay",
-			"description": "¿Seguro que quieres eliminar este relay? Las llamadas a /relay/{{name}} dejarán de funcionar y se quitarán sus permisos de claves virtuales. Esta acción no se puede deshacer.",
+			"description": "¿Seguro que quieres eliminar este relay? Las llamadas a {{path}} dejarán de funcionar y se quitarán sus permisos de claves virtuales. Esta acción no se puede deshacer.",
 			"toastDeleted": "Relay eliminado correctamente",
 			"toastFailed": "No se pudo eliminar el relay",
 			"deleting": "Eliminando..."
@@ -1249,7 +1249,7 @@
 			"toastFailed": "No se pudo agregar el relay",
 			"title": "Agregar relay",
 			"nameLabel": "Nombre (obligatorio)",
-			"nameInfo": "Quienes llaman usan /relay/<name>. No se puede cambiar después."
+			"nameInfo": "Quienes llaman usan {{path}}. No se puede cambiar después."
 		},
 		"fields": {
 			"baseUrlLabel": "URL base (obligatoria)",
