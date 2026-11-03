@@ -97,7 +97,7 @@ func (p *LoggerPlugin) PreRelayHook(ctx *schemas.BifrostContext, req *schemas.Bi
 		// the row (and its cost and attribution) at insert time.
 		entry.UserAgent = new(clampString(ua, maxPersistedUserAgentLen))
 		if app := p.detectAppFromUserAgent(ua); app != "" {
-			entry.App = &app
+			entry.App = new(clampString(app, maxPersistedAppLen))
 			if appKey := schemas.AppKeyFromName(app); appKey != "" {
 				ctx.SetValue(schemas.BifrostContextKeyApp, appKey)
 			}
