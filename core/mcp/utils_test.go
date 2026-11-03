@@ -785,3 +785,41 @@ func TestRelayableCapabilities(t *testing.T) {
 		})
 	}
 }
+
+// A caller can answer an elicitation only in a mode it declared; an empty capability means form only.
+func TestCanAnswer_ElicitationModes(t *testing.T) {
+	form := mcp.InputRequests{"q": {Method: mcp.MethodElicitationCreate, Elicitation: &mcp.ElicitationParams{Message: "Which environment?"}}}
+	url := mcp.InputRequests{"q": {Method: mcp.MethodElicitationCreate, Elicitation: &mcp.ElicitationParams{Mode: mcp.ElicitationModeURL, URL: "https://example.com/connect"}}}
+	cases := []struct {
+		name     string
+		cap      *mcp.ElicitationCapability
+		requests mcp.InputRequests
+		want     bool
+	}{
+		{"empty capability answers form", &mcp.ElicitationCapability{}, form, true},
+		{"empty capability cannot answer url", &mcp.ElicitationCapability{}, url, false},
+		{"form capability cannot answer url", &mcp.ElicitationCapability{Form: &struct{}{}}, url, false},
+		{"url capability answers url", &mcp.ElicitationCapability{URL: &struct{}{}}, url, true},
+		{"url-only capability cannot answer form", &mcp.ElicitationCapability{URL: &struct{}{}}, form, false},
+		{"no capability", nil, form, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, canAnswer(mcp.ClientCapabilities{Elicitation: tc.cap}, tc.requests))
+		})
+	}
+}
+
+// The explanation of a mixed input_required names the same request every time.
+func TestDescribeInputRequests_IsStable(t *testing.T) {
+	requests := mcp.InputRequests{
+		"a_summary": {Method: mcp.MethodSamplingCreateMessage, Sampling: &mcp.CreateMessageParams{MaxTokens: 10}},
+		"b_login":   {Method: mcp.MethodElicitationCreate, Elicitation: &mcp.ElicitationParams{Message: "GitHub username?"}},
+		"c_roots":   {Method: mcp.MethodListRoots, Roots: &mcp.ListRootsParams{}},
+	}
+	want := describeInputRequests(requests, "upstream")
+	assert.Contains(t, want, "an LLM completion (sampling)", "the first request by id is named")
+	for range 50 {
+		require.Equal(t, want, describeInputRequests(requests, "upstream"))
+	}
+}

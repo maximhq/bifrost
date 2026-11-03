@@ -1578,6 +1578,100 @@ func BenchmarkParseAndAddToolsToRequest_PerUserClients(b *testing.B) {
 	}
 }
 
+// A gateway caller that can answer elicitation gets an upstream's input_required result unchanged, and its
+// retry's answers and requestState reach the upstream. A caller that cannot answer gets the clear error,
+// and a "retry later" answer is the caller's to retry.
+func TestExecuteTool_PassesInputRequestsToGatewayCaller(t *testing.T) {
+	var seenCaps atomic.Pointer[mcpgo.ClientCapabilities]
+	var seenState atomic.Pointer[string]
+	s := server.NewMCPServer("input-upstream", "1.0.0", server.WithToolCapabilities(true))
+	s.AddTool(mcpgo.NewTool("login"), func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		if info := server.RequestProtocolInfoFromContext(ctx); info != nil {
+			seenCaps.Store(info.ClientCapabilities)
+		}
+		state := req.Params.RequestState
+		seenState.Store(&state)
+		if answer := server.ElicitationResponse(req.Params.InputResponses, "github_login"); answer != nil && answer.Action == mcpgo.ElicitationResponseActionAccept {
+			content, _ := answer.Content.(map[string]any)
+			return mcpgo.NewToolResultText(fmt.Sprintf("hello %v", content["username"])), nil
+		}
+		return server.NewInputRequestBuilder("s1").Elicit("github_login", mcpgo.ElicitationParams{Message: "GitHub username?"}).ToolResult(), nil
+	})
+	s.AddTool(mcpgo.NewTool("busy"), func(context.Context, mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		return server.NewInputRequestBuilder("").RequestState("later").ToolResult(), nil
+	})
+	ts := httptest.NewServer(server.NewStreamableHTTPServer(s))
+	t.Cleanup(ts.Close)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+	require.NoError(t, m.connectToMCPClient(context.Background(), &schemas.MCPClientConfig{
+		ID: "input-relay", Name: "upstream", ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(ts.URL), NeedsSessionStickiness: schemas.Ptr(true), ToolsToExecute: []string{"*"},
+	}))
+
+	call := func(t *testing.T, tool string, caller *mcpgo.ClientCapabilities, resume *mcpgo.MultiRoundTripParams) (*schemas.ChatMessage, *schemas.BifrostError) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		t.Cleanup(cancel)
+		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+		if caller != nil {
+			bfCtx.SetValue(schemas.BifrostContextKeyMCPCallerCapabilities, caller)
+		}
+		if resume != nil {
+			bfCtx.SetValue(schemas.BifrostContextKeyMCPInputResumption, resume)
+		}
+		name := "upstream-" + tool
+		return m.ExecuteChatTool(bfCtx, &schemas.ChatAssistantMessageToolCall{
+			Function: schemas.ChatAssistantMessageToolCallFunction{Name: &name, Arguments: "{}"},
+		})
+	}
+	elicitingCaller := &mcpgo.ClientCapabilities{Elicitation: &mcpgo.ElicitationCapability{}}
+
+	t.Run("caller that can answer gets the request, then the result", func(t *testing.T) {
+		msg, bErr := call(t, "login", elicitingCaller, nil)
+		require.Nil(t, bErr)
+		require.NotNil(t, seenCaps.Load())
+		assert.NotNil(t, seenCaps.Load().Elicitation, "the upstream is told the caller can answer elicitation")
+		upstream := msg.ChatToolMessage.MCPResult(msg.Content)
+		require.NotNil(t, upstream, "the upstream result must reach the gateway unchanged")
+		require.True(t, upstream.NeedsInput())
+		require.Contains(t, upstream.InputRequests, "github_login")
+		assert.Equal(t, mcpgo.MethodElicitationCreate, upstream.InputRequests["github_login"].Method)
+		assert.Equal(t, "s1", upstream.RequestState)
+
+		answer := mcpgo.ElicitationResult{ElicitationResponse: mcpgo.ElicitationResponse{
+			Action: mcpgo.ElicitationResponseActionAccept, Content: map[string]any{"username": "octo"},
+		}}
+		msg, bErr = call(t, "login", elicitingCaller, &mcpgo.MultiRoundTripParams{
+			InputResponses: mcpgo.InputResponses{"github_login": mcpgo.NewElicitationInputResponse(answer)},
+			RequestState:   "s1",
+		})
+		require.Nil(t, bErr)
+		require.NotNil(t, msg.Content.ContentStr)
+		assert.Equal(t, "hello octo", *msg.Content.ContentStr)
+		assert.Equal(t, "s1", *seenState.Load(), "the retry carries the upstream's requestState")
+	})
+
+	t.Run("caller that cannot answer gets the clear error", func(t *testing.T) {
+		for _, caller := range []*mcpgo.ClientCapabilities{nil, {}} {
+			_, bErr := call(t, "login", caller, nil)
+			require.NotNil(t, bErr)
+			assert.Contains(t, bErr.Error.Message, "input from the user (elicitation)")
+			assert.Contains(t, bErr.Error.Message, "Bifrost cannot provide")
+		}
+	})
+
+	t.Run("retry later reaches a caller that can answer", func(t *testing.T) {
+		msg, bErr := call(t, "busy", elicitingCaller, nil)
+		require.Nil(t, bErr)
+		upstream := msg.ChatToolMessage.MCPResult(msg.Content)
+		require.NotNil(t, upstream)
+		require.True(t, upstream.NeedsInput())
+		assert.Empty(t, upstream.InputRequests)
+		assert.Equal(t, "later", upstream.RequestState)
+	})
+}
+
 // A 2026-07-28 upstream called for a gateway caller is told what that caller declared, narrowed to what
 // Bifrost can relay, on persistent and per-call connections alike. A call with no gateway caller keeps
 // the client's own capabilities.

@@ -347,7 +347,11 @@ func (m *MCPManager) GetPrompt(ctx *schemas.BifrostContext, name string, argumen
 			get := mcp.GetPromptRequest{}
 			get.Params.Name = stripClientPrefix(req.BifrostMCPGetPromptRequest.Name, req.ClientName)
 			get.Params.Arguments = req.BifrostMCPGetPromptRequest.Arguments
-			return conn.GetPrompt(ctx, get)
+			result, err := conn.GetPrompt(ctx, get)
+			if err == nil && result.NeedsInput() {
+				return nil, &UnservableInputError{Requests: result.InputRequests, ServerName: req.ClientName}
+			}
+			return result, err
 		},
 		func(r *mcp.GetPromptResult) *schemas.BifrostMCPResponse {
 			return &schemas.BifrostMCPResponse{BifrostMCPGetPromptResponse: &schemas.BifrostMCPGetPromptResponse{Prompt: r}}
@@ -376,7 +380,11 @@ func (m *MCPManager) ReadResource(ctx *schemas.BifrostContext, uri string) (*mcp
 		func(ctx context.Context, conn *client.Client, req *schemas.BifrostMCPRequest) (*mcp.ReadResourceResult, error) {
 			read := mcp.ReadResourceRequest{}
 			read.Params.URI = req.BifrostMCPReadResourceRequest.URI
-			return conn.ReadResource(ctx, read)
+			result, err := conn.ReadResource(ctx, read)
+			if err == nil && result.NeedsInput() {
+				return nil, &UnservableInputError{Requests: result.InputRequests, ServerName: req.ClientName}
+			}
+			return result, err
 		},
 		func(r *mcp.ReadResourceResult) *schemas.BifrostMCPResponse {
 			return &schemas.BifrostMCPResponse{BifrostMCPReadResourceResponse: &schemas.BifrostMCPReadResourceResponse{Resource: r}}
@@ -455,7 +463,8 @@ func runOnClient[T any](m *MCPManager, ctx *schemas.BifrostContext, req *schemas
 		if err != nil {
 			return zero, err
 		}
-		result, err := call(UpstreamCallContext(callCtx), conn, preReq)
+		upstreamCtx, _, _ := upstreamContext(callCtx, false)
+		result, err := call(upstreamCtx, conn, preReq)
 		recoverable := err != nil && (isAuthFailure(err) || (isDeadSessionError(err) && hasProtocolSession(conn)))
 		release()
 		if !recoverable {
@@ -465,7 +474,8 @@ func runOnClient[T any](m *MCPManager, ctx *schemas.BifrostContext, req *schemas
 		if recovered, _ := m.toolsManager.recoverCall(recoveryCtx, req.RequestType.OTelMethodName(), state, state.ExecutionConfig, timeout, false, nil,
 			func(retryCtx context.Context, conn *client.Client) error {
 				var retryErr error
-				result, retryErr = call(UpstreamCallContext(retryCtx), conn, preReq)
+				retryUpstreamCtx, _, _ := upstreamContext(retryCtx, false)
+				result, retryErr = call(retryUpstreamCtx, conn, preReq)
 				return retryErr
 			}); recovered {
 			return result, nil

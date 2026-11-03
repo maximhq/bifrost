@@ -93,6 +93,19 @@ func withCallerCapabilities(ctx context.Context) context.Context {
 	return context.WithValue(ctx, schemas.BifrostContextKeyMCPCallerCapabilities, info.ClientCapabilities)
 }
 
+// withInputResumption records the answers and requestState a 2026-07-28 caller sent when retrying a
+// tools/call that needed input, so core forwards them to the upstream that asked.
+func withInputResumption(ctx context.Context, params mcp.MultiRoundTripParams) context.Context {
+	if len(params.InputResponses) == 0 && params.RequestState == "" {
+		return ctx
+	}
+	if info := server.RequestProtocolInfoFromContext(ctx); info == nil || info.ClientCapabilities == nil {
+		return ctx
+	}
+	resume := params
+	return context.WithValue(ctx, schemas.BifrostContextKeyMCPInputResumption, &resume)
+}
+
 func (h *MCPServerHandler) getPrompt(ctx context.Context, request mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
 	result, bErr := h.served.GetMCPPrompt(withCallerCapabilities(ctx), request.Params.Name, request.Params.Arguments)
 	if bErr != nil {
