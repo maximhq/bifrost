@@ -97403,7 +97403,7 @@
                           },
                           "client_ip": {
                             "type": "string",
-                            "description": "The caller's IP, taken from the leftmost `X-Forwarded-For` entry, else `X-Real-IP`, else the TCP peer address. The headers are sent by the caller and not verified.",
+                            "description": "The caller's IP, taken from the leftmost `X-Forwarded-For` entry, else `X-Real-IP`, else the TCP peer address. The headers are sent by the caller and not verified. Recorded only when `logs_store.capture_client_ip` is true.",
                             "nullable": true
                           },
                           "arguments": {
@@ -97702,7 +97702,7 @@
                     },
                     "client_ip": {
                       "type": "string",
-                      "description": "The caller's IP, taken from the leftmost `X-Forwarded-For` entry, else `X-Real-IP`, else the TCP peer address. The headers are sent by the caller and not verified.",
+                      "description": "The caller's IP, taken from the leftmost `X-Forwarded-For` entry, else `X-Real-IP`, else the TCP peer address. The headers are sent by the caller and not verified. Recorded only when `logs_store.capture_client_ip` is true.",
                       "nullable": true
                     },
                     "arguments": {
@@ -141313,7 +141313,7 @@
           },
           "client_ip": {
             "type": "string",
-            "description": "The caller's IP, taken from the leftmost `X-Forwarded-For` entry, else `X-Real-IP`, else the TCP peer address. The headers are sent by the caller and not verified.",
+            "description": "The caller's IP, taken from the leftmost `X-Forwarded-For` entry, else `X-Real-IP`, else the TCP peer address. The headers are sent by the caller and not verified. Recorded only when `logs_store.capture_client_ip` is true.",
             "nullable": true
           },
           "child_count": {
@@ -146682,7 +146682,7 @@
           },
           "client_ip": {
             "type": "string",
-            "description": "The caller's IP, taken from the leftmost `X-Forwarded-For` entry, else `X-Real-IP`, else the TCP peer address. The headers are sent by the caller and not verified.",
+            "description": "The caller's IP, taken from the leftmost `X-Forwarded-For` entry, else `X-Real-IP`, else the TCP peer address. The headers are sent by the caller and not verified. Recorded only when `logs_store.capture_client_ip` is true.",
             "nullable": true
           },
           "request_id": {
