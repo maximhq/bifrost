@@ -61,7 +61,7 @@ type Stream struct {
 func newStream(ctx *schemas.BifrostContext, e *endpoint, resp *http.Response, start time.Time, mapping resolvedUsage, billable bool, requestUnits usageFields, finish func(*schemas.BifrostRelayResponse, *schemas.BifrostError)) *Stream {
 	s := &Stream{
 		StatusCode: resp.StatusCode,
-		Headers:    e.responseHeaders(resp),
+		Headers:    e.streamResponseHeaders(resp),
 		ctx:        ctx,
 		body:       resp.Body,
 		start:      start,

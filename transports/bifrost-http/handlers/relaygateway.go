@@ -397,15 +397,22 @@ var relayHeartbeatInterval = lib.DefaultSSEHeartbeatInterval
 // relayHeartbeatEligible reports whether a relayed stream may carry the SSE comment heartbeat: only
 // a reply whose media type is exactly text/event-stream, as passthroughHeartbeatEligible rules, since
 // the relay forwards the upstream's bytes unchanged and extra bytes in any other format would
-// corrupt it.
+// corrupt it. A stream still content-encoded is excluded for the same reason: plain comment lines
+// inside a compressed body break it.
 func relayHeartbeatEligible(headers map[string]string) bool {
+	eventStream := false
 	for k, v := range headers {
-		if strings.EqualFold(k, "content-type") {
+		switch {
+		case strings.EqualFold(k, "content-encoding"):
+			if coding := strings.TrimSpace(v); coding != "" && !strings.EqualFold(coding, "identity") {
+				return false
+			}
+		case strings.EqualFold(k, "content-type"):
 			mediaType, _, _ := strings.Cut(v, ";")
-			return strings.EqualFold(strings.TrimSpace(mediaType), "text/event-stream")
+			eventStream = strings.EqualFold(strings.TrimSpace(mediaType), "text/event-stream")
 		}
 	}
-	return false
+	return eventStream
 }
 
 // runTransportPostHookCompleter runs the deferred transport post-hooks once a relay stream ends and
@@ -436,8 +443,10 @@ func writeEndpointHeaders(ctx *fasthttp.RequestCtx, headers map[string]string) {
 		if lib.IsGatewayOwnedResponseHeader(k) {
 			continue
 		}
+		// Content-Encoding is kept: core/relay hands a buffered reply over decoded and drops it there,
+		// and names it only on a stream it forwards still encoded, which the caller must decode.
 		switch strings.ToLower(k) {
-		case "content-length", "transfer-encoding", "connection", "keep-alive", "content-encoding":
+		case "content-length", "transfer-encoding", "connection", "keep-alive":
 			continue
 		}
 		ctx.Response.Header.Set(k, v)

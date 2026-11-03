@@ -99,12 +99,6 @@ func (p plan) readsReplyBody() bool {
 	return p.billing && (len(p.usage.eventPaths) > 0 || (p.route != nil && p.route.job != nil))
 }
 
-// measuresReplyBody reports whether a billable call reads anything from its reply's body: what
-// readsReplyBody reads, or the reply's size (a response-side body_bytes or body_chars measure).
-func (p plan) measuresReplyBody() bool {
-	return p.readsReplyBody() || (p.billing && p.usage.wholeBodyResponse())
-}
-
 // streamMode is how a request's reply is relayed.
 type streamMode int
 
@@ -394,12 +388,40 @@ func (e *endpoint) responseHeaders(resp *http.Response) map[string]string {
 	return headers
 }
 
+// streamResponseHeaders is responseHeaders for a reply forwarded as it arrives. A buffered reply is
+// handed over decoded (decodeReply), so the header filter rightly drops its Content-Encoding; a
+// streamed one is forwarded byte for byte, so a coding net/http left on it (it decodes gzip itself
+// and removes the header) goes with it, or the caller would receive bytes it cannot decode.
+func (e *endpoint) streamResponseHeaders(resp *http.Response) map[string]string {
+	headers := e.responseHeaders(resp)
+	if coding := resp.Header.Get("Content-Encoding"); coding != "" && !strings.EqualFold(strings.TrimSpace(coding), "identity") {
+		headers["Content-Encoding"] = coding
+	}
+	return headers
+}
+
+// decodeReply decodes a buffered reply body net/http left content-encoded (br, zstd, deflate; it
+// decodes gzip itself), as the LLM path decodes a provider reply in CheckAndDecodeBody: the caller
+// is handed the decoded body, which carries no Content-Encoding since responseHeaders drops it, and
+// usage is read from the same bytes. A body that does not decode is refused as the LLM path refuses
+// it. A reply with no coding is returned as it is, so the common case decodes nothing.
+func decodeReply(resp *http.Response, body []byte, latency time.Duration) ([]byte, *schemas.BifrostError) {
+	coding := resp.Header.Get("Content-Encoding")
+	if coding == "" || len(body) == 0 {
+		return body, nil
+	}
+	decoded, err := providerUtils.DecodeContentEncodedBody(body, coding)
+	if err != nil {
+		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError("failed to decode response body", err), latency)
+	}
+	return decoded, nil
+}
+
 // bufferedResult is one relayed call's reply, read in full.
 type bufferedResult struct {
 	status      int
 	headers     map[string]string
 	contentType string
-	encoding    string // the reply's Content-Encoding, left on it when net/http did not decode it
 	body        []byte
 	latency     time.Duration
 }
@@ -441,11 +463,14 @@ func (e *endpoint) readBuffered(resp *http.Response, start time.Time, bounded bo
 	if err != nil {
 		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError("error reading response body", err), latency)
 	}
+	body, bErr := decodeReply(resp, body, latency)
+	if bErr != nil {
+		return nil, bErr
+	}
 	return &bufferedResult{
 		status:      resp.StatusCode,
 		headers:     e.responseHeaders(resp),
 		contentType: resp.Header.Get("Content-Type"),
-		encoding:    resp.Header.Get("Content-Encoding"),
 		body:        body,
 		latency:     time.Since(start),
 	}, nil
@@ -495,12 +520,15 @@ func (e *endpoint) readOrHandOff(resp *http.Response, start time.Time, threshold
 		return nil, ahead, true, nil
 	}
 	_ = resp.Body.Close()
+	body, bErr := decodeReply(resp, ahead, latency)
+	if bErr != nil {
+		return nil, nil, false, bErr
+	}
 	return &bufferedResult{
 		status:      resp.StatusCode,
 		headers:     e.responseHeaders(resp),
 		contentType: resp.Header.Get("Content-Type"),
-		encoding:    resp.Header.Get("Content-Encoding"),
-		body:        ahead,
+		body:        body,
 		latency:     latency,
 	}, nil, false, nil
 }
