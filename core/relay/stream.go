@@ -226,8 +226,9 @@ func (s *Stream) flushFramer() (err error) {
 }
 
 // observeChunk feeds a chunk's complete events to the usage mapping. A panic in it is Bifrost's own
-// fault, not the caller's or the upstream's, so it comes back as a streamPanic. No event is too
-// large: the framer holds one until its delimiter arrives, as relays enforce no size cap.
+// fault, not the caller's or the upstream's, so it comes back as a streamPanic. An event past the
+// framer's 10 MiB ceiling (the native SSE scanner's, which passthrough streams also use) is skipped
+// rather than failing the stream: it is still forwarded, and only its usage goes unread.
 func (s *Stream) observeChunk(chunk []byte) (err error) {
 	defer func() {
 		if rec := recover(); rec != nil {
@@ -310,6 +311,9 @@ func (s *Stream) complete(readErr error) {
 		}
 		if len(s.capture) > 0 {
 			resp.Body = s.capture
+		}
+		if s.framer != nil {
+			resp.OversizedEvents = s.framer.Skipped()
 		}
 		if s.counted {
 			usage, usageErr := s.finalUsage()

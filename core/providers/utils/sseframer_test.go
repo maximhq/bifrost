@@ -28,21 +28,29 @@ func TestSSEFramerAcrossChunks(t *testing.T) {
 
 // A relay never fails a stream for its size: an event past the native scanner's ceiling is held
 // until its delimiter arrives and delivered whole, so its usage is read; the preview reads it too.
-func TestSSEFramerDeliversEventPastScannerCeiling(t *testing.T) {
+func TestSSEFramerSkipsEventPastScannerCeiling(t *testing.T) {
 	big := "{\"usage\":2,\"pad\":\"" + strings.Repeat("x", sseMaxBufSize+(1<<20)) + "\"}"
 	stream := "data: {\"usage\":1}\n\ndata: " + big + "\n\ndata: {\"usage\":3}\n\n"
 	var f SSEFramer
 	var events [][]byte
+	held := 0
 	for i := 0; i < len(stream); i += 64 << 10 {
 		got := f.Write([]byte(stream[i:min(i+64<<10, len(stream))]))
 		events = append(events, got...)
+		held = max(held, f.pending.Len())
 	}
-	require.Len(t, events, 3)
-	assert.Equal(t, `{"usage":1}`, string(events[0]))
-	assert.Equal(t, big, string(events[1]), "the oversized event is delivered whole")
-	assert.Equal(t, `{"usage":3}`, string(events[2]), "framing carries on after it")
+	assert.Equal(t, []string{`{"usage":1}`, `{"usage":3}`}, toStrings(events), "the oversized event is skipped and framing carries on after it")
+	assert.Equal(t, 1, f.Skipped())
+	assert.LessOrEqual(t, held, sseMaxBufSize+(64<<10), "the framer holds no more than the ceiling and one write")
 	assert.Nil(t, f.Flush())
-	assert.Equal(t, []string{`{"usage":1}`, big, `{"usage":3}`}, toStrings(SplitSSEPayloads([]byte(stream))))
+	assert.Equal(t, []string{`{"usage":1}`, `{"usage":3}`}, toStrings(SplitSSEPayloads([]byte(stream))))
+
+	t.Run("an oversized event the stream ends without delimiting is not flushed", func(t *testing.T) {
+		var g SSEFramer
+		assert.Empty(t, g.Write([]byte("data: "+big)))
+		assert.Nil(t, g.Flush())
+		assert.Equal(t, 1, g.Skipped())
+	})
 }
 
 // The framer resumes its delimiter search where the last write left off; whatever the split of the

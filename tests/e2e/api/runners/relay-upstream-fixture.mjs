@@ -183,8 +183,8 @@ const server = http.createServer(async (req, res) => {
 			);
 			return;
 		case "POST /v1/stream-oversized":
-			// A usage event, then one event past 10 MiB that carries the final usage: relays enforce no
-			// size cap, so the event must reach the caller whole and its credits must be the ones billed.
+			// A usage event, then one event past the 10 MiB SSE framing ceiling that carries more usage:
+			// it must reach the caller whole, but, as on passthrough, its credits are not read.
 			res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
 			res.write(`data: ${JSON.stringify({ delta: "a", usage: { credits: 1 } })}\n\n`);
 			res.write(`data: ${JSON.stringify({ delta: "big", pad: "x".repeat(11 * 1024 * 1024), usage: { credits: 3 } })}\n\n`);
