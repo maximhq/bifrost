@@ -55,6 +55,7 @@ type RelayLog struct {
 
 	UserID           *string `gorm:"type:varchar(255);index:idx_relay_logs_user_id" json:"user_id,omitempty"`
 	UserName         *string `gorm:"type:varchar(255)" json:"user_name,omitempty"`
+	UserEmail        *string `gorm:"type:varchar(255)" json:"user_email,omitempty"`
 	VirtualKeyID     *string `gorm:"type:varchar(255);index:idx_relay_logs_virtual_key_id" json:"virtual_key_id,omitempty"`
 	VirtualKeyName   *string `gorm:"type:varchar(255)" json:"virtual_key_name,omitempty"`
 	TeamID           *string `gorm:"type:varchar(255);index:idx_relay_logs_team_id" json:"team_id,omitempty"`
