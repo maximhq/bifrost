@@ -337,6 +337,7 @@ func relayLogUpdateColumns(entry *logstore.RelayLog, dropRequestBody bool) map[s
 		"job_status":                entry.JobStatus,
 		"user_id":                   entry.UserID,
 		"user_name":                 entry.UserName,
+		"user_email":                entry.UserEmail,
 		"virtual_key_id":            entry.VirtualKeyID,
 		"virtual_key_name":          entry.VirtualKeyName,
 		"team_id":                   entry.TeamID,

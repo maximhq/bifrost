@@ -682,6 +682,35 @@ func TestPerformanceIndexesCoverCorrelationIDs(t *testing.T) {
 	assert.Equal(t, "relay_logs", tables["idx_relay_logs_agent_correlation_id"])
 }
 
+// TestRelayBodyFTSIndexesAreBoundedPrefix pins the relay body full-text indexes to the first
+// relayContentSearchChars characters (the hybrid preview length), not ftsInputCharLimit: every
+// relay write pays to_tsvector over what the index covers, and relay bodies are far larger than an
+// LLM row's content_summary. The indexes carry new names and replace the 250000-character ones, so
+// a database that built those under the old names gets them swapped instead of keeping them (the
+// builder skips any valid index by name). The content_search predicate uses the same expression,
+// or the planner cannot use the index.
+func TestRelayBodyFTSIndexesAreBoundedPrefix(t *testing.T) {
+	require.Equal(t, maxRelayBodyPreviewRunes, relayContentSearchChars, "content search covers what a hybrid row keeps")
+	byName := map[string]performanceIndexDef{}
+	for _, idx := range performanceIndexes {
+		byName[idx.name] = idx
+	}
+	for column, want := range map[string]struct{ name, replaces string }{
+		"request_body":  {"idx_relay_logs_request_body_prefix_fts", "idx_relay_logs_request_body_fts"},
+		"response_body": {"idx_relay_logs_response_body_prefix_fts", "idx_relay_logs_response_body_fts"},
+	} {
+		idx, ok := byName[want.name]
+		require.True(t, ok, "%s is built by the background builder", want.name)
+		assert.Equal(t, "relay_logs", idx.table)
+		assert.Equal(t, want.replaces, idx.replaces, "%s drops the unbounded index it replaces", want.name)
+		assert.Contains(t, idx.sql, "USING GIN ("+relayBodyFTSExpr(column)+")", "%s indexes the content_search expression", want.name)
+		assert.Contains(t, idx.sql, fmt.Sprintf("left(%s, %d)", column, maxRelayBodyPreviewRunes))
+		assert.NotContains(t, idx.sql, fmt.Sprint(ftsInputCharLimit))
+		_, stillBuilt := byName[want.replaces]
+		assert.False(t, stillBuilt, "the replaced index %s is no longer built", want.replaces)
+	}
+}
+
 // TestMigrationAddMCPGovernanceSnapshots verifies the attribution columns are
 // additive, idempotent, and leave rows written before them intact — those rows
 // keep their bare ids, which is the accepted cost of not rewriting history.
