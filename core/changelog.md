@@ -1,2 +1,3 @@
 - fix: anthropic - Responses requests drop empty text blocks instead of forwarding them for a 400 (#9318) [@david-choi-querypie](https://github.com/david-choi-querypie)
+- fix: anthropic - preserve explicit web search and web fetch versions, and keep a declared code execution tool beside versions that do not auto-inject it (#9258) [@ykakade](https://github.com/ykakade)
 - fix: Gemini chat completions forward seed to generationConfig.seed instead of dropping it
