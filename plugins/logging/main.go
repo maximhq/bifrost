@@ -2367,6 +2367,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		}
 	}
 	applyOutputFieldsToEntry(entry, selectedKeyID, selectedKeyName, virtualKeyID, virtualKeyName, routingRuleID, routingRuleName, selectedPromptID, selectedPromptName, selectedPromptVersion, teamID, teamName, customerID, customerName, userID, userName, businessUnitID, businessUnitName, projectID, projectName, numberOfRetries, latency, upstreamLatency, overheadLatency, attemptTrail)
+	applyUserEmail(ctx, entry)
 	if complexityTier != "" {
 		entry.ComplexityTier = &complexityTier
 	}
