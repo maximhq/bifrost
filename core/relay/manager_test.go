@@ -538,7 +538,7 @@ func TestServeBufferedReadsUsageThroughContentEncoding(t *testing.T) {
 			encoding, reply = enc, encodeBody(t, enc, plain)
 			require.False(t, gjson.GetBytes(reply, "usage.in").Exists(), "the encoded reply must not be readable as it is")
 			resp := serve("/tokens")
-			assert.Equal(t, reply, resp.Body, "the caller receives the bytes the upstream sent")
+			assert.Equal(t, plain, resp.Body, "the caller receives the decoded body, as from an LLM provider reply")
 			assert.Equal(t, 3, resp.Usage.InputTokens)
 			assert.Equal(t, 7, resp.Usage.OutputTokens)
 			require.NotNil(t, resp.Usage.ExtractedCost)
@@ -555,21 +555,77 @@ func TestServeBufferedReadsUsageThroughContentEncoding(t *testing.T) {
 	t.Run("stacked codings", func(t *testing.T) {
 		encoding, reply = "deflate, br", encodeBody(t, "br", encodeBody(t, "deflate", plain))
 		resp := serve("/tokens")
-		assert.Equal(t, reply, resp.Body)
+		assert.Equal(t, plain, resp.Body)
 		assert.Equal(t, 3, resp.Usage.InputTokens)
 	})
-	t.Run("undecodable body is measured raw", func(t *testing.T) {
+	t.Run("undecodable body is refused as the LLM path refuses it", func(t *testing.T) {
 		encoding, reply = "br", []byte("not brotli at all")
-		resp := serve("/bytes")
-		assert.Equal(t, reply, resp.Body)
-		require.NotNil(t, resp.Usage.Units)
-		assert.Equal(t, float64(len(reply)), *resp.Usage.Units)
+		res, bErr := m.Serve(testCtx(t), Request{Endpoint: "enc", Method: "POST", Path: "/bytes", Headers: map[string]string{}})
+		assert.Nil(t, res)
+		require.NotNil(t, bErr)
+		require.NotNil(t, bErr.Error)
+		assert.Equal(t, "failed to decode response body", bErr.Error.Message)
+	})
+	t.Run("a route that bills nothing is decoded too", func(t *testing.T) {
+		free := bearerConfig("enc-free", upstream.URL)
+		free.SkipRouteCheck = true
+		mf, _ := newTestManager(t, free)
+		encoding, reply = "zstd", encodeBody(t, "zstd", plain)
+		res, bErr := mf.Serve(testCtx(t), Request{Endpoint: "enc-free", Method: "POST", Path: "/anything", Headers: map[string]string{}})
+		require.Nil(t, bErr)
+		require.NotNil(t, res.Response)
+		assert.Equal(t, plain, res.Response.Body)
+		_, hasEncoding := res.Response.Headers["Content-Encoding"]
+		assert.False(t, hasEncoding, "a decoded body carries no Content-Encoding")
 	})
 	t.Run("gzip is decoded by net/http", func(t *testing.T) {
 		encoding, reply = "gzip", encodeBody(t, "gzip", plain)
 		resp := serve("/tokens")
 		assert.Equal(t, plain, resp.Body, "net/http hands over the decoded body, as before")
 		assert.Equal(t, 3, resp.Usage.InputTokens)
+	})
+}
+
+// TestServeStreamKeepsContentEncodingOnBytesItForwardsEncoded pins the one place the relay does not
+// decode: a stream net/http left encoded (it decodes gzip itself) is forwarded as it came, so its
+// Content-Encoding goes with it and the caller can decode it; a gzip stream net/http decoded has none.
+func TestServeStreamKeepsContentEncodingOnBytesItForwardsEncoded(t *testing.T) {
+	events := []byte("data: {\"delta\":\"a\"}\n\ndata: {\"usage\":{\"in\":3}}\n\n")
+	var reply []byte
+	var encoding string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Content-Encoding", encoding)
+		_, _ = w.Write(reply)
+	}))
+	t.Cleanup(upstream.Close)
+	cfg := bearerConfig("enc-stream", upstream.URL)
+	cfg.Routes = []schemas.RelayRouteConfig{{Method: "POST", Path: "/chat", Stream: schemas.Ptr(true)}}
+	m, _ := newTestManager(t, cfg)
+	open := func() ([]byte, map[string]string) {
+		t.Helper()
+		res, bErr := m.Serve(testCtx(t), Request{Endpoint: "enc-stream", Method: "POST", Path: "/chat", Headers: map[string]string{}})
+		require.Nil(t, bErr)
+		require.NotNil(t, res.Stream)
+		body, err := io.ReadAll(res.Stream)
+		require.NoError(t, err)
+		require.NoError(t, res.Stream.Close())
+		return body, res.Stream.Headers
+	}
+	t.Run("br stream", func(t *testing.T) {
+		encoding, reply = "br", encodeBody(t, "br", events)
+		body, headers := open()
+		assert.Equal(t, reply, body, "the encoded bytes are forwarded unchanged")
+		assert.Equal(t, "br", headers["Content-Encoding"], "the caller is told how to decode them")
+		_, hasLength := headers["Content-Length"]
+		assert.False(t, hasLength)
+	})
+	t.Run("gzip stream decoded by net/http", func(t *testing.T) {
+		encoding, reply = "gzip", encodeBody(t, "gzip", events)
+		body, headers := open()
+		assert.Equal(t, events, body)
+		_, hasEncoding := headers["Content-Encoding"]
+		assert.False(t, hasEncoding)
 	})
 }
 

@@ -628,18 +628,11 @@ func (m *Manager) run(ctx *schemas.BifrostContext, e *endpoint, p plan, req *sch
 		Latency:    reply.latency.Milliseconds(),
 	}
 	if p.billing && reply.status >= 200 && reply.status < 300 {
-		// Usage is read from the reply as the upstream meant it: a body still content-encoded (br,
-		// zstd, deflate; net/http decodes gzip itself) is decoded into a copy for the reading only,
-		// and the caller is handed the bytes the upstream sent. A route that reads nothing from the
-		// body never decodes it.
-		body := reply.body
-		if p.measuresReplyBody() {
-			body = usageBody(reply.encoding, reply.body)
-		}
-		resp.Usage = extractUsage(p.usage, reply.contentType, body, requestUnits)
+		// The body is already decoded (decodeReply), so usage is read from the bytes the caller gets.
+		resp.Usage = extractUsage(p.usage, reply.contentType, reply.body, requestUnits)
 		// A route that starts a job hands the job id and its settlement snapshot to the logging
 		// plugin, which records it for the sweeper. The start call is still counted here.
-		resp.Usage.Job = p.route.jobHandle(reply.contentType, body)
+		resp.Usage.Job = p.route.jobHandle(reply.contentType, reply.body)
 	}
 	// A post-hook that clears the response without an error is refused like an empty recovery.
 	return recovered(runPost(resp, nil))

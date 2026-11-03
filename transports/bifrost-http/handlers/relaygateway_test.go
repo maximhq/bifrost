@@ -222,6 +222,34 @@ func TestRelayStreamHeartbeatFollowsPassthrough(t *testing.T) {
 	}
 }
 
+// A stream the upstream content-encoded beyond the gzip net/http decodes is forwarded as it came: the
+// caller gets its Content-Encoding so it can decode the bytes, and no heartbeat is written into them,
+// since plain comment lines inside a compressed body would corrupt it.
+func TestRelayStreamForwardsContentEncodingWithoutHeartbeat(t *testing.T) {
+	previous := relayHeartbeatInterval
+	relayHeartbeatInterval = 20 * time.Millisecond
+	t.Cleanup(func() { relayHeartbeatInterval = previous })
+	encoded := []byte{0x1b, 0x2a, 0x00, 0xf8, 0x8d, 0x94, 0x6e, 0xde, 0x0a, 0x0a, 0x45}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Content-Encoding", "br")
+		_, _ = w.Write(encoded[:10]) // ends on "\n\n", where a heartbeat would be written
+		w.(http.Flusher).Flush()
+		time.Sleep(200 * time.Millisecond)
+		_, _ = w.Write(encoded[10:])
+	}))
+	defer upstream.Close()
+	base := serveRelayGatewayHTTP(t, streamingRelay(t, "enc", upstream.URL))
+	client := &http.Client{Transport: &http.Transport{DisableCompression: true}}
+	resp, err := client.Post(base+"/relay/enc/s", "application/json", strings.NewReader(`{}`))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, "br", resp.Header.Get("Content-Encoding"), "the caller is told how the bytes are encoded")
+	assert.Equal(t, encoded, body, "the encoded bytes arrive unchanged, with no heartbeat written into them")
+}
+
 // A caller that hangs up during a quiet stream is noticed by the heartbeat and the upstream request
 // is cancelled, as a passthrough stream's is, rather than held open until the idle timeout.
 func TestRelayStreamCancelsUpstreamWhenCallerLeaves(t *testing.T) {
