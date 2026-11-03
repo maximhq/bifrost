@@ -1176,11 +1176,9 @@
 		},
 		"access": {
 			"createFirst": "請先建立此虛擬 MCP，然後再在此分配虛擬金鑰。",
-			"loadFailed": "無法載入虛擬金鑰。",
 			"virtualKeys": "虛擬金鑰",
 			"virtualKeysHelp": "在此分配的金鑰可透過其端點到達此虛擬 MCP。",
 			"assign": "分配虛擬金鑰",
-			"loading": "正在載入虛擬金鑰…",
 			"empty": "尚未分配虛擬金鑰。分配一個，呼叫方才能到達此虛擬 MCP。",
 			"unassignAria": "取消分配虛擬金鑰",
 			"ownerLookupFailed": "無法確認「{{name}}」的擁有者，因此未指派。請再試一次。",
