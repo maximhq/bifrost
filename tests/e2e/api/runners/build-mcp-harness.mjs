@@ -1055,12 +1055,12 @@ const EP01 = folder("EP-01 initialize (2025-03-26)", `Setup: ${FLEET}; mcp_serve
   ...fleetSetup("EP-01"),
   request("EP-01", "setup: read GET /api/version", "GET", "/api/version", { asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('ep01_version', JSON.stringify(pm.response.json()));"] }),
   rpc("EP-01", "initialize with 2025-03-26", init("2025-03-26"), {
-    asserts: [A.status(200), A.custom("JSON reply; serverInfo bifrost at the server version; capabilities tools, prompts and resources with listChanged, and completions; an Mcp-Session-Id", [
+    asserts: [A.status(200), A.custom("JSON reply; serverInfo bifrost at the server version; capabilities tools, prompts and resources with listChanged, completions and the MCP Apps extension; an Mcp-Session-Id", [
       "pm.expect(pm.response.headers.get('Content-Type')).to.include('application/json');",
       "var r = pm.response.json().result;",
       "pm.expect(r.serverInfo.name, 'body: ' + pm.response.text()).to.equal('bifrost');",
       "pm.expect(r.serverInfo.version).to.equal(JSON.parse(pm.collectionVariables.get('ep01_version')));",
-      "pm.expect(r.capabilities).to.eql({ tools: { listChanged: true }, prompts: { listChanged: true }, resources: { listChanged: true }, completions: {} });",
+      "pm.expect(r.capabilities).to.eql({ tools: { listChanged: true }, prompts: { listChanged: true }, resources: { listChanged: true }, completions: {}, extensions: { 'io.modelcontextprotocol/ui': {} } });",
       "pm.expect(pm.response.headers.get('Mcp-Session-Id'), 'Mcp-Session-Id').to.be.a('string').and.not.empty;",
     ])],
   }),
@@ -11127,6 +11127,158 @@ const EP69 = folder("EP-69 A retry-later answer", `Setup: ${INPUTS}, plus a 2025
   inputsTeardown("EP-69"),
 ]);
 
+// ================================================================ MCP Apps (EP-70..EP-75, INF-67)
+
+// apps-server (examples/mcps/apps-server) serves two MCP servers: dash on /mcp (view and item with a UI,
+// app-only refresh, status, caps) and board on /mcp2 (status). They are registered as clients "apps" and
+// "board", so prefixed names are apps-view, apps-refresh, ... and board-status. Every tool answers
+// "<server>:<tool>"; caps answers whether the request declared MCP Apps upstream.
+const APPS = "{{apps_url}}";
+const APPS_TEXT = "apps-server's dash (view and item with a UI, app-only refresh, status, caps) registered as client \"apps\" and its board (status) as client \"board\", HTTP, auth none";
+const UI_EXT = "io.modelcontextprotocol/ui";
+const HOSTS_APPS = { extensions: { [UI_EXT]: {} } };
+VKS.apps = { label: "the apps VK", text: "every tool of apps and board", configs: [{ mcp_client_name: "apps", tools_to_execute: ["*"] }, { mcp_client_name: "board", tools_to_execute: ["*"] }] };
+const appsSetup = (id) => {
+  const p = id.toLowerCase();
+  return [
+    createClient(id, { client_id: `${p}-apps`, name: "apps", connection_type: "http", connection_string: `${APPS}/mcp`, auth_type: "none", tools_to_execute: ["*"] }, "setup: register client apps"),
+    createClient(id, { client_id: `${p}-board`, name: "board", connection_type: "http", connection_string: `${APPS}/mcp2`, auth_type: "none", tools_to_execute: ["*"] }, "setup: register client board"),
+  ];
+};
+const appsTeardown = (id) => [deleteClient(id, `${id.toLowerCase()}-apps`), deleteClient(id, `${id.toLowerCase()}-board`)];
+// appsRpc sends a 2026-07-28 request on path declaring caps; name is the Mcp-Name header (tool or URI).
+// A 2026-07-28 JSON-RPC error answers HTTP 400, so error cases pass status 400.
+const appsRpc = (id, title, path, method, params, caps, asserts, { name, headers = [], status = 200 } = {}) => request(id, title, "POST", path, {
+  noAuth: true,
+  raw: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params: { ...params, _meta: {
+    "io.modelcontextprotocol/protocolVersion": MODERN,
+    "io.modelcontextprotocol/clientCapabilities": caps,
+    "io.modelcontextprotocol/clientInfo": { name: "mcp-harness", version: "1.0.0" },
+  } } }),
+  headers: [MCP_ACCEPT, { key: "MCP-Protocol-Version", value: MODERN }, { key: "Mcp-Method", value: method }, ...(name ? [{ key: "Mcp-Name", value: name }] : []), ...headers],
+  asserts: [A.status(status), ...asserts],
+});
+const appsList = (id, title, path, caps, asserts, opts) => appsRpc(id, title, path, "tools/list", {}, caps, asserts, opts);
+const appsCall = (id, title, path, tool, caps, asserts, opts) => appsRpc(id, title, path, "tools/call", { name: tool, arguments: {} }, caps, asserts, { name: tool, ...opts });
+const appsRead = (id, title, path, uri, caps, asserts, opts) => appsRpc(id, title, path, "resources/read", { uri }, caps, asserts, { name: uri, ...opts });
+const legacyList = (id, title, path, asserts) => rpc(id, title, listMsg, { path, headers: [MCP_ACCEPT, { key: "MCP-Protocol-Version", value: "2025-11-25" }], asserts: [A.status(200), ...asserts] });
+const listed = (name, yes) => A.custom(`tools/list ${yes ? "includes" : "leaves out"} ${name}`, [
+  "var names = pm.response.json().result.tools.map(function (t) { return t.name; });",
+  `pm.expect(names, 'body: ' + pm.response.text()).to.${yes ? "" : "not."}include(${lit(name)});`,
+]);
+// toolMetaIs checks one value in a listed tool's _meta; path separates keys with "|" since a key may hold "/".
+const toolMetaIs = (tool, path, value) => A.custom(`${tool} _meta.${path.replace(/\|/g, ".")} is ${lit(value)}`, [
+  `var t = pm.response.json().result.tools.find(function (t) { return t.name === ${lit(tool)}; });`,
+  "pm.expect(t && t._meta, 'body: ' + pm.response.text()).to.be.an('object');",
+  `var v = t._meta; ${lit(path.split("|"))}.forEach(function (k) { v = v && v[k]; });`,
+  `pm.expect(v, 'body: ' + pm.response.text()).to.eql(${lit(value)});`,
+]);
+const toolText = (text) => A.custom(`tool result is ${lit(text)}`, [
+  "var r = pm.response.json().result;",
+  "pm.expect(r && r.isError, 'body: ' + pm.response.text()).to.not.equal(true);",
+  `pm.expect(r.content[0].text, 'body: ' + pm.response.text()).to.equal(${lit(text)});`,
+]);
+const readText = (uri, text) => A.custom(`read ${uri} answers ${lit(text)} under that URI`, [
+  "var c = pm.response.json().result.contents;",
+  `pm.expect(c && c[0] && c[0].uri, 'body: ' + pm.response.text()).to.equal(${lit(uri)});`,
+  `pm.expect(c[0].text).to.equal(${lit(text)});`,
+]);
+const listedURIs = (key, field, uris) => A.custom(`${key} are exactly ${lit(uris)}`, [
+  `var got = pm.response.json().result.${key}.map(function (r) { return r.${field}; }).sort();`,
+  `pm.expect(got, 'body: ' + pm.response.text()).to.eql(${lit([...uris].sort())});`,
+]);
+const NOT_FOUND = (tool) => rpcError(-32602, `tool '${tool}' not found: tool not found`);
+
+const EP70 = folder("EP-70 MCP Apps: the gateway declares the extension and passes tool _meta through", `Setup: ${APPS_TEXT}; 2026-07-28 callers declaring MCP Apps.`, [
+  ...appsSetup("EP-70"),
+  appsRpc("EP-70", "server/discover declares the MCP Apps extension", "/mcp", "server/discover", {}, HOSTS_APPS, [A.custom("capabilities.extensions has io.modelcontextprotocol/ui", [
+    "var c = pm.response.json().result.capabilities;",
+    `pm.expect(c && c.extensions, 'body: ' + pm.response.text()).to.have.property(${lit(UI_EXT)});`,
+  ])]),
+  appsList("EP-70", "/mcp/apps lists each tool's _meta as the server sent it", "/mcp/apps", HOSTS_APPS, [
+    toolMetaIs("apps-view", "ui|resourceUri", "ui://dash/view"),
+    toolMetaIs("apps-item", "ui|resourceUri", "ui://dash/items/7"),
+    toolMetaIs("apps-item", "openai/outputTemplate", "ui://dash/items/7"),
+    toolMetaIs("apps-refresh", "ui|visibility", ["app"]),
+  ]),
+  ...appsTeardown("EP-70"),
+]);
+
+const EP71 = folder("EP-71 App-only tools reach only a single server's slug, for callers that declared MCP Apps", `Setup: ${APPS_TEXT}. refresh declares visibility ["app"].`, [
+  ...appsSetup("EP-71"),
+  appsList("EP-71", "/mcp/apps, caller declaring MCP Apps: refresh is listed", "/mcp/apps", HOSTS_APPS, [listed("apps-refresh", true)]),
+  appsCall("EP-71", "/mcp/apps, caller declaring MCP Apps: refresh runs", "/mcp/apps", "apps-refresh", HOSTS_APPS, [toolText("dash:refresh")]),
+  appsList("EP-71", "/mcp/apps, caller without MCP Apps: refresh is not listed", "/mcp/apps", {}, [listed("apps-refresh", false), listed("apps-view", true)]),
+  appsCall("EP-71", "/mcp/apps, caller without MCP Apps: refresh is refused", "/mcp/apps", "apps-refresh", {}, [toolResultError(null, "only callable from an MCP App")]),
+  legacyList("EP-71", "/mcp/apps, 2025-11-25 caller: refresh is not listed", "/mcp/apps", [listed("apps-refresh", false)]),
+  appsList("EP-71", "/mcp, caller declaring MCP Apps: refresh is not listed", "/mcp", HOSTS_APPS, [listed("apps-refresh", false), listed("apps-view", true)]),
+  appsCall("EP-71", "/mcp, caller declaring MCP Apps: refresh is refused", "/mcp", "apps-refresh", HOSTS_APPS, [toolResultError(null, "only callable from an MCP App")]),
+  ...appsTeardown("EP-71"),
+]);
+
+const EP72 = folder("EP-72 ui:// resources on /mcp are namespaced by server", `Setup: ${APPS_TEXT}. dash serves ui://dash/view and the template ui://dash/items/{id}; on /mcp they read as ui://apps/dash/...`, [
+  ...appsSetup("EP-72"),
+  appsList("EP-72", "/mcp: tool _meta names the namespaced URIs", "/mcp", HOSTS_APPS, [
+    toolMetaIs("apps-view", "ui|resourceUri", "ui://apps/dash/view"),
+    toolMetaIs("apps-item", "ui|resourceUri", "ui://apps/dash/items/7"),
+    toolMetaIs("apps-item", "openai/outputTemplate", "ui://apps/dash/items/7"),
+  ]),
+  appsRpc("EP-72", "/mcp: resources/list", "/mcp", "resources/list", {}, HOSTS_APPS, [listedURIs("resources", "uri", ["ui://apps/dash/view"])]),
+  appsRpc("EP-72", "/mcp: resources/templates/list", "/mcp", "resources/templates/list", {}, HOSTS_APPS, [listedURIs("resourceTemplates", "uriTemplate", ["ui://apps/dash/items/{id}"])]),
+  appsRead("EP-72", "/mcp: read the dashboard", "/mcp", "ui://apps/dash/view", HOSTS_APPS, [readText("ui://apps/dash/view", "<html>dash view</html>")]),
+  appsRead("EP-72", "/mcp: read item 7 through the template", "/mcp", "ui://apps/dash/items/7", HOSTS_APPS, [readText("ui://apps/dash/items/7", "<html>item 7</html>")]),
+  appsRead("EP-72", "/mcp: the server's own URI is not served", "/mcp", "ui://dash/view", HOSTS_APPS, [rpcError(-32602, "resource \"ui://dash/view\" not found")], { status: 400 }),
+  appsRpc("EP-72", "/mcp/apps: resources/list keeps the server's URIs", "/mcp/apps", "resources/list", {}, HOSTS_APPS, [listedURIs("resources", "uri", ["ui://dash/view"])]),
+  appsRead("EP-72", "/mcp/apps: read the dashboard", "/mcp/apps", "ui://dash/view", HOSTS_APPS, [readText("ui://dash/view", "<html>dash view</html>")]),
+  ...appsTeardown("EP-72"),
+]);
+
+const EP73 = folder("EP-73 MCP Apps is declared upstream only for a caller that declared it", `Setup: ${APPS_TEXT}. caps answers whether the request reaching dash declared MCP Apps.`, [
+  ...appsSetup("EP-73"),
+  appsCall("EP-73", "caller declaring MCP Apps", "/mcp/apps", "apps-caps", HOSTS_APPS, [toolText("mcp apps declared")]),
+  appsCall("EP-73", "caller without MCP Apps", "/mcp/apps", "apps-caps", {}, [toolText("mcp apps not declared")]),
+  rpc("EP-73", "2025-11-25 caller", call("apps-caps"), { path: "/mcp/apps", headers: [MCP_ACCEPT, { key: "MCP-Protocol-Version", value: "2025-11-25" }], asserts: [A.status(200), toolText("mcp apps not declared")] }),
+  ...appsTeardown("EP-73"),
+]);
+
+const EP74 = folder("EP-74 Tools by the names their own server gave them", `Setup: ${APPS_TEXT}. Both servers have a tool named status; refresh is app-only.`, [
+  ...appsSetup("EP-74"),
+  appsCall("EP-74", "/mcp/apps: refresh is apps's refresh", "/mcp/apps", "refresh", HOSTS_APPS, [toolText("dash:refresh")]),
+  appsCall("EP-74", "/mcp/apps: status is apps's status", "/mcp/apps", "status", HOSTS_APPS, [toolText("dash:status")]),
+  appsCall("EP-74", "/mcp/board: status is board's status", "/mcp/board", "status", HOSTS_APPS, [toolText("board:status")]),
+  appsCall("EP-74", "/mcp: view is unique, so it runs", "/mcp", "view", HOSTS_APPS, [toolText("dash:view")]),
+  appsCall("EP-74", "/mcp: status is ambiguous", "/mcp", "status", HOSTS_APPS, [toolResultError(null, "call one of apps-status, board-status")]),
+  appsCall("EP-74", "/mcp: refresh is app-only", "/mcp", "refresh", HOSTS_APPS, [toolResultError(null, "only callable from an MCP App")]),
+  appsCall("EP-74", "/mcp: an unknown name", "/mcp", "nope", HOSTS_APPS, [NOT_FOUND("nope")], { status: 400 }),
+  appsCall("EP-74", "/mcp/board: another server's tool looks unknown", "/mcp/board", "refresh", HOSTS_APPS, [NOT_FOUND("refresh")], { status: 400 }),
+  appsList("EP-74", "/mcp lists only full names", "/mcp", HOSTS_APPS, [toolNamesInList(["apps-caps", "apps-item", "apps-status", "apps-view", "board-status"])]),
+  ...appsTeardown("EP-74"),
+]);
+
+const EP75 = folder("EP-75 A Virtual MCP slug follows the /mcp rules", `Setup: ${APPS_TEXT}; the apps VK (${VKS.apps.text}); a virtual MCP "bundle" with apps's view, refresh and status, attached to the apps VK.`, [
+  ...appsSetup("EP-75"), createVK("EP-75", "apps"),
+  request("EP-75", "setup: create the virtual MCP bundle", "POST", "/api/mcp/virtual-mcps", {
+    body: { name: "bundle", tools: [{ mcp_client_id: "ep-75-apps", tool_names: ["view", "refresh", "status"] }] },
+    asserts: [A.status(201)], extraTests: ["pm.collectionVariables.set('ep75_bundle_id', pm.response.json().virtual_mcp.id);"],
+  }),
+  request("EP-75", "setup: attach bundle to the apps VK", "POST", "/api/mcp/virtual-mcps/{{ep75_bundle_id}}/virtual-keys/{{ep-75_apps_id}}", { asserts: [A.status(200)] }),
+  appsList("EP-75", "refresh is not listed and view's _meta is namespaced", "/mcp/bundle", HOSTS_APPS, [listed("apps-refresh", false), toolMetaIs("apps-view", "ui|resourceUri", "ui://apps/dash/view")], { headers: [vkHeader("EP-75", "apps")] }),
+  appsCall("EP-75", "status is unique inside bundle, so it runs", "/mcp/bundle", "status", HOSTS_APPS, [toolText("dash:status")], { headers: [vkHeader("EP-75", "apps")] }),
+  appsCall("EP-75", "refresh is app-only", "/mcp/bundle", "refresh", HOSTS_APPS, [toolResultError(null, "only callable from an MCP App")], { headers: [vkHeader("EP-75", "apps")] }),
+  request("EP-75", "teardown: delete the virtual MCP bundle", "DELETE", "/api/mcp/virtual-mcps/{{ep75_bundle_id}}", { asserts: [A.status(200)] }),
+  deleteVK("EP-75", "apps"), ...appsTeardown("EP-75"),
+]);
+
+const INF67 = folder("INF-67 Models never get app-only tools", `Setup: ${APPS_TEXT}, only apps registered; ${LLM_TEXT}.`, [
+  createClient("INF-67", { client_id: "inf-67-apps", name: "apps", connection_type: "http", connection_string: `${APPS}/mcp`, auth_type: "none", tools_to_execute: ["*"] }, "setup: register client apps"),
+  llmScript("INF-67", "inf67", TEXT_OK),
+  infChat("INF-67", "chat completion", "inf67", [A.status(200)]),
+  llmCaptured("INF-67", "the model is offered every apps tool but refresh", "inf67", [reqCount(1), toolsAre(0, ["apps-caps", "apps-item", "apps-status", "apps-view"])]),
+  execArgs("INF-67", "direct execute of refresh is refused", "apps-refresh", {}, [A.status(400), A.custom("the refusal names MCP Apps", ["pm.expect(pm.response.text()).to.include('only callable from an MCP App');"])]),
+  execArgs("INF-67", "a direct execute does not declare MCP Apps upstream", "apps-caps", {}, [A.status(200), toolContent("mcp apps not declared")]),
+  deleteClient("INF-67", "inf-67-apps"),
+]);
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -11143,11 +11295,11 @@ const collection = {
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM26, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM84, ADM85, ADM86, ADM87]),
     section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH47, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57, AUTH58]),
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, GO18, CONN23, CONN24, CONN25, CONN27, CONN28, CONN29, GO34, GO36]),
-    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, EP66, EP67, EP68, EP69, GO01, GO02, GO03, GO06, GO07, GO08, GO09, GO10, GO11, GO12, GO13, GO14, GO33, GO35]),
+    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, EP66, EP67, EP68, EP69, EP70, EP71, EP72, EP73, EP74, EP75, GO01, GO02, GO03, GO06, GO07, GO08, GO09, GO10, GO11, GO12, GO13, GO14, GO33, GO35]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET26, SET27, SET28, SET29, SET30, SET31, SET32, SET04, SET05, SET10, SET11, SET15, SET23]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV36, GOV37, GOV38, GOV39]),
-    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66, INF76, INF77]),
+    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66, INF76, INF77, INF67]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB12, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB27, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43, LOG49]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL01, FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL09, FAIL10, FAIL12, FAIL14, FAIL16, FAIL18, FAIL19, FAIL23, FAIL24, FAIL25, FAIL27, FAIL28]),

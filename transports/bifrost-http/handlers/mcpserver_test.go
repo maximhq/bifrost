@@ -2135,7 +2135,7 @@ func TestMCPGateway_ServerGivenToolNames(t *testing.T) {
 		{ID: "apps", Name: "apps", EndpointSlug: "apps"}, {ID: "other", Name: "other", EndpointSlug: "other"},
 	}}}
 	admitter := slugAdmitter{
-		vmcps:   map[string][]string{"bundle": {"apps-status", "apps-view"}},
+		vmcps:   map[string][]string{"bundle": {"apps-status", "apps-view"}, "withrefresh": {"apps-view", "apps-refresh"}},
 		clients: map[string][]string{"apps": {"apps-*"}, "other": {"other-*"}},
 	}
 	tm := &recordingGatewayManager{coreGatewayManager: coreGatewayManager{m}}
@@ -2181,6 +2181,7 @@ func TestMCPGateway_ServerGivenToolNames(t *testing.T) {
 		{"aggregate refuses an unknown name", "/mcp", "nothing", notFound, true, ""},
 		{"a slug cannot see another server's tool", "/mcp/other", "refresh", notFound, true, ""},
 		{"a virtual mcp cannot see a tool outside it", "/mcp/bundle", "refresh", notFound, true, ""},
+		{"a virtual mcp refuses its app-only tool as app-only, as /mcp does", "/mcp/withrefresh", "refresh", "only callable from an MCP App", true, ""},
 		{"virtual mcp resolves among its own tools", "/mcp/bundle", "status", "apps:status", false, "apps-status"},
 		{"exact name wins over another server's same-named tool", "/mcp", "apps-view", "apps:view", false, "apps-view"},
 		{"another server's tool named like a prefix keeps its full name", "/mcp", "other-apps-view", "other:apps-view", false, "other-apps-view"},

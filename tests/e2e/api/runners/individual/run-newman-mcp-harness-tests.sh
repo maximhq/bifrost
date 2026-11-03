@@ -42,6 +42,9 @@
 # beside the fleet, since the fleet's hand-rolled protocol predates 2026-07-28. Tests
 # reach it through input_url and register their own client against it.
 #
+# MCP Apps tools and ui:// resources come from examples/mcps/apps-server, started the
+# same way and reached through apps_url (server dash on /mcp, server board on /mcp2).
+#
 # Requires a built bifrost-http binary; this runner boots its own server so the
 # state each test starts from is exactly what its assertions expect.
 
@@ -65,6 +68,7 @@ PORT="8093"
 CHAOS_PORT="8494"
 CHAOS_TLS_PORT=""
 INPUT_PORT="8496"
+APPS_PORT="8497"
 FOLDER=""
 REPORTERS="cli"
 VERBOSE=""
@@ -81,6 +85,7 @@ while [[ $# -gt 0 ]]; do
         --chaos-port) CHAOS_PORT="$2"; shift 2 ;;
         --chaos-tls-port) CHAOS_TLS_PORT="$2"; shift 2 ;;
         --input-port) INPUT_PORT="$2"; shift 2 ;;
+        --apps-port) APPS_PORT="$2"; shift 2 ;;
         --folder) FOLDER="$2"; shift 2 ;;
         --html) REPORTERS="${REPORTERS},html"; shift ;;
         --json) REPORTERS="${REPORTERS},json"; shift ;;
@@ -95,6 +100,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --chaos-port <p>  Port for the mcpchaos fleet (default: 8494)"
             echo "  --chaos-tls-port <p>  HTTPS fleet port (default: fleet port + 1)"
             echo "  --input-port <p>  Port for the input-required MCP server (default: 8496)"
+            echo "  --apps-port <p>   Port for the MCP Apps server (default: 8497)"
             echo "  --folder <name>   Run only this collection folder (e.g. \"ADM\" or \"ADM-05 ...\")"
             echo "  --html            Generate HTML report"
             echo "  --json            Generate JSON report"
@@ -136,9 +142,10 @@ SERVER_DIR=""
 CHAOS_PID=""
 CHAOS_DIR=""
 INPUT_PID=""
+APPS_PID=""
 
 cleanup() {
-    for pid in "$SERVER_PID" "$CHAOS_PID" "$INPUT_PID"; do
+    for pid in "$SERVER_PID" "$CHAOS_PID" "$INPUT_PID" "$APPS_PID"; do
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null || true
             wait "$pid" 2>/dev/null || true
@@ -166,6 +173,10 @@ if port_in_use "$INPUT_PORT"; then
     echo -e "${RED}Error: port $INPUT_PORT is already in use; pass --input-port to use another${NC}"
     exit 1
 fi
+if port_in_use "$APPS_PORT"; then
+    echo -e "${RED}Error: port $APPS_PORT is already in use; pass --apps-port to use another${NC}"
+    exit 1
+fi
 
 CHAOS_TLS_PORT="${CHAOS_TLS_PORT:-$((CHAOS_PORT + 1))}"
 if port_in_use "$CHAOS_TLS_PORT"; then
@@ -174,6 +185,10 @@ if port_in_use "$CHAOS_TLS_PORT"; then
 fi
 if [[ "$INPUT_PORT" == "$CHAOS_PORT" || "$INPUT_PORT" == "$CHAOS_TLS_PORT" ]]; then
     echo -e "${RED}Error: --input-port $INPUT_PORT is also an mcpchaos fleet port; pass another${NC}"
+    exit 1
+fi
+if [[ "$APPS_PORT" == "$CHAOS_PORT" || "$APPS_PORT" == "$CHAOS_TLS_PORT" || "$APPS_PORT" == "$INPUT_PORT" ]]; then
+    echo -e "${RED}Error: --apps-port $APPS_PORT is already another server's port; pass another${NC}"
     exit 1
 fi
 
@@ -233,27 +248,29 @@ start_chaos() {
     echo -e "${GREEN}mcpchaos ready on :$CHAOS_PORT${NC}"
 }
 
-# start_input_server builds examples/mcps/input-required-server and starts it on INPUT_PORT.
-start_input_server() {
-    echo -e "${YELLOW}Building input-required-server...${NC}"
+# start_example_server builds examples/mcps/<name>, starts it on port and prints its pid.
+start_example_server() {
+    local name="$1" port="$2"
+    echo -e "${YELLOW}Building $name...${NC}" >&2
     # GOWORK=off: the example has its own module and pins the mcp-go release it needs.
-    ( cd "$REPO_ROOT/examples/mcps/input-required-server" && GOWORK=off go build -o "$CHAOS_DIR/input-required-server" . ) || {
-        echo -e "${RED}Error: failed to build input-required-server${NC}"; exit 1; }
-    local log="$API_DIR/$REPORT_DIR/input-required-server.log"
-    MCP_HTTP_PORT="$INPUT_PORT" "$CHAOS_DIR/input-required-server" > "$log" 2>&1 &
-    INPUT_PID=$!
+    ( cd "$REPO_ROOT/examples/mcps/$name" && GOWORK=off go build -o "$CHAOS_DIR/$name" . ) >&2 || {
+        echo -e "${RED}Error: failed to build $name${NC}" >&2; exit 1; }
+    local log="$API_DIR/$REPORT_DIR/$name.log"
+    MCP_HTTP_PORT="$port" "$CHAOS_DIR/$name" > "$log" 2>&1 &
+    local pid=$!
     local waited=0
     while [ $waited -lt 40 ]; do
-        port_in_use "$INPUT_PORT" && break
-        if ! kill -0 "$INPUT_PID" 2>/dev/null; then
-            echo -e "${RED}input-required-server exited during startup${NC}"; cat "$log"; exit 1
+        port_in_use "$port" && break
+        if ! kill -0 "$pid" 2>/dev/null; then
+            echo -e "${RED}$name exited during startup${NC}" >&2; cat "$log" >&2; exit 1
         fi
         sleep 0.5; waited=$((waited + 1))
     done
-    if ! port_in_use "$INPUT_PORT"; then
-        echo -e "${RED}input-required-server did not become ready${NC}"; cat "$log"; exit 1
+    if ! port_in_use "$port"; then
+        echo -e "${RED}$name did not become ready${NC}" >&2; cat "$log" >&2; kill "$pid" 2>/dev/null; exit 1
     fi
-    echo -e "${GREEN}input-required-server ready on :$INPUT_PORT${NC}"
+    echo -e "${GREEN}$name ready on :$port${NC}" >&2
+    echo "$pid"
 }
 
 write_config() {
@@ -341,7 +358,8 @@ enable_dashboard_auth() {
 }
 
 start_chaos
-start_input_server
+INPUT_PID=$(start_example_server input-required-server "$INPUT_PORT") || exit 1
+APPS_PID=$(start_example_server apps-server "$APPS_PORT") || exit 1
 start_bifrost
 enable_dashboard_auth
 
@@ -353,6 +371,7 @@ cmd=(newman run "$COLLECTION"
     --env-var "chaos_url=http://127.0.0.1:$CHAOS_PORT"
     --env-var "chaos_bin=$CHAOS_DIR/mcpchaos"
     --env-var "input_url=http://127.0.0.1:$INPUT_PORT"
+    --env-var "apps_url=http://127.0.0.1:$APPS_PORT"
     --env-var "setup_token=$SETUP_TOKEN"
     --timeout-script 60000 --timeout-request 120000
     -r "$REPORTERS")
