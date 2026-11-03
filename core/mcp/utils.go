@@ -193,7 +193,7 @@ func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.
 // tools when withConnect is set and its instructions when withInstructions is set.
 func (m *MCPManager) resolveCallerDiscovery(ctx context.Context, withConnect, withInstructions bool) CallerDiscovery {
 	var includeClients []string
-	appTools := hostsApps(ctx)
+	appTools := listsAppTools(ctx)
 
 	// Extract client filtering from request context
 	if existingIncludeClients, ok := ctx.Value(schemas.MCPContextKeyIncludeClients).([]string); ok && existingIncludeClients != nil {
@@ -256,6 +256,7 @@ func (m *MCPManager) resolveCallerDiscovery(ctx context.Context, withConnect, wi
 		// FILTERING HIERARCHY (restrictive, not permissive):
 		// 1. Client-level configuration (ToolsToExecute) - Global allow-list, most restrictive
 		// 2. Request context (MCPContextKeyIncludeTools) - Can only further narrow, not expand
+		// 3. MCP Apps visibility - app-only tools only for callers AppToolsAllowed admits
 		// Context filtering CANNOT override client configuration - it can only be more restrictive.
 		// The names kept are gathered first, so the tools are copied once into a
 		// slice of exactly their count instead of being grown one by one.
@@ -273,7 +274,7 @@ func (m *MCPManager) resolveCallerDiscovery(ctx context.Context, withConnect, wi
 				continue
 			}
 
-			// Third check: app-only MCP Apps tools are listed only to callers that host MCP Apps
+			// Third check: app-only MCP Apps tools need a caller AppToolsAllowed admits
 			if !appTools && !toolMap[toolName].MCP.ModelVisible() {
 				continue
 			}
@@ -786,19 +787,33 @@ var relayedClientCapabilities = mcp.ClientCapabilities{
 	Extensions:  map[string]any{schemas.MCPAppsExtension: struct{}{}},
 }
 
-type modelToolsOnlyKey struct{}
+// BifrostContextKeyMCPToolListing values.
+const (
+	listModelTools = "model"
+	listAllTools   = "all"
+)
 
 // WithModelToolsOnly hides app-only tools from listings on ctx. Code mode uses it, since a model writes its scripts.
+// A derived context, not SetValue, so the override never reaches the rest of the request.
 func WithModelToolsOnly(ctx context.Context) context.Context {
-	return context.WithValue(ctx, modelToolsOnlyKey{}, true)
+	return context.WithValue(ctx, schemas.BifrostContextKeyMCPToolListing, listModelTools)
 }
 
-// hostsApps reports whether the request is from a gateway caller that declared MCP Apps.
-func hostsApps(ctx context.Context) bool {
+// WithAllTools lists app-only tools on ctx too. Only for the gateway's sync; calls still follow AppToolsAllowed.
+func WithAllTools(ctx context.Context) context.Context {
+	return context.WithValue(ctx, schemas.BifrostContextKeyMCPToolListing, listAllTools)
+}
+
+// AppToolsAllowed reports whether the request may see and call app-only tools: a /mcp/<slug> request for
+// one MCP client, from a caller that declared MCP Apps. ctx must carry the caller's capabilities.
+func AppToolsAllowed(ctx context.Context) bool {
+	if listing, _ := ctx.Value(schemas.BifrostContextKeyMCPToolListing).(string); listing == listModelTools {
+		return false
+	}
 	if gateway, _ := ctx.Value(schemas.BifrostContextKeyIsMCPGateway).(bool); !gateway {
 		return false
 	}
-	if modelOnly, _ := ctx.Value(modelToolsOnlyKey{}).(bool); modelOnly {
+	if client, _ := ctx.Value(schemas.BifrostContextKeyMCPGatewayClient).(string); client == "" {
 		return false
 	}
 	caller, _ := ctx.Value(schemas.BifrostContextKeyMCPCallerCapabilities).(*mcp.ClientCapabilities)
@@ -808,6 +823,55 @@ func hostsApps(ctx context.Context) bool {
 	_, ok := caller.Extensions[schemas.MCPAppsExtension]
 	return ok
 }
+
+// listsAppTools reports whether a tool listing on ctx includes app-only tools.
+func listsAppTools(ctx context.Context) bool {
+	if listing, _ := ctx.Value(schemas.BifrostContextKeyMCPToolListing).(string); listing == listAllTools {
+		return true
+	}
+	return AppToolsAllowed(ctx)
+}
+
+// GatewayAggregate reports whether ctx is a gateway request that may reach several MCP clients
+// (/mcp or a Virtual MCP), where ui:// resources are namespaced by client.
+func GatewayAggregate(ctx context.Context) bool {
+	gateway, _ := ctx.Value(schemas.BifrostContextKeyIsMCPGateway).(bool)
+	client, _ := ctx.Value(schemas.BifrostContextKeyMCPGatewayClient).(string)
+	return gateway && client == ""
+}
+
+// GatewayUIResourceURI is uri as aggregate gateway requests see it: ui://<client>/<rest>, the client
+// name path-escaped since names may contain "/", "?" or "#".
+func GatewayUIResourceURI(clientName, uri string) string {
+	rest, ok := strings.CutPrefix(uri, "ui://")
+	if !ok {
+		return uri
+	}
+	return "ui://" + url.PathEscape(clientName) + "/" + rest
+}
+
+// ToolClientName is the MCP client a prefixed tool name belongs to (client names have no hyphens),
+// or "" for an unprefixed name such as a code-mode tool.
+func ToolClientName(toolName string) string {
+	clientName, _, found := strings.Cut(toolName, "-")
+	if !found {
+		return ""
+	}
+	return clientName
+}
+
+// upstreamUIResourceURI undoes GatewayUIResourceURI for clientName's resources.
+func upstreamUIResourceURI(clientName, uri string) (string, bool) {
+	rest, ok := strings.CutPrefix(uri, "ui://"+url.PathEscape(clientName)+"/")
+	if !ok {
+		return uri, false
+	}
+	return "ui://" + rest, true
+}
+
+// readRelayedCapabilities are what resource and prompt reads pass through: MCP Apps, so an upstream
+// serves its ui:// resources to an apps caller.
+var readRelayedCapabilities = mcp.ClientCapabilities{Extensions: map[string]any{schemas.MCPAppsExtension: struct{}{}}}
 
 // bifrostClientCapabilities is declared at connect time so upstreams list their MCP Apps tools.
 var bifrostClientCapabilities = mcp.ClientCapabilities{
@@ -821,13 +885,13 @@ var manualInputRoundTrips = client.WithManualInputRoundTrips()
 // (input_required with no input requests), as mcp-go's own round-trip loop does.
 const maxRetryLaterRounds = 3
 
-// upstreamContext sets the capabilities a 2026-07-28 request declares: what the gateway caller can
-// answer (relay only), otherwise none. Legacy connections declared theirs at initialize.
-func upstreamContext(ctx context.Context, conn *client.Client, relay bool) (_ context.Context, answerable mcp.ClientCapabilities, hasCaller bool) {
+// upstreamContext sets what a 2026-07-28 request declares: the capabilities in relayed that the gateway
+// caller declared, otherwise none. Legacy connections declared theirs at initialize.
+func upstreamContext(ctx context.Context, conn *client.Client, relayed mcp.ClientCapabilities) (_ context.Context, answerable mcp.ClientCapabilities, hasCaller bool) {
 	caller, _ := ctx.Value(schemas.BifrostContextKeyMCPCallerCapabilities).(*mcp.ClientCapabilities)
 	hasCaller = caller != nil
-	if hasCaller && relay {
-		answerable = relayableCapabilities(*caller, relayedClientCapabilities)
+	if hasCaller {
+		answerable = relayableCapabilities(*caller, relayed)
 	}
 	if version := conn.ProtocolVersion(); version != "" && !mcp.IsModernProtocol(version) {
 		return ctx, answerable, hasCaller
@@ -841,7 +905,11 @@ func upstreamContext(ctx context.Context, conn *client.Client, relay bool) (_ co
 // *UnservableInputError once Bifrost has retried a "retry later" answer itself. Exported for code
 // mode's nested tool calls, which cannot pass a request back mid-script.
 func CallUpstreamTool(ctx context.Context, conn *client.Client, call mcp.CallToolRequest, relay bool) (*mcp.CallToolResult, error) {
-	ctx, answerable, hasCaller := upstreamContext(ctx, conn, relay)
+	var relayed mcp.ClientCapabilities
+	if relay {
+		relayed = relayedClientCapabilities
+	}
+	ctx, answerable, hasCaller := upstreamContext(ctx, conn, relayed)
 	relay = relay && hasCaller
 	if relay {
 		if resume, _ := ctx.Value(schemas.BifrostContextKeyMCPInputResumption).(*mcp.MultiRoundTripParams); resume != nil {

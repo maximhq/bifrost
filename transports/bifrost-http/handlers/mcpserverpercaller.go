@@ -122,11 +122,14 @@ func (h *MCPServerHandler) loadPerCallerEntries(ctx context.Context) (*perCaller
 		for _, prompt := range held.Prompts {
 			entries.prompts[prefix+prompt] = struct{}{}
 		}
+		// A ui:// entry is also held under its aggregate /mcp form, ui://<client>/... (MCP Apps).
 		for _, uri := range held.Resources {
 			entries.resources[uri] = struct{}{}
+			entries.resources[coremcp.GatewayUIResourceURI(clients[id].Name, uri)] = struct{}{}
 		}
 		for _, uri := range held.ResourceTemplates {
 			entries.templates[uri] = struct{}{}
+			entries.templates[coremcp.GatewayUIResourceURI(clients[id].Name, uri)] = struct{}{}
 		}
 	}
 	return entries, nil

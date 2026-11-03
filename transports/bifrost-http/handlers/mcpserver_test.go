@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"runtime"
 	"slices"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	bifrost "github.com/maximhq/bifrost/core"
 	coremcp "github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -121,7 +123,8 @@ func callToolResult(t *testing.T, tm MCPToolManager) map[string]any {
 		config:      &lib.Config{ClientConfig: &configstore.ClientConfig{}},
 	}
 	h.mcpServer = h.buildServer()
-	h.mcpServer.SetTools(h.serverTools([]schemas.ChatTool{{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "alpha-echo"}}})...)
+	tools, _ := h.serverTools([]schemas.ChatTool{{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "alpha-echo"}}})
+	h.mcpServer.SetTools(tools...)
 
 	raw := h.server().HandleMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"alpha-echo","arguments":{}}}`))
 	require.NotNil(t, raw)
@@ -209,7 +212,8 @@ func TestSyncMCPServer_ReadsToolsWithoutTheTriggersIdentity(t *testing.T) {
 	require.NoError(t, h.SyncMCPServer(admin))
 	require.NotNil(t, tm.toolsCtx)
 	assert.Nil(t, tm.toolsCtx.Value(schemas.BifrostContextKeyUserID), "the shared tool list must not be read as the admin who triggered the sync")
-	require.Len(t, served.ctxs, 3)
+	// Prompts, resources and templates, plus resources and templates again in their aggregate /mcp form (MCP Apps).
+	require.Len(t, served.ctxs, 5)
 	for _, ctx := range served.ctxs {
 		assert.Nil(t, ctx.Value(schemas.BifrostContextKeyUserID), "the shared resources and prompts must not be read as the admin who triggered the sync")
 	}
@@ -317,11 +321,12 @@ func TestAdmitBySlug(t *testing.T) {
 		slug       string
 		wantStatus int
 		wantTools  []string
+		wantClient any // the single client the request serves; nil for a Virtual MCP
 	}{
-		{name: "nil admitter serves a configured client unrestricted", slug: "context7", wantTools: []string{"context7-*"}},
+		{name: "nil admitter serves a configured client unrestricted", slug: "context7", wantTools: []string{"context7-*"}, wantClient: "context7"},
 		{name: "nil admitter refuses an unknown slug", slug: "definitely-does-not-exist", wantStatus: 403},
 		{name: "granted virtual mcp", admitter: resolver, slug: "research-tools", wantTools: []string{"alpha-search"}},
-		{name: "granted mcp client", admitter: resolver, slug: "context7", wantTools: []string{"context7-*"}},
+		{name: "granted mcp client", admitter: resolver, slug: "context7", wantTools: []string{"context7-*"}, wantClient: "context7"},
 		{name: "unknown slug", admitter: resolver, slug: "definitely-does-not-exist", wantStatus: 403},
 	}
 	for _, tc := range cases {
@@ -342,6 +347,7 @@ func TestAdmitBySlug(t *testing.T) {
 			}
 			require.Nil(t, refusal)
 			assert.Equal(t, tc.wantTools, bctx.Value(schemas.MCPContextKeyIncludeTools))
+			assert.Equal(t, tc.wantClient, bctx.Value(schemas.BifrostContextKeyMCPGatewayClient))
 		})
 	}
 }
@@ -1177,16 +1183,30 @@ func BenchmarkMCPGateway(b *testing.B) {
 			if name == "tools-only" && (strings.HasPrefix(tc.name, "prompts-") || strings.HasPrefix(tc.name, "resources-")) {
 				continue
 			}
-			benchmarkGatewayRequest(b, h, name+"/"+tc.name, tc.headers, tc.body)
+			benchmarkGatewayRequest(b, h, name+"/"+tc.name, "", tc.headers, tc.body)
 		}
 	}
+
+	// MCP Apps: the per-request work once app tools and ui:// resources exist.
+	apps := newAppsGateway(b)
+	appsMeta := `"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{"extensions":{"io.modelcontextprotocol/ui":{}}},"io.modelcontextprotocol/clientInfo":{"name":"bench","version":"0"}}`
+	toolsList := `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{` + appsMeta + `}}`
+	resourcesList := `{"jsonrpc":"2.0","id":1,"method":"resources/list","params":{` + appsMeta + `}}`
+	benchmarkGatewayRequest(b, apps, "apps/tools-list/aggregate/2026-07-28", "", modern("tools/list", ""), toolsList)
+	benchmarkGatewayRequest(b, apps, "apps/tools-list/slug/2026-07-28", "apps", modern("tools/list", ""), toolsList)
+	benchmarkGatewayRequest(b, apps, "apps/resources-list/aggregate/2026-07-28", "", modern("resources/list", ""), resourcesList)
+	benchmarkGatewayRequest(b, apps, "apps/resources-list/slug/2026-07-28", "apps", modern("resources/list", ""), resourcesList)
 }
 
-func benchmarkGatewayRequest(b *testing.B, h *MCPServerHandler, name string, headers map[string]string, body string) {
+func benchmarkGatewayRequest(b *testing.B, h *MCPServerHandler, name, slug string, headers map[string]string, body string) {
 	b.Run(name, func(b *testing.B) {
 		var ctx fasthttp.RequestCtx
 		ctx.Request.Header.SetMethod(fasthttp.MethodPost)
 		ctx.Request.SetRequestURI("/mcp")
+		if slug != "" {
+			ctx.Request.SetRequestURI("/mcp/" + slug)
+			ctx.SetUserValue("slug", slug)
+		}
 		for k, v := range headers {
 			ctx.Request.Header.Set(k, v)
 		}
@@ -1336,6 +1356,13 @@ func (p *perCallerToolManager) GetAvailableMCPTools(ctx context.Context) []schem
 	case "dave":
 		add("listToolFiles", "List dave's tool files", false)
 		add("executeToolCode", "Run code against dave's tools", false)
+	case "gina":
+		// MCP Apps, as core serves them: board's UI, and refresh only for callers AppToolsAllowed admits.
+		add("notes-board", "Show gina's board", false)
+		tools[len(tools)-1].MCP = &schemas.MCPToolMetadata{Meta: json.RawMessage(`{"ui":{"resourceUri":"ui://notes/board"}}`), UIResourceURI: "ui://notes/board"}
+		if coremcp.AppToolsAllowed(ctx) {
+			add("notes-refresh", "Refresh gina's board", false)
+		}
 	}
 	return tools
 }
@@ -1367,6 +1394,12 @@ func (p *perCallerToolManager) GetAvailableMCPResources(ctx context.Context) []m
 		return []mcp.Resource{mcp.NewResource("file:///alice.md", "alice's handbook")}
 	case "bob":
 		return []mcp.Resource{mcp.NewResource("file:///bob.md", "bob's handbook")}
+	case "gina":
+		uri := "ui://notes/board"
+		if coremcp.GatewayAggregate(ctx) {
+			uri = coremcp.GatewayUIResourceURI("notes", uri)
+		}
+		return []mcp.Resource{mcp.NewResource(uri, "gina's board", mcp.WithMIMEType(schemas.MCPAppsMimeType))}
 	}
 	return nil
 }
@@ -1791,4 +1824,250 @@ func BenchmarkMCPGatewayToolsList(b *testing.B) {
 		h, _, _ := newPerCallerGatewayHandler(b)
 		run(b, h, callerContext("alice"))
 	})
+}
+
+// coreGatewayManager serves the gateway from a real core MCP manager, so the gateway runs core's rules.
+type coreGatewayManager struct{ m *coremcp.MCPManager }
+
+func bctx(ctx context.Context) *schemas.BifrostContext {
+	return schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+}
+
+func (c coreGatewayManager) GetAvailableMCPTools(ctx context.Context) []schemas.ChatTool {
+	return c.m.GetAvailableTools(bctx(ctx))
+}
+func (c coreGatewayManager) GetMCPServerInstructions(ctx context.Context) string {
+	return c.m.GetAggregatedServerInstructions(ctx)
+}
+func (c coreGatewayManager) ExecuteChatMCPTool(ctx context.Context, call *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
+	return c.m.ExecuteChatTool(bctx(ctx), call)
+}
+func (c coreGatewayManager) ExecuteResponsesMCPTool(context.Context, *schemas.ResponsesToolMessage) (*schemas.ResponsesMessage, *schemas.BifrostError) {
+	return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "not used"}}
+}
+func (c coreGatewayManager) GetAvailableMCPPrompts(ctx context.Context) []mcp.Prompt {
+	return c.m.GetAvailablePrompts(ctx)
+}
+func (c coreGatewayManager) GetAvailableMCPResources(ctx context.Context) []mcp.Resource {
+	return c.m.GetAvailableResources(ctx)
+}
+func (c coreGatewayManager) GetAvailableMCPResourceTemplates(ctx context.Context) []mcp.ResourceTemplate {
+	return c.m.GetAvailableResourceTemplates(ctx)
+}
+func (c coreGatewayManager) GetMCPPrompt(ctx context.Context, name string, arguments map[string]string) (*mcp.GetPromptResult, *schemas.BifrostError) {
+	return c.m.GetPrompt(bctx(ctx), name, arguments)
+}
+func (c coreGatewayManager) ReadMCPResource(ctx context.Context, uri string) (*mcp.ReadResourceResult, *schemas.BifrostError) {
+	return c.m.ReadResource(bctx(ctx), uri)
+}
+func (c coreGatewayManager) CompleteMCPArgument(ctx context.Context, params mcp.CompleteParams) (*mcp.CompleteResult, *schemas.BifrostError) {
+	return c.m.Complete(bctx(ctx), params)
+}
+
+// newAppsGateway serves an upstream with MCP Apps tools (view, app-only refresh, item via a ui:// template)
+// through a real core MCP manager, on /mcp, the client slug "apps" and the Virtual MCP slug "bundle".
+func newAppsGateway(tb testing.TB) *MCPServerHandler {
+	tb.Helper()
+	upstream := server.NewMCPServer("apps-upstream", "1.0.0", server.WithToolCapabilities(true), server.WithResourceCapabilities(false, false))
+	view := mcp.NewTool("view")
+	view.Meta = &mcp.Meta{AdditionalFields: map[string]any{"ui": map[string]any{"resourceUri": "ui://dash/view"}}}
+	refresh := mcp.NewTool("refresh")
+	refresh.Meta = &mcp.Meta{AdditionalFields: map[string]any{"ui": map[string]any{"resourceUri": "ui://dash/view", "visibility": []any{"app"}}}}
+	ok := func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return mcp.NewToolResultText("ok"), nil
+	}
+	item := mcp.NewTool("item")
+	item.Meta = &mcp.Meta{AdditionalFields: map[string]any{"ui": map[string]any{"resourceUri": "ui://dash/items/7"}, "openai/outputTemplate": "ui://dash/items/7"}}
+	upstream.AddTool(view, ok)
+	upstream.AddTool(refresh, ok)
+	upstream.AddTool(item, ok)
+	upstream.AddResourceTemplate(mcp.NewResourceTemplate("ui://dash/items/{id}", "items", mcp.WithTemplateMIMEType(schemas.MCPAppsMimeType)),
+		func(_ context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+			return []mcp.ResourceContents{mcp.TextResourceContents{URI: req.Params.URI, MIMEType: schemas.MCPAppsMimeType, Text: "<html>item</html>"}}, nil
+		})
+	upstream.AddResource(mcp.NewResource("ui://dash/view", "view", mcp.WithMIMEType(schemas.MCPAppsMimeType)),
+		func(_ context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+			return []mcp.ResourceContents{mcp.TextResourceContents{URI: req.Params.URI, MIMEType: schemas.MCPAppsMimeType, Text: "<html></html>"}}, nil
+		})
+	ts := httptest.NewServer(server.NewStreamableHTTPServer(upstream))
+	tb.Cleanup(ts.Close)
+
+	ctx := context.Background()
+	m := coremcp.NewMCPManager(ctx, schemas.MCPConfig{}, nil, bifrost.NewDefaultLogger(schemas.LogLevelError), nil)
+	tb.Cleanup(func() { _ = m.Cleanup() })
+	require.NoError(tb, m.AddClient(ctx, &schemas.MCPClientConfig{
+		ID: "apps", Name: "apps", EndpointSlug: "apps", ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"},
+	}))
+	cfg := &lib.Config{ClientConfig: &configstore.ClientConfig{}, MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+		{ID: "apps", Name: "apps", EndpointSlug: "apps"},
+	}}}
+	admitter := slugAdmitter{vmcps: map[string][]string{"bundle": {"apps-view", "apps-refresh", "apps-item"}}, clients: map[string][]string{"apps": {"apps-*"}}}
+	h, err := NewMCPServerHandler(ctx, cfg, coreGatewayManager{m}, admitter, nil, nil)
+	require.NoError(tb, err)
+	return h
+}
+
+// MCP Apps on the gateway: /mcp/<slug> for one server serves its tools' _meta and ui:// URIs as the
+// server sent them, and app-only tools to callers that declared MCP Apps; aggregate /mcp and Virtual
+// MCP slugs never serve app-only tools and namespace ui:// URIs (resources and templates) by client.
+func TestMCPGateway_MCPApps(t *testing.T) {
+	ctx := context.Background()
+	h := newAppsGateway(t)
+	baseURL := startGateway(t, h)
+
+	hostsApps := mcp.ClientCapabilities{Extensions: map[string]any{schemas.MCPAppsExtension: map[string]any{"mimeTypes": []any{schemas.MCPAppsMimeType}}}}
+	cases := []struct {
+		name, path, version string
+		caps                mcp.ClientCapabilities
+		appOnly             bool
+		prefix              string // what ui:// URIs start with on this endpoint
+	}{
+		{"slug, apps caller", "/mcp/apps", mcp.ProtocolVersion20260728, hostsApps, true, "ui://"},
+		{"slug, caller without apps", "/mcp/apps", mcp.ProtocolVersion20260728, mcp.ClientCapabilities{}, false, "ui://"},
+		{"slug, legacy apps caller", "/mcp/apps", mcp.ProtocolVersion20251125, hostsApps, false, "ui://"},
+		{"aggregate, apps caller", "/mcp", mcp.ProtocolVersion20260728, hostsApps, false, "ui://apps/"},
+		{"aggregate, legacy caller", "/mcp", mcp.ProtocolVersion20251125, mcp.ClientCapabilities{}, false, "ui://apps/"},
+		{"virtual mcp, apps caller", "/mcp/bundle", mcp.ProtocolVersion20260728, hostsApps, false, "ui://apps/"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tr, err := transport.NewStreamableHTTP(baseURL + tc.path)
+			require.NoError(t, err)
+			c := client.NewClient(tr, client.WithProtocolVersion(tc.version), client.WithClientCapabilities(tc.caps))
+			require.NoError(t, c.Start(ctx))
+			t.Cleanup(func() { _ = c.Close() })
+			init := mcp.InitializeRequest{}
+			init.Params.ProtocolVersion = tc.version
+			initResult, err := c.Initialize(ctx, init)
+			require.NoError(t, err)
+			assert.Contains(t, initResult.Capabilities.Extensions, schemas.MCPAppsExtension, "the gateway declares MCP Apps")
+
+			tools, err := c.ListTools(ctx, mcp.ListToolsRequest{})
+			require.NoError(t, err)
+			byName := map[string]mcp.Tool{}
+			for _, tool := range tools.Tools {
+				byName[tool.Name] = tool
+			}
+			_, listed := byName["apps-refresh"]
+			assert.Equal(t, tc.appOnly, listed, "app-only tool listing")
+			viewURI, itemURI := tc.prefix+"dash/view", tc.prefix+"dash/items/7"
+			viewTool, found := byName["apps-view"]
+			require.True(t, found)
+			require.NotNil(t, viewTool.Meta)
+			ui, _ := viewTool.Meta.AdditionalFields["ui"].(map[string]any)
+			assert.Equal(t, viewURI, ui["resourceUri"], "the tool's ui:// resource")
+			itemTool, found := byName["apps-item"]
+			require.True(t, found)
+			require.NotNil(t, itemTool.Meta)
+			itemUI, _ := itemTool.Meta.AdditionalFields["ui"].(map[string]any)
+			assert.Equal(t, itemURI, itemUI["resourceUri"])
+			assert.Equal(t, itemURI, itemTool.Meta.AdditionalFields["openai/outputTemplate"], "the OpenAI Apps SDK template")
+
+			call := mcp.CallToolRequest{}
+			call.Params.Name = "apps-refresh"
+			result, err := c.CallTool(ctx, call)
+			require.NoError(t, err)
+			assert.Equal(t, !tc.appOnly, result.IsError, "app-only tool call")
+
+			resources, err := c.ListResources(ctx, mcp.ListResourcesRequest{})
+			require.NoError(t, err)
+			var uris []string
+			for _, r := range resources.Resources {
+				uris = append(uris, r.URI)
+			}
+			assert.Equal(t, []string{viewURI}, uris, "the ui:// resource is listed under the URI the tool names")
+			templates, err := c.ListResourceTemplates(ctx, mcp.ListResourceTemplatesRequest{})
+			require.NoError(t, err)
+			var templateURIs []string
+			for _, template := range templates.ResourceTemplates {
+				templateURIs = append(templateURIs, coremcp.ResourceTemplateURI(template))
+			}
+			assert.Equal(t, []string{tc.prefix + "dash/items/{id}"}, templateURIs)
+
+			for _, uri := range []string{viewURI, itemURI} {
+				read := mcp.ReadResourceRequest{}
+				read.Params.URI = uri
+				contents, err := c.ReadResource(ctx, read)
+				require.NoError(t, err, uri)
+				require.Len(t, contents.Contents, 1)
+				assert.Equal(t, uri, contents.Contents[0].(mcp.TextResourceContents).URI)
+			}
+		})
+	}
+
+	t.Run("tools-only gateway does not declare MCP Apps", func(t *testing.T) {
+		toolsOnly := newGatewayHandler(t)
+		tr, err := transport.NewStreamableHTTP(startGateway(t, toolsOnly) + "/mcp")
+		require.NoError(t, err)
+		c := client.NewClient(tr)
+		require.NoError(t, c.Start(ctx))
+		t.Cleanup(func() { _ = c.Close() })
+		result, err := c.Initialize(ctx, mcp.InitializeRequest{})
+		require.NoError(t, err)
+		assert.NotContains(t, result.Capabilities.Extensions, schemas.MCPAppsExtension, "it cannot serve ui:// resources")
+	})
+}
+
+// MCP Apps for a client with per_user_discovery on: a caller's own tools carry their _meta, namespaced
+// on /mcp; an app-only tool is listed only on the client's slug to a caller that declared MCP Apps; and
+// the caller's ui:// resource is listed and read under the URI its endpoint uses.
+func TestMCPGateway_MCPAppsForPerCallerClients(t *testing.T) {
+	h, _, store := newPerCallerGatewayHandler(t)
+	store.mu.Lock()
+	names := store.names["notes-id"]
+	names.Tools = append(names.Tools, "board", "refresh")
+	names.Resources = append(names.Resources, "ui://notes/board")
+	store.names["notes-id"] = names
+	store.mu.Unlock()
+	require.NoError(t, h.ResyncPerCallerEntries(context.Background()))
+
+	hostsApps := &mcp.ClientCapabilities{Extensions: map[string]any{schemas.MCPAppsExtension: map[string]any{}}}
+	// gateway is gina's request on /mcp/<slug>, or on /mcp when slug is "".
+	gateway := func(slug string, caps *mcp.ClientCapabilities) *schemas.BifrostContext {
+		ctx := callerContext("gina")
+		ctx.SetValue(schemas.BifrostContextKeyIsMCPGateway, true)
+		if slug != "" {
+			ctx.SetValue(schemas.BifrostContextKeyMCPGatewayClient, slug)
+			ctx.SetValue(schemas.MCPContextKeyIncludeTools, []string{slug + "-*"})
+		}
+		if caps != nil {
+			ctx.SetValue(schemas.BifrostContextKeyMCPCallerCapabilities, caps)
+		}
+		return ctx
+	}
+	resourceURIOf := func(tool mcp.Tool) any {
+		require.NotNil(t, tool.Meta, tool.Name)
+		ui, _ := tool.Meta.AdditionalFields["ui"].(map[string]any)
+		return ui["resourceUri"]
+	}
+	listedResources := func(ctx context.Context) []string {
+		raw, rpcErr := gatewayRequest(t, h, ctx, "resources/list", map[string]any{})
+		require.Nil(t, rpcErr)
+		var result mcp.ListResourcesResult
+		require.NoError(t, json.Unmarshal(raw, &result))
+		var uris []string
+		for _, r := range result.Resources {
+			uris = append(uris, r.URI)
+		}
+		return uris
+	}
+	read := func(ctx context.Context, uri string) {
+		raw, rpcErr := gatewayRequest(t, h, ctx, "resources/read", map[string]any{"uri": uri})
+		require.Nil(t, rpcErr, uri)
+		assert.Contains(t, string(raw), uri)
+	}
+
+	slug := listedTools(t, h, gateway("notes", hostsApps))
+	assert.Equal(t, "ui://notes/board", resourceURIOf(slug["notes-board"]), "a slug lists the server's own URI")
+	assert.Contains(t, slug, "notes-refresh", "a slug lists the app-only tool to a caller that declared MCP Apps")
+	assert.NotContains(t, listedTools(t, h, gateway("notes", nil)), "notes-refresh", "not to one that did not")
+	assert.Equal(t, []string{"ui://notes/board"}, listedResources(gateway("notes", hostsApps)))
+	read(gateway("notes", hostsApps), "ui://notes/board")
+
+	aggregate := listedTools(t, h, gateway("", hostsApps))
+	assert.Equal(t, "ui://notes/notes/board", resourceURIOf(aggregate["notes-board"]), "/mcp lists the namespaced URI")
+	assert.NotContains(t, aggregate, "notes-refresh", "/mcp never lists an app-only tool")
+	assert.Equal(t, []string{"ui://notes/notes/board"}, listedResources(gateway("", hostsApps)))
+	read(gateway("", hostsApps), "ui://notes/notes/board")
 }

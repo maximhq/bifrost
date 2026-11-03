@@ -75,11 +75,7 @@ func (m *MCPManager) executeToolWithHooks(
 	// Populate top-level ClientName from the prefixed tool name so the gate can
 	// attribute short-circuit responses without depending on prefix parsing.
 	if request.ClientName == "" {
-		if toolName := request.GetToolName(); toolName != "" {
-			if idx := strings.IndexByte(toolName, '-'); idx > 0 {
-				request.ClientName = toolName[:idx]
-			}
-		}
+		request.ClientName = ToolClientName(request.GetToolName())
 	}
 
 	// A call named like a client's connect tool is marked on a context of its own
@@ -176,7 +172,7 @@ func (m *MCPManager) prepareToolExecution(ctx *schemas.BifrostContext, request *
 	if err := checkToolExecutionPermitted(ctx, state, toolName, m.logger); err != nil {
 		return nil, nil, nil, err
 	}
-	if !hostsApps(ctx) && !discovery.GetTools()[toolName].MCP.ModelVisible() {
+	if !AppToolsAllowed(ctx) && !discovery.GetTools()[toolName].MCP.ModelVisible() {
 		return nil, nil, nil, fmt.Errorf("tool '%s' is not permitted (it is only callable from an MCP App)", toolName)
 	}
 	// NeedsReauth is the one hard gate left besides Disabled: the credential

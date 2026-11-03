@@ -867,3 +867,30 @@ func TestToolMetadata_MCPAppsFields(t *testing.T) {
 	assert.True(t, got.ModelVisible())
 	assert.True(t, got.AppVisible())
 }
+
+// A client name with "/", "?" or "#" stays one path segment of a namespaced ui:// URI, so two clients
+// never share a prefix and the URI keeps its path.
+func TestGatewayUIResourceURI_EscapesClientName(t *testing.T) {
+	cases := []struct{ client, uri, want string }{
+		{"apps", "ui://dash/view", "ui://apps/dash/view"},
+		{"a/b", "ui://x", "ui://a%2Fb/x"},
+		{"q?a#b", "ui://x", "ui://q%3Fa%23b/x"},
+		{"apps", "https://example.com/x", "https://example.com/x"},
+	}
+	for _, tc := range cases {
+		got := GatewayUIResourceURI(tc.client, tc.uri)
+		assert.Equal(t, tc.want, got, tc.client)
+		back, ok := upstreamUIResourceURI(tc.client, got)
+		assert.Equal(t, tc.uri, back, tc.client)
+		assert.Equal(t, got != tc.uri, ok, tc.client)
+	}
+	_, ok := upstreamUIResourceURI("a", GatewayUIResourceURI("a/b", "ui://x"))
+	assert.False(t, ok, "client a must not own client a/b's resources")
+}
+
+func TestToolClientName(t *testing.T) {
+	assert.Equal(t, "apps", ToolClientName("apps-view"))
+	assert.Equal(t, "apps", ToolClientName("apps-my-tool"))
+	assert.Equal(t, "", ToolClientName("executeToolCode"), "an unprefixed tool has no client")
+	assert.Equal(t, "", ToolClientName("-x"))
+}

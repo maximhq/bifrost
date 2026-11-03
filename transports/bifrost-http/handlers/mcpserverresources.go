@@ -26,12 +26,13 @@ type MCPResourcesAndPromptsServer interface {
 // resourcesAndPromptsOptions declares prompts, resources and completions, narrowing their lists per request.
 func (h *MCPServerHandler) resourcesAndPromptsOptions(hooks *server.Hooks) []server.ServerOption {
 	hooks.AddAfterListResources(func(ctx context.Context, _ any, _ *mcp.ListResourcesRequest, result *mcp.ListResourcesResult) {
-		if result != nil && h.narrowsLists(ctx) {
+		// Both forms of a ui:// URI are installed, so the request's own list decides which it sees.
+		if result != nil && (h.narrowsLists(ctx) || h.uiResources.Load()) {
 			result.Resources = keepCallersEntries(result.Resources, h.served.GetAvailableMCPResources(ctx), resourceURI)
 		}
 	})
 	hooks.AddAfterListResourceTemplates(func(ctx context.Context, _ any, _ *mcp.ListResourceTemplatesRequest, result *mcp.ListResourceTemplatesResult) {
-		if result != nil && h.narrowsLists(ctx) {
+		if result != nil && (h.narrowsLists(ctx) || h.uiResources.Load()) {
 			result.ResourceTemplates = keepCallersEntries(result.ResourceTemplates, h.served.GetAvailableMCPResourceTemplates(ctx), coremcp.ResourceTemplateURI)
 		}
 	})
@@ -64,12 +65,15 @@ func (h *MCPServerHandler) syncResourcesAndPrompts(ctx context.Context, perCalle
 	for _, prompt := range prompts {
 		serverPrompts = append(serverPrompts, server.ServerPrompt{Prompt: prompt, Handler: h.getPrompt})
 	}
-	resources := h.served.GetAvailableMCPResources(ctx)
+	// Aggregate /mcp sees ui:// URIs as ui://<client>/...; install those forms too.
+	aggregateCtx := context.WithValue(ctx, schemas.BifrostContextKeyIsMCPGateway, true)
+	resources, uiResources := withNamespacedForms(h.served.GetAvailableMCPResources(ctx), h.served.GetAvailableMCPResources(aggregateCtx), resourceURI)
+	templates, uiTemplates := withNamespacedForms(h.served.GetAvailableMCPResourceTemplates(ctx), h.served.GetAvailableMCPResourceTemplates(aggregateCtx), coremcp.ResourceTemplateURI)
+	h.uiResources.Store(uiResources || uiTemplates)
 	serverResources := make([]server.ServerResource, 0, len(resources))
 	for _, resource := range resources {
 		serverResources = append(serverResources, server.ServerResource{Resource: resource, Handler: h.readResource})
 	}
-	templates := h.served.GetAvailableMCPResourceTemplates(ctx)
 	serverTemplates := make([]server.ServerResourceTemplate, 0, len(templates))
 	for _, template := range templates {
 		serverTemplates = append(serverTemplates, server.ServerResourceTemplate{Template: template, Handler: server.ResourceTemplateHandlerFunc(h.readResource)})
@@ -81,6 +85,22 @@ func (h *MCPServerHandler) syncResourcesAndPrompts(ctx context.Context, perCalle
 	h.mcpServer.SetResources(serverResources...)
 	h.mcpServer.SetResourceTemplates(serverTemplates...)
 	logger.Debug("Synced MCP server with %d prompts, %d resources, %d resource templates", len(prompts), len(resources), len(templates))
+}
+
+// withNamespacedForms appends the aggregate entries plain lacks, reporting whether there were any.
+func withNamespacedForms[T any](plain, aggregate []T, key func(T) string) ([]T, bool) {
+	installed := make(map[string]struct{}, len(plain))
+	for _, item := range plain {
+		installed[key(item)] = struct{}{}
+	}
+	added := false
+	for _, item := range aggregate {
+		if _, ok := installed[key(item)]; !ok {
+			plain = append(plain, item)
+			added = true
+		}
+	}
+	return plain, added
 }
 
 // withCallerCapabilities records on ctx what the downstream client declared on this request, so core
