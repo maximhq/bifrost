@@ -302,3 +302,127 @@ UserVirtualKeyLookupResponse:
       description: Virtual keys assigned to this user
       items:
         $ref: '#/UserVirtualKeySummary'
+
+UserLimits:
+  type: object
+  description: What caps one person's spend, by access profile
+  required:
+    - user_id
+    - profiles
+  properties:
+    user_id:
+      type: string
+    name:
+      type: string
+    profiles:
+      type: array
+      description: Every access profile attached to the user, active or not
+      items:
+        $ref: '#/UserLimitsProfile'
+
+UserLimitsProfile:
+  type: object
+  required:
+    - name
+    - active
+    - allow_all_providers
+    - budgets
+    - providers
+  properties:
+    name:
+      type: string
+    active:
+      type: boolean
+    expires_at:
+      type: string
+      format: date-time
+    allow_all_providers:
+      type: boolean
+    budgets:
+      type: array
+      items:
+        $ref: '#/UserLimitsBudget'
+    rate_limit:
+      $ref: '#/UserLimitsRateLimit'
+    providers:
+      type: array
+      items:
+        type: object
+        required:
+          - provider
+          - budgets
+        properties:
+          provider:
+            type: string
+          allowed_models:
+            type: array
+            items:
+              type: string
+          blacklisted_models:
+            type: array
+            items:
+              type: string
+          budgets:
+            type: array
+            items:
+              $ref: '#/UserLimitsBudget'
+          rate_limit:
+            $ref: '#/UserLimitsRateLimit'
+          model_budgets:
+            type: array
+            items:
+              type: object
+              required:
+                - model
+                - budgets
+              properties:
+                model:
+                  type: string
+                budgets:
+                  type: array
+                  items:
+                    $ref: '#/UserLimitsBudget'
+                rate_limit:
+                  $ref: '#/UserLimitsRateLimit'
+
+UserLimitsBudget:
+  type: object
+  description: One budget, in US dollars
+  properties:
+    id:
+      type: string
+    max_limit_usd:
+      type: number
+      description: The limit in force, including an active override
+    current_usage_usd:
+      type: number
+    remaining_usd:
+      type: number
+      description: max_limit_usd minus current_usage_usd, never below zero
+    reset_duration:
+      type: string
+      description: How often the budget resets, e.g. 1M
+    last_reset:
+      type: string
+      format: date-time
+    override_active:
+      type: boolean
+      description: Present and true while a budget override is in force
+
+UserLimitsRateLimit:
+  type: object
+  nullable: true
+  description: A rate limit; only the limits that are set appear
+  properties:
+    token_max_limit:
+      type: integer
+    token_current_usage:
+      type: integer
+    token_reset_duration:
+      type: string
+    request_max_limit:
+      type: integer
+    request_current_usage:
+      type: integer
+    request_reset_duration:
+      type: string

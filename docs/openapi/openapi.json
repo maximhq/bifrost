@@ -41187,6 +41187,657 @@
         }
       }
     },
+    "/api/governance/users/me/limits": {
+      "get": {
+        "operationId": "getMyLimits",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| None | Any authenticated user, for their own limits - exempt from RBAC |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Get your own budgets and rate limits",
+        "description": "Returns what caps one person's spend: every access profile attached to\nthe user, active or not, with its budgets and rate limit, and the\nper-provider and per-model budgets and rate limits under it. Usage is the\nlive counter where the node holds one. Budget amounts are US dollars;\n`remaining_usd` is `max_limit_usd` minus `current_usage_usd`, and a budget\nresets `reset_duration` after `last_reset`. An inactive or expired\nprofile caps nothing.\n\nAn empty `profiles` list means no access profile governs the user, so\nnothing caps their spend at the user level; a budget on a virtual key,\nteam, customer or business unit may still apply.\n\nThe user is the one the request acts for: the signed-in user, or for an\nAPI key the user who created it. A request that acts for no user returns\n404.\n",
+        "tags": [
+          "Users"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "What caps one person's spend, by access profile",
+                  "required": [
+                    "user_id",
+                    "profiles"
+                  ],
+                  "properties": {
+                    "user_id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "profiles": {
+                      "type": "array",
+                      "description": "Every access profile attached to the user, active or not",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "name",
+                          "active",
+                          "allow_all_providers",
+                          "budgets",
+                          "providers"
+                        ],
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "active": {
+                            "type": "boolean"
+                          },
+                          "expires_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "allow_all_providers": {
+                            "type": "boolean"
+                          },
+                          "budgets": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "description": "One budget, in US dollars",
+                              "properties": {
+                                "id": {
+                                  "type": "string"
+                                },
+                                "max_limit_usd": {
+                                  "type": "number",
+                                  "description": "The limit in force, including an active override"
+                                },
+                                "current_usage_usd": {
+                                  "type": "number"
+                                },
+                                "remaining_usd": {
+                                  "type": "number",
+                                  "description": "max_limit_usd minus current_usage_usd, never below zero"
+                                },
+                                "reset_duration": {
+                                  "type": "string",
+                                  "description": "How often the budget resets, e.g. 1M"
+                                },
+                                "last_reset": {
+                                  "type": "string",
+                                  "format": "date-time"
+                                },
+                                "override_active": {
+                                  "type": "boolean",
+                                  "description": "Present and true while a budget override is in force"
+                                }
+                              }
+                            }
+                          },
+                          "rate_limit": {
+                            "type": "object",
+                            "nullable": true,
+                            "description": "A rate limit; only the limits that are set appear",
+                            "properties": {
+                              "token_max_limit": {
+                                "type": "integer"
+                              },
+                              "token_current_usage": {
+                                "type": "integer"
+                              },
+                              "token_reset_duration": {
+                                "type": "string"
+                              },
+                              "request_max_limit": {
+                                "type": "integer"
+                              },
+                              "request_current_usage": {
+                                "type": "integer"
+                              },
+                              "request_reset_duration": {
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "providers": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "required": [
+                                "provider",
+                                "budgets"
+                              ],
+                              "properties": {
+                                "provider": {
+                                  "type": "string"
+                                },
+                                "allowed_models": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "blacklisted_models": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "budgets": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "description": "One budget, in US dollars",
+                                    "properties": {
+                                      "id": {
+                                        "type": "string"
+                                      },
+                                      "max_limit_usd": {
+                                        "type": "number",
+                                        "description": "The limit in force, including an active override"
+                                      },
+                                      "current_usage_usd": {
+                                        "type": "number"
+                                      },
+                                      "remaining_usd": {
+                                        "type": "number",
+                                        "description": "max_limit_usd minus current_usage_usd, never below zero"
+                                      },
+                                      "reset_duration": {
+                                        "type": "string",
+                                        "description": "How often the budget resets, e.g. 1M"
+                                      },
+                                      "last_reset": {
+                                        "type": "string",
+                                        "format": "date-time"
+                                      },
+                                      "override_active": {
+                                        "type": "boolean",
+                                        "description": "Present and true while a budget override is in force"
+                                      }
+                                    }
+                                  }
+                                },
+                                "rate_limit": {
+                                  "type": "object",
+                                  "nullable": true,
+                                  "description": "A rate limit; only the limits that are set appear",
+                                  "properties": {
+                                    "token_max_limit": {
+                                      "type": "integer"
+                                    },
+                                    "token_current_usage": {
+                                      "type": "integer"
+                                    },
+                                    "token_reset_duration": {
+                                      "type": "string"
+                                    },
+                                    "request_max_limit": {
+                                      "type": "integer"
+                                    },
+                                    "request_current_usage": {
+                                      "type": "integer"
+                                    },
+                                    "request_reset_duration": {
+                                      "type": "string"
+                                    }
+                                  }
+                                },
+                                "model_budgets": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "required": [
+                                      "model",
+                                      "budgets"
+                                    ],
+                                    "properties": {
+                                      "model": {
+                                        "type": "string"
+                                      },
+                                      "budgets": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "object",
+                                          "description": "One budget, in US dollars",
+                                          "properties": {
+                                            "id": {
+                                              "type": "string"
+                                            },
+                                            "max_limit_usd": {
+                                              "type": "number",
+                                              "description": "The limit in force, including an active override"
+                                            },
+                                            "current_usage_usd": {
+                                              "type": "number"
+                                            },
+                                            "remaining_usd": {
+                                              "type": "number",
+                                              "description": "max_limit_usd minus current_usage_usd, never below zero"
+                                            },
+                                            "reset_duration": {
+                                              "type": "string",
+                                              "description": "How often the budget resets, e.g. 1M"
+                                            },
+                                            "last_reset": {
+                                              "type": "string",
+                                              "format": "date-time"
+                                            },
+                                            "override_active": {
+                                              "type": "boolean",
+                                              "description": "Present and true while a budget override is in force"
+                                            }
+                                          }
+                                        }
+                                      },
+                                      "rate_limit": {
+                                        "type": "object",
+                                        "nullable": true,
+                                        "description": "A rate limit; only the limits that are set appear",
+                                        "properties": {
+                                          "token_max_limit": {
+                                            "type": "integer"
+                                          },
+                                          "token_current_usage": {
+                                            "type": "integer"
+                                          },
+                                          "token_reset_duration": {
+                                            "type": "string"
+                                          },
+                                          "request_max_limit": {
+                                            "type": "integer"
+                                          },
+                                          "request_current_usage": {
+                                            "type": "integer"
+                                          },
+                                          "request_reset_duration": {
+                                            "type": "string"
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The request does not act for a user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/governance/users/{user_id}/limits": {
+      "get": {
+        "operationId": "getUserLimits",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `AccessProfiles:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Get a user's budgets and rate limits",
+        "description": "Returns what caps one person's spend: every access profile attached to\nthe user, active or not, with its budgets and rate limit, and the\nper-provider and per-model budgets and rate limits under it. Usage is the\nlive counter where the node holds one. Budget amounts are US dollars;\n`remaining_usd` is `max_limit_usd` minus `current_usage_usd`, and a budget\nresets `reset_duration` after `last_reset`. An inactive or expired\nprofile caps nothing.\n\nAn empty `profiles` list means no access profile governs the user, so\nnothing caps their spend at the user level; a budget on a virtual key,\nteam, customer or business unit may still apply.\n\nUse it for a person's allowance, or for a budget question about a\nvirtual key that an access profile manages: such a key inherits the\nprofile's cap rather than carrying its own. A user the caller may not\nsee returns 404.\n",
+        "tags": [
+          "Users"
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "description": "User ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "What caps one person's spend, by access profile",
+                  "required": [
+                    "user_id",
+                    "profiles"
+                  ],
+                  "properties": {
+                    "user_id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "profiles": {
+                      "type": "array",
+                      "description": "Every access profile attached to the user, active or not",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "name",
+                          "active",
+                          "allow_all_providers",
+                          "budgets",
+                          "providers"
+                        ],
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "active": {
+                            "type": "boolean"
+                          },
+                          "expires_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "allow_all_providers": {
+                            "type": "boolean"
+                          },
+                          "budgets": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "description": "One budget, in US dollars",
+                              "properties": {
+                                "id": {
+                                  "type": "string"
+                                },
+                                "max_limit_usd": {
+                                  "type": "number",
+                                  "description": "The limit in force, including an active override"
+                                },
+                                "current_usage_usd": {
+                                  "type": "number"
+                                },
+                                "remaining_usd": {
+                                  "type": "number",
+                                  "description": "max_limit_usd minus current_usage_usd, never below zero"
+                                },
+                                "reset_duration": {
+                                  "type": "string",
+                                  "description": "How often the budget resets, e.g. 1M"
+                                },
+                                "last_reset": {
+                                  "type": "string",
+                                  "format": "date-time"
+                                },
+                                "override_active": {
+                                  "type": "boolean",
+                                  "description": "Present and true while a budget override is in force"
+                                }
+                              }
+                            }
+                          },
+                          "rate_limit": {
+                            "type": "object",
+                            "nullable": true,
+                            "description": "A rate limit; only the limits that are set appear",
+                            "properties": {
+                              "token_max_limit": {
+                                "type": "integer"
+                              },
+                              "token_current_usage": {
+                                "type": "integer"
+                              },
+                              "token_reset_duration": {
+                                "type": "string"
+                              },
+                              "request_max_limit": {
+                                "type": "integer"
+                              },
+                              "request_current_usage": {
+                                "type": "integer"
+                              },
+                              "request_reset_duration": {
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "providers": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "required": [
+                                "provider",
+                                "budgets"
+                              ],
+                              "properties": {
+                                "provider": {
+                                  "type": "string"
+                                },
+                                "allowed_models": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "blacklisted_models": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "budgets": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "description": "One budget, in US dollars",
+                                    "properties": {
+                                      "id": {
+                                        "type": "string"
+                                      },
+                                      "max_limit_usd": {
+                                        "type": "number",
+                                        "description": "The limit in force, including an active override"
+                                      },
+                                      "current_usage_usd": {
+                                        "type": "number"
+                                      },
+                                      "remaining_usd": {
+                                        "type": "number",
+                                        "description": "max_limit_usd minus current_usage_usd, never below zero"
+                                      },
+                                      "reset_duration": {
+                                        "type": "string",
+                                        "description": "How often the budget resets, e.g. 1M"
+                                      },
+                                      "last_reset": {
+                                        "type": "string",
+                                        "format": "date-time"
+                                      },
+                                      "override_active": {
+                                        "type": "boolean",
+                                        "description": "Present and true while a budget override is in force"
+                                      }
+                                    }
+                                  }
+                                },
+                                "rate_limit": {
+                                  "type": "object",
+                                  "nullable": true,
+                                  "description": "A rate limit; only the limits that are set appear",
+                                  "properties": {
+                                    "token_max_limit": {
+                                      "type": "integer"
+                                    },
+                                    "token_current_usage": {
+                                      "type": "integer"
+                                    },
+                                    "token_reset_duration": {
+                                      "type": "string"
+                                    },
+                                    "request_max_limit": {
+                                      "type": "integer"
+                                    },
+                                    "request_current_usage": {
+                                      "type": "integer"
+                                    },
+                                    "request_reset_duration": {
+                                      "type": "string"
+                                    }
+                                  }
+                                },
+                                "model_budgets": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "required": [
+                                      "model",
+                                      "budgets"
+                                    ],
+                                    "properties": {
+                                      "model": {
+                                        "type": "string"
+                                      },
+                                      "budgets": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "object",
+                                          "description": "One budget, in US dollars",
+                                          "properties": {
+                                            "id": {
+                                              "type": "string"
+                                            },
+                                            "max_limit_usd": {
+                                              "type": "number",
+                                              "description": "The limit in force, including an active override"
+                                            },
+                                            "current_usage_usd": {
+                                              "type": "number"
+                                            },
+                                            "remaining_usd": {
+                                              "type": "number",
+                                              "description": "max_limit_usd minus current_usage_usd, never below zero"
+                                            },
+                                            "reset_duration": {
+                                              "type": "string",
+                                              "description": "How often the budget resets, e.g. 1M"
+                                            },
+                                            "last_reset": {
+                                              "type": "string",
+                                              "format": "date-time"
+                                            },
+                                            "override_active": {
+                                              "type": "boolean",
+                                              "description": "Present and true while a budget override is in force"
+                                            }
+                                          }
+                                        }
+                                      },
+                                      "rate_limit": {
+                                        "type": "object",
+                                        "nullable": true,
+                                        "description": "A rate limit; only the limits that are set appear",
+                                        "properties": {
+                                          "token_max_limit": {
+                                            "type": "integer"
+                                          },
+                                          "token_current_usage": {
+                                            "type": "integer"
+                                          },
+                                          "token_reset_duration": {
+                                            "type": "string"
+                                          },
+                                          "request_max_limit": {
+                                            "type": "integer"
+                                          },
+                                          "request_current_usage": {
+                                            "type": "integer"
+                                          },
+                                          "request_reset_duration": {
+                                            "type": "string"
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No user with this ID is visible to the caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/governance/users/me/permissions": {
       "get": {
         "operationId": "getCurrentUserPermissions",

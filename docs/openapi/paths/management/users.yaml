@@ -709,3 +709,123 @@ team-member-by-id:
               $ref: '../../schemas/management/common.yaml#/ErrorResponse'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+users-limits-by-id:
+  get:
+    operationId: getUserLimits
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get a user's budgets and rate limits
+    description: |
+      Returns what caps one person's spend: every access profile attached to
+      the user, active or not, with its budgets and rate limit, and the
+      per-provider and per-model budgets and rate limits under it. Usage is the
+      live counter where the node holds one. Budget amounts are US dollars;
+      `remaining_usd` is `max_limit_usd` minus `current_usage_usd`, and a budget
+      resets `reset_duration` after `last_reset`. An inactive or expired
+      profile caps nothing.
+
+      An empty `profiles` list means no access profile governs the user, so
+      nothing caps their spend at the user level; a budget on a virtual key,
+      team, customer or business unit may still apply.
+
+      Use it for a person's allowance, or for a budget question about a
+      virtual key that an access profile manages: such a key inherits the
+      profile's cap rather than carrying its own. A user the caller may not
+      see returns 404.
+    tags:
+      - Users
+    parameters:
+      - name: user_id
+        in: path
+        required: true
+        description: User ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/users.yaml#/UserLimits'
+      '404':
+        description: No user with this ID is visible to the caller
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+users-me-limits:
+  get:
+    operationId: getMyLimits
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Any authenticated user, for their own limits - exempt from RBAC |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get your own budgets and rate limits
+    description: |
+      Returns what caps one person's spend: every access profile attached to
+      the user, active or not, with its budgets and rate limit, and the
+      per-provider and per-model budgets and rate limits under it. Usage is the
+      live counter where the node holds one. Budget amounts are US dollars;
+      `remaining_usd` is `max_limit_usd` minus `current_usage_usd`, and a budget
+      resets `reset_duration` after `last_reset`. An inactive or expired
+      profile caps nothing.
+
+      An empty `profiles` list means no access profile governs the user, so
+      nothing caps their spend at the user level; a budget on a virtual key,
+      team, customer or business unit may still apply.
+
+      The user is the one the request acts for: the signed-in user, or for an
+      API key the user who created it. A request that acts for no user returns
+      404.
+    tags:
+      - Users
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/users.yaml#/UserLimits'
+      '404':
+        description: The request does not act for a user
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
