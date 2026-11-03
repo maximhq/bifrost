@@ -705,13 +705,7 @@ func propertyInt(value interface{}) int {
 	case int:
 		return number
 	case int64:
-		if number > math.MaxInt {
-			return math.MaxInt
-		}
-		if number < math.MinInt {
-			return math.MinInt
-		}
-		return int(number)
+		return int64ToInt(number)
 	case float64:
 		return floatToInt(number)
 	case float32:
@@ -726,19 +720,30 @@ func propertyInt(value interface{}) int {
 	}
 }
 
+// int64ToInt saturates at int's bounds before narrowing on 32-bit builds.
+func int64ToInt(number int64) int {
+	if number > math.MaxInt {
+		return math.MaxInt
+	}
+	if number < math.MinInt {
+		return math.MinInt
+	}
+	return int(number)
+}
+
 // floatToInt truncates toward zero, saturating at int's bounds; NaN is 0.
-// The upper bound is -float64(math.MinInt), which is exact, rather than
-// float64(math.MaxInt), which rounds up past the largest int.
+// Convert through int64 so the final narrowing uses integer range checks.
+// float64(math.MaxInt64) rounds up to 1<<63, so it is excluded before the cast.
 func floatToInt(number float64) int {
 	switch {
 	case math.IsNaN(number):
 		return 0
-	case number >= -float64(math.MinInt):
+	case number >= float64(math.MaxInt64):
 		return math.MaxInt
-	case number < float64(math.MinInt):
+	case number < float64(math.MinInt64):
 		return math.MinInt
 	default:
-		return int(number)
+		return int64ToInt(int64(number))
 	}
 }
 
