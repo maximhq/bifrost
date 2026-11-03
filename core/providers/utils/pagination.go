@@ -118,7 +118,6 @@ func (h *SerialListHelper) HasMoreKeys() bool {
 	return currentKeyIndex < len(h.Keys)-1
 }
 
-
 // BuildNextCursorWithinKey builds the next cursor for a listing under one object (a container's files), which never moves to another key.
 func BuildNextCursorWithinKey(keyIndex int, hasMore bool, nativeCursor string) (string, bool) {
 	if !hasMore {
