@@ -1112,9 +1112,8 @@ func (s *ClickHouseLogStore) DeleteUserAgentMapping(ctx context.Context, id stri
 // per affected part whether it matches 100 rows or all of them, so batching
 // by id would rewrite the same part once per batch (#7098). The returned
 // count is selected before the delete because mutations never report rows
-// affected. The LogsCleaner loop stops after this call because the count
-// differs from batchSize; when it happens to equal batchSize the next call
-// finds nothing and returns 0 without issuing a mutation.
+// affected. The LogsCleaner loop stops on a count above batchSize; otherwise
+// the next call finds nothing and returns 0 without issuing a mutation.
 func (s *ClickHouseLogStore) DeleteLogsBatch(ctx context.Context, cutoff time.Time, _ int) (int64, error) {
 	return s.chDeleteWhere(ctx, "logs", "created_at < ?", cutoff)
 }
