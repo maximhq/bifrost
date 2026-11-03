@@ -1273,6 +1273,7 @@
 			"urlHelp": "Bifrost 會擷取一次文件並隨伺服器一併儲存；該 URL 會保留為其來源。",
 			"chooseFile": "選擇檔案",
 			"uploadHelp": "JSON 或 YAML，最大 {{size}}。檔案會在你的瀏覽器中讀取，並隨伺服器一併儲存。",
+			"uploadHelpNoLimit": "JSON 或 YAML。檔案會在你的瀏覽器中讀取，並隨伺服器一併儲存。",
 			"parsing": "正在解析文件…",
 			"staleNotice": "自擷取文件後，URL 或伺服器名稱已變更。請重新擷取以更新下方的操作。"
 		},

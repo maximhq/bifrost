@@ -3,19 +3,21 @@ import { CodeEditor } from "@/components/ui/codeEditor";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useGetCoreConfigQuery } from "@/lib/store";
 import { Info, Upload } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
 	detectSpecLanguage,
 	formatBytes,
 	isSpecTooLarge,
 	OPENAPI_AUTO_PARSE_DELAY_MS,
-	OPENAPI_MAX_SPEC_BYTES,
+	knownOpenAPIMaxSpecBytes,
 	autoParseStep,
 	openAPIParseControls,
 	applyUploadedSpec,
 	readUploadedSpec,
+	uploadSpecLimit,
 	type UploadErrorState,
 	visibleUploadError,
 	type OpenAPISourceMode,
@@ -85,8 +87,16 @@ export function OpenAPISpecSource({
 	const sourceModeLabel = (m: OpenAPISourceMode) =>
 		m === "paste" ? t("openapi.source.tabPaste") : m === "upload" ? t("openapi.source.tabUpload") : "URL";
 	const fileInputRef = useRef<HTMLInputElement>(null);
+	// The server enforces the configured limit; this only spares a doomed upload. Until the config
+	// has loaded (or when the caller cannot read it) the limit is unknown and only the supported
+	// maximum is applied; a file over a cached limit is refused only after the config is re-read.
+	const { data: bifrostConfig, refetch: refetchConfig } = useGetCoreConfigQuery({ fromDB: true });
+	const maxSpecBytes = knownOpenAPIMaxSpecBytes(bifrostConfig);
 	const sourceEmpty = mode === "url" ? !specUrl.trim() : !specText.trim();
-	const uploadTooLarge = mode === "upload" && specText && isSpecTooLarge(new TextEncoder().encode(specText).length);
+	// Encoding a large upload is not free, so measure it once per text change rather than on every
+	// render, and only for an upload: the other modes never show or check the size.
+	const specBytes = useMemo(() => (mode === "upload" ? new TextEncoder().encode(specText).length : 0), [mode, specText]);
+	const uploadTooLarge = mode === "upload" && specText && maxSpecBytes !== null && isSpecTooLarge(specBytes, maxSpecBytes);
 
 	const [uploadError, setUploadError] = useState<UploadErrorState | null>(null);
 	// Bumped by every new file, source switch and text edit, so a slow read that
@@ -104,7 +114,9 @@ export function OpenAPISpecSource({
 	const handleFile = async (file: File | undefined) => {
 		if (!file) return;
 		const token = ++readToken.current;
-		const result = await readUploadedSpec(file);
+		const limit = await uploadSpecLimit(file.size, maxSpecBytes, async () => knownOpenAPIMaxSpecBytes(await refetchConfig().unwrap()));
+		if (token !== readToken.current) return;
+		const result = await readUploadedSpec(file, limit);
 		if (token !== readToken.current) return;
 		// A rejected file keeps the document already loaded.
 		const { accept, error } = applyUploadedSpec(fileName ?? "", result);
@@ -213,9 +225,7 @@ export function OpenAPISpecSource({
 						/>
 						{controls.showButton && parseButton}
 					</div>
-					<p className="text-muted-foreground text-xs">
-						{urlHint ?? t("openapi.source.urlHelp")}
-					</p>
+					<p className="text-muted-foreground text-xs">{urlHint ?? t("openapi.source.urlHelp")}</p>
 				</TabsContent>
 
 				<TabsContent value="upload" className="mt-2 space-y-2">
@@ -245,16 +255,20 @@ export function OpenAPISpecSource({
 						{fileName && (
 							<span className="text-muted-foreground font-mono text-xs" data-testid="openapi-spec-upload-filename">
 								{fileName}
-								{specText ? ` · ${formatBytes(new TextEncoder().encode(specText).length)}` : ""}
+								{specText ? ` · ${formatBytes(specBytes)}` : ""}
 							</span>
 						)}
 					</div>
 					{shownUploadError || uploadTooLarge ? (
 						<p className="text-destructive text-xs" data-testid="openapi-spec-upload-error">
-							{shownUploadError ?? t("openapi.source.fileTooLarge", { size: formatBytes(OPENAPI_MAX_SPEC_BYTES) })}
+							{shownUploadError ?? t("openapi.source.fileTooLarge", { size: formatBytes(maxSpecBytes ?? 0) })}
 						</p>
 					) : (
-						<p className="text-muted-foreground text-xs">{t("openapi.source.uploadHelp", { size: formatBytes(OPENAPI_MAX_SPEC_BYTES) })}</p>
+						<p className="text-muted-foreground text-xs">
+							{maxSpecBytes === null
+								? t("openapi.source.uploadHelpNoLimit")
+								: t("openapi.source.uploadHelp", { size: formatBytes(maxSpecBytes) })}
+						</p>
 					)}
 				</TabsContent>
 			</Tabs>

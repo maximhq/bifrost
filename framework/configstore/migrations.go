@@ -588,6 +588,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_anthropic_workload_identity_column"}, run: migrationAddAnthropicWorkloadIdentityColumn},
 	{IDs: []string{"add_mcp_per_user_discoveries"}, run: migrationAddMCPPerUserDiscoveries},
 	{IDs: []string{"add_mcp_client_pending_verification_column"}, run: migrationAddMCPClientPendingVerificationColumn},
+	{IDs: []string{"add_client_config_mcp_openapi_max_spec_mb_column"}, run: migrationAddClientConfigMCPOpenAPIMaxSpecMBColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -12297,6 +12298,33 @@ func migrationAddClientConfigEnforceVKObjectOwnershipColumn(ctx context.Context,
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			return dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "enforce_vk_object_ownership")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddClientConfigMCPOpenAPIMaxSpecMBColumn adds mcp_openapi_max_spec_mb to
+// config_client. It defaults to 0, which reads as the built-in 32 MiB limit, so existing rows
+// need no backfill and a rolled-back binary ignores the column.
+func migrationAddClientConfigMCPOpenAPIMaxSpecMBColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_client_config_mcp_openapi_max_spec_mb_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			return addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "mcp_openapi_max_spec_mb")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "mcp_openapi_max_spec_mb")
 		},
 	}})
 	if err := m.Migrate(); err != nil {

@@ -19,12 +19,9 @@ var methodsV3 = []string{"get", "put", "post", "delete", "patch", "head", "optio
 
 // Parse decodes a JSON or YAML spec into the version-independent Document.
 func Parse(data []byte, opts ParseOptions) (*Document, error) {
-	limit := opts.MaxBytes
-	if limit <= 0 {
-		limit = MaxSpecBytes
-	}
+	limit := specLimit(opts.MaxBytes)
 	if len(data) > limit {
-		return nil, ErrSpecTooLarge
+		return nil, specTooLargeError{limit: limit}
 	}
 	tree, err := decodeTree(data)
 	if err != nil {

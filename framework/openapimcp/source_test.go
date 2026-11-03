@@ -2,6 +2,7 @@ package openapimcp
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -86,6 +87,45 @@ func TestLoadURL(t *testing.T) {
 
 	_, _, err = LoadURL(context.Background(), nil, "   ")
 	require.ErrorContains(t, err, "empty")
+}
+
+// The *Limit variants and ParseOptions.MaxBytes admit a spec above
+// MaxSpecBytes when the caller raises the limit, and refuse one above a lowered
+// limit with ErrSpecTooLarge naming that limit.
+func TestLoadLimit(t *testing.T) {
+	small := `{"openapi":"3.1.0","info":{"title":"t","version":"1"},"paths":{"/a":{"get":{"operationId":"a","responses":{"200":{"description":"ok"}}}}}}`
+	big := []byte(small + strings.Repeat(" ", MaxSpecBytes))
+	raised := 2 * MaxSpecBytes
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(big)
+	}))
+	t.Cleanup(ts.Close)
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "big.json"), big, 0o644))
+
+	got, _, err := LoadURLLimit(context.Background(), ts.Client(), ts.URL, raised)
+	require.NoError(t, err)
+	assert.Len(t, got, len(big))
+	got, err = LoadFileLimit("big.json", dir, raised)
+	require.NoError(t, err)
+	assert.Len(t, got, len(big))
+	_, err = LoadBytesLimit(big, raised)
+	require.NoError(t, err)
+	_, err = Parse(big, ParseOptions{MaxBytes: raised})
+	require.NoError(t, err)
+
+	// 0 keeps the default.
+	_, _, err = LoadURLLimit(context.Background(), ts.Client(), ts.URL, 0)
+	require.ErrorIs(t, err, ErrSpecTooLarge)
+	_, err = Parse(big, ParseOptions{})
+	require.ErrorIs(t, err, ErrSpecTooLarge)
+
+	lowered := len(small) - 1
+	_, err = LoadBytesLimit([]byte(small), lowered)
+	require.ErrorIs(t, err, ErrSpecTooLarge)
+	require.ErrorContains(t, err, fmt.Sprintf("exceeds %d bytes", lowered))
+	_, _, _, err = ResolveSpecLimit(context.Background(), &schemas.MCPOpenAPIConfig{Spec: small}, nil, "", lowered)
+	require.ErrorIs(t, err, ErrSpecTooLarge)
 }
 
 func TestResolveSpecPriority(t *testing.T) {

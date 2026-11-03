@@ -392,6 +392,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	}
+	// A JSON null would decode as 0 and silently reset the limit; an explicit 0 is the reset.
+	if raw, present := clientConfigFields["mcp_openapi_max_spec_mb"]; present && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("mcp_openapi_max_spec_mb must be an integer between 0 (the default, 32) and %d", maxMCPOpenAPISpecMB))
+		return
+	}
 
 	// vk_rotation_cooldown bounds: negative is meaningless, and anything past 30
 	// days keeps a retired credential alive long enough to defeat the rotation.
@@ -643,6 +648,10 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 
 	if err := validateMCPInstructionCaps(payload.ClientConfig.MCPMaxInstructionsPerClient, payload.ClientConfig.MCPMaxInstructionsTotal); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	if mb := payload.ClientConfig.MCPOpenAPIMaxSpecMB; mb < 0 || mb > maxMCPOpenAPISpecMB {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("mcp_openapi_max_spec_mb must be between 0 (the default, 32) and %d", maxMCPOpenAPISpecMB))
 		return
 	}
 	if payload.ClientConfig.LogRetentionDays < 1 {
@@ -901,6 +910,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 	if _, present := clientConfigFields["skip_access_profile_user_virtual_key_deletion"]; present {
 		updatedConfig.SkipAccessProfileUserVirtualKeyDeletion = payload.ClientConfig.SkipAccessProfileUserVirtualKeyDeletion
+	}
+	// Copied only when sent, so a partial save keeps the limit; 0 resets it to the default.
+	// The next spec load reads it, so no reload is needed.
+	if _, present := clientConfigFields["mcp_openapi_max_spec_mb"]; present {
+		updatedConfig.MCPOpenAPIMaxSpecMB = payload.ClientConfig.MCPOpenAPIMaxSpecMB
 	}
 
 	// Rotation grace period; bounds validated up front. Copied unconditionally
@@ -1701,6 +1715,9 @@ func validateGlobalToolSyncIntervalMinutes(minutes int) error {
 	}
 	return nil
 }
+
+// maxMCPOpenAPISpecMB bounds mcp_openapi_max_spec_mb; see configstore.MaxMCPOpenAPISpecMB.
+const maxMCPOpenAPISpecMB = configstore.MaxMCPOpenAPISpecMB
 
 // validateMCPInstructionCaps rejects bounds that cannot hold: a negative value, or a per-client
 // cap larger than the total it must fit inside. 0 means "use the built-in default" for either.
