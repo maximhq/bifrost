@@ -89,6 +89,15 @@ func TestOAuth2ClientMetadataResolver(t *testing.T) {
 		assert.Equal(t, "mcp", client.Scope)
 	})
 
+	t.Run("grants this server does not offer are dropped", func(t *testing.T) {
+		clientID := host.document("/extra-grant.json", map[string]any{
+			"grant_types": []string{"authorization_code", "urn:ietf:params:oauth:grant-type:jwt-bearer", "refresh_token"},
+		}, nil)
+		client, err := resolver.resolve(context.Background(), cfg, clientID)
+		require.Nil(t, err)
+		assert.Equal(t, []string{"authorization_code", "refresh_token"}, client.GrantTypes)
+	})
+
 	t.Run("long URL is accepted", func(t *testing.T) {
 		clientID := host.document("/"+strings.Repeat("a", 4096)+"/client.json", nil, nil)
 		client, err := resolver.resolve(context.Background(), cfg, clientID)
@@ -268,6 +277,15 @@ func TestHandleAuthorize_ClientIDMetadataDocument(t *testing.T) {
 	ctx = getCtx("/oauth2/authorize?" + query("http://127.0.0.1:3000/elsewhere"))
 	h.handleAuthorize(ctx)
 	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "a redirect_uri the document does not list is refused")
+
+	// claude.ai's document also lists the jwt-bearer grant, which this server does not offer.
+	clientID = host.document("/extra-grant.json", map[string]any{
+		"grant_types": []string{"authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:jwt-bearer"},
+	}, nil)
+	ctx = getCtx("/oauth2/authorize?" + query("http://127.0.0.1:3000/callback"))
+	h.handleAuthorize(ctx)
+	require.Equal(t, fasthttp.StatusFound, ctx.Response.StatusCode(), "a document listing a grant this server does not offer still authorizes: %s", ctx.Response.Body())
+	assert.Contains(t, string(ctx.Response.Header.Peek("Location")), "/oauth/consent?flow=")
 }
 
 // TestHandleToken_RefreshAsAMetadataDocumentClient pins that a client identified by a Client ID
@@ -281,6 +299,7 @@ func TestHandleToken_RefreshAsAMetadataDocumentClient(t *testing.T) {
 		wantStatus int
 	}{
 		{name: "document lists refresh_token", grantTypes: []string{"authorization_code", "refresh_token"}, wantStatus: fasthttp.StatusOK},
+		{name: "document also lists a grant this server does not offer", grantTypes: []string{"authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:jwt-bearer"}, wantStatus: fasthttp.StatusOK},
 		{name: "document omits grant_types", grantTypes: nil, wantStatus: fasthttp.StatusBadRequest},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
