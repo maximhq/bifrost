@@ -607,7 +607,7 @@ func (a *Accumulator) ResetStreamAccumulator(requestID string) {
 	accumulator.MaxAudioChunkIndex = -1
 	accumulator.TerminalErrorChunkIndex = -1
 	accumulator.TerminalResponseChunkIndex = -1
-	accumulator.PassthroughBody = nil
+	accumulator.PassthroughChunks = nil
 	accumulator.PassthroughStatusCode = 0
 	accumulator.PassthroughHeaders = nil
 	accumulator.PassthroughPath = ""

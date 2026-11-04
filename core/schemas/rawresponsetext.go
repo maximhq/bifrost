@@ -767,8 +767,9 @@ type rawTextMatch struct {
 	replacement string
 }
 
-// rawStreamedTextFields lists, for each format, how to find the frame fields that stream answer text and tool-call
-// arguments in pieces. Reasoning and signature deltas are not collected, since redaction leaves reasoning text alone.
+// rawStreamedTextFields lists, for each format, how to find the frame fields that hold answer text, refusals, and
+// tool-call arguments, whether streamed in pieces or repeated whole on a closing event. Reasoning and signature deltas
+// are not collected, since redaction leaves reasoning text alone.
 var rawStreamedTextFields = map[RawResponseFormat]func(frame gjson.Result, pieces rawStreamedPieces){
 	RawResponseFormatOpenAIChatCompletionChunk:    openAIChatStreamedText,
 	RawResponseFormatOpenAITextCompletionChunk:    openAITextStreamedText,
@@ -787,8 +788,9 @@ var rawStreamedTextFields = map[RawResponseFormat]func(frame gjson.Result, piece
 // the piece holding the matched text's last byte, the matched text leaves the pieces before it, and text outside a
 // match stays where it was.
 //
-// Only those streamed fields change: whole values elsewhere in a frame, such as accumulated text on a closing event,
-// are left to the caller's own literal replacement. raw is returned unchanged when the format streams no text,
+// Only those streamed fields change, along with the closing events that repeat a streamed value whole where a format
+// has them (Responses' *.done events and terminal response); any other whole value in a frame is left to the
+// caller's own literal replacement. raw is returned unchanged when the format streams no text,
 // nothing matches, or raw is not a sequence of whitespace-separated JSON objects, such as a truncated preview. Every
 // byte outside the rewritten fields is preserved.
 func RedactRawResponseText(raw string, format RawResponseFormat, replacements map[string]string) string {
@@ -952,7 +954,7 @@ func rawStreamIndex(object gjson.Result, path string) string {
 }
 
 // openAIChatStreamedText collects each choice's content, or the text blocks some OpenAI-compatible providers stream it
-// as, and each tool call's arguments.
+// as, its refusal, and each tool call's arguments.
 func openAIChatStreamedText(frame gjson.Result, pieces rawStreamedPieces) {
 	frame.Get("choices").ForEach(func(_, choice gjson.Result) bool {
 		content := rawStreamedValue{kind: "content", index: rawStreamIndex(choice, "index")}
@@ -966,6 +968,7 @@ func openAIChatStreamedText(frame gjson.Result, pieces rawStreamedPieces) {
 		} else {
 			pieces.add(content, blocks)
 		}
+		pieces.add(rawStreamedValue{kind: "refusal", index: content.index}, choice.Get("delta.refusal"))
 		choice.Get("delta.tool_calls").ForEach(func(_, call gjson.Result) bool {
 			pieces.add(rawStreamedValue{kind: "arguments", index: content.index, inner: rawStreamIndex(call, "index")}, call.Get("function.arguments"))
 			return true
@@ -982,13 +985,61 @@ func openAITextStreamedText(frame gjson.Result, pieces rawStreamedPieces) {
 	})
 }
 
-// openAIResponsesStreamedText collects the output_text deltas of each content part and the function or custom tool
-// call input deltas of each output item.
+// openAIResponsesStreamedText collects the output_text and refusal deltas of each content part and the function or
+// custom tool call input deltas of each output item. The closing events that repeat such a value whole (the *.done
+// events and the terminal response's output) are collected as values of their own.
 func openAIResponsesStreamedText(frame gjson.Result, pieces rawStreamedPieces) {
-	switch eventType := frame.Get("type").String(); eventType {
-	case "response.output_text.delta", "response.function_call_arguments.delta", "response.custom_tool_call_input.delta":
-		value := rawStreamedValue{kind: eventType, index: rawStreamIndex(frame, "output_index"), inner: rawStreamIndex(frame, "content_index")}
-		pieces.add(value, frame.Get("delta"))
+	eventType := frame.Get("type").String()
+	value := func() rawStreamedValue {
+		return rawStreamedValue{kind: eventType, index: rawStreamIndex(frame, "output_index"), inner: rawStreamIndex(frame, "content_index")}
+	}
+	switch eventType {
+	case "response.output_text.delta", "response.refusal.delta", "response.function_call_arguments.delta", "response.custom_tool_call_input.delta":
+		pieces.add(value(), frame.Get("delta"))
+	case "response.output_text.done":
+		pieces.add(value(), frame.Get("text"))
+	case "response.refusal.done":
+		pieces.add(value(), frame.Get("refusal"))
+	case "response.function_call_arguments.done":
+		pieces.add(value(), frame.Get("arguments"))
+	case "response.custom_tool_call_input.done":
+		pieces.add(value(), frame.Get("input"))
+	case "response.content_part.done":
+		openAIResponsesContentText(frame.Get("part"), value(), pieces)
+	case "response.output_item.done":
+		openAIResponsesItemText(frame.Get("item"), value(), pieces)
+	case "response.completed", "response.incomplete", "response.failed":
+		frame.Get("response.output").ForEach(func(index, item gjson.Result) bool {
+			openAIResponsesItemText(item, rawStreamedValue{kind: eventType, index: index.String()}, pieces)
+			return true
+		})
+	}
+}
+
+// openAIResponsesItemText collects the text a Responses output item holds whole: each message content part's text,
+// or a function or custom tool call's input. Reasoning items are left alone.
+func openAIResponsesItemText(item gjson.Result, value rawStreamedValue, pieces rawStreamedPieces) {
+	switch item.Get("type").String() {
+	case "message":
+		item.Get("content").ForEach(func(index, part gjson.Result) bool {
+			value.inner = index.String()
+			openAIResponsesContentText(part, value, pieces)
+			return true
+		})
+	case "function_call":
+		pieces.add(value, item.Get("arguments"))
+	case "custom_tool_call":
+		pieces.add(value, item.Get("input"))
+	}
+}
+
+// openAIResponsesContentText collects a Responses message content part's text or refusal.
+func openAIResponsesContentText(part gjson.Result, value rawStreamedValue, pieces rawStreamedPieces) {
+	switch part.Get("type").String() {
+	case "output_text":
+		pieces.add(value, part.Get("text"))
+	case "refusal":
+		pieces.add(value, part.Get("refusal"))
 	}
 }
 
@@ -1022,19 +1073,34 @@ func cohereStreamedText(frame gjson.Result, pieces rawStreamedPieces) {
 	pieces.add(rawStreamedValue{kind: "tool_plan"}, frame.Get("delta.message.tool_plan"))
 }
 
-// geminiStreamedText collects the non-thought text parts of each candidate. Function-call arguments arrive whole, as
-// JSON objects, so they need no joining.
+// geminiStreamedText collects the non-thought text parts of each candidate and the strings in each function call's
+// arguments, which arrive whole, as a JSON object.
 func geminiStreamedText(frame gjson.Result, pieces rawStreamedPieces) {
 	frame.Get("candidates").ForEach(func(_, candidate gjson.Result) bool {
 		text := rawStreamedValue{kind: "text", index: rawStreamIndex(candidate, "index")}
 		candidate.Get("content.parts").ForEach(func(_, part gjson.Result) bool {
 			if !part.Get("thought").Bool() {
 				pieces.add(text, part.Get("text"))
+				addWholeStrings(part.Get("functionCall.args"), pieces)
 			}
 			return true
 		})
 		return true
 	})
+}
+
+// addWholeStrings collects every string inside a JSON value as a value of its own, keyed by its offset: none of them
+// continues in another frame.
+func addWholeStrings(value gjson.Result, pieces rawStreamedPieces) {
+	switch {
+	case value.Type == gjson.String:
+		pieces.add(rawStreamedValue{kind: "whole", index: strconv.Itoa(value.Index)}, value)
+	case value.IsObject() || value.IsArray():
+		value.ForEach(func(_, child gjson.Result) bool {
+			addWholeStrings(child, pieces)
+			return true
+		})
+	}
 }
 
 // replicateStreamedText collects the Data of each output event.

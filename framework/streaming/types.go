@@ -154,7 +154,7 @@ type StreamAccumulator struct {
 	TerminalResponseChunkIndex int
 
 	// Passthrough streaming accumulation
-	PassthroughBody       []byte            // Accumulated body bytes from passthrough streaming chunks
+	PassthroughChunks     map[int][]byte    // Body bytes by ChunkIndex, so a chunk fed by several plugins or out of order is kept once
 	PassthroughStatusCode int               // Status code from passthrough response
 	PassthroughHeaders    map[string]string // Headers from passthrough response
 	PassthroughPath       string            // Stripped provider path, e.g. "/v1/chat/completions"

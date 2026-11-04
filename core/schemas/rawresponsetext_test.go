@@ -613,6 +613,11 @@ func TestRedactRawResponseTextJoinsValuesSplitAcrossFrames(t *testing.T) {
 			frames: twice(`{"choices":[{"index":0,"delta":{"content":[{"type":"text","text":%s}]}}]}`),
 			texts:  text, want: redactedText,
 		},
+		"openai chat refusal": {
+			format: RawResponseFormatOpenAIChatCompletionChunk,
+			frames: twice(`{"choices":[{"index":0,"delta":{"refusal":%s}}]}`),
+			texts:  text, want: redactedText,
+		},
 		"openai text completion": {
 			format: RawResponseFormatOpenAITextCompletionChunk,
 			frames: twice(`{"choices":[{"index":0,"text":%s}]}`),
@@ -623,10 +628,20 @@ func TestRedactRawResponseTextJoinsValuesSplitAcrossFrames(t *testing.T) {
 			frames: twice(`{"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":%s}`),
 			texts:  text, want: redactedText,
 		},
+		"openai responses refusal": {
+			format: RawResponseFormatOpenAIResponsesStreamEvent,
+			frames: twice(`{"type":"response.refusal.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":%s}`),
+			texts:  text, want: redactedText,
+		},
 		"openai responses arguments": {
 			format: RawResponseFormatOpenAIResponsesStreamEvent,
 			frames: twice(`{"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":1,"delta":%s}`),
 			texts:  arguments, want: redactedArguments,
+		},
+		"openai responses custom tool input": {
+			format: RawResponseFormatOpenAIResponsesStreamEvent,
+			frames: twice(`{"type":"response.custom_tool_call_input.delta","item_id":"ctc_1","output_index":1,"delta":%s}`),
+			texts:  text, want: redactedText,
 		},
 		"anthropic text": {
 			format: RawResponseFormatAnthropicMessagesStreamEvent,
@@ -666,6 +681,15 @@ func TestRedactRawResponseTextJoinsValuesSplitAcrossFrames(t *testing.T) {
 			},
 			texts: text, want: redactedText,
 		},
+		"gemini function-call arguments": {
+			format: RawResponseFormatGeminiStreamChunk,
+			frames: []string{
+				`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"send","args":{"to":"ops@example.org","cc":[%s],"n":1}}}]}}]}`,
+				`{"candidates":[{"content":{"role":"model","parts":[{"text":%s}]},"index":0}]}`,
+			},
+			texts: []string{"alex@example.com", "done"},
+			want:  []string{"[EMAIL-1]", "done"},
+		},
 		"replicate output": {
 			format: RawResponseFormatReplicateStreamEvent,
 			frames: twice(`{"Data":%s,"Event":"output","ID":""}`),
@@ -696,6 +720,32 @@ func TestRedactRawResponseTextKeepsStreamedValuesApart(t *testing.T) {
 
 	want := redactTestRaw(t, frames, []string{"check alex@", "example.com first", `{"url":"https://`, `{"to":"`, `example.com/docs"}`, `[EMAIL-1]"}`})
 	assert.Equal(t, want, redacted)
+}
+
+// TestRedactRawResponseTextRedactsResponsesClosingValues verifies the Responses closing events that repeat a value
+// whole are redacted as values of their own, while reasoning text and structural fields keep their bytes.
+func TestRedactRawResponseTextRedactsResponsesClosingValues(t *testing.T) {
+	frames := []string{
+		`{"type":"response.output_text.done","item_id":"msg_1","output_index":1,"content_index":0,"text":%[1]s}`,
+		`{"type":"response.content_part.done","item_id":"msg_1","output_index":1,"content_index":0,"part":{"type":"output_text","annotations":[],"text":%[1]s}}`,
+		`{"type":"response.output_item.done","output_index":2,"item":{"id":"fc_1","type":"function_call","name":"send","arguments":%[1]s}}`,
+		`{"type":"response.custom_tool_call_input.done","item_id":"ctc_1","output_index":3,"input":%[1]s}`,
+		`{"type":"response.reasoning_summary_text.done","item_id":"rs_1","output_index":0,"summary_index":0,"text":%[2]s}`,
+		`{"type":"response.completed","response":{"id":"resp_1","output":[{"type":"reasoning","summary":[{"type":"summary_text","text":%[2]s}]},{"type":"message","content":[{"type":"output_text","text":%[1]s},{"type":"refusal","refusal":%[1]s}]},{"type":"custom_tool_call","call_id":"call_1","name":"apply_patch","input":%[1]s}]}}`,
+	}
+	fill := func(text, reasoning string) string {
+		filled := make([]string, len(frames))
+		for index, frame := range frames {
+			filled[index] = fmt.Sprintf(frame, text, reasoning)
+		}
+		return strings.Join(filled, "\n\n")
+	}
+	mail := `"mail alex@example.com"`
+	replacements := map[string]string{"alex@example.com": "[EMAIL-1]", "message": "[X]"}
+
+	redacted := RedactRawResponseText(fill(mail, mail), RawResponseFormatOpenAIResponsesStreamEvent, replacements)
+
+	assert.Equal(t, fill(`"mail [EMAIL-1]"`, mail), redacted)
 }
 
 // TestRedactRawResponseTextMatchesApplyLiteralReplacements verifies a streamed value's redacted pieces join to exactly
