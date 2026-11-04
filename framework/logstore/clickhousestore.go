@@ -57,8 +57,9 @@ type ClickHouseLogStore struct {
 	// behaviour. Set once at startup, before any such write, so it is read
 	// without synchronization.
 	locker                 DistributedLocker
-	idLookupIgnoredIndexes string // non-id skip indexes on the id-read tables; see idLookupContext
-	idLookupSkipIndexes    bool   // false when that list could not be read, so id reads never use skip indexes under FINAL
+	idLookupIgnoredIndexes string   // non-id skip indexes on the id-read tables; see idLookupContext
+	idLookupSkipIndexes    bool     // false when that list could not be read, so id reads never use skip indexes under FINAL
+	retentionCutoffs       sync.Map // table -> cutoff of its last retention delete; see chRetentionDelete
 }
 
 // warpHistoryLockKey is the shared lock for one owner's Warp history. Hashed
@@ -921,6 +922,7 @@ func (s *ClickHouseLogStore) UpdateAgentLog(ctx context.Context, id string, entr
 
 // UpdateRelayLog applies an update to a Relay Logs row via read-modify-write.
 func (s *ClickHouseLogStore) UpdateRelayLog(ctx context.Context, id string, updates map[string]any) error {
+	_, _, updates = takeRelayRetainedUpdates(updates)
 	st, err := chParseSchema(s.db, &RelayLog{})
 	if err != nil {
 		return err
@@ -1111,11 +1113,30 @@ func (s *ClickHouseLogStore) DeleteUserAgentMapping(ctx context.Context, id stri
 // per affected part whether it matches 100 rows or all of them, so batching
 // by id would rewrite the same part once per batch (#7098). The returned
 // count is selected before the delete because mutations never report rows
-// affected. The LogsCleaner loop stops after this call because the count
-// differs from batchSize; when it happens to equal batchSize the next call
-// finds nothing and returns 0 without issuing a mutation.
+// affected. The LogsCleaner loop stops on a count above batchSize; otherwise
+// it calls again, and chRetentionDelete answers that call with 0.
 func (s *ClickHouseLogStore) DeleteLogsBatch(ctx context.Context, cutoff time.Time, _ int) (int64, error) {
-	return s.chDeleteWhere(ctx, "logs", "created_at < ?", cutoff)
+	return s.chRetentionDelete(ctx, "logs", "created_at", cutoff)
+}
+
+// chRetentionDelete runs one retention delete per table and cutoff. The
+// cleaner keeps calling until a batch deletes nothing, but one lightweight
+// delete already removes every row before cutoff. lightweight_deletes_sync = 1
+// only waits for the replica that ran it, so on a cluster a repeat count could
+// reach a replica that has not applied it yet and issue the same mutation
+// again. A pass uses one cutoff per table, so a repeat call for the cutoff
+// already deleted returns 0 without a query. retentionCutoffs holds one
+// time.Time per retention table.
+func (s *ClickHouseLogStore) chRetentionDelete(ctx context.Context, table, column string, cutoff time.Time) (int64, error) {
+	if last, ok := s.retentionCutoffs.Load(table); ok && last.(time.Time).Equal(cutoff) {
+		return 0, nil
+	}
+	deleted, err := s.chDeleteWhere(ctx, table, column+" < ?", cutoff)
+	if err != nil {
+		return 0, err
+	}
+	s.retentionCutoffs.Store(table, cutoff)
+	return deleted, nil
 }
 
 // DeleteLog deletes a log entry by id with a lightweight delete, and with it
@@ -1229,6 +1250,14 @@ func (s *ClickHouseLogStore) FlushMCPToolLogs(ctx context.Context, since time.Ti
 func (s *ClickHouseLogStore) FlushAgentLogs(ctx context.Context, since time.Time) error {
 	if err := s.chFlushProcessing(ctx, "agent_logs", since); err != nil {
 		return fmt.Errorf("failed to cleanup old processing A2A logs: %w", err)
+	}
+	return nil
+}
+
+// FlushRelayLogs removes stale processing relay log rows. See Flush.
+func (s *ClickHouseLogStore) FlushRelayLogs(ctx context.Context, since time.Time) error {
+	if err := s.chFlushProcessing(ctx, "relay_logs", since); err != nil {
+		return fmt.Errorf("failed to cleanup old processing relay logs: %w", err)
 	}
 	return nil
 }
@@ -1606,7 +1635,7 @@ func (s *ClickHouseLogStore) DeleteWarpTopicAssignmentsUnmatchedSince(ctx contex
 // created before cutoff with one lightweight delete; see DeleteLogsBatch for
 // why batchSize is ignored.
 func (s *ClickHouseLogStore) DeleteWarpTopicAssignmentsBatch(ctx context.Context, cutoff time.Time, _ int) (int64, error) {
-	return s.chDeleteWhere(ctx, "warp_topic_assignments", "created_at < ?", cutoff)
+	return s.chRetentionDelete(ctx, "warp_topic_assignments", "created_at", cutoff)
 }
 
 // AddWarpTopicUnmatched puts requests in the unmatched pool.
@@ -1682,7 +1711,7 @@ func (s *ClickHouseLogStore) DeleteWarpTopics(ctx context.Context, ids []string)
 // DeleteWarpTopicUnmatchedBatch deletes every pool row whose log was created
 // before cutoff with one lightweight delete.
 func (s *ClickHouseLogStore) DeleteWarpTopicUnmatchedBatch(ctx context.Context, cutoff time.Time, _ int) (int64, error) {
-	return s.chDeleteWhere(ctx, "warp_topic_unmatched", "created_at < ?", cutoff)
+	return s.chRetentionDelete(ctx, "warp_topic_unmatched", "created_at", cutoff)
 }
 
 // BatchCreateRelayLogsIfNotExists inserts Relay Logs rows whose IDs are absent and
@@ -1736,7 +1765,7 @@ func (s *ClickHouseLogStore) BatchCreateRelayLogsIfNotExists(ctx context.Context
 // DeleteRelayLogsBatch removes Relay Logs rows older than cutoff, as DeleteLogsBatch does for the
 // request logs, so the retention cleaner prunes relay rows on ClickHouse too.
 func (s *ClickHouseLogStore) DeleteRelayLogsBatch(ctx context.Context, cutoff time.Time, _ int) (int64, error) {
-	return s.chDeleteWhere(ctx, "relay_logs", "timestamp < ?", cutoff)
+	return s.chRetentionDelete(ctx, "relay_logs", "timestamp", cutoff)
 }
 
 func (s *ClickHouseLogStore) DeleteRelayLogs(ctx context.Context, ids []string) error {

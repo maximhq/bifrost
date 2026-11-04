@@ -207,7 +207,10 @@ type PrometheusPlugin struct {
 	MCPToolDuration                *prometheus.HistogramVec
 	A2AOperationDuration           *prometheus.HistogramVec
 	RelayOperationDuration         *prometheus.HistogramVec
+	RelayUpstreamDuration          *prometheus.HistogramVec
+	RelayOverheadLatency           *prometheus.HistogramVec
 	RelayCostTotal                 *prometheus.CounterVec
+	relayCustomLabels              []string // custom labels on the relay metrics, after the relay labels
 	customLabels                   []string
 
 	defaultHTTPLabels    []string
@@ -719,15 +722,36 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 	}, a2aMetricLabelNames)
 
 	// Relay calls are plain HTTP round trips; _count gives volume and error_type the error rate.
+	// They carry the custom labels (x-bf-dim-* dimensions) as the LLM metrics do, except one that
+	// would repeat a relay label.
+	var relayCustomLabels []string
+	for _, label := range filteredCustomLabels {
+		if !containsLabel(relayMetricLabelNames, label) {
+			relayCustomLabels = append(relayCustomLabels, label)
+		}
+	}
+	relayLabels := append(append(make([]string, 0, len(relayMetricLabelNames)+len(relayCustomLabels)), relayMetricLabelNames...), relayCustomLabels...)
+	// The relay latency metrics use the LLM latency buckets, as a passthrough call's metrics do, so a
+	// long stream (a speech or a report) is not folded into a 300s top bucket.
 	relayDuration := factory.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "bifrost_relay_operation_duration_seconds",
-		Help:    "Duration of a relay call to a non-LLM upstream API as observed by Bifrost.",
-		Buckets: mcpOperationDurationBuckets,
-	}, relayMetricLabelNames)
+		Help:    "Duration of a relay call to a non-LLM upstream API as observed by Bifrost, from the gateway to the end of the reply.",
+		Buckets: upstreamLatencyBuckets,
+	}, relayLabels)
+	relayUpstreamDuration := factory.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "bifrost_relay_upstream_socket_duration_seconds",
+		Help:    "Time a relay call spent blocked on its upstream API's socket (the upstream half of the overhead split).",
+		Buckets: upstreamLatencyBuckets,
+	}, relayLabels)
+	relayOverhead := factory.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "bifrost_relay_overhead_latency_microseconds",
+		Help:    "Latency Bifrost added to a relay call, in microseconds: total call time minus time blocked on the upstream, as bifrost_overhead_latency_microseconds measures it for LLM calls.",
+		Buckets: overheadLatencyBuckets,
+	}, relayLabels)
 	relayCost := factory.NewCounterVec(prometheus.CounterOpts{
 		Name: "bifrost_relay_cost_total",
 		Help: "USD charged for relay calls.",
-	}, relayMetricLabelNames)
+	}, relayLabels)
 
 	plugin := &PrometheusPlugin{
 		logger:                         logger,
@@ -767,7 +791,10 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		MCPToolDuration:                bifrostMCPToolDuration,
 		A2AOperationDuration:           a2aDuration,
 		RelayOperationDuration:         relayDuration,
+		RelayUpstreamDuration:          relayUpstreamDuration,
+		RelayOverheadLatency:           relayOverhead,
 		RelayCostTotal:                 relayCost,
+		relayCustomLabels:              relayCustomLabels,
 		customLabels:                   filteredCustomLabels,
 		defaultHTTPLabels:              defaultHTTPLabels,
 		defaultBifrostLabels:           defaultBifrostLabels,

@@ -1826,9 +1826,17 @@ func TestGetToolPerClient_AppOnlyToolsReachOnlySlugAppsCallers(t *testing.T) {
 		})
 		return bErr
 	}
-	bErr := call(newCtx(false, "", nil), "apps-refresh")
+	refused := newCtx(false, "", nil)
+	bErr := call(refused, "apps-refresh")
 	require.NotNil(t, bErr, "a model must not call an app-only tool")
 	assert.Contains(t, bErr.GetErrorString(), "only callable from an MCP App")
+	// The MCP log reads what the tool is from ctx, refused calls included.
+	assert.Equal(t, true, refused.Value(schemas.BifrostContextKeyMCPToolAppOnly))
+	assert.Equal(t, "ui://dash/view", refused.Value(schemas.BifrostContextKeyMCPToolUIResourceURI))
+	viewCall := newCtx(false, "", nil)
+	require.Nil(t, call(viewCall, "apps-view"))
+	assert.Nil(t, viewCall.Value(schemas.BifrostContextKeyMCPToolAppOnly), "a model-visible tool is not marked app-only")
+	assert.Equal(t, "ui://dash/view", viewCall.Value(schemas.BifrostContextKeyMCPToolUIResourceURI))
 	require.NotNil(t, call(newCtx(true, "apps", &mcpgo.ClientCapabilities{}), "apps-refresh"))
 	require.NotNil(t, call(newCtx(true, "", appsCaller), "apps-refresh"), "aggregate /mcp never calls app-only tools")
 	require.NotNil(t, call(schemas.NewBifrostContext(WithAllTools(context.Background()), schemas.NoDeadline), "apps-refresh"), "AllTools only lists")

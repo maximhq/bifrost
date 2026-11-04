@@ -634,6 +634,98 @@ func TestPerUserDiscovery_BindingsAreIsolated(t *testing.T) {
 	assert.Nil(t, store.GetDiscovery(modeContext(schemas.MCPAuthModeUser, "a"), other))
 }
 
+// TestPerUserDiscovery_TwoUsersThroughOneVirtualKeyEachKeepTheirOwn: callers
+// that share a virtual key but carry their own user identity are separate
+// callers, and the key's own binding is a third one, holding nothing either
+// user stored.
+func TestPerUserDiscovery_TwoUsersThroughOneVirtualKeyEachKeepTheirOwn(t *testing.T) {
+	store := NewPerUserStore(newFakeConfigStore(), nil)
+	throughKey := func(user string) *schemas.BifrostContext {
+		ctx := userContext(user)
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-shared")
+		return ctx
+	}
+	require.NoError(t, store.SetDiscovery(throughKey("alice"), notesClient(), notesDiscovery("search")))
+	require.NoError(t, store.SetDiscovery(throughKey("bob"), notesClient(), notesDiscovery("create_page")))
+
+	alice := store.GetDiscovery(throughKey("alice"), notesClient())
+	require.NotNil(t, alice)
+	assert.Equal(t, []string{"notes-search"}, sortedToolNames(alice))
+	bob := store.GetDiscovery(throughKey("bob"), notesClient())
+	require.NotNil(t, bob)
+	assert.Equal(t, []string{"notes-create_page"}, sortedToolNames(bob))
+	assert.Nil(t, store.GetDiscovery(vkContext("vk-shared"), notesClient()), "the key on its own holds neither user's discovery")
+	assert.Nil(t, store.GetDiscovery(throughKey("carol"), notesClient()), "another user through the same key holds nothing")
+}
+
+// TestPerUserStore_ManyCallersInParallelNeverReadAnothersDiscovery: callers in
+// both modes write, read, evict and reload in parallel, half of them holding
+// one shared discovery and the rest one each. Every read is nil or exactly the
+// caller's own tools, and no read changes the copy the shared callers hold.
+// Run with -race.
+func TestPerUserStore_ManyCallersInParallelNeverReadAnothersDiscovery(t *testing.T) {
+	db := newFakeConfigStore()
+	store := NewPerUserStore(db, nil)
+	const callers, rounds = 24, 200
+	ownTool := func(i int) string {
+		if i%2 == 0 {
+			return "shared"
+		}
+		return fmt.Sprintf("only_%d", i)
+	}
+	type caller struct {
+		mode     schemas.MCPAuthMode
+		identity string
+		tool     string
+	}
+	all := make([]caller, callers)
+	for i := range all {
+		mode := schemas.MCPAuthModeUser
+		if i%3 == 0 {
+			mode = schemas.MCPAuthModeVK
+		}
+		all[i] = caller{mode: mode, identity: fmt.Sprintf("caller-%d", i), tool: ownTool(i)}
+	}
+
+	var wg sync.WaitGroup
+	var failures sync.Map
+	for _, c := range all {
+		wg.Add(1)
+		go func(c caller) {
+			defer wg.Done()
+			ctx := modeContext(c.mode, c.identity)
+			want := []string{"notes-" + c.tool}
+			for r := 0; r < rounds; r++ {
+				switch r % 6 {
+				case 0:
+					if err := store.SetDiscovery(ctx, notesClient(), notesDiscovery(c.tool)); err != nil {
+						failures.Store(c.identity+": write", err.Error())
+					}
+				case 3:
+					store.EvictDiscovery(c.mode, c.identity, "client-notes")
+				case 5:
+					store.EvictDiscoveriesByMCPClient("client-notes")
+				default:
+					if got := store.GetDiscovery(ctx, notesClient()); got != nil && !reflect.DeepEqual(sortedToolNames(got), want) {
+						failures.Store(fmt.Sprintf("%s: round %d", c.identity, r), sortedToolNames(got))
+					}
+				}
+			}
+		}(c)
+	}
+	wg.Wait()
+	failures.Range(func(k, v any) bool {
+		t.Errorf("%v read %v", k, v)
+		return true
+	})
+
+	for _, c := range all {
+		got := store.GetDiscovery(modeContext(c.mode, c.identity), notesClient())
+		require.NotNil(t, got, c.identity)
+		assert.Equal(t, []string{"notes-" + c.tool}, sortedToolNames(got), c.identity)
+	}
+}
+
 func TestDiscovery_OnlyUserAndVirtualKeyCallersHaveOne(t *testing.T) {
 	db := newFakeConfigStore()
 	store := NewPerUserStore(db, nil)
@@ -1039,4 +1131,14 @@ func BenchmarkGetDiscovery_NotAMember(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_ = store.GetDiscovery(ctx, client)
 	}
+}
+
+// sortedToolNames lists a discovery's tool names in order.
+func sortedToolNames(d *schemas.MCPDiscovery) []string {
+	names := make([]string, 0, len(d.Tools))
+	for name := range d.Tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

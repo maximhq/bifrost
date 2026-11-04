@@ -67,6 +67,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/passthroughparse"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
@@ -3768,6 +3769,8 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	if cfg.ProviderDetector != nil {
 		provider = cfg.ProviderDetector(ctx, bodyModel)
 	}
+	// The route's provider is the API its bodies speak: a custom provider is accepted below only when it is based on it.
+	baseProvider := provider
 	// Host-backed routes have a fixed upstream and route list, so only their own provider serves them.
 	provider, err = getPassthroughProvider(ctx, g.handlerStore, provider, cfg.UpstreamURL == "")
 	if err != nil {
@@ -3787,16 +3790,18 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	isStreaming := cfg.streams(string(ctx.Method()), path, bodyStream || passthroughQueryStreams(string(ctx.Method()), string(ctx.URI().QueryString())))
 
 	passthroughReq := &schemas.BifrostPassthroughRequest{
-		Method:      string(ctx.Method()),
-		Path:        path,
-		APIVersion:  apiVersion,
-		RawQuery:    string(ctx.URI().QueryString()),
-		UpstreamURL: cfg.UpstreamURL,
-		Body:        body,
-		SafeHeaders: safeHeaders,
-		Provider:    provider,
-		Model:       resolvedModel,
+		Method:       string(ctx.Method()),
+		Path:         path,
+		APIVersion:   apiVersion,
+		RawQuery:     string(ctx.URI().QueryString()),
+		UpstreamURL:  cfg.UpstreamURL,
+		Body:         body,
+		SafeHeaders:  safeHeaders,
+		Provider:     provider,
+		BaseProvider: baseProvider,
+		Model:        resolvedModel,
 	}
+	registerPassthroughTextRewriters(bifrostCtx, passthroughparse.Classify(baseProvider, resolvedModel, passthroughReq.Method, path))
 
 	if isStreaming {
 		g.handlePassthroughStream(ctx, bifrostCtx, cancel, provider, passthroughReq)

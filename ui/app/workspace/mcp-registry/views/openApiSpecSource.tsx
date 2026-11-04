@@ -197,25 +197,23 @@ export function OpenAPISpecSource({
 				</TabsContent>
 
 				<TabsContent value="url" className="mt-2 space-y-2">
-					<div className="flex items-center gap-3">
-						<Label htmlFor="openapi-spec-url" className="shrink-0">
-							{t("openapi.source.specUrl")}
-						</Label>
-						<Input
-							id="openapi-spec-url"
-							className="min-w-0 flex-1"
-							data-testid="openapi-spec-url-input"
-							placeholder="https://api.example.com/openapi.json"
-							value={specUrl}
-							disabled={disabled}
-							onChange={(e) => onSpecUrlChange(e.target.value)}
-							aria-invalid={!!specUrlError}
-						/>
-						{controls.showButton && parseButton}
+					<div className="flex flex-col gap-2">
+						<Label htmlFor="openapi-spec-url">{t("openapi.source.specUrl")}</Label>
+						<div className="flex items-center gap-2">
+							<Input
+								id="openapi-spec-url"
+								className="min-w-0 flex-1"
+								data-testid="openapi-spec-url-input"
+								placeholder="https://api.example.com/openapi.json"
+								value={specUrl}
+								disabled={disabled}
+								onChange={(e) => onSpecUrlChange(e.target.value)}
+								aria-invalid={!!specUrlError}
+							/>
+							{controls.showButton && parseButton}
+						</div>
 					</div>
-					<p className="text-muted-foreground text-xs">
-						{urlHint ?? t("openapi.source.urlHelp")}
-					</p>
+					<p className="text-muted-foreground text-xs">{urlHint ?? t("openapi.source.urlHelp")}</p>
 				</TabsContent>
 
 				<TabsContent value="upload" className="mt-2 space-y-2">
