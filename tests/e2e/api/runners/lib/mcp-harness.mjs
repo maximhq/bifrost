@@ -202,3 +202,143 @@ export const vkCreate = (id, title, body, varPrefix) => request(id, title, "POST
 });
 
 export const vkDelete = (id, title, varPrefix) => request(id, title, "DELETE", `/api/governance/virtual-keys/{{${varPrefix}_id}}`, { asserts: [A.status(200)] });
+
+// Upstream OAuth against the mock's authorization server: fleet servers as OAuth protected resources, OAuth
+// and per-user OAuth clients, the consent and callback steps, per-user flows and the MCP sessions list.
+
+export const mockAuth = (id, server, title, auth) => mockPost(id, server, "auth", title, { auth });
+export const identityCalls = (identity, n) => A.custom(`calls_by_identity[${identity}] is ${n}`, [`pm.expect((pm.response.json().counters.calls_by_identity || {})[${lit(identity)}], 'body: ' + pm.response.text()).to.equal(${n});`]);
+export const identityCallsAre = (map) => A.custom(`calls_by_identity is ${lit(map)}`, [`pm.expect(pm.response.json().counters.calls_by_identity || {}, 'body: ' + pm.response.text()).to.eql(${lit(map)});`]);
+export const noIdentity = (identity) => A.custom(`calls_by_identity has no ${identity}`, [`pm.expect(pm.response.json().counters.calls_by_identity || {}, 'body: ' + pm.response.text()).to.not.have.property(${lit(identity)});`]);
+// serveTools re-adds a fleet server and gives it full tool definitions (annotations, replies, faults).
+export const serveTools = (id, name, tools, title) => [
+  request(id, `setup: fresh mcpchaos server ${name}`, "POST", "/control", { base: CHAOS, noAuth: true, body: { add: name }, asserts: [A.status(200)] }),
+  request(id, `setup: ${name} serves ${title}`, "POST", `/control/${name}/tools/set`, { base: CHAOS, noAuth: true, body: { tools }, asserts: [A.status(200)] }),
+];
+// ALLOWLIST_TEXT names the private allowlist entry that lets Bifrost dial the mock's authorization server on loopback.
+export const ALLOWLIST_TEXT = "mcp_oauth_private_allowlist [\"127.0.0.1\"]";
+export const allowlistOn = (id) => [readConfig(id), putConfig(id, `setup: ${ALLOWLIST_TEXT}`, ["cc.mcp_oauth_private_allowlist = ['127.0.0.1'];"], [A.status(200)])];
+// asServer re-adds a fleet server (echo_tool and add_tool unless tools are given) and makes it an OAuth protected
+// resource with its own authorization server configured by cfg.
+export const asServer = (id, name, cfg = {}, tools) => [
+  ...(tools ? serveTools(id, name, tools.list, tools.title) : freshServer(id, name, ["echo_tool", "add_tool"])),
+  mockAuth(id, name, `setup: ${name} is an OAuth protected resource with its own authorization server${Object.keys(cfg).length ? " (" + lit(cfg) + ")" : ""}`, { oauth: cfg }),
+];
+export const oauthBody = (clientId, name, server, over = {}) => ({ client_id: clientId, name, connection_type: "http", connection_string: `${CHAOS}/s/${server}/mcp`, auth_type: "oauth", oauth_config: {}, tools_to_execute: ["*"], ...over });
+// createOAuth creates an OAuth client and keeps its oauth_config_id and authorize_url in <p>_oc and <p>_au.
+export const createOAuth = (id, title, body, p, asserts = []) => request(id, title, "POST", "/api/mcp/client", {
+  body, asserts: [A.status(200), ...asserts],
+  extraTests: [`pm.collectionVariables.set('${p}_oc', pm.response.json().oauth_config_id);`, `pm.collectionVariables.set('${p}_au', pm.response.json().authorize_url);`],
+});
+// consentAs follows <p>_au on the mock without following the redirect, approving as identity (login_hint), and keeps
+// the Location, Bifrost's callback, in <p>_cb.
+export const consentAs = (id, title, p, identity, asserts = [A.status(302)]) => request(id, title, "GET", identity ? `&login_hint=${identity}` : "", {
+  base: `{{${p}_au}}`, noAuth: true, noRedirect: true, noCookies: true, asserts,
+  extraTests: [`pm.collectionVariables.set('${p}_cb', pm.response.headers.get('Location'));`],
+});
+export const followCallback = (id, title, p, asserts) => request(id, title, "GET", "", { base: `{{${p}_cb}}`, noAuth: true, noRedirect: true, noCookies: true, asserts });
+export const completeOAuth = (id, title, p, asserts) => request(id, title, "POST", `/api/mcp/client/{{${p}_oc}}/complete-oauth`, { asserts });
+export const oauthStatus = (id, title, p, query, asserts, extraTests = []) => request(id, title, "GET", `/api/oauth/config/{{${p}_oc}}/status${query}`, { asserts: [A.status(200), ...asserts], extraTests });
+export const locationEnds = (s) => A.custom(`Location ends ${lit(s)}`, [
+  "var loc = pm.response.headers.get('Location') || '';",
+  `pm.expect(loc.slice(-${s.length}), 'Location: ' + loc).to.equal(${lit(s)});`,
+]);
+export const SUCCESS_CB = "/workspace/mcp-registry/oauth-callback?status=success";
+export const callbackSuccess = () => [A.status(302), locationEnds(SUCCESS_CB)];
+// connectOAuth creates an OAuth client and takes it through consent, callback and complete.
+export const connectOAuth = (id, body, p, identity, label) => [
+  createOAuth(id, `setup: create ${label}`, body, p),
+  consentAs(id, `setup: consent for ${label}${identity ? " as " + identity : ""}`, p, identity),
+  followCallback(id, `setup: follow the callback for ${label}`, p, callbackSuccess()),
+  completeOAuth(id, `setup: complete ${label}`, p, [A.status(200)]),
+];
+// QS_FN parses a URL's query string into an object (ES5, for test scripts).
+export const QS_FN = "function qs(u) { var o = {}; (String(u).split('?')[1] || '').split('#')[0].split('&').forEach(function (kv) { var i = kv.indexOf('='); if (i > 0) { o[decodeURIComponent(kv.slice(0, i))] = decodeURIComponent(kv.slice(i + 1).replace(/\\+/g, ' ')); } }); return o; }";
+export const statusIs = (v) => A.custom(`status is ${lit(v)}`, [`pm.expect(pm.response.json().status, 'body: ' + pm.response.text()).to.equal(${lit(v)});`]);
+export const credStatus = (v) => A.custom(`credential status is ${lit(v)}`, [`pm.expect((pm.response.json().clients[0].credential || {}).status, 'body: ' + pm.response.text()).to.equal(${lit(v)});`]);
+// PU_TEXT describes the config per-user OAuth tests run with; a per_user_oauth client is verified at create time by an
+// admin consent (login_hint admin), and callers then consent as their own identity through the per-user flow.
+export const PU_TEXT = (tempTokens) => `${ALLOWLIST_TEXT}, mcp_enable_temp_token_auth ${tempTokens}`;
+export const puConfig = (id, tempTokens) => [readConfig(id), putConfig(id, `setup: ${PU_TEXT(tempTokens)}`, ["cc.mcp_oauth_private_allowlist = ['127.0.0.1'];", `cc.mcp_enable_temp_token_auth = ${tempTokens};`], [A.status(200)])];
+export const PU_SERVER_TEXT = (p, cfgText = "") => `a fleet server ${p} (echo_tool, add_tool) as an OAuth protected resource with dynamic registration${cfgText}; a per_user_oauth client ${p} on it with tools_to_execute ["*"]`;
+export const puBody = (p) => oauthBody(`${p}-u`, p, p, { auth_type: "per_user_oauth" });
+// puConnect creates a per_user_oauth client (with over merged into its config) and verifies it by consenting as admin.
+export const puConnect = (id, p, cfg = {}, over = {}, tools) => [
+  ...asServer(id, p, cfg, tools),
+  createOAuth(id, "setup: create the per-user OAuth client", { ...puBody(p), ...over }, p),
+  consentAs(id, "setup: consent for the per-user OAuth client as admin", p, "admin"),
+  followCallback(id, "setup: follow the callback for the per-user OAuth client", p, callbackSuccess()),
+  completeOAuth(id, "setup: complete the per-user OAuth client", p, [A.status(200)]),
+];
+export const PU_FLOWS = "/api/oauth/per-user/flows/";
+export const PU_SUCCESS = "/workspace/mcp-sessions/auth-success";
+export const flowDetail = (id, title, v, asserts, opts = {}) => request(id, title, "GET", `${PU_FLOWS}{{${v}}}`, { ...opts, asserts });
+// flowStart keeps the authorize_url it returns in <v>_au, which consentAs follows.
+export const flowStart = (id, title, v, asserts = [A.status(200)], opts = {}) => request(id, title, "GET", `${PU_FLOWS}{{${v}}}/start`, {
+  ...opts, asserts, extraTests: [`pm.collectionVariables.set('${v}_au', pm.response.json().authorize_url || '');`],
+});
+// puFinish takes flow v through start, consent as identity and the callback, which lands on the public success page.
+export const puFinish = (id, v, identity, label) => [
+  flowStart(id, `setup: start ${label}`, v),
+  consentAs(id, `setup: consent for ${label} as ${identity}`, v, identity),
+  followCallback(id, `setup: follow the callback for ${label}`, v, [A.status(302), locationEnds(PU_SUCCESS)]),
+];
+// TT sends only flow v's temp token, kept in <v>_tt by authFlow.
+export const TT = (v) => ({ noAuth: true, noCookies: true, headers: [{ key: "X-Bifrost-Temp-Token", value: `{{${v}_tt}}` }] });
+// keepFlow keeps the flow id of a 400's mcp_auth_required in v; with otherThan it also checks the flow is a new one.
+export const keepFlow = (v, otherThan) => A.custom(`mcp_auth_required kind "oauth" names a flow${otherThan ? ", a new one" : ""}`, [
+  "var r = (pm.response.json().extra_fields || {}).mcp_auth_required;",
+  "pm.expect(r && r.kind, 'body: ' + pm.response.text()).to.equal('oauth');",
+  "pm.expect(r.session_id, 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+  ...(otherThan ? [`pm.expect(r.session_id).to.not.equal(pm.collectionVariables.get(${lit(otherThan)}));`] : []),
+  `pm.collectionVariables.set(${lit(v)}, r.session_id);`,
+]);
+// authFlow checks a 400's mcp_auth_required in full: kind "oauth", authorize_url ending /workspace/mcp-sessions/auth?flow=<flow id>
+// and session_id equal to that flow id. Without temp tokens: no #t= and the exact message. With them: a #t= token, kept in <saveAs>_tt, and
+// the required-fragment notice. saveAs keeps F; sameAs checks F against a kept one.
+export const authFlow = (name, { saveAs, sameAs, tempToken = false }) => A.custom(`mcp_auth_required kind "oauth", authorize_url .../workspace/mcp-sessions/auth?flow=<flow id>${tempToken ? "#t=<token>" : " with no #t="}, session_id is the flow id${sameAs ? ", the same flow id" : ""}, ${tempToken ? "message has \"IMPORTANT: this link includes a required fragment\"" : `message "Authentication required for ${name}. Visit <url> to connect your account."`}`, [
+  "var r = (pm.response.json().extra_fields || {}).mcp_auth_required;",
+  "pm.expect(r, 'body: ' + pm.response.text()).to.be.an('object');",
+  "pm.expect(r.kind).to.equal('oauth');",
+  "var m = /\\/workspace\\/mcp-sessions\\/auth\\?flow=([^&#]+)(#t=(.*))?$/.exec(r.authorize_url);",
+  "pm.expect(m, 'authorize_url: ' + r.authorize_url).to.not.equal(null);",
+  "pm.expect(r.session_id).to.equal(m[1]);",
+  ...(tempToken ? [
+    "pm.expect(m[3], 'authorize_url: ' + r.authorize_url).to.be.a('string').and.not.empty;",
+    "pm.expect(r.message).to.include('IMPORTANT: this link includes a required fragment');",
+    ...(saveAs ? [`pm.collectionVariables.set(${lit(saveAs + "_tt")}, m[3]);`] : []),
+  ] : [
+    "pm.expect(r.authorize_url, 'authorize_url').to.not.include('#t=');",
+    `pm.expect(r.message).to.equal(${lit(`Authentication required for ${name}. Visit `)} + r.authorize_url + ' to connect your account.');`,
+  ]),
+  ...(saveAs ? [`pm.collectionVariables.set(${lit(saveAs)}, m[1]);`] : []),
+  ...(sameAs ? [`pm.expect(m[1]).to.equal(pm.collectionVariables.get(${lit(sameAs)}));`] : []),
+]);
+// startUrl checks a flow start's authorize_url: server p's authorize endpoint with a client_id, S256, a state and
+// Bifrost's callback as redirect_uri.
+export const startUrl = (p) => A.custom(`authorize_url is ${p}'s authorize endpoint with client_id, S256, a state and the callback redirect_uri`, [QS_FN,
+  "var u = pm.response.json().authorize_url;",
+  `pm.expect(u, 'body: ' + pm.response.text()).to.include(${lit(`/s/${p}/as/authorize?`)});`,
+  "var q = qs(u);",
+  "pm.expect(q.client_id, 'query').to.be.a('string').and.not.empty;",
+  "pm.expect(q.code_challenge_method, 'query').to.equal('S256');",
+  "pm.expect(q.code_challenge, 'query').to.be.a('string').and.not.empty;",
+  "pm.expect(q.state, 'query').to.be.a('string').and.not.empty;",
+  "pm.expect(/\\/api\\/oauth\\/callback$/.test(q.redirect_uri || ''), 'redirect_uri ' + q.redirect_uri).to.equal(true);",
+]);
+// The sessions list is read whole (limit 500) and filtered here by client and an ES5 predicate on the entry s.
+export const SESSIONS = "/api/mcp/sessions?limit=500";
+export const sessionRows = (clientId, pred) => `var found = (pm.response.json().sessions || []).filter(function (s) { return s.mcp_client && s.mcp_client.client_id === ${lit(clientId)} && (${pred}); });`;
+export const saveSession = (id, title, clientId, pred, v) => request(id, title, "GET", SESSIONS, {
+  asserts: [A.status(200), A.custom("exactly one matching entry", [sessionRows(clientId, pred), "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(1);"])],
+  extraTests: [sessionRows(clientId, pred), `pm.collectionVariables.set(${lit(v)}, found.length ? found[0].id : '');`],
+});
+export const sessionsHas = (id, title, clientId, pred, what) => request(id, title, "GET", SESSIONS, {
+  asserts: [A.status(200), A.custom(what, [sessionRows(clientId, pred), "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(1);"])],
+});
+export const vkPred = (v) => `s.kind === 'token' && s.virtual_key && s.virtual_key.id === pm.collectionVariables.get(${lit(v + "_id")})`;
+export const sessionPred = (sid) => `s.kind === 'token' && s.session_id === ${lit(sid)}`;
+// puVK creates a virtual key granted every tool of client p, keeping its id and value in v_id and v.
+export const puVK = (id, label, p, v) => vkCreate(id, `setup: create the ${label} VK, granted every tool of ${p}`, { name: `${id} ${label} key`, mcp_configs: [{ mcp_client_name: p, tools_to_execute: ["*"] }] }, v);
+export const vkExec = (v) => ({ headers: [{ key: "x-bf-vk", value: `{{${v}}}` }] });
+export const credKind = (v) => A.custom(`credential kind is ${lit(v)}`, [`pm.expect((pm.response.json().clients[0].credential || {}).kind, 'body: ' + pm.response.text()).to.equal(${lit(v)});`]);

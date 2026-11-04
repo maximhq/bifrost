@@ -3,7 +3,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { A, AUTH, CHAOS, MCP_ACCEPT, folder, mockPost, request, rpc, vkCreate } from "./mcp-harness.mjs";
+import { A, AUTH, CHAOS, MCP_ACCEPT, PU_FLOWS, consentAs, flowStart, folder, identityCalls, mockPost, puConnect, request, rpc, vkCreate } from "./mcp-harness.mjs";
 
 test("request defaults to the base URL, the admin header and JSON bodies", () => {
   const item = request("T-01", "create a thing", "POST", "/api/things", { body: { a: 1 }, asserts: [A.status(200)] });
@@ -45,4 +45,21 @@ test("rpc, mockPost and vkCreate address the gateway, the fleet and governance",
 
 test("folder groups items under a name and description", () => {
   assert.deepEqual(folder("T-05 a test", "Setup: none.", []), { name: "T-05 a test", description: "Setup: none.", item: [] });
+});
+
+test("the upstream OAuth helpers address the mock's consent, Bifrost's per-user flows and the identity counters", () => {
+  const c = consentAs("T-06", "consent as alice", "srv", "alice");
+  assert.equal(c.request.url, "{{srv_au}}&login_hint=alice");
+  assert.deepEqual(c.protocolProfileBehavior, { followRedirects: false, disableCookies: true });
+  assert.ok(c.event[0].script.exec.includes("pm.collectionVariables.set('srv_cb', pm.response.headers.get('Location'));"));
+  const f = flowStart("T-06", "start the flow", "f1");
+  assert.equal(f.request.url, `{{base_url}}${PU_FLOWS}{{f1}}/start`);
+  const connect = puConnect("T-06", "srv");
+  assert.deepEqual(connect.map((i) => i.name.replace("T-06 ", "")).slice(-4), [
+    "setup: create the per-user OAuth client",
+    "setup: consent for the per-user OAuth client as admin",
+    "setup: follow the callback for the per-user OAuth client",
+    "setup: complete the per-user OAuth client",
+  ]);
+  assert.equal(identityCalls("alice", 2).title, "calls_by_identity[alice] is 2");
 });
