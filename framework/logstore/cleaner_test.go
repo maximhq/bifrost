@@ -281,3 +281,31 @@ func TestDrainExpiredContinuesPastShortBatch(t *testing.T) {
 	require.True(t, cleaner.drainExpired(context.Background(), "logs", time.Now(), m.DeleteLogsBatch))
 	assert.Equal(t, 5, m.calls, "only the empty fifth batch ends the drain")
 }
+
+// Another replica holding the table's lock ends this replica's drain of that
+// table quietly, and the pass still moves on to the other tables.
+func TestDrainExpiredYieldsToLockHolder(t *testing.T) {
+	m := &scriptedRetention{results: []scriptedBatch{{deleted: batchSize}, {err: ErrRetentionBusy}, {deleted: batchSize}}}
+	cleaner := NewLogsCleaner(m, CleanerConfig{RetentionDays: 3}, testLogger{})
+	require.True(t, cleaner.drainExpired(context.Background(), "logs", time.Now(), m.DeleteLogsBatch), "yielding is not a failure")
+	assert.Equal(t, 2, m.calls, "no batch may follow the yield")
+
+	manager := &fullRetention{}
+	manager.logs.err = ErrRetentionBusy
+	manager.assignments.expired = 4
+	NewLogsCleaner(manager, CleanerConfig{RetentionDays: 3}, testLogger{}).cleanupOldLogs(context.Background())
+	assert.Zero(t, manager.assignments.expired, "a busy logs table must not hold up the tables after it")
+}
+
+// Retention keys share Postgres' advisory key space with every other lock, so a shared key makes
+// replicas yield a table nobody is draining. 1000031 and 1000032 are held by enterprise.
+func TestRetentionAdvisoryLockKeysStayInOwnBlock(t *testing.T) {
+	seen := map[int64]string{}
+	for table, key := range retentionAdvisoryLockKeys {
+		assert.GreaterOrEqual(t, key, int64(1000040), table)
+		assert.LessOrEqual(t, key, int64(1000049), table)
+		assert.Empty(t, seen[key], "%s shares its key", table)
+		seen[key] = table
+	}
+	assert.Empty(t, seen[retentionAdvisoryLockKeyOther], "the fallback key must be its own")
+}

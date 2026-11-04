@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"context"
+	"errors"
 	"math/rand"
 	"sync"
 	"time"
@@ -240,7 +241,7 @@ func (c *LogsCleaner) cleanupOldLogs(ctx context.Context) {
 	}
 }
 
-// drainExpired calls deleteBatch until it deletes nothing or ctx ends.
+// drainExpired calls deleteBatch until it deletes nothing, another replica holds the table, or ctx ends.
 // It returns false when the table stopped early (cancellation or an error).
 func (c *LogsCleaner) drainExpired(ctx context.Context, label string, cutoff time.Time, deleteBatch func(context.Context, time.Time, int) (int64, error)) bool {
 	totalDeleted := int64(0)
@@ -263,6 +264,10 @@ func (c *LogsCleaner) drainExpired(ctx context.Context, label string, cutoff tim
 		}
 
 		deleted, err := deleteBatch(ctx, cutoff, batchSize)
+		if errors.Is(err, ErrRetentionBusy) {
+			c.logger.Debug("%s cleanup yielded to another replica after %d rows in %d batches", label, totalDeleted, batchCount)
+			return true
+		}
 		if err != nil {
 			c.logger.Error("failed to delete old %s: %v", label, err)
 			return false
