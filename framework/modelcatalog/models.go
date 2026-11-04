@@ -83,7 +83,7 @@ func (mc *ModelCatalog) computeModelsForProvider(provider schemas.ModelProvider)
 			datasheetModelsToAppend = nil
 		}
 		out = mc.appendAllowedDatasheetModels(out, datasheetModelsToAppend, allowed, blacklisted)
-	} else if datasheetModels := mc.datasheet.DatasheetModelsForProvider(provider); len(datasheetModels) > 0 && allowed != nil {
+	} else if datasheetModels := mc.datasheetModelsForProvider(provider); len(datasheetModels) > 0 && allowed != nil {
 		out = make([]string, 0, len(datasheetModels))
 		for _, m := range datasheetModels {
 			if blacklisted.IsBlocked(m) {
@@ -132,6 +132,35 @@ func (mc *ModelCatalog) computeModelsForProvider(provider schemas.ModelProvider)
 	return out
 }
 
+// datasheetModelsForProvider returns the datasheet rows for provider, minus the
+// deprecated ones for providers whose list-models is authoritative. Those
+// providers serve no deprecated model, so a stale datasheet row would surface a
+// model that fails upstream (see providersWithNoDeprecatedBackfill). Every other
+// provider keeps its deprecated rows, which stay callable after list-models
+// drops them.
+func (mc *ModelCatalog) datasheetModelsForProvider(provider schemas.ModelProvider) []string {
+	models := mc.datasheet.DatasheetModelsForProvider(provider)
+	if !providersWithNoDeprecatedBackfill[provider] || len(models) == 0 {
+		return models
+	}
+	deprecated := mc.datasheet.DeprecatedDatasheetModelsForProvider(provider)
+	if len(deprecated) == 0 {
+		return models
+	}
+	drop := make(map[string]struct{}, len(deprecated))
+	for _, m := range deprecated {
+		drop[m] = struct{}{}
+	}
+	out := make([]string, 0, len(models))
+	for _, m := range models {
+		if _, skip := drop[m]; skip {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
 func (mc *ModelCatalog) appendAllowedDatasheetModels(out []string, models []string, allowed schemas.WhiteList, blacklisted schemas.BlackList) []string {
 	if len(models) == 0 {
 		return out
@@ -164,7 +193,7 @@ func (mc *ModelCatalog) GetUnfilteredModelsForProvider(provider schemas.ModelPro
 	if providersWithListModelsOnly[provider] {
 		return liveModels
 	}
-	datasheetModels := mc.datasheet.DatasheetModelsForProvider(provider)
+	datasheetModels := mc.datasheetModelsForProvider(provider)
 	if len(liveModels) == 0 {
 		return datasheetModels
 	}

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/maximhq/bifrost/framework/modelcatalog/keyconfig"
 	"github.com/maximhq/bifrost/framework/modelcatalog/live"
@@ -574,4 +575,71 @@ func TestGetModelCreatedTimes(t *testing.T) {
 	if got := mc.GetModelCreatedTimes(schemas.OpenAI, false); !maps.Equal(got, map[string]int64{"model-a": 100}) {
 		t.Fatalf("unfiltered times must not leak into filtered reads: %v", got)
 	}
+}
+
+// TestGetModelsForProvider_SarvamSkipsDeprecatedDatasheetModels pins the
+// exclusion of Sarvam's deprecated datasheet rows. sarvam-m is a legacy /v1
+// model that Token Factory v2 does not serve (400 on /v1, 404 on /v2), so it
+// must not surface on any catalog path: the filtered list, the unfiltered list
+// the dashboard reads, or the reverse provider lookup.
+func TestGetModelsForProvider_SarvamSkipsDeprecatedDatasheetModels(t *testing.T) {
+	seed := func(t *testing.T) *ModelCatalog {
+		t.Helper()
+		mc := NewTestCatalog(nil)
+		mc.datasheet.SetPricingRowsForTest([]configstoreTables.TableModelPricing{
+			{Model: "sarvam-m", Provider: string(schemas.Sarvam), Mode: "chat", IsDeprecated: true},
+			{Model: "glm5.3-flash", Provider: string(schemas.Sarvam), Mode: "chat"},
+		})
+		return mc
+	}
+
+	t.Run("live list present", func(t *testing.T) {
+		mc := seed(t)
+		mc.UpsertLive(schemas.Sarvam, "k1", false, []string{"glm5.3-flash", "sarvam-105b"})
+
+		got := mc.GetModelsForProvider(schemas.Sarvam)
+		if slices.Contains(got, "sarvam-m") {
+			t.Fatalf("GetModelsForProvider(sarvam) = %v, want sarvam-m excluded", got)
+		}
+		for _, want := range []string{"glm5.3-flash", "sarvam-105b"} {
+			if !slices.Contains(got, want) {
+				t.Fatalf("GetModelsForProvider(sarvam) = %v, want %q retained", got, want)
+			}
+		}
+	})
+
+	t.Run("unfiltered list", func(t *testing.T) {
+		mc := seed(t)
+		mc.UpsertLive(schemas.Sarvam, "k1", false, []string{"glm5.3-flash"})
+
+		got := mc.GetUnfilteredModelsForProvider(schemas.Sarvam)
+		if slices.Contains(got, "sarvam-m") {
+			t.Fatalf("GetUnfilteredModelsForProvider(sarvam) = %v, want sarvam-m excluded", got)
+		}
+		if !slices.Contains(got, "glm5.3-flash") {
+			t.Fatalf("GetUnfilteredModelsForProvider(sarvam) = %v, want glm5.3-flash retained", got)
+		}
+	})
+
+	t.Run("live list empty", func(t *testing.T) {
+		mc := seed(t)
+		mc.keyconf.SetProvider(schemas.Sarvam, []schemas.Key{{ID: "k1", Models: schemas.WhiteList{"*"}}})
+
+		got := mc.GetModelsForProvider(schemas.Sarvam)
+		if slices.Contains(got, "sarvam-m") {
+			t.Fatalf("GetModelsForProvider(sarvam) with no live list = %v, want sarvam-m excluded", got)
+		}
+		if !slices.Contains(got, "glm5.3-flash") {
+			t.Fatalf("GetModelsForProvider(sarvam) with no live list = %v, want glm5.3-flash retained", got)
+		}
+	})
+
+	t.Run("reverse provider lookup", func(t *testing.T) {
+		mc := seed(t)
+		mc.keyconf.SetProvider(schemas.Sarvam, []schemas.Key{{ID: "k1", Models: schemas.WhiteList{"*"}}})
+
+		if got := mc.GetProvidersForModel("sarvam-m"); len(got) != 0 {
+			t.Fatalf("GetProvidersForModel(sarvam-m) = %v, want none", got)
+		}
+	})
 }
