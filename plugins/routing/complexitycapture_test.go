@@ -2,6 +2,8 @@ package routing
 
 import (
 	"context"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -152,4 +154,59 @@ func TestComplexityCaptureClosesWithPlugin(t *testing.T) {
 	st := p.ComplexityCaptureStats()
 	assert.False(t, st.Enabled)
 	assert.EqualValues(t, st.Queued, st.Written+st.Failed, "cleanup drains accepted samples")
+}
+
+// recordedDeletes is an in-memory CaptureDeleteRecorder.
+type recordedDeletes struct {
+	mu   sync.Mutex
+	rows []complexity.CaptureDelete
+}
+
+func (r *recordedDeletes) AddCaptureDeletes(_ context.Context, rows []complexity.CaptureDelete) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.rows = append(r.rows, rows...)
+	return nil
+}
+
+func (r *recordedDeletes) ListCaptureDeletes(_ context.Context, limit int) ([]complexity.CaptureDelete, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]complexity.CaptureDelete(nil), r.rows[:min(limit, len(r.rows))]...), nil
+}
+
+func (r *recordedDeletes) DeleteCaptureDeletes(_ context.Context, done []complexity.CaptureDelete) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	kept := r.rows[:0]
+	for _, row := range r.rows {
+		if !slices.Contains(done, row) {
+			kept = append(kept, row)
+		}
+	}
+	r.rows = kept
+	return nil
+}
+
+// A delete recorded for retry - here with no namespace, as one recorded
+// before the embedding space was known - is retried by the upkeep pass
+// against the serving capture space, and leaves the record once it is done.
+func TestComplexityCaptureUpkeepRetriesRecordedDeletes(t *testing.T) {
+	p := newCapturePlugin(t, &configstore.ComplexitySuggestionsConfig{Enabled: true, SampleRate: 1, LookbackDays: 7})
+	recorder := &recordedDeletes{}
+	p.SetComplexityCaptureDeleteRecorder(recorder)
+	for _, id := range []string{"a", "b"} {
+		classifyAs(t, p, id)
+	}
+	require.Eventually(t, func() bool { return p.ComplexityCaptureStats().Written == 2 }, 2*time.Second, 5*time.Millisecond)
+	ctx := context.Background()
+	require.NoError(t, recorder.AddCaptureDeletes(ctx, []complexity.CaptureDelete{{LogID: "a"}}))
+
+	p.captureUpkeepOnce(ctx, time.Now())
+	rows, err := recorder.ListCaptureDeletes(ctx, 10)
+	require.NoError(t, err)
+	assert.Empty(t, rows, "a retried delete leaves the record")
+	n, err := p.semanticClassifier.SweepCapturedRequests(ctx, time.Now().Add(time.Hour))
+	require.NoError(t, err)
+	assert.Equal(t, 1, n, "only b's vector was left for the sweep")
 }
