@@ -5617,3 +5617,67 @@ func BenchmarkToOpenAIResponsesRequestReasoningReplay(b *testing.B) {
 		})
 	}
 }
+
+// Codex replays assistant message items carrying summary:null and encrypted_content.
+// Those fields decode into the embedded ResponsesReasoning, which used to route the
+// item through reasoning handling: content was stripped (OpenAI: "Missing required
+// parameter: 'input[N].content'") and summary was re-emitted (OpenAI rejects it on a
+// message), or, for non-reasoning models, the whole assistant turn was dropped.
+// OpenAI never mints encrypted_content on a message item and rejects any it receives
+// ("Encrypted content could not be decrypted or parsed"), even its own reasoning token;
+// forwarding it cost a failed call whose fail-soft retry also strips the genuine reasoning
+// items. So the message drops it for every model while separate reasoning items keep theirs.
+func TestToOpenAIResponsesRequest_MessageItemWithEncryptedContent(t *testing.T) {
+	const reasoning = `{"type":"reasoning","id":"rs_keep","summary":[],"encrypted_content":"gAAAA-reasoning"}`
+	const assistant = `{"type":"message","role":"assistant","status":"completed","phase":"final_answer","content":[{"type":"output_text","text":"ok","annotations":[]}],"summary":null,"encrypted_content":"gAAAA"}`
+	tests := []struct {
+		name          string
+		model         string
+		withReasoning bool
+	}{
+		{name: "reasoning model drops encrypted_content from the message only", model: "gpt-5-mini", withReasoning: true},
+		{name: "non-reasoning model drops encrypted_content", model: "gpt-4o"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			history := assistant
+			if tt.withReasoning {
+				history = reasoning + "," + assistant
+			}
+			body := `{"model":"` + tt.model + `","input":[{"role":"user","content":"hi"},` + history + `,{"role":"user","content":"hi again"}]}`
+			var request OpenAIResponsesRequest
+			require.NoError(t, sonic.Unmarshal([]byte(body), &request))
+			bifrostRequest := request.ToBifrostResponsesRequest(nil)
+			bifrostRequest.Provider = schemas.OpenAI
+
+			wire, err := sonic.Marshal(ToOpenAIResponsesRequest(nil, bifrostRequest))
+			require.NoError(t, err)
+			var payload struct {
+				Input []map[string]json.RawMessage `json:"input"`
+			}
+			require.NoError(t, sonic.Unmarshal(wire, &payload))
+
+			var item map[string]json.RawMessage
+			var reasoningItems []map[string]json.RawMessage
+			for _, in := range payload.Input {
+				switch string(in["type"]) {
+				case `"message"`:
+					if string(in["role"]) == `"assistant"` {
+						item = in
+					}
+				case `"reasoning"`:
+					reasoningItems = append(reasoningItems, in)
+				}
+			}
+			require.NotNil(t, item, "assistant turn must not be dropped: %s", wire)
+			require.JSONEq(t, `[{"type":"output_text","text":"ok","annotations":[]}]`, string(item["content"]), "content must survive: %s", wire)
+			require.NotContains(t, item, "summary", "OpenAI rejects summary on a message item: %s", wire)
+			require.JSONEq(t, `"final_answer"`, string(item["phase"]))
+			require.NotContains(t, item, "encrypted_content", "OpenAI rejects encrypted_content on a message item: %s", wire)
+			if tt.withReasoning {
+				require.Len(t, reasoningItems, 1, "the reasoning item must still be replayed: %s", wire)
+				require.JSONEq(t, `"gAAAA-reasoning"`, string(reasoningItems[0]["encrypted_content"]), "a separate reasoning item keeps its token: %s", wire)
+			}
+		})
+	}
+}
