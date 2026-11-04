@@ -177,18 +177,13 @@ func TestChatMixedBlocksImageUntouched(t *testing.T) {
 }
 
 func TestChatTrimNotLongerThanOriginal(t *testing.T) {
-	// 21 long lines with head=0 tail=20: the marker costs more than the one removed line.
-	line := strings.Repeat("x", 120)
-	lines := make([]string, 21)
-	for i := range lines {
-		lines[i] = line
-	}
+	// Two tiny lines with head=0, tail=1: trimming would swap one 2-byte line
+	// for a ~48-byte marker, making the message longer, so it must be left as is.
+	tiny := "ab\nab"
 	s := defaults(t)
-	s.HeadLines, s.TailLines, s.MinTokens = 0, 20, 1
-	msgs := rounds(strings.Join(lines[:2], "\n"), "a", "b")
-	s.TailLines = 1
-	out := run(t, msgs, s)
-	require.LessOrEqual(t, len(strOf(out[3])), len(strings.Join(lines[:2], "\n")))
+	s.HeadLines, s.TailLines, s.MinTokens = 0, 1, 1
+	out := run(t, rounds(tiny, "a", "b"), s)
+	require.Equal(t, tiny, strOf(out[3]))
 }
 
 func TestEstimateChat(t *testing.T) {
