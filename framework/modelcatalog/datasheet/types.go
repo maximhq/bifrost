@@ -467,9 +467,16 @@ type customPricingData struct {
 
 // --- private helpers (shared across pricing/*.go files) ---
 
-// makeKey is the composite map key used by pricingData: model|provider|mode.
+// makeKey is the exact-spelling composite key, model|provider|mode. It keeps the
+// casing, matching the database's case-sensitive unique index.
 func makeKey(model, provider, mode string) string {
 	return model + "|" + provider + "|" + mode
+}
+
+// makeKeyNormalized is makeKey lowercased, the key pricingData uses so a model
+// name matches its row in any casing.
+func makeKeyNormalized(model, provider, mode string) string {
+	return strings.ToLower(makeKey(model, provider, mode))
 }
 
 // normalizeProvider folds equivalent provider identifiers onto the canonical
