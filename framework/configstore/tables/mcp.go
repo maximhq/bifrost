@@ -450,17 +450,30 @@ func (c *TableMCPClient) AwaitsAdminVerification() bool {
 // or a per_user_headers or token_exchange client (not openapi, which has
 // nothing upstream to verify) has stored no tools.
 //
-// Turning per_user_discovery on or off records this in PendingVerification. On,
-// the client stays as verified as these say. Off, a per_user_headers or
-// token_exchange client goes back to its admin step, having stored no tools
-// while the flag was on, and an OAuth client stays verified, to get its admin
-// credential back through reauthorization.
+// A per_user_oauth client with no stash is pending only when it has stored no
+// tools AND PendingVerification records it: turning per_user_discovery off
+// leaves it registered with no admin discovery and records exactly that. The
+// missing tools alone do not count, so a row from before the record reads as
+// it always has.
 func (c *TableMCPClient) AdminStepSignalsPending() bool {
 	switch schemas.MCPAuthType(c.AuthType) {
-	case schemas.MCPAuthTypeOauth, schemas.MCPAuthTypePerUserOauth:
+	case schemas.MCPAuthTypeOauth:
 		return c.PendingOAuthConfig != nil
+	case schemas.MCPAuthTypePerUserOauth:
+		return c.PendingOAuthConfig != nil || (c.PendingVerification && c.DiscoveredTools == nil)
 	case schemas.MCPAuthTypePerUserHeaders, schemas.MCPAuthTypeTokenExchange:
 		return c.ConnectionType != string(schemas.MCPConnectionTypeOpenAPI) && c.DiscoveredTools == nil
+	}
+	return false
+}
+
+// HasAdminStep reports whether the client's auth type has a one-time admin step
+// at all: every OAuth, per_user_oauth, per_user_headers and token_exchange
+// client, except an openapi one, which has nothing upstream to verify.
+func (c *TableMCPClient) HasAdminStep() bool {
+	switch schemas.MCPAuthType(c.AuthType) {
+	case schemas.MCPAuthTypeOauth, schemas.MCPAuthTypePerUserOauth, schemas.MCPAuthTypePerUserHeaders, schemas.MCPAuthTypeTokenExchange:
+		return c.ConnectionType != string(schemas.MCPConnectionTypeOpenAPI)
 	}
 	return false
 }

@@ -95,7 +95,6 @@
 		},
 		"actions": {
 			"edit": "編集",
-			"viewDetails": "詳細を表示",
 			"authorize": "許可する",
 			"reconnect": "再接続",
 			"reauthorize": "再承認する",
@@ -305,7 +304,8 @@
 		},
 		"sheet": {
 			"statePendingTokenExchange": "このサーバーは一度限りの認証が必要です：Bifrostはサインイン済みのIDトークンを交換し、接続をテストし、ツールを検出します。その後、呼び出し者は各ツール呼び出し時に自動的に自身のIDトークンが交換されます。",
-			"statePendingPerUserOauth": "このクライアントは config.json で宣言されました。OAuth のセットアップを確認し、ツールを検出するには管理者のサインインが必要です。Bifrost はツールリストを定期的に更新するためにそれをファイルに保持します。各ユーザーは、このサーバーを使用する際に個別に認証を行います。",
+			"statePendingPerUserOauth": "このサーバーを確認してツールを検出するには、管理者のサインインが必要です。各ユーザーは引き続き個別に認証を行います。",
+			"statePendingPerUserHeaders": "サンプルのヘッダー値でこのサーバーを確認し、ツールを検出します。各ユーザーは引き続き自分のヘッダーを指定します。",
 			"statePendingOauth": "このクライアントは config.json で宣言されており、使用する前に一度だけ OAuth 承認が必要です。",
 			"stateNeedsReauthTokenExchange": "管理者資格情報Bifrostは、このサーバーのツールリストを更新するために保持されており、修理が必要です。呼び出し元のツール呼び出しには影響ありません。サーバーのアクションメニューから{{action}}を使用して修正してください。",
 			"stateNeedsReauthPerUser": "このサーバーのツールリストを更新するために保管されている管理者資格情報Bifrostは修理が必要です。エンドユーザーの資格情報やツール呼び出しには影響ありません。サーバーのアクションメニューから{{action}}を使用して修正してください。",
@@ -332,7 +332,6 @@
 			"usingGlobal": "グローバル設定を使用する",
 			"syncIntervalNotUsed": "使用されません: このサーバーは同期する独自の検出結果を保持しません。各呼び出し元のツール、プロンプト、リソースは接続時に検出されます。",
 			"perUserDiscoveryOnWarning": "保存すると、Bifrost がこのサーバー用に保持している管理者の認証情報と検出結果が削除されます。各呼び出し元のツール、プロンプト、リソースは、次回接続時に本人の認証情報で検出されます。",
-			"perUserDiscoveryOffWarningSignIn": "保存すると、すべての呼び出し元で検出されたツール、プロンプト、リソースが削除されます。その後 {{action}} を使用すると、Bifrost が管理者のサインインで再度検出できます。",
 			"perUserDiscoveryOffWarningPending": "保存すると、すべての呼び出し元で検出されたツール、プロンプト、リソースが削除され、管理者が再度確認するまでサーバーは確認待ちの状態に戻ります。",
 			"toolExecutionTimeout": "ツール実行タイムアウト（秒）",
 			"disableClient": "クライアントを無効にする",
@@ -486,6 +485,9 @@
 			"apiCredentials": "API 認証情報",
 			"tlsVerification": "TLS 検証",
 			"customCaCertificate": "カスタム CA 証明書",
+			"tlsPlainHttpHint": "このサーバーの URL はプレーン HTTP を使用しているため、TLS は関係しません。",
+			"showErrorDetails": "詳細を表示",
+			"hideErrorDetails": "詳細を非表示",
 			"codeMode": "コードモード",
 			"spec": "仕様",
 			"calls": "呼び出し先",
@@ -525,9 +527,8 @@
 			"openWorld": "オープンワールド",
 			"failureLine": "{{stage}}: {{message}}",
 			"verificationRequired": "確認が必要です",
-			"adminCredentialNeedsRepair": "このサーバーのツール一覧を更新するために Bifrost が保持している管理者の認証情報を修復する必要があります。呼び出し元自身の認証情報とツール呼び出しには影響しません。",
+			"adminCredentialNeedsRepair": "このサーバー用の Bifrost の管理者認証情報を更新する必要があります。呼び出し元には影響しません。",
 			"credentialsNeedReauth": "この接続の認証情報を再認可する必要があります。",
-			"unstableNote": "ツール呼び出しは引き続き通常どおり試行されます。次のチェックは約 10 秒以内に実行されます。",
 			"instanceState_one": "インスタンス {{count}} 件: {{state}}。",
 			"instanceState_other": "インスタンス {{count}} 件: {{state}}。",
 			"instanceStateFailure_one": "インスタンス {{count}} 件: {{state}}、{{failure}}、{{timing}}。",
@@ -565,8 +566,8 @@
 			"hideSchemaAria": "{{name}} のスキーマを非表示",
 			"parameters": "パラメーター",
 			"returns": "戻り値",
-			"viewJsonSchema": "JSON スキーマを表示",
-			"hideJsonSchema": "JSON スキーマを非表示"
+			"viewAsJson": "JSON で表示",
+			"viewAsTable": "表で表示"
 		},
 		"tls": {
 			"skipVerify": "TLS検証をスキップ",
