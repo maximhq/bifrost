@@ -45,7 +45,8 @@ func run(t *testing.T, msgs []schemas.ChatMessage, s settings) []schemas.ChatMes
 	t.Helper()
 	before, err := json.Marshal(msgs)
 	require.NoError(t, err)
-	out, _ := compressChat(msgs, s)
+	out, st := compressChat(msgs, s)
+	require.Equal(t, st.Changed, len(out) > 0 && &out[0] != &msgs[0], "Changed must match slice aliasing")
 	after, err := json.Marshal(msgs)
 	require.NoError(t, err)
 	require.Equal(t, string(before), string(after), "input mutated")
@@ -135,9 +136,9 @@ func TestChatDedupeOnlyEligibleOlderCopy(t *testing.T) {
 	young := run(t, rounds(file, file), s) // ages 1 and 0
 	require.Equal(t, file, strOf(young[3]))
 	require.Equal(t, file, strOf(young[5]))
-	old := run(t, rounds(file, "x", "y", file), s) // ages 3 and 0
-	require.Equal(t, "[identical to the output of call call_4]", strOf(old[3]))
-	require.Equal(t, file, strOf(old[9]))
+	old := run(t, rounds(file, file, "x", "y"), s) // ages 3 and 2, both eligible
+	require.Equal(t, "[identical to the output of call call_2]", strOf(old[3]))
+	require.NotContains(t, strOf(old[5]), "identical to the output", "newest copy has no newer duplicate")
 }
 
 func TestChatDedupeStubPointsAtIneligibleNewerCopy(t *testing.T) {
@@ -163,15 +164,68 @@ func TestChatStatsEligibleRegion(t *testing.T) {
 	big := bigOutput(200)
 	msgs := rounds(big, "x", "y")
 	s := defaults(t)
-	before, _ := json.Marshal(msgs)
+	before, err := json.Marshal(msgs)
+	require.NoError(t, err)
 	out, st := compressChat(msgs, s)
-	after, _ := json.Marshal(msgs)
+	after, err := json.Marshal(msgs)
+	require.NoError(t, err)
 	require.Equal(t, string(before), string(after))
 	// ages: big=2 eligible, "x" age 1 and "y" age 0 are not.
 	require.True(t, st.Changed)
 	require.Equal(t, estimateTokens(big), st.EligibleBefore)
 	require.Equal(t, estimateTokens(strOf(out[3])), st.EligibleAfter)
 	require.Less(t, st.EligibleAfter, st.EligibleBefore)
+}
+
+func TestChatLateDuplicateDoesNotRewriteEligibleOutput(t *testing.T) {
+	big := bigOutput(200)
+	s := defaults(t)
+	reqN := rounds(big, "x", "y") // msg3 has age 2 and is trimmed
+	outN := run(t, reqN, s)
+	require.Contains(t, strOf(outN[3]), "tokens trimmed")
+	reqN1 := append(append([]schemas.ChatMessage{}, reqN...), assistantCall("call_9"), toolMsg("call_10", big))
+	outN1 := run(t, reqN1, s)
+	require.Equal(t, strOf(outN[3]), strOf(outN1[3]), "late duplicate must not turn trimmed text into a stub")
+	require.Equal(t, big, strOf(outN1[9]))
+}
+
+func TestChatDuplicatePresentAtEligibilityIsStubbed(t *testing.T) {
+	file := bigOutput(50)
+	s := defaults(t)
+	const want = "[identical to the output of call call_2]"
+	req := rounds(file, file, "x") // msg3 reaches age 2 with its duplicate present
+	for k, extra := range []string{"", "y", "z"} {
+		if extra != "" {
+			n := len(req)/2 + 1
+			id := fmt.Sprintf("call_%d", n)
+			req = append(append([]schemas.ChatMessage{}, req...), assistantCall(id), toolMsg(id, extra))
+		}
+		out := run(t, req, s)
+		require.Equal(t, want, strOf(out[3]), "request %d", k+1)
+	}
+}
+
+func TestChatDedupeSkipsYoungOlderCopy(t *testing.T) {
+	file := bigOutput(50)
+	s := defaults(t)
+	s.MinAgeTurns = 2
+	out := run(t, rounds("other output text", file, file), s) // ages 2,1,0
+	require.Equal(t, file, strOf(out[5]), "age 1 copy is not eligible")
+}
+
+func TestChatDedupePointerAdvancesOverIneligibleCopies(t *testing.T) {
+	file := bigOutput(50)
+	s := defaults(t)
+	s.MinAgeTurns = 2
+	out := run(t, rounds(file, "x", file, file), s) // ages 3,2,1,0
+	require.Equal(t, "[identical to the output of call call_3]", strOf(out[3]), "points at the next copy, not the newest")
+}
+
+func TestChatStatsCountsUnchangedEligibleOutputs(t *testing.T) {
+	big := bigOutput(200)
+	out, st := compressChat(rounds("small1", big, "x", "y"), defaults(t))
+	require.Equal(t, estimateTokens("small1")+estimateTokens(strOf(out[5])), st.EligibleAfter)
+	require.Equal(t, estimateTokens("small1")+estimateTokens(big), st.EligibleBefore)
 }
 
 func TestChatNoopEligibleSmallOutput(t *testing.T) {

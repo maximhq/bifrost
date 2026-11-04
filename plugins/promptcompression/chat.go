@@ -140,9 +140,17 @@ func chatMayEdit(m *schemas.ChatMessage, s settings) bool {
 // an existing stub never changes when another duplicate arrives later (which
 // would invalidate provider prompt caches). Originals are compared, never
 // already-replaced text, and a stub is used only when shorter.
+//
+// The decision is fixed at eligibility time: copy i (age a, minAge K) is
+// stubbed only if its next copy j (age b) already existed in the request where
+// i first reached age K, i.e. j lies before the (K+1)-th assistant message
+// after i, which is a-b <= K. A duplicate that arrives later must not turn an
+// already-sent trimmed output into a stub, since that would rewrite a cached
+// prefix; such a copy is only ever trimmed.
 func planChatDedupe(msgs []schemas.ChatMessage, start, minAge int) []string {
 	var stubs []string
-	next := map[string]int{} // text -> index of the next newer copy
+	type copy struct{ idx, age int }
+	next := map[string]copy{} // text -> next newer copy
 	assistants := 0
 	for i := len(msgs) - 1; i >= start; i-- {
 		m := &msgs[i]
@@ -158,13 +166,13 @@ func planChatDedupe(msgs []schemas.ChatMessage, start, minAge int) []string {
 			continue
 		}
 		j, seen := next[text]
-		next[text] = i
-		if !seen || assistants < minAge {
+		next[text] = copy{i, assistants}
+		if !seen || assistants < minAge || assistants-j.age > minAge {
 			continue
 		}
 		var id *string
-		if msgs[j].ChatToolMessage != nil {
-			id = msgs[j].ChatToolMessage.ToolCallID
+		if msgs[j.idx].ChatToolMessage != nil {
+			id = msgs[j.idx].ChatToolMessage.ToolCallID
 		}
 		stub, ok := dedupeStub(id, text)
 		if !ok {
@@ -179,6 +187,7 @@ func planChatDedupe(msgs []schemas.ChatMessage, start, minAge int) []string {
 }
 
 // isAllText reports whether allText would succeed, without building the text.
+// It must mirror allText's conditions exactly; change them together.
 func isAllText(c *schemas.ChatMessageContent) bool {
 	if c == nil {
 		return false
