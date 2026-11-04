@@ -329,7 +329,7 @@
           "  // JSON or multipart body, or from the path on the Gemini-shaped routes, up to the last colon since",
           "  // a Bedrock id can contain one. Only standard provider names count as a prefix: a namespaced",
           "  // model such as meta-llama/Llama-3.1-8B names no provider, and a custom provider is not known here.",
-          "  var __standard = ['openai', 'azure', 'anthropic', 'bedrock', 'bedrock_mantle', 'cohere', 'vertex', 'mistral', 'ollama', 'opencode-go', 'opencode-zen', 'groq', 'sgl', 'parasail', 'perplexity', 'cerebras', 'deepseek', 'gemini', 'openrouter', 'elevenlabs', 'huggingface', 'nebius', 'xai', 'replicate', 'vllm', 'runway', 'runware', 'fireworks', 'sarvam', 'wafer', 'github-copilot', 'databricks', 'cloudflare', 'typesafe', 'minimax', 'byteplus'];",
+          "  var __standard = ['openai', 'azure', 'anthropic', 'bedrock', 'bedrock_mantle', 'cohere', 'vertex', 'mistral', 'ollama', 'opencode-go', 'opencode-zen', 'groq', 'sgl', 'parasail', 'perplexity', 'cerebras', 'deepseek', 'gemini', 'openrouter', 'elevenlabs', 'huggingface', 'nebius', 'xai', 'replicate', 'vllm', 'runway', 'runware', 'fireworks', 'sarvam', 'wafer', 'github-copilot', 'databricks', 'cloudflare', 'typesafe', 'minimax', 'byteplus', 'machgen'];",
           "  var __model = null;",
           "  try {",
           "    var __raw = pm.request && pm.request.body && pm.request.body.mode === 'raw' ? pm.request.body.raw : '';",
@@ -304961,6 +304961,361 @@
                   "  if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
                   "  var row = raw && raw.data && raw.data[0];",
                   "  pm.expect(row && row.status, 'raw_response: ' + JSON.stringify(raw)).to.equal('success');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "310. MachGen Provider Coverage (list models, image, image edit, video)",
+      "description": "MachGen serves video and image models behind one task-based API: POST /api/v0/generate submits a task, GET /api/v0/tasks/{id} reports it, and GET /api/v0/assets/{id} serves the output behind the same API key. Bifrost maps /v1/videos onto that flow (T2V, I2V or R2V inferred from the inputs), and /v1/images/generations and /v1/images/edits onto T2I and I2I, waiting for the task and returning the image as b64_json. /v1/models comes from GET /api/v0/models, which is scoped to the key's account.\n\nThese rows pin the list-models mapping (task types as supported_methods), both image routes, the size -> height + aspect ratio mapping on video, retrieve by the suffixed id, and two caller errors that must stay 4xx: n > 1 and video delete.\n\nMachGen model ids often carry the original vendor (machgen/MiniMax-H3, machgen/FLUX.2-dev), so filter-collection.mjs routes these rows exclusively to the machgen partition.",
+      "item": [
+        {
+          "name": "machgen /v1/models lists the key's catalog with task types",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=machgen",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "machgen"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('list models succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('every model is a machgen model with its task types', function () {",
+                  "  var data = pm.response.json().data;",
+                  "  pm.expect(data, 'empty catalog: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  data.forEach(function (m) {",
+                  "    pm.expect(m.id).to.match(/^machgen\\//);",
+                  "    pm.expect(m.supported_methods, 'no task types on ' + m.id).to.be.an('array').that.is.not.empty;",
+                  "  });",
+                  "});",
+                  "pm.test('includes a public image and video model', function () {",
+                  "  var ids = pm.response.json().data.map(function (m) { return m.id; });",
+                  "  pm.expect(ids).to.include('machgen/FLUX.2-dev');",
+                  "  pm.expect(ids).to.include('machgen/MiniMax-H3');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "machgen/FLUX.2-dev text-to-image (waits for the task, returns b64_json)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"machgen/FLUX.2-dev\",\n  \"prompt\": \"a blue glass marble on white background\",\n  \"size\": \"1024x1024\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('text-to-image succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('returns the image inline as base64', function () {",
+                  "  var d = pm.response.json().data;",
+                  "  pm.expect(d[0].b64_json, 'no b64_json: ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "machgen/FLUX.2-dev image edit via image_url (I2I, no upload)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "machgen/FLUX.2-dev",
+                  "type": "text"
+                },
+                {
+                  "key": "prompt",
+                  "value": "make the scones look frosted",
+                  "type": "text"
+                },
+                {
+                  "key": "image_url",
+                  "value": "https://storage.googleapis.com/generativeai-downloads/images/scones.jpg",
+                  "type": "text"
+                },
+                {
+                  "key": "size",
+                  "value": "1024x1024",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('image edit by URL succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('returns the image inline as base64', function () {",
+                  "  var d = pm.response.json().data;",
+                  "  pm.expect(d[0].b64_json, 'no b64_json: ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] machgen/FLUX.2-dev n=2 is rejected before reaching MachGen",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"machgen/FLUX.2-dev\",\n  \"prompt\": \"a red cube\",\n  \"n\": 2,\n  \"size\": \"1024x1024\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('rejected as a caller error, not a 5xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('n must be 1');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] machgen/FLUX.2-dev data-URL input image is rejected before reaching MachGen",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"machgen/FLUX.2-dev\",\n  \"prompt\": \"a red cube\",\n  \"input_images\": [\"data:image/png;base64,iVBORw0KGgo=\"],\n  \"size\": \"1024x1024\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('rejected as a caller error, not a 5xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('public http(s) URL');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "machgen/MiniMax-H3 text-to-video submit (size maps to height + aspect ratio)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"machgen/MiniMax-H3\",\n  \"prompt\": \"a red panda exploring a misty forest at dawn\",\n  \"seconds\": \"5\",\n  \"size\": \"1366x768\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('text-to-video submit accepted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('returns a queued job id', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.id, 'no job id: ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(j.status).to.equal('queued');",
+                  "  pm.collectionVariables.set('machgenVideoId', j.id);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "machgen video retrieve - poll the text-to-video job (GET /v1/videos/{id})",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/{{machgenVideoId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "{{machgenVideoId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var id = pm.collectionVariables.get('machgenVideoId');",
+                  "if (!id) { pm.test.skip('no video id produced upstream', function () {}); return; }",
+                  "pm.test('retrieve resolves the provider from the id suffix', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('reports a lifecycle status', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(['queued','in_progress','completed','failed'], 'unexpected status: ' + pm.response.text())",
+                  "    .to.include(j.status);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-4XX] machgen video delete is unsupported (DELETE /v1/videos/{id})",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/t-unsupported:machgen",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "t-unsupported:machgen"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('degrades to a 4xx, not a 5xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.within(400, 499);",
                   "});"
                 ]
               }
