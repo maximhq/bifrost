@@ -1007,7 +1007,7 @@ func TestGeminiCodeExecutionPartsBecomeCodeInterpreterCall(t *testing.T) {
 			{ExecutableCode: &ExecutableCode{Language: "PYTHON", Code: "print(6*7)"}},
 			{CodeExecutionResult: &CodeExecutionResult{Outcome: OutcomeOK, Output: "42\n"}},
 		}}},
-	})
+	}, "msg_test")
 
 	var calls []schemas.ResponsesMessage
 	for _, msg := range out {
@@ -1054,12 +1054,12 @@ func TestGeminiCodeExecutionFailureKeepsOutput(t *testing.T) {
 		out := convertGeminiCandidatesToResponsesOutput([]*Candidate{{Content: &Content{Role: "model", Parts: []*Part{
 			{ExecutableCode: &ExecutableCode{Language: "PYTHON", Code: "1/0"}},
 			{CodeExecutionResult: failed},
-		}}}})
+		}}}}, "msg_test")
 		assertFailedCall(t, &out[len(out)-1])
 	})
 
 	t.Run("constructed without code", func(t *testing.T) {
-		out := convertGeminiCandidatesToResponsesOutput([]*Candidate{{Content: &Content{Role: "model", Parts: []*Part{{CodeExecutionResult: failed}}}}})
+		out := convertGeminiCandidatesToResponsesOutput([]*Candidate{{Content: &Content{Role: "model", Parts: []*Part{{CodeExecutionResult: failed}}}}}, "msg_test")
 		assertFailedCall(t, &out[len(out)-1])
 	})
 
