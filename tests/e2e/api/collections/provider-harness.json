@@ -249381,6 +249381,10 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
               }
             ],
             "body": {
@@ -249416,6 +249420,12 @@
                   "  pm.expect(c.input, 'custom tool input missing').to.be.a('string').and.not.empty;",
                   "  pm.expect(c.input, 'input still wrapped in function arguments').to.not.match(/^\\s*\\{\\s*\"input\"/);",
                   "  pm.expect(items.filter(function (o) { return o.type === 'function_call'; }).length, 'leaked function_call').to.equal(0);",
+                  "});",
+                  "// The provider payload describes the function_call it sent, so a restored response must not pass it through.",
+                  "pm.test('restored response carries no stale raw_response', function () {",
+                  "  pm.expect(items.filter(function (o) { return o.type === 'custom_tool_call'; }).length, 'nothing was restored').to.be.above(0);",
+                  "  var extra = (pm.response.json() || {}).extra_fields || {};",
+                  "  pm.expect(extra.raw_response, 'raw_response still carries the provider function_call: ' + JSON.stringify(extra.raw_response || '').slice(0, 400)).to.be.undefined;",
                   "});"
                 ]
               }
@@ -249430,6 +249440,10 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
               }
             ],
             "body": {
@@ -249469,6 +249483,32 @@
                   "  pm.expect(raw, 'no custom_tool_call item').to.match(/\"type\"\\s*:\\s*\"custom_tool_call\"/);",
                   "  pm.expect(clientRaw, 'function call events leaked').to.not.include('response.function_call_arguments');",
                   "  pm.expect(raw).to.include('code_exec');",
+                  "});",
+                  "// From the first rewritten event on, raw payloads describe function call events and stale sequence numbers.",
+                  "pm.test('no event from the first custom tool rewrite onward carries raw_response', function () {",
+                  "  var events = raw.split('\\n').filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { try { return JSON.parse(l.slice(5)); } catch (e) { return null; } }).filter(Boolean);",
+                  "  // A rewrite that misses an item event would let a later custom tool event start the scan below.",
+                  "  ['response.output_item.added', 'response.output_item.done'].forEach(function (type) {",
+                  "    var itemEvent = events.filter(function (ev) { return ev.type === type; })[0];",
+                  "    pm.expect(itemEvent, 'no ' + type).to.be.an('object');",
+                  "    pm.expect(itemEvent.item && itemEvent.item.type, type + ' item type').to.equal('custom_tool_call');",
+                  "  });",
+                  "  var first = -1;",
+                  "  events.forEach(function (ev, i) { if (first < 0 && ((ev.type || '').indexOf('response.custom_tool_call_input') === 0 || (ev.item && ev.item.type === 'custom_tool_call'))) { first = i; } });",
+                  "  pm.expect(first, 'no rewritten custom tool event').to.be.above(-1);",
+                  "  // Without capture the stale check below passes vacuously, so an event before the first rewrite must keep it.",
+                  "  var untouched = events.slice(0, first).filter(function (ev) { return ev.extra_fields && ev.extra_fields.raw_response !== undefined; });",
+                  "  pm.expect(untouched, 'no pre-rewrite event retained raw_response').to.not.be.empty;",
+                  "  var stale = events.slice(first).filter(function (ev) { return ev.extra_fields && ev.extra_fields.raw_response !== undefined; }).map(function (ev) { return ev.type; });",
+                  "  pm.expect(stale, 'events still carrying raw_response: ' + stale.join(', ')).to.be.empty;",
+                  "  var completed = events.filter(function (ev) { return ev.type === 'response.completed'; })[0];",
+                  "  pm.expect(completed, 'no response.completed event').to.be.an('object');",
+                  "  var completedOutput = completed.response && completed.response.output || [];",
+                  "  pm.expect(completedOutput.some(function (item) { return item && item.type === 'custom_tool_call'; }), 'completed response has no restored custom_tool_call').to.equal(true);",
+                  "  var sequenceNumbers = events.map(function (ev) { return ev.sequence_number; }).filter(function (n) { return typeof n === 'number'; });",
+                  "  for (var i = 1; i < sequenceNumbers.length; i++) {",
+                  "    pm.expect(sequenceNumbers[i], 'sequence_number did not increase').to.be.above(sequenceNumbers[i - 1]);",
+                  "  }",
                   "});"
                 ]
               }

@@ -2166,8 +2166,9 @@ func HandleOpenAIResponsesRequest(
 	response.Usage.PreserveTokenCountZeros(body, "usage.input_tokens", "usage.output_tokens")
 
 	// Custom tools sent as function tools come back as function calls; restore them.
+	restored := false
 	if names := customToolNamesToRestore(ctx, request); names != nil {
-		restoreCustomToolCalls(response.Output, names)
+		restored = restoreCustomToolCalls(response.Output, names)
 	}
 	recordResponsesServerToolUsage(response, jsonData)
 
@@ -2179,8 +2180,9 @@ func HandleOpenAIResponsesRequest(
 		response.ExtraFields.RawRequest = rawRequest
 	}
 
-	// Set raw response if enabled
-	if sendBackRawResponse {
+	// Set raw response if enabled. A restored response no longer matches the
+	// provider payload, so passing that payload through would undo the restore.
+	if sendBackRawResponse && !restored {
 		response.ExtraFields.RawResponse = rawResponse
 	}
 
