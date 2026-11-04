@@ -16,6 +16,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/openapimcp"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -437,21 +438,26 @@ func (h *RelaysHandler) preview(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, out)
 }
 
-// relayOpenAPISpecRequest names the OpenAPI document to fetch for a route import.
+// relayOpenAPISpecRequest names the OpenAPI document a route import reads: the text itself, or a
+// URL the gateway fetches. With both, spec is read and spec_url only resolves relative servers, as
+// on the MCP OpenAPI preview.
 type relayOpenAPISpecRequest struct {
-	SpecURL string `json:"spec_url"`
+	Spec    string `json:"spec,omitempty"`
+	SpecURL string `json:"spec_url,omitempty"`
 }
 
-// relayOpenAPISpecResponse is the fetched document and the URL it was read from after redirects.
+// relayOpenAPISpecResponse is the import a document resolves into. Spec and SpecURL are set when
+// the document was fetched: its text as served and the URL it was read from after redirects.
 type relayOpenAPISpecResponse struct {
-	Spec    string `json:"spec"`
-	SpecURL string `json:"spec_url"`
+	openapimcp.RelayImport
+	Spec    string `json:"spec,omitempty"`
+	SpecURL string `json:"spec_url,omitempty"`
 }
 
-// fetchOpenAPISpec handles POST /api/relays/openapi-spec. The route import reads the document in
-// the browser, which cannot fetch most spec URLs itself (CORS), so the gateway fetches it with the
-// same timeout, size cap and private-network guard as the MCP OpenAPI preview and returns the text
-// unparsed. Nothing is stored.
+// fetchOpenAPISpec handles POST /api/relays/openapi-spec. The document is read with the parser the
+// MCP OpenAPI servers use (framework/openapimcp), and a spec_url is fetched with the same timeout,
+// size cap and private-network guard as the MCP OpenAPI preview. Nothing is stored: the operator
+// reviews the routes, auth and base URL suggestion before saving them.
 func (h *RelaysHandler) fetchOpenAPISpec(ctx *fasthttp.RequestCtx) {
 	var req relayOpenAPISpecRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
@@ -459,16 +465,38 @@ func (h *RelaysHandler) fetchOpenAPISpec(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	specURL := strings.TrimSpace(req.SpecURL)
-	if parsed, err := url.Parse(specURL); specURL == "" || err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "spec_url must be an absolute http(s) URL")
-		return
+	var data []byte
+	fetched := false
+	if strings.TrimSpace(req.Spec) != "" {
+		var err error
+		if data, err = openapimcp.LoadBytes([]byte(req.Spec)); err != nil {
+			SendError(ctx, openAPISpecErrorStatus(err), fmt.Sprintf("Invalid OpenAPI spec: %v", err))
+			return
+		}
+	} else {
+		if parsed, err := url.Parse(specURL); specURL == "" || err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			SendError(ctx, fasthttp.StatusBadRequest, "spec or spec_url is required; spec_url must be an absolute http(s) URL")
+			return
+		}
+		var status int
+		var err error
+		if data, specURL, status, err = fetchOpenAPISpecForCaller(ctx, specURL); err != nil {
+			SendError(ctx, status, err.Error())
+			return
+		}
+		fetched = true
 	}
-	data, finalURL, status, err := fetchOpenAPISpecForCaller(ctx, specURL)
+	doc, err := openapimcp.Parse(data, openapimcp.ParseOptions{SpecURL: specURL})
 	if err != nil {
-		SendError(ctx, status, err.Error())
+		SendError(ctx, openAPISpecErrorStatus(err), fmt.Sprintf("Invalid OpenAPI spec: %v", err))
 		return
 	}
-	SendJSON(ctx, relayOpenAPISpecResponse{Spec: string(data), SpecURL: finalURL})
+	resp := relayOpenAPISpecResponse{RelayImport: openapimcp.ImportRelay(doc, specURL)}
+	if fetched {
+		resp.Spec = string(data)
+		resp.SpecURL = specURL
+	}
+	SendJSON(ctx, resp)
 }
 
 // --- Relay Logs ---

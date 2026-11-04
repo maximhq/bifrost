@@ -1333,9 +1333,6 @@
 			"import": "Import",
 			"importCount_one": "Import {{count}} route",
 			"importCount_other": "Import {{count}} routes",
-			"docEmpty": "The document is empty",
-			"docNotJson": "The document is not a JSON object",
-			"docNotOpenapi": "The document is not an OpenAPI object",
 			"warn": {
 				"schemeUndeclared": "Security scheme {{name}} is required but not declared; set the auth type by hand",
 				"apiKeyLocation": "Security scheme {{name}} uses an apiKey in {{location}}, which the relay cannot inject",
@@ -1346,7 +1343,6 @@
 				"authOptional": "The document makes authentication optional; set the auth type by hand if the API needs a key",
 				"noSingleScheme": "No security alternative in the document is a single scheme the relay can inject; set the auth type by hand",
 				"severalSchemes": "The document declares several security schemes and requires none; set the auth type by hand",
-				"noPaths": "The document declares no paths",
 				"refPaths_one": "{{paths}} is defined by $ref, which the import does not resolve, so those operations were not imported; add their routes by hand and review the routes list.",
 				"refPaths_other": "{{paths}} are defined by $ref, which the import does not resolve, so those operations were not imported; add their routes by hand and review the routes list.",
 				"noMethods": "No operation in the document uses a method the relay serves",

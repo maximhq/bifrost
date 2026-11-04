@@ -1353,9 +1353,6 @@
 			"import": "가져오기",
 			"importCount_one": "라우트 {{count}}개 가져오기",
 			"importCount_other": "라우트 {{count}}개 가져오기",
-			"docEmpty": "문서가 비어 있습니다",
-			"docNotJson": "문서가 JSON 객체가 아닙니다",
-			"docNotOpenapi": "문서가 OpenAPI 객체가 아닙니다",
 			"warn": {
 				"schemeUndeclared": "보안 스킴 {{name}}이(가) 필요하지만 선언되지 않았습니다. 인증 유형을 직접 설정하세요",
 				"apiKeyLocation": "보안 스킴 {{name}}이(가) {{location}}에서 apiKey를 사용하며, Relay가 주입할 수 없습니다",
@@ -1366,7 +1363,6 @@
 				"authOptional": "문서에서 인증이 선택 사항으로 지정되어 있습니다. API에 키가 필요하면 인증 유형을 직접 설정하세요",
 				"noSingleScheme": "문서에 Relay가 주입할 수 있는 단일 스킴의 보안 대안이 없습니다. 인증 유형을 직접 설정하세요",
 				"severalSchemes": "문서에 여러 보안 스킴이 선언되어 있지만 필수로 지정된 것이 없습니다. 인증 유형을 직접 설정하세요",
-				"noPaths": "문서에 선언된 경로가 없습니다",
 				"refPaths_other": "{{paths}}은(는) $ref로 정의되어 있으며 가져오기에서 $ref를 해석하지 않으므로 해당 작업을 가져오지 못했습니다. 라우트를 직접 추가하고 라우트 목록을 확인하세요.",
 				"noMethods": "문서에 Relay가 처리하는 메서드를 사용하는 작업이 없습니다",
 				"differentSchemes": "작업마다 서로 다른 보안 스킴이 필요하지만 엔드포인트 하나에는 인증 하나만 적용할 수 있습니다. 인증 유형을 직접 설정하세요",

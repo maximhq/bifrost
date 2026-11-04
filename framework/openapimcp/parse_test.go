@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -247,6 +248,32 @@ func TestParse_ExternalRefMarksOperationUnsupported(t *testing.T) {
 	assert.Contains(t, findOp(t, doc, "GET", "/a").Unsupported, "external $ref")
 	assert.Contains(t, findOp(t, doc, "POST", "/b").Unsupported, "external $ref")
 	assert.Empty(t, findOp(t, doc, "GET", "/c").Unsupported)
+}
+
+func TestParse_RecordsSkippedPathsAndDeclaredGlobalSecurity(t *testing.T) {
+	spec := `{"openapi":"3.0.0","info":{"title":"x","version":"1"},"paths":{
+	  "/a":{"get":{"responses":{"200":{"description":"ok"}}}},
+	  "/b":{"$ref":"other.yaml#/paths/B"}}}`
+	doc, err := Parse([]byte(spec), ParseOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"/b"}, doc.SkippedPaths)
+	assert.False(t, doc.HasGlobalSecurity, "no top-level security key")
+
+	doc, err = Parse([]byte(`{"openapi":"3.0.0","info":{"title":"x","version":"1"},"security":[],"paths":{"/a":{"get":{}}}}`), ParseOptions{})
+	require.NoError(t, err)
+	assert.True(t, doc.HasGlobalSecurity, "an empty list is still a declaration")
+	assert.Empty(t, doc.GlobalSecurity)
+
+	doc, err = Parse([]byte(`{"swagger":"2.0","info":{"title":"x","version":"1"},"security":[{"k":[]}],"paths":{"/a":{"get":{}},"/b":{"$ref":"x.json#/B"}}}`), ParseOptions{})
+	require.NoError(t, err)
+	assert.True(t, doc.HasGlobalSecurity)
+	assert.Equal(t, []string{"/b"}, doc.SkippedPaths)
+
+	// Swagger 2 skips a local reference that does not resolve too, so it is listed beside external ones.
+	doc, err = Parse([]byte(`{"swagger":"2.0","info":{"title":"x","version":"1"},"paths":{"/a":{"get":{}},"/m":{"$ref":"#/x-missing"}}}`), ParseOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"/m"}, doc.SkippedPaths)
+	assert.True(t, slices.ContainsFunc(doc.Warnings, func(w string) bool { return strings.Contains(w, "path /m skipped") }), doc.Warnings)
 }
 
 func TestParse_ServerResolutionAgainstSpecURL(t *testing.T) {

@@ -457,6 +457,51 @@ test.describe("Relays", () => {
     }
   });
 
+  test("imports routes from an uploaded OpenAPI document parsed by the gateway", async ({ relaysPage: page, request }) => {
+    // The gateway reads the document with the MCP OpenAPI parser: a path item behind a local $ref is
+    // resolved, a server variable takes its default, and the shared apiKey scheme becomes the auth suggestion.
+    const spec = [
+      "openapi: 3.1.0",
+      "info: {title: Files API, version: '3'}",
+      "servers: [{url: 'https://{region}.files.example.com/v1/', variables: {region: {default: eu}}}]",
+      "components:",
+      "  securitySchemes: {key: {type: apiKey, in: header, name: X-Api-Key}}",
+      "  pathItems:",
+      "    File: {get: {}, delete: {}}",
+      "security: [{key: []}]",
+      "paths:",
+      "  /files: {post: {}}",
+      "  /files/{id}: {$ref: '#/components/pathItems/File'}",
+      "  /files/latest: {get: {}}",
+      "",
+    ].join("\n");
+    const name = `e2e-pte-upload-${Date.now()}`;
+    created.push(name);
+    await page.goto();
+    await page.createEndpoint(name, "https://api.example.com", "sk-e2e-secret");
+    await page.select(name);
+
+    await page.page.getByTestId("relay-routes-import").click();
+    await page.page.getByTestId("openapi-spec-source-tab-upload").click();
+    await page.page.getByTestId("openapi-spec-upload-input").setInputFiles({ name: "files.yaml", mimeType: "application/yaml", buffer: Buffer.from(spec) });
+    const preview = page.page.getByTestId("relay-openapi-preview");
+    await expect(preview).toContainText("Files API");
+    await expect(preview).toContainText("4 routes");
+    await expect(preview).toContainText("https://eu.files.example.com/v1");
+    await expect(preview).toContainText("header");
+    await page.page.getByTestId("relay-openapi-import").click();
+
+    await page.page.getByRole("button", { name: "Apply import" }).click();
+    await page.waitForSuccessToast();
+    const relay = await getRelay(request, name);
+    expect(relay.routes.map((r: { method: string; path: string }) => `${r.method} ${r.path}`)).toEqual([
+      "POST /files",
+      "GET /files/latest",
+      "DELETE /files/*",
+      "GET /files/*",
+    ]);
+  });
+
   // ---------------------------------------------------------------------------------------------
   // Advanced, Network and Proxy tabs
   // ---------------------------------------------------------------------------------------------

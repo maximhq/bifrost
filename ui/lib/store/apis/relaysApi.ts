@@ -9,7 +9,8 @@ import type {
 	RelayLogPagination,
 	RelayLogSearchResponse,
 	RelayLogStatsResponse,
-	RelayOpenAPISpecResponse,
+	RelayOpenAPIImport,
+	RelayOpenAPIImportRequest,
 	UsagePreview,
 	UsagePreviewRequest,
 } from "@/lib/types/relays";
@@ -48,7 +49,7 @@ export const relaysApi = baseApi.injectEndpoints({
 		previewRelayUsage: builder.mutation<UsagePreview, UsagePreviewRequest>({
 			query: (body) => ({ url: "/relays/usage-preview", method: "POST", body }),
 		}),
-		fetchRelayOpenAPISpec: builder.mutation<RelayOpenAPISpecResponse, { spec_url: string }>({
+		importRelayOpenAPI: builder.mutation<RelayOpenAPIImport, RelayOpenAPIImportRequest>({
 			query: (body) => ({ url: "/relays/openapi-spec", method: "POST", body }),
 		}),
 
@@ -113,7 +114,7 @@ export const {
 	useUpdateRelayMutation,
 	useDeleteRelayMutation,
 	usePreviewRelayUsageMutation,
-	useFetchRelayOpenAPISpecMutation,
+	useImportRelayOpenAPIMutation,
 	useGetRelayLogsQuery,
 	useLazyGetRelayLogsQuery,
 	useGetRelayLogQuery,

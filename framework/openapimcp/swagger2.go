@@ -56,6 +56,7 @@ func parseSwagger2(tree map[string]any, res *resolver, doc *Document, opts Parse
 		doc.SecuritySchemes[name] = parseSecurityScheme(name, asMap(node), true)
 	}
 	doc.GlobalSecurity = parseSecurityRequirements(tree["security"])
+	_, doc.HasGlobalSecurity = tree["security"]
 	globalConsumes := asStringSlice(tree["consumes"])
 
 	paths := asMap(tree["paths"])
@@ -63,6 +64,7 @@ func parseSwagger2(tree map[string]any, res *resolver, doc *Document, opts Parse
 		itemRaw, err := res.resolveShallow(paths[p])
 		if err != nil {
 			doc.Warnings = append(doc.Warnings, fmt.Sprintf("path %s skipped: %v", p, err))
+			doc.SkippedPaths = append(doc.SkippedPaths, p)
 			continue
 		}
 		item := asMap(itemRaw)
