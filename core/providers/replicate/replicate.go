@@ -701,6 +701,7 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 						rawEvent := ReplicateSSEEvent{Event: eventType, Data: eventData}
 						if eventJSON, err := providerUtils.MarshalSorted(rawEvent); err == nil {
 							response.ExtraFields.RawResponse = string(eventJSON)
+							response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatReplicateStreamEvent
 						}
 					}
 
@@ -1057,6 +1058,7 @@ func (provider *ReplicateProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 						rawEvent := ReplicateSSEEvent{Event: eventType, Data: eventData}
 						if eventJSON, err := providerUtils.MarshalSorted(rawEvent); err == nil {
 							response.ExtraFields.RawResponse = string(eventJSON)
+							response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatReplicateStreamEvent
 						}
 					}
 
