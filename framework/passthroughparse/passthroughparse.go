@@ -57,6 +57,36 @@ const (
 	wireGemini
 )
 
+// provider names the built-in provider whose API a wire format is, or "" for an unknown format.
+func (format wireFormat) provider() schemas.ModelProvider {
+	switch format {
+	case wireOpenAI:
+		return schemas.OpenAI
+	case wireAnthropic:
+		return schemas.Anthropic
+	case wireGemini:
+		return schemas.Gemini
+	}
+	return ""
+}
+
+// Route is the API shape and inner request kind a passthrough call addresses.
+type Route struct {
+	Wire        schemas.ModelProvider // API the bodies are written in: OpenAI, Anthropic, or Gemini
+	RequestType schemas.RequestType   // inner request kind, e.g. ChatCompletionRequest; never a streaming variant
+}
+
+// Classify returns the API shape and request kind a passthrough call addresses from its route alone (base
+// provider, model, method, path), without reading either body. The zero Route means the route has no typed
+// equivalent. Like InferRequestType it is a few string checks, cheap enough for the request path.
+func Classify(provider schemas.ModelProvider, model, method, path string) Route {
+	format, requestType := classify(Input{Provider: provider, Model: model, Method: method, Path: path})
+	if format == wireUnknown || requestType == "" {
+		return Route{}
+	}
+	return Route{Wire: format.provider(), RequestType: requestType}
+}
+
 // Parse decodes a passthrough call on a best-effort basis. It returns (nil, nil) for routes with no
 // typed equivalent (unsupported providers, list/retrieve calls, Bedrock agent routes), so the caller
 // keeps the raw bodies only. A non-nil error describes a body that matched a known route but failed

@@ -914,3 +914,37 @@ func TestInferRequestTypeMethods(t *testing.T) {
 		}
 	}
 }
+
+// TestClassify pins the API shape and request kind of each route family, including providers whose route speaks
+// another provider's API (Claude on Azure and Vertex speaks Anthropic, Mistral on Vertex speaks OpenAI, Codex on the
+// ChatGPT backend speaks Responses). Routes without a typed equivalent, and non-POST calls, return the zero Route.
+func TestClassify(t *testing.T) {
+	cases := []struct {
+		name     string
+		provider schemas.ModelProvider
+		method   string
+		path     string
+		want     Route
+	}{
+		{"openai chat", schemas.OpenAI, "POST", "/v1/chat/completions", Route{schemas.OpenAI, schemas.ChatCompletionRequest}},
+		{"openai responses", schemas.OpenAI, "POST", "/v1/responses", Route{schemas.OpenAI, schemas.ResponsesRequest}},
+		{"codex responses", schemas.OpenAI, "POST", "/backend-api/codex/responses", Route{schemas.OpenAI, schemas.ResponsesRequest}},
+		{"openai text completions", schemas.OpenAI, "POST", "/v1/completions", Route{schemas.OpenAI, schemas.TextCompletionRequest}},
+		{"anthropic messages", schemas.Anthropic, "POST", "/v1/messages", Route{schemas.Anthropic, schemas.ResponsesRequest}},
+		{"anthropic count tokens", schemas.Anthropic, "POST", "/v1/messages/count_tokens", Route{schemas.Anthropic, schemas.CountTokensRequest}},
+		{"azure claude", schemas.Azure, "POST", "/anthropic/v1/messages", Route{schemas.Anthropic, schemas.ResponsesRequest}},
+		{"azure openai chat", schemas.Azure, "POST", "/openai/deployments/gpt-4o/chat/completions", Route{schemas.OpenAI, schemas.ChatCompletionRequest}},
+		{"vertex claude", schemas.Vertex, "POST", "/projects/p/locations/l/publishers/anthropic/models/claude-sonnet-4-5:rawPredict", Route{schemas.Anthropic, schemas.ResponsesRequest}},
+		{"vertex mistral", schemas.Vertex, "POST", "/projects/p/locations/l/publishers/mistralai/models/mistral-large:rawPredict", Route{schemas.OpenAI, schemas.ChatCompletionRequest}},
+		{"gemini stream", schemas.Gemini, "POST", "/models/gemini-2.5-flash:streamGenerateContent", Route{schemas.Gemini, schemas.ResponsesRequest}},
+		{"gemini count tokens", schemas.Gemini, "POST", "/models/gemini-2.5-flash:countTokens", Route{schemas.Gemini, schemas.CountTokensRequest}},
+		{"untyped route", schemas.Anthropic, "POST", "/v1/files", Route{}},
+		{"non-POST call", schemas.Anthropic, "GET", "/v1/messages", Route{}},
+		{"provider without a parser", schemas.Bedrock, "POST", "/model/anthropic.claude-sonnet-4-5/invoke", Route{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, Classify(tc.provider, "", tc.method, tc.path))
+		})
+	}
+}
