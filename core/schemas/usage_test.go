@@ -323,3 +323,42 @@ func TestPreserveTokenCountZerosResetsFlags(t *testing.T) {
 		require.False(t, usage.CompletionTokensExplicitZero)
 	}
 }
+
+// TestAsyncJobResponsePreservesZeroUsage pins that async poll JSON keeps explicit
+// zeros while Result keeps its Go type, and other result types are unchanged.
+func TestAsyncJobResponsePreservesZeroUsage(t *testing.T) {
+	zero := &BifrostLLMUsage{PromptTokensExplicitZero: true, CompletionTokensExplicitZero: true}
+	for name, tc := range map[string]struct {
+		result any
+		usage  string
+	}{
+		"chat zero":    {&BifrostChatResponse{ID: "c", Usage: zero}, `{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}`},
+		"text zero":    {&BifrostTextCompletionResponse{ID: "t", Usage: zero}, `{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}`},
+		"chat missing": {&BifrostChatResponse{ID: "m", Usage: &BifrostLLMUsage{TotalTokens: 12}}, `{"total_tokens":12}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp := &AsyncJobResponse{ID: "job", Status: AsyncJobStatusCompleted, Result: tc.result}
+			wire, err := MarshalSorted(resp)
+			require.NoError(t, err)
+			var poll struct {
+				Result struct{ Usage json.RawMessage }
+			}
+			require.NoError(t, json.Unmarshal(wire, &poll))
+			require.JSONEq(t, tc.usage, string(poll.Result.Usage))
+			require.Same(t, tc.result, resp.Result, "marshal must not replace Result")
+		})
+	}
+	t.Run("other result and no result unchanged", func(t *testing.T) {
+		type plain AsyncJobResponse
+		for _, resp := range []AsyncJobResponse{
+			{ID: "e", Status: AsyncJobStatusCompleted, Result: &BifrostEmbeddingResponse{Model: "m"}},
+			{ID: "p", Status: AsyncJobStatusPending},
+		} {
+			want, err := MarshalSorted(plain(resp))
+			require.NoError(t, err)
+			got, err := MarshalSorted(resp)
+			require.NoError(t, err)
+			require.Equal(t, string(want), string(got))
+		}
+	})
+}

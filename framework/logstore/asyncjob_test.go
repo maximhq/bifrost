@@ -489,6 +489,28 @@ func TestAsyncJobCleaner_ReapsExpiredWebhookDeliveries(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+// TestAsyncPollResultKeepsGoType pins that ToResponse hands Go callers the plain
+// response pointer even when usage reported a zero; zeros are restored on marshal.
+func TestAsyncPollResultKeepsGoType(t *testing.T) {
+	raw := `{"id":"usage-job","usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`
+	chat := (&AsyncJob{RequestType: schemas.ChatCompletionRequest, Response: raw}).ToResponse()
+	chatResult, ok := chat.Result.(*schemas.BifrostChatResponse)
+	require.True(t, ok, "chat Result is %T", chat.Result)
+	assert.True(t, chatResult.Usage.PromptTokensExplicitZero)
+	text := (&AsyncJob{RequestType: schemas.TextCompletionRequest, Response: raw}).ToResponse()
+	_, ok = text.Result.(*schemas.BifrostTextCompletionResponse)
+	require.True(t, ok, "text Result is %T", text.Result)
+	for _, resp := range []*schemas.AsyncJobResponse{chat, text} {
+		wire, err := sonic.ConfigStd.Marshal(resp)
+		require.NoError(t, err)
+		var poll struct {
+			Result struct{ Usage json.RawMessage }
+		}
+		require.NoError(t, json.Unmarshal(wire, &poll))
+		assert.JSONEq(t, `{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}`, string(poll.Result.Usage))
+	}
+}
+
 // TestAsyncResultKeepsDefaultEncoding pins that persisted async results keep the
 // pre-fix sonic.Marshal bytes; only Chat/Text with an explicit zero are wrapped.
 func TestAsyncResultKeepsDefaultEncoding(t *testing.T) {

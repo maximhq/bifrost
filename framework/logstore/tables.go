@@ -2302,14 +2302,14 @@ func (j *AsyncJob) ToResponse() *schemas.AsyncJobResponse {
 			data := []byte(j.Response)
 			if err := sonic.Unmarshal(data, &result); err == nil {
 				result.Usage.PreserveTokenCountZeros(data, "usage.prompt_tokens", "usage.completion_tokens")
-				resp.Result = result.WithPreservedUsage()
+				resp.Result = &result
 			}
 		case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
 			var result schemas.BifrostTextCompletionResponse
 			data := []byte(j.Response)
 			if err := sonic.Unmarshal(data, &result); err == nil {
 				result.Usage.PreserveTokenCountZeros(data, "usage.prompt_tokens", "usage.completion_tokens")
-				resp.Result = result.WithPreservedUsage()
+				resp.Result = &result
 			}
 		case schemas.EmbeddingRequest:
 			var result schemas.BifrostEmbeddingResponse
