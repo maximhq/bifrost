@@ -4,6 +4,11 @@
 {{- if and $basicAuth.enabled .Values.serviceMonitor.authorization }}
 {{- fail "ERROR: serviceMonitor.basicAuth.enabled and serviceMonitor.authorization are mutually exclusive; a scrape endpoint carries at most one authentication method. Pick one." }}
 {{- end }}
+{{- with .Values.serviceMonitor.authorization }}
+{{- if not .credentials }}
+{{- fail "ERROR: serviceMonitor.authorization requires credentials, otherwise the scrape carries no token. Set serviceMonitor.authorization.credentials to a Secret key reference, or remove authorization." }}
+{{- end }}
+{{- end }}
 {{- $basicAuthSecret := "" }}
 {{- $basicAuthUsernameKey := "" }}
 {{- $basicAuthPasswordKey := "" }}

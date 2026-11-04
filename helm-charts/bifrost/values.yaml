@@ -121,7 +121,9 @@ serviceMonitor:
     usernameKey: ""
     passwordKey: ""
   # Bearer-token auth for the scrape, as an alternative to basicAuth (mutually
-  # exclusive with it). Passed through to the endpoint's `authorization` field, e.g.
+  # exclusive with it). Requires `credentials`: without them the scrape carries no
+  # token, so the render fails. Passed through to the endpoint's `authorization`
+  # field, e.g.
   #   authorization:
   #     type: Bearer
   #     credentials:

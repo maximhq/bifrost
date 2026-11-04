@@ -1127,6 +1127,11 @@ expect_render_failure "serviceMonitor: basicAuth and authorization are mutually 
   --set serviceMonitor.authorization.credentials.name=scrape-token \
   --set serviceMonitor.authorization.credentials.key=token
 
+expect_render_failure "serviceMonitor: authorization without credentials is refused" \
+  "requires credentials" \
+  --set serviceMonitor.enabled=true \
+  --set serviceMonitor.authorization.type=Bearer
+
 check_service_monitor "serviceMonitor: bearer-token authorization renders without basicAuth" \
   'e = sm["spec"]["endpoints"][0]
 assert "basicAuth" not in e, "basicAuth rendered without being enabled: %r" % e["basicAuth"]

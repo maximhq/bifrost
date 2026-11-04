@@ -171,7 +171,7 @@
         },
         "authorization": {
           "type": "object",
-          "description": "Bearer-token auth for the scrape, as an alternative to basicAuth (mutually exclusive with it)",
+          "description": "Bearer-token auth for the scrape, as an alternative to basicAuth (mutually exclusive with it). Requires credentials when set.",
           "properties": {
             "type": {
               "type": "string",
