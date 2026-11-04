@@ -92,8 +92,9 @@ serviceMonitor:
   path: /metrics
   # Scrape interval. Empty string uses the Prometheus global default.
   interval: 30s
-  # Per-scrape timeout. Empty string uses the Prometheus default.
-  scrapeTimeout: 10s
+  # Per-scrape timeout. Must not exceed the interval. Empty string uses the Prometheus
+  # default.
+  scrapeTimeout: ""
   # Scrape scheme: http (default) or https.
   scheme: ""
   # TLS settings for the scrape endpoint (https). See the ServiceMonitor spec.

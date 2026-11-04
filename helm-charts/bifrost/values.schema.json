@@ -116,6 +116,9 @@
         },
         "additionalLabels": {
           "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
           "description": "Extra labels on the ServiceMonitor (match your Prometheus serviceMonitorSelector)"
         },
         "namespace": {
@@ -7548,7 +7551,7 @@
         },
         "modulus": {
           "type": "integer",
-          "minimum": 0,
+          "minimum": 1,
           "description": "Modulus for the hashmod action"
         },
         "replacement": {

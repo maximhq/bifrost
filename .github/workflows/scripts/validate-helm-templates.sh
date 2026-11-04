@@ -1074,7 +1074,9 @@ check_service_monitor "serviceMonitor: selects the primary Service and not the S
 assert "bifrost-headless" in names, "expected the SQLite headless Service to render, got %r" % names
 labels = sm["spec"]["selector"]["matchLabels"]
 matched = [s["metadata"]["name"] for s in services if labels.items() <= s["metadata"]["labels"].items()]
-assert matched == ["bifrost"], "selector %r matched %r" % (labels, matched)' \
+assert matched == ["bifrost"], "selector %r matched %r" % (labels, matched)
+e = sm["spec"]["endpoints"][0]
+assert (e["port"], e["path"]) == ("http", "/metrics"), "scrape target: %r" % e' \
   --set serviceMonitor.enabled=true
 
 check_service_monitor "serviceMonitor: same-namespace basicAuth inherits the active auth Secret and its keys" \
@@ -1124,6 +1126,50 @@ expect_render_failure "serviceMonitor: basicAuth and authorization are mutually 
   --set serviceMonitor.basicAuth.existingSecret=monitoring-secret \
   --set serviceMonitor.authorization.credentials.name=scrape-token \
   --set serviceMonitor.authorization.credentials.key=token
+
+check_service_monitor "serviceMonitor: bearer-token authorization renders without basicAuth" \
+  'e = sm["spec"]["endpoints"][0]
+assert "basicAuth" not in e, "basicAuth rendered without being enabled: %r" % e["basicAuth"]
+assert e["authorization"] == {"type": "Bearer", "credentials": {"name": "scrape-token", "key": "token"}}, "authorization: %r" % e["authorization"]' \
+  --set serviceMonitor.enabled=true \
+  --set serviceMonitor.authorization.type=Bearer \
+  --set serviceMonitor.authorization.credentials.name=scrape-token \
+  --set serviceMonitor.authorization.credentials.key=token
+
+check_service_monitor "serviceMonitor: a short interval does not get a longer default scrapeTimeout" \
+  'e = sm["spec"]["endpoints"][0]
+assert e["interval"] == "5s", "interval: %r" % e.get("interval")
+assert "scrapeTimeout" not in e, "scrapeTimeout rendered by default: %r" % e["scrapeTimeout"]' \
+  --set serviceMonitor.enabled=true \
+  --set serviceMonitor.interval=5s
+
+check_service_monitor "serviceMonitor: an explicit scrapeTimeout renders" \
+  'e = sm["spec"]["endpoints"][0]
+assert e["scrapeTimeout"] == "3s", "scrapeTimeout: %r" % e.get("scrapeTimeout")' \
+  --set serviceMonitor.enabled=true \
+  --set serviceMonitor.interval=5s \
+  --set serviceMonitor.scrapeTimeout=3s
+
+check_service_monitor "serviceMonitor: a string additional label renders" \
+  'assert sm["metadata"]["labels"]["team"] == "1", "labels: %r" % sm["metadata"]["labels"]' \
+  --set serviceMonitor.enabled=true \
+  --set-string serviceMonitor.additionalLabels.team=1
+
+expect_render_failure "serviceMonitor: schema rejects a non-string additional label" \
+  "additionalLabels" \
+  --set serviceMonitor.enabled=true \
+  --set serviceMonitor.additionalLabels.team=1
+
+check_service_monitor "serviceMonitor: relabelings accept a non-zero hashmod modulus" \
+  'r = sm["spec"]["endpoints"][0]["relabelings"][0]
+assert (r["action"], r["modulus"]) == ("hashmod", 4), "relabeling: %r" % r' \
+  --set serviceMonitor.enabled=true \
+  --set-json 'serviceMonitor.relabelings=[{"sourceLabels":["__address__"],"modulus":4,"targetLabel":"__tmp_hash","action":"hashmod"}]'
+
+expect_render_failure "serviceMonitor: schema rejects a zero hashmod modulus" \
+  "modulus" \
+  --set serviceMonitor.enabled=true \
+  --set-json 'serviceMonitor.relabelings=[{"sourceLabels":["__address__"],"modulus":0,"targetLabel":"__tmp_hash","action":"hashmod"}]'
 
 # Cleanup
 rm -f /tmp/helm-template-output.yaml
