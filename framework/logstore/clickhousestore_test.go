@@ -432,7 +432,7 @@ func TestLogsCleanerStopsAfterOversizedBatch(t *testing.T) {
 	t.Run("FullBatchesKeepGoing", func(t *testing.T) {
 		m := &countingRetentionManager{counts: []int64{batchSize, batchSize, 40}}
 		NewLogsCleaner(m, CleanerConfig{RetentionDays: 3}, testLogger{}).cleanupOldLogs(context.Background())
-		assert.Equal(t, 3, m.calls, "SQL stores return exactly batchSize while rows remain")
+		assert.Equal(t, 4, m.calls, "SQL stores keep going until a batch deletes nothing")
 	})
 	t.Run("ExactBatchThenEmpty", func(t *testing.T) {
 		m := &countingRetentionManager{counts: []int64{batchSize, 0}}

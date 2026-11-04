@@ -167,7 +167,7 @@ func TestLogsCleanerExpiresWarpTopicRows(t *testing.T) {
 	assert.Zero(t, manager.logs.expired)
 	assert.Zero(t, manager.mcp.expired)
 	assert.Zero(t, manager.assignments.expired, "assignments past retention must be drained to the end")
-	assert.Equal(t, 3, manager.assignments.calls, "two full batches and the short one that ends the drain")
+	assert.Equal(t, 4, manager.assignments.calls, "two full batches, the short one, and the empty one that ends the drain")
 	assert.Zero(t, manager.unmatched.expired)
 	// Every table expires on the same instant: the one the logs expire on.
 	want := time.Now().UTC().AddDate(0, 0, -30)
@@ -251,4 +251,33 @@ func TestLogsCleanerLogsTroubleDoesNotStarveWarpTopicRows(t *testing.T) {
 
 		assert.Zero(t, manager.unmatched.expired, "assignments must leave time for the unmatched pool")
 	})
+}
+
+// scriptedRetention returns one scripted result per call, then empty batches.
+type scriptedRetention struct {
+	results []scriptedBatch
+	calls   int
+}
+
+type scriptedBatch struct {
+	deleted int64
+	err     error
+}
+
+func (m *scriptedRetention) DeleteLogsBatch(context.Context, time.Time, int) (int64, error) {
+	m.calls++
+	if m.calls > len(m.results) {
+		return 0, nil
+	}
+	r := m.results[m.calls-1]
+	return r.deleted, r.err
+}
+
+// A short batch is what SKIP LOCKED returns when another session holds some
+// expired rows, so it must not end the pass the way it did before.
+func TestDrainExpiredContinuesPastShortBatch(t *testing.T) {
+	m := &scriptedRetention{results: []scriptedBatch{{deleted: batchSize}, {deleted: 40}, {deleted: batchSize}, {deleted: 7}}}
+	cleaner := NewLogsCleaner(m, CleanerConfig{RetentionDays: 3}, testLogger{})
+	require.True(t, cleaner.drainExpired(context.Background(), "logs", time.Now(), m.DeleteLogsBatch))
+	assert.Equal(t, 5, m.calls, "only the empty fifth batch ends the drain")
 }

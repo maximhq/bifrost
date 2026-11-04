@@ -240,9 +240,8 @@ func (c *LogsCleaner) cleanupOldLogs(ctx context.Context) {
 	}
 }
 
-// drainExpired calls deleteBatch until it reports a short batch, logging
-// progress at Debug. It returns false when the table stopped early
-// (cancellation or an error).
+// drainExpired calls deleteBatch until it deletes nothing or ctx ends.
+// It returns false when the table stopped early (cancellation or an error).
 func (c *LogsCleaner) drainExpired(ctx context.Context, label string, cutoff time.Time, deleteBatch func(context.Context, time.Time, int) (int64, error)) bool {
 	totalDeleted := int64(0)
 	batchCount := 0
@@ -280,12 +279,9 @@ func (c *LogsCleaner) drainExpired(ctx context.Context, label string, cutoff tim
 			c.logger.Debug("%s cleanup progress: %d rows deleted in %d batches", label, totalDeleted, batchCount)
 		}
 
-		// A full batch means more rows may remain; anything else means the
-		// store is done. The SQL stores return at most batchSize. ClickHouse
-		// deletes the whole expired range in one lightweight statement and
-		// returns that count, so a count above batchSize must end the loop
-		// too instead of re-issuing the delete (#7098).
-		if deleted != int64(batchSize) {
+		// A short batch can mean another session took some of the picked rows, so only an empty batch ends the drain.
+		// ClickHouse deletes the whole expired range in one statement and returns a count above batchSize (#7098).
+		if deleted > int64(batchSize) {
 			break
 		}
 	}
