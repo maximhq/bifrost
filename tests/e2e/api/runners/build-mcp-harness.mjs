@@ -11649,6 +11649,204 @@ const PUD81 = folder("PUD-81 Two callers signing in at the same time", `Setup: $
   pudVKDelete("PUD-81", "pud81", "a"), pudVKDelete("PUD-81", "pud81", "c"),
 ]);
 
+// ---------------------------------------------------------------- F. Who the caller is: virtual-key grants and session IDs
+
+// vkBlocked is governance's refusal of tool for VK-<l>.
+const vkBlocked = (id, tool, l) => [A.status(403), A.custom("type mcp_tool_blocked", ["pm.expect(pm.response.json().type, 'body: ' + pm.response.text()).to.equal('mcp_tool_blocked');"]), A.msgEquals(`MCP tool '${tool}' is not allowed for virtual key '${id} ${L(l)}'`)];
+const pudVKAssign = (id, p, l, title, configs) => request(id, title, "PUT", `/api/governance/virtual-keys/{{${p}_${l}_id}}`, { body: { mcp_configs: configs }, asserts: [A.status(200)] });
+// gwPrefixed checks the listed <p>-* names, sorted. A caller with no virtual key is served whatever nothing restricts,
+// so other clients' tools are left out of the comparison.
+const gwPrefixed = (p, names) => A.custom(`the ${p}-* tools listed are ${lit([...names].sort())}`, [
+  "var names = ((pm.response.json().result || {}).tools || []).map(function (t) { return t.name; });",
+  `pm.expect(names.filter(function (n) { return n.indexOf(${lit(p + "-")}) === 0; }).sort(), 'body: ' + pm.response.text()).to.eql(${lit([...names].sort())});`,
+]);
+const toolsNoneOf = (i, p) => A.custom(`request ${i + 1} declares no ${p}-* tool`, [REQS, `pm.expect(((reqs[${i}] || {}).tools || []).filter(function (n) { return n.indexOf(${lit(p + "-")}) === 0; }), 'body: ' + pm.response.text()).to.eql([]);`]);
+// execKeep runs a tool through execute that must answer 400 and keeps its error message, with tool replaced by
+// <name>, in v; sameExecErrorAs checks a later one against it.
+const execErrOf = (name) => `String((pm.response.json().error || {}).message).split(${lit(name)}).join('<name>')`;
+const execKeep = (id, title, tool, headers, v) => execAs(id, title, tool, headers, [A.status(400), A.msgEquals(`tool '${tool}' is not available or not permitted`)], { extraTests: [`pm.collectionVariables.set(${lit(v)}, ${execErrOf(tool)});`] });
+const sameExecErrorAs = (v, name) => A.custom(`the error is the one an unknown name gets, with ${name} in place of it`, [`pm.expect(${execErrOf(name)}, 'body: ' + pm.response.text()).to.equal(pm.collectionVariables.get(${lit(v)}));`]);
+// signInSessH signs session sid in to the unflagged per_user_headers client p with X-Api-Key key: a call opens the
+// flow (kept in <v>_flow), the submit stores the credential.
+const signInSessH = (id, p, sid, v, key) => [
+  execAs(id, `setup: session ${sid} calls ${p}-echo_tool and is sent to a header flow`, `${p}-echo_tool`, [SESS(sid)], [A.status(400), headersFlow({ saveAs: `${v}_flow` })]),
+  hdrSubmit(id, `setup: session ${sid} submits X-Api-Key ${key}`, `${v}_flow`, { "x-api-key": key }, [A.status(200)]),
+];
+const SESSION_CONNECT_MSG = (p) => `${p} keeps tools per caller and needs a signed-in user or a virtual key to connect`;
+
+const PUD82 = folder("PUD-82 Allowed by default, and grants that change after connecting", `Setup: ${HDOOR_TEXT("pud82")}, also allow_by_default; ${LLM_TEXT}; VK-D assigned nothing, VK-E assigned only pud82's echo_tool, VK-X assigned pud82 with no tool, none with a credential. VK-D and VK-E then sign in with key-d and key-e; allow_by_default is turned off and on again; VK-E's assignment is removed, then replaced by one with no tool.`, [
+  ...hdoor("PUD-82", "pud82", { over: { allow_by_default: true } }),
+  pudVK("PUD-82", "pud82", "d", []),
+  pudVK("PUD-82", "pud82", "e", [{ mcp_client_name: "pud82", tools_to_execute: ["echo_tool"] }]),
+  pudVK("PUD-82", "pud82", "x", [{ mcp_client_name: "pud82", tools_to_execute: [] }]),
+  gwList("PUD-82", "VK-D, assigned nothing, lists [pud82-connect]", [vkOf("pud82", "d")], ["pud82-connect"], [connectToolShape("pud82")]),
+  llmScript("PUD-82", "pud82d", TEXT_OK),
+  infChat("PUD-82", "chat with VK-D", "pud82d", [A.status(200)], { headers: [vkOf("pud82", "d")] }),
+  llmCaptured("PUD-82", "VK-D's chat declared only pud82-connect", "pud82d", [reqCount(1), toolsAre(0, ["pud82-connect"])]),
+  gwList("PUD-82", "VK-E, assigned only echo_tool, lists [pud82-connect]", [vkOf("pud82", "e")], ["pud82-connect"]),
+  gwListNone("PUD-82", "VK-X, assigned pud82 with no tool, lists no pud82-* tool", [vkOf("pud82", "x")], "pud82"),
+  execAs("PUD-82", "VK-X calls pud82-connect", "pud82-connect", [vkOf("pud82", "x")], vkBlocked("PUD-82", "pud82-connect", "x")),
+  ...signInH("PUD-82", "pud82", "d"),
+  gwList("PUD-82", "after sign-in VK-D lists pud82's two tools", [vkOf("pud82", "d")], ["pud82-add_tool", "pud82-echo_tool"]),
+  execAs("PUD-82", "VK-D calls pud82-add_tool", "pud82-add_tool", [vkOf("pud82", "d")], [A.status(200), contentIs("add_tool:{\"text\":\"hi\"}")]),
+  ...signInH("PUD-82", "pud82", "e"),
+  gwList("PUD-82", "after sign-in VK-E lists only pud82-echo_tool", [vkOf("pud82", "e")], ["pud82-echo_tool"]),
+  execAs("PUD-82", "VK-E calls pud82-add_tool, outside its assignment", "pud82-add_tool", [vkOf("pud82", "e")], vkBlocked("PUD-82", "pud82-add_tool", "e")),
+  clientPut("PUD-82", "turn allow_by_default off", "pud82-h", { allow_by_default: false }, [A.status(200)]),
+  gwListNone("PUD-82", "VK-D now lists no pud82-* tool", [vkOf("pud82", "d")], "pud82"),
+  execAs("PUD-82", "VK-D calls pud82-echo_tool", "pud82-echo_tool", [vkOf("pud82", "d")], vkBlocked("PUD-82", "pud82-echo_tool", "d")),
+  rowOf("PUD-82", "VK-D's credential is orphaned and keeps its discovery", "pud82-h", "pud82", "d", "VK-D's row: orphaned, 2 tools", [...ROW_STATUS("orphaned"), ...DISCOVERY(2)]),
+  gwList("PUD-82", "VK-E, assigned explicitly, still lists pud82-echo_tool", [vkOf("pud82", "e")], ["pud82-echo_tool"]),
+  clientPut("PUD-82", "turn allow_by_default on again", "pud82-h", { allow_by_default: true }, [A.status(200)]),
+  rowOf("PUD-82", "VK-D's credential is active again, with the same discovery", "pud82-h", "pud82", "d", "VK-D's row: active, 2 tools", [...ROW_STATUS("active"), ...DISCOVERY(2)]),
+  gwList("PUD-82", "VK-D lists its two tools again without signing in", [vkOf("pud82", "d")], ["pud82-add_tool", "pud82-echo_tool"]),
+  pudVKAssign("PUD-82", "pud82", "e", "remove VK-E's assignment", []),
+  gwList("PUD-82", "VK-E, now assigned nothing, lists both tools its discovery holds", [vkOf("pud82", "e")], ["pud82-add_tool", "pud82-echo_tool"]),
+  pudVKAssign("PUD-82", "pud82", "e", "assign VK-E pud82 with no tool", [{ mcp_client_name: "pud82", tools_to_execute: [] }]),
+  gwListNone("PUD-82", "VK-E now lists no pud82-* tool", [vkOf("pud82", "e")], "pud82"),
+  execAs("PUD-82", "VK-E calls pud82-echo_tool", "pud82-echo_tool", [vkOf("pud82", "e")], vkBlocked("PUD-82", "pud82-echo_tool", "e")),
+  rowOf("PUD-82", "VK-E's credential, assigned pud82 with no tool, stays active with its discovery", "pud82-h", "pud82", "e", "VK-E's row: active, 2 tools", [...ROW_STATUS("active"), ...DISCOVERY(2)]),
+  deleteClient("PUD-82", "pud82-h"),
+  ...["d", "e", "x"].map((l) => pudVKDelete("PUD-82", "pud82", l)),
+]);
+
+const PUD83 = folder("PUD-83 A signed-in session loses the client, and a virtual key decides over a session ID", `Setup: HDOOR(pud83) created with per_user_discovery unset (${PUD_SERVER_TEXT("pud83")}), tools_to_auto_execute ["*"]; ${LLM_TEXT}; VK-A signed in with key-a and session pud83-sess with key-s through header flows; VK-B without a credential. Then per_user_discovery is turned on and pud83's counters reset. The session keeps its credential but no discovery is kept for a session, so it sees and reaches nothing of pud83; a request with a virtual key and the session's ID goes by the key.`, [
+  ...hdoor("PUD-83", "pud83", { flag: false, over: { tools_to_auto_execute: ["*"] } }),
+  pudVK("PUD-83", "pud83", "a"), ...signInFlowH("PUD-83", "pud83", "a"),
+  pudVK("PUD-83", "pud83", "b"),
+  ...signInSessH("PUD-83", "pud83", "pud83-sess", "pud83_s", "key-s"),
+  execAs("PUD-83", "control: with the flag unset the session's call runs", "pud83-echo_tool", [SESS("pud83-sess")], [A.status(200), contentIs("echo_tool:{\"text\":\"hi\"}")]),
+  rpc("PUD-83", "control: with the flag unset the session lists pud83's tools", listMsg, { headers: [MCP_ACCEPT, SESS("pud83-sess")], asserts: [A.status(200), gwPrefixed("pud83", ["pud83-add_tool", "pud83-echo_tool"])] }),
+  clientPut("PUD-83", "setup: turn per_user_discovery on", "pud83-h", { per_user_discovery: true }, [A.status(200)]),
+  resetCounters("PUD-83", "pud83"),
+  gwListNone("PUD-83", "the session lists no pud83-* tool", [SESS("pud83-sess")], "pud83"),
+  execKeep("PUD-83", "control: the session calls pud83-zzz, a name nobody holds", "pud83-zzz", [SESS("pud83-sess")], "pud83_exec_err"),
+  execAs("PUD-83", "the session calls pud83-echo_tool", "pud83-echo_tool", [SESS("pud83-sess")], [A.status(400), sameExecErrorAs("pud83_exec_err", "pud83-echo_tool")]),
+  gwKeep("PUD-83", "control: the session calls pud83-zzz over /mcp", "tools/call", { name: "pud83-zzz", arguments: { text: "hi" } }, [SESS("pud83-sess")], "pud83_gw_err", "pud83-zzz"),
+  gwCallAs("PUD-83", "the session calls pud83-echo_tool over /mcp", "pud83-echo_tool", [SESS("pud83-sess")], [sameErrorAs("pud83_gw_err", "pud83-echo_tool")]),
+  gwCallAs("PUD-83", "the session calls pud83-connect over /mcp", "pud83-connect", [SESS("pud83-sess")], [toolResultError(null, SESSION_CONNECT_MSG("pud83"))]),
+  llmScript("PUD-83", "pud83c", TEXT_OK),
+  infChat("PUD-83", "chat with the session", "pud83c", [A.status(200)], { headers: [SESS("pud83-sess")] }),
+  llmCaptured("PUD-83", "the session's chat declared no pud83-* tool", "pud83c", [reqCount(1), toolsNoneOf(0, "pud83")]),
+  llmScript("PUD-83", "pud83r", TEXT_OK),
+  infResponses("PUD-83", "/v1/responses with the session", "pud83r", [A.status(200)], { headers: [SESS("pud83-sess")] }),
+  llmCaptured("PUD-83", "the session's /v1/responses request declared no pud83-* tool", "pud83r", [reqCount(1), toolsNoneOf(0, "pud83")]),
+  llmScript("PUD-83", "pud83g", { turns: [{ tool_calls: [llmCall("t1", "pud83-echo_tool")] }, { text: "done" }] }),
+  infPost("PUD-83", "the session's chat asks for pud83-echo_tool", "/v1/chat/completions", chatBody("pud83g"), [A.status(200)], { headers: [SESS("pud83-sess")] }),
+  llmCaptured("PUD-83", "no request carried an echo_tool result", "pud83g", [toolsNoneOf(0, "pud83"), noToolOutput("echo_tool")]),
+  mockGet("PUD-83", "pud83", "nothing reached pud83 for the session", [methodsEmpty()]),
+  gwList("PUD-83", "VK-B with the session's ID lists [pud83-connect]", [vkOf("pud83", "b"), SESS("pud83-sess")], ["pud83-connect"]),
+  execAs("PUD-83", "VK-B with the session's ID calls pud83-connect: VK-B's sign-in link, not the session's credential", "pud83-connect", [vkOf("pud83", "b"), SESS("pud83-sess")], [A.status(200), contentMatches(`content is "Authentication required for pud83. Visit <link> to submit the required headers."`, H_SIGNIN("pud83"))]),
+  mockGet("PUD-83", "pud83", "still nothing was dialed", [methodsEmpty()]),
+  gwList("PUD-83", "VK-A with the session's ID lists [pud83-connect]", [vkOf("pud83", "a"), SESS("pud83-sess")], ["pud83-connect"]),
+  execAs("PUD-83", "VK-A with the session's ID calls pud83-connect", "pud83-connect", [vkOf("pud83", "a"), SESS("pud83-sess")], [A.status(200), contentIs(connectedText("pud83", 2))]),
+  mockGet("PUD-83", "pud83", "the discovery listed with key-a, not key-s", [identityMethod("key-a", "tools/list", 1), identityMethod("key-s", "tools/list", 0)]),
+  rowOf("PUD-83", "the discovery is VK-A's", "pud83-h", "pud83", "a", "VK-A's row: active, 2 tools", [...ROW_STATUS("active"), ...DISCOVERY(2)]),
+  gwList("PUD-83", "VK-A with the session's ID lists pud83's tools", [vkOf("pud83", "a"), SESS("pud83-sess")], ["pud83-add_tool", "pud83-echo_tool"]),
+  execAs("PUD-83", "VK-A with the session's ID calls pud83-echo_tool", "pud83-echo_tool", [vkOf("pud83", "a"), SESS("pud83-sess")], [A.status(200), contentIs("echo_tool:{\"text\":\"hi\"}")]),
+  mockGet("PUD-83", "pud83", "the call ran under key-a", [identityCallsAre({ "key-a": 1 })]),
+  gwListNone("PUD-83", "the session alone still lists no pud83-* tool", [SESS("pud83-sess")], "pud83"),
+  deleteClient("PUD-83", "pud83-h"),
+  pudVKDelete("PUD-83", "pud83", "a"), pudVKDelete("PUD-83", "pud83", "b"),
+]);
+
+const PUD84 = folder("PUD-84 A session-mode Bifrost token", `Setup: ${HDOOR_TEXT("pud84")}; VK-A signed in with key-a; then ${BOTH}, temp-token auth on, enforce_auth_on_inference off, and a session-mode token consented by the admin with Bearer base64(admin:pw), as in EP-49; pud84's counters reset after the sign-in.`, [
+  ...hdoor("PUD-84", "pud84"),
+  pudVK("PUD-84", "pud84", "a"), ...signInH("PUD-84", "pud84", "a"),
+  readConfig("PUD-84"), oauthConfig("PUD-84", "both"),
+  register("PUD-84", "pud84_client", LOOPBACK_CB, undefined, REFRESHABLE),
+  authorize("PUD-84", "pud84_client", "pud84_s", "setup: authorize"),
+  consent("PUD-84", "pud84_s", "setup: consent in session mode as the admin", "bearer", { mode: "session", value: "" }, [A.status(200), codeIssued()], { extraTests: saveCode("pud84_s") }),
+  tokenReq("PUD-84", "setup: exchange the code for a session-mode token", codeParams("pud84_s", "pud84_client"), [A.status(200), sessionBfMode("session")], { extraTests: saveTokens("pud84_s") }),
+  resetCounters("PUD-84", "pud84"),
+  gwListNone("PUD-84", "the session token lists no pud84-* tool", [bearer("{{pud84_s_at}}")], "pud84"),
+  gwKeep("PUD-84", "control: the session token calls pud84-zzz", "tools/call", { name: "pud84-zzz", arguments: { text: "hi" } }, [bearer("{{pud84_s_at}}")], "pud84_err", "pud84-zzz"),
+  gwCallAs("PUD-84", "the session token calls pud84-echo_tool, which VK-A holds", "pud84-echo_tool", [bearer("{{pud84_s_at}}")], [sameErrorAs("pud84_err", "pud84-echo_tool")]),
+  gwCallAs("PUD-84", "the session token calls pud84-connect", "pud84-connect", [bearer("{{pud84_s_at}}")], [toolResultError(null, SESSION_CONNECT_MSG("pud84"))]),
+  mockGet("PUD-84", "pud84", "nothing reached pud84", [methodsEmpty()]),
+  gwList("PUD-84", "control: VK-A lists pud84's tools", [vkOf("pud84", "a")], ["pud84-add_tool", "pud84-echo_tool"]),
+  revokeGrants("PUD-84", "pud84_client"),
+  restoreConfig("PUD-84"),
+  deleteClient("PUD-84", "pud84-h"),
+  pudVKDelete("PUD-84", "pud84", "a"),
+]);
+
+const PUD85 = folder("PUD-85 A session ID on a code-mode client", `Setup: ${HDOOR_TEXT("pud85")}, also a code-mode client; VK-A signed in with key-a; pud85's counters reset after the sign-in. The session pud85-sess has no virtual key.`, [
+  ...hdoor("PUD-85", "pud85", { over: { is_code_mode_client: true } }),
+  pudVK("PUD-85", "pud85", "a"), ...signInH("PUD-85", "pud85", "a"),
+  resetCounters("PUD-85", "pud85"),
+  gwListNone("PUD-85", "the session lists no pud85-* tool", [SESS("pud85-sess")], "pud85"),
+  execBody("PUD-85", "the session's listToolFiles finds no server", toolCall("listToolFiles", {}), [A.status(200), contentIs("No servers are currently connected. There are no virtual .pyi files available. Please ensure servers are connected before using this tool.")], { headers: [SESS("pud85-sess")] }),
+  execBody("PUD-85", "the session runs code calling pud85.echo_tool: pud85 is not defined", toolCall("executeToolCode", { code: "result = pud85.echo_tool(text=\"s\")" }), [A.status(200), A.custom("is_error true, content names undefined: pud85", ["var b = pm.response.json();", "pm.expect(b.is_error, 'body: ' + pm.response.text()).to.equal(true);", "pm.expect(b.content).to.include('undefined: pud85');"])], { headers: [SESS("pud85-sess")] }),
+  mockGet("PUD-85", "pud85", "nothing reached pud85 for the session", [methodsEmpty()]),
+  execBody("PUD-85", "control: VK-A runs code calling pud85.echo_tool", toolCall("executeToolCode", { code: "result = pud85.echo_tool(text=\"a\")" }), [A.status(200), noIsError()], { headers: [vkOf("pud85", "a")] }),
+  mockGet("PUD-85", "pud85", "the nested call ran under key-a", [identityCallsAre({ "key-a": 1 }), callsIs("echo_tool", 1)]),
+  deleteClient("PUD-85", "pud85-h"),
+  pudVKDelete("PUD-85", "pud85", "a"),
+]);
+
+// gwKeepAt is gwKeep on another /mcp path; noBlock checks an initialize answer carries no instructions block for name.
+const gwKeepAt = (id, title, path, method, params, headers, v, name) => request(id, title, "POST", path, {
+  noAuth: true, raw: JSON.stringify(rpcMsg(method, params)), headers: [MCP_ACCEPT, ...headers],
+  asserts: [A.status(200), A.custom("a JSON-RPC error", ["pm.expect(pm.response.json().error, 'body: ' + pm.response.text()).to.be.an('object');"])],
+  extraTests: keepError(v, name),
+});
+const noBlock = (name) => A.custom(`no <mcp_server name="${name}"> block`, [`pm.expect(String((pm.response.json().result || {}).instructions || ''), 'body: ' + pm.response.text()).to.not.include(${lit(`<mcp_server name="${name}">`)});`]);
+// pud86Sees checks VK-A's prompts, resources, templates and instructions on pud86: all of key-a's, or none.
+const pud86Sees = (id, label, all) => [
+  gwRpc(id, `${label}: VK-A's prompts/list`, "prompts/list", null, [vkOf("pud86", "a")], [all ? listedAre("prompts", "name", ["pud86-pa"]) : listedNoneOf("prompts", "name", ["pud86-pa"])]),
+  gwRpc(id, `${label}: VK-A's resources/list`, "resources/list", null, [vkOf("pud86", "a")], [all ? listedAre("resources", "uri", ["notes://a"]) : listedNoneOf("resources", "uri", ["notes://a"])]),
+  gwRpc(id, `${label}: VK-A's resources/templates/list`, "resources/templates/list", null, [vkOf("pud86", "a")], [all ? listedAre("resourceTemplates", "uriTemplate", ["a://{id}"]) : listedNoneOf("resourceTemplates", "uriTemplate", ["a://{id}"])]),
+  initialize(id, `${label}: VK-A's initialize`, [all ? instructionsEqual(block("pud86", "A notes")) : noBlock("pud86")], { headers: [MCP_ACCEPT, vkOf("pud86", "a")] }),
+];
+
+const PUD86 = folder("PUD-86 A session on the slug endpoint and in initialize; prompts and resources when a grant changes", `Setup: ${HDOOR_TEXT("pud86")}, also allow_by_default; pud86 sends key-a the instructions "A notes" and shows key-a prompt pa, resource notes://a and template a://{id}; ${LLM_TEXT}; VK-A assigned nothing, signed in with key-a; pud86's counters reset after the sign-in. The session pud86-sess has no virtual key. Then allow_by_default is turned off and on again, and VK-A is assigned only echo_tool, then pud86 with no tool.`, [
+  ...hdoor("PUD-86", "pud86", { over: { allow_by_default: true } }),
+  mockPost("PUD-86", "pud86", "instructions", "setup: pud86 sends key-a \"A notes\"", { identity: "key-a", text: "A notes" }),
+  kindOverlay("PUD-86", "pud86", "prompts", "key-a", [{ name: "pa", description: "key-a's prompt", text: "key-a's pa" }]),
+  kindOverlay("PUD-86", "pud86", "resources", "key-a", [{ uri: "notes://a", name: "key-a's note", text: "key-a's note a" }]),
+  kindOverlay("PUD-86", "pud86", "templates", "key-a", [{ uriTemplate: "a://{id}", name: "key-a's template", text: "key-a read {uri}" }]),
+  pudVK("PUD-86", "pud86", "a", []), ...signInH("PUD-86", "pud86", "a"),
+  resetCounters("PUD-86", "pud86"),
+  rpc("PUD-86", "control: VK-A on /mcp/pud86 lists its own tools", listMsg, { path: "/mcp/pud86", headers: [MCP_ACCEPT, vkOf("pud86", "a")], asserts: [A.status(200), gwNames(["pud86-add_tool", "pud86-echo_tool"])] }),
+  rpc("PUD-86", "the session on /mcp/pud86 lists nothing", listMsg, { path: "/mcp/pud86", headers: [MCP_ACCEPT, SESS("pud86-sess")], asserts: [A.status(200), gwNames([])] }),
+  gwKeepAt("PUD-86", "control: the session calls pud86-zzz on /mcp/pud86", "/mcp/pud86", "tools/call", { name: "pud86-zzz", arguments: { text: "hi" } }, [SESS("pud86-sess")], "pud86_slug_err", "pud86-zzz"),
+  rpc("PUD-86", "the session calls pud86-echo_tool on /mcp/pud86", call("pud86-echo_tool", { text: "hi" }), { path: "/mcp/pud86", headers: [MCP_ACCEPT, SESS("pud86-sess")], asserts: [A.status(200), sameErrorAs("pud86_slug_err", "pud86-echo_tool")] }),
+  rpc("PUD-86", "the session calls pud86-connect on /mcp/pud86", call("pud86-connect", {}), { path: "/mcp/pud86", headers: [MCP_ACCEPT, SESS("pud86-sess")], asserts: [A.status(200), toolResultError(null, SESSION_CONNECT_MSG("pud86"))] }),
+  gwRpc("PUD-86", "the session's prompts/list on /mcp/pud86 has no pud86-pa", "prompts/list", null, [SESS("pud86-sess")], [listedNoneOf("prompts", "name", ["pud86-pa"])], "/mcp/pud86"),
+  gwRpc("PUD-86", "the session's resources/list on /mcp/pud86 has no notes://a", "resources/list", null, [SESS("pud86-sess")], [listedNoneOf("resources", "uri", ["notes://a"])], "/mcp/pud86"),
+  mockGet("PUD-86", "pud86", "nothing reached pud86 for the session", [methodsEmpty()]),
+  initialize("PUD-86", "control: VK-A's initialize carries its block", [instructionsEqual(block("pud86", "A notes"))], { headers: [MCP_ACCEPT, vkOf("pud86", "a")] }),
+  initialize("PUD-86", "the session's initialize carries no pud86 block", [noBlock("pud86")], { headers: [MCP_ACCEPT, SESS("pud86-sess")] }),
+  initialize("PUD-86", "the session's initialize on /mcp/pud86 carries no pud86 block", [noBlock("pud86")], { path: "/mcp/pud86", headers: [MCP_ACCEPT, SESS("pud86-sess")] }),
+  llmScript("PUD-86", "pud86s", TEXT_OK),
+  infChat("PUD-86", "chat with the session", "pud86s", [A.status(200)], { headers: [SESS("pud86-sess")] }),
+  llmCaptured("PUD-86", "the session's chat carries no pud86 block", "pud86s", [reqCount(1), A.custom("no A notes and no pud86 block", [REQS, MCP_TEXT, "pm.expect(mcpText(reqs[0]), 'request').to.not.include('A notes');", "pm.expect(mcpText(reqs[0])).to.not.include('mcp_server name=\\\\\"pud86\\\\\"');"])]),
+  ...pud86Sees("PUD-86", "allowed by default", true),
+  gwRpc("PUD-86", "control: VK-A gets pud86-pa", "prompts/get", { name: "pud86-pa" }, [vkOf("pud86", "a")], [promptTextIs("key-a's pa")]),
+  gwRpc("PUD-86", "control: VK-A reads notes://a", "resources/read", { uri: "notes://a" }, [vkOf("pud86", "a")], [readTextIs("key-a's note a")]),
+  clientPut("PUD-86", "turn allow_by_default off", "pud86-h", { allow_by_default: false }, [A.status(200)]),
+  ...pud86Sees("PUD-86", "allow_by_default off", false),
+  gwKeep("PUD-86", "control: VK-A gets prompt pud86-zzz", "prompts/get", { name: "pud86-zzz" }, [vkOf("pud86", "a")], "pud86_prompt_err", "pud86-zzz"),
+  gwRpc("PUD-86", "VK-A gets pud86-pa", "prompts/get", { name: "pud86-pa" }, [vkOf("pud86", "a")], [sameErrorAs("pud86_prompt_err", "pud86-pa")]),
+  gwKeep("PUD-86", "control: VK-A reads notes://zzz", "resources/read", { uri: "notes://zzz" }, [vkOf("pud86", "a")], "pud86_res_err", "notes://zzz"),
+  gwRpc("PUD-86", "VK-A reads notes://a", "resources/read", { uri: "notes://a" }, [vkOf("pud86", "a")], [sameErrorAs("pud86_res_err", "notes://a")]),
+  clientPut("PUD-86", "turn allow_by_default on again", "pud86-h", { allow_by_default: true }, [A.status(200)]),
+  ...pud86Sees("PUD-86", "allowed by default again", true),
+  request("PUD-86", "assign VK-A only pud86's echo_tool", "PUT", "/api/governance/virtual-keys/{{pud86_a_id}}", {
+    body: { mcp_configs: [{ mcp_client_name: "pud86", tools_to_execute: ["echo_tool"] }] }, asserts: [A.status(200)],
+    extraTests: ["pm.collectionVariables.set('pud86_a_mcfg', String((((pm.response.json().virtual_key || {}).mcp_configs || [])[0] || {}).id || ''));"],
+  }),
+  ...pud86Sees("PUD-86", "assigned echo_tool, so pud86 is reached", true),
+  // The entry is changed by its id: an entry for the same client sent without one is refused (409).
+  request("PUD-86", "change VK-A's pud86 entry to no tool", "PUT", "/api/governance/virtual-keys/{{pud86_a_id}}", {
+    raw: '{"mcp_configs":[{"id":{{pud86_a_mcfg}},"mcp_client_name":"pud86","tools_to_execute":[]}]}', asserts: [A.status(200)],
+  }),
+  ...pud86Sees("PUD-86", "assigned no tool", false),
+  deleteClient("PUD-86", "pud86-h"),
+  pudVKDelete("PUD-86", "pud86", "a"),
+]);
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -11673,7 +11871,7 @@ const collection = {
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB12, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB27, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43, LOG49]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL01, FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL09, FAIL10, FAIL12, FAIL14, FAIL16, FAIL18, FAIL19, FAIL23, FAIL24, FAIL25, FAIL27, FAIL28]),
-    section("PUD Per-user discovery", "Per-user discovery tests.", [PUD01, PUD02, PUD03, PUD04, PUD05, PUD06, PUD07, PUD08, PUD09, PUD10, PUD11, PUD12, PUD13, PUD14, PUD15, PUD16, PUD17, PUD18, PUD19, PUD20, PUD21, PUD22, PUD23, PUD24, PUD25, PUD26, PUD27, PUD28, PUD29, PUD30, PUD31, PUD32, PUD33, PUD34, PUD35, PUD36, PUD37, PUD38, PUD39, PUD40, PUD41, PUD42, PUD43, PUD44, PUD45, PUD46, PUD47, PUD48, PUD49, PUD50, PUD51, PUD52, PUD53, PUD54, PUD55, PUD56, PUD57, PUD58, PUD59, PUD60, PUD61, PUD62, PUD63, PUD64, PUD65, PUD66, PUD67, PUD68, PUD69, PUD70, PUD71, PUD72, PUD73, PUD74, PUD75, PUD76, PUD77, PUD78, PUD79, PUD80, PUD81]),
+    section("PUD Per-user discovery", "Per-user discovery tests.", [PUD01, PUD02, PUD03, PUD04, PUD05, PUD06, PUD07, PUD08, PUD09, PUD10, PUD11, PUD12, PUD13, PUD14, PUD15, PUD16, PUD17, PUD18, PUD19, PUD20, PUD21, PUD22, PUD23, PUD24, PUD25, PUD26, PUD27, PUD28, PUD29, PUD30, PUD31, PUD32, PUD33, PUD34, PUD35, PUD36, PUD37, PUD38, PUD39, PUD40, PUD41, PUD42, PUD43, PUD44, PUD45, PUD46, PUD47, PUD48, PUD49, PUD50, PUD51, PUD52, PUD53, PUD54, PUD55, PUD56, PUD57, PUD58, PUD59, PUD60, PUD61, PUD62, PUD63, PUD64, PUD65, PUD66, PUD67, PUD68, PUD69, PUD70, PUD71, PUD72, PUD73, PUD74, PUD75, PUD76, PUD77, PUD78, PUD79, PUD80, PUD81, PUD82, PUD83, PUD84, PUD85, PUD86]),
   ],
 };
 
