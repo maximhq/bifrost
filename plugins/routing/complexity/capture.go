@@ -9,6 +9,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"slices"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -730,4 +731,106 @@ func (c *RequestCapture) Close() {
 		<-drained
 	}
 	c.cancel()
+}
+
+// CapturedRequest is one captured request read back for a suggestion run.
+type CapturedRequest struct {
+	LogID  string
+	Vector []float32
+	At     time.Time
+}
+
+// captureReadPage is how many captured vectors one read returns: about 3 MB
+// at 1536 dimensions.
+const captureReadPage = 500
+
+// EachCaptured reads the requests captured from from through to from
+// namespace, with their vectors, a page at a time, in whatever order the
+// store pages them. Capture times are whole seconds, so both ends include
+// their second: a window ending now includes what was captured this second.
+// Entries without a vector or log ID are skipped; fn's error stops the read.
+//
+// The namespace is read whole, unfiltered, and the window applied here.
+// Filtered reads stop at a ceiling on Redis (MAXSEARCHRESULTS) and Weaviate
+// (QUERY_MAXIMUM_RESULTS), 10,000 by default, past which Redis reports
+// nothing more, which reads as the end of the window. The unfiltered read is
+// each backend's complete walk, and it costs little extra: upkeep sweeps a
+// capture namespace down to the lookback, which is the window a run reads. A
+// walk can hand an entry back twice (a Redis SCAN while capture writes), so
+// each log ID is taken once.
+func EachCaptured(ctx context.Context, store vectorstore.VectorStore, namespace string, from, to time.Time, fn func([]CapturedRequest) error) error {
+	if store == nil || namespace == "" {
+		return nil
+	}
+	ctx = vectorstore.WithIncludeVectors(ctx)
+	fromUnix, toUnix := from.Unix(), to.Unix()
+	fields := []string{captureMetadataKind, captureMetadataTimestamp, captureMetadataLogID}
+	seen := map[string]struct{}{}
+	var cursor *string
+	for {
+		results, next, err := store.GetAll(ctx, namespace, nil, fields, cursor, captureReadPage)
+		// A namespace missing from the start holds nothing yet. One that goes
+		// after a page was read (dropped with the routing plugin, or by an
+		// operator) leaves the window partial, and a run that took it as
+		// whole would supersede suggestions on traffic it never saw.
+		if errors.Is(err, vectorstore.ErrNotFound) && cursor == nil {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("read captured requests: %w", err)
+		}
+		page := make([]CapturedRequest, 0, len(results))
+		for _, r := range results {
+			// The point ID is derived from the log ID (capturePointID); the
+			// log ID itself is in the metadata.
+			logID, _ := r.Properties[captureMetadataLogID].(string)
+			if len(r.Vector) == 0 || logID == "" {
+				continue
+			}
+			// Only capture writes here; a kind is checked where the store
+			// returns one, never required.
+			if kind, ok := r.Properties[captureMetadataKind].(string); ok && kind != captureMetadataKindValue {
+				continue
+			}
+			at := captureUnix(r.Properties[captureMetadataTimestamp])
+			if at < fromUnix || at > toUnix {
+				continue
+			}
+			if _, repeat := seen[logID]; repeat {
+				continue
+			}
+			seen[logID] = struct{}{}
+			page = append(page, CapturedRequest{LogID: logID, Vector: r.Vector, At: time.Unix(at, 0).UTC()})
+		}
+		if len(page) > 0 {
+			if err := fn(page); err != nil {
+				return err
+			}
+		}
+		if next == nil || *next == "" || len(results) == 0 {
+			return nil
+		}
+		cursor = next
+	}
+}
+
+// captureUnix reads a stored unix-seconds property, which backends hand back
+// as whichever numeric type they keep.
+func captureUnix(value any) int64 {
+	switch v := value.(type) {
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	case int32:
+		return int64(v)
+	case float64:
+		return int64(v)
+	case float32:
+		return int64(v)
+	case string:
+		n, _ := strconv.ParseInt(v, 10, 64)
+		return n
+	}
+	return 0
 }

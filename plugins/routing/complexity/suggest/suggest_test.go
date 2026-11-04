@@ -319,3 +319,54 @@ func TestInstructionsLimitMatchesConfig(t *testing.T) {
 		t.Fatalf("suggest.MaxInstructionsChars = %d, configstore allows %d", MaxInstructionsChars, configstore.MaxComplexitySuggestionsInstructionsChars)
 	}
 }
+
+// Requests clustered without text are read back only for the members the LLM
+// is shown; one that cannot be read is left out, and a cluster none of whose
+// examples can be read is not sent at all.
+func TestSuggestReadsTextsOnlyForShownMembers(t *testing.T) {
+	rng := rand.New(rand.NewSource(31))
+	reqs := refundRequests(rng)
+	for i := range reqs {
+		reqs[i].Text = ""
+	}
+	cl := clusterOf(t, reqs, nil)
+	var asked []string
+	texts := func(_ context.Context, ids []string) (map[string]string, error) {
+		asked = append(asked, ids...)
+		out := map[string]string{}
+		for _, id := range ids {
+			if id != cl.Members[0].ID { // the medoid's log was deleted
+				out[id] = "refund " + id
+			}
+		}
+		return out, nil
+	}
+	llm := &scriptedLLM{answers: map[string][]string{"refund": {`{"coherent":true,"tier":"SIMPLE","confidence":"high","reason":"refund status","phrases":["where is my refund"]}`}}}
+	sg, err := NewSuggester(nil, testEmbedder, llm, Options{Representatives: 4, Texts: texts}).Suggest(context.Background(), cl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(asked) != 4 {
+		t.Fatalf("asked for %d texts, want only the 4 representatives", len(asked))
+	}
+	if len(sg.Examples) != 3 {
+		t.Fatalf("examples %d, want 3: the unreadable medoid is left out", len(sg.Examples))
+	}
+	for _, m := range sg.Examples {
+		if m.ID == cl.Members[0].ID || m.Text == "" {
+			t.Errorf("example %s has text %q", m.ID, m.Text)
+		}
+	}
+
+	none := func(context.Context, []string) (map[string]string, error) { return nil, nil }
+	sg, err = NewSuggester(nil, testEmbedder, llm, Options{Texts: none}).Suggest(context.Background(), cl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sg.Category != CategoryUnreadable || sg.Category.Actionable() {
+		t.Fatalf("category %s, want unreadable and not actionable", sg.Category)
+	}
+	if len(llm.calls["refund"]) != 1 {
+		t.Errorf("an unreadable cluster must not reach the LLM")
+	}
+}
