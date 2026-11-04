@@ -21,7 +21,7 @@ func creditsUsage() *schemas.BifrostLLMUsage {
 
 func providerCostTestStore() *Store {
 	return testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
-		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
+		makeKeyNormalized("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
 	})
 }
 
@@ -164,7 +164,7 @@ func TestCalculateCost_IgnoreProviderCostUnpricedModelKeepsRoutingCost(t *testin
 
 func TestGetBasePricing_FallsBackToLowercaseModel(t *testing.T) {
 	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
-		makeKey("deepseek-v4.1-flash", "azure", "chat"): chatPricing(0.0000003, 0.0000012),
+		makeKeyNormalized("deepseek-v4.1-flash", "azure", "chat"): chatPricing(0.0000003, 0.0000012),
 	})
 	resp := makeChatResponse(schemas.Azure, "DeepSeek-V4.1-Flash", &schemas.BifrostLLMUsage{
 		PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500,
@@ -201,7 +201,7 @@ func TestGetBasePricing_CaseVariantRowsPriceFromLowercaseRow(t *testing.T) {
 
 func TestGetBasePricing_LowercaseModelMatchesMixedCaseRow(t *testing.T) {
 	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
-		makeKey("Qwen3-235B-A22B", "azure", "chat"): chatPricing(0.0000003, 0.0000012),
+		makeKeyNormalized("Qwen3-235B-A22B", "azure", "chat"): chatPricing(0.0000003, 0.0000012),
 	})
 	resp := makeChatResponse(schemas.Azure, "qwen3-235b-a22b", &schemas.BifrostLLMUsage{
 		PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500,
@@ -212,7 +212,7 @@ func TestGetBasePricing_LowercaseModelMatchesMixedCaseRow(t *testing.T) {
 
 func TestGetBasePricing_CaseInsensitiveOnVertexPrefixFallback(t *testing.T) {
 	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
-		makeKey("gemini-2.5-pro", "vertex", "chat"): chatPricing(0.0000003, 0.0000012),
+		makeKeyNormalized("gemini-2.5-pro", "vertex", "chat"): chatPricing(0.0000003, 0.0000012),
 	})
 	resp := makeChatResponse(schemas.Vertex, "google/Gemini-2.5-Pro", &schemas.BifrostLLMUsage{
 		PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500,
@@ -223,8 +223,8 @@ func TestGetBasePricing_CaseInsensitiveOnVertexPrefixFallback(t *testing.T) {
 
 func BenchmarkGetBasePricing_Casing(b *testing.B) {
 	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
-		makeKey("deepseek-v4.1-flash", "azure", "chat"): chatPricing(0.0000003, 0.0000012),
-		makeKey("Qwen3-235B-A22B", "azure", "chat"):     chatPricing(0.0000003, 0.0000012),
+		makeKeyNormalized("deepseek-v4.1-flash", "azure", "chat"): chatPricing(0.0000003, 0.0000012),
+		makeKeyNormalized("Qwen3-235B-A22B", "azure", "chat"):     chatPricing(0.0000003, 0.0000012),
 	})
 	for _, tc := range []struct{ name, model string }{
 		{"exact", "deepseek-v4.1-flash"},
@@ -242,7 +242,7 @@ func BenchmarkGetBasePricing_Casing(b *testing.B) {
 
 func TestSetPricingRows_PicksLowercaseThenSmallest(t *testing.T) {
 	titled, upper, lower := azureChatRow("Model-X", 1, 1), azureChatRow("MODEL-X", 2, 2), azureChatRow("model-x", 3, 3)
-	key := makeKey("model-x", "azure", "chat")
+	key := makeKeyNormalized("model-x", "azure", "chat")
 	for _, tc := range []struct {
 		rows []configstoreTables.TableModelPricing
 		want string
@@ -267,7 +267,7 @@ func TestSetPricingRows_ProviderAndModeCasingPicksLowercaseRow(t *testing.T) {
 	upperProvider.Provider = "Azure"
 	upperMode := azureChatRow("model-x", 3, 3)
 	upperMode.Mode = "Chat"
-	key := makeKey("model-x", "azure", "chat")
+	key := makeKeyNormalized("model-x", "azure", "chat")
 	for _, tc := range []struct {
 		rows         []configstoreTables.TableModelPricing
 		wantProvider string
@@ -285,14 +285,14 @@ func TestSetPricingRows_ProviderAndModeCasingPicksLowercaseRow(t *testing.T) {
 	}
 }
 
-// Every fallback in getBasePricing reads through makeKey, so each one must find
+// Every fallback in getBasePricing reads through makeKeyNormalized, so each one must find
 // a row whose casing differs from the request. Each row carries its
 // own input rate so the test also proves which fallback answered.
 func TestGetBasePricing_CaseInsensitiveOnEveryFallback(t *testing.T) {
 	row := func(model, provider, mode string, input float64) (string, configstoreTables.TableModelPricing) {
 		p := chatPricing(input, input)
 		p.Model, p.Provider, p.Mode = model, provider, mode
-		return makeKey(model, provider, mode), p
+		return makeKeyNormalized(model, provider, mode), p
 	}
 	entries := map[string]configstoreTables.TableModelPricing{}
 	for _, r := range []struct {

@@ -17,7 +17,7 @@ func TestGetCapabilityEntry_PrefersChatThenResponsesThenCompletion(t *testing.T)
 
 	s := &Store{
 		pricingData: map[string]configstoreTables.TableModelPricing{
-			makeKey("gpt-4o", "openai", "responses"): {
+			makeKeyNormalized("gpt-4o", "openai", "responses"): {
 				Model:           "gpt-4o",
 				Provider:        "openai",
 				Mode:            "responses",
@@ -25,7 +25,7 @@ func TestGetCapabilityEntry_PrefersChatThenResponsesThenCompletion(t *testing.T)
 				MaxInputTokens:  capabilityIntPtr(100000),
 				MaxOutputTokens: capabilityIntPtr(32000),
 			},
-			makeKey("gpt-4o", "openai", "chat"): {
+			makeKeyNormalized("gpt-4o", "openai", "chat"): {
 				Model:           "gpt-4o",
 				Provider:        "openai",
 				Mode:            "chat",
@@ -63,7 +63,7 @@ func TestGetCapabilityEntry_PrefersChatThenResponsesThenCompletion(t *testing.T)
 func TestGetCapabilityEntry_FallsBackToAnyModeDeterministically(t *testing.T) {
 	s := &Store{
 		pricingData: map[string]configstoreTables.TableModelPricing{
-			makeKey("imagen", "vertex", "image_generation"): {
+			makeKeyNormalized("imagen", "vertex", "image_generation"): {
 				Model:           "imagen",
 				Provider:        "vertex",
 				Mode:            "image_generation",
@@ -112,8 +112,8 @@ func TestGetCapabilityEntry_AnyModeFallbackUsesLowercaseRowForEveryCasing(t *tes
 // the chat lookup missed, so it proves the preferred-mode lookup answered.
 func TestGetCapabilityEntry_PreferredModeMatchesAnyCase(t *testing.T) {
 	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
-		makeKey("Qwen3-235B-A22B", "azure", "chat"):      {Model: "Qwen3-235B-A22B", Provider: "azure", Mode: "chat", MaxOutputTokens: capabilityIntPtr(32000)},
-		makeKey("qwen3-235b-a22b", "azure", "embedding"): {Model: "qwen3-235b-a22b", Provider: "azure", Mode: "embedding", MaxOutputTokens: capabilityIntPtr(1)},
+		makeKeyNormalized("Qwen3-235B-A22B", "azure", "chat"):      {Model: "Qwen3-235B-A22B", Provider: "azure", Mode: "chat", MaxOutputTokens: capabilityIntPtr(32000)},
+		makeKeyNormalized("qwen3-235b-a22b", "azure", "embedding"): {Model: "qwen3-235b-a22b", Provider: "azure", Mode: "embedding", MaxOutputTokens: capabilityIntPtr(1)},
 	})
 
 	entry := s.GetCapabilityEntry("qwen3-235b-a22b", schemas.Azure)
@@ -130,7 +130,7 @@ func TestGetCapabilityEntry_ResolvesAliasFamilyViaBaseModel(t *testing.T) {
 
 	s := &Store{
 		pricingData: map[string]configstoreTables.TableModelPricing{
-			makeKey("gpt-4o-2024-08-06", "openai", "responses"): {
+			makeKeyNormalized("gpt-4o-2024-08-06", "openai", "responses"): {
 				Model:           "gpt-4o-2024-08-06",
 				BaseModel:       "gpt-4o",
 				Provider:        "openai",
@@ -138,7 +138,7 @@ func TestGetCapabilityEntry_ResolvesAliasFamilyViaBaseModel(t *testing.T) {
 				ContextLength:   capabilityIntPtr(64000),
 				MaxOutputTokens: capabilityIntPtr(8000),
 			},
-			makeKey("gpt-4o-2024-08-06", "openai", "chat"): {
+			makeKeyNormalized("gpt-4o-2024-08-06", "openai", "chat"): {
 				Model:           "gpt-4o-2024-08-06",
 				BaseModel:       "gpt-4o",
 				Provider:        "openai",
@@ -167,7 +167,7 @@ func TestGetCapabilityEntry_ResolvesAliasFamilyViaBaseModel(t *testing.T) {
 func TestGetCapabilityEntry_ResolvesProviderPrefixedAlias(t *testing.T) {
 	s := &Store{
 		pricingData: map[string]configstoreTables.TableModelPricing{
-			makeKey("gpt-4o-2024-08-06", "openai", "chat"): {
+			makeKeyNormalized("gpt-4o-2024-08-06", "openai", "chat"): {
 				Model:           "gpt-4o-2024-08-06",
 				BaseModel:       "gpt-4o",
 				Provider:        "openai",
@@ -196,7 +196,7 @@ func TestGetCapabilityEntry_PrefersLiteralMatchOverAliasFamily(t *testing.T) {
 
 	s := &Store{
 		pricingData: map[string]configstoreTables.TableModelPricing{
-			makeKey("gpt-4o", "openai", "chat"): {
+			makeKeyNormalized("gpt-4o", "openai", "chat"): {
 				Model:           "gpt-4o",
 				BaseModel:       "gpt-4o",
 				Provider:        "openai",
@@ -204,7 +204,7 @@ func TestGetCapabilityEntry_PrefersLiteralMatchOverAliasFamily(t *testing.T) {
 				ContextLength:   &literalContextLength,
 				MaxOutputTokens: capabilityIntPtr(4000),
 			},
-			makeKey("gpt-4o-2024-08-06", "openai", "chat"): {
+			makeKeyNormalized("gpt-4o-2024-08-06", "openai", "chat"): {
 				Model:           "gpt-4o-2024-08-06",
 				BaseModel:       "gpt-4o",
 				Provider:        "openai",

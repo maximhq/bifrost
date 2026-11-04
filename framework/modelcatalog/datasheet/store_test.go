@@ -15,7 +15,7 @@ func TestPricingLookupsNormalizeRuntimeProvider(t *testing.T) {
 	inputCost := 0.00000014
 	provider := schemas.ModelProvider("together")
 	s := NewTestStore(nil)
-	s.pricingData[makeKey(model, "together_ai", "chat")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized(model, "together_ai", "chat")] = configstoreTables.TableModelPricing{
 		Model:             model,
 		Provider:          "together_ai",
 		Mode:              "chat",
@@ -51,30 +51,30 @@ func TestPricingLookupsNormalizeRuntimeProvider(t *testing.T) {
 func TestDeprecatedDatasheetModelsForProviderUsesRebuiltIndex(t *testing.T) {
 	s := NewTestStore(nil)
 	s.mu.Lock()
-	s.pricingData[makeKey("deprecated-b", "openai", "chat")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized("deprecated-b", "openai", "chat")] = configstoreTables.TableModelPricing{
 		Model:        "deprecated-b",
 		Provider:     "openai",
 		Mode:         "chat",
 		IsDeprecated: true,
 	}
-	s.pricingData[makeKey("deprecated-a", "openai", "chat")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized("deprecated-a", "openai", "chat")] = configstoreTables.TableModelPricing{
 		Model:        "deprecated-a",
 		Provider:     "openai",
 		Mode:         "chat",
 		IsDeprecated: true,
 	}
-	s.pricingData[makeKey("deprecated-a", "openai", "responses")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized("deprecated-a", "openai", "responses")] = configstoreTables.TableModelPricing{
 		Model:        "deprecated-a",
 		Provider:     "openai",
 		Mode:         "responses",
 		IsDeprecated: true,
 	}
-	s.pricingData[makeKey("active", "openai", "chat")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized("active", "openai", "chat")] = configstoreTables.TableModelPricing{
 		Model:    "active",
 		Provider: "openai",
 		Mode:     "chat",
 	}
-	s.pricingData[makeKey("deprecated-vertex", "vertex_ai", "chat")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized("deprecated-vertex", "vertex_ai", "chat")] = configstoreTables.TableModelPricing{
 		Model:        "deprecated-vertex",
 		Provider:     "vertex_ai",
 		Mode:         "chat",
@@ -139,7 +139,7 @@ func TestGithubCopilotDatasheetRowsPriceRuntimeProvider(t *testing.T) {
 }
 
 // Get, GetPricingEntryForModel and IsTextCompletionSupported read pricingData
-// through makeKey, so they match a row in any casing.
+// through makeKeyNormalized, so they match a row in any casing.
 func TestPricingReadsMatchModelCaseInsensitively(t *testing.T) {
 	inputCost := 0.0000015
 	s := NewTestStore(nil)

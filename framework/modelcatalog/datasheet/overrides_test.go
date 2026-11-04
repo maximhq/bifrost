@@ -39,7 +39,7 @@ func newTestStore() *Store {
 
 func TestGetPricing_OverridePrecedenceExactWildcard(t *testing.T) {
 	s := newTestStore()
-	s.pricingData[makeKey("gpt-4o", "openai", "chat")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized("gpt-4o", "openai", "chat")] = configstoreTables.TableModelPricing{
 		Model:              "gpt-4o",
 		Provider:           "openai",
 		Mode:               "chat",
@@ -77,7 +77,7 @@ func TestGetPricing_OverridePrecedenceExactWildcard(t *testing.T) {
 
 func TestGetPricing_OverridePatternsMatchAnyCase(t *testing.T) {
 	s := newTestStore()
-	s.pricingData[makeKey("qwen3-coder", "openai", "chat")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized("qwen3-coder", "openai", "chat")] = configstoreTables.TableModelPricing{
 		Model:              "qwen3-coder",
 		Provider:           "openai",
 		Mode:               "chat",
@@ -125,7 +125,7 @@ func TestGetPricing_OverridePatternsMatchAnyCase(t *testing.T) {
 
 func TestGetPricing_RequestTypeSpecificOverrideBeatsGeneric(t *testing.T) {
 	s := newTestStore()
-	s.pricingData[makeKey("gpt-4o", "openai", "responses")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized("gpt-4o", "openai", "responses")] = configstoreTables.TableModelPricing{
 		Model:              "gpt-4o",
 		Provider:           "openai",
 		Mode:               "responses",
@@ -167,7 +167,7 @@ func TestGetPricing_RequestTypeSpecificOverrideBeatsGeneric(t *testing.T) {
 
 func TestGetPricing_AppliesOverrideAfterFallbackResolution(t *testing.T) {
 	s := newTestStore()
-	s.pricingData[makeKey("gpt-4o", "vertex", "chat")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized("gpt-4o", "vertex", "chat")] = configstoreTables.TableModelPricing{
 		Model:              "gpt-4o",
 		Provider:           "vertex",
 		Mode:               "chat",
@@ -196,7 +196,7 @@ func TestGetPricing_AppliesOverrideAfterFallbackResolution(t *testing.T) {
 
 func TestGetPricing_DeploymentLookupUsesResolvedModelForOverrideMatching(t *testing.T) {
 	s := newTestStore()
-	s.pricingData[makeKey("dep-gpt4o", "openai", "chat")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized("dep-gpt4o", "openai", "chat")] = configstoreTables.TableModelPricing{
 		Model:              "dep-gpt4o",
 		Provider:           "openai",
 		Mode:               "chat",
@@ -227,7 +227,7 @@ func TestGetPricing_DeploymentLookupUsesResolvedModelForOverrideMatching(t *test
 
 func TestGetPricing_FallbackUsesRequestedProviderForScopeMatching(t *testing.T) {
 	s := newTestStore()
-	s.pricingData[makeKey("gpt-4o", "vertex", "chat")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized("gpt-4o", "vertex", "chat")] = configstoreTables.TableModelPricing{
 		Model:              "gpt-4o",
 		Provider:           "vertex",
 		Mode:               "chat",
@@ -266,7 +266,7 @@ func TestGetPricing_FallbackUsesRequestedProviderForScopeMatching(t *testing.T) 
 
 func TestGetPricing_ExactOverrideDoesNotMatchProviderPrefixedModel(t *testing.T) {
 	s := newTestStore()
-	s.pricingData[makeKey("openai/gpt-4o", "openai", "chat")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized("openai/gpt-4o", "openai", "chat")] = configstoreTables.TableModelPricing{
 		Model:              "openai/gpt-4o",
 		Provider:           "openai",
 		Mode:               "chat",
@@ -296,7 +296,7 @@ func TestGetPricing_ExactOverrideDoesNotMatchProviderPrefixedModel(t *testing.T)
 func TestGetPricing_NoMatchingOverrideLeavesPricingUnchanged(t *testing.T) {
 	s := newTestStore()
 	baseCacheRead := 0.4
-	s.pricingData[makeKey("gpt-4o", "openai", "chat")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized("gpt-4o", "openai", "chat")] = configstoreTables.TableModelPricing{
 		Model:                   "gpt-4o",
 		Provider:                "openai",
 		Mode:                    "chat",
@@ -330,14 +330,14 @@ func TestGetPricing_NoMatchingOverrideLeavesPricingUnchanged(t *testing.T) {
 
 func TestDeleteProviderOverrides_StopsApplying(t *testing.T) {
 	s := newTestStore()
-	s.pricingData[makeKey("gpt-4o", "openai", "chat")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized("gpt-4o", "openai", "chat")] = configstoreTables.TableModelPricing{
 		Model:              "gpt-4o",
 		Provider:           "openai",
 		Mode:               "chat",
 		InputCostPerToken:  bifrost.Ptr(1.0),
 		OutputCostPerToken: bifrost.Ptr(2.0),
 	}
-	s.pricingData[makeKey("gpt-4o-mini", "openai", "chat")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized("gpt-4o-mini", "openai", "chat")] = configstoreTables.TableModelPricing{
 		Model:              "gpt-4o-mini",
 		Provider:           "openai",
 		Mode:               "chat",
@@ -388,7 +388,7 @@ func TestDeleteProviderOverrides_StopsApplying(t *testing.T) {
 
 func TestGetPricing_WildcardSpecificityLongerLiteralWins(t *testing.T) {
 	s := newTestStore()
-	s.pricingData[makeKey("gpt-4o-mini", "openai", "chat")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized("gpt-4o-mini", "openai", "chat")] = configstoreTables.TableModelPricing{
 		Model:              "gpt-4o-mini",
 		Provider:           "openai",
 		Mode:               "chat",
@@ -426,7 +426,7 @@ func TestGetPricing_WildcardSpecificityLongerLiteralWins(t *testing.T) {
 
 func TestGetPricing_FirstInsertionWinsOnTie(t *testing.T) {
 	s := newTestStore()
-	s.pricingData[makeKey("gpt-4o-mini", "openai", "chat")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized("gpt-4o-mini", "openai", "chat")] = configstoreTables.TableModelPricing{
 		Model:              "gpt-4o-mini",
 		Provider:           "openai",
 		Mode:               "chat",

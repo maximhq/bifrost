@@ -166,7 +166,7 @@ func (s *Store) MarkSynced(t time.Time) {
 // Get returns the raw pricing row for (model, provider, requestType) or nil.
 // Useful for callers that need exact pricing without override resolution.
 func (s *Store) Get(model string, provider schemas.ModelProvider, requestType schemas.RequestType) *configstoreTables.TableModelPricing {
-	key := makeKey(model, normalizeProvider(string(provider)), normalizeRequestType(requestType))
+	key := makeKeyNormalized(model, normalizeProvider(string(provider)), normalizeRequestType(requestType))
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	row, ok := s.pricingData[key]
@@ -198,7 +198,7 @@ func (s *Store) GetPricingEntryForModel(model string, provider schemas.ModelProv
 		schemas.VideoGenerationRequest,
 		schemas.OCRRequest,
 	} {
-		key := makeKey(model, catalogProvider, normalizeRequestType(mode))
+		key := makeKeyNormalized(model, catalogProvider, normalizeRequestType(mode))
 		if pricing, ok := s.pricingData[key]; ok {
 			return convertTablePricingToEntry(&pricing)
 		}
@@ -358,7 +358,7 @@ func (s *Store) GetSupportedParameters(model string) []string {
 func (s *Store) IsTextCompletionSupported(model string, provider schemas.ModelProvider) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	key := makeKey(model, normalizeProvider(string(provider)), normalizeRequestType(schemas.TextCompletionRequest))
+	key := makeKeyNormalized(model, normalizeProvider(string(provider)), normalizeRequestType(schemas.TextCompletionRequest))
 	_, ok := s.pricingData[key]
 	return ok
 }
@@ -372,13 +372,13 @@ func (s *Store) capabilityEntryForExactUnsafe(model string, provider schemas.Mod
 		schemas.TextCompletionRequest,
 	}
 	for _, mode := range preferredModes {
-		key := makeKey(model, string(provider), normalizeRequestType(mode))
+		key := makeKeyNormalized(model, string(provider), normalizeRequestType(mode))
 		if pricing, ok := s.pricingData[key]; ok {
 			return convertTablePricingToEntry(&pricing)
 		}
 	}
 
-	prefix := makeKey(model, string(provider), "")
+	prefix := makeKeyNormalized(model, string(provider), "")
 	var matchingKeys []string
 	for key := range s.pricingData {
 		if strings.HasPrefix(key, prefix) {
@@ -485,7 +485,7 @@ func (s *Store) SetPricingRowsForTest(rows []configstoreTables.TableModelPricing
 func (s *Store) setPricingRowsUnsafe(rows []configstoreTables.TableModelPricing) {
 	s.pricingData = make(map[string]configstoreTables.TableModelPricing, len(rows))
 	for _, row := range rows {
-		key := makeKey(row.Model, row.Provider, row.Mode)
+		key := makeKeyNormalized(row.Model, row.Provider, row.Mode)
 		if cur, taken := s.pricingData[key]; taken && !pricingRowBeats(row, cur) {
 			continue
 		}
@@ -498,8 +498,8 @@ func (s *Store) setPricingRowsUnsafe(rows []configstoreTables.TableModelPricing)
 // their shared lowercase key. It compares the full spelling, since the database
 // can hold rows that differ only by provider or mode casing.
 func pricingRowBeats(row, current configstoreTables.TableModelPricing) bool {
-	spelling := row.Model + "|" + row.Provider + "|" + row.Mode
-	currentSpelling := current.Model + "|" + current.Provider + "|" + current.Mode
+	spelling := makeKey(row.Model, row.Provider, row.Mode)
+	currentSpelling := makeKey(current.Model, current.Provider, current.Mode)
 	rowIsLower, currentIsLower := spelling == strings.ToLower(spelling), currentSpelling == strings.ToLower(currentSpelling)
 	if rowIsLower != currentIsLower {
 		return rowIsLower

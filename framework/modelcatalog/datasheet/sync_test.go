@@ -97,7 +97,7 @@ func TestApplyPricingDataBedrockRowBeatsMantleRow(t *testing.T) {
 	for i := 0; i < syncRepeats; i++ {
 		store.applyPricingData(entries)
 		store.mu.RLock()
-		row, ok := store.pricingData[makeKey("anthropic.claude-sonnet-5-5", "bedrock", "chat")]
+		row, ok := store.pricingData[makeKeyNormalized("anthropic.claude-sonnet-5-5", "bedrock", "chat")]
 		store.mu.RUnlock()
 		if !ok || row.InputCostPerToken == nil || *row.InputCostPerToken != 2e-06 {
 			t.Fatalf("apply %d stored input cost %v, want 2e-06 from the bedrock row", i, deref(row.InputCostPerToken))

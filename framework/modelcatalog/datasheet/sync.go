@@ -134,10 +134,10 @@ func (s *Store) resolvePricingRows(pricingData map[string]Entry) []configstoreTa
 	winners := make(map[string]pricingCandidate, len(pricingData))
 	var losers map[string][]pricingCandidate // stored key -> rows that lost it; empty unless rows fold
 	for modelKey, entry := range pricingData {
-		// Same identity convertEntryToTablePricing stores the row under. Not makeKey:
+		// Same identity convertEntryToTablePricing stores the row under. Not makeKeyNormalized:
 		// the database keeps each casing as its own row.
 		provider := normalizeProvider(entry.Provider)
-		key := extractModelName(modelKey) + "|" + provider + "|" + entry.Mode
+		key := makeKey(extractModelName(modelKey), provider, entry.Mode)
 		cand := pricingCandidate{modelKey: modelKey, exact: entry.Provider == provider}
 		cur, taken := winners[key]
 		lost := cand
