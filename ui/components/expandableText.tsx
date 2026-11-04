@@ -16,12 +16,15 @@ interface ExpandableTextProps {
 	lines?: 2 | 3 | 4 | 5;
 	// Which side the View more / View less toggle sits on. Defaults to left.
 	toggleAlign?: "left" | "right";
+	// Puts the toggle at the end of the last visible line instead of on a line
+	// of its own (toggleAlign does not apply).
+	inlineToggle?: boolean;
 	className?: string;
 }
 
 // Clamps long text to a few lines with a "View more" / "View less" toggle. The toggle
 // appears only when the text actually overflows, so short text is left untouched.
-export function ExpandableText({ text, lines = 3, toggleAlign = "left", className }: ExpandableTextProps) {
+export function ExpandableText({ text, lines = 3, toggleAlign = "left", inlineToggle = false, className }: ExpandableTextProps) {
 	const { t } = useTranslation("common");
 	const ref = useRef<HTMLParagraphElement>(null);
 	const [expanded, setExpanded] = useState(false);
@@ -38,6 +41,36 @@ export function ExpandableText({ text, lines = 3, toggleAlign = "left", classNam
 		observer.observe(el);
 		return () => observer.disconnect();
 	}, [text, lines, expanded]);
+
+	const toggleLabel = expanded ? t("viewToggle.less") : t("viewToggle.more");
+	if (inlineToggle) {
+		// The toggle floats right below a spacer as tall as the text less one line,
+		// so it sits at the end of the last visible line and the text wraps around
+		// it. The flex wrapper gives the text the definite height the spacer's
+		// percentage needs.
+		return (
+			<div className={cn("flex", className)}>
+				<p
+					ref={ref}
+					className={cn(
+						"min-w-0 break-words before:float-right before:h-[calc(100%-1lh)] before:content-['']",
+						!expanded && (CLAMP_CLASS[lines] ?? CLAMP_CLASS[3]),
+					)}
+				>
+					{(overflowing || expanded) && (
+						<button
+							type="button"
+							className="text-primary float-right clear-both ml-1 text-xs font-medium hover:underline"
+							onClick={() => setExpanded((value) => !value)}
+						>
+							{toggleLabel}
+						</button>
+					)}
+					{text}
+				</p>
+			</div>
+		);
+	}
 
 	return (
 		<div className={className}>
