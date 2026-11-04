@@ -54,7 +54,7 @@ test_template() {
 
 # 1. Storage Combinations (9 tests)
 echo ""
-echo -e "${CYAN}📦 1/9 - Testing Storage Combinations (9 tests)...${NC}"
+echo -e "${CYAN}📦 1/10 - Testing Storage Combinations (9 tests)...${NC}"
 echo "---------------------------------------------------"
 
 # config=no, logs=no
@@ -126,7 +126,7 @@ test_template "config=postgres, logs=postgres" \
 
 # 2. Vector Store Combinations (6 tests)
 echo ""
-echo -e "${CYAN}🗄️  2/9 - Testing Vector Store Combinations (6 tests)...${NC}"
+echo -e "${CYAN}🗄️  2/10 - Testing Vector Store Combinations (6 tests)...${NC}"
 echo "--------------------------------------------------------"
 
 # Weaviate
@@ -175,7 +175,7 @@ test_template "sqlite + qdrant" \
 
 # 3. Special Configurations (7 tests)
 echo ""
-echo -e "${CYAN}⚙️  3/9 - Testing Special Configurations (7 tests)...${NC}"
+echo -e "${CYAN}⚙️  3/10 - Testing Special Configurations (7 tests)...${NC}"
 echo "-----------------------------------------------------"
 
 # semantic cache: direct mode (dimension: 1, no provider/keys)
@@ -251,7 +251,7 @@ test_template "production-like config" \
 
 # 4. New Property Rendering (Gap 1-8 tests)
 echo ""
-echo -e "${CYAN}🆕 4/9 - Testing New Property Rendering (Gap 1-8)...${NC}"
+echo -e "${CYAN}🆕 4/10 - Testing New Property Rendering (Gap 1-8)...${NC}"
 echo "-----------------------------------------------------"
 
 # Gap 1+2: Client new properties
@@ -345,7 +345,7 @@ test_template "combined: all new Gap 1-9 fields" \
 
 # 5. Plugin Name Validation
 echo ""
-echo -e "${CYAN}🔌 5/9 - Validating Plugin Names Match Go Registry...${NC}"
+echo -e "${CYAN}🔌 5/10 - Validating Plugin Names Match Go Registry...${NC}"
 echo "------------------------------------------------------"
 
 # Verify semantic cache plugin renders with correct name ("semantic_cache", not "semantic_cache")
@@ -374,7 +374,7 @@ fi
 
 # 6. Custom Plugin Placement and Order Rendering
 echo ""
-echo -e "${CYAN}🔧 6/9 - Validating Custom Plugin placement and order Rendering...${NC}"
+echo -e "${CYAN}🔧 6/10 - Validating Custom Plugin placement and order Rendering...${NC}"
 echo "-------------------------------------------------------------------"
 
 # Test custom plugin renders successfully with placement and order
@@ -431,7 +431,7 @@ fi
 
 # 7. Security Context Rendering
 echo ""
-echo -e "${CYAN}🔒 7/9 - Validating OpenShift-compatible Security Contexts...${NC}"
+echo -e "${CYAN}🔒 7/10 - Validating OpenShift-compatible Security Contexts...${NC}"
 echo "----------------------------------------------------------------"
 
 # Images before v1.6.4 use a non-numeric `USER appuser`, so kubelet can only
@@ -500,7 +500,7 @@ fi
 
 # 8. Pod Scheduling: topologySpreadConstraints
 echo ""
-echo -e "${CYAN}🗺️  8/9 - Validating topologySpreadConstraints Rendering...${NC}"
+echo -e "${CYAN}🗺️  8/10 - Validating topologySpreadConstraints Rendering...${NC}"
 echo "----------------------------------------------------------------"
 
 # Values files for the sections below live in a private directory (not fixed /tmp paths,
@@ -680,7 +680,7 @@ rm -f "$VALUES_DIR/tsc-values.yaml"
 
 # 9. Sidecars: native (initContainers entry with restartPolicy: Always) and regular (extraContainers)
 echo ""
-echo -e "${CYAN}🛵 9/9 - Validating Sidecar Container Rendering...${NC}"
+echo -e "${CYAN}🛵 9/10 - Validating Sidecar Container Rendering...${NC}"
 echo "----------------------------------------------------------------"
 
 # Native sidecars need Kubernetes 1.29+, and Helm's default .Capabilities.KubeVersion varies by
@@ -1010,6 +1010,171 @@ expect_render_failure "relays: schema requires base_url" "base_url" \
 expect_render_failure "relays: schema rejects a relay grant without relay_name" "relay_name" \
   --set 'bifrost.governance.virtualKeys[0].id=vk' --set 'bifrost.governance.virtualKeys[0].name=vk' \
   --set-json 'bifrost.governance.virtualKeys[0].relay_grants=[{"name":"tavily"}]'
+
+# 10. ServiceMonitor
+echo ""
+echo -e "${CYAN}📊 10/10 - Validating ServiceMonitor Rendering...${NC}"
+echo "--------------------------------------------------------"
+
+# check_service_monitor renders the chart and runs a Python assertion against the rendered
+# ServiceMonitor, available to the assertion as `sm`, with every rendered Service as `services`.
+check_service_monitor() {
+  local test_name=$1
+  local assertion=$2
+  shift 2
+  if ! helm template bifrost ./helm-charts/bifrost --set image.tag=v1.0.0 "$@" \
+    > /tmp/helm-template-output.yaml 2>&1; then
+    report_result "$test_name" 1
+    echo -e "${YELLOW}  Error output:${NC}"
+    head -10 /tmp/helm-template-output.yaml | sed 's/^/    /'
+    return
+  fi
+  local reason
+  reason=$(ASSERTION="$assertion" python3 -c '
+import os, yaml
+docs = [d for d in yaml.safe_load_all(open("/tmp/helm-template-output.yaml")) if d]
+sms = [d for d in docs if d.get("kind") == "ServiceMonitor"]
+services = [d for d in docs if d.get("kind") == "Service"]
+if len(sms) != 1:
+    print("expected exactly one ServiceMonitor, got %d" % len(sms))
+else:
+    sm = sms[0]
+    try:
+        exec(os.environ["ASSERTION"])
+    except AssertionError as e:
+        print(e or "assertion failed")
+    except Exception as e:
+        print("%s: %s" % (type(e).__name__, e))
+' 2>&1 || true)
+  if [ -z "$reason" ]; then
+    report_result "$test_name" 0
+  else
+    report_result "$test_name" 1
+    echo -e "${YELLOW}  $reason${NC}"
+  fi
+}
+
+test_name="serviceMonitor: omitted by default"
+if helm template bifrost ./helm-charts/bifrost --set image.tag=v1.0.0 \
+  > /tmp/helm-template-output.yaml 2>&1; then
+  if grep -q '^kind: ServiceMonitor' /tmp/helm-template-output.yaml; then
+    report_result "$test_name" 1
+    echo -e "${YELLOW}  ServiceMonitor rendered without being enabled${NC}"
+  else
+    report_result "$test_name" 0
+  fi
+else
+  report_result "$test_name" 1
+  echo -e "${YELLOW}  Error output:${NC}"
+  head -10 /tmp/helm-template-output.yaml | sed 's/^/    /'
+fi
+
+check_service_monitor "serviceMonitor: selects the primary Service and not the SQLite headless Service" \
+  'names = [s["metadata"]["name"] for s in services]
+assert "bifrost-headless" in names, "expected the SQLite headless Service to render, got %r" % names
+labels = sm["spec"]["selector"]["matchLabels"]
+matched = [s["metadata"]["name"] for s in services if labels.items() <= s["metadata"]["labels"].items()]
+assert matched == ["bifrost"], "selector %r matched %r" % (labels, matched)
+e = sm["spec"]["endpoints"][0]
+assert (e["port"], e["path"]) == ("http", "/metrics"), "scrape target: %r" % e' \
+  --set serviceMonitor.enabled=true
+
+check_service_monitor "serviceMonitor: same-namespace basicAuth inherits the active auth Secret and its keys" \
+  'a = sm["spec"]["endpoints"][0]["basicAuth"]
+assert sm["metadata"]["namespace"] == "default", "namespace: %r" % sm["metadata"]["namespace"]
+assert a["username"] == {"name": "admin-secret", "key": "admin-username"}, "username: %r" % a["username"]
+assert a["password"] == {"name": "admin-secret", "key": "admin-password"}, "password: %r" % a["password"]' \
+  --set serviceMonitor.enabled=true \
+  --set serviceMonitor.basicAuth.enabled=true \
+  --set bifrost.authConfig.existingSecret=admin-secret \
+  --set bifrost.authConfig.usernameKey=admin-username \
+  --set bifrost.authConfig.passwordKey=admin-password
+
+check_service_monitor "serviceMonitor: cross-namespace basicAuth accepts an explicit Secret" \
+  'a = sm["spec"]["endpoints"][0]["basicAuth"]
+assert sm["metadata"]["namespace"] == "monitoring", "namespace: %r" % sm["metadata"]["namespace"]
+assert sm["spec"]["namespaceSelector"]["matchNames"] == ["default"], "namespaceSelector: %r" % sm["spec"]["namespaceSelector"]
+assert a["username"] == {"name": "monitoring-secret", "key": "scrape-username"}, "username: %r" % a["username"]
+assert a["password"] == {"name": "monitoring-secret", "key": "scrape-password"}, "password: %r" % a["password"]' \
+  --set serviceMonitor.enabled=true \
+  --set serviceMonitor.namespace=monitoring \
+  --set serviceMonitor.basicAuth.enabled=true \
+  --set serviceMonitor.basicAuth.existingSecret=monitoring-secret \
+  --set serviceMonitor.basicAuth.usernameKey=scrape-username \
+  --set serviceMonitor.basicAuth.passwordKey=scrape-password
+
+expect_render_failure "serviceMonitor: cross-namespace basicAuth requires an explicit Secret" \
+  "serviceMonitor.basicAuth.existingSecret must be set explicitly" \
+  --set serviceMonitor.enabled=true \
+  --set serviceMonitor.namespace=monitoring \
+  --set serviceMonitor.basicAuth.enabled=true \
+  --set bifrost.authConfig.existingSecret=admin-secret
+
+expect_render_failure "serviceMonitor: active inline governance auth rejects the top-level Secret" \
+  "active bifrost.governance.authConfig does not use an existing Secret" \
+  --set serviceMonitor.enabled=true \
+  --set serviceMonitor.basicAuth.enabled=true \
+  --set bifrost.governance.authConfig.isEnabled=true \
+  --set bifrost.governance.authConfig.adminUsername=governance-user \
+  --set bifrost.governance.authConfig.adminPassword=governance-pass \
+  --set bifrost.authConfig.existingSecret=top-level-secret
+
+expect_render_failure "serviceMonitor: basicAuth and authorization are mutually exclusive" \
+  "mutually exclusive" \
+  --set serviceMonitor.enabled=true \
+  --set serviceMonitor.basicAuth.enabled=true \
+  --set serviceMonitor.basicAuth.existingSecret=monitoring-secret \
+  --set serviceMonitor.authorization.credentials.name=scrape-token \
+  --set serviceMonitor.authorization.credentials.key=token
+
+expect_render_failure "serviceMonitor: authorization without credentials is refused" \
+  "requires credentials" \
+  --set serviceMonitor.enabled=true \
+  --set serviceMonitor.authorization.type=Bearer
+
+check_service_monitor "serviceMonitor: bearer-token authorization renders without basicAuth" \
+  'e = sm["spec"]["endpoints"][0]
+assert "basicAuth" not in e, "basicAuth rendered without being enabled: %r" % e["basicAuth"]
+assert e["authorization"] == {"type": "Bearer", "credentials": {"name": "scrape-token", "key": "token"}}, "authorization: %r" % e["authorization"]' \
+  --set serviceMonitor.enabled=true \
+  --set serviceMonitor.authorization.type=Bearer \
+  --set serviceMonitor.authorization.credentials.name=scrape-token \
+  --set serviceMonitor.authorization.credentials.key=token
+
+check_service_monitor "serviceMonitor: a short interval does not get a longer default scrapeTimeout" \
+  'e = sm["spec"]["endpoints"][0]
+assert e["interval"] == "5s", "interval: %r" % e.get("interval")
+assert "scrapeTimeout" not in e, "scrapeTimeout rendered by default: %r" % e["scrapeTimeout"]' \
+  --set serviceMonitor.enabled=true \
+  --set serviceMonitor.interval=5s
+
+check_service_monitor "serviceMonitor: an explicit scrapeTimeout renders" \
+  'e = sm["spec"]["endpoints"][0]
+assert e["scrapeTimeout"] == "3s", "scrapeTimeout: %r" % e.get("scrapeTimeout")' \
+  --set serviceMonitor.enabled=true \
+  --set serviceMonitor.interval=5s \
+  --set serviceMonitor.scrapeTimeout=3s
+
+check_service_monitor "serviceMonitor: a string additional label renders" \
+  'assert sm["metadata"]["labels"]["team"] == "1", "labels: %r" % sm["metadata"]["labels"]' \
+  --set serviceMonitor.enabled=true \
+  --set-string serviceMonitor.additionalLabels.team=1
+
+expect_render_failure "serviceMonitor: schema rejects a non-string additional label" \
+  "additionalLabels" \
+  --set serviceMonitor.enabled=true \
+  --set serviceMonitor.additionalLabels.team=1
+
+check_service_monitor "serviceMonitor: relabelings accept a non-zero hashmod modulus" \
+  'r = sm["spec"]["endpoints"][0]["relabelings"][0]
+assert (r["action"], r["modulus"]) == ("hashmod", 4), "relabeling: %r" % r' \
+  --set serviceMonitor.enabled=true \
+  --set-json 'serviceMonitor.relabelings=[{"sourceLabels":["__address__"],"modulus":4,"targetLabel":"__tmp_hash","action":"hashmod"}]'
+
+expect_render_failure "serviceMonitor: schema rejects a zero hashmod modulus" \
+  "modulus" \
+  --set serviceMonitor.enabled=true \
+  --set-json 'serviceMonitor.relabelings=[{"sourceLabels":["__address__"],"modulus":0,"targetLabel":"__tmp_hash","action":"hashmod"}]'
 
 # Cleanup
 rm -f /tmp/helm-template-output.yaml
