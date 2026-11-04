@@ -1344,6 +1344,49 @@ func TestComplexitySuggestionsConfigDefaultsAndValidation(t *testing.T) {
 	require.NoError(t, n.Validate())
 }
 
+// The run settings decode strictly, take their defaults when omitted, and are
+// refused out of range.
+func TestComplexitySuggestionsRunSettings(t *testing.T) {
+	var cfg ComplexitySuggestionsConfig
+	require.NoError(t, json.Unmarshal([]byte(`{"enabled":true,"schedule":{"every":"1w","at":"04:30","weekday":"friday","timezone":"Asia/Kolkata"},`+
+		`"max_clustered_requests":5000,"min_cluster_requests":10,"provider":"openai","model":"gpt-5","instructions":"be brief"}`), &cfg))
+	assert.Equal(t, ComplexitySuggestionsConfig{
+		Enabled:              true,
+		Schedule:             &ComplexitySuggestionsSchedule{Every: "1w", At: "04:30", Weekday: "friday", Timezone: "Asia/Kolkata"},
+		MaxClusteredRequests: 5000, MinClusterRequests: 10, Provider: "openai", Model: "gpt-5", Instructions: "be brief",
+	}, cfg)
+	require.ErrorContains(t, json.Unmarshal([]byte(`{"enabled":true,"schedule":{"cron":"0 3 * * *"}}`), &cfg), `unknown complexity suggestions schedule field "cron"`)
+
+	analyzer := testSemanticAnalyzerConfig()
+	analyzer.Suggestions = &ComplexitySuggestionsConfig{Enabled: true, Instructions: "   "}
+	n := analyzer.Normalized()
+	require.NoError(t, n.Validate())
+	assert.Equal(t, DefaultComplexitySuggestionsMaxClusteredRequests, n.Suggestions.MaxClusteredRequests)
+	assert.Equal(t, DefaultComplexitySuggestionsMinClusterRequests, n.Suggestions.MinClusterRequests)
+	assert.Equal(t, &ComplexitySuggestionsSchedule{Every: "1d", At: "03:00", Timezone: "UTC"}, n.Suggestions.Schedule)
+	assert.Empty(t, n.Suggestions.Instructions, "blank instructions use the shipped ones")
+	assert.Equal(t, ComplexitySuggestionsSchedule{Every: "1d", At: "03:00", Timezone: "UTC"}, (*ComplexitySuggestionsConfig)(nil).EffectiveSchedule())
+
+	for name, bad := range map[string]ComplexitySuggestionsConfig{
+		"budget too small":       {Enabled: true, MaxClusteredRequests: 10},
+		"budget too large":       {Enabled: true, MaxClusteredRequests: MaxComplexitySuggestionsMaxClusteredRequests + 1},
+		"cluster minimum of one": {Enabled: true, MinClusterRequests: 1},
+		"provider without model": {Enabled: true, Provider: "openai"},
+		"model without provider": {Enabled: true, Model: "gpt-5"},
+		"instructions too long":  {Enabled: true, Instructions: strings.Repeat("x", MaxComplexitySuggestionsInstructionsChars+1)},
+		"bad interval":           {Enabled: true, Schedule: &ComplexitySuggestionsSchedule{Every: "5h"}},
+		"at on hourly":           {Enabled: true, Schedule: &ComplexitySuggestionsSchedule{Every: "6h", At: "03:00"}},
+		"weekday on daily":       {Enabled: true, Schedule: &ComplexitySuggestionsSchedule{Every: "1d", Weekday: "monday"}},
+		"bad at":                 {Enabled: true, Schedule: &ComplexitySuggestionsSchedule{Every: "1d", At: "3am"}},
+		"bad weekday":            {Enabled: true, Schedule: &ComplexitySuggestionsSchedule{Every: "1w", Weekday: "funday"}},
+		"bad timezone":           {Enabled: true, Schedule: &ComplexitySuggestionsSchedule{Every: "1d", Timezone: "Mars/Olympus"}},
+	} {
+		analyzer.Suggestions = &bad
+		n := analyzer.Normalized()
+		assert.Error(t, n.Validate(), name)
+	}
+}
+
 // The suggestions block rides the semantic row as a top-level key, which the
 // row record decodes leniently; it must never land inside the strictly
 // decoded semantic block, or a rolled-back binary loses the whole row.
@@ -1443,7 +1486,8 @@ func TestRDBConfigStore_ComplexitySuggestionsPersistenceAndReset(t *testing.T) {
 	got, err := store.GetComplexityAnalyzerConfig(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, got.Suggestions)
-	assert.Equal(t, ComplexitySuggestionsConfig{Enabled: true, SampleRate: 0.25, LookbackDays: 14}, *got.Suggestions)
+	assert.Equal(t, *testSuggestionsAnalyzerConfig().Normalized().Suggestions, *got.Suggestions, "stored with defaults filled in")
+	assert.Equal(t, DefaultComplexitySuggestionsMaxClusteredRequests, got.Suggestions.MaxClusteredRequests)
 	assert.Equal(t, hashes.SuggestionsSettings, got.ConfigHashes.SuggestionsSettings)
 
 	// A UI-style update omits hashes; the carry-over keeps them with the block.

@@ -7059,11 +7059,84 @@
           "minimum": 1,
           "maximum": 90,
           "description": "Days of captured traffic suggestions draw on, and how long captured vectors are kept (never longer than the logs); default 7."
+        },
+        "schedule": {
+          "$ref": "#/$defs/complexity_suggestions_schedule"
+        },
+        "max_clustered_requests": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 100000,
+          "description": "Most captured requests one run clusters; the rest of the lookback window is assigned to the clusters found, so request counts still cover all of it. Default 20000."
+        },
+        "min_cluster_requests": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 1000,
+          "description": "Smallest cluster, in requests, a suggestion is written for; default 6."
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider of the model that writes suggestions. Set together with model; both omitted use the llm block's model."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Model that writes suggestions. Set together with provider; both omitted use the llm block's model."
+        },
+        "instructions": {
+          "type": "string",
+          "maxLength": 8000,
+          "description": "Replaces the shipped suggestion instructions. The tier definitions and the fixed output and safety rules are added either way; empty uses the shipped instructions."
         }
+      },
+      "dependentRequired": {
+        "provider": [
+          "model"
+        ],
+        "model": [
+          "provider"
+        ]
       },
       "required": [
         "enabled"
       ],
+      "additionalProperties": false
+    },
+    "complexity_suggestions_schedule": {
+      "type": "object",
+      "description": "When phrase-suggestion runs start. Slots follow the calendar in timezone, so every node computes the same one. Default: daily at 03:00 UTC.",
+      "properties": {
+        "every": {
+          "type": "string",
+          "pattern": "^([1-9]|1[0-2])h$|^([1-9]|[12][0-9]|30)d$|^[1-4]w$",
+          "description": "Interval: hours that divide a day (1, 2, 3, 4, 6, 8, 12h, starting at midnight), days (1d-30d, at at) or weeks (1w-4w, on weekday at at). Default 1d."
+        },
+        "at": {
+          "type": "string",
+          "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+          "description": "Wall-clock start time HH:MM for daily and weekly schedules; not allowed for hourly ones. Default 03:00."
+        },
+        "weekday": {
+          "type": "string",
+          "enum": [
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday",
+            "saturday",
+            "sunday"
+          ],
+          "description": "Day weekly schedules run on; only allowed for weekly schedules. Default monday."
+        },
+        "timezone": {
+          "type": "string",
+          "minLength": 1,
+          "description": "IANA time zone the schedule is read in, e.g. Europe/Berlin. Default UTC."
+        }
+      },
       "additionalProperties": false
     },
     "complexity_session_config": {

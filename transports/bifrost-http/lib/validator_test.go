@@ -2580,6 +2580,40 @@ func TestSchemaComplexityAnalyzerDependencies(t *testing.T) {
 			wantError: true,
 		},
 		{
+			name: "suggestions accept run settings",
+			analyzer: complexityAnalyzerSchemaConfig(`,"suggestions":{"enabled":true,"schedule":{"every":"1w","at":"04:30","weekday":"friday","timezone":"Europe/Berlin"},` +
+				`"max_clustered_requests":5000,"min_cluster_requests":10,"provider":"openai","model":"gpt-5","instructions":"be brief"}`),
+		},
+		{
+			name:     "suggestions accept an hourly schedule",
+			analyzer: complexityAnalyzerSchemaConfig(`,"suggestions":{"enabled":true,"schedule":{"every":"6h"}}`),
+		},
+		{
+			name:      "suggestions reject an interval that does not divide a day",
+			analyzer:  complexityAnalyzerSchemaConfig(`,"suggestions":{"enabled":true,"schedule":{"every":"24h"}}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject a malformed start time",
+			analyzer:  complexityAnalyzerSchemaConfig(`,"suggestions":{"enabled":true,"schedule":{"every":"1d","at":"3:00"}}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject unknown schedule fields",
+			analyzer:  complexityAnalyzerSchemaConfig(`,"suggestions":{"enabled":true,"schedule":{"cron":"0 3 * * *"}}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject a provider without a model",
+			analyzer:  complexityAnalyzerSchemaConfig(`,"suggestions":{"enabled":true,"provider":"openai"}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject a cluster budget below 1000",
+			analyzer:  complexityAnalyzerSchemaConfig(`,"suggestions":{"enabled":true,"max_clustered_requests":10}`),
+			wantError: true,
+		},
+		{
 			name:     "semantic fallback none does not require llm config",
 			analyzer: complexityAnalyzerSchemaConfig(`,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small","fallback":"none"}`),
 		},

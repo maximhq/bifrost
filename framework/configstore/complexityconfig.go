@@ -769,7 +769,8 @@ func (c *ComplexitySessionConfig) normalized() *ComplexitySessionConfig {
 // computes for classified requests and keeps them for LookbackDays, so
 // suggestions can cluster real traffic in the router's own embedding space.
 // Only the vector and routing metadata are kept, under the request's log ID;
-// the text stays in the logs.
+// the text stays in the logs. A run on Schedule clusters that traffic and asks
+// the suggestion model for phrases.
 //
 // The block is persisted as a top-level key of the semantic row, never inside
 // the semantic block: released binaries decode that block strictly, so a new
@@ -783,6 +784,22 @@ type ComplexitySuggestionsConfig struct {
 	// long captured vectors are kept (never longer than the logs they belong
 	// to). Zero takes DefaultComplexitySuggestionsLookbackDays.
 	LookbackDays int `json:"lookback_days,omitempty"`
+	// Schedule is when runs start. Nil takes the defaults (daily at 03:00 UTC).
+	Schedule *ComplexitySuggestionsSchedule `json:"schedule,omitempty"`
+	// MaxClusteredRequests bounds the requests one run clusters; the rest of
+	// the window is assigned to the clusters found, so counts still cover all
+	// of it. Zero takes DefaultComplexitySuggestionsMaxClusteredRequests.
+	MaxClusteredRequests int `json:"max_clustered_requests,omitempty"`
+	// MinClusterRequests is the smallest cluster a suggestion is written for.
+	// Zero takes DefaultComplexitySuggestionsMinClusterRequests.
+	MinClusterRequests int `json:"min_cluster_requests,omitempty"`
+	// Provider and Model select the suggestion model. Both empty uses the llm
+	// fallback block's model; otherwise both are set.
+	Provider schemas.ModelProvider `json:"provider,omitempty"`
+	Model    string                `json:"model,omitempty"`
+	// Instructions replace the shipped suggestion instructions when set. The
+	// tier definitions and the fixed reinforcement are added either way.
+	Instructions string `json:"instructions,omitempty"`
 }
 
 const (
@@ -794,6 +811,25 @@ const (
 	// MaxComplexitySuggestionsLookbackDays bounds how long captured vectors
 	// can be kept.
 	MaxComplexitySuggestionsLookbackDays = 90
+	// DefaultComplexitySuggestionsMaxClusteredRequests is measured, not
+	// guessed: 16k WildChat prompts clustered in under two minutes, and at
+	// 1536 dimensions 20k vectors are about 120 MB.
+	DefaultComplexitySuggestionsMaxClusteredRequests = 20000
+	// MinComplexitySuggestionsMaxClusteredRequests keeps a run worth its
+	// model calls.
+	MinComplexitySuggestionsMaxClusteredRequests = 1000
+	// MaxComplexitySuggestionsMaxClusteredRequests bounds a run's memory
+	// (about 600 MB of vectors at 1536 dimensions).
+	MaxComplexitySuggestionsMaxClusteredRequests = 100000
+	// DefaultComplexitySuggestionsMinClusterRequests matches the clustering
+	// default: fewer requests than this are an anecdote, not a pattern.
+	DefaultComplexitySuggestionsMinClusterRequests = 6
+	// MaxComplexitySuggestionsMinClusterRequests bounds the setting to
+	// something a week of sampled traffic can reach.
+	MaxComplexitySuggestionsMinClusterRequests = 1000
+	// MaxComplexitySuggestionsInstructionsChars bounds the editable
+	// instructions, matching the suggestion package's limit.
+	MaxComplexitySuggestionsInstructionsChars = 8000
 )
 
 // UnmarshalJSON rejects unknown fields so a misspelled setting cannot be
@@ -805,15 +841,22 @@ func (c *ComplexitySuggestionsConfig) UnmarshalJSON(data []byte) error {
 	}
 	for field := range fields {
 		switch field {
-		case "enabled", "sample_rate", "lookback_days":
+		case "enabled", "sample_rate", "lookback_days", "schedule", "max_clustered_requests",
+			"min_cluster_requests", "provider", "model", "instructions":
 		default:
 			return fmt.Errorf("unknown complexity suggestions field %q", field)
 		}
 	}
 	var decoded struct {
-		Enabled      *bool   `json:"enabled"`
-		SampleRate   float64 `json:"sample_rate"`
-		LookbackDays int     `json:"lookback_days"`
+		Enabled              *bool                          `json:"enabled"`
+		SampleRate           float64                        `json:"sample_rate"`
+		LookbackDays         int                            `json:"lookback_days"`
+		Schedule             *ComplexitySuggestionsSchedule `json:"schedule"`
+		MaxClusteredRequests int                            `json:"max_clustered_requests"`
+		MinClusterRequests   int                            `json:"min_cluster_requests"`
+		Provider             schemas.ModelProvider          `json:"provider"`
+		Model                string                         `json:"model"`
+		Instructions         string                         `json:"instructions"`
 	}
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return err
@@ -821,7 +864,11 @@ func (c *ComplexitySuggestionsConfig) UnmarshalJSON(data []byte) error {
 	if decoded.Enabled == nil {
 		return fmt.Errorf("complexity suggestions config requires enabled")
 	}
-	*c = ComplexitySuggestionsConfig{Enabled: *decoded.Enabled, SampleRate: decoded.SampleRate, LookbackDays: decoded.LookbackDays}
+	*c = ComplexitySuggestionsConfig{
+		Enabled: *decoded.Enabled, SampleRate: decoded.SampleRate, LookbackDays: decoded.LookbackDays,
+		Schedule: decoded.Schedule, MaxClusteredRequests: decoded.MaxClusteredRequests, MinClusterRequests: decoded.MinClusterRequests,
+		Provider: decoded.Provider, Model: decoded.Model, Instructions: decoded.Instructions,
+	}
 	return nil
 }
 
@@ -837,6 +884,18 @@ func (c *ComplexitySuggestionsConfig) normalized() *ComplexitySuggestionsConfig 
 	if out.LookbackDays == 0 {
 		out.LookbackDays = DefaultComplexitySuggestionsLookbackDays
 	}
+	if out.MaxClusteredRequests == 0 {
+		out.MaxClusteredRequests = DefaultComplexitySuggestionsMaxClusteredRequests
+	}
+	if out.MinClusterRequests == 0 {
+		out.MinClusterRequests = DefaultComplexitySuggestionsMinClusterRequests
+	}
+	out.Provider = schemas.ModelProvider(strings.TrimSpace(string(out.Provider)))
+	out.Model = strings.TrimSpace(out.Model)
+	if strings.TrimSpace(out.Instructions) == "" {
+		out.Instructions = ""
+	}
+	out.Schedule = out.Schedule.normalized()
 	return &out
 }
 
@@ -851,7 +910,28 @@ func (c *ComplexitySuggestionsConfig) Validate() error {
 	if c.LookbackDays < 1 || c.LookbackDays > MaxComplexitySuggestionsLookbackDays {
 		return fmt.Errorf("suggestions lookback_days must be between 1 and %d, got %d", MaxComplexitySuggestionsLookbackDays, c.LookbackDays)
 	}
-	return nil
+	if c.MaxClusteredRequests < MinComplexitySuggestionsMaxClusteredRequests || c.MaxClusteredRequests > MaxComplexitySuggestionsMaxClusteredRequests {
+		return fmt.Errorf("suggestions max_clustered_requests must be between %d and %d, got %d",
+			MinComplexitySuggestionsMaxClusteredRequests, MaxComplexitySuggestionsMaxClusteredRequests, c.MaxClusteredRequests)
+	}
+	if c.MinClusterRequests < 2 || c.MinClusterRequests > MaxComplexitySuggestionsMinClusterRequests {
+		return fmt.Errorf("suggestions min_cluster_requests must be between 2 and %d, got %d", MaxComplexitySuggestionsMinClusterRequests, c.MinClusterRequests)
+	}
+	if (c.Provider == "") != (c.Model == "") {
+		return fmt.Errorf("suggestions provider and model must be set together")
+	}
+	if n := utf8.RuneCountInString(c.Instructions); n > MaxComplexitySuggestionsInstructionsChars {
+		return fmt.Errorf("suggestions instructions must be at most %d characters, got %d", MaxComplexitySuggestionsInstructionsChars, n)
+	}
+	return c.Schedule.Validate()
+}
+
+// EffectiveSchedule returns the schedule with defaults filled in.
+func (c *ComplexitySuggestionsConfig) EffectiveSchedule() ComplexitySuggestionsSchedule {
+	if c == nil {
+		return *(*ComplexitySuggestionsSchedule)(nil).normalized()
+	}
+	return *c.Schedule.normalized()
 }
 
 // ComplexityAnalyzerConfigHashes tracks the config.json hash for each editable
