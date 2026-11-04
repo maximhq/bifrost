@@ -5929,11 +5929,11 @@ const LOG10 = folder("LOG-10 Code mode inside agent mode", `Setup: ${AGENT_TEXT(
 // back with them, and clears them the same way at the end.
 const WEB_SEARCH = [{ name: "web_search", mcp_client_name: "alpha", tool_name: "search" }];
 const INJ_TEXT = `${LLM_TEXT}; alpha (search, echo) registered as client alpha, per call, tools_to_execute ["*"]; openai's injected_tools expose alpha's search as web_search`;
-const readProvider = (id) => request(id, "setup: read the openai provider", "GET", "/api/providers/openai", { asserts: [A.status(200)], extraTests: ["var p = pm.response.json(); pm.collectionVariables.set('openai_provider', JSON.stringify({ network_config: p.network_config, concurrency_and_buffer_size: p.concurrency_and_buffer_size }));"] });
-// putInjected writes the provider back with injected_tools set to tools.
-const putInjected = (id, title, tools) => request(id, title, "PUT", "/api/providers/openai", {
+const readProvider = (id, prov = "openai") => request(id, `setup: read the ${prov} provider`, "GET", `/api/providers/${prov}`, { asserts: [A.status(200)], extraTests: [`var p = pm.response.json(); pm.collectionVariables.set('${prov}_provider', JSON.stringify({ network_config: p.network_config, concurrency_and_buffer_size: p.concurrency_and_buffer_size }));`] });
+// putInjected writes provider prov (read first with readProvider) back with injected_tools set to tools.
+const putInjected = (id, title, tools, prov = "openai") => request(id, title, "PUT", `/api/providers/${prov}`, {
   raw: "{{provider_body}}", asserts: [A.status(200)],
-  pre: ["var p = JSON.parse(pm.collectionVariables.get('openai_provider'));", `p.injected_tools = ${lit(tools)};`, "pm.variables.set('provider_body', JSON.stringify(p));"],
+  pre: [`var p = JSON.parse(pm.collectionVariables.get('${prov}_provider'));`, `p.injected_tools = ${lit(tools)};`, "pm.variables.set('provider_body', JSON.stringify(p));"],
 });
 const injectedSetup = (id, tools = ["search", "echo"], over = {}) => [
   readProvider(id),
@@ -8385,6 +8385,121 @@ const INF77 = folder("INF-77 MCP tool metadata stays inside Bifrost", `Setup: ${
     ])]),
   ]),
   agentTeardown("INF-77"),
+]);
+
+// ================================================================ injected tools and MCP tools on other providers
+
+const INF78 = folder("INF-78 An injected tool's call runs nothing else the model names", `Setup: ${INJ_TEXT}; beta (zz) registered as client beta, per call, tools_to_execute ["*"]; a virtual key allowed openai with any model and key and no mcp_configs; turn 1 calls web_search (w1), alpha-search (w2) and beta-zz (w3) together, turn 2 answers "answer".`, [
+  ...injectedSetup("INF-78"),
+  ...freshServer("INF-78", "beta", ["zz"]),
+  createClient("INF-78", httpClient("inf-78-beta", "beta", "beta", { tools_to_execute: ["*"] }), "setup: register client beta"),
+  govVK("INF-78", null),
+  llmScript("INF-78", "inf78", { turns: [{ tool_calls: [llmCall("w1", "web_search", { text: "q" }), llmCall("w2", "alpha-search", { text: "q2" }), llmCall("w3", "beta-zz", { text: "q3" })] }, { text: "answer" }] }),
+  govChat("INF-78", "inf78", [A.status(200), chatContent("answer"), toolCallNames([])]),
+  llmCaptured("INF-78", "turn 2 carries only w1's search result", "inf78", [reqCount(2), A.custom("turn 2's tool messages are exactly w1's", [REQS, TOOL_MSGS(1), `pm.expect(tm, JSON.stringify(reqs[1].json.messages)).to.eql({ w1: ${lit(SEARCH_RESULT)} });`])]),
+  mockGet("INF-78", "alpha", "alpha ran search once", [callsIs("search", 1)]),
+  mockGet("INF-78", "beta", "beta never ran zz", [callsIs("zz", 0)]),
+  govTeardownVK("INF-78"),
+  deleteClient("INF-78", "inf-78-beta"),
+  ...injectedTeardown("INF-78"),
+]);
+
+// anthMessages sends an Anthropic messages request with the bare model mock-model and the given tools.
+const anthMessages = (id, title, key, asserts, tools) => request(id, title, "POST", "/anthropic/v1/messages", {
+  noAuth: true, noCookies: true, body: { model: "mock-model", max_tokens: 64, messages: [userMsg(key)], tools }, asserts,
+});
+const ANTH_WS = (type) => ({ type, name: "web_search", max_uses: 2 });
+// ANTH_RESULTS reads turn 2's Anthropic tool_result blocks as `r`, and the first one's text as `text`.
+const ANTH_RESULTS = [
+  "var r = []; (reqs[1].json.messages || []).forEach(function (m) { (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b.type === 'tool_result') { r.push(b); } }); });",
+  "var text = !r.length ? '' : typeof r[0].content === 'string' ? r[0].content : (r[0].content || []).map(function (b) { return b.text || ''; }).join('');",
+];
+const INF79 = folder("INF-79 Injected web_search on the Anthropic route", `Setup: ${LLM_TEXT}; alpha (search, echo) registered as client alpha, per call, tools_to_execute ["*"]; anthropic's injected_tools empty, then exposing alpha's search as web_search. Requests go to /anthropic/v1/messages with the bare model mock-model: first the native web_search_20250305 and web_search_20260209 tools and the caller's own function named web_search, with nothing injected; then the native web_search_20250305 with web_search injected, where turn 1 calls web_search and turn 2 answers "answer".`, [
+  readProvider("INF-79", "anthropic"),
+  ...freshServer("INF-79", "alpha", ["search", "echo"]),
+  alphaClient("INF-79"),
+  putInjected("INF-79", "setup: anthropic injects nothing", [], "anthropic"),
+  ...["web_search_20250305", "web_search_20260209"].flatMap((type) => [
+    llmScript("INF-79", `inf79-${type}`, TEXT_OK),
+    anthMessages("INF-79", `native ${type} with nothing injected`, `inf79-${type}`, [A.status(200)], [ANTH_WS(type)]),
+    llmCaptured("INF-79", `${type} reaches the provider unchanged`, `inf79-${type}`, [reqCount(1), A.custom(`one tool named web_search, of type ${type} with max_uses 2 and no input_schema`, [REQS,
+      "var ws = (reqs[0].json.tools || []).filter(function (t) { return t.name === 'web_search'; });",
+      "pm.expect(ws.length, JSON.stringify(reqs[0].json.tools)).to.equal(1);",
+      `pm.expect(ws[0].type).to.equal(${lit(type)});`,
+      "pm.expect(ws[0].max_uses).to.equal(2);",
+      "pm.expect(ws[0]).to.not.have.property('input_schema');",
+    ])]),
+  ]),
+  llmScript("INF-79", "inf79-own", { then: { tool_calls: [llmCall("u1", "web_search", { text: "q" })] } }),
+  anthMessages("INF-79", "control: the caller's own function named web_search, with nothing injected", "inf79-own", [A.status(200), A.custom("the client gets a tool_use named web_search", [
+    "var c = (pm.response.json().content || []).filter(function (b) { return b.type === 'tool_use'; });",
+    "pm.expect(c.map(function (b) { return b.name; }), 'body: ' + pm.response.text()).to.eql(['web_search']);",
+  ])], [{ name: "web_search", description: "the caller's own", input_schema: { type: "object", properties: { text: { type: "string" } } } }]),
+  mockGet("INF-79", "alpha", "control: alpha never ran search", [callsIs("search", 0)]),
+  putInjected("INF-79", "setup: anthropic injects alpha's search as web_search", WEB_SEARCH, "anthropic"),
+  llmScript("INF-79", "inf79-inj", { turns: [SEARCH_CALL, { text: "answer" }] }),
+  anthMessages("INF-79", "native web_search_20250305 with web_search injected", "inf79-inj", [A.status(200), A.custom("the client gets only the final text", [
+    "pm.expect(pm.response.json().content, 'body: ' + pm.response.text()).to.eql([{ type: 'text', text: 'answer' }]);",
+  ])], [ANTH_WS("web_search_20250305")]),
+  llmCaptured("INF-79", "turn 1 declares the injected web_search function in place of the native tool; turn 2 has the result", "inf79-inj", [reqCount(2),
+    A.custom("turn 1 has one tool named web_search, with an input_schema and no native type, and no alpha-search", [REQS,
+      "var ws = (reqs[0].json.tools || []).filter(function (t) { return t.name === 'web_search'; });",
+      "pm.expect(ws.length, JSON.stringify(reqs[0].json.tools)).to.equal(1);",
+      "pm.expect(ws[0].input_schema, JSON.stringify(ws[0])).to.be.an('object');",
+      "pm.expect(String(ws[0].type || ''), JSON.stringify(ws[0])).to.not.match(/^web_search_/);",
+      "pm.expect(reqs[0].tools).to.not.include('alpha-search');",
+    ]),
+    A.custom("turn 2 has the search result for w1", [REQS, ...ANTH_RESULTS,
+      "pm.expect(r.map(function (b) { return b.tool_use_id; }), JSON.stringify(reqs[1].json.messages)).to.eql(['w1']);",
+      `pm.expect(text).to.equal(${lit(SEARCH_RESULT)});`,
+    ]),
+  ]),
+  mockGet("INF-79", "alpha", "alpha ran search once", [callsIs("search", 1)]),
+  putInjected("INF-79", "teardown: clear anthropic's injected_tools", [], "anthropic"),
+  agentTeardown("INF-79"),
+]);
+
+// INF80_RESULT reads the tool result turn 2 sends back to the model in the provider's own shape, as `text`. From
+// /v1/responses a Gemini functionResponse carries it under response.output (a chat sends response.content, INF-76).
+const INF80_RESULT = {
+  anthropic: [...ANTH_RESULTS, "pm.expect(r.map(function (b) { return b.tool_use_id; }), JSON.stringify(reqs[1].json.messages)).to.eql(['t1']);"],
+  gemini: [
+    "var fr = []; (reqs[1].json.contents || []).forEach(function (c) { (c.parts || []).forEach(function (p) { if (p.functionResponse) { fr.push(p.functionResponse); } }); });",
+    "pm.expect(fr.map(function (f) { return f.name; }), JSON.stringify(reqs[1].json.contents)).to.eql(['alpha-echo']);",
+    "var text = fr[0].response.output;",
+  ],
+};
+const INF80_FORMAT = { anthropic: "anthropic.messages", gemini: "genai" };
+const INF80 = folder("INF-80 Responses and non-auto tools on Anthropic and Gemini models", `Setup: ${AGENT_TEXT(["echo"])}; for anthropic/mock-model, then gemini/mock-model: a /v1/responses request where turn 1 calls alpha-echo (id t1) and turn 2 answers "done"; then a /v1/responses request and a chat where the model calls alpha-add (id n1).`, [
+  ...agentSetup("INF-80", ["echo"]),
+  ...["anthropic", "gemini"].flatMap((prov) => {
+    const model = `${prov}/mock-model`;
+    return [
+      resetCounters("INF-80", "alpha"),
+      llmScript("INF-80", `inf80-${prov}-loop`, { turns: [{ tool_calls: [llmCall("t1", "alpha-echo")] }, { text: "done" }] }),
+      infResponses("INF-80", `${prov}: Responses request where the model calls alpha-echo`, `inf80-${prov}-loop`, [A.status(200), A.custom("the output is the final message and no function_call", [
+        "var out = pm.response.json().output || [];",
+        "pm.expect(out.map(function (o) { return o.type; }), 'body: ' + pm.response.text()).to.eql(['message']);",
+        "pm.expect(out[0].content[0].text).to.equal('done');",
+      ])], { body: { model } }),
+      llmCaptured("INF-80", `${prov}: turn 1 declares alpha's tools in the ${prov} format; turn 2 carries t1's echo back in it`, `inf80-${prov}-loop`, [reqCount(2),
+        A.custom(`both requests reached the ${INF80_FORMAT[prov]} surface; turn 1 declares exactly ${lit(ALPHA3)}`, [REQS,
+          `pm.expect(reqs.map(function (q) { return q.format; }), 'body: ' + pm.response.text()).to.eql([${lit(INF80_FORMAT[prov])}, ${lit(INF80_FORMAT[prov])}]);`,
+          `pm.expect((reqs[0].tools || []).slice().sort()).to.eql(${lit(ALPHA3)});`,
+        ]),
+        A.custom(`turn 2 carries ${ECHO_RESULT("hi")}`, [REQS, ...INF80_RESULT[prov], `pm.expect(text).to.equal(${lit(ECHO_RESULT("hi"))});`]),
+      ]),
+      llmScript("INF-80", `inf80-${prov}-noauto`, { then: { tool_calls: [llmCall("n1", "alpha-add", { a: 1, b: 2 })] } }),
+      infResponses("INF-80", `${prov}: Responses request where the model calls alpha-add`, `inf80-${prov}-noauto`, [A.status(200), A.custom("the output carries a function_call for alpha-add", [
+        "var calls = (pm.response.json().output || []).filter(function (o) { return o.type === 'function_call'; });",
+        "pm.expect(calls.map(function (o) { return o.name; }), 'body: ' + pm.response.text()).to.eql(['alpha-add']);",
+      ])], { body: { model } }),
+      infPost("INF-80", `${prov}: chat where the model calls alpha-add`, "/v1/chat/completions", { model, messages: [userMsg(`inf80-${prov}-noauto`)] }, [A.status(200), finishIs("tool_calls"), toolCallNames(["alpha-add"])]),
+      llmCaptured("INF-80", `${prov}: one model request each for the alpha-add calls`, `inf80-${prov}-noauto`, [reqCount(2)]),
+      mockGet("INF-80", "alpha", `${prov}: alpha ran echo once and add never`, [callsIs("echo", 1), callsIs("add", 0)]),
+    ];
+  }),
+  agentTeardown("INF-80"),
 ]);
 
 // ================================================================ client metadata documents
@@ -11847,6 +11962,261 @@ const PUD86 = folder("PUD-86 A session on the slug endpoint and in initialize; p
   pudVKDelete("PUD-86", "pud86", "a"),
 ]);
 
+// ================================================================ AUTH-64 a code moved between per-user flows
+
+const AUTH64 = folder("AUTH-64 One caller's code cannot finish another caller's flow", `Setup: ${PU_TEXT(false)}; ${PU_SERVER_TEXT("auth64")}, verified as admin; VK-A and VK-B granted every tool of auth64, each sent to its own per-user flow by a call to auth64-echo_tool. Both flows are started, and VK-B's is consented as bob. Then VK-B's callback is sent with VK-A's state in place of its own, then as it was.`, [
+  ...puConfig("AUTH-64", false),
+  ...puConnect("AUTH-64", "auth64"),
+  puVK("AUTH-64", "A", "auth64", "auth64_va"),
+  puVK("AUTH-64", "B", "auth64", "auth64_vb"),
+  execTool("AUTH-64", "setup: VK-A calls auth64-echo_tool and is sent to a flow", "auth64-echo_tool", [A.status(400), keepFlow("auth64_fa")], vkExec("auth64_va")),
+  execTool("AUTH-64", "setup: VK-B calls auth64-echo_tool and is sent to another flow", "auth64-echo_tool", [A.status(400), keepFlow("auth64_fb", "auth64_fa")], vkExec("auth64_vb")),
+  flowStart("AUTH-64", "setup: start VK-A's flow", "auth64_fa"),
+  flowStart("AUTH-64", "setup: start VK-B's flow", "auth64_fb"),
+  consentAs("AUTH-64", "setup: consent for VK-B's flow as bob", "auth64_fb", "bob"),
+  request("AUTH-64", "VK-B's callback carrying VK-A's state", "GET", "", {
+    base: "{{auth64_mixed_cb}}", noAuth: true, noRedirect: true, noCookies: true,
+    pre: [QS_FN,
+      "var a = qs(pm.collectionVariables.get('auth64_fa_au')), cb = pm.collectionVariables.get('auth64_fb_cb'), q = qs(cb);",
+      "q.state = a.state;",
+      "pm.collectionVariables.set('auth64_mixed_cb', cb.split('?')[0] + '?' + Object.keys(q).map(function (k) { return encodeURIComponent(k) + '=' + encodeURIComponent(q[k]); }).join('&'));",
+    ],
+    asserts: [A.status(302), A.custom("it does not land on the success page", ["var loc = pm.response.headers.get('Location') || '';", `pm.expect(loc, 'Location: ' + loc).to.not.include(${lit(PU_SUCCESS)});`])],
+  }),
+  mockGet("AUTH-64", "auth64", "the exchange of VK-B's code with VK-A's flow failed PKCE", [A.custom("the authorization_code token requests' pkce are ok (the admin's verification), then mismatch", [
+    "var t = pm.response.json().oauth.log.filter(function (e) { return e.endpoint === 'token' && e.grant_type === 'authorization_code'; });",
+    "pm.expect(t.map(function (e) { return e.pkce; }), 'token log: ' + JSON.stringify(t)).to.eql(['ok', 'mismatch']);",
+  ])]),
+  request("AUTH-64", "VK-A has no token", "GET", SESSIONS, { asserts: [A.status(200), A.custom("no token entry for VK-A", [sessionRows("auth64-u", vkPred("auth64_va")), "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(0);"])] }),
+  execTool("AUTH-64", "VK-A's next call is sent to a new flow", "auth64-echo_tool", [A.status(400), keepFlow("auth64_fa2", "auth64_fa")], vkExec("auth64_va")),
+  followCallback("AUTH-64", "VK-B's own callback", "auth64_fb", [A.status(302), locationEnds(PU_SUCCESS)]),
+  execTool("AUTH-64", "VK-B calls auth64-echo_tool", "auth64-echo_tool", [A.status(200)], vkExec("auth64_vb")),
+  mockGet("AUTH-64", "auth64", "auth64 ran the call as bob, and nothing as anyone else", [identityCallsAre({ bob: 1 })]),
+  deleteClient("AUTH-64", "auth64-u"),
+  vkDelete("AUTH-64", "teardown: delete VK-A", "auth64_va"),
+  vkDelete("AUTH-64", "teardown: delete VK-B", "auth64_vb"),
+  restoreConfig("AUTH-64"),
+]);
+
+// ================================================================ PUD on 2026-07-28, upstream failures, Bifrost tokens and injected tools
+
+// waitAcked polls driven clients, 250ms apart for up to 10s each, until each has its subscriptions/acknowledged.
+const waitAcked = (names) => [
+  "var deadline = Date.now() + 10000, chaos = pm.variables.get('chaos_url');",
+  `var names = ${lit(names)};`,
+  "function poll(i) {",
+  "  if (i >= names.length) { return; }",
+  "  pm.sendRequest({ url: chaos + '/client/' + names[i] + '/notifications', method: 'GET' }, function (err, res) {",
+  "    var got = !err && res.code === 200 ? (res.json().notifications || []) : [];",
+  "    if (got.indexOf('notifications/subscriptions/acknowledged') >= 0 || Date.now() >= deadline) { return poll(i + 1); }",
+  "    setTimeout(function () { poll(i); }, 250);",
+  "  });",
+  "}",
+  "poll(0);",
+];
+const sdkNamesAre = (names) => sdkJSON(`the tools are exactly ${lit([...names].sort())}`, [`pm.expect((b.tools || []).map(function (t) { return t.name; }).sort(), BODY).to.eql(${lit([...names].sort())});`]);
+const modernCallOk = (prefix) => A.custom(`the result is not an error and its text starts ${lit(prefix)}`, [
+  "var r = pm.response.json().result || {};",
+  "pm.expect(r.isError, 'body: ' + pm.response.text()).to.not.equal(true);",
+  `pm.expect((((r.content || [])[0] || {}).text || '').indexOf(${lit(prefix)}), 'body: ' + pm.response.text()).to.equal(0);`,
+]);
+const PUD87_A = ["pud87-add_tool", "pud87-echo_tool"];
+const PUD87_C = ["pud87-echo_tool", "pud87-notes_tool"];
+const pud87Call = (title, tool, headers, asserts) => modernRpc("PUD-87", title, "tools/call", { name: tool, arguments: { text: "hi" } }, asserts, { name: tool, headers });
+// On 2026-07-28 an unknown tool is a 400 carrying the JSON-RPC error, as an unknown prompt or resource is (EP-63).
+const pud87Unknown = (tool) => [A.status(400), rpcError(-32602, `tool '${tool}' not found: tool not found`)];
+const PUD87 = folder("PUD-87 Each caller's own tools on 2026-07-28 requests", `Setup: ${ISO_TEXT("pud87")}; VK-N granted every tool of pud87, with no credential; ${BOTH}, temp-token auth on, and a Bifrost OAuth grant (bf_mode vk) for VK-A; pud87's counters reset after the sign-ins. Requests on protocol ${MODERN}, with no session. Then VK-A and VK-C each listen through ${SDK_TEXT} (subscriptions/listen on ${MODERN}), key-a also sees new_tool, and VK-A's session is refreshed.`, [
+  readConfig("PUD-87"), oauthConfig("PUD-87", "both"),
+  ...isoSetup("PUD-87", "pud87", {}, { tt: true }),
+  pudVK("PUD-87", "pud87", "n"),
+  ...pudGrant("PUD-87", "pud87", "a", "pud87_grant"),
+  resetCounters("PUD-87", "pud87"),
+  modernRpc("PUD-87", "VK-A's tools/list", "tools/list", {}, [A.status(200), gwNames(PUD87_A), noSessionHeader], { headers: [vkOf("pud87", "a")] }),
+  modernRpc("PUD-87", "VK-C's tools/list", "tools/list", {}, [A.status(200), gwNames(PUD87_C), noSessionHeader], { headers: [vkOf("pud87", "c")] }),
+  modernRpc("PUD-87", "VK-N's tools/list offers only connect", "tools/list", {}, [A.status(200), gwNames(["pud87-connect"])], { headers: [vkOf("pud87", "n")] }),
+  modernRpc("PUD-87", "VK-A's Bifrost token lists key-a's tools", "tools/list", {}, [A.status(200), gwNames(PUD87_A)], { headers: [{ key: "Authorization", value: "Bearer {{pud87_grant_at}}" }] }),
+  pud87Call("VK-A calls pud87-add_tool", "pud87-add_tool", [vkOf("pud87", "a")], [A.status(200), modernCallOk("add_tool:")]),
+  pud87Call("VK-C calls pud87-notes_tool", "pud87-notes_tool", [vkOf("pud87", "c")], [A.status(200), modernCallOk("notes_tool:")]),
+  pud87Call("VK-A's Bifrost token calls pud87-echo_tool", "pud87-echo_tool", [{ key: "Authorization", value: "Bearer {{pud87_grant_at}}" }], [A.status(200), modernCallOk("echo_tool:")]),
+  pud87Call("VK-C's call of pud87-add_tool is an unknown tool", "pud87-add_tool", [vkOf("pud87", "c")], pud87Unknown("pud87-add_tool")),
+  pud87Call("VK-A's call of pud87-notes_tool is an unknown tool", "pud87-notes_tool", [vkOf("pud87", "a")], pud87Unknown("pud87-notes_tool")),
+  pud87Call("VK-N's call of pud87-echo_tool is an unknown tool", "pud87-echo_tool", [vkOf("pud87", "n")], pud87Unknown("pud87-echo_tool")),
+  mockGet("PUD-87", "pud87", "pud87 ran two calls as key-a and one as key-c", [identityCallsAre({ "key-a": 2, "key-c": 1 })]),
+  rowOf("PUD-87", "setup: find VK-A's session", "pud87-h", "pud87", "a", "VK-A's row is active", ROW_STATUS("active"), keepRowId("pud87_a_row")),
+  sdkOpen("PUD-87", "pud87a", `setup: VK-A's client handshakes on ${MODERN}, listening`, { headers: { "x-bf-vk": "{{pud87_a}}" }, listen: true }, [A.status(200)]),
+  sdkOpen("PUD-87", "pud87c", `setup: VK-C's client handshakes on ${MODERN}, listening`, { headers: { "x-bf-vk": "{{pud87_c}}" }, listen: true }, [A.status(200)]),
+  request("PUD-87", "setup: both subscriptions are acknowledged", "GET", sdkPath("pud87c", "notifications"), {
+    base: CHAOS, noAuth: true, pre: waitAcked(["pud87a", "pud87c"]), asserts: [A.status(200), sdkJSON("VK-C's notifications include notifications/subscriptions/acknowledged", ["pm.expect(b.notifications, BODY).to.include('notifications/subscriptions/acknowledged');"])],
+  }),
+  overlay("PUD-87", "pud87", "key-a", [...ISO_A, { name: "new_tool" }], "setup: key-a also sees new_tool on pud87"),
+  refreshRow("PUD-87", "refresh VK-A's session", "pud87_a_row", [A.status(200)]),
+  request("PUD-87", "VK-A's client receives tools/list_changed within 10s", "GET", sdkPath("pud87a", "notifications"), {
+    base: CHAOS, noAuth: true, pre: waitNotified("pud87a", 10), asserts: [A.status(200), sdkJSON("notifications include notifications/tools/list_changed", ["pm.expect(b.notifications, BODY).to.include('notifications/tools/list_changed');"])],
+  }),
+  sdkTools("PUD-87", "pud87a", "VK-A's client lists new_tool", [A.status(200), sdkNamesAre([...PUD87_A, "pud87-new_tool"])]),
+  sdkTools("PUD-87", "pud87c", "VK-C's client lists key-c's tools, unchanged", [A.status(200), sdkNamesAre(PUD87_C)]),
+  sdkClose("PUD-87", "pud87a"), sdkClose("PUD-87", "pud87c"),
+  ...isoTeardown("PUD-87", "pud87"),
+  pudVKDelete("PUD-87", "pud87", "n"),
+  restoreConfig("PUD-87"),
+]);
+
+const noRowFor = (id, title, clientId, p, l) => request(id, title, "GET", SESSIONS, { asserts: [A.status(200), A.custom(`no credential row for ${L(l)}`, [sessionRows(clientId, vkRowPred(p, l)), "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(0);"])] });
+const clearIdentityFaults = (id, p, identity) => mockPost(id, p, "faults/identity", `setup: clear ${identity}'s faults on ${p}`, { identity, clear: true });
+const PUD88 = folder("PUD-88 A header sign-in the upstream cannot answer stores nothing", `Setup: ${HDOOR_TEXT("pud88")}; VK-B signed in with key-b; VK-A has opened its header flow. VK-A submits key-a on that flow while key-a's requests to pud88 answer HTTP 500, then while key-a's list methods fail (list_fail), then with the faults cleared.`, [
+  ...hdoor("PUD-88", "pud88"),
+  pudVK("PUD-88", "pud88", "a"), pudVK("PUD-88", "pud88", "b"),
+  ...signInH("PUD-88", "pud88", "b"),
+  connectH("PUD-88", "setup: VK-A calls pud88-connect and gets the sign-in link", "pud88", "a"),
+  ...[["HTTP 500", { status: 500 }], ["list_fail", { list_fail: true }]].flatMap(([label, faults]) => [
+    identityFault("PUD-88", "pud88", "key-a", faults),
+    submitH("PUD-88", `VK-A submits key-a while pud88 answers key-a with ${label}`, "pud88", "a", "key-a", [A.status(422)]),
+    noRowFor("PUD-88", `after the ${label} submit, VK-A has no credential`, "pud88-h", "pud88", "a"),
+    gwList("PUD-88", `after the ${label} submit, VK-A's gw-list is [pud88-connect]`, [vkOf("pud88", "a")], ["pud88-connect"]),
+    gwList("PUD-88", `after the ${label} submit, VK-B keeps its tools`, [vkOf("pud88", "b")], ["pud88-add_tool", "pud88-echo_tool"]),
+    clearIdentityFaults("PUD-88", "pud88", "key-a"),
+  ]),
+  submitH("PUD-88", "VK-A submits key-a on the same flow once pud88 answers", "pud88", "a", "key-a"),
+  rowOf("PUD-88", "VK-A's row is active with its discovery", "pud88-h", "pud88", "a", "VK-A's row: active, 2 tools", [...ROW_STATUS("active"), ...DISCOVERY(2)]),
+  gwList("PUD-88", "VK-A's gw-list has its tools", [vkOf("pud88", "a")], ["pud88-add_tool", "pud88-echo_tool"]),
+  deleteClient("PUD-88", "pud88-h"),
+  pudVKDelete("PUD-88", "pud88", "a"), pudVKDelete("PUD-88", "pud88", "b"),
+]);
+
+const PUD89 = folder("PUD-89 A refreshed Bifrost token keeps the caller's own tools", `Setup: ${ISO_TEXT("pud89")}; ${BOTH}, temp-token auth on, access_token_ttl 2; a Bifrost OAuth grant (bf_mode vk) for VK-A; pud89's counters reset after the sign-ins. The access token is used after it expires, then refreshed.`, [
+  readConfig("PUD-89"), oauthConfig("PUD-89", "both", ["cc.oauth2_server_config.access_token_ttl = 2;"], "setup: mcp_server_auth_mode both, issuer_url set to the base URL, temp-token auth on, access_token_ttl 2"),
+  ...isoSetup("PUD-89", "pud89", {}, { tt: true }),
+  ...pudGrant("PUD-89", "pud89", "a", "pud89_grant"),
+  resetCounters("PUD-89", "pud89"),
+  mcpWithToken("PUD-89", "VK-A's access token on /mcp after 3s", "pud89_grant_at", [A.status(401), A.msgStartsWith("invalid token"), A.msgContains("expired")], WAIT_3S),
+  tokenReq("PUD-89", "refresh VK-A's grant", refreshParams("pud89_grant_rt", "pud89_grant_client"), [A.status(200), tokensIssued()], { extraTests: saveTokens("pud89_r") }),
+  tokenList("PUD-89", "the refreshed token lists key-a's tools", "pud89_r", ["pud89-add_tool", "pud89-echo_tool"]),
+  rpc("PUD-89", "the refreshed token calls pud89-add_tool", call("pud89-add_tool", { a: 1, b: 2 }), { headers: [MCP_ACCEPT, { key: "Authorization", value: "Bearer {{pud89_r_at}}" }], asserts: [A.status(200), gwText("the result is not an error", ["pm.expect(r.isError, 'body: ' + pm.response.text()).to.not.equal(true);"])] }),
+  rpc("PUD-89", "the refreshed token's call of pud89-notes_tool is an unknown tool", call("pud89-notes_tool", { text: "hi" }), { headers: [MCP_ACCEPT, { key: "Authorization", value: "Bearer {{pud89_r_at}}" }], asserts: [A.status(200), rpcError(-32602)] }),
+  mockGet("PUD-89", "pud89", "pud89 ran one call, as key-a", [identityCallsAre({ "key-a": 1 })]),
+  ...isoTeardown("PUD-89", "pud89"),
+  restoreConfig("PUD-89"),
+]);
+
+const PUD90_INJ = [{ name: "web_search", mcp_client_name: "pud90", tool_name: "echo_tool" }];
+const PUD90 = folder("PUD-90 An injected tool backed by a flagged client", `Setup: ${ISO_TEXT("pud90")}; VK-N granted every tool of pud90, with no credential; ${LLM_TEXT}; openai's injected_tools expose pud90's echo_tool as web_search; pud90's counters reset after the sign-ins. For VK-A and then VK-N, turn 1 calls web_search with {"text": "q"} and turn 2 answers "answer".`, [
+  ...isoSetup("PUD-90", "pud90"),
+  pudVK("PUD-90", "pud90", "n"),
+  readProvider("PUD-90"),
+  putInjected("PUD-90", "setup: openai injects pud90's echo_tool as web_search", PUD90_INJ),
+  resetCounters("PUD-90", "pud90"),
+  llmScript("PUD-90", "pud90-a", { turns: [SEARCH_CALL, { text: "answer" }] }),
+  infChat("PUD-90", "VK-A's chat", "pud90-a", [A.status(200), chatContent("answer"), toolCallNames([])], { headers: [vkOf("pud90", "a")] }),
+  llmCaptured("PUD-90", "VK-A's turn 2 carries key-a's echo_tool result", "pud90-a", [reqCount(2), A.custom("w1's result is echo_tool's", [REQS, TOOL_MSGS(1), `pm.expect(tm.w1, JSON.stringify(reqs[1].json.messages)).to.equal(${lit(`echo_tool:${JSON.stringify({ text: "q" })}`)});`])]),
+  mockGet("PUD-90", "pud90", "pud90 ran one call, as key-a", [identityCallsAre({ "key-a": 1 })]),
+  llmScript("PUD-90", "pud90-n", { turns: [SEARCH_CALL, { text: "answer" }] }),
+  infChat("PUD-90", "VK-N's chat", "pud90-n", [A.status(200)], { headers: [vkOf("pud90", "n")] }),
+  mockGet("PUD-90", "pud90", "still only key-a's one call: nothing ran for VK-N", [identityCallsAre({ "key-a": 1 })]),
+  putInjected("PUD-90", "teardown: clear openai's injected_tools", []),
+  ...isoTeardown("PUD-90", "pud90"),
+  pudVKDelete("PUD-90", "pud90", "n"),
+]);
+
+// ================================================================ GO-37 per-user discovery under load
+
+// pool runs n requests from a pre-request script, at most conc at a time. step is ES5 that defines run(i), which sends
+// request i and calls finish(i, good, why) exactly once. The outcome is saved as JSON {ok, bad} in varName, as burst does.
+const pool = (varName, n, conc, step) => [
+  `pm.collectionVariables.set(${lit(varName)}, '');`,
+  "var base = pm.variables.get('base_url'), chaos = pm.variables.get('chaos_url'), admin = pm.variables.get('admin_auth_header');",
+  `var n = ${n}, next = 0, done = 0, ok = 0, bad = [];`,
+  "function finish(i, good, why) {",
+  "  if (good) { ok++; } else if (bad.length < 5) { bad.push(i + ': ' + why); }",
+  `  if (++done === n) { pm.collectionVariables.set(${lit(varName)}, JSON.stringify({ ok: ok, bad: bad })); return; }`,
+  "  if (next < n) { run(next++); }",
+  "}",
+  "function why(err, res) { return err ? String(err) : res.code + ' ' + res.text(); }",
+  "function body(res) { try { return res.json(); } catch (e) { return {}; } }",
+  "function send(method, url, hdr, payload, cb) { pm.sendRequest({ url: url, method: method, header: hdr, body: payload === undefined ? undefined : { mode: 'raw', raw: JSON.stringify(payload) } }, cb); }",
+  "var keys = JSON.parse(pm.collectionVariables.get('go37_keys') || '[]');",
+  ...step,
+  `for (var s = 0; s < ${conc} && next < n; s++) { run(next++); }`,
+];
+const GO37_N = 300;
+const GO37_OWN = 150;
+// go37Tools is what key i lists: the first 150 keys each see echo_tool and their own own_<i>, the rest echo_tool and add_tool.
+const GO37_TOOLS_FN = `function toolsOf(i) { return (i < ${GO37_OWN} ? ['go37-echo_tool', 'go37-own_' + i] : ['go37-add_tool', 'go37-echo_tool']).sort(); }`;
+const GO37 = folder("GO-37 Per-user discovery under load", `Setup: ${HDOOR_TEXT("go37")}; ${GO37_N} VKs granted every tool of go37, each signed in with its own X-Api-Key key-<i> (at most 20 at a time): keys 0 to ${GO37_OWN - 1} each see echo_tool and their own own_<i>, keys ${GO37_OWN} to ${GO37_N - 1} all see echo_tool and add_tool. Then every VK lists tools on /mcp three times (${GO37_N * 3} lists, 20 at a time), and every fifth VK calls go37-echo_tool with its own argument (${GO37_N / 5} calls, 20 at a time).`, [
+  ...hdoor("GO-37", "go37"),
+  request("GO-37", `setup: keys 0 to ${GO37_OWN - 1} each see echo_tool and their own own_<i> on go37`, "GET", "/control/go37", {
+    base: CHAOS, noAuth: true, asserts: [A.status(200), burstOk("go37_overlay", GO37_OWN, "overlays")],
+    pre: pool("go37_overlay", GO37_OWN, 20, [
+      "function run(i) {",
+      "  send('POST', chaos + '/control/go37/tools/overlay', { 'Content-Type': 'application/json' }, { identity: 'key-' + i, tools: [{ name: 'echo_tool' }, { name: 'own_' + i }] }, function (err, res) { finish(i, !err && res.code === 200, why(err, res)); });",
+      "}",
+    ]),
+  }),
+  request("GO-37", `setup: create ${GO37_N} VKs granted every tool of go37`, "GET", "/control/go37", {
+    base: CHAOS, noAuth: true, asserts: [A.status(200), burstOk("go37_vks", GO37_N, "VK creates")],
+    pre: [
+      "pm.collectionVariables.set('go37_keys', '[]');",
+      ...pool("go37_vks", GO37_N, 20, [
+        "var made = [];",
+        "function run(i) {",
+        `  send('POST', base + '/api/governance/virtual-keys', { 'Content-Type': 'application/json', Authorization: admin }, { name: 'GO-37 key ' + i, mcp_configs: [{ mcp_client_name: 'go37', tools_to_execute: ['*'] }] }, function (err, res) {`,
+        "    var vk = !err && res.code === 200 ? body(res).virtual_key : null;",
+        "    if (vk) { made[i] = { id: vk.id, value: vk.value }; pm.collectionVariables.set('go37_keys', JSON.stringify(made)); }",
+        "    finish(i, !!vk, why(err, res));",
+        "  });",
+        "}",
+      ]),
+    ],
+  }),
+  request("GO-37", `setup: every VK signs in with its own key-<i>`, "GET", "/control/go37", {
+    base: CHAOS, noAuth: true, asserts: [A.status(200), burstOk("go37_signin", GO37_N, "sign-ins")],
+    pre: pool("go37_signin", GO37_N, 20, [
+      "function run(i) {",
+      "  var call = { id: 'c' + i, type: 'function', function: { name: 'go37-connect', arguments: '{}' } };",
+      "  send('POST', base + '/v1/mcp/tool/execute', { 'Content-Type': 'application/json', 'x-bf-vk': keys[i].value }, call, function (err, res) {",
+      `    var m = ${FLOW_RE}.exec(!err ? String(body(res).content || '') : '');`,
+      "    if (!m) { return finish(i, false, 'connect ' + why(err, res)); }",
+      `    send('PUT', base + ${lit(HDR_FLOWS)} + m[1], { 'Content-Type': 'application/json', Authorization: admin }, { headers: { 'x-api-key': 'key-' + i } }, function (err, res) { finish(i, !err && res.code === 200, 'submit ' + why(err, res)); });`,
+      "  });",
+      "}",
+    ]),
+  }),
+  request("GO-37", `${GO37_N * 3} lists: every VK lists exactly its own tools each time`, "GET", "/control/go37", {
+    base: CHAOS, noAuth: true, asserts: [A.status(200), burstOk("go37_lists", GO37_N * 3, "lists")],
+    pre: pool("go37_lists", GO37_N * 3, 20, [
+      GO37_TOOLS_FN,
+      "function run(j) {",
+      `  var i = j % ${GO37_N};`,
+      "  send('POST', base + '/mcp', { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'x-bf-vk': keys[i].value }, { jsonrpc: '2.0', id: 1, method: 'tools/list' }, function (err, res) {",
+      "    var names = !err ? ((body(res).result || {}).tools || []).map(function (t) { return t.name; }).filter(function (n) { return n.indexOf('go37-') === 0; }).sort() : [];",
+      "    finish(j, JSON.stringify(names) === JSON.stringify(toolsOf(i)), 'key ' + i + ' listed ' + JSON.stringify(names));",
+      "  });",
+      "}",
+    ]),
+  }),
+  mockPost("GO-37", "go37", "counters/reset", "setup: reset go37's counters", {}),
+  mockGetAfter("GO-37", "go37", `${GO37_N / 5} calls: each got back its own argument, and go37 counted each under the caller's own key`, [burstOk("go37_calls", GO37_N / 5, "calls"), A.custom(`calls_by_identity is one call for each of key-0, key-5, ... key-${GO37_N - 5}`, [
+    `var want = {}; for (var i = 0; i < ${GO37_N}; i += 5) { want['key-' + i] = 1; }`,
+    "pm.expect(pm.response.json().counters.calls_by_identity || {}, 'body: ' + pm.response.text()).to.eql(want);",
+  ])], pool("go37_calls", GO37_N / 5, 20, [
+    "function run(j) {",
+    "  var i = j * 5, tok = 'go37-' + i;",
+    "  send('POST', base + '/mcp', { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'x-bf-vk': keys[i].value }, { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'go37-echo_tool', arguments: { text: tok } } }, function (err, res) {",
+    "    var c = ((body(res).result || {}).content || [])[0];",
+    "    finish(j, !err && res.code === 200 && !!c && c.text === 'echo_tool:' + JSON.stringify({ text: tok }), why(err, res));",
+    "  });",
+    "}",
+  ])),
+  deleteClient("GO-37", "go37-h"),
+  request("GO-37", `teardown: delete the ${GO37_N} VKs`, "GET", "/control/go37", {
+    base: CHAOS, noAuth: true, asserts: [A.status(200), burstOk("go37_vkdel", GO37_N, "VK deletes")],
+    pre: pool("go37_vkdel", GO37_N, 20, [
+      "function run(i) {",
+      "  send('DELETE', base + '/api/governance/virtual-keys/' + keys[i].id, { Authorization: admin }, undefined, function (err, res) { finish(i, !err && res.code === 200, why(err, res)); });",
+      "}",
+    ]),
+  }),
+]);
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -11861,17 +12231,17 @@ const collection = {
   ],
   item: [
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM26, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM84, ADM85, ADM86, ADM87, ADM88]),
-    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH47, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57, AUTH58, AUTH59, AUTH60, AUTH61, AUTH62, AUTH63]),
+    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH47, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57, AUTH58, AUTH59, AUTH60, AUTH61, AUTH62, AUTH63, AUTH64]),
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, GO18, CONN23, CONN24, CONN25, CONN27, CONN28, CONN29, GO34, GO36]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, EP66, EP67, EP68, EP69, EP70, EP71, EP72, EP73, EP74, EP75, GO01, GO02, GO03, GO06, GO07, GO08, GO09, GO10, GO11, GO12, GO13, GO14, GO33, GO35]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43, OAS44, OAS45]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET26, SET27, SET28, SET29, SET30, SET31, SET32, SET04, SET05, SET10, SET11, SET15, SET23]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV36, GOV37, GOV38, GOV39]),
-    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66, INF76, INF77, INF67]),
+    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66, INF76, INF77, INF67, INF78, INF79, INF80]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB12, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB27, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43, LOG49]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL01, FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL09, FAIL10, FAIL12, FAIL14, FAIL16, FAIL18, FAIL19, FAIL23, FAIL24, FAIL25, FAIL27, FAIL28]),
-    section("PUD Per-user discovery", "Per-user discovery tests.", [PUD01, PUD02, PUD03, PUD04, PUD05, PUD06, PUD07, PUD08, PUD09, PUD10, PUD11, PUD12, PUD13, PUD14, PUD15, PUD16, PUD17, PUD18, PUD19, PUD20, PUD21, PUD22, PUD23, PUD24, PUD25, PUD26, PUD27, PUD28, PUD29, PUD30, PUD31, PUD32, PUD33, PUD34, PUD35, PUD36, PUD37, PUD38, PUD39, PUD40, PUD41, PUD42, PUD43, PUD44, PUD45, PUD46, PUD47, PUD48, PUD49, PUD50, PUD51, PUD52, PUD53, PUD54, PUD55, PUD56, PUD57, PUD58, PUD59, PUD60, PUD61, PUD62, PUD63, PUD64, PUD65, PUD66, PUD67, PUD68, PUD69, PUD70, PUD71, PUD72, PUD73, PUD74, PUD75, PUD76, PUD77, PUD78, PUD79, PUD80, PUD81, PUD82, PUD83, PUD84, PUD85, PUD86]),
+    section("PUD Per-user discovery", "Per-user discovery tests.", [PUD01, PUD02, PUD03, PUD04, PUD05, PUD06, PUD07, PUD08, PUD09, PUD10, PUD11, PUD12, PUD13, PUD14, PUD15, PUD16, PUD17, PUD18, PUD19, PUD20, PUD21, PUD22, PUD23, PUD24, PUD25, PUD26, PUD27, PUD28, PUD29, PUD30, PUD31, PUD32, PUD33, PUD34, PUD35, PUD36, PUD37, PUD38, PUD39, PUD40, PUD41, PUD42, PUD43, PUD44, PUD45, PUD46, PUD47, PUD48, PUD49, PUD50, PUD51, PUD52, PUD53, PUD54, PUD55, PUD56, PUD57, PUD58, PUD59, PUD60, PUD61, PUD62, PUD63, PUD64, PUD65, PUD66, PUD67, PUD68, PUD69, PUD70, PUD71, PUD72, PUD73, PUD74, PUD75, PUD76, PUD77, PUD78, PUD79, PUD80, PUD81, PUD82, PUD83, PUD84, PUD85, PUD86, PUD87, PUD88, PUD89, PUD90, GO37]),
   ],
 };
 
