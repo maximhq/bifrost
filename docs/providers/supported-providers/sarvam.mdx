@@ -10,7 +10,8 @@ Sarvam AI is a voice and LLM provider focused on Indian languages (10 Indic lang
 - **OpenAI-compatible chat (Token Factory v2)** - Chat completions delegate to the shared OpenAI implementation; Bifrost targets Sarvam's `/v2` API
 - **Text-to-Speech (Bulbul)** - Custom mapping; Sarvam returns base64-encoded audio in a JSON `audios[]` array rather than raw binary
 - **Speech-to-Text (Saaras/Saarika)** - Custom mapping; multipart upload with Sarvam-specific response fields (`transcript`, `timestamps`, `diarized_transcript`)
-- **Dual authentication** - Chat uses `Authorization: Bearer`; voice endpoints use the `api-subscription-key` header
+- **Decisions (Sarvam Prism)** - Custom mapping to Sarvam's System One API; returns calibrated probabilities for `noul`, `choice`, and `score` questions
+- **Dual authentication** - Chat and decisions use `Authorization: Bearer`; voice endpoints use the `api-subscription-key` header
 
 ### Supported Operations
 
@@ -18,6 +19,7 @@ Sarvam AI is a voice and LLM provider focused on Indian languages (10 Indic lang
 |-----------|---------------|-----------|----------|
 | Chat Completions | ✅ | ✅ | `/v2/chat/completions` |
 | Responses API | ✅ | ✅ | `/v2/chat/completions` |
+| Decisions | ✅ | - | `/v2/systemone` |
 | Speech (TTS) | ✅ | ✅ | `/text-to-speech`, `/text-to-speech/stream` |
 | Transcription (STT) | ✅ | ❌ | `/speech-to-text` |
 | List Models | ✅ | - | `/v2/models` |
@@ -130,7 +132,33 @@ Same parameter support as Chat Completions with response format differences (out
 
 ---
 
-# 3. Speech (Text-to-Speech, Bulbul)
+# 3. Decisions (Sarvam Prism)
+
+Sarvam Prism is a decision model served by `POST /v2/systemone`. It returns calibrated probabilities for typed questions instead of text, so it is reached through Bifrost's `/v1/decisions` route, not chat.
+
+| Bifrost question type | Sarvam question type | Answer |
+|---|---|---|
+| `predicate` | `noul` | `probability` in [0,1] |
+| `choice` | `choice` | the option with the highest probability |
+| `score` | `score` | probability-weighted level index |
+
+Limits: 32,768 tokens per question (state + question + options), 2-255 options per `choice`, and 2-10 levels per `score`. Images, box questions, and streaming are not supported; `temperature`, `max_tokens`, and `stream` are refused. Each request must finish within 60 seconds.
+
+```bash
+curl -X POST http://localhost:8080/v1/decisions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "sarvam/sarvam-prism",
+    "input": "Customer: I was double charged and nobody replied.",
+    "questions": [
+      {"type": "predicate", "name": "is_frustrated", "instructions": "Is the customer frustrated?"}
+    ]
+  }'
+```
+
+---
+
+# 4. Speech (Text-to-Speech, Bulbul)
 
 Sarvam's TTS endpoint is **not** OpenAI-compatible: it returns JSON with base64-encoded audio in an `audios[]` array, which Bifrost decodes into raw audio bytes. The streaming endpoint returns raw binary audio chunks, which Bifrost forwards as speech-audio deltas.
 
@@ -162,7 +190,7 @@ curl -X POST http://localhost:8080/v1/audio/speech \
 
 ---
 
-# 4. Transcription (Speech-to-Text, Saaras/Saarika)
+# 5. Transcription (Speech-to-Text, Saaras/Saarika)
 
 Sarvam's STT endpoint accepts a multipart audio upload and returns a custom response shape that Bifrost maps onto its standard transcription format.
 
@@ -203,6 +231,7 @@ Bifrost applies the correct header per operation automatically.
 **HTTP Settings:**
 - **Base URL**: `https://api.sarvam.ai` (default)
 - **Chat endpoint**: `/v2/chat/completions`
+- **Decisions endpoint**: `/v2/systemone`
 - **Models endpoint**: `/v2/models`
 - **Voice endpoints**: `/text-to-speech`, `/text-to-speech/stream`, `/speech-to-text`
 
@@ -226,10 +255,10 @@ Bifrost applies the correct header per operation automatically.
 **Impact**: Use at least 1024 output tokens for `sarvam-105b`, `glm5.3`, `glm5.3-flash`, and `deepseekv4.1-flash-1017`, or set `reasoning_effort` to `low`.
 </Accordion>
 
-<Accordion title="Decisions API is not implemented">
+<Accordion title="Prism is a decision model, not a chat model">
 **Severity**: Low
-**Behavior**: `sarvam-prism` is a decision model served by `POST /v2/systemone`, not a chat model.
-**Impact**: It is not available through the chat provider; call Sarvam's Decisions API directly.
+**Behavior**: `sarvam-prism` is served by `POST /v2/systemone` and returns probabilities, not text. It is reachable through `/v1/decisions`, not `/v1/chat/completions`; a chat request for it fails upstream.
+**Impact**: Use the Decisions route. To hide it from the chat model list, add `sarvam-prism` to the key's `blacklisted_models`.
 </Accordion>
 
 <Accordion title="Model-specific parameter limits">

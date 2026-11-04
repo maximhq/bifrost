@@ -24,8 +24,9 @@ func TestSarvam(t *testing.T) {
 	defer client.Shutdown()
 
 	testConfig := llmtests.ComprehensiveTestConfig{
-		Provider:  schemas.Sarvam,
-		ChatModel: "glm5.3-flash",
+		Provider:      schemas.Sarvam,
+		ChatModel:     "glm5.3-flash",
+		DecisionModel: "sarvam-prism",
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Sarvam, Model: "sarvam-105b"},
 			{Provider: schemas.Sarvam, Model: "gemma4"},
@@ -37,6 +38,7 @@ func TestSarvam(t *testing.T) {
 			ToolCalls:             true,
 			StructuredOutputs:     true,
 			ListModels:            true,
+			Decision:              true,
 			// CompletionStream is left off: Sarvam's reasoning models can emit
 			// 500+ reasoning chunks, tripping the harness's 500-chunk safety cap.
 			// Streaming is delegated to the shared OpenAI handler and verified

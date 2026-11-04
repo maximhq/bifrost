@@ -1,2 +1,2 @@
-- feat: sarvam - move chat and model listing to Token Factory v2 [@vikashmaddi-sarvam](https://github.com/vikashmaddi-sarvam)
+- feat: sarvam - move chat and model listing to Token Factory v2 and add Sarvam Prism decisions [@vikashmaddi-sarvam](https://github.com/vikashmaddi-sarvam)
 - fix: anthropic - Responses requests drop empty text blocks instead of forwarding them for a 400 (#9318) [@david-choi-querypie](https://github.com/david-choi-querypie)
