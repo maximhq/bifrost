@@ -296,3 +296,16 @@ func TestDrainExpiredYieldsToLockHolder(t *testing.T) {
 	NewLogsCleaner(manager, CleanerConfig{RetentionDays: 3}, testLogger{}).cleanupOldLogs(context.Background())
 	assert.Zero(t, manager.assignments.expired, "a busy logs table must not hold up the tables after it")
 }
+
+// Retention keys share Postgres' advisory key space with every other lock, so a shared key makes
+// replicas yield a table nobody is draining. 1000031 and 1000032 are held by enterprise.
+func TestRetentionAdvisoryLockKeysStayInOwnBlock(t *testing.T) {
+	seen := map[int64]string{}
+	for table, key := range retentionAdvisoryLockKeys {
+		assert.GreaterOrEqual(t, key, int64(1000040), table)
+		assert.LessOrEqual(t, key, int64(1000049), table)
+		assert.Empty(t, seen[key], "%s shares its key", table)
+		seen[key] = table
+	}
+	assert.Empty(t, seen[retentionAdvisoryLockKeyOther], "the fallback key must be its own")
+}

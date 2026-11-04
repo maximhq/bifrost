@@ -5325,16 +5325,17 @@ func (s *RDBLogStore) deleteExpiredBatchByKey(ctx context.Context, table, key, c
 }
 
 // retentionAdvisoryLockKeys gives each retention table its own lock, so replicas can drain different tables at once.
+// 1000040-1000049 is reserved for retention: enterprise holds 1000031 and 1000032, so keep this block separate.
 var retentionAdvisoryLockKeys = map[string]int64{
-	"logs":                   1000030,
-	"mcp_tool_logs":          1000031,
-	"relay_logs":             1000032,
-	"warp_topic_assignments": 1000033,
-	"warp_topic_unmatched":   1000034,
+	"logs":                   1000040,
+	"mcp_tool_logs":          1000041,
+	"relay_logs":             1000042,
+	"warp_topic_assignments": 1000043,
+	"warp_topic_unmatched":   1000044,
 }
 
 // retentionAdvisoryLockKeyOther covers any retention table missing from retentionAdvisoryLockKeys.
-const retentionAdvisoryLockKeyOther int64 = 1000039
+const retentionAdvisoryLockKeyOther int64 = 1000049
 
 // deleteExpiredBatchPostgres deletes one batch under the table's xact advisory lock (PgBouncer-safe), or returns ErrRetentionBusy.
 func (s *RDBLogStore) deleteExpiredBatchPostgres(ctx context.Context, table, key, column string, cutoff time.Time, batchSize int) (int64, error) {
