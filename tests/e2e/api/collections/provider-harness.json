@@ -304414,7 +304414,437 @@
       ]
     },
     {
-      "name": "308. Gemini chat completions seed reaches generationConfig (gemini seed) (PR #9275)",
+      "name": "308. Virtual MCPs filtered by source server (virtual-mcp-reverse-lookup) (#8645)",
+      "description": "Management-plane regression for GET /api/mcp/virtual-mcps?mcp_client_id=<client_id>. The MCP server sheet asked which Virtual MCPs bundle a server by listing Virtual MCPs with limit=1000 and scanning the page client-side, but the list is capped at 100, so a Virtual MCP past the first 100 read as \"This server isn't part of any virtual MCP\" and the server looked safe to delete. The list now filters by client_id in the query. The cases register one client from an inline OpenAPI document (no upstream call), bundle it into an older Virtual MCP, create a newer Virtual MCP that does not bundle it, and then pin that a one-row page filtered by the client returns the older Virtual MCP with total_count 1, and that an unknown client_id, or one differing only in case, matches nothing. Before the fix the parameter was ignored, so the one-row page returned the newest Virtual MCP and total_count counted every Virtual MCP. The openai keyword in case names is only a harness filter label.",
+      "item": [
+        {
+          "name": "openai virtual-mcp-reverse-lookup create the source server - #8645",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Run-unique identity (timestamp plus a random suffix): harness shards and parallel runs never collide.",
+                  "var run = Date.now() + '_' + Math.random().toString(36).slice(2, 8);",
+                  "pm.collectionVariables.set('vmcpLookupRun', run);",
+                  "pm.collectionVariables.set('vmcpLookupClientId', 'harness-vmcp-lookup-' + run.replace('_', '-'));",
+                  "pm.collectionVariables.set('vmcpLookupClientName', 'harness_vmcp_lookup_' + run);",
+                  "// A run that stopped before its cleanup leaves Virtual MCPs and a client behind. Remove this folder's own leftovers",
+                  "// once they are over an hour old, which no run still in progress can own. Virtual MCPs go first, since they bundle the client.",
+                  "var cutoff = Date.now() - 3600000;",
+                  "var base = pm.variables.get('baseUrl');",
+                  "pm.sendRequest({ url: base + '/api/mcp/virtual-mcps?search=harness_vmcp_lookup_&limit=100', method: 'GET' }, function (err, res) {",
+                  "  pm.test('leftover lookup Virtual MCPs listed', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.eql(200);",
+                  "  });",
+                  "  if (err || res.code !== 200) { return; }",
+                  "  (res.json().virtual_mcps || []).forEach(function (v) {",
+                  "    var m = /^harness_vmcp_lookup_(\\d{13})_/.exec(v.name || '');",
+                  "    if (!m || Number(m[1]) >= cutoff) { return; }",
+                  "    pm.sendRequest({ url: base + '/api/mcp/virtual-mcps/' + v.id, method: 'DELETE' }, function (derr, dres) {",
+                  "      pm.test('leftover lookup Virtual MCP ' + v.name + ' removed', function () {",
+                  "        pm.expect(derr, String(derr)).to.equal(null);",
+                  "        pm.expect(dres.code === 200 || dres.code === 404, 'status ' + dres.code + ': ' + dres.text()).to.equal(true);",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "});",
+                  "pm.sendRequest({ url: base + '/api/mcp/clients?search=harness_vmcp_lookup_&limit=100', method: 'GET' }, function (err, res) {",
+                  "  pm.test('leftover lookup clients listed', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.eql(200);",
+                  "  });",
+                  "  if (err || res.code !== 200) { return; }",
+                  "  (res.json().clients || []).forEach(function (c) {",
+                  "    var name = (c.config && c.config.name) || '';",
+                  "    var m = /^harness_vmcp_lookup_(\\d{13})(?:_|$)/.exec(name);",
+                  "    if (!m || Number(m[1]) >= cutoff) { return; }",
+                  "    pm.sendRequest({ url: base + '/api/mcp/client/' + encodeURIComponent(c.config.client_id), method: 'DELETE' }, function (derr, dres) {",
+                  "      pm.test('leftover lookup client ' + name + ' removed', function () {",
+                  "        pm.expect(derr, String(derr)).to.equal(null);",
+                  "        var gone = dres.code === 500 && dres.text().indexOf('not found') !== -1;",
+                  "        pm.expect(dres.code === 200 || gone, 'status ' + dres.code + ': ' + dres.text()).to.equal(true);",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('source server is created', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"client_id\": \"{{vmcpLookupClientId}}\",\n  \"name\": \"{{vmcpLookupClientName}}\",\n  \"connection_type\": \"openapi\",\n  \"auth_type\": \"none\",\n  \"tools_to_execute\": [\n    \"listPets\",\n    \"getPetById\"\n  ],\n  \"openapi_config\": {\n    \"spec\": \"{\\n  \\\"openapi\\\": \\\"3.0.3\\\",\\n  \\\"info\\\": {\\n    \\\"title\\\": \\\"Harness Petstore\\\",\\n    \\\"version\\\": \\\"1.0.0\\\",\\n    \\\"x-harness-marker\\\": \\\"spec-body-must-not-be-returned\\\"\\n  },\\n  \\\"servers\\\": [\\n    {\\n      \\\"url\\\": \\\"https://petstore3.swagger.io/api/v3\\\"\\n    }\\n  ],\\n  \\\"components\\\": {\\n    \\\"securitySchemes\\\": {\\n      \\\"ApiKeyAuth\\\": {\\n        \\\"type\\\": \\\"apiKey\\\",\\n        \\\"in\\\": \\\"header\\\",\\n        \\\"name\\\": \\\"api_key\\\"\\n      }\\n    }\\n  },\\n  \\\"paths\\\": {\\n    \\\"/pet/findByStatus\\\": {\\n      \\\"get\\\": {\\n        \\\"operationId\\\": \\\"listPets\\\",\\n        \\\"summary\\\": \\\"Find pets by status\\\",\\n        \\\"parameters\\\": [\\n          {\\n            \\\"name\\\": \\\"status\\\",\\n            \\\"in\\\": \\\"query\\\",\\n            \\\"schema\\\": {\\n              \\\"type\\\": \\\"string\\\",\\n              \\\"enum\\\": [\\n                \\\"available\\\",\\n                \\\"pending\\\",\\n                \\\"sold\\\"\\n              ]\\n            }\\n          }\\n        ],\\n        \\\"responses\\\": {\\n          \\\"200\\\": {\\n            \\\"description\\\": \\\"ok\\\"\\n          }\\n        }\\n      }\\n    },\\n    \\\"/pet\\\": {\\n      \\\"post\\\": {\\n        \\\"operationId\\\": \\\"createPet\\\",\\n        \\\"requestBody\\\": {\\n          \\\"required\\\": true,\\n          \\\"content\\\": {\\n            \\\"application/json\\\": {\\n              \\\"schema\\\": {\\n                \\\"type\\\": \\\"object\\\",\\n                \\\"required\\\": [\\n                  \\\"name\\\"\\n                ],\\n                \\\"properties\\\": {\\n                  \\\"name\\\": {\\n                    \\\"type\\\": \\\"string\\\"\\n                  },\\n                  \\\"status\\\": {\\n                    \\\"type\\\": \\\"string\\\"\\n                  }\\n                }\\n              }\\n            }\\n          }\\n        },\\n        \\\"responses\\\": {\\n          \\\"200\\\": {\\n            \\\"description\\\": \\\"ok\\\"\\n          }\\n        }\\n      }\\n    },\\n    \\\"/pet/{petId}\\\": {\\n      \\\"get\\\": {\\n        \\\"operationId\\\": \\\"getPetById\\\",\\n        \\\"parameters\\\": [\\n          {\\n            \\\"name\\\": \\\"petId\\\",\\n            \\\"in\\\": \\\"path\\\",\\n            \\\"required\\\": true,\\n            \\\"schema\\\": {\\n              \\\"type\\\": \\\"integer\\\"\\n            }\\n          }\\n        ],\\n        \\\"responses\\\": {\\n          \\\"200\\\": {\\n            \\\"description\\\": \\\"ok\\\"\\n          }\\n        }\\n      }\\n    },\\n    \\\"/pet/{petId}/uploadImage\\\": {\\n      \\\"post\\\": {\\n        \\\"operationId\\\": \\\"uploadPetPhoto\\\",\\n        \\\"parameters\\\": [\\n          {\\n            \\\"name\\\": \\\"petId\\\",\\n            \\\"in\\\": \\\"path\\\",\\n            \\\"required\\\": true,\\n            \\\"schema\\\": {\\n              \\\"type\\\": \\\"integer\\\"\\n            }\\n          }\\n        ],\\n        \\\"requestBody\\\": {\\n          \\\"content\\\": {\\n            \\\"multipart/form-data\\\": {\\n              \\\"schema\\\": {\\n                \\\"type\\\": \\\"object\\\"\\n              }\\n            }\\n          }\\n        },\\n        \\\"responses\\\": {\\n          \\\"200\\\": {\\n            \\\"description\\\": \\\"ok\\\"\\n          }\\n        }\\n      }\\n    }\\n  }\\n}\",\n    \"base_url\": \"https://petstore3.swagger.io/api/v3\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-201] openai virtual-mcp-reverse-lookup create the older Virtual MCP that bundles the server - #8645",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('bundling Virtual MCP is created', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(201);",
+                  "});",
+                  "var vmcp = pm.response.json().virtual_mcp;",
+                  "pm.collectionVariables.set('vmcpLookupBundlesId', vmcp.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"harness_vmcp_lookup_{{vmcpLookupRun}}_bundles\",\n  \"tools\": [\n    {\n      \"mcp_client_id\": \"{{vmcpLookupClientId}}\",\n      \"tool_names\": [\"*\"]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/virtual-mcps",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-201] openai virtual-mcp-reverse-lookup create a newer Virtual MCP without the server - #8645",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('unrelated Virtual MCP is created', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(201);",
+                  "});",
+                  "pm.collectionVariables.set('vmcpLookupFillerId', pm.response.json().virtual_mcp.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"harness_vmcp_lookup_{{vmcpLookupRun}}_filler\",\n  \"tools\": []\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/virtual-mcps",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai virtual-mcp-reverse-lookup a one-row page filtered by the server returns only the older Virtual MCP - #8645",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('filtered list is a 200', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('total_count counts only the Virtual MCP that bundles the server', function () {",
+                  "  pm.expect(body.total_count, pm.response.text()).to.eql(1);",
+                  "});",
+                  "pm.test('the older bundling Virtual MCP is returned even though a newer one exists', function () {",
+                  "  pm.expect(body.virtual_mcps, pm.response.text()).to.have.lengthOf(1);",
+                  "  pm.expect(body.virtual_mcps[0].id, pm.response.text()).to.eql(Number(pm.collectionVariables.get('vmcpLookupBundlesId')));",
+                  "  var spec = body.virtual_mcps[0].tools.filter(function (t) { return t.mcp_client_id === pm.collectionVariables.get('vmcpLookupClientId'); });",
+                  "  pm.expect(spec, pm.response.text()).to.have.lengthOf(1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/virtual-mcps?mcp_client_id={{vmcpLookupClientId}}&limit=1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps"
+              ],
+              "query": [
+                {
+                  "key": "mcp_client_id",
+                  "value": "{{vmcpLookupClientId}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "1"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai virtual-mcp-reverse-lookup an unknown server matches no Virtual MCP - #8645",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('filtered list is a 200', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('nothing matches a client_id no Virtual MCP bundles', function () {",
+                  "  pm.expect(body.total_count, pm.response.text()).to.eql(0);",
+                  "  pm.expect(body.virtual_mcps, pm.response.text()).to.have.lengthOf(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/virtual-mcps?mcp_client_id={{vmcpLookupClientId}}-missing&limit=100",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps"
+              ],
+              "query": [
+                {
+                  "key": "mcp_client_id",
+                  "value": "{{vmcpLookupClientId}}-missing"
+                },
+                {
+                  "key": "limit",
+                  "value": "100"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai virtual-mcp-reverse-lookup a client id differing only in case matches no Virtual MCP - #8645",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('vmcpLookupClientIdUpper', pm.collectionVariables.get('vmcpLookupClientId').toUpperCase());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('filtered list is a 200', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('client_id is matched case-sensitively on every store', function () {",
+                  "  pm.expect(body.total_count, pm.response.text()).to.eql(0);",
+                  "  pm.expect(body.virtual_mcps, pm.response.text()).to.have.lengthOf(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/virtual-mcps?mcp_client_id={{vmcpLookupClientIdUpper}}&limit=100",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps"
+              ],
+              "query": [
+                {
+                  "key": "mcp_client_id",
+                  "value": "{{vmcpLookupClientIdUpper}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "100"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai virtual-mcp-reverse-lookup cleanup deletes the newer Virtual MCP - #8645",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('unrelated Virtual MCP is deleted', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/virtual-mcps/{{vmcpLookupFillerId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps",
+                "{{vmcpLookupFillerId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai virtual-mcp-reverse-lookup cleanup deletes the bundling Virtual MCP - #8645",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('bundling Virtual MCP is deleted', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/virtual-mcps/{{vmcpLookupBundlesId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps",
+                "{{vmcpLookupBundlesId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai virtual-mcp-reverse-lookup cleanup deletes the source server - #8645",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('source server is deleted', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{vmcpLookupClientId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{vmcpLookupClientId}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "309. Gemini chat completions seed reaches generationConfig (gemini seed) (PR #9275)",
       "description": "A seed on a /v1/chat/completions request to Gemini was dropped by the converter, so output was never reproducible. The first two cases read the outgoing request through x-bf-send-back-raw-request and pin generationConfig.seed, including seed 0 (a falsy value that must not be omitted). The third pins that a seed outside the int32 range Gemini accepts is a 400 from the gateway, not a 5xx.",
       "item": [
         {

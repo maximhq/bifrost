@@ -1176,11 +1176,9 @@
 		},
 		"access": {
 			"createFirst": "Crea prima questo Virtual MCP, poi assegnalo alle chiavi virtuali qui.",
-			"loadFailed": "Impossibile caricare le chiavi virtuali.",
 			"virtualKeys": "Chiavi virtuali",
 			"virtualKeysHelp": "Le chiavi assegnate qui possono raggiungere questo Virtual MCP al suo endpoint.",
 			"assign": "Assegna chiave virtuale",
-			"loading": "Caricamento delle chiavi virtuali…",
 			"empty": "Nessuna chiave virtuale ancora assegnata. Assegnane una in modo che i chiamanti possano raggiungere questo Virtual MCP.",
 			"unassignAria": "Rimuovi assegnazione chiave virtuale",
 			"ownerLookupFailed": "Impossibile verificare chi possiede «{{name}}», quindi non è stato assegnato. Riprova.",

@@ -1235,7 +1235,15 @@
 			"editConfigAria": "Editar la configuración del relay",
 			"viewConfigAria": "Ver la configuración del relay",
 			"testSheetTitle": "Probar precios",
-			"testSheetDescription": "Ejecuta una llamada de ejemplo con las rutas y los precios guardados de {{name}}. No se envía nada al upstream."
+			"testSheetDescription": "Ejecuta una llamada de ejemplo con las rutas y los precios guardados de {{name}}. No se envía nada al upstream.",
+			"gatewayPath": "Ruta del gateway",
+			"upstream": "Upstream",
+			"auth": "Autenticación",
+			"pricing": "Precio predeterminado",
+			"anyPath": "Cualquier ruta",
+			"moreActionsAria": "Más acciones del relay",
+			"deleteRelay": "Eliminar relay",
+			"copyPathAria": "Copiar ruta del gateway"
 		},
 		"deleteDialog": {
 			"title": "Eliminar relay",
@@ -1263,6 +1271,7 @@
 			"title": "Rutas",
 			"importOpenapi": "Importar OpenAPI",
 			"addRoute": "Agregar ruta",
+			"description": "Una solicitud usa la primera ruta que coincide; las rutas más específicas aparecen primero.",
 			"columns": {
 				"method": "Método",
 				"route": "Ruta",

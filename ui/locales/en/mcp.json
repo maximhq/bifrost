@@ -1176,11 +1176,9 @@
 		},
 		"access": {
 			"createFirst": "Create this Virtual MCP first, then assign it to virtual keys here.",
-			"loadFailed": "Could not load virtual keys.",
 			"virtualKeys": "Virtual keys",
 			"virtualKeysHelp": "Keys assigned here can reach this Virtual MCP at its endpoint.",
 			"assign": "Assign virtual key",
-			"loading": "Loading virtual keys…",
 			"empty": "No virtual keys assigned yet. Assign one so callers can reach this Virtual MCP.",
 			"unassignAria": "Unassign virtual key",
 			"ownerLookupFailed": "Could not check who owns \"{{name}}\", so it was not assigned. Try again.",
