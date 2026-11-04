@@ -10,6 +10,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/providers/sagemaker"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/passthroughparse"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -211,4 +212,27 @@ func NewGenAIPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handler
 			"/genai_passthrough",
 		},
 	})
+}
+
+// registerPassthroughTextRewriters lets plugins that change a passthrough call's text keep its raw bytes in step,
+// using the same integration-owned field rules as the native route for the API the call speaks. A passthrough body
+// is forwarded as received, so a route with no rewriter registers nothing and a plugin that must change its text has
+// to refuse the call instead of forwarding the original bytes.
+func registerPassthroughTextRewriters(ctx *schemas.BifrostContext, route passthroughparse.Route) {
+	var rewriter schemas.RawRequestBodyTextRewriter
+	switch route.Wire {
+	case schemas.Anthropic:
+		rewriter = rewriteAnthropicRawRequestBody
+		if route.RequestType == schemas.ResponsesRequest {
+			ctx.SetValue(schemas.BifrostContextKeyRawRequestBodyTextTransformer, schemas.RawRequestBodyTextTransformer(rewriteAnthropicRawRequestBodyTransforms))
+			ctx.SetValue(schemas.BifrostContextKeyRawResponseTextTransformer, schemas.RawResponseTextTransformer(rewriteAnthropicRawResponseTransforms))
+		}
+	case schemas.Gemini:
+		rewriter = rewriteGenAIRawRequestBody
+	case schemas.OpenAI:
+		rewriter = openAIRawRequestBodyRewriter(route.RequestType)
+	}
+	if rewriter != nil {
+		ctx.SetValue(schemas.BifrostContextKeyRawRequestBodyTextRewriter, rewriter)
+	}
 }

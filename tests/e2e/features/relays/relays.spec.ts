@@ -499,6 +499,15 @@ test.describe("Relays", () => {
     await page.openConfigTab("proxy");
     await expect(page.saveButton("proxy")).toBeDisabled();
     await expect(page.page.getByTestId("relay-proxy-url")).toBeHidden();
+    // An unsaved choice can be discarded: the select has no unset entry to pick instead.
+    await expect(page.page.getByTestId("relay-discard-proxy")).toBeHidden();
+    await page.page.getByTestId("relay-proxy-type").click();
+    await page.page.getByRole("option", { name: "SOCKS5", exact: true }).click();
+    await expect(page.page.getByTestId("relay-proxy-url")).toBeVisible();
+    await page.page.getByTestId("relay-discard-proxy").click();
+    await expect(page.page.getByTestId("relay-proxy-url")).toBeHidden();
+    await expect(page.page.getByTestId("relay-proxy-type")).not.toContainText("SOCKS5");
+    await expect(page.saveButton("proxy")).toBeDisabled();
     await page.page.getByTestId("relay-proxy-type").click();
     await page.page.getByRole("option", { name: "HTTP", exact: true }).click();
     await expect(page.page.getByTestId("relay-proxy-url")).toBeVisible();
