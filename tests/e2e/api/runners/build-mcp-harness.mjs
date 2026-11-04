@@ -2631,11 +2631,11 @@ const EP54 = folder("EP-54 Non-VK keys in VK headers", `Setup: ${FLEET}; a provi
 // INPUT is examples/mcps/input-required-server, whose tools ask the caller for input mid-call
 // (2026-07-28 input_required). Each test registers it as client "inputs" (HTTP, auth none, per-call)
 // and calls it as an anonymous 2026-07-28 caller declaring the capabilities the test names.
-// EP-53 polls for up to about 15s until the asynchronous log write lands and is no longer "processing".
-const EP53_POLL = [
+// pollLogRow polls GET /api/mcp-logs/R for up to about 15s (log entries are written in 5s batches), until it is no longer "processing".
+const pollLogRow = (R) => [
   "var left = 30;",
   "function poll() {",
-  "  pm.sendRequest({ url: pm.variables.get('base_url') + '/api/mcp-logs/r1', method: 'GET', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) {",
+  `  pm.sendRequest({ url: pm.variables.get('base_url') + '/api/mcp-logs/${R}', method: 'GET', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) {`,
   "    if ((!err && res.code === 200 && res.json().status !== 'processing') || --left <= 0) { return; }",
   "    setTimeout(poll, 500);",
   "  });",
@@ -2645,7 +2645,7 @@ const EP53_POLL = [
 const EP53 = folder("EP-53 Log entry for a /mcp call", `Setup: ${FLEET}; the full-access VK (${VKS.full.text}); tools/call alpha-echo with x-request-id r1.`, [
   ...fleetSetup("EP-53"), createVK("EP-53", "full"),
   rpc("EP-53", "setup: tools/call alpha-echo with x-request-id r1", call("alpha-echo", { text: "hi" }), { headers: [MCP_ACCEPT, vkHeader("EP-53", "full"), { key: "x-request-id", value: "r1" }], asserts: [A.status(200)] }),
-  request("EP-53", "GET /api/mcp-logs/r1", "GET", "/api/mcp-logs/r1", { pre: EP53_POLL, asserts: [A.status(200), A.jsonEquals("status", "success"), A.jsonEquals("tool_name", "echo"), A.jsonEquals("server_label", "alpha"), A.custom("virtual_key_id is the full-access VK's", ["pm.expect(pm.response.json().virtual_key_id, 'body: ' + pm.response.text()).to.equal(pm.collectionVariables.get('ep-53_full_id'));"])] }),
+  request("EP-53", "GET /api/mcp-logs/r1", "GET", "/api/mcp-logs/r1", { pre: pollLogRow("r1"), asserts: [A.status(200), A.jsonEquals("status", "success"), A.jsonEquals("tool_name", "echo"), A.jsonEquals("server_label", "alpha"), A.custom("virtual_key_id is the full-access VK's", ["pm.expect(pm.response.json().virtual_key_id, 'body: ' + pm.response.text()).to.equal(pm.collectionVariables.get('ep-53_full_id'));"])] }),
   request("EP-53", "teardown: delete the log entry", "DELETE", "/api/mcp-logs", { body: { ids: ["r1"] }, asserts: [A.status(200)] }),
   deleteVK("EP-53", "full"), ...fleetTeardown("EP-53"),
 ]);
@@ -3335,17 +3335,7 @@ const reqId = (R) => ({ key: "x-request-id", value: R });
 const execR = (id, title, R, tool, args, asserts, { query = "", headers = [] } = {}) => execBody(id, title,
   { id: `${R}-call`, type: "function", function: { name: tool, arguments: lit(args) } }, asserts, { query, headers: [reqId(R), ...headers] });
 const rpcR = (id, title, path, R, tok, asserts, headers = []) => rpc(id, title, call("alpha-echo_tool", { text: tok }), { path, headers: [MCP_ACCEPT, reqId(R), ...headers], asserts });
-// logRow polls GET /api/mcp-logs/R for up to about 15s (log entries are written in 5s batches), then asserts on it.
-const pollLogRow = (R) => [
-  "var left = 30;",
-  "function poll() {",
-  `  pm.sendRequest({ url: pm.variables.get('base_url') + '/api/mcp-logs/${R}', method: 'GET', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) {`,
-  "    if ((!err && res.code === 200 && res.json().status !== 'processing') || --left <= 0) { return; }",
-  "    setTimeout(poll, 500);",
-  "  });",
-  "}",
-  "poll();",
-];
+// logRow polls GET /api/mcp-logs/R (see pollLogRow), then asserts on it.
 const logRow = (id, title, R, asserts) => request(id, title, "GET", `/api/mcp-logs/${R}`, { pre: pollLogRow(R), asserts: [A.status(200), ...asserts] });
 const noRowYet = (id, title, R) => request(id, title, "GET", `/api/mcp-logs/${R}`, { asserts: [A.status(404), A.msgEquals("MCP log not found")] });
 const rowIs = (field, v) => A.custom(`${field} is ${lit(v)}`, [`pm.expect(pm.response.json()[${lit(field)}], 'body: ' + pm.response.text()).to.eql(${lit(v)});`]);
@@ -11144,14 +11134,14 @@ const inputsSetup = (id) => createClient(id, { client_id: `${id.toLowerCase()}-i
 const inputsTeardown = (id) => deleteClient(id, `${id.toLowerCase()}-in`);
 // modernCall sends tools/call as a 2026-07-28 caller declaring caps; extra adds inputResponses or requestState.
 // A retry (one carrying requestState) gets its own JSON-RPC id, which the spec requires.
-const modernCall = (id, title, tool, caps, extra, asserts, pre = []) => request(id, title, "POST", "/mcp", {
+const modernCall = (id, title, tool, caps, extra, asserts, pre = [], headers = []) => request(id, title, "POST", "/mcp", {
   noAuth: true,
   raw: JSON.stringify({ jsonrpc: "2.0", id: extra.requestState ? 2 : 1, method: "tools/call", params: { name: tool, arguments: {}, ...extra, _meta: {
     "io.modelcontextprotocol/protocolVersion": MODERN,
     "io.modelcontextprotocol/clientCapabilities": caps,
     "io.modelcontextprotocol/clientInfo": { name: "mcp-harness", version: "1.0.0" },
   } } }),
-  headers: [MCP_ACCEPT, { key: "MCP-Protocol-Version", value: MODERN }, { key: "Mcp-Method", value: "tools/call" }, { key: "Mcp-Name", value: tool }],
+  headers: [MCP_ACCEPT, { key: "MCP-Protocol-Version", value: MODERN }, { key: "Mcp-Method", value: "tools/call" }, { key: "Mcp-Name", value: tool }, ...headers],
   asserts, pre,
 });
 const legacyCall = (id, title, tool, asserts) => rpc(id, title, call(tool), { headers: [MCP_ACCEPT, { key: "MCP-Protocol-Version", value: "2025-11-25" }], asserts });
@@ -11359,6 +11349,78 @@ const EP75 = folder("EP-75 A Virtual MCP slug follows the /mcp rules", `Setup: $
   appsCall("EP-75", "refresh is app-only", "/mcp/bundle", "refresh", HOSTS_APPS, [toolResultError(null, "only callable from an MCP App")], { headers: [vkHeader("EP-75", "apps")] }),
   request("EP-75", "teardown: delete the virtual MCP bundle", "DELETE", "/api/mcp/virtual-mcps/{{ep75_bundle_id}}", { asserts: [A.status(200)] }),
   deleteVK("EP-75", "apps"), ...appsTeardown("EP-75"),
+]);
+
+// EP-76: MCP logs record input_required rounds and link a call's rounds by round_trip_id.
+const EP76 = folder("EP-76 MCP logs record input_required rounds", `Setup: ${INPUTS}. ask_environment asks and its retry answers "staging"; a second ask_environment call is its own round trip; busy answers retry later. Each request carries its own x-request-id, which names its log entry.`, [
+  inputsSetup("EP-76"),
+  modernCall("EP-76", "setup: the caller receives the elicitation", "inputs-ask_environment", ELICIT_FORM, {}, [A.status(200), inputRequired(["environment"], "ep76_state")], [], [reqId("ep76-ask")]),
+  modernCall("EP-76", "setup: the retry with the answer completes the call", "inputs-ask_environment", ELICIT_FORM,
+    { inputResponses: { environment: accepted({ environment: "staging" }) }, requestState: "{{ep76_state}}" }, [A.status(200), resultText("deployed to staging")], [], [reqId("ep76-answer")]),
+  logRow("EP-76", "the asking round is logged as input_required with the question", "ep76-ask", [A.jsonEquals("status", "input_required"), A.custom("result is what was asked, and round_trip_id is set", [
+    "var b = pm.response.json();",
+    "var asked = ((b.result || {}).input_requests || {}).environment || {};",
+    "pm.expect(asked.method, 'body: ' + pm.response.text()).to.equal('elicitation/create');",
+    "pm.expect((asked.params || {}).message).to.equal('Which environment should I deploy to?');",
+    "pm.expect(b.round_trip_id, 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+    "pm.expect(pm.collectionVariables.get('ep76_state'), 'the requestState names the call').to.match(new RegExp('^bfrt1\\\\.' + b.round_trip_id + '\\\\.'));",
+    "pm.collectionVariables.set('ep76_round_trip', b.round_trip_id);",
+  ])]),
+  logRow("EP-76", "the answering retry shares the round_trip_id and records the answer", "ep76-answer", [A.jsonEquals("status", "success"), A.custom("same round_trip_id; metadata.input_responses has the accepted answer", [
+    "var b = pm.response.json();",
+    "pm.expect(b.round_trip_id, 'body: ' + pm.response.text()).to.equal(pm.collectionVariables.get('ep76_round_trip'));",
+    "var answer = ((b.metadata || {}).input_responses || {}).environment || {};",
+    "pm.expect(answer.action, 'body: ' + pm.response.text()).to.equal('accept');",
+    "pm.expect((answer.content || {}).environment).to.equal('staging');",
+  ])]),
+  modernCall("EP-76", "setup: a separate call to ask_environment, whose server issues the same requestState", "inputs-ask_environment", ELICIT_FORM, {}, [A.status(200), inputRequired(["environment"], "ep76_other_state")], [], [reqId("ep76-other")]),
+  logRow("EP-76", "the separate call has its own round_trip_id", "ep76-other", [A.jsonEquals("status", "input_required"), A.custom("a different round_trip_id from the first call", [
+    "var b = pm.response.json();",
+    "pm.expect(b.round_trip_id, 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+    "pm.expect(b.round_trip_id).to.not.equal(pm.collectionVariables.get('ep76_round_trip'));",
+  ])]),
+  request("EP-76", "filtering by round_trip_id returns exactly both rounds", "GET", "/api/mcp-logs?round_trip_id={{ep76_round_trip}}", { asserts: [A.status(200), A.custom("the two rounds, and nothing else", [
+    "var ids = (pm.response.json().logs || []).map(function (l) { return l.id; }).sort();",
+    "pm.expect(ids, 'body: ' + pm.response.text()).to.eql(['ep76-answer', 'ep76-ask']);",
+  ])] }),
+  modernCall("EP-76", "setup: busy answers retry later, asking nothing", "inputs-busy", ELICIT_FORM, {}, [A.status(200), inputRequired([], "ep76_busy_state")], [], [reqId("ep76-busy")]),
+  logRow("EP-76", "a retry-later round is logged as retry_later with no result", "ep76-busy", [A.jsonEquals("status", "input_required"), A.custom("metadata.retry_later is true and there is no result", [
+    "var b = pm.response.json();",
+    "pm.expect((b.metadata || {}).retry_later, 'body: ' + pm.response.text()).to.equal(true);",
+    "pm.expect(b.result, 'body: ' + pm.response.text()).to.be.undefined;",
+  ])]),
+  request("EP-76", "teardown: delete the log entries", "DELETE", "/api/mcp-logs", { body: { ids: ["ep76-ask", "ep76-answer", "ep76-other", "ep76-busy"] }, asserts: [A.status(200)] }),
+  inputsTeardown("EP-76"),
+]);
+
+// EP-77: MCP logs record MCP Apps use.
+const EP77 = folder("EP-77 MCP logs record MCP Apps use", `Setup: ${APPS_TEXT}. An apps caller calls refresh by its server-given name on /mcp/apps and reads ui://dash/view. Each request carries its own x-request-id, which names its log entry.`, [
+  ...appsSetup("EP-77"),
+  appsCall("EP-77", "setup: an apps caller calls refresh by its server-given name on the slug", "/mcp/apps", "refresh", HOSTS_APPS, [toolText("dash:refresh")], { headers: [reqId("ep77-app")] }),
+  logRow("EP-77", "the app's call carries the MCP Apps markers", "ep77-app", [A.jsonEquals("status", "success"), A.custom("mcp_apps, app_only, requested_name and ui_resource_uri", [
+    "var m = pm.response.json().metadata || {};",
+    "pm.expect(m.mcp_apps, 'body: ' + pm.response.text()).to.equal(true);",
+    "pm.expect(m.app_only).to.equal(true);",
+    "pm.expect(m.requested_name).to.equal('refresh');",
+    "pm.expect(m.ui_resource_uri).to.equal('ui://dash/view');",
+    "pm.expect(pm.response.json().round_trip_id, 'a call outside a round trip has none').to.equal(undefined);",
+  ])]),
+  appsRead("EP-77", "setup: the apps caller reads ui://dash/view", "/mcp/apps", "ui://dash/view", HOSTS_APPS, [A.custom("keeps the served HTML", [
+    "var c = (((pm.response.json().result || {}).contents || [])[0] || {});",
+    "pm.expect(c.text, 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+    "pm.collectionVariables.set('ep77_html', c.text);",
+  ])], { headers: [reqId("ep77-read")] }),
+  logRow("EP-77", "the ui:// read logs the app's size and hash, not its HTML", "ep77-read", [A.custom("the logged text is the placeholder for the served HTML's size and SHA-256", [
+    "var C = require('crypto-js');",
+    "var bytes = C.enc.Utf8.parse(pm.collectionVariables.get('ep77_html'));",
+    "var n = bytes.sigBytes;",
+    "var size = n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : n >= 1024 ? Math.floor(n / 1024) + ' KB' : n + ' bytes';",
+    "var want = '[MCP App HTML, ' + size + ', sha256 ' + C.SHA256(bytes).toString(C.enc.Hex).slice(0, 16) + ', not shown]';",
+    "var logged = ((pm.response.json().result || [])[0] || {}).text;",
+    "pm.expect(logged, 'body: ' + pm.response.text()).to.equal(want);",
+  ])]),
+  request("EP-77", "teardown: delete the log entries", "DELETE", "/api/mcp-logs", { body: { ids: ["ep77-app", "ep77-read"] }, asserts: [A.status(200)] }),
+  ...appsTeardown("EP-77"),
 ]);
 
 const INF67 = folder("INF-67 Models never get app-only tools", `Setup: ${APPS_TEXT}, only apps registered; ${LLM_TEXT}.`, [
@@ -12233,7 +12295,7 @@ const collection = {
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM26, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM84, ADM85, ADM86, ADM87, ADM88]),
     section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH47, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57, AUTH58, AUTH59, AUTH60, AUTH61, AUTH62, AUTH63, AUTH64]),
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, GO18, CONN23, CONN24, CONN25, CONN27, CONN28, CONN29, GO34, GO36]),
-    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, EP66, EP67, EP68, EP69, EP70, EP71, EP72, EP73, EP74, EP75, GO01, GO02, GO03, GO06, GO07, GO08, GO09, GO10, GO11, GO12, GO13, GO14, GO33, GO35]),
+    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, EP66, EP67, EP68, EP69, EP70, EP71, EP72, EP73, EP74, EP75, EP76, EP77, GO01, GO02, GO03, GO06, GO07, GO08, GO09, GO10, GO11, GO12, GO13, GO14, GO33, GO35]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43, OAS44, OAS45]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET26, SET27, SET28, SET29, SET30, SET31, SET32, SET04, SET05, SET10, SET11, SET15, SET23]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV36, GOV37, GOV38, GOV39]),

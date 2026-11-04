@@ -894,3 +894,26 @@ func TestToolClientName(t *testing.T) {
 	assert.Equal(t, "", ToolClientName("executeToolCode"), "an unprefixed tool has no client")
 	assert.Equal(t, "", ToolClientName("-x"))
 }
+
+// TestRoundTripState: Bifrost's wrap of a requestState round-trips, keeps one id across a call's rounds,
+// and leaves a state it did not wrap alone.
+func TestRoundTripState(t *testing.T) {
+	id := RoundTripID("req-1")
+	assert.Len(t, id, 16)
+	assert.NotEqual(t, id, RoundTripID("req-2"), "separate calls get separate ids")
+
+	for _, upstream := range []string{"busy", "", "a.b.c", "bfrt1.0123456789abcdef.inner"} {
+		gotID, gotState := UnwrapRoundTripState(WrapRoundTripState(id, upstream))
+		assert.Equal(t, id, gotID)
+		assert.Equal(t, upstream, gotState, "the upstream's own state comes back unchanged")
+	}
+	for _, foreign := range []string{"", "busy", "bfrt1.", "bfrt1.0123456789abcdef", "bfrt1.0123456789ABCDEF.x", "bfrt1.0123456789abcdeg.x", "bfrt1.short.x"} {
+		gotID, gotState := UnwrapRoundTripState(foreign)
+		assert.Empty(t, gotID, foreign)
+		assert.Equal(t, foreign, gotState, foreign)
+	}
+
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyRequestID, "req-2")
+	assert.Equal(t, RoundTripID("req-2"), CallRoundTripID(ctx), "a first round's id comes from its request")
+	assert.Equal(t, id, CallRoundTripID(context.WithValue(ctx, schemas.BifrostContextKeyMCPRoundTripID, id)), "a retry keeps the id it carried")
+}
