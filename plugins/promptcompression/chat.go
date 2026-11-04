@@ -8,57 +8,148 @@ import (
 
 // compressChat shortens old tool outputs in a Chat Completions history. Every
 // message, its order, role and tool-call IDs are preserved; only text values
-// shrink. The cache-protected prefix is returned untouched so provider prompt
-// caches still hit. The input slice and everything it points to is never
-// written: changed messages get a copied struct and a fresh Content.
-func compressChat(msgs []schemas.ChatMessage, s settings) []schemas.ChatMessage {
-	out := make([]schemas.ChatMessage, len(msgs))
-	copy(out, msgs)
+// shrink. Only eligible outputs are edited: role tool, outside the
+// cache-protected prefix, and at least MinAgeTurns assistant turns old. A
+// younger output was seen by the model once and is the tail of the provider's
+// cached prefix, so rewriting it would break the next request's cache hit.
+// The input slice and everything it points to is never written: changed
+// messages get a copied struct and a fresh Content.
+//
+// Dedupe candidates are all-text tool outputs of any age (a young copy is a
+// valid pointer target), but only an eligible older copy is replaced, and a
+// replaced message is not trimmed as well.
+//
+// This runs on every request, and for a long agent loop the usual outcome is
+// "nothing to do". A first pass over the history therefore allocates nothing
+// and only decides whether any edit is possible; when none is, msgs itself is
+// returned. The output slice is allocated lazily at the first real change.
+func compressChat(msgs []schemas.ChatMessage, s settings) ([]schemas.ChatMessage, stats) {
 	n := chatProtectedPrefix(msgs, s.ProtectedLeading)
 
-	deduped := make([]bool, len(msgs))
-	if s.Dedupe {
-		dedupeChat(msgs, out, n, deduped)
-	}
-
-	// age[i] = assistant messages after i; computed back to front.
-	age := make([]int, len(msgs))
-	assistants := 0
-	for i := len(msgs) - 1; i >= 0; i-- {
-		age[i] = assistants
-		if msgs[i].Role == schemas.ChatMessageRoleAssistant {
+	// Pass 1 (back to front, no allocation): sum eligible tokens and look for
+	// any trigger that would make trimming or whitespace cleanup change text.
+	var st stats
+	editable := false
+	candidates, eligibleCandidates := 0, 0
+	assistants := 0 // assistant messages after i, so assistants is the age of i
+	for i := len(msgs) - 1; i >= n; i-- {
+		m := &msgs[i]
+		if m.Role == schemas.ChatMessageRoleAssistant {
 			assistants++
+			continue
+		}
+		if m.Role != schemas.ChatMessageRoleTool {
+			continue
+		}
+		eligible := assistants >= s.MinAgeTurns
+		allTxt := isAllText(m.Content)
+		if allTxt {
+			candidates++
+		}
+		if !eligible {
+			continue
+		}
+		if allTxt {
+			eligibleCandidates++
+		}
+		st.EligibleBefore += chatMsgTokens(m)
+		if !editable {
+			editable = chatMayEdit(m, s)
 		}
 	}
+	st.EligibleAfter = st.EligibleBefore
 
-	for i := n; i < len(msgs); i++ {
-		if deduped[i] {
+	// The duplicate lookup needs a map, so it only runs when a pair of
+	// candidates exists and one of them is eligible; the plan it returns is
+	// reused below instead of being computed twice.
+	var stubs []string
+	if s.Dedupe && candidates >= 2 && eligibleCandidates >= 1 {
+		stubs = planChatDedupe(msgs, n, s.MinAgeTurns)
+		if stubs != nil {
+			editable = true
+		}
+	}
+	if !editable {
+		return msgs, st
+	}
+
+	// Pass 2: apply edits to eligible outputs only.
+	var out []schemas.ChatMessage
+	st.EligibleAfter = 0
+	f := textTransform(s, true)
+	assistants = 0
+	for i := len(msgs) - 1; i >= n; i-- {
+		m := msgs[i]
+		if m.Role == schemas.ChatMessageRoleAssistant {
+			assistants++
 			continue
 		}
-		trim := msgs[i].Role == schemas.ChatMessageRoleTool && age[i] >= s.MinAgeTurns
-		// Only trim-eligible old tool output is rewritten (trim and whitespace
-		// normalisation); everything else is sent exactly as received.
-		if !trim {
+		if m.Role != schemas.ChatMessageRoleTool || assistants < s.MinAgeTurns {
 			continue
 		}
-		if m, changed := mapChatText(msgs[i], textTransform(s, true)); changed {
+		if stubs != nil && stubs[i] != "" {
+			stub := stubs[i]
+			m.Content = &schemas.ChatMessageContent{ContentStr: &stub}
+		} else if cm, changed := mapChatText(m, f); changed {
+			m = cm
+		}
+		if m.Content != msgs[i].Content {
+			if out == nil {
+				out = make([]schemas.ChatMessage, len(msgs))
+				copy(out, msgs)
+			}
 			out[i] = m
 		}
+		st.EligibleAfter += chatMsgTokens(&m)
 	}
-	return out
+	if out == nil {
+		return msgs, st
+	}
+	st.Changed = true
+	return out, st
 }
 
-// dedupeChat replaces each older identical all-text tool output with a pointer
-// to the immediately next newer copy, so the model still knows where the
-// content lives and an existing stub never changes when another duplicate
-// arrives later (which would invalidate provider prompt caches). It scans back
-// to front, so the last copy seen for a text is the next newer one. Originals
-// are compared, never already-replaced text, and a stub is used only when
-// shorter.
-func dedupeChat(msgs, out []schemas.ChatMessage, start int, deduped []bool) {
-	next := map[string]*string{} // text -> ToolCallID of the next newer copy
+// chatMayEdit reports whether textTransform could change any text value of an
+// eligible output: a value large enough to trim, or one whitespace
+// normalisation would rewrite. It errs towards true; the real transform still
+// keeps an edit only when it is strictly shorter.
+func chatMayEdit(m *schemas.ChatMessage, s settings) bool {
+	c := m.Content
+	if c == nil {
+		return false
+	}
+	may := func(text string) bool {
+		return estimateTokens(text) >= s.MinTokens || (s.Whitespace && needsWhitespaceNormalization(text))
+	}
+	if c.ContentStr != nil && may(*c.ContentStr) {
+		return true
+	}
+	for i := range c.ContentBlocks {
+		b := &c.ContentBlocks[i]
+		if b.Type == schemas.ChatContentBlockTypeText && b.Text != nil && may(*b.Text) {
+			return true
+		}
+	}
+	return false
+}
+
+// planChatDedupe returns, per message index, the stub text that replaces an
+// eligible older copy of a tool output, or nil when no copy qualifies. It
+// scans back to front, so the last copy seen for a text is its next newer
+// one, whether or not that newer copy is eligible; the stub names that copy so
+// an existing stub never changes when another duplicate arrives later (which
+// would invalidate provider prompt caches). Originals are compared, never
+// already-replaced text, and a stub is used only when shorter.
+func planChatDedupe(msgs []schemas.ChatMessage, start, minAge int) []string {
+	var stubs []string
+	next := map[string]int{} // text -> index of the next newer copy
+	assistants := 0
 	for i := len(msgs) - 1; i >= start; i-- {
 		m := &msgs[i]
+		if m.Role == schemas.ChatMessageRoleAssistant {
+			assistants++
+			continue
+		}
 		if m.Role != schemas.ChatMessageRoleTool {
 			continue
 		}
@@ -66,25 +157,63 @@ func dedupeChat(msgs, out []schemas.ChatMessage, start int, deduped []bool) {
 		if !ok {
 			continue
 		}
-		var cid *string
-		if m.ChatToolMessage != nil {
-			cid = m.ChatToolMessage.ToolCallID
-		}
-		id, seen := next[text]
-		next[text] = cid
-		if !seen {
+		j, seen := next[text]
+		next[text] = i
+		if !seen || assistants < minAge {
 			continue
+		}
+		var id *string
+		if msgs[j].ChatToolMessage != nil {
+			id = msgs[j].ChatToolMessage.ToolCallID
 		}
 		stub, ok := dedupeStub(id, text)
 		if !ok {
 			continue
 		}
-		c := &schemas.ChatMessageContent{ContentStr: &stub}
-		cp := *m
-		cp.Content = c
-		out[i] = cp
-		deduped[i] = true
+		if stubs == nil {
+			stubs = make([]string, len(msgs))
+		}
+		stubs[i] = stub
 	}
+	return stubs
+}
+
+// isAllText reports whether allText would succeed, without building the text.
+func isAllText(c *schemas.ChatMessageContent) bool {
+	if c == nil {
+		return false
+	}
+	if c.ContentStr != nil {
+		return true
+	}
+	if len(c.ContentBlocks) == 0 {
+		return false
+	}
+	for i := range c.ContentBlocks {
+		if c.ContentBlocks[i].Type != schemas.ChatContentBlockTypeText || c.ContentBlocks[i].Text == nil {
+			return false
+		}
+	}
+	return true
+}
+
+// chatMsgTokens sums estimateTokens over the text values of one message.
+func chatMsgTokens(m *schemas.ChatMessage) int {
+	c := m.Content
+	if c == nil {
+		return 0
+	}
+	total := 0
+	if c.ContentStr != nil {
+		total += estimateTokens(*c.ContentStr)
+	}
+	for i := range c.ContentBlocks {
+		b := &c.ContentBlocks[i]
+		if b.Type == schemas.ChatContentBlockTypeText && b.Text != nil {
+			total += estimateTokens(*b.Text)
+		}
+	}
+	return total
 }
 
 // allText returns the joined text of a content that consists solely of text
@@ -151,18 +280,7 @@ func mapChatText(m schemas.ChatMessage, f func(string) string) (schemas.ChatMess
 func estimateChat(msgs []schemas.ChatMessage) int {
 	total := 0
 	for i := range msgs {
-		c := msgs[i].Content
-		if c == nil {
-			continue
-		}
-		if c.ContentStr != nil {
-			total += estimateTokens(*c.ContentStr)
-		}
-		for _, b := range c.ContentBlocks {
-			if b.Type == schemas.ChatContentBlockTypeText && b.Text != nil {
-				total += estimateTokens(*b.Text)
-			}
-		}
+		total += chatMsgTokens(&msgs[i])
 	}
 	return total
 }

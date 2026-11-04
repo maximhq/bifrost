@@ -45,7 +45,7 @@ func run(t *testing.T, msgs []schemas.ChatMessage, s settings) []schemas.ChatMes
 	t.Helper()
 	before, err := json.Marshal(msgs)
 	require.NoError(t, err)
-	out := compressChat(msgs, s)
+	out, _ := compressChat(msgs, s)
 	after, err := json.Marshal(msgs)
 	require.NoError(t, err)
 	require.Equal(t, string(before), string(after), "input mutated")
@@ -105,7 +105,7 @@ func TestChatDedupe(t *testing.T) {
 	file := bigOutput(50)
 	msgs := rounds(file, "other", file)
 	s := defaults(t)
-	s.MinAgeTurns = 99 // isolate dedupe from trimming
+	s.MinAgeTurns = 2 // the first copy (age 2) is eligible, the last (age 0) is not
 	out := run(t, msgs, s)
 	require.Equal(t, "[identical to the output of call call_3]", strOf(out[3]))
 	require.Equal(t, file, strOf(out[7]))
@@ -126,6 +126,76 @@ func TestChatDedupeDisabled(t *testing.T) {
 	s.MinAgeTurns = 99
 	out := run(t, msgs, s)
 	require.Equal(t, file, strOf(out[3]))
+}
+
+func TestChatDedupeOnlyEligibleOlderCopy(t *testing.T) {
+	file := bigOutput(50)
+	s := defaults(t)
+	s.MinAgeTurns = 2
+	young := run(t, rounds(file, file), s) // ages 1 and 0
+	require.Equal(t, file, strOf(young[3]))
+	require.Equal(t, file, strOf(young[5]))
+	old := run(t, rounds(file, "x", "y", file), s) // ages 3 and 0
+	require.Equal(t, "[identical to the output of call call_4]", strOf(old[3]))
+	require.Equal(t, file, strOf(old[9]))
+}
+
+func TestChatDedupeStubPointsAtIneligibleNewerCopy(t *testing.T) {
+	file := bigOutput(50)
+	s := defaults(t)
+	s.MinAgeTurns = 2
+	// ages 3, 2, 1, 0: copies 1 and 2 are eligible, 3 (age 1) is not.
+	out := run(t, rounds(file, file, file, "z"), s)
+	require.Equal(t, "[identical to the output of call call_2]", strOf(out[3]))
+	require.Equal(t, "[identical to the output of call call_3]", strOf(out[5]))
+	require.Equal(t, file, strOf(out[7]))
+}
+
+func TestChatYoungDuplicateNeverTouched(t *testing.T) {
+	big := bigOutput(300)
+	msgs := rounds(big, "x", "y", big)
+	out := run(t, msgs, defaults(t))
+	require.Equal(t, big, strOf(out[9]), "age 0 copy byte-identical")
+	require.NotEqual(t, big, strOf(out[3]))
+}
+
+func TestChatStatsEligibleRegion(t *testing.T) {
+	big := bigOutput(200)
+	msgs := rounds(big, "x", "y")
+	s := defaults(t)
+	before, _ := json.Marshal(msgs)
+	out, st := compressChat(msgs, s)
+	after, _ := json.Marshal(msgs)
+	require.Equal(t, string(before), string(after))
+	// ages: big=2 eligible, "x" age 1 and "y" age 0 are not.
+	require.True(t, st.Changed)
+	require.Equal(t, estimateTokens(big), st.EligibleBefore)
+	require.Equal(t, estimateTokens(strOf(out[3])), st.EligibleAfter)
+	require.Less(t, st.EligibleAfter, st.EligibleBefore)
+}
+
+func TestChatNoopEligibleSmallOutput(t *testing.T) {
+	msgs := rounds("small clean output", "x", "y")
+	s := defaults(t)
+	out, st := compressChat(msgs, s)
+	require.Equal(t, &msgs[0], &out[0], "same backing array")
+	require.False(t, st.Changed)
+	require.Equal(t, estimateTokens("small clean output"), st.EligibleBefore)
+	require.Equal(t, st.EligibleBefore, st.EligibleAfter)
+	require.Zero(t, testing.AllocsPerRun(100, func() { compressChat(msgs, s) }))
+}
+
+func TestChatNoopReturnsSameSliceNoAllocs(t *testing.T) {
+	msgs := []schemas.ChatMessage{
+		textMsg(schemas.ChatMessageRoleSystem, "sys"), textMsg(schemas.ChatMessageRoleUser, "go"),
+		textMsg(schemas.ChatMessageRoleAssistant, "ok"),
+	}
+	s := defaults(t)
+	out, st := compressChat(msgs, s)
+	require.Equal(t, &msgs[0], &out[0])
+	require.False(t, st.Changed)
+	require.Zero(t, st.EligibleBefore)
+	require.Zero(t, testing.AllocsPerRun(100, func() { compressChat(msgs, s) }))
 }
 
 func TestChatWhitespaceOnlyOldToolOutputs(t *testing.T) {
@@ -153,7 +223,7 @@ func TestChatWhitespaceOnlyOldToolOutputs(t *testing.T) {
 func TestChatDedupeChainsToNextCopy(t *testing.T) {
 	file := bigOutput(50)
 	s := defaults(t)
-	s.MinAgeTurns = 99
+	s.MinAgeTurns = 1 // every copy but the newest is eligible
 	three := run(t, rounds(file, file, file), s)
 	require.Equal(t, "[identical to the output of call call_2]", strOf(three[3]))
 	require.Equal(t, "[identical to the output of call call_3]", strOf(three[5]))

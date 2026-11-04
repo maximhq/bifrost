@@ -1,5 +1,15 @@
 package promptcompression
 
+// stats reports what a compressor did to the eligible region (old tool
+// outputs outside the protected prefix). EligibleBefore and EligibleAfter are
+// estimated tokens summed over every eligible output, edited or not, so the
+// caller can judge savings against the part of the request that may change.
+// Changed is true when at least one message differs from the input.
+type stats struct {
+	EligibleBefore, EligibleAfter int
+	Changed                       bool
+}
+
 // textTransform returns the per-text rewrite shared by the Chat and Responses
 // compressors, so both APIs trim and normalise identically. trim marks text
 // of a trim-eligible old tool output; any other text is returned unchanged,

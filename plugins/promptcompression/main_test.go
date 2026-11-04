@@ -189,7 +189,7 @@ func TestPreLLMHookFailOpen(t *testing.T) {
 	p, lg := newHookPlugin(t)
 	orig := compressChatFn
 	t.Cleanup(func() { compressChatFn = orig })
-	compressChatFn = func([]schemas.ChatMessage, settings) []schemas.ChatMessage { panic("boom") }
+	compressChatFn = func([]schemas.ChatMessage, settings) ([]schemas.ChatMessage, stats) { panic("boom") }
 
 	ctx := hookCtx()
 	req := bigChatReq(schemas.ChatCompletionRequest)
@@ -447,7 +447,7 @@ func TestFixtureChatSavings(t *testing.T) {
 	inBefore, err := json.Marshal(msgs)
 	require.NoError(t, err)
 
-	out := compressChat(msgs, s)
+	out, _ := compressChat(msgs, s)
 
 	inAfter, err := json.Marshal(msgs)
 	require.NoError(t, err)
@@ -533,7 +533,7 @@ func TestFixturePerTurnEstimates(t *testing.T) {
 	var chatRows []turnRow
 	for k, end := range chatTurnBounds(chat) {
 		prefix := chat[:end]
-		out := compressChat(prefix, s)
+		out, _ := compressChat(prefix, s)
 		require.Len(t, out, len(prefix), "chat turn %d: message count changed", k+1)
 		r := turnRow{k + 1, len(prefix), estimateChat(prefix), estimateChat(out)}
 		require.LessOrEqual(t, r.after, r.before, "chat turn %d", k+1)

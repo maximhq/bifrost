@@ -108,7 +108,7 @@ func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostReq
 		if before == 0 {
 			return req, nil, nil
 		}
-		compressed := compressChatFn(cr.Input, p.s)
+		compressed, _ := compressChatFn(cr.Input, p.s)
 		after = estimateChat(compressed)
 		cc := *cr
 		cc.Input = compressed
