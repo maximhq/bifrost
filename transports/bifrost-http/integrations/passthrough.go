@@ -143,8 +143,9 @@ func NewAzurePassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handler
 
 // NewBedrockPassthroughRouter creates a passthrough router for /bedrock_passthrough. Unlike the
 // other passthrough routers it is not a general proxy: the Bedrock provider forwards only
-// InvokeAgent, knowledge-base Retrieve and ApplyGuardrail, the operations Bifrost has no native
-// route for, and refuses every other path with a 400 before any request is built.
+// InvokeAgent, knowledge-base Retrieve, ApplyGuardrail and the read-only inference-profile and
+// foundation-model listings, the operations Bifrost has no native route for, and refuses every other
+// path with a 400 before any request is built.
 func NewBedrockPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *PassthroughRouter {
 	return NewPassthroughRouter(client, handlerStore, accessResolver, logger, &PassthroughConfig{
 		Provider: schemas.Bedrock,
@@ -153,6 +154,33 @@ func NewBedrockPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handl
 		},
 		// InvokeAgent answers with an event stream; nothing in its path or body says so.
 		StreamingPath: bedrock.IsPassthroughStreamPath,
+	})
+}
+
+// NewBedrockControlPlaneRouter serves the read-only Bedrock control-plane listings under the /bedrock
+// integration prefix: ListInferenceProfiles, GetInferenceProfile, ListFoundationModels and
+// GetFoundationModel. AWS SDK clients pointed at /bedrock (Claude Code in Bedrock mode, for one) call
+// them on the same base URL as the runtime APIs to discover models; without these routes the requests
+// fell through to the dashboard catch-all and got the UI's index.html with a 200.
+//
+// Only these four method+path pairs are registered, and the Bedrock provider re-checks each against
+// its own allow-list before signing the request with the selected key and sending it to the
+// control-plane host for the key's region. The listings run and name no model, so model allowlists
+// are skipped; the virtual key still has to grant the Bedrock provider.
+func NewBedrockControlPlaneRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *PassthroughRouter {
+	return NewPassthroughRouter(client, handlerStore, accessResolver, logger, &PassthroughConfig{
+		Provider:    schemas.Bedrock,
+		StripPrefix: []string{"/bedrock"},
+		AllowedRoutes: []PassthroughRoute{
+			{Method: fasthttp.MethodGet, Path: "/bedrock/inference-profiles"},
+			{Method: fasthttp.MethodGet, Path: "/bedrock/inference-profiles/{inferenceProfileIdentifier}"},
+			{Method: fasthttp.MethodGet, Path: "/bedrock/foundation-models"},
+			{Method: fasthttp.MethodGet, Path: "/bedrock/foundation-models/{modelIdentifier}"},
+		},
+		StreamingPath: bedrock.IsPassthroughStreamPath,
+		ModelFreePath: bedrock.IsControlPlaneListingPath,
+		// A foundation model id is not a "models/{x}" segment, but nothing in these paths names a model to route by.
+		NoPathModel: bedrock.IsControlPlaneListingPath,
 	})
 }
 

@@ -35,7 +35,7 @@ func (p *passthroughTarget) requests() []capturedPassthroughRequest {
 	return append([]capturedPassthroughRequest(nil), p.seen...)
 }
 
-// newPassthroughTarget stands in for both bedrock-agent-runtime and bedrock-runtime: the key's
+// newPassthroughTarget stands in for bedrock-agent-runtime, bedrock-runtime and the bedrock control plane: the key's
 // endpoint overrides send each service to the same local TLS server.
 func newPassthroughTarget(t *testing.T, status int, respBody string, respHeader map[string]string) *passthroughTarget {
 	t.Helper()
@@ -63,7 +63,7 @@ func (p *passthroughTarget) key(apiKey string) schemas.Key {
 		AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),
 		SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 		Region:    schemas.NewSecretVar("us-west-2"),
-		Endpoints: &schemas.BedrockEndpoints{AgentRuntime: schemas.NewSecretVar(host), Runtime: schemas.NewSecretVar(host)},
+		Endpoints: &schemas.BedrockEndpoints{AgentRuntime: schemas.NewSecretVar(host), Runtime: schemas.NewSecretVar(host), ControlPlane: schemas.NewSecretVar(host)},
 	}}
 	if apiKey != "" {
 		k.Value = *schemas.NewSecretVar(apiKey)
@@ -142,7 +142,7 @@ func (p *passthroughTarget) apiKeyOnlyKey(apiKey string) schemas.Key {
 		Value: *schemas.NewSecretVar(apiKey),
 		BedrockKeyConfig: &schemas.BedrockKeyConfig{
 			Region:    schemas.NewSecretVar("us-west-2"),
-			Endpoints: &schemas.BedrockEndpoints{AgentRuntime: schemas.NewSecretVar(host), Runtime: schemas.NewSecretVar(host)},
+			Endpoints: &schemas.BedrockEndpoints{AgentRuntime: schemas.NewSecretVar(host), Runtime: schemas.NewSecretVar(host), ControlPlane: schemas.NewSecretVar(host)},
 		},
 	}
 }
@@ -238,7 +238,7 @@ func TestBedrockPassthroughDropsCallerCredentialsAndHostHeaders(t *testing.T) {
 	assert.Empty(t, got[0].Header.Get("X-Amz-Target"))
 }
 
-// Only the three allow-listed operations are reachable. Everything else - other methods, other
+// Only the allow-listed operations are reachable. Everything else - other methods, other
 // services, traversal, extra or empty segments, encoded dots - is refused with a 400 before any
 // request leaves the gateway.
 func TestBedrockPassthroughRejectsEverythingOutsideTheAllowList(t *testing.T) {
@@ -247,7 +247,14 @@ func TestBedrockPassthroughRejectsEverythingOutsideTheAllowList(t *testing.T) {
 	}{
 		{"wrong method on an allowed path", http.MethodGet, "/knowledgebases/KB12345678/retrieve"},
 		{"model invocation is not allowed", http.MethodPost, "/model/anthropic.claude-v2/invoke"},
-		{"control plane is not allowed", http.MethodPost, "/foundation-models"},
+		{"control plane listing only accepts GET", http.MethodPost, "/foundation-models"},
+		{"other control plane operations are not allowed", http.MethodGet, "/model-invocation-jobs"},
+		{"custom models are not allowed", http.MethodGet, "/custom-models"},
+		{"inference profile ARN with a slash", http.MethodGet, "/inference-profiles/arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.x"},
+		{"dot-only inference profile id", http.MethodGet, "/inference-profiles/.."},
+		{"dot-only foundation model id", http.MethodGet, "/foundation-models/..."},
+		{"extra segment after a foundation model", http.MethodGet, "/foundation-models/anthropic.claude-v2/extra"},
+		{"inference profile deletion is not allowed", http.MethodDelete, "/inference-profiles/us.anthropic.claude-sonnet-4-6"},
 		{"traversal in an identifier", http.MethodPost, "/agents/../model/x/agentAliases/a/sessions/s/text"},
 		{"encoded traversal", http.MethodPost, "/agents/%2e%2e/agentAliases/a/sessions/s/text"},
 		{"extra trailing segment", http.MethodPost, "/knowledgebases/KB12345678/retrieve/extra"},

@@ -25,6 +25,7 @@ type bedrockPassthroughSegment struct {
 
 // bedrockPassthroughRoute is one operation the Bedrock passthrough will forward.
 type bedrockPassthroughRoute struct {
+	method    string
 	operation string
 	service   bedrockService
 	segments  []bedrockPassthroughSegment
@@ -47,6 +48,9 @@ var (
 	bedrockPassthroughSessionRe = regexp.MustCompile(`^[0-9a-zA-Z._:-]{1,128}$`)
 	// guardrailVersion: ([1-9][0-9]{0,7})|DRAFT
 	bedrockPassthroughVersionRe = regexp.MustCompile(`^(DRAFT|[1-9][0-9]{0,7})$`)
+	// inferenceProfileIdentifier and modelIdentifier, in their id form: [a-zA-Z0-9-:.]+
+	// (e.g. "us.anthropic.claude-sonnet-4-6", "anthropic.claude-3-haiku-20240307-v1:0").
+	bedrockPassthroughResourceIDRe = regexp.MustCompile(`^[a-zA-Z0-9.:-]+$`)
 )
 
 func isBedrockPassthroughAlnum(s string) bool { return bedrockPassthroughAlnumRe.MatchString(s) }
@@ -61,24 +65,40 @@ func isBedrockPassthroughGuardrailVersion(s string) bool {
 	return bedrockPassthroughVersionRe.MatchString(s)
 }
 
+// An inference profile or foundation model id contains dots, so like a session id a segment made only
+// of dots is refused explicitly.
+func isBedrockPassthroughResourceID(s string) bool {
+	// AWS caps these identifiers at 2048 characters, above Go's regexp repeat limit, so length is checked here.
+	return len(s) <= 2048 && bedrockPassthroughResourceIDRe.MatchString(s) && strings.Trim(s, ".") != ""
+}
+
 // The passthrough is deliberately not a general AWS proxy: it forwards exactly the Bedrock
 // operations Bifrost has no native route for, to the service host derived from the key's region.
 // Anything else is refused before a request is built. Knowledge-base and guardrail ARNs are not
 // accepted in place of an id: an ARN contains "/", which would change the shape of the path.
+//
+// The read-only control-plane listings (ListInferenceProfiles, GetInferenceProfile,
+// ListFoundationModels, GetFoundationModel) are allow-listed too: AWS SDK clients pointed at the
+// /bedrock integration (Claude Code in Bedrock mode, for one) call them on the same base URL as the
+// runtime APIs to discover which models they can use.
 var bedrockPassthroughRoutes = []bedrockPassthroughRoute{
-	{operation: "InvokeAgent", service: bedrockServiceAgentRuntime, streaming: true, segments: []bedrockPassthroughSegment{literal("agents"), param(isBedrockPassthroughAlnum), literal("agentAliases"), param(isBedrockPassthroughAlnum), literal("sessions"), param(isBedrockPassthroughSessionID), literal("text")}},
-	{operation: "Retrieve", service: bedrockServiceAgentRuntime, segments: []bedrockPassthroughSegment{literal("knowledgebases"), param(isBedrockPassthroughAlnum), literal("retrieve")}},
-	{operation: "ApplyGuardrail", service: bedrockServiceRuntime, segments: []bedrockPassthroughSegment{literal("guardrail"), param(isBedrockPassthroughAlnum), literal("version"), param(isBedrockPassthroughGuardrailVersion), literal("apply")}},
+	{method: http.MethodPost, operation: "InvokeAgent", service: bedrockServiceAgentRuntime, streaming: true, segments: []bedrockPassthroughSegment{literal("agents"), param(isBedrockPassthroughAlnum), literal("agentAliases"), param(isBedrockPassthroughAlnum), literal("sessions"), param(isBedrockPassthroughSessionID), literal("text")}},
+	{method: http.MethodPost, operation: "Retrieve", service: bedrockServiceAgentRuntime, segments: []bedrockPassthroughSegment{literal("knowledgebases"), param(isBedrockPassthroughAlnum), literal("retrieve")}},
+	{method: http.MethodPost, operation: "ApplyGuardrail", service: bedrockServiceRuntime, segments: []bedrockPassthroughSegment{literal("guardrail"), param(isBedrockPassthroughAlnum), literal("version"), param(isBedrockPassthroughGuardrailVersion), literal("apply")}},
+	{method: http.MethodGet, operation: "ListInferenceProfiles", service: bedrockServiceControlPlane, segments: []bedrockPassthroughSegment{literal("inference-profiles")}},
+	{method: http.MethodGet, operation: "GetInferenceProfile", service: bedrockServiceControlPlane, segments: []bedrockPassthroughSegment{literal("inference-profiles"), param(isBedrockPassthroughResourceID)}},
+	{method: http.MethodGet, operation: "ListFoundationModels", service: bedrockServiceControlPlane, segments: []bedrockPassthroughSegment{literal("foundation-models")}},
+	{method: http.MethodGet, operation: "GetFoundationModel", service: bedrockServiceControlPlane, segments: []bedrockPassthroughSegment{literal("foundation-models"), param(isBedrockPassthroughResourceID)}},
 }
 
 // matchBedrockPassthroughRoute returns the allow-listed route for a method and stripped path.
 func matchBedrockPassthroughRoute(method, path string) (bedrockPassthroughRoute, bool) {
-	if method != http.MethodPost || path == "" {
+	if path == "" {
 		return bedrockPassthroughRoute{}, false
 	}
 	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
 	for _, route := range bedrockPassthroughRoutes {
-		if len(parts) != len(route.segments) {
+		if method != route.method || len(parts) != len(route.segments) {
 			continue
 		}
 		matched := true
@@ -129,6 +149,14 @@ func IsPassthroughRoute(method, path string) bool {
 	return ok
 }
 
+// IsControlPlaneListingPath reports whether a request is one of the read-only control-plane listings
+// (inference profiles and foundation models). They run and name no model, so the HTTP router skips
+// model allowlists for them.
+func IsControlPlaneListingPath(method, path string) bool {
+	route, ok := matchBedrockPassthroughRoute(method, path)
+	return ok && route.service == bedrockServiceControlPlane
+}
+
 // IsPassthroughStreamPath reports whether a request is an allow-listed operation whose AWS response is an
 // event stream (InvokeAgent). The HTTP router uses it to pick the streaming passthrough for exactly those
 // requests: the path and body of an InvokeAgent call carry no "stream" marker of their own.
@@ -142,7 +170,7 @@ func IsPassthroughStreamPath(method, path string) bool {
 func (provider *BedrockProvider) buildPassthroughRequest(ctx *schemas.BifrostContext, key schemas.Key, req *schemas.BifrostPassthroughRequest) (*http.Request, bedrockPassthroughRoute, *schemas.BifrostError) {
 	route, ok := matchBedrockPassthroughRoute(req.Method, req.Path)
 	if !ok {
-		return nil, route, providerUtils.NewBifrostBadRequestError("bedrock passthrough only forwards POST InvokeAgent, Retrieve and ApplyGuardrail requests")
+		return nil, route, providerUtils.NewBifrostBadRequestError("bedrock passthrough only forwards POST InvokeAgent, Retrieve and ApplyGuardrail, and GET ListInferenceProfiles, GetInferenceProfile, ListFoundationModels and GetFoundationModel requests")
 	}
 
 	config := key.BedrockKeyConfig
