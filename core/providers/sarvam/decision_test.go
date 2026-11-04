@@ -12,7 +12,6 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/sarvam"
-	"github.com/maximhq/bifrost/core/providers/typesafe"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
@@ -40,25 +39,34 @@ func sarvamTextPart(text string) schemas.DecisionInputPart {
 	return schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText(text)}
 }
 
-// An input Sarvam can read sends exactly Typesafe's body, so questions and
-// state validate as they do there, whatever shape the input takes.
-func TestToSarvamDecisionRequest_MatchesTypesafe(t *testing.T) {
+// An input Sarvam can read sends the state and questions Sarvam validates: the
+// input as state, each question keyed by name with its native type, and no
+// assets map.
+func TestToSarvamDecisionRequest_WireBody(t *testing.T) {
 	t.Parallel()
-	for name, input := range map[string]schemas.DecisionInput{
-		"text":       {Text: schemas.Ptr("The sky is blue.")},
-		"structured": {Structured: map[string]any{"ticket": "A-4021"}},
-		"messages":   {Messages: []schemas.DecisionInputMessage{sarvamUserMessage(sarvamTextPart("hi"))}},
+	for name, tc := range map[string]struct {
+		input     schemas.DecisionInput
+		wantState string
+	}{
+		"text":       {input: schemas.DecisionInput{Text: schemas.Ptr("The sky is blue.")}, wantState: `"The sky is blue."`},
+		"structured": {input: schemas.DecisionInput{Structured: map[string]any{"ticket": "A-4021"}}, wantState: `{"ticket":"A-4021"}`},
+		"messages": {
+			input:     schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{sarvamUserMessage(sarvamTextPart("hi"))}},
+			wantState: `[{"role":"user","content":[{"type":"input_text","text":"hi"}]}]`,
+		},
 	} {
-		request := newSarvamDecisionRequest(input)
-		native, err := sarvam.ToSarvamDecisionRequest(request)
-		require.NoError(t, err, name)
-		got, err := providerUtils.MarshalProviderRequest(native)
-		require.NoError(t, err, name)
-		typesafeNative, err := typesafe.ToTypesafeDecisionRequest(request)
-		require.NoError(t, err, name)
-		want, err := providerUtils.MarshalProviderRequest(typesafeNative)
-		require.NoError(t, err, name)
-		require.JSONEq(t, string(want), string(got), name)
+		t.Run(name, func(t *testing.T) {
+			native, err := sarvam.ToSarvamDecisionRequest(newSarvamDecisionRequest(tc.input))
+			require.NoError(t, err)
+			body, err := providerUtils.MarshalProviderRequest(native)
+			require.NoError(t, err)
+
+			var wire map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(body, &wire))
+			require.JSONEq(t, tc.wantState, string(wire["state"]), "state")
+			require.JSONEq(t, `{"is_frustrated":{"type":"noul","instructions":"Is the customer frustrated?"}}`, string(wire["questions"]), "questions")
+			require.NotContains(t, wire, "assets", "Sarvam reads no assets")
+		})
 	}
 }
 
@@ -74,7 +82,11 @@ func TestToSarvamDecisionRequest_Rejections(t *testing.T) {
 		"asset image": newSarvamDecisionRequest(schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{
 			sarvamUserMessage(sarvamTextPart("see r1"), schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("r1"), Data: schemas.DecisionData{File: []byte{0x89, 0x50}}}),
 		}}),
-		"empty input":  newSarvamDecisionRequest(schemas.DecisionInput{}),
+		"empty input": newSarvamDecisionRequest(schemas.DecisionInput{}),
+		"empty text":  newSarvamDecisionRequest(schemas.DecisionInput{Text: schemas.Ptr("   ")}),
+		"empty messages": newSarvamDecisionRequest(schemas.DecisionInput{
+			Messages: []schemas.DecisionInputMessage{},
+		}),
 		"box question": boxRequest,
 	} {
 		_, err := sarvam.ToSarvamDecisionRequest(request)
@@ -189,5 +201,8 @@ func TestSarvamDecision_PassesErrorsThrough(t *testing.T) {
 	require.Equal(t, schemas.Ptr(http.StatusUnprocessableEntity), bifrostErr.StatusCode)
 	require.NotNil(t, bifrostErr.Error)
 	require.Contains(t, bifrostErr.Error.Message, "Extra inputs are not permitted")
+	require.NotNil(t, bifrostErr.Error.Code)
+	require.Equal(t, "unprocessable_entity_error", *bifrostErr.Error.Code)
+	require.Equal(t, "questions.is_frustrated.noul.instruction", bifrostErr.Error.Param)
 	require.False(t, bifrostErr.IsBifrostError)
 }
