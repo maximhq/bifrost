@@ -31,12 +31,134 @@ func (p *Plugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostReq
 	return nil
 }
 
-// PreLLMHook is a pass-through (compression is added in a later task).
-func (p *Plugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
-	return req, nil, nil
+// Context keys under which PreLLMHook records its token estimates (int values)
+// so PostLLMHook can compare them with the provider-reported usage. They are
+// set only when the compressed request is actually sent.
+const (
+	ContextKeyEstimatedBefore schemas.BifrostContextKey = "prompt-compression-estimated-before"
+	ContextKeyEstimatedAfter  schemas.BifrostContextKey = "prompt-compression-estimated-after"
+)
+
+// The compressors are held in package vars so tests can substitute a panicking
+// one and verify the fail-open path.
+var (
+	compressChatFn      = compressChat
+	compressResponsesFn = compressResponses
+)
+
+// PreLLMHook compresses the conversation of Chat and Responses requests
+// (streaming included). It never returns an error or short-circuit: any
+// panic or skip condition yields the original request unchanged (fail-open).
+//
+// Core runs this hook on every attempt and fallback with the same request, so
+// the incoming request is never written to; a compressed request is a shallow
+// copy whose Input slice is the new one.
+func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (result *schemas.BifrostRequest, sc *schemas.LLMPluginShortCircuit, err error) {
+	result = req
+	defer func() {
+		if r := recover(); r != nil {
+			p.warn("promptcompression: recovered from panic, sending original request", "panic", r)
+			result, sc, err = req, nil, nil
+		}
+	}()
+	if req == nil {
+		return req, nil, nil
+	}
+	// Raw bodies bypass the structured Input entirely; editing it would be a no-op at best.
+	if raw, _ := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); raw {
+		return req, nil, nil
+	}
+
+	var before, after int
+	var out *schemas.BifrostRequest
+	switch req.RequestType {
+	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
+		cr := req.ChatRequest
+		if cr == nil || len(cr.Input) == 0 {
+			return req, nil, nil
+		}
+		// Automatic caching puts the breakpoint at the end of the prompt, so any edit
+		// would invalidate the provider cache.
+		if cr.Params != nil && cr.Params.CacheControl != nil {
+			return req, nil, nil
+		}
+		before = estimateChat(cr.Input)
+		if before == 0 {
+			return req, nil, nil
+		}
+		compressed := compressChatFn(cr.Input, p.s)
+		after = estimateChat(compressed)
+		cc := *cr
+		cc.Input = compressed
+		rc := *req
+		rc.ChatRequest = &cc
+		out = &rc
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+		rr := req.ResponsesRequest
+		if rr == nil || len(rr.Input) == 0 {
+			return req, nil, nil
+		}
+		before = estimateResponses(rr.Input)
+		if before == 0 {
+			return req, nil, nil
+		}
+		compressed := compressResponsesFn(rr.Input, p.s)
+		after = estimateResponses(compressed)
+		rc2 := *rr
+		rc2.Input = compressed
+		rc := *req
+		rc.ResponsesRequest = &rc2
+		out = &rc
+	default:
+		return req, nil, nil
+	}
+
+	if after >= before || (before-after)*100/before < p.s.MinSavingsPercent {
+		return req, nil, nil
+	}
+	ctx.SetValue(ContextKeyEstimatedBefore, before)
+	ctx.SetValue(ContextKeyEstimatedAfter, after)
+	return out, nil, nil
 }
 
-// PostLLMHook is a pass-through.
-func (p *Plugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+// PostLLMHook logs estimated versus provider-reported prompt tokens when
+// PreLLMHook compressed the request. The response and error pass through
+// untouched; a panic here is swallowed so logging can never break a request.
+func (p *Plugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	defer func() {
+		if r := recover(); r != nil {
+			p.warn("promptcompression: recovered from panic in PostLLMHook", "panic", r)
+		}
+	}()
+	before, ok1 := ctx.Value(ContextKeyEstimatedBefore).(int)
+	after, ok2 := ctx.Value(ContextKeyEstimatedAfter).(int)
+	if !ok1 || !ok2 {
+		return resp, bifrostErr, nil
+	}
+	var prompt, cached int
+	if resp != nil {
+		if cr := resp.ChatResponse; cr != nil && cr.Usage != nil {
+			prompt = cr.Usage.PromptTokens
+			if d := cr.Usage.PromptTokensDetails; d != nil {
+				cached = d.CachedReadTokens
+			}
+		} else if rr := resp.ResponsesResponse; rr != nil && rr.Usage != nil {
+			prompt = rr.Usage.InputTokens
+			if d := rr.Usage.InputTokensDetails; d != nil {
+				cached = d.CachedReadTokens
+			}
+		}
+	}
+	if p.logger != nil {
+		p.logger.Info("promptcompression: request compressed",
+			"estimated_before", before, "estimated_after", after,
+			"prompt_tokens", prompt, "cached_read_tokens", cached)
+	}
 	return resp, bifrostErr, nil
+}
+
+func (p *Plugin) warn(msg string, args ...any) {
+	if p.logger != nil {
+		p.logger.Warn(msg, args...)
+	}
 }
