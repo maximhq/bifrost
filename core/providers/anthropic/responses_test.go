@@ -14,6 +14,159 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+func TestWebSearchStreamQueryVariants(t *testing.T) {
+	for _, passthrough := range []bool{false, true} {
+		for _, prepopulated := range []bool{false, true} {
+			t.Run(fmt.Sprintf("passthrough=%t/prepopulated=%t", passthrough, prepopulated), func(t *testing.T) {
+				ctx := schemas.NewBifrostContext(nil, time.Time{})
+				if passthrough {
+					SetResponsesStreamPassthrough(ctx)
+				}
+				for i, query := range []string{"bbc top headline", "東京 \"news\"\nweather"} {
+					item := &schemas.ResponsesMessage{
+						ID: schemas.Ptr(fmt.Sprintf("srvtoolu_%d", i)), Type: schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{Action: &schemas.ResponsesToolMessageActionStruct{
+							ResponsesWebSearchToolCallAction: &schemas.ResponsesWebSearchToolCallAction{Type: "search", Query: &query},
+						}},
+					}
+					startItem := *item
+					if !prepopulated {
+						startItem.ResponsesToolMessage = nil
+					}
+					events := ToAnthropicResponsesStreamResponse(ctx, &schemas.BifrostResponsesStreamResponse{
+						Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, Item: &startItem, OutputIndex: &i,
+					})
+					events = append(events, ToAnthropicResponsesStreamResponse(ctx, &schemas.BifrostResponsesStreamResponse{
+						Type: schemas.ResponsesStreamResponseTypeOutputItemDone, Item: item, OutputIndex: &i,
+					})...)
+					var input strings.Builder
+					index, stops := -1, 0
+					for _, event := range events {
+						if stops != 0 {
+							t.Fatal("event emitted after search block closed")
+						}
+						switch event.Type {
+						case AnthropicStreamEventTypeContentBlockStart:
+							index = *event.Index
+							if string(event.ContentBlock.Input) != "{}" {
+								input.Write(event.ContentBlock.Input)
+							}
+						case AnthropicStreamEventTypeContentBlockDelta:
+							if *event.Index != index {
+								t.Fatal("delta index differs from start")
+							}
+							input.WriteString(*event.Delta.PartialJSON)
+						case AnthropicStreamEventTypeContentBlockStop:
+							if *event.Index != index {
+								t.Fatal("stop index differs from start")
+							}
+							stops++
+						}
+					}
+					var replay struct {
+						Query string `json:"query"`
+					}
+					if err := json.Unmarshal([]byte(input.String()), &replay); err != nil {
+						t.Fatalf("invalid or duplicated input %q: %v", input.String(), err)
+					}
+					if replay.Query != query || stops != 1 {
+						t.Fatalf("query=%q stops=%d, want %q and one stop", replay.Query, stops, query)
+					}
+				}
+			})
+		}
+	}
+}
+
+func BenchmarkWebSearchStreamQueryReplay(b *testing.B) {
+	for _, prepopulated := range []bool{false, true} {
+		b.Run(fmt.Sprintf("prepopulated=%t", prepopulated), func(b *testing.B) {
+			item := &schemas.ResponsesMessage{
+				ID: schemas.Ptr("srvtoolu_bench"), Type: schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{Action: &schemas.ResponsesToolMessageActionStruct{
+					ResponsesWebSearchToolCallAction: &schemas.ResponsesWebSearchToolCallAction{Type: "search", Query: schemas.Ptr("bbc top headline")},
+				}},
+			}
+			startItem := *item
+			if !prepopulated {
+				startItem.ResponsesToolMessage = nil
+			}
+			start := &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, Item: &startItem, OutputIndex: schemas.Ptr(0)}
+			done := &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemDone, Item: item, OutputIndex: schemas.Ptr(0)}
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx := schemas.NewBifrostContext(nil, time.Time{})
+				ToAnthropicResponsesStreamResponse(ctx, start)
+				ToAnthropicResponsesStreamResponse(ctx, done)
+			}
+		})
+	}
+}
+
+func BenchmarkAnthropicTextStreamQueryReplay(b *testing.B) {
+	ctx := schemas.NewBifrostContext(nil, time.Time{})
+	ToAnthropicResponsesStreamResponse(ctx, &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, OutputIndex: schemas.Ptr(0),
+		Item: &schemas.ResponsesMessage{ID: schemas.Ptr("msg_bench"), Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage)},
+	})
+	delta := &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, ItemID: schemas.Ptr("msg_bench"), OutputIndex: schemas.Ptr(0), Delta: schemas.Ptr("hello")}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		ToAnthropicResponsesStreamResponse(ctx, delta)
+	}
+}
+
+func TestWebSearchStreamQueryReplay(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, time.Time{})
+	state := AcquireAnthropicResponsesStreamState()
+	defer ReleaseAnthropicResponsesStreamState(state)
+	var input string
+	index := -1
+	seq := 0
+	for _, raw := range webSearchStreamEvents {
+		var chunk AnthropicStreamEvent
+		if err := sonic.Unmarshal([]byte(raw), &chunk); err != nil {
+			t.Fatal(err)
+		}
+		responses, bErr, _ := chunk.ToBifrostResponsesStream(ctx, seq, state)
+		if bErr != nil {
+			t.Fatal(bErr)
+		}
+		for _, response := range responses {
+			seq++
+			for _, event := range ToAnthropicResponsesStreamResponse(ctx, response) {
+				if event.ContentBlock != nil && event.ContentBlock.Type == AnthropicContentBlockTypeServerToolUse {
+					index = *event.Index
+					if string(event.ContentBlock.Input) != "{}" {
+						input = string(event.ContentBlock.Input)
+					}
+				}
+				if event.Index == nil || *event.Index != index {
+					continue
+				}
+				if event.Delta != nil && event.Delta.Type == AnthropicStreamDeltaTypeInputJSON && event.Delta.PartialJSON != nil {
+					input += *event.Delta.PartialJSON
+				}
+				if event.Type == AnthropicStreamEventTypeContentBlockStop {
+					var replay struct {
+						Query string `json:"query"`
+					}
+					if err := json.Unmarshal([]byte(input), &replay); err != nil {
+						t.Fatalf("web_search replay input = %q; want JSON with query %q: %v", input, "bbc top headline", err)
+					}
+					if replay.Query != "bbc top headline" {
+						t.Fatalf("replay query = %q, want %q", replay.Query, "bbc top headline")
+					}
+				}
+			}
+		}
+	}
+	if index == -1 {
+		t.Fatal("missing web_search server_tool_use")
+	}
+}
+
 // makeResponsesTextFormat returns a minimal json_schema text config for the
 // Responses API structured-output request path.
 func makeResponsesTextFormat(schemaName string) *schemas.ResponsesTextConfig {
@@ -1691,8 +1844,8 @@ func TestConvertBifrostToolsToAnthropicTranslatesProgrammaticCaller(t *testing.T
 		}
 	})
 
-	// Beside web search the interpreter is never sent (Anthropic injects its own code
-	// execution), so its legacy version must not block the request.
+	// Beside an auto-injecting web search version the interpreter is never sent (Anthropic
+	// injects its own code execution), so its legacy version must not block the request.
 	legacyInterpreter := func(callers ...string) schemas.ResponsesTool {
 		return schemas.ResponsesTool{
 			Type:                         schemas.ResponsesToolTypeCodeInterpreter,
@@ -1700,7 +1853,10 @@ func TestConvertBifrostToolsToAnthropicTranslatesProgrammaticCaller(t *testing.T
 			ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{Version: schemas.Ptr("code_execution_20250522")},
 		}
 	}
-	webSearch := schemas.ResponsesTool{Type: schemas.ResponsesToolTypeWebSearch}
+	webSearch := schemas.ResponsesTool{
+		Type:                   schemas.ResponsesToolTypeWebSearch,
+		ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{Version: schemas.Ptr(string(AnthropicToolTypeWebSearch20260209))},
+	}
 
 	t.Run("a dropped legacy interpreter with a programmatic caller does not block the request", func(t *testing.T) {
 		tools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{webSearch, legacyInterpreter("programmatic")}, schemas.Anthropic)
@@ -3861,5 +4017,109 @@ func BenchmarkToAnthropicResponsesRequest_TextMessages(b *testing.B) {
 				}
 			}
 		})
+	}
+}
+
+func TestSearchToolVersionRoundTrip(t *testing.T) {
+	for _, version := range []AnthropicToolType{
+		AnthropicToolTypeWebSearch20250305, AnthropicToolTypeWebSearch20260209,
+		AnthropicToolTypeWebFetch20250910, AnthropicToolTypeWebFetch20260209,
+		AnthropicToolTypeWebFetch20260309, AnthropicToolTypeWebFetch20260318,
+	} {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%t", version, stream), func(t *testing.T) {
+				name := "web_search"
+				if strings.HasPrefix(string(version), "web_fetch_") {
+					name = "web_fetch"
+				}
+				request := &AnthropicMessageRequest{
+					Model: "claude-sonnet-4-6", MaxTokens: 32, Stream: &stream,
+					Tools: []AnthropicTool{{Type: &version, Name: name}},
+				}
+				neutral := request.ToBifrostResponsesRequest(nil)
+				neutral.Provider = schemas.Anthropic
+				out, err := ToAnthropicResponsesRequest(nil, neutral)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(out.Tools) != 1 || out.Tools[0].Type == nil {
+					t.Fatalf("tools = %+v", out.Tools)
+				}
+				if got := *out.Tools[0].Type; got != version {
+					t.Errorf("tool version = %s, want %s", got, version)
+				}
+			})
+		}
+	}
+}
+
+func BenchmarkSearchToolVersionConversion(b *testing.B) {
+	caps := schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-6")
+	b.Run("neutral", func(b *testing.B) {
+		tool := &schemas.ResponsesTool{Type: schemas.ResponsesToolTypeWebSearch}
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = convertBifrostToolToAnthropic(caps, tool, schemas.Anthropic, false)
+		}
+	})
+	b.Run("roundtrip", func(b *testing.B) {
+		tool := &AnthropicTool{Type: schemas.Ptr(AnthropicToolTypeWebSearch20250305), Name: "web_search"}
+		b.ReportAllocs()
+		for b.Loop() {
+			neutral := convertAnthropicToolToBifrost(tool)
+			_ = convertBifrostToolToAnthropic(caps, neutral, schemas.Anthropic, false)
+		}
+	})
+}
+
+func TestSearchToolVersionDefaultsAndOpenAIWire(t *testing.T) {
+	caps := schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-6")
+	for _, tool := range []schemas.ResponsesTool{
+		{Type: schemas.ResponsesToolTypeWebSearch},
+		{Type: schemas.ResponsesToolTypeWebSearch, ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{Version: schemas.Ptr("")}},
+		{Type: schemas.ResponsesToolTypeWebFetch},
+		{Type: schemas.ResponsesToolTypeWebFetch, ResponsesToolWebFetch: &schemas.ResponsesToolWebFetch{Version: schemas.Ptr("")}},
+	} {
+		got := convertBifrostToolToAnthropic(caps, &tool, schemas.Anthropic, false)
+		want := AnthropicToolTypeWebSearch20260209
+		if tool.Type == schemas.ResponsesToolTypeWebFetch {
+			want = AnthropicToolTypeWebFetch20260309
+		}
+		if got == nil || got.Type == nil || *got.Type != want {
+			t.Errorf("default %s = %+v, want %s", tool.Type, got, want)
+		}
+	}
+	tool := convertAnthropicToolToBifrost(&AnthropicTool{Type: schemas.Ptr(AnthropicToolTypeWebSearch20250305), Name: "web_search"})
+	// Persisting the neutral shape must retain the version, including SDK/Responses input.
+	encoded, err := json.Marshal(tool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored schemas.ResponsesTool
+	if err := json.Unmarshal(encoded, &restored); err != nil {
+		t.Fatal(err)
+	}
+	if restored.ResponsesToolWebSearch == nil || restored.ResponsesToolWebSearch.Version == nil || *restored.ResponsesToolWebSearch.Version != string(AnthropicToolTypeWebSearch20250305) {
+		t.Fatalf("version lost: %s", encoded)
+	}
+	request := &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-4o-mini", Input: makeSimpleInput("hello"), Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{restored}}}
+	for _, direct := range []bool{false, true} {
+		out := openai.ToOpenAIResponsesRequest(nil, request)
+		if direct {
+			out.Tools = request.Params.Tools
+		} // The serializer also accepts SDK-built requests directly.
+		body, err := json.Marshal(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(body), "web_search_version") {
+			t.Errorf("Anthropic version leaked to OpenAI: %s", body)
+		}
+		if !strings.Contains(string(body), `"type":"web_search"`) {
+			t.Errorf("web search dropped: %s", body)
+		}
+	}
+	if restored.ResponsesToolWebSearch.Version == nil {
+		t.Fatal("OpenAI conversion mutated the caller's tool")
 	}
 }

@@ -75,11 +75,7 @@ func (m *MCPManager) executeToolWithHooks(
 	// Populate top-level ClientName from the prefixed tool name so the gate can
 	// attribute short-circuit responses without depending on prefix parsing.
 	if request.ClientName == "" {
-		if toolName := request.GetToolName(); toolName != "" {
-			if idx := strings.IndexByte(toolName, '-'); idx > 0 {
-				request.ClientName = toolName[:idx]
-			}
-		}
+		request.ClientName = ToolClientName(request.GetToolName())
 	}
 
 	// A call named like a client's connect tool is marked on a context of its own
@@ -168,13 +164,16 @@ func (m *MCPManager) prepareToolExecution(ctx *schemas.BifrostContext, request *
 		return nil, nil, func() {}, nil
 	}
 
-	state, _ := m.GetClientForTool(ctx, toolName)
+	state, discovery := m.GetClientForTool(ctx, toolName)
 	if state == nil {
 		return nil, nil, nil, fmt.Errorf("tool '%s' is not available or not permitted", toolName)
 	}
 	clientName := state.ExecutionConfig.Name
 	if err := checkToolExecutionPermitted(ctx, state, toolName, m.logger); err != nil {
 		return nil, nil, nil, err
+	}
+	if !AppToolsAllowed(ctx) && !discovery.GetTools()[toolName].MCP.ModelVisible() {
+		return nil, nil, nil, fmt.Errorf("tool '%s' is not permitted (it is only callable from an MCP App)", toolName)
 	}
 	// NeedsReauth is the one hard gate left besides Disabled: the credential
 	// is confirmed permanently dead (see connectToMCPClient's typed
@@ -231,6 +230,8 @@ func (m *MCPManager) codeModeClientReachable(ctx *schemas.BifrostContext) bool {
 //  2. Client allow-list — request-context MCPContextKeyIncludeClients.
 //  3. Tool allow-list   — client-level ToolsToExecute (most restrictive).
 //  4. Tool narrowing    — request-context MCPContextKeyIncludeTools.
+//
+// The app-only rule is enforced in prepareToolExecution.
 //
 // A provider-injected tool (core's mcpvouch mark names it) skips 2-4.
 // The operator chose it in the provider config, and the caller never saw it in the

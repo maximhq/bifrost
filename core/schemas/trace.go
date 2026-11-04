@@ -1254,6 +1254,7 @@ const (
 	AttrBifrostRelayCost               = "bifrost.relay.cost" // USD charged for the call
 	AttrBifrostRelayBytesOut           = "bifrost.relay.bytes_out"
 	AttrBifrostRelayUpstreamDurationMs = "bifrost.relay.upstream.duration_ms" // time blocked on the upstream socket
+	AttrBifrostRelayDurationMs         = "bifrost.relay.duration_ms"          // the whole call, pre-hooks to the end of the reply
 
 	// RelayMethodLabelOther is the method label for a request method outside the set a relay
 	// route can name, so a relay that skips the route check cannot grow a metric's series.
@@ -1460,4 +1461,20 @@ func RelayMethodLabel(method string) string {
 		return strings.ToUpper(strings.TrimSpace(method))
 	}
 	return RelayMethodLabelOther
+}
+
+// RelaySpanDurationSeconds is a relay call's duration for the relay metrics: the whole call the
+// span records (AttrBifrostRelayDurationMs, which covers a call the pre-hooks refused), else the
+// span's own extent.
+func RelaySpanDurationSeconds(span *Span) float64 {
+	if span == nil {
+		return 0
+	}
+	if ms, ok := GetFloat64AttrOK(span.Attributes, AttrBifrostRelayDurationMs); ok && ms > 0 {
+		return ms / 1000
+	}
+	if !span.StartTime.IsZero() && !span.EndTime.IsZero() {
+		return span.EndTime.Sub(span.StartTime).Seconds()
+	}
+	return 0
 }

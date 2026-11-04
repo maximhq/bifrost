@@ -47244,7 +47244,7 @@
                   },
                   "per_user_discovery": {
                     "type": "boolean",
-                    "description": "Per-user auth types only, and not for openapi clients. Omitted\npreserves the stored value. Turning it on deletes the admin credential\nand the discovery the client keeps; each caller's tools, prompts and\nresources are then discovered with their own credential. Turning it\noff deletes every caller's discovery: a `per_user_headers` or\n`token_exchange` client goes back to pending_verification, and a\n`per_user_oauth` client needs its admin credential again through\nPOST /api/mcp/client/{id}/reauthorize.\nWhile it is on, POST /api/mcp/client/{id}/refresh-tools and\nPOST /api/mcp/client/{id}/reauthorize return 400, as do\nPOST /api/mcp/client/{id}/verify-headers and\nPOST /api/mcp/client/{id}/verify-exchange on a verified client.\n"
+                    "description": "Per-user auth types only, and not for openapi clients. Omitted\npreserves the stored value. Turning it on deletes the admin credential\nand the discovery the client keeps; each caller's tools, prompts and\nresources are then discovered with their own credential. Turning it\noff deletes every caller's discovery, and the client goes back to\npending_verification until an admin verifies it again: through\nPOST /api/mcp/client/{id}/verify-headers, verify-exchange, or, for\n`per_user_oauth`, initiate-verification or reauthorize, which sign the\nadmin in on the client's existing OAuth registration so callers keep\ntheir sign-ins. For a provider that no longer recognises that\nregistration, reregister registers a new OAuth client first, which\nneeds the OAuth config's registration_url and a provider that accepts\nthe registration (otherwise it answers 400 and changes nothing), and\nevery caller then signs in again. While a client declared in\nconfig.json has not completed its first sign-in, reauthorize and\nreregister answer 400 for it, and initiate-verification runs that\nfirst sign-in.\nWhile it is on, POST /api/mcp/client/{id}/refresh-tools and\nPOST /api/mcp/client/{id}/reauthorize return 400, as do\nPOST /api/mcp/client/{id}/verify-headers and\nPOST /api/mcp/client/{id}/verify-exchange on a verified client.\n"
                   },
                   "token_exchange": {
                     "type": "object",
@@ -47719,7 +47719,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPGateway:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Initiate verification for a pending MCP client",
-        "description": "Starts the one-time admin OAuth authorization for an MCP client sitting\nin pending_verification state (declared via config.json with auth_type\n\"oauth\" or \"per_user_oauth\"). Runs OAuth metadata discovery (RFC 8414)\nand dynamic client registration (RFC 7591) against the client's\nconnection_string when the declared oauth_config omits those fields,\ncreates a fresh OAuth flow, and returns the authorization URL.\n\nComplete the flow like a create-time OAuth flow: open authorize_url in a\nbrowser, poll status_url until \"authorized\", then POST complete_url.\nSafe to call again if a previous attempt expired or was abandoned — each\ncall starts a fresh flow.\n",
+        "description": "Starts the one-time admin OAuth authorization for an MCP client sitting\nin pending_verification state (declared via config.json with auth_type\n\"oauth\" or \"per_user_oauth\"). Runs OAuth metadata discovery (RFC 8414)\nand dynamic client registration (RFC 7591) against the client's\nconnection_string when the declared oauth_config omits those fields,\ncreates a fresh OAuth flow, and returns the authorization URL.\n\nA per_user_oauth client back in pending_verification because\nper_user_discovery was turned off keeps its OAuth registration: the call\nopens an admin sign-in on that registration instead, so callers keep\ntheir sign-ins, and the response carries a flow_id that status_url\nalready includes. POST /api/mcp/client/{id}/reauthorize does the same\nfor such a client. If its provider no longer recognises that\nregistration, POST /api/mcp/client/{id}/reregister registers a new\nclient first; every caller then signs in again.\n\nComplete the flow like a create-time OAuth flow: open authorize_url in a\nbrowser, poll status_url until \"authorized\", then POST complete_url.\nSafe to call again if a previous attempt expired or was abandoned — each\ncall starts a fresh flow.\n",
         "tags": [
           "MCP",
           "OAuth"
@@ -47794,7 +47794,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPGateway:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Reauthorize an MCP client",
-        "description": "Redoes the OAuth consent flow for an already-authorized OAuth-based MCP\nclient, without delete-and-recreate. The flow always runs against the\ncredentials currently stored on the client's OAuth config.\n\n- auth_type \"oauth\": serves both a standalone admin-triggered reauth\n  (e.g. the upstream provider revoked the credential and the client sits\n  in needs_reauth) and the follow-up to rotating oauth_config via\n  PUT /api/mcp/client/{id} (which cascades every bound token to\n  needs_reauth).\n- auth_type \"per_user_oauth\": repairs the retained admin discovery\n  credential used for periodic tool-list refresh. Only allowed while\n  that credential actually sits in needs_reauth (409 otherwise);\n  end-user credentials are untouched either way.\n\nComplete the returned flow like any other admin OAuth flow: open\nauthorize_url in a browser, poll status_url until \"authorized\", then\nPOST complete_url.\n",
+        "description": "Redoes the OAuth consent flow for an already-authorized OAuth-based MCP\nclient, without delete-and-recreate. The flow always runs against the\ncredentials currently stored on the client's OAuth config.\n\n- auth_type \"oauth\": serves both a standalone admin-triggered reauth\n  (e.g. the upstream provider revoked the credential and the client sits\n  in needs_reauth) and the follow-up to rotating oauth_config via\n  PUT /api/mcp/client/{id} (which cascades every bound token to\n  needs_reauth).\n- auth_type \"per_user_oauth\": refreshes the retained admin discovery\n  credential used for periodic tool-list refresh, whether or not it\n  needs repair; end-user credentials are untouched either way. It also\n  verifies a client back in pending_verification because\n  per_user_discovery was turned off, the same way\n  POST /api/mcp/client/{id}/initiate-verification does: the admin signs\n  in on the client's existing OAuth registration.\n\nA client still in its first sign-in (declared in config.json and not\nyet verified) gets 400: use initiate-verification instead.\n\nComplete the returned flow like any other admin OAuth flow: open\nauthorize_url in a browser, poll status_url until \"authorized\", then\nPOST complete_url.\n",
         "tags": [
           "MCP",
           "OAuth"
@@ -47886,7 +47886,7 @@
       "post": {
         "operationId": "reregisterMCPClient",
         "summary": "Reauthorize an MCP client against a newly registered OAuth client",
-        "description": "Registers a replacement OAuth client (RFC 7591 Dynamic Client\nRegistration) at the config's registration_url, writes it over the\nstored credentials, and then runs the same consent flow\nPOST /api/mcp/client/{id}/reauthorize runs, against the new client.\n\nThis exists for a provider that no longer recognises the client_id it\nissued, which is common with Dynamic Client Registration because the\nprovider's client registry is often in memory and does not survive a\nrestart. Once that happens the stored client_id is rejected at the token\nendpoint on every refresh and at the authorize endpoint on every\nreauthorization, so plain reauthorize cannot recover the connection.\n\nReplacing the client_id marks every credential stored under the OAuth\nconfig needs_reauth and stops using it, since none of them can be\nrefreshed against a client the provider no longer associates them\nwith. It does not revoke access tokens the provider already issued\n(Bifrost never calls the provider's revocation endpoint), so those can\nstay valid at the provider until they expire. For auth_type\n\"per_user_oauth\" that includes every end-user credential, not just the\nretained admin one, and each user must authenticate again. Plain\nreauthorize leaves end-user credentials untouched; this endpoint does\nnot.\n\nComplete the returned flow exactly like reauthorize's: open\nauthorize_url in a browser, poll status_url until \"authorized\", then\nPOST complete_url.\n",
+        "description": "Registers a replacement OAuth client (RFC 7591 Dynamic Client\nRegistration) at the config's registration_url, writes it over the\nstored credentials, and then runs the same consent flow\nPOST /api/mcp/client/{id}/reauthorize runs, against the new client.\n\nThis exists for a provider that no longer recognises the client_id it\nissued, which is common with Dynamic Client Registration because the\nprovider's client registry is often in memory and does not survive a\nrestart. Once that happens the stored client_id is rejected at the token\nendpoint on every refresh and at the authorize endpoint on every\nreauthorization, so plain reauthorize cannot recover the connection.\n\nReplacing the client_id marks every credential stored under the OAuth\nconfig needs_reauth and stops using it, since none of them can be\nrefreshed against a client the provider no longer associates them\nwith. It does not revoke access tokens the provider already issued\n(Bifrost never calls the provider's revocation endpoint), so those can\nstay valid at the provider until they expire. For auth_type\n\"per_user_oauth\" that includes every end-user credential, not just the\nretained admin one, and each user must authenticate again. Plain\nreauthorize leaves end-user credentials untouched; this endpoint does\nnot.\n\nA per_user_oauth client back in pending_verification because\nper_user_discovery was turned off can be reregistered too, for when its\nprovider no longer recognises the client it kept: completing the flow\nverifies it. A client still in its first sign-in (declared in\nconfig.json and not yet verified) gets 400: use initiate-verification\ninstead.\n\nComplete the returned flow exactly like reauthorize's: open\nauthorize_url in a browser, poll status_url until \"authorized\", then\nPOST complete_url.\n",
         "tags": [
           "MCP",
           "OAuth"
@@ -111373,7 +111373,7 @@
             }
           },
           {
-            "name": "statuses",
+            "name": "status",
             "in": "query",
             "description": "Statuses to filter by (`success`, `error`, `cancelled`). Accepts repeated parameters or comma-separated values.",
             "schema": {
@@ -111498,6 +111498,46 @@
             "name": "job_id",
             "in": "query",
             "description": "Exact upstream job ID.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "query",
+            "description": "Exact session ID resolved at ingress (x-bf-session-id), as on /api/logs.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "min_latency",
+            "in": "query",
+            "description": "Minimum latency in milliseconds.",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "max_latency",
+            "in": "query",
+            "description": "Maximum latency in milliseconds.",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "description": "Window resolved on the server, one of 1h, 6h, 24h, 7d, 30d, today, this_week, this_month; any other value is refused with 400. Wins over start_time and end_time, as on /api/logs.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone the calendar periods (today, this_week, this_month) are resolved in.",
             "schema": {
               "type": "string"
             }
@@ -111845,7 +111885,7 @@
             }
           },
           {
-            "name": "statuses",
+            "name": "status",
             "in": "query",
             "description": "Statuses to filter by (`success`, `error`, `cancelled`). Accepts repeated parameters or comma-separated values.",
             "schema": {
@@ -111970,6 +112010,46 @@
             "name": "job_id",
             "in": "query",
             "description": "Exact upstream job ID.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "query",
+            "description": "Exact session ID resolved at ingress (x-bf-session-id), as on /api/logs.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "min_latency",
+            "in": "query",
+            "description": "Minimum latency in milliseconds.",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "max_latency",
+            "in": "query",
+            "description": "Maximum latency in milliseconds.",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "description": "Window resolved on the server, one of 1h, 6h, 24h, 7d, 30d, today, this_week, this_month; any other value is refused with 400. Wins over start_time and end_time, as on /api/logs.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone the calendar periods (today, this_week, this_month) are resolved in.",
             "schema": {
               "type": "string"
             }
@@ -112183,7 +112263,7 @@
             }
           },
           {
-            "name": "statuses",
+            "name": "status",
             "in": "query",
             "description": "Statuses to filter by (`success`, `error`, `cancelled`). Accepts repeated parameters or comma-separated values.",
             "schema": {
@@ -112313,6 +112393,46 @@
             }
           },
           {
+            "name": "session_id",
+            "in": "query",
+            "description": "Exact session ID resolved at ingress (x-bf-session-id), as on /api/logs.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "min_latency",
+            "in": "query",
+            "description": "Minimum latency in milliseconds.",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "max_latency",
+            "in": "query",
+            "description": "Maximum latency in milliseconds.",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "description": "Window resolved on the server, one of 1h, 6h, 24h, 7d, 30d, today, this_week, this_month; any other value is refused with 400. Wins over start_time and end_time, as on /api/logs.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone the calendar periods (today, this_week, this_month) are resolved in.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "search",
             "in": "query",
             "description": "Free-text match on the path, matched route, model and request ID. Metadata columns only, never bodies.",
@@ -112321,13 +112441,23 @@
             }
           },
           {
-            "name": "bucket_size_seconds",
+            "name": "bucket_size",
             "in": "query",
-            "description": "Width of each bucket in seconds.",
+            "description": "Width of each bucket in seconds. Omitted, the width follows the window as on /api/logs/histogram. Between 60 and 2678400; below an hour it must divide 3600, otherwise it must be a whole number of hours, and the window may not need more than 5000 buckets.",
             "schema": {
               "type": "integer",
-              "minimum": 1,
-              "default": 3600
+              "minimum": 60,
+              "maximum": 2678400
+            }
+          },
+          {
+            "name": "bucket_size_seconds",
+            "in": "query",
+            "description": "Alias of bucket_size, kept for earlier clients.",
+            "schema": {
+              "type": "integer",
+              "minimum": 60,
+              "maximum": 2678400
             }
           }
         ],
@@ -112432,7 +112562,7 @@
             }
           },
           {
-            "name": "statuses",
+            "name": "status",
             "in": "query",
             "description": "Statuses to filter by (`success`, `error`, `cancelled`). Accepts repeated parameters or comma-separated values.",
             "schema": {
@@ -146672,6 +146802,10 @@
               "type": "string"
             }
           },
+          "session_id": {
+            "type": "string",
+            "description": "Session identity resolved at ingress (x-bf-session-id), as on LLM and MCP log rows."
+          },
           "user_agent": {
             "type": "string",
             "description": "Raw HTTP `User-Agent` of the calling client."
@@ -146820,13 +146954,18 @@
             "type": "integer",
             "format": "int64"
           },
+          "cancelled_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Calls the caller hung up on, answered with 499, or whose own deadline expired."
+          },
           "success_rate": {
             "type": "number",
-            "description": "Percentage of requests that succeeded."
+            "description": "Percentage of finished calls (success, error, cancelled) that succeeded, as on /api/logs/stats; calls still processing are left out."
           },
           "average_latency": {
             "type": "number",
-            "description": "Milliseconds."
+            "description": "Milliseconds, over finished calls."
           },
           "total_cost": {
             "type": "number"

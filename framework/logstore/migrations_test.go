@@ -675,6 +675,11 @@ func TestPerformanceIndexesCoverCorrelationIDs(t *testing.T) {
 	assert.Equal(t, "logs", tables["idx_logs_agent_correlation_id"])
 	assert.Equal(t, "mcp_tool_logs", tables["idx_mcp_logs_session_id"])
 	assert.Equal(t, "mcp_tool_logs", tables["idx_mcp_logs_agent_correlation_id"])
+	// relay_logs_add_session_id adds only the column on Postgres, so the background builder must
+	// carry the index or an upgraded deployment filters relay rows by session unindexed.
+	assert.Equal(t, "relay_logs", tables["idx_relay_logs_session_id"])
+	assert.Equal(t, "relay_logs", tables["idx_relay_logs_parent_request_id"])
+	assert.Equal(t, "relay_logs", tables["idx_relay_logs_agent_correlation_id"])
 }
 
 // TestMigrationAddMCPGovernanceSnapshots verifies the attribution columns are
@@ -1478,4 +1483,40 @@ func TestUserEmailColumnMigration_NonRollbackable(t *testing.T) {
 	var stored string
 	require.NoError(t, db.Model(&MCPToolLog{}).Where("id = ?", "mcp-1").Pluck("user_email", &stored).Error)
 	assert.Equal(t, "ada@example.com", stored)
+}
+
+// TestMigrationAddRelayLogCorrelationColumns pins that a relay_logs table from before the
+// correlation columns gains them and their indexes, keeps its rows, and survives a second run.
+func TestMigrationAddRelayLogCorrelationColumns(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("CREATE TABLE relay_logs (id TEXT PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("INSERT INTO relay_logs (id) VALUES (?)", "relay-existing").Error)
+
+	ctx := context.Background()
+	require.NoError(t, migrationAddRelayLogCorrelationColumns(ctx, db, testLogger{}))
+	require.NoError(t, migrationAddRelayLogCorrelationColumns(ctx, db, testLogger{}), "the migration is idempotent")
+	for field, index := range map[string]string{"ParentRequestID": "idx_relay_logs_parent_request_id", "AgentCorrelationID": "idx_relay_logs_agent_correlation_id"} {
+		require.True(t, db.Migrator().HasColumn(&RelayLog{}, field), "missing column for %s", field)
+		require.True(t, db.Migrator().HasIndex(&RelayLog{}, index), "missing index %s", index)
+	}
+	var count int64
+	require.NoError(t, db.Table("relay_logs").Count(&count).Error)
+	require.Equal(t, int64(1), count)
+}
+
+// TestMigrationAddRelayLogLargePayloadResponse pins that a relay_logs table from before the column
+// gains is_large_payload_response, keeps its rows, and survives a second run.
+func TestMigrationAddRelayLogLargePayloadResponse(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("CREATE TABLE relay_logs (id TEXT PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("INSERT INTO relay_logs (id) VALUES (?)", "relay-existing").Error)
+	ctx := context.Background()
+	require.NoError(t, migrationAddRelayLogLargePayloadResponse(ctx, db, testLogger{}))
+	require.NoError(t, migrationAddRelayLogLargePayloadResponse(ctx, db, testLogger{}), "the migration is idempotent")
+	require.True(t, db.Migrator().HasColumn(&RelayLog{}, "IsLargePayloadResponse"))
+	var count int64
+	require.NoError(t, db.Table("relay_logs").Count(&count).Error)
+	require.Equal(t, int64(1), count)
 }

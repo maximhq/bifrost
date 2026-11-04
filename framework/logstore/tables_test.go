@@ -672,3 +672,15 @@ func TestLogPassthroughObjectType(t *testing.T) {
 	require.Equal(t, "passthrough_stream", (&Log{Object: "chat_completion_stream", IsPassthrough: true, Stream: true}).PassthroughObjectType())
 	require.Equal(t, "passthrough", (&Log{Object: "passthrough", IsPassthrough: true}).PassthroughObjectType())
 }
+
+// TestSearchFiltersDecodesScalarMetadataFilter pins that metadata_filters still decodes in the
+// one-value-per-key form written before several values per key existed: a queued cost-recalc job
+// or an older API client sends {"env":"prod"}, which must read as one accepted value.
+func TestSearchFiltersDecodesScalarMetadataFilter(t *testing.T) {
+	var f SearchFilters
+	require.NoError(t, json.Unmarshal([]byte(`{"metadata_filters":{"env":"prod","region":["us","eu"],"empty":""}}`), &f))
+	require.Equal(t, map[string][]string{"env": {"prod"}, "region": {"us", "eu"}}, map[string][]string(f.MetadataFilters))
+
+	var bad SearchFilters
+	require.Error(t, json.Unmarshal([]byte(`{"metadata_filters":{"env":7}}`), &bad))
+}
