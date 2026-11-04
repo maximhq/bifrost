@@ -304842,6 +304842,132 @@
           }
         }
       ]
+    },
+    {
+      "name": "309. Runware long-running sync image tasks are polled to completion (runware sync polling)",
+      "description": "A Runware sync request holds the connection for up to 120 seconds. A task still running at that point continues as an async task, and the reply carries one data row per unfinished task with status \"processing\", the taskUUID that was sent, and no asset (https://runware.ai/docs/models-api/task-polling#long-running-sync-requests). Bifrost sent every image task sync and never read status, so that row became data[0] with no url, b64_json or id: a 200 with an empty image, no cost, and the taskUUID needed to fetch the result thrown away. Resending the task starts a second paid generation.\n\nThe fix (core/providers/runware handleImageInference) polls the same taskUUID with taskType getResponse every 2s, bounded by the provider request timeout, and returns the complete result set it reports. Every image route on the provider shares that path: /v1/images/generations and every /v1/images/edits task type.\n\nOnly a real slow task reaches it, so the input is built in-row: a Topaz Wonder 3.5 3x upscale of the scones fixture (~9.4MP, ~20s) feeds a 4x upscale (~150MP output), which measured 179s end to end for a 133MP output (sync window plus polling). The long-running row asserts it actually outlived the window - latency above 120s and a raw_response carrying status, which only getResponse replies include - so a faster upstream fails the row instead of passing it vacuously. /v1/images/generations has no model that reliably crosses 120s (GPT Image 2 at high quality and 4K lands at 111-113s), so it is covered by unit tests only.\n\nCost: about $0.70 per run (the 4x upscale is ~$0.60).",
+      "item": [
+        {
+          "name": "runware/topazlabs:wonder@3.5 sync polling setup - 3x upscale builds the large input",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"runware/topazlabs:wonder@3.5\",\n  \"images\": [\n    \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"\n  ],\n  \"type\": \"upscale\",\n  \"upscale_factor\": 3\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('setup upscale succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var d = (pm.response.json() || {}).data || [];",
+                  "pm.test('setup upscale returns an image url', function () {",
+                  "  pm.expect(d[0] && d[0].url, 'data: ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
+                  "});",
+                  "if (d[0] && d[0].url) { pm.collectionVariables.set('runwareSyncPollingInput', d[0].url); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "runware/topazlabs:wonder@3.5 upscale past Runware's 120s sync window is polled to completion via getResponse",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"runware/topazlabs:wonder@3.5\",\n  \"images\": [\n    \"{{runwareSyncPollingInput}}\"\n  ],\n  \"type\": \"upscale\",\n  \"upscale_factor\": 4\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('long-running upscale succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json() || {};",
+                  "var d = body.data || [];",
+                  "var ef = body.extra_fields || {};",
+                  "pm.test('the finished image comes back, not an empty processing row', function () {",
+                  "  pm.expect(d, 'data: ' + pm.response.text()).to.have.lengthOf(1);",
+                  "  pm.expect(d[0].url, 'empty image (processing row surfaced): ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(d[0].id, 'image id missing: ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
+                  "});",
+                  "pm.test('the polled task cost is reported', function () {",
+                  "  var cost = body.usage && body.usage.cost && body.usage.cost.total_cost;",
+                  "  pm.expect(cost, 'usage: ' + JSON.stringify(body.usage)).to.be.a('number').that.is.above(0);",
+                  "});",
+                  "pm.test('the task actually outlived the 120s sync window', function () {",
+                  "  pm.expect(ef.latency, 'latency ' + ef.latency + 'ms: task finished inside the sync window, so polling was not exercised').to.be.above(120000);",
+                  "});",
+                  "pm.test('the reply came from getResponse (only polled replies carry status)', function () {",
+                  "  var raw = ef.raw_response;",
+                  "  if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
+                  "  var row = raw && raw.data && raw.data[0];",
+                  "  pm.expect(row && row.status, 'raw_response: ' + JSON.stringify(raw)).to.equal('success');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

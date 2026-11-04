@@ -346,6 +346,40 @@ func TestToBifrostImageGenerationResponse_NoCost(t *testing.T) {
 	}
 }
 
+// A sync task still running at Runware's 120s cutoff comes back as a processing row with no asset;
+// it must surface as an error naming the task, never as an empty image.
+func TestToBifrostImageGenerationResponse_ProcessingRow(t *testing.T) {
+	resp := &RunwareResponse{
+		Data: []RunwareResult{
+			{TaskType: taskTypeUpscale, TaskUUID: "img-3", ImageURL: "https://x/1.jpg"},
+			{TaskType: taskTypeUpscale, TaskUUID: "img-3", Status: "processing"},
+		},
+	}
+	out, err := ToBifrostImageGenerationResponse(resp)
+	if err == nil {
+		t.Fatalf("expected an error for a processing row, got %+v", out)
+	}
+	if err.Error == nil || !strings.Contains(err.Error.Message, "img-3") {
+		t.Fatalf("error should name the processing task, got %+v", err.Error)
+	}
+}
+
+// The common case: a sync task that finished inside Runware's window, with no row left processing.
+func BenchmarkToBifrostImageGenerationResponse(b *testing.B) {
+	resp := &RunwareResponse{
+		Data: []RunwareResult{
+			{TaskType: taskTypeUpscale, TaskUUID: "img-4", ImageURL: "https://x/1.jpg", Cost: 0.04},
+			{TaskType: taskTypeUpscale, TaskUUID: "img-4", ImageURL: "https://x/2.jpg", Cost: 0.04},
+		},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := ToBifrostImageGenerationResponse(resp); err != nil {
+			b.Fatal(err.Error.Message)
+		}
+	}
+}
+
 // type=vectorize drives the raster-to-SVG task on the edit path, and the prompt-to-SVG task on the
 // generation path, where the models take a prompt and no input image.
 func TestToRunwareVectorize(t *testing.T) {
