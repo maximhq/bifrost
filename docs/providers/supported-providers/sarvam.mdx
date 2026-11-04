@@ -102,6 +102,10 @@ Sarvam's Token Factory v2 chat completions endpoint is OpenAI-compatible, so Bif
 | `gemma4` | 262,144 | Google Gemma 4; reasoning available, off by default |
 | `deepseekv4.1-flash-1017` | 1,048,576 | DeepSeek V4.1 Flash; reasoning model |
 
+<Note>
+**Breaking change.** `sarvam-30b` is not served by Token Factory v2; a request for it returns 404. Replace it with `sarvam-105b`.
+</Note>
+
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
@@ -112,7 +116,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 ```
 
 <Note>
-**Reasoning models.** `sarvam-105b`, `glm5.3`, `glm5.3-flash`, and `deepseekv4.1-flash-1017` reason by default; `gemma4` supports reasoning but leaves it off unless requested. Reasoning tokens count toward `max_tokens`; with a small budget the response can return empty `content` and `finish_reason: "length"`. Use at least 1024 output tokens for reasoning models. Set `reasoning_effort` to `low` or `high`; GLM models reject `max` (it is mapped to `xhigh` upstream).
+**Reasoning models.** `sarvam-105b`, `glm5.3`, `glm5.3-flash`, and `deepseekv4.1-flash-1017` reason by default; `gemma4` supports reasoning but leaves it off unless requested. Reasoning tokens count toward `max_tokens`; with a small budget the response can return empty `content` and `finish_reason: "length"`. Use at least 1024 output tokens for reasoning models. Set `reasoning_effort` to `low`, `high`, or `max`; GLM models reject `medium` and `xhigh`.
 </Note>
 
 ---
@@ -128,7 +132,7 @@ BifrostResponsesRequest
   → ToBifrostResponsesResponse()
 ```
 
-Same parameter support as Chat Completions with response format differences (output items instead of message content). Sarvam rejects `previous_response_id`, `conversation`, and `background: true`; use `reasoning.effort` of `low` or `high`.
+Same parameter support as Chat Completions with response format differences (output items instead of message content). Bifrost does not forward `previous_response_id`, `conversation`, or `background: true` on this path: the request is converted to Chat Completions, which has no equivalent, so they are dropped. Set `reasoning.effort` to `low`, `high`, or `max`.
 
 ---
 
@@ -142,7 +146,7 @@ Sarvam Prism is a decision model served by `POST /v2/systemone`. It returns cali
 | `choice` | `choice` | the option with the highest probability |
 | `score` | `score` | probability-weighted level index |
 
-Limits: 32,768 tokens per question (state + question + options), 2-255 options per `choice`, and 2-10 levels per `score`. Images, box questions, and streaming are not supported; `temperature`, `max_tokens`, and `stream` are refused. Each request must finish within 60 seconds.
+Limits: 32,768 tokens per question (state + question + options), 2-255 options per `choice`, and 2-10 levels per `score`. Images and box questions are refused locally. Streaming is not supported: `stream`, `temperature`, and `max_tokens` are dropped by Bifrost, and Sarvam returns 422 for them if they are forwarded as extra params. Each request must finish within 60 seconds.
 
 ```bash
 curl -X POST http://localhost:8080/v1/decisions \
@@ -155,6 +159,10 @@ curl -X POST http://localhost:8080/v1/decisions \
     ]
   }'
 ```
+
+<Note>
+`sarvam-prism` appears in the model list, but it is not a chat model: a chat request for it fails upstream with `model_call_failed`. Do not add it to `blacklisted_models` to hide it, because that list gates key selection and `/v1/decisions` would then fail with `no keys found that support model`.
+</Note>
 
 ---
 
@@ -255,14 +263,8 @@ Bifrost applies the correct header per operation automatically.
 **Impact**: Use at least 1024 output tokens for `sarvam-105b`, `glm5.3`, `glm5.3-flash`, and `deepseekv4.1-flash-1017`, or set `reasoning_effort` to `low`.
 </Accordion>
 
-<Accordion title="Prism is a decision model, not a chat model">
-**Severity**: Low
-**Behavior**: `sarvam-prism` is served by `POST /v2/systemone` and returns probabilities, not text. It is reachable through `/v1/decisions`, not `/v1/chat/completions`; a chat request for it fails upstream.
-**Impact**: Use the Decisions route. To hide it from the chat model list, add `sarvam-prism` to the key's `blacklisted_models`.
-</Accordion>
-
 <Accordion title="Model-specific parameter limits">
 **Severity**: Low
-**Behavior**: `n > 1` is not supported. `stop` accepts at most 4 sequences on `sarvam-105b` and `glm5.3`. `logprobs` is rejected on `glm5.3`. GLM models reject `reasoning_effort: "max"`.
+**Behavior**: `n > 1` is not supported. `stop` accepts at most 4 sequences on `sarvam-105b` and `glm5.3`. `logprobs` is rejected on `glm5.3`. GLM models accept only `low`, `high`, and `max` for `reasoning_effort`.
 **Impact**: Requests outside these limits return an upstream 400 error.
 </Accordion>
