@@ -353,6 +353,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"relay_logs_add_session_id"}, run: migrationAddRelayLogSessionID},
 	{IDs: []string{"relay_logs_add_large_payload_response"}, run: migrationAddRelayLogLargePayloadResponse},
 	{IDs: []string{"relay_logs_add_correlation_columns"}, run: migrationAddRelayLogCorrelationColumns},
+	{IDs: []string{"logs_add_complexity_suggestion_tables"}, run: migrationAddComplexitySuggestionTables},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -6272,4 +6273,70 @@ func userEmailColumnMigration(ctx context.Context, logger schemas.Logger) *migra
 			return eachTable(tx, dropColumnIfExists)
 		},
 	}
+}
+
+// migrationAddComplexitySuggestionTables creates the storage for the
+// complexity router's phrase suggestions: the suggestions, the runs that wrote
+// them, and the retry list of captured request vectors whose delete failed.
+// See complexitysuggestions.go.
+func migrationAddComplexitySuggestionTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_complexity_suggestion_tables"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	// Transactional so a boot that dies part-way leaves none of the three. No
+	// boundDDLLockWait: this only creates tables that do not exist yet.
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).AutoMigrate(&ComplexitySuggestion{}, &ComplexitySuggestionRun{}, &ComplexityVectorDelete{})
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return rollbackComplexitySuggestionTables(tx.WithContext(ctx))
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// rollbackComplexitySuggestionTables drops the suggestion tables, but only
+// while complexity_suggestions and complexity_vector_deletes are empty. A
+// suggestion row carries the user's accept and dismiss decisions, which no
+// rerun can rebuild; a vector delete row is a deleted log whose vector is
+// still in the vector store, and dropping it would leave the vector there for
+// good. The runs table is history only and is not checked. On PostgreSQL both
+// are locked first, so nothing can write between the check and the DROP.
+func rollbackComplexitySuggestionTables(tx *gorm.DB) error {
+	guarded := []struct {
+		model  any
+		table  string
+		reason string
+	}{
+		{&ComplexitySuggestion{}, "complexity_suggestions", "complexity_suggestions holds accepted and dismissed suggestions that cannot be rebuilt from the logs"},
+		{&ComplexityVectorDelete{}, "complexity_vector_deletes", "complexity_vector_deletes lists deleted logs whose vectors are still in the vector store"},
+	}
+	for _, g := range guarded {
+		if !tx.Migrator().HasTable(g.model) {
+			continue
+		}
+		if tx.Dialector.Name() == "postgres" {
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			if err := tx.Exec("LOCK TABLE " + g.table + " IN ACCESS EXCLUSIVE MODE").Error; err != nil {
+				return fmt.Errorf("could not lock %s before rollback: %w", g.table, err)
+			}
+		}
+		var present []struct{ One int }
+		if err := tx.Model(g.model).Select("1 AS one").Limit(1).Find(&present).Error; err != nil {
+			return fmt.Errorf("could not check %s before rollback: %w", g.table, err)
+		}
+		if len(present) > 0 {
+			return fmt.Errorf("logs_add_complexity_suggestion_tables is non-rollbackable: %s; clear it first if the rollback is genuinely intended", g.reason)
+		}
+	}
+	return tx.Migrator().DropTable(&ComplexityVectorDelete{}, &ComplexitySuggestionRun{}, &ComplexitySuggestion{})
 }

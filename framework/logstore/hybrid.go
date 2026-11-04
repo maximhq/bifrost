@@ -2963,3 +2963,52 @@ func (h *HybridLogStore) DeleteRelayLogs(ctx context.Context, ids []string) erro
 func (h *HybridLogStore) DeleteRelayLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
 	return h.inner.DeleteRelayLogsBatch(ctx, cutoff, batchSize)
 }
+
+// Complexity suggestion methods - delegated directly. Suggestions, runs and
+// pending vector deletes hold no payloads, so they stay in the database.
+
+// UpsertComplexitySuggestions writes suggestions whole.
+func (h *HybridLogStore) UpsertComplexitySuggestions(ctx context.Context, suggestions []ComplexitySuggestion) error {
+	return h.inner.UpsertComplexitySuggestions(ctx, suggestions)
+}
+
+// ListComplexitySuggestions returns the selected suggestions.
+func (h *HybridLogStore) ListComplexitySuggestions(ctx context.Context, filter ComplexitySuggestionFilter) ([]ComplexitySuggestion, error) {
+	return h.inner.ListComplexitySuggestions(ctx, filter)
+}
+
+// DeleteComplexitySuggestions removes suggestions outright.
+func (h *HybridLogStore) DeleteComplexitySuggestions(ctx context.Context, ids []string) error {
+	return h.inner.DeleteComplexitySuggestions(ctx, ids)
+}
+
+// UpsertComplexitySuggestionRun writes a run whole.
+func (h *HybridLogStore) UpsertComplexitySuggestionRun(ctx context.Context, run *ComplexitySuggestionRun) error {
+	return h.inner.UpsertComplexitySuggestionRun(ctx, run)
+}
+
+// ListComplexitySuggestionRuns returns up to limit runs, newest first.
+func (h *HybridLogStore) ListComplexitySuggestionRuns(ctx context.Context, ids []string, limit int) ([]ComplexitySuggestionRun, error) {
+	return h.inner.ListComplexitySuggestionRuns(ctx, ids, limit)
+}
+
+// PruneComplexitySuggestionRuns keeps the newest keep runs.
+func (h *HybridLogStore) PruneComplexitySuggestionRuns(ctx context.Context, keep int) (int64, error) {
+	return h.inner.PruneComplexitySuggestionRuns(ctx, keep)
+}
+
+// AddComplexityVectorDeletes records deleted logs whose captured vector delete
+// failed.
+func (h *HybridLogStore) AddComplexityVectorDeletes(ctx context.Context, rows []ComplexityVectorDelete) error {
+	return h.inner.AddComplexityVectorDeletes(ctx, rows)
+}
+
+// ListComplexityVectorDeletes returns up to limit pending vector deletes.
+func (h *HybridLogStore) ListComplexityVectorDeletes(ctx context.Context, limit int) ([]ComplexityVectorDelete, error) {
+	return h.inner.ListComplexityVectorDeletes(ctx, limit)
+}
+
+// DeleteComplexityVectorDeletes removes the rows of logs whose vector is gone.
+func (h *HybridLogStore) DeleteComplexityVectorDeletes(ctx context.Context, logIDs []string) error {
+	return h.inner.DeleteComplexityVectorDeletes(ctx, logIDs)
+}
