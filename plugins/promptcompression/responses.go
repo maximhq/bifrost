@@ -41,19 +41,7 @@ func compressResponses(msgs []schemas.ResponsesMessage, s settings) []schemas.Re
 		if !trim && !s.Whitespace {
 			continue
 		}
-		f := func(text string) string {
-			if trim && estimateTokens(text) >= s.MinTokens {
-				// Keep the trim only if it saves bytes: the marker can
-				// outweigh a tiny cut.
-				if r, ok := trimMiddle(text, s.HeadLines, s.TailLines); ok && len(r) < len(text) {
-					text = r
-				}
-			}
-			if s.Whitespace {
-				text = normalizeWhitespace(text)
-			}
-			return text
-		}
+		f := textTransform(s, trim)
 		if m, changed := mapResponsesText(msgs[i], f); changed {
 			out[i] = m
 		}
@@ -103,11 +91,8 @@ func dedupeResponses(msgs, out []schemas.ResponsesMessage, start int, deduped []
 			newest[text] = m.ResponsesToolMessage.CallID
 			continue
 		}
-		if id == nil {
-			continue
-		}
-		stub := "[identical to the output of call " + *id + "]"
-		if len(stub) >= len(text) {
+		stub, ok := dedupeStub(id, text)
+		if !ok {
 			continue
 		}
 		tm := *m.ResponsesToolMessage

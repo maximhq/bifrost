@@ -272,3 +272,36 @@ func TestEstimateResponses(t *testing.T) {
 	}
 	require.Equal(t, 7, estimateResponses(msgs))
 }
+
+func TestResponsesAssistantMessageEndsTurn(t *testing.T) {
+	asstNilType := rmText(schemas.ResponsesInputMessageRoleAssistant, "thinking aloud")
+	asstNilType.Type = nil
+	msgs := []schemas.ResponsesMessage{
+		rmText(schemas.ResponsesInputMessageRoleSystem, "sys"),
+		rmCall("1"), rmOut("1", bigOutput(200)),
+		asstNilType, // turn 1 (Type nil still counts)
+		rmText(schemas.ResponsesInputMessageRoleUser, "more"),
+		rmText(schemas.ResponsesInputMessageRoleAssistant, "done"), // turn 2
+	}
+	out := runResp(t, msgs, defaults(t))
+	require.Contains(t, rmOutStr(out[2]), "tokens trimmed", "age 2 via assistant messages")
+}
+
+func TestResponsesUserSplitsCallsIntoTurns(t *testing.T) {
+	mk := func(split bool) []schemas.ResponsesMessage {
+		msgs := []schemas.ResponsesMessage{
+			rmText(schemas.ResponsesInputMessageRoleSystem, "sys"),
+			rmCall("1"), rmOut("1", bigOutput(200)),
+			rmCall("b"),
+		}
+		if split {
+			msgs = append(msgs, rmText(schemas.ResponsesInputMessageRoleUser, "hm"))
+		}
+		return append(msgs, rmCall("c"))
+	}
+	out := runResp(t, mk(true), defaults(t))
+	require.Contains(t, rmOutStr(out[2]), "tokens trimmed", "user between calls: two turns")
+	joined := mk(false)
+	out = runResp(t, joined, defaults(t))
+	require.Equal(t, rmOutStr(joined[2]), rmOutStr(out[2]), "adjacent calls: one turn")
+}
