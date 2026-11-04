@@ -31,6 +31,17 @@ type RelaysHandler struct {
 	// vkReloader refreshes the governance in-memory copy of every virtual key a relay delete
 	// took a grant from, as the Agent Gateway handler does for agent grants. Optional.
 	vkReloader VirtualKeyReloader
+	// redactedKeys resolves the virtual keys the filter data names, so a deleted key is dropped or
+	// labelled as the LLM logs filter data does; nil leaves the stored names as they are.
+	redactedKeys RedactedKeysManager
+}
+
+// SetRedactedKeysManager gives the Relay Logs filter data the same virtual-key resolution the LLM
+// logs filter data has (deleted keys hidden or labelled per hide_deleted_virtual_keys_in_filters).
+func (h *RelaysHandler) SetRedactedKeysManager(manager RedactedKeysManager) {
+	if h != nil {
+		h.redactedKeys = manager
+	}
 }
 
 // RelayManager owns relay mutations and the local runtime updates they require. Deployments may
@@ -470,10 +481,10 @@ func parseRelayLogFilters(ctx *fasthttp.RequestCtx) (logstore.RelayLogFilters, e
 	value := func(name string) string { return strings.TrimSpace(string(args.Peek(name))) }
 	values := func(name string) []string { return parseAgentHistoryMultiValue(args, name) }
 	f := logstore.RelayLogFilters{
-		EndpointNames: values("relay_names"), Methods: values("methods"), Statuses: values("statuses"), Kinds: values("kinds"),
+		EndpointNames: values("relay_names"), Methods: values("methods"), Statuses: values("status"), Kinds: values("kinds"),
 		VirtualKeyIDs: values("virtual_key_ids"), UserIDs: values("user_ids"), TeamIDs: values("team_ids"),
 		CustomerIDs: values("customer_ids"), BusinessUnitIDs: values("business_unit_ids"), ProjectIDs: values("project_ids"),
-		Apps: values("apps"), RequestID: value("request_id"), JobID: value("job_id"), Search: value("search"),
+		Apps: values("apps"), RequestID: value("request_id"), JobID: value("job_id"), SessionID: value("session_id"), Search: value("search"),
 	}
 	if raw := value("billable"); raw != "" {
 		b, err := strconv.ParseBool(raw)
@@ -491,7 +502,16 @@ func parseRelayLogFilters(ctx *fasthttp.RequestCtx) (logstore.RelayLogFilters, e
 			*target = &parsed
 		}
 	}
-	for name, target := range map[string]**float64{"min_cost": &f.MinCost, "max_cost": &f.MaxCost} {
+	// period wins over an explicit window, as on /api/logs. An unknown one is refused: ignoring it
+	// would read the call as one with no window at all.
+	if period := value("period"); period != "" {
+		start, end := ResolvePeriod(period, value("timezone"))
+		if start == nil {
+			return f, fmt.Errorf("invalid period: must be one of 1h, 6h, 24h, 7d, 30d, today, this_week, this_month")
+		}
+		f.StartTime, f.EndTime = start, end
+	}
+	for name, target := range map[string]**float64{"min_cost": &f.MinCost, "max_cost": &f.MaxCost, "min_latency": &f.MinLatency, "max_latency": &f.MaxLatency} {
 		if raw := value(name); raw != "" {
 			parsed, err := strconv.ParseFloat(raw, 64)
 			if err != nil {
@@ -603,7 +623,8 @@ func (h *RelaysHandler) logStats(ctx *fasthttp.RequestCtx) {
 	// /api/logs/stats does, so the metric strip can show the change against it. A window with
 	// no start and end has nothing to compare against, and a failed comparison degrades to none.
 	if compare := string(ctx.QueryArgs().Peek("compare_to_previous")); compare != "" {
-		if enabled, parseErr := strconv.ParseBool(compare); parseErr == nil && enabled && filters.StartTime != nil && filters.EndTime != nil && filters.EndTime.After(*filters.StartTime) {
+		// An exact request-id lookup has no window to compare, as hasComparableWindow rules for /api/logs.
+		if enabled, parseErr := strconv.ParseBool(compare); parseErr == nil && enabled && filters.RequestID == "" && filters.StartTime != nil && filters.EndTime != nil && filters.EndTime.After(*filters.StartTime) {
 			previous, prevErr := store.GetRelayLogStats(logCtx, previousRelayPeriodFilters(filters))
 			switch {
 			case prevErr != nil:
@@ -645,11 +666,17 @@ func (h *RelaysHandler) logHistogram(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
-	bucket := int64(3600)
-	if raw := string(ctx.QueryArgs().Peek("bucket_size_seconds")); raw != "" {
-		parsed, err := strconv.ParseInt(raw, 10, 64)
-		if err != nil || parsed <= 0 {
-			SendError(ctx, fasthttp.StatusBadRequest, "invalid bucket_size_seconds")
+	// The bucket follows the window, as on /api/logs/histogram; an explicit size (bucket_size, or
+	// bucket_size_seconds as this endpoint first named it) is validated the same way.
+	bucket := calculateBucketSize(filters.StartTime, filters.EndTime)
+	raw := string(ctx.QueryArgs().Peek("bucket_size"))
+	if raw == "" {
+		raw = string(ctx.QueryArgs().Peek("bucket_size_seconds"))
+	}
+	if raw != "" {
+		parsed, err := parseBucketSizeOverride(raw, filters.StartTime, filters.EndTime)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 			return
 		}
 		bucket = parsed
@@ -709,5 +736,38 @@ func (h *RelaysHandler) logFilterData(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "failed to load relay log filters")
 		return
 	}
+	result.VirtualKeys = h.resolveRelayVirtualKeyOptions(ctx, result.VirtualKeys)
 	SendJSON(ctx, result)
+}
+
+// resolveRelayVirtualKeyOptions treats the virtual keys the rows name as the LLM logs filter data
+// does: a key that no longer exists is dropped under hide_deleted_virtual_keys_in_filters, and
+// labelled "(deleted)" otherwise. Keys are resolved only when the rows named some, since an empty
+// id list would read every key in the deployment.
+func (h *RelaysHandler) resolveRelayVirtualKeyOptions(ctx *fasthttp.RequestCtx, options []logstore.RelayFilterOption) []logstore.RelayFilterOption {
+	if h.redactedKeys == nil || len(options) == 0 {
+		return options
+	}
+	ids := make([]string, len(options))
+	for i, option := range options {
+		ids[i] = option.ID
+	}
+	existing := make(map[string]struct{}, len(ids))
+	for _, key := range h.redactedKeys.GetAllRedactedVirtualKeys(ctx, ids) {
+		existing[key.ID] = struct{}{}
+	}
+	hideDeleted := h.config != nil && h.config.ClientConfig != nil && h.config.ClientConfig.HideDeletedVirtualKeysInFilters
+	resolved := make([]logstore.RelayFilterOption, 0, len(options))
+	for _, option := range options {
+		if _, ok := existing[option.ID]; ok {
+			resolved = append(resolved, option)
+			continue
+		}
+		if hideDeleted {
+			continue
+		}
+		option.Name += " (deleted)"
+		resolved = append(resolved, option)
+	}
+	return resolved
 }
