@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -296,4 +297,60 @@ func TestPostLLMHookStreamLogsOnceOnFinalChunk(t *testing.T) {
 	require.Len(t, lg.infos, 1)
 	require.Contains(t, lg.infos[0], "prompt_tokens=321")
 	require.Contains(t, lg.infos[0], "estimated_before=")
+}
+
+// benchHook runs PreLLMHook b.N times against one request and context. The
+// plugin never writes to the incoming request, so reuse is safe.
+func benchHook(b *testing.B, p *Plugin, req *schemas.BifrostRequest) {
+	b.Helper()
+	ctx := hookCtx()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, _, err := p.PreLLMHook(ctx, req); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func benchPlugin(b *testing.B) *Plugin {
+	b.Helper()
+	p, err := Init(nil, &capLogger{})
+	require.NoError(b, err)
+	return p.(*Plugin)
+}
+
+// BenchmarkPreLLMHookDisabledPath is the common-case cost: a request type the
+// plugin does not touch (embedding) must add no allocations.
+func BenchmarkPreLLMHookDisabledPath(b *testing.B) {
+	req := &schemas.BifrostRequest{RequestType: schemas.EmbeddingRequest}
+	benchHook(b, benchPlugin(b), req)
+}
+
+// BenchmarkPreLLMHookSmallChat is a short chat with no large tool outputs: the
+// compressor runs, finds too little to save and the original request is returned.
+func BenchmarkPreLLMHookSmallChat(b *testing.B) {
+	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{
+		Model: "m", Input: rounds("small")[:3]}}
+	benchHook(b, benchPlugin(b), req)
+}
+
+// BenchmarkPreLLMHookFixtureChat replays the recorded 12-round agent session in Chat shape.
+func BenchmarkPreLLMHookFixtureChat(b *testing.B) {
+	data, err := os.ReadFile("testdata/agent_session_chat.json")
+	require.NoError(b, err)
+	var msgs []schemas.ChatMessage
+	require.NoError(b, json.Unmarshal(data, &msgs))
+	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Model: "m", Input: msgs}}
+	benchHook(b, benchPlugin(b), req)
+}
+
+// BenchmarkPreLLMHookFixtureResponses is the Responses-shape counterpart.
+func BenchmarkPreLLMHookFixtureResponses(b *testing.B) {
+	data, err := os.ReadFile("testdata/agent_session_responses.json")
+	require.NoError(b, err)
+	var msgs []schemas.ResponsesMessage
+	require.NoError(b, json.Unmarshal(data, &msgs))
+	req := &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{Model: "m", Input: msgs}}
+	benchHook(b, benchPlugin(b), req)
 }
