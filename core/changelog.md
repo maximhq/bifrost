@@ -1,2 +1,8 @@
+- feat: Perplexity Agent API tools on the Responses API (sandbox, fetch_url, finance_search, people_search, extended web_search filters) with default ExtraParams passthrough for preset/max_steps (thanks [@hnoguchigr](https://github.com/hnoguchigr)!)
+- feat: Perplexity `perplexity/preset` model sentinel omits `model` from the wire so a `preset` selects Perplexity's own default model (thanks [@hnoguchigr](https://github.com/hnoguchigr)!)
+- fix: the generic OpenAI-compatible Responses tool filter keeps non-OpenAI tool types and fields for providers that support them, including custom providers backed by Perplexity (thanks [@hnoguchigr](https://github.com/hnoguchigr)!)
+- fix: Perplexity web_search maps the cross-provider `allowed_domains` / `blocked_domains` filters onto its native allowlist / denylist `search_domain_filter` and drops other providers' web_search fields; Responses passthrough of Perplexity-only ExtraParams no longer leaks into fallback providers (thanks [@hnoguchigr](https://github.com/hnoguchigr)!)
+- fix: preserve Perplexity Agent API `skill_loaded` output items verbatim (thanks [@hnoguchigr](https://github.com/hnoguchigr)!)
+- fix: Perplexity web_search keeps the Agent API's top-level `search_type` (`web` / `fast`) and no longer forwards Anthropic's `web_search_version` (thanks [@hnoguchigr](https://github.com/hnoguchigr)!)
 - fix: anthropic - Responses requests drop empty text blocks instead of forwarding them for a 400 (#9318) [@david-choi-querypie](https://github.com/david-choi-querypie)
 - fix: anthropic - preserve explicit web search and web fetch versions, and keep a declared code execution tool beside versions that do not auto-inject it (#9258) [@ykakade](https://github.com/ykakade)
