@@ -95,7 +95,6 @@
 		},
 		"actions": {
 			"edit": "Editar",
-			"viewDetails": "Ver detalhes",
 			"authorize": "Autorizar",
 			"reconnect": "Voltar a ligar",
 			"reauthorize": "Voltar a autorizar",
@@ -305,7 +304,8 @@
 		},
 		"sheet": {
 			"statePendingTokenExchange": "Este servidor precisa de uma verificação única: o Bifrost troca o seu token de identidade com sessão iniciada, testa a ligação e descobre ferramentas. Os autores das chamadas passam então a ter os seus próprios tokens de identidade trocados automaticamente em cada chamada de ferramenta.",
-			"statePendingPerUserOauth": "Este cliente foi declarado em config.json. É necessário um início de sessão de administrador para verificar a configuração OAuth e descobrir ferramentas; o Bifrost mantém-no em ficheiro para atualizar periodicamente a lista de ferramentas. Cada utilizador continua a autenticar-se individualmente quando usa este servidor.",
+			"statePendingPerUserOauth": "É necessário um início de sessão de administrador para verificar este servidor e descobrir as suas ferramentas. Cada utilizador continua a autenticar-se individualmente.",
+			"statePendingPerUserHeaders": "Verifique este servidor com valores de cabeçalho de exemplo para descobrir as suas ferramentas. Cada utilizador continua a fornecer os seus próprios cabeçalhos.",
 			"statePendingOauth": "Este cliente foi declarado em config.json e precisa de uma autorização OAuth única antes de poder ser usado.",
 			"stateNeedsReauthTokenExchange": "A credencial de administrador que o Bifrost mantém em ficheiro para atualizar a lista de ferramentas deste servidor precisa de reparação. As chamadas de ferramentas dos autores das chamadas não são afetadas. Use {{action}} no menu de ações do servidor para a corrigir.",
 			"stateNeedsReauthPerUser": "A credencial de administrador que o Bifrost mantém em ficheiro para atualizar a lista de ferramentas deste servidor precisa de reparação. As credenciais e chamadas de ferramentas dos utilizadores finais não são afetadas. Use {{action}} no menu de ações do servidor para a corrigir.",
@@ -332,7 +332,6 @@
 			"usingGlobal": "A usar a definição global",
 			"syncIntervalNotUsed": "Não utilizado: este servidor não guarda uma descoberta própria para sincronizar. As ferramentas, os prompts e os recursos de cada autor da chamada são descobertos quando se liga.",
 			"perUserDiscoveryOnWarning": "Ao guardar, são eliminadas a credencial de administrador e a descoberta que o Bifrost mantém para este servidor. As ferramentas, os prompts e os recursos de cada autor da chamada são descobertos com a sua própria credencial na próxima ligação.",
-			"perUserDiscoveryOffWarningSignIn": "Ao guardar, são eliminadas as ferramentas, os prompts e os recursos descobertos de todos os autores das chamadas. Use depois {{action}} para que o Bifrost os possa descobrir novamente com um início de sessão de administrador.",
 			"perUserDiscoveryOffWarningPending": "Ao guardar, são eliminadas as ferramentas, os prompts e os recursos descobertos de todos os autores das chamadas, e o servidor volta a ficar a aguardar verificação até que um administrador o verifique novamente.",
 			"toolExecutionTimeout": "Tempo limite de execução da ferramenta (segundos)",
 			"disableClient": "Desativar cliente",
@@ -486,6 +485,9 @@
 			"apiCredentials": "Credenciais da API",
 			"tlsVerification": "Verificação TLS",
 			"customCaCertificate": "Certificado de CA personalizado",
+			"tlsPlainHttpHint": "O URL deste servidor usa HTTP simples, por isso não há TLS envolvido.",
+			"showErrorDetails": "Mostrar detalhes",
+			"hideErrorDetails": "Ocultar detalhes",
 			"codeMode": "Modo de código",
 			"spec": "Especificação",
 			"calls": "Chama",
@@ -525,9 +527,8 @@
 			"openWorld": "Mundo aberto",
 			"failureLine": "{{stage}}: {{message}}",
 			"verificationRequired": "Verificação necessária",
-			"adminCredentialNeedsRepair": "A credencial de administrador que o Bifrost guarda para atualizar a lista de ferramentas deste servidor precisa de ser reparada. As credenciais próprias dos autores das chamadas e as chamadas de ferramentas não são afetadas.",
+			"adminCredentialNeedsRepair": "A credencial de administrador do Bifrost para este servidor tem de ser renovada. Os autores das chamadas não são afetados.",
 			"credentialsNeedReauth": "As credenciais desta ligação têm de ser autorizadas novamente.",
-			"unstableNote": "As chamadas de ferramentas continuam a ser tentadas normalmente; a próxima verificação é executada dentro de cerca de 10 segundos.",
 			"instanceState_one": "{{count}} instância: {{state}}.",
 			"instanceState_other": "{{count}} instâncias: {{state}}.",
 			"instanceStateFailure_one": "{{count}} instância: {{state}}, {{failure}}, {{timing}}.",
@@ -565,8 +566,8 @@
 			"hideSchemaAria": "Ocultar o esquema de {{name}}",
 			"parameters": "Parâmetros",
 			"returns": "Devolve",
-			"viewJsonSchema": "Ver esquema JSON",
-			"hideJsonSchema": "Ocultar esquema JSON"
+			"viewAsJson": "Ver como JSON",
+			"viewAsTable": "Ver como tabela"
 		},
 		"tls": {
 			"skipVerify": "Ignorar verificação TLS",

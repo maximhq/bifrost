@@ -95,7 +95,6 @@
 		},
 		"actions": {
 			"edit": "Edit",
-			"viewDetails": "View details",
 			"authorize": "Authorize",
 			"reconnect": "Reconnect",
 			"reauthorize": "Reauthorize",
@@ -305,7 +304,8 @@
 		},
 		"sheet": {
 			"statePendingTokenExchange": "This server needs a one-time verification: Bifrost exchanges your signed-in identity token, tests the connection, and discovers tools. Callers then have their own identity tokens exchanged automatically on every tool call.",
-			"statePendingPerUserOauth": "This client was declared in config.json. An admin sign-in is needed to verify the OAuth setup and discover tools; Bifrost keeps it on file to refresh the tool list periodically. Each user will still authenticate individually when they use this server.",
+			"statePendingPerUserOauth": "An admin sign-in is needed to verify this server and discover its tools. Each user still signs in individually.",
+			"statePendingPerUserHeaders": "Verify this server with sample header values to discover its tools. Each user still supplies their own headers.",
 			"statePendingOauth": "This client was declared in config.json and needs a one-time OAuth authorization before it can be used.",
 			"stateNeedsReauthTokenExchange": "The admin credential Bifrost keeps on file to refresh this server's tool list needs repair. Callers' tool calls are unaffected. Use {{action}} from the server's actions menu to fix it.",
 			"stateNeedsReauthPerUser": "The admin credential Bifrost keeps on file to refresh this server's tool list needs repair. End-user credentials and tool calls are unaffected. Use {{action}} from the server's actions menu to fix it.",
@@ -332,7 +332,6 @@
 			"usingGlobal": "Using global setting",
 			"syncIntervalNotUsed": "Not used: this server keeps no discovery of its own to sync. Each caller's tools, prompts and resources are discovered when they connect.",
 			"perUserDiscoveryOnWarning": "Saving deletes the admin credential and the discovery Bifrost keeps for this server. Each caller's tools, prompts and resources are discovered with their own credential when they next connect.",
-			"perUserDiscoveryOffWarningSignIn": "Saving deletes every caller's discovered tools, prompts and resources. Use {{action}} afterwards so Bifrost can discover them with an admin sign-in again.",
 			"perUserDiscoveryOffWarningPending": "Saving deletes every caller's discovered tools, prompts and resources, and the server goes back to pending verification until an admin verifies it again.",
 			"toolExecutionTimeout": "Tool Execution Timeout (seconds)",
 			"disableClient": "Disable Client",
@@ -486,6 +485,9 @@
 			"apiCredentials": "API credentials",
 			"tlsVerification": "TLS verification",
 			"customCaCertificate": "Custom CA certificate",
+			"tlsPlainHttpHint": "This server's URL uses plain HTTP, so no TLS is involved.",
+			"showErrorDetails": "Show details",
+			"hideErrorDetails": "Hide details",
 			"codeMode": "Code mode",
 			"spec": "Spec",
 			"calls": "Calls",
@@ -525,9 +527,8 @@
 			"openWorld": "Open world",
 			"failureLine": "{{stage}}: {{message}}",
 			"verificationRequired": "Verification required",
-			"adminCredentialNeedsRepair": "The admin credential Bifrost keeps to refresh this server's tool list needs repair. Callers' own credentials and tool calls are unaffected.",
+			"adminCredentialNeedsRepair": "Bifrost's admin credential for this server needs refreshing. Callers aren't affected.",
 			"credentialsNeedReauth": "This connection's credentials need to be re-authorized.",
-			"unstableNote": "Tool calls are still attempted normally; the next check runs within about 10 seconds.",
 			"instanceState_one": "{{count}} instance: {{state}}.",
 			"instanceState_other": "{{count}} instances: {{state}}.",
 			"instanceStateFailure_one": "{{count}} instance: {{state}}, {{failure}}, {{timing}}.",
@@ -565,8 +566,8 @@
 			"hideSchemaAria": "Hide the schema of {{name}}",
 			"parameters": "Parameters",
 			"returns": "Returns",
-			"viewJsonSchema": "View JSON schema",
-			"hideJsonSchema": "Hide JSON schema"
+			"viewAsJson": "View as JSON",
+			"viewAsTable": "View as table"
 		},
 		"tls": {
 			"skipVerify": "Skip TLS verification",

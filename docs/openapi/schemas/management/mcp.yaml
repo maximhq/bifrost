@@ -917,10 +917,19 @@ MCPClientUpdateRequest:
         preserves the stored value. Turning it on deletes the admin credential
         and the discovery the client keeps; each caller's tools, prompts and
         resources are then discovered with their own credential. Turning it
-        off deletes every caller's discovery: a `per_user_headers` or
-        `token_exchange` client goes back to pending_verification, and a
-        `per_user_oauth` client needs its admin credential again through
-        POST /api/mcp/client/{id}/reauthorize.
+        off deletes every caller's discovery, and the client goes back to
+        pending_verification until an admin verifies it again: through
+        POST /api/mcp/client/{id}/verify-headers, verify-exchange, or, for
+        `per_user_oauth`, initiate-verification or reauthorize, which sign the
+        admin in on the client's existing OAuth registration so callers keep
+        their sign-ins. For a provider that no longer recognises that
+        registration, reregister registers a new OAuth client first, which
+        needs the OAuth config's registration_url and a provider that accepts
+        the registration (otherwise it answers 400 and changes nothing), and
+        every caller then signs in again. While a client declared in
+        config.json has not completed its first sign-in, reauthorize and
+        reregister answer 400 for it, and initiate-verification runs that
+        first sign-in.
         While it is on, POST /api/mcp/client/{id}/refresh-tools and
         POST /api/mcp/client/{id}/reauthorize return 400, as do
         POST /api/mcp/client/{id}/verify-headers and

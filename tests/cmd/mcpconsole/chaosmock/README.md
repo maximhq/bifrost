@@ -189,6 +189,7 @@ trigger one either.
 | `POST /control/<s>/routes/remove` | `{"path":"/x","method":"GET"}` | remove routes for a path (every method when none is given) |
 | `POST /control/<s>/oauth/expire` | `{"identity":"..."}` / `{}` | that identity's live access tokens (everyone's when empty) now fail at the server |
 | `POST /control/<s>/oauth/revoke` | `{"identity":"..."}` / `{"token":"..."}` / `{}` | end whole grants: access tokens fail, refresh tokens get `invalid_grant` |
+| `POST /control/<s>/oauth/forget` | | drop every dynamically registered client and end its grants: authorize answers an unknown client, refresh gets `invalid_client`, access tokens fail; clients registered up front stay |
 | `POST /control/<s>/oauth/fail` | `{"fail":{"endpoint","grant_type","status","error","count"}}` | the next `count` matching authorization server requests fail |
 | `POST /control/<s>/llm/script` | `{"scenario":"k","turns":[...],"then":{...}}` | replace a scenario's turns and repeat turn, clearing its logged requests |
 | `POST /control/<s>/llm/append` | `{"scenario":"k","turns":[...]}` | add turns, keeping the log |

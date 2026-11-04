@@ -95,7 +95,6 @@
 		},
 		"actions": {
 			"edit": "编辑",
-			"viewDetails": "查看详情",
 			"authorize": "授权",
 			"reconnect": "重新连接",
 			"reauthorize": "重新授权",
@@ -305,7 +304,8 @@
 		},
 		"sheet": {
 			"statePendingTokenExchange": "此服务器需要一次性验证：Bifrost 交换你已登录身份的令牌、测试连接并发现工具。之后调用方会在每次工具调用时自动交换各自的身份令牌。",
-			"statePendingPerUserOauth": "此客户端在 config.json 中声明。需要管理员登录以验证 OAuth 配置并发现工具；Bifrost 会将其保留在档以定期刷新工具列表。每位用户使用此服务器时仍会单独鉴权。",
+			"statePendingPerUserOauth": "需要管理员登录以验证此服务器并发现其工具。每位用户仍会单独鉴权。",
+			"statePendingPerUserHeaders": "使用示例请求头值验证此服务器以发现其工具。每位用户仍会提供自己的请求头。",
 			"statePendingOauth": "此客户端在 config.json 中声明，需要一次性 OAuth 授权后才能使用。",
 			"stateNeedsReauthTokenExchange": "Bifrost 为刷新此服务器工具列表而保留的管理员凭证需要修复。调用方的工具调用不受影响。请使用服务器操作菜单中的{{action}}来修复。",
 			"stateNeedsReauthPerUser": "Bifrost 为刷新此服务器工具列表而保留的管理员凭证需要修复。终端用户凭证和工具调用不受影响。请使用服务器操作菜单中的{{action}}来修复。",
@@ -332,7 +332,6 @@
 			"usingGlobal": "使用全局设置",
 			"syncIntervalNotUsed": "未使用：此服务器不保留需要同步的自身发现结果。每个调用方的工具、提示词和资源会在其连接时发现。",
 			"perUserDiscoveryOnWarning": "保存后将删除 Bifrost 为此服务器保留的管理员凭证和发现结果。每个调用方的工具、提示词和资源会在其下次连接时使用自己的凭证发现。",
-			"perUserDiscoveryOffWarningSignIn": "保存后将删除所有调用方已发现的工具、提示词和资源。之后请使用“{{action}}”，以便 Bifrost 通过管理员登录重新发现它们。",
 			"perUserDiscoveryOffWarningPending": "保存后将删除所有调用方已发现的工具、提示词和资源，服务器将回到待验证状态，直到管理员再次验证。",
 			"toolExecutionTimeout": "工具执行超时（秒）",
 			"disableClient": "禁用客户端",
@@ -486,6 +485,9 @@
 			"apiCredentials": "API 凭证",
 			"tlsVerification": "TLS 验证",
 			"customCaCertificate": "自定义 CA 证书",
+			"tlsPlainHttpHint": "此服务器的 URL 使用明文 HTTP，因此不涉及 TLS。",
+			"showErrorDetails": "显示详情",
+			"hideErrorDetails": "隐藏详情",
 			"codeMode": "代码模式",
 			"spec": "规范",
 			"calls": "调用目标",
@@ -525,9 +527,8 @@
 			"openWorld": "开放世界",
 			"failureLine": "{{stage}}：{{message}}",
 			"verificationRequired": "需要验证",
-			"adminCredentialNeedsRepair": "Bifrost 为刷新此服务器工具列表而保留的管理员凭证需要修复。调用方自己的凭证和工具调用不受影响。",
+			"adminCredentialNeedsRepair": "Bifrost 用于此服务器的管理员凭据需要刷新。调用方不受影响。",
 			"credentialsNeedReauth": "此连接的凭证需要重新授权。",
-			"unstableNote": "工具调用仍会正常尝试；下一次检查将在约 10 秒内运行。",
 			"instanceState_one": "{{count}} 个实例：{{state}}。",
 			"instanceState_other": "{{count}} 个实例：{{state}}。",
 			"instanceStateFailure_one": "{{count}} 个实例：{{state}}，{{failure}}，{{timing}}。",
@@ -565,8 +566,8 @@
 			"hideSchemaAria": "隐藏 {{name}} 的模式",
 			"parameters": "参数",
 			"returns": "返回",
-			"viewJsonSchema": "查看 JSON 模式",
-			"hideJsonSchema": "隐藏 JSON 模式"
+			"viewAsJson": "以 JSON 查看",
+			"viewAsTable": "以表格查看"
 		},
 		"tls": {
 			"skipVerify": "跳过 TLS 校验",
