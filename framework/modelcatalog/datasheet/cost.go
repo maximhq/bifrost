@@ -2534,7 +2534,7 @@ func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType sche
 // getBasePricing looks up catalog pricing for the given model, provider, and request type.
 // It applies a provider-specific fallback chain when an exact match is not found:
 //
-//   - All lookups: the model name matches case-insensitively (see lookupPricingUnsafe); a row under the exact casing wins.
+//   - All lookups: makeKey lowercases the key, so the model name matches in any casing.
 //   - Gemini: retries under the "vertex" provider, then falls back to the counterpart chat/responses mode.
 //   - Vertex: strips the "provider/model" prefix and retries, then falls back to the counterpart chat/responses mode.
 //   - Bedrock: prepends the vendor namespace ("anthropic.", "openai.", "google.", "xai.") inferred from the model family, then falls back to the counterpart chat/responses mode.
@@ -2571,12 +2571,12 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 	// Realtime voice rates take precedence over responses/chat rates for the
 	// same model. Retain those existing lookups when no realtime row exists.
 	if requestType == schemas.RealtimeRequest {
-		if pricing, ok := s.lookupPricingUnsafe(model, provider, "realtime"); ok {
+		if pricing, ok := s.pricingData[makeKey(model, provider, "realtime")]; ok {
 			return &pricing, true
 		}
 	}
 
-	pricing, ok := s.lookupPricingUnsafe(model, provider, mode)
+	pricing, ok := s.pricingData[makeKey(model, provider, mode)]
 	if ok {
 		return &pricing, true
 	}
@@ -2584,7 +2584,7 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 	// Lookup in vertex if gemini not found
 	if provider == string(schemas.Gemini) {
 		s.logger.Debug("primary lookup failed, trying vertex provider for the same model")
-		pricing, ok = s.lookupPricingUnsafe(model, "vertex", mode)
+		pricing, ok = s.pricingData[makeKey(model, "vertex", mode)]
 		if ok {
 			return &pricing, true
 		}
@@ -2592,7 +2592,7 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 		// Lookup in the counterpart chat/responses mode if this model's row is filed under the other one
 		if hasFallbackMode {
 			s.logger.Debug("secondary lookup failed, trying vertex provider for the same model in %s mode", fallbackMode)
-			pricing, ok = s.lookupPricingUnsafe(model, "vertex", fallbackMode)
+			pricing, ok = s.pricingData[makeKey(model, "vertex", fallbackMode)]
 			if ok {
 				return &pricing, true
 			}
@@ -2604,7 +2604,7 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 		if strings.Contains(model, "/") {
 			modelWithoutProvider := strings.SplitN(model, "/", 2)[1]
 			s.logger.Debug("primary lookup failed, trying vertex provider for the same model with provider/model format %s", modelWithoutProvider)
-			pricing, ok = s.lookupPricingUnsafe(modelWithoutProvider, "vertex", mode)
+			pricing, ok = s.pricingData[makeKey(modelWithoutProvider, "vertex", mode)]
 			if ok {
 				return &pricing, true
 			}
@@ -2612,7 +2612,7 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 			// Lookup in the counterpart chat/responses mode if this model's row is filed under the other one
 			if hasFallbackMode {
 				s.logger.Debug("secondary lookup failed, trying vertex provider for the same model in %s mode", fallbackMode)
-				pricing, ok = s.lookupPricingUnsafe(modelWithoutProvider, "vertex", fallbackMode)
+				pricing, ok = s.pricingData[makeKey(modelWithoutProvider, "vertex", fallbackMode)]
 				if ok {
 					return &pricing, true
 				}
@@ -2625,7 +2625,7 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 		// "openai.gpt-oss-*", "google.gemma-*", "xai.grok-*"). When the caller
 		// sends the bare model name, retry with the namespace inferred from
 		// the model family. The family predicates match lowercase substrings,
-		// so detect on the lowercased name; the lookups keep the request casing.
+		// so detect on the lowercased name.
 		family := strings.ToLower(model)
 		var vendorPrefix string
 		switch {
@@ -2640,7 +2640,7 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 		}
 		if vendorPrefix != "" {
 			s.logger.Debug("primary lookup failed, trying with %s prefix for the same model", vendorPrefix)
-			pricing, ok = s.lookupPricingUnsafe(vendorPrefix+model, provider, mode)
+			pricing, ok = s.pricingData[makeKey(vendorPrefix+model, provider, mode)]
 			if ok {
 				return &pricing, true
 			}
@@ -2648,7 +2648,7 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 			// Lookup in the counterpart chat/responses mode if this model's row is filed under the other one
 			if hasFallbackMode {
 				s.logger.Debug("secondary lookup failed, trying the same prefixed model in %s mode", fallbackMode)
-				pricing, ok = s.lookupPricingUnsafe(vendorPrefix+model, provider, fallbackMode)
+				pricing, ok = s.pricingData[makeKey(vendorPrefix+model, provider, fallbackMode)]
 				if ok {
 					return &pricing, true
 				}
@@ -2659,7 +2659,7 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 	// Lookup in the counterpart chat/responses mode if this model's row is filed under the other one
 	if hasFallbackMode {
 		s.logger.Debug("primary lookup failed, trying the same model in %s mode", fallbackMode)
-		pricing, ok = s.lookupPricingUnsafe(model, provider, fallbackMode)
+		pricing, ok = s.pricingData[makeKey(model, provider, fallbackMode)]
 		if ok {
 			return &pricing, true
 		}
@@ -2668,7 +2668,7 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 	// The feed files GPT Live models under the Realtime API's mode.
 	if requestType == schemas.LiveRequest {
 		s.logger.Debug("primary lookup failed, trying realtime mode for the same voice model")
-		pricing, ok = s.lookupPricingUnsafe(model, provider, "realtime")
+		pricing, ok = s.pricingData[makeKey(model, provider, "realtime")]
 		if ok {
 			return &pricing, true
 		}
@@ -2679,7 +2679,7 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 		requestType == schemas.ImageEditStreamRequest ||
 		requestType == schemas.ImageVariationRequest {
 		s.logger.Debug("primary lookup failed, trying image generation provider for the same model")
-		pricing, ok = s.lookupPricingUnsafe(model, provider, normalizeRequestType(schemas.ImageGenerationRequest))
+		pricing, ok = s.pricingData[makeKey(model, provider, normalizeRequestType(schemas.ImageGenerationRequest))]
 		if ok {
 			return &pricing, true
 		}
@@ -2689,17 +2689,17 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 	if hasFallbackMode && requestType != schemas.DecisionRequest {
 		imageMode := normalizeRequestType(schemas.ImageGenerationRequest)
 		s.logger.Debug("primary lookup failed, trying image generation mode for the same model")
-		if pricing, ok = s.lookupPricingUnsafe(model, provider, imageMode); ok {
+		if pricing, ok = s.pricingData[makeKey(model, provider, imageMode)]; ok {
 			return &pricing, true
 		}
 		if provider == string(schemas.Gemini) {
-			if pricing, ok = s.lookupPricingUnsafe(model, "vertex", imageMode); ok {
+			if pricing, ok = s.pricingData[makeKey(model, "vertex", imageMode)]; ok {
 				return &pricing, true
 			}
 		}
 		// Vertex "publisher/model" form, matching the prefix strip above
 		if provider == string(schemas.Vertex) && strings.Contains(model, "/") {
-			if pricing, ok = s.lookupPricingUnsafe(strings.SplitN(model, "/", 2)[1], provider, imageMode); ok {
+			if pricing, ok = s.pricingData[makeKey(strings.SplitN(model, "/", 2)[1], provider, imageMode)]; ok {
 				return &pricing, true
 			}
 		}
@@ -2710,13 +2710,13 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 	// 2. Try the base "container" model in chat mode (default rate when no memory-specific entry exists)
 	if requestType == schemas.ContainerCreateRequest {
 		s.logger.Debug("primary lookup failed, trying chat mode for container create pricing")
-		pricing, ok = s.lookupPricingUnsafe(model, provider, normalizeRequestType(schemas.ChatCompletionRequest))
+		pricing, ok = s.pricingData[makeKey(model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
 		if ok {
 			return &pricing, true
 		}
 		if model != "container" {
 			s.logger.Debug("memory-specific container pricing not found, falling back to base container entry")
-			pricing, ok = s.lookupPricingUnsafe("container", provider, normalizeRequestType(schemas.ChatCompletionRequest))
+			pricing, ok = s.pricingData[makeKey("container", provider, normalizeRequestType(schemas.ChatCompletionRequest))]
 			if ok {
 				return &pricing, true
 			}

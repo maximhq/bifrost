@@ -84,7 +84,6 @@ func TestGetPricing_OverridePatternsMatchAnyCase(t *testing.T) {
 		InputCostPerToken:  bifrost.Ptr(1.0),
 		OutputCostPerToken: bifrost.Ptr(2.0),
 	}
-	s.rebuildPricingKeyFoldedUnsafe()
 
 	providerID := "openai"
 	require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{

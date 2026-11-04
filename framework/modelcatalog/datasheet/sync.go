@@ -134,9 +134,10 @@ func (s *Store) resolvePricingRows(pricingData map[string]Entry) []configstoreTa
 	winners := make(map[string]pricingCandidate, len(pricingData))
 	var losers map[string][]pricingCandidate // stored key -> rows that lost it; empty unless rows fold
 	for modelKey, entry := range pricingData {
-		// Same identity convertEntryToTablePricing stores the row under.
+		// Same identity convertEntryToTablePricing stores the row under. Not makeKey:
+		// the database keeps each casing as its own row.
 		provider := normalizeProvider(entry.Provider)
-		key := makeKey(extractModelName(modelKey), provider, entry.Mode)
+		key := extractModelName(modelKey) + "|" + provider + "|" + entry.Mode
 		cand := pricingCandidate{modelKey: modelKey, exact: entry.Provider == provider}
 		cur, taken := winners[key]
 		lost := cand
@@ -218,12 +219,7 @@ func (s *Store) LoadFromDB(ctx context.Context) error {
 	}
 
 	s.mu.Lock()
-	s.pricingData = make(map[string]configstoreTables.TableModelPricing, len(records))
-	for _, pricing := range records {
-		key := makeKey(pricing.Model, pricing.Provider, pricing.Mode)
-		s.pricingData[key] = pricing
-	}
-	s.rebuildDatasheetViewUnsafe()
+	s.setPricingRowsUnsafe(records)
 	s.mu.Unlock()
 
 	if s.logger != nil {
@@ -251,11 +247,7 @@ func (s *Store) LoadFromURLIntoMemory(ctx context.Context) error {
 func (s *Store) applyPricingData(pricingData map[string]Entry) {
 	records := s.resolvePricingRows(pricingData)
 	s.mu.Lock()
-	s.pricingData = make(map[string]configstoreTables.TableModelPricing, len(records))
-	for _, pricing := range records {
-		s.pricingData[makeKey(pricing.Model, pricing.Provider, pricing.Mode)] = pricing
-	}
-	s.rebuildDatasheetViewUnsafe()
+	s.setPricingRowsUnsafe(records)
 	s.mu.Unlock()
 }
 

@@ -423,7 +423,6 @@ func testStoreWithPricing(entries map[string]configstoreTables.TableModelPricing
 	for k, v := range entries {
 		s.pricingData[k] = v
 	}
-	s.rebuildPricingKeyFoldedUnsafe()
 	return s
 }
 

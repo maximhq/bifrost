@@ -147,6 +147,31 @@ func TestResolvePricingRowsTieBreakIsOrderIndependentAndWarns(t *testing.T) {
 	}
 }
 
+// The database keeps each casing as its own row, so a sync neither drops one nor
+// warns about it. Only the in-memory map collapses them, onto the lowercase row.
+func TestResolvePricingRowsKeepsCaseVariantsForDatabase(t *testing.T) {
+	entries := map[string]Entry{
+		"azure/deepseek-v4-pro": costEntry("azure", 1e-06),
+		"azure/DeepSeek-V4-Pro": costEntry("azure", 2e-06),
+	}
+	rec := &warnRecorder{}
+	s := NewTestStore(nil)
+	s.logger = rec
+	rows := s.resolvePricingRows(entries)
+	if len(rows) != 2 || rows[0].Model != "DeepSeek-V4-Pro" || rows[1].Model != "deepseek-v4-pro" {
+		t.Fatalf("rows=%+v, want one row per casing", rows)
+	}
+	if len(rec.warns) != 0 {
+		t.Fatalf("warnings=%q, want none", rec.warns)
+	}
+
+	s.applyPricingData(entries)
+	row := s.Get("DeepSeek-V4-Pro", "azure", schemas.ChatCompletionRequest)
+	if row == nil || row.InputCostPerToken == nil || *row.InputCostPerToken != 1e-06 {
+		t.Fatalf("Get() = %+v, want the lowercase row at 1e-06", row)
+	}
+}
+
 // Rows folded onto one key at the same price lose nothing, so they stay quiet.
 func TestResolvePricingRowsSamePriceFoldIsSilent(t *testing.T) {
 	rec := &warnRecorder{}

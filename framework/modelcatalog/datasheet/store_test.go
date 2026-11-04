@@ -1,6 +1,7 @@
 package datasheet
 
 import (
+	"maps"
 	"math"
 	"slices"
 	"testing"
@@ -37,7 +38,7 @@ func TestPricingLookupsNormalizeRuntimeProvider(t *testing.T) {
 	}
 
 	s.mu.Lock()
-	s.rebuildDatasheetViewUnsafe()
+	s.rebuildDatasheetViewUnsafe(slices.Collect(maps.Values(s.pricingData)))
 	s.mu.Unlock()
 	if got := s.DatasheetModelsForProvider(provider); !slices.Equal(got, []string{model}) {
 		t.Fatalf("DatasheetModelsForProvider() = %v, want [%s]", got, model)
@@ -79,7 +80,7 @@ func TestDeprecatedDatasheetModelsForProviderUsesRebuiltIndex(t *testing.T) {
 		Mode:         "chat",
 		IsDeprecated: true,
 	}
-	s.rebuildDatasheetViewUnsafe()
+	s.rebuildDatasheetViewUnsafe(slices.Collect(maps.Values(s.pricingData)))
 	s.mu.Unlock()
 
 	got := s.DeprecatedDatasheetModelsForProvider(schemas.OpenAI)
@@ -138,7 +139,7 @@ func TestGithubCopilotDatasheetRowsPriceRuntimeProvider(t *testing.T) {
 }
 
 // Get, GetPricingEntryForModel and IsTextCompletionSupported read pricingData
-// through lookupPricingUnsafe, so they match a row in any casing.
+// through makeKey, so they match a row in any casing.
 func TestPricingReadsMatchModelCaseInsensitively(t *testing.T) {
 	inputCost := 0.0000015
 	s := NewTestStore(nil)
@@ -159,5 +160,26 @@ func TestPricingReadsMatchModelCaseInsensitively(t *testing.T) {
 	}
 	if !s.IsTextCompletionSupported("gpt-3.5-turbo-instruct", schemas.OpenAI) {
 		t.Fatal("IsTextCompletionSupported() = false, want true from the mixed-case completion row")
+	}
+}
+
+// Rows that lose the lowercase key are not priced from, but the datasheet view
+// still lists every spelling and indexes its base model.
+func TestSetPricingRowsKeepsEverySpellingInDatasheetView(t *testing.T) {
+	s := NewTestStore(nil)
+	s.SetPricingRowsForTest([]configstoreTables.TableModelPricing{
+		{Model: "DeepSeek-V4-Pro", BaseModel: "deepseek-v4-pro", Provider: "azure", Mode: "chat", IsDeprecated: true},
+		{Model: "deepseek-v4-pro", BaseModel: "deepseek-v4-pro", Provider: "azure", Mode: "chat", IsDeprecated: true},
+	})
+
+	want := []string{"DeepSeek-V4-Pro", "deepseek-v4-pro"}
+	if got := s.DatasheetModelsForProvider(schemas.Azure); !slices.Equal(got, want) {
+		t.Fatalf("DatasheetModelsForProvider() = %v, want %v", got, want)
+	}
+	if got := s.DeprecatedDatasheetModelsForProvider(schemas.Azure); !slices.Equal(got, want) {
+		t.Fatalf("DeprecatedDatasheetModelsForProvider() = %v, want %v", got, want)
+	}
+	if got := s.BaseModelName("DeepSeek-V4-Pro"); got != "deepseek-v4-pro" {
+		t.Fatalf("BaseModelName() = %q, want the indexed base model", got)
 	}
 }
