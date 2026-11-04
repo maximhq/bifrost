@@ -424,6 +424,8 @@
 		"bufferSizeMustBeLessThanOrEqualTo1000": "La taille du tampon doit être inférieure ou égale à 1000",
 		"proxyUrlIsRequiredWhenUsingHttpOrSocks5Proxy": "L’URL du proxy est obligatoire lorsque vous utilisez un proxy HTTP ou SOCKS5",
 		"mustBeAValidUrlEGHttpProxyExample": "Doit être une URL valide (par ex. http://proxy.example.com:8080)",
+		"socks5ProxyUrlMustStartWithSocks5Scheme": "Une URL de proxy SOCKS5 doit commencer par socks5:// ou socks5h://",
+		"httpProxyUrlMustStartWithHttpScheme": "Une URL de proxy HTTP doit commencer par http:// ou https://",
 		"setARoleAnIndexOrBothAPointWith": "Définissez un rôle, un index, ou les deux : un point sans aucun des deux ne correspond à rien",
 		"use164LettersDigitsOr": "Utilisez 1 à 64 lettres, chiffres, _ ou -",
 		"pickAnMcpServer": "Choisissez un serveur MCP",
