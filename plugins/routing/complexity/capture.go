@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand/v2"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -487,4 +488,79 @@ func (c *RequestCapture) Close() {
 		<-drained
 	}
 	c.cancel()
+}
+
+// CapturedRequest is one captured request read back for a suggestion run.
+type CapturedRequest struct {
+	LogID  string
+	Vector []float32
+	At     time.Time
+}
+
+// captureReadPage is how many captured vectors one read returns: about 3 MB
+// at 1536 dimensions.
+const captureReadPage = 500
+
+// EachCaptured reads the requests captured from from through to from
+// namespace, with their vectors, a page at a time, in whatever order the
+// store pages them. Capture times are whole seconds, so both ends include
+// their second: a window ending now includes what was captured this second.
+// Entries without a vector are skipped; fn's error stops the read.
+func EachCaptured(ctx context.Context, store vectorstore.VectorStore, namespace string, from, to time.Time, fn func([]CapturedRequest) error) error {
+	if store == nil || namespace == "" {
+		return nil
+	}
+	ctx = vectorstore.WithIncludeVectors(ctx)
+	queries := []vectorstore.Query{
+		{Field: captureMetadataKind, Operator: vectorstore.QueryOperatorEqual, Value: captureMetadataKindValue},
+		{Field: captureMetadataTimestamp, Operator: vectorstore.QueryOperatorGreaterThanOrEqual, Value: from.Unix()},
+		{Field: captureMetadataTimestamp, Operator: vectorstore.QueryOperatorLessThanOrEqual, Value: to.Unix()},
+	}
+	var cursor *string
+	for {
+		results, next, err := store.GetAll(ctx, namespace, queries, []string{captureMetadataTimestamp}, cursor, captureReadPage)
+		if errors.Is(err, vectorstore.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("read captured requests: %w", err)
+		}
+		page := make([]CapturedRequest, 0, len(results))
+		for _, r := range results {
+			if len(r.Vector) == 0 {
+				continue
+			}
+			page = append(page, CapturedRequest{LogID: r.ID, Vector: r.Vector, At: time.Unix(captureUnix(r.Properties[captureMetadataTimestamp]), 0).UTC()})
+		}
+		if len(page) > 0 {
+			if err := fn(page); err != nil {
+				return err
+			}
+		}
+		if next == nil || *next == "" || len(results) == 0 {
+			return nil
+		}
+		cursor = next
+	}
+}
+
+// captureUnix reads a stored unix-seconds property, which backends hand back
+// as whichever numeric type they keep.
+func captureUnix(value any) int64 {
+	switch v := value.(type) {
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	case int32:
+		return int64(v)
+	case float64:
+		return int64(v)
+	case float32:
+		return int64(v)
+	case string:
+		n, _ := strconv.ParseInt(v, 10, 64)
+		return n
+	}
+	return 0
 }
