@@ -36,13 +36,12 @@ func compressResponses(msgs []schemas.ResponsesMessage, s settings) []schemas.Re
 		if deduped[i] {
 			continue
 		}
-		isOut := respIsToolOutput(&msgs[i])
-		trim := isOut && age[i] >= s.MinAgeTurns
-		if !trim && !s.Whitespace {
+		// Only trim-eligible old tool output is rewritten (trim and whitespace
+		// normalisation); everything else is sent exactly as received.
+		if !respIsToolOutput(&msgs[i]) || age[i] < s.MinAgeTurns {
 			continue
 		}
-		f := textTransform(s, trim)
-		if m, changed := mapResponsesText(msgs[i], f); changed {
+		if m, changed := mapResponsesText(msgs[i], textTransform(s, true)); changed {
 			out[i] = m
 		}
 	}
@@ -59,6 +58,7 @@ func respIsAssistantItem(m *schemas.ResponsesMessage) bool {
 		case schemas.ResponsesMessageTypeFunctionCall, schemas.ResponsesMessageTypeReasoning:
 			return true
 		case schemas.ResponsesMessageTypeMessage:
+			// role decides below
 		default:
 			return false
 		}
@@ -71,12 +71,13 @@ func respIsTextBlock(b *schemas.ResponsesMessageContentBlock) bool {
 		b.Type == schemas.ResponsesOutputMessageContentTypeText) && b.Text != nil
 }
 
-// dedupeResponses replaces older identical all-text function_call_output items
-// with a pointer to the newest copy's call ID. Scanning back to front makes the
-// first copy seen the newest; originals are compared and a stub is used only
-// when strictly shorter.
+// dedupeResponses replaces each older identical all-text function_call_output
+// item with a pointer to the call ID of the immediately next newer copy, so an
+// existing stub never changes when another duplicate arrives later. Scanning
+// back to front makes the last copy seen for a text the next newer one;
+// originals are compared and a stub is used only when strictly shorter.
 func dedupeResponses(msgs, out []schemas.ResponsesMessage, start int, deduped []bool) {
-	newest := map[string]*string{} // text -> CallID of newest copy
+	next := map[string]*string{} // text -> CallID of the next newer copy
 	for i := len(msgs) - 1; i >= start; i-- {
 		m := &msgs[i]
 		if !respIsToolOutput(m) {
@@ -86,9 +87,9 @@ func dedupeResponses(msgs, out []schemas.ResponsesMessage, start int, deduped []
 		if !ok {
 			continue
 		}
-		id, seen := newest[text]
+		id, seen := next[text]
+		next[text] = m.ResponsesToolMessage.CallID
 		if !seen {
-			newest[text] = m.ResponsesToolMessage.CallID
 			continue
 		}
 		stub, ok := dedupeStub(id, text)

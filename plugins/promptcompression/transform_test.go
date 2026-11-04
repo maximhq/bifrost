@@ -27,12 +27,13 @@ func TestTextTransformStrictlyShorterGuard(t *testing.T) {
 	require.Equal(t, text, textTransform(s, true)(text))
 }
 
-func TestTextTransformWhitespaceOnOff(t *testing.T) {
+func TestTextTransformWhitespaceOnlyWhenTrimEligible(t *testing.T) {
 	s := defaults(t)
 	in := "a  \n\n\n\n\nb"
-	require.Equal(t, "a\n\nb", textTransform(s, false)(in))
+	require.Equal(t, "a\n\nb", textTransform(s, true)(in), "trim-eligible text is normalised")
+	require.Equal(t, in, textTransform(s, false)(in), "not trim-eligible: untouched")
 	s.Whitespace = false
-	require.Equal(t, in, textTransform(s, false)(in))
+	require.Equal(t, in, textTransform(s, true)(in), "normalisation disabled")
 }
 
 func TestDedupeStub(t *testing.T) {

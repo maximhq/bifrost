@@ -127,12 +127,41 @@ func TestChatDedupeDisabled(t *testing.T) {
 	require.Equal(t, file, strOf(out[3]))
 }
 
-func TestChatWhitespaceDisabled(t *testing.T) {
-	msgs := []schemas.ChatMessage{textMsg(schemas.ChatMessageRoleSystem, "sys"), textMsg(schemas.ChatMessageRoleUser, "a   \nb")}
+func TestChatWhitespaceOnlyOldToolOutputs(t *testing.T) {
+	const padded = "a   \nb  \n\n\n\n\nc"
+	user := textMsg(schemas.ChatMessageRoleUser, padded)
+	msgs := []schemas.ChatMessage{textMsg(schemas.ChatMessageRoleSystem, "sys  "), user}
+	// tool outputs at 3, 5, 7 (plus the one after asst): ages 3, 2, 1, 0
+	msgs = append(msgs, rounds(padded, padded, padded)[2:]...)
+	asst := assistantCall("x")
+	asst.Content.ContentStr = strp(padded)
+	msgs = append(msgs, asst, toolMsg("x", "ok"))
 	s := defaults(t)
-	require.Equal(t, "a\nb", strOf(run(t, msgs, s)[1]))
+	s.Dedupe = false
+	out := run(t, msgs, s)
+	require.Equal(t, "sys  ", strOf(out[0]), "system untouched")
+	require.Equal(t, padded, strOf(out[1]), "user untouched")
+	require.Equal(t, "a\nb\n\nc", strOf(out[3]), "old (age 3) tool output normalised")
+	require.Equal(t, "a\nb\n\nc", strOf(out[5]), "old (age 2) tool output normalised")
+	require.Equal(t, padded, strOf(out[7]), "young (age 1) tool output unchanged")
+	require.Equal(t, padded, strOf(out[8]), "assistant untouched")
 	s.Whitespace = false
-	require.Equal(t, "a   \nb", strOf(run(t, msgs, s)[1]))
+	require.Equal(t, padded, strOf(run(t, msgs, s)[3]), "disabled")
+}
+
+func TestChatDedupeChainsToNextCopy(t *testing.T) {
+	file := bigOutput(50)
+	s := defaults(t)
+	s.MinAgeTurns = 99
+	three := run(t, rounds(file, file, file), s)
+	require.Equal(t, "[identical to the output of call call_2]", strOf(three[3]))
+	require.Equal(t, "[identical to the output of call call_3]", strOf(three[5]))
+	require.Equal(t, file, strOf(three[7]))
+	four := run(t, rounds(file, file, file, file), s)
+	require.Equal(t, strOf(three[3]), strOf(four[3]), "existing stub unchanged when a copy is appended")
+	require.Equal(t, strOf(three[5]), strOf(four[5]))
+	require.Equal(t, "[identical to the output of call call_4]", strOf(four[7]))
+	require.Equal(t, file, strOf(four[9]))
 }
 
 func TestChatProtectedPrefixUntouched(t *testing.T) {

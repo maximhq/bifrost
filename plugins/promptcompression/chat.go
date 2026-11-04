@@ -36,23 +36,27 @@ func compressChat(msgs []schemas.ChatMessage, s settings) []schemas.ChatMessage 
 			continue
 		}
 		trim := msgs[i].Role == schemas.ChatMessageRoleTool && age[i] >= s.MinAgeTurns
-		if !trim && !s.Whitespace {
+		// Only trim-eligible old tool output is rewritten (trim and whitespace
+		// normalisation); everything else is sent exactly as received.
+		if !trim {
 			continue
 		}
-		f := textTransform(s, trim)
-		if m, changed := mapChatText(msgs[i], f); changed {
+		if m, changed := mapChatText(msgs[i], textTransform(s, true)); changed {
 			out[i] = m
 		}
 	}
 	return out
 }
 
-// dedupeChat replaces older identical all-text tool outputs with a pointer to
-// the most recent copy, so the model still knows where the content lives. It
-// scans back to front so the first copy seen is the newest. Originals are
-// compared, never already-replaced text, and a stub is used only when shorter.
+// dedupeChat replaces each older identical all-text tool output with a pointer
+// to the immediately next newer copy, so the model still knows where the
+// content lives and an existing stub never changes when another duplicate
+// arrives later (which would invalidate provider prompt caches). It scans back
+// to front, so the last copy seen for a text is the next newer one. Originals
+// are compared, never already-replaced text, and a stub is used only when
+// shorter.
 func dedupeChat(msgs, out []schemas.ChatMessage, start int, deduped []bool) {
-	newest := map[string]*string{} // text -> ToolCallID of newest copy
+	next := map[string]*string{} // text -> ToolCallID of the next newer copy
 	for i := len(msgs) - 1; i >= start; i-- {
 		m := &msgs[i]
 		if m.Role != schemas.ChatMessageRoleTool {
@@ -62,13 +66,13 @@ func dedupeChat(msgs, out []schemas.ChatMessage, start int, deduped []bool) {
 		if !ok {
 			continue
 		}
-		id, seen := newest[text]
+		var cid *string
+		if m.ChatToolMessage != nil {
+			cid = m.ChatToolMessage.ToolCallID
+		}
+		id, seen := next[text]
+		next[text] = cid
 		if !seen {
-			var cid *string
-			if m.ChatToolMessage != nil {
-				cid = m.ChatToolMessage.ToolCallID
-			}
-			newest[text] = cid
 			continue
 		}
 		stub, ok := dedupeStub(id, text)

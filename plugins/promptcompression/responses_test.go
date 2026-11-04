@@ -235,24 +235,48 @@ func TestResponsesTrimNotLonger(t *testing.T) {
 	require.Equal(t, text, rmOutStr(out[3]), "marker longer than cut: unchanged")
 }
 
-func TestResponsesWhitespace(t *testing.T) {
+func TestResponsesWhitespaceOnlyOldToolOutputs(t *testing.T) {
+	const padded = "o  \n\n\n\nz"
 	s := defaults(t)
-	s.MinAgeTurns = 99
+	s.Dedupe = false
 	user := rmText(schemas.ResponsesInputMessageRoleUser, "hi   \n\n\n\n\nthere")
-	blocks := schemas.ResponsesMessage{
+	asst := schemas.ResponsesMessage{
 		Type: rmType(schemas.ResponsesMessageTypeMessage),
 		Role: rmRole(schemas.ResponsesInputMessageRoleAssistant),
 		Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
 			rmBlock(schemas.ResponsesOutputMessageContentTypeText, "a \t\nb"),
 		}},
 	}
-	msgs := []schemas.ResponsesMessage{rmText(schemas.ResponsesInputMessageRoleSystem, "sys  "), user, blocks, rmCall("1"), rmOut("1", "o  \n\n\n\nz")}
+	// outputs at 4, 6, 8: ages 2, 1, 0
+	msgs := []schemas.ResponsesMessage{
+		rmText(schemas.ResponsesInputMessageRoleSystem, "sys  "), user, asst,
+		rmCall("1"), rmOut("1", padded), rmCall("2"), rmOut("2", padded), rmCall("3"), rmOut("3", padded),
+	}
 	out := runResp(t, msgs, s)
-	require.Equal(t, "sys  ", *out[0].Content.ContentStr, "protected")
-	require.Equal(t, "hi\n\nthere", *out[1].Content.ContentStr)
-	require.Equal(t, "a\nb", *out[2].Content.ContentBlocks[0].Text)
-	require.Equal(t, "o\n\nz", rmOutStr(out[4]))
+	require.Equal(t, "sys  ", *out[0].Content.ContentStr, "system untouched")
+	require.Equal(t, "hi   \n\n\n\n\nthere", *out[1].Content.ContentStr, "user untouched")
+	require.Equal(t, "a \t\nb", *out[2].Content.ContentBlocks[0].Text, "assistant untouched")
+	require.Equal(t, "o\n\nz", rmOutStr(out[4]), "old tool output normalised")
+	require.Equal(t, padded, rmOutStr(out[6]), "young (age 1) tool output unchanged")
+	require.Equal(t, padded, rmOutStr(out[8]), "newest tool output unchanged")
 	require.Equal(t, "{}", *out[3].ResponsesToolMessage.Arguments)
+	s.Whitespace = false
+	require.Equal(t, padded, rmOutStr(runResp(t, msgs, s)[4]), "disabled")
+}
+
+func TestResponsesDedupeChainsToNextCopy(t *testing.T) {
+	same := bigOutput(200)
+	s := defaults(t)
+	s.MinAgeTurns = 99
+	three := runResp(t, respRounds(same, same, same), s)
+	require.Equal(t, "[identical to the output of call call_2]", rmOutStr(three[3]))
+	require.Equal(t, "[identical to the output of call call_3]", rmOutStr(three[5]))
+	require.Equal(t, same, rmOutStr(three[7]))
+	four := runResp(t, respRounds(same, same, same, same), s)
+	require.Equal(t, rmOutStr(three[3]), rmOutStr(four[3]), "existing stub unchanged when a copy is appended")
+	require.Equal(t, rmOutStr(three[5]), rmOutStr(four[5]))
+	require.Equal(t, "[identical to the output of call call_4]", rmOutStr(four[7]))
+	require.Equal(t, same, rmOutStr(four[9]))
 }
 
 func TestEstimateResponses(t *testing.T) {
