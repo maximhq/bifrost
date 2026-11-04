@@ -606,6 +606,15 @@ client-initiate-verification:
       connection_string when the declared oauth_config omits those fields,
       creates a fresh OAuth flow, and returns the authorization URL.
 
+      A per_user_oauth client back in pending_verification because
+      per_user_discovery was turned off keeps its OAuth registration: the call
+      opens an admin sign-in on that registration instead, so callers keep
+      their sign-ins, and the response carries a flow_id that status_url
+      already includes. POST /api/mcp/client/{id}/reauthorize does the same
+      for such a client. If its provider no longer recognises that
+      registration, POST /api/mcp/client/{id}/reregister registers a new
+      client first; every caller then signs in again.
+
       Complete the flow like a create-time OAuth flow: open authorize_url in a
       browser, poll status_url until "authorized", then POST complete_url.
       Safe to call again if a previous attempt expired or was abandoned — each
@@ -661,10 +670,16 @@ client-reauthorize:
         in needs_reauth) and the follow-up to rotating oauth_config via
         PUT /api/mcp/client/{id} (which cascades every bound token to
         needs_reauth).
-      - auth_type "per_user_oauth": repairs the retained admin discovery
-        credential used for periodic tool-list refresh. Only allowed while
-        that credential actually sits in needs_reauth (409 otherwise);
-        end-user credentials are untouched either way.
+      - auth_type "per_user_oauth": refreshes the retained admin discovery
+        credential used for periodic tool-list refresh, whether or not it
+        needs repair; end-user credentials are untouched either way. It also
+        verifies a client back in pending_verification because
+        per_user_discovery was turned off, the same way
+        POST /api/mcp/client/{id}/initiate-verification does: the admin signs
+        in on the client's existing OAuth registration.
+
+      A client still in its first sign-in (declared in config.json and not
+      yet verified) gets 400: use initiate-verification instead.
 
       Complete the returned flow like any other admin OAuth flow: open
       authorize_url in a browser, poll status_url until "authorized", then
@@ -734,6 +749,13 @@ client-reregister:
       retained admin one, and each user must authenticate again. Plain
       reauthorize leaves end-user credentials untouched; this endpoint does
       not.
+
+      A per_user_oauth client back in pending_verification because
+      per_user_discovery was turned off can be reregistered too, for when its
+      provider no longer recognises the client it kept: completing the flow
+      verifies it. A client still in its first sign-in (declared in
+      config.json and not yet verified) gets 400: use initiate-verification
+      instead.
 
       Complete the returned flow exactly like reauthorize's: open
       authorize_url in a browser, poll status_url until "authorized", then

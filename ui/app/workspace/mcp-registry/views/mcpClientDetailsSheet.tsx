@@ -1,4 +1,5 @@
 import { getExternalBaseUrl } from "@/app/workspace/mcp-registry/views/mcpUsageGuide/utils";
+import { ExpandableText } from "@/components/expandableText";
 import { SheetNavigationButtons } from "@/components/sheetNavigationButtons";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -21,8 +22,8 @@ import { formatRelativePast } from "@/lib/utils/mcpCredential";
 import { perUserDiscoveryOn, sessionDiscoveryCell, toolSubtitle } from "@/lib/utils/mcpPerUserDiscovery";
 import { titleCaseFromSnakeCase } from "@/lib/utils/strings";
 import { Link } from "@tanstack/react-router";
-import { ArrowUpRight, Check, ChevronDown, ChevronRight, CircleAlert, Copy, Info } from "lucide-react";
-import { Fragment, ReactNode, useEffect, useMemo, useState } from "react";
+import { ArrowUpRight, Braces, Check, ChevronDown, ChevronRight, CircleAlert, Copy, Info, Table2 } from "lucide-react";
+import { Fragment, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { DefinitionList, DefinitionRow, MCPClientCredentialSection } from "./mcpClientCredentialSection";
 import {
@@ -115,6 +116,10 @@ export default function MCPClientDetailsSheet({
 	const { t } = useTranslation("mcp");
 	const config = mcpClient.config;
 	const [tab, setTab] = useState<DetailsTab>("overview");
+	const titleRef = useRef<HTMLHeadingElement>(null);
+	// What had focus when the sheet opened (the server's name, say). The sheet has no trigger for
+	// Radix to return focus to, so it is handed back here on close.
+	const openerRef = useRef<HTMLElement | null>(null);
 	const [toolFilter, setToolFilter] = useState<ToolFilter>("all");
 	const [expandedTool, setExpandedTool] = useState<string | null>(null);
 	const [callerFilter, setCallerFilter] = useState<MCPSessionStatus | null>(null);
@@ -238,11 +243,33 @@ export default function MCPClientDetailsSheet({
 
 	return (
 		<Sheet open onOpenChange={(open) => !open && onClose()}>
-			<SheetContent className="flex w-full flex-col overflow-hidden! pt-4 sm:max-w-[60%]" data-testid="mcpclient-view-sheet">
+			{/* The shared Sheet keeps focus where it was on open; this one moves it to its title, so the
+			    sheet is announced and Tab continues inside it, whichever way it was opened. */}
+			<SheetContent
+				className="flex w-full flex-col overflow-hidden! pt-4 sm:max-w-[60%]"
+				data-testid="mcpclient-view-sheet"
+				onOpenAutoFocus={() => {
+					openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+					titleRef.current?.focus();
+				}}
+				onCloseAutoFocus={(e) => {
+					const opener = openerRef.current;
+					openerRef.current = null;
+					if (opener?.isConnected && opener !== document.body) {
+						e.preventDefault();
+						opener.focus();
+					}
+				}}
+			>
 				<SheetHeader className="w-full p-0 py-4" showCloseButton={false} headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8">
 					<div className="flex w-full items-start justify-between gap-4">
 						<div className="min-w-0 space-y-2">
-							<SheetTitle className="flex w-fit items-center gap-2 font-medium" data-testid="mcpclient-view-title">
+							<SheetTitle
+								ref={titleRef}
+								tabIndex={-1}
+								className="flex w-fit items-center gap-2 font-medium outline-none"
+								data-testid="mcpclient-view-title"
+							>
 								{config.name}
 								<Badge className={MCP_STATUS_COLORS[mcpClient.state]} data-testid="mcpclient-view-state">
 									{titleCaseFromSnakeCase(mcpClient.state)}
@@ -280,6 +307,15 @@ export default function MCPClientDetailsSheet({
 								{alert.lines.map((line) => (
 									<p key={line}>{line}</p>
 								))}
+								{(alert.timing || alert.detail) && (
+									// Keyed by server and failure: moving to another server, or a new failure on
+									// this one, starts the details collapsed rather than open from the last one.
+									<AlertFailure
+										key={`${config.client_id}:${mcpClient.last_failure?.at ?? ""}`}
+										timing={alert.timing}
+										detail={alert.detail}
+									/>
+								)}
 							</AlertDescription>
 							{alertAction && onAlertAction && (
 								<Button
@@ -733,6 +769,37 @@ export default function MCPClientDetailsSheet({
 	);
 }
 
+// AlertFailure is the alert's last line: when it last failed, and the raw error
+// behind a toggle, since the alert's title and line already say what is wrong.
+function AlertFailure({ timing, detail }: { timing?: string; detail?: string }) {
+	const { t } = useTranslation("mcp");
+	const [open, setOpen] = useState(false);
+	return (
+		<>
+			<p className="text-xs opacity-80">
+				{timing}
+				{timing && detail && " · "}
+				{detail && (
+					<button
+						type="button"
+						className="font-medium underline-offset-2 hover:underline"
+						aria-expanded={open}
+						onClick={() => setOpen((value) => !value)}
+						data-testid="mcpclient-view-alert-detail-toggle"
+					>
+						{open ? t("registry.view.hideErrorDetails") : t("registry.view.showErrorDetails")}
+					</button>
+				)}
+			</p>
+			{detail && open && (
+				<p className="font-mono text-xs break-all" data-testid="mcpclient-view-alert-detail">
+					{detail}
+				</p>
+			)}
+		</>
+	);
+}
+
 function TabCount({ n }: { n?: number }) {
 	if (n === undefined) return null;
 	return <span className="text-muted-foreground text-xs tabular-nums">{n}</span>;
@@ -849,7 +916,7 @@ function ToolRows({
 								{title}
 							</div>
 							{title !== tool.name && <div className="text-muted-foreground truncate font-mono text-xs">{tool.name}</div>}
-							{subtitle && <p className="text-muted-foreground mt-0.5 truncate text-xs">{subtitle}</p>}
+							{subtitle && <ExpandableText text={subtitle} lines={2} inlineToggle className="text-muted-foreground mt-0.5 text-xs" />}
 							{hints.length > 0 && (
 								<div className="mt-1.5 flex flex-wrap gap-1">
 									{hints.map((hint) => (
@@ -889,8 +956,46 @@ function ToolRows({
 							) : (
 								<>
 									<div className="space-y-2">
-										<div className="text-muted-foreground text-xs font-medium">{t("registry.view.parameters")}</div>
-										{params.length > 0 ? (
+										{/* The table and the JSON show the same schema, so one replaces the other. */}
+										<div className="flex items-center justify-between gap-2">
+											<div className="text-muted-foreground text-xs font-medium">{t("registry.view.parameters")}</div>
+											<Button
+												type="button"
+												variant="outline"
+												size="sm"
+												className="h-7 text-xs"
+												onClick={() => setShowJson(!showJson)}
+												data-testid={`mcp-tool-json-${tool.name}`}
+											>
+												{showJson ? <Table2 className="size-3.5" /> : <Braces className="size-3.5" />}
+												{showJson ? t("registry.view.viewAsTable") : t("registry.view.viewAsJson")}
+											</Button>
+										</div>
+										{showJson ? (
+											<CodeEditor
+												className="z-0 w-full rounded-sm border"
+												shouldAdjustInitialHeight={true}
+												maxHeight={300}
+												wrap={true}
+												code={JSON.stringify(
+													tool.output_schema
+														? { parameters: tool.parameters ?? null, output: tool.output_schema }
+														: (tool.parameters ?? {}),
+													null,
+													2,
+												)}
+												lang="json"
+												readonly={true}
+												options={{
+													scrollBeyondLastLine: false,
+													collapsibleBlocks: true,
+													lineNumbers: "off",
+													alwaysConsumeMouseWheel: false,
+													// Schemas taller than the editor scroll; the bar says there is more.
+													showVerticalScrollbar: true,
+												}}
+											/>
+										) : params.length > 0 ? (
 											<div className="bg-card rounded-sm border text-xs">
 												{params.map((param) => (
 													<div
@@ -910,36 +1015,11 @@ function ToolRows({
 											<div className="text-muted-foreground text-sm">{t("registry.sheet.noParameters")}</div>
 										)}
 									</div>
-									{output && (
+									{output && !showJson && (
 										<div className="space-y-1" data-testid={`mcp-tool-output-schema-${tool.name}`}>
 											<div className="text-muted-foreground text-xs font-medium">{t("registry.view.returns")}</div>
 											<div className="font-mono text-xs">{output}</div>
 										</div>
-									)}
-									<Button
-										type="button"
-										variant="link"
-										className="h-auto p-0"
-										onClick={() => setShowJson(!showJson)}
-										data-testid={`mcp-tool-json-${tool.name}`}
-									>
-										{showJson ? t("registry.view.hideJsonSchema") : t("registry.view.viewJsonSchema")}
-									</Button>
-									{showJson && (
-										<CodeEditor
-											className="z-0 w-full rounded-sm border"
-											shouldAdjustInitialHeight={true}
-											maxHeight={300}
-											wrap={true}
-											code={JSON.stringify(
-												tool.output_schema ? { parameters: tool.parameters ?? null, output: tool.output_schema } : (tool.parameters ?? {}),
-												null,
-												2,
-											)}
-											lang="json"
-											readonly={true}
-											options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
-										/>
 									)}
 								</>
 							)}

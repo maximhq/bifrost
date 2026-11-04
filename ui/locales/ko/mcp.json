@@ -95,7 +95,6 @@
 		},
 		"actions": {
 			"edit": "편집",
-			"viewDetails": "세부 정보 보기",
 			"authorize": "승인하다",
 			"reconnect": "다시 연결",
 			"reauthorize": "재승인",
@@ -305,7 +304,8 @@
 		},
 		"sheet": {
 			"statePendingTokenExchange": "이 서버에는 일회성 확인이 필요해요. Bifrost는 로그인된 ID 토큰을 교환하고 연결을 테스트하며 도구를 검색해요. 그러면 호출자는 모든 도구 호출에서 자동으로 교환되는 자체 ID 토큰을 갖게 돼요.",
-			"statePendingPerUserOauth": "이 클라이언트는 config.json에 선언되었어요. OAuth 설정을 확인하고 도구를 검색하려면 관리자 로그인이 필요해요. Bifrost는 도구 목록을 주기적으로 새로 고치기 위해 파일에 보관해요. 각 사용자는 이 서버를 사용할 때 개별적으로 인증돼요.",
+			"statePendingPerUserOauth": "이 서버를 확인하고 도구를 검색하려면 관리자 로그인이 필요해요. 각 사용자는 계속 개별적으로 인증돼요.",
+			"statePendingPerUserHeaders": "샘플 헤더 값으로 이 서버를 확인해 도구를 검색하세요. 각 사용자는 계속 본인의 헤더를 입력해요.",
 			"statePendingOauth": "이 클라이언트는 config.json에 선언되었으며 사용하려면 일회성 OAuth 인증이 필요해요.",
 			"stateNeedsReauthTokenExchange": "이 서버의 도구 목록을 새로 고치려면 관리자 자격 증명 Bifrost을 파일에 보관해야 해요. 호출자의 도구 호출은 영향을 받지 않어요. 서버 작업 메뉴에서 {{action}}를 사용하여 문제를 해결하세요.",
 			"stateNeedsReauthPerUser": "이 서버의 도구 목록을 새로 고치려면 관리자 자격 증명 Bifrost을 파일에 보관해야 해요. 최종 사용자 자격 증명 및 도구 호출은 영향을 받지 않어요. 서버 작업 메뉴에서 {{action}}를 사용하여 문제를 해결하세요.",
@@ -332,7 +332,6 @@
 			"usingGlobal": "전역 설정 사용",
 			"syncIntervalNotUsed": "사용 안 함: 이 서버는 동기화할 자체 검색 결과를 보관하지 않아요. 각 호출자의 도구, 프롬프트, 리소스는 연결할 때 검색돼요.",
 			"perUserDiscoveryOnWarning": "저장하면 Bifrost가 이 서버용으로 보관하는 관리자 자격 증명과 검색 결과가 삭제돼요. 각 호출자의 도구, 프롬프트, 리소스는 다음에 연결할 때 본인의 자격 증명으로 검색돼요.",
-			"perUserDiscoveryOffWarningSignIn": "저장하면 모든 호출자의 검색된 도구, 프롬프트, 리소스가 삭제돼요. 이후 {{action}}을(를) 사용하면 Bifrost가 관리자 로그인으로 다시 검색할 수 있어요.",
 			"perUserDiscoveryOffWarningPending": "저장하면 모든 호출자의 검색된 도구, 프롬프트, 리소스가 삭제되고, 관리자가 다시 확인할 때까지 서버는 확인 대기 상태로 돌아가요.",
 			"toolExecutionTimeout": "도구 실행 시간 초과(초)",
 			"disableClient": "클라이언트 비활성화",
@@ -486,6 +485,9 @@
 			"apiCredentials": "API 자격 증명",
 			"tlsVerification": "TLS 검증",
 			"customCaCertificate": "사용자 지정 CA 인증서",
+			"tlsPlainHttpHint": "이 서버의 URL은 일반 HTTP를 사용하므로 TLS가 관여하지 않아요.",
+			"showErrorDetails": "세부 정보 보기",
+			"hideErrorDetails": "세부 정보 숨기기",
 			"codeMode": "코드 모드",
 			"spec": "사양",
 			"calls": "호출 대상",
@@ -525,9 +527,8 @@
 			"openWorld": "개방형",
 			"failureLine": "{{stage}}: {{message}}",
 			"verificationRequired": "확인 필요",
-			"adminCredentialNeedsRepair": "이 서버의 도구 목록을 새로 고치기 위해 Bifrost가 보관하는 관리자 자격 증명을 복구해야 해요. 호출자 본인의 자격 증명과 도구 호출에는 영향이 없어요.",
+			"adminCredentialNeedsRepair": "이 서버에 대한 Bifrost 관리자 자격 증명을 갱신해야 해요. 호출자에게는 영향이 없어요.",
 			"credentialsNeedReauth": "이 연결의 자격 증명을 다시 승인해야 해요.",
-			"unstableNote": "도구 호출은 계속 정상적으로 시도돼요. 다음 확인은 약 10초 이내에 실행돼요.",
 			"instanceState_one": "인스턴스 {{count}}개: {{state}}.",
 			"instanceState_other": "인스턴스 {{count}}개: {{state}}.",
 			"instanceStateFailure_one": "인스턴스 {{count}}개: {{state}}, {{failure}}, {{timing}}.",
@@ -565,8 +566,8 @@
 			"hideSchemaAria": "{{name}}의 스키마 숨기기",
 			"parameters": "매개변수",
 			"returns": "반환값",
-			"viewJsonSchema": "JSON 스키마 보기",
-			"hideJsonSchema": "JSON 스키마 숨기기"
+			"viewAsJson": "JSON으로 보기",
+			"viewAsTable": "표로 보기"
 		},
 		"tls": {
 			"skipVerify": "TLS 확인 건너뛰기",

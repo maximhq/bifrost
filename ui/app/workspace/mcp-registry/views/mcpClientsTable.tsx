@@ -47,7 +47,6 @@ import {
 	ChevronLeft,
 	ChevronRight,
 	Copy,
-	Eye,
 	Info,
 	KeyRound,
 	ListRestart,
@@ -89,7 +88,6 @@ function MCPClientActionsMenu({
 	isVerifyingExchange,
 	canReconnect,
 	triggerTestId,
-	onView,
 	onEdit,
 	onReconnect,
 	onRefreshTools,
@@ -110,7 +108,6 @@ function MCPClientActionsMenu({
 	isVerifyingExchange: boolean;
 	canReconnect: boolean;
 	triggerTestId?: string;
-	onView?: (client: MCPClient) => void; // Omitted on the server's view sheet itself
 	onEdit?: (client: MCPClient) => void; // Omitted on the server's view sheet, which has no Edit entry
 	onReconnect: (client: MCPClient) => void;
 	onRefreshTools: (client: MCPClient) => void;
@@ -150,27 +147,13 @@ function MCPClientActionsMenu({
 			<DropdownMenuContent
 				align="end"
 				onCloseAutoFocus={(e) => {
-					// View details and Edit open a Sheet; letting the dropdown restore focus to its
+					// Edit opens a Sheet; letting the dropdown restore focus to its
 					// trigger fights the Sheet's autofocus and leaves focus outside
 					// the dialog — which breaks ESC-to-close. Hand focus off to the
 					// Sheet by skipping the dropdown's auto-restore.
 					e.preventDefault();
 				}}
 			>
-				{onView && (
-					<DropdownMenuItem
-						className="cursor-pointer"
-						data-testid={`mcp-client-view-${client.config.client_id}-menu-item`}
-						onSelect={(e) => {
-							e.preventDefault();
-							onView(client);
-							setIsOpen(false);
-						}}
-					>
-						<Eye className="h-4 w-4" />
-						{t("registry.actions.viewDetails")}
-					</DropdownMenuItem>
-				)}
 				{hasUpdateAccess && onEdit && (
 					<DropdownMenuItem
 						className="cursor-pointer"
@@ -400,6 +383,9 @@ export default function MCPClientsTable({
 	const hasCreateMCPClientAccess = useRbac(RbacResource.MCPGateway, RbacOperation.Create);
 	const hasUpdateMCPClientAccess = useRbac(RbacResource.MCPGateway, RbacOperation.Update);
 	const hasDeleteMCPClientAccess = useRbac(RbacResource.MCPGateway, RbacOperation.Delete);
+	// Every item in a row's actions menu needs one of these, so without either
+	// the menu would open empty: the column is left out instead.
+	const hasRowActions = hasUpdateMCPClientAccess || hasDeleteMCPClientAccess;
 	// Externally reachable base URL, so the endpoint cell copies the full URL callers use.
 	const { data: coreConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const baseUrl = getExternalBaseUrl(coreConfig?.client_config);
@@ -433,6 +419,8 @@ export default function MCPClientsTable({
 	const [bootstrapAuthorize, setBootstrapAuthorize] = useState<{
 		authorizeUrl: string;
 		oauthConfigId: string;
+		flowId?: string;
+		expiresAt?: string;
 		mcpClientId: string;
 		isPerUserOauth: boolean;
 		perUserDiscovery: boolean;
@@ -540,6 +528,10 @@ export default function MCPClientsTable({
 				setBootstrapAuthorize({
 					authorizeUrl: response.authorize_url,
 					oauthConfigId: response.oauth_config_id,
+					// A client verifying on the registration it already has (per-caller
+					// discovery turned off) signs in through a flow: its config already
+					// reads "authorized", so the dialog has to poll the flow instead.
+					...(response.flow_id ? { flowId: response.flow_id, expiresAt: response.expires_at } : {}),
 					mcpClientId: client.config.client_id,
 					isPerUserOauth,
 					perUserDiscovery: perUserDiscoveryOn(client.config),
@@ -744,10 +736,7 @@ export default function MCPClientsTable({
 		reauthorizingClients.includes(clientId) ||
 		verifyingExchangeClients.includes(clientId);
 
-	const renderActionsMenu = (
-		client: MCPClient,
-		options: { onView?: (client: MCPClient) => void; onEdit?: (client: MCPClient) => void; triggerTestId?: string },
-	) => (
+	const renderActionsMenu = (client: MCPClient, options: { onEdit?: (client: MCPClient) => void; triggerTestId?: string }) => (
 		<MCPClientActionsMenu
 			client={client}
 			hasUpdateAccess={hasUpdateMCPClientAccess}
@@ -759,7 +748,6 @@ export default function MCPClientsTable({
 			isVerifyingExchange={verifyingExchangeClients.includes(client.config.client_id)}
 			canReconnect={canReconnectMCPClient(client.config)}
 			triggerTestId={options.triggerTestId}
-			onView={options.onView}
 			onEdit={options.onEdit}
 			onReconnect={(c) => void handleReconnect(c)}
 			onRefreshTools={(c) => void handleRefreshTools(c)}
@@ -800,10 +788,7 @@ export default function MCPClientsTable({
 					onNavigate={handleDetailNavigate}
 					hasPrev={selectedMCPClientIndex > 0 || offset > 0}
 					hasNext={(selectedMCPClientIndex >= 0 && selectedMCPClientIndex < mcpClients.length - 1) || offset + limit < totalCount}
-					actions={
-						(hasUpdateMCPClientAccess || hasDeleteMCPClientAccess) &&
-						renderActionsMenu(viewedMCPClient, { triggerTestId: "mcpclient-view-actions-btn" })
-					}
+					actions={hasRowActions && renderActionsMenu(viewedMCPClient, { triggerTestId: "mcpclient-view-actions-btn" })}
 					onAlertAction={hasUpdateMCPClientAccess ? (kind) => handleAlertAction(viewedMCPClient, kind) : undefined}
 					alertActionBusy={isClientBusy(viewedMCPClient.config.client_id)}
 				/>
@@ -820,7 +805,9 @@ export default function MCPClientsTable({
 							{reregisterTarget?.config.auth_type === "per_user_oauth" ? t("registry.reregister.perUser") : t("registry.reregister.shared")}{" "}
 							{perUserDiscoveryOn(reregisterTarget?.config)
 								? t("registry.reregister.perUserDiscovery")
-								: t("registry.reregister.otherwise")}
+								: reregisterTarget?.state === "pending_verification"
+									? null
+									: t("registry.reregister.otherwise")}
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
@@ -880,8 +867,41 @@ export default function MCPClientsTable({
 						setBootstrapAuthorize(null);
 						toast({ title: t("registry.toast.authorizationFailed"), description: error, variant: "destructive" });
 					}}
+					onRetry={
+						bootstrapAuthorize.flowId
+							? async () => {
+									// As for reauthorize: a timed-out or denied flow is dead
+									// server-side, so Retry starts a fresh one.
+									const response = await initiateVerification(bootstrapAuthorize.mcpClientId).unwrap();
+									setBootstrapAuthorize(
+										(prev) =>
+											prev && {
+												...prev,
+												authorizeUrl: response.authorize_url,
+												oauthConfigId: response.oauth_config_id,
+												flowId: response.flow_id,
+												expiresAt: response.expires_at,
+											},
+									);
+								}
+							: undefined
+					}
+					onRegisterNewClient={
+						bootstrapAuthorize.flowId
+							? () => {
+									// Signing in on the client the server kept fails for good
+									// once its provider forgets that client, so a failed sign-in
+									// offers the reregister confirmation the menu would.
+									const target = mcpClients.find((c) => c.config.client_id === bootstrapAuthorize.mcpClientId);
+									setBootstrapAuthorize(null);
+									if (target) setReregisterTarget(target);
+								}
+							: undefined
+					}
 					authorizeUrl={bootstrapAuthorize.authorizeUrl}
 					oauthConfigId={bootstrapAuthorize.oauthConfigId}
+					flowId={bootstrapAuthorize.flowId}
+					expiresAt={bootstrapAuthorize.expiresAt}
 					mcpClientId={bootstrapAuthorize.mcpClientId}
 					isPerUserOauth={bootstrapAuthorize.isPerUserOauth}
 					perUserDiscovery={bootstrapAuthorize.perUserDiscovery}
@@ -1160,13 +1180,13 @@ export default function MCPClientsTable({
 									/>
 								</TableHead>
 								<TableHead className="w-[90px] font-semibold">{t("registry.columns.status")}</TableHead>
-								<TableHead className={`bg-muted sticky right-0 z-10 w-14 text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
+								{hasRowActions && <TableHead className={`bg-muted sticky right-0 z-10 w-14 text-right ${PIN_SHADOW_RIGHT}`}></TableHead>}
 							</TableRow>
 						</TableHeader>
 						<TableBody>
 							{mcpClients.length === 0 ? (
 								<TableRow>
-									<TableCell colSpan={12} className="h-24 text-center">
+									<TableCell colSpan={hasRowActions ? 12 : 11} className="h-24 text-center">
 										<span className="text-muted-foreground text-sm">{t("registry.noMatch")}</span>
 									</TableCell>
 								</TableRow>
@@ -1205,9 +1225,20 @@ export default function MCPClientsTable({
 											data-testid={`mcp-client-row-${c.config.client_id}`}
 										>
 											<TableCell className="font-medium">
-												<div className="truncate" title={c.config.name}>
+												{/* The row opens the details on click; the name is the same thing as a
+												    button, so it can be reached and opened from the keyboard. */}
+												<button
+													type="button"
+													className="focus-visible:ring-ring block max-w-full cursor-pointer truncate rounded-sm text-left outline-none hover:underline focus-visible:ring-1 focus-visible:ring-offset-1"
+													title={c.config.name}
+													onClick={(e) => {
+														e.stopPropagation();
+														handleRowClick(c);
+													}}
+													data-testid={`mcp-client-name-${c.config.client_id}`}
+												>
 													{c.config.name}
-												</div>
+												</button>
 											</TableCell>
 											<TableCell>
 												<ClientEndpointCell slug={c.config.endpoint_slug} baseUrl={baseUrl} />
@@ -1306,12 +1337,14 @@ export default function MCPClientsTable({
 													}}
 												/>
 											</TableCell>
-											<TableCell
-												className={`bg-card group-hover:bg-muted/50 sticky right-0 z-10 text-right ${PIN_SHADOW_RIGHT}`}
-												onClick={(e) => e.stopPropagation()}
-											>
-												{renderActionsMenu(c, { onView: handleRowClick, onEdit: handleEdit })}
-											</TableCell>
+											{hasRowActions && (
+												<TableCell
+													className={`bg-card group-hover:bg-muted/50 sticky right-0 z-10 text-right ${PIN_SHADOW_RIGHT}`}
+													onClick={(e) => e.stopPropagation()}
+												>
+													{renderActionsMenu(c, { onEdit: handleEdit })}
+												</TableCell>
+											)}
 										</TableRow>
 									);
 								})
