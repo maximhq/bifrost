@@ -59,12 +59,6 @@ var (
 // copy whose Input slice is the new one.
 func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (result *schemas.BifrostRequest, sc *schemas.LLMPluginShortCircuit, err error) {
 	result = req
-	// Core reuses one ctx across MCP agent-loop iterations and fallbacks, so
-	// estimates left by an earlier attempt must not describe this request.
-	// Checking before clearing keeps the common case allocation-free.
-	if ctx != nil && ctx.Value(ContextKeyEstimatedBefore) != nil {
-		clearEstimates(ctx)
-	}
 	defer func() {
 		if r := recover(); r != nil {
 			p.warn("promptcompression: recovered from panic, sending original request: %v", r)
@@ -73,6 +67,20 @@ func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostReq
 	}()
 	if req == nil {
 		return req, nil, nil
+	}
+	// Other request types never touch the context: a fallback keeps the request
+	// type, so only Chat and Responses attempts can follow a compressed one.
+	switch req.RequestType {
+	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest,
+		schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+	default:
+		return req, nil, nil
+	}
+	// Core reuses one ctx across MCP agent-loop iterations and fallbacks, so
+	// estimates left by an earlier attempt must not describe this request.
+	// Looking before clearing keeps the common case allocation-free.
+	if ctx.Value(ContextKeyEstimatedBefore) != nil {
+		clearEstimates(ctx)
 	}
 	// Raw bodies bypass the structured Input entirely; editing it would be a no-op at best.
 	if raw, _ := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); raw {

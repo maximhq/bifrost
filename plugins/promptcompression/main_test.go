@@ -315,8 +315,10 @@ func TestPreLLMHookSkippedFallbackClearsEarlierEstimates(t *testing.T) {
 	_, _, err = p.PostLLMHook(ctx, nil, &schemas.BifrostError{}) // first attempt fails
 	require.NoError(t, err)
 
-	// the fallback attempt is not compressed (embedding): nothing may leak
-	_, _, err = p.PreLLMHook(ctx, &schemas.BifrostRequest{RequestType: schemas.EmbeddingRequest})
+	// the fallback attempt is not compressed (too little to save): nothing may leak
+	small := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{
+		Input: rounds("small", "small", "small", "small")}}
+	_, _, err = p.PreLLMHook(ctx, small)
 	require.NoError(t, err)
 	_, _, err = p.PostLLMHook(ctx, &schemas.BifrostResponse{}, nil)
 	require.NoError(t, err)
