@@ -2599,7 +2599,7 @@ func TestWarpToolsAcceptEveryLogsFilter(t *testing.T) {
 	require.Equal(t, []string{"semantic"}, filters.ComplexityMechanisms)
 	require.Equal(t, []string{"get_weather"}, filters.ToolCallNames)
 	require.Equal(t, []string{"curl/8"}, filters.UserAgents)
-	require.Equal(t, map[string]string{"env": "prod"}, filters.MetadataFilters)
+	require.Equal(t, logstore.MetadataFilterMap{"env": {"prod"}}, filters.MetadataFilters)
 	require.Equal(t, "sess-1", filters.SessionID)
 	require.Equal(t, "req-0", filters.ParentRequestID)
 	require.Equal(t, "req-1", filters.RequestID)

@@ -22,6 +22,8 @@
 		"provider": "Provider",
 		"model": "Model",
 		"app": "App",
+		"clientIp": "Client IP",
+		"userEmail": "User Email",
 		"server": "Server",
 		"toolName": "Tool Name",
 		"serviceTier": "Service Tier",

@@ -6216,7 +6216,6 @@ func TestGemini35ThinkingAndStreamingUsage(t *testing.T) {
 				effort:    "low",
 				maxTokens: 4096,
 				summary:   schemas.Ptr("none"),
-				display:   schemas.Ptr("omitted"),
 				wantLevel: "low",
 				wantInc:   false,
 			},
@@ -6229,6 +6228,7 @@ func TestGemini35ThinkingAndStreamingUsage(t *testing.T) {
 						Reasoning: &schemas.ChatReasoning{
 							Effort:    schemas.Ptr(tc.effort),
 							MaxTokens: schemas.Ptr(tc.maxTokens),
+							Summary:   tc.summary,
 							Display:   tc.display,
 						},
 					},

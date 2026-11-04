@@ -1053,6 +1053,75 @@ def test_adaptive_routing_put_descriptions_state_the_empty_reroute_target():
     assert not problems, "reroute_target descriptions drift from the settings handler:\n    " + "\n    ".join(problems)
 
 
+HANDLERS_DIR = REPO_ROOT / "transports" / "bifrost-http" / "handlers"
+
+# Every list handler that calls ClampPaginationParams, mapped to the fragment that documents
+# its GET. The clamp turns limit <= 0 into 25 and anything above 100 into 100 without an error,
+# so a spec that leaves out the bound reads like `?limit=1000` returns 1000 rows.
+CLAMPED_LIST_HANDLERS = {
+    "getVirtualKeys": ("governance.yaml", "virtual-keys"),
+    "getTeams": ("governance.yaml", "teams"),
+    "getCustomers": ("governance.yaml", "customers"),
+    "getModelConfigs": ("governance.yaml", "model-configs"),
+    "getPricingOverrides": ("governance.yaml", "pricing-overrides"),
+    "getRoutingRules": ("routing.yaml", "rules"),
+    "getMCPClientsPaginated": ("mcp.yaml", "clients"),
+    "listVirtualMCPs": ("virtualmcps.yaml", "virtual-mcps"),
+    "listPushConfigs": ("agents.yaml", "agent-push-configs"),
+    "listWebhookEndpoints": ("webhooks.yaml", "webhooks"),
+    "listWebhookDeliveries": ("webhooks.yaml", "webhooks-deliveries"),
+    "searchWebhookDeliveries": ("webhooks.yaml", "webhooks-deliveries-search"),
+}
+
+# Clamped handlers whose route has no operation in the spec yet. Listed so the gap stays visible.
+UNDOCUMENTED_CLAMPED_HANDLERS = {
+    "getMCPLibrary",  # GET /api/mcp/library
+}
+
+GO_FUNC_RE = re.compile(r"^func (?:\([^)]*\) )?(\w+)\(")
+
+
+def clamped_handler_names() -> set[str]:
+    names = set()
+    for path in sorted(HANDLERS_DIR.glob("*.go")):
+        if path.name.endswith("_test.go"):
+            continue
+        current = None
+        for line in path.read_text(encoding="utf-8").splitlines():
+            match = GO_FUNC_RE.match(line)
+            if match:
+                current = match.group(1)
+            elif current and current != "ClampPaginationParams" and "ClampPaginationParams(" in line:
+                names.add(current)
+    return names
+
+
+def test_clamped_list_endpoints_document_the_page_bounds():
+    """Each handler that clamps limit must document maximum 100 and default 25 on that limit.
+    A new clamped handler fails here until it is added to CLAMPED_LIST_HANDLERS."""
+    found = clamped_handler_names()
+    known = set(CLAMPED_LIST_HANDLERS) | UNDOCUMENTED_CLAMPED_HANDLERS
+    problems = []
+    for name in sorted(found - known):
+        problems.append(f"{name}: calls ClampPaginationParams but is not in CLAMPED_LIST_HANDLERS")
+    for name in sorted(known - found):
+        problems.append(f"{name}: listed but no longer calls ClampPaginationParams")
+    for name, (filename, key) in sorted(CLAMPED_LIST_HANDLERS.items()):
+        operation = ((load(PATHS_DIR / filename) or {}).get(key) or {}).get("get") or {}
+        params = {p.get("name"): p for p in operation.get("parameters") or [] if isinstance(p, dict)}
+        schema = (params.get("limit") or {}).get("schema") or {}
+        if not schema:
+            problems.append(f"{name} ({filename}#/{key}): no limit parameter")
+            continue
+        if schema.get("maximum") != 100 or schema.get("default") != 25:
+            problems.append(
+                f"{name} ({filename}#/{key}): limit schema {schema} lacks maximum: 100 and default: 25"
+            )
+        if "offset" not in params:
+            problems.append(f"{name} ({filename}#/{key}): no offset parameter")
+    assert not problems, "clamped list endpoints drift from ClampPaginationParams:\n    " + "\n    ".join(problems)
+
+
 check("legacy aliases are mounted and their successors documented", test_legacy_aliases_mount_legacy_fragments)
 check("secret-capable values accept bare strings (EnvVar oneOf)", test_secret_capable_values_accept_bare_strings)
 check("vertex aws_workload_identity matches config.schema.json", test_vertex_aws_workload_identity_contract)
@@ -1073,5 +1142,6 @@ check("oauth token_url descriptions state the loopback and URL-part rules", test
 check("adaptive routing legacy alias declares Link and Warning on every response", test_adaptive_routing_legacy_alias_declares_deprecation_headers_on_every_response)
 check("adaptive routing PUT descriptions state that an empty reroute_target is stored as pool", test_adaptive_routing_put_descriptions_state_the_empty_reroute_target)
 
+check("clamped list endpoints document limit maximum 100 and default 25", test_clamped_list_endpoints_document_the_page_bounds)
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(0 if failed == 0 else 1)

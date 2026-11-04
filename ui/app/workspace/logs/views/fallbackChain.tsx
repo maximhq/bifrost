@@ -8,7 +8,7 @@ import { Check, Loader2, X } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
-import { buildFallbackChain, fallbackChainOutcome, type FallbackChainOutcome } from "../sheets/logDetailView.utils";
+import { buildFallbackChain, fallbackChainOutcome, fallbackChainRootId, type FallbackChainOutcome } from "../sheets/logDetailView.utils";
 
 // The search endpoint's page cap. The server takes any number of fallbacks, so
 // one page this size holds every attempt of any real request.
@@ -21,7 +21,7 @@ const CHAIN_SETTLE_MS = 10_000;
 // Loads the other attempts of the request this row belongs to. Returns a chain
 // only when there is more than one attempt, so ordinary requests render nothing.
 export function useFallbackChain(log: LogEntry): LogEntry[] | undefined {
-	const rootId = log.parent_request_id || log.id;
+	const rootId = fallbackChainRootId(log);
 	const skip = !!log.batch_debug || !!log.video_debug;
 	const [pollingInterval, setPollingInterval] = useState(0);
 	const { currentData: children } = useGetLogsQuery(
@@ -37,7 +37,7 @@ export function useFallbackChain(log: LogEntry): LogEntry[] | undefined {
 		{ skip, pollingInterval, skipPollingIfUnfocused: true },
 	);
 	const { currentData: root } = useGetLogByIdQuery(rootId, {
-		skip: skip || !log.parent_request_id,
+		skip: skip || rootId === log.id,
 		pollingInterval,
 		skipPollingIfUnfocused: true,
 	});

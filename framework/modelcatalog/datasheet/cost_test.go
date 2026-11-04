@@ -3627,6 +3627,31 @@ func TestCalculateCost_VideoRetrieveIsNotBilled(t *testing.T) {
 	assert.Zero(t, s.CalculateCost(resp, nil))
 }
 
+// A Gemini Interactions poll names no model on the request: the agent that ran comes back on the
+// response as ServedModel, and the run is priced at that agent's rates. Without it the record has
+// no model to look up and is left unpriced.
+func TestCalculateCost_InteractionsPollPricedAtServedAgent(t *testing.T) {
+	agent := chatPricing(0.000002, 0.000012)
+	agent.Provider, agent.Model = "gemini", "deep-research-preview-04-2026"
+	store := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(agent.Model, agent.Provider, agent.Mode): agent,
+	})
+	usage := &schemas.BifrostPassthroughUsage{LLMUsage: &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 100, TotalTokens: 1100}}
+	poll := func(served string) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{
+			PassthroughUsage: usage,
+			ServedModel:      served,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:     schemas.PassthroughRequest,
+				PassthroughPath: "/interactions/int_1",
+				RoutingInfo:     routingInfoFor(schemas.Gemini, ""),
+			},
+		}}
+	}
+	assert.InDelta(t, 1000*0.000002+100*0.000012, store.CalculateCost(poll(agent.Model), nil), 1e-12)
+	assert.Zero(t, store.CalculateCost(poll(""), nil), "with no model anywhere there is nothing to price")
+}
+
 // Passthrough responses can carry a provider-reported cost (e.g. Runware's per-task cost read from
 // the raw body). It must win verbatim, with no datasheet entry required.
 func TestCalculateCost_PassthroughProviderComputedCost(t *testing.T) {

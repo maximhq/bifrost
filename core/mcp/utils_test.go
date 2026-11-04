@@ -753,3 +753,144 @@ func BenchmarkDescribeUnservableInput(b *testing.B) {
 		})
 	}
 }
+
+// A gateway caller's capabilities are declared upstream only where Bifrost can relay them.
+func TestRelayableCapabilities(t *testing.T) {
+	const ui = schemas.MCPAppsExtension
+	elicitation := &mcp.ElicitationCapability{}
+	sampling := &mcp.SamplingCapability{}
+	cases := []struct {
+		name            string
+		caller, relayed mcp.ClientCapabilities
+		want            mcp.ClientCapabilities
+	}{
+		{name: "nothing relayed", caller: mcp.ClientCapabilities{Elicitation: elicitation, Sampling: sampling}, want: mcp.ClientCapabilities{}},
+		{name: "relayed and declared",
+			caller:  mcp.ClientCapabilities{Elicitation: elicitation, Sampling: sampling},
+			relayed: mcp.ClientCapabilities{Elicitation: &mcp.ElicitationCapability{}},
+			want:    mcp.ClientCapabilities{Elicitation: elicitation}},
+		{name: "relayed but not declared", relayed: mcp.ClientCapabilities{Elicitation: &mcp.ElicitationCapability{}}, want: mcp.ClientCapabilities{}},
+		{name: "extensions by name",
+			caller:  mcp.ClientCapabilities{Extensions: map[string]any{ui: map[string]any{"mimeTypes": []any{schemas.MCPAppsMimeType}}, "other": map[string]any{}}},
+			relayed: mcp.ClientCapabilities{Extensions: map[string]any{ui: map[string]any{}}},
+			want:    mcp.ClientCapabilities{Extensions: map[string]any{ui: map[string]any{"mimeTypes": []any{schemas.MCPAppsMimeType}}}}},
+		{name: "experimental and tasks are never relayed",
+			caller:  mcp.ClientCapabilities{Experimental: map[string]any{"x": true}, Tasks: &mcp.TasksCapability{}},
+			relayed: mcp.ClientCapabilities{Experimental: map[string]any{"x": true}, Tasks: &mcp.TasksCapability{}},
+			want:    mcp.ClientCapabilities{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, relayableCapabilities(tc.caller, tc.relayed))
+		})
+	}
+}
+
+// A caller can answer an elicitation only in a mode it declared; an empty capability means form only.
+func TestCanAnswer_ElicitationModes(t *testing.T) {
+	form := mcp.InputRequests{"q": {Method: mcp.MethodElicitationCreate, Elicitation: &mcp.ElicitationParams{Message: "Which environment?"}}}
+	url := mcp.InputRequests{"q": {Method: mcp.MethodElicitationCreate, Elicitation: &mcp.ElicitationParams{Mode: mcp.ElicitationModeURL, URL: "https://example.com/connect"}}}
+	cases := []struct {
+		name     string
+		cap      *mcp.ElicitationCapability
+		requests mcp.InputRequests
+		want     bool
+	}{
+		{"empty capability answers form", &mcp.ElicitationCapability{}, form, true},
+		{"empty capability cannot answer url", &mcp.ElicitationCapability{}, url, false},
+		{"form capability cannot answer url", &mcp.ElicitationCapability{Form: &struct{}{}}, url, false},
+		{"url capability answers url", &mcp.ElicitationCapability{URL: &struct{}{}}, url, true},
+		{"url-only capability cannot answer form", &mcp.ElicitationCapability{URL: &struct{}{}}, form, false},
+		{"no capability", nil, form, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, canAnswer(mcp.ClientCapabilities{Elicitation: tc.cap}, tc.requests))
+		})
+	}
+}
+
+// The explanation of a mixed input_required names the same request every time.
+func TestDescribeInputRequests_IsStable(t *testing.T) {
+	requests := mcp.InputRequests{
+		"a_summary": {Method: mcp.MethodSamplingCreateMessage, Sampling: &mcp.CreateMessageParams{MaxTokens: 10}},
+		"b_login":   {Method: mcp.MethodElicitationCreate, Elicitation: &mcp.ElicitationParams{Message: "GitHub username?"}},
+		"c_roots":   {Method: mcp.MethodListRoots, Roots: &mcp.ListRootsParams{}},
+	}
+	want := describeInputRequests(requests, "upstream")
+	assert.Contains(t, want, "an LLM completion (sampling)", "the first request by id is named")
+	for range 50 {
+		require.Equal(t, want, describeInputRequests(requests, "upstream"))
+	}
+}
+
+// MCP Apps fields are read from the tool's _meta; no visibility means model and app.
+func TestToolMetadata_MCPAppsFields(t *testing.T) {
+	withMeta := func(fields map[string]any) *mcp.Tool {
+		tool := mcp.NewTool("t")
+		tool.Meta = &mcp.Meta{AdditionalFields: fields}
+		return &tool
+	}
+	cases := []struct {
+		name         string
+		tool         *mcp.Tool
+		wantURI      string
+		wantVisible  []string
+		model, app   bool
+		wantMetaJSON string
+	}{
+		{name: "resource and visibility", tool: withMeta(map[string]any{"ui": map[string]any{"resourceUri": "ui://charts/view", "visibility": []any{"app"}}}),
+			wantURI: "ui://charts/view", wantVisible: []string{"app"}, model: false, app: true,
+			wantMetaJSON: `{"ui":{"resourceUri":"ui://charts/view","visibility":["app"]}}`},
+		{name: "deprecated resourceUri key", tool: withMeta(map[string]any{"ui/resourceUri": "ui://charts/view"}),
+			wantURI: "ui://charts/view", model: true, app: true, wantMetaJSON: `{"ui/resourceUri":"ui://charts/view"}`},
+		{name: "non-ui URI is not an app resource", tool: withMeta(map[string]any{"ui": map[string]any{"resourceUri": "https://example.com/view"}}),
+			model: true, app: true, wantMetaJSON: `{"ui":{"resourceUri":"https://example.com/view"}}`},
+		{name: "model only", tool: withMeta(map[string]any{"ui": map[string]any{"visibility": []any{"model"}}}),
+			wantVisible: []string{"model"}, model: true, app: false, wantMetaJSON: `{"ui":{"visibility":["model"]}}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := toolMetadata(tc.tool)
+			require.NotNil(t, got)
+			assert.Equal(t, tc.wantURI, got.UIResourceURI)
+			assert.Equal(t, tc.wantVisible, got.Visibility)
+			assert.Equal(t, tc.model, got.ModelVisible())
+			assert.Equal(t, tc.app, got.AppVisible())
+			assert.JSONEq(t, tc.wantMetaJSON, string(got.Meta))
+		})
+	}
+
+	plain := mcp.NewTool("plain")
+	got := toolMetadata(&plain)
+	assert.Nil(t, got, "a tool with no metadata keeps none")
+	assert.True(t, got.ModelVisible())
+	assert.True(t, got.AppVisible())
+}
+
+// A client name with "/", "?" or "#" stays one path segment of a namespaced ui:// URI, so two clients
+// never share a prefix and the URI keeps its path.
+func TestGatewayUIResourceURI_EscapesClientName(t *testing.T) {
+	cases := []struct{ client, uri, want string }{
+		{"apps", "ui://dash/view", "ui://apps/dash/view"},
+		{"a/b", "ui://x", "ui://a%2Fb/x"},
+		{"q?a#b", "ui://x", "ui://q%3Fa%23b/x"},
+		{"apps", "https://example.com/x", "https://example.com/x"},
+	}
+	for _, tc := range cases {
+		got := GatewayUIResourceURI(tc.client, tc.uri)
+		assert.Equal(t, tc.want, got, tc.client)
+		back, ok := upstreamUIResourceURI(tc.client, got)
+		assert.Equal(t, tc.uri, back, tc.client)
+		assert.Equal(t, got != tc.uri, ok, tc.client)
+	}
+	_, ok := upstreamUIResourceURI("a", GatewayUIResourceURI("a/b", "ui://x"))
+	assert.False(t, ok, "client a must not own client a/b's resources")
+}
+
+func TestToolClientName(t *testing.T) {
+	assert.Equal(t, "apps", ToolClientName("apps-view"))
+	assert.Equal(t, "apps", ToolClientName("apps-my-tool"))
+	assert.Equal(t, "", ToolClientName("executeToolCode"), "an unprefixed tool has no client")
+	assert.Equal(t, "", ToolClientName("-x"))
+}

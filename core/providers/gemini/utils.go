@@ -1612,6 +1612,9 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 		if params.Reasoning.Display != nil && (*params.Reasoning.Display == "omitted" || *params.Reasoning.Display == "none") {
 			includeThoughts = false
 		}
+		if params.Reasoning.Summary != nil && *params.Reasoning.Summary == "none" {
+			includeThoughts = false
+		}
 		config.ThinkingConfig = &GenerationConfigThinkingConfig{
 			IncludeThoughts: includeThoughts,
 		}
