@@ -4,14 +4,15 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.47
+**Latest Version:** 2.1.48
 
 ## Changelog
 
 ### Upcoming
 
-- Added `bifrost.mcp.clientConfigs[].oauthConfig.useClientMetadataDocument` (`mcp.client_configs[].oauth_config.use_client_metadata_document`): sign in with Bifrost's Client ID Metadata Document even when the authorization server does not advertise support. Needs Bifrost on a public HTTPS address; cannot be combined with `clientId`.
+- Added `bifrost.mcp.clientConfigs[].oauthConfig.useClientMetadataDocument` (`mcp.client_configs[].oauth_config.use_client_metadata_document`): register with Bifrost's Client ID Metadata Document even when the authorization server does not advertise support. Needs Bifrost on a public HTTPS address; cannot be combined with `clientId`.
 - Added `bifrost.mcp.clientConfigs[].oauthConfig.resource` (`mcp.client_configs[].oauth_config.resource`): the OAuth resource indicator, discovered from the MCP server when omitted.
+- Added `workloadIdentity.additionalTrustedIssuers` to every `bifrost.scim.config` provider (`scim_config.config.workloadIdentity`, enterprise): token issuers besides the SSO provider whose workload tokens can be mapped to service accounts. Each issuer is known by a `name` unique without case, with `kind` `aws` (named by IAM role ARN) or `generic` (which requires `identityClaim` and `machineCheck`), an https `issuerUrl` (or `http` on `localhost`, `127.x.x.x` or `[::1]`, for local testing) with no user info, query or fragment, and `audiences`. In `machineCheck`, the values schema requires `claim` for `sub_equals_claim`, `claim_equals` and `claim_prefix`, and a non-empty `value` for `claim_equals` and `claim_prefix`; `kind: any` takes neither. Workloads are mapped to service accounts in the dashboard or through the API, so there are no mapping values.
 
 ### 2.1.47
 

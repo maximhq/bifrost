@@ -1497,6 +1497,27 @@ bifrost:
       #   accessTokenTtl: 86400   # seconds, 60-86400; 0 or omitted = 86400
       #   provisionUsers: false   # create a Bifrost user for an unknown assertion subject instead of refusing
       #
+      # # Workload identity (Enterprise). Shared across every provider above: token issuers,
+      # # besides the provider itself, whose workload tokens can be mapped to service accounts.
+      # # Workloads are mapped in the dashboard (the service account's Workload identity tab) or
+      # # through the API, not in values. Mappings refer to an issuer by its name, unique without
+      # # case: renaming or removing it leaves them without an issuer, and changing its issuerUrl,
+      # # kind or identityClaim stops them working (Bifrost refuses that save while any exist).
+      # # Kinds: aws (named by IAM role ARN) or generic (any OIDC issuer; also set identityClaim and
+      # # machineCheck, e.g. Okta: identityClaim cid, machineCheck {kind: sub_equals_claim, claim: cid}).
+      # workloadIdentity:
+      #   additionalTrustedIssuers:
+      #     - name: "AWS prod"
+      #       kind: "aws"
+      #       issuerUrl: "https://<id>.tokens.sts.global.api.aws"  # exactly as tokens carry it in iss
+      #       audiences: ["https://bifrost.example.com"]
+      #     - name: "Okta workloads"
+      #       kind: "generic"
+      #       issuerUrl: "https://acme.okta.com/oauth2/default"
+      #       audiences: ["api://bifrost"]
+      #       identityClaim: "cid"            # matched exactly
+      #       machineCheck: { kind: "sub_equals_claim", claim: "cid" }  # or {kind: any} to take only mapped IDs
+      #
       # # Auth proxy / identity-aware proxy (Enterprise). Shared across every provider above:
       # # when a Zero Trust / ZTNA proxy fronts the IdP, Bifrost reads the login credential from the
       # # proxy's header and validates it against the proxy's own keys (not the IdP's).
