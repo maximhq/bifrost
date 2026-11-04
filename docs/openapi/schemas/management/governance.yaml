@@ -3145,6 +3145,9 @@ ComplexitySemanticStatus:
           type: string
           enum: [disabled, ready]
           description: disabled = no llm configuration; ready = the llm block is configured. The classifier has no warmup, so it is ready as soon as it is saved.
+    suggestion_default_instructions:
+      type: string
+      description: The shipped phrase-suggestion instructions, served so a configuration client can seed its editor and offer a reset. The tier definitions and fixed output and safety rules are not exposed.
     llm_default_prompt:
       type: string
       description: The shipped classification guidance, served so a configuration client can seed its prompt editor and offer a reset without holding a copy that drifts from the gateway's. Always present in the response, regardless of whether an llm block is configured.
@@ -3242,6 +3245,296 @@ ComplexityAnalyzerConfig:
       $ref: '#/ComplexityLLMConfig'
     session:
       $ref: '#/ComplexitySessionConfig'
+    suggestions:
+      $ref: '#/ComplexitySuggestionsConfig'
+
+ComplexitySuggestionsConfig:
+  type: object
+  description: Phrase suggestions for the semantic router. When enabled, a sample of the vectors the semantic classifier already computes is kept under each request's log ID (request text stays in the logs), and a run on the schedule clusters that traffic and asks the suggestion model for phrases. Captured vectors are deleted with their logs and never kept longer than lookback_days or the log retention.
+  additionalProperties: false
+  required:
+    - enabled
+  properties:
+    enabled:
+      type: boolean
+      description: Capture a sample of classified requests and run suggestions on the schedule; default false.
+    sample_rate:
+      type: number
+      exclusiveMinimum: 0
+      maximum: 1
+      description: Share of classified requests captured; default 0.1.
+    lookback_days:
+      type: integer
+      minimum: 1
+      maximum: 90
+      description: Days of captured traffic a run draws on, and how long captured vectors are kept; default 7.
+    schedule:
+      $ref: '#/ComplexitySuggestionsSchedule'
+    max_clustered_requests:
+      type: integer
+      minimum: 1000
+      maximum: 100000
+      description: Most captured requests one run clusters; the rest of the window is counted into the clusters found. Default 20000.
+    min_cluster_requests:
+      type: integer
+      minimum: 2
+      maximum: 1000
+      description: Smallest cluster, in requests, a suggestion is written for; default 6.
+    provider:
+      type: string
+      description: Provider of the suggestion model. Set together with model; both omitted use the llm block's model.
+    model:
+      type: string
+      description: Suggestion model. Set together with provider; both omitted use the llm block's model.
+    instructions:
+      type: string
+      maxLength: 8000
+      description: Replaces the shipped suggestion instructions (served as suggestion_default_instructions by the status endpoint). Tier definitions and the fixed output and safety rules are added either way.
+
+ComplexitySuggestionsSchedule:
+  type: object
+  description: When suggestion runs start, on the calendar in timezone. Default daily at 03:00 UTC.
+  additionalProperties: false
+  properties:
+    every:
+      type: string
+      description: Hours that divide a day (1h-12h, from midnight), days (1d-30d, at at) or weeks (1w-4w, on weekday at at). Default 1d.
+      example: 1d
+    at:
+      type: string
+      description: Wall-clock start HH:MM for daily and weekly schedules; not allowed for hourly ones. Default 03:00.
+      example: "03:00"
+    weekday:
+      type: string
+      enum: [monday, tuesday, wednesday, thursday, friday, saturday, sunday]
+      description: Day weekly schedules run on. Default monday.
+    timezone:
+      type: string
+      description: IANA time zone. Default UTC.
+      example: Europe/Berlin
+
+ComplexitySuggestion:
+  type: object
+  description: One suggested set of phrases for a cluster of routed traffic.
+  properties:
+    id:
+      type: string
+    status:
+      type: string
+      enum: [open, accepted, dismissed, superseded]
+      description: open waits for the user; accepted and dismissed are the user's call and are left alone by later runs; superseded was open when a later run no longer proposed it.
+    tier:
+      type: string
+      enum: [SIMPLE, MEDIUM, COMPLEX]
+    phrases:
+      type: array
+      items:
+        type: string
+    category:
+      type: string
+      enum: [uncovered, weak, misrouted, mixed]
+      description: Why the cluster needs phrases - no phrase matches it, it matches weakly, it routes confidently to a different tier, or its routing is split.
+    reason:
+      type: string
+    confidence:
+      type: string
+    request_count:
+      type: integer
+      description: Requests in the cluster over the lookback window, sampled ones counted once each.
+    coverage:
+      type: number
+      description: Share of the cluster's requests the phrases would take over routing for.
+    nearest_phrase:
+      type: string
+      description: The live phrase closest to the cluster's centre.
+    nearest_tier:
+      type: string
+    nearest_similarity:
+      type: number
+    example_log_ids:
+      type: array
+      items:
+        type: string
+      description: The requests the suggestion was written from, the most central first.
+    embedding_signature:
+      type: string
+    run_id:
+      type: string
+      description: The last run that proposed it.
+    last_seen_at:
+      type: string
+      format: date-time
+    resolved_at:
+      type: string
+      format: date-time
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+
+ComplexitySuggestionRun:
+  type: object
+  properties:
+    id:
+      type: string
+    triggered_by:
+      type: string
+      enum: [schedule, manual]
+    status:
+      type: string
+      enum: [running, succeeded, failed]
+    embedding_signature:
+      type: string
+    model:
+      type: string
+      description: provider/model the suggestions were written with.
+    prompt_hash:
+      type: string
+      description: SHA-256 of the instructions and tier guidance in force.
+    requests_read:
+      type: integer
+    clusters:
+      type: integer
+    created:
+      type: integer
+    refreshed:
+      type: integer
+    superseded:
+      type: integer
+    cost:
+      type: number
+      description: Cost of the run's suggestion-model calls, in USD.
+    error:
+      type: string
+      description: Why the run failed, or, on a run that succeeded, the clusters it left for the next run.
+    started_at:
+      type: string
+      format: date-time
+    finished_at:
+      type: string
+      format: date-time
+
+ComplexitySuggestionsList:
+  type: object
+  properties:
+    suggestions:
+      type: array
+      items:
+        $ref: '#/ComplexitySuggestion'
+    counts:
+      type: object
+      additionalProperties:
+        type: integer
+      description: Stored suggestions per status, whatever the filter selected.
+    enabled:
+      type: boolean
+    last_run:
+      $ref: '#/ComplexitySuggestionRun'
+    next_run_at:
+      type: string
+      format: date-time
+
+ComplexitySuggestionDetail:
+  type: object
+  properties:
+    suggestion:
+      $ref: '#/ComplexitySuggestion'
+    examples:
+      type: array
+      items:
+        type: object
+        properties:
+          log_id:
+            type: string
+          text:
+            type: string
+            description: The request text as the router embedded it. Absent for a log that was deleted, hides its content, or is outside the caller's access.
+
+ComplexitySuggestionStatusUpdate:
+  type: object
+  required: [status]
+  properties:
+    status:
+      type: string
+      enum: [open, accepted, dismissed]
+      description: accepted or dismissed from open; open again from either.
+
+ComplexityPhraseTestRequest:
+  type: object
+  required: [phrases]
+  properties:
+    phrases:
+      type: array
+      minItems: 1
+      maxItems: 10
+      items:
+        type: object
+        required: [tier, text]
+        properties:
+          tier:
+            type: string
+            enum: [SIMPLE, MEDIUM, COMPLEX]
+          text:
+            type: string
+    suggestion_id:
+      type: string
+      description: Route this suggestion's examples.
+    log_ids:
+      type: array
+      items:
+        type: string
+      description: Route these logs, instead of or as well as a suggestion's examples. At most 32 examples are routed.
+
+ComplexityRouting:
+  type: object
+  properties:
+    tier:
+      type: string
+    phrase:
+      type: string
+    similarity:
+      type: number
+    accepted:
+      type: boolean
+      description: Whether the similarity clears semantic.min_similarity.
+    candidate:
+      type: boolean
+      description: Whether the phrase is one being tested.
+
+ComplexityPhraseTest:
+  type: object
+  properties:
+    phrases:
+      type: array
+      items:
+        type: object
+        properties:
+          tier:
+            type: string
+          text:
+            type: string
+          nearest_existing:
+            $ref: '#/ComplexityRouting'
+    examples:
+      type: array
+      items:
+        type: object
+        properties:
+          log_id:
+            type: string
+          text:
+            type: string
+          current:
+            $ref: '#/ComplexityRouting'
+          with_phrases:
+            $ref: '#/ComplexityRouting'
+          changed:
+            type: boolean
+    taken_over:
+      type: number
+      description: Share of the examples the tested phrases now route.
 
 ComplexitySessionConfig:
   type: object

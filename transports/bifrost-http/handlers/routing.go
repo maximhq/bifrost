@@ -22,6 +22,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
+	"github.com/maximhq/bifrost/plugins/routing/complexity/suggest"
 	"github.com/maximhq/bifrost/plugins/routing/rules"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -77,6 +78,9 @@ type complexityStatusResponse struct {
 	// reason as LLMDefaultPrompt. The fixed question, decision rule, and
 	// context rule are never exposed because they are not editable.
 	DecisionDefaults configstore.ComplexityDecisionGuidanceDefaults `json:"decision_defaults"`
+	// SuggestionDefaultInstructions is the shipped phrase-suggestion
+	// instructions, served for the same reason: the editable half only.
+	SuggestionDefaultInstructions string `json:"suggestion_default_instructions"`
 }
 
 // RoutingHandler manages HTTP requests for routing rules and complexity analyzer config.
@@ -130,6 +134,7 @@ func (h *RoutingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	r.Handle(fasthttp.MethodPost, "/api/routing/complexity-analyzer-status/retry", lib.ChainMiddlewares(h.retryComplexitySemanticWarmup, middlewares...))
 	r.Handle(fasthttp.MethodGet, "/api/routing/complexity-analyzer-generations", lib.ChainMiddlewares(h.listComplexityGenerations, middlewares...))
 	r.Handle(fasthttp.MethodDelete, "/api/routing/complexity-analyzer-generations/{namespace}", lib.ChainMiddlewares(h.deleteComplexityGeneration, middlewares...))
+	h.registerComplexitySuggestionRoutes(r, middlewares...)
 }
 
 // RoutingTarget represents a single weighted routing target within a rule.
@@ -464,7 +469,11 @@ func (h *RoutingHandler) getComplexitySemanticStatus(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, fmt.Sprintf("failed to get semantic complexity status: %v", err))
 		return
 	}
-	response := complexityStatusResponse{SemanticStatusInfo: status, DecisionDefaults: configstore.DefaultComplexityDecisionGuidance()}
+	response := complexityStatusResponse{
+		SemanticStatusInfo:            status,
+		DecisionDefaults:              configstore.DefaultComplexityDecisionGuidance(),
+		SuggestionDefaultInstructions: suggest.DefaultInstructions(),
+	}
 	// The llm classifier state rides the same endpoint and must not be able to
 	// fail the whole response.
 	if llmStatus, llmErr := h.routingManager.GetComplexityLLMStatus(ctx); llmErr != nil {

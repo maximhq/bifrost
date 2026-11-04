@@ -85252,6 +85252,92 @@
                           "description": "Enable monotonic session tier retention; default is false."
                         }
                       }
+                    },
+                    "suggestions": {
+                      "type": "object",
+                      "description": "Phrase suggestions for the semantic router. When enabled, a sample of the vectors the semantic classifier already computes is kept under each request's log ID (request text stays in the logs), and a run on the schedule clusters that traffic and asks the suggestion model for phrases. Captured vectors are deleted with their logs and never kept longer than lookback_days or the log retention.",
+                      "additionalProperties": false,
+                      "required": [
+                        "enabled"
+                      ],
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean",
+                          "description": "Capture a sample of classified requests and run suggestions on the schedule; default false."
+                        },
+                        "sample_rate": {
+                          "type": "number",
+                          "exclusiveMinimum": 0,
+                          "maximum": 1,
+                          "description": "Share of classified requests captured; default 0.1."
+                        },
+                        "lookback_days": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 90,
+                          "description": "Days of captured traffic a run draws on, and how long captured vectors are kept; default 7."
+                        },
+                        "schedule": {
+                          "type": "object",
+                          "description": "When suggestion runs start, on the calendar in timezone. Default daily at 03:00 UTC.",
+                          "additionalProperties": false,
+                          "properties": {
+                            "every": {
+                              "type": "string",
+                              "description": "Hours that divide a day (1h-12h, from midnight), days (1d-30d, at at) or weeks (1w-4w, on weekday at at). Default 1d.",
+                              "example": "1d"
+                            },
+                            "at": {
+                              "type": "string",
+                              "description": "Wall-clock start HH:MM for daily and weekly schedules; not allowed for hourly ones. Default 03:00.",
+                              "example": "03:00"
+                            },
+                            "weekday": {
+                              "type": "string",
+                              "enum": [
+                                "monday",
+                                "tuesday",
+                                "wednesday",
+                                "thursday",
+                                "friday",
+                                "saturday",
+                                "sunday"
+                              ],
+                              "description": "Day weekly schedules run on. Default monday."
+                            },
+                            "timezone": {
+                              "type": "string",
+                              "description": "IANA time zone. Default UTC.",
+                              "example": "Europe/Berlin"
+                            }
+                          }
+                        },
+                        "max_clustered_requests": {
+                          "type": "integer",
+                          "minimum": 1000,
+                          "maximum": 100000,
+                          "description": "Most captured requests one run clusters; the rest of the window is counted into the clusters found. Default 20000."
+                        },
+                        "min_cluster_requests": {
+                          "type": "integer",
+                          "minimum": 2,
+                          "maximum": 1000,
+                          "description": "Smallest cluster, in requests, a suggestion is written for; default 6."
+                        },
+                        "provider": {
+                          "type": "string",
+                          "description": "Provider of the suggestion model. Set together with model; both omitted use the llm block's model."
+                        },
+                        "model": {
+                          "type": "string",
+                          "description": "Suggestion model. Set together with provider; both omitted use the llm block's model."
+                        },
+                        "instructions": {
+                          "type": "string",
+                          "maxLength": 8000,
+                          "description": "Replaces the shipped suggestion instructions (served as suggestion_default_instructions by the status endpoint). Tier definitions and the fixed output and safety rules are added either way."
+                        }
+                      }
                     }
                   }
                 }
@@ -85701,6 +85787,92 @@
                         "description": "Enable monotonic session tier retention; default is false."
                       }
                     }
+                  },
+                  "suggestions": {
+                    "type": "object",
+                    "description": "Phrase suggestions for the semantic router. When enabled, a sample of the vectors the semantic classifier already computes is kept under each request's log ID (request text stays in the logs), and a run on the schedule clusters that traffic and asks the suggestion model for phrases. Captured vectors are deleted with their logs and never kept longer than lookback_days or the log retention.",
+                    "additionalProperties": false,
+                    "required": [
+                      "enabled"
+                    ],
+                    "properties": {
+                      "enabled": {
+                        "type": "boolean",
+                        "description": "Capture a sample of classified requests and run suggestions on the schedule; default false."
+                      },
+                      "sample_rate": {
+                        "type": "number",
+                        "exclusiveMinimum": 0,
+                        "maximum": 1,
+                        "description": "Share of classified requests captured; default 0.1."
+                      },
+                      "lookback_days": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 90,
+                        "description": "Days of captured traffic a run draws on, and how long captured vectors are kept; default 7."
+                      },
+                      "schedule": {
+                        "type": "object",
+                        "description": "When suggestion runs start, on the calendar in timezone. Default daily at 03:00 UTC.",
+                        "additionalProperties": false,
+                        "properties": {
+                          "every": {
+                            "type": "string",
+                            "description": "Hours that divide a day (1h-12h, from midnight), days (1d-30d, at at) or weeks (1w-4w, on weekday at at). Default 1d.",
+                            "example": "1d"
+                          },
+                          "at": {
+                            "type": "string",
+                            "description": "Wall-clock start HH:MM for daily and weekly schedules; not allowed for hourly ones. Default 03:00.",
+                            "example": "03:00"
+                          },
+                          "weekday": {
+                            "type": "string",
+                            "enum": [
+                              "monday",
+                              "tuesday",
+                              "wednesday",
+                              "thursday",
+                              "friday",
+                              "saturday",
+                              "sunday"
+                            ],
+                            "description": "Day weekly schedules run on. Default monday."
+                          },
+                          "timezone": {
+                            "type": "string",
+                            "description": "IANA time zone. Default UTC.",
+                            "example": "Europe/Berlin"
+                          }
+                        }
+                      },
+                      "max_clustered_requests": {
+                        "type": "integer",
+                        "minimum": 1000,
+                        "maximum": 100000,
+                        "description": "Most captured requests one run clusters; the rest of the window is counted into the clusters found. Default 20000."
+                      },
+                      "min_cluster_requests": {
+                        "type": "integer",
+                        "minimum": 2,
+                        "maximum": 1000,
+                        "description": "Smallest cluster, in requests, a suggestion is written for; default 6."
+                      },
+                      "provider": {
+                        "type": "string",
+                        "description": "Provider of the suggestion model. Set together with model; both omitted use the llm block's model."
+                      },
+                      "model": {
+                        "type": "string",
+                        "description": "Suggestion model. Set together with provider; both omitted use the llm block's model."
+                      },
+                      "instructions": {
+                        "type": "string",
+                        "maxLength": 8000,
+                        "description": "Replaces the shipped suggestion instructions (served as suggestion_default_instructions by the status endpoint). Tier definitions and the fixed output and safety rules are added either way."
+                      }
+                    }
                   }
                 }
               }
@@ -86125,6 +86297,92 @@
                         "enabled": {
                           "type": "boolean",
                           "description": "Enable monotonic session tier retention; default is false."
+                        }
+                      }
+                    },
+                    "suggestions": {
+                      "type": "object",
+                      "description": "Phrase suggestions for the semantic router. When enabled, a sample of the vectors the semantic classifier already computes is kept under each request's log ID (request text stays in the logs), and a run on the schedule clusters that traffic and asks the suggestion model for phrases. Captured vectors are deleted with their logs and never kept longer than lookback_days or the log retention.",
+                      "additionalProperties": false,
+                      "required": [
+                        "enabled"
+                      ],
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean",
+                          "description": "Capture a sample of classified requests and run suggestions on the schedule; default false."
+                        },
+                        "sample_rate": {
+                          "type": "number",
+                          "exclusiveMinimum": 0,
+                          "maximum": 1,
+                          "description": "Share of classified requests captured; default 0.1."
+                        },
+                        "lookback_days": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 90,
+                          "description": "Days of captured traffic a run draws on, and how long captured vectors are kept; default 7."
+                        },
+                        "schedule": {
+                          "type": "object",
+                          "description": "When suggestion runs start, on the calendar in timezone. Default daily at 03:00 UTC.",
+                          "additionalProperties": false,
+                          "properties": {
+                            "every": {
+                              "type": "string",
+                              "description": "Hours that divide a day (1h-12h, from midnight), days (1d-30d, at at) or weeks (1w-4w, on weekday at at). Default 1d.",
+                              "example": "1d"
+                            },
+                            "at": {
+                              "type": "string",
+                              "description": "Wall-clock start HH:MM for daily and weekly schedules; not allowed for hourly ones. Default 03:00.",
+                              "example": "03:00"
+                            },
+                            "weekday": {
+                              "type": "string",
+                              "enum": [
+                                "monday",
+                                "tuesday",
+                                "wednesday",
+                                "thursday",
+                                "friday",
+                                "saturday",
+                                "sunday"
+                              ],
+                              "description": "Day weekly schedules run on. Default monday."
+                            },
+                            "timezone": {
+                              "type": "string",
+                              "description": "IANA time zone. Default UTC.",
+                              "example": "Europe/Berlin"
+                            }
+                          }
+                        },
+                        "max_clustered_requests": {
+                          "type": "integer",
+                          "minimum": 1000,
+                          "maximum": 100000,
+                          "description": "Most captured requests one run clusters; the rest of the window is counted into the clusters found. Default 20000."
+                        },
+                        "min_cluster_requests": {
+                          "type": "integer",
+                          "minimum": 2,
+                          "maximum": 1000,
+                          "description": "Smallest cluster, in requests, a suggestion is written for; default 6."
+                        },
+                        "provider": {
+                          "type": "string",
+                          "description": "Provider of the suggestion model. Set together with model; both omitted use the llm block's model."
+                        },
+                        "model": {
+                          "type": "string",
+                          "description": "Suggestion model. Set together with provider; both omitted use the llm block's model."
+                        },
+                        "instructions": {
+                          "type": "string",
+                          "maxLength": 8000,
+                          "description": "Replaces the shipped suggestion instructions (served as suggestion_default_instructions by the status endpoint). Tier definitions and the fixed output and safety rules are added either way."
                         }
                       }
                     }
@@ -86597,6 +86855,92 @@
                           "description": "Enable monotonic session tier retention; default is false."
                         }
                       }
+                    },
+                    "suggestions": {
+                      "type": "object",
+                      "description": "Phrase suggestions for the semantic router. When enabled, a sample of the vectors the semantic classifier already computes is kept under each request's log ID (request text stays in the logs), and a run on the schedule clusters that traffic and asks the suggestion model for phrases. Captured vectors are deleted with their logs and never kept longer than lookback_days or the log retention.",
+                      "additionalProperties": false,
+                      "required": [
+                        "enabled"
+                      ],
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean",
+                          "description": "Capture a sample of classified requests and run suggestions on the schedule; default false."
+                        },
+                        "sample_rate": {
+                          "type": "number",
+                          "exclusiveMinimum": 0,
+                          "maximum": 1,
+                          "description": "Share of classified requests captured; default 0.1."
+                        },
+                        "lookback_days": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 90,
+                          "description": "Days of captured traffic a run draws on, and how long captured vectors are kept; default 7."
+                        },
+                        "schedule": {
+                          "type": "object",
+                          "description": "When suggestion runs start, on the calendar in timezone. Default daily at 03:00 UTC.",
+                          "additionalProperties": false,
+                          "properties": {
+                            "every": {
+                              "type": "string",
+                              "description": "Hours that divide a day (1h-12h, from midnight), days (1d-30d, at at) or weeks (1w-4w, on weekday at at). Default 1d.",
+                              "example": "1d"
+                            },
+                            "at": {
+                              "type": "string",
+                              "description": "Wall-clock start HH:MM for daily and weekly schedules; not allowed for hourly ones. Default 03:00.",
+                              "example": "03:00"
+                            },
+                            "weekday": {
+                              "type": "string",
+                              "enum": [
+                                "monday",
+                                "tuesday",
+                                "wednesday",
+                                "thursday",
+                                "friday",
+                                "saturday",
+                                "sunday"
+                              ],
+                              "description": "Day weekly schedules run on. Default monday."
+                            },
+                            "timezone": {
+                              "type": "string",
+                              "description": "IANA time zone. Default UTC.",
+                              "example": "Europe/Berlin"
+                            }
+                          }
+                        },
+                        "max_clustered_requests": {
+                          "type": "integer",
+                          "minimum": 1000,
+                          "maximum": 100000,
+                          "description": "Most captured requests one run clusters; the rest of the window is counted into the clusters found. Default 20000."
+                        },
+                        "min_cluster_requests": {
+                          "type": "integer",
+                          "minimum": 2,
+                          "maximum": 1000,
+                          "description": "Smallest cluster, in requests, a suggestion is written for; default 6."
+                        },
+                        "provider": {
+                          "type": "string",
+                          "description": "Provider of the suggestion model. Set together with model; both omitted use the llm block's model."
+                        },
+                        "model": {
+                          "type": "string",
+                          "description": "Suggestion model. Set together with provider; both omitted use the llm block's model."
+                        },
+                        "instructions": {
+                          "type": "string",
+                          "maxLength": 8000,
+                          "description": "Replaces the shipped suggestion instructions (served as suggestion_default_instructions by the status endpoint). Tier definitions and the fixed output and safety rules are added either way."
+                        }
+                      }
                     }
                   }
                 }
@@ -86723,6 +87067,10 @@
                           "description": "disabled = no llm configuration; ready = the llm block is configured. The classifier has no warmup, so it is ready as soon as it is saved."
                         }
                       }
+                    },
+                    "suggestion_default_instructions": {
+                      "type": "string",
+                      "description": "The shipped phrase-suggestion instructions, served so a configuration client can seed its editor and offer a reset. The tier definitions and fixed output and safety rules are not exposed."
                     },
                     "llm_default_prompt": {
                       "type": "string",
@@ -86882,6 +87230,10 @@
                           "description": "disabled = no llm configuration; ready = the llm block is configured. The classifier has no warmup, so it is ready as soon as it is saved."
                         }
                       }
+                    },
+                    "suggestion_default_instructions": {
+                      "type": "string",
+                      "description": "The shipped phrase-suggestion instructions, served so a configuration client can seed its editor and offer a reset. The tier definitions and fixed output and safety rules are not exposed."
                     },
                     "llm_default_prompt": {
                       "type": "string",
@@ -87078,6 +87430,1043 @@
           },
           "503": {
             "description": "The vector store could not be reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/routing/complexity-suggestions": {
+      "get": {
+        "operationId": "listComplexitySuggestions",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "List phrase suggestions",
+        "description": "Lists stored phrase suggestions for the semantic complexity router, largest cluster first, with how many there are per status, the last run, and when the next scheduled run is. Suggestions are written by runs over a sample of routed traffic; see the suggestions block of the complexity analyzer config.\n",
+        "tags": [
+          "Routing"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "description": "Comma-separated statuses to list (open, accepted, dismissed, superseded); default open.",
+            "schema": {
+              "type": "string",
+              "example": "open,dismissed"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Suggestions retrieved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "suggestions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "One suggested set of phrases for a cluster of routed traffic.",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "open",
+                              "accepted",
+                              "dismissed",
+                              "superseded"
+                            ],
+                            "description": "open waits for the user; accepted and dismissed are the user's call and are left alone by later runs; superseded was open when a later run no longer proposed it."
+                          },
+                          "tier": {
+                            "type": "string",
+                            "enum": [
+                              "SIMPLE",
+                              "MEDIUM",
+                              "COMPLEX"
+                            ]
+                          },
+                          "phrases": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "category": {
+                            "type": "string",
+                            "enum": [
+                              "uncovered",
+                              "weak",
+                              "misrouted",
+                              "mixed"
+                            ],
+                            "description": "Why the cluster needs phrases - no phrase matches it, it matches weakly, it routes confidently to a different tier, or its routing is split."
+                          },
+                          "reason": {
+                            "type": "string"
+                          },
+                          "confidence": {
+                            "type": "string"
+                          },
+                          "request_count": {
+                            "type": "integer",
+                            "description": "Requests in the cluster over the lookback window, sampled ones counted once each."
+                          },
+                          "coverage": {
+                            "type": "number",
+                            "description": "Share of the cluster's requests the phrases would take over routing for."
+                          },
+                          "nearest_phrase": {
+                            "type": "string",
+                            "description": "The live phrase closest to the cluster's centre."
+                          },
+                          "nearest_tier": {
+                            "type": "string"
+                          },
+                          "nearest_similarity": {
+                            "type": "number"
+                          },
+                          "example_log_ids": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "The requests the suggestion was written from, the most central first."
+                          },
+                          "embedding_signature": {
+                            "type": "string"
+                          },
+                          "run_id": {
+                            "type": "string",
+                            "description": "The last run that proposed it."
+                          },
+                          "last_seen_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "resolved_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "created_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "updated_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        }
+                      }
+                    },
+                    "counts": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "integer"
+                      },
+                      "description": "Stored suggestions per status, whatever the filter selected."
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "last_run": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "triggered_by": {
+                          "type": "string",
+                          "enum": [
+                            "schedule",
+                            "manual"
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "running",
+                            "succeeded",
+                            "failed"
+                          ]
+                        },
+                        "embedding_signature": {
+                          "type": "string"
+                        },
+                        "model": {
+                          "type": "string",
+                          "description": "provider/model the suggestions were written with."
+                        },
+                        "prompt_hash": {
+                          "type": "string",
+                          "description": "SHA-256 of the instructions and tier guidance in force."
+                        },
+                        "requests_read": {
+                          "type": "integer"
+                        },
+                        "clusters": {
+                          "type": "integer"
+                        },
+                        "created": {
+                          "type": "integer"
+                        },
+                        "refreshed": {
+                          "type": "integer"
+                        },
+                        "superseded": {
+                          "type": "integer"
+                        },
+                        "cost": {
+                          "type": "number",
+                          "description": "Cost of the run's suggestion-model calls, in USD."
+                        },
+                        "error": {
+                          "type": "string",
+                          "description": "Why the run failed, or, on a run that succeeded, the clusters it left for the next run."
+                        },
+                        "started_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "finished_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      }
+                    },
+                    "next_run_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Phrase suggestions are not available (no log store, or the routing plugin is not loaded)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/routing/complexity-suggestions/test": {
+      "post": {
+        "operationId": "testComplexitySuggestionPhrases",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Test phrases against routed requests",
+        "description": "Routes example requests the way the semantic router does, by nearest phrase, against the serving phrase bank and against the bank with the given phrases added, without saving anything. Use it to try an edited phrase before staging it. Each tested phrase also reports its nearest existing phrase, which shows a near-duplicate. The phrases and examples are embedded with the router's embedding model.\n",
+        "tags": [
+          "Routing"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "phrases"
+                ],
+                "properties": {
+                  "phrases": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 10,
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "tier",
+                        "text"
+                      ],
+                      "properties": {
+                        "tier": {
+                          "type": "string",
+                          "enum": [
+                            "SIMPLE",
+                            "MEDIUM",
+                            "COMPLEX"
+                          ]
+                        },
+                        "text": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  },
+                  "suggestion_id": {
+                    "type": "string",
+                    "description": "Route this suggestion's examples."
+                  },
+                  "log_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Route these logs, instead of or as well as a suggestion's examples. At most 32 examples are routed."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Phrases tested",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "phrases": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "tier": {
+                            "type": "string"
+                          },
+                          "text": {
+                            "type": "string"
+                          },
+                          "nearest_existing": {
+                            "type": "object",
+                            "properties": {
+                              "tier": {
+                                "type": "string"
+                              },
+                              "phrase": {
+                                "type": "string"
+                              },
+                              "similarity": {
+                                "type": "number"
+                              },
+                              "accepted": {
+                                "type": "boolean",
+                                "description": "Whether the similarity clears semantic.min_similarity."
+                              },
+                              "candidate": {
+                                "type": "boolean",
+                                "description": "Whether the phrase is one being tested."
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "examples": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "log_id": {
+                            "type": "string"
+                          },
+                          "text": {
+                            "type": "string"
+                          },
+                          "current": {
+                            "type": "object",
+                            "properties": {
+                              "tier": {
+                                "type": "string"
+                              },
+                              "phrase": {
+                                "type": "string"
+                              },
+                              "similarity": {
+                                "type": "number"
+                              },
+                              "accepted": {
+                                "type": "boolean",
+                                "description": "Whether the similarity clears semantic.min_similarity."
+                              },
+                              "candidate": {
+                                "type": "boolean",
+                                "description": "Whether the phrase is one being tested."
+                              }
+                            }
+                          },
+                          "with_phrases": {
+                            "type": "object",
+                            "properties": {
+                              "tier": {
+                                "type": "string"
+                              },
+                              "phrase": {
+                                "type": "string"
+                              },
+                              "similarity": {
+                                "type": "number"
+                              },
+                              "accepted": {
+                                "type": "boolean",
+                                "description": "Whether the similarity clears semantic.min_similarity."
+                              },
+                              "candidate": {
+                                "type": "boolean",
+                                "description": "Whether the phrase is one being tested."
+                              }
+                            }
+                          },
+                          "changed": {
+                            "type": "boolean"
+                          }
+                        }
+                      }
+                    },
+                    "taken_over": {
+                      "type": "number",
+                      "description": "Share of the examples the tested phrases now route."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No phrases, too many, or a phrase without text or a valid tier",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Suggestion not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The embedding provider failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Phrase suggestions are not available (no log store, or the routing plugin is not loaded)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/routing/complexity-suggestions/runs": {
+      "get": {
+        "operationId": "listComplexitySuggestionRuns",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "List phrase suggestion runs",
+        "description": "Lists suggestion runs newest first, scheduled and manual, with what each read, created, refreshed and superseded, what its model calls cost, and why it failed if it did. The latest 200 runs are kept.\n",
+        "tags": [
+          "Routing"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Runs retrieved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "runs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "triggered_by": {
+                            "type": "string",
+                            "enum": [
+                              "schedule",
+                              "manual"
+                            ]
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "running",
+                              "succeeded",
+                              "failed"
+                            ]
+                          },
+                          "embedding_signature": {
+                            "type": "string"
+                          },
+                          "model": {
+                            "type": "string",
+                            "description": "provider/model the suggestions were written with."
+                          },
+                          "prompt_hash": {
+                            "type": "string",
+                            "description": "SHA-256 of the instructions and tier guidance in force."
+                          },
+                          "requests_read": {
+                            "type": "integer"
+                          },
+                          "clusters": {
+                            "type": "integer"
+                          },
+                          "created": {
+                            "type": "integer"
+                          },
+                          "refreshed": {
+                            "type": "integer"
+                          },
+                          "superseded": {
+                            "type": "integer"
+                          },
+                          "cost": {
+                            "type": "number",
+                            "description": "Cost of the run's suggestion-model calls, in USD."
+                          },
+                          "error": {
+                            "type": "string",
+                            "description": "Why the run failed, or, on a run that succeeded, the clusters it left for the next run."
+                          },
+                          "started_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "finished_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        }
+                      }
+                    },
+                    "next_run_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Phrase suggestions are not available (no log store, or the routing plugin is not loaded)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "startComplexitySuggestionRun",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Start a phrase suggestion run now",
+        "description": "Starts a run outside the schedule. It is queued in the background and answers at once with the run's ID; the run appears in the runs listing when it starts. Refused while suggestions are off or another run is queued or running.\n",
+        "tags": [
+          "Routing"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Run started",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "run_id": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Suggestions are off, or a run is already queued or running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Phrase suggestions are not available (no log store, or the routing plugin is not loaded)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/routing/complexity-suggestions/{suggestion_id}": {
+      "get": {
+        "operationId": "getComplexitySuggestion",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Get a phrase suggestion with its examples",
+        "description": "Returns one suggestion and the text of the requests it was written from, read from their logs within the caller's access scope. An example whose log was deleted, hides its content, or is outside the caller's access is listed without text.\n",
+        "tags": [
+          "Routing"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "suggestion_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Suggestion retrieved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "suggestion": {
+                      "type": "object",
+                      "description": "One suggested set of phrases for a cluster of routed traffic.",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "open",
+                            "accepted",
+                            "dismissed",
+                            "superseded"
+                          ],
+                          "description": "open waits for the user; accepted and dismissed are the user's call and are left alone by later runs; superseded was open when a later run no longer proposed it."
+                        },
+                        "tier": {
+                          "type": "string",
+                          "enum": [
+                            "SIMPLE",
+                            "MEDIUM",
+                            "COMPLEX"
+                          ]
+                        },
+                        "phrases": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "category": {
+                          "type": "string",
+                          "enum": [
+                            "uncovered",
+                            "weak",
+                            "misrouted",
+                            "mixed"
+                          ],
+                          "description": "Why the cluster needs phrases - no phrase matches it, it matches weakly, it routes confidently to a different tier, or its routing is split."
+                        },
+                        "reason": {
+                          "type": "string"
+                        },
+                        "confidence": {
+                          "type": "string"
+                        },
+                        "request_count": {
+                          "type": "integer",
+                          "description": "Requests in the cluster over the lookback window, sampled ones counted once each."
+                        },
+                        "coverage": {
+                          "type": "number",
+                          "description": "Share of the cluster's requests the phrases would take over routing for."
+                        },
+                        "nearest_phrase": {
+                          "type": "string",
+                          "description": "The live phrase closest to the cluster's centre."
+                        },
+                        "nearest_tier": {
+                          "type": "string"
+                        },
+                        "nearest_similarity": {
+                          "type": "number"
+                        },
+                        "example_log_ids": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "The requests the suggestion was written from, the most central first."
+                        },
+                        "embedding_signature": {
+                          "type": "string"
+                        },
+                        "run_id": {
+                          "type": "string",
+                          "description": "The last run that proposed it."
+                        },
+                        "last_seen_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "resolved_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "created_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "updated_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      }
+                    },
+                    "examples": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "log_id": {
+                            "type": "string"
+                          },
+                          "text": {
+                            "type": "string",
+                            "description": "The request text as the router embedded it. Absent for a log that was deleted, hides its content, or is outside the caller's access."
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Suggestion not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Phrase suggestions are not available (no log store, or the routing plugin is not loaded)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/routing/complexity-suggestions/{suggestion_id}/status": {
+      "put": {
+        "operationId": "updateComplexitySuggestionStatus",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Accept, dismiss or reopen a phrase suggestion",
+        "description": "Records the user's call on a suggestion. An open suggestion can be accepted (its phrases were added to the phrase bank) or dismissed; either can be reopened. Later runs leave accepted and dismissed suggestions as they are and spend no model call on them, so the call sticks. Superseded is set by runs and cannot be changed here.\n",
+        "tags": [
+          "Routing"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "suggestion_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "status"
+                ],
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "open",
+                      "accepted",
+                      "dismissed"
+                    ],
+                    "description": "accepted or dismissed from open; open again from either."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Status updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "One suggested set of phrases for a cluster of routed traffic.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "open",
+                        "accepted",
+                        "dismissed",
+                        "superseded"
+                      ],
+                      "description": "open waits for the user; accepted and dismissed are the user's call and are left alone by later runs; superseded was open when a later run no longer proposed it."
+                    },
+                    "tier": {
+                      "type": "string",
+                      "enum": [
+                        "SIMPLE",
+                        "MEDIUM",
+                        "COMPLEX"
+                      ]
+                    },
+                    "phrases": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "category": {
+                      "type": "string",
+                      "enum": [
+                        "uncovered",
+                        "weak",
+                        "misrouted",
+                        "mixed"
+                      ],
+                      "description": "Why the cluster needs phrases - no phrase matches it, it matches weakly, it routes confidently to a different tier, or its routing is split."
+                    },
+                    "reason": {
+                      "type": "string"
+                    },
+                    "confidence": {
+                      "type": "string"
+                    },
+                    "request_count": {
+                      "type": "integer",
+                      "description": "Requests in the cluster over the lookback window, sampled ones counted once each."
+                    },
+                    "coverage": {
+                      "type": "number",
+                      "description": "Share of the cluster's requests the phrases would take over routing for."
+                    },
+                    "nearest_phrase": {
+                      "type": "string",
+                      "description": "The live phrase closest to the cluster's centre."
+                    },
+                    "nearest_tier": {
+                      "type": "string"
+                    },
+                    "nearest_similarity": {
+                      "type": "number"
+                    },
+                    "example_log_ids": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "The requests the suggestion was written from, the most central first."
+                    },
+                    "embedding_signature": {
+                      "type": "string"
+                    },
+                    "run_id": {
+                      "type": "string",
+                      "description": "The last run that proposed it."
+                    },
+                    "last_seen_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "resolved_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "created_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "updated_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Suggestion not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The suggestion cannot move to that status from its current one",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Phrase suggestions are not available (no log store, or the routing plugin is not loaded)",
             "content": {
               "application/json": {
                 "schema": {
@@ -87954,6 +89343,92 @@
                           "description": "Enable monotonic session tier retention; default is false."
                         }
                       }
+                    },
+                    "suggestions": {
+                      "type": "object",
+                      "description": "Phrase suggestions for the semantic router. When enabled, a sample of the vectors the semantic classifier already computes is kept under each request's log ID (request text stays in the logs), and a run on the schedule clusters that traffic and asks the suggestion model for phrases. Captured vectors are deleted with their logs and never kept longer than lookback_days or the log retention.",
+                      "additionalProperties": false,
+                      "required": [
+                        "enabled"
+                      ],
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean",
+                          "description": "Capture a sample of classified requests and run suggestions on the schedule; default false."
+                        },
+                        "sample_rate": {
+                          "type": "number",
+                          "exclusiveMinimum": 0,
+                          "maximum": 1,
+                          "description": "Share of classified requests captured; default 0.1."
+                        },
+                        "lookback_days": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 90,
+                          "description": "Days of captured traffic a run draws on, and how long captured vectors are kept; default 7."
+                        },
+                        "schedule": {
+                          "type": "object",
+                          "description": "When suggestion runs start, on the calendar in timezone. Default daily at 03:00 UTC.",
+                          "additionalProperties": false,
+                          "properties": {
+                            "every": {
+                              "type": "string",
+                              "description": "Hours that divide a day (1h-12h, from midnight), days (1d-30d, at at) or weeks (1w-4w, on weekday at at). Default 1d.",
+                              "example": "1d"
+                            },
+                            "at": {
+                              "type": "string",
+                              "description": "Wall-clock start HH:MM for daily and weekly schedules; not allowed for hourly ones. Default 03:00.",
+                              "example": "03:00"
+                            },
+                            "weekday": {
+                              "type": "string",
+                              "enum": [
+                                "monday",
+                                "tuesday",
+                                "wednesday",
+                                "thursday",
+                                "friday",
+                                "saturday",
+                                "sunday"
+                              ],
+                              "description": "Day weekly schedules run on. Default monday."
+                            },
+                            "timezone": {
+                              "type": "string",
+                              "description": "IANA time zone. Default UTC.",
+                              "example": "Europe/Berlin"
+                            }
+                          }
+                        },
+                        "max_clustered_requests": {
+                          "type": "integer",
+                          "minimum": 1000,
+                          "maximum": 100000,
+                          "description": "Most captured requests one run clusters; the rest of the window is counted into the clusters found. Default 20000."
+                        },
+                        "min_cluster_requests": {
+                          "type": "integer",
+                          "minimum": 2,
+                          "maximum": 1000,
+                          "description": "Smallest cluster, in requests, a suggestion is written for; default 6."
+                        },
+                        "provider": {
+                          "type": "string",
+                          "description": "Provider of the suggestion model. Set together with model; both omitted use the llm block's model."
+                        },
+                        "model": {
+                          "type": "string",
+                          "description": "Suggestion model. Set together with provider; both omitted use the llm block's model."
+                        },
+                        "instructions": {
+                          "type": "string",
+                          "maxLength": 8000,
+                          "description": "Replaces the shipped suggestion instructions (served as suggestion_default_instructions by the status endpoint). Tier definitions and the fixed output and safety rules are added either way."
+                        }
+                      }
                     }
                   }
                 }
@@ -88409,6 +89884,92 @@
                         "description": "Enable monotonic session tier retention; default is false."
                       }
                     }
+                  },
+                  "suggestions": {
+                    "type": "object",
+                    "description": "Phrase suggestions for the semantic router. When enabled, a sample of the vectors the semantic classifier already computes is kept under each request's log ID (request text stays in the logs), and a run on the schedule clusters that traffic and asks the suggestion model for phrases. Captured vectors are deleted with their logs and never kept longer than lookback_days or the log retention.",
+                    "additionalProperties": false,
+                    "required": [
+                      "enabled"
+                    ],
+                    "properties": {
+                      "enabled": {
+                        "type": "boolean",
+                        "description": "Capture a sample of classified requests and run suggestions on the schedule; default false."
+                      },
+                      "sample_rate": {
+                        "type": "number",
+                        "exclusiveMinimum": 0,
+                        "maximum": 1,
+                        "description": "Share of classified requests captured; default 0.1."
+                      },
+                      "lookback_days": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 90,
+                        "description": "Days of captured traffic a run draws on, and how long captured vectors are kept; default 7."
+                      },
+                      "schedule": {
+                        "type": "object",
+                        "description": "When suggestion runs start, on the calendar in timezone. Default daily at 03:00 UTC.",
+                        "additionalProperties": false,
+                        "properties": {
+                          "every": {
+                            "type": "string",
+                            "description": "Hours that divide a day (1h-12h, from midnight), days (1d-30d, at at) or weeks (1w-4w, on weekday at at). Default 1d.",
+                            "example": "1d"
+                          },
+                          "at": {
+                            "type": "string",
+                            "description": "Wall-clock start HH:MM for daily and weekly schedules; not allowed for hourly ones. Default 03:00.",
+                            "example": "03:00"
+                          },
+                          "weekday": {
+                            "type": "string",
+                            "enum": [
+                              "monday",
+                              "tuesday",
+                              "wednesday",
+                              "thursday",
+                              "friday",
+                              "saturday",
+                              "sunday"
+                            ],
+                            "description": "Day weekly schedules run on. Default monday."
+                          },
+                          "timezone": {
+                            "type": "string",
+                            "description": "IANA time zone. Default UTC.",
+                            "example": "Europe/Berlin"
+                          }
+                        }
+                      },
+                      "max_clustered_requests": {
+                        "type": "integer",
+                        "minimum": 1000,
+                        "maximum": 100000,
+                        "description": "Most captured requests one run clusters; the rest of the window is counted into the clusters found. Default 20000."
+                      },
+                      "min_cluster_requests": {
+                        "type": "integer",
+                        "minimum": 2,
+                        "maximum": 1000,
+                        "description": "Smallest cluster, in requests, a suggestion is written for; default 6."
+                      },
+                      "provider": {
+                        "type": "string",
+                        "description": "Provider of the suggestion model. Set together with model; both omitted use the llm block's model."
+                      },
+                      "model": {
+                        "type": "string",
+                        "description": "Suggestion model. Set together with provider; both omitted use the llm block's model."
+                      },
+                      "instructions": {
+                        "type": "string",
+                        "maxLength": 8000,
+                        "description": "Replaces the shipped suggestion instructions (served as suggestion_default_instructions by the status endpoint). Tier definitions and the fixed output and safety rules are added either way."
+                      }
+                    }
                   }
                 }
               }
@@ -88833,6 +90394,92 @@
                         "enabled": {
                           "type": "boolean",
                           "description": "Enable monotonic session tier retention; default is false."
+                        }
+                      }
+                    },
+                    "suggestions": {
+                      "type": "object",
+                      "description": "Phrase suggestions for the semantic router. When enabled, a sample of the vectors the semantic classifier already computes is kept under each request's log ID (request text stays in the logs), and a run on the schedule clusters that traffic and asks the suggestion model for phrases. Captured vectors are deleted with their logs and never kept longer than lookback_days or the log retention.",
+                      "additionalProperties": false,
+                      "required": [
+                        "enabled"
+                      ],
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean",
+                          "description": "Capture a sample of classified requests and run suggestions on the schedule; default false."
+                        },
+                        "sample_rate": {
+                          "type": "number",
+                          "exclusiveMinimum": 0,
+                          "maximum": 1,
+                          "description": "Share of classified requests captured; default 0.1."
+                        },
+                        "lookback_days": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 90,
+                          "description": "Days of captured traffic a run draws on, and how long captured vectors are kept; default 7."
+                        },
+                        "schedule": {
+                          "type": "object",
+                          "description": "When suggestion runs start, on the calendar in timezone. Default daily at 03:00 UTC.",
+                          "additionalProperties": false,
+                          "properties": {
+                            "every": {
+                              "type": "string",
+                              "description": "Hours that divide a day (1h-12h, from midnight), days (1d-30d, at at) or weeks (1w-4w, on weekday at at). Default 1d.",
+                              "example": "1d"
+                            },
+                            "at": {
+                              "type": "string",
+                              "description": "Wall-clock start HH:MM for daily and weekly schedules; not allowed for hourly ones. Default 03:00.",
+                              "example": "03:00"
+                            },
+                            "weekday": {
+                              "type": "string",
+                              "enum": [
+                                "monday",
+                                "tuesday",
+                                "wednesday",
+                                "thursday",
+                                "friday",
+                                "saturday",
+                                "sunday"
+                              ],
+                              "description": "Day weekly schedules run on. Default monday."
+                            },
+                            "timezone": {
+                              "type": "string",
+                              "description": "IANA time zone. Default UTC.",
+                              "example": "Europe/Berlin"
+                            }
+                          }
+                        },
+                        "max_clustered_requests": {
+                          "type": "integer",
+                          "minimum": 1000,
+                          "maximum": 100000,
+                          "description": "Most captured requests one run clusters; the rest of the window is counted into the clusters found. Default 20000."
+                        },
+                        "min_cluster_requests": {
+                          "type": "integer",
+                          "minimum": 2,
+                          "maximum": 1000,
+                          "description": "Smallest cluster, in requests, a suggestion is written for; default 6."
+                        },
+                        "provider": {
+                          "type": "string",
+                          "description": "Provider of the suggestion model. Set together with model; both omitted use the llm block's model."
+                        },
+                        "model": {
+                          "type": "string",
+                          "description": "Suggestion model. Set together with provider; both omitted use the llm block's model."
+                        },
+                        "instructions": {
+                          "type": "string",
+                          "maxLength": 8000,
+                          "description": "Replaces the shipped suggestion instructions (served as suggestion_default_instructions by the status endpoint). Tier definitions and the fixed output and safety rules are added either way."
                         }
                       }
                     }
@@ -89309,6 +90956,92 @@
                         "enabled": {
                           "type": "boolean",
                           "description": "Enable monotonic session tier retention; default is false."
+                        }
+                      }
+                    },
+                    "suggestions": {
+                      "type": "object",
+                      "description": "Phrase suggestions for the semantic router. When enabled, a sample of the vectors the semantic classifier already computes is kept under each request's log ID (request text stays in the logs), and a run on the schedule clusters that traffic and asks the suggestion model for phrases. Captured vectors are deleted with their logs and never kept longer than lookback_days or the log retention.",
+                      "additionalProperties": false,
+                      "required": [
+                        "enabled"
+                      ],
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean",
+                          "description": "Capture a sample of classified requests and run suggestions on the schedule; default false."
+                        },
+                        "sample_rate": {
+                          "type": "number",
+                          "exclusiveMinimum": 0,
+                          "maximum": 1,
+                          "description": "Share of classified requests captured; default 0.1."
+                        },
+                        "lookback_days": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 90,
+                          "description": "Days of captured traffic a run draws on, and how long captured vectors are kept; default 7."
+                        },
+                        "schedule": {
+                          "type": "object",
+                          "description": "When suggestion runs start, on the calendar in timezone. Default daily at 03:00 UTC.",
+                          "additionalProperties": false,
+                          "properties": {
+                            "every": {
+                              "type": "string",
+                              "description": "Hours that divide a day (1h-12h, from midnight), days (1d-30d, at at) or weeks (1w-4w, on weekday at at). Default 1d.",
+                              "example": "1d"
+                            },
+                            "at": {
+                              "type": "string",
+                              "description": "Wall-clock start HH:MM for daily and weekly schedules; not allowed for hourly ones. Default 03:00.",
+                              "example": "03:00"
+                            },
+                            "weekday": {
+                              "type": "string",
+                              "enum": [
+                                "monday",
+                                "tuesday",
+                                "wednesday",
+                                "thursday",
+                                "friday",
+                                "saturday",
+                                "sunday"
+                              ],
+                              "description": "Day weekly schedules run on. Default monday."
+                            },
+                            "timezone": {
+                              "type": "string",
+                              "description": "IANA time zone. Default UTC.",
+                              "example": "Europe/Berlin"
+                            }
+                          }
+                        },
+                        "max_clustered_requests": {
+                          "type": "integer",
+                          "minimum": 1000,
+                          "maximum": 100000,
+                          "description": "Most captured requests one run clusters; the rest of the window is counted into the clusters found. Default 20000."
+                        },
+                        "min_cluster_requests": {
+                          "type": "integer",
+                          "minimum": 2,
+                          "maximum": 1000,
+                          "description": "Smallest cluster, in requests, a suggestion is written for; default 6."
+                        },
+                        "provider": {
+                          "type": "string",
+                          "description": "Provider of the suggestion model. Set together with model; both omitted use the llm block's model."
+                        },
+                        "model": {
+                          "type": "string",
+                          "description": "Suggestion model. Set together with provider; both omitted use the llm block's model."
+                        },
+                        "instructions": {
+                          "type": "string",
+                          "maxLength": 8000,
+                          "description": "Replaces the shipped suggestion instructions (served as suggestion_default_instructions by the status endpoint). Tier definitions and the fixed output and safety rules are added either way."
                         }
                       }
                     }
