@@ -22,6 +22,8 @@
 		"provider": "Провайдер",
 		"model": "Модель",
 		"app": "Приложение",
+		"clientIp": "IP клиента",
+		"userEmail": "Email пользователя",
 		"server": "Сервер",
 		"toolName": "Имя инструмента",
 		"serviceTier": "Уровень сервиса",
@@ -953,6 +955,8 @@
 			"tokensNotPricedValue": "{{input}} вход / {{output}} выход",
 			"matchedRoute": "Совпавший маршрут",
 			"parentLog": "Родительский журнал",
+			"responseBodyPreview": "Тело ответа (предпросмотр)",
+			"filterByValue": "Показать вызовы ретрансляторов с этим значением",
 			"queryParameters": "Параметры запроса",
 			"matchedHeaders": "Совпавшие заголовки",
 			"errorNoMessageWithStatus": "Ретранслятор вернул ошибку (HTTP {{status}}) без сообщения.",
@@ -973,7 +977,9 @@
 			"minCost": "Мин. $",
 			"maxCost": "Макс. $",
 			"minimumCost": "Минимальная стоимость",
-			"maximumCost": "Максимальная стоимость"
+			"maximumCost": "Максимальная стоимость",
+			"exactJobID": "Точный ID задания",
+			"exactParentRequestID": "Точный ID родительского запроса"
 		},
 		"grants": {
 			"label": "Доступ к ретрансляторам",

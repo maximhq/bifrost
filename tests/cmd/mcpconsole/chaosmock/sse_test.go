@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/maximhq/bifrost/tests/cmd/mcpconsole/chaosmock"
@@ -27,12 +28,12 @@ func sseFleet(t *testing.T, tools ...chaosmock.Tool) (*chaosmock.Fleet, *chaosmo
 	return fleet, srv
 }
 
-func connectSSE(t *testing.T, url string) (*client.Client, context.Context) {
+func connectSSE(t *testing.T, url string, opts ...transport.ClientOption) (*client.Client, context.Context) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	t.Cleanup(cancel)
 
-	c, err := client.NewSSEMCPClient(url)
+	c, err := client.NewSSEMCPClient(url, opts...)
 	if err != nil {
 		t.Fatalf("failed to create SSE client: %v", err)
 	}

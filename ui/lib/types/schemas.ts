@@ -1912,6 +1912,7 @@ export const mcpClientUpdateSchema = z
 		is_code_mode_client: z.boolean().optional(),
 		is_ping_available: z.boolean().optional(),
 		needs_session_stickiness: z.boolean().optional(),
+		per_user_discovery: z.boolean().optional(),
 		allow_by_default: z.boolean().optional(),
 		disabled: z.boolean().optional(),
 		// openapi clients only; undefined = leave the stored document alone.
@@ -2153,7 +2154,7 @@ export const globalProxyConfigSchema = z
 			return true;
 		},
 		{
-			message: "A SOCKS5 proxy URL must start with socks5:// or socks5h://",
+			error: () => i18n.t("validation.socks5ProxyUrlMustStartWithSocks5Scheme"),
 			path: ["url"],
 		},
 	)
@@ -2167,7 +2168,7 @@ export const globalProxyConfigSchema = z
 			return true;
 		},
 		{
-			message: "An HTTP proxy URL must start with http:// or https://",
+			error: () => i18n.t("validation.httpProxyUrlMustStartWithHttpScheme"),
 			path: ["url"],
 		},
 	);

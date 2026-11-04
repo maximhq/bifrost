@@ -22,6 +22,9 @@ import http from "node:http";
 //   POST /v1/reported    usage.cost 0.005 (a provider-reported cost)
 //   *    /v1/echo, other the method, path, query and headers the upstream received
 const port = Number(process.env.RELAY_UPSTREAM_FIXTURE_PORT || "8783");
+// Loopback by default. The proxy matrix binds every interface, because its relays address the
+// fixture by the host's own IPv4: a loopback target never goes through an environment proxy.
+const host = process.env.RELAY_UPSTREAM_FIXTURE_HOST || "127.0.0.1";
 
 const hits = new Map();
 
@@ -104,8 +107,8 @@ const server = http.createServer(async (req, res) => {
 	}
 });
 
-server.listen(port, "127.0.0.1", () => {
-	console.log(`relay-upstream-fixture listening on http://127.0.0.1:${port}`);
+server.listen(port, host, () => {
+	console.log(`relay-upstream-fixture listening on http://${host}:${port}`);
 });
 
 const stop = () => server.close(() => process.exit(0));

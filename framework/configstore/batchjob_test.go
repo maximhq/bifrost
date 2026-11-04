@@ -242,6 +242,69 @@ func TestUpsertProviderJobNextCheckAtTerminalHandling(t *testing.T) {
 	}
 }
 
+// TestUpsertProviderJobKeepsFailedInteractionDue pins that a failed or cancelled interaction stays
+// due: unlike a batch, a run that stopped can still owe for the work it did, so the sweeper must
+// still settle it if the inline settlement did not.
+func TestUpsertProviderJobKeepsFailedInteractionDue(t *testing.T) {
+	store := setupBatchJobTestStore(t)
+	ctx := context.Background()
+	next := time.Now().UTC().Add(time.Hour).UTC()
+	for _, status := range []string{"failed", "cancelled"} {
+		id := tables.ProviderJobID(tables.ProviderJobKindInteraction, "gemini", "int_"+status)
+		require.NoError(t, store.UpsertProviderJob(ctx, &tables.TableProviderJob{
+			ID:               id,
+			Kind:             tables.ProviderJobKindInteraction,
+			Provider:         "gemini",
+			JobID:            "int_" + status,
+			AccountingStatus: tables.ProviderJobAccountingStatusPending,
+			NextCheckAt:      &next,
+			ProviderStatus:   status,
+		}))
+		assert.NotNil(t, getBatchJob(t, store, id).NextCheckAt, "a %s interaction keeps next_check_at", status)
+	}
+}
+
+// TestUpsertProviderJobLeavesASettledInteractionAlone pins the update itself, not only the logging
+// guard in front of it. A read can load an interaction row while it is pending, the run can then be
+// settled by another request or the sweeper, and the read's upsert lands last. That upsert must not
+// rewrite the settled row's provider status, model or next check.
+func TestUpsertProviderJobLeavesASettledInteractionAlone(t *testing.T) {
+	store := setupBatchJobTestStore(t)
+	ctx := context.Background()
+	settledAt := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
+	for _, status := range []string{tables.ProviderJobAccountingStatusAccounted, tables.ProviderJobAccountingStatusUnpriceable} {
+		id := tables.ProviderJobID(tables.ProviderJobKindInteraction, "gemini", "int_race_"+status)
+		require.NoError(t, store.UpsertProviderJob(ctx, &tables.TableProviderJob{
+			ID:               id,
+			Kind:             tables.ProviderJobKindInteraction,
+			Provider:         "gemini",
+			JobID:            "int_race_" + status,
+			Model:            "deep-research-preview-04-2026",
+			ProviderStatus:   "completed",
+			AccountingStatus: status,
+			NextCheckAt:      &settledAt,
+		}))
+
+		later := time.Now().UTC().Add(time.Hour)
+		require.NoError(t, store.UpsertProviderJob(ctx, &tables.TableProviderJob{
+			ID:             id,
+			Kind:           tables.ProviderJobKindInteraction,
+			Provider:       "gemini",
+			JobID:          "int_race_" + status,
+			Model:          "some-other-model",
+			ProviderStatus: "in_progress",
+			NextCheckAt:    &later,
+		}))
+
+		persisted := getBatchJob(t, store, id)
+		assert.Equal(t, "completed", persisted.ProviderStatus, "a stale read must not rewrite a %s run's status", status)
+		assert.Equal(t, "deep-research-preview-04-2026", persisted.Model, "a stale read must not rewrite a %s run's model", status)
+		require.NotNil(t, persisted.NextCheckAt)
+		assert.True(t, persisted.NextCheckAt.Equal(settledAt), "a stale read must not reschedule a %s run: %v", status, persisted.NextCheckAt)
+		assert.Equal(t, status, persisted.AccountingStatus)
+	}
+}
+
 func TestListDueProviderJobsFiltersByDueAndStatus(t *testing.T) {
 	store := setupBatchJobTestStore(t)
 	ctx := context.Background()

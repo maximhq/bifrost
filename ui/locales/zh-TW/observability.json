@@ -22,6 +22,8 @@
 		"provider": "供應商",
 		"model": "模型",
 		"app": "應用",
+		"clientIp": "用戶端 IP",
+		"userEmail": "使用者電子郵件",
 		"server": "伺服器",
 		"toolName": "工具名稱",
 		"serviceTier": "服務層級",
@@ -794,7 +796,7 @@
 				"teams": "團隊（{{total}}）",
 				"customers": "客戶（{{total}}）",
 				"period": "期間 {{value}}",
-				"relays": "中繼 ({{total}})",
+				"relays": "轉送 ({{total}})",
 				"methods": "方法 ({{total}})",
 				"kinds": "類型 ({{total}})",
 				"users": "使用者 ({{total}})",
@@ -898,6 +900,8 @@
 			"tokensNotPricedValue": "輸入 {{input}} / 輸出 {{output}}",
 			"matchedRoute": "符合的路由",
 			"parentLog": "父日誌",
+			"responseBodyPreview": "回應內文（預覽）",
+			"filterByValue": "顯示具有此值的轉送呼叫",
 			"queryParameters": "查詢參數",
 			"matchedHeaders": "符合的標頭",
 			"errorNoMessageWithStatus": "轉送傳回錯誤（HTTP {{status}}），但沒有訊息。",
@@ -918,7 +922,9 @@
 			"minCost": "最低 $",
 			"maxCost": "最高 $",
 			"minimumCost": "最低成本",
-			"maximumCost": "最高成本"
+			"maximumCost": "最高成本",
+			"exactJobID": "精確作業 ID",
+			"exactParentRequestID": "精確父請求 ID"
 		},
 		"grants": {
 			"label": "轉送存取",

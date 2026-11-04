@@ -171,6 +171,16 @@ func TestValidateConfigSchema_GlobalProxyTypes(t *testing.T) {
 	}
 }
 
+// TestValidateConfigSchema_NoWorkloadIdentityMappings pins that config.json holds no
+// workload identity mappings: workloads are mapped to service accounts in the dashboard or
+// through the API, and only the trusted issuers live in the file, on the SSO provider.
+func TestValidateConfigSchema_NoWorkloadIdentityMappings(t *testing.T) {
+	config := `{"workload_identity": {"mappings": [{"name": "CI", "platform": "entra", "object_id": "5b1e2c7a", "service_account": "svc-ci"}]}}`
+	if err := ValidateConfigSchema([]byte(config), loadLocalSchema(t)); err == nil {
+		t.Fatal("expected a top-level workload_identity section to fail validation")
+	}
+}
+
 func TestValidateConfigSchema_WarpSection(t *testing.T) {
 	validConfig := `{
 		"warp": {
@@ -1062,6 +1072,42 @@ func TestValidateConfigSchema_MCPClientConfig_Valid_Http(t *testing.T) {
 	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
 	if err != nil {
 		t.Errorf("expected valid MCP client config (http) to pass validation, got error: %v", err)
+	}
+}
+
+// TestValidateConfigSchema_MCPClientConfig_PerUserDiscovery: per_user_discovery
+// discovers each caller's tools with their own credential, so the schema accepts
+// it only on a per-user auth type, and not on an openapi client.
+func TestValidateConfigSchema_MCPClientConfig_PerUserDiscovery(t *testing.T) {
+	schema := loadLocalSchema(t)
+	for _, tc := range []struct {
+		name   string
+		client string
+		valid  bool
+	}{
+		{"per_user_headers", `"connection_type": "http", "connection_string": "http://localhost:3001/mcp", "auth_type": "per_user_headers", "per_user_header_keys": ["x-api-key"]`, true},
+		{"per_user_oauth", `"connection_type": "http", "connection_string": "http://localhost:3001/mcp", "auth_type": "per_user_oauth"`, true},
+		{"token_exchange", `"connection_type": "http", "connection_string": "http://localhost:3001/mcp", "auth_type": "token_exchange", "token_exchange": {"audience": "api://notes", "client_id": "exchange-app"}`, true},
+		{"headers", `"connection_type": "http", "connection_string": "http://localhost:3001/mcp", "auth_type": "headers"`, false},
+		{"oauth", `"connection_type": "http", "connection_string": "http://localhost:3001/mcp", "auth_type": "oauth"`, false},
+		{"no auth_type", `"connection_type": "http", "connection_string": "http://localhost:3001/mcp"`, false},
+		{"openapi per_user_headers", `"connection_type": "openapi", "auth_type": "per_user_headers", "per_user_header_keys": ["x-api-key"], "openapi_config": {"spec_url": "https://example.com/openapi.json"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := `{"mcp": {"client_configs": [{"name": "notes", ` + tc.client + `, "per_user_discovery": true}]}}`
+			err := ValidateConfigSchema([]byte(config), schema)
+			if tc.valid && err != nil {
+				t.Errorf("expected per_user_discovery to be accepted, got: %v", err)
+			}
+			if !tc.valid && err == nil {
+				t.Error("expected per_user_discovery to be rejected")
+			}
+		})
+	}
+
+	off := `{"mcp": {"client_configs": [{"name": "notes", "connection_type": "http", "connection_string": "http://localhost:3001/mcp", "auth_type": "headers", "per_user_discovery": false}]}}`
+	if err := ValidateConfigSchema([]byte(off), schema); err != nil {
+		t.Errorf("expected per_user_discovery false to be accepted on any auth type, got: %v", err)
 	}
 }
 
@@ -2760,9 +2806,16 @@ func TestSchemaSCIMConfigValidation(t *testing.T) {
 	}
 }
 
+// workloadIssuer returns the provider config suffix holding one trusted issuer at
+// https://idp.example for audience a, with fields added to it.
+func workloadIssuer(fields string) string {
+	return `,"workloadIdentity":{"additionalTrustedIssuers":[{"name":"IdP","issuerUrl":"https://idp.example","audiences":["a"],` + fields + `}]}`
+}
+
 // TestSchemaSCIMSharedProvisioningFields pins the fields every identity provider inherits from
-// the enterprise mapping.ProvisioningConfig: Cross App Access (crossAppAccess), the token
-// exchange host allowlist (tokenExchangeHosts) and accessProfileResolutionStrategy. Each
+// the enterprise mapping.ProvisioningConfig: Cross App Access (crossAppAccess), workload
+// identity (workloadIdentity), the token exchange host allowlist (tokenExchangeHosts) and
+// accessProfileResolutionStrategy. Each
 // provider's config refuses unknown keys, so a provider missing one of them rejects a config
 // the loader accepts.
 func TestSchemaSCIMSharedProvisioningFields(t *testing.T) {
@@ -2784,6 +2837,7 @@ func TestSchemaSCIMSharedProvisioningFields(t *testing.T) {
 	for provider := range providers {
 		t.Run(provider+" accepts the shared provisioning fields", func(t *testing.T) {
 			extra := `,"crossAppAccess":{"enabled":true,"accessTokenTtl":3600,"provisionUsers":false},` +
+				`"workloadIdentity":{"additionalTrustedIssuers":[{"name":"AWS prod","kind":"aws","issuerUrl":"https://abc.tokens.sts.global.api.aws","audiences":["https://bifrost.example"]}]},` +
 				`"tokenExchangeHosts":["auth.example.com","login.example.com:8443"],` +
 				`"accessProfileResolutionStrategy":"order"`
 			if err := validateConfig(t, compiled, scimConfig(provider, extra)); err != nil {
@@ -2803,6 +2857,25 @@ func TestSchemaSCIMSharedProvisioningFields(t *testing.T) {
 		{name: "crossAppAccess accessTokenTtl below the floor", extra: `,"crossAppAccess":{"enabled":true,"accessTokenTtl":59}`, wantError: true},
 		{name: "crossAppAccess accessTokenTtl above one day", extra: `,"crossAppAccess":{"enabled":true,"accessTokenTtl":86401}`, wantError: true},
 		{name: "crossAppAccess rejects unknown keys", extra: `,"crossAppAccess":{"enabled":true,"trustedIssuer":"https://acme.okta.com"}`, wantError: true},
+		{name: "generic trusted issuer with its claims", extra: workloadIssuer(`"kind":"generic","identityClaim":"client_id","machineCheck":{"kind":"sub_equals_claim","claim":"client_id"},"maxLifetimeSeconds":3600,"disabled":true`)},
+		{name: "generic trusted issuer taking only mapped IDs", extra: workloadIssuer(`"kind":"generic","identityClaim":"azp","machineCheck":{"kind":"any"}`)},
+		{name: "generic trusted issuer with a prefix rule", extra: workloadIssuer(`"kind":"generic","identityClaim":"azp","machineCheck":{"kind":"claim_prefix","claim":"preferred_username","value":"service-account-"}`)},
+		{name: "trusted issuer on localhost over http", extra: `,"workloadIdentity":{"additionalTrustedIssuers":[{"name":"Local","kind":"aws","issuerUrl":"http://localhost:8381/realms/acme","audiences":["a"]}]}`},
+		{name: "trusted issuer over plain http", extra: `,"workloadIdentity":{"additionalTrustedIssuers":[{"name":"X","kind":"aws","issuerUrl":"http://idp.example","audiences":["a"]}]}`, wantError: true},
+		{name: "trusted issuer URL with a query", extra: `,"workloadIdentity":{"additionalTrustedIssuers":[{"name":"X","kind":"aws","issuerUrl":"https://idp.example/?","audiences":["a"]}]}`, wantError: true},
+		{name: "trusted issuer URL with a fragment", extra: `,"workloadIdentity":{"additionalTrustedIssuers":[{"name":"X","kind":"aws","issuerUrl":"https://idp.example#","audiences":["a"]}]}`, wantError: true},
+		{name: "trusted issuer URL with user info", extra: `,"workloadIdentity":{"additionalTrustedIssuers":[{"name":"X","kind":"aws","issuerUrl":"https://u:p@idp.example","audiences":["a"]}]}`, wantError: true},
+		{name: "trusted issuer without an audience", extra: `,"workloadIdentity":{"additionalTrustedIssuers":[{"name":"X","kind":"aws","issuerUrl":"https://idp.example","audiences":[]}]}`, wantError: true},
+		{name: "trusted issuer of an unknown kind", extra: `,"workloadIdentity":{"additionalTrustedIssuers":[{"name":"X","kind":"okta","issuerUrl":"https://idp.example","audiences":["a"]}]}`, wantError: true},
+		{name: "trusted issuer without a name", extra: `,"workloadIdentity":{"additionalTrustedIssuers":[{"kind":"aws","issuerUrl":"https://idp.example","audiences":["a"]}]}`, wantError: true},
+		{name: "trusted issuer with a blank name", extra: `,"workloadIdentity":{"additionalTrustedIssuers":[{"name":"  ","kind":"aws","issuerUrl":"https://idp.example","audiences":["a"]}]}`, wantError: true},
+		{name: "trusted issuer with an id", extra: `,"workloadIdentity":{"additionalTrustedIssuers":[{"id":"x","name":"X","kind":"aws","issuerUrl":"https://idp.example","audiences":["a"]}]}`, wantError: true},
+		{name: "generic trusted issuer without an identity claim", extra: workloadIssuer(`"kind":"generic","machineCheck":{"kind":"any"}`), wantError: true},
+		{name: "generic trusted issuer without a machine check", extra: workloadIssuer(`"kind":"generic","identityClaim":"azp"`), wantError: true},
+		{name: "machine check prefix that is empty", extra: workloadIssuer(`"kind":"generic","identityClaim":"azp","machineCheck":{"kind":"claim_prefix","claim":"preferred_username","value":""}`), wantError: true},
+		{name: "machine check prefix without a value", extra: workloadIssuer(`"kind":"generic","identityClaim":"azp","machineCheck":{"kind":"claim_prefix","claim":"preferred_username"}`), wantError: true},
+		{name: "machine check equals without a claim", extra: workloadIssuer(`"kind":"generic","identityClaim":"azp","machineCheck":{"kind":"claim_equals","value":"client-credentials"}`), wantError: true},
+		{name: "machine check sub_equals_claim without a claim", extra: workloadIssuer(`"kind":"generic","identityClaim":"azp","machineCheck":{"kind":"sub_equals_claim"}`), wantError: true},
 		{name: "tokenExchangeHosts rejects a URL", extra: `,"tokenExchangeHosts":["https://auth.example.com"]`, wantError: true},
 		{name: "tokenExchangeHosts rejects a path", extra: `,"tokenExchangeHosts":["auth.example.com/oauth2"]`, wantError: true},
 		{name: "accessProfileResolutionStrategy rejects unknown values", extra: `,"accessProfileResolutionStrategy":"first"`, wantError: true},

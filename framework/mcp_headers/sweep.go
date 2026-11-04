@@ -3,6 +3,7 @@ package mcp_headers
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -34,6 +35,7 @@ type CredentialSweepWorker struct {
 	stopOnce         sync.Once
 	cancel           context.CancelFunc
 	logger           schemas.Logger
+	shouldSweep      atomic.Pointer[func(ctx context.Context) bool] // see SetShouldSweepGate
 }
 
 // NewCredentialSweepWorker creates a sweep worker with sensible defaults.
@@ -54,6 +56,30 @@ func NewCredentialSweepWorker(provider *Provider, orphanRetention time.Duration,
 		stopCh:           make(chan struct{}),
 		logger:           logger,
 	}
+}
+
+// SetShouldSweepGate installs a predicate consulted before every sweep, the
+// one run on start included; a sweep proceeds only when the gate is unset or
+// returns true. The deletes act on the shared store, so a deployment with
+// several workers on one store can let a single one of them sweep. Safe to
+// call at any time, including while the worker is running; passing nil
+// restores the default (always sweep). Mirrors
+// oauth2.PerUserOAuthSweepWorker.SetShouldSweepGate.
+func (w *CredentialSweepWorker) SetShouldSweepGate(gate func(ctx context.Context) bool) {
+	if w == nil {
+		return
+	}
+	if gate == nil {
+		w.shouldSweep.Store(nil)
+		return
+	}
+	w.shouldSweep.Store(&gate)
+}
+
+// sweepAllowed reports whether the installed gate, if any, lets a sweep run.
+func (w *CredentialSweepWorker) sweepAllowed(ctx context.Context) bool {
+	gate := w.shouldSweep.Load()
+	return gate == nil || (*gate)(ctx)
 }
 
 // Start begins the sweep worker in a background goroutine.
@@ -108,7 +134,7 @@ func (w *CredentialSweepWorker) run(ctx context.Context) {
 }
 
 func (w *CredentialSweepWorker) sweepOrphanedCredentials(ctx context.Context) {
-	if w.orphanRetention <= 0 {
+	if w.orphanRetention <= 0 || !w.sweepAllowed(ctx) {
 		return
 	}
 	// No cache eviction here: the provider's credential cache can never hold
@@ -129,6 +155,9 @@ func (w *CredentialSweepWorker) sweepOrphanedCredentials(ctx context.Context) {
 }
 
 func (w *CredentialSweepWorker) sweepExpiredFlows(ctx context.Context) {
+	if !w.sweepAllowed(ctx) {
+		return
+	}
 	n, err := w.provider.configStore.DeleteExpiredMCPPerUserHeaderFlows(ctx)
 	if err != nil {
 		if w.logger != nil {

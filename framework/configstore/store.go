@@ -139,9 +139,10 @@ type MCPClientsQueryParams struct {
 
 // VirtualMCPsQueryParams holds pagination and search parameters for Virtual MCP list queries.
 type VirtualMCPsQueryParams struct {
-	Limit  int
-	Offset int
-	Search string // matches name (case-insensitive)
+	Limit       int
+	Offset      int
+	Search      string // matches name (case-insensitive)
+	MCPClientID string // only Virtual MCPs with a tool spec for this exact client_id
 }
 
 // MCPLibraryQueryParams holds pagination, filtering, search, and sort
@@ -220,6 +221,15 @@ type MCPSessionsFilterParams struct {
 	// filter ORs `{table}.user_id IN (matched)` into the search WHERE.
 	// Only consulted when Search is non-empty.
 	MatchedUserIDs []string
+}
+
+// MCPPerUserDiscoveryBinding names one caller's discovery on one MCP client:
+// the (mode, identity, client) binding the discovery shares with the
+// credential it was made with.
+type MCPPerUserDiscoveryBinding struct {
+	Mode        schemas.MCPAuthMode
+	Identity    string
+	MCPClientID string
 }
 
 // OAuth2SessionsQueryParams holds the filters + pagination for the OAuth2
@@ -313,7 +323,7 @@ type ConfigStore interface {
 	MCPEndpointSlugTaken(ctx context.Context, slug string) (bool, error)
 	GetMCPClientByOauthConfigID(ctx context.Context, oauthConfigID string) (*tables.TableMCPClient, error)
 	UpdateMCPClientOAuthConfigID(ctx context.Context, clientID string, oauthConfigID *string) error
-	ClearMCPClientPendingOAuthConfig(ctx context.Context, clientID string) error
+	ClearMCPClientPendingVerification(ctx context.Context, clientID string) error
 	GetMCPClientsPaginated(ctx context.Context, params MCPClientsQueryParams) ([]tables.TableMCPClient, int64, error)
 	CreateMCPClientConfig(ctx context.Context, clientConfig *schemas.MCPClientConfig) error
 	UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient) error
@@ -758,6 +768,12 @@ type ConfigStore interface {
 	// state. The two claim methods partition the table by flow_mode, so a
 	// given state can only ever be claimed by one of them.
 	ClaimOauthFlowByState(ctx context.Context, state string) (*tables.TableMCPOauthFlow, error)
+	// CompleteOauthUserSession consumes the claimed per-identity flow row
+	// sessionID and stores the token it produced, in one transaction. Returns
+	// ErrNotFound, storing nothing, when the row is gone: a revoke deletes the
+	// binding's flows before its token, so a completion that finishes after a
+	// revoke cannot bring the token back.
+	CompleteOauthUserSession(ctx context.Context, sessionID string, token *tables.TableMCPOauthToken) error
 	// GetOauthUserSessionByModeIdentityAndMCPClient returns the canonical flow
 	// row for an (identity, mcp_client) binding. Used at flow-init time as the
 	// single source of truth: reauth updates this row in place rather than
@@ -920,6 +936,36 @@ type ConfigStore interface {
 	// status='orphaned' and updated_at is older than olderThan.
 	DeleteOrphanedMCPPerUserHeaderCredentials(ctx context.Context, olderThan time.Duration) (int64, error)
 
+	// Per-user MCP discovery CRUD, for clients with per_user_discovery on.
+	// One row per (auth_mode, identity, mcp_client_id) binding — the same key
+	// the per-user credential rows use — holding the tools and instructions
+	// discovered with that caller's own credential. There is no staleness
+	// sweep: rows are refreshed only by the caller's manual refresh and die
+	// with their credential or their client.
+	GetMCPPerUserDiscoveryByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPPerUserDiscovery, error)
+	// GetMCPPerUserDiscoveryBindings lists who holds a discovery on one
+	// client: the user and virtual-key rows with only their identity columns
+	// and discovery hash filled.
+	GetMCPPerUserDiscoveryBindings(ctx context.Context, mcpClientID string) ([]tables.TableMCPPerUserDiscovery, error)
+	// GetMCPPerUserDiscoveryToolCallerCounts returns, for each of the clients,
+	// every tool name in its user and virtual-key callers' discoveries with how
+	// many of those discoveries include it. Clients no caller holds a discovery
+	// of are left out.
+	GetMCPPerUserDiscoveryToolCallerCounts(ctx context.Context, mcpClientIDs []string) (map[string]map[string]int, error)
+	// GetMCPPerUserDiscoveryNames returns, for each of the clients, the union
+	// of the tool and prompt names and the resource and template URIs its user
+	// and virtual-key callers' discoveries hold. Clients no caller holds a
+	// discovery of are left out.
+	GetMCPPerUserDiscoveryNames(ctx context.Context, mcpClientIDs []string) (map[string]MCPPerUserDiscoveryNames, error)
+	// GetMCPPerUserDiscoverySummaries returns the discovery each of the user
+	// and virtual-key bindings holds, keyed by binding, with only the identity
+	// columns, the counts and discovered_at read. Bindings without one, and
+	// bindings of any other mode, are left out.
+	GetMCPPerUserDiscoverySummaries(ctx context.Context, bindings []MCPPerUserDiscoveryBinding) (map[MCPPerUserDiscoveryBinding]tables.TableMCPPerUserDiscovery, error)
+	UpsertMCPPerUserDiscovery(ctx context.Context, discovery *tables.TableMCPPerUserDiscovery) error
+	DeleteMCPPerUserDiscovery(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) error
+	DeleteMCPPerUserDiscoveriesByClient(ctx context.Context, mcpClientID string) error
+
 	// Per-user-headers submission flow CRUD. Mirrors the OAuth user-session
 	// surface — the resolver creates a pending flow row when the inline-401
 	// fires, the submit endpoint deletes the row on success, and the sweep
@@ -942,6 +988,11 @@ type ConfigStore interface {
 	// DeleteOauthUserSessionsByModeIdentityAndMCPClient.
 	DeleteMCPPerUserHeaderFlowsByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) error
 	DeleteMCPPerUserHeaderFlow(ctx context.Context, id string) error
+	// CompleteMCPPerUserHeaderFlow consumes the submission flow row flowID and
+	// upserts the credential it produced, in one transaction. Returns
+	// ErrNotFound, storing nothing, when the row is gone: revoked, swept as
+	// expired, or already consumed by a concurrent submit.
+	CompleteMCPPerUserHeaderFlow(ctx context.Context, flowID string, cred *tables.TableMCPPerUserHeaderCredential) error
 	// ListPendingMCPPerUserHeaderFlows returns non-expired pending header
 	// submission flow rows matching the supplied filters. Mirrors
 	// ListPendingOauthUserSessions on the OAuth side. Always restricted to

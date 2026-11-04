@@ -35,7 +35,7 @@ type Faults struct {
 	BadVersion  string `json:"bad_version,omitempty"`  // advertise this protocolVersion instead
 	NoPing      bool   `json:"no_ping,omitempty"`      // ping answers method-not-found
 	PingFail    bool   `json:"ping_fail,omitempty"`    // ping answers an internal error
-	ListFail    bool   `json:"list_fail,omitempty"`    // tools/list answers an error
+	ListFail    bool   `json:"list_fail,omitempty"`    // every list method answers an error
 	KillSession bool   `json:"kill_session,omitempty"` // every known session is invalid, so requests 404
 
 	// Timing. Hang is applied before answering and is what a client's own
@@ -46,7 +46,7 @@ type Faults struct {
 	Latency Duration `json:"latency,omitempty"`
 	Jitter  Duration `json:"jitter,omitempty"`
 
-	// Call layer: tools/call specifically.
+	// Call layer: tools/call, and every list method for Malformed.
 	ErrRate   float64 `json:"err_rate,omitempty"`  // probability in [0,1] that a call fails
 	ErrKind   ErrKind `json:"err_kind,omitempty"`  // how it fails when it does
 	Malformed bool    `json:"malformed,omitempty"` // answer with a body that is not valid JSON-RPC
@@ -59,8 +59,9 @@ type Faults struct {
 
 	// Message is the text an injected failure carries: the body of an
 	// injected status or err_kind http, the JSON-RPC error message of
-	// err_kind protocol, init_fail, ping_fail and list_fail, and the text of
-	// an err_kind tool result. Empty keeps the mock's own wording.
+	// err_kind protocol, init_fail, ping_fail and list_fail (on every list
+	// method), and the text of an err_kind tool result. Empty keeps the
+	// mock's own wording.
 	Message string `json:"message,omitempty"`
 }
 
@@ -152,36 +153,80 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 type faultState struct {
 	mu sync.Mutex
 	f  Faults
+	// byIdentity holds the sets that replace f for one caller's requests.
+	byIdentity map[string]*Faults
 	// rng is per-server and seeded once, so an ErrRate run is reproducible
 	// within a process rather than depending on global rand scheduling.
 	rng *rand.Rand
 }
 
 func newFaultState() *faultState {
-	return &faultState{rng: rand.New(rand.NewSource(time.Now().UnixNano()))}
+	return &faultState{
+		byIdentity: map[string]*Faults{},
+		rng:        rand.New(rand.NewSource(time.Now().UnixNano())),
+	}
 }
 
 // forRequest returns a copy of the faults that apply to one request for
-// method, the empty set when the request is out of scope. One-shot status is
+// method from identity, the empty set when the request is out of scope. A
+// caller with a set of its own gets that set in place of the server-wide one,
+// scope included, so it sees none of the server-wide faults. One-shot status is
 // consumed only by a request it applies to, which is the request it fires on,
 // so the next one sees a healthy server again.
-func (fs *faultState) forRequest(method string) Faults {
+func (fs *faultState) forRequest(method, identity string) Faults {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
-	if !fs.f.appliesTo(method) {
+	target := &fs.f
+	if own, ok := fs.byIdentity[identity]; ok && identity != "" {
+		target = own
+	}
+	if !target.appliesTo(method) {
 		return Faults{}
 	}
-	f := fs.f
-	if fs.f.StatusOnce && fs.f.Status != 0 {
-		fs.f.Status = 0
-		fs.f.StatusOnce = false
+	f := *target
+	if target.StatusOnce && target.Status != 0 {
+		target.Status = 0
+		target.StatusOnce = false
 	}
 	// DropSSE is edge-triggered: it closes the streams open when it was set,
 	// not every stream opened forever after.
-	if fs.f.DropSSE {
-		fs.f.DropSSE = false
+	if target.DropSSE {
+		target.DropSSE = false
 	}
 	return f
+}
+
+// setIdentity gives one caller its own fault set.
+func (fs *faultState) setIdentity(identity string, f Faults) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	fs.byIdentity[identity] = &f
+}
+
+// clearIdentity returns one caller to the server-wide set, reporting whether
+// it had a set of its own.
+func (fs *faultState) clearIdentity(identity string) bool {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if _, ok := fs.byIdentity[identity]; !ok {
+		return false
+	}
+	delete(fs.byIdentity, identity)
+	return true
+}
+
+// identities returns a copy of every caller's own set, nil when there are none.
+func (fs *faultState) identities() map[string]Faults {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if len(fs.byIdentity) == 0 {
+		return nil
+	}
+	out := make(map[string]Faults, len(fs.byIdentity))
+	for identity, f := range fs.byIdentity {
+		out[identity] = *f
+	}
+	return out
 }
 
 // peek returns the current faults without consuming one-shot state. Used by
@@ -207,11 +252,13 @@ func (fs *faultState) update(fn func(*Faults)) {
 	fn(&fs.f)
 }
 
-// clear returns the server to healthy.
+// clear returns the server, and every caller with a set of its own, to
+// healthy.
 func (fs *faultState) clear() {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 	fs.f = Faults{}
+	fs.byIdentity = map[string]*Faults{}
 }
 
 // shouldFail rolls against ErrRate.

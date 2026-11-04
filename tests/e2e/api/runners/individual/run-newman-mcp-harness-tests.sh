@@ -30,12 +30,25 @@
 # only come from config.json. Each belongs to one test, which its id names, and
 # points at a fleet server of the same name that the test sets up.
 #
+# Bifrost is built with the harness tag and started with BIFROST_HARNESS_CLIENT_METADATA_PRIVATE_ALLOWLIST
+# 127.0.0.1, so its OAuth server fetches Client ID Metadata Documents from the fleet over http: real
+# clients' documents, served from fleet routes, then sign in as those clients. Any other private host
+# stays refused, and a release build has no such switch (a --binary built without the tag fails OAS-45).
+#
 # The upstream MCP servers are an mcpchaos fleet (tests/cmd/mcpconsole), built
 # and started here. Tests reach it through two collection variables: chaos_url,
 # the fleet's base URL for both its MCP endpoints and its control API, and
 # chaos_bin, the binary a STDIO client spawns to bridge to the fleet. Each test
 # resets the servers it uses through the control API, so tests do not depend on
 # one another.
+#
+# Tools that ask the caller for input mid-call (2026-07-28 input_required) come from
+# examples/mcps/input-required-server, a real mcp-go server built and started here
+# beside the fleet, since the fleet's hand-rolled protocol predates 2026-07-28. Tests
+# reach it through input_url and register their own client against it.
+#
+# MCP Apps tools and ui:// resources come from examples/mcps/apps-server, started the
+# same way and reached through apps_url (server dash on /mcp, server board on /mcp2).
 #
 # Requires a built bifrost-http binary; this runner boots its own server so the
 # state each test starts from is exactly what its assertions expect.
@@ -59,6 +72,8 @@ BIFROST_BINARY=""
 PORT="8093"
 CHAOS_PORT="8494"
 CHAOS_TLS_PORT=""
+INPUT_PORT="8496"
+APPS_PORT="8497"
 FOLDER=""
 REPORTERS="cli"
 VERBOSE=""
@@ -74,6 +89,8 @@ while [[ $# -gt 0 ]]; do
         --port) PORT="$2"; shift 2 ;;
         --chaos-port) CHAOS_PORT="$2"; shift 2 ;;
         --chaos-tls-port) CHAOS_TLS_PORT="$2"; shift 2 ;;
+        --input-port) INPUT_PORT="$2"; shift 2 ;;
+        --apps-port) APPS_PORT="$2"; shift 2 ;;
         --folder) FOLDER="$2"; shift 2 ;;
         --html) REPORTERS="${REPORTERS},html"; shift ;;
         --json) REPORTERS="${REPORTERS},json"; shift ;;
@@ -87,6 +104,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --port <port>     Port to boot the server on (default: 8093)"
             echo "  --chaos-port <p>  Port for the mcpchaos fleet (default: 8494)"
             echo "  --chaos-tls-port <p>  HTTPS fleet port (default: fleet port + 1)"
+            echo "  --input-port <p>  Port for the input-required MCP server (default: 8496)"
+            echo "  --apps-port <p>   Port for the MCP Apps server (default: 8497)"
             echo "  --folder <name>   Run only this collection folder (e.g. \"ADM\" or \"ADM-05 ...\")"
             echo "  --html            Generate HTML report"
             echo "  --json            Generate JSON report"
@@ -127,9 +146,11 @@ SERVER_PID=""
 SERVER_DIR=""
 CHAOS_PID=""
 CHAOS_DIR=""
+INPUT_PID=""
+APPS_PID=""
 
 cleanup() {
-    for pid in "$SERVER_PID" "$CHAOS_PID"; do
+    for pid in "$SERVER_PID" "$CHAOS_PID" "$INPUT_PID" "$APPS_PID"; do
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null || true
             wait "$pid" 2>/dev/null || true
@@ -153,10 +174,26 @@ if port_in_use "$CHAOS_PORT"; then
     echo -e "${RED}Error: port $CHAOS_PORT is already in use; pass --chaos-port to use another${NC}"
     exit 1
 fi
+if port_in_use "$INPUT_PORT"; then
+    echo -e "${RED}Error: port $INPUT_PORT is already in use; pass --input-port to use another${NC}"
+    exit 1
+fi
+if port_in_use "$APPS_PORT"; then
+    echo -e "${RED}Error: port $APPS_PORT is already in use; pass --apps-port to use another${NC}"
+    exit 1
+fi
 
 CHAOS_TLS_PORT="${CHAOS_TLS_PORT:-$((CHAOS_PORT + 1))}"
 if port_in_use "$CHAOS_TLS_PORT"; then
     echo "Error: TLS port $CHAOS_TLS_PORT is already in use; pass --chaos-tls-port"
+    exit 1
+fi
+if [[ "$INPUT_PORT" == "$CHAOS_PORT" || "$INPUT_PORT" == "$CHAOS_TLS_PORT" ]]; then
+    echo -e "${RED}Error: --input-port $INPUT_PORT is also an mcpchaos fleet port; pass another${NC}"
+    exit 1
+fi
+if [[ "$APPS_PORT" == "$CHAOS_PORT" || "$APPS_PORT" == "$CHAOS_TLS_PORT" || "$APPS_PORT" == "$INPUT_PORT" ]]; then
+    echo -e "${RED}Error: --apps-port $APPS_PORT is already another server's port; pass another${NC}"
     exit 1
 fi
 
@@ -216,6 +253,31 @@ start_chaos() {
     echo -e "${GREEN}mcpchaos ready on :$CHAOS_PORT${NC}"
 }
 
+# start_example_server builds examples/mcps/<name>, starts it on port and prints its pid.
+start_example_server() {
+    local name="$1" port="$2"
+    echo -e "${YELLOW}Building $name...${NC}" >&2
+    # GOWORK=off: the example has its own module and pins the mcp-go release it needs.
+    ( cd "$REPO_ROOT/examples/mcps/$name" && GOWORK=off go build -o "$CHAOS_DIR/$name" . ) >&2 || {
+        echo -e "${RED}Error: failed to build $name${NC}" >&2; exit 1; }
+    local log="$API_DIR/$REPORT_DIR/$name.log"
+    MCP_HTTP_PORT="$port" "$CHAOS_DIR/$name" > "$log" 2>&1 &
+    local pid=$!
+    local waited=0
+    while [ $waited -lt 40 ]; do
+        port_in_use "$port" && break
+        if ! kill -0 "$pid" 2>/dev/null; then
+            echo -e "${RED}$name exited during startup${NC}" >&2; cat "$log" >&2; exit 1
+        fi
+        sleep 0.5; waited=$((waited + 1))
+    done
+    if ! port_in_use "$port"; then
+        echo -e "${RED}$name did not become ready${NC}" >&2; cat "$log" >&2; kill "$pid" 2>/dev/null; exit 1
+    fi
+    echo -e "${GREEN}$name ready on :$port${NC}" >&2
+    echo "$pid"
+}
+
 write_config() {
     local dir="$1"
     cat > "$dir/config.json" <<EOF
@@ -240,7 +302,13 @@ write_config() {
     { "client_id": "adm68-h", "name": "adm68_h", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm68/mcp", "auth_type": "per_user_headers", "per_user_header_keys": ["x-key"], "tools_to_execute": ["*"] },
     { "client_id": "adm86-h", "name": "adm86_h", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm86h/mcp", "auth_type": "per_user_headers", "per_user_header_keys": ["x-key"], "tool_sync_interval": "5s", "tools_to_execute": ["*"] },
     { "client_id": "adm86-o", "name": "adm86_o", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm86o/mcp", "auth_type": "per_user_oauth", "tool_sync_interval": "5s", "tools_to_execute": ["*"] },
-    { "client_id": "adm86-c", "name": "adm86_c", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm86h/mcp", "auth_type": "headers", "headers": { "x-key": "good" }, "tool_sync_interval": "5s", "tools_to_execute": ["*"] }
+    { "client_id": "adm86-c", "name": "adm86_c", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm86h/mcp", "auth_type": "headers", "headers": { "x-key": "good" }, "tool_sync_interval": "5s", "tools_to_execute": ["*"] },
+    { "client_id": "adm85-h", "name": "adm85_h", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm85/mcp", "auth_type": "per_user_headers", "per_user_header_keys": ["x-key"], "tools_to_execute": ["*"] },
+    { "client_id": "auth47-t", "name": "auth47_t", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/auth47/mcp", "auth_type": "token_exchange", "token_exchange": { "audience": "auth47" }, "tools_to_execute": ["*"] },
+    { "client_id": "pud10-h", "name": "pud10_h", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/pud10/mcp", "auth_type": "per_user_headers", "per_user_header_keys": ["x-api-key"], "per_user_discovery": true, "tools_to_execute": ["*"] },
+    { "client_id": "pud10-x", "name": "pud10_x", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/pud10/mcp", "auth_type": "headers", "headers": { "X-Api-Key": "admin-key" }, "per_user_discovery": true, "tools_to_execute": ["*"] },
+    { "client_id": "pud11-p", "name": "pud11_p", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/pud11p/mcp", "auth_type": "per_user_headers", "per_user_header_keys": ["x-api-key"], "per_user_discovery": true, "tools_to_execute": ["*"] },
+    { "client_id": "pud68-o", "name": "pud68_o", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/pud68/mcp", "auth_type": "per_user_oauth", "per_user_discovery": true, "tools_to_execute": ["*"] }
   ] },
   "providers": {
     "openai": { "keys": [{ "name": "openai-mock", "value": "sk-mock", "models": ["*"], "weight": 1 }],
@@ -264,7 +332,10 @@ start_bifrost() {
     write_config "$SERVER_DIR"
     local log="$SERVER_DIR/server.log"
     # The setup token is what lets enable_dashboard_auth create the first admin account.
-    BIFROST_SETUP_TOKEN="$SETUP_TOKEN" "$BIFROST_BINARY" --app-dir "$SERVER_DIR" --port "$PORT" --log-level info > "$log" 2>&1 &
+    # SET-23 reads a header value from this variable; MCP_E2E_UNSET_KEY stays unset.
+    # The admin password and setup token are well-known test values, so the server must not
+    # inherit a wider BIFROST_HOST (such as 0.0.0.0) from the caller's environment.
+    MCP_E2E_HEADER_KEY="mcp-e2e-header-key" BIFROST_SETUP_TOKEN="$SETUP_TOKEN" BIFROST_HARNESS_CLIENT_METADATA_PRIVATE_ALLOWLIST="127.0.0.1" "$BIFROST_BINARY" --app-dir "$SERVER_DIR" --host 127.0.0.1 --port "$PORT" --log-level info > "$log" 2>&1 &
     SERVER_PID=$!
     local elapsed=0
     while [ $elapsed -lt 60 ]; do
@@ -293,6 +364,8 @@ enable_dashboard_auth() {
 }
 
 start_chaos
+INPUT_PID=$(start_example_server input-required-server "$INPUT_PORT") || exit 1
+APPS_PID=$(start_example_server apps-server "$APPS_PORT") || exit 1
 start_bifrost
 enable_dashboard_auth
 
@@ -303,6 +376,8 @@ cmd=(newman run "$COLLECTION"
     --env-var "admin_auth_header=$ADMIN_AUTH_HEADER"
     --env-var "chaos_url=http://127.0.0.1:$CHAOS_PORT"
     --env-var "chaos_bin=$CHAOS_DIR/mcpchaos"
+    --env-var "input_url=http://127.0.0.1:$INPUT_PORT"
+    --env-var "apps_url=http://127.0.0.1:$APPS_PORT"
     --env-var "setup_token=$SETUP_TOKEN"
     --timeout-script 60000 --timeout-request 120000
     -r "$REPORTERS")

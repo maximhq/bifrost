@@ -24,6 +24,7 @@ import {
 } from "@/lib/types/complexityRouter";
 import type { LogFilters } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
+import { metadataFilterValueCount, normalizeMetadataFilters, toggleMetadataFilterValue } from "@/lib/utils/metadataFilters";
 import { getRangeForPeriod } from "@/lib/utils/timeRange";
 import "@enterprise/lib/registrations/logs";
 import { ChevronDown, LoaderCircle, PanelLeftClose, Plus, RotateCcw, Search } from "lucide-react";
@@ -73,10 +74,7 @@ export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps
 			if (Array.isArray(value)) return c + value.length;
 			return c + (value ? 1 : 0);
 		}, 0);
-		if (filters.metadata_filters) {
-			count += Object.keys(filters.metadata_filters).length;
-		}
-		return count;
+		return count + metadataFilterValueCount(filters.metadata_filters);
 	}, [filters]);
 
 	const handleReset = useCallback(() => {
@@ -1535,15 +1533,14 @@ function LocalCachingFilter({ filters, onFiltersChange, defaultOpen }: FilterCom
 // LabelledMetadataFilter – a registered group of metadata keys under readable names
 // ---------------------------------------------------------------------------
 
-// setMetadataFilter sets one metadata key's filter value, or clears it when value is undefined.
-function setMetadataFilter(filters: LogFilters, key: string, value: string | undefined): LogFilters {
-	const current = { ...(filters.metadata_filters || {}) };
-	if (value === undefined) {
-		delete current[key];
-	} else {
-		current[key] = value;
-	}
-	return { ...filters, metadata_filters: Object.keys(current).length > 0 ? current : undefined };
+// toggleMetadataFilter checks or unchecks one value of a metadata key; a key may hold several.
+function toggleMetadataFilter(filters: LogFilters, key: string, value: string): LogFilters {
+	return { ...filters, metadata_filters: toggleMetadataFilterValue(filters.metadata_filters, key, value) };
+}
+
+// selectedMetadataValues is what a key has checked; a link written before multiple selection may hold a string.
+function selectedMetadataValues(filters: LogFilters, key: string): string[] {
+	return normalizeMetadataFilters(filters.metadata_filters)?.[key] ?? [];
 }
 
 // Keys a registered group offers under readable names; the generic Metadata section leaves them to it.
@@ -1556,8 +1553,8 @@ function useNoRecordedValues(): RecordedMetadataValues {
 	return { values: undefined, isLoading: false };
 }
 
-// LabelledMetadataFilter draws a registered group: each field's values under its label, one value
-// per key, as the metadata filter holds them. A group that can read which values rows in the time
+// LabelledMetadataFilter draws a registered group: each field's values under its label, any number
+// checked per key, as the metadata filter holds them. A group that can read which values rows in the time
 // range hold lists only those, and a field with none is left out.
 function LabelledMetadataFilter({
 	group,
@@ -1566,7 +1563,7 @@ function LabelledMetadataFilter({
 	defaultOpen,
 }: FilterComponentProps & { group: LabelledMetadataFilterGroup }) {
 	const { t } = useTranslation("observability");
-	const hasActive = group.fields.some((field) => filters.metadata_filters?.[field.key] !== undefined);
+	const hasActive = group.fields.some((field) => selectedMetadataValues(filters, field.key).length > 0);
 	const [opened, setOpened] = useState(defaultOpen || hasActive);
 	// The page's time range: a custom one as it is, a relative period (which carries no start or end)
 	// resolved against now when the period changes or the group opens, so the read's arguments hold
@@ -1582,7 +1579,7 @@ function LabelledMetadataFilter({
 	const useRecordedValues = group.useRecordedValues ?? useNoRecordedValues;
 	const recorded = useRecordedValues(range, { skip: !opened && !hasActive });
 	const fields = group.fields
-		.map((field) => ({ field, options: listedOptions(field, recorded.values, filters.metadata_filters?.[field.key]) }))
+		.map((field) => ({ field, options: listedOptions(field, recorded.values, selectedMetadataValues(filters, field.key)) }))
 		.filter(({ options }) => options.length > 0);
 	return (
 		<FilterSection
@@ -1597,13 +1594,13 @@ function LabelledMetadataFilter({
 				<div key={field.key} data-testid={`labelled-metadata-${field.key}-filter-group`}>
 					<div className="text-muted-foreground px-3 pt-2 pb-1 text-xs font-medium">{field.label}</div>
 					{options.map((option) => {
-						const checked = filters.metadata_filters?.[field.key] === option.value;
+						const checked = selectedMetadataValues(filters, field.key).includes(option.value);
 						return (
 							<CheckboxFilterItem
 								key={option.value}
 								label={option.label}
 								checked={checked}
-								onCheckedChange={() => onFiltersChange(setMetadataFilter(filters, field.key, checked ? undefined : option.value))}
+								onCheckedChange={() => onFiltersChange(toggleMetadataFilter(filters, field.key, option.value))}
 								testId={`labelled-metadata-${field.key}-filter-checkbox-${option.value}`}
 							/>
 						);
@@ -1621,7 +1618,7 @@ function LabelledMetadataFilter({
 function MetadataFilters({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
 	const { t } = useTranslation("observability");
 	const labelled = labelledMetadataKeys();
-	const hasActive = Object.keys(filters.metadata_filters || {}).some((key) => !labelled.has(key));
+	const hasActive = Object.keys(normalizeMetadataFilters(filters.metadata_filters) ?? {}).some((key) => !labelled.has(key));
 	const [opened, setOpened] = useState(defaultOpen || hasActive);
 	const [searchQuery, setSearchQuery] = useState("");
 	const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -1640,9 +1637,20 @@ function MetadataFilters({ filters, onFiltersChange, defaultOpen }: FilterCompon
 	const availableMetadataKeys = filterData?.metadata_keys || {};
 	const [customInputs, setCustomInputs] = useState<Record<string, string>>({});
 
-	const handleChange = useCallback(
-		(metadataKey: string, value: string | undefined) => onFiltersChange(setMetadataFilter(filters, metadataKey, value)),
+	const handleToggle = useCallback(
+		(metadataKey: string, value: string) => onFiltersChange(toggleMetadataFilter(filters, metadataKey, value)),
 		[filters, onFiltersChange],
+	);
+
+	// Adds a typed value to the key's selection; one already checked stays checked.
+	const handleAddCustom = useCallback(
+		(metadataKey: string) => {
+			const value = customInputs[metadataKey]?.trim();
+			if (!value) return;
+			if (!selectedMetadataValues(filters, metadataKey).includes(value)) handleToggle(metadataKey, value);
+			setCustomInputs((prev) => ({ ...prev, [metadataKey]: "" }));
+		},
+		[customInputs, filters, handleToggle],
 	);
 
 	const entries = Object.entries(availableMetadataKeys);
@@ -1677,48 +1685,40 @@ function MetadataFilters({ filters, onFiltersChange, defaultOpen }: FilterCompon
 					{entries.length === 0 && !isFetching && (
 						<div className="text-muted-foreground flex h-9 items-center px-3 text-xs">{t("filters.noResults")}</div>
 					)}
-					{entries.map(([metadataKey, values]) => (
-						<div key={metadataKey} data-testid={`metadata-${metadataKey}-filter-group`}>
-							<div className="text-muted-foreground px-3 pt-2 pb-1 text-xs font-medium">{metadataKey}</div>
-							{values.map((value: string) => (
-								<CheckboxFilterItem
-									key={value}
-									label={value}
-									checked={filters.metadata_filters?.[metadataKey] === value}
-									onCheckedChange={() => {
-										const currentValue = filters.metadata_filters?.[metadataKey];
-										handleChange(metadataKey, currentValue === value ? undefined : value);
-									}}
-									testId={`metadata-${metadataKey}-filter-checkbox-${value}`}
-								/>
-							))}
-							<div className="px-3 py-2.5">
-								<Input
-									className="placeholder:text-muted-foreground h-7 w-full rounded border bg-transparent px-2 text-sm"
-									placeholder={t("filters.customValue")}
-									value={
-										customInputs[metadataKey] ??
-										(filters.metadata_filters?.[metadataKey] && !values.includes(filters.metadata_filters[metadataKey])
-											? filters.metadata_filters[metadataKey]
-											: "")
-									}
-									onChange={(e) => {
-										const newVal = e.target.value;
-										setCustomInputs((prev) => ({ ...prev, [metadataKey]: newVal }));
-										if (newVal === "" && filters.metadata_filters?.[metadataKey]) {
-											handleChange(metadataKey, undefined);
-										}
-									}}
-									onKeyDown={(e) => {
-										if (e.key === "Enter" && customInputs[metadataKey]?.trim()) {
-											handleChange(metadataKey, customInputs[metadataKey].trim());
-										}
-									}}
-									data-testid={`metadata-${metadataKey}-filter-custom-input`}
-								/>
+					{entries.map(([metadataKey, values]) => {
+						const selected = selectedMetadataValues(filters, metadataKey);
+						// Checked values the key no longer lists (typed, or from a link) stay listed so they can be unchecked.
+						const listed = [...values, ...selected.filter((value) => !values.includes(value))];
+						return (
+							<div key={metadataKey} data-testid={`metadata-${metadataKey}-filter-group`}>
+								<div className="text-muted-foreground px-3 pt-2 pb-1 text-xs font-medium">{metadataKey}</div>
+								{listed.map((value) => (
+									<CheckboxFilterItem
+										key={value}
+										label={value}
+										checked={selected.includes(value)}
+										onCheckedChange={() => handleToggle(metadataKey, value)}
+										testId={`metadata-${metadataKey}-filter-checkbox-${value}`}
+									/>
+								))}
+								<div className="px-3 py-2.5">
+									<Input
+										className="placeholder:text-muted-foreground h-7 w-full rounded border bg-transparent px-2 text-sm"
+										placeholder={t("filters.customValue")}
+										value={customInputs[metadataKey] ?? ""}
+										onChange={(e) => {
+											const newVal = e.target.value;
+											setCustomInputs((prev) => ({ ...prev, [metadataKey]: newVal }));
+										}}
+										onKeyDown={(e) => {
+											if (e.key === "Enter") handleAddCustom(metadataKey);
+										}}
+										data-testid={`metadata-${metadataKey}-filter-custom-input`}
+									/>
+								</div>
 							</div>
-						</div>
-					))}
+						);
+					})}
 				</>
 			)}
 		</FilterSection>

@@ -40,6 +40,9 @@ func (p *GovernancePlugin) PreRelayHook(ctx *schemas.BifrostContext, req *schema
 			Error: &schemas.ErrorField{
 				Message: denialReason(fmt.Sprintf("Relay '%s' is not allowed", req.RelayName), access.DeniedPermitsForRelay(req.RelayName)),
 			},
+			// Classified as the access denial it is (error headers, spans and metrics read it), as
+			// the other governance refusals carry their decision.
+			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypePolicyAccessDenied, RequestType: schemas.RelayRequest},
 		}}, nil
 	}
 	return req, nil, nil

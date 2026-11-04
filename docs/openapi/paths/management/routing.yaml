@@ -37,16 +37,22 @@ rules:
           type: string
       - name: limit
         in: query
-        description: Page size (default 25, maximum 100). Sending limit, offset or search returns one page. Ignored when scope is set.
+        description: >-
+          Page size, 0 to 100 (default 25). Values above 100 are clamped to 100 without an error, and 0 uses the default, so read `limit` back from the response. Page with `offset` until `offset >= total_count`. Sending limit, offset or
+          search returns one page; without them every rule is returned. Ignored when
+          scope is set.
         schema:
           type: integer
           minimum: 0
+          maximum: 100
+          default: 25
       - name: offset
         in: query
         description: Number of rules to skip.
         schema:
           type: integer
           minimum: 0
+          default: 0
       - name: search
         in: query
         description: Case-insensitive match against the rule's name or CEL expression.

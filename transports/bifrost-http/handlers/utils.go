@@ -277,6 +277,13 @@ func SendError(ctx *fasthttp.RequestCtx, statusCode int, message string) {
 
 // SendBifrostError sends a BifrostError response
 func SendBifrostError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError) {
+	sendBifrostErrorWithContext(ctx, nil, bifrostErr)
+}
+
+// sendBifrostErrorWithContext is SendBifrostError for a caller that holds the request's Bifrost
+// context, so the error headers are written once, the context-only ones (fallback index, upstream
+// latency) included, as GenericRouter.sendError writes them.
+func sendBifrostErrorWithContext(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, bifrostErr *schemas.BifrostError) {
 	// Before sanitizing: the span keeps the unredacted detail core already stamps.
 	stampRootSpanError(ctx, bifrostErr)
 	bifrostErr = lib.SanitizeBifrostErrorForClient(bifrostErr)
@@ -289,10 +296,10 @@ func SendBifrostError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError
 
 	// Routed-identity headers from the error itself (provider/model/request-type +
 	// routing_info incl. is-fallback). Callers forward provider headers before this,
-	// so bifrost identity wins. No bifrostCtx here, so the ctx-only fallback-index /
+	// so bifrost identity wins. Without a bifrostCtx the ctx-only fallback-index /
 	// upstream-latency headers are omitted on native errors — the routing_info-*
 	// headers still carry which provider ran and whether a fallback fired.
-	lib.ApplyBifrostErrorResponseHeaders(ctx, nil, bifrostErr.ExtraFields)
+	lib.ApplyBifrostErrorResponseHeaders(ctx, bifrostCtx, bifrostErr.ExtraFields)
 
 	ctx.SetContentType("application/json")
 	if lib.ExtraFieldsInHeaders(ctx) {

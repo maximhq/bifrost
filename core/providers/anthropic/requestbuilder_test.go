@@ -3497,3 +3497,120 @@ func TestThinkingDisplayUpdatesRequestBuilders(t *testing.T) {
 		}
 	}
 }
+
+func TestSearchToolVersionsOnProviderWire(t *testing.T) {
+	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Azure, schemas.Vertex} {
+		for _, version := range []AnthropicToolType{AnthropicToolTypeWebSearch20250305, AnthropicToolTypeWebSearch20260209, AnthropicToolTypeWebFetch20250910} {
+			// Vertex does not support web fetch.
+			if provider == schemas.Vertex && strings.HasPrefix(string(version), "web_fetch_") {
+				continue
+			}
+			for _, stream := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/stream=%t", provider, version, stream), func(t *testing.T) {
+					name := "web_search"
+					if strings.HasPrefix(string(version), "web_fetch_") {
+						name = "web_fetch"
+					}
+					client := &AnthropicMessageRequest{Model: "claude-sonnet-4-6", MaxTokens: 32,
+						Tools: []AnthropicTool{{Type: &version, Name: name}}}
+					request := client.ToBifrostResponsesRequest(nil)
+					request.Provider = provider
+					request.Input = makeSimpleInput("Reply hello without using tools.")
+					ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+					body, err := BuildAnthropicResponsesRequestBody(ctx, request,
+						AnthropicRequestBuildConfig{Provider: provider, Model: request.Model, IsStreaming: stream, ValidateTools: true})
+					if err != nil {
+						t.Fatalf("build: %v", err)
+					}
+					want := string(version)
+					if provider == schemas.Vertex && version == AnthropicToolTypeWebSearch20260209 {
+						want = string(AnthropicToolTypeWebSearch20250305)
+					}
+					if got := gjson.GetBytes(body, "tools.0.type").String(); got != want {
+						t.Errorf("tool = %s, want %s; body=%s", got, want, body)
+					}
+					if gjson.GetBytes(body, "tools.#").Int() != 1 {
+						t.Errorf("unexpected tools: %s", body)
+					}
+					if strings.Contains(string(body), "web_search_version") || strings.Contains(string(body), "web_fetch_version") {
+						t.Errorf("neutral metadata leaked: %s", body)
+					}
+					if want == string(AnthropicToolTypeWebSearch20250305) || want == string(AnthropicToolTypeWebFetch20250910) {
+						if doesWebSearchOrFetchAutoInjectCodeExecution(gjson.GetBytes(body, "tools.0.type").String()) {
+							t.Errorf("old version now enables code execution: %s", body)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+// Regression for PR #9258: an older web tool version supplies no code execution, so a
+// declared code execution tool beside it must reach the wire.
+func TestSearchToolVersionKeepsDeclaredCodeExecution(t *testing.T) {
+	codeExec := AnthropicToolTypeCodeExecution20260120
+	cases := []struct {
+		provider     schemas.ModelProvider
+		webTool      *AnthropicToolType // nil sends the neutral tool with no version
+		webName      string
+		wantCodeExec bool
+	}{
+		{schemas.Anthropic, schemas.Ptr(AnthropicToolTypeWebSearch20250305), "web_search", true},
+		{schemas.Anthropic, schemas.Ptr(AnthropicToolTypeWebFetch20250910), "web_fetch", true},
+		{schemas.Azure, schemas.Ptr(AnthropicToolTypeWebSearch20250305), "web_search", true},
+		{schemas.Anthropic, schemas.Ptr(AnthropicToolTypeWebSearch20260209), "web_search", false},
+		{schemas.Anthropic, schemas.Ptr(AnthropicToolTypeWebFetch20260309), "web_fetch", false},
+		{schemas.Anthropic, nil, "web_search", false}, // Sonnet 4.6 defaults to web_search_20260209.
+		// Vertex has no code execution, so the earlier omission still applies there.
+		{schemas.Vertex, schemas.Ptr(AnthropicToolTypeWebSearch20250305), "web_search", false},
+	}
+	for _, tc := range cases {
+		for _, stream := range []bool{false, true} {
+			label := "neutral"
+			if tc.webTool != nil {
+				label = string(*tc.webTool)
+			}
+			t.Run(fmt.Sprintf("%s/%s/stream=%t", tc.provider, label, stream), func(t *testing.T) {
+				var tools []schemas.ResponsesTool
+				if tc.webTool != nil {
+					client := &AnthropicMessageRequest{Model: "claude-sonnet-4-6", MaxTokens: 32,
+						Tools: []AnthropicTool{{Type: tc.webTool, Name: tc.webName}}}
+					tools = client.ToBifrostResponsesRequest(nil).Params.Tools
+				} else {
+					tools = []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebSearch}}
+				}
+				tools = append(tools, schemas.ResponsesTool{
+					Type:                         schemas.ResponsesToolTypeCodeInterpreter,
+					ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{Version: schemas.Ptr(string(codeExec))},
+				})
+				request := &schemas.BifrostResponsesRequest{
+					Provider: tc.provider, Model: "claude-sonnet-4-6",
+					Input:  makeSimpleInput("Reply hello without using tools."),
+					Params: &schemas.ResponsesParameters{Tools: tools},
+				}
+				ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+				body, err := BuildAnthropicResponsesRequestBody(ctx, request,
+					AnthropicRequestBuildConfig{Provider: tc.provider, Model: request.Model, IsStreaming: stream, ValidateTools: true})
+				if err != nil {
+					t.Fatalf("build: %v", err)
+				}
+				gotCodeExec := false
+				for _, tool := range gjson.GetBytes(body, "tools").Array() {
+					if tool.Get("type").String() == string(codeExec) {
+						gotCodeExec = true
+					}
+				}
+				if gotCodeExec != tc.wantCodeExec {
+					t.Errorf("code execution sent = %t, want %t; body=%s", gotCodeExec, tc.wantCodeExec, body)
+				}
+				if tc.webTool != nil {
+					want := string(*tc.webTool)
+					if got := gjson.GetBytes(body, "tools.0.type").String(); got != want {
+						t.Errorf("web tool = %s, want %s; body=%s", got, want, body)
+					}
+				}
+			})
+		}
+	}
+}

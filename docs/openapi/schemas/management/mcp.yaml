@@ -228,6 +228,23 @@ MCPClientCreateRequestBase:
         description: |
           A `token_exchange` block only applies to auth_type "token_exchange";
           reject it for every other auth_type instead of silently ignoring it.
+    - if:
+        required: [per_user_discovery]
+        properties:
+          per_user_discovery:
+            const: true
+      then:
+        required: [auth_type]
+        properties:
+          auth_type:
+            enum: [per_user_oauth, per_user_headers, token_exchange]
+          connection_type:
+            not:
+              const: openapi
+        description: |
+          `per_user_discovery` discovers each caller's tools with their own
+          credential, so it only applies to the per-user auth types, and not to
+          an openapi client, whose tools come from its document.
   properties:
     client_id:
       type: string
@@ -398,6 +415,20 @@ MCPClientCreateRequestBase:
         POST /api/mcp/client/{id}/verify-exchange). A request with neither,
         such as one made with an API key, creates the client in
         pending_verification. There is no sample-token field on this request.
+    per_user_discovery:
+      type: boolean
+      default: false
+      description: |
+        Per-user auth types only (`per_user_oauth`, `per_user_headers`,
+        `token_exchange`), and not for connection_type "openapi". When true,
+        each caller's tools, prompts and resources are discovered with their
+        own credential when they connect, and the client keeps no admin
+        credential or discovery of its own: the admin's verification only
+        checks the server. Every caller is served their own tools, prompts,
+        resources and resource templates, the MCP gateway (`/mcp`) included, and a caller who has not
+        connected yet is offered the client's `<name>-connect` tool. When false
+        or omitted, every caller is served what was discovered with the admin
+        credential.
     user_headers:
       type: object
       additionalProperties:
@@ -879,6 +910,30 @@ MCPClientUpdateRequest:
         their next tool call to satisfy the new schema. The retained admin
         discovery credential is flipped the same way; repair it by calling
         POST /api/mcp/client/{id}/verify-headers with fresh sample values.
+    per_user_discovery:
+      type: boolean
+      description: |
+        Per-user auth types only, and not for openapi clients. Omitted
+        preserves the stored value. Turning it on deletes the admin credential
+        and the discovery the client keeps; each caller's tools, prompts and
+        resources are then discovered with their own credential. Turning it
+        off deletes every caller's discovery, and the client goes back to
+        pending_verification until an admin verifies it again: through
+        POST /api/mcp/client/{id}/verify-headers, verify-exchange, or, for
+        `per_user_oauth`, initiate-verification or reauthorize, which sign the
+        admin in on the client's existing OAuth registration so callers keep
+        their sign-ins. For a provider that no longer recognises that
+        registration, reregister registers a new OAuth client first, which
+        needs the OAuth config's registration_url and a provider that accepts
+        the registration (otherwise it answers 400 and changes nothing), and
+        every caller then signs in again. While a client declared in
+        config.json has not completed its first sign-in, reauthorize and
+        reregister answer 400 for it, and initiate-verification runs that
+        first sign-in.
+        While it is on, POST /api/mcp/client/{id}/refresh-tools and
+        POST /api/mcp/client/{id}/reauthorize return 400, as do
+        POST /api/mcp/client/{id}/verify-headers and
+        POST /api/mcp/client/{id}/verify-exchange on a verified client.
     token_exchange:
       $ref: '#/MCPTokenExchangeConfig'
       description: |
@@ -1071,6 +1126,14 @@ MCPClientConfig:
       description: |
         For `token_exchange` clients only. `client_id` and `client_secret` are
         redacted in this response.
+    per_user_discovery:
+      type: boolean
+      default: false
+      description: |
+        When true, each caller's tools, prompts and resources are discovered
+        with their own credential, and the client keeps no admin credential or
+        discovery of its own. The list response's `tools` are then the names
+        seen in callers' discoveries (see `callers_by_tool`).
     disabled:
       type: boolean
       default: false
@@ -1267,6 +1330,16 @@ MCPClient:
             items:
               $ref: '#/MCPIcon'
           _meta: { type: object, additionalProperties: true }
+    callers_by_tool:
+      type: object
+      additionalProperties:
+        type: integer
+        minimum: 1
+      description: |
+        Set for a client with `per_user_discovery` on, whose `tools` are the
+        names seen in its callers' discoveries, names only, since descriptions
+        and schemas can differ from one caller to another: how many callers'
+        discoveries include each. Absent until a caller holds one.
     state:
       $ref: '#/MCPConnectionState'
     last_failure:
@@ -1286,6 +1359,81 @@ MCPClient:
       items:
         $ref: '#/MCPVKConfigResponse'
       description: Virtual key assignments for this MCP client
+    credential:
+      $ref: '#/MCPClientCredential'
+
+MCPClientCredential:
+  type: object
+  description: |
+    Read-only view of the credential the client holds on its own behalf, as
+    opposed to the per-caller credentials listed under /api/mcp/sessions: the
+    shared token of an `oauth` client, the retained admin token of a
+    `per_user_oauth` or `token_exchange` client, or the retained admin header
+    values of a `per_user_headers` client. Absent for auth types that hold no
+    such credential (`none`, `headers`), while none has been issued yet (a
+    client still pending its one-time authorization), and for a client with
+    `per_user_discovery` on, which keeps none. Secret material never appears:
+    a refresh token is reported as present or absent, and header values only
+    by name.
+  required: [kind, status, has_refresh_token, created_at, updated_at]
+  properties:
+    kind:
+      type: string
+      enum: [oauth, headers]
+    status:
+      type: string
+      enum: [active, orphaned, needs_reauth, needs_update]
+      description: |
+        `oauth` credentials are `active`, `orphaned` or `needs_reauth`;
+        `headers` credentials are `active`, `orphaned` or `needs_update`.
+    status_reason:
+      type: string
+      description: |
+        Why an `oauth` credential left `active`: the provider's rejection of
+        the last refresh (HTTP status plus the OAuth error and description), a
+        credential rotation, or a failed admin exchange. Absent while `active`
+        and for `headers` credentials.
+    expires_at:
+      type: string
+      format: date-time
+      description: |
+        When the access token of an `oauth` credential expires. Absent when
+        the provider did not report an expiry, and for `headers` credentials.
+    last_refreshed_at:
+      type: string
+      format: date-time
+      description: |
+        Set on an `oauth` credential once its access token has been refreshed
+        or the credential re-authorized at least once.
+    has_refresh_token:
+      type: boolean
+      description: |
+        Whether the provider issued a refresh token, so the access token can
+        be renewed without another consent. Always false for `headers`
+        credentials.
+    scopes:
+      type: array
+      items:
+        type: string
+      description: |
+        The scopes the provider reported at consent time. Absent when it
+        reported none.
+    header_keys:
+      type: array
+      items:
+        type: string
+      description: |
+        The names of the headers the stored admin values of a `headers`
+        credential cover, sorted. Absent when the stored values hold no
+        headers or could not be read. A name in the client's
+        `per_user_header_keys` that is missing from a present list is one the
+        stored values predate.
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
 
 MCPIcon:
   type: object
@@ -1445,6 +1593,12 @@ MCPClientSummary:
       type: string
     name:
       type: string
+    per_user_discovery:
+      type: boolean
+      description: |
+        Set on sessions list rows. True when each caller keeps their own
+        discovery on this client; absent when the client keeps one discovery
+        every caller shares.
 
 MCPVirtualKeySummary:
   type: object
@@ -1478,6 +1632,7 @@ MCPSessionRow:
     - status
     - created_at
     - can_reauth
+    - can_refresh
   properties:
     id:
       type: string
@@ -1556,6 +1711,38 @@ MCPSessionRow:
         enough to see the row, but reauthing mints credentials under whoever clicks
         the URL, so the server returns 403 to non-bound callers. The UI hides the
         Re-authenticate / Edit values action when this is false.
+    can_refresh:
+      type: boolean
+      description: |
+        Whether POST /api/mcp/sessions/{id}/refresh accepts this row for the
+        calling user: an active OAuth token or header credential of a `user` or
+        `vk` caller on an MCP client with `per_user_discovery` on that is not
+        awaiting admin verification, and, for a `user` row, only when the calling
+        user is the row's user. The UI offers Refresh tools only when this is true.
+    discovery:
+      $ref: '#/MCPSessionDiscovery'
+      nullable: true
+      description: |
+        What Bifrost discovered with this credential's binding on a client with
+        per_user_discovery on. Token and header rows of user and virtual-key
+        callers only; absent when the binding holds none.
+
+MCPSessionDiscovery:
+  type: object
+  description: A caller's discovery on a client with per_user_discovery on, as counts.
+  required: [discovered_at, tool_count, prompt_count, resource_count]
+  properties:
+    discovered_at:
+      type: string
+      format: date-time
+      description: When the upstream last answered tools/list for this caller
+    tool_count:
+      type: integer
+    prompt_count:
+      type: integer
+    resource_count:
+      type: integer
+      description: Resources plus resource templates
 
 MCPSessionsListResponse:
   type: object
@@ -1565,6 +1752,24 @@ MCPSessionsListResponse:
       type: array
       items:
         $ref: '#/MCPSessionRow'
+
+MCPSessionRefreshResponse:
+  type: object
+  description: Response for POST /api/mcp/sessions/{id}/refresh, with what the new discovery holds.
+  required: [status, tool_count, prompt_count, resource_count]
+  properties:
+    status:
+      type: string
+      example: success
+    tool_count:
+      type: integer
+      description: Tools the caller's new discovery holds
+    prompt_count:
+      type: integer
+      description: Prompts the caller's new discovery holds
+    resource_count:
+      type: integer
+      description: Resources plus resource templates the caller's new discovery holds
 
 MCPSessionReauthResponse:
   type: object
@@ -1693,3 +1898,8 @@ MCPHeadersSubmitResponse:
     updated_at:
       type: string
       format: date-time
+    discovery_error:
+      type: string
+      description: >-
+        Present when the credential was stored but the MCP client's tools could
+        not be loaded with it. Connecting to the client again retries.

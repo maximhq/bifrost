@@ -75,7 +75,7 @@ type alphaServer struct {
 	url         string
 	mu          sync.Mutex
 	calls       map[string]int
-	initializes atomic.Int64
+	handshakes  atomic.Int64 // connection handshakes: initialize, or server/discover on the modern protocol
 }
 
 // newAlphaServer starts alpha on a local port for the length of the test.
@@ -89,8 +89,8 @@ func newAlphaServer(t *testing.T) *alphaServer {
 			var msg struct {
 				Method string `json:"method"`
 			}
-			if json.Unmarshal(body, &msg) == nil && msg.Method == "initialize" {
-				a.initializes.Add(1)
+			if json.Unmarshal(body, &msg) == nil && (msg.Method == "initialize" || msg.Method == "server/discover") {
+				a.handshakes.Add(1)
 			}
 			r.Body = io.NopCloser(bytes.NewReader(body))
 		}
@@ -689,14 +689,13 @@ func testSDKOpenAPIFactoryAfterInit(t *testing.T) {
 	}
 }
 
-// testSDKConcurrency: 100 concurrent calls on one sticky client all succeed on a single upstream
-// session.
+// testSDKConcurrency: 100 concurrent calls on one sticky client all succeed over its one upstream
+// connection, with no handshake after the first.
 func testSDKConcurrency(t *testing.T) {
 	a := newAlphaServer(t)
 	b := connectedAlpha(t, a, func(c *schemas.MCPClientConfig) { c.NeedsSessionStickiness = schemas.Ptr(true) })
-	sessions := a.initializes.Load()
-	if sessions != 1 {
-		t.Fatalf("sessions after connect = %d, want 1", sessions)
+	if got := a.handshakes.Load(); got != 1 {
+		t.Fatalf("handshakes after connect = %d, want 1", got)
 	}
 	var wg sync.WaitGroup
 	var failures atomic.Int64
@@ -718,8 +717,8 @@ func testSDKConcurrency(t *testing.T) {
 	if got := a.callCount("echo_tool"); got != 100 {
 		t.Fatalf("alpha ran echo_tool %d times, want 100", got)
 	}
-	if got := a.initializes.Load(); got != 1 {
-		t.Fatalf("sessions after the calls = %d, want 1", got)
+	if got := a.handshakes.Load(); got != 1 {
+		t.Fatalf("handshakes after the calls = %d, want 1: the sticky client reconnected", got)
 	}
 }
 
