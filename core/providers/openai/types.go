@@ -1101,6 +1101,11 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 // encrypted_content rides the embedded *ResponsesReasoning, whose (no-omitempty) Summary
 // re-injects "summary": null. Reasoning items legitimately carry summary and are left intact.
 func stripCompactionItemSummary(data []byte, items []schemas.ResponsesMessage) []byte {
+	if !slices.ContainsFunc(items, func(msg schemas.ResponsesMessage) bool {
+		return msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeCompaction
+	}) {
+		return data
+	}
 	// Each item's summary is dropped from that item's own JSON and the array is written
 	// back once. Deleting "<i>.summary" through the whole array would reserialise it per
 	// compaction item, making this O(items x payload).
