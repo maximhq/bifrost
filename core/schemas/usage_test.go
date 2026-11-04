@@ -2,6 +2,8 @@ package schemas
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -361,4 +363,56 @@ func TestAsyncJobResponsePreservesZeroUsage(t *testing.T) {
 			require.Equal(t, string(want), string(got))
 		}
 	})
+}
+
+// TestPreserveTokenCountZerosLookupShapes pins the single parent lookup and its
+// fallback: nested parents, non-object parents and paths without a shared parent.
+func TestPreserveTokenCountZerosLookupShapes(t *testing.T) {
+	for _, tc := range []struct {
+		name, data, prompt, completion string
+		usage                          BifrostLLMUsage
+		wantPrompt, wantCompletion     bool
+	}{
+		{"nested parent", `{"response":{"usage":{"input_tokens":0,"output_tokens":0}}}`, "response.usage.input_tokens", "response.usage.output_tokens", BifrostLLMUsage{}, true, true},
+		{"one zero one nonzero", `{"usage":{"prompt_tokens":4,"completion_tokens":0}}`, "usage.prompt_tokens", "usage.completion_tokens", BifrostLLMUsage{PromptTokens: 4}, false, true},
+		{"null and missing", `{"usage":{"prompt_tokens":null}}`, "usage.prompt_tokens", "usage.completion_tokens", BifrostLLMUsage{}, false, false},
+		{"string zero", `{"usage":{"prompt_tokens":"0","completion_tokens":0}}`, "usage.prompt_tokens", "usage.completion_tokens", BifrostLLMUsage{}, false, true},
+		{"parent not object", `{"usage":[0,0]}`, "usage.prompt_tokens", "usage.completion_tokens", BifrostLLMUsage{}, false, false},
+		{"parent missing", `{"other":{"prompt_tokens":0}}`, "usage.prompt_tokens", "usage.completion_tokens", BifrostLLMUsage{}, false, false},
+		{"different parents", `{"a":{"prompt_tokens":0},"b":{"completion_tokens":0}}`, "a.prompt_tokens", "b.completion_tokens", BifrostLLMUsage{}, true, true},
+		{"top level", `{"prompt_tokens":0,"completion_tokens":1}`, "prompt_tokens", "completion_tokens", BifrostLLMUsage{CompletionTokens: 1}, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			usage := tc.usage
+			usage.PreserveTokenCountZeros([]byte(tc.data), tc.prompt, tc.completion)
+			require.Equal(t, tc.wantPrompt, usage.PromptTokensExplicitZero, "prompt")
+			require.Equal(t, tc.wantCompletion, usage.CompletionTokensExplicitZero, "completion")
+		})
+	}
+}
+
+// BenchmarkPreserveTokenCountZeros measures the presence lookup alone, with the
+// usage object after a small and a 64 KiB message body.
+func BenchmarkPreserveTokenCountZeros(b *testing.B) {
+	for _, size := range []int{64, 64 << 10} {
+		content := strings.Repeat("x", size)
+		for _, tc := range []struct {
+			name  string
+			usage string
+			base  BifrostLLMUsage
+		}{
+			{"zero", `{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}`, BifrostLLMUsage{}},
+			{"missing", `{"total_tokens":12}`, BifrostLLMUsage{TotalTokens: 12}},
+			{"nonzero", `{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}`, BifrostLLMUsage{PromptTokens: 3, CompletionTokens: 2}},
+		} {
+			data := []byte(`{"id":"x","choices":[{"message":{"role":"assistant","content":"` + content + `"}}],"usage":` + tc.usage + `}`)
+			b.Run(fmt.Sprintf("%s/%dB", tc.name, size), func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					usage := tc.base
+					usage.PreserveTokenCountZeros(data, "usage.prompt_tokens", "usage.completion_tokens")
+				}
+			})
+		}
+	}
 }

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
+	"unsafe"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/tidwall/gjson"
@@ -2028,14 +2030,44 @@ func (u *BifrostLLMUsage) PreserveTokenCountZeros(data []byte, promptPath, compl
 	if u.PromptTokens != 0 && u.CompletionTokens != 0 {
 		return
 	}
+	// Sibling paths (every caller's "usage.*") scan the body once for the parent
+	// object, then read both keys from that small sub-document. The string view
+	// avoids copying data; no result outlives this call.
+	promptParent, promptKey := splitJSONFieldPath(promptPath)
+	completionParent, completionKey := splitJSONFieldPath(completionPath)
+	if promptParent != "" && promptParent == completionParent {
+		parent := gjson.Get(unsafe.String(unsafe.SliceData(data), len(data)), promptParent)
+		if !parent.IsObject() {
+			return
+		}
+		if u.PromptTokens == 0 {
+			u.PromptTokensExplicitZero = isJSONNumberZero(gjson.Get(parent.Raw, promptKey))
+		}
+		if u.CompletionTokens == 0 {
+			u.CompletionTokensExplicitZero = isJSONNumberZero(gjson.Get(parent.Raw, completionKey))
+		}
+		return
+	}
 	if u.PromptTokens == 0 {
-		value := gjson.GetBytes(data, promptPath)
-		u.PromptTokensExplicitZero = value.Type == gjson.Number && value.Num == 0
+		u.PromptTokensExplicitZero = isJSONNumberZero(gjson.GetBytes(data, promptPath))
 	}
 	if u.CompletionTokens == 0 {
-		value := gjson.GetBytes(data, completionPath)
-		u.CompletionTokensExplicitZero = value.Type == gjson.Number && value.Num == 0
+		u.CompletionTokensExplicitZero = isJSONNumberZero(gjson.GetBytes(data, completionPath))
 	}
+}
+
+// splitJSONFieldPath splits a plain dotted gjson path into parent and last key.
+// Paths with escapes or no parent return an empty parent so callers look up the full path.
+func splitJSONFieldPath(path string) (parent, key string) {
+	idx := strings.LastIndexByte(path, '.')
+	if idx <= 0 || strings.IndexByte(path, '\\') >= 0 {
+		return "", path
+	}
+	return path[:idx], path[idx+1:]
+}
+
+func isJSONNumberZero(value gjson.Result) bool {
+	return value.Type == gjson.Number && value.Num == 0
 }
 
 // completionUsage preserves prompt/completion presence; total_tokens serialization is unchanged.
