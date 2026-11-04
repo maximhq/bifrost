@@ -78,7 +78,7 @@ func (provider *SarvamProvider) ListModels(ctx *schemas.BifrostContext, keys []s
 		ctx,
 		provider.client,
 		request,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/models"),
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v2/models"),
 		keys,
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
@@ -102,7 +102,7 @@ func (provider *SarvamProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v2/chat/completions"),
 		request,
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
@@ -124,7 +124,7 @@ func (provider *SarvamProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamingClient,
-		provider.networkConfig.BaseURL+"/v1/chat/completions",
+		provider.networkConfig.BaseURL+"/v2/chat/completions",
 		request,
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
