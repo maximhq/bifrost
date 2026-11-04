@@ -1,6 +1,7 @@
 package machgen
 
 import (
+	"maps"
 	"strconv"
 	"strings"
 
@@ -79,10 +80,12 @@ func takeExtraParam[T any](extra map[string]interface{}, key string, dst *T) err
 
 // applyMachGenExtraParams lifts the MachGen-native fields from extra params onto the request.
 // Whatever is left stays in ExtraParams and is merged into the body when passthrough is on.
+// It works on a copy: a retry converts the caller's request again and must still see them.
 func applyMachGenExtraParams(request *MachGenGenerateRequest, extra map[string]interface{}) error {
 	if len(extra) == 0 {
 		return nil
 	}
+	extra = maps.Clone(extra)
 	request.ExtraParams = extra
 	if err := takeExtraParam(extra, "task_type", &request.TaskType); err != nil {
 		return err
@@ -108,4 +111,21 @@ func applyMachGenExtraParams(request *MachGenGenerateRequest, extra map[string]i
 		return err
 	}
 	return takeExtraParam(extra, "subject_to_audio_ids", &request.SubjectToAudioIDs)
+}
+
+// requireSourceURLs rejects inline sources (data URLs, bare base64), since MachGen's async API
+// fetches every source over HTTP.
+func requireSourceURLs(request *MachGenGenerateRequest) error {
+	for _, urls := range [][]string{request.SrcImageURLs, request.SrcVideoURLs, request.SrcAudioURLs} {
+		for _, u := range urls {
+			if !hasHTTPScheme(u) {
+				return providerUtils.InvalidRequestErrorf("MachGen needs each source as a public http(s) URL; inline data URLs and base64 are not supported")
+			}
+		}
+	}
+	return nil
+}
+
+func hasHTTPScheme(u string) bool {
+	return (len(u) > 7 && strings.EqualFold(u[:7], "http://")) || (len(u) > 8 && strings.EqualFold(u[:8], "https://"))
 }

@@ -88,7 +88,7 @@ curl http://localhost:8080/v1/videos \
 
 MachGen's native statuses are `PENDING`, `RUNNING`, `COMPLETED` and `FAILED`. A failed task carries MachGen's `error_msg` in `error.message`.
 
-A few MachGen models have a second name. For those, `model` on a retrieved video is MachGen's internal id, for example `MiniMax-H3-MultiMax` for a video requested as `MiniMax-H3-Turbo`. Image responses always echo the model you sent.
+A few MachGen models have a second name. For those, `model` on a retrieved video is MachGen's internal id, for example `MiniMax-H3-MultiMax` for a video requested as `MiniMax-H3-Turbo`. Image responses always carry the model you asked for, without the `machgen/` prefix: a request for `machgen/FLUX.2-dev` returns `FLUX.2-dev`.
 
 ## Retrieve / Download
 
@@ -113,7 +113,7 @@ MachGen asset URLs need your MachGen API key, so download through Bifrost rather
 | `seed` | Generation seed |
 | `n` | Must be `1`; each task makes one image |
 
-Images for `I2I` must be public `http(s)` URLs; uploaded image bytes are rejected.
+Images for `I2I` must be public `http(s)` URLs. Uploaded image bytes and inline `data:` URLs are rejected with a 400, and the same applies to every image, video and audio source on video requests.
 
 Bifrost waits for the task to finish and returns the image as `b64_json`. The wait is bounded by the provider's request timeout, so raise `network_config.default_request_timeout_in_seconds` for slower models.
 

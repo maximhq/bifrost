@@ -58,6 +58,9 @@ func ToMachGenVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationR
 		}
 	}
 
+	if err := requireSourceURLs(request); err != nil {
+		return nil, err
+	}
 	if request.TaskType == "" {
 		request.TaskType = inferVideoTaskType(request)
 	}

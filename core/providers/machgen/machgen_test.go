@@ -135,6 +135,74 @@ func TestToMachGenImageEditRequest_RequiresImageURLs(t *testing.T) {
 	assert.Equal(t, []string{"https://x/a.png"}, req.SrcImageURLs)
 }
 
+func TestMachGenConverters_RejectInlineDataURLSources(t *testing.T) {
+	const dataURL = "data:image/png;base64,iVBORw0KGgo="
+	convert := map[string]func() (*MachGenGenerateRequest, error){
+		"image generation input image": func() (*MachGenGenerateRequest, error) {
+			return ToMachGenImageGenerationRequest(&schemas.BifrostImageGenerationRequest{
+				Model:  "FLUX.2-dev",
+				Input:  &schemas.ImageGenerationInput{Prompt: "p"},
+				Params: &schemas.ImageGenerationParameters{InputImages: []string{dataURL}},
+			})
+		},
+		"image generation bare base64": func() (*MachGenGenerateRequest, error) {
+			return ToMachGenImageGenerationRequest(&schemas.BifrostImageGenerationRequest{
+				Model:  "FLUX.2-dev",
+				Input:  &schemas.ImageGenerationInput{Prompt: "p"},
+				Params: &schemas.ImageGenerationParameters{InputImages: []string{"iVBORw0KGgo="}},
+			})
+		},
+		"image edit url": func() (*MachGenGenerateRequest, error) {
+			return ToMachGenImageEditRequest(&schemas.BifrostImageEditRequest{
+				Model: "Nano-Banana-Pro",
+				Input: &schemas.ImageEditInput{Prompt: "p", Images: []schemas.ImageInput{{URL: dataURL}}},
+			})
+		},
+		"video input reference": func() (*MachGenGenerateRequest, error) {
+			return ToMachGenVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
+				Model: "MiniMax-H3",
+				Input: &schemas.VideoGenerationInput{Prompt: "p", InputReference: schemas.Ptr(dataURL)},
+			})
+		},
+		"video src_video_urls extra param": func() (*MachGenGenerateRequest, error) {
+			return ToMachGenVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
+				Model:  "MiniMax-H3",
+				Input:  &schemas.VideoGenerationInput{Prompt: "p"},
+				Params: &schemas.VideoGenerationParameters{ExtraParams: map[string]interface{}{"src_video_urls": []interface{}{"DATA:video/mp4;base64,AAAA"}}},
+			})
+		},
+	}
+	for name, fn := range convert {
+		t.Run(name, func(t *testing.T) {
+			_, err := fn()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "public http(s) URL")
+		})
+	}
+}
+
+func TestMachGenConverters_LeaveCallerExtraParamsUntouched(t *testing.T) {
+	extra := map[string]interface{}{
+		"task_type":      "I2I",
+		"src_image_urls": []interface{}{"https://x/a.png"},
+		"style":          "watercolor",
+	}
+	bifrostReq := &schemas.BifrostImageGenerationRequest{
+		Model:  "FLUX.2-dev",
+		Input:  &schemas.ImageGenerationInput{Prompt: "p"},
+		Params: &schemas.ImageGenerationParameters{ExtraParams: extra},
+	}
+	// A retry converts the same request again, so the second pass must see the same inputs.
+	for attempt := 1; attempt <= 2; attempt++ {
+		req, err := ToMachGenImageGenerationRequest(bifrostReq)
+		require.NoError(t, err)
+		assert.Equal(t, taskTypeI2I, req.TaskType, "attempt %d", attempt)
+		assert.Equal(t, []string{"https://x/a.png"}, req.SrcImageURLs, "attempt %d", attempt)
+		assert.Equal(t, map[string]interface{}{"style": "watercolor"}, req.ExtraParams, "attempt %d", attempt)
+	}
+	assert.Len(t, extra, 3)
+}
+
 func TestToBifrostVideoGenerationResponse_MapsTaskLifecycle(t *testing.T) {
 	completed, bErr := ToBifrostVideoGenerationResponse(&MachGenTaskStatusResponse{
 		TaskID:     "t-1",
@@ -329,4 +397,30 @@ func TestMachGenLive(t *testing.T) {
 	require.Nil(t, bErr, "%v", bErr)
 	require.Len(t, resp.Data, 1)
 	assert.NotEmpty(t, resp.Data[0].B64JSON)
+}
+
+func BenchmarkToMachGenVideoGenerationRequest(b *testing.B) {
+	req := &schemas.BifrostVideoGenerationRequest{
+		Model: "MiniMax-H3",
+		Input: &schemas.VideoGenerationInput{Prompt: "@alice waves", InputReference: schemas.Ptr("https://example.com/first.png")},
+		Params: &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("5"), Size: "1280x720", ExtraParams: map[string]interface{}{
+			"src_image_urls":       []interface{}{"https://example.com/alice.png"},
+			"subject_to_image_ids": map[string]interface{}{"alice": []interface{}{1}},
+		}},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := ToMachGenVideoGenerationRequest(req); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkToBifrostImageGenerationResponse(b *testing.B) {
+	task := &MachGenTaskStatusResponse{TaskID: "t1", Status: MachGenTaskStatusCompleted}
+	image := make([]byte, 1<<20)
+	b.ReportAllocs()
+	for b.Loop() {
+		ToBifrostImageGenerationResponse(task, image)
+	}
 }

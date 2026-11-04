@@ -35,6 +35,9 @@ func ToMachGenImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationR
 		}
 	}
 
+	if err := requireSourceURLs(request); err != nil {
+		return nil, err
+	}
 	if request.TaskType == "" {
 		request.TaskType = taskTypeT2I
 		if len(request.SrcImageURLs) > 0 {
@@ -77,6 +80,9 @@ func ToMachGenImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) (*Ma
 		if err := applyMachGenExtraParams(request, params.ExtraParams); err != nil {
 			return nil, err
 		}
+	}
+	if err := requireSourceURLs(request); err != nil {
+		return nil, err
 	}
 	return request, nil
 }

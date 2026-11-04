@@ -305168,6 +305168,47 @@
           ]
         },
         {
+          "name": "[EXPECT-400] machgen/FLUX.2-dev data-URL input image is rejected before reaching MachGen",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"machgen/FLUX.2-dev\",\n  \"prompt\": \"a red cube\",\n  \"input_images\": [\"data:image/png;base64,iVBORw0KGgo=\"],\n  \"size\": \"1024x1024\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('rejected as a caller error, not a 5xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('public http(s) URL');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "machgen/MiniMax-H3 text-to-video submit (size maps to height + aspect ratio)",
           "request": {
             "method": "POST",
