@@ -235,6 +235,39 @@ func cacheHits(t *testing.T, plugin *Plugin, ctx *schemas.BifrostContext, req *s
 	return shortCircuit != nil && shortCircuit.Response != nil
 }
 
+// TestCacheWriteKeepsDefaultEncoding pins that cache writes keep the pre-fix
+// sonic.Marshal bytes: only Chat/Text responses with an explicit zero go through the
+// usage wrapper, and even that keeps sonic's default (no HTML escaping) encoding.
+func TestCacheWriteKeepsDefaultEncoding(t *testing.T) {
+	const model = "fixture<b>&</b>"
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 3, CompletionTokens: 2, TotalTokens: 5}
+	for _, tc := range []struct {
+		name string
+		res  *schemas.BifrostResponse
+	}{
+		{"nonzero chat", &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{ID: "c", Model: model, Usage: usage}}},
+		{"nonzero text", &schemas.BifrostResponse{TextCompletionResponse: &schemas.BifrostTextCompletionResponse{ID: "t", Model: model, Usage: usage}}},
+		{"responses", &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{Model: model}}},
+		{"embedding", &schemas.BifrostResponse{EmbeddingResponse: &schemas.BifrostEmbeddingResponse{Model: model}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want, err := sonic.Marshal(tc.res)
+			require.NoError(t, err)
+			got, err := marshalCachedResponse(tc.res)
+			require.NoError(t, err)
+			require.Equal(t, string(want), string(got))
+		})
+	}
+	t.Run("explicit zero chat", func(t *testing.T) {
+		zero := &schemas.BifrostLLMUsage{PromptTokensExplicitZero: true, CompletionTokensExplicitZero: true}
+		got, err := marshalCachedResponse(&schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{ID: "z", Model: model, Usage: zero}})
+		require.NoError(t, err)
+		require.Contains(t, string(got), `"model":"`+model+`"`, "wrapper keeps default encoding")
+		require.Contains(t, string(got), `"prompt_tokens":0`)
+		require.Contains(t, string(got), `"completion_tokens":0`)
+	})
+}
+
 // Exercise actual writes and hits, including SSE replay, after a JSON round trip.
 func TestCompletionUsageSurvivesCache(t *testing.T) {
 	for _, text := range []bool{false, true} {

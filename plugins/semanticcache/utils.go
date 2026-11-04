@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/cespare/xxhash/v2"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -19,11 +20,12 @@ import (
 )
 
 // Cache the same completion usage fields sent to clients, so explicit zeros
-// survive without a separate metadata format. Other response types are unchanged.
+// survive without a separate metadata format. Encoding stays sonic.Marshal as
+// before the fix; only Chat/Text responses with an explicit zero are wrapped.
 func marshalCachedResponse(res *schemas.BifrostResponse) ([]byte, error) {
 	if res.ChatResponse != nil {
 		if view := res.ChatResponse.WithPreservedUsage(); view != res.ChatResponse {
-			return schemas.MarshalSorted(&struct {
+			return sonic.Marshal(&struct {
 				*schemas.BifrostResponse
 				ChatResponse any
 			}{res, view})
@@ -31,13 +33,13 @@ func marshalCachedResponse(res *schemas.BifrostResponse) ([]byte, error) {
 	}
 	if res.TextCompletionResponse != nil {
 		if view := res.TextCompletionResponse.WithPreservedUsage(); view != res.TextCompletionResponse {
-			return schemas.MarshalSorted(&struct {
+			return sonic.Marshal(&struct {
 				*schemas.BifrostResponse
 				TextCompletionResponse any
 			}{res, view})
 		}
 	}
-	return schemas.MarshalSorted(res)
+	return sonic.Marshal(res)
 }
 
 func unmarshalCachedResponse(data []byte, res *schemas.BifrostResponse) error {
