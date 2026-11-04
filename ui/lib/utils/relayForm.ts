@@ -301,18 +301,18 @@ export function toRelayConfig(v: RelayFormValues): Relay {
 		credential,
 		extra_headers: Object.keys(extraHeaders).length ? extraHeaders : undefined,
 		network: Object.keys(network).length ? network : undefined,
+		// "none" names no proxy, the same as leaving it unset (the provider rule): both inherit the
+		// global proxy, so both are saved as no proxy_config.
 		proxy_config:
-			v.proxy.type === "inherit"
+			v.proxy.type === "inherit" || v.proxy.type === "none"
 				? undefined
-				: v.proxy.type === "none"
-					? { type: "none" }
-					: {
-							type: v.proxy.type,
-							url: toApiSecret(v.proxy.url),
-							username: toApiSecret(v.proxy.username),
-							password: toApiSecret(v.proxy.password),
-							ca_cert_pem: toApiSecret(v.proxy.ca_cert_pem),
-						},
+				: {
+						type: v.proxy.type,
+						url: toApiSecret(v.proxy.url),
+						username: toApiSecret(v.proxy.username),
+						password: toApiSecret(v.proxy.password),
+						ca_cert_pem: toApiSecret(v.proxy.ca_cert_pem),
+					},
 		usage: cleanUsage(v.usage, false),
 		streaming: streamingSet ? { ...v.streaming, paths: v.streaming.paths.filter((p) => p.trim()) } : undefined,
 		routes: v.routes

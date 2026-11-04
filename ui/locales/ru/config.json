@@ -1638,6 +1638,7 @@
 			"proxyCaCertInfo": "CA-сертификат в формате PEM, которому доверяют TLS-соединения через прокси с перехватом SSL, или ссылка на него через env.",
 			"proxyCaCertPlaceholder": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE----- или env.PROXY_CA_CERT_PEM",
 			"removeConfig": "Удалить конфигурацию",
+			"discardProxy": "Отменить изменения",
 			"saveProxy": "Сохранить конфигурацию прокси"
 		},
 		"pricing": {

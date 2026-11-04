@@ -1567,6 +1567,7 @@
 			"proxyCaCertInfo": "Um certificado CA codificado em PEM em que confiar nas ligações TLS através de um proxy que intercepta SSL, ou uma referência env. para ele.",
 			"proxyCaCertPlaceholder": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE----- ou env.PROXY_CA_CERT_PEM",
 			"removeConfig": "Remover configuração",
+			"discardProxy": "Descartar alterações",
 			"saveProxy": "Guardar configuração do proxy"
 		},
 		"pricing": {
