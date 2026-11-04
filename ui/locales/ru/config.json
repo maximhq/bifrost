@@ -356,6 +356,7 @@
 		"disableAutoToolInjection": "Отключить автодобавление инструментов",
 		"allowTempToken": "Разрешить ссылки аутентификации с временным токеном",
 		"codeModeBinding": "Уровень привязки Code Mode",
+		"codeModeSettings": "Настройки Code Mode",
 		"selectBindingLevel": "Выберите уровень привязки",
 		"serverLevel": "На уровне сервера",
 		"toolLevel": "На уровне инструмента",

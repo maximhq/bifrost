@@ -33,8 +33,19 @@ test.describe('MCP Settings', () => {
       await coreConfigApi.updateClientConfig(request, { mcp_code_mode_limits: originalLimits ?? {} })
     })
 
+    test('should keep code mode settings collapsed until opened', async ({ mcpSettingsPage }) => {
+      await expect(mcpSettingsPage.codeModeTrigger).toBeVisible()
+      await expect(mcpSettingsPage.codeModeTrigger).toHaveAttribute('aria-expanded', 'false')
+      await expect(mcpSettingsPage.codeModeLimits).toBeHidden()
+      await expect(mcpSettingsPage.page.getByTestId('mcp-binding-level')).toBeHidden()
+
+      await mcpSettingsPage.openCodeModeSettings()
+      await expect(mcpSettingsPage.codeModeTrigger).toHaveAttribute('aria-expanded', 'true')
+      await expect(mcpSettingsPage.page.getByTestId('mcp-binding-level')).toBeVisible()
+    })
+
     test('should show every limit with its default as the placeholder', async ({ mcpSettingsPage }) => {
-      await expect(mcpSettingsPage.codeModeLimits).toBeVisible()
+      await mcpSettingsPage.openCodeModeSettings()
       const defaults: [string, string][] = [
         ['max_source_bytes', '65536'],
         ['max_steps', '1000000'],
@@ -52,6 +63,7 @@ test.describe('MCP Settings', () => {
     test('should save a limit and keep empty fields on their defaults', async ({ mcpSettingsPage, request }) => {
       await coreConfigApi.updateClientConfig(request, { mcp_code_mode_limits: {} })
       await mcpSettingsPage.goto()
+      await mcpSettingsPage.openCodeModeSettings()
 
       await mcpSettingsPage.codeModeLimitInput('max_tool_calls').fill('200')
       await expect(mcpSettingsPage.saveBtn).toBeEnabled()
@@ -63,6 +75,7 @@ test.describe('MCP Settings', () => {
       expect(saved.max_steps ?? 0).toBe(0)
 
       await mcpSettingsPage.goto()
+      await mcpSettingsPage.openCodeModeSettings()
       await expect(mcpSettingsPage.codeModeLimitInput('max_tool_calls')).toHaveValue('200')
       await expect(mcpSettingsPage.codeModeLimitInput('max_steps')).toHaveValue('')
       await expect(mcpSettingsPage.saveBtn).toBeDisabled()
@@ -71,6 +84,7 @@ test.describe('MCP Settings', () => {
     test('should reject a value size below the minimum without saving', async ({ mcpSettingsPage, request }) => {
       await coreConfigApi.updateClientConfig(request, { mcp_code_mode_limits: {} })
       await mcpSettingsPage.goto()
+      await mcpSettingsPage.openCodeModeSettings()
 
       await mcpSettingsPage.codeModeLimitInput('max_value_bytes').fill('10')
       await mcpSettingsPage.saveBtn.click()

@@ -57,8 +57,8 @@ func TestHighFixesCleanerUsesLargeBatchesAndCleansMCP(t *testing.T) {
 	}
 	NewLogsCleaner(m, CleanerConfig{RetentionDays: 7}, testLogger{}).cleanupOldLogs(context.Background())
 
-	require.Equal(t, []int{5000, 5000, 5000}, m.logBatches, "logs must be deleted 5000 rows at a time until a short batch")
-	require.Equal(t, []int{5000, 5000}, m.mcpBatches, "mcp_tool_logs must get the same retention pass")
+	require.Equal(t, []int{5000, 5000, 5000, 5000}, m.logBatches, "logs must be deleted 5000 rows at a time until an empty batch")
+	require.Equal(t, []int{5000, 5000, 5000}, m.mcpBatches, "mcp_tool_logs must get the same retention pass")
 }
 
 // backlogRetentionManager simulates a logs table that never finishes draining:
@@ -82,10 +82,12 @@ func (m *backlogRetentionManager) DeleteLogsBatch(ctx context.Context, _ time.Ti
 	return int64(size), nil
 }
 
-// DeleteMCPToolLogsBatch counts the call and reports a short batch.
+// DeleteMCPToolLogsBatch counts the call and reports a short batch, then an empty one.
 func (m *backlogRetentionManager) DeleteMCPToolLogsBatch(_ context.Context, _ time.Time, _ int) (int64, error) {
-	m.mcpBatches.Add(1)
-	return 3, nil
+	if m.mcpBatches.Add(1) == 1 {
+		return 3, nil
+	}
+	return 0, nil
 }
 
 // TestHighFixesCleanerMCPNotStarvedByLogsBacklog pins that mcp_tool_logs get a
