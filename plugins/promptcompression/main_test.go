@@ -412,15 +412,15 @@ func TestPreLLMHookEnabledNoopZeroAllocs(t *testing.T) {
 }
 
 func TestPreLLMHookBelowEligibleThresholdReturnsOriginal(t *testing.T) {
-	// A 50-line output trims by a fifth: real but below a 30% eligible threshold.
-	c := 30
-	pl, err := Init(&Config{MinSavingsPercent: &c}, &capLogger{})
+	// A 50-line output trims by a few hundred tokens: real, but below a 10000-token threshold.
+	c := 10000
+	pl, err := Init(&Config{MinSavingsTokens: &c}, &capLogger{})
 	require.NoError(t, err)
 	p := pl.(*Plugin)
 	in := rounds(bigOutput(50), "x", "y")
 	_, st := compressChat(in, p.s)
 	require.True(t, st.Changed, "precondition: something is trimmed")
-	require.Less(t, (st.EligibleBefore-st.EligibleAfter)*100/st.EligibleBefore, c)
+	require.Less(t, st.EligibleBefore-st.EligibleAfter, c)
 
 	ctx := hookCtx()
 	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Input: in}}
@@ -428,6 +428,14 @@ func TestPreLLMHookBelowEligibleThresholdReturnsOriginal(t *testing.T) {
 	require.NoError(t, err)
 	require.Same(t, req, out)
 	require.Nil(t, ctx.Value(ContextKeyEstimatedBefore))
+
+	// The same input with the threshold at the saved amount is compressed.
+	c = st.EligibleBefore - st.EligibleAfter
+	pl, err = Init(&Config{MinSavingsTokens: &c}, &capLogger{})
+	require.NoError(t, err)
+	out, _, err = pl.(*Plugin).PreLLMHook(hookCtx(), req)
+	require.NoError(t, err)
+	require.NotSame(t, req, out)
 }
 
 func TestPreLLMHookLogsAreSkippedWhenUnchanged(t *testing.T) {
@@ -1051,4 +1059,101 @@ func BenchmarkPreLLMHookNoopEnabledChat(b *testing.B) {
 	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest,
 		ChatRequest: &schemas.BifrostChatRequest{Model: "m", Input: rounds(bigOutput(200), bigOutput(200))}}
 	benchHook(b, benchPlugin(b), req)
+}
+
+// longPressureRounds is enough untrimmable single-line rounds that a
+// percentage threshold on the eligible region would eventually fall below 5%
+// and flip the hook back to the original request (it did at about 74 rounds).
+const longPressureRounds = 90
+
+func chatLongPressureVariant(t *testing.T) []schemas.ChatMessage {
+	msgs := chatBase(t)
+	for i := 0; i < longPressureRounds; i++ {
+		cid := fmt.Sprintf("call_%d", 200+i)
+		msgs = append(msgs, assistantCall(cid), toolMsg(cid, singleLine(i, 8000)))
+	}
+	return chatFinal(msgs)
+}
+
+func respLongPressureVariant(t *testing.T) []schemas.ResponsesMessage {
+	msgs := respBase(t)
+	for i := 0; i < longPressureRounds; i++ {
+		cid := fmt.Sprintf("call_%d", 200+i)
+		msgs = append(msgs, rmCall(cid), rmOut(cid, singleLine(i, 8000)))
+	}
+	return respFinal(msgs)
+}
+
+// Hook level only: compression must never switch off once it is on, however
+// much untrimmable output accumulates.
+func TestHookStabilityLongThresholdPressureChat(t *testing.T) {
+	msgs := chatLongPressureVariant(t)
+	s := defaults(t)
+	bounds := chatTurnBounds(msgs)
+	outs := make([][]string, len(bounds))
+	flags := make([]bool, len(bounds))
+	for k, end := range bounds {
+		outs[k], flags[k] = stabilityLevels[1].chat(t, msgs[:end])
+	}
+	allowed := make([]map[int]bool, len(bounds)-1)
+	for k := range allowed {
+		allowed[k] = allowedChat(msgs[:bounds[k]], msgs[:bounds[k+1]], s)
+	}
+	checkStability(t, outs, flags, allowed)
+	require.True(t, flags[len(flags)-1], "hook must still compress after %d rounds", longPressureRounds)
+}
+
+func TestHookStabilityLongThresholdPressureResponses(t *testing.T) {
+	msgs := respLongPressureVariant(t)
+	s := defaults(t)
+	bounds := responsesTurnBounds(msgs)
+	outs := make([][]string, len(bounds))
+	flags := make([]bool, len(bounds))
+	for k, end := range bounds {
+		outs[k], flags[k] = stabilityLevels[1].respn(t, msgs[:end])
+	}
+	allowed := make([]map[int]bool, len(bounds)-1)
+	for k := range allowed {
+		allowed[k] = allowedResp(msgs[:bounds[k]], msgs[:bounds[k+1]], s)
+	}
+	checkStability(t, outs, flags, allowed)
+	require.True(t, flags[len(flags)-1], "hook must still compress after %d rounds", longPressureRounds)
+}
+
+// savedTokens runs the hook and returns the tokens it saved (0 when the
+// original request was sent).
+func savedTokens(t *testing.T, p *Plugin, req *schemas.BifrostRequest) int {
+	t.Helper()
+	ctx := hookCtx()
+	_, _, err := p.PreLLMHook(ctx, req)
+	require.NoError(t, err)
+	b, ok := ctx.Value(ContextKeyEstimatedBefore).(int)
+	if !ok {
+		return 0
+	}
+	return b - ctx.Value(ContextKeyEstimatedAfter).(int)
+}
+
+// TestHookSavedTokensMonotone: edits are stable and the eligible set only
+// grows, so the tokens saved never decrease from one request to the next.
+func TestHookSavedTokensMonotone(t *testing.T) {
+	p, _ := newHookPlugin(t)
+	chat := chatFinal(chatBase(t))
+	prev := 0
+	for k, end := range chatTurnBounds(chat) {
+		got := savedTokens(t, p, &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest,
+			ChatRequest: &schemas.BifrostChatRequest{Model: "m", Input: chat[:end]}})
+		require.GreaterOrEqual(t, got, prev, "chat turn %d", k+1)
+		prev = got
+	}
+	require.Positive(t, prev)
+	resp := respFinal(respBase(t))
+	prev = 0
+	for k, end := range responsesTurnBounds(resp) {
+		got := savedTokens(t, p, &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest,
+			ResponsesRequest: &schemas.BifrostResponsesRequest{Model: "m", Input: resp[:end]}})
+		require.GreaterOrEqual(t, got, prev, "responses turn %d", k+1)
+		prev = got
+	}
+	require.Positive(t, prev)
 }

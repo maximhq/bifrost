@@ -13,19 +13,19 @@ type Config struct {
 	DedupeToolOutputs        *bool `json:"dedupe_tool_outputs,omitempty"`
 	NormalizeWhitespace      *bool `json:"normalize_whitespace,omitempty"`
 	ProtectedLeadingMessages *int  `json:"protected_leading_messages,omitempty"`
-	MinSavingsPercent        *int  `json:"min_savings_percent,omitempty"`
+	MinSavingsTokens         *int  `json:"min_savings_tokens,omitempty"`
 }
 
 // settings holds the resolved configuration with defaults applied.
 type settings struct {
-	MinAgeTurns       int
-	MinTokens         int
-	HeadLines         int
-	TailLines         int
-	ProtectedLeading  int
-	MinSavingsPercent int
-	Dedupe            bool
-	Whitespace        bool
+	MinAgeTurns      int
+	MinTokens        int
+	HeadLines        int
+	TailLines        int
+	ProtectedLeading int
+	MinSavingsTokens int
+	Dedupe           bool
+	Whitespace       bool
 }
 
 func orInt(p *int, def int) int {
@@ -48,14 +48,14 @@ func (c *Config) resolve() (settings, error) {
 		c = &Config{}
 	}
 	s := settings{
-		MinAgeTurns:       orInt(c.ToolOutputMinAgeTurns, 2),
-		MinTokens:         orInt(c.ToolOutputMinTokens, 500),
-		HeadLines:         orInt(c.KeepHeadLines, 20),
-		TailLines:         orInt(c.KeepTailLines, 20),
-		ProtectedLeading:  orInt(c.ProtectedLeadingMessages, 1),
-		MinSavingsPercent: orInt(c.MinSavingsPercent, 5),
-		Dedupe:            orBool(c.DedupeToolOutputs, true),
-		Whitespace:        orBool(c.NormalizeWhitespace, true),
+		MinAgeTurns:      orInt(c.ToolOutputMinAgeTurns, 2),
+		MinTokens:        orInt(c.ToolOutputMinTokens, 500),
+		HeadLines:        orInt(c.KeepHeadLines, 20),
+		TailLines:        orInt(c.KeepTailLines, 20),
+		ProtectedLeading: orInt(c.ProtectedLeadingMessages, 1),
+		MinSavingsTokens: orInt(c.MinSavingsTokens, 200),
+		Dedupe:           orBool(c.DedupeToolOutputs, true),
+		Whitespace:       orBool(c.NormalizeWhitespace, true),
 	}
 	for name, v := range map[string]int{
 		"tool_output_min_age_turns":  s.MinAgeTurns,
@@ -63,7 +63,7 @@ func (c *Config) resolve() (settings, error) {
 		"keep_head_lines":            s.HeadLines,
 		"keep_tail_lines":            s.TailLines,
 		"protected_leading_messages": s.ProtectedLeading,
-		"min_savings_percent":        s.MinSavingsPercent,
+		"min_savings_tokens":         s.MinSavingsTokens,
 	} {
 		if v < 0 {
 			return settings{}, fmt.Errorf("promptcompression: %s must be >= 0, got %d", name, v)
@@ -73,9 +73,6 @@ func (c *Config) resolve() (settings, error) {
 	// read yet; 1 is the smallest safe value.
 	if s.MinAgeTurns < 1 {
 		return settings{}, fmt.Errorf("promptcompression: tool_output_min_age_turns must be >= 1, got %d", s.MinAgeTurns)
-	}
-	if s.MinSavingsPercent > 100 {
-		return settings{}, fmt.Errorf("promptcompression: min_savings_percent must be <= 100, got %d", s.MinSavingsPercent)
 	}
 	return s, nil
 }

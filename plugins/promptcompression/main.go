@@ -151,14 +151,16 @@ func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostReq
 
 // afterIfWorthwhile returns the estimated token count of the compressed
 // request, or -1 when the original should be sent: nothing changed, nothing
-// was eligible, the eligible region shrank by less than MinSavingsPercent, or
-// the whole request did not get strictly smaller.
+// was eligible, the compression saved fewer than MinSavingsTokens eligible tokens, or
+// the whole request did not get strictly smaller. The threshold is absolute
+// because edits are stable and the eligible set only grows: saved never
+// decreases between requests, so once compression is on it stays on.
 func (p *Plugin) afterIfWorthwhile(before int, st stats) int {
 	if !st.Changed || st.EligibleBefore == 0 {
 		return -1
 	}
 	saved := st.EligibleBefore - st.EligibleAfter
-	if saved*100/st.EligibleBefore < p.s.MinSavingsPercent {
+	if saved < p.s.MinSavingsTokens {
 		return -1
 	}
 	if after := before - saved; after < before {
