@@ -22,6 +22,8 @@
 		"provider": "Fournisseur",
 		"model": "Modèle",
 		"app": "Application",
+		"clientIp": "IP du client",
+		"userEmail": "E-mail de l'utilisateur",
 		"server": "Serveur",
 		"toolName": "Nom de l’outil",
 		"serviceTier": "Niveau de service",
@@ -903,6 +905,8 @@
 			"tokensNotPricedValue": "{{input}} en entrée / {{output}} en sortie",
 			"matchedRoute": "Route correspondante",
 			"parentLog": "Journal parent",
+			"responseBodyPreview": "Corps de la réponse (aperçu)",
+			"filterByValue": "Afficher les appels relay avec cette valeur",
 			"queryParameters": "Paramètres de requête",
 			"matchedHeaders": "En-têtes correspondants",
 			"errorNoMessageWithStatus": "Le relais a renvoyé une erreur (HTTP {{status}}) sans message.",
@@ -923,7 +927,9 @@
 			"minCost": "Min $",
 			"maxCost": "Max $",
 			"minimumCost": "Coût minimal",
-			"maximumCost": "Coût maximal"
+			"maximumCost": "Coût maximal",
+			"exactJobID": "ID de tâche exact",
+			"exactParentRequestID": "ID exact de la requête parente"
 		},
 		"grants": {
 			"label": "Accès aux relais",

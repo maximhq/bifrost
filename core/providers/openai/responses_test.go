@@ -14,6 +14,75 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestToOpenAIResponsesRequest_PreservesNamedOutputWithoutCallID(t *testing.T) {
+	const body = `{"model":"gpt-6.1-sol","input":[{"role":"user","content":"Hello"},{"type":"function_call_output","name":"aaaaaa","output":"hi"}]}`
+	var request OpenAIResponsesRequest
+	require.NoError(t, sonic.Unmarshal([]byte(body), &request))
+	bifrostRequest := request.ToBifrostResponsesRequest(nil)
+	bifrostRequest.Provider = schemas.OpenAI
+	require.Equal(t, "aaaaaa", *bifrostRequest.Input[1].Name)
+	converted := ToOpenAIResponsesRequest(nil, bifrostRequest)
+	wire, err := sonic.Marshal(converted)
+	require.NoError(t, err)
+	var payload struct {
+		Input []json.RawMessage `json:"input"`
+	}
+	require.NoError(t, sonic.Unmarshal(wire, &payload))
+	require.Len(t, payload.Input, 2)
+	require.JSONEq(t, `{"type":"function_call_output","name":"aaaaaa","output":"hi"}`, string(payload.Input[1]))
+	require.Equal(t, "aaaaaa", *bifrostRequest.Input[1].Name)
+}
+
+func TestToOpenAIResponsesRequest_NamedOutputCallIDVariants(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		item string
+		want string
+	}{
+		{"null call ID", `{"type":"function_call_output","name":"notify","call_id":null,"output":"hi"}`, `{"type":"function_call_output","name":"notify","output":"hi"}`},
+		{"empty call ID", `{"type":"function_call_output","name":"notify","call_id":"","output":"hi"}`, `{"type":"function_call_output","name":"notify","call_id":"","output":"hi"}`},
+		{"paired output", `{"type":"function_call_output","name":"notify","call_id":"call_123","output":"hi"}`, `{"type":"function_call_output","call_id":"call_123","output":"hi"}`},
+		{"no name", `{"type":"function_call_output","output":"hi"}`, `{"type":"function_call_output","output":"hi"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var request OpenAIResponsesRequest
+			require.NoError(t, sonic.Unmarshal([]byte(`{"model":"gpt-6.1-sol","input":[`+tc.item+`]}`), &request))
+			bifrostRequest := request.ToBifrostResponsesRequest(nil)
+			bifrostRequest.Provider = schemas.OpenAI
+			before, err := schemas.MarshalSorted(bifrostRequest)
+			require.NoError(t, err)
+			converted := ToOpenAIResponsesRequest(nil, bifrostRequest)
+			wire, err := schemas.MarshalSorted(converted.Input.OpenAIResponsesRequestInputArray[0])
+			require.NoError(t, err)
+			require.JSONEq(t, tc.want, string(wire))
+			after, err := schemas.MarshalSorted(bifrostRequest)
+			require.NoError(t, err)
+			require.Equal(t, string(before), string(after), "conversion must not mutate the caller's input")
+		})
+	}
+}
+
+func BenchmarkToOpenAIResponsesRequestNamedOutput(b *testing.B) {
+	for _, tc := range []struct{ name, item string }{
+		{"ordinary-message", `{"role":"user","content":"Hello"}`},
+		{"paired-output", `{"type":"function_call_output","name":"notify","call_id":"call_123","output":"hi"}`},
+		{"unpaired-output", `{"type":"function_call_output","name":"notify","output":"hi"}`},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			var request OpenAIResponsesRequest
+			if err := sonic.Unmarshal([]byte(`{"model":"gpt-6.1-sol","input":[`+tc.item+`]}`), &request); err != nil {
+				b.Fatal(err)
+			}
+			bifrostRequest := request.ToBifrostResponsesRequest(nil)
+			bifrostRequest.Provider = schemas.OpenAI
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = ToOpenAIResponsesRequest(nil, bifrostRequest)
+			}
+		})
+	}
+}
+
 func TestToOpenAIResponsesRequest_ReasoningOnlyMessageSkip(t *testing.T) {
 	tests := []struct {
 		name                     string
@@ -2448,6 +2517,7 @@ func TestToOpenAIResponsesRequest_PerplexityWebSearchMapsAllowedDomainsToSearchD
 		webSearch.SearchContextSize = schemas.Ptr("high")
 		webSearch.MaxResults = schemas.Ptr(5)
 		webSearch.SearchType = schemas.Ptr("fast")
+		webSearch.Version = schemas.Ptr("web_search_20250305")
 		webSearch.UserLocation = &schemas.ResponsesToolWebSearchUserLocation{Country: schemas.Ptr("US")}
 
 		result := ToOpenAIResponsesRequest(nil, bifrostReq)
@@ -2456,7 +2526,7 @@ func TestToOpenAIResponsesRequest_PerplexityWebSearchMapsAllowedDomainsToSearchD
 			t.Fatalf("marshal failed: %v", err)
 		}
 		body := string(data)
-		for _, dropped := range []string{"time_range_filter", "max_uses", "external_web_access", "search_content_types"} {
+		for _, dropped := range []string{"time_range_filter", "max_uses", "web_search_version", "external_web_access", "search_content_types"} {
 			if strings.Contains(body, dropped) {
 				t.Fatalf("expected %s to be absent from the wire payload, got %s", dropped, body)
 			}

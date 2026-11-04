@@ -50,6 +50,23 @@ func CostUpdateFromBreakdown(bd *schemas.BifrostCost) CostUpdate {
 	return u
 }
 
+type lookupContextKey string
+
+// LogTimestampContextKey carries the time.Time of the row a FindByID call
+// addresses, as an earlier list response reported it. It is a hint only:
+// stores whose sort key leads with timestamp use it to prune the lookup and
+// fall back to the id alone when no row matches near it.
+const LogTimestampContextKey lookupContextKey = "logstore-log-timestamp"
+
+// logTimestampFromContext returns the FindByID timestamp hint, if any.
+func logTimestampFromContext(ctx context.Context) (time.Time, bool) {
+	if ctx == nil {
+		return time.Time{}, false
+	}
+	ts, ok := ctx.Value(LogTimestampContextKey).(time.Time)
+	return ts, ok && !ts.IsZero()
+}
+
 // LogStore is the interface for the log store.
 type LogStore interface {
 	// WarpConversationStore is Warp's saved-chat surface. Transcripts live here
@@ -238,11 +255,13 @@ type LogStore interface {
 	SearchRelayLogs(ctx context.Context, filters RelayLogFilters, pagination PaginationOptions) (*RelayLogSearchResult, error)
 	GetRelayLogStats(ctx context.Context, filters RelayLogFilters) (*RelayLogStats, error)
 	GetRelayHistogram(ctx context.Context, filters RelayLogFilters, bucketSizeSeconds int64) (*RelayHistogramResult, error)
+	GetRelayLatencyHistogram(ctx context.Context, filters RelayLogFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error)
 	GetRelayTopEndpoints(ctx context.Context, filters RelayLogFilters, limit int) (*RelayTopResults, error)
 	GetRelayFilterData(ctx context.Context, dimensions []string, limit int, search string) (*RelayFilterData, error)
 	HasRelayLogs(ctx context.Context) (bool, error)
 	DeleteRelayLogs(ctx context.Context, ids []string) error
 	DeleteRelayLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error)
+	FlushRelayLogs(ctx context.Context, since time.Time) error
 
 	// Async Job methods
 	CreateAsyncJob(ctx context.Context, job *AsyncJob) error

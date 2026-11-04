@@ -115,6 +115,7 @@ func (p *LoggerPlugin) insertInitialLogEntry(
 	if data.App != "" {
 		entry.App = new(clampString(data.App, maxPersistedAppLen))
 	}
+	entry.ClientIP = optionalString(data.ClientIP)
 	return p.store.CreateIfNotExists(ctx, entry)
 }
 
@@ -491,6 +492,7 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 			// Raw response
 			if streamResponse.Data.RawResponse != nil {
 				entry.RawResponse = *streamResponse.Data.RawResponse
+				entry.RawResponseFormat = streamResponse.Data.RawResponseFormat
 			}
 		}
 	}

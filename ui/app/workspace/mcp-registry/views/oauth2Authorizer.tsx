@@ -28,6 +28,9 @@ interface OAuth2AuthorizerProps {
 	expiresAt?: string;
 	mcpClientId: string;
 	isPerUserOauth?: boolean;
+	// The client has per-caller discovery, so this sign-in only verifies it
+	// and nothing from it is kept.
+	perUserDiscovery?: boolean;
 	// A popup the caller already opened synchronously (before any await), to
 	// preserve the triggering click's transient user-activation. When
 	// present, openPopup navigates this handle instead of calling
@@ -70,6 +73,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 	flowId,
 	expiresAt,
 	isPerUserOauth,
+	perUserDiscovery,
 	initialPopup,
 	isReauthorize,
 	onRetry,
@@ -287,7 +291,9 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 		onClose();
 	};
 
-	const isPerUserReauth = isPerUserOauth && isReauthorize;
+	// A client with per-caller discovery has no admin credential to renew:
+	// a sign-in after registering a new client only verifies it.
+	const isPerUserReauth = isPerUserOauth && isReauthorize && !perUserDiscovery;
 
 	const titles: Record<Status, string> = {
 		confirm: isPerUserReauth ? t("registry.actions.refreshAdminCredential") : t("registry.authorizer.oauth.authorizeConnection"),
@@ -298,7 +304,11 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 	};
 
 	const subtitles: Record<Status, string> = {
-		confirm: isPerUserReauth ? t("registry.authorizer.oauth.confirmRenew") : t("registry.authorizer.oauth.confirmVerify"),
+		confirm: isPerUserReauth
+			? t("registry.authorizer.oauth.confirmRenew")
+			: perUserDiscovery
+				? t("registry.authorizer.oauth.confirmVerifyPerUserDiscovery")
+				: t("registry.authorizer.oauth.confirmVerify"),
 		polling: t("registry.authorizer.oauth.polling"),
 		blocked: t("registry.authorizer.oauth.blocked"),
 		success: t("registry.authorizer.oauth.success"),
@@ -343,13 +353,23 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 								<p>
 									<Trans
 										t={t}
-										i18nKey={isPerUserReauth ? "registry.authorizer.oauth.openHostRenew" : "registry.authorizer.oauth.openHostVerify"}
+										i18nKey={
+											isPerUserReauth
+												? "registry.authorizer.oauth.openHostRenew"
+												: perUserDiscovery
+													? "registry.authorizer.oauth.openHostVerifyPerUserDiscovery"
+													: "registry.authorizer.oauth.openHostVerify"
+										}
 										values={{ host: authorizationHost }}
 										components={{ strong: <strong /> }}
 									/>
 								</p>
 								<p className="text-muted-foreground/80 text-xs">
-									{isPerUserReauth ? t("registry.authorizer.oauth.renewHint") : t("registry.authorizer.oauth.verifyHint")}
+									{isPerUserReauth
+										? t("registry.authorizer.oauth.renewHint")
+										: perUserDiscovery
+											? t("registry.authorizer.oauth.verifyHintPerUserDiscovery")
+											: t("registry.authorizer.oauth.verifyHint")}
 								</p>
 							</InfoBox>
 							<div className="flex justify-end gap-2">

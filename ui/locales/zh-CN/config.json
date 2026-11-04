@@ -225,7 +225,7 @@
 		"directKeysHelp": "启用后，调用方可通过 <b0>Authorization</b0>、<b1>x-api-key</b1> 或 <b2>x-goog-api-key</b2> 请求头直接传入供应商 API 密钥，同时传入 <b3>x-bf-direct-key: true</b3>。Bifrost 将直接使用该密钥，绕过已注册的密钥池。",
 		"originsHelp": "以逗号分隔的 CORS 和 WebSocket 连接来源白名单。始终允许 localhost 来源。每个来源必须是包含协议的完整 URL（例如 https://app.example.com、http://10.0.0.100:3000）。子域名支持通配符（例如 https://*.example.com），也可使用“*”允许所有来源。",
 		"requiredHeadersHelp": "以逗号分隔的必需请求头列表。缺少任一请求头的请求将被拒绝，并返回 400 错误。请求头名称不区分大小写。",
-		"routesHelp": "以逗号分隔的路由列表，这些路由可绕过认证中间件，无需认证即可访问。无论此设置如何，<b0>/health</b0>、<b1>/api/session/login</b1> 和 <b2>/api/session/is-auth-enabled</b2> 等系统路由始终在白名单中。",
+		"routesHelp": "以逗号分隔的路由列表，这些路由可绕过认证中间件，无需认证即可访问。无论此设置如何，<b0>/health</b0>、<b1>/api/session/login</b1> 和 <b2>/api/session/is-auth-enabled</b2> 等系统路由始终在白名单中。 路由会在去掉 server.base_path 前缀后进行匹配，因此请不要带前缀。",
 		"see": "参见",
 		"documentation": "文档",
 		"forDetails": "了解详情。",
@@ -254,7 +254,7 @@
 		"title": "日志设置",
 		"description": "配置请求与响应的日志记录设置。",
 		"enableLogs": "启用日志",
-		"enableLogsHelp": "将请求和响应记录到 SQL 数据库。这可能增加 40-60mb 的系统内存开销。",
+		"enableLogsHelp": "将请求和响应（包括中继调用）记录到 SQL 数据库。这可能增加 40-60mb 的系统内存开销。",
 		"requiresStore": "需要在 config.json 中配置并启用日志存储。",
 		"disableContentLogging": "禁用内容日志",
 		"disableContentLoggingHelp": "适用于 LLM、MCP、代理和中继日志。启用后，仅记录用量元数据（延迟、费用、token 数、状态、路由 ID 等）。请求/响应内容（消息、参数、工具调用和任何原始提供商字节）都会从日志记录中丢弃，即使启用了 <code0>store_raw_request_response</code0> 也是如此。通过 <code1>send_back_raw_*</code1> 将原始字节发送回调用方不受影响。代理协议正文遵循此设置；上游原始捕获还需要在代理网关设置中启用“捕获原始请求和响应”。",
@@ -266,9 +266,9 @@
 		"allowRawOverride": "允许按请求覆盖原始数据",
 		"allowRawOverrideHelp": "启用后，单个请求可用 x-bf-send-back-raw-request 和 x-bf-send-back-raw-response 请求头将原始供应商请求/响应字节回传给调用方。不影响日志存储；日志中的原始字节持久化由 {{setting}} 控制。",
 		"logRetentionDays": "日志保留天数",
-		"logRetentionDaysHelp": "在数据库中保留日志的天数。最少 1 天。更旧的日志会自动删除。",
+		"logRetentionDaysHelp": "在数据库中保留日志（包括中继日志）的天数。最少 1 天。更旧的日志会自动删除。",
 		"hideDeletedVks": "筛选器中不显示已删除的虚拟密钥",
-		"hideDeletedVksHelp": "启用后，已删除的虚拟密钥不会出现在日志、仪表盘和 MCP 日志的 Virtual Keys 筛选选项中。",
+		"hideDeletedVksHelp": "启用后，已删除的虚拟密钥不会出现在日志、仪表盘、MCP 日志和中继日志的 Virtual Keys 筛选选项中。",
 		"loggingHeaders": "日志请求头",
 		"loggingHeadersHelp": "要捕获到日志元数据中的请求头，逗号分隔。支持精确名称和通配模式（例如 x-custom-* 捕获该前缀的全部请求头，* 记录全部请求头；注意 * 会捕获 Authorization 等敏感请求头）。值从传入请求提取并写入日志条目的 metadata 字段。带 x-bf-lh- 前缀的请求头始终会自动捕获。中继日志携带相同的元数据，此外还有中继路由所匹配的请求头；不会存储任何其他请求头，也从不存储响应的请求头。",
 		"loggingHeadersPlaceholder": "X-Tenant-ID, X-Request-Source, x-custom-*",
@@ -375,7 +375,7 @@
 		"disableAutoToolInjectionHelp": "启用后，不再自动为每个请求添加 MCP 工具。只有通过请求头（<code0>x-bf-mcp-include-tools</code0>）显式指定时才会注入工具，且这些工具仍须得到虚拟密钥 MCP 配置的允许。",
 		"tempTokenHelp": "启用后，用户的 MCP OAuth 链接可包含权限范围受限的短期令牌，让尚未登录 Bifrost 仪表盘的用户也能完成认证流程。保持关闭则要求用户先通过常规仪表盘认证。",
 		"bindingHelp": "设置工具在 VFS 中的组织方式：按服务器组织（每台服务器的所有工具放在一起），或按工具组织（每个工具单独存放）。",
-		"externalClientUrlHelp": "当 Bifrost 部署在反向代理后方时，可覆盖其公共基础 URL。<b0>留空则根据传入的 <code1>Host</code1> 请求头推导 URL</b0>。Bifrost 作为 MCP 服务器的客户端时，会将此地址作为 <code2>redirect_uri</code2> 注册到上游 OAuth 提供商（例如 Notion 或 Jira 在登录后会将浏览器重定向到 <code3>&lt;URL&gt;/api/oauth/callback</code3>）。支持环境变量语法（例如 <code4>env.BIFROST_EXTERNAL_URL</code4>）。",
+		"externalClientUrlHelp": "当 Bifrost 部署在反向代理后方时，可覆盖其公共基础 URL。<b0>留空则根据传入的 <code1>Host</code1> 请求头推导 URL</b0>。Bifrost 作为 MCP 服务器的客户端时，会将此地址作为 <code2>redirect_uri</code2> 注册到上游 OAuth 提供商（例如 Notion 或 Jira 在登录后会将浏览器重定向到 <code3>&lt;URL&gt;/api/oauth/callback</code3>）。支持环境变量语法（例如 <code4>env.BIFROST_EXTERNAL_URL</code4>）。 若部署在 URL 前缀（server.base_path）之下，请包含该前缀，例如 https://host/bifrost。",
 		"externalClientUrlWarningHelp": "上游 OAuth 提供商会将 <code0>redirect_uri</code0> 固定为最初注册的地址，因此已完成 OAuth 认证的 MCP 客户端将出现 <em1>“Invalid redirect URI”</em1> 错误。要恢复连接，请清除受影响 MCP 服务器已保存的 OAuth 客户端凭据并重新授权，让 Bifrost 使用新 URL 再次执行 Dynamic Client Registration。",
 		"authModeHelp": "控制 MCP 客户端（例如 Claude Code、Cursor）如何通过 <code0>/mcp</code0> 端点认证。<b1>headers</b1>（默认）：仅接受 VK / api-key / session 请求头，关闭 OAuth 发现。<b2>both</b2>：同时接受请求头凭据和 Bifrost 签发的 JWT，不影响现有集成。<b3>oauth</b3>：仅接受 JWT，禁用 VK 和请求头访问。",
 		"issuerUrlHelp": "发现文档中公布的稳定公共 URL，并作为每个 JWT 的 <code0>iss</code0> 声明。OAuth 和 Both 模式下必填：Bifrost 不会从请求的 <code1>Host</code1> 标头推导颁发者，因为该标头由调用方控制。支持环境变量语法（例如 <code2>env.BIFROST_ISSUER_URL</code2>）。",
@@ -513,7 +513,7 @@
 		"scimHelp": "对 SCIM 目录同步请求使用代理。",
 		"scimEnterpriseOnly": "Bifrost Enterprise 提供 SCIM 代理支持。",
 		"inference": "推理",
-		"inferenceHelp": "对发往模型提供商的 LLM 推理请求使用代理。已配置自身代理的提供商保留其设置。",
+		"inferenceHelp": "对发往模型提供商的 LLM 推理请求和中继调用使用代理。已配置自身代理的提供商或中继保留其设置。",
 		"comingSoon": "即将推出",
 		"api": "API",
 		"apiHelp": "对出站 API 调用使用代理：MCP 服务器、OAuth、Webhook、插件下载、模型目录同步和 OpenTelemetry 导出。",
@@ -1201,7 +1201,7 @@
 		"toastSaved": "代理网关设置已成功更新。",
 		"loadFailed": "加载代理网关设置失败。",
 		"externalClientUrl": "外部客户端 URL",
-		"externalClientUrlHelp": "Bifrost 的公共基础 URL，用于提供代理卡片和推送通知回调 URL。留空则所有代理协议端点均被禁用，但仍可进行代理管理。支持环境变量语法（例如 <code>env.BIFROST_EXTERNAL_URL</code>）。",
+		"externalClientUrlHelp": "Bifrost 的公共基础 URL，用于提供代理卡片和推送通知回调 URL。留空则所有代理协议端点均被禁用，但仍可进行代理管理。支持环境变量语法（例如 <code>env.BIFROST_EXTERNAL_URL</code>）。 若部署在 URL 前缀（server.base_path）之下，请包含该前缀，例如 https://host/bifrost。",
 		"privateAllowlist": "私有网络允许列表",
 		"privateAllowlistHelp": "代理网关的发现、OAuth 和运行时请求在解析到私有地址或环回地址时可以访问的主机、IP 地址或 CIDR 范围（不含协议和端口）。链路本地地址和云元数据地址始终被拦截。",
 		"privateAllowlistPlaceholder": "添加主机、IP 或 CIDR（按 Enter 或逗号）",
@@ -1565,6 +1565,7 @@
 			"proxyCaCertInfo": "PEM 编码的 CA 证书，用于通过执行 SSL 拦截的代理建立 TLS 连接时的信任，或指向它的 env. 引用。",
 			"proxyCaCertPlaceholder": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE----- 或 env.PROXY_CA_CERT_PEM",
 			"removeConfig": "移除配置",
+			"discardProxy": "放弃更改",
 			"saveProxy": "保存代理配置"
 		},
 		"pricing": {
@@ -1586,6 +1587,6 @@
 		"loadFailed": "加载技能设置失败。",
 		"retry": "重试",
 		"externalClientUrl": "外部客户端 URL",
-		"externalClientUrlHelp": "Bifrost 面向 Claude Code 和 Codex 市场的公共基础 URL。留空则禁用市场服务和注册，但仍可进行技能管理和下载。支持环境变量和 vault 引用。"
+		"externalClientUrlHelp": "Bifrost 面向 Claude Code 和 Codex 市场的公共基础 URL。留空则禁用市场服务和注册，但仍可进行技能管理和下载。支持环境变量和 vault 引用。 若部署在 URL 前缀（server.base_path）之下，请包含该前缀，例如 https://host/bifrost。"
 	}
 }

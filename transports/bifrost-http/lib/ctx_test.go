@@ -40,6 +40,7 @@ type testHandlerStore struct {
 	matcher              *HeaderMatcher
 	allowDirectKeys      bool
 	extraFieldsInHeaders bool
+	captureClientIP      bool
 }
 
 func (s testHandlerStore) GetHeaderMatcher() *HeaderMatcher                      { return s.matcher }
@@ -55,6 +56,7 @@ func (s testHandlerStore) ShouldAllowPerRequestStorageOverride() bool      { ret
 func (s testHandlerStore) ShouldAllowPerRequestRawOverride() bool          { return false }
 func (s testHandlerStore) ShouldAllowDirectKeys() bool                     { return s.allowDirectKeys }
 func (s testHandlerStore) ShouldSendExtraFieldsInHeaders() bool            { return s.extraFieldsInHeaders }
+func (s testHandlerStore) ShouldCaptureClientIP() bool                     { return s.captureClientIP }
 func (s testHandlerStore) IsProviderConfigured(schemas.ModelProvider) bool { return false }
 func (s testHandlerStore) GetMCPExternalServerURL() string                 { return "" }
 func (s testHandlerStore) GetMCPExternalClientURL() string                 { return "" }
@@ -106,6 +108,56 @@ func TestConvertToBifrostContext_ReusesSharedContext(t *testing.T) {
 	}
 	if ctx.UserValue(FastHTTPUserValueBifrostCancel) == nil {
 		t.Fatal("expected shared cancel function to be stored on fasthttp user values")
+	}
+}
+
+// TestConvertToBifrostContext_ClientIP pins the order enterprise audit logs use: leftmost X-Forwarded-For, else X-Real-IP,
+// else the TCP peer. No separate forwarded-for value is recorded.
+func TestConvertToBifrostContext_ClientIP(t *testing.T) {
+	tests := []struct {
+		name         string
+		remote       net.Addr
+		headers      map[string]string
+		wantClientIP string
+	}{
+		{name: "peer only", remote: &net.TCPAddr{IP: net.ParseIP("10.1.2.3"), Port: 5000}, wantClientIP: "10.1.2.3"},
+		{name: "ipv6 peer", remote: &net.TCPAddr{IP: net.ParseIP("2001:db8::1"), Port: 5000}, wantClientIP: "2001:db8::1"},
+		{name: "xff leftmost wins", remote: &net.TCPAddr{IP: net.ParseIP("10.0.0.9")}, headers: map[string]string{"X-Forwarded-For": " 203.0.113.7 , 10.0.0.1", "X-Real-IP": "198.51.100.2"}, wantClientIP: "203.0.113.7"},
+		{name: "x-real-ip fallback", remote: &net.TCPAddr{IP: net.ParseIP("10.0.0.9")}, headers: map[string]string{"X-Real-IP": "198.51.100.2"}, wantClientIP: "198.51.100.2"},
+		{name: "blank headers fall back to peer", remote: &net.TCPAddr{IP: net.ParseIP("10.0.0.9")}, headers: map[string]string{"X-Forwarded-For": "  ", "X-Real-IP": " "}, wantClientIP: "10.0.0.9"},
+		{name: "header without a peer", headers: map[string]string{"X-Forwarded-For": "203.0.113.7"}, wantClientIP: "203.0.113.7"},
+		{name: "no remote addr", wantClientIP: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			if tt.remote != nil {
+				ctx.SetRemoteAddr(tt.remote)
+			}
+			for k, v := range tt.headers {
+				ctx.Request.Header.Set(k, v)
+			}
+			bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{captureClientIP: true})
+			defer cancel()
+			if got, _ := bifrostCtx.Value(schemas.BifrostContextKeyClientIP).(string); got != tt.wantClientIP {
+				t.Errorf("client ip = %q, want %q", got, tt.wantClientIP)
+			}
+		})
+	}
+}
+
+// TestConvertToBifrostContext_ClientIPOffByDefault records no client IP, from the headers or the peer, unless logs_store.capture_client_ip is on.
+func TestConvertToBifrostContext_ClientIPOffByDefault(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetRemoteAddr(&net.TCPAddr{IP: net.ParseIP("10.1.2.3"), Port: 5000})
+	ctx.Request.Header.Set("X-Forwarded-For", "203.0.113.7")
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+	defer cancel()
+	if got := bifrostCtx.Value(schemas.BifrostContextKeyClientIP); got != nil {
+		t.Errorf("client ip = %v, want unset", got)
+	}
+	if !(&Config{LogsStoreConfig: &logstore.Config{CaptureClientIP: true}}).ShouldCaptureClientIP() || (&Config{}).ShouldCaptureClientIP() {
+		t.Error("ShouldCaptureClientIP must follow logs_store.capture_client_ip")
 	}
 }
 
@@ -838,6 +890,7 @@ func TestBuildBaseURL(t *testing.T) {
 		{name: "non HTTP override rejected", external: "ftp://proxy.example.com", host: host, want: "http://" + host},
 		{name: "external override wins", external: "https://proxy.example.com", host: host, xfProto: "http", want: "https://proxy.example.com"},
 		{name: "external override trailing slash trimmed", external: "https://proxy.example.com/", host: host, want: "https://proxy.example.com"},
+		{name: "external override surrounding whitespace trimmed", external: "  https://proxy.example.com/  ", host: host, xfProto: "http", want: "https://proxy.example.com"},
 		{name: "invalid external falls back to inference", external: "not-a-url", host: host, xbfProto: "https", want: "https://" + host},
 		{name: "empty host yields empty", host: "", xbfProto: "https", want: ""},
 	}
@@ -885,6 +938,33 @@ func TestBuildBaseURL_BasePath(t *testing.T) {
 	SetBasePath("")
 	if got := BuildBaseURL(ctx, ""); got != "https://abc.com" {
 		t.Fatalf("BuildBaseURL() without base path = %q, want https://abc.com", got)
+	}
+}
+
+// TestRequestIsHTTPS pins the one scheme rule every HTTPS-dependent decision uses.
+func TestRequestIsHTTPS(t *testing.T) {
+	for name, tc := range map[string]struct {
+		headers map[string]string
+		want    bool
+	}{
+		"plain":                        {want: false},
+		"x-forwarded-proto https":      {headers: map[string]string{"X-Forwarded-Proto": "https"}, want: true},
+		"x-forwarded-proto HTTPS":      {headers: map[string]string{"X-Forwarded-Proto": "HTTPS"}, want: true},
+		"x-forwarded-proto chain":      {headers: map[string]string{"X-Forwarded-Proto": "https, http"}, want: true},
+		"x-forwarded-proto http chain": {headers: map[string]string{"X-Forwarded-Proto": "http, https"}, want: false},
+		"x-bf-forwarded-proto https":   {headers: map[string]string{"x-bf-forwarded-proto": "https"}, want: true},
+		"x-bf wins over lb overwrite":  {headers: map[string]string{"X-Forwarded-Proto": "http", "x-bf-forwarded-proto": "https"}, want: true},
+		"x-bf http overrides lb https": {headers: map[string]string{"X-Forwarded-Proto": "https, http", "x-bf-forwarded-proto": "http"}, want: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			for k, v := range tc.headers {
+				ctx.Request.Header.Set(k, v)
+			}
+			if got := RequestIsHTTPS(ctx); got != tc.want {
+				t.Fatalf("RequestIsHTTPS() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -945,6 +1025,27 @@ func BenchmarkConvertToBifrostContextVirtualKeyHeader(b *testing.B) {
 	for b.Loop() {
 		_, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
 		cancel()
+	}
+}
+
+// BenchmarkConvertToBifrostContextClientIP measures a request from a real peer behind a proxy, with capture off (the default) and on.
+func BenchmarkConvertToBifrostContextClientIP(b *testing.B) {
+	for _, capture := range []bool{false, true} {
+		b.Run(fmt.Sprintf("capture=%t", capture), func(b *testing.B) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.SetRemoteAddr(&net.TCPAddr{IP: net.ParseIP("10.1.2.3"), Port: 5000})
+			ctx.Request.Header.Set("Content-Type", "application/json")
+			ctx.Request.Header.Set("User-Agent", "OpenAI/Python 2.8.1")
+			ctx.Request.Header.Set("X-Forwarded-For", "203.0.113.7, 10.0.0.1")
+			store := testHandlerStore{captureClientIP: capture}
+			b.ReportAllocs()
+			for b.Loop() {
+				_, cancel := ConvertToBifrostContext(ctx, store)
+				cancel()
+				// Drop the context cached on ctx so every iteration builds a fresh one, as a new request does.
+				ctx.ResetUserValues()
+			}
+		})
 	}
 }
 

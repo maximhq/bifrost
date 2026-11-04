@@ -303,8 +303,8 @@ bifrost:
   # on every startup. Leave unset to manage the proxy from the dashboard.
   # proxyConfig:
   #   enabled: true
-  #   type: "http"                       # only http is supported
-  #   url: "http://proxy.example.com:8080"
+  #   type: "http"                       # http or socks5
+  #   url: "http://proxy.example.com:8080"  # http:// or https:// for type http; socks5:// or socks5h:// for type socks5. A bare host:port takes its scheme from type
   #   username: "env.PROXY_USERNAME"     # optional; env.VAR_NAME supported
   #   password: "env.PROXY_PASSWORD"     # optional; env.VAR_NAME supported
   #   noProxy: "localhost,.internal.example.com"
@@ -693,6 +693,10 @@ bifrost:
       #     # tokenUrl: "https://idp.corp/oauth2/token"           # optional — discovered when omitted
       #     # registrationUrl: "https://idp.corp/oauth2/register" # optional — discovered when omitted
       #     # scopes: ["read", "write"]                           # optional — OAuth scopes to request
+      #     # resource: "https://mcp.example.com/mcp"             # optional — RFC 8707 resource indicator, discovered when omitted
+      #     # Sign in with Bifrost's client metadata document even when the authorization server does
+      #     # not advertise support. Needs Bifrost on a public HTTPS address; cannot be combined with clientId.
+      #     # useClientMetadataDocument: true
       #   # Only meaningful for connectionType "http": true keeps one persistent connection reused
       #   # across every caller; false (default for new clients) connects fresh per call.
       #   needsSessionStickiness: false
@@ -1289,6 +1293,7 @@ bifrost:
       #   model: "jev-latest"              # Set together with provider; omit both for typesafe/jev-latest
       #   previous_message_count: 1        # Earlier user messages sent with the current request (0-5)
       #   timeout: "1.5s"                  # Maximum wait for one decision-model call; usage counts toward request cost and budgets
+      #   min_confidence: 0.7              # Optional: an answer below this publishes no tier (0-1; 0 keeps every answer)
       #   criteria:                        # Optional: per-tier overrides; tiers are SIMPLE, MEDIUM, COMPLEX
       #     COMPLEX:
       #       definition: "..."            # Replaces the shipped definition of this tier (max 500 chars)

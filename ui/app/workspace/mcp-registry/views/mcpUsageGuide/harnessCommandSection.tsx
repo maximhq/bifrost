@@ -111,7 +111,7 @@ export function HarnessCommandSection({
 
 				{canCopyCommand ? (
 					<pre className="overflow-x-auto p-4 text-xs leading-5">
-						<code>{command}</code>
+						<code data-testid="mcp-usage-guide-command">{command}</code>
 					</pre>
 				) : (
 					<div className="p-4 text-sm text-slate-400">{emptyMessage}</div>

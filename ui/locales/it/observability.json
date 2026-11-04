@@ -22,6 +22,8 @@
 		"provider": "Provider",
 		"model": "Modello",
 		"app": "App",
+		"clientIp": "IP del client",
+		"userEmail": "Email dell'utente",
 		"server": "Server",
 		"toolName": "Nome strumento",
 		"serviceTier": "Livello di servizio",
@@ -903,6 +905,8 @@
 			"tokensNotPricedValue": "{{input}} in ingresso / {{output}} in uscita",
 			"matchedRoute": "Route corrispondente",
 			"parentLog": "Log padre",
+			"responseBodyPreview": "Corpo della risposta (anteprima)",
+			"filterByValue": "Mostra le chiamate relay con questo valore",
 			"queryParameters": "Parametri di query",
 			"matchedHeaders": "Header corrispondenti",
 			"errorNoMessageWithStatus": "Il relay ha restituito un errore (HTTP {{status}}) senza messaggio.",
@@ -923,7 +927,9 @@
 			"minCost": "Min $",
 			"maxCost": "Max $",
 			"minimumCost": "Costo minimo",
-			"maximumCost": "Costo massimo"
+			"maximumCost": "Costo massimo",
+			"exactJobID": "ID job esatto",
+			"exactParentRequestID": "ID esatto della richiesta padre"
 		},
 		"grants": {
 			"label": "Accesso ai relay",

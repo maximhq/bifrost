@@ -40,7 +40,7 @@ import type { TFunction } from "i18next";
 import { Link } from "@tanstack/react-router";
 import { addMilliseconds, format, isValid } from "date-fns";
 import { AlertCircle, ChevronDown, Download, Loader2, MoreVertical, Trash2, Waypoints, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { getLocale } from "@/lib/i18n";
 import { dateFnsLocale } from "@/lib/i18n/dateLocale";
@@ -90,13 +90,58 @@ function AttributionLink({ label, id, name, filterKey }: { label: string; id?: s
 								"block max-w-full min-w-0 cursor-pointer truncate text-sm font-normal text-blue-600 underline-offset-2 hover:underline dark:text-blue-400",
 								!name && "font-mono",
 							)}
-							data-testid={`relay-log-${filterKey}-link`}
+							data-testid={`relay-log-${filterKey.replaceAll("_", "-")}-link`}
 						>
 							{name || id}
 						</Link>
 					</TooltipTrigger>
-					<TooltipContent sideOffset={6}>{name ? id : t("mcpLogs.detail.filterBy", { label: label.toLowerCase() })}</TooltipContent>
+					<TooltipContent sideOffset={6}>{name ? id : t("relayLogs.detail.filterByValue")}</TooltipContent>
 				</Tooltip>
+			}
+		/>
+	);
+}
+
+type RelayLogCorrelationKey = "session_id" | "job_id" | "parent_request_id" | "agent_correlation_id";
+
+/** A correlation id row that lists the calls sharing it, as the LLM sheet's session and parent rows do. */
+function CorrelationLink({
+	label,
+	id,
+	filterKey,
+	suffix,
+}: {
+	label: string;
+	id?: string;
+	filterKey: RelayLogCorrelationKey;
+	/** Shown after the link, outside it (a job's status). */
+	suffix?: string;
+}) {
+	const { t } = useTranslation("observability");
+	if (!id) return null;
+	return (
+		<LogEntryDetailsView
+			className="w-full"
+			label={label}
+			value={
+				<div className="flex max-w-full min-w-0 items-center gap-1.5">
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<Link
+								to="/workspace/relay-logs"
+								search={(prev) => ({ ...prev, offset: 0, selected_log: "", [filterKey]: id })}
+								className="block max-w-full min-w-0 cursor-pointer truncate font-mono text-sm font-normal text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+								data-testid={`relay-log-${filterKey.replaceAll("_", "-")}-link`}
+							>
+								{id}
+							</Link>
+						</TooltipTrigger>
+						<TooltipContent sideOffset={6} className="max-w-md break-all">
+							{t("relayLogs.detail.filterByValue")}
+						</TooltipContent>
+					</Tooltip>
+					{suffix && <span className="text-muted-foreground shrink-0 text-sm">({suffix})</span>}
+				</div>
 			}
 		/>
 	);
@@ -131,8 +176,15 @@ export function RelayLogDetailSheet({
 	// currentData, not data: data keeps the previous log while the next one loads, and Delete and
 	// Export must never act on it.
 	const id = logId ?? log?.id ?? "";
-	const { currentData: fetched, isFetching, isError } = useGetRelayLogQuery(id, { skip: !open || !id });
+	// A row still processing (a call that outlived the plugin's sweep) or a failed read is re-read
+	// every 2s while the sheet is open, as the LLM log sheet does, so it flips in place.
+	const [pollingInterval, setPollingInterval] = useState(0);
+	const { currentData: fetched, isFetching, isError } = useGetRelayLogQuery(id, { skip: !open || !id, pollingInterval });
 	const display = fetched ?? (log?.id === id ? log : null);
+	const shouldPoll = open && (isError || fetched?.status === "processing");
+	useEffect(() => {
+		setPollingInterval(shouldPoll ? 2000 : 0);
+	}, [shouldPoll]);
 	const [moreDetailsOpen, setMoreDetailsOpen] = useState(false);
 	const { prev: prevKeys, next: nextKeys } = useSheetNavigation({ enabled: open, hasPrev, hasNext, onNavigate: (d) => onNavigate?.(d) });
 
@@ -148,7 +200,11 @@ export function RelayLogDetailSheet({
 	const pathOnly = display ? (queryIndex >= 0 ? display.path.slice(0, queryIndex) : display.path) : "";
 	const queryOnly = display && queryIndex >= 0 ? display.path.slice(queryIndex + 1) : "";
 	const queryParams = useMemo(() => [...new URLSearchParams(queryOnly).entries()], [queryOnly]);
-	const requestLine = display ? (display.kind === "job" ? t("relayLogs.detail.jobLine", { id: display.job_id ?? "—" }) : `${display.method} ${pathOnly}`) : "";
+	const requestLine = display
+		? display.kind === "job"
+			? t("relayLogs.detail.jobLine", { id: display.job_id ?? "—" })
+			: `${display.method} ${pathOnly}`
+		: "";
 
 	// Client app, mapped the same way the LLM sheet maps it: the backend-detected app first, then the User-Agent.
 	const { data: userAgentMappingsData } = useGetUserAgentMappingsQuery(undefined, { skip: !open });
@@ -173,14 +229,14 @@ export function RelayLogDetailSheet({
 			>
 				{!display ? (
 					<div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center" data-testid="relay-log-details-empty">
-						<SheetTitle className="sr-only">{isFetching ? t("relayLogs.detail.loadingDetails") : t("relayLogs.detail.notFound")}</SheetTitle>
+						<SheetTitle className="sr-only">
+							{isFetching ? t("relayLogs.detail.loadingDetails") : t("relayLogs.detail.notFound")}
+						</SheetTitle>
 						{isFetching ? (
 							<Loader2 className="text-muted-foreground h-6 w-6 animate-spin" />
 						) : (
 							<>
-								<p className="text-muted-foreground text-sm">
-									{isError ? t("relayLogs.detail.loadFailed") : t("relayLogs.detail.gone")}
-								</p>
+								<p className="text-muted-foreground text-sm">{isError ? t("relayLogs.detail.loadFailed") : t("relayLogs.detail.gone")}</p>
 								<Button variant="outline" size="sm" type="button" onClick={() => onOpenChange(false)} data-testid="relay-log-close-button">
 									{t("labels.close")}
 								</Button>
@@ -206,7 +262,13 @@ export function RelayLogDetailSheet({
 								<AlertDialog>
 									<DropdownMenu>
 										<DropdownMenuTrigger asChild>
-											<Button variant="ghost" className="size-7" type="button" aria-label={t("logs.logActions")} data-testid="relay-log-actions">
+											<Button
+												variant="ghost"
+												className="size-7"
+												type="button"
+												aria-label={t("logs.logActions")}
+												data-testid="relay-log-actions"
+											>
 												<MoreVertical className="h-3 w-3" />
 											</Button>
 										</DropdownMenuTrigger>
@@ -234,9 +296,7 @@ export function RelayLogDetailSheet({
 									<AlertDialogContent>
 										<AlertDialogHeader>
 											<AlertDialogTitle>{t("mcpLogs.deleteConfirmTitle")}</AlertDialogTitle>
-											<AlertDialogDescription>
-												{t("mcpLogs.deleteConfirmDesc")}
-											</AlertDialogDescription>
+											<AlertDialogDescription>{t("mcpLogs.deleteConfirmDesc")}</AlertDialogDescription>
 										</AlertDialogHeader>
 										<AlertDialogFooter>
 											<AlertDialogCancel data-testid="relay-log-delete-cancel">{t("labels.cancel")}</AlertDialogCancel>
@@ -298,9 +358,16 @@ export function RelayLogDetailSheet({
 											testId="relay-log-copy-route-button"
 											className="mt-3"
 										/>
-										<HeroIdRow label={t("mcpLogs.detail.request")} value={display.request_id} testId="relay-log-copy-request-id-button" className="mt-1" />
+										<HeroIdRow
+											label={t("mcpLogs.detail.request")}
+											value={display.request_id}
+											testId="relay-log-copy-request-id-button"
+											className="mt-1"
+										/>
 										{display.route_path && <HeroIdRow label={t("relayLogs.detail.matched")} value={display.route_path} className="mt-1" />}
-										{display.virtual_key_name && <HeroIdRow label={t("relayLogs.fields.virtualKey")} value={display.virtual_key_name} className="mt-1" />}
+										{display.virtual_key_name && (
+											<HeroIdRow label={t("relayLogs.fields.virtualKey")} value={display.virtual_key_name} className="mt-1" />
+										)}
 									</div>
 									<div className="flex shrink-0 items-center gap-1.5 rounded-sm border bg-white px-2 py-1 font-mono text-[12px] font-medium dark:bg-zinc-900">
 										<Waypoints className="text-muted-foreground h-3.5 w-3.5" />
@@ -393,19 +460,27 @@ export function RelayLogDetailSheet({
 												className="w-full"
 												label={t("labels.latency")}
 												tooltip={t("relayLogs.detail.latencyTooltip")}
-												value={hasLatency ? `${(display.latency as number).toFixed(2)}ms` : t("mcpLogs.notRecorded")}
+												value={hasLatency ? `${(display.latency as number).toFixed(2)}ms` : t("labels.nA")}
 											/>
 											<LogEntryDetailsView
 												className="w-full"
 												label={t("logs.detail.upstreamLatency")}
 												tooltip={t("relayLogs.detail.upstreamLatencyTooltip")}
-												value={display.upstream_latency != null ? `${display.upstream_latency.toFixed(2)}ms` : t("labels.nA")}
+												value={
+													display.upstream_latency == null || isNaN(display.upstream_latency)
+														? t("labels.nA")
+														: `${display.upstream_latency.toFixed(2)}ms`
+												}
 											/>
 											<LogEntryDetailsView
 												className="w-full"
 												label={t("logs.detail.bifrostOverhead")}
 												tooltip={t("relayLogs.detail.overheadTooltip")}
-												value={display.overhead_latency != null ? `${display.overhead_latency.toFixed(2)}ms` : t("labels.nA")}
+												value={
+													display.overhead_latency == null || isNaN(display.overhead_latency)
+														? t("labels.nA")
+														: `${display.overhead_latency.toFixed(2)}ms`
+												}
 											/>
 										</div>
 										{display.overhead_breakdown && display.overhead_breakdown.length > 0 ? (
@@ -416,23 +491,50 @@ export function RelayLogDetailSheet({
 									<div className="space-y-4" data-testid="relay-log-cost">
 										<BlockHeader title={t("labels.cost")} />
 										<div className="grid w-full grid-cols-1 gap-4 md:grid-cols-3">
-											<LogEntryDetailsView className="w-full" label={t("relayLogs.detail.charged")} value={usd(display.cost) ?? t("relayLogs.detail.chargedNone")} />
-											<LogEntryDetailsView className="w-full" label={t("relayLogs.detail.feePerCall")} value={usd(display.cost_per_request)} />
-											<LogEntryDetailsView className="w-full" label={t("relayLogs.detail.pricePerUnit")} value={usd(display.cost_per_unit)} />
+											<LogEntryDetailsView
+												className="w-full"
+												label={t("relayLogs.detail.charged")}
+												value={usd(display.cost) ?? t("relayLogs.detail.chargedNone")}
+											/>
+											<LogEntryDetailsView
+												className="w-full"
+												label={t("relayLogs.detail.feePerCall")}
+												value={usd(display.cost_per_request)}
+											/>
+											<LogEntryDetailsView
+												className="w-full"
+												label={t("relayLogs.detail.pricePerUnit")}
+												value={usd(display.cost_per_unit)}
+											/>
 											{display.units !== undefined && (
-												<LogEntryDetailsView className="w-full" label={t("relayLogs.detail.unitsReadLabel")} value={String(display.units)} />
+												<LogEntryDetailsView
+													className="w-full"
+													label={t("relayLogs.detail.unitsReadLabel")}
+													value={String(display.units)}
+												/>
 											)}
 											{display.billed_units !== undefined && (
-												<LogEntryDetailsView className="w-full" label={t("relayLogs.detail.unitsBilled")} value={String(display.billed_units)} />
+												<LogEntryDetailsView
+													className="w-full"
+													label={t("relayLogs.detail.unitsBilled")}
+													value={String(display.billed_units)}
+												/>
 											)}
 											{display.extracted_cost !== undefined && (
-												<LogEntryDetailsView className="w-full" label={t("relayLogs.detail.reportedCost")} value={usd(display.extracted_cost)} />
+												<LogEntryDetailsView
+													className="w-full"
+													label={t("relayLogs.detail.reportedCost")}
+													value={usd(display.extracted_cost)}
+												/>
 											)}
 											{!!display.total_tokens && (
 												<LogEntryDetailsView
 													className="w-full"
 													label={t("relayLogs.detail.tokensNotPriced")}
-													value={t("relayLogs.detail.tokensNotPricedValue", { input: display.input_tokens ?? 0, output: display.output_tokens ?? 0 })}
+													value={t("relayLogs.detail.tokensNotPricedValue", {
+														input: display.input_tokens ?? 0,
+														output: display.output_tokens ?? 0,
+													})}
 												/>
 											)}
 										</div>
@@ -465,15 +567,53 @@ export function RelayLogDetailSheet({
 													}
 												/>
 											)}
+											{display.client_ip && (
+												<LogEntryDetailsView
+													className="w-full"
+													label={t("labels.clientIp")}
+													valueTooltip={display.client_ip}
+													value={
+														<span className="font-mono" data-testid="relaylogdetails-client-ip">
+															{display.client_ip}
+														</span>
+													}
+												/>
+											)}
 											<LogEntryDetailsView className="w-full" label={t("relayLogs.fields.method")} value={display.method || "—"} />
 											<LogEntryDetailsView className="w-full" label={t("relayLogs.fields.path")} value={pathOnly || "—"} />
-											<LogEntryDetailsView className="w-full" label={t("relayLogs.detail.matchedRoute")} value={display.route_path || t("agentGateway.sheet.none")} />
-											<LogEntryDetailsView className="w-full" label={t("relayLogs.fields.billable")} value={display.billable ? t("relayLogs.fields.yes") : t("relayLogs.fields.no")} />
-											<LogEntryDetailsView className="w-full" label={t("relayLogs.fields.streamed")} value={display.streamed ? t("relayLogs.fields.yes") : t("relayLogs.fields.no")} />
+											<LogEntryDetailsView
+												className="w-full"
+												label={t("relayLogs.detail.matchedRoute")}
+												value={display.route_path || t("agentGateway.sheet.none")}
+											/>
+											<LogEntryDetailsView
+												className="w-full"
+												label={t("relayLogs.fields.billable")}
+												value={display.billable ? t("relayLogs.fields.yes") : t("relayLogs.fields.no")}
+											/>
+											<LogEntryDetailsView
+												className="w-full"
+												label={t("relayLogs.fields.streamed")}
+												value={display.streamed ? t("relayLogs.fields.yes") : t("relayLogs.fields.no")}
+											/>
 											{display.model && <LogEntryDetailsView className="w-full" label={t("labels.model")} value={display.model} />}
-											{display.job_id && (
-												<LogEntryDetailsView className="w-full" label={t("relayLogs.fields.job")} value={`${display.job_id} (${display.job_status ?? "-"})`} />
-											)}
+											<CorrelationLink
+												label={t("relayLogs.fields.job")}
+												id={display.job_id}
+												filterKey="job_id"
+												suffix={display.job_id ? (display.job_status ?? "-") : undefined}
+											/>
+											<CorrelationLink label={t("filters.sessionID")} id={display.session_id} filterKey="session_id" />
+											<CorrelationLink
+												label={t("logs.detail.parentRequestID")}
+												id={display.parent_request_id}
+												filterKey="parent_request_id"
+											/>
+											<CorrelationLink
+												label={t("filters.agentCorrelationID")}
+												id={display.agent_correlation_id}
+												filterKey="agent_correlation_id"
+											/>
 											{display.parent_log_id && (
 												<LogEntryDetailsView
 													className="w-full"
@@ -498,15 +638,33 @@ export function RelayLogDetailSheet({
 												/>
 											)}
 											<AttributionLink label={t("labels.user")} id={display.user_id} name={display.user_name} filterKey="user_ids" />
+											{display.user_email && (
+												<LogEntryDetailsView
+													className="w-full"
+													label={t("labels.userEmail")}
+													valueTooltip={display.user_email}
+													value={<span data-testid="relaylogdetails-user-email">{display.user_email}</span>}
+												/>
+											)}
 											<AttributionLink label={t("labels.team")} id={display.team_id} name={display.team_name} filterKey="team_ids" />
-											<AttributionLink label={t("labels.customer")} id={display.customer_id} name={display.customer_name} filterKey="customer_ids" />
+											<AttributionLink
+												label={t("labels.customer")}
+												id={display.customer_id}
+												name={display.customer_name}
+												filterKey="customer_ids"
+											/>
 											<AttributionLink
 												label={t("relayLogs.fields.businessUnit")}
 												id={display.business_unit_id}
 												name={display.business_unit_name}
 												filterKey="business_unit_ids"
 											/>
-											<AttributionLink label={t("labels.project")} id={display.project_id} name={display.project_name} filterKey="project_ids" />
+											<AttributionLink
+												label={t("labels.project")}
+												id={display.project_id}
+												name={display.project_name}
+												filterKey="project_ids"
+											/>
 										</div>
 									</div>
 									{queryParams.length > 0 && (
@@ -591,7 +749,11 @@ export function RelayLogDetailSheet({
 										<PassthroughBodyBox title={t("logs.detail.requestBody")} body={display.request_body} testId="relay-log-request-body" />
 									)}
 									{display.response_body && display.status !== "processing" && (
-										<PassthroughBodyBox title={t("logs.detail.responseBody")} body={display.response_body} testId="relay-log-response-body" />
+										<PassthroughBodyBox
+											title={display.is_large_payload_response ? t("relayLogs.detail.responseBodyPreview") : t("logs.detail.responseBody")}
+											body={display.response_body}
+											testId="relay-log-response-body"
+										/>
 									)}
 								</>
 							)}

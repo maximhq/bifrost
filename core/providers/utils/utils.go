@@ -1073,6 +1073,13 @@ func NewProviderHTTPClient(proxyConfig *schemas.ProxyConfig, networkConfig schem
 	return &http.Client{Transport: &fasthttpRoundTripper{client: client, schemes: schemes}, Timeout: timeout}
 }
 
+// NewHTTPClientOn returns an *http.Client that sends its requests on client, for a call that
+// must keep the inference client's ConfigureProxy, ConfigureDialer and ConfigureTLS setup but
+// goes through a library or helper that only takes an *http.Client.
+func NewHTTPClientOn(client *fasthttp.Client, timeout time.Duration) *http.Client {
+	return &http.Client{Transport: &fasthttpRoundTripper{client: client}, Timeout: timeout}
+}
+
 // namesProxy reports whether proxyConfig names a proxy. nil, an empty type and the
 // UI's default "none" all mean "not configured".
 func namesProxy(proxyConfig *schemas.ProxyConfig) bool {
@@ -3453,6 +3460,18 @@ func ShouldSendBackRawResponse(ctx context.Context, defaultSendBackRawResponse b
 		return capture
 	}
 	return defaultSendBackRawResponse
+}
+
+// ResponsesStreamRawIndex picks the one response of a provider event's Responses expansion that carries the event's
+// raw payload: the response streaming the event's text or arguments (its delta), so the raw text travels with the
+// normalized text it backs and is never sent ahead of it, otherwise fallback.
+func ResponsesStreamRawIndex(responses []*schemas.BifrostResponsesStreamResponse, fallback int) int {
+	for i := len(responses) - 1; i >= 0; i-- {
+		if responses[i] != nil && responses[i].Delta != nil {
+			return i
+		}
+	}
+	return fallback
 }
 
 // SendCreatedEventResponsesChunk sends a ResponsesStreamResponseTypeCreated event.

@@ -4123,7 +4123,8 @@ type ResponsesToolWebSearch struct {
 	UserLocation       *ResponsesToolWebSearchUserLocation `json:"user_location,omitempty"`        // The approximate location of the user
 
 	// Anthropic only
-	MaxUses *int `json:"max_uses,omitempty"` // Maximum number of uses for the search
+	MaxUses *int    `json:"max_uses,omitempty"`           // Maximum number of uses for the search
+	Version *string `json:"web_search_version,omitempty"` // Preserve an explicit Anthropic tool version
 
 	// Perplexity Agent API only: search mode, and overrides for the token budget search_context_size implies.
 	SearchType       *string `json:"search_type,omitempty"`         // "web" | "fast"
@@ -4479,6 +4480,7 @@ type ResponsesToolToolSearch struct {
 
 // ResponsesToolWebFetch represents a web fetch tool
 type ResponsesToolWebFetch struct {
+	Version           *string                        `json:"web_fetch_version,omitempty"` // Preserve an explicit Anthropic tool version
 	MaxUses           *int                           `json:"max_uses,omitempty"`
 	Filters           *ResponsesToolWebSearchFilters `json:"filters,omitempty"`
 	MaxContentTokens  *int                           `json:"max_content_tokens,omitempty"`

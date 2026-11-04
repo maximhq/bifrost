@@ -796,10 +796,12 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			message.ID = nil
 		}
 
-		// Gemini sets Name on function_call_output items (the tool name), but OpenAI's
-		// function_call_output does not accept this field. Strip it. message is a value copy.
+		// Preserve the name on unsolicited outputs: OpenAI requires it when there is
+		// no call_id. Keep stripping Gemini's redundant name on paired outputs for
+		// compatibility with backends that reject it. message is a value copy.
 		if message.Type != nil && *message.Type == schemas.ResponsesMessageTypeFunctionCallOutput &&
-			message.ResponsesToolMessage != nil && message.ResponsesToolMessage.Name != nil {
+			message.ResponsesToolMessage != nil && message.ResponsesToolMessage.Name != nil &&
+			message.ResponsesToolMessage.CallID != nil && *message.ResponsesToolMessage.CallID != "" {
 			// Clone to avoid mutating the caller's input
 			toolMsgCopy := *message.ResponsesToolMessage
 			toolMsgCopy.Name = nil
@@ -1465,11 +1467,12 @@ func isOpenAISupportedToolType(t schemas.ResponsesToolType, provider schemas.Mod
 // allowlist or a "-"-prefixed denylist but never both: an explicit native filter wins,
 // then AllowedDomains, then BlockedDomains, so a request carrying both generic lists
 // keeps the (still restrictive) allowlist. Fields only other providers understand
-// (Gemini time_range_filter, Anthropic max_uses, OpenAI external_web_access and
+// (Gemini time_range_filter, Anthropic max_uses and web_search_version, OpenAI external_web_access and
 // search_content_types) are dropped. The input is never mutated.
 func toPerplexityWebSearch(webSearch *schemas.ResponsesToolWebSearch) *schemas.ResponsesToolWebSearch {
 	out := *webSearch
 	out.MaxUses = nil
+	out.Version = nil
 	out.ExternalWebAccess = nil
 	out.SearchContentTypes = nil
 	if webSearch.Filters == nil {

@@ -4,13 +4,21 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.46
+**Latest Version:** 2.1.47
 
 ## Changelog
 
 ### Upcoming
 
+- Added `bifrost.mcp.clientConfigs[].oauthConfig.useClientMetadataDocument` (`mcp.client_configs[].oauth_config.use_client_metadata_document`): sign in with Bifrost's Client ID Metadata Document even when the authorization server does not advertise support. Needs Bifrost on a public HTTPS address; cannot be combined with `clientId`.
+- Added `bifrost.mcp.clientConfigs[].oauthConfig.resource` (`mcp.client_configs[].oauth_config.resource`): the OAuth resource indicator, discovered from the MCP server when omitted.
+
+### 2.1.47
+
 - Added `bifrost.server.basePath` (`server.base_path`) to serve Bifrost under a URL path prefix behind an ingress (e.g. `https://abc.com/bifrost`). The UI, redirects and OAuth callback URLs use the prefix. Requests are accepted with or without it, so the ingress can forward or strip it and probes stay on `/health`.
+- Added `socks5` as a `bifrost.proxyConfig.type` (`proxy_config.type`): `url` is then a `socks5://` or `socks5h://` proxy URL; a bare `host:port` takes its scheme from the type. The values schema previously rejected it, so a SOCKS5 global proxy could only be set from the dashboard.
+- `bifrost.client.oauth2ServerConfig.issuerUrl` (`client.oauth2_server_config.issuer_url`): a trailing slash is now ignored.
+- Bumped `appVersion` from `2.3.1` to `2.4.0`.
 
 ### 2.1.46
 

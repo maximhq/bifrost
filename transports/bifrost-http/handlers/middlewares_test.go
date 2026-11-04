@@ -5642,6 +5642,14 @@ func TestBasePathMiddleware_RedirectsKeepPrefix(t *testing.T) {
 			ctx.SetStatusCode(fasthttp.StatusFound)
 		case "lookalike":
 			ctx.Redirect("/bifrostx/y", fasthttp.StatusFound)
+		case "foreign-same-host":
+			// A third-party OAuth client's redirect_uri that happens to share this host.
+			ctx.Response.Header.Set("Location", "http://gw.example.com/app/cb?code=1")
+			ctx.SetStatusCode(fasthttp.StatusFound)
+			markLocationExternal(ctx)
+		case "foreign-same-host-unmarked":
+			ctx.Response.Header.Set("Location", "http://gw.example.com/app/cb?code=1")
+			ctx.SetStatusCode(fasthttp.StatusFound)
 		}
 	})
 	handler := ServerRootHandler(newRecoveryTestCors(), basePathTestConfig("/bifrost"), r.Handler)
@@ -5665,6 +5673,10 @@ func TestBasePathMiddleware_RedirectsKeepPrefix(t *testing.T) {
 		{"GET", "/bifrost/handler/protocol-relative", fasthttp.StatusFound, "//evil.example.org/x"},
 		{"GET", "/bifrost/handler/backslash", fasthttp.StatusFound, "/\\evil.example.org/x"},
 		{"GET", "/bifrost/handler/lookalike", fasthttp.StatusFound, "http://gw.example.com/bifrost/bifrostx/y"},
+		// A redirect the handler marked as leaving Bifrost is not pulled under the prefix.
+		{"GET", "/bifrost/handler/foreign-same-host", fasthttp.StatusFound, "http://gw.example.com/app/cb?code=1"},
+		// Unmarked same-host Locations are still assumed to be ours.
+		{"GET", "/bifrost/handler/foreign-same-host-unmarked", fasthttp.StatusFound, "http://gw.example.com/bifrost/app/cb?code=1"},
 	}
 	for _, tc := range cases {
 		ctx := &fasthttp.RequestCtx{}

@@ -225,7 +225,7 @@
 		"directKeysHelp": "Cuando esté habilitado, los usuarios pueden pasar una clave de API de proveedor directamente en la autorización<b0></b0>,<b1>x-api-key</b1>, o<b2>x-goog-api-key</b2>header junto con<b3>x-bf-direct-key: verdadero</b3>. Bifrost utilizará esa llave directamente, pasando por la piscina de clave registrada.",
 		"originsHelp": "Lista separada de los orígenes permitidos para las conexiones CORS y WebSocket. Los orígenes locales siempre están permitidos. Cada origen debe ser una URL completa con protocolo (por ejemplo,https://app.example.com,http://10.0.0.100:3000).Wildcards son compatibles para subdominios (por ejemplo,https://*.example.com)o utilizar \"*) para permitir todos los orígenes.",
 		"requiredHeadersHelp": "Lista separada de los encabezados que deben estar presentes en cada solicitud. Las solicitudes que faltan cualquiera de estos encabezados serán rechazadas con un error de 400. Los nombres de los encabezados son sensibles a casos.",
-		"routesHelp": "Lista separada de rutas que pasan por la auth middleware. Las solicitudes a estas rutas no requerirán autenticación. Las rutas del sistema como<b0>/health</b0>,<b1>/api/session/login</b1>, y<b2>/api/session/is-auth-enabled</b2>siempre están en blanco sin importar este ajuste.",
+		"routesHelp": "Lista separada de rutas que pasan por la auth middleware. Las solicitudes a estas rutas no requerirán autenticación. Las rutas del sistema como<b0>/health</b0>,<b1>/api/session/login</b1>, y<b2>/api/session/is-auth-enabled</b2>siempre están en blanco sin importar este ajuste. Las rutas se comparan después de quitar el prefijo server.base_path, así que indícalas sin el prefijo.",
 		"see": "Véase",
 		"documentation": "documentación",
 		"forDetails": "para detalles.",
@@ -254,7 +254,7 @@
 		"title": "Ajustes de registros",
 		"description": "Configurar la configuración de registro para solicitudes y respuestas.",
 		"enableLogs": "Logs habilitados",
-		"enableLogsHelp": "Permitir la registro de solicitudes y respuestas a una base de datos SQL. Esto puede añadir 40-60mb de sobrecabeza a la memoria del sistema.",
+		"enableLogsHelp": "Permite el registro de solicitudes y respuestas, incluidas las llamadas de relay, en una base de datos SQL. Esto puede añadir 40-60mb de sobrecarga a la memoria del sistema.",
 		"requiresStore": "Requiere la tienda de registros para ser configurada y habilitada en config.json.",
 		"disableContentLogging": "Contenido deshabilitado",
 		"disableContentLoggingHelp": "Se aplica a los logs de LLM, MCP, agentes y relays. Si está habilitado, solo se registran los metadatos de uso (latencia, costo, cantidad de tokens, estado, IDs de enrutamiento, etc.). El contenido de solicitudes y respuestas (mensajes, parámetros, llamadas a herramientas y cualquier byte sin procesar del proveedor) se elimina de los registros de log, incluso con <code0>store_raw_request_response</code0> activado. El reenvío de bytes sin procesar a quienes llaman mediante <code1>send_back_raw_*</code1> no se ve afectado. Los cuerpos del protocolo de agentes siguen esta configuración; las capturas sin procesar del upstream también requieren Capturar solicitud y respuesta sin procesar en la configuración del Agent Gateway.",
@@ -266,9 +266,9 @@
 		"allowRawOverride": "Permitir Per-Request Raw Override",
 		"allowRawOverrideHelp": "Cuando está habilitado, las solicitudes individuales pueden enviar bytes de solicitud/respuesta de proveedor crudo de vuelta al solicitante usando los encabezados de respuesta x-bf-back-raw-request y x-bf-send-back-raw-response. No afecta el almacenamiento de troncos; la persistencia de bytes en los registros está controlada por{{setting}}.",
 		"logRetentionDays": "Días de retención de registros",
-		"logRetentionDaysHelp": "Número de días para retener los registros en la base de datos. Mínimo es 1 día. Los registros más antiguos se eliminarán automáticamente.",
+		"logRetentionDaysHelp": "Número de días para retener los registros, incluidos los logs de relay, en la base de datos. Mínimo es 1 día. Los registros más antiguos se eliminarán automáticamente.",
 		"hideDeletedVks": "No mostrar caracteres virtuales eliminados en los filtros",
-		"hideDeletedVksHelp": "Cuando está habilitado, las claves virtuales eliminadas están excluidas de las opciones de filtros Claves virtuales en Logs, Dashboard y MCP Logs.",
+		"hideDeletedVksHelp": "Cuando está habilitado, las claves virtuales eliminadas están excluidas de las opciones de filtros Claves virtuales en Logs, Dashboard, MCP Logs y logs de relay.",
 		"loggingHeaders": "Responsables de registro",
 		"loggingHeadersHelp": "Lista separada por comas de encabezados de solicitud que se capturan en los metadatos del log. Admite nombres exactos y patrones con comodines (p. ej. x-custom-* captura todos los encabezados con ese prefijo, * registra todos los encabezados; ten en cuenta que * capturará encabezados sensibles como Authorization). Los valores se extraen de las solicitudes entrantes y se almacenan en el campo de metadatos de las entradas del log. Los encabezados con el prefijo x-bf-lh- siempre se capturan automáticamente. Los logs del relay llevan los mismos metadatos y, además, los encabezados por los que coinciden las rutas de un relay; no se almacena ningún otro encabezado ni nunca los de la respuesta.",
 		"loggingHeadersPlaceholder": "X-Tenant-ID, X-Request-Source, x-custom-*",
@@ -375,7 +375,7 @@
 		"disableAutoToolInjectionHelp": "Cuando está habilitado, las herramientas MCP no se incluyen automáticamente en cada solicitud. Las herramientas sólo se inyectan cuando se especifican explícitamente mediante encabezados de solicitud (<code0>x-bf-mcp-include-tools</code0>) y todavía deben ser permitidas por la configuración virtual clave MCP.",
 		"tempTokenHelp": "Cuando está habilitado, los enlaces de MCP OAuth por usuario pueden incluir un token de corta duración para que alguien sin una sesión activa de panel de Bifrost pueda completar el flujo. Mantenga la discapacidad para requerir la autenticación de panel de control normal.",
 		"bindingHelp": "Cómo se exponen las herramientas en el VFS: nivel de servidor (todas las herramientas por servidor) o nivel de herramientas (herramientas individuales).",
-		"externalClientUrlHelp": "Superar la URL de base pública de Bifrost cuando se ejecuta detrás de un proxy inverso.<b0>Deja en blanco para derivar la URL</b0>del encabezado<code1>Host</code1>entrante. Utilizado como el<code2>redirect_uri</code2>Bifrost se registra con los proveedores OAuth de corriente superior cuando actúa como cliente a un servidor MCP (por ejemplo,. Noción o Jira redirigir el navegador a<code3><URL>/api/oauth/callback</code3>después de iniciar sesión). Admite sintaxis env var (por ejemplo.<code4>env.BIFROST_EXTERNAL_ URL</code4>).",
+		"externalClientUrlHelp": "Superar la URL de base pública de Bifrost cuando se ejecuta detrás de un proxy inverso.<b0>Deja en blanco para derivar la URL</b0>del encabezado<code1>Host</code1>entrante. Utilizado como el<code2>redirect_uri</code2>Bifrost se registra con los proveedores OAuth de corriente superior cuando actúa como cliente a un servidor MCP (por ejemplo,. Noción o Jira redirigir el navegador a<code3><URL>/api/oauth/callback</code3>después de iniciar sesión). Admite sintaxis env var (por ejemplo.<code4>env.BIFROST_EXTERNAL_ URL</code4>). Detrás de un prefijo de URL (server.base_path), incluye el prefijo, por ejemplo https://host/bifrost.",
 		"externalClientUrlWarningHelp": "Los proveedores de OAuth de Upstream bloquean el<code0>redirect_uri</code0>a lo que se registró inicialmente, por lo que los clientes de MCP que ya han completado OAuth fallarán con<em1>\"Invalid redirect URI\"</em1>. Para recuperar, despejar las credenciales de clientes OAuth almacenadas para los servidores MCP afectados y volver a autorizar para que Bifrost vuelva a ejecutar Registro de cliente dinámico con la nueva URL.",
 		"authModeHelp": "Controla cómo los clientes de MCP entrante (por ejemplo. Código Claude, Cursor) autentica al punto final<code0>/mcp</code0>.<b1>headers</b1>(default) - VK / api-key / Sesion headers only, OAuth discovery disabled.<b2>ambos</b2>- acepta las credenciales de encabezado y los JWT de Bifrost; las integraciones existentes no son afectadas.<b3>oauth</b3>- JWT s solamente; VK y acceso de cabecera está deshabilitado.",
 		"issuerUrlHelp": "URL pública estable que se anuncia en los documentos de descubrimiento y se incluye como claim <code0>iss</code0> en cada JWT. Obligatoria en los modos OAuth y Ambos: Bifrost nunca deriva el emisor del encabezado <code1>Host</code1> de la solicitud, porque lo controla quien llama. Admite la sintaxis de variables de entorno (p. ej., <code2>env.BIFROST_ISSUER_URL</code2>).",
@@ -513,7 +513,7 @@
 		"scimHelp": "Use proxy para las solicitudes de sincronización del directorio SCIM.",
 		"scimEnterpriseOnly": "El soporte proxy SCIM está disponible en Bifrost Enterprise.",
 		"inference": "Inferencias",
-		"inferenceHelp": "Usa el proxy para las solicitudes de inferencia LLM a los proveedores de modelos. Un proveedor con su propia configuración de proxy la conserva.",
+		"inferenceHelp": "Usa el proxy para las solicitudes de inferencia LLM a los proveedores de modelos y para las llamadas de relay. Un proveedor o relay con su propia configuración de proxy la conserva.",
 		"comingSoon": "Pronto.",
 		"api": "API",
 		"apiHelp": "Usa el proxy para las llamadas API salientes: servidores MCP, OAuth, webhooks, descargas de plugins, sincronización del catálogo de modelos y exportación de OpenTelemetry.",
@@ -1207,7 +1207,7 @@
 		"toastSaved": "Los ajustes de Agent Gateway se actualizaron correctamente.",
 		"loadFailed": "No se pudieron cargar los ajustes de Agent Gateway.",
 		"externalClientUrl": "URL externa del cliente",
-		"externalClientUrlHelp": "URL base pública de Bifrost, usada para las agent cards publicadas y las URL de callback de notificaciones push. Si se deja en blanco, todos los endpoints del protocolo de agentes quedan deshabilitados. La administración de agentes sigue disponible. Admite la sintaxis de variables de entorno (p. ej., <code>env.BIFROST_EXTERNAL_URL</code>).",
+		"externalClientUrlHelp": "URL base pública de Bifrost, usada para las agent cards publicadas y las URL de callback de notificaciones push. Si se deja en blanco, todos los endpoints del protocolo de agentes quedan deshabilitados. La administración de agentes sigue disponible. Admite la sintaxis de variables de entorno (p. ej., <code>env.BIFROST_EXTERNAL_URL</code>). Detrás de un prefijo de URL (server.base_path), incluye el prefijo, por ejemplo https://host/bifrost.",
 		"privateAllowlist": "Lista de permitidos de red privada",
 		"privateAllowlistHelp": "Hosts, direcciones IP o rangos CIDR, sin esquema ni puerto, a los que pueden acceder el descubrimiento, OAuth y las solicitudes en ejecución de Agent Gateway cuando se resuelven a una dirección privada o de loopback. Las direcciones link-local y de metadatos de la nube siempre se bloquean.",
 		"privateAllowlistPlaceholder": "Agrega host, IP o CIDR (Enter o coma)",
@@ -1572,6 +1572,7 @@
 			"proxyCaCertInfo": "Un certificado de CA en formato PEM en el que confiar para las conexiones TLS a través de un proxy que intercepta SSL, o una referencia env. a él.",
 			"proxyCaCertPlaceholder": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE----- o env.PROXY_CA_CERT_PEM",
 			"removeConfig": "Quitar configuración",
+			"discardProxy": "Descartar cambios",
 			"saveProxy": "Guardar configuración del proxy"
 		},
 		"pricing": {
@@ -1596,6 +1597,6 @@
 		"loadFailed": "No se pudieron cargar los ajustes de skills.",
 		"retry": "Reintentar",
 		"externalClientUrl": "URL externa del cliente",
-		"externalClientUrlHelp": "URL base pública de Bifrost para los marketplaces de Claude Code y Codex. Déjala en blanco para deshabilitar la publicación y el registro del marketplace. La administración y las descargas de skills siguen disponibles. Admite referencias a variables de entorno y a vault."
+		"externalClientUrlHelp": "URL base pública de Bifrost para los marketplaces de Claude Code y Codex. Déjala en blanco para deshabilitar la publicación y el registro del marketplace. La administración y las descargas de skills siguen disponibles. Admite referencias a variables de entorno y a vault. Detrás de un prefijo de URL (server.base_path), incluye el prefijo, por ejemplo https://host/bifrost."
 	}
 }

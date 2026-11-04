@@ -20,6 +20,7 @@ import { useTranslation } from "react-i18next";
 import VirtualMCPAccessTab from "./virtualMcpAccessTab";
 import VirtualMCPGeneralTab, { slugify } from "./virtualMcpGeneralTab";
 import VirtualMcpToolsEditor from "./virtualMcpToolsEditor";
+import { withBasePath } from "@/lib/utils/basePath";
 
 const DOCS_URL = "https://docs.getbifrost.ai/mcp/connections";
 
@@ -240,7 +241,10 @@ function ReviewStep({ name, endpointSlug, description, enabled, tools, assignedV
 	const { copy, copied } = useCopyToClipboard({ successMessage: t("common.endpointCopied") });
 	const rows: { label: string; value: React.ReactNode }[] = [
 		{ label: t("common.name"), value: name.trim() || <span className="text-muted-foreground">—</span> },
-		{ label: t("registry.columns.endpoint"), value: <span className="font-mono text-sm">/mcp/{previewSlug || "—"}</span> },
+		{
+			label: t("registry.columns.endpoint"),
+			value: <span className="font-mono text-sm">{withBasePath(`/mcp/${previewSlug || "—"}`)}</span>,
+		},
 		{
 			label: t("library.add.descriptionLabel"),
 			value: description.trim() ? (
