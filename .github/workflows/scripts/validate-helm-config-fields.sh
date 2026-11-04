@@ -1787,6 +1787,7 @@ storage:
     statementTimeout: "60s"
     idleInTransactionSessionTimeout: "30s"
     objectStorageExcludeRequestTypes: ["list_models"]
+    captureClientIp: true
 postgresql:
   enabled: true
   auth:
@@ -1868,6 +1869,7 @@ assert_field_value 'config_store.config.idle_in_transaction_session_timeout ("0"
 assert_field_value 'logs_store.config.statement_timeout' '.logs_store.config.statement_timeout' '"60s"'
 assert_field_value 'logs_store.config.idle_in_transaction_session_timeout' '.logs_store.config.idle_in_transaction_session_timeout' '"30s"'
 assert_field_value 'logs_store.object_storage_exclude_request_types' '.logs_store.object_storage_exclude_request_types' '["list_models"]'
+assert_field_value 'logs_store.capture_client_ip' '.logs_store.capture_client_ip' 'true'
 assert_field_value 'providers.openai.ignore_provider_cost' '.providers.openai.ignore_provider_cost' 'true'
 assert_field_value 'client.compat.force_reasoning_only_models_to_responses' '.client.compat.force_reasoning_only_models_to_responses' 'false'
 assert_field_value 'client.delete_expired_virtual_keys' '.client.delete_expired_virtual_keys' 'true'
@@ -2022,6 +2024,70 @@ for case in 'useClientMetadataDocument "yes"|{"useClientMetadataDocument":"yes"}
     report_result "mcp.client_configs[].oauth_config $name is rejected" 0
   else
     report_result "mcp.client_configs[].oauth_config $name is rejected" 1
+    head -5 "$TMPDIR/render-err.txt" | sed 's/^/      /'
+  fi
+done
+
+###############################################################################
+# mcp.client_configs[].per_user_discovery renders when set and is absent when omitted. It is
+# refused without a per-user auth type and on openapi clients, and SSE/STDIO clients (and websocket,
+# which renders as sse) are refused
+# per-user auth types, which Bifrost would otherwise only skip at startup.
+###############################################################################
+echo ""
+echo -e "${CYAN}📋 MCP per-user discovery${NC}"
+
+cat > "$TMPDIR/values-mcp-pud.yaml" <<'VALS'
+bifrost:
+  encryptionKey: "test-encryption-key-1234567890ab"
+  mcp:
+    enabled: true
+    clientConfigs:
+      - name: "per-user"
+        connectionType: "http"
+        httpConfig:
+          url: "https://mcp.example.com/mcp"
+        authType: "per_user_oauth"
+        perUserDiscovery: true
+      - name: "shared"
+        connectionType: "http"
+        httpConfig:
+          url: "https://mcp.example.com/shared"
+        authType: "headers"
+VALS
+
+render_config "$TMPDIR/values-mcp-pud.yaml"
+assert_field_value 'mcp.client_configs[].per_user_discovery' '.mcp.client_configs.[0].per_user_discovery' 'true'
+absent=$(python3 -c "
+import json
+print('per_user_discovery' in json.load(open('$TMPDIR/config.json'))['mcp']['client_configs'][1])
+" 2>/dev/null)
+report_result "mcp.client_configs[].per_user_discovery omitted when unset" "$([ "$absent" = "False" ] && echo 0 || echo 1)"
+
+for case in \
+  'perUserDiscovery with headers auth|authType|{"name":"c","connectionType":"http","httpConfig":{"url":"https://mcp.example.com/mcp"},"authType":"headers","perUserDiscovery":true}' \
+  'perUserDiscovery on openapi|connectionType|{"name":"c","connectionType":"openapi","openapiConfig":{"specUrl":"https://api.example.com/openapi.json"},"authType":"per_user_headers","perUserHeaderKeys":["Authorization"],"perUserDiscovery":true}' \
+  'per_user_oauth on sse|authType|{"name":"c","connectionType":"sse","connectionString":"https://mcp.example.com/sse","authType":"per_user_oauth"}' \
+  'per_user_oauth on websocket (rendered as sse)|authType|{"name":"c","connectionType":"websocket","websocketConfig":{"url":"wss://mcp.example.com/ws"},"authType":"per_user_oauth"}' \
+  'per_user_headers on stdio|authType|{"name":"c","connectionType":"stdio","stdioConfig":{"command":"npx"},"authType":"per_user_headers","perUserHeaderKeys":["Authorization"]}'; do
+  # Each case is name|field the error must name|client JSON, so a fixture that fails for an
+  # unrelated reason (a missing URL, a typo) cannot pass as the rule under test.
+  name=${case%%|*}
+  rest=${case#*|}
+  expected=${rest%%|*}
+  client=${rest#*|}
+  if helm template bifrost "$CHART_DIR" --set image.tag=v1.0.0 \
+       --set bifrost.encryptionKey=test-encryption-key-1234567890ab \
+       --set bifrost.mcp.enabled=true \
+       --set-json "bifrost.mcp.clientConfigs=[${client}]" \
+       > "$TMPDIR/render-err.txt" 2>&1; then
+    report_result "mcp.client_configs[] $name is rejected" 1
+    echo -e "${YELLOW}    render succeeded; expected the chart to reject it${NC}"
+  elif grep -q -- "$expected" "$TMPDIR/render-err.txt"; then
+    report_result "mcp.client_configs[] $name is rejected" 0
+  else
+    report_result "mcp.client_configs[] $name is rejected" 1
+    echo -e "${YELLOW}    rejected for another reason; expected an error naming $expected:${NC}"
     head -5 "$TMPDIR/render-err.txt" | sed 's/^/      /'
   fi
 done

@@ -222,6 +222,7 @@ func (c *customPricingData) resolve(model, mode string, scopes LookupScopes) *Op
 // so callers that need the override's identity (not just its patch) can
 // recover it without duplicating the precedence walk.
 func (c *customPricingData) resolveEntry(model, mode string, scopes LookupScopes) *customPricingEntry {
+	model = strings.ToLower(model) // patterns are stored lowercased by buildCustomPricingData
 	for _, scopeKind := range scopePriorityOrder(scopes) {
 		for i := range c.exact[model] {
 			e := &c.exact[model][i]
@@ -303,7 +304,8 @@ func buildCustomPricingData(overrides []Override) *customPricingData {
 		for _, rt := range o.RequestTypes {
 			entry.requestModes[normalizeRequestType(rt)] = struct{}{}
 		}
-		pattern := strings.TrimSpace(o.Pattern)
+		// Lowercased so a pattern matches the model name in any casing.
+		pattern := strings.ToLower(strings.TrimSpace(o.Pattern))
 		switch o.MatchType {
 		case MatchTypeExact:
 			entry.pattern = pattern
@@ -427,6 +429,7 @@ func (s *Store) CatalogPricingOverrides(model string, provider schemas.ModelProv
 		out.AppliedPatch = &patch
 	}
 
+	model = strings.ToLower(model)
 	matched := make(map[string]struct{})
 	collect := func(entries []customPricingEntry) {
 		for i := range entries {

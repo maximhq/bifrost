@@ -320,18 +320,19 @@ func TestHandleAuthorize_ClientIDMetadataDocument(t *testing.T) {
 }
 
 // TestHandleToken_RefreshAsAMetadataDocumentClient pins that a client identified by a Client ID
-// Metadata Document refreshes by the grant types its document lists, as a registered client does by
-// the ones it registered. Such a client is never in the store, so a store-only lookup refused every
-// one of its refreshes.
+// Metadata Document refreshes the grant it was issued whatever grant types its document lists, and
+// without its document being fetched again: a refresh needs only the refresh token and the client_id
+// it was issued to, so a document that has since gone away does not end the grant.
 func TestHandleToken_RefreshAsAMetadataDocumentClient(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		grantTypes any
-		wantStatus int
+		gone       bool
 	}{
-		{name: "document lists refresh_token", grantTypes: []string{"authorization_code", "refresh_token"}, wantStatus: fasthttp.StatusOK},
-		{name: "document also lists a grant this server does not offer", grantTypes: []string{"authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:jwt-bearer"}, wantStatus: fasthttp.StatusOK},
-		{name: "document omits grant_types", grantTypes: nil, wantStatus: fasthttp.StatusBadRequest},
+		{name: "document lists refresh_token", grantTypes: []string{"authorization_code", "refresh_token"}},
+		{name: "document also lists a grant this server does not offer", grantTypes: []string{"authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:jwt-bearer"}},
+		{name: "document omits grant_types", grantTypes: nil},
+		{name: "document is no longer served", grantTypes: []string{"authorization_code", "refresh_token"}, gone: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, store, _ := newIssuanceHandler(t)
@@ -347,14 +348,16 @@ func TestHandleToken_RefreshAsAMetadataDocumentClient(t *testing.T) {
 				BfMode: "vk", BfSub: "vk-1", Scope: "mcp", Resource: testMCPResource, CreatedAt: time.Now(),
 			}))
 
+			if tc.gone {
+				delete(host.docs, "/client.json")
+			}
+
 			ctx := formPostCtx(url.Values{
 				"grant_type": {"refresh_token"}, "refresh_token": {"refresh-vk-1"}, "client_id": {clientID},
 			}.Encode())
 			h.handleToken(ctx)
-			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), string(ctx.Response.Body()))
-			if tc.wantStatus == fasthttp.StatusBadRequest {
-				assert.Contains(t, string(ctx.Response.Body()), "client is not registered for the refresh_token grant")
-			}
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			assert.Zero(t, host.fetches.Load(), "a refresh does not fetch the client's document")
 		})
 	}
 }
