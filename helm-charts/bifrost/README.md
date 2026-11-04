@@ -1429,7 +1429,7 @@ serviceMonitor:
 
 The Secret must exist in the `ServiceMonitor`'s namespace. Auth-config Secret inheritance is available only when the `ServiceMonitor` uses the Helm release namespace; if you set `serviceMonitor.namespace` to another namespace, set `serviceMonitor.basicAuth.existingSecret` explicitly to a Secret there. If `basicAuth.enabled` is true and no Secret can be resolved, the render fails rather than producing a `ServiceMonitor` that would quietly scrape 401s.
 
-To authenticate with a bearer token instead, use `serviceMonitor.authorization` (mutually exclusive with `basicAuth`), with `credentials` pointing at the Secret that holds the token; the render fails without them. To leave `/metrics` open instead of authenticating the scrape, add it to `bifrost.client.whitelistedRoutes` — note that this exposes metrics to anyone who can reach the pod.
+To authenticate with a bearer token instead, use `serviceMonitor.authorization` (mutually exclusive with `basicAuth`), with `credentials` pointing at the Secret that holds the token; the render fails without them. Bifrost accepts a session token or a base64-encoded `username:password` as the bearer token. Session tokens expire, so a static Secret holding one needs rotating, or scrapes start returning `401`; `basicAuth` has no such expiry. To leave `/metrics` open instead of authenticating the scrape, add it to `bifrost.client.whitelistedRoutes` — note that this exposes metrics to anyone who can reach the pod.
 
 For OpenTelemetry integration:
 
