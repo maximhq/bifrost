@@ -627,11 +627,12 @@ func (s *Store) calculateContainerSessionCost(usage *schemas.BifrostLLMUsage, ro
 	return total
 }
 
+// routesToAzureModelRouter reads the alias's wire model when one resolved, since the alias name says nothing about the deployment.
 func routesToAzureModelRouter(routingInfo schemas.RoutingInfo) bool {
-	if schemas.IsAzureModelRouter(routingInfo.Model) {
-		return true
+	if rka := routingInfo.ResolvedKeyAlias; rka != nil && rka.ModelID != "" {
+		return schemas.IsAzureModelRouter(rka.ModelID)
 	}
-	return routingInfo.ResolvedKeyAlias != nil && schemas.IsAzureModelRouter(routingInfo.ResolvedKeyAlias.ModelID)
+	return schemas.IsAzureModelRouter(routingInfo.Model)
 }
 
 func routesToClaude(routingInfo schemas.RoutingInfo) bool {

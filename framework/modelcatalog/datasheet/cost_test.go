@@ -7835,7 +7835,7 @@ func TestCalculateCost_ContainerSessions_AzureModelRouterUsesServedModel(t *test
 		{"openai model bills at azure's rate", "model-router", "", "gpt-6.1-sol", 0.033},
 		{"unknown served model bills at azure's rate", "model-router", "", "", 0.033},
 		{"aliased router serving claude bills at anthropic's rate", "router-prod", "model-router", "claude-sonnet-5-5", 0.05 * 5 / 60},
-		{"served model outranks a claude alias", "model-router", "claude-sonnet-5-5", "gpt-6.1-sol", 0.033},
+		{"alias resolving to claude bills at anthropic's rate", "model-router", "claude-sonnet-5-5", "gpt-6.1-sol", 0.05 * 5 / 60},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

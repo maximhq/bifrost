@@ -248,3 +248,23 @@ func TestCalculateCost_AzureModelRouter_BehindKeyAlias(t *testing.T) {
 		})
 	}
 }
+
+// An alias named like the router can still resolve to an ordinary model, which must bill once.
+func TestCalculateCost_AzureModelRouter_RouterNamedAliasOfOrdinaryModel(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("model-router", "azure", "chat"): azureModelRouterPricing(),
+		makeKey("gpt-4.1-mini", "azure", "chat"): {
+			Model: "gpt-4.1-mini", Provider: "azure", Mode: "chat",
+			InputCostPerToken:  new(0.0000004),
+			OutputCostPerToken: new(0.0000016),
+		},
+	})
+	resp := makeChatResponse(schemas.Azure, "model-router-prod", &schemas.BifrostLLMUsage{
+		PromptTokens:     10000,
+		CompletionTokens: 2000,
+		TotalTokens:      12000,
+	})
+	resp.ChatResponse.Model = "gpt-4.1-mini"
+	resp.ChatResponse.ExtraFields.RoutingInfo.ResolvedKeyAlias = &schemas.ResolvedKeyAlias{ModelID: "gpt-4.1-mini"}
+	assert.InDelta(t, 10000*0.0000004+2000*0.0000016, s.CalculateCost(resp, nil), 1e-12)
+}
