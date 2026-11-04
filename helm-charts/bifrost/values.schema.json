@@ -6207,10 +6207,15 @@
             },
             "objectStorageExcludeRequestTypes": {
               "type": "array",
-              "description": "Request types (log object type, e.g. list_models, embedding) whose logs are not offloaded to object storage and are written to the logs database in full instead. Hidden logs are still offloaded. Maps to logs_store.object_storage_exclude_request_types.",
+              "description": "Request types (log object type, e.g. list_models, embedding; relay for Relay Logs rows) whose logs are not offloaded to object storage and are written to the logs database in full instead. Hidden logs are still offloaded. Maps to logs_store.object_storage_exclude_request_types.",
               "items": {
                 "type": "string"
               }
+            },
+            "captureClientIp": {
+              "type": "boolean",
+              "default": false,
+              "description": "Record the caller's IP as client_ip on LLM, MCP and relay logs: leftmost X-Forwarded-For, else X-Real-IP, else the TCP peer. The headers are caller-supplied and not verified, so run behind a proxy that overwrites them. Off by default; turning it off does not clear values already recorded. Takes effect on restart. Maps to logs_store.capture_client_ip."
             },
             "objectStorage": {
               "type": "object",
@@ -9419,6 +9424,11 @@
           "type": "boolean",
           "description": "Only meaningful for connectionType 'http': true keeps one persistent connection reused across every caller; false (the default for new clients) connects fresh per call. SSE and STDIO always behave as sticky regardless. Renders into needs_session_stickiness."
         },
+        "perUserDiscovery": {
+          "type": "boolean",
+          "default": false,
+          "description": "Only valid for per-user auth types (per_user_oauth, per_user_headers, token_exchange), and not for openapi clients: when true, each caller's tools, prompts, resources and server instructions are discovered with that caller's own credential, and the client stores no admin credential. When false, every caller is served the discovery made with the admin credential. Renders into per_user_discovery."
+        },
         "toolPricing": {
           "type": "object",
           "description": "Tool pricing map (tool name to cost per execution)",
@@ -9561,6 +9571,48 @@
             "properties": {
               "perUserHeaderKeys": {
                 "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "$comment": "Per-user auth types open a connection per call, which SSE and STDIO cannot serve. websocket renders as sse.",
+          "if": {
+            "properties": {
+              "connectionType": {
+                "enum": ["sse", "stdio", "websocket"]
+              }
+            },
+            "required": ["connectionType"]
+          },
+          "then": {
+            "properties": {
+              "authType": {
+                "enum": ["none", "headers", "oauth"]
+              }
+            }
+          }
+        },
+        {
+          "$comment": "perUserDiscovery needs a per-user auth type, and openapi clients take their tools from the document.",
+          "if": {
+            "properties": {
+              "perUserDiscovery": {
+                "const": true
+              }
+            },
+            "required": ["perUserDiscovery"]
+          },
+          "then": {
+            "required": ["authType"],
+            "properties": {
+              "authType": {
+                "enum": ["per_user_oauth", "per_user_headers", "token_exchange"]
+              },
+              "connectionType": {
+                "not": {
+                  "const": "openapi"
+                }
               }
             }
           }
