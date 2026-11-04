@@ -1176,11 +1176,9 @@
 		},
 		"access": {
 			"createFirst": "Erstelle zuerst diesen virtuellen MCP und weise ihn dann hier virtuellen Schlüsseln zu.",
-			"loadFailed": "Virtuelle Schlüssel konnten nicht geladen werden.",
 			"virtualKeys": "Virtuelle Schlüssel",
 			"virtualKeysHelp": "Hier zugewiesene Schlüssel können dieses Virtual MCP an seinem Endpunkt erreichen.",
 			"assign": "Virtuellen Schlüssel zuweisen",
-			"loading": "Virtuelle Schlüssel werden geladen…",
 			"empty": "Noch keine virtuellen Schlüssel zugewiesen. Weise einen zu, damit Aufrufer dieses Virtual MCP erreichen können.",
 			"unassignAria": "Virtuellen Schlüssel entfernen",
 			"ownerLookupFailed": "Der Inhaber von „{{name}}“ konnte nicht ermittelt werden; die Zuweisung wurde daher nicht vorgenommen. Versuche es erneut.",

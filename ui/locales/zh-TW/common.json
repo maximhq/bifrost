@@ -220,6 +220,8 @@
 		"bufferSizeMustBeLessThanOrEqualTo1000": "緩衝區大小必須小於或等於 1000",
 		"proxyUrlIsRequiredWhenUsingHttpOrSocks5Proxy": "使用 HTTP 或 SOCKS5 代理時，代理 URL 為必填項",
 		"mustBeAValidUrlEGHttpProxyExample": "必須是有效的 URL（例如 http://proxy.example.com:8080）",
+		"socks5ProxyUrlMustStartWithSocks5Scheme": "SOCKS5 代理 URL 必須以 socks5:// 或 socks5h:// 開頭",
+		"httpProxyUrlMustStartWithHttpScheme": "HTTP 代理 URL 必須以 http:// 或 https:// 開頭",
 		"setARoleAnIndexOrBothAPointWith": "請設定角色、索引或兩者皆設定，兩者都沒有的點不會匹配任何內容",
 		"use164LettersDigitsOr": "請使用 1-64 個字母、數字、_ 或 -",
 		"pickAnMcpServer": "請選擇 MCP 伺服器",

@@ -38,25 +38,19 @@ function ownershipSettled(vk: Parameters<typeof virtualKeyOwner>[0]): boolean {
 }
 
 /**
- * Decides what picking a key leads to. A key the tab already listed is answered from that when it
- * says who it belongs to; otherwise (past the listed page, or listed with its assignee unresolved) it
- * is read with fetchKey. A failed read, or one that still leaves the owner unknown, is reported as
- * such rather than read as an unowned key, since that would assign another entity's key without the
- * confirmation.
+ * Decides what picking a key leads to. The key is read with fetchKey, since the picker's own row can
+ * name an owner it no longer has. A failed read, or one that still leaves the owner unknown, is
+ * reported as such rather than read as an unowned key, since that would assign another entity's key
+ * without the confirmation.
  */
-export async function resolvePickedVirtualKey(
-	listed: Parameters<typeof virtualKeyOwner>[0],
-	fetchKey: () => Promise<Parameters<typeof virtualKeyOwner>[0]>,
-): Promise<PickedVirtualKey> {
-	let vk = listed;
-	if (!ownershipSettled(vk)) {
-		try {
-			vk = await fetchKey();
-		} catch {
-			return { outcome: "lookupFailed" };
-		}
-		if (!ownershipSettled(vk)) return { outcome: "lookupFailed" };
+export async function resolvePickedVirtualKey(fetchKey: () => Promise<Parameters<typeof virtualKeyOwner>[0]>): Promise<PickedVirtualKey> {
+	let vk: Parameters<typeof virtualKeyOwner>[0];
+	try {
+		vk = await fetchKey();
+	} catch {
+		return { outcome: "lookupFailed" };
 	}
+	if (!ownershipSettled(vk)) return { outcome: "lookupFailed" };
 	const owner = virtualKeyOwner(vk);
 	return owner ? { outcome: "owned", owner } : { outcome: "unowned" };
 }

@@ -1238,7 +1238,15 @@
 			"editConfigAria": "Edit relay configuration",
 			"viewConfigAria": "View relay configuration",
 			"testSheetTitle": "Test pricing",
-			"testSheetDescription": "Runs a sample call through the saved routes and pricing of {{name}}. Nothing is sent upstream."
+			"testSheetDescription": "Runs a sample call through the saved routes and pricing of {{name}}. Nothing is sent upstream.",
+			"gatewayPath": "Gateway path",
+			"upstream": "Upstream",
+			"auth": "Authentication",
+			"pricing": "Default pricing",
+			"anyPath": "Any path",
+			"moreActionsAria": "More relay actions",
+			"deleteRelay": "Delete relay",
+			"copyPathAria": "Copy gateway path"
 		},
 		"deleteDialog": {
 			"title": "Delete Relay",
@@ -1266,6 +1274,7 @@
 			"title": "Routes",
 			"importOpenapi": "Import OpenAPI",
 			"addRoute": "Add Route",
+			"description": "A request uses the first route that matches it; more specific routes are listed first.",
 			"columns": {
 				"method": "Method",
 				"route": "Route",
