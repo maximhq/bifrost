@@ -304260,6 +304260,158 @@
           }
         }
       ]
+    },
+    {
+      "name": "307. Anthropic web search query replay",
+      "description": "Pin streamed server_tool_use input reconstruction before content_block_stop on normalized and Claude Code routes. Empty input loses the query when clients replay the conversation.",
+      "item": [
+        {
+          "name": "Anthropic claude-sonnet-4-6 web search query replay - normalized",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('web search replay retains query before block stop', function () {",
+                  "  var raw = pm.response.text();",
+                  "  pm.expect(pm.response.code, raw).to.equal(200);",
+                  "  var blocks = {}, count = 0;",
+                  "  raw.split(/\\r?\\n/).forEach(function (line) {",
+                  "    if (line.indexOf('data: ') !== 0) return;",
+                  "    var e = JSON.parse(line.slice(6));",
+                  "    if (e.type === 'content_block_start' && e.content_block.type === 'server_tool_use' && e.content_block.name === 'web_search') {",
+                  "      var input = e.content_block.input || {};",
+                  "      blocks[e.index] = input.query === undefined ? '' : JSON.stringify(input);",
+                  "    }",
+                  "    if (!Object.prototype.hasOwnProperty.call(blocks, e.index)) return;",
+                  "    if (e.type === 'content_block_delta' && e.delta.type === 'input_json_delta') blocks[e.index] += e.delta.partial_json;",
+                  "    if (e.type === 'content_block_stop') {",
+                  "      var replay = JSON.parse(blocks[e.index]);",
+                  "      pm.expect(replay.query, raw).to.be.a('string').and.not.empty;",
+                  "      delete blocks[e.index];",
+                  "      count++;",
+                  "    }",
+                  "  });",
+                  "  pm.expect(count, 'No completed web_search call: ' + raw).to.be.above(0);",
+                  "  pm.expect(Object.keys(blocks), 'Unclosed search blocks').to.have.lengthOf(0);",
+                  "  pm.expect(raw).to.include('message_stop');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "bifrost-regression"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"claude-sonnet-4-6\", \"max_tokens\": 512, \"messages\": [{\"role\": \"user\", \"content\": \"Search the web for the current BBC top headline. Use web_search once and answer in one sentence.\"}], \"tools\": [{\"type\": \"web_search_20250305\", \"name\": \"web_search\", \"max_uses\": 1}], \"stream\": true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic claude-sonnet-4-6 web search query replay - Claude Code",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('web search replay retains query before block stop', function () {",
+                  "  var raw = pm.response.text();",
+                  "  pm.expect(pm.response.code, raw).to.equal(200);",
+                  "  var blocks = {}, count = 0;",
+                  "  raw.split(/\\r?\\n/).forEach(function (line) {",
+                  "    if (line.indexOf('data: ') !== 0) return;",
+                  "    var e = JSON.parse(line.slice(6));",
+                  "    if (e.type === 'content_block_start' && e.content_block.type === 'server_tool_use' && e.content_block.name === 'web_search') {",
+                  "      var input = e.content_block.input || {};",
+                  "      blocks[e.index] = input.query === undefined ? '' : JSON.stringify(input);",
+                  "    }",
+                  "    if (!Object.prototype.hasOwnProperty.call(blocks, e.index)) return;",
+                  "    if (e.type === 'content_block_delta' && e.delta.type === 'input_json_delta') blocks[e.index] += e.delta.partial_json;",
+                  "    if (e.type === 'content_block_stop') {",
+                  "      var replay = JSON.parse(blocks[e.index]);",
+                  "      pm.expect(replay.query, raw).to.be.a('string').and.not.empty;",
+                  "      delete blocks[e.index];",
+                  "      count++;",
+                  "    }",
+                  "  });",
+                  "  pm.expect(count, 'No completed web_search call: ' + raw).to.be.above(0);",
+                  "  pm.expect(Object.keys(blocks), 'Unclosed search blocks').to.have.lengthOf(0);",
+                  "  pm.expect(raw).to.include('message_stop');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/1.0"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"claude-sonnet-4-6\", \"max_tokens\": 512, \"messages\": [{\"role\": \"user\", \"content\": \"Search the web for the current BBC top headline. Use web_search once and answer in one sentence.\"}], \"tools\": [{\"type\": \"web_search_20250305\", \"name\": \"web_search\", \"max_uses\": 1}], \"stream\": true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
