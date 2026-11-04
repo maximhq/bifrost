@@ -60,7 +60,8 @@ func runResp(t *testing.T, msgs []schemas.ResponsesMessage, s settings) []schema
 	t.Helper()
 	before, err := json.Marshal(msgs)
 	require.NoError(t, err)
-	out := compressResponses(msgs, s)
+	out, st := compressResponses(msgs, s)
+	require.Equal(t, st.Changed, len(out) > 0 && &out[0] != &msgs[0], "Changed must match slice aliasing")
 	after, err := json.Marshal(msgs)
 	require.NoError(t, err)
 	require.Equal(t, string(before), string(after), "input mutated")
@@ -137,7 +138,7 @@ func TestResponsesDedupe(t *testing.T) {
 	same := bigOutput(200)
 	msgs := respRounds(same, same, "tail")
 	s := defaults(t)
-	s.MinAgeTurns = 99 // isolate dedupe from trimming
+	s.MinAgeTurns, s.MinTokens = 1, 1<<30 // isolate dedupe from trimming
 	out := runResp(t, msgs, s)
 	require.Equal(t, "[identical to the output of call call_2]", rmOutStr(out[3]))
 	require.Equal(t, same, rmOutStr(out[5]))
@@ -146,7 +147,7 @@ func TestResponsesDedupe(t *testing.T) {
 
 func TestResponsesDedupeBlocksAndMixed(t *testing.T) {
 	s := defaults(t)
-	s.MinAgeTurns = 99
+	s.MinAgeTurns, s.MinTokens = 1, 1<<30 // isolate dedupe from trimming
 	txt := bigOutput(100)
 	img := schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesInputMessageContentBlockTypeImage}
 	msgs := []schemas.ResponsesMessage{
@@ -165,7 +166,7 @@ func TestResponsesDedupeBlocksAndMixed(t *testing.T) {
 
 func TestResponsesDedupeNilCallIDSkipped(t *testing.T) {
 	s := defaults(t)
-	s.MinAgeTurns = 99
+	s.MinAgeTurns, s.MinTokens = 1, 1<<30 // isolate dedupe from trimming
 	same := bigOutput(100)
 	newest := rmOut("x", same)
 	newest.ResponsesToolMessage.CallID = nil
@@ -267,7 +268,7 @@ func TestResponsesWhitespaceOnlyOldToolOutputs(t *testing.T) {
 func TestResponsesDedupeChainsToNextCopy(t *testing.T) {
 	same := bigOutput(200)
 	s := defaults(t)
-	s.MinAgeTurns = 99
+	s.MinAgeTurns, s.MinTokens = 1, 1<<30 // isolate dedupe from trimming
 	three := runResp(t, respRounds(same, same, same), s)
 	require.Equal(t, "[identical to the output of call call_2]", rmOutStr(three[3]))
 	require.Equal(t, "[identical to the output of call call_3]", rmOutStr(three[5]))
@@ -357,4 +358,177 @@ func respCallID(m schemas.ResponsesMessage) *string {
 		return nil
 	}
 	return m.ResponsesToolMessage.CallID
+}
+
+// rmItem builds a bare item of the given type (reasoning, web_search_call,
+// shell_call, local_shell_call_output, ...) with no role and no content.
+func rmItem(typ schemas.ResponsesMessageType) schemas.ResponsesMessage {
+	return schemas.ResponsesMessage{Type: rmType(typ)}
+}
+
+// A turn made only of server-tool items still counts, and a run of them is one
+// turn: the output the model saw once must not look two turns old.
+func TestResponsesServerToolItemsCountAsOneTurn(t *testing.T) {
+	big := bigOutput(200)
+	msgs := []schemas.ResponsesMessage{
+		rmText(schemas.ResponsesInputMessageRoleSystem, "sys"),
+		rmText(schemas.ResponsesInputMessageRoleUser, "go"),
+		rmItem(schemas.ResponsesMessageTypeReasoning),
+		rmItem(schemas.ResponsesMessageTypeWebSearchCall),
+		rmCall("1"),
+		rmOut("1", big),
+		rmItem(schemas.ResponsesMessageTypeMCPCall),
+		rmText(schemas.ResponsesInputMessageRoleAssistant, "done"),
+	}
+	s := defaults(t) // MinAgeTurns 2; the output has age 1
+	out := runResp(t, msgs, s)
+	require.Equal(t, big, rmOutStr(out[5]), "age 1 untouched")
+	s.MinAgeTurns = 1
+	out = runResp(t, msgs, s)
+	require.Contains(t, rmOutStr(out[5]), "tokens trimmed", "age 1 reaches MinAgeTurns 1")
+}
+
+// A turn that is only an mcp_call, split by a user message, is still a turn.
+func TestResponsesServerToolOnlyTurnsAdvanceAge(t *testing.T) {
+	msgs := []schemas.ResponsesMessage{
+		rmText(schemas.ResponsesInputMessageRoleSystem, "sys"),
+		rmCall("1"), rmOut("1", bigOutput(200)),
+		rmItem(schemas.ResponsesMessageTypeMCPCall),
+		rmText(schemas.ResponsesInputMessageRoleUser, "more"),
+		rmItem(schemas.ResponsesMessageTypeWebSearchCall),
+	}
+	out := runResp(t, msgs, defaults(t))
+	require.Contains(t, rmOutStr(out[2]), "tokens trimmed", "two server-tool turns: age 2")
+}
+
+func TestResponsesShellCallAdvancesAge(t *testing.T) {
+	msgs := []schemas.ResponsesMessage{
+		rmText(schemas.ResponsesInputMessageRoleSystem, "sys"),
+		rmCall("1"), rmOut("1", bigOutput(200)),
+		rmItem(schemas.ResponsesMessageTypeShellCall), rmItem(schemas.ResponsesMessageTypeLocalShellCallOutput),
+		rmItem(schemas.ResponsesMessageTypeShellCall), rmItem(schemas.ResponsesMessageTypeLocalShellCallOutput),
+	}
+	out := runResp(t, msgs, defaults(t))
+	require.Contains(t, rmOutStr(out[2]), "tokens trimmed", "age 2 via shell_call turns")
+}
+
+// Tool outputs of any type are not assistant items: they neither start nor
+// extend a turn, so a call whose outputs follow it is one turn.
+func TestResponsesOutputsAreNotAssistantItems(t *testing.T) {
+	big := bigOutput(200)
+	msgs := []schemas.ResponsesMessage{
+		rmText(schemas.ResponsesInputMessageRoleSystem, "sys"),
+		rmCall("1"), rmOut("1", big),
+		rmItem(schemas.ResponsesMessageTypeCustomToolCallOutput),
+		rmItem(schemas.ResponsesMessageTypeComputerCallOutput),
+		rmItem(schemas.ResponsesMessageType("mcp_call_output")),
+		rmItem(schemas.ResponsesMessageType("future_tool_output")),
+	}
+	out := runResp(t, msgs, defaults(t))
+	require.Equal(t, big, rmOutStr(out[2]), "no assistant turn after the output")
+}
+
+func TestResponsesDedupeOnlyEligibleOlderCopy(t *testing.T) {
+	file := bigOutput(50)
+	s := defaults(t)
+	s.MinAgeTurns = 2
+	young := runResp(t, respRounds(file, file), s) // ages 1 and 0
+	require.Equal(t, file, rmOutStr(young[3]))
+	require.Equal(t, file, rmOutStr(young[5]))
+	old := runResp(t, respRounds(file, file, "x", "y"), s) // ages 3 and 2, both eligible
+	require.Equal(t, "[identical to the output of call call_2]", rmOutStr(old[3]))
+	require.NotContains(t, rmOutStr(old[5]), "identical to the output", "newest copy has no newer duplicate")
+}
+
+func TestResponsesLateDuplicateDoesNotRewriteEligibleOutput(t *testing.T) {
+	big := bigOutput(200)
+	s := defaults(t)
+	reqN := respRounds(big, "x", "y") // item 3 has age 2 and is trimmed
+	outN := runResp(t, reqN, s)
+	require.Contains(t, rmOutStr(outN[3]), "tokens trimmed")
+	reqN1 := append(append([]schemas.ResponsesMessage{}, reqN...), rmCall("call_9"), rmOut("call_10", big))
+	outN1 := runResp(t, reqN1, s)
+	require.Equal(t, rmOutStr(outN[3]), rmOutStr(outN1[3]), "late duplicate must not turn trimmed text into a stub")
+	require.Equal(t, big, rmOutStr(outN1[9]))
+}
+
+func TestResponsesDuplicatePresentAtEligibilityIsStubbed(t *testing.T) {
+	file := bigOutput(50)
+	s := defaults(t)
+	const want = "[identical to the output of call call_2]"
+	req := respRounds(file, file, "x") // item 3 reaches age 2 with its duplicate present
+	for k, extra := range []string{"", "y", "z"} {
+		if extra != "" {
+			id := fmt.Sprintf("call_%d", (len(req)-2)/2+1)
+			req = append(append([]schemas.ResponsesMessage{}, req...), rmCall(id), rmOut(id, extra))
+		}
+		out := runResp(t, req, s)
+		require.Equal(t, want, rmOutStr(out[3]), "request %d", k+1)
+	}
+}
+
+func TestResponsesDedupePointerAdvancesOverIneligibleCopies(t *testing.T) {
+	file := bigOutput(50)
+	s := defaults(t)
+	s.MinAgeTurns = 2
+	out := runResp(t, respRounds(file, "x", file, file), s) // ages 3,2,1,0
+	require.Equal(t, "[identical to the output of call call_3]", rmOutStr(out[3]), "points at the next copy, not the newest")
+}
+
+func TestResponsesStatsCountsUnchangedEligibleOutputs(t *testing.T) {
+	big := bigOutput(200)
+	blocks := rmOutBlocks("b", rmBlock(schemas.ResponsesInputMessageContentBlockTypeText, "blk text"))
+	msgs := []schemas.ResponsesMessage{
+		rmText(schemas.ResponsesInputMessageRoleSystem, "sys"),
+		rmCall("1"), rmOut("1", "small1"),
+		rmCall("2"), rmOut("2", big),
+		rmCall("b"), blocks,
+		rmCall("3"), rmOut("3", "x"),
+		rmCall("4"), rmOut("4", "y"),
+	}
+	out, st := compressResponses(msgs, defaults(t))
+	require.True(t, st.Changed)
+	require.Equal(t, estimateTokens("small1")+estimateTokens(big)+estimateTokens("blk text"), st.EligibleBefore)
+	require.Equal(t, estimateTokens("small1")+estimateTokens(rmOutStr(out[4]))+estimateTokens("blk text"), st.EligibleAfter)
+}
+
+func TestResponsesNoopEligibleSmallOutput(t *testing.T) {
+	msgs := respRounds("small clean output", "x", "y")
+	s := defaults(t)
+	out, st := compressResponses(msgs, s)
+	require.Equal(t, &msgs[0], &out[0], "same backing array")
+	require.False(t, st.Changed)
+	require.Equal(t, estimateTokens("small clean output"), st.EligibleBefore)
+	require.Equal(t, st.EligibleBefore, st.EligibleAfter)
+	require.Zero(t, testing.AllocsPerRun(100, func() { compressResponses(msgs, s) }))
+}
+
+func TestResponsesNoopReturnsSameSliceNoAllocs(t *testing.T) {
+	msgs := []schemas.ResponsesMessage{
+		rmText(schemas.ResponsesInputMessageRoleSystem, "sys"),
+		rmText(schemas.ResponsesInputMessageRoleUser, "go"),
+		rmText(schemas.ResponsesInputMessageRoleAssistant, "ok"),
+	}
+	s := defaults(t)
+	out, st := compressResponses(msgs, s)
+	require.Equal(t, &msgs[0], &out[0])
+	require.False(t, st.Changed)
+	require.Zero(t, st.EligibleBefore)
+	require.Zero(t, testing.AllocsPerRun(100, func() { compressResponses(msgs, s) }))
+}
+
+// Only function_call_output is rewritten; other output types keep their text
+// even when old and large.
+func TestResponsesOtherOutputTypesNeverEdited(t *testing.T) {
+	big := bigOutput(200)
+	shell := rmOut("s", big)
+	shell.Type = rmType(schemas.ResponsesMessageTypeLocalShellCallOutput)
+	msgs := []schemas.ResponsesMessage{
+		rmText(schemas.ResponsesInputMessageRoleSystem, "sys"),
+		rmCall("1"), shell, rmCall("2"), rmCall("3"),
+	}
+	out, st := compressResponses(msgs, defaults(t))
+	require.Equal(t, &msgs[0], &out[0])
+	require.False(t, st.Changed)
+	require.Zero(t, st.EligibleBefore)
 }

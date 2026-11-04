@@ -124,7 +124,7 @@ func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostReq
 		if before == 0 {
 			return req, nil, nil
 		}
-		compressed := compressResponsesFn(rr.Input, p.s)
+		compressed, _ := compressResponsesFn(rr.Input, p.s)
 		after = estimateResponses(compressed)
 		rc2 := *rr
 		rc2.Input = compressed

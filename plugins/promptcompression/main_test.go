@@ -205,7 +205,7 @@ func TestPreLLMHookFailOpenResponses(t *testing.T) {
 	p, lg := newHookPlugin(t)
 	orig := compressResponsesFn
 	t.Cleanup(func() { compressResponsesFn = orig })
-	compressResponsesFn = func([]schemas.ResponsesMessage, settings) []schemas.ResponsesMessage { panic("boom") }
+	compressResponsesFn = func([]schemas.ResponsesMessage, settings) ([]schemas.ResponsesMessage, stats) { panic("boom") }
 
 	req := bigRespReq(schemas.ResponsesRequest)
 	out, _, err := p.PreLLMHook(hookCtx(), req)
@@ -469,7 +469,7 @@ func TestFixtureResponsesSavings(t *testing.T) {
 	inBefore, err := json.Marshal(msgs)
 	require.NoError(t, err)
 
-	out := compressResponses(msgs, s)
+	out, _ := compressResponses(msgs, s)
 
 	inAfter, err := json.Marshal(msgs)
 	require.NoError(t, err)
@@ -547,7 +547,7 @@ func TestFixturePerTurnEstimates(t *testing.T) {
 	var respRows []turnRow
 	for k, end := range responsesTurnBounds(resp) {
 		prefix := resp[:end]
-		out := compressResponses(prefix, s)
+		out, _ := compressResponses(prefix, s)
 		require.Len(t, out, len(prefix), "responses turn %d: item count changed", k+1)
 		r := turnRow{k + 1, len(prefix), estimateResponses(prefix), estimateResponses(out)}
 		require.LessOrEqual(t, r.after, r.before, "responses turn %d", k+1)
