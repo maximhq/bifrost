@@ -921,6 +921,7 @@ func (s *ClickHouseLogStore) UpdateAgentLog(ctx context.Context, id string, entr
 
 // UpdateRelayLog applies an update to a Relay Logs row via read-modify-write.
 func (s *ClickHouseLogStore) UpdateRelayLog(ctx context.Context, id string, updates map[string]any) error {
+	_, _, updates = takeRelayRetainedUpdates(updates)
 	st, err := chParseSchema(s.db, &RelayLog{})
 	if err != nil {
 		return err
@@ -1229,6 +1230,14 @@ func (s *ClickHouseLogStore) FlushMCPToolLogs(ctx context.Context, since time.Ti
 func (s *ClickHouseLogStore) FlushAgentLogs(ctx context.Context, since time.Time) error {
 	if err := s.chFlushProcessing(ctx, "agent_logs", since); err != nil {
 		return fmt.Errorf("failed to cleanup old processing A2A logs: %w", err)
+	}
+	return nil
+}
+
+// FlushRelayLogs removes stale processing relay log rows. See Flush.
+func (s *ClickHouseLogStore) FlushRelayLogs(ctx context.Context, since time.Time) error {
+	if err := s.chFlushProcessing(ctx, "relay_logs", since); err != nil {
+		return fmt.Errorf("failed to cleanup old processing relay logs: %w", err)
 	}
 	return nil
 }

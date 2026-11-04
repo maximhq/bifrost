@@ -111373,7 +111373,7 @@
             }
           },
           {
-            "name": "statuses",
+            "name": "status",
             "in": "query",
             "description": "Statuses to filter by (`success`, `error`, `cancelled`). Accepts repeated parameters or comma-separated values.",
             "schema": {
@@ -111498,6 +111498,46 @@
             "name": "job_id",
             "in": "query",
             "description": "Exact upstream job ID.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "query",
+            "description": "Exact session ID resolved at ingress (x-bf-session-id), as on /api/logs.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "min_latency",
+            "in": "query",
+            "description": "Minimum latency in milliseconds.",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "max_latency",
+            "in": "query",
+            "description": "Maximum latency in milliseconds.",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "description": "Window resolved on the server, one of 1h, 6h, 24h, 7d, 30d, today, this_week, this_month; any other value is refused with 400. Wins over start_time and end_time, as on /api/logs.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone the calendar periods (today, this_week, this_month) are resolved in.",
             "schema": {
               "type": "string"
             }
@@ -111845,7 +111885,7 @@
             }
           },
           {
-            "name": "statuses",
+            "name": "status",
             "in": "query",
             "description": "Statuses to filter by (`success`, `error`, `cancelled`). Accepts repeated parameters or comma-separated values.",
             "schema": {
@@ -111970,6 +112010,46 @@
             "name": "job_id",
             "in": "query",
             "description": "Exact upstream job ID.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "query",
+            "description": "Exact session ID resolved at ingress (x-bf-session-id), as on /api/logs.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "min_latency",
+            "in": "query",
+            "description": "Minimum latency in milliseconds.",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "max_latency",
+            "in": "query",
+            "description": "Maximum latency in milliseconds.",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "description": "Window resolved on the server, one of 1h, 6h, 24h, 7d, 30d, today, this_week, this_month; any other value is refused with 400. Wins over start_time and end_time, as on /api/logs.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone the calendar periods (today, this_week, this_month) are resolved in.",
             "schema": {
               "type": "string"
             }
@@ -112183,7 +112263,7 @@
             }
           },
           {
-            "name": "statuses",
+            "name": "status",
             "in": "query",
             "description": "Statuses to filter by (`success`, `error`, `cancelled`). Accepts repeated parameters or comma-separated values.",
             "schema": {
@@ -112313,6 +112393,46 @@
             }
           },
           {
+            "name": "session_id",
+            "in": "query",
+            "description": "Exact session ID resolved at ingress (x-bf-session-id), as on /api/logs.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "min_latency",
+            "in": "query",
+            "description": "Minimum latency in milliseconds.",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "max_latency",
+            "in": "query",
+            "description": "Maximum latency in milliseconds.",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "description": "Window resolved on the server, one of 1h, 6h, 24h, 7d, 30d, today, this_week, this_month; any other value is refused with 400. Wins over start_time and end_time, as on /api/logs.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone the calendar periods (today, this_week, this_month) are resolved in.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "search",
             "in": "query",
             "description": "Free-text match on the path, matched route, model and request ID. Metadata columns only, never bodies.",
@@ -112321,13 +112441,23 @@
             }
           },
           {
-            "name": "bucket_size_seconds",
+            "name": "bucket_size",
             "in": "query",
-            "description": "Width of each bucket in seconds.",
+            "description": "Width of each bucket in seconds. Omitted, the width follows the window as on /api/logs/histogram. Between 60 and 2678400; below an hour it must divide 3600, otherwise it must be a whole number of hours, and the window may not need more than 5000 buckets.",
             "schema": {
               "type": "integer",
-              "minimum": 1,
-              "default": 3600
+              "minimum": 60,
+              "maximum": 2678400
+            }
+          },
+          {
+            "name": "bucket_size_seconds",
+            "in": "query",
+            "description": "Alias of bucket_size, kept for earlier clients.",
+            "schema": {
+              "type": "integer",
+              "minimum": 60,
+              "maximum": 2678400
             }
           }
         ],
@@ -112432,7 +112562,7 @@
             }
           },
           {
-            "name": "statuses",
+            "name": "status",
             "in": "query",
             "description": "Statuses to filter by (`success`, `error`, `cancelled`). Accepts repeated parameters or comma-separated values.",
             "schema": {
@@ -146672,6 +146802,10 @@
               "type": "string"
             }
           },
+          "session_id": {
+            "type": "string",
+            "description": "Session identity resolved at ingress (x-bf-session-id), as on LLM and MCP log rows."
+          },
           "user_agent": {
             "type": "string",
             "description": "Raw HTTP `User-Agent` of the calling client."
@@ -146820,13 +146954,18 @@
             "type": "integer",
             "format": "int64"
           },
+          "cancelled_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Calls the caller hung up on, answered with 499, or whose own deadline expired."
+          },
           "success_rate": {
             "type": "number",
-            "description": "Percentage of requests that succeeded."
+            "description": "Percentage of finished calls (success, error, cancelled) that succeeded, as on /api/logs/stats; calls still processing are left out."
           },
           "average_latency": {
             "type": "number",
-            "description": "Milliseconds."
+            "description": "Milliseconds, over finished calls."
           },
           "total_cost": {
             "type": "number"

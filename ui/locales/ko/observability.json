@@ -337,7 +337,7 @@
 			"servedByFallback": "공급자(대체)",
 			"servedModel": "제공되는 모델",
 			"stopReason": "중지 이유",
-			"parentRequestID": "학부모 요청 ID",
+			"parentRequestID": "상위 요청 ID",
 			"filterThisSession": "· 이 세션 필터링",
 			"selectedKey": "선택된 키",
 			"selectedPrompt": "선택한 프롬프트",
@@ -900,6 +900,8 @@
 			"tokensNotPricedValue": "입력 {{input}} / 출력 {{output}}",
 			"matchedRoute": "일치한 라우트",
 			"parentLog": "상위 로그",
+			"responseBodyPreview": "응답 본문 (미리보기)",
+			"filterByValue": "이 값의 릴레이 호출 보기",
 			"queryParameters": "쿼리 매개변수",
 			"matchedHeaders": "일치한 헤더",
 			"errorNoMessageWithStatus": "릴레이가 메시지 없이 오류(HTTP {{status}})를 반환했어요.",
@@ -920,7 +922,9 @@
 			"minCost": "최소 $",
 			"maxCost": "최대 $",
 			"minimumCost": "최소 비용",
-			"maximumCost": "최대 비용"
+			"maximumCost": "최대 비용",
+			"exactJobID": "정확한 작업 ID",
+			"exactParentRequestID": "정확한 상위 요청 ID"
 		},
 		"grants": {
 			"label": "릴레이 액세스",
