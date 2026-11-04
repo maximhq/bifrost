@@ -22,7 +22,7 @@ import { formatRelativePast } from "@/lib/utils/mcpCredential";
 import { perUserDiscoveryOn, sessionDiscoveryCell, toolSubtitle } from "@/lib/utils/mcpPerUserDiscovery";
 import { titleCaseFromSnakeCase } from "@/lib/utils/strings";
 import { Link } from "@tanstack/react-router";
-import { ArrowUpRight, Braces, Check, ChevronDown, ChevronRight, CircleAlert, Copy, Info } from "lucide-react";
+import { ArrowUpRight, Braces, Check, ChevronDown, ChevronRight, CircleAlert, Copy, Info, Table2 } from "lucide-react";
 import { Fragment, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { DefinitionList, DefinitionRow, MCPClientCredentialSection } from "./mcpClientCredentialSection";
@@ -916,7 +916,7 @@ function ToolRows({
 								{title}
 							</div>
 							{title !== tool.name && <div className="text-muted-foreground truncate font-mono text-xs">{tool.name}</div>}
-							{subtitle && <ExpandableText text={subtitle} lines={2} className="text-muted-foreground mt-0.5 text-xs" />}
+							{subtitle && <ExpandableText text={subtitle} lines={2} inlineToggle className="text-muted-foreground mt-0.5 text-xs" />}
 							{hints.length > 0 && (
 								<div className="mt-1.5 flex flex-wrap gap-1">
 									{hints.map((hint) => (
@@ -956,8 +956,46 @@ function ToolRows({
 							) : (
 								<>
 									<div className="space-y-2">
-										<div className="text-muted-foreground text-xs font-medium">{t("registry.view.parameters")}</div>
-										{params.length > 0 ? (
+										{/* The table and the JSON show the same schema, so one replaces the other. */}
+										<div className="flex items-center justify-between gap-2">
+											<div className="text-muted-foreground text-xs font-medium">{t("registry.view.parameters")}</div>
+											<Button
+												type="button"
+												variant="outline"
+												size="sm"
+												className="h-7 text-xs"
+												onClick={() => setShowJson(!showJson)}
+												data-testid={`mcp-tool-json-${tool.name}`}
+											>
+												{showJson ? <Table2 className="size-3.5" /> : <Braces className="size-3.5" />}
+												{showJson ? t("registry.view.viewAsTable") : t("registry.view.viewAsJson")}
+											</Button>
+										</div>
+										{showJson ? (
+											<CodeEditor
+												className="z-0 w-full rounded-sm border"
+												shouldAdjustInitialHeight={true}
+												maxHeight={300}
+												wrap={true}
+												code={JSON.stringify(
+													tool.output_schema
+														? { parameters: tool.parameters ?? null, output: tool.output_schema }
+														: (tool.parameters ?? {}),
+													null,
+													2,
+												)}
+												lang="json"
+												readonly={true}
+												options={{
+													scrollBeyondLastLine: false,
+													collapsibleBlocks: true,
+													lineNumbers: "off",
+													alwaysConsumeMouseWheel: false,
+													// Schemas taller than the editor scroll; the bar says there is more.
+													showVerticalScrollbar: true,
+												}}
+											/>
+										) : params.length > 0 ? (
 											<div className="bg-card rounded-sm border text-xs">
 												{params.map((param) => (
 													<div
@@ -977,39 +1015,11 @@ function ToolRows({
 											<div className="text-muted-foreground text-sm">{t("registry.sheet.noParameters")}</div>
 										)}
 									</div>
-									{output && (
+									{output && !showJson && (
 										<div className="space-y-1" data-testid={`mcp-tool-output-schema-${tool.name}`}>
 											<div className="text-muted-foreground text-xs font-medium">{t("registry.view.returns")}</div>
 											<div className="font-mono text-xs">{output}</div>
 										</div>
-									)}
-									<Button
-										type="button"
-										variant="outline"
-										size="sm"
-										className="h-7 text-xs"
-										onClick={() => setShowJson(!showJson)}
-										aria-expanded={showJson}
-										data-testid={`mcp-tool-json-${tool.name}`}
-									>
-										<Braces className="size-3.5" />
-										{showJson ? t("registry.view.hideJsonSchema") : t("registry.view.viewJsonSchema")}
-									</Button>
-									{showJson && (
-										<CodeEditor
-											className="z-0 w-full rounded-sm border"
-											shouldAdjustInitialHeight={true}
-											maxHeight={300}
-											wrap={true}
-											code={JSON.stringify(
-												tool.output_schema ? { parameters: tool.parameters ?? null, output: tool.output_schema } : (tool.parameters ?? {}),
-												null,
-												2,
-											)}
-											lang="json"
-											readonly={true}
-											options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
-										/>
 									)}
 								</>
 							)}

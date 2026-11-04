@@ -566,8 +566,8 @@
 			"hideSchemaAria": "Hide the schema of {{name}}",
 			"parameters": "Parameters",
 			"returns": "Returns",
-			"viewJsonSchema": "View JSON schema",
-			"hideJsonSchema": "Hide JSON schema"
+			"viewAsJson": "View as JSON",
+			"viewAsTable": "View as table"
 		},
 		"tls": {
 			"skipVerify": "Skip TLS verification",

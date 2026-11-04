@@ -566,8 +566,8 @@
 			"hideSchemaAria": "隐藏 {{name}} 的模式",
 			"parameters": "参数",
 			"returns": "返回",
-			"viewJsonSchema": "查看 JSON 模式",
-			"hideJsonSchema": "隐藏 JSON 模式"
+			"viewAsJson": "以 JSON 查看",
+			"viewAsTable": "以表格查看"
 		},
 		"tls": {
 			"skipVerify": "跳过 TLS 校验",

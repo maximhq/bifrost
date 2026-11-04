@@ -566,8 +566,8 @@
 			"hideSchemaAria": "{{name}} のスキーマを非表示",
 			"parameters": "パラメーター",
 			"returns": "戻り値",
-			"viewJsonSchema": "JSON スキーマを表示",
-			"hideJsonSchema": "JSON スキーマを非表示"
+			"viewAsJson": "JSON で表示",
+			"viewAsTable": "表で表示"
 		},
 		"tls": {
 			"skipVerify": "TLS検証をスキップ",

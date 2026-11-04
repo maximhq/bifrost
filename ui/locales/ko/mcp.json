@@ -566,8 +566,8 @@
 			"hideSchemaAria": "{{name}}의 스키마 숨기기",
 			"parameters": "매개변수",
 			"returns": "반환값",
-			"viewJsonSchema": "JSON 스키마 보기",
-			"hideJsonSchema": "JSON 스키마 숨기기"
+			"viewAsJson": "JSON으로 보기",
+			"viewAsTable": "표로 보기"
 		},
 		"tls": {
 			"skipVerify": "TLS 확인 건너뛰기",
