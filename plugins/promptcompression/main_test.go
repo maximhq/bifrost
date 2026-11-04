@@ -369,6 +369,122 @@ func TestPostLLMHookStreamLogsOnceOnFinalChunk(t *testing.T) {
 	require.Contains(t, lg.infos[0], "estimated_before=")
 }
 
+func TestPreLLMHookNoFlapOnHugeFreshOutput(t *testing.T) {
+	p, _ := newHookPlugin(t)
+	old, fresh := bigOutput(300), bigOutput(15000) // ~600 KB, age 0
+	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{
+		Input: rounds(old, "x", fresh)}}
+	out, _, err := p.PreLLMHook(hookCtx(), req)
+	require.NoError(t, err)
+	require.NotSame(t, req, out)
+	require.Contains(t, strOf(out.ChatRequest.Input[3]), "tokens trimmed by promptcompression")
+	require.Equal(t, fresh, strOf(out.ChatRequest.Input[7]))
+}
+
+func TestPreLLMHookSkipsResponsesAutoCache(t *testing.T) {
+	p, _ := newHookPlugin(t)
+	req := bigRespReq(schemas.ResponsesRequest)
+	req.ResponsesRequest.Params = &schemas.ResponsesParameters{
+		ExtraParams: map[string]interface{}{"cache_control": map[string]any{"type": "ephemeral"}}}
+	out, _, err := p.PreLLMHook(hookCtx(), req)
+	require.NoError(t, err)
+	require.Same(t, req, out)
+
+	// params without the key, or without a map, do not skip
+	req = bigRespReq(schemas.ResponsesRequest)
+	req.ResponsesRequest.Params = &schemas.ResponsesParameters{}
+	out, _, err = p.PreLLMHook(hookCtx(), req)
+	require.NoError(t, err)
+	require.NotSame(t, req, out)
+}
+
+func TestPreLLMHookEnabledNoopZeroAllocs(t *testing.T) {
+	p, _ := newHookPlugin(t)
+	ctx := hookCtx()
+	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{
+		Model: "m", Input: rounds("small")[:3]}}
+	allocs := testing.AllocsPerRun(100, func() {
+		if out, _, _ := p.PreLLMHook(ctx, req); out != req {
+			t.Fatal("expected original request")
+		}
+	})
+	require.Zero(t, allocs)
+}
+
+func TestPreLLMHookBelowEligibleThresholdReturnsOriginal(t *testing.T) {
+	// A 50-line output trims by a fifth: real but below a 30% eligible threshold.
+	c := 30
+	pl, err := Init(&Config{MinSavingsPercent: &c}, &capLogger{})
+	require.NoError(t, err)
+	p := pl.(*Plugin)
+	in := rounds(bigOutput(50), "x", "y")
+	_, st := compressChat(in, p.s)
+	require.True(t, st.Changed, "precondition: something is trimmed")
+	require.Less(t, (st.EligibleBefore-st.EligibleAfter)*100/st.EligibleBefore, c)
+
+	ctx := hookCtx()
+	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Input: in}}
+	out, _, err := p.PreLLMHook(ctx, req)
+	require.NoError(t, err)
+	require.Same(t, req, out)
+	require.Nil(t, ctx.Value(ContextKeyEstimatedBefore))
+}
+
+func TestPreLLMHookLogsAreSkippedWhenUnchanged(t *testing.T) {
+	p, _ := newHookPlugin(t)
+	ctx := hookCtx()
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-9")
+	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionStreamRequest, ChatRequest: &schemas.BifrostChatRequest{
+		Input: rounds("small", "small", "small", "small")}}
+	out, _, err := p.PreLLMHook(ctx, req)
+	require.NoError(t, err)
+	require.Same(t, req, out)
+	require.Nil(t, ctx.Value(ContextKeyEstimatedBefore))
+	require.Nil(t, ctx.Value(ContextKeyEstimatedAfter))
+	require.Nil(t, ctx.Value(contextKeyStream))
+}
+
+func TestPostLLMHookStreamResponsesUsage(t *testing.T) {
+	p, lg := newHookPlugin(t)
+	ctx := hookCtx()
+	_, _, err := p.PreLLMHook(ctx, bigRespReq(schemas.ResponsesStreamRequest))
+	require.NoError(t, err)
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	resp := &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+		Response: &schemas.BifrostResponsesResponse{Usage: &schemas.ResponsesResponseUsage{
+			InputTokens: 321, InputTokensDetails: &schemas.ResponsesResponseInputTokens{CachedReadTokens: 11}}}}}
+	_, _, err = p.PostLLMHook(ctx, resp, nil)
+	require.NoError(t, err)
+	require.Len(t, lg.infos, 1)
+	require.Contains(t, lg.infos[0], "prompt_tokens=321")
+	require.Contains(t, lg.infos[0], "cached_read_tokens=11")
+
+	// nil-safe at every level
+	for _, r := range []*schemas.BifrostResponse{
+		{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{}},
+		{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{Response: &schemas.BifrostResponsesResponse{}}},
+	} {
+		_, _, err = p.PostLLMHook(ctxWithEstimates(1, 1), r, nil)
+		require.NoError(t, err)
+	}
+}
+
+func TestPostLLMHookLogsRequestID(t *testing.T) {
+	p, lg := newHookPlugin(t)
+	ctx := ctxWithEstimates(10, 5)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-1")
+	_, _, err := p.PostLLMHook(ctx, &schemas.BifrostResponse{}, nil)
+	require.NoError(t, err)
+	require.Len(t, lg.infos, 1)
+	require.Contains(t, lg.infos[0], "request_id=req-1 estimated_before=10")
+
+	ctx = ctxWithEstimates(10, 5)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, 42) // not a string
+	_, _, err = p.PostLLMHook(ctx, &schemas.BifrostResponse{}, nil)
+	require.NoError(t, err)
+	require.Contains(t, lg.infos[1], "request_id= estimated_before=10")
+}
+
 // benchHook runs PreLLMHook b.N times against one request and context. The
 // plugin never writes to the incoming request, so reuse is safe.
 func benchHook(b *testing.B, p *Plugin, req *schemas.BifrostRequest) {

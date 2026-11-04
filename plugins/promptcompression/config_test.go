@@ -1,6 +1,7 @@
 package promptcompression
 
 import (
+	"strings"
 	"testing"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -24,12 +25,21 @@ func TestResolveDefaults(t *testing.T) {
 }
 
 func TestResolveExplicitZeroKept(t *testing.T) {
-	s, err := (&Config{ProtectedLeadingMessages: intp(0), MinSavingsPercent: intp(0)}).resolve()
+	s, err := (&Config{ProtectedLeadingMessages: intp(0), MinSavingsPercent: intp(0), ToolOutputMinTokens: intp(0)}).resolve()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if s.ProtectedLeading != 0 || s.MinSavingsPercent != 0 {
+	if s.ProtectedLeading != 0 || s.MinSavingsPercent != 0 || s.MinTokens != 0 {
 		t.Fatalf("explicit zeros overridden: %+v", s)
+	}
+}
+
+// A min age of 0 would make the newest output eligible, so the model could
+// lose the result it is about to read; 1 is the smallest safe value.
+func TestResolveRejectsZeroMinAge(t *testing.T) {
+	_, err := (&Config{ToolOutputMinAgeTurns: intp(0)}).resolve()
+	if err == nil || !strings.Contains(err.Error(), "tool_output_min_age_turns") {
+		t.Fatalf("expected error naming tool_output_min_age_turns, got %v", err)
 	}
 }
 

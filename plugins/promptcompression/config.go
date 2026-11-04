@@ -69,6 +69,11 @@ func (c *Config) resolve() (settings, error) {
 			return settings{}, fmt.Errorf("promptcompression: %s must be >= 0, got %d", name, v)
 		}
 	}
+	// Age 0 would make the newest tool output eligible, which the model has not
+	// read yet; 1 is the smallest safe value.
+	if s.MinAgeTurns < 1 {
+		return settings{}, fmt.Errorf("promptcompression: tool_output_min_age_turns must be >= 1, got %d", s.MinAgeTurns)
+	}
 	if s.MinSavingsPercent > 100 {
 		return settings{}, fmt.Errorf("promptcompression: min_savings_percent must be <= 100, got %d", s.MinSavingsPercent)
 	}

@@ -91,6 +91,9 @@ func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostReq
 		return req, nil, nil
 	}
 
+	// The compressors report savings over the eligible region only, so a huge
+	// fresh (protected by age) output cannot hide a worthwhile cut, and nothing
+	// is copied until the request is known to be worth sending compressed.
 	var before, after int
 	var out *schemas.BifrostRequest
 	switch req.RequestType {
@@ -105,11 +108,10 @@ func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostReq
 			return req, nil, nil
 		}
 		before = estimateChat(cr.Input)
-		if before == 0 {
+		compressed, st := compressChatFn(cr.Input, p.s)
+		if after = p.afterIfWorthwhile(before, st); after < 0 {
 			return req, nil, nil
 		}
-		compressed, _ := compressChatFn(cr.Input, p.s)
-		after = estimateChat(compressed)
 		cc := *cr
 		cc.Input = compressed
 		rc := *req
@@ -120,12 +122,16 @@ func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostReq
 		if rr == nil || len(rr.Input) == 0 {
 			return req, nil, nil
 		}
-		before = estimateResponses(rr.Input)
-		if before == 0 {
+		// Same as Chat: a request-level cache_control asks the provider for automatic
+		// caching at the end of the prompt (reading a nil map is safe).
+		if rr.Params != nil && rr.Params.ExtraParams["cache_control"] != nil {
 			return req, nil, nil
 		}
-		compressed, _ := compressResponsesFn(rr.Input, p.s)
-		after = estimateResponses(compressed)
+		before = estimateResponses(rr.Input)
+		compressed, st := compressResponsesFn(rr.Input, p.s)
+		if after = p.afterIfWorthwhile(before, st); after < 0 {
+			return req, nil, nil
+		}
 		rc2 := *rr
 		rc2.Input = compressed
 		rc := *req
@@ -135,15 +141,30 @@ func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostReq
 		return req, nil, nil
 	}
 
-	if after >= before || (before-after)*100/before < p.s.MinSavingsPercent {
-		return req, nil, nil
-	}
 	ctx.SetValue(ContextKeyEstimatedBefore, before)
 	ctx.SetValue(ContextKeyEstimatedAfter, after)
 	if req.RequestType == schemas.ChatCompletionStreamRequest || req.RequestType == schemas.ResponsesStreamRequest {
 		ctx.SetValue(contextKeyStream, true)
 	}
 	return out, nil, nil
+}
+
+// afterIfWorthwhile returns the estimated token count of the compressed
+// request, or -1 when the original should be sent: nothing changed, nothing
+// was eligible, the eligible region shrank by less than MinSavingsPercent, or
+// the whole request did not get strictly smaller.
+func (p *Plugin) afterIfWorthwhile(before int, st stats) int {
+	if !st.Changed || st.EligibleBefore == 0 {
+		return -1
+	}
+	saved := st.EligibleBefore - st.EligibleAfter
+	if saved*100/st.EligibleBefore < p.s.MinSavingsPercent {
+		return -1
+	}
+	if after := before - saved; after < before {
+		return after
+	}
+	return -1
 }
 
 func clearEstimates(ctx *schemas.BifrostContext) {
@@ -182,20 +203,28 @@ func (p *Plugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostR
 	// reused ctx cannot log them again.
 	clearEstimates(ctx)
 	var prompt, cached int
+	var ru *schemas.ResponsesResponseUsage
+	if rr := resp.ResponsesResponse; rr != nil {
+		ru = rr.Usage
+	} else if sr := resp.ResponsesStreamResponse; sr != nil && sr.Response != nil {
+		// The Responses stream carries usage on its final chunk's embedded response.
+		ru = sr.Response.Usage
+	}
 	if cr := resp.ChatResponse; cr != nil && cr.Usage != nil {
 		prompt = cr.Usage.PromptTokens
 		if d := cr.Usage.PromptTokensDetails; d != nil {
 			cached = d.CachedReadTokens
 		}
-	} else if rr := resp.ResponsesResponse; rr != nil && rr.Usage != nil {
-		prompt = rr.Usage.InputTokens
-		if d := rr.Usage.InputTokensDetails; d != nil {
+	} else if ru != nil {
+		prompt = ru.InputTokens
+		if d := ru.InputTokensDetails; d != nil {
 			cached = d.CachedReadTokens
 		}
 	}
 	if p.logger != nil {
-		p.logger.Info("promptcompression: request compressed estimated_before=%d estimated_after=%d prompt_tokens=%d cached_read_tokens=%d",
-			before, after, prompt, cached)
+		id, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+		p.logger.Info("promptcompression: request compressed request_id=%s estimated_before=%d estimated_after=%d prompt_tokens=%d cached_read_tokens=%d",
+			id, before, after, prompt, cached)
 	}
 	return resp, bifrostErr, nil
 }
