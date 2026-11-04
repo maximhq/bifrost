@@ -20,6 +20,8 @@ export const LOGS_CSV_HEADERS = [
 	"Canonical Model",
 	"App",
 	"Latency (ms)",
+	"Upstream Latency (ms)",
+	"Overhead (ms)",
 	"Prompt Tokens",
 	"Completion Tokens",
 	"Total Tokens",
@@ -34,6 +36,8 @@ export const LOGS_CSV_HEADERS = [
 	"Business Unit",
 	"Project",
 	"Stop Reason",
+	"Client IP",
+	"User Email",
 ];
 
 /**
@@ -161,6 +165,8 @@ export function logEntryToCSVRow(log: LogEntry): unknown[] {
 		log.canonical_model_name || "",
 		app,
 		log.latency != null ? log.latency : "",
+		log.upstream_latency != null ? log.upstream_latency : "",
+		log.overhead_latency != null ? log.overhead_latency : "",
 		promptTokens,
 		completionTokens,
 		totalTokens,
@@ -175,6 +181,8 @@ export function logEntryToCSVRow(log: LogEntry): unknown[] {
 		businessUnit,
 		project,
 		log.stop_reason || "",
+		log.client_ip || "",
+		log.user_email || "",
 	];
 }
 

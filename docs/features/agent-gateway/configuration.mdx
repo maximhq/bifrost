@@ -39,7 +39,7 @@ When this URL is unset or its reference resolves to an empty value, HTTP agent-c
 
 <Tabs group="config-method">
 <Tab title="Web UI">
-Open **Agents → Agent Settings**, set **External Client URL**, and select **Save Changes**. Use a base URL such as `https://bifrost.example.com`, not an individual agent's route.
+Open **Agents → Agent Settings**, set **External Client URL**, and select **Save Changes**. Use a base URL such as `https://bifrost.example.com`, not an individual agent's route; include the `server.base_path` prefix if Bifrost is served under one (`https://bifrost.example.com/bifrost`).
 </Tab>
 <Tab title="config.json">
 ```json
@@ -50,7 +50,7 @@ Open **Agents → Agent Settings**, set **External Client URL**, and select **Sa
 }
 ```
 
-You can use `env.BIFROST_EXTERNAL_URL` instead of a literal URL.
+You can use `env.BIFROST_EXTERNAL_URL` instead of a literal URL. Include the `server.base_path` prefix if Bifrost is served under one (`https://bifrost.example.com/bifrost`).
 </Tab>
 <Tab title="Helm">
 ```yaml
@@ -58,6 +58,8 @@ bifrost:
   client:
     a2aExternalClientUrl: https://bifrost.example.com
 ```
+
+Include the `server.base_path` prefix if Bifrost is served under one (`https://bifrost.example.com/bifrost`).
 </Tab>
 </Tabs>
 

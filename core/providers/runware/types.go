@@ -177,7 +177,7 @@ type RunwareResult struct {
 	// Common
 	TaskType string  `json:"taskType"`
 	TaskUUID string  `json:"taskUUID"`
-	Status   string  `json:"status,omitempty"` // video: "processing" | "success" | "error"
+	Status   string  `json:"status,omitempty"` // "processing" | "success" | "error"
 	Seed     *int    `json:"seed,omitempty"`
 	Cost     float64 `json:"cost,omitempty"`
 

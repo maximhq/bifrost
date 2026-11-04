@@ -198,6 +198,10 @@ func (cm *ChatMessage) ToResponsesToolMessage() *ResponsesMessage {
 			CallID: cm.ChatToolMessage.ToolCallID,
 		},
 	}
+	// A failed tool result is marked the way ToResponsesMessages marks it.
+	if cm.ChatToolMessage.IsError != nil && *cm.ChatToolMessage.IsError {
+		respMsg.Status = Ptr("incomplete")
+	}
 
 	// Extract output from content
 	if cm.Content != nil {
@@ -2919,6 +2923,7 @@ func (cr *BifrostChatResponse) ToBifrostTextCompletionResponse() *BifrostTextCom
 				OriginalModelRequested:  cr.ExtraFields.OriginalModelRequested,
 				Latency:                 cr.ExtraFields.Latency,
 				RawResponse:             cr.ExtraFields.RawResponse,
+				RawResponseFormat:       cr.ExtraFields.RawResponseFormat,
 				CacheDebug:              cr.ExtraFields.CacheDebug,
 				GuardrailDebug:          cr.ExtraFields.GuardrailDebug,
 				ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
@@ -2954,6 +2959,7 @@ func (cr *BifrostChatResponse) ToBifrostTextCompletionResponse() *BifrostTextCom
 				OriginalModelRequested:  cr.ExtraFields.OriginalModelRequested,
 				Latency:                 cr.ExtraFields.Latency,
 				RawResponse:             cr.ExtraFields.RawResponse,
+				RawResponseFormat:       cr.ExtraFields.RawResponseFormat,
 				CacheDebug:              cr.ExtraFields.CacheDebug,
 				GuardrailDebug:          cr.ExtraFields.GuardrailDebug,
 				ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
@@ -3005,6 +3011,7 @@ func (cr *BifrostChatResponse) ToBifrostTextCompletionResponse() *BifrostTextCom
 				OriginalModelRequested:  cr.ExtraFields.OriginalModelRequested,
 				Latency:                 cr.ExtraFields.Latency,
 				RawResponse:             cr.ExtraFields.RawResponse,
+				RawResponseFormat:       cr.ExtraFields.RawResponseFormat,
 				CacheDebug:              cr.ExtraFields.CacheDebug,
 				GuardrailDebug:          cr.ExtraFields.GuardrailDebug,
 				ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
@@ -3027,6 +3034,7 @@ func (cr *BifrostChatResponse) ToBifrostTextCompletionResponse() *BifrostTextCom
 			OriginalModelRequested:  cr.ExtraFields.OriginalModelRequested,
 			Latency:                 cr.ExtraFields.Latency,
 			RawResponse:             cr.ExtraFields.RawResponse,
+			RawResponseFormat:       cr.ExtraFields.RawResponseFormat,
 			CacheDebug:              cr.ExtraFields.CacheDebug,
 			GuardrailDebug:          cr.ExtraFields.GuardrailDebug,
 			ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,

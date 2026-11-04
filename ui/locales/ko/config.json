@@ -37,6 +37,7 @@
 		"dumpErrorsHelp": "활성화되면 전체 오류 세부 정보가 서버 콘솔 로그에 기록돼요. 디버깅에는 유용하지만 프로덕션 환경에서는 노이즈가 발생할 수 있어요.",
 		"asyncJobTtl": "비동기 작업 결과 TTL(초)",
 		"asyncJobTtlHelp": "비동기 작업의 기본 수명은 초 단위이에요. 결과는 만료 후 자동으로 정리돼요.",
+		"languageHelp": "대시보드 표시 언어예요. 이 브라우저에 저장되고 바로 적용돼요.",
 		"headerForwarding": "헤더 전달",
 		"headerForwardingHelp": "LLM 제공업체에 전달되는 추가 헤더를 제어해요.",
 		"aboutHeaderForwarding": "헤더 전달 정보",
@@ -224,7 +225,7 @@
 		"directKeysHelp": "활성화되면 호출자는 <b3>x-bf-direct-key와 함께 <b0>Authorization</b0>, <b1>x-api-key</b1> 또는 <b2>x-goog-api-key</b2> 헤더에 공급자 API 키를 직접 전달할 수 있어요. 사실</b3>. Bifrost는 등록된 키 풀을 우회하여 해당 키를 직접 사용해요.",
 		"originsHelp": "CORS 및 WebSocket 연결에 대해 허용되는 출처의 쉼표로 구분된 목록이에요. 로컬호스트 출처는 항상 허용돼요. 각 출처는 프로토콜(예: https://app.example.com, http://10.0.0.100:3000)을 갖춘 완전한 URL여야 해요. 하위 도메인(예: https://*.example.com)에는 와일드카드가 지원되며, 모든 출처를 허용하려면 \"*\"를 사용하세요.",
 		"requiredHeadersHelp": "모든 요청에 있어야 하는 쉼표로 구분된 헤더 목록이에요. 이러한 헤더 중 하나라도 누락된 요청은 400 오류와 함께 거부돼요. 헤더 이름은 대소문자를 구분해요.",
-		"routesHelp": "인증 미들웨어를 우회하는 쉼표로 구분된 경로 목록이에요. 이러한 경로에 대한 요청에는 인증이 필요하지 않어요. <b0>/health</b0>, <b1>/api/session/login</b1>, <b2>/api/session/is-auth-enabled</b2>와 같은 시스템 경로는 이 설정에 관계없이 항상 허용 목록에 포함돼요.",
+		"routesHelp": "인증 미들웨어를 우회하는 쉼표로 구분된 경로 목록이에요. 이러한 경로에 대한 요청에는 인증이 필요하지 않어요. <b0>/health</b0>, <b1>/api/session/login</b1>, <b2>/api/session/is-auth-enabled</b2>와 같은 시스템 경로는 이 설정에 관계없이 항상 허용 목록에 포함돼요. 경로는 server.base_path 접두사를 제거한 뒤 비교되므로 접두사 없이 지정하세요.",
 		"see": "참조",
 		"documentation": "문서화",
 		"forDetails": "자세한 내용은.",
@@ -253,7 +254,7 @@
 		"title": "로그 설정",
 		"description": "요청 및 응답에 대한 로깅 설정을 구성해요.",
 		"enableLogs": "로그 활성화",
-		"enableLogsHelp": "SQL 데이터베이스에 대한 요청 및 응답 로깅을 활성화해요. 이로 인해 시스템 메모리에 40-60MB의 오버헤드가 추가될 수 있어요.",
+		"enableLogsHelp": "릴레이 호출을 포함한 요청 및 응답을 SQL 데이터베이스에 로깅하도록 활성화해요. 이로 인해 시스템 메모리에 40-60MB의 오버헤드가 추가될 수 있어요.",
 		"requiresStore": "config.json에서 로그 저장소를 구성하고 활성화해야 해요.",
 		"disableContentLogging": "콘텐츠 로깅 비활성화",
 		"disableContentLoggingHelp": "LLM, MCP, 에이전트, 릴레이 로그에 적용돼요. 활성화하면 사용량 메타데이터(지연 시간, 비용, 토큰 수, 상태, 라우팅 ID 등)만 기록돼요. 요청/응답 콘텐츠(메시지, 매개변수, 도구 호출, 원시 공급자 바이트)는 <code0>store_raw_request_response</code0>가 켜져 있어도 로그 레코드에서 제외돼요. <code1>send_back_raw_*</code1>를 통해 호출자에게 원시 바이트를 돌려보내는 동작은 영향을 받지 않아요. 에이전트 프로토콜 본문은 이 설정을 따르며, 업스트림 원시 캡처는 에이전트 게이트웨이 설정에서 원시 요청 및 응답 캡처도 켜야 해요.",
@@ -265,9 +266,9 @@
 		"allowRawOverride": "요청별 원시 재정의 허용",
 		"allowRawOverrideHelp": "활성화되면 개별 요청은 x-bf-send-back-raw-request 및 x-bf-send-back-raw-response 헤더를 사용하여 원시 공급자 요청/응답 바이트를 호출자에게 다시 보낼 수 있어요. 로그 저장에는 영향을 주지 않어요. 로그의 원시 바이트 지속성은 {{setting}}에 의해 제어돼요.",
 		"logRetentionDays": "로그 보존 일수",
-		"logRetentionDaysHelp": "데이터베이스에 로그를 보관하는 일수이에요. 최소 기간은 1일이에요. 오래된 로그는 자동으로 삭제돼요.",
+		"logRetentionDaysHelp": "데이터베이스에 로그(릴레이 로그 포함)를 보관하는 일수이에요. 최소 기간은 1일이에요. 오래된 로그는 자동으로 삭제돼요.",
 		"hideDeletedVks": "필터에 삭제된 가상 키를 표시하지 않음",
-		"hideDeletedVksHelp": "활성화되면 삭제된 가상 키는 로그, 대시보드 및 MCP 로그의 가상 키 필터 옵션에서 제외돼요.",
+		"hideDeletedVksHelp": "활성화되면 삭제된 가상 키는 로그, 대시보드, MCP 로그 및 릴레이 로그의 가상 키 필터 옵션에서 제외돼요.",
 		"loggingHeaders": "로깅 헤더",
 		"loggingHeadersHelp": "로그 메타데이터에 캡처할 요청 헤더의 쉼표로 구분된 목록이에요. 정확한 이름과 와일드카드 패턴을 지원해요 (예: x-custom-*는 해당 접두사를 가진 모든 헤더를 캡처하고, *는 모든 헤더를 기록해요. *는 Authorization 같은 민감한 헤더도 캡처한다는 점에 유의하세요). 값은 수신 요청에서 추출되어 로그 항목의 metadata 필드에 저장돼요. x-bf-lh- 접두사가 붙은 헤더는 항상 자동으로 캡처돼요. 릴레이 로그에도 동일한 메타데이터가 담기며, 여기에 릴레이 라우트가 일치시키는 헤더가 함께 저장돼요. 그 외의 헤더나 응답 헤더는 저장되지 않아요.",
 		"loggingHeadersPlaceholder": "X-테넌트-ID, X-요청-소스, x-custom-*",
@@ -349,6 +350,7 @@
 		"disableAutoToolInjection": "자동 도구 주입 비활성화",
 		"allowTempToken": "임시 토큰 인증 링크 허용",
 		"codeModeBinding": "코드 모드 바인딩 수준",
+		"codeModeSettings": "코드 모드 설정",
 		"selectBindingLevel": "바인딩 수준 선택",
 		"serverLevel": "서버 수준",
 		"toolLevel": "도구 수준",
@@ -374,7 +376,7 @@
 		"disableAutoToolInjectionHelp": "활성화되면 MCP 도구가 모든 요청에 자동으로 포함되지 않어요. 도구는 요청 헤더(<code0>x-bf-mcp-include-tools</code0>)를 통해 명시적으로 지정된 경우에만 삽입되며 여전히 가상 키 MCP 구성에서 허용되어야 해요.",
 		"tempTokenHelp": "활성화되면 사용자별 MCP OAuth 링크에 단기 범위 토큰이 포함될 수 있으므로 활성 Bifrost 대시보드 세션이 없는 사람이 흐름을 완료할 수 있어요. 일반 대시보드 인증을 요구하려면 비활성화된 상태로 유지하세요.",
 		"bindingHelp": "VFS에 도구가 노출되는 방식: 서버 수준(서버당 모든 도구) 또는 도구 수준(개별 도구).",
-		"externalClientUrlHelp": "역방향 프록시 뒤에서 실행되는 경우 Bifrost의 공개 기반 URL을 재정의해요. <b0>수신 <code1>Host</code1> 헤더에서 URL</b0>를 파생하려면 공백으로 남겨두세요. <code2>redirect_uri</code2> Bifrost가 MCP 서버에 대한 클라이언트 역할을 할 때 업스트림 OAuth 공급자에 등록하는 데 사용됩니다(예: Notion 또는 Jira가 브라우저를 <code3><URL>/api/oauth/callback</code3> 로그인 후). env var 구문을 지원합니다(예: <code4>env.BIFROST_EXTERNAL_URL</code4>).",
+		"externalClientUrlHelp": "역방향 프록시 뒤에서 실행되는 경우 Bifrost의 공개 기반 URL을 재정의해요. <b0>수신 <code1>Host</code1> 헤더에서 URL</b0>를 파생하려면 공백으로 남겨두세요. <code2>redirect_uri</code2> Bifrost가 MCP 서버에 대한 클라이언트 역할을 할 때 업스트림 OAuth 공급자에 등록하는 데 사용됩니다(예: Notion 또는 Jira가 브라우저를 <code3><URL>/api/oauth/callback</code3> 로그인 후). env var 구문을 지원합니다(예: <code4>env.BIFROST_EXTERNAL_URL</code4>). URL 접두사(server.base_path) 뒤에서 실행되는 경우 https://host/bifrost처럼 접두사를 포함하세요.",
 		"externalClientUrlWarningHelp": "업스트림 OAuth 공급자는 <code0>redirect_uri</code0>를 처음에 등록된 항목에 잠그므로 이미 OAuth를 완료한 MCP 클라이언트는 <em1>\"잘못된 리디렉션 URI\"</em1>와 함께 실패해요. 복구하려면 영향을 받은 MCP 서버에 대해 저장된 OAuth 클라이언트 자격 증명을 지우고 Bifrost가 새 URL로 동적 클라이언트 등록을 다시 실행하도록 다시 인증하세요.",
 		"authModeHelp": "인바운드 MCP 클라이언트(예: Claude 코드, 커서)가 <code0>/mcp</code0> 엔드포인트에 인증하는 방법을 제어해요. <b1>headers</b1> (기본값) - VK / api-key / 세션 헤더만, OAuth 검색이 비활성화되었어요. <b2>모두</b2> - 헤더 자격 증명과 Bifrost 발급 JWT를 허용해요. 기존 통합은 영향을 받지 않어요. <b3>oauth</b3> - JWT에만 해당. VK 및 헤더 액세스가 비활성화되었어요.",
 		"issuerUrlHelp": "검색 문서에 광고되고 모든 JWT에 <code0>iss</code0> 클레임으로 포함된 안정적인 공개 URL입니다. OAuth 및 두 모드 모두에 필요: Bifrost는 요청 <code1>Host</code1> 헤더에서 발급자를 파생하지 않습니다. 해당 헤더가 호출자에 의해 제어되기 때문입니다. env var 구문(예: <code2>env.BIFROST_ISSUER_URL</code2>)을 지원합니다.",
@@ -491,7 +493,7 @@
 		"proxyConfiguration": "프록시 구성",
 		"proxyType": "프록시 유형",
 		"httpHttps": "HTTP / HTTPS",
-		"proxyTypeHelp": "프록시 프로토콜 유형을 선택해요. 현재는 HTTP 프록시만 지원돼요.",
+		"proxyTypeHelp": "HTTP / HTTPS는 http:// 또는 https:// 프록시 URL을 사용해요(https://는 프록시와의 연결을 암호화해요). SOCKS5는 socks5:// URL을 사용해요.",
 		"selectType": "유형 선택",
 		"proxyUrl": "프록시 URL",
 		"proxyUrlHelp": "프로토콜과 포트를 포함한 프록시 서버의 전체 URL.",
@@ -512,16 +514,16 @@
 		"scimHelp": "SCIM 디렉터리 동기화 요청에 프록시를 사용하세요.",
 		"scimEnterpriseOnly": "SCIM 프록시 지원은 Bifrost Enterprise에서 제공돼요.",
 		"inference": "추론",
-		"inferenceHelp": "모델 공급자에 대한 LLM 추론 요청에 프록시를 사용해요.",
+		"inferenceHelp": "모델 제공자로 보내는 LLM 추론 요청과 릴레이 호출에 프록시를 사용해요. 자체 프록시 설정이 있는 제공자나 릴레이는 그 설정을 유지해요.",
 		"comingSoon": "곧 출시 예정",
 		"api": "API",
-		"apiHelp": "외부 API 호출 및 웹후크에 프록시를 사용하세요.",
+		"apiHelp": "외부 API 호출에 프록시를 사용해요: MCP 서버, OAuth, 웹훅, 플러그인 다운로드, 모델 카탈로그 동기화, OpenTelemetry 내보내기.",
 		"noPermission": "설정을 업데이트할 권한이 없어요.",
 		"toastSaved": "프록시 구성이 업데이트되었어요.",
 		"connectionTimeoutHelp": "프록시 연결 설정 시간이 초과되었어요. 0은 시간 초과가 없음을 의미해요. 기본값은 60초이에요.",
 		"caCertificateHelp": "SSL 가로채기 프록시를 통한 TLS 연결을 신뢰하는 PEM 인코딩 CA 인증서이에요.",
 		"skipTlsHelp": "HTTPS 프록시에 대한 TLS 인증서 확인을 비활성화해요. 생산에는 권장되지 않어요.",
-		"unsupportedType": "{{type}} 프록시는 아직 지원되지 않어요. HTTP 프록시를 사용해 주세요."
+		"unsupportedType": "{{type}} 프록시는 아직 지원되지 않아요. HTTP 또는 SOCKS5 프록시를 사용해 주세요."
 	},
 	"userAgent": {
 		"title": "사용자 에이전트 매핑",
@@ -1229,7 +1231,7 @@
 		"toastSaved": "Agent Gateway 설정이 업데이트되었어요.",
 		"loadFailed": "Agent Gateway 설정을 불러오지 못했어요.",
 		"externalClientUrl": "외부 클라이언트 URL",
-		"externalClientUrlHelp": "제공되는 에이전트 카드와 푸시 알림 콜백 URL에 사용되는 Bifrost의 공개 기본 URL이에요. 비워 두면 모든 에이전트 프로토콜 엔드포인트가 비활성화돼요. 에이전트 관리는 계속 사용할 수 있어요. 환경 변수 구문을 지원해요(예: <code>env.BIFROST_EXTERNAL_URL</code>).",
+		"externalClientUrlHelp": "제공되는 에이전트 카드와 푸시 알림 콜백 URL에 사용되는 Bifrost의 공개 기본 URL이에요. 비워 두면 모든 에이전트 프로토콜 엔드포인트가 비활성화돼요. 에이전트 관리는 계속 사용할 수 있어요. 환경 변수 구문을 지원해요(예: <code>env.BIFROST_EXTERNAL_URL</code>). URL 접두사(server.base_path) 뒤에서 실행되는 경우 https://host/bifrost처럼 접두사를 포함하세요.",
 		"privateAllowlist": "사설 네트워크 허용 목록",
 		"privateAllowlistHelp": "Agent Gateway의 검색, OAuth, 런타임 요청이 사설 또는 루프백 주소로 확인될 때 접근할 수 있는 호스트, IP 주소 또는 CIDR 범위예요. 스킴이나 포트는 포함하지 마세요. 링크 로컬 및 클라우드 메타데이터 주소는 항상 차단돼요.",
 		"privateAllowlistPlaceholder": "호스트, IP 또는 CIDR 추가(Enter 또는 쉼표)",
@@ -1257,7 +1259,15 @@
 			"editConfigAria": "릴레이 구성 편집",
 			"viewConfigAria": "릴레이 구성 보기",
 			"testSheetTitle": "가격 테스트",
-			"testSheetDescription": "{{name}}에 저장된 라우트와 가격으로 샘플 호출을 실행해요. 업스트림으로는 아무것도 전송되지 않아요."
+			"testSheetDescription": "{{name}}에 저장된 라우트와 가격으로 샘플 호출을 실행해요. 업스트림으로는 아무것도 전송되지 않아요.",
+			"gatewayPath": "게이트웨이 경로",
+			"upstream": "업스트림",
+			"auth": "인증",
+			"pricing": "기본 요금",
+			"anyPath": "모든 경로",
+			"moreActionsAria": "릴레이 추가 작업",
+			"deleteRelay": "릴레이 삭제",
+			"copyPathAria": "게이트웨이 경로 복사"
 		},
 		"deleteDialog": {
 			"title": "릴레이 삭제",
@@ -1285,6 +1295,7 @@
 			"title": "라우트",
 			"importOpenapi": "OpenAPI 가져오기",
 			"addRoute": "라우트 추가",
+			"description": "요청에는 처음 일치하는 라우트가 사용되며, 더 구체적인 라우트가 먼저 표시됩니다.",
 			"columns": {
 				"method": "메서드",
 				"route": "라우트",
@@ -1593,6 +1604,7 @@
 			"proxyCaCertInfo": "SSL을 가로채는 프록시를 통한 TLS 연결에서 신뢰할 PEM 인코딩 CA 인증서이거나 이를 가리키는 env. 참조예요.",
 			"proxyCaCertPlaceholder": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE----- 또는 env.PROXY_CA_CERT_PEM",
 			"removeConfig": "구성 제거",
+			"discardProxy": "변경 사항 취소",
 			"saveProxy": "프록시 구성 저장"
 		},
 		"pricing": {
@@ -1614,6 +1626,6 @@
 		"loadFailed": "스킬 설정을 불러오지 못했어요.",
 		"retry": "다시 시도",
 		"externalClientUrl": "외부 클라이언트 URL",
-		"externalClientUrlHelp": "Claude Code 및 Codex 마켓플레이스에 사용되는 Bifrost의 공개 기본 URL이에요. 비워 두면 마켓플레이스 제공과 등록이 비활성화돼요. 스킬 관리와 다운로드는 계속 사용할 수 있어요. 환경 변수와 Vault 참조를 지원해요."
+		"externalClientUrlHelp": "Claude Code 및 Codex 마켓플레이스에 사용되는 Bifrost의 공개 기본 URL이에요. 비워 두면 마켓플레이스 제공과 등록이 비활성화돼요. 스킬 관리와 다운로드는 계속 사용할 수 있어요. 환경 변수와 Vault 참조를 지원해요. URL 접두사(server.base_path) 뒤에서 실행되는 경우 https://host/bifrost처럼 접두사를 포함하세요."
 	}
 }

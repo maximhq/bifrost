@@ -231,6 +231,10 @@ legacy-teams:
     operationId: listTeamsLegacy
     x-bifrost-successor: '/api/governance/teams'
     x-bifrost-removal: following-major-release
+    description: |
+      Legacy alias that lists teams one page at a time. `page` is 1-based and `limit`
+      defaults to 20 with a maximum of 100. Use `/api/governance/teams` for new
+      integrations.
     parameters:
       - name: page
         in: query

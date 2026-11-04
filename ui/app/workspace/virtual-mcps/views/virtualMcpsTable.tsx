@@ -25,15 +25,16 @@ import {
 	useDeleteVirtualMCPMutation,
 	useGetCoreConfigQuery,
 	useGetMCPClientsQuery,
-	useGetVirtualKeysQuery,
+	useGetVirtualKeyQuery,
 	useUpdateVirtualMCPMutation,
 } from "@/lib/store";
-import { VirtualMCP } from "@/lib/types/virtualMcps";
+import { VirtualMCP, VirtualMCPToolSpec } from "@/lib/types/virtualMcps";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Check, ChevronLeft, ChevronRight, Copy, Loader2, MoreHorizontal, Pencil, Plus, Search, Server, Trash2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { getLocale } from "@/lib/i18n";
+import { withBasePath } from "@/lib/utils/basePath";
 
 interface VirtualMCPsTableProps {
 	virtualMcps: VirtualMCP[];
@@ -70,23 +71,9 @@ export default function VirtualMCPsTable({
 	const canUpdate = useRbac(RbacResource.VirtualMCPs, RbacOperation.Update);
 	const canDelete = useRbac(RbacResource.VirtualMCPs, RbacOperation.Delete);
 
-	// Live clients, so "all tools" servers count their real tools.
-	const { data: mcpClientsData, isLoading: clientsLoading, isError: clientsError } = useGetMCPClientsQuery({ limit: 1000 });
-	const clientById = useMemo(() => new Map((mcpClientsData?.clients ?? []).map((c) => [c.config.client_id, c])), [mcpClientsData]);
-
-	// Resolve assigned virtual-key ids -> names for the "Assigned to" column.
-	const { data: vksData, isLoading: vksLoading } = useGetVirtualKeysQuery({ limit: 1000 });
-	const vkNameById = useMemo(() => new Map((vksData?.virtual_keys ?? []).map((v) => [v.id, v.name])), [vksData]);
-
 	// Externally reachable base URL, so the endpoint cell copies the full URL callers use.
 	const { data: coreConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const baseUrl = getExternalBaseUrl(coreConfig?.client_config);
-
-	const includedToolCount = (row: VirtualMCP) =>
-		(row.tools ?? []).reduce((sum, spec) => {
-			const isAll = spec.tool_names.length === 1 && spec.tool_names[0] === "*";
-			return sum + (isAll ? (clientById.get(spec.mcp_client_id)?.tools?.length ?? 0) : spec.tool_names.length);
-		}, 0);
 
 	const [pendingDelete, setPendingDelete] = useState<VirtualMCP | null>(null);
 	const [pendingId, setPendingId] = useState<number | null>(null);
@@ -215,12 +202,12 @@ export default function VirtualMCPsTable({
 											<EndpointCell slug={row.endpoint_slug} baseUrl={baseUrl} />
 										</TableCell>
 										<TableCell className="text-muted-foreground text-sm">{row.tools?.length ?? 0}</TableCell>
-										<TableCell className="text-muted-foreground text-sm">
-											{clientsLoading ? "…" : clientsError ? "—" : includedToolCount(row)}
+										<TableCell className="text-muted-foreground text-sm" data-testid={`virtual-mcp-included-tools-${row.id}`}>
+											<IncludedToolsCell tools={row.tools ?? []} />
 										</TableCell>
 										<TableCell className="text-muted-foreground text-sm">{formatDate(row.created_at)}</TableCell>
-										<TableCell>
-											<AssignedToCell vkIds={row.virtual_key_ids ?? []} vkNameById={vkNameById} loading={vksLoading} />
+										<TableCell data-testid={`virtual-mcp-assigned-${row.id}`}>
+											<AssignedToCell vkIds={row.virtual_key_ids ?? []} />
 										</TableCell>
 										<TableCell onClick={(e) => e.stopPropagation()}>
 											<Switch
@@ -309,7 +296,7 @@ function EndpointCell({ slug, baseUrl }: { slug: string; baseUrl: string }) {
 			aria-label={t("registry.sheet.copyEndpointAria")}
 			data-testid={`virtual-mcp-endpoint-copy-${slug}`}
 		>
-			/mcp/{slug}
+			{withBasePath(`/mcp/${slug}`)}
 			<span className="opacity-0 transition-opacity group-hover:opacity-100">
 				{copied ? <Check className="size-3.5 shrink-0" /> : <Copy className="size-3.5 shrink-0" />}
 			</span>
@@ -317,11 +304,55 @@ function EndpointCell({ slug, baseUrl }: { slug: string; baseUrl: string }) {
 	);
 }
 
-function AssignedToCell({ vkIds, vkNameById, loading }: { vkIds: string[]; vkNameById: Map<string, string>; loading: boolean }) {
+// "All tools" grants count the server's live tools. Each server is read by id, since the
+// clients list is paged server-side and a server past its first page would count as zero.
+function IncludedToolsCell({ tools }: { tools: VirtualMCPToolSpec[] }) {
+	const [allToolCounts, setAllToolCounts] = useState<Record<string, number | null>>({});
+	const handleResolved = useCallback((id: string, count: number | null) => {
+		setAllToolCounts((prev) => (prev[id] === count ? prev : { ...prev, [id]: count }));
+	}, []);
+	const allIds = Array.from(new Set(tools.filter(isAllTools).map((spec) => spec.mcp_client_id)));
+	const pending = allIds.some((id) => allToolCounts[id] === undefined);
+	const failed = allIds.some((id) => allToolCounts[id] === null);
+	const total = tools.reduce(
+		(sum, spec) => sum + (isAllTools(spec) ? (allToolCounts[spec.mcp_client_id] ?? 0) : spec.tool_names.length),
+		0,
+	);
+	return (
+		<>
+			{allIds.map((id) => (
+				<MCPClientToolCountResolver key={id} id={id} onResolved={handleResolved} />
+			))}
+			{pending ? "…" : failed ? "—" : total}
+		</>
+	);
+}
+
+function isAllTools(spec: VirtualMCPToolSpec): boolean {
+	return spec.tool_names.length === 1 && spec.tool_names[0] === "*";
+}
+
+// Reports one server's tool count: null when the read fails, 0 when the server no longer exists.
+function MCPClientToolCountResolver({ id, onResolved }: { id: string; onResolved: (id: string, count: number | null) => void }) {
+	const { data, isError } = useGetMCPClientsQuery({ server: id, limit: 1 });
+	useEffect(() => {
+		if (isError) onResolved(id, null);
+		else if (data) onResolved(id, data.clients?.[0]?.tools?.length ?? 0);
+	}, [data, isError, id, onResolved]);
+	return null;
+}
+
+// A key's name, read by id; the virtual keys list is paged server-side, so a key past its first
+// page would otherwise show as a raw id. Falls back to the id when the key cannot be read.
+function VirtualKeyLabel({ id }: { id: string }) {
 	const { t } = useTranslation("mcp");
+	const { data, isLoading } = useGetVirtualKeyQuery(id);
+	if (isLoading) return <span className="bg-muted/60 inline-block h-3 w-20 animate-pulse rounded align-middle" />;
+	return <>{t("virtualMcps.keyNamed", { name: data?.virtual_key?.name || id })}</>;
+}
+
+function AssignedToCell({ vkIds }: { vkIds: string[] }) {
 	if (vkIds.length === 0) return <span className="text-muted-foreground text-sm">-</span>;
-	// Hold a stable placeholder until names resolve, so badges don't reflow from ids to names.
-	if (loading) return <div className="bg-muted/60 h-5 w-32 animate-pulse rounded" />;
 	const VISIBLE = 2;
 	const visible = vkIds.slice(0, VISIBLE);
 	const overflow = vkIds.slice(VISIBLE);
@@ -329,7 +360,9 @@ function AssignedToCell({ vkIds, vkNameById, loading }: { vkIds: string[]; vkNam
 		<div className="flex flex-wrap items-center gap-1">
 			{visible.map((id) => (
 				<Badge key={id} variant="outline" className="max-w-[180px] font-normal">
-					<span className="truncate">{t("virtualMcps.keyNamed", { name: vkNameById.get(id) ?? id })}</span>
+					<span className="truncate">
+						<VirtualKeyLabel id={id} />
+					</span>
 				</Badge>
 			))}
 			{overflow.length > 0 && (
@@ -340,7 +373,12 @@ function AssignedToCell({ vkIds, vkNameById, loading }: { vkIds: string[]; vkNam
 						</Badge>
 					</TooltipTrigger>
 					<TooltipContent className="max-w-xs">
-						{overflow.map((id) => t("virtualMcps.keyNamed", { name: vkNameById.get(id) ?? id })).join(", ")}
+						{overflow.map((id, i) => (
+							<span key={id}>
+								{i > 0 && ", "}
+								<VirtualKeyLabel id={id} />
+							</span>
+						))}
 					</TooltipContent>
 				</Tooltip>
 			)}

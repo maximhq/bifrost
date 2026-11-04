@@ -1087,6 +1087,67 @@ func BenchmarkPreLLMHookServerToolModels(b *testing.B) {
 	}
 }
 
+// A Gemini Interactions create names an agent (Deep Research) instead of a model. The router puts
+// the agent in the request's model, so it is checked against the key's allowlist like any model and
+// a restricted key runs only the agents it allows; a "model" the body also names is checked too. The
+// polls, cancels and deletes that follow name none and are marked model-free by the router, so the
+// allowlist does not refuse them. A request that reaches governance with no model at all (a caller
+// bypassing the router) is still refused under a restricted key.
+func TestPreLLMHookChecksInteractionsAgentAgainstAllowlist(t *testing.T) {
+	const allowed, denied = "deep-research-preview-04-2026", "deep-research-max-preview-04-2026"
+	vk := buildVirtualKeyWithProviders("vk-ia", "sk-bf-ia", "Interactions VK", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("gemini", []string{allowed}),
+	})
+	logger := NewMockLogger()
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil, nil)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+	create := func(model, body string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.Gemini, Model: model, Method: "POST", Path: "/interactions", Body: []byte(body),
+		}}
+	}
+
+	_, shortCircuit, err := plugin.PreLLMHook(presentCtx("sk-bf-ia"), create(allowed, `{"agent":"`+allowed+`","input":"x","background":true}`))
+	require.NoError(t, err)
+	assertShortCircuitDecision(t, DecisionAllow, shortCircuit)
+
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx("sk-bf-ia"), create(denied, `{"agent":"`+denied+`","input":"x","background":true}`))
+	require.NoError(t, err)
+	assertShortCircuitDecision(t, DecisionModelBlocked, shortCircuit)
+
+	// The body's own "model" is checked too, not only the agent the router chose.
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx("sk-bf-ia"), create(allowed, `{"agent":"`+allowed+`","model":"gemini-3.8-flash","input":"x"}`))
+	require.NoError(t, err)
+	assertShortCircuitDecision(t, DecisionModelBlocked, shortCircuit)
+
+	// "agent" is only a model on an Interactions create; elsewhere it is an ordinary body field.
+	other := &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+		Provider: schemas.Gemini, Model: allowed, Method: "POST", Path: "/models/" + allowed + ":generateContent", Body: []byte(`{"agent":"` + denied + `","contents":[]}`),
+	}}
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx("sk-bf-ia"), other)
+	require.NoError(t, err)
+	assertShortCircuitDecision(t, DecisionAllow, shortCircuit)
+
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx("sk-bf-ia"), create("", `{"agent":"`+allowed+`","input":"x"}`))
+	require.NoError(t, err)
+	assertShortCircuitDecision(t, DecisionModelBlocked, shortCircuit)
+
+	poll := &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+		Provider: schemas.Gemini, Method: "GET", Path: "/interactions/int_1",
+	}}
+	pollCtx := presentCtx("sk-bf-ia")
+	pollCtx.SetValue(schemas.BifrostContextKeySkipModelCheck, true)
+	_, shortCircuit, err = plugin.PreLLMHook(pollCtx, poll)
+	require.NoError(t, err)
+	assertShortCircuitDecision(t, DecisionAllow, shortCircuit)
+}
+
 // TestBudgetResolver_EvaluateVirtualKey_ActiveNoExpiry verifies that a VK
 // with no expiry is allowed.
 // A mixed Runware task array leaves the request model empty, so the request is charged against

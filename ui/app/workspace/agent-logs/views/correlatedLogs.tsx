@@ -14,8 +14,9 @@ import {
 	ProviderName,
 	RequestTypeColors,
 	getRequestTypeLabel,
+	MCPStatuses,
 	StatusBarColors,
-	type Status,
+	type MCPStatus,
 } from "@/lib/constants/logs";
 import { useGetLogsQuery, useGetLogsStatsQuery } from "@/lib/store/apis/logsApi";
 import { useGetMCPLogsQuery, useGetMCPLogsStatsQuery } from "@/lib/store/apis/mcpLogsApi";
@@ -47,6 +48,8 @@ const LLM_HEADERS: HeaderKey[] = [
 const MCP_HEADERS: HeaderKey[] = ["", "labels.time", "mcpLogs.detail.tool", "labels.server", "labels.app", "labels.latency", "labels.cost"];
 
 type Correlation = { session_id: string } | { agent_correlation_id: string };
+// MCP-only: the rounds of one tool call that asked its caller for input.
+type MCPCorrelation = Correlation | { round_trip_id: string };
 type CorrelatedLogKind = "llm" | "mcp";
 
 export function useCorrelatedLogCounts(correlation: Correlation | null, enabled: boolean) {
@@ -135,7 +138,7 @@ function CorrelatedTableHeader({ kind }: { kind: CorrelatedLogKind }) {
 
 function CorrelatedStatusBar({ status }: { status: string }) {
 	const { t } = useTranslation("observability");
-	const validatedStatus: Status = status === "success" || status === "error" || status === "processing" ? status : "processing";
+	const validatedStatus: MCPStatus = MCPStatuses.includes(status as MCPStatus) ? (status as MCPStatus) : "processing";
 	const statusLabel = t(`logs.statuses.${validatedStatus}`);
 	return <div title={statusLabel} aria-label={statusLabel} className={`h-8 w-1 shrink-0 rounded-sm ${StatusBarColors[validatedStatus]}`} />;
 }
@@ -263,22 +266,24 @@ export function CorrelatedLogsContent({
 	correlation,
 	active,
 	sortOrder = "asc",
+	pollingInterval = 0,
 }: {
 	kind: CorrelatedLogKind;
-	correlation: Correlation;
+	correlation: MCPCorrelation;
 	active: boolean;
 	sortOrder?: "asc" | "desc";
+	pollingInterval?: number;
 }) {
 	const { t } = useTranslation("observability");
 	const location = useLocation();
 	const [page, setPage] = useState(0);
 	useEffect(() => setPage(0), [correlation, sortOrder]);
-	const filters = correlation;
-	const llmFilters: LogFilters = filters;
-	const mcpFilters: MCPToolLogFilters = filters;
+	const llmFilters: LogFilters = "round_trip_id" in correlation ? {} : correlation;
+	const mcpFilters: MCPToolLogFilters = correlation;
 	const isLLM = kind === "llm";
 	const {
 		data: llmData,
+		currentData: llmCurrent,
 		isFetching: llmLoading,
 		isError: llmError,
 	} = useGetLogsQuery(
@@ -288,16 +293,19 @@ export function CorrelatedLogsContent({
 	const { data: llmStats } = useGetLogsStatsQuery({ filters: llmFilters }, { skip: !isLLM });
 	const {
 		data: mcpData,
+		currentData: mcpCurrent,
 		isFetching: mcpLoading,
 		isError: mcpError,
 	} = useGetMCPLogsQuery(
 		{ filters: mcpFilters, pagination: { limit: PAGE_SIZE, offset: page * PAGE_SIZE, sort_by: "timestamp", order: sortOrder } },
-		{ skip: !active || isLLM },
+		{ skip: !active || isLLM, pollingInterval },
 	);
-	const { data: mcpStats } = useGetMCPLogsStatsQuery({ filters: mcpFilters }, { skip: isLLM });
+	const { data: mcpStats } = useGetMCPLogsStatsQuery({ filters: mcpFilters }, { skip: isLLM, pollingInterval });
 
 	const total = isLLM ? (llmStats?.total_requests ?? 0) : (mcpStats?.total_executions ?? 0);
 	const loading = isLLM ? llmLoading : mcpLoading;
+	// Background polls keep the rows on screen; only a query with nothing to show yet gets the spinner.
+	const awaitingRows = loading && !(isLLM ? llmCurrent : mcpCurrent);
 	const error = isLLM ? llmError : mcpError;
 	const logs = isLLM ? (llmData?.logs ?? []) : (mcpData?.logs ?? []);
 	const sourceSearch = location.search as Record<string, unknown>;
@@ -306,10 +314,7 @@ export function CorrelatedLogsContent({
 		: sourceSearch.start_time && sourceSearch.end_time
 			? { start_time: String(sourceSearch.start_time), end_time: String(sourceSearch.end_time) }
 			: {};
-	const fullPageSearch: Record<string, string> = {
-		...timeSearch,
-		...("session_id" in correlation ? { session_id: correlation.session_id } : { agent_correlation_id: correlation.agent_correlation_id }),
-	};
+	const fullPageSearch: Record<string, string> = { ...timeSearch, ...correlation };
 
 	return (
 		<TabsContent value={`${kind}-logs`} className="space-y-3 px-1 py-2">
@@ -341,7 +346,7 @@ export function CorrelatedLogsContent({
 				</Link>
 			</div>
 
-			{loading ? (
+			{awaitingRows ? (
 				<div className="flex h-24 items-center justify-center">
 					<Loader2 className="text-muted-foreground size-4 animate-spin" />
 				</div>

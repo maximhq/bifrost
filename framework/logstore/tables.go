@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"database/sql/driver"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -168,12 +169,54 @@ type SearchFilters struct {
 	// detect-only match in guardrail_debug. Several values are OR-ed together.
 	GuardrailOutcomes []string          `json:"guardrail_outcomes,omitempty"`
 	ContentSearch     string            `json:"content_search,omitempty"`
-	MetadataFilters   map[string]string `json:"metadata_filters,omitempty"` // key=metadataKey, value=metadataValue for filtering by metadata
+	MetadataFilters   MetadataFilterMap `json:"metadata_filters,omitempty"` // metadata key to accepted values: any value per key, every key
 	// RankingLimit caps the number of rows returned by the ranking queries
 	// (GetModelRankings / GetUserRankings / GetDimensionRankings). nil means
 	// "use the store default" (defaultMaxRankingsLimit); a value <= 0 means
 	// "return every ranked entity", which is what the dashboard export uses.
 	RankingLimit *int `json:"ranking_limit,omitempty"`
+}
+
+// MaxMetadataFilterValuesPerKey caps the accepted values for one metadata key. Each value is one
+// OR term in the search, and SQLite fails a query whose expression tree is deeper than 1000.
+const MaxMetadataFilterValuesPerKey = 100
+
+// MetadataFilterMap maps a metadata key to the values a row may hold for it.
+type MetadataFilterMap map[string][]string
+
+// UnmarshalJSON reads each key as an array of strings or as one bare string. The bare form is how
+// metadata filters were written before a key could hold several values, and cost-recalc jobs queued
+// back then still carry it. Empty strings are dropped, and so is a key left with no values.
+func (m *MetadataFilterMap) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if raw == nil {
+		*m = nil
+		return nil
+	}
+	out := make(MetadataFilterMap, len(raw))
+	for key, value := range raw {
+		var values []string
+		var single string
+		if err := json.Unmarshal(value, &single); err == nil {
+			values = []string{single}
+		} else if err := json.Unmarshal(value, &values); err != nil {
+			return fmt.Errorf("metadata filter %q must be a string or an array of strings", key)
+		}
+		kept := values[:0]
+		for _, v := range values {
+			if v != "" {
+				kept = append(kept, v)
+			}
+		}
+		if len(kept) > 0 {
+			out[key] = kept
+		}
+	}
+	*m = out
+	return nil
 }
 
 // SessionGroupingActive reports whether this query should collapse each
@@ -342,6 +385,7 @@ type Log struct {
 	SelectedPromptID        *string   `gorm:"type:varchar(36)" json:"selected_prompt_id"`
 	UserID                  *string   `gorm:"type:varchar(255);index:idx_logs_user_ts,priority:1" json:"user_id"` // (user_id, timestamp) composite; replaces the single-column idx_logs_user_id
 	UserName                *string   `gorm:"type:varchar(255)" json:"user_name"`
+	UserEmail               *string   `gorm:"type:varchar(255)" json:"user_email,omitempty"`
 	TeamID                  *string   `gorm:"type:varchar(255);index:idx_logs_team_ts,priority:1" json:"team_id"` // (team_id, timestamp) composite; replaces the single-column idx_logs_team_id
 	TeamName                *string   `gorm:"type:varchar(255)" json:"team_name"`
 	CustomerID              *string   `gorm:"type:varchar(255);index:idx_logs_customer_ts,priority:1" json:"customer_id"` // (customer_id, timestamp) composite; replaces idx_logs_customer_id
@@ -358,6 +402,7 @@ type Log struct {
 	BusinessUnitNames       *string   `gorm:"type:text" json:"-"`
 	UserAgent               *string   `gorm:"type:varchar(512);index:idx_logs_user_agent" json:"user_agent,omitempty"` // Raw HTTP User-Agent of the calling client
 	App                     *string   `gorm:"type:varchar(128);index:idx_logs_app" json:"app,omitempty"`               // Backend-detected client app derived from user_agent
+	ClientIP                *string   `gorm:"type:varchar(45)" json:"client_ip,omitempty"`                             // Caller IP: leftmost X-Forwarded-For, else X-Real-IP, else the TCP peer
 	InputHistory            string    `gorm:"type:text" json:"-"`                                                      // JSON serialized []schemas.ChatMessage
 	ResponsesInputHistory   string    `gorm:"type:text" json:"-"`                                                      // JSON serialized []schemas.ResponsesMessage
 	OutputMessage           string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.ChatMessage
@@ -444,7 +489,9 @@ type Log struct {
 	RealtimeInputCorrection *RealtimeInputCorrection         `gorm:"-" json:"-"` // Transient: merge one late transcript into the latest offloaded payload
 
 	RedactionData            *schemas.RedactionData        `gorm:"-" json:"-"`                           // Transient guardrail redaction data consumed by enterprise logstore wrappers
+	RawResponseFormat        schemas.RawResponseFormat     `gorm:"-" json:"-"`                           // Transient: declared format of a streamed RawResponse's frames, so redaction can match text split across them
 	PassthroughParseFormat   schemas.ModelProvider         `gorm:"-" json:"-"`                           // Transient: base provider whose wire format the log writer parses passthrough bodies with; empty skips parsing
+	PassthroughStreamFormat  schemas.RawResponseFormat     `gorm:"-" json:"-"`                           // Transient: declared format of a streamed passthrough response body's events, so redaction can match text split across them
 	PassthroughParseMaxBytes int64                         `gorm:"-" json:"-"`                           // Transient: large-payload request threshold applied to media parsed from passthrough bodies; 0 keeps everything
 	RedactionMapping         string                        `gorm:"type:text" json:"-"`                   // Reversible redaction mapping (encrypted when an encryption key is set), written by enterprise logstore wrappers; deleted with the row
 	RevealRedactionMapping   *schemas.RedactionMapsByPhase `gorm:"-" json:"redaction_mapping,omitempty"` // Virtual field populated only on permitted log-detail reads
@@ -1925,6 +1972,7 @@ type MCPToolLog struct {
 	// way the logs table records them. They are what the entity was called when
 	// the call was made, so a later rename or deletion leaves the row readable.
 	UserName         *string `gorm:"type:varchar(255)" json:"user_name,omitempty"`
+	UserEmail        *string `gorm:"type:varchar(255)" json:"user_email,omitempty"`
 	TeamName         *string `gorm:"type:varchar(255)" json:"team_name,omitempty"`
 	CustomerName     *string `gorm:"type:varchar(255)" json:"customer_name,omitempty"`
 	BusinessUnitName *string `gorm:"type:varchar(255)" json:"business_unit_name,omitempty"`
@@ -1948,6 +1996,7 @@ type MCPToolLog struct {
 	LLMRequestID       *string   `gorm:"type:varchar(255);column:llm_request_id;index:idx_mcp_logs_llm_request_id" json:"llm_request_id,omitempty"` // Links to the LLM request that triggered this tool call
 	SessionID          *string   `gorm:"type:varchar(255);index:idx_mcp_logs_session_id,where:session_id IS NOT NULL" json:"session_id,omitempty"`
 	AgentCorrelationID *string   `gorm:"type:varchar(255);index:idx_mcp_logs_agent_correlation_id,where:agent_correlation_id IS NOT NULL" json:"agent_correlation_id,omitempty"`
+	RoundTripID        *string   `gorm:"type:varchar(64);index:idx_mcp_logs_round_trip_id,where:round_trip_id IS NOT NULL" json:"round_trip_id,omitempty"` // Shared by every round of one gateway tool call that asked its caller for input
 	Timestamp          time.Time `gorm:"index;index:idx_mcp_logs_vk_ts,priority:2;index:idx_mcp_logs_user_ts,priority:2;index:idx_mcp_logs_team_ts,priority:2;not null" json:"timestamp"`
 	ToolName           string    `gorm:"type:varchar(255);index:idx_mcp_logs_tool_name;not null" json:"tool_name"`
 	ServerLabel        string    `gorm:"type:varchar(255);index:idx_mcp_logs_server_label" json:"server_label,omitempty"` // MCP server that provided the tool
@@ -1961,6 +2010,7 @@ type MCPToolLog struct {
 	ProjectName        *string   `gorm:"type:varchar(255)" json:"project_name"`
 	UserAgent          *string   `gorm:"type:varchar(512);index:idx_mcp_logs_user_agent" json:"user_agent,omitempty"` // Raw HTTP User-Agent of the calling client
 	App                *string   `gorm:"type:varchar(128);index:idx_mcp_logs_app" json:"app,omitempty"`               // Backend-detected client app derived from user_agent
+	ClientIP           *string   `gorm:"type:varchar(45)" json:"client_ip,omitempty"`                                 // Caller IP: leftmost X-Forwarded-For, else X-Real-IP, else the TCP peer
 	Arguments          string    `gorm:"type:text" json:"-"`                                                          // JSON serialized tool arguments
 	Result             string    `gorm:"type:text" json:"-"`                                                          // JSON serialized tool result
 	ErrorDetails       string    `gorm:"type:text" json:"-"`                                                          // JSON serialized *schemas.BifrostError
@@ -2420,6 +2470,7 @@ type MCPToolLogSearchFilters struct {
 	AgentNames         []string   `json:"agent_names,omitempty"`
 	SessionID          string     `json:"session_id,omitempty"`
 	AgentCorrelationID string     `json:"agent_correlation_id,omitempty"`
+	RoundTripID        string     `json:"round_trip_id,omitempty"`
 	Apps               []string   `json:"apps,omitempty"`        // Backend-detected client apps
 	UserAgents         []string   `json:"user_agents,omitempty"` // Raw User-Agent strings; kept for compatibility/debug filtering
 	StartTime          *time.Time `json:"start_time,omitempty"`

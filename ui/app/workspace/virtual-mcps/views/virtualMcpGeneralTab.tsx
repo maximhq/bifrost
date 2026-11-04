@@ -3,6 +3,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useTranslation } from "react-i18next";
+import { withBasePath } from "@/lib/utils/basePath";
 
 // Mirrors the backend Slugify: lowercase, keep [a-z0-9], collapse other runs to a single
 // hyphen, trim leading/trailing hyphens. Keep in sync with framework/configstore Slugify.
@@ -76,7 +77,7 @@ export default function VirtualMCPGeneralTab({
 				</p>
 				{isCreate && previewSlug && (
 					<p className="text-muted-foreground text-xs" data-testid="virtual-mcp-slug-preview">
-						{t("virtualMcps.general.servedAt")} <span className="text-foreground font-mono">/mcp/{previewSlug}</span>
+						{t("virtualMcps.general.servedAt")} <span className="text-foreground font-mono">{withBasePath(`/mcp/${previewSlug}`)}</span>
 					</p>
 				)}
 			</div>
