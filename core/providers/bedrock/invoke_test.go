@@ -3391,3 +3391,63 @@ func TestToBedrockResponsesRequest_InvokeDocumentReachesEgress(t *testing.T) {
 	require.NotNil(t, doc.Source.Bytes)
 	assert.Equal(t, "JVBERi0xLjQK", *doc.Source.Bytes)
 }
+
+// TestInvokeDocument_TextSourceStartingWithDataPrefix: a text-source document whose
+// content begins with "data:" (any case) is literal text, not a data URL. It must reach
+// the Converse egress as a document and the Anthropic egress as a text source (#9308).
+func TestInvokeDocument_TextSourceStartingWithDataPrefix(t *testing.T) {
+	for _, text := range []string{"Data: quarterly numbers", "data:text/plain,not a url", "DATA:x"} {
+		t.Run(text, func(t *testing.T) {
+			rawBlock, err := sonic.Marshal(map[string]any{
+				"type":   "document",
+				"source": map[string]any{"type": "text", "media_type": "text/plain", "data": text},
+			})
+			require.NoError(t, err)
+			body := `{"anthropic_version":"bedrock-2023-05-31","max_tokens":16,"messages":[{"role":"user","content":[{"type":"text","text":"summarize"},` + string(rawBlock) + `]}]}`
+
+			var req BedrockInvokeRequest
+			require.NoError(t, sonic.Unmarshal([]byte(body), &req))
+			req.ModelID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			bifrostReq, err := req.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx)
+			require.NoError(t, err)
+
+			// Converse egress.
+			out, err := ToBedrockResponsesRequest(ctx, bifrostReq)
+			require.NoError(t, err)
+			var doc *BedrockDocumentSource
+			for _, m := range out.Messages {
+				for _, c := range m.Content {
+					if c.Document != nil {
+						doc = c.Document
+					}
+				}
+			}
+			require.NotNil(t, doc, "text document dropped on the Converse egress")
+			assert.Equal(t, "txt", doc.Format)
+			require.NotNil(t, doc.Source)
+			require.NotNil(t, doc.Source.Bytes)
+			decoded, err := base64.StdEncoding.DecodeString(*doc.Source.Bytes)
+			require.NoError(t, err)
+			assert.Equal(t, text, string(decoded))
+
+			// Anthropic InvokeModel egress (thinking on): the original text source is rebuilt.
+			anthropicReq, err := anthropic.ToAnthropicResponsesRequest(ctx, bifrostReq)
+			require.NoError(t, err)
+			wire, err := sonic.Marshal(anthropicReq)
+			require.NoError(t, err)
+			var source gjson.Result
+			for _, msg := range gjson.GetBytes(wire, "messages").Array() {
+				for _, blk := range msg.Get("content").Array() {
+					if blk.Get("type").String() == "document" {
+						source = blk.Get("source")
+					}
+				}
+			}
+			require.True(t, source.Exists(), "document block missing from the Anthropic body: %s", wire)
+			assert.Equal(t, "text", source.Get("type").String())
+			assert.Equal(t, text, source.Get("data").String())
+		})
+	}
+}
