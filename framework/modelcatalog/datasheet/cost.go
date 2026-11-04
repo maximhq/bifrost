@@ -620,6 +620,9 @@ func (s *Store) calculateContainerSessionCost(usage *schemas.BifrostLLMUsage, ro
 	for tier, sessions := range usage.ToolUsage.ContainerSessions {
 		pricing := s.resolvePricing(schemas.RoutingInfo{Provider: provider, Model: schemas.ContainerPricingModel(tier)}, schemas.ContainerCreateRequest, scopes)
 		if pricing == nil || pricing.CodeInterpreterCostPerSession == nil {
+			pricing = s.resolvePricing(schemas.RoutingInfo{Provider: provider, Model: schemas.ContainerPricingModel(schemas.ContainerTierDefault)}, schemas.ContainerCreateRequest, scopes)
+		}
+		if pricing == nil || pricing.CodeInterpreterCostPerSession == nil {
 			continue
 		}
 		total = total.Add(totalOnlyCost(float64(sessions) * *pricing.CodeInterpreterCostPerSession))
@@ -627,19 +630,25 @@ func (s *Store) calculateContainerSessionCost(usage *schemas.BifrostLLMUsage, ro
 	return total
 }
 
-// routesToAzureModelRouter reads the alias's wire model when one resolved, since the alias name says nothing about the deployment.
-func routesToAzureModelRouter(routingInfo schemas.RoutingInfo) bool {
-	if rka := routingInfo.ResolvedKeyAlias; rka != nil && rka.ModelID != "" {
-		return schemas.IsAzureModelRouter(rka.ModelID)
+// resolvedModelIdentity follows resolvePricing's order: alias canonical name, alias wire model, then the requested model.
+func resolvedModelIdentity(routingInfo schemas.RoutingInfo) string {
+	if rka := routingInfo.ResolvedKeyAlias; rka != nil {
+		if rka.ModelName != nil && *rka.ModelName != "" {
+			return *rka.ModelName
+		}
+		if rka.ModelID != "" {
+			return rka.ModelID
+		}
 	}
-	return schemas.IsAzureModelRouter(routingInfo.Model)
+	return routingInfo.Model
+}
+
+func routesToAzureModelRouter(routingInfo schemas.RoutingInfo) bool {
+	return schemas.IsAzureModelRouter(resolvedModelIdentity(routingInfo))
 }
 
 func routesToClaude(routingInfo schemas.RoutingInfo) bool {
-	if schemas.IsAnthropicModel(routingInfo.Model) {
-		return true
-	}
-	return routingInfo.ResolvedKeyAlias != nil && schemas.IsAnthropicModel(routingInfo.ResolvedKeyAlias.ModelID)
+	return schemas.IsAnthropicModel(resolvedModelIdentity(routingInfo))
 }
 
 // advisorIterationType marks the usage.iterations[] entry of an Anthropic advisor pass: a sub-inference

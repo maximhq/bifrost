@@ -7808,6 +7808,8 @@ func TestCalculateContainerSessionCost(t *testing.T) {
 		{"missing tier falls back to the base entry", schemas.RoutingInfo{Provider: schemas.Azure, Model: "gpt-6.1-sol"}, map[string]int{"4g": 1}, 0.033},
 		{"claude on azure uses anthropic's rate", schemas.RoutingInfo{Provider: schemas.Azure, Model: "claude-sonnet-5-5"}, map[string]int{schemas.ContainerTierDefault: 1}, 0.05 * 5 / 60},
 		{"claude behind an azure deployment alias", schemas.RoutingInfo{Provider: schemas.Azure, Model: "my-deployment", ResolvedKeyAlias: &schemas.ResolvedKeyAlias{ModelID: "claude-sonnet-5-5"}}, map[string]int{schemas.ContainerTierDefault: 1}, 0.05 * 5 / 60},
+		{"claude named alias resolving to an openai model", schemas.RoutingInfo{Provider: schemas.Azure, Model: "claude-prod", ResolvedKeyAlias: &schemas.ResolvedKeyAlias{ModelID: "gpt-6.1-sol"}}, map[string]int{schemas.ContainerTierDefault: 1}, 0.033},
+		{"opaque deployment with a claude model name", schemas.RoutingInfo{Provider: schemas.Azure, Model: "my-deployment", ResolvedKeyAlias: &schemas.ResolvedKeyAlias{ModelID: "dep-01", ModelName: bifrost.Ptr("claude-sonnet-5-5")}}, map[string]int{schemas.ContainerTierDefault: 1}, 0.05 * 5 / 60},
 		{"provider without a container entry", schemas.RoutingInfo{Provider: schemas.Bedrock, Model: "claude-sonnet-5-5"}, map[string]int{schemas.ContainerTierDefault: 1}, 0},
 	}
 	for _, tt := range tests {
@@ -7822,6 +7824,22 @@ func TestCalculateContainerSessionCost(t *testing.T) {
 			assert.InDelta(t, tt.want, cost.TotalCost, 1e-12)
 		})
 	}
+}
+
+func TestCalculateContainerSessionCost_TierRowWithoutSessionRate(t *testing.T) {
+	pricing := map[string]configstoreTables.TableModelPricing{
+		makeKey("container-4g", "openai", "chat"): {Model: "container-4g", Provider: "openai", Mode: "chat"},
+		makeKey("container", "openai", "chat"):    {Model: "container", Provider: "openai", Mode: "chat", CodeInterpreterCostPerSession: bifrost.Ptr(0.03)},
+	}
+	usage := &schemas.BifrostLLMUsage{ToolUsage: &schemas.ToolUsage{ContainerSessions: map[string]int{"4g": 1}}}
+	routing := schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "gpt-6.1-sol"}
+
+	cost := testStoreWithPricing(pricing).calculateContainerSessionCost(usage, routing, LookupScopes{})
+	require.NotNil(t, cost)
+	assert.InDelta(t, 0.03, cost.TotalCost, 1e-12)
+
+	delete(pricing, makeKey("container", "openai", "chat"))
+	assert.Nil(t, testStoreWithPricing(pricing).calculateContainerSessionCost(usage, routing, LookupScopes{}))
 }
 
 // Repricing a stored log and a cut stream both bill from a bare usage object.

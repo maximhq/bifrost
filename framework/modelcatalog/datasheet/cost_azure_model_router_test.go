@@ -268,3 +268,23 @@ func TestCalculateCost_AzureModelRouter_RouterNamedAliasOfOrdinaryModel(t *testi
 	resp.ChatResponse.ExtraFields.RoutingInfo.ResolvedKeyAlias = &schemas.ResolvedKeyAlias{ModelID: "gpt-4.1-mini"}
 	assert.InDelta(t, 10000*0.0000004+2000*0.0000016, s.CalculateCost(resp, nil), 1e-12)
 }
+
+// A router behind an opaque deployment name is only recognizable from the alias's canonical name.
+func TestCalculateCost_AzureModelRouter_OpaqueDeploymentWithRouterModelName(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("model-router", "azure", "chat"): azureModelRouterPricing(),
+		makeKey("gpt-4.1-mini", "azure", "chat"): {
+			Model: "gpt-4.1-mini", Provider: "azure", Mode: "chat",
+			InputCostPerToken:  new(0.0000004),
+			OutputCostPerToken: new(0.0000016),
+		},
+	})
+	resp := makeChatResponse(schemas.Azure, "router-prod", &schemas.BifrostLLMUsage{
+		PromptTokens:     10000,
+		CompletionTokens: 2000,
+		TotalTokens:      12000,
+	})
+	resp.ChatResponse.Model = "gpt-4.1-mini"
+	resp.ChatResponse.ExtraFields.RoutingInfo.ResolvedKeyAlias = &schemas.ResolvedKeyAlias{ModelID: "dep-01", ModelName: new("model-router")}
+	assert.InDelta(t, 10000*0.00000014+10000*0.0000004+2000*0.0000016, s.CalculateCost(resp, nil), 1e-12)
+}
