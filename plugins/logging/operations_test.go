@@ -2070,6 +2070,37 @@ func TestMCPRoundTripsAreLoggedAndLinked(t *testing.T) {
 	}
 }
 
+// TestMCPAppsUseIsLogged: a call through MCP Apps carries the Apps markers, its ui:// URI without the user info,
+// query and fragment credentials ride in, and a plain call carries none.
+func TestMCPAppsUseIsLogged(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	apps := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	apps.SetValue(schemas.BifrostContextKeyIsMCPGateway, true)
+	apps.SetValue(schemas.BifrostContextKeyMCPCallerCapabilities, &mcpgo.ClientCapabilities{Extensions: map[string]any{schemas.MCPAppsExtension: map[string]any{}}})
+	apps.SetValue(schemas.BifrostContextKeyMCPRequestedToolName, "refresh")
+	apps.SetValue(schemas.BifrostContextKeyMCPToolAppOnly, true)
+	apps.SetValue(schemas.BifrostContextKeyMCPToolUIResourceURI, "ui://user:secret@dash/view?token=abc#frag")
+	logMCPToolCall(t, plugin, "mcp-apps", apps, mcpgo.NewToolResultText("refreshed"), "refreshed")
+	logMCPToolCall(t, plugin, "mcp-plain", schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), mcpgo.NewToolResultText("done"), "done")
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	appCall := findMCPToolLog(t, store, "mcp-apps")
+	for key, want := range map[string]any{"mcp_apps": true, "app_only": true, "requested_name": "refresh", "ui_resource_uri": "ui://dash/view"} {
+		if got := appCall.MetadataParsed[key]; got != want {
+			t.Fatalf("metadata[%s] = %#v, want %#v", key, got, want)
+		}
+	}
+	if plain := findMCPToolLog(t, store, "mcp-plain"); len(plain.MetadataParsed) != 0 {
+		t.Fatalf("a plain call carries no Apps markers, got %v", plain.MetadataParsed)
+	}
+}
+
 // TestPostMCPHookSkipsSignInPrompts: a tool call that stops because the caller
 // still has to sign in is a prompt, not a failed call, so it leaves no MCP log
 // row, and the sign-in link it carries stays out of the store. Arguments

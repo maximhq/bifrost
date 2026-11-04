@@ -11393,6 +11393,36 @@ const EP76 = folder("EP-76 MCP logs record input_required rounds", `Setup: ${INP
   inputsTeardown("EP-76"),
 ]);
 
+// EP-77: MCP logs record MCP Apps use.
+const EP77 = folder("EP-77 MCP logs record MCP Apps use", `Setup: ${APPS_TEXT}. An apps caller calls refresh by its server-given name on /mcp/apps and reads ui://dash/view. Each request carries its own x-request-id, which names its log entry.`, [
+  ...appsSetup("EP-77"),
+  appsCall("EP-77", "setup: an apps caller calls refresh by its server-given name on the slug", "/mcp/apps", "refresh", HOSTS_APPS, [toolText("dash:refresh")], { headers: [reqId("ep77-app")] }),
+  logRow("EP-77", "the app's call carries the MCP Apps markers", "ep77-app", [A.jsonEquals("status", "success"), A.custom("mcp_apps, app_only, requested_name and ui_resource_uri", [
+    "var m = pm.response.json().metadata || {};",
+    "pm.expect(m.mcp_apps, 'body: ' + pm.response.text()).to.equal(true);",
+    "pm.expect(m.app_only).to.equal(true);",
+    "pm.expect(m.requested_name).to.equal('refresh');",
+    "pm.expect(m.ui_resource_uri).to.equal('ui://dash/view');",
+    "pm.expect(pm.response.json().round_trip_id, 'a call outside a round trip has none').to.equal(undefined);",
+  ])]),
+  appsRead("EP-77", "setup: the apps caller reads ui://dash/view", "/mcp/apps", "ui://dash/view", HOSTS_APPS, [A.custom("keeps the served HTML", [
+    "var c = (((pm.response.json().result || {}).contents || [])[0] || {});",
+    "pm.expect(c.text, 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+    "pm.collectionVariables.set('ep77_html', c.text);",
+  ])], { headers: [reqId("ep77-read")] }),
+  logRow("EP-77", "the ui:// read logs the app's size and hash, not its HTML", "ep77-read", [A.custom("the logged text is the placeholder for the served HTML's size and SHA-256", [
+    "var C = require('crypto-js');",
+    "var bytes = C.enc.Utf8.parse(pm.collectionVariables.get('ep77_html'));",
+    "var n = bytes.sigBytes;",
+    "var size = n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : n >= 1024 ? Math.floor(n / 1024) + ' KB' : n + ' bytes';",
+    "var want = '[MCP App HTML, ' + size + ', sha256 ' + C.SHA256(bytes).toString(C.enc.Hex).slice(0, 16) + ', not shown]';",
+    "var logged = ((pm.response.json().result || [])[0] || {}).text;",
+    "pm.expect(logged, 'body: ' + pm.response.text()).to.equal(want);",
+  ])]),
+  request("EP-77", "teardown: delete the log entries", "DELETE", "/api/mcp-logs", { body: { ids: ["ep77-app", "ep77-read"] }, asserts: [A.status(200)] }),
+  ...appsTeardown("EP-77"),
+]);
+
 const INF67 = folder("INF-67 Models never get app-only tools", `Setup: ${APPS_TEXT}, only apps registered; ${LLM_TEXT}.`, [
   createClient("INF-67", { client_id: "inf-67-apps", name: "apps", connection_type: "http", connection_string: `${APPS}/mcp`, auth_type: "none", tools_to_execute: ["*"] }, "setup: register client apps"),
   llmScript("INF-67", "inf67", TEXT_OK),
@@ -12265,7 +12295,7 @@ const collection = {
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM26, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM84, ADM85, ADM86, ADM87, ADM88]),
     section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH47, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57, AUTH58, AUTH59, AUTH60, AUTH61, AUTH62, AUTH63, AUTH64]),
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, GO18, CONN23, CONN24, CONN25, CONN27, CONN28, CONN29, GO34, GO36]),
-    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, EP66, EP67, EP68, EP69, EP70, EP71, EP72, EP73, EP74, EP75, EP76, GO01, GO02, GO03, GO06, GO07, GO08, GO09, GO10, GO11, GO12, GO13, GO14, GO33, GO35]),
+    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, EP66, EP67, EP68, EP69, EP70, EP71, EP72, EP73, EP74, EP75, EP76, EP77, GO01, GO02, GO03, GO06, GO07, GO08, GO09, GO10, GO11, GO12, GO13, GO14, GO33, GO35]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43, OAS44, OAS45]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET26, SET27, SET28, SET29, SET30, SET31, SET32, SET04, SET05, SET10, SET11, SET15, SET23]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV36, GOV37, GOV38, GOV39]),

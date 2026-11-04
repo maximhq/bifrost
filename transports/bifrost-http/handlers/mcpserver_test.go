@@ -2116,16 +2116,20 @@ func TestMCPGateway_MCPAppsForPerCallerClients(t *testing.T) {
 	read(gateway("", hostsApps), "ui://notes/notes/board")
 }
 
-// recordingGatewayManager records the tool names the gateway executes.
+// recordingGatewayManager records the tool names the gateway executes, and the server-given name each
+// call was made with, as the MCP log reads it from ctx ("" for an exact name).
 type recordingGatewayManager struct {
 	coreGatewayManager
-	mu    sync.Mutex
-	names []string
+	mu        sync.Mutex
+	names     []string
+	requested []string
 }
 
 func (r *recordingGatewayManager) ExecuteChatMCPTool(ctx context.Context, call *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
+	requested, _ := ctx.Value(schemas.BifrostContextKeyMCPRequestedToolName).(string)
 	r.mu.Lock()
 	r.names = append(r.names, *call.Function.Name)
+	r.requested = append(r.requested, requested)
 	r.mu.Unlock()
 	return r.coreGatewayManager.ExecuteChatMCPTool(ctx, call)
 }
@@ -2224,7 +2228,7 @@ func TestMCPGateway_ServerGivenToolNames(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			c := connect(t, tc.path)
 			tm.mu.Lock()
-			tm.names = nil
+			tm.names, tm.requested = nil, nil
 			tm.mu.Unlock()
 			if tc.want == notFound {
 				req := mcp.CallToolRequest{}
@@ -2250,6 +2254,11 @@ func TestMCPGateway_ServerGivenToolNames(t *testing.T) {
 				assert.Empty(t, tm.names, "a refused alias never reaches Bifrost's executor")
 			} else {
 				assert.Equal(t, []string{tc.runs}, tm.names, "plugins and logs see the prefixed name")
+				requested := ""
+				if tc.tool != tc.runs {
+					requested = tc.tool
+				}
+				assert.Equal(t, []string{requested}, tm.requested, "the log keeps the server-given name a call was made with")
 			}
 		})
 	}
