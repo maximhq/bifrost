@@ -153,6 +153,8 @@ export interface SemanticStatusInfo {
 	// The shipped decision-model per-tier criteria, served for the same reason as
 	// llm_default_prompt.
 	decision_defaults?: DecisionGuidanceDefaults;
+	// The shipped phrase-suggestion instructions, for the instructions editor.
+	suggestion_default_instructions?: string;
 }
 
 export interface AnalyzerConfig {
@@ -496,4 +498,117 @@ export function parseLLMTimeoutMs(timeout: string | undefined): number {
 	const unitToMs: Record<string, number> = { ns: 1e-6, us: 1e-3, µs: 1e-3, ms: 1, s: 1000, m: 60000, h: 3600000 };
 	const milliseconds = value * unitToMs[match[2]];
 	return Number.isFinite(milliseconds) && milliseconds > 0 ? milliseconds : DEFAULT_LLM_TIMEOUT_MS;
+}
+// Phrase suggestions: written by scheduled runs over a sample of routed
+// traffic, staged into the phrase lists by the user, and marked accepted once
+// the staged phrases are saved.
+
+export const SUGGESTION_STATUSES = ["open", "accepted", "dismissed", "superseded"] as const;
+export type SuggestionStatus = (typeof SUGGESTION_STATUSES)[number];
+
+// Why a cluster of traffic needs a phrase: nothing matches it, it matches
+// weakly, it routes confidently to another tier, or its routing is split.
+export const SUGGESTION_CATEGORIES = ["uncovered", "weak", "misrouted", "mixed"] as const;
+export type SuggestionCategory = (typeof SUGGESTION_CATEGORIES)[number];
+
+export const SUGGESTION_EVERY_OPTIONS = ["1h", "2h", "3h", "4h", "6h", "8h", "12h", "1d", "2d", "3d", "1w", "2w", "4w"] as const;
+export const DEFAULT_SUGGESTION_SAMPLE_RATE = 0.1;
+export const DEFAULT_SUGGESTION_LOOKBACK_DAYS = 7;
+export const MAX_SUGGESTION_LOOKBACK_DAYS = 90;
+export const MAX_SUGGESTION_INSTRUCTIONS_CHARACTERS = 8000;
+export const DEFAULT_SUGGESTION_EVERY = "1d";
+// The gateway's default first run; runs repeat every interval from it.
+export const DEFAULT_SUGGESTION_START_AT = "1970-01-01T03:00:00Z";
+
+export interface Suggestion {
+	id: string;
+	status: SuggestionStatus;
+	tier: DecisionTier;
+	phrases: string[];
+	category: SuggestionCategory;
+	reason?: string;
+	confidence?: string;
+	request_count: number;
+	coverage: number;
+	nearest_phrase?: string;
+	nearest_tier?: string;
+	nearest_similarity: number;
+	example_log_ids: string[];
+	embedding_signature: string;
+	run_id: string;
+	last_seen_at: string;
+	resolved_at?: string;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface SuggestionRun {
+	id: string;
+	triggered_by: "schedule" | "manual";
+	// queued and running are in progress; the rest are where a run ends.
+	status: "queued" | "running" | "succeeded" | "failed" | "skipped" | "cancelled";
+	model?: string;
+	prompt_hash?: string;
+	requests_read: number;
+	clusters: number;
+	created: number;
+	refreshed: number;
+	superseded: number;
+	cost: number;
+	error?: string;
+	started_at: string;
+	finished_at?: string;
+}
+
+// One page of suggestions is listed at a time.
+export const SUGGESTIONS_PAGE_SIZE = 100;
+
+export interface SuggestionsList {
+	suggestions: Suggestion[];
+	// How many the status filter selects across every page, and the page served.
+	total: number;
+	limit: number;
+	offset: number;
+	counts: Partial<Record<SuggestionStatus, number>>;
+	enabled: boolean;
+	last_run?: SuggestionRun;
+	next_run_at?: string;
+}
+
+// isSuggestionRunInProgress reports a run that has not reached its end yet: a
+// queued one waits for the job runner, and will run.
+export function isSuggestionRunInProgress(run?: SuggestionRun): boolean {
+	return run?.status === "queued" || run?.status === "running";
+}
+
+export interface SuggestionExample {
+	log_id: string;
+	// Absent for a log that was deleted, hides its content, or that the
+	// caller cannot read.
+	text?: string;
+}
+
+export interface SuggestionDetail {
+	suggestion: Suggestion;
+	examples: SuggestionExample[];
+}
+
+export interface PhraseRouting {
+	tier: string;
+	phrase: string;
+	similarity: number;
+	accepted: boolean;
+	candidate: boolean;
+}
+
+export interface PhraseTestRequest {
+	phrases: { tier: DecisionTier; text: string }[];
+	suggestion_id?: string;
+	log_ids?: string[];
+}
+
+export interface PhraseTestResult {
+	phrases: { tier: string; text: string; nearest_existing: PhraseRouting }[];
+	examples: { log_id: string; text: string; current: PhraseRouting; with_phrases: PhraseRouting; changed: boolean }[];
+	taken_over: number;
 }

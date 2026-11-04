@@ -1,15 +1,21 @@
+import i18n from "@/lib/i18n";
 import { describe, expect, test } from "vitest";
 import {
 	analyzerConfigSchema,
 	countCanonicalSemanticPhrases,
 	DEFAULT_FORM_VALUES,
+	DEFAULT_SUGGESTIONS_FORM_VALUES,
 	getDecisionProviderState,
 	isRouterConfigured,
 	decisionGuidanceFormValues,
 	decisionTimeoutFieldValue,
+	fromLocalDateTime,
+	nextSuggestionRun,
 	shouldSeedLLMPrompt,
+	suggestionsFormValues,
 	toAnalyzerPayload,
 	toFormValues,
+	toSuggestionsPayload,
 } from "./formSchema";
 import { DEFAULT_DECISION_CONFIG, type AnalyzerConfig, type DecisionGuidanceDefaults } from "@/lib/types/complexityRouter";
 import type { ModelProvider } from "@/lib/types/config";
@@ -154,20 +160,120 @@ describe("Decision complexity configuration", () => {
 		expect(toAnalyzerPayload(parsed.data).decision).toBeUndefined();
 	});
 
-	test("carries the saved suggestions block through a save", () => {
+	test("round-trips the saved suggestions block through the form", () => {
+		const saved: AnalyzerConfig = {
+			keywords: { simple_keywords: ["simple"], medium_keywords: ["medium"], complex_keywords: ["complex"] },
+			suggestions: {
+				enabled: true,
+				sample_rate: 0.1,
+				lookback_days: 14,
+				schedule: { every: "1w", start_at: "2026-11-13T04:30:00Z" },
+				max_clustered_requests: 5000,
+				min_cluster_requests: 8,
+				provider: "openai",
+				model: "gpt-5",
+				instructions: "be brief",
+			},
+		};
+		const values = toFormValues(saved);
+		expect(values.suggestions.sample_percent).toBe(10);
+		const parsed = analyzerConfigSchema.safeParse(values);
+		expect(parsed.success).toBe(true);
+		if (!parsed.success) return;
+		expect(toAnalyzerPayload(parsed.data, saved).suggestions).toEqual(saved.suggestions);
+	});
+
+	test("keeps a small sample rate through the form instead of rounding it to zero", () => {
+		const keywords = { simple_keywords: ["simple"], medium_keywords: ["medium"], complex_keywords: ["complex"] };
+		for (const rate of [0.000001, 0.00012345, 0.1, 0.333, 1]) {
+			const saved: AnalyzerConfig = { keywords, suggestions: { enabled: true, sample_rate: rate, lookback_days: 7 } };
+			const values = toFormValues(saved);
+			expect(values.suggestions.sample_percent).toBeGreaterThan(0);
+			const parsed = analyzerConfigSchema.safeParse(values);
+			expect(parsed.success, `rate ${rate} must stay valid in the form`).toBe(true);
+			if (!parsed.success) return;
+			expect(toAnalyzerPayload(parsed.data, saved).suggestions?.sample_rate).toBe(rate);
+		}
+	});
+
+	test("leaves the cluster sizes to the gateway: not edited, kept as saved, never filled in", () => {
+		const saved: AnalyzerConfig = {
+			keywords: { simple_keywords: ["simple"], medium_keywords: ["medium"], complex_keywords: ["complex"] },
+			suggestions: { enabled: true, lookback_days: 7 },
+		};
+		const values = toFormValues(saved);
+		expect(values.suggestions).not.toHaveProperty("max_clustered_requests");
+		expect(values.suggestions).not.toHaveProperty("min_cluster_requests");
+		const parsed = analyzerConfigSchema.safeParse(values);
+		expect(parsed.success).toBe(true);
+		if (!parsed.success) return;
+		const payload = toAnalyzerPayload(parsed.data, saved).suggestions;
+		expect(payload).not.toHaveProperty("max_clustered_requests");
+		expect(payload).not.toHaveProperty("min_cluster_requests");
+	});
+
+	test("sends suggestions only once they have been used, and keeps them when turned off", () => {
 		const parsed = analyzerConfigSchema.safeParse({
 			...DEFAULT_FORM_VALUES,
 			keywords: { simple_keywords: ["simple"], medium_keywords: ["medium"], complex_keywords: ["complex"] },
 		});
 		expect(parsed.success).toBe(true);
 		if (!parsed.success) return;
-
-		const saved: AnalyzerConfig = {
-			...toAnalyzerPayload(parsed.data),
-			suggestions: { enabled: true, sample_rate: 0.25, lookback_days: 14 },
-		};
-		expect(toAnalyzerPayload(parsed.data, saved).suggestions).toEqual(saved.suggestions);
 		expect(toAnalyzerPayload(parsed.data).suggestions).toBeUndefined();
+
+		const saved: AnalyzerConfig = { ...toAnalyzerPayload(parsed.data), suggestions: { enabled: true, lookback_days: 30 } };
+		const off = { ...toFormValues(saved).suggestions, enabled: false };
+		const payload = toAnalyzerPayload({ ...parsed.data, suggestions: off }, saved).suggestions;
+		expect(payload?.enabled).toBe(false);
+		expect(payload?.lookback_days).toBe(30);
+	});
+
+	test("an unset first run shows the next run of the gateway's default schedule", () => {
+		const now = new Date("2026-11-10T10:00:00Z");
+		const daily = suggestionsFormValues({ enabled: true }, now);
+		expect(fromLocalDateTime(daily.start_at)?.toISOString()).toBe("2026-11-11T03:00:00.000Z");
+		const sixHourly = suggestionsFormValues({ enabled: true, schedule: { every: "6h" } }, now);
+		expect(fromLocalDateTime(sixHourly.start_at)?.toISOString()).toBe("2026-11-10T15:00:00.000Z");
+		const fresh = suggestionsFormValues(undefined, now);
+		expect(fromLocalDateTime(fresh.start_at)?.toISOString()).toBe("2026-11-11T03:00:00.000Z");
+	});
+
+	test("schedules send the interval and the first run in UTC", () => {
+		const base = { ...DEFAULT_SUGGESTIONS_FORM_VALUES, enabled: true };
+		const firstRun = "2026-11-12T03:30";
+		expect(toSuggestionsPayload({ ...base, every: "6h", start_at: firstRun }).schedule).toEqual({
+			every: "6h",
+			start_at: new Date(firstRun).toISOString().replace(".000Z", "Z"),
+		});
+		// Empty is the gateway's default first run, so it is left out.
+		expect(toSuggestionsPayload({ ...base, every: "2w", start_at: "" }).schedule).toEqual({ every: "2w" });
+		expect(toSuggestionsPayload({ ...base, sample_percent: 2.5 }).sample_rate).toBe(0.025);
+		expect(toSuggestionsPayload({ ...base, provider: "openai", model: "" })).not.toHaveProperty("provider");
+	});
+
+	test("rejects a first run that is not a time, and a half-chosen suggestion model", () => {
+		const values = {
+			...DEFAULT_FORM_VALUES,
+			keywords: { simple_keywords: ["simple"], medium_keywords: ["medium"], complex_keywords: ["complex"] },
+		};
+		const parse = (suggestions: Partial<typeof DEFAULT_SUGGESTIONS_FORM_VALUES>) =>
+			analyzerConfigSchema.safeParse({ ...values, suggestions: { ...DEFAULT_SUGGESTIONS_FORM_VALUES, ...suggestions } });
+		const issueAt = (result: ReturnType<typeof parse>, path: string) => result.error?.issues.find((i) => i.path.join(".") === path);
+
+		expect(parse({ start_at: "" }).success).toBe(true);
+		expect(parse({ start_at: "2026-11-12T03:30" }).success).toBe(true);
+		expect(issueAt(parse({ start_at: "tomorrow" }), "suggestions.start_at")?.message).toBe(
+			i18n.t("routing.complexityUi.suggestions.firstRunRequired", { ns: "models" }),
+		);
+		expect(issueAt(parse({ provider: "openai" }), "suggestions.model")).toBeDefined();
+	});
+
+	test("the next run is the first run while it is ahead, then one interval apart from it", () => {
+		const start = new Date("2026-11-10T03:00:00Z");
+		expect(nextSuggestionRun("1d", start, new Date("2026-11-09T00:00:00Z"))).toEqual(start);
+		expect(nextSuggestionRun("6h", start, new Date("2026-11-10T10:00:00Z"))?.toISOString()).toBe("2026-11-10T15:00:00.000Z");
+		expect(nextSuggestionRun("2w", start, new Date("2026-11-10T03:00:01Z"))?.toISOString()).toBe("2026-11-24T03:00:00.000Z");
+		expect(nextSuggestionRun("1d", new Date("not a time"), start)).toBeUndefined();
 	});
 
 	test("rejects invalid Decision fields when Decision is the semantic fallback", () => {
