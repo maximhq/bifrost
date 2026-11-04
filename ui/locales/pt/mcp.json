@@ -1176,11 +1176,9 @@
 		},
 		"access": {
 			"createFirst": "Crie primeiro este MCP virtual e depois atribua-o a chaves virtuais aqui.",
-			"loadFailed": "Não foi possível carregar as chaves virtuais.",
 			"virtualKeys": "Chaves virtuais",
 			"virtualKeysHelp": "As chaves atribuídas aqui podem alcançar este MCP virtual no seu endpoint.",
 			"assign": "Atribuir chave virtual",
-			"loading": "A carregar chaves virtuais…",
 			"empty": "Ainda sem chaves virtuais atribuídas. Atribua uma para que os autores das chamadas possam alcançar este MCP virtual.",
 			"unassignAria": "Remover atribuição da chave virtual",
 			"ownerLookupFailed": "Não foi possível verificar quem é o proprietário de \"{{name}}\", então não foi atribuído. Tente novamente.",

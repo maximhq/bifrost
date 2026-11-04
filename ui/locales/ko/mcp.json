@@ -1176,11 +1176,9 @@
 		},
 		"access": {
 			"createFirst": "먼저 이 가상 MCP을 생성한 다음 여기에서 가상 키에 할당하세요.",
-			"loadFailed": "가상 키를 로드할 수 없어요.",
 			"virtualKeys": "가상 키",
 			"virtualKeysHelp": "여기에 할당된 키는 해당 엔드포인트에서 이 가상 MCP에 도달할 수 있어요.",
 			"assign": "가상 키 할당",
-			"loading": "가상 키 로드 중…",
 			"empty": "아직 할당된 가상 키가 없어요. 발신자가 이 가상 MCP에 연결할 수 있도록 하나를 할당하세요.",
 			"unassignAria": "가상 키 할당 해제",
 			"ownerLookupFailed": "\"{{name}}\"의 소유자를 확인하지 못해 할당하지 않았습니다. 다시 시도하세요.",

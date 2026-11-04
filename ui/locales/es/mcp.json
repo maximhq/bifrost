@@ -1176,11 +1176,9 @@
 		},
 		"access": {
 			"createFirst": "Cree este Virtual MCP primero, luego asigne a las claves virtuales aquí.",
-			"loadFailed": "No podía cargar las claves virtuales.",
 			"virtualKeys": "Claves virtuales",
 			"virtualKeysHelp": "Las claves asignadas aquí pueden llegar a este PCM virtual en su punto final.",
 			"assign": "Asignar clave virtual",
-			"loading": "Cargando claves virtuales...",
 			"empty": "No hay claves virtuales asignadas todavía. Asigna una para que los solicitantes puedan llegar a este MCP virtual.",
 			"unassignAria": "Unassign clave virtual",
 			"ownerLookupFailed": "No se pudo comprobar quién es el propietario de \"{{name}}\", así que no se asignó. Inténtalo de nuevo.",
