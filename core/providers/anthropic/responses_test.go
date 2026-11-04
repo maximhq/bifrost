@@ -4157,3 +4157,39 @@ func TestToAnthropicResponsesRequest_Haiku55_EffortAndSampling(t *testing.T) {
 		t.Errorf("sampling forwarded: temperature=%v top_p=%v", out.Temperature, out.TopP)
 	}
 }
+
+// The Responses converter resolves a custom provider to its base the same way.
+func TestToAnthropicResponsesRequest_CustomProviderUsesBaseProviderRow(t *testing.T) {
+	const model = "claude-datasheet-only-test"
+	yes, no := true, false
+	setOverride(t, model, schemas.ModelCapabilities{SupportsAdaptiveThinking: &yes, SupportsNativeEffort: &yes, SupportsSamplingParams: &no})
+
+	temp := 0.0
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, schemas.Anthropic)
+
+	out, err := ToAnthropicResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+		Provider: schemas.ModelProvider("my-claude"),
+		Model:    model,
+		Input:    makeSimpleInput("think"),
+		Params: &schemas.ResponsesParameters{
+			MaxOutputTokens: new(8192),
+			Temperature:     &temp,
+			Reasoning:       &schemas.ResponsesParametersReasoning{Effort: new("medium")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if out.Thinking == nil || out.Thinking.Type != "adaptive" {
+		t.Errorf("thinking = %+v, want adaptive from the base provider's row", out.Thinking)
+	}
+	if out.OutputConfig == nil || out.OutputConfig.Effort == nil || *out.OutputConfig.Effort != "medium" {
+		t.Errorf("output_config = %+v, want effort \"medium\"", out.OutputConfig)
+	}
+	if out.Temperature != nil {
+		t.Errorf("temperature forwarded: %v", *out.Temperature)
+	}
+}

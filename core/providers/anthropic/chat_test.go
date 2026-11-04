@@ -1477,6 +1477,56 @@ func TestToAnthropicChatRequest_Haiku55_StripsTemperatureTopPTopK(t *testing.T) 
 	}
 }
 
+// A custom provider's own key matches no datasheet row; the worker stamps the
+// built-in provider it wraps on the context, and the converter resolves through it.
+// Without that, a model only the datasheet knows falls back to the name checks:
+// budget thinking without effort, and the sampling params forwarded.
+func TestToAnthropicChatRequest_CustomProviderUsesBaseProviderRow(t *testing.T) {
+	const model = "claude-datasheet-only-test"
+	yes, no := true, false
+	setOverride(t, model, schemas.ModelCapabilities{SupportsAdaptiveThinking: &yes, SupportsNativeEffort: &yes, SupportsSamplingParams: &no})
+
+	for _, tc := range []struct {
+		name        string
+		stampedBase bool
+	}{
+		{"base provider on the context", true},
+		{"no base provider on the context", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			temp := 0.0
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			if tc.stampedBase {
+				ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, schemas.Anthropic)
+			}
+			result, err := ToAnthropicChatRequest(ctx, &schemas.BifrostChatRequest{
+				Provider: schemas.ModelProvider("my-claude"),
+				Model:    model,
+				Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}},
+				},
+				Params: &schemas.ChatParameters{
+					MaxCompletionTokens: new(8192),
+					Temperature:         &temp,
+					Reasoning:           &schemas.ChatReasoning{Effort: new("low")},
+				},
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			rowApplied := result.Thinking != nil && result.Thinking.Type == "adaptive" &&
+				result.OutputConfig != nil && result.OutputConfig.Effort != nil && *result.OutputConfig.Effort == "low" &&
+				result.Temperature == nil
+			if rowApplied != tc.stampedBase {
+				t.Errorf("datasheet row applied = %v, want %v (thinking=%+v output_config=%+v temperature=%v)",
+					rowApplied, tc.stampedBase, result.Thinking, result.OutputConfig, result.Temperature)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Structured output (response_format: json_schema) round-trip tests
 // ---------------------------------------------------------------------------
