@@ -251,7 +251,6 @@ func TestPostLLMHookLogsResponses(t *testing.T) {
 func TestPostLLMHookNilUsage(t *testing.T) {
 	p, lg := newHookPlugin(t)
 	for name, resp := range map[string]*schemas.BifrostResponse{
-		"nil resp":       nil,
 		"empty":          {},
 		"chat no usage":  {ChatResponse: &schemas.BifrostChatResponse{}},
 		"chat no detail": {ChatResponse: &schemas.BifrostChatResponse{Usage: &schemas.BifrostLLMUsage{PromptTokens: 3}}},
@@ -264,7 +263,75 @@ func TestPostLLMHookNilUsage(t *testing.T) {
 			require.Equal(t, resp, got)
 		})
 	}
-	require.Len(t, lg.infos, 6)
+	require.Len(t, lg.infos, 5)
+}
+
+func TestPostLLMHookNoStaleValuesAcrossRequests(t *testing.T) {
+	p, lg := newHookPlugin(t)
+	ctx := hookCtx() // core reuses one ctx across MCP agent-loop iterations
+	resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{Usage: &schemas.BifrostLLMUsage{PromptTokens: 7}}}
+
+	_, _, err := p.PreLLMHook(ctx, bigChatReq(schemas.ChatCompletionRequest))
+	require.NoError(t, err)
+	_, _, err = p.PostLLMHook(ctx, resp, nil)
+	require.NoError(t, err)
+	require.Len(t, lg.infos, 1)
+
+	small := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{
+		Input: rounds("small", "small", "small", "small")}}
+	out, _, err := p.PreLLMHook(ctx, small)
+	require.NoError(t, err)
+	require.Same(t, small, out)
+	_, _, err = p.PostLLMHook(ctx, resp, nil)
+	require.NoError(t, err)
+	require.Len(t, lg.infos, 1, "skipped request must not log the previous request's estimates")
+}
+
+func TestPostLLMHookErrorOnlyAttemptDoesNotLog(t *testing.T) {
+	p, lg := newHookPlugin(t)
+	ctx := hookCtx()
+	_, _, err := p.PreLLMHook(ctx, bigChatReq(schemas.ChatCompletionRequest))
+	require.NoError(t, err)
+
+	berr := &schemas.BifrostError{}
+	_, gotErr, err := p.PostLLMHook(ctx, nil, berr)
+	require.NoError(t, err)
+	require.Same(t, berr, gotErr)
+	require.Empty(t, lg.infos, "error-only attempt logs nothing")
+
+	// the fallback attempt succeeds on the same ctx
+	resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{Usage: &schemas.BifrostLLMUsage{PromptTokens: 9}}}
+	_, _, err = p.PostLLMHook(ctx, resp, nil)
+	require.NoError(t, err)
+	require.Len(t, lg.infos, 1)
+	require.Contains(t, lg.infos[0], "prompt_tokens=9")
+}
+
+func TestPreLLMHookSkippedFallbackClearsEarlierEstimates(t *testing.T) {
+	p, lg := newHookPlugin(t)
+	ctx := hookCtx()
+	_, _, err := p.PreLLMHook(ctx, bigChatReq(schemas.ChatCompletionRequest))
+	require.NoError(t, err)
+	_, _, err = p.PostLLMHook(ctx, nil, &schemas.BifrostError{}) // first attempt fails
+	require.NoError(t, err)
+
+	// the fallback attempt is not compressed (embedding): nothing may leak
+	_, _, err = p.PreLLMHook(ctx, &schemas.BifrostRequest{RequestType: schemas.EmbeddingRequest})
+	require.NoError(t, err)
+	_, _, err = p.PostLLMHook(ctx, &schemas.BifrostResponse{}, nil)
+	require.NoError(t, err)
+	require.Empty(t, lg.infos)
+}
+
+func TestPreLLMHookSkipsLargePayloadMode(t *testing.T) {
+	p, _ := newHookPlugin(t)
+	ctx := hookCtx()
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+	req := bigChatReq(schemas.ChatCompletionRequest)
+	out, _, err := p.PreLLMHook(ctx, req)
+	require.NoError(t, err)
+	require.Same(t, req, out)
+	require.Nil(t, ctx.Value(ContextKeyEstimatedBefore))
 }
 
 func TestPostLLMHookWithoutEstimatesIsSilent(t *testing.T) {

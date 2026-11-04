@@ -59,6 +59,12 @@ var (
 // copy whose Input slice is the new one.
 func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (result *schemas.BifrostRequest, sc *schemas.LLMPluginShortCircuit, err error) {
 	result = req
+	// Core reuses one ctx across MCP agent-loop iterations and fallbacks, so
+	// estimates left by an earlier attempt must not describe this request.
+	// Checking before clearing keeps the common case allocation-free.
+	if ctx != nil && ctx.Value(ContextKeyEstimatedBefore) != nil {
+		clearEstimates(ctx)
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			p.warn("promptcompression: recovered from panic, sending original request: %v", r)
@@ -70,6 +76,10 @@ func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostReq
 	}
 	// Raw bodies bypass the structured Input entirely; editing it would be a no-op at best.
 	if raw, _ := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); raw {
+		return req, nil, nil
+	}
+	// Large payload mode streams the body through without the structured Input.
+	if large, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool); large {
 		return req, nil, nil
 	}
 
@@ -128,6 +138,12 @@ func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostReq
 	return out, nil, nil
 }
 
+func clearEstimates(ctx *schemas.BifrostContext) {
+	ctx.ClearValue(ContextKeyEstimatedBefore)
+	ctx.ClearValue(ContextKeyEstimatedAfter)
+	ctx.ClearValue(contextKeyStream)
+}
+
 // PostLLMHook logs estimated versus provider-reported prompt tokens when
 // PreLLMHook compressed the request. The response and error pass through
 // untouched; a panic here is swallowed so logging can never break a request.
@@ -148,18 +164,25 @@ func (p *Plugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostR
 			return resp, bifrostErr, nil
 		}
 	}
+	// An error-only attempt has no usage to report. Leave the estimates in
+	// place: the fallback attempt either overwrites them in PreLLMHook or
+	// clears them there, and its own response logs the line once.
+	if resp == nil {
+		return resp, bifrostErr, nil
+	}
+	// The line is due: consume the estimates so a later request on the same
+	// reused ctx cannot log them again.
+	clearEstimates(ctx)
 	var prompt, cached int
-	if resp != nil {
-		if cr := resp.ChatResponse; cr != nil && cr.Usage != nil {
-			prompt = cr.Usage.PromptTokens
-			if d := cr.Usage.PromptTokensDetails; d != nil {
-				cached = d.CachedReadTokens
-			}
-		} else if rr := resp.ResponsesResponse; rr != nil && rr.Usage != nil {
-			prompt = rr.Usage.InputTokens
-			if d := rr.Usage.InputTokensDetails; d != nil {
-				cached = d.CachedReadTokens
-			}
+	if cr := resp.ChatResponse; cr != nil && cr.Usage != nil {
+		prompt = cr.Usage.PromptTokens
+		if d := cr.Usage.PromptTokensDetails; d != nil {
+			cached = d.CachedReadTokens
+		}
+	} else if rr := resp.ResponsesResponse; rr != nil && rr.Usage != nil {
+		prompt = rr.Usage.InputTokens
+		if d := rr.Usage.InputTokensDetails; d != nil {
+			cached = d.CachedReadTokens
 		}
 	}
 	if p.logger != nil {
