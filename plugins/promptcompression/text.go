@@ -100,9 +100,13 @@ func normalizeWhitespace(text string) string {
 }
 
 // needsWhitespaceNormalization reports whether normalizeWhitespace would
-// change text: a space or tab before a newline or at the very end, or three
-// consecutive blank lines ("\n\n\n\n"). Most tool outputs are already clean,
-// so this cheap scan lets them skip the split-and-join entirely.
+// change text, so clean outputs (the common case) skip the split-and-join. It
+// must never answer false when the slow path would change something. Triggers:
+// a space or tab before a newline or at the very end, and a run of three
+// blank lines. Splitting on "\n" counts the empty piece before the first or
+// after the last newline as a blank line, so inside the text that run is
+// "\n\n\n\n" but at the start or end of the text "\n\n\n" already is one; a text that is exactly "\n\n" is both
+// edges at once and also qualifies.
 func needsWhitespaceNormalization(text string) bool {
 	if text == "" {
 		return false
@@ -110,5 +114,8 @@ func needsWhitespaceNormalization(text string) bool {
 	if last := text[len(text)-1]; last == ' ' || last == '\t' {
 		return true
 	}
-	return strings.Contains(text, " \n") || strings.Contains(text, "\t\n") || strings.Contains(text, "\n\n\n\n")
+	return strings.Contains(text, " \n") || strings.Contains(text, "\t\n") ||
+		strings.Contains(text, "\n\n\n\n") ||
+		strings.HasPrefix(text, "\n\n\n") || strings.HasSuffix(text, "\n\n\n") ||
+		text == "\n\n"
 }

@@ -6,7 +6,8 @@ package promptcompression
 // because only old tool output is ever rewritten. For eligible text of at
 // least MinTokens, trimMiddle cuts it, kept only if strictly shorter in bytes
 // (the marker can outweigh a tiny cut). Whitespace normalisation then runs if
-// enabled; if that leaves nothing of a non-empty text, the original is kept. It holds no API types on purpose.
+// enabled; if that leaves nothing of a non-empty text, the original is kept.
+// It holds no API types on purpose.
 func textTransform(s settings, trim bool) func(string) string {
 	return func(text string) string {
 		if !trim {

@@ -72,6 +72,9 @@ func TestNormalizeWhitespace(t *testing.T) {
 		{"a\n  \n\t\n \nb", "a\n\nb"},
 		{"    indented\n\tx", "    indented\n\tx"},
 		{"a \r\nb", "a \r\nb"}, // \r is never stripped
+		{"a\n\n\n", "a\n"},     // edge runs: the empty piece after the last "\n" is a blank line
+		{"\n\n\nx", "\nx"},
+		{"\n\n\n", ""},
 	}
 	for _, c := range cases {
 		if got := normalizeWhitespace(c.in); got != c.want {
@@ -129,6 +132,57 @@ func TestNormalizeWhitespaceUnchangedNoAlloc(t *testing.T) {
 	}
 	allocs := testing.AllocsPerRun(100, func() {
 		normalizeWhitespace(in)
+	})
+	if allocs != 0 {
+		t.Errorf("allocs = %v want 0", allocs)
+	}
+}
+
+// slowNormalizeWhitespace is the reference split-and-join implementation that
+// normalizeWhitespace's fast path must agree with on every input.
+func slowNormalizeWhitespace(text string) string {
+	lines := strings.Split(text, "\n")
+	out := make([]string, 0, len(lines))
+	for i := 0; i < len(lines); {
+		line := strings.TrimRight(lines[i], " \t")
+		if line != "" {
+			out = append(out, line)
+			i++
+			continue
+		}
+		j := i
+		for j < len(lines) && strings.TrimRight(lines[j], " \t") == "" {
+			j++
+		}
+		if j-i >= 3 {
+			out = append(out, "")
+		} else {
+			for k := i; k < j; k++ {
+				out = append(out, "")
+			}
+		}
+		i = j
+	}
+	return strings.Join(out, "\n")
+}
+
+func TestNormalizeWhitespaceFastPathMatchesSlowPath(t *testing.T) {
+	cases := []string{
+		"a\n\n\n", "\n\n\nx", "\n\n\n", " \n\n\n", "\n\n \n", "a\t", "", "\n",
+		"a\n\n\nb", "a\n\n\n\nb", "a\n", "a\n\n", "\n\n", "\n\nx", "x\n\n",
+		"a\n\n\n\n", "\n\n\n\nx", "clean\ntext",
+	}
+	for _, c := range cases {
+		if got, want := normalizeWhitespace(c), slowNormalizeWhitespace(c); got != want {
+			t.Errorf("normalizeWhitespace(%q)=%q slow=%q", c, got, want)
+		}
+	}
+}
+
+func TestTrimMiddleAlreadyTrimmedNoAlloc(t *testing.T) {
+	r1, _ := trimMiddle(numberedLines(300), 20, 20)
+	allocs := testing.AllocsPerRun(100, func() {
+		trimMiddle(r1, 20, 20)
 	})
 	if allocs != 0 {
 		t.Errorf("allocs = %v want 0", allocs)
