@@ -3,6 +3,8 @@ package openai
 import (
 	"bytes"
 	"encoding/json"
+	"strconv"
+	"strings"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -37,7 +39,7 @@ func recordResponsesServerToolUsage(response *schemas.BifrostResponsesResponse, 
 	if response == nil || response.Usage == nil {
 		return
 	}
-	schemas.SetContainerSessions(&response.Usage.ToolUsage, countContainerSessions(reqBody, response.Output))
+	schemas.SetContainerSessions(&response.Usage.ToolUsage, countContainerSessions(reqBody, response.Output, int64(response.CreatedAt)))
 	recordImageGenToolModel(response.Usage.ToolUsage, reqBody)
 }
 
@@ -72,25 +74,28 @@ func recordPassthroughContainerSessions(usage *schemas.BifrostPassthroughUsage, 
 		return
 	}
 	var w struct {
-		Output   []schemas.ResponsesMessage `json:"output"`
-		Response *struct {
-			Output []schemas.ResponsesMessage `json:"output"`
+		CreatedAt float64                    `json:"created_at"`
+		Output    []schemas.ResponsesMessage `json:"output"`
+		Response  *struct {
+			CreatedAt float64                    `json:"created_at"`
+			Output    []schemas.ResponsesMessage `json:"output"`
 		} `json:"response"`
 	}
 	if err := sonic.Unmarshal(body, &w); err != nil {
 		return
 	}
-	output := w.Output
+	output, createdAt := w.Output, w.CreatedAt
 	if w.Response != nil {
-		output = w.Response.Output
+		output, createdAt = w.Response.Output, w.Response.CreatedAt
 	}
-	schemas.SetContainerSessions(&usage.LLMUsage.ToolUsage, countContainerSessions(reqBody, output))
+	schemas.SetContainerSessions(&usage.LLMUsage.ToolUsage, countContainerSessions(reqBody, output, int64(createdAt)))
 }
 
 // countContainerSessions returns the new auto containers in output by memory tier. Only tool calls count,
-// since unused containers are free. Explicit containers were billed at create. Any request we cannot read,
-// or whose context is stored upstream, is treated as reuse: under-billing beats billing a session twice.
-func countContainerSessions(reqBody []byte, output []schemas.ResponsesMessage) map[string]int {
+// since unused containers are free. Explicit containers were billed at create. Any request we cannot read
+// is treated as reuse, and context stored upstream counts only containers started during this response:
+// under-billing beats billing a session twice.
+func countContainerSessions(reqBody []byte, output []schemas.ResponsesMessage, responseCreatedAt int64) map[string]int {
 	if !hasContainerToolCall(output) || len(reqBody) == 0 {
 		return nil
 	}
@@ -98,12 +103,8 @@ func countContainerSessions(reqBody []byte, output []schemas.ResponsesMessage) m
 	if err := sonic.Unmarshal(reqBody, &req); err != nil {
 		return nil
 	}
-	if req.PreviousResponseID != nil && *req.PreviousResponseID != "" {
-		return nil
-	}
-	if len(req.Conversation) > 0 && !bytes.Equal(req.Conversation, []byte("null")) {
-		return nil
-	}
+	storedContext := (req.PreviousResponseID != nil && *req.PreviousResponseID != "") ||
+		(len(req.Conversation) > 0 && !bytes.Equal(req.Conversation, []byte("null")))
 
 	codeTier, codeAuto, shellTier, shellAuto := "", false, "", false
 	for i := range req.Tools {
@@ -150,6 +151,9 @@ func countContainerSessions(reqBody []byte, output []schemas.ResponsesMessage) m
 		if _, ok := seen[id]; ok {
 			return
 		}
+		if storedContext && !containerStartedDuring(id, responseCreatedAt) {
+			return
+		}
 		seen[id] = struct{}{}
 		if tier == "" {
 			tier = schemas.ContainerTierDefault
@@ -183,6 +187,19 @@ func countContainerSessions(reqBody []byte, output []schemas.ResponsesMessage) m
 		}
 	}
 	return sessions
+}
+
+// maxContainerStartDelaySeconds bounds a container's start after its response's, so an id format change bills nothing.
+const maxContainerStartDelaySeconds = 24 * 60 * 60
+
+// containerStartedDuring reads the creation time OpenAI encodes as the first 8 hex digits of a container id.
+func containerStartedDuring(id string, responseCreatedAt int64) bool {
+	hex, ok := strings.CutPrefix(id, "cntr_")
+	if !ok || len(hex) < 8 || responseCreatedAt <= 0 {
+		return false
+	}
+	startedAt, err := strconv.ParseInt(hex[:8], 16, 64)
+	return err == nil && startedAt >= responseCreatedAt && startedAt-responseCreatedAt <= maxContainerStartDelaySeconds
 }
 
 // hasContainerToolCall keeps the request parse off responses that used no container tool.
