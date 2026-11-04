@@ -139,9 +139,10 @@ type MCPClientsQueryParams struct {
 
 // VirtualMCPsQueryParams holds pagination and search parameters for Virtual MCP list queries.
 type VirtualMCPsQueryParams struct {
-	Limit  int
-	Offset int
-	Search string // matches name (case-insensitive)
+	Limit       int
+	Offset      int
+	Search      string // matches name (case-insensitive)
+	MCPClientID string // only Virtual MCPs with a tool spec for this exact client_id
 }
 
 // MCPLibraryQueryParams holds pagination, filtering, search, and sort

@@ -283,13 +283,16 @@ func (h *MCPHandler) startMCPClientReauthorization(ctx *fasthttp.RequestCtx, rer
 		SendError(ctx, fasthttp.StatusBadRequest, "MCP client has not completed initial OAuth authorization yet; use initiate-verification instead")
 		return
 	}
-	if clientConfig.PendingVerification {
+	if clientConfig.PendingVerification && !awaitsVerificationOnItsRegistration(clientConfig) {
 		// A config.json-bootstrapped client links OauthConfigID before the
 		// admin ever completes consent (see InitiateOAuthFlow), so the check
 		// above alone doesn't catch this case. Reauthorizing here would
 		// resolve to the same flow_mode='admin' + mcp_client_id lookup as
 		// the in-flight bootstrap flow and rotate its state/code_verifier,
 		// breaking the bootstrap authorize URL the admin already has open.
+		// A client pending on the registration it already has (see
+		// awaitsVerificationOnItsRegistration) has no bootstrap to break:
+		// either route signs its admin in, and complete-oauth verifies it.
 		SendError(ctx, fasthttp.StatusBadRequest, "MCP client has not completed initial OAuth authorization yet; use initiate-verification instead")
 		return
 	}
@@ -379,39 +382,10 @@ func (h *MCPHandler) startMCPClientReauthorization(ctx *fasthttp.RequestCtx, rer
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("A new OAuth client was registered and installed (client_id %s replaces %s), but starting consent with it failed: %v. Do not retry this request, which would register another client: call reauthorize to run consent against the client that is now stored", newClientID, previousClientID, err))
 	}
 
-	flowInitiation, flowID, err := h.store.OAuthProvider.InitiateUserOAuthFlow(ctx, *clientConfig.OauthConfigID, clientConfig.ID, redirectURI, schemas.MCPAuthModeAdmin)
+	response, failed, err := h.startAdminSignIn(ctx, clientConfig, redirectURI, "Failed to initiate reauthorization", "reconnect")
 	if err != nil {
-		failConsentSetup("Failed to initiate reauthorization", err)
+		failConsentSetup(failed, err)
 		return
-	}
-	authorizeURL, err := h.store.OAuthProvider.BuildAdminUpstreamAuthorizeURL(ctx, flowID)
-	if err != nil {
-		failConsentSetup("Failed to build authorize URL", err)
-		return
-	}
-
-	completeURL := lib.WithBasePath(fmt.Sprintf("/api/mcp/client/%s/complete-oauth", flowInitiation.OauthConfigID))
-	// status_url carries the flow id: this client's oauth_configs row has
-	// been "authorized" since its original bootstrap and that status never
-	// regresses (see isPrematureOAuthCompletion), so a poller reading the
-	// bare config status would see "authorized" before the admin has even
-	// signed in. With flow_id the status endpoint answers from the flow row
-	// instead, which stays "pending" until the callback actually completes.
-	statusURL := lib.WithBasePath(fmt.Sprintf("/api/oauth/config/%s/status?flow_id=%s", flowInitiation.OauthConfigID, url.QueryEscape(flowID)))
-	response := map[string]any{
-		"status":          "pending_oauth",
-		"oauth_config_id": flowInitiation.OauthConfigID,
-		"flow_id":         flowID,
-		"authorize_url":   authorizeURL,
-		"expires_at":      flowInitiation.ExpiresAt,
-		"mcp_client_id":   clientConfig.ID,
-		"complete_url":    completeURL,
-		"status_url":      statusURL,
-		"next_steps": []string{
-			"1. Open authorize_url in a browser to approve access",
-			"2. Poll status_url to check when status becomes 'authorized'",
-			"3. POST complete_url to reconnect the MCP client",
-		},
 	}
 	// Reported back so the caller can show which client_id the consent it is
 	// about to run actually belongs to. Present only when a registration
@@ -423,10 +397,48 @@ func (h *MCPHandler) startMCPClientReauthorization(ctx *fasthttp.RequestCtx, rer
 	} else {
 		h.recordMCPClientAction(ctx, "mcp_client.reauthorization_started", clientConfig.ID, clientConfig.Name, map[string]any{
 			"auth_type":       clientConfig.AuthType,
-			"oauth_config_id": flowInitiation.OauthConfigID,
+			"oauth_config_id": response["oauth_config_id"],
 		})
 	}
 	SendJSON(ctx, response)
+}
+
+// startAdminSignIn opens an admin-mode flow on clientConfig's stored OAuth
+// registration and returns the pending_oauth response handing back its
+// upstream authorize URL. On failure it returns the message to report:
+// initiateFailure when the flow could not be opened. completeStep names what
+// POSTing complete_url does, for next_steps.
+//
+// status_url carries the flow id: the client's oauth_configs row has been
+// "authorized" since its original bootstrap and that status never regresses
+// (see isPrematureOAuthCompletion), so a poller reading the bare config status
+// would see "authorized" before the admin has even signed in. With flow_id the
+// status endpoint answers from the flow row instead, which stays "pending"
+// until the callback actually completes.
+func (h *MCPHandler) startAdminSignIn(ctx *fasthttp.RequestCtx, clientConfig *schemas.MCPClientConfig, redirectURI, initiateFailure, completeStep string) (map[string]any, string, error) {
+	flowInitiation, flowID, err := h.store.OAuthProvider.InitiateUserOAuthFlow(ctx, *clientConfig.OauthConfigID, clientConfig.ID, redirectURI, schemas.MCPAuthModeAdmin)
+	if err != nil {
+		return nil, initiateFailure, err
+	}
+	authorizeURL, err := h.store.OAuthProvider.BuildAdminUpstreamAuthorizeURL(ctx, flowID)
+	if err != nil {
+		return nil, "Failed to build authorize URL", err
+	}
+	return map[string]any{
+		"status":          "pending_oauth",
+		"oauth_config_id": flowInitiation.OauthConfigID,
+		"flow_id":         flowID,
+		"authorize_url":   authorizeURL,
+		"expires_at":      flowInitiation.ExpiresAt,
+		"mcp_client_id":   clientConfig.ID,
+		"complete_url":    lib.WithBasePath(fmt.Sprintf("/api/mcp/client/%s/complete-oauth", flowInitiation.OauthConfigID)),
+		"status_url":      lib.WithBasePath(fmt.Sprintf("/api/oauth/config/%s/status?flow_id=%s", flowInitiation.OauthConfigID, url.QueryEscape(flowID))),
+		"next_steps": []string{
+			"1. Open authorize_url in a browser to approve access",
+			"2. Poll status_url to check when status becomes 'authorized'",
+			fmt.Sprintf("3. POST complete_url to %s the MCP client", completeStep),
+		},
+	}, "", nil
 }
 
 // initiateMCPClientVerification handles
@@ -472,6 +484,15 @@ func (h *MCPHandler) initiateMCPClientVerification(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	if clientConfig.PendingOAuthConfig == nil {
+		// The admin verifies a client pending on the registration it already
+		// has by signing in on that registration, as reauthorize would, so its
+		// callers keep their sign-ins; a new registration would end every one
+		// of them. When its provider no longer recognises that client,
+		// reregister gets it a new one.
+		if awaitsVerificationOnItsRegistration(clientConfig) {
+			h.initiateVerificationOnRegistration(ctx, clientConfig)
+			return
+		}
 		SendError(ctx, fasthttp.StatusBadRequest, "MCP client has no pending OAuth bootstrap config to initiate from")
 		return
 	}
@@ -512,6 +533,39 @@ func (h *MCPHandler) initiateMCPClientVerification(ctx *fasthttp.RequestCtx) {
 			"3. POST complete_url to activate the MCP client",
 		},
 	})
+}
+
+// awaitsVerificationOnItsRegistration reports whether config is a per_user_oauth
+// client pending its admin step on the OAuth registration it already has, with
+// no bootstrap stash: what turning per_user_discovery off leaves. Unlike a
+// config.json client still in its first sign-in, nothing is in flight that
+// reauthorize or reregister could break.
+func awaitsVerificationOnItsRegistration(config *schemas.MCPClientConfig) bool {
+	return config.AuthType == schemas.MCPAuthTypePerUserOauth && config.PendingVerification &&
+		config.PendingOAuthConfig == nil && config.OauthConfigID != nil && *config.OauthConfigID != ""
+}
+
+// initiateVerificationOnRegistration starts the admin sign-in that verifies
+// clientConfig, a per_user_oauth client pending its admin step, on the OAuth
+// registration it already has. complete-oauth finishes it like a config.json
+// bootstrap: it discovers the tools with the admin's token, keeps that token as
+// the admin credential and clears the pending record.
+func (h *MCPHandler) initiateVerificationOnRegistration(ctx *fasthttp.RequestCtx, clientConfig *schemas.MCPClientConfig) {
+	if h.store.OAuthProvider == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "OAuth provider not configured")
+		return
+	}
+	redirectURI := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL()) + "/api/oauth/callback"
+	response, failed, err := h.startAdminSignIn(ctx, clientConfig, redirectURI, "Failed to initiate OAuth flow", "activate")
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("%s: %v", failed, err))
+		return
+	}
+	h.recordMCPClientAction(ctx, "mcp_client.verification_initiated", clientConfig.ID, clientConfig.Name, map[string]any{
+		"auth_type":       clientConfig.AuthType,
+		"oauth_config_id": response["oauth_config_id"],
+	})
+	SendJSON(ctx, response)
 }
 
 // VerifyMCPClientHeadersRequest is the body for
@@ -4902,6 +4956,23 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			})
 			SendJSON(ctx, map[string]any{"status": "success", "message": successMsg})
 			return
+		}
+		// A per_user_oauth client verifying on the registration it kept (see
+		// initiateVerificationOnRegistration) has had an "authorized" config
+		// since it was first verified, so the status check above passes before
+		// the admin has signed in. That sign-in leaves a fresh ACTIVE
+		// auth_mode='shared' token, as the admin repair's does; without one,
+		// nothing new happened yet.
+		if dbClient.AuthType == string(schemas.MCPAuthTypePerUserOauth) && dbClient.PendingOAuthConfig == nil {
+			sharedToken, tokErr := h.store.ConfigStore.GetSharedOauthTokenByConfigID(ctx, oauthConfigID)
+			if tokErr != nil {
+				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to look up the admin sign-in token: %v", tokErr))
+				return
+			}
+			if sharedToken == nil || sharedToken.Status != "active" {
+				SendError(ctx, fasthttp.StatusConflict, "Authorization has not completed yet: the admin has not finished signing in. Wait for it to finish, or call initiate-verification again.")
+				return
+			}
 		}
 		mcpClientConfig, err = h.store.ConfigStore.GetMCPClientConfigByID(ctx, dbClient.ClientID)
 		if err != nil || mcpClientConfig == nil {

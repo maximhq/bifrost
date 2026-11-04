@@ -1258,7 +1258,15 @@
 			"editConfigAria": "リレー設定を編集",
 			"viewConfigAria": "リレー設定を表示",
 			"testSheetTitle": "料金をテスト",
-			"testSheetDescription": "{{name}} の保存済みルートと料金でサンプル呼び出しを実行します。アップストリームには何も送信されません。"
+			"testSheetDescription": "{{name}} の保存済みルートと料金でサンプル呼び出しを実行します。アップストリームには何も送信されません。",
+			"gatewayPath": "ゲートウェイパス",
+			"upstream": "アップストリーム",
+			"auth": "認証",
+			"pricing": "デフォルト料金",
+			"anyPath": "任意のパス",
+			"moreActionsAria": "その他のリレー操作",
+			"deleteRelay": "リレーを削除",
+			"copyPathAria": "ゲートウェイパスをコピー"
 		},
 		"deleteDialog": {
 			"title": "リレーを削除",
@@ -1286,6 +1294,7 @@
 			"title": "ルート",
 			"importOpenapi": "OpenAPI をインポート",
 			"addRoute": "ルートを追加",
+			"description": "リクエストには最初に一致したルートが使われます。より具体的なルートが先に並びます。",
 			"columns": {
 				"method": "メソッド",
 				"route": "ルート",

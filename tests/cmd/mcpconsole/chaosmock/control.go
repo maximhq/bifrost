@@ -425,7 +425,7 @@ func (s *Server) applyControl(verb string, r *http.Request) error {
 		if s.rest.remove(body.Method, body.Path) == 0 {
 			return errBadRequest("no route matched")
 		}
-	case "oauth/expire", "oauth/revoke", "oauth/fail":
+	case "oauth/expire", "oauth/revoke", "oauth/fail", "oauth/forget":
 		return s.applyOAuthControl(strings.TrimSuffix(verb, "/"), body)
 	case "llm/script", "llm/append":
 		return s.applyLLMScript(strings.TrimSuffix(verb, "/") == "llm/script", body)
@@ -457,6 +457,10 @@ func (s *Server) applyOAuthControl(verb string, body controlBody) error {
 	case "oauth/revoke":
 		if s.oauth.revoke(body.Identity, body.Token) == 0 {
 			return errBadRequest("no live grant matched")
+		}
+	case "oauth/forget":
+		if s.oauth.forget() == 0 {
+			return errBadRequest("no dynamically registered client to forget")
 		}
 	case "oauth/fail":
 		if body.Fail == nil {
