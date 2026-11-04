@@ -7825,6 +7825,28 @@ func TestCalculateContainerSessionCost(t *testing.T) {
 }
 
 // Repricing a stored log and a cut stream both bill from a bare usage object.
+func TestCalculateCost_ContainerSessions_AzureModelRouterUsesServedModel(t *testing.T) {
+	s := containerSessionTestStore()
+	tests := []struct {
+		name, servedModel string
+		want              float64
+	}{
+		{"claude bills at anthropic's rate", "claude-sonnet-5-5", 0.05 * 5 / 60},
+		{"openai model bills at azure's rate", "gpt-6.1-sol", 0.033},
+		{"unknown served model bills at azure's rate", "", 0.033},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			usage := &schemas.ResponsesResponseUsage{ToolUsage: &schemas.ToolUsage{ContainerSessions: map[string]int{schemas.ContainerTierDefault: 1}}}
+			result := responsesResultWithSessions(schemas.Azure, "model-router", usage)
+			result.ResponsesResponse.Model = tt.servedModel
+			cost := s.CalculateCostBreakdown(result, nil)
+			require.NotNil(t, cost)
+			assert.InDelta(t, tt.want, cost.TotalCost, 1e-12)
+		})
+	}
+}
+
 func TestCalculateCostBreakdownForUsage_ContainerSessions(t *testing.T) {
 	s := containerSessionTestStore()
 	usage := &schemas.BifrostLLMUsage{

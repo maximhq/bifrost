@@ -588,7 +588,11 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 	// "model-router" deployment name on RoutingInfo.Model.
 	if result.PassthroughResponse == nil && routingInfo.Provider == schemas.Azure && schemas.IsAzureModelRouter(routingInfo.Model) &&
 		(requestType == schemas.TextCompletionRequest || requestType == schemas.ChatCompletionRequest || requestType == schemas.ResponsesRequest) {
-		return s.calculateAzureModelRouterCost(result, input, routingInfo, requestType, scopes).Add(s.calculateContainerSessionCost(input.usage, routingInfo, scopes))
+		sessionRouting := routingInfo
+		if servedModel := result.ServedModel(); servedModel != "" {
+			sessionRouting.Model = servedModel
+		}
+		return s.calculateAzureModelRouterCost(result, input, routingInfo, requestType, scopes).Add(s.calculateContainerSessionCost(input.usage, sessionRouting, scopes))
 	}
 
 	cost := s.computeCostFromInput(input, routingInfo, requestType, scopes)
