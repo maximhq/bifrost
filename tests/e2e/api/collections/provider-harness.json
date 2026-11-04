@@ -306063,7 +306063,7 @@
     },
     {
       "name": "311. Anthropic code execution container sessions on usage (container sessions)",
-      "description": "Bifrost derives usage.tool_usage.container_sessions because Anthropic reports no session count: code execution in a new container counts one session, and a request with web_search_20260209 or web_fetch_20260209 counts none because code execution is free with those tools. /v1/chat/completions is the route where the derived field reaches the client: /anthropic/v1/messages returns the provider usage and /v1/responses strips derived fields.",
+      "description": "Bifrost derives usage.tool_usage.container_sessions because Anthropic reports no session count: code execution in a new container counts one session, and a request with web_search_20260209 or web_fetch_20260209 counts none because code execution is free with those tools. The code execution cases force the tool with tool_choice required so the model cannot answer without it. /v1/chat/completions is the route where the derived field reaches the client: /anthropic/v1/messages returns the provider usage and /v1/responses strips derived fields.",
       "item": [
         {
           "name": "/v1/chat/completions anthropic claude-haiku-5-5 code execution counts one container session",
@@ -306077,7 +306077,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"anthropic/claude-haiku-5-5\",\"max_tokens\":300,\"messages\":[{\"role\":\"user\",\"content\":\"Use the code execution tool to compute 17*19. Reply with just the number.\"}],\"tools\":[{\"type\":\"code_execution_20250825\",\"name\":\"code_execution\"}]}"
+              "raw": "{\"model\":\"anthropic/claude-haiku-5-5\",\"max_tokens\":300,\"messages\":[{\"role\":\"user\",\"content\":\"Use the code execution tool to compute 17*19. Reply with just the number.\"}],\"tool_choice\":\"required\",\"tools\":[{\"type\":\"code_execution_20250825\",\"name\":\"code_execution\"}]}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -306120,7 +306120,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"anthropic/claude-haiku-5-5\",\"max_tokens\":300,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"Use the code execution tool to compute 19*23. Reply with just the number.\"}],\"tools\":[{\"type\":\"code_execution_20250825\",\"name\":\"code_execution\"}]}"
+              "raw": "{\"model\":\"anthropic/claude-haiku-5-5\",\"max_tokens\":300,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"Use the code execution tool to compute 19*23. Reply with just the number.\"}],\"tool_choice\":\"required\",\"tools\":[{\"type\":\"code_execution_20250825\",\"name\":\"code_execution\"}]}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
