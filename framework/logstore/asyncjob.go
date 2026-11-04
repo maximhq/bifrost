@@ -430,6 +430,8 @@ func getVirtualKeyFromContext(ctx *schemas.BifrostContext) *string {
 }
 
 // marshalAsyncResponse preserves completion counts before the job leaves memory.
+// Encoding stays sonic.Marshal as before the fix; only Chat/Text with an explicit
+// zero are wrapped.
 func marshalAsyncResponse(resp any) ([]byte, error) {
 	switch result := resp.(type) {
 	case *schemas.BifrostChatResponse:
@@ -437,5 +439,5 @@ func marshalAsyncResponse(resp any) ([]byte, error) {
 	case *schemas.BifrostTextCompletionResponse:
 		resp = result.WithPreservedUsage()
 	}
-	return schemas.MarshalSorted(resp)
+	return sonic.Marshal(resp)
 }

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
@@ -486,6 +487,37 @@ func TestAsyncJobCleaner_ReapsExpiredWebhookDeliveries(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNotFound)
 	_, err = store.FindWebhookDeliveryByID(ctx, "d-live")
 	assert.NoError(t, err)
+}
+
+// TestAsyncResultKeepsDefaultEncoding pins that persisted async results keep the
+// pre-fix sonic.Marshal bytes; only Chat/Text with an explicit zero are wrapped.
+func TestAsyncResultKeepsDefaultEncoding(t *testing.T) {
+	const model = "fixture<b>&</b>"
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 3, CompletionTokens: 2, TotalTokens: 5}
+	for _, tc := range []struct {
+		name string
+		resp any
+	}{
+		{"nonzero chat", &schemas.BifrostChatResponse{ID: "c", Model: model, Usage: usage}},
+		{"nonzero text", &schemas.BifrostTextCompletionResponse{ID: "t", Model: model, Usage: usage}},
+		{"responses", &schemas.BifrostResponsesResponse{Model: model}},
+		{"embedding", &schemas.BifrostEmbeddingResponse{Model: model}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want, err := sonic.Marshal(tc.resp)
+			require.NoError(t, err)
+			got, err := marshalAsyncResponse(tc.resp)
+			require.NoError(t, err)
+			require.Equal(t, string(want), string(got))
+		})
+	}
+	t.Run("explicit zero chat", func(t *testing.T) {
+		zero := &schemas.BifrostLLMUsage{PromptTokensExplicitZero: true, CompletionTokensExplicitZero: true}
+		got, err := marshalAsyncResponse(&schemas.BifrostChatResponse{ID: "z", Model: model, Usage: zero})
+		require.NoError(t, err)
+		require.Contains(t, string(got), `"model":"`+model+`"`, "wrapper keeps default encoding")
+		require.Contains(t, string(got), `"prompt_tokens":0`)
+	})
 }
 
 // Exercise the persisted job and polling response, not just the provider's wire wrapper.
