@@ -1,4 +1,5 @@
 import { getExternalBaseUrl } from "@/app/workspace/mcp-registry/views/mcpUsageGuide/utils";
+import { ExpandableText } from "@/components/expandableText";
 import { SheetNavigationButtons } from "@/components/sheetNavigationButtons";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -21,7 +22,7 @@ import { formatRelativePast } from "@/lib/utils/mcpCredential";
 import { perUserDiscoveryOn, sessionDiscoveryCell, toolSubtitle } from "@/lib/utils/mcpPerUserDiscovery";
 import { titleCaseFromSnakeCase } from "@/lib/utils/strings";
 import { Link } from "@tanstack/react-router";
-import { ArrowUpRight, Check, ChevronDown, ChevronRight, CircleAlert, Copy, Info } from "lucide-react";
+import { ArrowUpRight, Braces, Check, ChevronDown, ChevronRight, CircleAlert, Copy, Info } from "lucide-react";
 import { Fragment, ReactNode, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { DefinitionList, DefinitionRow, MCPClientCredentialSection } from "./mcpClientCredentialSection";
@@ -280,6 +281,15 @@ export default function MCPClientDetailsSheet({
 								{alert.lines.map((line) => (
 									<p key={line}>{line}</p>
 								))}
+								{(alert.timing || alert.detail) && (
+									// Keyed by server and failure: moving to another server, or a new failure on
+									// this one, starts the details collapsed rather than open from the last one.
+									<AlertFailure
+										key={`${config.client_id}:${mcpClient.last_failure?.at ?? ""}`}
+										timing={alert.timing}
+										detail={alert.detail}
+									/>
+								)}
 							</AlertDescription>
 							{alertAction && onAlertAction && (
 								<Button
@@ -733,6 +743,37 @@ export default function MCPClientDetailsSheet({
 	);
 }
 
+// AlertFailure is the alert's last line: when it last failed, and the raw error
+// behind a toggle, since the alert's title and line already say what is wrong.
+function AlertFailure({ timing, detail }: { timing?: string; detail?: string }) {
+	const { t } = useTranslation("mcp");
+	const [open, setOpen] = useState(false);
+	return (
+		<>
+			<p className="text-xs opacity-80">
+				{timing}
+				{timing && detail && " · "}
+				{detail && (
+					<button
+						type="button"
+						className="font-medium underline-offset-2 hover:underline"
+						aria-expanded={open}
+						onClick={() => setOpen((value) => !value)}
+						data-testid="mcpclient-view-alert-detail-toggle"
+					>
+						{open ? t("registry.view.hideErrorDetails") : t("registry.view.showErrorDetails")}
+					</button>
+				)}
+			</p>
+			{detail && open && (
+				<p className="font-mono text-xs break-all" data-testid="mcpclient-view-alert-detail">
+					{detail}
+				</p>
+			)}
+		</>
+	);
+}
+
 function TabCount({ n }: { n?: number }) {
 	if (n === undefined) return null;
 	return <span className="text-muted-foreground text-xs tabular-nums">{n}</span>;
@@ -849,7 +890,7 @@ function ToolRows({
 								{title}
 							</div>
 							{title !== tool.name && <div className="text-muted-foreground truncate font-mono text-xs">{tool.name}</div>}
-							{subtitle && <p className="text-muted-foreground mt-0.5 truncate text-xs">{subtitle}</p>}
+							{subtitle && <ExpandableText text={subtitle} lines={2} className="text-muted-foreground mt-0.5 text-xs" />}
 							{hints.length > 0 && (
 								<div className="mt-1.5 flex flex-wrap gap-1">
 									{hints.map((hint) => (
@@ -918,11 +959,14 @@ function ToolRows({
 									)}
 									<Button
 										type="button"
-										variant="link"
-										className="h-auto p-0"
+										variant="outline"
+										size="sm"
+										className="h-7 text-xs"
 										onClick={() => setShowJson(!showJson)}
+										aria-expanded={showJson}
 										data-testid={`mcp-tool-json-${tool.name}`}
 									>
+										<Braces className="size-3.5" />
 										{showJson ? t("registry.view.hideJsonSchema") : t("registry.view.viewJsonSchema")}
 									</Button>
 									{showJson && (

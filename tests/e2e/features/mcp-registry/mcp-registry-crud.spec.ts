@@ -741,6 +741,95 @@ test.describe("MCP Registry", () => {
     });
   });
 
+  test.describe("View Sheet Details", () => {
+    // One listed server, mocked: plain HTTP, failing its connection checks, with a tool and a prompt
+    // whose descriptions run longer than two lines.
+    const longText =
+      "Analyzes a production error and returns a detailed root cause analysis, with the stack frames involved, the recent changes that touched them and a suggested fix for each, so the next step is clear without opening the issue tracker.";
+    const failingServer = () => ({
+      config: {
+        client_id: "vd-1",
+        name: "view_details_server",
+        connection_type: "http",
+        connection_string: { value: "http://127.0.0.1:9/mcp", type: "plain_text" },
+        auth_type: "none",
+        tools_to_execute: ["*"],
+      },
+      tools: [{ name: "analyze", description: longText, parameters: { type: "object", properties: { issue: { type: "string" } } } }],
+      prompts: [{ name: "summarize", description: longText }],
+      state: "unstable",
+      last_failure: {
+        stage: "connect",
+        message: "transport error: failed to send request: dial tcp 127.0.0.1:9: connect: connection refused",
+        at: new Date().toISOString(),
+        since: new Date().toISOString(),
+      },
+      vk_configs: [],
+    });
+
+    test("keeps the failure short, TLS where it applies, and long descriptions readable", async ({ mcpRegistryPage }) => {
+      await mcpRegistryPage.page.route("**/api/mcp/clients?**", (route) =>
+        route.fulfill({ json: { clients: [failingServer()], count: 1, total_count: 1, limit: 25, offset: 0 } }),
+      );
+      await mcpRegistryPage.goto();
+      await mcpRegistryPage.viewClientDetails("view_details_server");
+      const view = mcpRegistryPage.viewSheet;
+
+      // The title says what is wrong; the raw error is one click away, and nothing else is added.
+      const alert = view.getByTestId("mcpclient-view-alert");
+      await expect(alert).toContainText("Last connection check failed");
+      await expect(alert).toContainText("Last failed");
+      await expect(alert).not.toContainText("connection refused");
+      await expect(alert).not.toContainText("Tool calls are still attempted normally");
+      const toggle = view.getByTestId("mcpclient-view-alert-detail-toggle");
+      await expect(toggle).toHaveText("Show details");
+      await toggle.click();
+      await expect(view.getByTestId("mcpclient-view-alert-detail")).toContainText("connection refused");
+      await expect(toggle).toHaveText("Hide details");
+
+      // A plain HTTP URL involves no TLS.
+      await expect(view.getByTestId("mcpclient-view-row-tls_verification")).toHaveText("Not used");
+      await expect(view.getByTestId("mcpclient-view-row-tls_ca")).toHaveCount(0);
+
+      // A long tool description can be read in full, and the JSON schema sits behind a button.
+      await view.getByTestId("mcpclient-view-tab-tools").click();
+      const toolRow = view.getByTestId("mcpclient-view-tool-analyze");
+      await toolRow.getByRole("button", { name: "View more" }).click();
+      await expect(toolRow.getByRole("button", { name: "View less" })).toBeVisible();
+      await view.getByTestId("mcp-tool-expand-analyze").click();
+      const schemaButton = view.getByTestId("mcp-tool-json-analyze");
+      await expect(schemaButton).toHaveText("View JSON schema");
+      await schemaButton.click();
+      await expect(schemaButton).toHaveAttribute("aria-expanded", "true");
+      await expect(schemaButton).toHaveText("Hide JSON schema");
+
+      // So can a prompt's.
+      await view.getByTestId("mcpclient-view-tab-prompts").click();
+      const promptRow = view.getByTestId("mcp-expose-prompts-row-summarize");
+      await promptRow.getByRole("button", { name: "View more" }).click();
+      await expect(promptRow.getByRole("button", { name: "View less" })).toBeVisible();
+    });
+
+    test("starts each server's failure details collapsed", async ({ mcpRegistryPage }) => {
+      const second = failingServer();
+      second.config = { ...second.config, client_id: "vd-2", name: "view_details_server_2" };
+      second.last_failure = { ...second.last_failure, message: "the second server's own failure" };
+      await mcpRegistryPage.page.route("**/api/mcp/clients?**", (route) =>
+        route.fulfill({ json: { clients: [failingServer(), second], count: 2, total_count: 2, limit: 25, offset: 0 } }),
+      );
+      await mcpRegistryPage.goto();
+      await mcpRegistryPage.viewClientDetails("view_details_server");
+      const view = mcpRegistryPage.viewSheet;
+      await view.getByTestId("mcpclient-view-alert-detail-toggle").click();
+      await expect(view.getByTestId("mcpclient-view-alert-detail")).toContainText("connection refused");
+
+      await view.getByRole("button", { name: "Next server" }).click();
+      await expect(view.getByTestId("mcpclient-view-title")).toContainText("view_details_server_2");
+      await expect(view.getByTestId("mcpclient-view-alert-detail")).toHaveCount(0);
+      await expect(view.getByTestId("mcpclient-view-alert-detail-toggle")).toHaveText("Show details");
+    });
+  });
+
   test.describe("View Sheet Paging", () => {
     // pagedClient is a minimal listed server; the list below holds 26 of them, so 25 on page one.
     const pagedClient = (i: number) => ({

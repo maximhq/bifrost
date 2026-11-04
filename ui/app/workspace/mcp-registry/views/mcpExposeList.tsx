@@ -1,3 +1,4 @@
+import { ExpandableText } from "@/components/expandableText";
 import { Badge } from "@/components/ui/badge";
 import type { ReactNode } from "react";
 import { Switch } from "@/components/ui/switch";
@@ -97,7 +98,13 @@ export function MCPExposeList({
 										<TableCell className="max-w-[360px]">
 											<div className="text-foreground truncate text-sm font-medium">{item.label}</div>
 											{item.detail && <div className="text-muted-foreground truncate font-mono text-xs">{item.detail}</div>}
-											{item.description && <p className="text-muted-foreground mt-0.5 truncate text-xs">{item.description}</p>}
+											{item.description && (
+												<ExpandableText
+													text={item.description}
+													lines={2}
+													className="text-muted-foreground mt-0.5 text-xs whitespace-normal"
+												/>
+											)}
 										</TableCell>
 										{extraColumn && <TableCell className="max-w-[280px]">{extraColumn.render(item)}</TableCell>}
 										<TableCell className="text-center">
