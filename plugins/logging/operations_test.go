@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	coremcp "github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -1947,6 +1948,125 @@ func TestPostMCPHookDropsArgumentsWhenContentIsDisabledLate(t *testing.T) {
 	}
 	if logEntry.ArgumentsParsed != nil {
 		t.Fatalf("expected the arguments captured before the key was stamped to be dropped, got %#v", logEntry.ArgumentsParsed)
+	}
+}
+
+// logMCPToolCall runs deploy-ask_environment through plugin's MCP hooks on ctx as logID, with upstream as
+// the tool's result.
+func logMCPToolCall(t *testing.T, plugin *LoggerPlugin, logID string, ctx *schemas.BifrostContext, upstream *mcpgo.CallToolResult, text string) {
+	t.Helper()
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-"+logID)
+	ctx.SetValue(schemas.BifrostContextKeyMCPLogID, logID)
+	toolName := "deploy-ask_environment"
+	if _, _, err := plugin.PreMCPHook(ctx, &schemas.BifrostMCPRequest{
+		RequestType: schemas.MCPRequestTypeChatToolCall,
+		ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{
+			Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolName, Arguments: `{}`},
+		},
+	}); err != nil {
+		t.Fatalf("PreMCPHook() error = %v", err)
+	}
+	message := &schemas.ChatMessage{Role: schemas.ChatMessageRoleTool, Content: &schemas.ChatMessageContent{ContentStr: &text}, ChatToolMessage: &schemas.ChatToolMessage{}}
+	message.ChatToolMessage.SetMCPResult(upstream, message.Content)
+	if _, _, err := plugin.PostMCPHook(ctx, &schemas.BifrostMCPResponse{
+		ChatMessage: message,
+		ExtraFields: schemas.BifrostMCPResponseExtraFields{MCPRequestType: schemas.MCPRequestTypeChatToolCall, ClientName: "deploy", ToolName: "ask_environment"},
+	}, nil); err != nil {
+		t.Fatalf("PostMCPHook() error = %v", err)
+	}
+}
+
+func findMCPToolLog(t *testing.T, store logstore.LogStore, id string) *logstore.MCPToolLog {
+	t.Helper()
+	entry, err := store.FindMCPToolLog(context.Background(), id)
+	if err != nil {
+		t.Fatalf("FindMCPToolLog(%s) error = %v", id, err)
+	}
+	return entry
+}
+
+// TestMCPRoundTripsAreLoggedAndLinked: a relayed input_required round is logged as input_required with
+// what it asked, every round of one call shares its round_trip_id, the retry that answers records the
+// answers, and a call outside a round trip has no round_trip_id.
+func TestMCPRoundTripsAreLoggedAndLinked(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	call := func(logID string, ctx *schemas.BifrostContext, upstream *mcpgo.CallToolResult, text string) {
+		t.Helper()
+		logMCPToolCall(t, plugin, logID, ctx, upstream, text)
+	}
+
+	asked := &mcpgo.CallToolResult{Result: mcpgo.Result{ResultType: mcpgo.ResultTypeInputRequired}, MultiRoundTripResult: mcpgo.MultiRoundTripResult{
+		RequestState: "state-1",
+		InputRequests: mcpgo.InputRequests{"environment": {Method: mcpgo.MethodElicitationCreate, Elicitation: &mcpgo.ElicitationParams{
+			Message: "Which environment?", RequestedSchema: map[string]any{"type": "object"},
+		}}},
+	}}
+	first := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	call("mcp-round-1", first, asked, "MCP tool 'deploy-ask_environment' executed successfully")
+
+	// The retry carries the round-trip id the gateway unwrapped from its requestState, and asks again.
+	carried := coremcp.RoundTripID("req-mcp-round-1")
+	resumed := func(answer string) *schemas.BifrostContext {
+		ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyMCPInputResumption, &mcpgo.MultiRoundTripParams{
+			RequestState:   "state-1",
+			InputResponses: mcpgo.InputResponses{"environment": mcpgo.NewElicitationInputResponse(mcpgo.ElicitationResult{ElicitationResponse: mcpgo.ElicitationResponse{Action: mcpgo.ElicitationResponseActionAccept, Content: map[string]any{"environment": answer}}})},
+		})
+		return schemas.NewBifrostContext(context.WithValue(ctx, schemas.BifrostContextKeyMCPRoundTripID, carried), schemas.NoDeadline)
+	}
+	call("mcp-round-2", resumed("staging"), asked, "MCP tool 'deploy-ask_environment' executed successfully")
+	call("mcp-round-3", resumed("staging"), mcpgo.NewToolResultText("deployed to staging"), "deployed to staging")
+
+	// A separate call whose server issues the same requestState is its own round trip.
+	call("mcp-other-call", schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), asked, "MCP tool 'deploy-ask_environment' executed successfully")
+
+	retryLater := &mcpgo.CallToolResult{Result: mcpgo.Result{ResultType: mcpgo.ResultTypeInputRequired}, MultiRoundTripResult: mcpgo.MultiRoundTripResult{RequestState: "state-busy"}}
+	call("mcp-retry-later", schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), retryLater, "MCP tool 'deploy-ask_environment' executed successfully")
+
+	call("mcp-plain", schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), mcpgo.NewToolResultText("done"), "done")
+
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+	find := func(id string) *logstore.MCPToolLog {
+		t.Helper()
+		return findMCPToolLog(t, store, id)
+	}
+	round1, round2, round3, other := find("mcp-round-1"), find("mcp-round-2"), find("mcp-round-3"), find("mcp-other-call")
+
+	if round1.Status != "input_required" || round2.Status != "input_required" || round3.Status != "success" {
+		t.Fatalf("statuses = %q, %q, %q, want input_required, input_required, success", round1.Status, round2.Status, round3.Status)
+	}
+	askedJSON, _ := json.Marshal(round1.ResultParsed)
+	if !strings.Contains(string(askedJSON), "Which environment?") || strings.Contains(string(askedJSON), "executed successfully") {
+		t.Fatalf("round 1 result should be what was asked, got %s", askedJSON)
+	}
+	for _, round := range []*logstore.MCPToolLog{round1, round2, round3} {
+		if round.RoundTripID == nil || *round.RoundTripID != carried {
+			t.Fatalf("every round of the call should share round_trip_id %s, %s has %v", carried, round.ID, round.RoundTripID)
+		}
+	}
+	if other.RoundTripID == nil || *other.RoundTripID == carried {
+		t.Fatalf("a separate call reusing the server's requestState needs its own round_trip_id, got %v", other.RoundTripID)
+	}
+	if _, ok := round2.MetadataParsed["next_round_trip_id"]; ok {
+		t.Fatalf("a round that asks again keeps its id, got %v", round2.MetadataParsed)
+	}
+	if later := find("mcp-retry-later"); later.Status != "input_required" || later.ResultParsed != nil || later.Result != "" || later.MetadataParsed["retry_later"] != true {
+		t.Fatalf("a retry-later round asks nothing, want input_required, no result and retry_later, got %q %v %q %v", later.Status, later.ResultParsed, later.Result, later.MetadataParsed)
+	}
+	if round1.MetadataParsed["retry_later"] != nil {
+		t.Fatalf("a round that asked for input is not retry_later, got %v", round1.MetadataParsed)
+	}
+	answersJSON, _ := json.Marshal(round3.MetadataParsed["input_responses"])
+	if !strings.Contains(string(answersJSON), `"staging"`) || !strings.Contains(string(answersJSON), `"accept"`) {
+		t.Fatalf("the answering retry should record the answers, got %s", answersJSON)
+	}
+	if plain := find("mcp-plain"); plain.RoundTripID != nil {
+		t.Fatalf("a call outside a round trip has no round_trip_id, got %v", *plain.RoundTripID)
 	}
 }
 

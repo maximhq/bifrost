@@ -468,6 +468,7 @@ const (
 	BifrostContextKeyMCPToolListing                      BifrostContextKey = "bifrost-mcp-tool-listing"                   // string (set by bifrost - DO NOT SET THIS MANUALLY) - overrides which tools an MCP tool listing includes: "model" (code mode) or "all" (the gateway's sync)
 	BifrostContextKeyMCPGatewayClient                    BifrostContextKey = "bifrost-mcp-gateway-client"                 // string (set by the MCP gateway - DO NOT SET THIS MANUALLY) - the one MCP client a /mcp/<slug> request serves
 	BifrostContextKeyMCPInputResumption                  BifrostContextKey = "bifrost-mcp-input-resumption"               // *mcp.MultiRoundTripParams (set by the MCP gateway - DO NOT SET THIS MANUALLY) - the caller's answers and requestState when it retries a tools/call that needed input
+	BifrostContextKeyMCPRoundTripID                      BifrostContextKey = "bifrost-mcp-round-trip-id"                  // string (set by the MCP gateway - DO NOT SET THIS MANUALLY) - the round-trip id a caller's retry carried in its requestState
 	BifrostContextKeyCompatConvertTextToChat             BifrostContextKey = "bifrost-compat-convert-text-to-chat"        // bool (per-request override from x-bf-compat header)
 	BifrostContextKeyCompatConvertChatToResponses        BifrostContextKey = "bifrost-compat-convert-chat-to-responses"   // bool (per-request override from x-bf-compat header)
 	BifrostContextKeyCompatShouldDropParams              BifrostContextKey = "bifrost-compat-should-drop-params"          // bool (per-request override from x-bf-compat header)

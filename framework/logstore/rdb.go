@@ -5516,6 +5516,9 @@ func (s *RDBLogStore) applyMCPFilters(baseQuery *gorm.DB, filters MCPToolLogSear
 	if filters.AgentCorrelationID != "" {
 		baseQuery = baseQuery.Where("agent_correlation_id = ?", filters.AgentCorrelationID)
 	}
+	if filters.RoundTripID != "" {
+		baseQuery = baseQuery.Where("round_trip_id = ?", filters.RoundTripID)
+	}
 	if len(filters.UserAgents) > 0 {
 		baseQuery = baseQuery.Where("user_agent IN ?", filters.UserAgents)
 	}
