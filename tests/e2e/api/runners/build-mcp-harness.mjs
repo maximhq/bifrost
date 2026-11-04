@@ -4762,6 +4762,107 @@ const AUTH58 = folder("AUTH-58 Per-user token revoked before it expires", `Setup
   restoreConfig("AUTH-58"),
 ]);
 
+// puSignIns signs sessions <p>-sess1 (alice) and <p>-sess2 (bob) in to per_user_oauth client p, each making one call.
+const puSignIns = (id, p, callers = [["1", "alice"], ["2", "bob"]]) => callers.flatMap(([n, who]) => [
+  execTool(id, `setup: execute as ${p}-sess${n} opens a flow`, `${p}-echo_tool`, [A.status(400), keepFlow(`${p}_f${n}`)], { session: `${p}-sess${n}` }),
+  ...puFinish(id, `${p}_f${n}`, who, `${p}-sess${n}'s flow`),
+  execTool(id, `setup: execute as ${p}-sess${n}`, `${p}-echo_tool`, [A.status(200)], { session: `${p}-sess${n}` }),
+]);
+// keepAuthorize posts verb (reauthorize or reregister) to client c and keeps its authorize_url in <p>_au, which consentAs follows.
+const keepAuthorize = (id, title, c, verb, p) => request(id, title, "POST", `/api/mcp/client/${c}/${verb}`, { asserts: [A.status(200)], extraTests: [`pm.collectionVariables.set('${p}_au', pm.response.json().authorize_url);`] });
+const sessIs = (id, p, n, status) => sessionsHas(id, `${p}-sess${n}'s entry is ${status}`, `${p}-u`, `${sessionPred(`${p}-sess${n}`)} && s.status === ${lit(status)}`, `${p}-sess${n}'s token entry, ${status}`);
+
+const AUTH59 = folder("AUTH-59 Re-registering a per-user OAuth client signs every caller out until each signs in again", `Setup: ${PU_TEXT(false)}; ${PU_SERVER_TEXT("auth59")}, verified as admin; auth59-sess1 completes as alice and auth59-sess2 as bob, each making one call. Then the client is re-registered, so every token was issued to the old registration.`, [
+  ...puConfig("AUTH-59", false),
+  ...puConnect("AUTH-59", "auth59"),
+  ...puSignIns("AUTH-59", "auth59"),
+  keepAuthorize("AUTH-59", "reregister", "auth59-u", "reregister", "auth59"),
+  getClient("AUTH-59", "auth59-u", "the client and its admin credential need reauth", [clientState("needs_reauth"), credStatus("needs_reauth")]),
+  sessIs("AUTH-59", "auth59", "1", "needs_reauth"),
+  sessIs("AUTH-59", "auth59", "2", "needs_reauth"),
+  execTool("AUTH-59", "execute as auth59-sess1 opens a new flow", "auth59-echo_tool", [A.status(400), keepFlow("auth59_g1", "auth59_f1")], { session: "auth59-sess1" }),
+  execTool("AUTH-59", "execute as auth59-sess2 opens a new flow", "auth59-echo_tool", [A.status(400), keepFlow("auth59_g2", "auth59_f2")], { session: "auth59-sess2" }),
+  consentAs("AUTH-59", "consent as admin on the new registration", "auth59", "admin"),
+  followCallback("AUTH-59", "follow the callback", "auth59", callbackSuccess()),
+  completeOAuth("AUTH-59", "complete", "auth59", [A.status(200)]),
+  getClient("AUTH-59", "auth59-u", "the client is healthy again", [clientState("healthy"), credStatus("active")]),
+  sessIs("AUTH-59", "auth59", "1", "needs_reauth"),
+  ...puFinish("AUTH-59", "auth59_g1", "alice", "auth59-sess1's new flow"),
+  execTool("AUTH-59", "execute as auth59-sess1 runs", "auth59-echo_tool", [A.status(200)], { session: "auth59-sess1" }),
+  sessIs("AUTH-59", "auth59", "1", "active"),
+  sessIs("AUTH-59", "auth59", "2", "needs_reauth"),
+  execTool("AUTH-59", "execute as auth59-sess2 is still sent to a flow", "auth59-echo_tool", [A.status(400), keepFlow("auth59_h2")], { session: "auth59-sess2" }),
+  mockGet("AUTH-59", "auth59", "alice's calls reached auth59 twice and bob's once", [identityCallsAre({ alice: 2, bob: 1 })]),
+  deleteClient("AUTH-59", "auth59-u"),
+  restoreConfig("AUTH-59"),
+]);
+
+const AUTH60 = folder("AUTH-60 Reauthorizing a per-user OAuth client keeps its callers signed in", `Setup: ${PU_TEXT(false)}; ${PU_SERVER_TEXT("auth60")}, verified as admin; auth60-sess1 completes as alice and makes one call. Then the admin reauthorizes the client.`, [
+  ...puConfig("AUTH-60", false),
+  ...puConnect("AUTH-60", "auth60"),
+  ...puSignIns("AUTH-60", "auth60", [["1", "alice"]]),
+  keepAuthorize("AUTH-60", "reauthorize", "auth60-u", "reauthorize", "auth60"),
+  execTool("AUTH-60", "execute as auth60-sess1 while the reauthorization is pending", "auth60-echo_tool", [A.status(200)], { session: "auth60-sess1" }),
+  consentAs("AUTH-60", "consent as admin", "auth60", "admin"),
+  followCallback("AUTH-60", "follow the callback", "auth60", callbackSuccess()),
+  completeOAuth("AUTH-60", "complete", "auth60", [A.status(200)]),
+  getClient("AUTH-60", "auth60-u", "the client is healthy", [clientState("healthy"), credStatus("active")]),
+  sessIs("AUTH-60", "auth60", "1", "active"),
+  execTool("AUTH-60", "execute as auth60-sess1 runs without a new sign-in", "auth60-echo_tool", [A.status(200)], { session: "auth60-sess1" }),
+  mockGet("AUTH-60", "auth60", "alice's three calls reached auth60", [identityCallsAre({ alice: 3 })]),
+  deleteClient("AUTH-60", "auth60-u"),
+  restoreConfig("AUTH-60"),
+]);
+
+const AUTH61 = folder("AUTH-61 A per-user OAuth client whose admin credential is revoked upstream", `Setup: ${PU_TEXT(false)}; ${PU_SERVER_TEXT("auth61")}, verified as admin; auth61-sess1 completes as alice and makes one call. Then the authorization server revokes the admin's grant. This pins today's behaviour: nothing marks the client needs_reauth, refresh-tools answers 500, and callers keep working; reauthorizing repairs refresh-tools.`, [
+  ...puConfig("AUTH-61", false),
+  ...puConnect("AUTH-61", "auth61"),
+  ...puSignIns("AUTH-61", "auth61", [["1", "alice"]]),
+  mockPost("AUTH-61", "auth61", "oauth/revoke", "setup: revoke the admin's grant", { identity: "admin" }),
+  request("AUTH-61", "refresh-tools fails", "POST", "/api/mcp/client/auth61-u/refresh-tools", { asserts: [A.status(500), A.msgContains("Failed to refresh MCP client tools")] }),
+  getClient("AUTH-61", "auth61-u", "the client still reads healthy with an active credential (today's behaviour)", [clientState("healthy"), credStatus("active")]),
+  execTool("AUTH-61", "execute as auth61-sess1 still runs", "auth61-echo_tool", [A.status(200)], { session: "auth61-sess1" }),
+  keepAuthorize("AUTH-61", "reauthorize", "auth61-u", "reauthorize", "auth61"),
+  consentAs("AUTH-61", "consent as admin", "auth61", "admin"),
+  followCallback("AUTH-61", "follow the callback", "auth61", callbackSuccess()),
+  completeOAuth("AUTH-61", "complete", "auth61", [A.status(200)]),
+  request("AUTH-61", "refresh-tools works again", "POST", "/api/mcp/client/auth61-u/refresh-tools", { asserts: [A.status(200), A.jsonEquals("tool_count", 2)] }),
+  deleteClient("AUTH-61", "auth61-u"),
+  restoreConfig("AUTH-61"),
+]);
+
+const AUTH62 = folder("AUTH-62 Per-call OAuth client: grant revoked, then reauthorized", `Setup: ${ALLOWLIST_TEXT}; fleet server auth62 (echo_tool, add_tool) as an OAuth protected resource with dynamic registration; an OAuth client on it, per call, connected as id1, which makes one call; then the authorization server revokes the grant, so the next refresh gets invalid_grant.`, [
+  ...allowlistOn("AUTH-62"),
+  ...asServer("AUTH-62", "auth62"),
+  ...connectOAuth("AUTH-62", oauthBody("auth62-c", "auth62", "auth62"), "auth62", "id1", "the per-call OAuth client"),
+  execTool("AUTH-62", "setup: execute", "auth62-echo_tool", [A.status(200)]),
+  mockPost("AUTH-62", "auth62", "oauth/revoke", "setup: revoke the grant", {}),
+  execTool("AUTH-62", "execute after the revoke is refused for re-authorization", "auth62-echo_tool", [A.status(400), A.msgContains("provider rejected the refresh")]),
+  getClient("AUTH-62", "auth62-c", "the client and its credential need reauth", [clientState("needs_reauth"), credStatus("needs_reauth")]),
+  keepAuthorize("AUTH-62", "reauthorize", "auth62-c", "reauthorize", "auth62"),
+  consentAs("AUTH-62", "consent as id1", "auth62", "id1"),
+  followCallback("AUTH-62", "follow the callback", "auth62", callbackSuccess()),
+  completeOAuth("AUTH-62", "complete", "auth62", [A.status(200)]),
+  getClient("AUTH-62", "auth62-c", "the client is healthy again", [clientState("healthy"), credStatus("active")]),
+  execTool("AUTH-62", "execute runs", "auth62-echo_tool", [A.status(200)]),
+  deleteClient("AUTH-62", "auth62-c"),
+  restoreConfig("AUTH-62"),
+]);
+
+const AUTH63 = folder("AUTH-63 Per-call OAuth client: upstream rejects an unexpired token", `Setup: ${ALLOWLIST_TEXT}; fleet server auth63 (echo_tool, add_tool) as an OAuth protected resource with dynamic registration; an OAuth client on it, per call, connected as id1, which makes one call; then the authorization server expires id1's access token, which Bifrost still believes is good.`, [
+  ...allowlistOn("AUTH-63"),
+  ...asServer("AUTH-63", "auth63"),
+  ...connectOAuth("AUTH-63", oauthBody("auth63-c", "auth63", "auth63"), "auth63", "id1", "the per-call OAuth client"),
+  execTool("AUTH-63", "setup: execute", "auth63-echo_tool", [A.status(200)]),
+  saveOAuthCounts("AUTH-63", "auth63", "auth63"),
+  mockPost("AUTH-63", "auth63", "oauth/expire", "setup: expire id1's access token", {}),
+  execTool("AUTH-63", "execute refreshes the token and runs", "auth63-echo_tool", [A.status(200)]),
+  mockGet("AUTH-63", "auth63", "exactly one refresh", [A.custom("token_refresh +1", [refreshPlus("auth63", 1)])]),
+  getClient("AUTH-63", "auth63-c", "the client stays healthy", [clientState("healthy"), credStatus("active")]),
+  deleteClient("AUTH-63", "auth63-c"),
+  restoreConfig("AUTH-63"),
+]);
+
 const gwFlow = (id, title, tool, vk, v, withToken) => request(id, title, "POST", "/mcp", {
   noAuth: true, raw: JSON.stringify(call(tool, { text: "hi" })), headers: [MCP_ACCEPT, { key: "x-bf-vk", value: `{{${vk}}}` }],
   asserts: [A.status(200), A.custom(`isError true and the text links a flow${withToken ? " with a #t= temp token" : ""}`, [
@@ -6742,6 +6843,49 @@ const ADM71 = folder("ADM-71 Resubmission merges stored values", `Setup: ${HDR_T
   execTool("ADM-71", "a call with vk1", "adm71_h-echo_tool", [A.status(200)], vkExec("adm71_vk1")),
   mockGet("ADM-71", "adm71", "adm71 ran echo_tool once", [callsIs("echo_tool", 1)]),
   ...hdrTeardown("ADM-71", "adm71"),
+]);
+
+// ADM88_VK is ES5 matching vk<n>'s header entry for adm88-h in the sessions list.
+const ADM88_VK = (n) => `s.kind === 'header' && s.virtual_key && s.virtual_key.id === pm.collectionVariables.get('adm88_vk${n}_id')`;
+// adm88Entries checks that adm88-h has n header entries, every one in status.
+const adm88Entries = (title, status, n) => request("ADM-88", title, "GET", SESSIONS, { asserts: [A.status(200), A.custom(`${n} header entries, all ${status}`, [
+  sessionRows("adm88-h", "s.kind === 'header'"),
+  `pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(${n});`,
+  `pm.expect(found.filter(function (s) { return s.status !== ${lit(status)}; }), 'body: ' + pm.response.text()).to.eql([]);`,
+])] });
+const ADM88 = folder("ADM-88 A new header key flips every caller, and each comes back on their own", `Setup: ${HDR_TEXT("adm88")}, verified with verify-headers; vk2 and vk3, also granted every tool of adm88_h; vk1, vk2 and vk3 each submit x-key good through the flow their first call opens. Then key x-extra is added. Last, x-extra is removed again while vk3 has still not resubmitted, which pins today's behaviour: vk3's calls run again on its stored x-key, but its sessions entry keeps reading needs_update.`, [
+  ...hdrSetup("ADM-88", "adm88"),
+  verifyHeaders("ADM-88", "setup: verify-headers", "adm88-h", { "x-key": "good" }, [A.status(200)]),
+  ...[2, 3].map((n) => vkCreate("ADM-88", `setup: create vk${n}, granted every tool of adm88_h`, { name: `ADM-88 adm88 vk${n}`, mcp_configs: [{ mcp_client_name: "adm88_h", tools_to_execute: ["*"] }] }, `adm88_vk${n}`)),
+  ...[1, 2, 3].flatMap((n) => [
+    execTool("ADM-88", `setup: a call with vk${n} opens a header flow`, "adm88_h-echo_tool", [A.status(400), headersFlow({ saveAs: `adm88_f${n}` })], vkExec(`adm88_vk${n}`)),
+    hdrSubmit("ADM-88", `setup: vk${n} submits x-key good`, `adm88_f${n}`, { "x-key": "good" }, [A.status(200)]),
+  ]),
+  clientPut("ADM-88", "add key x-extra", "adm88-h", { per_user_header_keys: ["x-key", "x-extra"] }, [A.status(200)]),
+  getClient("ADM-88", "adm88-h", "the client needs reauth and its admin credential needs an update", [clientState("needs_reauth"), credStatus("needs_update")]),
+  adm88Entries("every caller's entry needs an update", "needs_update", 3),
+  ...[1, 2, 3].map((n) => execTool("ADM-88", `a call with vk${n} is sent to a new header flow`, "adm88_h-echo_tool", [A.status(400), headersFlow({ saveAs: `adm88_g${n}` })], vkExec(`adm88_vk${n}`))),
+  verifyHeaders("ADM-88", "verify-headers with only x-key is refused", "adm88-h", { "x-key": "good" }, [A.status(400), A.msgEquals("user_headers missing values for required keys: x-extra")]),
+  verifyHeaders("ADM-88", "verify-headers with both keys", "adm88-h", { "x-key": "good", "x-extra": "a" }, [A.status(200)]),
+  getClient("ADM-88", "adm88-h", "the client is healthy again and its admin credential active", [clientState("healthy"), credStatus("active")]),
+  adm88Entries("the callers' entries still need an update: verify-headers repairs only the admin credential", "needs_update", 3),
+  hdrSubmit("ADM-88", "vk1 submits only x-extra", "adm88_g1", { "x-extra": "e1" }, [A.status(200)]),
+  execTool("ADM-88", "a call with vk1 runs", "adm88_h-echo_tool", [A.status(200)], vkExec("adm88_vk1")),
+  sessionsHas("ADM-88", "vk1's entry is active", "adm88-h", `${ADM88_VK(1)} && s.status === 'active'`, "vk1's header entry, active"),
+  execTool("ADM-88", "a call with vk2 is still sent to a header flow", "adm88_h-echo_tool", [A.status(400), headersFlow({})], vkExec("adm88_vk2")),
+  saveSession("ADM-88", "setup: find vk2's entry", "adm88-h", ADM88_VK(2), "adm88_e2"),
+  request("ADM-88", "reauth vk2's entry from the sessions list", "POST", "/api/mcp/sessions/{{adm88_e2}}/reauth", { asserts: [A.status(200), A.jsonEquals("kind", "headers")], extraTests: ["pm.collectionVariables.set('adm88_r2', pm.response.json().session_id);"] }),
+  hdrSubmit("ADM-88", "vk2 submits x-extra through that flow", "adm88_r2", { "x-extra": "e2" }, [A.status(200)]),
+  execTool("ADM-88", "a call with vk2 runs", "adm88_h-echo_tool", [A.status(200)], vkExec("adm88_vk2")),
+  sessionsHas("ADM-88", "vk2's entry is active", "adm88-h", `${ADM88_VK(2)} && s.status === 'active'`, "vk2's header entry, active"),
+  sessionsHas("ADM-88", "vk3's entry still needs an update", "adm88-h", `${ADM88_VK(3)} && s.status === 'needs_update'`, "vk3's header entry, needs_update"),
+  execTool("ADM-88", "a call with vk3 is still sent to a header flow", "adm88_h-echo_tool", [A.status(400), headersFlow({})], vkExec("adm88_vk3")),
+  clientPut("ADM-88", "remove key x-extra again", "adm88-h", { per_user_header_keys: ["x-key"] }, [A.status(200)]),
+  execTool("ADM-88", "a call with vk3 runs on its stored x-key", "adm88_h-echo_tool", [A.status(200)], vkExec("adm88_vk3")),
+  sessionsHas("ADM-88", "vk3's entry still reads needs_update (today's behaviour)", "adm88-h", `${ADM88_VK(3)} && s.status === 'needs_update'`, "vk3's header entry, needs_update"),
+  ...hdrTeardown("ADM-88", "adm88"),
+  vkDelete("ADM-88", "teardown: delete vk2", "adm88_vk2"),
+  vkDelete("ADM-88", "teardown: delete vk3", "adm88_vk3"),
 ]);
 
 const ADM72 = folder("ADM-72 Revoke a header credential", `Setup: ${HDR_TEXT("adm72")}, verified with verify-headers; vk1 submits x-key good plus x-other, as in ADM-70; key x-extra is then added and a call with vk1 opens a second flow, left pending.`, [
@@ -11645,8 +11789,8 @@ const collection = {
     { key: "admin_auth_header", value: "" },
   ],
   item: [
-    section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM26, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM84, ADM85, ADM86, ADM87]),
-    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH47, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57, AUTH58]),
+    section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM26, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM84, ADM85, ADM86, ADM87, ADM88]),
+    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH47, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57, AUTH58, AUTH59, AUTH60, AUTH61, AUTH62, AUTH63]),
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, GO18, CONN23, CONN24, CONN25, CONN27, CONN28, CONN29, GO34, GO36]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, EP66, EP67, EP68, EP69, EP70, EP71, EP72, EP73, EP74, EP75, GO01, GO02, GO03, GO06, GO07, GO08, GO09, GO10, GO11, GO12, GO13, GO14, GO33, GO35]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43, OAS44, OAS45]),
