@@ -478,15 +478,15 @@ func (s *Store) SetPricingRowsForTest(rows []configstoreTables.TableModelPricing
 
 // setPricingRowsUnsafe replaces pricingData with rows and rebuilds the derived
 // view. Rows that differ only by casing share a key, so one survives: the one
-// whose model name is already lowercase, then the byte-wise smallest, which
-// keeps every reload on the same row whatever order rows arrive in. The view is
+// already spelled in lowercase, then the byte-wise smallest, which keeps every
+// reload on the same row whatever order rows arrive in. The view is
 // built from all rows, so listings and base-model lookups still see every
 // spelling. Caller MUST hold s.mu write-lock.
 func (s *Store) setPricingRowsUnsafe(rows []configstoreTables.TableModelPricing) {
 	s.pricingData = make(map[string]configstoreTables.TableModelPricing, len(rows))
 	for _, row := range rows {
 		key := makeKey(row.Model, row.Provider, row.Mode)
-		if cur, taken := s.pricingData[key]; taken && !pricingRowBeats(row.Model, cur.Model) {
+		if cur, taken := s.pricingData[key]; taken && !pricingRowBeats(row, cur) {
 			continue
 		}
 		s.pricingData[key] = row
@@ -494,14 +494,17 @@ func (s *Store) setPricingRowsUnsafe(rows []configstoreTables.TableModelPricing)
 	s.rebuildDatasheetViewUnsafe(rows)
 }
 
-// pricingRowBeats reports whether model should replace current as the row for
-// their shared lowercase key.
-func pricingRowBeats(model, current string) bool {
-	modelIsLower, currentIsLower := model == strings.ToLower(model), current == strings.ToLower(current)
-	if modelIsLower != currentIsLower {
-		return modelIsLower
+// pricingRowBeats reports whether row should replace current as the row for
+// their shared lowercase key. It compares the full spelling, since the database
+// can hold rows that differ only by provider or mode casing.
+func pricingRowBeats(row, current configstoreTables.TableModelPricing) bool {
+	spelling := row.Model + "|" + row.Provider + "|" + row.Mode
+	currentSpelling := current.Model + "|" + current.Provider + "|" + current.Mode
+	rowIsLower, currentIsLower := spelling == strings.ToLower(spelling), currentSpelling == strings.ToLower(currentSpelling)
+	if rowIsLower != currentIsLower {
+		return rowIsLower
 	}
-	return model < current
+	return spelling < currentSpelling
 }
 
 // --- Internal: rebuild the datasheet view from current pricingData ---

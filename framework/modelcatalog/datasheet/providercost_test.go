@@ -259,6 +259,32 @@ func TestSetPricingRows_PicksLowercaseThenSmallest(t *testing.T) {
 	}
 }
 
+// Rows with the same model name can still differ by provider or mode casing, and
+// the database returns them in no fixed order.
+func TestSetPricingRows_ProviderAndModeCasingPicksLowercaseRow(t *testing.T) {
+	lower := azureChatRow("model-x", 1, 1)
+	upperProvider := azureChatRow("model-x", 2, 2)
+	upperProvider.Provider = "Azure"
+	upperMode := azureChatRow("model-x", 3, 3)
+	upperMode.Mode = "Chat"
+	key := makeKey("model-x", "azure", "chat")
+	for _, tc := range []struct {
+		rows         []configstoreTables.TableModelPricing
+		wantProvider string
+		wantMode     string
+	}{
+		{[]configstoreTables.TableModelPricing{lower, upperProvider, upperMode}, "azure", "chat"},
+		{[]configstoreTables.TableModelPricing{upperMode, upperProvider, lower}, "azure", "chat"},
+		{[]configstoreTables.TableModelPricing{upperProvider, upperMode}, "Azure", "chat"},
+		{[]configstoreTables.TableModelPricing{upperMode, upperProvider}, "Azure", "chat"},
+	} {
+		s := newTestStore()
+		s.setPricingRowsUnsafe(tc.rows)
+		assert.Equal(t, tc.wantProvider, s.pricingData[key].Provider)
+		assert.Equal(t, tc.wantMode, s.pricingData[key].Mode)
+	}
+}
+
 // Every fallback in getBasePricing reads through makeKey, so each one must find
 // a row whose casing differs from the request. Each row carries its
 // own input rate so the test also proves which fallback answered.
