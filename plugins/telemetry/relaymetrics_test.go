@@ -90,13 +90,14 @@ func TestRelayMetricsFromTrace(t *testing.T) {
 }
 
 // refusingRelayPipeline is the narrowest real pipeline: its pre-hook refuses every call the way
-// governance refuses a key without a grant, and its post-hook passes the refusal through.
+// governance refuses a key without a grant (a 403 classified as policy_access_denied), and its
+// post-hook passes the refusal through.
 type refusingRelayPipeline struct{}
 
 func (refusingRelayPipeline) RunRelayPreHooks(_ *schemas.BifrostContext, req *schemas.BifrostRelayRequest, entered func(int)) (*schemas.BifrostRelayRequest, *schemas.RelayPluginShortCircuit, int) {
 	entered(1)
 	status := http.StatusForbidden
-	return req, &schemas.RelayPluginShortCircuit{Error: &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Message: "virtual key has no grant for relay tavily"}}}, 1
+	return req, &schemas.RelayPluginShortCircuit{Error: &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Message: "virtual key has no grant for relay tavily"}, ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypePolicyAccessDenied}}}, 1
 }
 
 func (refusingRelayPipeline) RunRelayPostHooks(_ *schemas.BifrostContext, resp *schemas.BifrostRelayResponse, bifrostErr *schemas.BifrostError, _ int) (*schemas.BifrostRelayResponse, *schemas.BifrostError) {
@@ -162,7 +163,7 @@ func TestRelayMetricsCountRefusedCalls(t *testing.T) {
 				for _, l := range m.GetLabel() {
 					labels[l.GetName()] = l.GetValue()
 				}
-				if labels["relay_name"] != "tavily" || labels["status_code"] != "403" || labels["error_type"] != "403" || labels["method"] != "POST" {
+				if labels["relay_name"] != "tavily" || labels["status_code"] != "403" || labels["error_type"] != string(schemas.ErrorTypePolicyAccessDenied) || labels["method"] != "POST" {
 					t.Fatalf("refused call labels = %v", labels)
 				}
 				if m.GetHistogram().GetSampleCount() != 1 {
@@ -178,5 +179,56 @@ func TestRelayMetricsCountRefusedCalls(t *testing.T) {
 	}
 	if costs != 0 {
 		t.Fatalf("a refused call charges nothing, got %d cost series", costs)
+	}
+}
+
+// TestRelayMetricsCarryCustomLabelsAndUpstream pins that the relay metrics carry the configured
+// custom labels from the trace's x-bf-dim-* dimensions, as the LLM metrics do, record the
+// upstream time, and take the whole call's duration from the span.
+func TestRelayMetricsCarryCustomLabelsAndUpstream(t *testing.T) {
+	p, err := Init(&Config{CustomLabels: []string{"region", "relay_name"}}, nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	start := time.Now()
+	trace := &schemas.Trace{
+		Attributes: map[string]any{schemas.TraceAttrDimensions: map[string]string{"region": "eu-west"}},
+		RootSpan:   &schemas.Span{Attributes: map[string]any{schemas.AttrBifrostOverheadDurationMs: 3.0}},
+		Spans: []*schemas.Span{{Kind: schemas.SpanKindRelay, Status: schemas.SpanStatusOk, StartTime: start, EndTime: start.Add(time.Millisecond), Attributes: map[string]any{
+			schemas.AttrBifrostRelayName: "tavily", schemas.AttrHTTPRequestMethod: "POST", schemas.AttrHTTPResponseStatusCode: 200,
+			schemas.AttrBifrostRelayUpstreamDurationMs: 500.0, schemas.AttrBifrostRelayDurationMs: 750.0,
+		}}},
+	}
+	if err := p.Inject(context.Background(), trace); err != nil {
+		t.Fatal(err)
+	}
+	families, err := p.registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]float64{}
+	for _, family := range families {
+		switch family.GetName() {
+		case "bifrost_relay_operation_duration_seconds", "bifrost_relay_upstream_socket_duration_seconds", "bifrost_relay_overhead_latency_microseconds":
+			for _, m := range family.GetMetric() {
+				labels := map[string]string{}
+				for _, l := range m.GetLabel() {
+					labels[l.GetName()] = l.GetValue()
+				}
+				if labels["region"] != "eu-west" {
+					t.Fatalf("%s labels = %v, want the region dimension", family.GetName(), labels)
+				}
+				seen[family.GetName()] = m.GetHistogram().GetSampleSum()
+			}
+		}
+	}
+	if got := seen["bifrost_relay_operation_duration_seconds"]; got < 0.749 || got > 0.751 {
+		t.Fatalf("duration = %v, want the whole call's 0.75s", got)
+	}
+	if got := seen["bifrost_relay_upstream_socket_duration_seconds"]; got < 0.499 || got > 0.501 {
+		t.Fatalf("upstream = %v, want 0.5s", got)
+	}
+	if got := seen["bifrost_relay_overhead_latency_microseconds"]; got < 2999 || got > 3001 {
+		t.Fatalf("overhead = %v, want the root span's 3ms in microseconds", got)
 	}
 }

@@ -568,6 +568,9 @@ RelayLog:
       type: array
       items:
         type: string
+    session_id:
+      type: string
+      description: Session identity resolved at ingress (x-bf-session-id), as on LLM and MCP log rows.
     user_agent:
       type: string
       description: Raw HTTP `User-Agent` of the calling client.
@@ -677,12 +680,16 @@ RelayLogStats:
     error_count:
       type: integer
       format: int64
+    cancelled_count:
+      type: integer
+      format: int64
+      description: Calls the caller hung up on, answered with 499, or whose own deadline expired.
     success_rate:
       type: number
-      description: Percentage of requests that succeeded.
+      description: Percentage of finished calls (success, error, cancelled) that succeeded, as on /api/logs/stats; calls still processing are left out.
     average_latency:
       type: number
-      description: Milliseconds.
+      description: Milliseconds, over finished calls.
     total_cost:
       type: number
     total_units:

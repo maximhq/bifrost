@@ -14,6 +14,159 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+func TestWebSearchStreamQueryVariants(t *testing.T) {
+	for _, passthrough := range []bool{false, true} {
+		for _, prepopulated := range []bool{false, true} {
+			t.Run(fmt.Sprintf("passthrough=%t/prepopulated=%t", passthrough, prepopulated), func(t *testing.T) {
+				ctx := schemas.NewBifrostContext(nil, time.Time{})
+				if passthrough {
+					SetResponsesStreamPassthrough(ctx)
+				}
+				for i, query := range []string{"bbc top headline", "東京 \"news\"\nweather"} {
+					item := &schemas.ResponsesMessage{
+						ID: schemas.Ptr(fmt.Sprintf("srvtoolu_%d", i)), Type: schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{Action: &schemas.ResponsesToolMessageActionStruct{
+							ResponsesWebSearchToolCallAction: &schemas.ResponsesWebSearchToolCallAction{Type: "search", Query: &query},
+						}},
+					}
+					startItem := *item
+					if !prepopulated {
+						startItem.ResponsesToolMessage = nil
+					}
+					events := ToAnthropicResponsesStreamResponse(ctx, &schemas.BifrostResponsesStreamResponse{
+						Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, Item: &startItem, OutputIndex: &i,
+					})
+					events = append(events, ToAnthropicResponsesStreamResponse(ctx, &schemas.BifrostResponsesStreamResponse{
+						Type: schemas.ResponsesStreamResponseTypeOutputItemDone, Item: item, OutputIndex: &i,
+					})...)
+					var input strings.Builder
+					index, stops := -1, 0
+					for _, event := range events {
+						if stops != 0 {
+							t.Fatal("event emitted after search block closed")
+						}
+						switch event.Type {
+						case AnthropicStreamEventTypeContentBlockStart:
+							index = *event.Index
+							if string(event.ContentBlock.Input) != "{}" {
+								input.Write(event.ContentBlock.Input)
+							}
+						case AnthropicStreamEventTypeContentBlockDelta:
+							if *event.Index != index {
+								t.Fatal("delta index differs from start")
+							}
+							input.WriteString(*event.Delta.PartialJSON)
+						case AnthropicStreamEventTypeContentBlockStop:
+							if *event.Index != index {
+								t.Fatal("stop index differs from start")
+							}
+							stops++
+						}
+					}
+					var replay struct {
+						Query string `json:"query"`
+					}
+					if err := json.Unmarshal([]byte(input.String()), &replay); err != nil {
+						t.Fatalf("invalid or duplicated input %q: %v", input.String(), err)
+					}
+					if replay.Query != query || stops != 1 {
+						t.Fatalf("query=%q stops=%d, want %q and one stop", replay.Query, stops, query)
+					}
+				}
+			})
+		}
+	}
+}
+
+func BenchmarkWebSearchStreamQueryReplay(b *testing.B) {
+	for _, prepopulated := range []bool{false, true} {
+		b.Run(fmt.Sprintf("prepopulated=%t", prepopulated), func(b *testing.B) {
+			item := &schemas.ResponsesMessage{
+				ID: schemas.Ptr("srvtoolu_bench"), Type: schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{Action: &schemas.ResponsesToolMessageActionStruct{
+					ResponsesWebSearchToolCallAction: &schemas.ResponsesWebSearchToolCallAction{Type: "search", Query: schemas.Ptr("bbc top headline")},
+				}},
+			}
+			startItem := *item
+			if !prepopulated {
+				startItem.ResponsesToolMessage = nil
+			}
+			start := &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, Item: &startItem, OutputIndex: schemas.Ptr(0)}
+			done := &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemDone, Item: item, OutputIndex: schemas.Ptr(0)}
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx := schemas.NewBifrostContext(nil, time.Time{})
+				ToAnthropicResponsesStreamResponse(ctx, start)
+				ToAnthropicResponsesStreamResponse(ctx, done)
+			}
+		})
+	}
+}
+
+func BenchmarkAnthropicTextStreamQueryReplay(b *testing.B) {
+	ctx := schemas.NewBifrostContext(nil, time.Time{})
+	ToAnthropicResponsesStreamResponse(ctx, &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, OutputIndex: schemas.Ptr(0),
+		Item: &schemas.ResponsesMessage{ID: schemas.Ptr("msg_bench"), Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage)},
+	})
+	delta := &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, ItemID: schemas.Ptr("msg_bench"), OutputIndex: schemas.Ptr(0), Delta: schemas.Ptr("hello")}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		ToAnthropicResponsesStreamResponse(ctx, delta)
+	}
+}
+
+func TestWebSearchStreamQueryReplay(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, time.Time{})
+	state := AcquireAnthropicResponsesStreamState()
+	defer ReleaseAnthropicResponsesStreamState(state)
+	var input string
+	index := -1
+	seq := 0
+	for _, raw := range webSearchStreamEvents {
+		var chunk AnthropicStreamEvent
+		if err := sonic.Unmarshal([]byte(raw), &chunk); err != nil {
+			t.Fatal(err)
+		}
+		responses, bErr, _ := chunk.ToBifrostResponsesStream(ctx, seq, state)
+		if bErr != nil {
+			t.Fatal(bErr)
+		}
+		for _, response := range responses {
+			seq++
+			for _, event := range ToAnthropicResponsesStreamResponse(ctx, response) {
+				if event.ContentBlock != nil && event.ContentBlock.Type == AnthropicContentBlockTypeServerToolUse {
+					index = *event.Index
+					if string(event.ContentBlock.Input) != "{}" {
+						input = string(event.ContentBlock.Input)
+					}
+				}
+				if event.Index == nil || *event.Index != index {
+					continue
+				}
+				if event.Delta != nil && event.Delta.Type == AnthropicStreamDeltaTypeInputJSON && event.Delta.PartialJSON != nil {
+					input += *event.Delta.PartialJSON
+				}
+				if event.Type == AnthropicStreamEventTypeContentBlockStop {
+					var replay struct {
+						Query string `json:"query"`
+					}
+					if err := json.Unmarshal([]byte(input), &replay); err != nil {
+						t.Fatalf("web_search replay input = %q; want JSON with query %q: %v", input, "bbc top headline", err)
+					}
+					if replay.Query != "bbc top headline" {
+						t.Fatalf("replay query = %q, want %q", replay.Query, "bbc top headline")
+					}
+				}
+			}
+		}
+	}
+	if index == -1 {
+		t.Fatal("missing web_search server_tool_use")
+	}
+}
+
 // makeResponsesTextFormat returns a minimal json_schema text config for the
 // Responses API structured-output request path.
 func makeResponsesTextFormat(schemaName string) *schemas.ResponsesTextConfig {

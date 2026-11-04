@@ -938,6 +938,7 @@ func HandleOpenAITextCompletionStreaming(
 
 				if sendBackRawResponse {
 					response.ExtraFields.RawResponse = jsonData
+					response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatOpenAITextCompletionChunk
 				}
 
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(&response, nil, nil, nil, nil, nil), responseChan, postHookSpanFinalizer)
@@ -1674,6 +1675,7 @@ func HandleOpenAIChatCompletionStreaming(
 				convStart := time.Now()
 				spreadResponses := response.ToBifrostResponsesStreamResponse(responsesStreamState)
 				schemas.AddStreamConvert(ctx, time.Since(convStart))
+				rawIdx := providerUtils.ResponsesStreamRawIndex(spreadResponses, 0)
 				for i, response := range spreadResponses {
 					if response.Type == schemas.ResponsesStreamResponseTypeError {
 						bifrostErr := &schemas.BifrostError{
@@ -1705,11 +1707,13 @@ func HandleOpenAIChatCompletionStreaming(
 					// Stamping every one of them made framework/streaming/responses.go
 					// concatenate that single frame once per event, so the captured raw
 					// response reported frames the provider never sent twice over. Only
-					// the first event drains, and it carries every frame queued since
-					// the last emitted event - including frames that produced no event
-					// of their own.
-					if sendBackRawResponse && i == 0 {
+					// one event drains, and it carries every frame queued since the last
+					// emitted event - including frames that produced no event of their
+					// own. It is the event streaming the frame's text or arguments, so the
+					// raw text never travels ahead of the normalized text it backs.
+					if sendBackRawResponse && i == rawIdx {
 						response.ExtraFields.RawResponse = drainPendingRawFrames()
+						response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatOpenAIChatCompletionChunk
 					}
 
 					if response.Type == schemas.ResponsesStreamResponseTypeCompleted || response.Type == schemas.ResponsesStreamResponseTypeIncomplete {
@@ -1865,6 +1869,7 @@ func HandleOpenAIChatCompletionStreaming(
 
 					if sendBackRawResponse {
 						response.ExtraFields.RawResponse = drainPendingRawFrames()
+						response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatOpenAIChatCompletionChunk
 					}
 
 					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, &response, nil, nil, nil, nil), responseChan, postHookSpanFinalizer)
@@ -1921,6 +1926,7 @@ func HandleOpenAIChatCompletionStreaming(
 						trailing = existing + "\n\n" + trailing
 					}
 					pendingFinalEvent.ExtraFields.RawResponse = trailing
+					pendingFinalEvent.ExtraFields.RawResponseFormat = schemas.RawResponseFormatOpenAIChatCompletionChunk
 				}
 				pendingFinalEvent.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -1948,6 +1954,7 @@ func HandleOpenAIChatCompletionStreaming(
 			// carrier they will ever get.
 			if sendBackRawResponse && len(pendingRawFrames) > 0 {
 				response.ExtraFields.RawResponse = drainPendingRawFrames()
+				response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatOpenAIChatCompletionChunk
 			}
 			response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -2423,6 +2430,7 @@ func HandleOpenAIResponsesStreaming(
 				}
 				if sendBackRawResponse {
 					response.ExtraFields.RawResponse = jsonData
+					response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatOpenAIResponsesStreamEvent
 				}
 			} else {
 				// Per-event decode -> "response-parse" (Serialization) stream phase.
@@ -2454,6 +2462,7 @@ func HandleOpenAIResponsesStreaming(
 
 				if sendBackRawResponse {
 					response.ExtraFields.RawResponse = jsonData
+					response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatOpenAIResponsesStreamEvent
 				}
 			}
 
