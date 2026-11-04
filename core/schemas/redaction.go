@@ -43,22 +43,6 @@ type RawRequestBodyTextTransformer func(rawBody []byte, rewrites []TextRewrite) 
 // forwarding the original native response when its normalized counterpart has changed.
 type RawResponseTextTransformer func(rawResponse any, rewrites []TextRewrite) (any, error)
 
-// RawStreamTextEvent identifies guardrail-visible text carried by one provider-native stream event.
-type RawStreamTextEvent struct {
-	TargetID string
-	Text     string
-}
-
-// RawStreamTextCodec inspects and rewrites text in one provider-native raw stream event.
-// Integrations own this contract because only they know which raw event fields mirror
-// normalized assistant text; unrelated reasoning, tool, and lifecycle fields stay opaque.
-type RawStreamTextCodec interface {
-	// Inspect returns the event's text and opaque provider target identity when it is eligible.
-	Inspect(rawResponse string) (event RawStreamTextEvent, eligible bool, err error)
-	// Rewrite returns a copy of an eligible raw event with only its text field replaced.
-	Rewrite(rawResponse string, text string) (string, error)
-}
-
 // RedactionPhase identifies which request lifecycle phase produced a redaction finding.
 type RedactionPhase string
 

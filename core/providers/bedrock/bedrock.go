@@ -2161,6 +2161,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 
 						if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 							response.ExtraFields.RawResponse = string(message.Payload)
+							response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatBedrockConverseStreamEvent
 						}
 
 						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan, postHookSpanFinalizer)
@@ -2189,7 +2190,9 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger, postHookSpanFinalizer)
 					return
 				}
-				for _, response := range responses {
+				// Attach the upstream event to exactly one response: the one streaming its text or arguments.
+				rawIdx := providerUtils.ResponsesStreamRawIndex(responses, len(responses)-1)
+				for i, response := range responses {
 					if response != nil {
 						response.ExtraFields = schemas.BifrostResponseExtraFields{
 							ChunkIndex: chunkIndex,
@@ -2198,8 +2201,9 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 						chunkIndex++
 						lastChunkTime = time.Now()
 
-						if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+						if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) && i == rawIdx {
 							response.ExtraFields.RawResponse = string(message.Payload)
+							response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatBedrockConverseStreamEvent
 						}
 
 						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan, postHookSpanFinalizer)

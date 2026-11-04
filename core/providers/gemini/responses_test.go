@@ -2237,9 +2237,9 @@ func TestGeminiContinuationRequestRoundTrip(t *testing.T) {
 	}
 }
 
-// TestGeminiResponsesRawAttachment verifies a Gemini chunk's raw payload rides on the event carrying its text, so the
-// closing events a finishing chunk also expands into never hold text they do not back, and that the payload is
-// declared only when that one event carries all of the chunk's text.
+// TestGeminiResponsesRawAttachment verifies a Gemini chunk's raw payload rides on the event carrying its text or its
+// function call's whole arguments, so the closing events a finishing chunk also expands into never hold text they do
+// not back, and that the payload is declared only when that one event carries all of the chunk's text and arguments.
 func TestGeminiResponsesRawAttachment(t *testing.T) {
 	textChunk := func(finish FinishReason, texts ...string) *GenerateContentResponse {
 		parts := make([]*Part, 0, len(texts))
@@ -2247,6 +2247,9 @@ func TestGeminiResponsesRawAttachment(t *testing.T) {
 			parts = append(parts, &Part{Text: text})
 		}
 		return &GenerateContentResponse{Candidates: []*Candidate{{Content: &Content{Role: "model", Parts: parts}, FinishReason: finish}}}
+	}
+	callChunk := func(parts ...*Part) *GenerateContentResponse {
+		return &GenerateContentResponse{Candidates: []*Candidate{{Content: &Content{Role: "model", Parts: parts}}}}
 	}
 	cases := map[string]struct {
 		chunks     []*GenerateContentResponse
@@ -2273,6 +2276,22 @@ func TestGeminiResponsesRawAttachment(t *testing.T) {
 		"text spread over several deltas": {
 			chunks:   []*GenerateContentResponse{textChunk("", "Hello"), textChunk(FinishReasonStop, " there", " friend")},
 			wantType: schemas.ResponsesStreamResponseTypeCompleted,
+		},
+		"one function call": {
+			chunks:     []*GenerateContentResponse{callChunk(&Part{FunctionCall: &FunctionCall{Name: "notify", Args: json.RawMessage(`{"to":"alex@example.com"}`)}})},
+			wantType:   schemas.ResponsesStreamResponseTypeOutputItemDone,
+			wantFormat: schemas.RawResponseFormatGeminiStreamChunk,
+		},
+		"text and a function call": {
+			chunks:   []*GenerateContentResponse{callChunk(&Part{Text: "Sending"}, &Part{FunctionCall: &FunctionCall{Name: "notify", Args: json.RawMessage(`{"to":"alex@example.com"}`)}})},
+			wantType: schemas.ResponsesStreamResponseTypeOutputItemDone,
+		},
+		"two function calls": {
+			chunks: []*GenerateContentResponse{callChunk(
+				&Part{FunctionCall: &FunctionCall{Name: "notify", Args: json.RawMessage(`{"to":"alex@example.com"}`)}},
+				&Part{FunctionCall: &FunctionCall{Name: "notify", Args: json.RawMessage(`{"to":"sam@example.com"}`)}},
+			)},
+			wantType: schemas.ResponsesStreamResponseTypeOutputItemDone,
 		},
 	}
 	for name, tc := range cases {
