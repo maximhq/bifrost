@@ -22,7 +22,7 @@ BENCH_MODEL=openai/gpt-4o-mini node benchmark/run.mjs --dry-run   # prints reque
 1. Build and start the gateway from the repo root with the plugin **disabled**. In the gateway `config.json` leave the
    `prompt_compression` entry out or set `"enabled": false`, or toggle it at runtime with
    `POST /api/plugins` (enable) and `DELETE /api/plugins/prompt_compression` (disable).
-   For static builds on glibc, DNS resolution needs the Go resolver:
+   Static builds on some glibc systems need `GODEBUG=netdns=go` for DNS resolution:
 
    ```sh
    GODEBUG=netdns=go ./tmp/bifrost-http -app-dir ./data -port 8080

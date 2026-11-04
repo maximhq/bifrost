@@ -4671,13 +4671,13 @@
                   "properties": {
                     "tool_output_min_age_turns": {
                       "type": "integer",
-                      "description": "Number of user turns that must pass after a tool output before it becomes eligible for compression",
+                      "description": "Number of assistant turns that must come after a tool output before it can be trimmed (Chat counts assistant messages; Responses counts runs of consecutive assistant items once). Any value of 1 or more keeps the newest tool outputs untouched; 0 makes every tool output eligible",
                       "minimum": 0,
                       "default": 2
                     },
                     "tool_output_min_tokens": {
                       "type": "integer",
-                      "description": "Estimated token size (ceil(bytes/4)) a tool output must exceed before it is trimmed",
+                      "description": "Estimated token size (ceil(bytes/4)) a tool output must reach (at least this many) before it is trimmed",
                       "minimum": 0,
                       "default": 500
                     },
@@ -4695,12 +4695,12 @@
                     },
                     "dedupe_tool_outputs": {
                       "type": "boolean",
-                      "description": "Replace a tool output identical to an earlier one with a short reference stub",
+                      "description": "Replace each older tool output that is byte-identical to a newer one with a short stub naming the call of the next newer identical copy, so existing stubs do not change when another duplicate arrives. Applies regardless of age",
                       "default": true
                     },
                     "normalize_whitespace": {
                       "type": "boolean",
-                      "description": "Strip trailing spaces and tabs and squeeze runs of 3 or more blank lines. Leading indentation is never changed.",
+                      "description": "Strip trailing spaces and tabs and squeeze runs of 3 or more blank lines, in old tool outputs only (those at least tool_output_min_age_turns old). User, assistant and system text and newer tool outputs are never changed. Leading indentation is never changed.",
                       "default": true
                     },
                     "protected_leading_messages": {

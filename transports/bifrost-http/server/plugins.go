@@ -378,7 +378,7 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	}
 	s.Config.SetPluginOrderInfo(promptcompression.PluginName, builtinPlacement, schemas.Ptr(10))
 
-	// 10. ModelCatalogResolver (last routing layer — fills req.Provider from catalog only when
+	// 11. ModelCatalogResolver (last routing layer — fills req.Provider from catalog only when
 	// no earlier routing plugin (governance routing rules, governance VK LB, enterprise LB)
 	// already set one. CEL rules can still match on provider == "" because this runs last.
 	// Requires a model catalog; only register when one is configured.

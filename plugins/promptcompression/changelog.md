@@ -1,1 +1,1 @@
-[feat]: add cache-aware prompt compression plugin [@Thiago-spart](https://github.com/Thiago-spart)
+- feat: add cache-aware prompt compression plugin that shortens old tool outputs in Chat and Responses agent-loop requests

@@ -39,7 +39,8 @@ func bigOutput(n int) string {
 
 func strOf(m schemas.ChatMessage) string { return *m.Content.ContentStr }
 
-// run compresses a deep copy check: input JSON must be unchanged after the call.
+// run compresses msgs with compressChat and checks that the input JSON is unchanged
+// afterwards and that the structural invariants hold.
 func run(t *testing.T, msgs []schemas.ChatMessage, s settings) []schemas.ChatMessage {
 	t.Helper()
 	before, err := json.Marshal(msgs)
