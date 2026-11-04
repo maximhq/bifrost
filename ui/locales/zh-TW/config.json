@@ -1361,9 +1361,6 @@
 			"import": "匯入",
 			"importCount_one": "匯入 {{count}} 條路由",
 			"importCount_other": "匯入 {{count}} 條路由",
-			"docEmpty": "文件為空",
-			"docNotJson": "文件不是 JSON 物件",
-			"docNotOpenapi": "文件不是 OpenAPI 物件",
 			"warn": {
 				"schemeUndeclared": "安全性方案 {{name}} 為必要但未宣告，請手動設定驗證類型",
 				"apiKeyLocation": "安全性方案 {{name}} 在 {{location}} 中使用 apiKey，Relay 無法注入",
@@ -1374,7 +1371,6 @@
 				"authOptional": "文件將驗證設為選用；如果 API 需要金鑰，請手動設定驗證類型",
 				"noSingleScheme": "文件中沒有任何安全性方案選項是 Relay 可注入的單一方案，請手動設定驗證類型",
 				"severalSchemes": "文件宣告了多個安全性方案但未要求任何一個，請手動設定驗證類型",
-				"noPaths": "文件未宣告任何路徑",
 				"refPaths_other": "{{paths}} 透過 $ref 定義，匯入不會解析 $ref，因此這些操作未被匯入；請手動新增其路由並檢查路由清單。",
 				"noMethods": "文件中沒有任何操作使用 Relay 支援的方法",
 				"differentSchemes": "各操作要求不同的安全性方案，而一個端點只能套用一種驗證，請手動設定驗證類型",

@@ -341,10 +341,10 @@ func TestRelaysHandlerRequiresGenuineAuthForDialChanges(t *testing.T) {
 	})
 }
 
-// TestRelaysHandlerFetchOpenAPISpec: the route import's URL source returns the document text as
-// served (YAML stays YAML, nothing is parsed) with the URL it was read from after redirects, and
-// refuses what the MCP preview refuses: a non-http(s) URL, an unreachable document, and loopback
-// for an unauthenticated caller.
+// TestRelaysHandlerFetchOpenAPISpec: the route import's URL source is parsed by the gateway into
+// routes, and also returns the document text as served with the URL it was read from after
+// redirects; it refuses what the MCP preview refuses: a non-http(s) URL, an unreachable document,
+// and loopback for an unauthenticated caller.
 func TestRelaysHandlerFetchOpenAPISpec(t *testing.T) {
 	h, _, _ := newRelaysTestHandler(t)
 	const yamlSpec = "openapi: 3.0.0\ninfo: {title: Search, version: '1'}\npaths:\n  /search:\n    post: {responses: {'200': {description: ok}}}\n"
@@ -366,8 +366,10 @@ func TestRelaysHandlerFetchOpenAPISpec(t *testing.T) {
 	require.Equal(t, fasthttp.StatusOK, status, respBody)
 	var resp relayOpenAPISpecResponse
 	require.NoError(t, json.Unmarshal([]byte(respBody), &resp), respBody)
-	assert.Equal(t, yamlSpec, resp.Spec, "the document comes back as served, for the browser to parse")
-	assert.Equal(t, specServer.URL+"/v2/openapi.yaml", resp.SpecURL, "the URL after redirects, for resolving relative servers")
+	assert.Equal(t, yamlSpec, resp.Spec, "the document comes back as served")
+	assert.Equal(t, specServer.URL+"/v2/openapi.yaml", resp.SpecURL, "the URL after redirects, which relative servers resolve against")
+	assert.Equal(t, "Search", resp.Title)
+	assert.Equal(t, []schemas.RelayRouteConfig{{Method: "POST", Path: "/search"}}, resp.Routes, "the gateway parses the document")
 
 	status, respBody = doMCPRequest(t, h.fetchOpenAPISpec, fasthttp.MethodPost, string(body), "", true)
 	assert.Equal(t, fasthttp.StatusForbidden, status, respBody)
@@ -385,6 +387,37 @@ func TestRelaysHandlerFetchOpenAPISpec(t *testing.T) {
 	}
 	status, _ = doMCPRequest(t, h.fetchOpenAPISpec, fasthttp.MethodPost, `not json`, "", false)
 	assert.Equal(t, fasthttp.StatusBadRequest, status)
+}
+
+// TestRelaysHandlerImportsPastedOpenAPISpec: a pasted document is parsed by the gateway, even for a
+// caller let through without auth since nothing is fetched, and only a fetched one is echoed back.
+// A document the MCP OpenAPI parser refuses is refused here with its error.
+func TestRelaysHandlerImportsPastedOpenAPISpec(t *testing.T) {
+	h, _, _ := newRelaysTestHandler(t)
+	body, _ := json.Marshal(relayOpenAPISpecRequest{Spec: "openapi: 3.0.0\ninfo: {title: Files, version: '2'}\nservers: [{url: 'https://files.example.com/v2/'}]\npaths:\n  /files/{id}:\n    get: {}\n    delete: {}\n"})
+	status, respBody := doMCPRequest(t, h.fetchOpenAPISpec, fasthttp.MethodPost, string(body), "", true)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	var resp relayOpenAPISpecResponse
+	require.NoError(t, json.Unmarshal([]byte(respBody), &resp), respBody)
+	assert.Equal(t, []schemas.RelayRouteConfig{{Method: "GET", Path: "/files/*"}, {Method: "DELETE", Path: "/files/*"}}, resp.Routes)
+	assert.Equal(t, "https://files.example.com/v2", resp.BaseURL)
+	assert.Equal(t, "2", resp.Version)
+	assert.Equal(t, "3.0.0", resp.OpenAPIVersion)
+	assert.Empty(t, resp.Spec, "a pasted document is not echoed back")
+	assert.Empty(t, resp.SpecURL)
+	assert.NotContains(t, respBody, `"spec"`)
+
+	for spec, want := range map[string]string{
+		"   ":                  "spec or spec_url is required",
+		`{"openapi": "3.0.0",`: "invalid JSON",
+		`{"title": "nope"}`:    "not an OpenAPI document",
+		`{"openapi": "3.0.0", "info": {"title": "x", "version": "1"}, "paths": {}}`: "no operations",
+	} {
+		body, _ := json.Marshal(relayOpenAPISpecRequest{Spec: spec})
+		status, respBody := doMCPRequest(t, h.fetchOpenAPISpec, fasthttp.MethodPost, string(body), "", false)
+		assert.Equal(t, fasthttp.StatusBadRequest, status, spec)
+		assert.Contains(t, respBody, want, spec)
+	}
 }
 
 // TestOpenAPISpecFetchClientsByCaller: an unauthenticated caller's spec URL is fetched with the strict

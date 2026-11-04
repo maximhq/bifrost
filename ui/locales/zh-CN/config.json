@@ -1324,9 +1324,6 @@
 			"import": "导入",
 			"importCount_one": "导入 {{count}} 条路由",
 			"importCount_other": "导入 {{count}} 条路由",
-			"docEmpty": "文档为空",
-			"docNotJson": "文档不是 JSON 对象",
-			"docNotOpenapi": "文档不是 OpenAPI 对象",
 			"warn": {
 				"schemeUndeclared": "安全方案 {{name}} 为必需但未声明，请手动设置认证类型",
 				"apiKeyLocation": "安全方案 {{name}} 在 {{location}} 中使用 apiKey，Relay 无法注入",
@@ -1337,7 +1334,6 @@
 				"authOptional": "文档将认证设为可选；如果 API 需要密钥，请手动设置认证类型",
 				"noSingleScheme": "文档中没有任何安全方案选项是 Relay 可注入的单一方案，请手动设置认证类型",
 				"severalSchemes": "文档声明了多个安全方案但未要求任何一个，请手动设置认证类型",
-				"noPaths": "文档未声明任何路径",
 				"refPaths_other": "{{paths}} 通过 $ref 定义，导入不会解析 $ref，因此这些操作未被导入；请手动添加其路由并检查路由列表。",
 				"noMethods": "文档中没有任何操作使用 Relay 支持的方法",
 				"differentSchemes": "各操作要求不同的安全方案，而一个端点只能应用一种认证，请手动设置认证类型",

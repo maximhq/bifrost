@@ -21,10 +21,9 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { getErrorMessage, useUpdateRelayMutation } from "@/lib/store";
-import type { Relay } from "@/lib/types/relays";
+import { relayOpenAPIImportWarningText, type Relay, type RelayOpenAPIImport } from "@/lib/types/relays";
 import { cn } from "@/lib/utils";
-import { cleanUsage, describePricing, mergeUsage, routeBillableByDefault, toRelayForm } from "@/lib/utils/relayForm";
-import type { OpenAPIImport } from "@/lib/utils/openapiImport";
+import { cleanUsage, compareRoutes, describePricing, mergeUsage, routeBillableByDefault, toRelayForm } from "@/lib/utils/relayForm";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { EllipsisIcon, FileUpIcon, PencilIcon, PlusIcon, TrashIcon } from "lucide-react";
 import { useState, type ReactNode } from "react";
@@ -57,14 +56,12 @@ function RouteActionsMenu({
 			<DropdownMenuContent align="end">
 				<DropdownMenuItem onSelect={onEdit} disabled={!hasUpdateAccess} data-testid={`relay-route-edit-${index}`}>
 					<PencilIcon className="mr-1 h-4 w-4" />
-						{t("edit", { ns: "common" })}
-
+					{t("edit", { ns: "common" })}
 				</DropdownMenuItem>
 				<DropdownMenuSeparator />
 				<DropdownMenuItem variant="destructive" onSelect={onDelete} disabled={!hasUpdateAccess} data-testid={`relay-route-remove-${index}`}>
 					<TrashIcon className="mr-1 h-4 w-4" />
-						{t("delete", { ns: "common" })}
-
+					{t("delete", { ns: "common" })}
 				</DropdownMenuItem>
 			</DropdownMenuContent>
 		</DropdownMenu>
@@ -96,8 +93,8 @@ export function EndpointRoutesTable({ endpoint, headerActions }: { endpoint: Rel
 	};
 
 	// An import is staged for review: nothing replaces the saved routes until the person applies it.
-	const stageImport = (result: OpenAPIImport) => {
-		for (const w of result.warnings) toast.warning(w);
+	const stageImport = (result: RelayOpenAPIImport) => {
+		for (const w of result.warnings) toast.warning(relayOpenAPIImportWarningText(w));
 		if (result.routes.length === 0) {
 			toast.error(t("relays.routes.toastNothingToImport"));
 			return;
@@ -115,7 +112,8 @@ export function EndpointRoutesTable({ endpoint, headerActions }: { endpoint: Rel
 					.sort(),
 			].join(" ");
 		const existing = new Map(routes.map((r) => [key(r.method, r.path, r.headers), r]));
-		const imported: RouteForm[] = result.routes.map((r) => {
+		// Staged in the order every save writes, which is the order requests are matched in.
+		const imported: RouteForm[] = [...result.routes].sort(compareRoutes).map((r) => {
 			const headers = Object.entries(r.headers ?? {}).map(([name, value]) => ({ name, value }));
 			return { ...existing.get(key(r.method, r.path, headers)), method: r.method, path: r.path, headers };
 		});
@@ -177,9 +175,7 @@ export function EndpointRoutesTable({ endpoint, headerActions }: { endpoint: Rel
 						{routes.length === 0 && (
 							<TableRow data-testid="relay-routes-empty">
 								<TableCell colSpan={5} className="py-6 text-center">
-									{endpoint.skip_route_check
-										? t("relays.routes.emptyAnyPath")
-										: t("relays.routes.empty")}
+									{endpoint.skip_route_check ? t("relays.routes.emptyAnyPath") : t("relays.routes.empty")}
 								</TableCell>
 							</TableRow>
 						)}
@@ -219,8 +215,7 @@ export function EndpointRoutesTable({ endpoint, headerActions }: { endpoint: Rel
 										)}
 										{override && billable && (
 											<Badge variant="outline" className="ml-2">
-													{t("relays.routes.overrideBadge")}
-
+												{t("relays.routes.overrideBadge")}
 											</Badge>
 										)}
 									</TableCell>
@@ -277,8 +272,7 @@ export function EndpointRoutesTable({ endpoint, headerActions }: { endpoint: Rel
 					</AlertDialogHeader>
 					<AlertDialogFooter className="pt-4">
 						<AlertDialogCancel onClick={() => setDeleting(null)} disabled={saving}>
-								{t("cancel", { ns: "common" })}
-
+							{t("cancel", { ns: "common" })}
 						</AlertDialogCancel>
 						<AlertDialogAction
 							disabled={saving || !canUpdate}
@@ -294,8 +288,8 @@ export function EndpointRoutesTable({ endpoint, headerActions }: { endpoint: Rel
 									setDeleting(null);
 							}}
 						>
-								{t("delete", { ns: "common" })}
-							</AlertDialogAction>
+							{t("delete", { ns: "common" })}
+						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>
 			</AlertDialog>
@@ -306,12 +300,13 @@ export function EndpointRoutesTable({ endpoint, headerActions }: { endpoint: Rel
 						<AlertDialogTitle>{t("relays.routes.importReview.title")}</AlertDialogTitle>
 						<AlertDialogDescription asChild>
 							<div className="space-y-2">
-								<p>
-									{t("relays.routes.importReview.body", { count: pendingImport?.routes.length ?? 0 })}
-								</p>
+								<p>{t("relays.routes.importReview.body", { count: pendingImport?.routes.length ?? 0 })}</p>
 								{pendingImport && pendingImport.dropped.length > 0 && (
 									<p className="text-destructive">
-										{t("relays.routes.importReview.dropped", { count: pendingImport.dropped.length, routes: pendingImport.dropped.join(", ") })}
+										{t("relays.routes.importReview.dropped", {
+											count: pendingImport.dropped.length,
+											routes: pendingImport.dropped.join(", "),
+										})}
 									</p>
 								)}
 							</div>
@@ -330,9 +325,7 @@ export function EndpointRoutesTable({ endpoint, headerActions }: { endpoint: Rel
 								if (await save(imported, t("relays.routes.toastImported", { count: imported.length }))) setPendingImport(null);
 							}}
 						>
-							
-								{t("relays.routes.importReview.apply")}
-
+							{t("relays.routes.importReview.apply")}
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>

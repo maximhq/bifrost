@@ -1325,9 +1325,6 @@
 			"import": "Importa",
 			"importCount_one": "Importa {{count}} route",
 			"importCount_other": "Importa {{count}} route",
-			"docEmpty": "Il documento è vuoto",
-			"docNotJson": "Il documento non è un oggetto JSON",
-			"docNotOpenapi": "Il documento non è un oggetto OpenAPI",
 			"warn": {
 				"schemeUndeclared": "Lo schema di sicurezza {{name}} è richiesto ma non dichiarato; imposta manualmente il tipo di autenticazione",
 				"apiKeyLocation": "Lo schema di sicurezza {{name}} usa una apiKey in {{location}}, che il relay non può iniettare",
@@ -1338,7 +1335,6 @@
 				"authOptional": "Il documento rende facoltativa l'autenticazione; se l'API richiede una chiave, imposta manualmente il tipo di autenticazione",
 				"noSingleScheme": "Nessuna alternativa di sicurezza nel documento è un singolo schema che il relay può iniettare; imposta manualmente il tipo di autenticazione",
 				"severalSchemes": "Il documento dichiara più schemi di sicurezza e non ne richiede nessuno; imposta manualmente il tipo di autenticazione",
-				"noPaths": "Il documento non dichiara alcun percorso",
 				"refPaths_one": "{{paths}} è definito tramite $ref, che l'importazione non risolve, quindi queste operazioni non sono state importate; aggiungi le relative route manualmente e controlla l'elenco delle route.",
 				"refPaths_other": "{{paths}} sono definiti tramite $ref, che l'importazione non risolve, quindi queste operazioni non sono state importate; aggiungi le relative route manualmente e controlla l'elenco delle route.",
 				"noMethods": "Nessuna operazione del documento usa un metodo gestito dal relay",

@@ -1354,9 +1354,6 @@
 			"import": "Importer",
 			"importCount_one": "Importer {{count}} route",
 			"importCount_other": "Importer {{count}} routes",
-			"docEmpty": "Le document est vide",
-			"docNotJson": "Le document n'est pas un objet JSON",
-			"docNotOpenapi": "Le document n'est pas un objet OpenAPI",
 			"warn": {
 				"schemeUndeclared": "Le schéma de sécurité {{name}} est requis mais non déclaré ; définissez le type d'authentification manuellement",
 				"apiKeyLocation": "Le schéma de sécurité {{name}} utilise une apiKey dans {{location}}, que le relay ne peut pas injecter",
@@ -1367,7 +1364,6 @@
 				"authOptional": "Le document rend l'authentification facultative ; si l'API nécessite une clé, définissez le type d'authentification manuellement",
 				"noSingleScheme": "Aucune alternative de sécurité du document n'est un schéma unique que le relay peut injecter ; définissez le type d'authentification manuellement",
 				"severalSchemes": "Le document déclare plusieurs schémas de sécurité sans en exiger aucun ; définissez le type d'authentification manuellement",
-				"noPaths": "Le document ne déclare aucun chemin",
 				"refPaths_one": "{{paths}} est défini par $ref, que l'import ne résout pas ; ces opérations n'ont donc pas été importées. Ajoutez leurs routes manuellement et vérifiez la liste des routes.",
 				"refPaths_other": "{{paths}} sont définis par $ref, que l'import ne résout pas ; ces opérations n'ont donc pas été importées. Ajoutez leurs routes manuellement et vérifiez la liste des routes.",
 				"noMethods": "Aucune opération du document n'utilise une méthode prise en charge par le relay",

@@ -296304,6 +296304,148 @@
               }
             }
           ]
+        },
+        {
+          "name": "Config: OpenAPI route import is parsed by the gateway",
+          "description": "POST /api/relays/openapi-spec reads a pasted document with the parser MCP OpenAPI servers use (framework/openapimcp) and returns routes, an auth suggestion and a base URL, so the dashboard no longer parses documents in the browser. Before, the endpoint only fetched a spec_url and refused a pasted spec with 400. Management API only, nothing is fetched and no relay is created.",
+          "item": [
+            {
+              "name": "a pasted document resolves a local path-item $ref, a server variable and the shared apiKey scheme - relays-e2e",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('import parsed: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });",
+                      "var body = pm.response.json() || {};",
+                      "var routes = (body.routes || []).map(function (r) { return r.method + ' ' + r.path; }).sort();",
+                      "pm.test('every operation becomes a route, including the ones behind the local $ref', function () { pm.expect(routes, pm.response.text()).to.eql(['DELETE /files/*', 'GET /files/*', 'POST /files']); });",
+                      "pm.test('the server variable takes its default and the trailing slash is dropped', function () { pm.expect(body.base_url, pm.response.text()).to.eql('https://eu.files.example.com/v1'); });",
+                      "pm.test('the shared apiKey header scheme is the auth suggestion', function () { pm.expect(body.auth, pm.response.text()).to.eql({ type: 'header', header_name: 'X-Api-Key' }); });",
+                      "pm.test('title, version and spec version come from the document', function () { pm.expect([body.title, body.version, body.openapi_version], pm.response.text()).to.eql(['Files API', '3', '3.1.0']); });",
+                      "pm.test('no warnings, not partial, and a pasted document is not echoed back', function () {",
+                      "  pm.expect(body.warnings, pm.response.text()).to.eql([]);",
+                      "  pm.expect(body.partial, pm.response.text()).to.not.eql(true);",
+                      "  pm.expect(body.spec, pm.response.text()).to.be.undefined;",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"spec\": \"openapi: 3.1.0\\ninfo: {title: Files API, version: '3'}\\nservers: [{url: 'https://{region}.files.example.com/v1/', variables: {region: {default: eu}}}]\\ncomponents:\\n  securitySchemes: {key: {type: apiKey, in: header, name: X-Api-Key}}\\n  pathItems:\\n    File: {get: {}, delete: {}}\\nsecurity: [{key: []}]\\npaths:\\n  /files: {post: {}}\\n  /files/{id}: {$ref: '#/components/pathItems/File'}\\n\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/relays/openapi-spec",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "relays",
+                    "openapi-spec"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "an AWS X-Amz-Target key becomes a header-matched route and an external path $ref is flagged - relays-e2e",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('import parsed: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });",
+                      "var body = pm.response.json() || {};",
+                      "pm.test('the X-Amz-Target key is a POST / route matched on the header', function () { pm.expect(body.routes, pm.response.text()).to.eql([{ method: 'POST', path: '/', headers: { 'X-Amz-Target': 'Textract.AnalyzeDocument' } }]); });",
+                      "pm.test('the path item behind another document is left out and named', function () {",
+                      "  pm.expect(body.partial, pm.response.text()).to.eql(true);",
+                      "  var refs = (body.warnings || []).filter(function (w) { return w.code === 'ref_paths'; });",
+                      "  pm.expect(refs.length, pm.response.text()).to.eql(1);",
+                      "  pm.expect(refs[0].paths, pm.response.text()).to.eql(['/b']);",
+                      "  pm.expect(refs[0].message, pm.response.text()).to.be.a('string').and.not.empty;",
+                      "});",
+                      "pm.test('no server is listed, so no base URL is suggested', function () { pm.expect(body.base_url, pm.response.text()).to.be.undefined; });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"spec\": \"{\\\"openapi\\\":\\\"3.0.0\\\",\\\"info\\\":{\\\"title\\\":\\\"Textract\\\",\\\"version\\\":\\\"2018-06-27\\\"},\\\"paths\\\":{\\\"/#X-Amz-Target=Textract.AnalyzeDocument\\\":{\\\"post\\\":{}},\\\"/b\\\":{\\\"$ref\\\":\\\"other.yaml#/paths/B\\\"}}}\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/relays/openapi-spec",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "relays",
+                    "openapi-spec"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "[EXPECT-400] a document the MCP OpenAPI parser refuses is refused with its error - relays-e2e",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('invalid document refused: HTTP 400', function () { pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400); });",
+                      "pm.test('the parser error is returned', function () { pm.expect(pm.response.text()).to.include('Invalid OpenAPI spec').and.include('not an OpenAPI document'); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"spec\": \"{\\\"title\\\": \\\"nope\\\"}\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/relays/openapi-spec",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "relays",
+                    "openapi-spec"
+                  ]
+                }
+              }
+            }
+          ]
         }
       ]
     },

@@ -189,11 +189,87 @@ export interface UsagePreviewRequest {
 	sample: UsagePreviewSample;
 }
 
-/** POST /api/relays/openapi-spec: the gateway fetches a document the browser cannot (CORS) for the route import. */
-export interface RelayOpenAPISpecResponse {
-	spec: string;
-	/** The URL the document was read from after redirects; relative servers resolve against it. */
-	spec_url: string;
+/** POST /api/relays/openapi-spec body: a pasted document, or a URL the gateway fetches. */
+export type RelayOpenAPIImportRequest = { spec: string } | { spec_url: string };
+
+export type RelayOpenAPIImportWarningCode =
+	| "scheme_undeclared"
+	| "api_key_location"
+	| "http_scheme"
+	| "scheme_type"
+	| "auth_optional"
+	| "no_single_scheme"
+	| "several_schemes"
+	| "different_schemes"
+	| "ref_paths"
+	| "no_methods"
+	| "server_query";
+
+export interface RelayOpenAPIImportWarning {
+	code: RelayOpenAPIImportWarningCode;
+	/** English text, shown when the code is not one this dashboard knows. */
+	message: string;
+	name?: string;
+	detail?: string;
+	paths?: string[];
+}
+
+/** The operator-language text of an import warning; an unknown code falls back to the gateway's English. */
+export function relayOpenAPIImportWarningText(w: RelayOpenAPIImportWarning): string {
+	const name = w.name ?? "";
+	switch (w.code) {
+		case "scheme_undeclared":
+			return i18n.t("relays.openapiImport.warn.schemeUndeclared", { ...T, name });
+		case "api_key_location":
+			return i18n.t("relays.openapiImport.warn.apiKeyLocation", {
+				...T,
+				name,
+				location: w.detail || i18n.t("relays.openapiImport.warn.unsupportedLocation", T),
+			});
+		case "http_scheme":
+			return i18n.t("relays.openapiImport.warn.httpScheme", { ...T, name, scheme: w.detail || "?" });
+		case "scheme_type":
+			return i18n.t("relays.openapiImport.warn.schemeType", {
+				...T,
+				name,
+				type: w.detail || i18n.t("relays.openapiImport.warn.unknownType", T),
+			});
+		case "auth_optional":
+			return i18n.t("relays.openapiImport.warn.authOptional", T);
+		case "no_single_scheme":
+			return i18n.t("relays.openapiImport.warn.noSingleScheme", T);
+		case "several_schemes":
+			return i18n.t("relays.openapiImport.warn.severalSchemes", T);
+		case "different_schemes":
+			return i18n.t("relays.openapiImport.warn.differentSchemes", T);
+		case "ref_paths":
+			return i18n.t("relays.openapiImport.warn.refPaths", { ...T, count: w.paths?.length ?? 0, paths: (w.paths ?? []).join(", ") });
+		case "no_methods":
+			return i18n.t("relays.openapiImport.warn.noMethods", T);
+		case "server_query":
+			return i18n.t("relays.openapiImport.warn.serverQuery", { ...T, query: w.detail ?? "" });
+		default:
+			return w.message;
+	}
+}
+
+/**
+ * POST /api/relays/openapi-spec: what the gateway's OpenAPI parser (the one MCP OpenAPI servers use)
+ * resolves a document into. Nothing is saved until the relay is.
+ */
+export interface RelayOpenAPIImport {
+	title?: string;
+	version?: string;
+	openapi_version: string;
+	base_url?: string;
+	auth?: RelayAuthConfig;
+	routes: RelayRouteConfig[];
+	warnings: RelayOpenAPIImportWarning[];
+	/** Some path items could not be read and were left out; add their routes by hand. */
+	partial?: boolean;
+	/** Set when the document was fetched: its text and the URL it was read from after redirects. */
+	spec?: string;
+	spec_url?: string;
 }
 
 export interface UsagePreview {

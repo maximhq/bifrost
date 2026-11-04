@@ -58,6 +58,12 @@ var endpointRouteMethods = map[string]struct{}{
 	"GET": {}, "POST": {}, "PUT": {}, "PATCH": {}, "DELETE": {}, "HEAD": {},
 }
 
+// IsRelayRouteMethod reports whether a relay route can serve method (case-insensitive).
+func IsRelayRouteMethod(method string) bool {
+	_, ok := endpointRouteMethods[strings.ToUpper(method)]
+	return ok
+}
+
 // RelayAuthConfig selects the credential scheme for a relay.
 type RelayAuthConfig struct {
 	Type        RelayAuthType       `json:"type"`                   // bearer | header | query | basic | aws_sigv4 | none (default bearer)
@@ -406,7 +412,7 @@ func (c *RelayConfig) Validate() error {
 		}
 	}
 	for i, route := range c.Routes {
-		if _, ok := endpointRouteMethods[strings.ToUpper(route.Method)]; !ok {
+		if !IsRelayRouteMethod(route.Method) {
 			return fmt.Errorf("routes[%d]: unsupported method %q", i, route.Method)
 		}
 		if err := validateEndpointRouteGlob(route.Path); err != nil {
@@ -459,7 +465,7 @@ func (j *RelayJobConfig) validate(field string, route RelayRouteConfig, base *Re
 		return fmt.Errorf("%s.poll.path %q must start with /", field, j.Poll.Path)
 	}
 	if j.Poll.Method != "" {
-		if _, ok := endpointRouteMethods[strings.ToUpper(j.Poll.Method)]; !ok {
+		if !IsRelayRouteMethod(j.Poll.Method) {
 			return fmt.Errorf("%s.poll.method: unsupported method %q", field, j.Poll.Method)
 		}
 	}

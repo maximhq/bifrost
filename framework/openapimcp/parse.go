@@ -164,6 +164,7 @@ func parseV3(tree map[string]any, version Version, res *resolver, doc *Document,
 		doc.SecuritySchemes[name] = parseSecurityScheme(name, asMap(node), false)
 	}
 	doc.GlobalSecurity = parseSecurityRequirements(tree["security"])
+	_, doc.HasGlobalSecurity = tree["security"]
 
 	paths := asMap(tree["paths"])
 	for _, p := range sortedKeys(paths) {
@@ -174,6 +175,7 @@ func parseV3(tree map[string]any, version Version, res *resolver, doc *Document,
 		if err != nil {
 			if errors.Is(err, errExternalRef) {
 				doc.Warnings = append(doc.Warnings, fmt.Sprintf("path %s skipped: %v", p, err))
+				doc.SkippedPaths = append(doc.SkippedPaths, p)
 				continue
 			}
 			return fmt.Errorf("path %s: %w", p, err)

@@ -1325,9 +1325,6 @@
 			"import": "Importar",
 			"importCount_one": "Importar {{count}} rota",
 			"importCount_other": "Importar {{count}} rotas",
-			"docEmpty": "O documento está vazio",
-			"docNotJson": "O documento não é um objeto JSON",
-			"docNotOpenapi": "O documento não é um objeto OpenAPI",
 			"warn": {
 				"schemeUndeclared": "O esquema de segurança {{name}} é obrigatório, mas não foi declarado; defina o tipo de autenticação manualmente",
 				"apiKeyLocation": "O esquema de segurança {{name}} usa uma apiKey em {{location}}, que o relay não consegue injetar",
@@ -1338,7 +1335,6 @@
 				"authOptional": "O documento torna a autenticação opcional; se a API precisar de uma chave, defina o tipo de autenticação manualmente",
 				"noSingleScheme": "Nenhuma alternativa de segurança do documento é um único esquema que o relay consiga injetar; defina o tipo de autenticação manualmente",
 				"severalSchemes": "O documento declara vários esquemas de segurança e não exige nenhum; defina o tipo de autenticação manualmente",
-				"noPaths": "O documento não declara nenhum caminho",
 				"refPaths_one": "{{paths}} está definido por $ref, que a importação não resolve, então essas operações não foram importadas; adicione as rotas manualmente e revise a lista de rotas.",
 				"refPaths_other": "{{paths}} estão definidos por $ref, que a importação não resolve, então essas operações não foram importadas; adicione as rotas manualmente e revise a lista de rotas.",
 				"noMethods": "Nenhuma operação do documento usa um método atendido pelo relay",

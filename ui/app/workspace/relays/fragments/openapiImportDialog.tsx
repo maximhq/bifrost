@@ -1,8 +1,8 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { importOpenAPI, parseOpenAPIText, type OpenAPIImport } from "@/lib/utils/openapiImport";
-import { getErrorMessage, useFetchRelayOpenAPISpecMutation } from "@/lib/store";
+import { getErrorMessage, useImportRelayOpenAPIMutation } from "@/lib/store";
+import { relayOpenAPIImportWarningText, type RelayOpenAPIImport } from "@/lib/types/relays";
 import { relayOpenAPISpecUrlSchema } from "@/lib/types/schemas";
 import { useCallback, useRef, useState } from "react";
 import { specFingerprint, type OpenAPISourceMode } from "../../mcp-registry/views/mcpClientOpenApiUtils";
@@ -12,15 +12,15 @@ import { useTranslation } from "react-i18next";
 interface OpenAPIImportDialogProps {
 	open: boolean;
 	onClose: () => void;
-	onImport: (result: OpenAPIImport) => void;
+	onImport: (result: RelayOpenAPIImport) => void;
 }
 
 /**
  * Turns an OpenAPI or Swagger document (pasted, uploaded or fetched from a URL; JSON or YAML) into
  * routes, an auth suggestion and a base URL hint, through the same source picker as an MCP OpenAPI
- * server. A pasted or uploaded document is parsed as soon as it settles; a URL is fetched by the
- * gateway on request (the browser cannot fetch most spec URLs itself) and parsed here the same way.
- * The summary is what Import hands over. Nothing is saved until the relay is.
+ * server. The gateway reads the document with the parser MCP OpenAPI servers use, fetching a URL
+ * itself (the browser cannot fetch most spec URLs). The summary is what Import hands over. Nothing
+ * is saved until the relay is.
  */
 export function OpenAPIImportDialog({ open, onClose, onImport }: OpenAPIImportDialogProps) {
 	const { t } = useTranslation("config");
@@ -29,18 +29,18 @@ export function OpenAPIImportDialog({ open, onClose, onImport }: OpenAPIImportDi
 	const [text, setText] = useState("");
 	const [specUrl, setSpecUrl] = useState("");
 	const [specUrlError, setSpecUrlError] = useState<string>();
-	const [fetchSpec] = useFetchRelayOpenAPISpecMutation();
+	const [importSpec] = useImportRelayOpenAPIMutation();
 	const [fileName, setFileName] = useState<string | null>(null);
 	const [parseError, setParseError] = useState<string | null>(null);
 	const [isParsing, setIsParsing] = useState(false);
-	const [preview, setPreview] = useState<{ key: string; result: OpenAPIImport } | null>(null);
+	const [preview, setPreview] = useState<{ key: string; result: RelayOpenAPIImport } | null>(null);
 
 	const sourceKey = specFingerprint(mode, text, specUrl);
 	const isCurrent = preview?.key === sourceKey;
 
-	// Each parse gets a sequence number; a result from an older attempt (the YAML parser loading
-	// while the text was replaced with JSON, say) is dropped, error and loading state included, so
-	// it can never overwrite a newer preview and leave Import disabled.
+	// Each parse gets a sequence number; a result from an older attempt (a slow fetch while the
+	// source was replaced, say) is dropped, error and loading state included, so it can never
+	// overwrite a newer preview and leave Import disabled.
 	const parseSeq = useRef(0);
 	const parse = useCallback(async () => {
 		const checked = mode === "url" ? relayOpenAPISpecUrlSchema.safeParse(specUrl) : undefined;
@@ -48,26 +48,22 @@ export function OpenAPIImportDialog({ open, onClose, onImport }: OpenAPIImportDi
 			setSpecUrlError(checked.error.issues[0]?.message ?? t("relays.openapiImport.urlInvalid"));
 			return;
 		}
-		const url = checked?.data ?? "";
 		const seq = ++parseSeq.current;
 		setIsParsing(true);
 		setParseError(null);
 		setSpecUrlError(undefined);
 		try {
-			// A fetched document resolves relative servers against the URL it was read from.
-			const source = mode === "url" ? await fetchSpec({ spec_url: url }).unwrap() : undefined;
+			const result = await importSpec(checked ? { spec_url: checked.data } : { spec: text }).unwrap();
 			if (seq !== parseSeq.current) return;
-			const doc = await parseOpenAPIText(source?.spec ?? text);
-			if (seq !== parseSeq.current) return;
-			setPreview({ key: sourceKey, result: importOpenAPI(doc, source?.spec_url) });
+			setPreview({ key: sourceKey, result });
 		} catch (e) {
 			if (seq !== parseSeq.current) return;
 			setPreview(null);
-			setParseError(e instanceof Error ? e.message : getErrorMessage(e) || t("relays.openapiImport.readFailed"));
+			setParseError(getErrorMessage(e) || t("relays.openapiImport.readFailed"));
 		} finally {
 			if (seq === parseSeq.current) setIsParsing(false);
 		}
-	}, [mode, specUrl, text, sourceKey, fetchSpec, t]);
+	}, [mode, specUrl, text, sourceKey, importSpec, t]);
 
 	const reset = () => {
 		// A fetch still in flight belongs to the dialog being closed: retire it so its result or error
@@ -99,9 +95,7 @@ export function OpenAPIImportDialog({ open, onClose, onImport }: OpenAPIImportDi
 			<DialogContent className="sm:max-w-2xl">
 				<DialogHeader>
 					<DialogTitle>{t("relays.openapiImport.title")}</DialogTitle>
-					<DialogDescription>
-						{t("relays.openapiImport.description")}
-					</DialogDescription>
+					<DialogDescription>{t("relays.openapiImport.description")}</DialogDescription>
 				</DialogHeader>
 				<div data-testid="relay-openapi-source">
 					<OpenAPISpecSource
@@ -138,15 +132,13 @@ export function OpenAPIImportDialog({ open, onClose, onImport }: OpenAPIImportDi
 						<div className="flex flex-wrap items-center gap-2">
 							<span className="font-medium">{result.title ?? t("relays.openapiImport.untitled")}</span>
 							{result.version && <Badge variant="outline">v{result.version}</Badge>}
-							<Badge variant="secondary">
-								{t("relays.openapiImport.routeCount", { count: result.routes.length })}
-								</Badge>
+							<Badge variant="secondary">{t("relays.openapiImport.routeCount", { count: result.routes.length })}</Badge>
 							{result.partial && <Badge variant="outline">{t("relays.openapiImport.partial")}</Badge>}
 						</div>
 						<div className="text-muted-foreground text-xs">
-							{result.baseUrl ? (
+							{result.base_url ? (
 								<>
-									{t("relays.openapiImport.baseUrl")} <code className="font-mono">{result.baseUrl}</code>
+									{t("relays.openapiImport.baseUrl")} <code className="font-mono">{result.base_url}</code>
 								</>
 							) : (
 								t("relays.openapiImport.noServer")
@@ -156,7 +148,7 @@ export function OpenAPIImportDialog({ open, onClose, onImport }: OpenAPIImportDi
 						{result.warnings.length > 0 && (
 							<ul className="list-disc space-y-0.5 pl-4 text-xs text-amber-700 dark:text-amber-400">
 								{result.warnings.map((w) => (
-									<li key={w}>{w}</li>
+									<li key={`${w.code}:${w.name ?? ""}:${w.detail ?? ""}`}>{relayOpenAPIImportWarningText(w)}</li>
 								))}
 							</ul>
 						)}
@@ -165,7 +157,6 @@ export function OpenAPIImportDialog({ open, onClose, onImport }: OpenAPIImportDi
 				<DialogFooter>
 					<Button variant="outline" onClick={close}>
 						{t("cancel", { ns: "common" })}
-
 					</Button>
 					<Button onClick={apply} disabled={!result || isParsing} data-testid="relay-openapi-import">
 						{result ? t("relays.openapiImport.importCount", { count: result.routes.length }) : t("relays.openapiImport.import")}

@@ -51,16 +51,18 @@ const (
 
 // Document is the version-independent view of a spec.
 type Document struct {
-	Title           string
-	Version         string // info.version
-	Description     string
-	OpenAPIVersion  string // detected spec version, e.g. "2.0", "3.0.3", "3.1.0"
-	Self            string // 3.2 $self, if any
-	Servers         []string
-	SecuritySchemes map[string]SecurityScheme
-	GlobalSecurity  []SecurityRequirement
-	Operations      []Operation
-	Warnings        []string
+	Title             string
+	Version           string // info.version
+	Description       string
+	OpenAPIVersion    string // detected spec version, e.g. "2.0", "3.0.3", "3.1.0"
+	Self              string // 3.2 $self, if any
+	Servers           []string
+	SecuritySchemes   map[string]SecurityScheme
+	GlobalSecurity    []SecurityRequirement
+	HasGlobalSecurity bool // the document declared top-level security (even if empty)
+	Operations        []Operation
+	SkippedPaths      []string // path items left out because their $ref could not be resolved
+	Warnings          []string
 }
 
 // SecurityScheme is one components.securitySchemes (or securityDefinitions) entry.
