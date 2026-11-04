@@ -306163,11 +306163,15 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
               }
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"anthropic/claude-haiku-5-5\",\"max_tokens\":300,\"messages\":[{\"role\":\"user\",\"content\":\"Use the code execution tool to compute 23*29. Reply with just the number.\"}],\"tools\":[{\"type\":\"web_search_20260209\",\"name\":\"web_search\"}]}"
+              "raw": "{\"model\":\"anthropic/claude-haiku-5-5\",\"max_tokens\":1024,\"messages\":[{\"role\":\"user\",\"content\":\"Search the web once for the current share price of AAPL. Reply with one short sentence.\"}],\"tool_choice\":\"required\",\"tools\":[{\"type\":\"web_search_20260209\",\"name\":\"web_search\"}]}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -306189,8 +306193,10 @@
                 "exec": [
                   "pm.test('free web tool counts no session', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
-                  "  var usage = pm.response.json().usage;",
-                  "  var toolUsage = usage.tool_usage || {};",
+                  "  var body = pm.response.json();",
+                  "  var raw = (body.extra_fields || {}).raw_response || {};",
+                  "  pm.expect((raw.container || {}).id, 'no container ran, so this proves nothing: ' + pm.response.text()).to.be.a('string');",
+                  "  var toolUsage = body.usage.tool_usage || {};",
                   "  pm.expect(toolUsage.container_sessions, 'unexpected session: ' + pm.response.text()).to.equal(undefined);",
                   "});"
                 ]
