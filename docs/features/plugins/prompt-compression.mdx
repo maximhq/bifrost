@@ -8,7 +8,7 @@ icon: "compress"
 
 Coding and research agents re-send the whole conversation on every turn. Tool outputs (file reads, logs, search results) are usually the largest part of it, and the model rarely needs a 2,000-line log from ten turns ago.
 
-The Prompt Compression plugin shortens **old** tool outputs before the request is sent to the provider. It works on Chat Completions and Responses API requests, including streaming. It is **disabled by default** and does nothing until you enable it. There is no LLM summarisation: the plugin only trims, de-duplicates and cleans up text.
+The Prompt Compression plugin shortens **old** tool outputs before the request is sent to the provider. It also tidies whitespace in all other text outside the cache-protected prefix (see below). It works on Chat Completions and Responses API requests, including streaming. It is **disabled by default** and does nothing until you enable it. There is no LLM summarisation: the plugin only trims, de-duplicates and cleans up text.
 
 It helps most when your agents:
 
@@ -64,7 +64,7 @@ Three strategies run in this order on each request:
     [identical to the output of call <tool_call_id>]
     ```
 
-    Only outputs made entirely of text are compared. Controlled by `dedupe_tool_outputs`.
+    Only outputs made entirely of text are compared. This applies to every tool output outside the protected prefix regardless of age. In Chat, an older copy is replaced only if the newest copy has a `tool_call_id` to point at. Controlled by `dedupe_tool_outputs`.
   </Step>
   <Step title="Trim old, large tool outputs">
     A tool output is trimmed when it is at least `tool_output_min_age_turns` assistant turns old **and** its estimated size is at least `tool_output_min_tokens`. The first `keep_head_lines` and last `keep_tail_lines` lines are kept, and the lines in between are replaced by one marker line:
@@ -73,10 +73,10 @@ Three strategies run in this order on each request:
     [… 1840 tokens trimmed by promptcompression …]
     ```
 
-    The newest tool outputs are never trimmed. Only text is changed; images, files and audio are left as they are.
+    With the default `tool_output_min_age_turns` of 2, the newest outputs are never trimmed; setting it to 0 makes every large tool output eligible. Only text is changed; images, files and audio are left as they are.
   </Step>
   <Step title="Normalise whitespace">
-    Trailing spaces and tabs are stripped from every line, and runs of three or more blank lines are squeezed into one. Leading indentation is **never** touched, so code and YAML stay valid. Controlled by `normalize_whitespace`.
+    When `normalize_whitespace` is on, this applies to **all** text outside the protected prefix, not only tool outputs: user messages, assistant messages and the newest tool outputs too. Trailing spaces and tabs are stripped from every line, and runs of three or more blank lines are squeezed into one. Leading indentation is **never** touched, so code and YAML stay valid. Controlled by `normalize_whitespace`.
   </Step>
 </Steps>
 
@@ -93,7 +93,7 @@ The plugin is designed so that, in the worst case, your request goes out exactly
   - Bedrock `cachePoint` on content blocks
   - Responses API: `cache_control` on a message, and `cache_control` or `prompt_cache_breakpoint` on content blocks (including blocks inside a function-call output)
 - **Leading messages are protected.** The first `protected_leading_messages` messages (default 1, typically the system prompt) are never modified, even without a cache marker.
-- **Automatic caching means no compression.** A Chat request with a request-level `cache_control` (automatic caching) is passed through untouched, because the breakpoint sits at the end of the prompt.
+- **Automatic caching means no compression.** A Chat request with a request-level `cache_control` (automatic caching) is passed through untouched, because the breakpoint sits at the end of the prompt. This check is Chat-only: the Responses API has no request-level field for it.
 - **Edits must pay off.** A trim or a dedupe stub is kept only if the result is strictly shorter. If the whole request saves less than `min_savings_percent`, the original is sent.
 - **Fail-open.** Any panic inside the plugin is recovered, a warning is logged, and the original request is sent.
 - **The incoming request is never mutated.** Compression builds a copy, which matters because Bifrost retries and fallbacks reuse the same request.
