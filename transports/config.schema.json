@@ -11301,7 +11301,16 @@
         },
         "audience": {
           "type": "string",
-          "description": "JWT audience for validation (optional)"
+          "description": "Single JWT audience for validation (optional). Still accepted alongside allowedAudiences, and requested from the identity provider before them. Supports the env. prefix."
+        },
+        "allowedAudiences": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "description": "More accepted JWT audiences, unioned with audience: a token naming audience or any entry is accepted. Where a single audience is requested from the identity provider, audience is used, else the first entry. Plain values only; put an env. or vault. reference in audience."
         },
         "additionalScopes": {
           "type": "array",
@@ -11406,7 +11415,16 @@
         },
         "audience": {
           "type": "string",
-          "description": "JWT audience for validation (default: clientId)"
+          "description": "Single JWT audience for validation (default: clientId). Still accepted alongside allowedAudiences, and requested from the identity provider before them. Supports the env. prefix."
+        },
+        "allowedAudiences": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "description": "More accepted JWT audiences, unioned with audience: a token naming audience or any entry is accepted. Where a single audience is requested from the identity provider, audience is used, else the first entry. Plain values only; put an env. or vault. reference in audience."
         },
         "appIdUri": {
           "type": "string",
@@ -11508,7 +11526,16 @@
         },
         "audience": {
           "type": "string",
-          "description": "Expected JWT audience (default: clientId)"
+          "description": "Single expected JWT audience (default: clientId). Still accepted alongside allowedAudiences, and requested from the identity provider before them. Supports the env. prefix."
+        },
+        "allowedAudiences": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "description": "More accepted JWT audiences, unioned with audience: a token naming audience or any entry is accepted. Where a single audience is requested from the identity provider, audience is used, else the first entry. Plain values only; put an env. or vault. reference in audience."
         },
         "userIdField": {
           "type": "string",
@@ -11592,7 +11619,16 @@
         },
         "audience": {
           "type": "string",
-          "description": "JWT audience for token validation (optional)"
+          "description": "Single JWT audience for token validation (optional). Still accepted alongside allowedAudiences, and requested from the identity provider before them. Supports the env. prefix."
+        },
+        "allowedAudiences": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "description": "More accepted JWT audiences, unioned with audience: a token naming audience or any entry is accepted. Where a single audience is requested from the identity provider, audience is used, else the first entry. Plain values only; put an env. or vault. reference in audience."
         },
         "authorizationEndpoint": {
           "type": "string",
@@ -11705,7 +11741,16 @@
         },
         "audience": {
           "type": "string",
-          "description": "Access-token audience override (default: clientId)"
+          "description": "Single access-token audience override (default: clientId). Still accepted alongside allowedAudiences, and requested from the identity provider before them. Supports the env. prefix."
+        },
+        "allowedAudiences": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "description": "More accepted JWT audiences, unioned with audience: a token naming audience or any entry is accepted. Where a single audience is requested from the identity provider, audience is used, else the first entry. Plain values only; put an env. or vault. reference in audience."
         },
         "serviceAccountClientId": {
           "type": "string",
@@ -11816,7 +11861,16 @@
         },
         "audience": {
           "type": "string",
-          "description": "JWT audience override (default: clientId)"
+          "description": "Single JWT audience override (default: clientId). Still accepted alongside allowedAudiences, and requested from the identity provider before them. Supports the env. prefix."
+        },
+        "allowedAudiences": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "description": "More accepted JWT audiences, unioned with audience: a token naming audience or any entry is accepted. Where a single audience is requested from the identity provider, audience is used, else the first entry. Plain values only; put an env. or vault. reference in audience."
         },
         "teamIdsField": {
           "type": "string",
@@ -12097,14 +12151,14 @@
         },
         "audience": {
           "type": "string",
-          "description": "Expected token audience (aud) for JWKS providers, binding the token to this application. Required unless allowedAudiences is set. Supports the env. prefix."
+          "description": "Expected token audience (aud) for JWKS providers, binding the token to this application. A token naming audience or any allowedAudiences entry is accepted. Required unless allowedAudiences is set. Supports the env. prefix."
         },
         "allowedAudiences": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "description": "Alternative to a single audience: a list of accepted audiences. Must not contain blank entries."
+          "description": "Accepted token audiences, unioned with audience. Plain values only; must not contain blank entries."
         },
         "region": {
           "type": "string",
