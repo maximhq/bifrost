@@ -1405,7 +1405,7 @@ The `ServiceMonitor` targets the service's `http` port. The `monitoring.coreos.c
 
 #### Scraping with authentication enabled
 
-Bifrost's auth middleware is global. When auth is on (`bifrost.authConfig.isEnabled` or `bifrost.governance.authConfig.isEnabled`), `/metrics` requires credentials too — only `/health`, `/api/session/login`, `/api/session/is-auth-enabled`, `/api/oauth/callback` and `/api/info` are always open. **An unauthenticated scrape gets a `401` and the target silently sits at `up=0`**: the Prometheus UI shows a target, no error is logged by the chart, and no Bifrost metrics are ever stored.
+Bifrost's auth middleware is global. When auth is on (`bifrost.authConfig.isEnabled` or `bifrost.governance.authConfig.isEnabled`), `/metrics` requires credentials too, as it is not one of the routes that stay open without auth (such as `/health`). **An unauthenticated scrape gets a `401` and the target silently sits at `up=0`**: the Prometheus UI shows a target, no error is logged by the chart, and no Bifrost metrics are ever stored.
 
 Enable `serviceMonitor.basicAuth` so the scrape authenticates with the admin credentials:
 

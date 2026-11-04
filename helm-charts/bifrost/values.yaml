@@ -101,11 +101,10 @@ serviceMonitor:
   # Authenticate the scrape with Bifrost's admin credentials.
   #
   # Bifrost's auth middleware is global: when auth is on (bifrost.authConfig.isEnabled
-  # or bifrost.governance.authConfig.isEnabled) /metrics requires credentials too —
-  # only /health, /api/session/login, /api/session/is-auth-enabled, /api/oauth/callback
-  # and /api/info are always open. An unauthenticated scrape gets a 401 and the target
-  # silently sits at up=0: Prometheus looks healthy but stores no Bifrost metrics.
-  # Turn this on whenever auth is enabled.
+  # or bifrost.governance.authConfig.isEnabled) /metrics requires credentials too, as
+  # it is not one of the routes that stay open without auth (such as /health). An
+  # unauthenticated scrape gets a 401 and the target silently sits at up=0: Prometheus
+  # looks healthy but stores no Bifrost metrics. Turn this on whenever auth is enabled.
   basicAuth:
     enabled: false
     # Secret holding the admin credentials. In the Helm release namespace, defaults
