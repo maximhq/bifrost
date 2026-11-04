@@ -304844,8 +304844,134 @@
       ]
     },
     {
-      "name": "309. Claude Haiku 5.5 effort and sampling params (haiku55-effort) (#9490 / PR #9491)",
-      "description": "Claude Haiku 5.5 takes the Sonnet 5+ request surface: thinking is adaptive-only (thinking.type enabled with budget_tokens is a 400), output_config.effort sets depth (low to max, default medium), and any non-default temperature/top_p/top_k is a 400. The name-based capability fallbacks did not know Haiku 5, so reasoning.effort fell through to the budget_tokens branch (or was dropped, then rewritten to adaptive at the default effort, when a datasheet row applied in the re-strip) and the sampling params were forwarded into the upstream 400. Cases assert the OUTBOUND body via x-bf-send-back-raw-request.",
+      "name": "309. Runware long-running sync image tasks are polled to completion (runware sync polling)",
+      "description": "A Runware sync request holds the connection for up to 120 seconds. A task still running at that point continues as an async task, and the reply carries one data row per unfinished task with status \"processing\", the taskUUID that was sent, and no asset (https://runware.ai/docs/models-api/task-polling#long-running-sync-requests). Bifrost sent every image task sync and never read status, so that row became data[0] with no url, b64_json or id: a 200 with an empty image, no cost, and the taskUUID needed to fetch the result thrown away. Resending the task starts a second paid generation.\n\nThe fix (core/providers/runware handleImageInference) polls the same taskUUID with taskType getResponse every 2s, bounded by the provider request timeout, and returns the complete result set it reports. Every image route on the provider shares that path: /v1/images/generations and every /v1/images/edits task type.\n\nOnly a real slow task reaches it, so the input is built in-row: a Topaz Wonder 3.5 3x upscale of the scones fixture (~9.4MP, ~20s) feeds a 4x upscale (~150MP output), which measured 179s end to end for a 133MP output (sync window plus polling). The long-running row asserts it actually outlived the window - latency above 120s and a raw_response carrying status, which only getResponse replies include - so a faster upstream fails the row instead of passing it vacuously. /v1/images/generations has no model that reliably crosses 120s (GPT Image 2 at high quality and 4K lands at 111-113s), so it is covered by unit tests only.\n\nCost: about $0.70 per run (the 4x upscale is ~$0.60).",
+      "item": [
+        {
+          "name": "runware/topazlabs:wonder@3.5 sync polling setup - 3x upscale builds the large input",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"runware/topazlabs:wonder@3.5\",\n  \"images\": [\n    \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"\n  ],\n  \"type\": \"upscale\",\n  \"upscale_factor\": 3\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('setup upscale succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var d = (pm.response.json() || {}).data || [];",
+                  "pm.test('setup upscale returns an image url', function () {",
+                  "  pm.expect(d[0] && d[0].url, 'data: ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
+                  "});",
+                  "if (d[0] && d[0].url) { pm.collectionVariables.set('runwareSyncPollingInput', d[0].url); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "runware/topazlabs:wonder@3.5 upscale past Runware's 120s sync window is polled to completion via getResponse",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"runware/topazlabs:wonder@3.5\",\n  \"images\": [\n    \"{{runwareSyncPollingInput}}\"\n  ],\n  \"type\": \"upscale\",\n  \"upscale_factor\": 4\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('long-running upscale succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json() || {};",
+                  "var d = body.data || [];",
+                  "var ef = body.extra_fields || {};",
+                  "pm.test('the finished image comes back, not an empty processing row', function () {",
+                  "  pm.expect(d, 'data: ' + pm.response.text()).to.have.lengthOf(1);",
+                  "  pm.expect(d[0].url, 'empty image (processing row surfaced): ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(d[0].id, 'image id missing: ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
+                  "});",
+                  "pm.test('the polled task cost is reported', function () {",
+                  "  var cost = body.usage && body.usage.cost && body.usage.cost.total_cost;",
+                  "  pm.expect(cost, 'usage: ' + JSON.stringify(body.usage)).to.be.a('number').that.is.above(0);",
+                  "});",
+                  "pm.test('the task actually outlived the 120s sync window', function () {",
+                  "  pm.expect(ef.latency, 'latency ' + ef.latency + 'ms: task finished inside the sync window, so polling was not exercised').to.be.above(120000);",
+                  "});",
+                  "pm.test('the reply came from getResponse (only polled replies carry status)', function () {",
+                  "  var raw = ef.raw_response;",
+                  "  if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
+                  "  var row = raw && raw.data && raw.data[0];",
+                  "  pm.expect(row && row.status, 'raw_response: ' + JSON.stringify(raw)).to.equal('success');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "310. Claude Haiku 5.5 effort and sampling params (haiku55-effort) (#9490 / PR #9491)",
+      "description": "Claude Haiku 5.5 takes the Sonnet 5+ request surface: thinking is adaptive-only (thinking.type enabled with budget_tokens is a 400), output_config.effort sets depth (low to max, default medium), and any non-default temperature/top_p/top_k is a 400. The name-based capability fallbacks did not know Haiku 5, so reasoning.effort fell through to the budget_tokens branch (or was dropped, then rewritten to adaptive at the default effort, when a datasheet row applied in the re-strip) and the sampling params were forwarded into the upstream 400. The anthropic_pc_auto cases send the same requests through a custom provider with an anthropic base, which resolved capabilities under its own key and missed the anthropic datasheet row; they use effort max and xhigh, which the built-in row (no effort ladder) clamped to high. Cases assert the OUTBOUND body via x-bf-send-back-raw-request.",
       "item": [
         {
           "name": "Anthropic /v1/chat/completions - reasoning_effort becomes adaptive thinking plus effort, temperature dropped (anthropic/claude-haiku-5-5) - haiku55-effort - #9490",
@@ -305023,6 +305149,125 @@
                 "anthropic",
                 "v1",
                 "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic_pc_auto /v1/chat/completions - custom provider with an anthropic base: reasoning_effort max reaches the wire as adaptive thinking plus effort, temperature dropped (anthropic_pc_auto/claude-haiku-5-5) - haiku55-effort - #9490",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('custom provider reads the anthropic row: adaptive thinking, full effort ladder, sampling dropped', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.exist;",
+                  "  pm.expect(raw.thinking, 'thinking dropped').to.exist;",
+                  "  pm.expect(raw.thinking.type, 'Haiku 5.5 rejects enabled thinking').to.eql('adaptive');",
+                  "  pm.expect(raw.thinking, 'Haiku 5.5 rejects budget_tokens').to.not.have.property('budget_tokens');",
+                  "  pm.expect(raw.output_config, 'output_config dropped').to.exist;",
+                  "  pm.expect(raw.output_config.effort, 'caller effort must not be lost').to.eql('max');",
+                  "  pm.expect(raw, 'Haiku 5.5 rejects a non-default temperature').to.not.have.property('temperature');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{anthropicKey}}"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic_pc_auto/claude-haiku-5-5\",\n  \"max_completion_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"reasoning\": {\n    \"effort\": \"max\"\n  },\n  \"temperature\": 0\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic_pc_auto /v1/responses - custom provider with an anthropic base: reasoning.effort xhigh reaches the wire as adaptive thinking plus effort, temperature dropped (anthropic_pc_auto/claude-haiku-5-5) - haiku55-effort - #9490",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('custom provider reads the anthropic row: adaptive thinking, full effort ladder, sampling dropped', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.exist;",
+                  "  pm.expect(raw.thinking, 'thinking dropped').to.exist;",
+                  "  pm.expect(raw.thinking.type, 'Haiku 5.5 rejects enabled thinking').to.eql('adaptive');",
+                  "  pm.expect(raw.thinking, 'Haiku 5.5 rejects budget_tokens').to.not.have.property('budget_tokens');",
+                  "  pm.expect(raw.output_config, 'output_config dropped').to.exist;",
+                  "  pm.expect(raw.output_config.effort, 'caller effort must not be lost').to.eql('xhigh');",
+                  "  pm.expect(raw, 'Haiku 5.5 rejects a non-default temperature').to.not.have.property('temperature');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{anthropicKey}}"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic_pc_auto/claude-haiku-5-5\",\n  \"max_output_tokens\": 64,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"reasoning\": {\n    \"effort\": \"xhigh\"\n  },\n  \"temperature\": 0\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
               ]
             }
           }

@@ -350,6 +350,7 @@
 		"disableAutoToolInjection": "自動ツール注入を無効化",
 		"allowTempToken": "一時トークン認証リンクを許可",
 		"codeModeBinding": "コードモードのバインドレベル",
+		"codeModeSettings": "コードモードの設定",
 		"selectBindingLevel": "バインドレベルを選択",
 		"serverLevel": "サーバーレベル",
 		"toolLevel": "ツールレベル",
