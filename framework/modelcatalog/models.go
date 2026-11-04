@@ -32,6 +32,14 @@ var providersWithListModelsOnly = map[schemas.ModelProvider]bool{
 	schemas.Cloudflare: true,
 }
 
+// providersWithNoDeprecatedBackfill enumerates providers whose deprecated
+// datasheet rows are not callable on the API the provider targets, so the
+// backfill would list models the provider cannot serve. Sarvam's sarvam-m is
+// a legacy /v1 model; Token Factory v2 does not serve it.
+var providersWithNoDeprecatedBackfill = map[schemas.ModelProvider]bool{
+	schemas.Sarvam: true,
+}
+
 // GetModelCreatedTimes returns the creation time, in Unix seconds, that the
 // provider last reported for each of its listed models, taken from the cached
 // list-models responses in the given mode, so times line up with the listing
@@ -71,6 +79,8 @@ func (mc *ModelCatalog) computeModelsForProvider(provider schemas.ModelProvider)
 		datasheetModelsToAppend := mc.datasheet.DeprecatedDatasheetModelsForProvider(provider)
 		if providersWithPartialListModels[provider] {
 			datasheetModelsToAppend = mc.datasheet.DatasheetModelsForProvider(provider)
+		} else if providersWithNoDeprecatedBackfill[provider] {
+			datasheetModelsToAppend = nil
 		}
 		out = mc.appendAllowedDatasheetModels(out, datasheetModelsToAppend, allowed, blacklisted)
 	} else if datasheetModels := mc.datasheet.DatasheetModelsForProvider(provider); len(datasheetModels) > 0 && allowed != nil {
