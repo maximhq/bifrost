@@ -81,7 +81,6 @@
 		},
 		"actions": {
 			"edit": "Modifier",
-			"viewDetails": "Voir les détails",
 			"authorize": "Autoriser",
 			"reconnect": "Reconnecter",
 			"reauthorize": "Réautoriser",

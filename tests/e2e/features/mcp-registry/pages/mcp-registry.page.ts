@@ -850,16 +850,15 @@ export class MCPRegistryPage extends BasePage {
   }
 
   /**
-   * Open the read-only view sheet from the client's actions menu, with the
-   * keyboard only
+   * Open the read-only view sheet from the client's name, which is a button,
+   * with the keyboard only
    */
   async viewClientDetailsFromKeyboard(name: string): Promise<void> {
     const row = this.getClientRow(name)
     await expect(row).toBeVisible({ timeout: 10000 })
-    await row.getByRole('button', { name: /MCP server actions/i }).focus()
-    await this.page.keyboard.press('Enter')
-    const viewItem = this.page.getByRole('menuitem', { name: 'View details', exact: true })
-    await expect(viewItem).toBeFocused({ timeout: 5000 })
+    const nameButton = row.getByRole('button', { name, exact: true })
+    await nameButton.focus()
+    await expect(nameButton).toBeFocused({ timeout: 5000 })
     await this.page.keyboard.press('Enter')
     await expect(this.viewSheet).toBeVisible({ timeout: 5000 })
   }

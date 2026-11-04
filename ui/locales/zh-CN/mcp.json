@@ -95,7 +95,6 @@
 		},
 		"actions": {
 			"edit": "编辑",
-			"viewDetails": "查看详情",
 			"authorize": "授权",
 			"reconnect": "重新连接",
 			"reauthorize": "重新授权",

@@ -95,7 +95,6 @@
 		},
 		"actions": {
 			"edit": "Изменить",
-			"viewDetails": "Подробнее",
 			"authorize": "Авторизовать",
 			"reconnect": "Переподключить",
 			"reauthorize": "Повторно авторизовать",

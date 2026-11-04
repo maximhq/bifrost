@@ -95,7 +95,6 @@
 		},
 		"actions": {
 			"edit": "Modifica",
-			"viewDetails": "Visualizza dettagli",
 			"authorize": "Autorizza",
 			"reconnect": "Riconnetti",
 			"reauthorize": "Riautorizza",
