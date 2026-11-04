@@ -306205,6 +306205,752 @@
           ]
         }
       ]
+    },
+    {
+      "name": "310. OpenAI image generation tool billing (image tool billing) [SERIAL]",
+      "description": "OpenAI reports the image generation tool's tokens only in the top-level tool_usage.image_gen, and bills them at the image model's rates. Bifrost now keeps that block, records the tool's model from the request (image_gen_model, stripped from the client wire), and adds the charge to the log cost, shown as image_cost in the breakdown. Setup creates a run-scoped virtual key and virtual-key scoped pricing overrides for gpt-5.4, gpt-image-1-mini and gpt-image-2, with different image rates, so the expected charge is exact from the token counts and a wrong tool model fails it. Three routes are pinned: /v1/responses unary with an explicit tool model, /v1/responses streaming with no tool model (bills at the default, gpt-image-2), and /openai_passthrough/v1/responses (no virtual key, so it asserts image cost above zero at datasheet rates). Each case fails loudly if no image was generated. Red before the change: tool_usage.image_gen never reached the client and the logged cost was the model tokens alone. This spends three live gpt-5.4 calls plus three low quality images.",
+      "item": [
+        {
+          "name": "openai image tool billing setup: create a virtual key",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Sweep what an aborted run left behind: the run-tagged pricing overrides first, then the virtual keys they were scoped to.",
+                  "// Each name ends in its creation time. Another run may share this gateway, so only objects older than any run of this folder go.",
+                  "(function () {",
+                  "  var BASE = pm.variables.get('baseUrl');",
+                  "  function sweep(path, field, prefix, done) {",
+                  "    pm.sendRequest({ url: BASE + path + '?search=' + encodeURIComponent(prefix) + '&limit=100', method: 'GET' }, function (err, res) {",
+                  "      var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "      var cutoff = Date.now() - 60 * 60 * 1000;",
+                  "      var items = ((json && json[field]) || []).filter(function (o) {",
+                  "        var name = String(o.name || '');",
+                  "        var createdAt = Number(name.slice(name.lastIndexOf('-') + 1));",
+                  "        return name.indexOf(prefix) === 0 && createdAt > 0 && createdAt < cutoff;",
+                  "      });",
+                  "      var i = 0; (function next() { if (i >= items.length) { return done(); } pm.sendRequest({ url: BASE + path + '/' + items[i++].id, method: 'DELETE' }, function () { next(); }); })();",
+                  "    });",
+                  "  }",
+                  "  sweep('/api/governance/pricing-overrides', 'pricing_overrides', 'harness-itb-', function () {",
+                  "    sweep('/api/governance/virtual-keys', 'virtual_keys', 'harness-itb-vk-run-', function () {});",
+                  "  });",
+                  "})();",
+                  "pm.collectionVariables.set('itbVK', 'missing');",
+                  "pm.collectionVariables.unset('itbVKID');",
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  name: 'harness-itb-vk-run-' + Date.now(),",
+                  "  provider_configs: [{ provider: 'openai', allowed_models: ['*'], key_ids: ['*'], weight: 1 }]",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('image tool billing: virtual key created', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var vk = {}; try { vk = (pm.response.json() || {}).virtual_key || {}; } catch (e) { vk = {}; }",
+                  "var value = (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value;",
+                  "if (value && vk.id) { pm.collectionVariables.set('itbVK', value); pm.collectionVariables.set('itbVKID', vk.id); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai image tool billing setup: virtual-key scoped rates for gpt-5.4 [EXPECT-201]",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/pricing-overrides",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('itbModelOverrideID');",
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  name: 'harness-itb-model-' + Date.now(),",
+                  "  // Virtual-key scoped: only this folder's requests are repriced.",
+                  "  scope_kind: 'virtual_key',",
+                  "  virtual_key_id: pm.collectionVariables.get('itbVKID') || 'missing',",
+                  "  match_type: 'wildcard',",
+                  "  pattern: 'gpt-5.4*',",
+                  "  request_types: ['responses'],",
+                  "  patch: { input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 }",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('image tool billing: gpt-5.4 override accepted', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+                  "});",
+                  "var body = null; try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "var ov = body && (body.pricing_override || body);",
+                  "pm.test('image tool billing: gpt-5.4 override has an id', function () {",
+                  "  pm.expect(ov && ov.id, 'body: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "});",
+                  "if (ov && ov.id) { pm.collectionVariables.set('itbModelOverrideID', ov.id); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai image tool billing setup: virtual-key scoped rates for gpt-image-1-mini [EXPECT-201]",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/pricing-overrides",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('itbMiniOverrideID');",
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  name: 'harness-itb-mini-' + Date.now(),",
+                  "  // Virtual-key scoped: only this folder's requests are repriced.",
+                  "  scope_kind: 'virtual_key',",
+                  "  virtual_key_id: pm.collectionVariables.get('itbVKID') || 'missing',",
+                  "  match_type: 'wildcard',",
+                  "  pattern: 'gpt-image-1-mini*',",
+                  "  request_types: ['image_generation'],",
+                  "  patch: { input_cost_per_token: 0.00001, input_cost_per_image_token: 0.00002, output_cost_per_token: 0.00003, output_cost_per_image_token: 0.0001 }",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('image tool billing: gpt-image-1-mini override accepted', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+                  "});",
+                  "var body = null; try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "var ov = body && (body.pricing_override || body);",
+                  "pm.test('image tool billing: gpt-image-1-mini override has an id', function () {",
+                  "  pm.expect(ov && ov.id, 'body: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "});",
+                  "if (ov && ov.id) { pm.collectionVariables.set('itbMiniOverrideID', ov.id); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai image tool billing setup: virtual-key scoped rates for gpt-image-2 [EXPECT-201]",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/pricing-overrides",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('itbDefaultOverrideID');",
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  name: 'harness-itb-default-' + Date.now(),",
+                  "  // Virtual-key scoped: only this folder's requests are repriced.",
+                  "  scope_kind: 'virtual_key',",
+                  "  virtual_key_id: pm.collectionVariables.get('itbVKID') || 'missing',",
+                  "  match_type: 'wildcard',",
+                  "  pattern: 'gpt-image-2*',",
+                  "  request_types: ['image_generation'],",
+                  "  patch: { input_cost_per_token: 0.00004, input_cost_per_image_token: 0.00005, output_cost_per_token: 0.00006, output_cost_per_image_token: 0.0002 }",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('image tool billing: gpt-image-2 override accepted', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+                  "});",
+                  "var body = null; try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "var ov = body && (body.pricing_override || body);",
+                  "pm.test('image tool billing: gpt-image-2 override has an id', function () {",
+                  "  pm.expect(ov && ov.id, 'body: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "});",
+                  "if (ov && ov.id) { pm.collectionVariables.set('itbDefaultOverrideID', ov.id); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai/gpt-5.4 /v1/responses: the logged cost includes the image tool tokens at the requested tool model rate - image tool billing",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{itbVK}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-5.4\",\"input\":\"Generate an image of a red square.\",\"tool_choice\":\"required\",\"tools\":[{\"type\":\"image_generation\",\"quality\":\"low\",\"size\":\"1024x1024\",\"output_format\":\"jpeg\",\"output_compression\":30,\"model\":\"gpt-image-1-mini\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "var resp = {}; try { resp = JSON.parse(text); } catch (e) { resp = {}; }",
+                  "var LABEL = 'image tool billing unary';",
+                  "var failText = text.length > 800 ? text.slice(0, 800) + '...' : text;",
+                  "pm.test(LABEL + ': request served', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + failText).to.eql(200);",
+                  "});",
+                  "var imageCalls = (resp.output || []).filter(function (it) { return it && it.type === 'image_generation_call'; });",
+                  "pm.test(LABEL + ': the model called the image tool (this pin needs an image)', function () {",
+                  "  pm.expect(imageCalls.length, 'no image_generation_call: ' + failText).to.be.above(0);",
+                  "});",
+                  "var tool = (resp.tool_usage || {}).image_gen || {};",
+                  "pm.test(LABEL + ': tool_usage.image_gen reaches the client', function () {",
+                  "  pm.expect(tool.total_tokens, 'tool_usage: ' + JSON.stringify(resp.tool_usage)).to.be.above(0);",
+                  "});",
+                  "pm.test(LABEL + ': the derived image tool model stays off the client wire', function () {",
+                  "  pm.expect((resp.tool_usage || {}).image_gen_model, JSON.stringify(resp.tool_usage)).to.equal(undefined);",
+                  "});",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test(LABEL + ': x-bifrost-request-id echoed', function () {",
+                  "  pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (!reqId || !tool.total_tokens) { return; }",
+                  "var usage = resp.usage || {};",
+                  "pm.test(LABEL + ': no prompt caching, so the rates fully determine the cost', function () {",
+                  "  pm.expect(((usage.input_tokens_details || {}).cached_tokens || 0) + (tool.cached_tokens || 0), JSON.stringify(usage)).to.eql(0);",
+                  "});",
+                  "var inD = tool.input_tokens_details || {}, outD = tool.output_tokens_details || {};",
+                  "var inText = tool.input_tokens, inImage = 0;",
+                  "if ((inD.text_tokens || 0) + (inD.image_tokens || 0) > 0) { inText = inD.text_tokens || 0; inImage = inD.image_tokens || 0; }",
+                  "var outText = 0, outImage = tool.output_tokens;",
+                  "if ((outD.text_tokens || 0) + (outD.image_tokens || 0) > 0) {",
+                  "  outImage = outD.image_tokens || 0;",
+                  "  outText = (outD.text_tokens || 0) + Math.max(tool.output_tokens - outImage - (outD.text_tokens || 0), 0);",
+                  "}",
+                  "var toolInput = inText * 0.00001 + inImage * 0.00002;",
+                  "var toolOutput = outText * 0.00003 + outImage * 0.0001;",
+                  "var modelCost = (usage.input_tokens || 0) * 0.000001 + (usage.output_tokens || 0) * 0.000002;",
+                  "// The log row is written by the batching writer, so poll the logs API. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.cost_breakdown && j.token_usage && j.token_usage.tool_usage) {",
+                  "      var cb = j.cost_breakdown;",
+                  "      var expected = modelCost + toolInput + toolOutput;",
+                  "      pm.test(LABEL + ': logged charge is the model tokens plus the image tool tokens at the image model rates', function () {",
+                  "        pm.expect(cb.total_cost, 'log: ' + JSON.stringify(cb) + ' model-only would be ' + modelCost).to.be.closeTo(expected, expected * 1e-6);",
+                  "      });",
+                  "      pm.test(LABEL + ': breakdown reports the tool charge as image cost on each side', function () {",
+                  "        pm.expect((cb.input_cost_details || {}).image_cost, JSON.stringify(cb)).to.be.closeTo(toolInput, toolInput * 1e-6);",
+                  "        pm.expect((cb.output_cost_details || {}).image_cost, JSON.stringify(cb)).to.be.closeTo(toolOutput, toolOutput * 1e-6);",
+                  "      });",
+                  "      pm.test(LABEL + ': log row keeps image_gen and the tool model for repricing', function () {",
+                  "        pm.expect(j.token_usage.tool_usage.image_gen.total_tokens, JSON.stringify(j.token_usage.tool_usage)).to.eql(tool.total_tokens);",
+                  "        pm.expect(j.token_usage.tool_usage.image_gen_model, JSON.stringify(j.token_usage.tool_usage)).to.eql('gpt-image-1-mini');",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test(LABEL + ': log row carries the billed tool usage', function () { pm.expect.fail('log ' + reqId + ' never carried it: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai/gpt-5.4 /v1/responses stream: the logged cost bills an unnamed image tool model at the default rate - image tool billing",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{itbVK}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-5.4\",\"input\":\"Generate an image of a red square.\",\"stream\":true,\"tool_choice\":\"required\",\"tools\":[{\"type\":\"image_generation\",\"quality\":\"low\",\"size\":\"1024x1024\",\"output_format\":\"jpeg\",\"output_compression\":30}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "var resp = {};",
+                  "text.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var ev; try { ev = JSON.parse(line.slice(5)); } catch (e) { return; }",
+                  "  if (ev && ev.type === 'response.completed' && ev.response) { resp = ev.response; }",
+                  "});",
+                  "var LABEL = 'image tool billing stream';",
+                  "var failText = text.length > 800 ? text.slice(0, 800) + '...' : text;",
+                  "pm.test(LABEL + ': request served', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + failText).to.eql(200);",
+                  "});",
+                  "var imageCalls = (resp.output || []).filter(function (it) { return it && it.type === 'image_generation_call'; });",
+                  "pm.test(LABEL + ': the model called the image tool (this pin needs an image)', function () {",
+                  "  pm.expect(imageCalls.length, 'no image_generation_call: ' + failText).to.be.above(0);",
+                  "});",
+                  "var tool = (resp.tool_usage || {}).image_gen || {};",
+                  "pm.test(LABEL + ': tool_usage.image_gen reaches the client', function () {",
+                  "  pm.expect(tool.total_tokens, 'tool_usage: ' + JSON.stringify(resp.tool_usage)).to.be.above(0);",
+                  "});",
+                  "pm.test(LABEL + ': the derived image tool model stays off the client wire', function () {",
+                  "  pm.expect((resp.tool_usage || {}).image_gen_model, JSON.stringify(resp.tool_usage)).to.equal(undefined);",
+                  "});",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test(LABEL + ': x-bifrost-request-id echoed', function () {",
+                  "  pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (!reqId || !tool.total_tokens) { return; }",
+                  "var usage = resp.usage || {};",
+                  "pm.test(LABEL + ': no prompt caching, so the rates fully determine the cost', function () {",
+                  "  pm.expect(((usage.input_tokens_details || {}).cached_tokens || 0) + (tool.cached_tokens || 0), JSON.stringify(usage)).to.eql(0);",
+                  "});",
+                  "var inD = tool.input_tokens_details || {}, outD = tool.output_tokens_details || {};",
+                  "var inText = tool.input_tokens, inImage = 0;",
+                  "if ((inD.text_tokens || 0) + (inD.image_tokens || 0) > 0) { inText = inD.text_tokens || 0; inImage = inD.image_tokens || 0; }",
+                  "var outText = 0, outImage = tool.output_tokens;",
+                  "if ((outD.text_tokens || 0) + (outD.image_tokens || 0) > 0) {",
+                  "  outImage = outD.image_tokens || 0;",
+                  "  outText = (outD.text_tokens || 0) + Math.max(tool.output_tokens - outImage - (outD.text_tokens || 0), 0);",
+                  "}",
+                  "var toolInput = inText * 0.00004 + inImage * 0.00005;",
+                  "var toolOutput = outText * 0.00006 + outImage * 0.0002;",
+                  "var modelCost = (usage.input_tokens || 0) * 0.000001 + (usage.output_tokens || 0) * 0.000002;",
+                  "// The log row is written by the batching writer, so poll the logs API. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.cost_breakdown && j.token_usage && j.token_usage.tool_usage) {",
+                  "      var cb = j.cost_breakdown;",
+                  "      var expected = modelCost + toolInput + toolOutput;",
+                  "      pm.test(LABEL + ': logged charge is the model tokens plus the image tool tokens at the image model rates', function () {",
+                  "        pm.expect(cb.total_cost, 'log: ' + JSON.stringify(cb) + ' model-only would be ' + modelCost).to.be.closeTo(expected, expected * 1e-6);",
+                  "      });",
+                  "      pm.test(LABEL + ': breakdown reports the tool charge as image cost on each side', function () {",
+                  "        pm.expect((cb.input_cost_details || {}).image_cost, JSON.stringify(cb)).to.be.closeTo(toolInput, toolInput * 1e-6);",
+                  "        pm.expect((cb.output_cost_details || {}).image_cost, JSON.stringify(cb)).to.be.closeTo(toolOutput, toolOutput * 1e-6);",
+                  "      });",
+                  "      pm.test(LABEL + ': log row keeps image_gen and the tool model for repricing', function () {",
+                  "        pm.expect(j.token_usage.tool_usage.image_gen.total_tokens, JSON.stringify(j.token_usage.tool_usage)).to.eql(tool.total_tokens);",
+                  "        pm.expect(j.token_usage.tool_usage.image_gen_model, JSON.stringify(j.token_usage.tool_usage)).to.equal(undefined);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test(LABEL + ': log row carries the billed tool usage', function () { pm.expect.fail('log ' + reqId + ' never carried it: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai gpt-5.4 /openai_passthrough/v1/responses: the logged cost includes the image tool tokens - image tool billing",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gpt-5.4\",\"input\":\"Generate an image of a red square.\",\"tool_choice\":\"required\",\"tools\":[{\"type\":\"image_generation\",\"quality\":\"low\",\"size\":\"1024x1024\",\"output_format\":\"jpeg\",\"output_compression\":30,\"model\":\"gpt-image-1-mini\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "var resp = {}; try { resp = JSON.parse(text); } catch (e) { resp = {}; }",
+                  "var LABEL = 'image tool billing passthrough';",
+                  "var failText = text.length > 800 ? text.slice(0, 800) + '...' : text;",
+                  "pm.test(LABEL + ': request served', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + failText).to.eql(200);",
+                  "});",
+                  "var imageCalls = (resp.output || []).filter(function (it) { return it && it.type === 'image_generation_call'; });",
+                  "pm.test(LABEL + ': the model called the image tool (this pin needs an image)', function () {",
+                  "  pm.expect(imageCalls.length, 'no image_generation_call: ' + failText).to.be.above(0);",
+                  "});",
+                  "var tool = (resp.tool_usage || {}).image_gen || {};",
+                  "pm.test(LABEL + ': tool_usage.image_gen reaches the client', function () {",
+                  "  pm.expect(tool.total_tokens, 'tool_usage: ' + JSON.stringify(resp.tool_usage)).to.be.above(0);",
+                  "});",
+                  "pm.test(LABEL + ': the derived image tool model stays off the client wire', function () {",
+                  "  pm.expect((resp.tool_usage || {}).image_gen_model, JSON.stringify(resp.tool_usage)).to.equal(undefined);",
+                  "});",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test(LABEL + ': x-bifrost-request-id echoed', function () {",
+                  "  pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (!reqId || !tool.total_tokens) { return; }",
+                  "// The log row is written by the batching writer, so poll the logs API. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.cost_breakdown && j.token_usage && j.token_usage.tool_usage) {",
+                  "      var cb = j.cost_breakdown;",
+                  "      pm.test(LABEL + ': logged charge has image cost on each side', function () {",
+                  "        pm.expect((cb.input_cost_details || {}).image_cost, JSON.stringify(cb)).to.be.above(0);",
+                  "        pm.expect((cb.output_cost_details || {}).image_cost, JSON.stringify(cb)).to.be.above(0);",
+                  "      });",
+                  "      pm.test(LABEL + ': log row keeps image_gen and the tool model for repricing', function () {",
+                  "        pm.expect(j.token_usage.tool_usage.image_gen.total_tokens, JSON.stringify(j.token_usage.tool_usage)).to.eql(tool.total_tokens);",
+                  "        pm.expect(j.token_usage.tool_usage.image_gen_model, JSON.stringify(j.token_usage.tool_usage)).to.eql('gpt-image-1-mini');",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test(LABEL + ': log row carries the billed tool usage', function () { pm.expect.fail('log ' + reqId + ' never carried it: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai image tool billing cleanup: delete the gpt-image-2 override",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/pricing-overrides/{{itbDefaultOverrideID}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides",
+                "{{itbDefaultOverrideID}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Nothing was created, so there is nothing to delete.",
+                  "if (!pm.collectionVariables.get('itbDefaultOverrideID')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('image tool billing: the gpt-image-2 override deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.within(200, 299);",
+                  "});",
+                  "// Keep the id when the delete failed, so the failure stays visible and the next run's sweep removes it.",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) { pm.collectionVariables.unset('itbDefaultOverrideID'); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai image tool billing cleanup: delete the gpt-image-1-mini override",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/pricing-overrides/{{itbMiniOverrideID}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides",
+                "{{itbMiniOverrideID}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Nothing was created, so there is nothing to delete.",
+                  "if (!pm.collectionVariables.get('itbMiniOverrideID')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('image tool billing: the gpt-image-1-mini override deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.within(200, 299);",
+                  "});",
+                  "// Keep the id when the delete failed, so the failure stays visible and the next run's sweep removes it.",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) { pm.collectionVariables.unset('itbMiniOverrideID'); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai image tool billing cleanup: delete the gpt-5.4 override",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/pricing-overrides/{{itbModelOverrideID}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides",
+                "{{itbModelOverrideID}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Nothing was created, so there is nothing to delete.",
+                  "if (!pm.collectionVariables.get('itbModelOverrideID')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('image tool billing: the gpt-5.4 override deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.within(200, 299);",
+                  "});",
+                  "// Keep the id when the delete failed, so the failure stays visible and the next run's sweep removes it.",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) { pm.collectionVariables.unset('itbModelOverrideID'); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai image tool billing cleanup: delete the virtual key",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys/{{itbVKID}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{itbVKID}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Nothing was created, so there is nothing to delete.",
+                  "if (!pm.collectionVariables.get('itbVKID')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('image tool billing: the virtual key deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.within(200, 299);",
+                  "});",
+                  "// Keep the id when the delete failed, so the failure stays visible and the next run's sweep removes it.",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) { pm.collectionVariables.unset('itbVKID'); }"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

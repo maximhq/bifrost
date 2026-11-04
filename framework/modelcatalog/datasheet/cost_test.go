@@ -7990,6 +7990,12 @@ func TestCalculateCost_ImageGenTool_AddsToModelTokens(t *testing.T) {
 	assert.InDelta(t, 10*2e-6+100*5e-6, cost.InputCost, 1e-12)
 	assert.InDelta(t, 2*1e-5+5000*3e-5, cost.OutputCost, 1e-12)
 	assert.InDelta(t, 10*2e-6+2*1e-5+100*5e-6+5000*3e-5, cost.TotalCost, 1e-12)
+	require.NotNil(t, cost.InputCostDetails)
+	require.NotNil(t, cost.OutputCostDetails)
+	assert.InDelta(t, 10*2e-6, cost.InputCostDetails.TextCost, 1e-12)
+	assert.InDelta(t, 100*5e-6, cost.InputCostDetails.ImageCost, 1e-12)
+	assert.InDelta(t, 2*1e-5, cost.OutputCostDetails.TextCost, 1e-12)
+	assert.InDelta(t, 5000*3e-5, cost.OutputCostDetails.ImageCost, 1e-12)
 
 	azure := s.CalculateCostBreakdown(responsesResultWithSessions(schemas.Azure, "gpt-6.1-sol", usage), nil)
 	require.NotNil(t, azure)

@@ -654,7 +654,18 @@ func computeImageGenToolCost(pricing *configstoreTables.TableModelPricing, u *sc
 	if d := u.OutputTokensDetails; d != nil && d.ImageTokens+d.TextTokens > 0 {
 		imageUsage.OutputTokensDetails = &schemas.ImageTokenDetails{ImageTokens: d.ImageTokens, TextTokens: d.TextTokens}
 	}
-	return computeImageCost(pricing, imageUsage, "", "", serviceTier{}).Add(newInputOutputCost(cachedCost, 0))
+	cost := computeImageCost(pricing, imageUsage, "", "", serviceTier{}).Add(newInputOutputCost(cachedCost, 0))
+	if cost == nil {
+		return nil
+	}
+	// Report the tool's whole charge as image cost so the details still sum to each side.
+	if cost.InputCost > 0 {
+		cost.InputCostDetails = &schemas.InputCostDetails{ImageCost: cost.InputCost}
+	}
+	if cost.OutputCost > 0 {
+		cost.OutputCostDetails = &schemas.OutputCostDetails{ImageCost: cost.OutputCost}
+	}
+	return cost
 }
 
 func cachedImageTokenRate(pricing *configstoreTables.TableModelPricing) float64 {
