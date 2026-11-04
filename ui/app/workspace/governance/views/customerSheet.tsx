@@ -17,6 +17,8 @@ import { Label } from "@/components/ui/label";
 import BudgetUsageResetDialog from "@/components/ui/budgetUsageResetDialog";
 import { useBudgetUsageResetPrompt } from "@/hooks/useBudgetUsageResetPrompt";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
+import { useEntityGovernanceProbe } from "@/lib/registries/entityGovernance";
+import "@enterprise/lib/registrations/entityGovernance";
 import MultiBudgetLines, { BudgetLineEntry } from "@/components/ui/multibudgets";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -68,16 +70,16 @@ const createInitialState = (customer?: Customer | null): Omit<CustomerFormData, 
 };
 
 export default function CustomerSheet({ open, onOpenChange, customer, onSuccess }: CustomerSheetProps) {
-	// Enterprise governs a customer's keys with an access profile, so a customer's own budgets and
-	// rate limits are the legacy system: not offered to a customer that has none, since the way to
-	// fund a new one is a profile. A customer that already has them keeps them editable here - the
-	// deployment is running on them, and taking editing away would leave it able only to migrate or
-	// delete, with no way back.
+	const isEditing = !!customer;
+	// A customer funds itself with the budgets and rate limit edited here, unless something else
+	// governs it - in builds that can attach one, an access profile. The two are alternatives, so a
+	// governed customer gets its name field only, and the probe is asked before the fields are shown:
+	// a customer that already holds limits of its own cannot be governed, so it skips the wait.
 	const hasLegacyLimits = !!customer && ((customer.budgets?.length ?? 0) > 0 || !!customer.rate_limit);
-	const editsLimits = !IS_ENTERPRISE || hasLegacyLimits;
+	const governance = useEntityGovernanceProbe("customer", customer?.id ?? "", IS_ENTERPRISE && isEditing && open && !hasLegacyLimits);
+	const editsLimits = !IS_ENTERPRISE || !isEditing || hasLegacyLimits || (!governance.isLoading && !governance.governedBy);
 	const { t } = useTranslation("governance");
 	const { t: tCommon } = useTranslation("common");
-	const isEditing = !!customer;
 	const [initialState, setInitialState] = useState<Omit<CustomerFormData, "isDirty">>(createInitialState(customer));
 	const [formData, setFormData] = useState<CustomerFormData>({
 		...createInitialState(customer),
@@ -187,10 +189,9 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 			new Validator([
 				Validator.required(formData.name.trim(), t("customers.nameRequired")),
 				Validator.custom(formData.isDirty, t("sheet.noChanges")),
-				// Limits are only editable here when this build owns them. In enterprise they are the
-				// access profile's, the fields are hidden, and the form still carries whatever the
-				// customer already has - validating that would block an unrelated rename behind a
-				// legacy value the operator cannot reach.
+				// Limits are validated only while they are offered. A governed customer's fields are
+				// hidden, and the form still carries whatever the customer already has - validating that
+				// would block an unrelated rename behind a value the operator cannot reach.
 				...(editsLimits
 					? [
 							Validator.custom(!hasDuplicateDuration, t("sheet.uniqueResetPeriod")),
