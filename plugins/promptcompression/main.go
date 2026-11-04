@@ -39,6 +39,10 @@ const (
 	ContextKeyEstimatedAfter  schemas.BifrostContextKey = "prompt-compression-estimated-after"
 )
 
+// contextKeyStream marks a compressed request as streaming so PostLLMHook,
+// which core runs once per stream chunk, can log only on the final chunk.
+const contextKeyStream schemas.BifrostContextKey = "prompt-compression-stream"
+
 // The compressors are held in package vars so tests can substitute a panicking
 // one and verify the fail-open path.
 var (
@@ -57,7 +61,7 @@ func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostReq
 	result = req
 	defer func() {
 		if r := recover(); r != nil {
-			p.warn("promptcompression: recovered from panic, sending original request", "panic", r)
+			p.warn("promptcompression: recovered from panic, sending original request: %v", r)
 			result, sc, err = req, nil, nil
 		}
 	}()
@@ -118,6 +122,9 @@ func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostReq
 	}
 	ctx.SetValue(ContextKeyEstimatedBefore, before)
 	ctx.SetValue(ContextKeyEstimatedAfter, after)
+	if req.RequestType == schemas.ChatCompletionStreamRequest || req.RequestType == schemas.ResponsesStreamRequest {
+		ctx.SetValue(contextKeyStream, true)
+	}
 	return out, nil, nil
 }
 
@@ -127,13 +134,19 @@ func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostReq
 func (p *Plugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	defer func() {
 		if r := recover(); r != nil {
-			p.warn("promptcompression: recovered from panic in PostLLMHook", "panic", r)
+			p.warn("promptcompression: recovered from panic in PostLLMHook: %v", r)
 		}
 	}()
 	before, ok1 := ctx.Value(ContextKeyEstimatedBefore).(int)
 	after, ok2 := ctx.Value(ContextKeyEstimatedAfter).(int)
 	if !ok1 || !ok2 {
 		return resp, bifrostErr, nil
+	}
+	// Streams run this hook per chunk; usage arrives with the final one.
+	if stream, _ := ctx.Value(contextKeyStream).(bool); stream {
+		if final, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !final {
+			return resp, bifrostErr, nil
+		}
 	}
 	var prompt, cached int
 	if resp != nil {
@@ -150,9 +163,8 @@ func (p *Plugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostR
 		}
 	}
 	if p.logger != nil {
-		p.logger.Info("promptcompression: request compressed",
-			"estimated_before", before, "estimated_after", after,
-			"prompt_tokens", prompt, "cached_read_tokens", cached)
+		p.logger.Info("promptcompression: request compressed estimated_before=%d estimated_after=%d prompt_tokens=%d cached_read_tokens=%d",
+			before, after, prompt, cached)
 	}
 	return resp, bifrostErr, nil
 }

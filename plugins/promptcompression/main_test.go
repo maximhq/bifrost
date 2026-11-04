@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -23,7 +22,7 @@ type capLogger struct {
 func (l *capLogger) add(dst *[]string, msg string, args ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	*dst = append(*dst, msg+" "+fmt.Sprint(args...))
+	*dst = append(*dst, fmt.Sprintf(msg, args...))
 }
 func (l *capLogger) Debug(string, ...any)                                            {}
 func (l *capLogger) Info(m string, a ...any)                                         { l.add(&l.infos, m, a...) }
@@ -230,7 +229,7 @@ func TestPostLLMHookLogsChat(t *testing.T) {
 	require.Same(t, resp, gotResp)
 	require.Same(t, berr, gotErr)
 	require.Len(t, lg.infos, 1)
-	for _, want := range []string{"estimated_before", "estimated_after", "prompt_tokens", "cached_read_tokens", "1000", "600", "123", "45"} {
+	for _, want := range []string{"estimated_before=1000", "estimated_after=600", "prompt_tokens=123", "cached_read_tokens=45"} {
 		require.Contains(t, lg.infos[0], want)
 	}
 }
@@ -242,7 +241,10 @@ func TestPostLLMHookLogsResponses(t *testing.T) {
 	_, _, err := p.PostLLMHook(ctxWithEstimates(10, 5), resp, nil)
 	require.NoError(t, err)
 	require.Len(t, lg.infos, 1)
-	require.True(t, strings.Contains(lg.infos[0], "77") && strings.Contains(lg.infos[0], "9"))
+	require.Contains(t, lg.infos[0], "estimated_before=10")
+	require.Contains(t, lg.infos[0], "prompt_tokens=77")
+	require.Contains(t, lg.infos[0], "cached_read_tokens=9")
+	require.NotContains(t, lg.infos[0], "%!")
 }
 
 func TestPostLLMHookNilUsage(t *testing.T) {
@@ -271,4 +273,27 @@ func TestPostLLMHookWithoutEstimatesIsSilent(t *testing.T) {
 	require.NoError(t, err)
 	require.Same(t, resp, got)
 	require.Empty(t, lg.infos)
+}
+
+func TestPostLLMHookStreamLogsOnceOnFinalChunk(t *testing.T) {
+	p, lg := newHookPlugin(t)
+	ctx := hookCtx()
+	req := bigChatReq(schemas.ChatCompletionStreamRequest)
+	_, _, err := p.PreLLMHook(ctx, req)
+	require.NoError(t, err)
+
+	chunk := func(prompt int) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{Usage: &schemas.BifrostLLMUsage{PromptTokens: prompt}}}
+	}
+	for _, c := range []struct {
+		final  bool
+		prompt int
+	}{{false, 0}, {false, 0}, {true, 321}} {
+		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, c.final)
+		_, _, err := p.PostLLMHook(ctx, chunk(c.prompt), nil)
+		require.NoError(t, err)
+	}
+	require.Len(t, lg.infos, 1)
+	require.Contains(t, lg.infos[0], "prompt_tokens=321")
+	require.Contains(t, lg.infos[0], "estimated_before=")
 }
