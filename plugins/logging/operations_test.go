@@ -6558,3 +6558,20 @@ func TestClientIPCaptureOffByDefault(t *testing.T) {
 	require.NotNil(t, relayEntry)
 	require.Nil(t, relayEntry.ClientIP)
 }
+
+// TestRelayLogMarksLargePayloadResponse pins that a relay reply forwarded past the large-payload
+// response threshold is marked on its row, as is_large_payload_response marks an LLM row, so the
+// body it keeps reads as the preview it is.
+func TestRelayLogMarksLargePayloadResponse(t *testing.T) {
+	plugin := policyTestPlugin(nil, nil, true)
+	plugin.writeQueue = make(chan *writeQueueEntry, 1)
+	ctx := policyCtx(false, nil)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-large")
+	_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "files", Method: "GET", Path: "/f"})
+	require.NoError(t, err)
+	_, _, err = plugin.PostRelayHook(ctx, &schemas.BifrostRelayResponse{RelayName: "files", StatusCode: 200, Streamed: true, LargeResponse: true, Body: []byte("preview")}, nil)
+	require.NoError(t, err)
+	entry := (<-plugin.writeQueue).endpointLog
+	require.True(t, entry.IsLargePayloadResponse)
+	require.Equal(t, "preview", *entry.ResponseBody)
+}

@@ -900,6 +900,7 @@
 			"tokensNotPricedValue": "입력 {{input}} / 출력 {{output}}",
 			"matchedRoute": "일치한 라우트",
 			"parentLog": "상위 로그",
+			"responseBodyPreview": "응답 본문 (미리보기)",
 			"queryParameters": "쿼리 매개변수",
 			"matchedHeaders": "일치한 헤더",
 			"errorNoMessageWithStatus": "릴레이가 메시지 없이 오류(HTTP {{status}})를 반환했어요.",

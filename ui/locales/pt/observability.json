@@ -905,6 +905,7 @@
 			"tokensNotPricedValue": "{{input}} entrada / {{output}} saída",
 			"matchedRoute": "Rota correspondida",
 			"parentLog": "Registo principal",
+			"responseBodyPreview": "Corpo da resposta (pré-visualização)",
 			"queryParameters": "Parâmetros de consulta",
 			"matchedHeaders": "Cabeçalhos correspondidos",
 			"errorNoMessageWithStatus": "O relay devolveu um erro (HTTP {{status}}) sem mensagem.",

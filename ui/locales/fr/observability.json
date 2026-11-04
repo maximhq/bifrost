@@ -905,6 +905,7 @@
 			"tokensNotPricedValue": "{{input}} en entrée / {{output}} en sortie",
 			"matchedRoute": "Route correspondante",
 			"parentLog": "Journal parent",
+			"responseBodyPreview": "Corps de la réponse (aperçu)",
 			"queryParameters": "Paramètres de requête",
 			"matchedHeaders": "En-têtes correspondants",
 			"errorNoMessageWithStatus": "Le relais a renvoyé une erreur (HTTP {{status}}) sans message.",

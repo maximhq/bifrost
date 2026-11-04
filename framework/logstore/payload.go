@@ -536,6 +536,16 @@ type relayPayloadV1 struct {
 	ResponseBody  *string `json:"response_body,omitempty"`
 }
 
+// relayMergePayloadV1 is what a relay reconcile queues: the bodies it carries, each with a flag
+// saying whether it was carried at all (a nil body with its flag set clears the stored one).
+type relayMergePayloadV1 struct {
+	SchemaVersion   int     `json:"schema_version"`
+	RequestBody     *string `json:"request_body,omitempty"`
+	SetRequestBody  bool    `json:"set_request_body,omitempty"`
+	ResponseBody    *string `json:"response_body,omitempty"`
+	SetResponseBody bool    `json:"set_response_body,omitempty"`
+}
+
 // MarshalRelayLogPayload serializes a Relay Logs row's full bodies for object storage.
 func MarshalRelayLogPayload(l *RelayLog) ([]byte, error) {
 	return sonic.Marshal(relayPayloadV1{

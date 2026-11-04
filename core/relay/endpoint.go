@@ -11,7 +11,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -21,10 +20,6 @@ import (
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
-
-// maxBufferedResponseBytes bounds a response the buffered relay will hold. A package variable so
-// tests can lower it; the streaming relay never buffers a body.
-var maxBufferedResponseBytes int64 = 64 << 20
 
 // endpoint is one configured endpoint with its routes, globs and clients compiled once per
 // (re)build. It is immutable once built; an update swaps in a new one.
@@ -94,6 +89,14 @@ type plan struct {
 	usage   resolvedUsage
 	billing bool
 	stream  streamMode
+}
+
+// readsReplyBody reports whether a billable call reads something from its reply's body: a priced
+// or recorded field (cost, units, tokens) or the id of the job it starts. Such a reply is read
+// whole even past the large-payload response threshold, since the field can sit anywhere in it;
+// a hand-off would charge the default price or lose the job.
+func (p plan) readsReplyBody() bool {
+	return p.billing && (len(p.usage.eventPaths) > 0 || (p.route != nil && p.route.job != nil))
 }
 
 // streamMode is how a request's reply is relayed.
@@ -282,8 +285,10 @@ func (e *endpoint) doBuffered(ctx *schemas.BifrostContext, req upstreamRequest) 
 	return e.readBuffered(resp, start, false)
 }
 
-// readBuffered reads an open reply in full, up to maxBufferedResponseBytes. bounded applies the
-// endpoint timeout to the read, for a reply opened on the streaming client, which has none.
+// readBuffered reads an open reply in full. There is no size bound of the relay's own, as there is
+// none on a provider's unary reply: the only cap on this path is the one the server puts on the
+// request body. bounded applies the endpoint timeout to the read, for a reply opened on the
+// streaming client, which has none.
 func (e *endpoint) readBuffered(resp *http.Response, start time.Time, bounded bool) (*bufferedResult, *schemas.BifrostError) {
 	defer resp.Body.Close()
 	var timedOut atomic.Bool
@@ -295,18 +300,13 @@ func (e *endpoint) readBuffered(resp *http.Response, start time.Time, bounded bo
 		defer timer.Stop()
 	}
 	// DoHTTPRequest wraps the body so time blocked reading it counts as upstream time too.
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBufferedResponseBytes+1))
+	body, err := io.ReadAll(resp.Body)
 	latency := time.Since(start)
 	if timedOut.Load() {
 		return nil, transportError(context.DeadlineExceeded, latency)
 	}
 	if err != nil {
 		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError("error reading response body", err), latency)
-	}
-	if int64(len(body)) > maxBufferedResponseBytes {
-		tooLarge := providerUtils.NewBifrostOperationError(fmt.Sprintf("relay response is too large to buffer (limit %d bytes); configure the route to stream", maxBufferedResponseBytes), nil)
-		tooLarge.StatusCode = schemas.Ptr(http.StatusBadGateway)
-		return nil, providerUtils.SetErrorLatency(tooLarge, latency)
 	}
 	return &bufferedResult{
 		status:      resp.StatusCode,
@@ -315,6 +315,59 @@ func (e *endpoint) readBuffered(resp *http.Response, start time.Time, bounded bo
 		body:        body,
 		latency:     time.Since(start),
 	}, nil
+}
+
+// largeResponseThreshold is the large-payload response threshold on the request (enterprise
+// large_payload_optimization.response_threshold_bytes, set by its middleware for inference and relay
+// routes alike), 0 when the optimization is off or the caller sent X-Bifrost-Force-Buffering.
+func largeResponseThreshold(ctx context.Context) int64 {
+	threshold, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseThreshold).(int64)
+	return threshold
+}
+
+// readOrHandOff reads a reply opened on the streaming client as readBuffered does, unless it is
+// larger than threshold, in which case it is not held: large is true and ahead holds what was read
+// while deciding, the reply's body still open for the caller to forward. A known length decides at
+// once; an unknown one (chunked, or decompressed by the transport) is read up to the threshold, as
+// FinalizeResponseWithLargeDetection classifies an LLM reply.
+func (e *endpoint) readOrHandOff(resp *http.Response, start time.Time, threshold int64) (reply *bufferedResult, ahead []byte, large bool, bErr *schemas.BifrostError) {
+	if resp.ContentLength >= 0 && resp.ContentLength <= threshold {
+		reply, bErr = e.readBuffered(resp, start, true)
+		return reply, nil, false, bErr
+	}
+	if resp.ContentLength > threshold {
+		return nil, nil, true, nil
+	}
+	var timedOut atomic.Bool
+	timer := time.AfterFunc(max(e.client.Timeout-time.Since(start), 0), func() {
+		timedOut.Store(true)
+		_ = resp.Body.Close()
+	})
+	ahead, err := io.ReadAll(io.LimitReader(resp.Body, threshold+1))
+	stopped := timer.Stop()
+	latency := time.Since(start)
+	if err != nil {
+		_ = resp.Body.Close()
+		if timedOut.Load() {
+			return nil, nil, false, transportError(context.DeadlineExceeded, latency)
+		}
+		return nil, nil, false, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError("error reading response body", err), latency)
+	}
+	if int64(len(ahead)) > threshold {
+		if !stopped {
+			// The deadline fired as the read ended and closed the body the stream would forward.
+			return nil, nil, false, transportError(context.DeadlineExceeded, latency)
+		}
+		return nil, ahead, true, nil
+	}
+	_ = resp.Body.Close()
+	return &bufferedResult{
+		status:      resp.StatusCode,
+		headers:     e.responseHeaders(resp),
+		contentType: resp.Header.Get("Content-Type"),
+		body:        ahead,
+		latency:     latency,
+	}, nil, false, nil
 }
 
 // openStream sends one request and returns the open reply for the streaming relay. The streaming

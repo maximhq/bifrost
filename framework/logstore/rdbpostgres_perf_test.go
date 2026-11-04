@@ -749,3 +749,53 @@ func TestSearchLogsCostAndLatencySortUsesIndex_Postgres(t *testing.T) {
 		})
 	}
 }
+
+// TestRelayLogSessionIDIndexBuiltConcurrentlyOnPostgres pins the upgrade path of
+// relay_logs_add_session_id on a populated relay_logs: the migration adds only the column, so it
+// never scans the table under a lock that blocks inserts, and the background builder then
+// produces a valid index CONCURRENTLY.
+func TestRelayLogSessionIDIndexBuiltConcurrentlyOnPostgres(t *testing.T) {
+	db := trySetupPostgresDB(t)
+	if db == nil {
+		t.Skip("Postgres not available, skipping test")
+	}
+	ctx := context.Background()
+	db.Exec("DROP TABLE IF EXISTS relay_logs CASCADE")
+	db.Exec("CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)")
+	db.Exec("DELETE FROM migrations")
+	require.NoError(t, triggerMigrations(ctx, db, testLogger{}))
+	t.Cleanup(func() {
+		db.Exec("DROP TABLE IF EXISTS relay_logs CASCADE")
+		db.Exec("DELETE FROM migrations")
+	})
+
+	// A deployment upgraded from before the column: rows present, no column, no index.
+	require.NoError(t, db.Exec("DROP INDEX IF EXISTS idx_relay_logs_session_id").Error)
+	require.NoError(t, db.Migrator().DropColumn(&RelayLog{}, "session_id"))
+	now := time.Now().UTC()
+	rows := make([]*RelayLog, 0, 200)
+	for i := 0; i < 200; i++ {
+		id := fmt.Sprintf("relay-%03d", i)
+		rows = append(rows, &RelayLog{ID: id, RequestID: id, Timestamp: now, RelayName: "docs", Status: RelayLogStatusSuccess})
+	}
+	require.NoError(t, db.Omit("session_id").Create(&rows).Error)
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "relay_logs_add_session_id").Error)
+
+	require.NoError(t, migrationAddRelayLogSessionID(ctx, db, testLogger{}))
+	assert.True(t, db.Migrator().HasColumn(&RelayLog{}, "session_id"), "the migration adds the column")
+	conn := acquirePerfTestSQLConn(t, ctx, db)
+	valid, err := pgIndexValid(ctx, conn, "relay_logs", "idx_relay_logs_session_id")
+	require.NoError(t, err)
+	assert.False(t, valid, "the migration does not build the index on Postgres")
+
+	require.NoError(t, ensurePerformanceIndexes(ctx, conn, testLogger{}))
+	valid, err = pgIndexValid(ctx, conn, "relay_logs", "idx_relay_logs_session_id")
+	require.NoError(t, err)
+	assert.True(t, valid, "the background builder builds a valid index")
+	var predicate string
+	require.NoError(t, db.Raw("SELECT pg_get_indexdef(indexrelid) FROM pg_index WHERE indexrelid = 'idx_relay_logs_session_id'::regclass").Scan(&predicate).Error)
+	assert.Contains(t, predicate, "WHERE (session_id IS NOT NULL)", "the index stays partial, as the model's tag declares")
+	var count int64
+	require.NoError(t, db.Model(&RelayLog{}).Count(&count).Error)
+	assert.EqualValues(t, 200, count, "existing rows are untouched")
+}

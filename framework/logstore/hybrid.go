@@ -38,6 +38,10 @@ const (
 	// has (BatchUpdate's reconcile of a late completion) instead of replacing it.
 	uploadKindLogMerge
 	uploadKindRelay
+	// uploadKindRelayMerge overlays the bodies a reconcile carries onto the relay row's object at
+	// worker time, after the insert's own upload, so a reconcile that lands before that upload has
+	// run never replaces the full request body with the row's preview.
+	uploadKindRelayMerge
 )
 
 // uploadWork represents an async S3 upload job.
@@ -213,7 +217,7 @@ func (h *HybridLogStore) processUpload(work *uploadWork) {
 		if work.status != "" && current.Status != work.status {
 			return
 		}
-	case uploadKindRelay:
+	case uploadKindRelay, uploadKindRelayMerge:
 		// A row deleted while its upload waited in the queue uploads nothing.
 		if _, err := h.inner.FindRelayLog(ctx, work.logID); err != nil {
 			if !errors.Is(err, ErrNotFound) {
@@ -227,6 +231,13 @@ func (h *HybridLogStore) processUpload(work *uploadWork) {
 	realtimeCorrection := work.kind == uploadKindLogMerge && gjson.GetBytes(work.payload, realtimeInputCorrectionField).Exists()
 	if work.kind == uploadKindLogMerge {
 		merged, ok := h.mergeIntoStoredObject(ctx, work)
+		if !ok {
+			return
+		}
+		work.payload = merged
+	}
+	if work.kind == uploadKindRelayMerge {
+		merged, ok := h.mergeIntoStoredRelayObject(ctx, work)
 		if !ok {
 			return
 		}
@@ -267,7 +278,7 @@ func (h *HybridLogStore) processUpload(work *uploadWork) {
 			err = h.inner.UpdateMCPToolLog(dbCtx, work.logID, map[string]interface{}{"has_object": true})
 		case uploadKindAgent:
 			err = h.inner.UpdateAgentLog(dbCtx, work.logID, map[string]interface{}{"has_object": true})
-		case uploadKindRelay:
+		case uploadKindRelay, uploadKindRelayMerge:
 			err = h.inner.UpdateRelayLog(dbCtx, work.logID, map[string]any{"has_object": true})
 		default:
 			err = h.inner.Update(dbCtx, work.logID, map[string]interface{}{"has_object": true})
@@ -276,7 +287,7 @@ func (h *HybridLogStore) processUpload(work *uploadWork) {
 		if err == nil {
 			return
 		}
-		if work.kind == uploadKindRelay && errors.Is(err, ErrNotFound) {
+		if (work.kind == uploadKindRelay || work.kind == uploadKindRelayMerge) && errors.Is(err, ErrNotFound) {
 			// The row was deleted while its body was uploading, and DeleteRelayLogs found no
 			// object to remove yet, so remove it here instead of leaving it orphaned.
 			if delErr := h.objects.Delete(ctx, work.key); delErr != nil {
@@ -366,6 +377,51 @@ func (h *HybridLogStore) mergeIntoStoredObject(ctx context.Context, work *upload
 	merged, err := sonic.Marshal(base)
 	if err != nil {
 		h.logger.Warn("objectstore: failed to encode merged payload for log %s: %v", work.logID, err)
+		h.droppedUploads.Add(1)
+		return nil, false
+	}
+	return merged, true
+}
+
+// mergeIntoStoredRelayObject lays a relay reconcile's bodies over the row's stored object, read
+// at worker time so it runs after the insert's upload on the same shard. A missing object means
+// the row never offloaded a body; the reconcile's bodies then form the whole object. Any other
+// read or decode failure drops the upload, since a document rebuilt without the stored request
+// body must never replace an object that may exist.
+func (h *HybridLogStore) mergeIntoStoredRelayObject(ctx context.Context, work *uploadWork) ([]byte, bool) {
+	var overlay relayMergePayloadV1
+	if err := sonic.Unmarshal(work.payload, &overlay); err != nil {
+		h.logger.Warn("objectstore: failed to decode relay merge payload for log %s: %v", work.logID, err)
+		h.droppedUploads.Add(1)
+		return nil, false
+	}
+	base := &RelayLog{}
+	existing, foundKey, err := h.getPayload(ctx, work.key)
+	switch {
+	case err == nil:
+		if err := MergeRelayLogPayloadFromJSON(base, existing); err != nil {
+			h.logger.Warn("objectstore: failed to decode relay log %s before merge upload, leaving the stored object untouched: %v", work.logID, err)
+			h.droppedUploads.Add(1)
+			return nil, false
+		}
+		if foundKey != work.key {
+			work.staleKey = foundKey
+		}
+	case errors.Is(err, objectstore.ErrNotFound):
+	default:
+		h.logger.Warn("objectstore: failed to fetch relay log %s before merge upload, leaving the stored object untouched: %v", work.logID, err)
+		h.droppedUploads.Add(1)
+		return nil, false
+	}
+	if overlay.SetRequestBody {
+		base.RequestBody = overlay.RequestBody
+	}
+	if overlay.SetResponseBody {
+		base.ResponseBody = overlay.ResponseBody
+	}
+	merged, err := MarshalRelayLogPayload(base)
+	if err != nil {
+		h.logger.Warn("objectstore: failed to encode merged relay payload for log %s: %v", work.logID, err)
 		h.droppedUploads.Add(1)
 		return nil, false
 	}
@@ -2613,7 +2669,35 @@ func (h *HybridLogStore) ListLogsForWarpTopics(ctx context.Context, logIDs []str
 
 // Relay Logs offload their bodies as Agent logs do: the database row keeps a preview and a
 // reference, the object holds the full bodies, and FindRelayLog reads them back for the detail
-// sheet. Lists, stats and charts read the database alone.
+// sheet. Lists, stats and charts read the database alone. The operator's exclusions apply as they
+// do to LLM rows: object_storage_exclude_request_types naming "relay" keeps every relay row whole
+// in the database, and object_storage_exclude_fields naming request_body or response_body keeps
+// that body resident while the other is offloaded.
+
+// skipsRelayOffload reports whether relay rows stay whole in the database. Hidden content is
+// always offloaded: it may only live in object storage, never in the row.
+func (h *HybridLogStore) skipsRelayOffload(hidden bool) bool {
+	if hidden {
+		return false
+	}
+	_, excluded := h.excludedRequestTypes[RelayLogObjectType]
+	return excluded
+}
+
+// prepareRelayDBEntry cuts a relay row to its database form and restores any body the operator
+// keeps resident, unless the content is hidden.
+func (h *HybridLogStore) prepareRelayDBEntry(dbEntry, full *RelayLog, key string) {
+	PrepareRelayLogDBEntry(dbEntry, key)
+	if dbEntry.ContentHidden {
+		return
+	}
+	if _, resident := h.excludedPayloadFields["request_body"]; resident {
+		dbEntry.RequestBody = full.RequestBody
+	}
+	if _, resident := h.excludedPayloadFields["response_body"]; resident {
+		dbEntry.ResponseBody = full.ResponseBody
+	}
+}
 
 // BatchCreateRelayLogsIfNotExists inserts the rows with their bodies cut to a preview and
 // uploads the full bodies of the rows it inserted, so a duplicate never overwrites an object.
@@ -2637,13 +2721,13 @@ func (h *HybridLogStore) BatchCreateRelayLogsIfNotExists(ctx context.Context, en
 		}
 		seen[entry.ID] = struct{}{}
 		dbEntry := *entry
-		if RelayLogHasPayload(entry) {
+		if RelayLogHasPayload(entry) && !h.skipsRelayOffload(entry.ContentHidden) {
 			key := h.relayLogKey(entry.Timestamp, entry.ID)
 			payload, err := MarshalRelayLogPayload(entry)
 			if err != nil {
 				return nil, fmt.Errorf("logstore: serialize relay log before offload: %w", err)
 			}
-			PrepareRelayLogDBEntry(&dbEntry, key)
+			h.prepareRelayDBEntry(&dbEntry, entry, key)
 			uploads = append(uploads, pendingUpload{
 				id: entry.ID, timestamp: entry.Timestamp,
 				key: key, payload: payload, tags: BuildRelayLogTags(entry),
@@ -2707,8 +2791,86 @@ func (h *HybridLogStore) FindRelayLogsForDeletion(ctx context.Context, ids []str
 	return h.inner.FindRelayLogsForDeletion(ctx, ids)
 }
 
+// UpdateRelayLog applies column updates to a relay row. An update that carries a body (a row
+// persisted as processing at eviction being reconciled with its reply) cuts the database columns
+// to previews and queues a merge upload that lays the bodies over the row's object at worker time,
+// as BatchUpdate does for an LLM row. The object is never read here: the insert's own upload may
+// still be queued, and reading the row's preview back as the body would lose the full request.
 func (h *HybridLogStore) UpdateRelayLog(ctx context.Context, id string, updates map[string]any) error {
-	return h.inner.UpdateRelayLog(ctx, id, updates)
+	requestBody, hasRequest := relayBodyUpdate(updates, "request_body")
+	responseBody, hasResponse := relayBodyUpdate(updates, "response_body")
+	if !hasRequest && !hasResponse {
+		return h.inner.UpdateRelayLog(ctx, id, updates)
+	}
+	row, err := h.inner.FindRelayLog(ctx, id)
+	if err != nil {
+		return err
+	}
+	hidden := row.ContentHidden
+	if v, ok := updates["content_hidden"].(bool); ok {
+		hidden = v
+	}
+	if h.skipsRelayOffload(hidden) {
+		return h.inner.UpdateRelayLog(ctx, id, updates)
+	}
+	merge := relayMergePayloadV1{SchemaVersion: relayObjectSchemaVersion, RequestBody: requestBody, SetRequestBody: hasRequest, ResponseBody: responseBody, SetResponseBody: hasResponse}
+	if !hasRequest && responseBody == nil && (row.RequestBody == nil && !row.HasObject && row.PayloadReference == nil) {
+		// Nothing to hold in an object: the row had no body and the update clears the reply.
+		return h.inner.UpdateRelayLog(ctx, id, updates)
+	}
+	key := h.relayObjectKey(row)
+	payload, err := sonic.Marshal(merge)
+	if err != nil {
+		return fmt.Errorf("logstore: serialize relay log update before offload: %w", err)
+	}
+	// The database keeps previews of the bodies the update carries; a body it does not carry is
+	// left as the row has it.
+	preview := RelayLog{RequestBody: requestBody, ResponseBody: responseBody, ContentHidden: hidden}
+	h.prepareRelayDBEntry(&preview, &RelayLog{RequestBody: requestBody, ResponseBody: responseBody}, key)
+	dbUpdates := make(map[string]any, len(updates)+1)
+	for k, v := range updates {
+		dbUpdates[k] = v
+	}
+	if hasRequest {
+		dbUpdates["request_body"] = preview.RequestBody
+	}
+	if hasResponse {
+		dbUpdates["response_body"] = preview.ResponseBody
+	}
+	dbUpdates["payload_reference"] = key
+	if err := h.inner.UpdateRelayLog(ctx, id, dbUpdates); err != nil {
+		return err
+	}
+	tagRow := *row
+	tagRow.ContentHidden = hidden
+	if status, ok := updates["status"].(string); ok && status != "" {
+		tagRow.Status = status
+	}
+	h.enqueueRawUpload(row.ID, row.Timestamp, key, uploadKindRelayMerge, "", payload, BuildRelayLogTags(&tagRow))
+	return nil
+}
+
+// relayBodyUpdate reads a body column out of an update map: present or not, and its value when
+// present (nil clears it).
+func relayBodyUpdate(updates map[string]any, column string) (*string, bool) {
+	v, ok := updates[column]
+	if !ok {
+		return nil, false
+	}
+	switch body := v.(type) {
+	case nil:
+		return nil, true
+	case *string:
+		return body, true
+	case string:
+		return &body, true
+	}
+	return nil, false
+}
+
+func (h *HybridLogStore) FlushRelayLogs(ctx context.Context, since time.Time) error {
+	// Time-based row cleanup leaves objects to the bucket lifecycle policy, as FlushAgentLogs does.
+	return h.inner.FlushRelayLogs(ctx, since)
 }
 
 func (h *HybridLogStore) SearchRelayLogs(ctx context.Context, filters RelayLogFilters, pagination PaginationOptions) (*RelayLogSearchResult, error) {

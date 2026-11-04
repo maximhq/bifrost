@@ -900,6 +900,7 @@
 			"tokensNotPricedValue": "輸入 {{input}} / 輸出 {{output}}",
 			"matchedRoute": "符合的路由",
 			"parentLog": "父日誌",
+			"responseBodyPreview": "回應內文（預覽）",
 			"queryParameters": "查詢參數",
 			"matchedHeaders": "符合的標頭",
 			"errorNoMessageWithStatus": "轉送傳回錯誤（HTTP {{status}}），但沒有訊息。",

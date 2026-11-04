@@ -680,7 +680,7 @@ export function RelayLogDetailSheet({
 									)}
 									{display.response_body && display.status !== "processing" && (
 										<PassthroughBodyBox
-											title={t("logs.detail.responseBody")}
+											title={display.is_large_payload_response ? t("relayLogs.detail.responseBodyPreview") : t("logs.detail.responseBody")}
 											body={display.response_body}
 											testId="relay-log-response-body"
 										/>

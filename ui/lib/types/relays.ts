@@ -235,6 +235,8 @@ export interface RelayLog {
 	status: RelayLogStatus;
 	status_code: number;
 	streamed: boolean;
+	/** The reply passed the large-payload response threshold; response_body is only a preview. */
+	is_large_payload_response?: boolean;
 	billable: boolean;
 	model?: string;
 	latency?: number; // ms, pre-hooks to the end of the reply

@@ -112,6 +112,8 @@ func (p *LoggerPlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *schemas.
 		}
 		entry.StatusCode = resp.StatusCode
 		entry.Streamed = resp.Streamed
+		// The body is a preview: the reply passed the large-payload response threshold.
+		entry.IsLargePayloadResponse = resp.LargeResponse
 		entry.BytesOut = resp.BytesOut
 		latency := float64(resp.Latency)
 		entry.Latency = &latency
