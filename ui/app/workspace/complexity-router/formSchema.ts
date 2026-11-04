@@ -10,6 +10,19 @@ import {
 	MAX_DECISION_DEFINITION_CHARACTERS,
 	DEFAULT_LLM_CONFIG,
 	DEFAULT_SEMANTIC_CONFIG,
+	DEFAULT_SUGGESTION_AT,
+	DEFAULT_SUGGESTION_EVERY,
+	DEFAULT_SUGGESTION_LOOKBACK_DAYS,
+	DEFAULT_SUGGESTION_MAX_CLUSTERED,
+	DEFAULT_SUGGESTION_MIN_CLUSTER,
+	DEFAULT_SUGGESTION_SAMPLE_RATE,
+	MAX_SUGGESTION_INSTRUCTIONS_CHARACTERS,
+	MAX_SUGGESTION_LOOKBACK_DAYS,
+	MAX_SUGGESTION_MAX_CLUSTERED,
+	MAX_SUGGESTION_MIN_CLUSTER,
+	MIN_SUGGESTION_MAX_CLUSTERED,
+	SUGGESTION_EVERY_OPTIONS,
+	SUGGESTION_WEEKDAYS,
 	MAX_DECISION_PREVIOUS_MESSAGE_COUNT,
 	KeywordListKey,
 	MAX_LLM_PROMPT_CHARACTERS,
@@ -178,6 +191,71 @@ const llmSchema = z.object({
 	count_toward_budgets: z.boolean().optional(),
 });
 
+// suggestionsSchema holds the phrase-suggestion settings. The sample rate is
+// edited as a percentage; toAnalyzerPayload sends it as the fraction the
+// gateway stores.
+const suggestionsSchema = z
+	.object({
+		enabled: z.boolean(),
+		sample_percent: z
+			.number({ error: () => complexityT("suggestions.samplePercentRange") })
+			.gt(0, { error: () => complexityT("suggestions.samplePercentRange") })
+			.max(100, { error: () => complexityT("suggestions.samplePercentRange") }),
+		lookback_days: z
+			.number({ error: () => complexityT("mustBeWholeNumber") })
+			.int({ error: () => complexityT("mustBeWholeNumber") })
+			.min(1, { error: () => complexityT("mustBeAtLeast", { min: 1 }) })
+			.max(MAX_SUGGESTION_LOOKBACK_DAYS, { error: () => complexityT("mustBeAtMost", { max: MAX_SUGGESTION_LOOKBACK_DAYS }) }),
+		every: z.enum(SUGGESTION_EVERY_OPTIONS),
+		at: z.string().regex(/^([01][0-9]|2[0-3]):[0-5][0-9]$/, { error: () => complexityT("suggestions.atFormat") }),
+		weekday: z.enum(SUGGESTION_WEEKDAYS),
+		timezone: z
+			.string()
+			.trim()
+			.min(1, { error: () => complexityT("suggestions.timezoneRequired") }),
+		max_clustered_requests: z
+			.number({ error: () => complexityT("mustBeWholeNumber") })
+			.int({ error: () => complexityT("mustBeWholeNumber") })
+			.min(MIN_SUGGESTION_MAX_CLUSTERED, { error: () => complexityT("mustBeAtLeast", { min: MIN_SUGGESTION_MAX_CLUSTERED }) })
+			.max(MAX_SUGGESTION_MAX_CLUSTERED, { error: () => complexityT("mustBeAtMost", { max: MAX_SUGGESTION_MAX_CLUSTERED }) }),
+		min_cluster_requests: z
+			.number({ error: () => complexityT("mustBeWholeNumber") })
+			.int({ error: () => complexityT("mustBeWholeNumber") })
+			.min(2, { error: () => complexityT("mustBeAtLeast", { min: 2 }) })
+			.max(MAX_SUGGESTION_MIN_CLUSTER, { error: () => complexityT("mustBeAtMost", { max: MAX_SUGGESTION_MIN_CLUSTER }) }),
+		provider: z.string(),
+		model: z.string(),
+		instructions: z.string().max(MAX_SUGGESTION_INSTRUCTIONS_CHARACTERS, {
+			error: () => complexityT("promptMaxChars", { max: MAX_SUGGESTION_INSTRUCTIONS_CHARACTERS }),
+		}),
+	})
+	.superRefine((data, ctx) => {
+		if (data.provider.trim() !== "" && data.model.trim() === "") {
+			ctx.addIssue({ code: "custom", message: complexityT("suggestions.modelRequired"), path: ["model"] });
+		}
+		if (data.provider.trim() === "" && data.model.trim() !== "") {
+			ctx.addIssue({ code: "custom", message: complexityT("suggestions.providerRequired"), path: ["provider"] });
+		}
+	});
+
+// isTimezone reports whether the browser knows an IANA zone, which is the
+// same database the gateway resolves it with.
+export function isTimezone(zone: string): boolean {
+	try {
+		new Intl.DateTimeFormat("en-US", { timeZone: zone });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+// suggestionScheduleUnit names the unit of an interval: hours run from
+// midnight, days and weeks at a time of day, weeks on a weekday.
+export function suggestionScheduleUnit(every: string): "h" | "d" | "w" {
+	const unit = every.slice(-1);
+	return unit === "h" || unit === "w" ? unit : "d";
+}
+
 // usesDecision reports whether the Decision block is live: the primary classifier or the
 // semantic fallback. Its controls are hidden and its values are not saved otherwise.
 function usesDecision(values: { classifier: string; semantic: { fallback: string } }): boolean {
@@ -211,6 +289,7 @@ export const analyzerConfigSchema = z
 		}),
 		llm: llmSchema,
 		session: z.object({ enabled: z.boolean() }),
+		suggestions: suggestionsSchema,
 	})
 	.superRefine((data, ctx) => {
 		// A blank provider and model means the classifier simply is not configured
@@ -233,6 +312,9 @@ export const analyzerConfigSchema = z
 					path: ["semantic", "embedding_model"],
 				});
 			}
+		}
+		if (data.suggestions.timezone.trim() && !isTimezone(data.suggestions.timezone.trim())) {
+			ctx.addIssue({ code: "custom", message: complexityT("suggestions.timezoneUnknown"), path: ["suggestions", "timezone"] });
 		}
 		if (data.session.enabled && data.classifier === "semantic" && (!hasProvider || !hasModel)) {
 			ctx.addIssue({
@@ -354,6 +436,69 @@ export const DEFAULT_SEMANTIC_FORM_VALUES: SemanticFormValues = {
 	fallback: DEFAULT_SEMANTIC_CONFIG.fallback ?? "none",
 };
 
+export type SuggestionsFormValues = AnalyzerFormValues["suggestions"];
+
+export const DEFAULT_SUGGESTIONS_FORM_VALUES: SuggestionsFormValues = {
+	enabled: false,
+	sample_percent: DEFAULT_SUGGESTION_SAMPLE_RATE * 100,
+	lookback_days: DEFAULT_SUGGESTION_LOOKBACK_DAYS,
+	every: DEFAULT_SUGGESTION_EVERY,
+	at: DEFAULT_SUGGESTION_AT,
+	weekday: "monday",
+	timezone: "UTC",
+	max_clustered_requests: DEFAULT_SUGGESTION_MAX_CLUSTERED,
+	min_cluster_requests: DEFAULT_SUGGESTION_MIN_CLUSTER,
+	provider: "",
+	model: "",
+	instructions: "",
+};
+
+// suggestionsFormValues reads a saved block into the form, defaults filled in.
+export function suggestionsFormValues(saved?: AnalyzerConfig["suggestions"]): SuggestionsFormValues {
+	if (!saved) return { ...DEFAULT_SUGGESTIONS_FORM_VALUES };
+	const every = (SUGGESTION_EVERY_OPTIONS as readonly string[]).includes(saved.schedule?.every ?? "")
+		? (saved.schedule?.every as SuggestionsFormValues["every"])
+		: DEFAULT_SUGGESTION_EVERY;
+	return {
+		enabled: saved.enabled,
+		// Rounded so a stored 0.1 reads back as 10, not 10.000000000000002.
+		sample_percent: Math.round((saved.sample_rate ?? DEFAULT_SUGGESTION_SAMPLE_RATE) * 100 * 1000) / 1000,
+		lookback_days: saved.lookback_days ?? DEFAULT_SUGGESTION_LOOKBACK_DAYS,
+		every,
+		at: saved.schedule?.at ?? DEFAULT_SUGGESTION_AT,
+		weekday: saved.schedule?.weekday ?? "monday",
+		timezone: saved.schedule?.timezone ?? "UTC",
+		max_clustered_requests: saved.max_clustered_requests ?? DEFAULT_SUGGESTION_MAX_CLUSTERED,
+		min_cluster_requests: saved.min_cluster_requests ?? DEFAULT_SUGGESTION_MIN_CLUSTER,
+		provider: saved.provider ?? "",
+		model: saved.model ?? "",
+		instructions: saved.instructions ?? "",
+	};
+}
+
+// toSuggestionsPayload sends only the settings the interval uses: the gateway
+// refuses a time of day on an hourly schedule and a weekday on a daily one.
+export function toSuggestionsPayload(values: SuggestionsFormValues): NonNullable<AnalyzerConfig["suggestions"]> {
+	const unit = suggestionScheduleUnit(values.every);
+	const provider = values.provider.trim();
+	const model = values.model.trim();
+	return {
+		enabled: values.enabled,
+		sample_rate: Math.round(values.sample_percent * 1000) / 100000,
+		lookback_days: values.lookback_days,
+		schedule: {
+			every: values.every,
+			...(unit !== "h" ? { at: values.at } : {}),
+			...(unit === "w" ? { weekday: values.weekday } : {}),
+			timezone: values.timezone.trim(),
+		},
+		max_clustered_requests: values.max_clustered_requests,
+		min_cluster_requests: values.min_cluster_requests,
+		...(provider && model ? { provider, model } : {}),
+		...(values.instructions.trim() ? { instructions: values.instructions } : {}),
+	};
+}
+
 export const DEFAULT_FORM_VALUES: AnalyzerFormValues = {
 	keywords: {
 		simple_keywords: [],
@@ -365,6 +510,7 @@ export const DEFAULT_FORM_VALUES: AnalyzerFormValues = {
 	decision: { ...DEFAULT_DECISION_CONFIG, ...decisionGuidanceFormValues() },
 	llm: DEFAULT_LLM_FORM_VALUES,
 	session: { enabled: false },
+	suggestions: DEFAULT_SUGGESTIONS_FORM_VALUES,
 };
 
 export type DecisionGuidanceFormValues = Pick<AnalyzerFormValues["decision"], "criteria">;
@@ -451,6 +597,7 @@ export function toFormValues(config: AnalyzerConfig, decisionDefaults?: Decision
 			...decisionGuidanceFormValues(config.decision, decisionDefaults),
 		},
 		session: config.session ?? { enabled: false },
+		suggestions: suggestionsFormValues(config.suggestions),
 		llm: savedLLM
 			? {
 					...DEFAULT_LLM_FORM_VALUES,
@@ -489,10 +636,10 @@ export function toAnalyzerPayload(values: AnalyzerFormValues, saved?: AnalyzerCo
 		// sending hidden, possibly invalid edits.
 		...(usesDecision(values) ? { decision: toDecisionPayload(values.decision) } : saved?.decision ? { decision: saved.decision } : {}),
 		...(values.session.enabled ? { session: values.session } : {}),
-		// This page has no suggestions controls yet, and the save replaces the
-		// whole config: carry the saved block through so a save here never
-		// turns suggestions off.
-		...(saved?.suggestions ? { suggestions: saved.suggestions } : {}),
+		// Sent once suggestions have ever been turned on, so turning them off
+		// keeps their settings; never sent for a router that has not used them,
+		// so an ordinary save stays readable by gateways that predate them.
+		...(values.suggestions.enabled || saved?.suggestions ? { suggestions: toSuggestionsPayload(values.suggestions) } : {}),
 		...(semantic ? { semantic } : {}),
 		...(llm ? { llm } : {}),
 	};

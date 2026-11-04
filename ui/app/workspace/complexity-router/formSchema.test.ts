@@ -3,13 +3,16 @@ import {
 	analyzerConfigSchema,
 	countCanonicalSemanticPhrases,
 	DEFAULT_FORM_VALUES,
+	DEFAULT_SUGGESTIONS_FORM_VALUES,
 	getDecisionProviderState,
 	isRouterConfigured,
 	decisionGuidanceFormValues,
 	decisionTimeoutFieldValue,
 	shouldSeedLLMPrompt,
+	suggestionScheduleUnit,
 	toAnalyzerPayload,
 	toFormValues,
+	toSuggestionsPayload,
 } from "./formSchema";
 import { DEFAULT_DECISION_CONFIG, type AnalyzerConfig, type DecisionGuidanceDefaults } from "@/lib/types/complexityRouter";
 import type { ModelProvider } from "@/lib/types/config";
@@ -154,20 +157,79 @@ describe("Decision complexity configuration", () => {
 		expect(toAnalyzerPayload(parsed.data).decision).toBeUndefined();
 	});
 
-	test("carries the saved suggestions block through a save", () => {
+	test("round-trips the saved suggestions block through the form", () => {
+		const saved: AnalyzerConfig = {
+			keywords: { simple_keywords: ["simple"], medium_keywords: ["medium"], complex_keywords: ["complex"] },
+			suggestions: {
+				enabled: true,
+				sample_rate: 0.1,
+				lookback_days: 14,
+				schedule: { every: "1w", at: "04:30", weekday: "friday", timezone: "Europe/Berlin" },
+				max_clustered_requests: 5000,
+				min_cluster_requests: 8,
+				provider: "openai",
+				model: "gpt-5",
+				instructions: "be brief",
+			},
+		};
+		const values = toFormValues(saved);
+		expect(values.suggestions.sample_percent).toBe(10);
+		const parsed = analyzerConfigSchema.safeParse(values);
+		expect(parsed.success).toBe(true);
+		if (!parsed.success) return;
+		expect(toAnalyzerPayload(parsed.data, saved).suggestions).toEqual(saved.suggestions);
+	});
+
+	test("sends suggestions only once they have been used, and keeps them when turned off", () => {
 		const parsed = analyzerConfigSchema.safeParse({
 			...DEFAULT_FORM_VALUES,
 			keywords: { simple_keywords: ["simple"], medium_keywords: ["medium"], complex_keywords: ["complex"] },
 		});
 		expect(parsed.success).toBe(true);
 		if (!parsed.success) return;
-
-		const saved: AnalyzerConfig = {
-			...toAnalyzerPayload(parsed.data),
-			suggestions: { enabled: true, sample_rate: 0.25, lookback_days: 14 },
-		};
-		expect(toAnalyzerPayload(parsed.data, saved).suggestions).toEqual(saved.suggestions);
 		expect(toAnalyzerPayload(parsed.data).suggestions).toBeUndefined();
+
+		const saved: AnalyzerConfig = { ...toAnalyzerPayload(parsed.data), suggestions: { enabled: true, lookback_days: 30 } };
+		const off = { ...toFormValues(saved).suggestions, enabled: false };
+		const payload = toAnalyzerPayload({ ...parsed.data, suggestions: off }, saved).suggestions;
+		expect(payload?.enabled).toBe(false);
+		expect(payload?.lookback_days).toBe(30);
+	});
+
+	test("schedules send only the settings their interval uses", () => {
+		const base = { ...DEFAULT_SUGGESTIONS_FORM_VALUES, enabled: true, at: "05:15", weekday: "sunday" as const, timezone: "Asia/Kolkata" };
+		expect(toSuggestionsPayload({ ...base, every: "6h" }).schedule).toEqual({ every: "6h", timezone: "Asia/Kolkata" });
+		expect(toSuggestionsPayload({ ...base, every: "2d" }).schedule).toEqual({ every: "2d", at: "05:15", timezone: "Asia/Kolkata" });
+		expect(toSuggestionsPayload({ ...base, every: "1w" }).schedule).toEqual({
+			every: "1w",
+			at: "05:15",
+			weekday: "sunday",
+			timezone: "Asia/Kolkata",
+		});
+		expect(toSuggestionsPayload({ ...base, sample_percent: 2.5 }).sample_rate).toBe(0.025);
+		expect(toSuggestionsPayload({ ...base, provider: "openai", model: "" })).not.toHaveProperty("provider");
+	});
+
+	test("rejects an unknown timezone and a half-chosen suggestion model", () => {
+		const values = {
+			...DEFAULT_FORM_VALUES,
+			keywords: { simple_keywords: ["simple"], medium_keywords: ["medium"], complex_keywords: ["complex"] },
+		};
+		const badZone = analyzerConfigSchema.safeParse({
+			...values,
+			suggestions: { ...DEFAULT_SUGGESTIONS_FORM_VALUES, timezone: "Mars/Olympus" },
+		});
+		expect(badZone.success).toBe(false);
+		expect(badZone.error?.issues.some((issue) => issue.path.join(".") === "suggestions.timezone")).toBe(true);
+		const halfModel = analyzerConfigSchema.safeParse({
+			...values,
+			suggestions: { ...DEFAULT_SUGGESTIONS_FORM_VALUES, provider: "openai" },
+		});
+		expect(halfModel.success).toBe(false);
+		expect(halfModel.error?.issues.some((issue) => issue.path.join(".") === "suggestions.model")).toBe(true);
+		expect(suggestionScheduleUnit("12h")).toBe("h");
+		expect(suggestionScheduleUnit("2w")).toBe("w");
+		expect(suggestionScheduleUnit("3d")).toBe("d");
 	});
 
 	test("rejects invalid Decision fields when Decision is the semantic fallback", () => {
