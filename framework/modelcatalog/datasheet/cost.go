@@ -224,7 +224,7 @@ func (s *Store) CalculateCostBreakdownForUsage(usage *schemas.BifrostLLMUsage, p
 	if requestType == schemas.ResponsesRequest && len(usage.Iterations) > 0 {
 		cost = cost.Add(s.calculateAdvisorIterationCost(usage.Iterations, routingInfo, input.tier, lookupScopes))
 	}
-	return cost.Add(s.calculateContainerSessionCost(usage, routingInfo, lookupScopes))
+	return cost.Add(s.calculateServerToolCost(usage, routingInfo, lookupScopes))
 }
 
 // CalculateGuardrailCost computes judge cost when no parent response is available.
@@ -593,7 +593,7 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 			sessionRouting.Model = servedModel
 			sessionRouting.ResolvedKeyAlias = nil
 		}
-		return s.calculateAzureModelRouterCost(result, input, routingInfo, requestType, scopes).Add(s.calculateContainerSessionCost(input.usage, sessionRouting, scopes))
+		return s.calculateAzureModelRouterCost(result, input, routingInfo, requestType, scopes).Add(s.calculateServerToolCost(input.usage, sessionRouting, scopes))
 	}
 
 	cost := s.computeCostFromInput(input, routingInfo, requestType, scopes)
@@ -602,7 +602,73 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 			cost = cost.Add(s.calculateAdvisorIterationCost(iterations, routingInfo, input.tier, scopes))
 		}
 	}
-	return cost.Add(s.calculateContainerSessionCost(input.usage, routingInfo, scopes))
+	return cost.Add(s.calculateServerToolCost(input.usage, routingInfo, scopes))
+}
+
+// calculateServerToolCost prices server tool usage billed outside the request model's own tokens.
+func (s *Store) calculateServerToolCost(usage *schemas.BifrostLLMUsage, routingInfo schemas.RoutingInfo, scopes LookupScopes) *schemas.BifrostCost {
+	if usage == nil || usage.ToolUsage == nil {
+		return nil
+	}
+	return s.calculateContainerSessionCost(usage, routingInfo, scopes).Add(s.calculateImageGenToolCost(usage.ToolUsage, routingInfo, scopes))
+}
+
+// defaultImageGenToolModel is the model OpenAI's image generation tool uses when the request names none.
+const defaultImageGenToolModel = "gpt-image-2"
+
+// calculateImageGenToolCost prices tool_usage.image_gen at the image model's rates. OpenAI only: Azure
+// picks the model with a deployment header. Batch results are out of scope, so standard rates always apply.
+func (s *Store) calculateImageGenToolCost(toolUsage *schemas.ToolUsage, routingInfo schemas.RoutingInfo, scopes LookupScopes) *schemas.BifrostCost {
+	if routingInfo.Provider != schemas.OpenAI || !toolUsage.ImageGen.HasTokens() {
+		return nil
+	}
+	model := toolUsage.ImageGenModel
+	if model == "" {
+		model = defaultImageGenToolModel
+	}
+	pricing := s.resolvePricing(schemas.RoutingInfo{Provider: routingInfo.Provider, Model: model}, schemas.ImageGenerationRequest, scopes)
+	if pricing == nil {
+		if s.logger != nil {
+			s.logger.Debug("no pricing for image generation tool model %q on %s", model, routingInfo.Provider)
+		}
+		return nil
+	}
+	return computeImageGenToolCost(pricing, toolUsage.ImageGen)
+}
+
+// computeImageGenToolCost prices uncached tokens through computeImageCost and cached input at its own rates.
+// Cached counts without a modality split cannot be attributed, so they bill at the full input rate.
+func computeImageGenToolCost(pricing *configstoreTables.TableModelPricing, u *schemas.ImageGenToolUsage) *schemas.BifrostCost {
+	imageUsage := &schemas.ImageUsage{InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, TotalTokens: u.TotalTokens}
+	cachedCost := 0.0
+	if d := u.InputTokensDetails; d != nil && d.ImageTokens+d.TextTokens > 0 {
+		imageTokens, textTokens := d.ImageTokens, d.TextTokens
+		if c := u.CachedTokensDetails; c != nil {
+			cachedImage, cachedText := min(c.CachedImageTokens, imageTokens), min(c.CachedTextTokens, textTokens)
+			imageTokens -= cachedImage
+			textTokens -= cachedText
+			cachedCost = float64(cachedImage)*cachedImageTokenRate(pricing) + float64(cachedText)*cachedTextTokenRate(pricing)
+		}
+		imageUsage.InputTokensDetails = &schemas.ImageTokenDetails{ImageTokens: imageTokens, TextTokens: textTokens}
+	}
+	if d := u.OutputTokensDetails; d != nil && d.ImageTokens+d.TextTokens > 0 {
+		imageUsage.OutputTokensDetails = &schemas.ImageTokenDetails{ImageTokens: d.ImageTokens, TextTokens: d.TextTokens}
+	}
+	return computeImageCost(pricing, imageUsage, "", "", serviceTier{}).Add(newInputOutputCost(cachedCost, 0))
+}
+
+func cachedImageTokenRate(pricing *configstoreTables.TableModelPricing) float64 {
+	if pricing.CacheReadInputImageTokenCost != nil {
+		return *pricing.CacheReadInputImageTokenCost
+	}
+	return tieredImageInputRate(pricing, 0, serviceTier{})
+}
+
+func cachedTextTokenRate(pricing *configstoreTables.TableModelPricing) float64 {
+	if pricing.CacheReadInputTokenCost != nil {
+		return *pricing.CacheReadInputTokenCost
+	}
+	return tieredInputRate(pricing, 0, serviceTier{})
 }
 
 // calculateContainerSessionCost prices the containers a request started through a server tool. The

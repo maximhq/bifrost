@@ -68,6 +68,9 @@ func ExtractOpenAIPassthroughUsage(method, path string, reqBody, body []byte) *s
 	case schemas.ResponsesRequest:
 		u := extractOAIResponsesUsage(body)
 		recordPassthroughContainerSessions(u, reqBody, body)
+		if u != nil && u.LLMUsage != nil {
+			recordImageGenToolModel(u.LLMUsage.ToolUsage, reqBody)
+		}
 		return u
 	case schemas.EmbeddingRequest:
 		return extractOAIEmbeddingUsage(body)

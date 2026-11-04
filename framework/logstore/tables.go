@@ -3281,9 +3281,13 @@ func serializeTokenUsage(u *schemas.BifrostLLMUsage) *schemas.BifrostLLMUsage {
 	}
 	stored := *u
 	stored.ToolUsage = nil
-	// Container sessions have no legacy column, so they stay on tool_usage for repricing.
-	if len(u.ToolUsage.ContainerSessions) > 0 {
+	// These have no legacy column, so they stay on tool_usage for repricing. OpenAI sends zero image counts on every response.
+	if len(u.ToolUsage.ContainerSessions) > 0 || u.ToolUsage.ImageGen.HasTokens() {
 		stored.ToolUsage = &schemas.ToolUsage{ContainerSessions: u.ToolUsage.ContainerSessions}
+		if u.ToolUsage.ImageGen.HasTokens() {
+			stored.ToolUsage.ImageGen = u.ToolUsage.ImageGen
+			stored.ToolUsage.ImageGenModel = u.ToolUsage.ImageGenModel
+		}
 	}
 	if ws := u.ToolUsage.WebSearch; ws != nil && ws.NumRequests > 0 {
 		details := schemas.ChatCompletionTokensDetails{}

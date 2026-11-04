@@ -2695,3 +2695,44 @@ func TestResponsesMarshalOmitsDerivedToolUsage(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(wire), `"tool_usage":{"web_search":{"num_requests":2}}`)
 }
+
+func TestToolUsageImageGen(t *testing.T) {
+	one := func() *ToolUsage {
+		return &ToolUsage{
+			ImageGenModel: "gpt-image-2",
+			ImageGen: &ImageGenToolUsage{
+				InputTokens: 1, OutputTokens: 2, TotalTokens: 3,
+				InputTokensDetails:  &ImageGenTokenDetails{TextTokens: 1},
+				OutputTokensDetails: &ImageGenTokenDetails{ImageTokens: 2},
+			},
+		}
+	}
+	sum := one().Add(one())
+	assert.Equal(t, 6, sum.ImageGen.TotalTokens)
+	assert.Equal(t, 4, sum.ImageGen.OutputTokensDetails.ImageTokens)
+	assert.Equal(t, "gpt-image-2", sum.ImageGenModel)
+
+	a := one()
+	c := a.DeepCopy()
+	c.ImageGen.OutputTokensDetails.ImageTokens = 9
+	assert.Equal(t, 2, a.ImageGen.OutputTokensDetails.ImageTokens, "DeepCopy must own its details")
+
+	assert.False(t, (&ImageGenToolUsage{}).HasTokens())
+	var none *ImageGenToolUsage
+	assert.False(t, none.HasTokens())
+}
+
+// OpenAI's zero-count image_gen block survives, as it did not before, and the derived model stays internal.
+func TestResponsesToolUsageImageGenRoundTrip(t *testing.T) {
+	in := `{"id":"r","object":"response","created_at":1,"output":[],"tools":[],"tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`
+	var resp BifrostResponsesResponse
+	require.NoError(t, Unmarshal([]byte(in), &resp))
+	resp.Usage.ToolUsage.ImageGenModel = "gpt-image-2"
+	wire, err := Marshal(resp)
+	require.NoError(t, err)
+	var out struct {
+		ToolUsage json.RawMessage `json:"tool_usage"`
+	}
+	require.NoError(t, Unmarshal(wire, &out))
+	assert.JSONEq(t, `{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}}`, string(out.ToolUsage))
+}
