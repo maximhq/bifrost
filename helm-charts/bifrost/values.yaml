@@ -700,6 +700,10 @@ bifrost:
       #   # Only meaningful for connectionType "http": true keeps one persistent connection reused
       #   # across every caller; false (default for new clients) connects fresh per call.
       #   needsSessionStickiness: false
+      #   # Only with a per-user authType (per_user_oauth, per_user_headers, token_exchange), not
+      #   # openapi: discover each caller's tools, prompts and resources with their own credential
+      #   # instead of serving everyone the admin credential's discovery.
+      #   perUserDiscovery: false
       #   # When true, this MCP server is available to every caller that has not been assigned it
       #   # explicitly, with all tools allowed. An explicit assignment takes precedence for that caller.
       #   # Replaces the deprecated allowOnAllVirtualKeys, which is read only when this is absent.
@@ -2109,6 +2113,11 @@ storage:
     # These logs are kept in full in the logs database instead. Hidden logs (content
     # logging disabled with retainContentInObjectStorage on) are still offloaded.
     objectStorageExcludeRequestTypes: []
+    # Record the caller's IP as client_ip on LLM, MCP and relay logs (leftmost
+    # X-Forwarded-For, else X-Real-IP, else the TCP peer). The headers are not
+    # verified, so only trust the value behind a proxy that overwrites them.
+    # Off by default. Maps to logs_store.capture_client_ip.
+    # captureClientIp: true
 
     # Object storage for offloading large log payloads (optional)
     # When enabled, request/response payloads are stored in S3/GCS/Azure Blob
