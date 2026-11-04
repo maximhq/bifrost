@@ -332,7 +332,6 @@
 			"usingGlobal": "Impostazione globale in uso",
 			"syncIntervalNotUsed": "Non usato: questo server non conserva un proprio rilevamento da sincronizzare. Gli strumenti, i prompt e le risorse di ogni chiamante vengono rilevati quando si connette.",
 			"perUserDiscoveryOnWarning": "Salvando si eliminano la credenziale di amministratore e il rilevamento che Bifrost conserva per questo server. Gli strumenti, i prompt e le risorse di ogni chiamante vengono rilevati con la sua credenziale alla prossima connessione.",
-			"perUserDiscoveryOffWarningSignIn": "Salvando si eliminano gli strumenti, i prompt e le risorse rilevati di tutti i chiamanti. Usa poi {{action}} affinché Bifrost possa rilevarli di nuovo con un accesso di amministratore.",
 			"perUserDiscoveryOffWarningPending": "Salvando si eliminano gli strumenti, i prompt e le risorse rilevati di tutti i chiamanti, e il server torna in attesa di verifica finché un amministratore non lo verifica di nuovo.",
 			"toolExecutionTimeout": "Timeout di esecuzione dello strumento (secondi)",
 			"disableClient": "Disabilita client",

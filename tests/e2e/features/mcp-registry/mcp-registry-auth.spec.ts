@@ -231,6 +231,70 @@ test.describe("MCP Registry - Authentication", () => {
       await mcpRegistryPage.cancelCreation();
     });
 
+    test("should start a new sign-in when Verify is retried after per-caller discovery is turned off", async ({
+      mcpRegistryPage,
+    }) => {
+      const clientData = createPerUserOAuthClientData({ perUserDiscovery: true });
+      createdClients.push(clientData.name);
+      const flow = await mcpRegistryPage.createOAuthClient(clientData);
+      await completeOAuthFlow(mcpRegistryPage.page, flow);
+      const turnedOff = await mcpRegistryPage.page.request.put(`/api/mcp/client/${flow.mcp_client_id}`, {
+        data: { per_user_discovery: false },
+      });
+      expect(turnedOff.ok()).toBe(true);
+      await mcpRegistryPage.goto();
+
+      // Every sign-in fails, so the dialog reaches its failure step; the flow ids it polls are recorded.
+      const polled: string[] = [];
+      const flowStatus = (url: URL) => /\/api\/oauth\/config\/[^/]+\/status$/.test(url.pathname) && url.searchParams.has("flow_id");
+      await mcpRegistryPage.page.route(flowStatus, (route) => {
+        polled.push(new URL(route.request().url()).searchParams.get("flow_id") ?? "");
+        return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ status: "failed" }) });
+      });
+      const page = mcpRegistryPage.page;
+      const initiated = (response: { url: () => string; request: () => { method: () => string } }) =>
+        response.url().includes(`/api/mcp/client/${flow.mcp_client_id}/initiate-verification`) && response.request().method() === "POST";
+
+      const row = mcpRegistryPage.getClientRow(clientData.name);
+      await row.getByRole("button", { name: /MCP server actions/i }).click();
+      const firstInitiate = page.waitForResponse(initiated);
+      await page.getByTestId(`mcp-client-authorize-${flow.mcp_client_id}-menu-item`).click();
+      const first = await (await firstInitiate).json();
+      expect(first.flow_id).toBeTruthy();
+      const firstPopup = page.context().waitForEvent("page");
+      await page.getByTestId("per-user-oauth-confirm").click();
+      await (await firstPopup).close().catch(() => {});
+      await expect(page.getByTestId("oauth-failed-retry-btn")).toBeVisible({ timeout: 15000 });
+      expect(polled).toContain(first.flow_id);
+
+      // Retry asks for a new sign-in (the server keeps one admin flow per server, so its id stays and its
+      // state and deadline are new), and the dialog polls it again instead of resetting on the dead attempt.
+      const retryInitiate = page.waitForResponse(initiated);
+      await page.getByTestId("oauth-failed-retry-btn").click();
+      const retried = await (await retryInitiate).json();
+      expect(retried.flow_id).toBe(first.flow_id);
+      expect(retried.authorize_url).not.toBe(first.authorize_url);
+      const pollsBefore = polled.length;
+      // The second popup opens the new sign-in, recognised by its new state parameter.
+      const newState = new URL(retried.authorize_url).searchParams.get("state");
+      expect(newState).toBeTruthy();
+      expect(newState).not.toBe(new URL(first.authorize_url).searchParams.get("state"));
+      const openedNew = page.context().waitForEvent("request", {
+        predicate: (request) => {
+          const url = new URL(request.url());
+          return url.origin === new URL(retried.authorize_url).origin && url.searchParams.get("state") === newState;
+        },
+        timeout: 15000,
+      });
+      const secondPopup = page.context().waitForEvent("page");
+      await page.getByTestId("per-user-oauth-confirm").click();
+      await openedNew;
+      await (await secondPopup).close().catch(() => {});
+      await expect.poll(() => polled.slice(pollsBefore).includes(retried.flow_id), { timeout: 15000 }).toBe(true);
+      await page.getByTestId("oauth-failed-close-btn").click();
+      await page.unroute(flowStatus);
+    });
+
     test("should create a Per-User OAuth 2.0 client with per-caller discovery", async ({
       mcpRegistryPage,
     }) => {
@@ -321,9 +385,11 @@ test.describe("MCP Registry - Authentication", () => {
       await expect(discoverySwitch).toHaveAttribute("data-state", "checked");
       await expect(sheet.getByTestId("mcpclient-tool-sync-interval-input")).toBeDisabled();
 
-      // Turning it off says what saving would delete, before anything is saved.
+      // Turning it off says what saving would delete, before anything is saved:
+      // a per-user OAuth server goes back to pending verification, like the
+      // other per-user auth types.
       await discoverySwitch.click();
-      await expect(sheet.getByTestId("mcpclient-per-user-discovery-warning")).toContainText("Refresh admin credential");
+      await expect(sheet.getByTestId("mcpclient-per-user-discovery-warning")).toContainText("goes back to pending verification");
       await discoverySwitch.click();
       await expect(sheet.getByTestId("mcpclient-per-user-discovery-warning")).toBeHidden();
 

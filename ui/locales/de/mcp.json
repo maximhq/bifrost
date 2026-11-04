@@ -332,7 +332,6 @@
 			"usingGlobal": "Globale Einstellung wird verwendet",
 			"syncIntervalNotUsed": "Nicht verwendet: Dieser Server speichert keine eigene Erkennung, die synchronisiert werden könnte. Die Tools, Prompts und Ressourcen jedes Aufrufers werden erkannt, wenn er sich verbindet.",
 			"perUserDiscoveryOnWarning": "Beim Speichern werden die Admin-Anmeldedaten und die Erkennung gelöscht, die Bifrost für diesen Server speichert. Die Tools, Prompts und Ressourcen jedes Aufrufers werden bei seiner nächsten Verbindung mit dessen eigenen Anmeldedaten erkannt.",
-			"perUserDiscoveryOffWarningSignIn": "Beim Speichern werden die erkannten Tools, Prompts und Ressourcen aller Aufrufer gelöscht. Verwende danach {{action}}, damit Bifrost sie mit einer Admin-Anmeldung erneut erkennen kann.",
 			"perUserDiscoveryOffWarningPending": "Beim Speichern werden die erkannten Tools, Prompts und Ressourcen aller Aufrufer gelöscht, und der Server wartet wieder auf eine Verifizierung, bis ein Admin ihn erneut verifiziert.",
 			"toolExecutionTimeout": "Tool-Ausführungs-Timeout (Sekunden)",
 			"disableClient": "Client deaktivieren",
