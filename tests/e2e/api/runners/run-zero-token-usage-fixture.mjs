@@ -31,7 +31,7 @@ const server = http.createServer(async (req, res) => {
     json(200, { object: "list", data: models.map(id => ({ id, object: "model", owned_by: "fixture" })) });
     return;
   }
-  if (req.method !== "POST" || !["/v1/chat/completions", "/v1/completions", "/v1/embeddings", "/v1/responses"].includes(req.url)) {
+  if (req.method !== "POST" || !["/v1/chat/completions", "/v1/completions", "/v1/responses"].includes(req.url)) {
     json(404, { error: { message: "unknown fixture route" } });
     return;
   }
@@ -46,14 +46,6 @@ const server = http.createServer(async (req, res) => {
       throw new Error("expected fixture model and dummy key");
     }
     const usage = usageByModel[body.model];
-    if (req.url === "/v1/embeddings") {
-      json(200, {
-        object: "list", model: body.model,
-        data: [{ object: "embedding", index: 0, embedding: [0.25, 0.75] }],
-        usage: { prompt_tokens: 0, total_tokens: 0 },
-      });
-      return;
-    }
     if (req.url === "/v1/responses") {
       if (body.reasoning?.mode !== "pro") throw new Error("expected reasoning.mode=pro on Responses route");
       var responseUsage;

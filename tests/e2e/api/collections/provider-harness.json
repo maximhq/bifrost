@@ -304416,7 +304416,7 @@
   ,
     {
       "name": "308. OpenAI zero-token-usage survives completion wire serialization (#8749 / PR #8763)",
-      "description": "Local regression for #8749 using a Custom OpenAI-compatible provider. Eight zero-usage cases cover Chat/Text on /v1 and /openai/v1, both unary and SSE. Representative controls pin total-only usage, nonzero counts, absent usage and the existing embedding limitation (a known follow-up). The full missing/null/partial-zero matrix lives in Go tests. Async Chat/Text cases poll the persisted result; reasoning.mode cases cover Chat-to-Responses conversion on native and SDK routes. One folder-level script checks every response; no paid provider calls.\n\nStart the fixture in a fresh directory: node tests/e2e/api/runners/run-zero-token-usage-fixture.mjs /tmp/bifrost-zero-token-usage. In another terminal: make dev PORT=3022 APP_DIR=/tmp/bifrost-zero-token-usage. Verify port 3022 is free beforehand and wait for /health. Log in at POST /api/session/login with username usage-fixture and password fixture-only-password; export its token cookie as BIFROST_E2E_AUTH_HEADER=\"Bearer <token>\" for the management preflight. Run: make run-provider-harness-test PROVIDER=openai FEATURE=\"zero-token-usage\" INCLUDE_PREVIEW=1 PARALLEL=0 COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1 BASE_URL=http://localhost:3022. Stop the gateway and fixture afterward. PREVIEW excludes these fixture cases from paid sweeps.",
+      "description": "Local regression for #8749 using a Custom OpenAI-compatible provider. Eight zero-usage cases cover Chat/Text on /v1 and /openai/v1, both unary and SSE. Representative controls pin total-only usage, nonzero counts and absent usage; Embedding zero-count omission is a known follow-up and is not pinned here. The full missing/null/partial-zero matrix lives in Go tests. Async Chat/Text cases poll the persisted result; reasoning.mode cases cover Chat-to-Responses conversion on native and SDK routes. One folder-level script checks every response; no paid provider calls.\n\nStart the fixture in a fresh directory: node tests/e2e/api/runners/run-zero-token-usage-fixture.mjs /tmp/bifrost-zero-token-usage. In another terminal: make dev PORT=3022 APP_DIR=/tmp/bifrost-zero-token-usage. Verify port 3022 is free beforehand and wait for /health. Log in at POST /api/session/login with username usage-fixture and password fixture-only-password; export its token cookie as BIFROST_E2E_AUTH_HEADER=\"Bearer <token>\" for the management preflight. Run: make run-provider-harness-test PROVIDER=openai FEATURE=\"zero-token-usage\" INCLUDE_PREVIEW=1 PARALLEL=0 COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1 BASE_URL=http://localhost:3022. Stop the gateway and fixture afterward. PREVIEW excludes these fixture cases from paid sweeps.",
       "item": [
         {
           "name": "308.1 [PREVIEW] OpenAI zero-usage-fixture/zero /v1/chat/completions unary zero-token-usage",
@@ -304689,33 +304689,7 @@
           }
         },
         {
-          "name": "308.11 [PREVIEW] OpenAI zero-usage-fixture/zero /v1/embeddings unary zero-token-usage (known limitation)",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/v1/embeddings",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "embeddings"
-              ]
-            },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"zero-usage-fixture/zero\",\n  \"input\": \"hello\"\n}"
-            }
-          }
-        },
-        {
-          "name": "308.12 [PREVIEW] OpenAI zero-usage-fixture/total-only /v1/chat/completions unary zero-token-usage",
+          "name": "308.11 [PREVIEW] OpenAI zero-usage-fixture/total-only /v1/chat/completions unary zero-token-usage",
           "request": {
             "method": "POST",
             "header": [
@@ -304742,7 +304716,7 @@
           }
         },
         {
-          "name": "308.13 [PREVIEW] OpenAI zero-usage-fixture/total-only /v1/chat/completions SSE zero-token-usage",
+          "name": "308.12 [PREVIEW] OpenAI zero-usage-fixture/total-only /v1/chat/completions SSE zero-token-usage",
           "request": {
             "method": "POST",
             "header": [
@@ -304769,7 +304743,7 @@
           }
         },
         {
-          "name": "308.14 [PREVIEW] OpenAI zero-usage-fixture/total-only /openai/v1/completions unary zero-token-usage",
+          "name": "308.13 [PREVIEW] OpenAI zero-usage-fixture/total-only /openai/v1/completions unary zero-token-usage",
           "request": {
             "method": "POST",
             "header": [
@@ -304796,7 +304770,7 @@
           }
         },
         {
-          "name": "308.15 [PREVIEW] OpenAI zero-usage-fixture/total-only /openai/v1/completions SSE zero-token-usage",
+          "name": "308.14 [PREVIEW] OpenAI zero-usage-fixture/total-only /openai/v1/completions SSE zero-token-usage",
           "request": {
             "method": "POST",
             "header": [
@@ -304823,7 +304797,7 @@
           }
         },
         {
-          "name": "308.16 [PREVIEW] OpenAI zero-usage-fixture/zero /v1/chat/completions unary reasoning.mode zero-token-usage",
+          "name": "308.15 [PREVIEW] OpenAI zero-usage-fixture/zero /v1/chat/completions unary reasoning.mode zero-token-usage",
           "request": {
             "method": "POST",
             "header": [
@@ -304850,7 +304824,7 @@
           }
         },
         {
-          "name": "308.17 [PREVIEW] OpenAI zero-usage-fixture/total-only /v1/chat/completions unary reasoning.mode zero-token-usage",
+          "name": "308.16 [PREVIEW] OpenAI zero-usage-fixture/total-only /v1/chat/completions unary reasoning.mode zero-token-usage",
           "request": {
             "method": "POST",
             "header": [
@@ -304877,7 +304851,7 @@
           }
         },
         {
-          "name": "308.18 [PREVIEW] OpenAI zero-usage-fixture/zero /v1/chat/completions SSE reasoning.mode zero-token-usage",
+          "name": "308.17 [PREVIEW] OpenAI zero-usage-fixture/zero /v1/chat/completions SSE reasoning.mode zero-token-usage",
           "request": {
             "method": "POST",
             "header": [
@@ -304904,7 +304878,7 @@
           }
         },
         {
-          "name": "308.19 [PREVIEW] OpenAI zero-usage-fixture/total-only /v1/chat/completions SSE reasoning.mode zero-token-usage",
+          "name": "308.18 [PREVIEW] OpenAI zero-usage-fixture/total-only /v1/chat/completions SSE reasoning.mode zero-token-usage",
           "request": {
             "method": "POST",
             "header": [
@@ -304931,7 +304905,7 @@
           }
         },
         {
-          "name": "308.20 [PREVIEW] OpenAI zero-usage-fixture/zero /openai/v1/chat/completions unary reasoning.mode zero-token-usage",
+          "name": "308.19 [PREVIEW] OpenAI zero-usage-fixture/zero /openai/v1/chat/completions unary reasoning.mode zero-token-usage",
           "request": {
             "method": "POST",
             "header": [
@@ -304959,7 +304933,7 @@
           }
         },
         {
-          "name": "308.21 [PREVIEW] OpenAI zero-usage-fixture/total-only /openai/v1/chat/completions unary reasoning.mode zero-token-usage",
+          "name": "308.20 [PREVIEW] OpenAI zero-usage-fixture/total-only /openai/v1/chat/completions unary reasoning.mode zero-token-usage",
           "request": {
             "method": "POST",
             "header": [
@@ -304987,7 +304961,7 @@
           }
         },
         {
-          "name": "308.22 [PREVIEW] OpenAI zero-usage-fixture/zero /openai/v1/chat/completions SSE reasoning.mode zero-token-usage",
+          "name": "308.21 [PREVIEW] OpenAI zero-usage-fixture/zero /openai/v1/chat/completions SSE reasoning.mode zero-token-usage",
           "request": {
             "method": "POST",
             "header": [
@@ -305015,7 +304989,7 @@
           }
         },
         {
-          "name": "308.23 [PREVIEW] OpenAI zero-usage-fixture/total-only /openai/v1/chat/completions SSE reasoning.mode zero-token-usage",
+          "name": "308.22 [PREVIEW] OpenAI zero-usage-fixture/total-only /openai/v1/chat/completions SSE reasoning.mode zero-token-usage",
           "request": {
             "method": "POST",
             "header": [
@@ -305043,7 +305017,7 @@
           }
         },
         {
-          "name": "308.24 [PREVIEW] [EXPECT-202] OpenAI zero-usage-fixture/zero /v1/async/chat/completions unary zero-token-usage",
+          "name": "308.23 [PREVIEW] [EXPECT-202] OpenAI zero-usage-fixture/zero /v1/async/chat/completions unary zero-token-usage",
           "request": {
             "method": "POST",
             "header": [
@@ -305071,7 +305045,7 @@
           }
         },
         {
-          "name": "308.25 [PREVIEW] [EXPECT-202] OpenAI zero-usage-fixture/total-only /v1/async/chat/completions unary zero-token-usage",
+          "name": "308.24 [PREVIEW] [EXPECT-202] OpenAI zero-usage-fixture/total-only /v1/async/chat/completions unary zero-token-usage",
           "request": {
             "method": "POST",
             "header": [
@@ -305099,7 +305073,7 @@
           }
         },
         {
-          "name": "308.26 [PREVIEW] [EXPECT-202] OpenAI zero-usage-fixture/zero /v1/async/completions unary zero-token-usage",
+          "name": "308.25 [PREVIEW] [EXPECT-202] OpenAI zero-usage-fixture/zero /v1/async/completions unary zero-token-usage",
           "request": {
             "method": "POST",
             "header": [
@@ -305126,7 +305100,7 @@
           }
         },
         {
-          "name": "308.27 [PREVIEW] [EXPECT-202] OpenAI zero-usage-fixture/total-only /v1/async/completions unary zero-token-usage",
+          "name": "308.26 [PREVIEW] [EXPECT-202] OpenAI zero-usage-fixture/total-only /v1/async/completions unary zero-token-usage",
           "request": {
             "method": "POST",
             "header": [
@@ -305214,12 +305188,7 @@
               "  pm.test('stream includes usage', function () { pm.expect(usages.length, text).to.be.above(0); });",
               "} else {",
               "  var body = pm.response.json();",
-              "  if (request.input) {",
-              "    expected = { total_tokens: 0 };",
-              "    pm.test('embedding survives', function () { pm.expect(body.data[0].embedding, text).to.eql([0.25, 0.75]); });",
-              "  } else {",
-              "    pm.test('fixture content survives', function () { pm.expect(body.choices[0].text || (body.choices[0].message || {}).content, text).to.eql(expectedContent); });",
-              "  }",
+              "  pm.test('fixture content survives', function () { pm.expect(body.choices[0].text || (body.choices[0].message || {}).content, text).to.eql(expectedContent); });",
               "  usages = [body.usage == null ? null : body.usage];",
               "}",
               "pm.test('usage preserves reported counts without adding missing counts', function () {",
