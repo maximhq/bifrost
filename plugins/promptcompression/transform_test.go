@@ -50,3 +50,11 @@ func TestDedupeStub(t *testing.T) {
 	_, ok = dedupeStub(strp("c9"), stub)
 	require.False(t, ok, "stub equal length is not shorter")
 }
+
+func TestTextTransformKeepsOriginalWhenEmpty(t *testing.T) {
+	s := defaults(t)
+	s.Whitespace = true
+	in := "   \n\n\n\n  "
+	require.Equal(t, in, textTransform(s, true)(in))
+	require.Equal(t, "", textTransform(s, true)(""), "empty input stays empty")
+}

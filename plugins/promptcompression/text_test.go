@@ -79,3 +79,58 @@ func TestNormalizeWhitespace(t *testing.T) {
 		}
 	}
 }
+
+func TestTrimMiddleIdempotent(t *testing.T) {
+	big := numberedLines(300)
+	r1, ok := trimMiddle(big, 20, 20)
+	if !ok {
+		t.Fatal("first pass should trim")
+	}
+	r2, ok := trimMiddle(r1, 20, 20)
+	if ok || r2 != r1 {
+		t.Errorf("second pass must be a no-op; ok=%v", ok)
+	}
+}
+
+func TestTrimMiddleMarkerElsewhereIsNotTrimmed(t *testing.T) {
+	lines := strings.Split(numberedLines(100), "\n")
+	lines[3] = "[… 5 tokens trimmed by promptcompression …]"
+	_, ok := trimMiddle(strings.Join(lines, "\n"), 20, 20)
+	if !ok {
+		t.Error("a marker outside the cut position must not block trimming")
+	}
+}
+
+func TestTrimMiddleZeroTail(t *testing.T) {
+	got, ok := trimMiddle(numberedLines(10), 3, 0)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	lines := strings.Split(got, "\n")
+	if len(lines) != 4 || lines[2] != "L3" || !strings.HasPrefix(lines[3], "[… ") {
+		t.Errorf("unexpected result: %q", got)
+	}
+}
+
+func TestTrimMiddleNoSplitAllocs(t *testing.T) {
+	in := numberedLines(200)
+	allocs := testing.AllocsPerRun(100, func() {
+		trimMiddle(in, 100, 100)
+	})
+	if allocs != 0 {
+		t.Errorf("allocs = %v want 0", allocs)
+	}
+}
+
+func TestNormalizeWhitespaceUnchangedNoAlloc(t *testing.T) {
+	in := "a\n\nb\n\n\nc\n  indented\nend"
+	if got := normalizeWhitespace(in); got != in {
+		t.Fatalf("changed: %q", got)
+	}
+	allocs := testing.AllocsPerRun(100, func() {
+		normalizeWhitespace(in)
+	})
+	if allocs != 0 {
+		t.Errorf("allocs = %v want 0", allocs)
+	}
+}
