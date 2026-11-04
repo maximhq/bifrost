@@ -71,6 +71,9 @@ const (
 	// CategoryIncoherent: the LLM found several request types, or gave no
 	// usable tier or phrase.
 	CategoryIncoherent Category = "incoherent"
+	// CategoryTemplate: the requests are one prompt template sent with
+	// different fills; its phrases are written from the template's wording.
+	CategoryTemplate Category = "template"
 	// CategoryUnreadable: none of the cluster's examples could be read back
 	// (their logs were deleted or hide their content), so it was not sent.
 	CategoryUnreadable Category = "unreadable"
@@ -79,7 +82,7 @@ const (
 // Actionable reports whether a category is worth showing as a suggestion.
 func (c Category) Actionable() bool {
 	switch c {
-	case CategoryUncovered, CategoryWeak, CategoryMisrouted, CategoryMixed:
+	case CategoryUncovered, CategoryWeak, CategoryMisrouted, CategoryMixed, CategoryTemplate:
 		return true
 	}
 	return false
@@ -167,6 +170,9 @@ type Suggestion struct {
 	NearestSim float32
 	// Examples are the requests the LLM saw, the medoid first.
 	Examples []Member
+	// Template is the opening the examples share when they are one prompt
+	// template with different fills; empty otherwise.
+	Template string
 
 	vectors [][]float32
 }
@@ -251,11 +257,14 @@ func (s *Suggester) Suggest(ctx context.Context, cl *Cluster) (Suggestion, error
 	if len(reps) == 0 {
 		return Suggestion{Cluster: cl, Category: CategoryUnreadable}, nil
 	}
-	base := Suggestion{Cluster: cl, Examples: reps}
+	base := Suggestion{Cluster: cl, Examples: reps, Template: sharedTemplate(reps)}
 	if i, sim := nearest(cl.Centroid, s.live); i >= 0 {
 		base.Nearest, base.NearestSim = s.live[i], sim
 	}
 	messages := buildPrompt(s.opts.Instructions, s.opts.Guidance, reps, cl.Weight)
+	if base.Template != "" {
+		messages[1].Content += "\n" + templateNote(base.Template)
+	}
 
 	var best *Suggestion
 	for attempt := 1; attempt <= 2; attempt++ {
@@ -277,6 +286,7 @@ func (s *Suggester) Suggest(ctx context.Context, cl *Cluster) (Suggestion, error
 		cand.Attempts = attempt
 		cand.Tier, cand.Confidence, cand.Reason = v.Tier, v.Confidence, v.Reason
 		kept, leaked := filterLeaks(v.Phrases)
+		kept, leaked = withoutPasted(kept, leaked, base.Template, reps)
 		cand.Leaked = leaked
 		if !v.Coherent || !validTier(v.Tier) {
 			cand.Tier = ""
@@ -317,7 +327,7 @@ func (s *Suggester) Suggest(ctx context.Context, cl *Cluster) (Suggestion, error
 	if sg.Tier != "" && len(sg.Phrases) == 0 && len(sg.Leaked) > 0 {
 		var cleaned []string
 		for _, p := range sg.Leaked {
-			if c := sanitize(p); c != "" && !leaks(c) {
+			if c := sanitize(p); c != "" && !leaks(c) && !pastedFrom(c, sg.Template, reps) {
 				cleaned = append(cleaned, c)
 			}
 		}
@@ -327,6 +337,12 @@ func (s *Suggester) Suggest(ctx context.Context, cl *Cluster) (Suggestion, error
 		sg.Sanitized = len(sg.Phrases) > 0
 	}
 	sg.Category = s.categorize(&sg)
+	// A template cluster is worth suggesting for whatever its routing is
+	// today; saying it is a template is what tells the reviewer why its
+	// phrase reads like the template's opening.
+	if sg.Template != "" && sg.Category.Actionable() {
+		sg.Category = CategoryTemplate
+	}
 	return sg, nil
 }
 

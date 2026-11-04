@@ -35,8 +35,11 @@ type item struct {
 	Text  string `json:"text"`
 	Count int    `json:"count"`
 	Gold  string `json:"gold,omitempty"`
-	test  bool
-	vec   []float32
+	// Intent names the request type of a synthetic text; when present the
+	// run reports how cleanly clustering kept the types apart.
+	Intent string `json:"intent,omitempty"`
+	test   bool
+	vec    []float32
 }
 
 func main() {
@@ -57,8 +60,11 @@ func main() {
 		minReq     = flag.Int("min-requests", 6, "drop clusters with fewer requests")
 		batch      = flag.Int("batch", 8000, "requests clustered together")
 		maxMembers = flag.Int("max-members", 64, "members kept per cluster")
+		split      = flag.Float64("split", 0, "split clusters whose halves are less similar than this (0 = join threshold, -1 = off)")
+		rescue     = flag.Float64("rescue", 0, "merge undersized clusters with each other at this similarity (0 = default 0.75, -1 = off)")
 		workers    = flag.Int("workers", 10, "concurrent LLM calls")
 		instrFile  = flag.String("instructions", "", "file with custom suggestion instructions (default: suggest.DefaultInstructions)")
+		dropBelow  = flag.Float64("drop-below", 0, "leave out of scoring suggestions covering less than this share of their own cluster")
 		onlyClust  = flag.Bool("cluster-only", false, "cluster, print cluster stats, and exit before any LLM call")
 	)
 	flag.Parse()
@@ -70,9 +76,11 @@ func main() {
 		Workers:    *workers,
 		Cluster: suggest.ClusterOptions{
 			AvgSize: *avgSize, MergeSimilarity: *merge, JoinSimilarity: *join, MinRequests: *minReq, BatchSize: *batch, MaxMembers: *maxMembers,
+			SplitSimilarity: *split, RescueSimilarity: *rescue,
 		},
 	}
 	clusterOnly = *onlyClust
+	dropCoverage = *dropBelow
 	if *instrFile != "" {
 		data, err := os.ReadFile(*instrFile)
 		if err != nil {
@@ -91,7 +99,10 @@ func main() {
 	}
 }
 
-var clusterOnly bool
+var (
+	clusterOnly  bool
+	dropCoverage float64
+)
 
 type embedder struct{ api *apiClient }
 
@@ -156,6 +167,7 @@ func run(jsonlPath, outDir, cachePath, baseURL, embedModel, chatModel, judgeMode
 	runtime.ReadMemStats(&ms)
 	fmt.Fprintf(os.Stderr, "%d clusters over %d train texts in %s (heap in use %d MB); asking %s…\n",
 		len(clusters), len(train), clusterTime.Round(time.Second), ms.HeapInuse>>20, chatModel)
+	purity(items, clusters)
 	if clusterOnly {
 		coh := make([]float64, len(clusters))
 		var weight int
@@ -207,7 +219,7 @@ func run(jsonlPath, outDir, cachePath, baseURL, embedModel, chatModel, judgeMode
 		if sg.Attempts > 1 {
 			attempts2++
 		}
-		if !sg.Category.Actionable() {
+		if !sg.Category.Actionable() || sg.Coverage < dropCoverage {
 			continue
 		}
 		actionable++
@@ -462,4 +474,83 @@ func writeOutputs(dir string, sgs []suggest.Suggestion, test []*item, set []sugg
 		f.Write(append(line, '\n'))
 	}
 	return nil
+}
+
+// purity reports, for labelled input, whether each request type got a cluster
+// of its own. A type is absorbed when the cluster holding most of its kept
+// members is mostly another type, and cross-tier when that type has a
+// different gold tier: its requests are then suggested a phrase and tier
+// written for someone else's. Members are what clusters keep (MaxMembers per
+// cluster), so this is a sample of each cluster, not a census.
+func purity(items []*item, clusters []*suggest.Cluster) {
+	intentOf := func(id string) *item {
+		var i int
+		if _, err := fmt.Sscan(id, &i); err != nil || i < 0 || i >= len(items) {
+			return nil
+		}
+		return items[i]
+	}
+	trainByIntent := map[string]int{}
+	goldByIntent := map[string]string{}
+	for _, it := range items {
+		if it.Intent == "" || it.test {
+			continue
+		}
+		trainByIntent[it.Intent]++
+		goldByIntent[it.Intent] = it.Gold
+	}
+	if len(trainByIntent) == 0 {
+		return
+	}
+	type place struct {
+		cluster, members int
+	}
+	best := map[string]place{}
+	majority := make([]string, len(clusters))
+	var pure, total int
+	for ci, cl := range clusters {
+		counts := map[string]int{}
+		for _, m := range cl.Members {
+			if it := intentOf(m.ID); it != nil && it.Intent != "" {
+				counts[it.Intent]++
+			}
+		}
+		top, topN, n := "", 0, 0
+		for intent, c := range counts {
+			n += c
+			if c > topN || (c == topN && intent < top) {
+				top, topN = intent, c
+			}
+			if b, ok := best[intent]; !ok || c > b.members {
+				best[intent] = place{ci, c}
+			}
+		}
+		majority[ci] = top
+		pure += topN
+		total += n
+	}
+	var own, absorbed, crossTier, dropped int
+	var examples []string
+	for intent := range trainByIntent {
+		b, ok := best[intent]
+		switch {
+		case !ok:
+			dropped++
+		case majority[b.cluster] == intent:
+			own++
+		default:
+			absorbed++
+			if host := majority[b.cluster]; goldByIntent[host] != goldByIntent[intent] {
+				crossTier++
+				examples = append(examples, fmt.Sprintf("%s (%s, %d train, %d here) in %s (%s, cluster of %d)",
+					intent, goldByIntent[intent], trainByIntent[intent], b.members, host, goldByIntent[host], clusters[b.cluster].Size))
+			}
+		}
+	}
+	sort.Strings(examples)
+	fmt.Printf("types %d · own cluster %d · absorbed %d (cross-tier %d) · dropped %d · member purity %.1f%%\n",
+		len(trainByIntent), own, absorbed, crossTier, dropped, 100*float64(pure)/float64(max(1, total)))
+	for _, e := range examples {
+		fmt.Printf("  cross-tier: %s\n", e)
+	}
 }

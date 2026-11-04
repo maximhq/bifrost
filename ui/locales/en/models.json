@@ -1986,19 +1986,22 @@
 					"uncovered": "No match ({{n}})",
 					"weak": "Weak match ({{n}})",
 					"misrouted": "Different tier ({{n}})",
-					"mixed": "Mixed tiers ({{n}})"
+					"mixed": "Mixed tiers ({{n}})",
+					"template": "Prompt template ({{n}})"
 				},
 				"category": {
 					"uncovered": "No match",
 					"weak": "Weak match",
 					"misrouted": "Different tier",
-					"mixed": "Mixed tiers"
+					"mixed": "Mixed tiers",
+					"template": "Prompt template"
 				},
 				"categoryDescription": {
 					"uncovered": "Most of these requests match no phrase closely enough, so they take the default tier.",
 					"weak": "These requests reach the suggested tier, but only through weak matches.",
 					"misrouted": "These requests confidently match phrases of a different tier than the one suggested.",
-					"mixed": "Similar requests are split across tiers today."
+					"mixed": "Similar requests are split across tiers today.",
+					"template": "These requests are one prompt template sent with different fills, so the phrases are written from the template's fixed wording."
 				},
 				"lastDays_one": "Last {{count}} day",
 				"lastDays_other": "Last {{count}} days",

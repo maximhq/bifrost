@@ -72,6 +72,6 @@ describe("filtering suggestions", () => {
 	test("searches phrases and reasons, filters by category, and leaves out staged ones", () => {
 		expect(filterSuggestions(list, { query: "REFUND", category: "all" }, new Set()).map((s) => s.id)).toEqual(["a"]);
 		expect(filterSuggestions(list, { query: "", category: "weak" }, new Set(["c"])).map((s) => s.id)).toEqual(["a"]);
-		expect(categoryCounts(list, new Set(["c"]))).toEqual({ all: 2, uncovered: 1, weak: 1, misrouted: 0, mixed: 0 });
+		expect(categoryCounts(list, new Set(["c"]))).toEqual({ all: 2, uncovered: 1, weak: 1, misrouted: 0, mixed: 0, template: 0 });
 	});
 });
