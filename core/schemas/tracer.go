@@ -35,6 +35,7 @@ type StreamAccumulatorResult struct {
 	PassthroughOutput     *BifrostPassthroughResponse     // For passthrough streaming
 	FinishReason          *string                         // Finish reason
 	RawResponse           *string                         // Raw response
+	RawResponseFormat     RawResponseFormat               // Declared format of RawResponse's frames, if any
 	RawRequest            interface{}                     // Raw request
 }
 

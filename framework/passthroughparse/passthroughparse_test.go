@@ -1,6 +1,7 @@
 package passthroughparse
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -911,6 +912,170 @@ func TestInferRequestTypeMethods(t *testing.T) {
 			t.Run(string(route.provider)+" "+method+" "+route.path, func(t *testing.T) {
 				require.Equal(t, want, InferRequestType(route.provider, route.model, method, route.path, false))
 			})
+		}
+	}
+}
+
+// TestClassify pins the API shape and request kind of each route family, including providers whose route speaks
+// another provider's API (Claude on Azure and Vertex speaks Anthropic, Mistral on Vertex speaks OpenAI, Codex on the
+// ChatGPT backend speaks Responses). Routes without a typed equivalent, and non-POST calls, return the zero Route.
+func TestClassify(t *testing.T) {
+	cases := []struct {
+		name     string
+		provider schemas.ModelProvider
+		method   string
+		path     string
+		want     Route
+	}{
+		{"openai chat", schemas.OpenAI, "POST", "/v1/chat/completions", Route{schemas.OpenAI, schemas.ChatCompletionRequest}},
+		{"openai responses", schemas.OpenAI, "POST", "/v1/responses", Route{schemas.OpenAI, schemas.ResponsesRequest}},
+		{"codex responses", schemas.OpenAI, "POST", "/backend-api/codex/responses", Route{schemas.OpenAI, schemas.ResponsesRequest}},
+		{"openai text completions", schemas.OpenAI, "POST", "/v1/completions", Route{schemas.OpenAI, schemas.TextCompletionRequest}},
+		{"anthropic messages", schemas.Anthropic, "POST", "/v1/messages", Route{schemas.Anthropic, schemas.ResponsesRequest}},
+		{"anthropic count tokens", schemas.Anthropic, "POST", "/v1/messages/count_tokens", Route{schemas.Anthropic, schemas.CountTokensRequest}},
+		{"azure claude", schemas.Azure, "POST", "/anthropic/v1/messages", Route{schemas.Anthropic, schemas.ResponsesRequest}},
+		{"azure openai chat", schemas.Azure, "POST", "/openai/deployments/gpt-4o/chat/completions", Route{schemas.OpenAI, schemas.ChatCompletionRequest}},
+		{"vertex claude", schemas.Vertex, "POST", "/projects/p/locations/l/publishers/anthropic/models/claude-sonnet-4-5:rawPredict", Route{schemas.Anthropic, schemas.ResponsesRequest}},
+		{"vertex mistral", schemas.Vertex, "POST", "/projects/p/locations/l/publishers/mistralai/models/mistral-large:rawPredict", Route{schemas.OpenAI, schemas.ChatCompletionRequest}},
+		{"gemini stream", schemas.Gemini, "POST", "/models/gemini-2.5-flash:streamGenerateContent", Route{schemas.Gemini, schemas.ResponsesRequest}},
+		{"gemini count tokens", schemas.Gemini, "POST", "/models/gemini-2.5-flash:countTokens", Route{schemas.Gemini, schemas.CountTokensRequest}},
+		{"untyped route", schemas.Anthropic, "POST", "/v1/files", Route{}},
+		{"non-POST call", schemas.Anthropic, "GET", "/v1/messages", Route{}},
+		{"provider without a parser", schemas.Bedrock, "POST", "/model/anthropic.claude-sonnet-4-5/invoke", Route{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, Classify(tc.provider, "", tc.method, tc.path))
+		})
+	}
+}
+
+// TestRouteStreamFormat verifies a route has a stream format exactly when Parse can assemble its stream.
+func TestRouteStreamFormat(t *testing.T) {
+	wires := map[schemas.ModelProvider]wireFormat{schemas.OpenAI: wireOpenAI, schemas.Anthropic: wireAnthropic, schemas.Gemini: wireGemini}
+	cases := []struct {
+		route Route
+		want  schemas.RawResponseFormat
+	}{
+		{Route{schemas.OpenAI, schemas.ChatCompletionRequest}, schemas.RawResponseFormatOpenAIChatCompletionChunk},
+		{Route{schemas.OpenAI, schemas.TextCompletionRequest}, schemas.RawResponseFormatOpenAITextCompletionChunk},
+		{Route{schemas.OpenAI, schemas.ResponsesRequest}, schemas.RawResponseFormatOpenAIResponsesStreamEvent},
+		{Route{schemas.Anthropic, schemas.ResponsesRequest}, schemas.RawResponseFormatAnthropicMessagesStreamEvent},
+		{Route{schemas.Gemini, schemas.ResponsesRequest}, schemas.RawResponseFormatGeminiStreamChunk},
+		{Route{schemas.OpenAI, schemas.ImageGenerationRequest}, ""},
+		{Route{schemas.OpenAI, schemas.SpeechRequest}, ""},
+		{Route{schemas.Anthropic, schemas.TextCompletionRequest}, ""},
+		{Route{}, ""},
+	}
+	for _, tc := range cases {
+		require.Equal(t, tc.want, tc.route.StreamFormat(), tc.route)
+		_, err := parseStreamResponse(wires[tc.route.Wire], tc.route.RequestType, nil)
+		require.Equal(t, tc.want != "", err != nil, "Parse assembles the stream of %v exactly when it has a format", tc.route)
+	}
+}
+
+// TestParseStreamEndingOnUpstreamError verifies a stream the upstream ended with an error event is reported as
+// ErrUpstreamStreamFailed, with everything that streamed before it.
+func TestParseStreamEndingOnUpstreamError(t *testing.T) {
+	body := anthropicStream[:strings.Index(anthropicStream, "event: content_block_stop")] +
+		"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n"
+
+	result, err := Parse(Input{Provider: schemas.Anthropic, Method: "POST", Path: "/v1/messages", StatusCode: 200, Stream: true, ResponseBody: []byte(body)})
+
+	require.True(t, errors.Is(err, ErrUpstreamStreamFailed), err)
+	require.NotNil(t, result.Response)
+	text, _ := responsesTextAndCalls(result.Response.ResponsesResponse.Output)
+	require.Equal(t, "Checking.", text)
+}
+
+// TestRedactStreamBody verifies values split across events are redacted in place while framing, events without text,
+// reasoning, and every other byte are kept.
+func TestRedactStreamBody(t *testing.T) {
+	replacements := map[string]string{"alex@example.com": "[EMAIL-1]"}
+	cases := []struct {
+		name   string
+		format schemas.RawResponseFormat
+		body   string
+		want   *strings.Replacer
+	}{
+		{
+			name:   "openai chat with comments, CRLF, and data: without a space",
+			format: schemas.RawResponseFormatOpenAIChatCompletionChunk,
+			body: ": keep-alive\r\n\r\n" +
+				`data: {"choices":[{"index":0,"delta":{"content":"mail alex@"}}]}` + "\r\n\r\n" +
+				`data:{"choices":[{"index":0,"delta":{"content":"exam"}}]}` + "\n\n" +
+				"data: not json\n\n" +
+				`data: {"choices":[{"index":0,"delta":{"content":"ple.com now"}}]}` + "\n\n" +
+				"data: [DONE]\n\n",
+			want: strings.NewReplacer(`"mail alex@"`, `"mail "`, `"exam"`, `""`, `"ple.com now"`, `"[EMAIL-1] now"`),
+		},
+		{
+			name:   "anthropic text with thinking and signature untouched",
+			format: schemas.RawResponseFormatAnthropicMessagesStreamEvent,
+			body: "event: ping\ndata: {\"type\":\"ping\"}\n\n" +
+				"event: content_block_delta\n" + `data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"user is alex@example.com"}}` + "\n\n" +
+				"event: content_block_delta\n" + `data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"c2lnbmF0dXJl"}}` + "\n\n" +
+				"event: content_block_delta\n" + `data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"mail alex@exa"}}` + "\n\n" +
+				"event: content_block_delta\n" + `data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"mple.com"}}` + "\n\n",
+			want: strings.NewReplacer(`"mail alex@exa"`, `"mail "`, `"mple.com"`, `"[EMAIL-1]"`),
+		},
+		{
+			name:   "responses deltas and closing events with reasoning untouched",
+			format: schemas.RawResponseFormatOpenAIResponsesStreamEvent,
+			body: "event: response.reasoning_summary_text.delta\n" + `data: {"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":0,"delta":"alex@example.com"}` + "\n\n" +
+				"event: response.output_text.delta\n" + `data: {"type":"response.output_text.delta","output_index":1,"content_index":0,"delta":"mail alex@"}` + "\n\n" +
+				"event: response.output_text.delta\n" + `data: {"type":"response.output_text.delta","output_index":1,"content_index":0,"delta":"example.com"}` + "\n\n" +
+				"event: response.output_text.done\n" + `data: {"type":"response.output_text.done","output_index":1,"content_index":0,"text":"mail alex@example.com"}` + "\n\n",
+			want: strings.NewReplacer(`"mail alex@"`, `"mail "`, `"delta":"example.com"`, `"delta":"[EMAIL-1]"`, `"text":"mail alex@example.com"`, `"text":"mail [EMAIL-1]"`),
+		},
+		{
+			name:   "gemini pretty-printed JSON array",
+			format: schemas.RawResponseFormatGeminiStreamChunk,
+			body: "[{\n  \"candidates\": [{\"content\": {\"role\": \"model\", \"parts\": [{\"text\": \"mail alex@\"}]}}]\n}\r\n,\r\n" +
+				"{\n  \"candidates\": [{\"content\": {\"role\": \"model\", \"parts\": [{\"text\": \"example.com\"}]}, \"finishReason\": \"STOP\"}]\n}\n]",
+			want: strings.NewReplacer(`"mail alex@"`, `"mail "`, `"example.com"`, `"[EMAIL-1]"`),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			redacted, ok := RedactStreamBody([]byte(tc.body), tc.format, replacements)
+
+			require.True(t, ok)
+			require.Equal(t, tc.want.Replace(tc.body), string(redacted))
+		})
+	}
+}
+
+// TestRedactStreamBodyReturnsBodyItCannotChange verifies a body with nothing to redact comes back as the same slice,
+// and an event whose data spans several lines is reported unhandled.
+func TestRedactStreamBodyReturnsBodyItCannotChange(t *testing.T) {
+	replacements := map[string]string{"alex@example.com": "[EMAIL-1]"}
+	clean := []byte(`data: {"choices":[{"index":0,"delta":{"content":"hello"}}]}` + "\n\n")
+	redacted, ok := RedactStreamBody(clean, schemas.RawResponseFormatOpenAIChatCompletionChunk, replacements)
+	require.True(t, ok)
+	require.Same(t, &clean[0], &redacted[0])
+
+	multiline := []byte("data: {\"choices\":[{\"index\":0,\ndata: \"delta\":{\"content\":\"alex@example.com\"}}]}\n\n")
+	redacted, ok = RedactStreamBody(multiline, schemas.RawResponseFormatOpenAIChatCompletionChunk, replacements)
+	require.False(t, ok)
+	require.Equal(t, multiline, redacted)
+}
+
+// BenchmarkRedactStreamBody measures redacting a 1 MB chat stream with one value split across two events.
+func BenchmarkRedactStreamBody(b *testing.B) {
+	var body strings.Builder
+	for body.Len() < 1<<20 {
+		body.WriteString(`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"some streamed words "}}]}` + "\n\n")
+	}
+	body.WriteString(`data: {"choices":[{"index":0,"delta":{"content":"mail alex@"}}]}` + "\n\n")
+	body.WriteString(`data: {"choices":[{"index":0,"delta":{"content":"example.com"}}]}` + "\n\ndata: [DONE]\n\n")
+	raw := []byte(body.String())
+	replacements := map[string]string{"alex@example.com": "[EMAIL-1]"}
+	b.SetBytes(int64(len(raw)))
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, ok := RedactStreamBody(raw, schemas.RawResponseFormatOpenAIChatCompletionChunk, replacements); !ok {
+			b.Fatal("unhandled")
 		}
 	}
 }

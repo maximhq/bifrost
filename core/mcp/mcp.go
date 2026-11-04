@@ -44,6 +44,7 @@ type MCPManager struct {
 	toolsManager           *ToolsManager                      // Handler for MCP tools
 	server                 *server.MCPServer                  // Local MCP server instance for hosting tools (STDIO-based)
 	clientMap              map[string]*schemas.MCPClientState // Map of MCP client names to their configurations
+	discoveryStore         schemas.MCPDiscoveryStore          // Discoveries (tools, instructions, resources, prompts); the single owner of that data, which client state never carries
 	mu                     sync.RWMutex                       // Read-write mutex for thread-safe operations
 	serverRunning          bool                               // Track whether local MCP server is running
 	checkerManager         *ConnectionCheckerManager          // Manager for per-client periodic connection checkers (liveness + discovery refresh, drives Healthy/Unstable/NeedsReauth)
@@ -88,7 +89,8 @@ type MCPManager struct {
 
 	// discoveryChangeCallback, if set, runs when a fresh discovery of a client differs from the installed one:
 	// connect/reconnect, SetClientDiscovery and the connection checker. Not on a restore from config
-	// (nothing changed). It is how the transport persists; fired outside m.mu since it may do I/O.
+	// (nothing changed). It lets the transport react (it re-syncs its hosted /mcp); persisting the
+	// discovery is the discovery store's job. Fired outside m.mu since it may do I/O.
 	discoveryChangeCallback func(clientID, name string, discovery *schemas.MCPDiscovery)
 }
 
@@ -111,12 +113,11 @@ func (m *MCPManager) SetDiscoveryChangeCallback(cb func(clientID, name string, d
 	m.discoveryChangeCallback = cb
 }
 
-// discoveryChanged updates LastDiscoveryHash from clientState and, on a change, returns a closure that
-// runs the callback with the discovery installed when it fires; nil when nothing changed or no
-// callback is set. Call with m.mu held and run the closure after releasing it.
+// discoveryChanged updates LastDiscoveryHash from clientID's installed discovery and, on a change,
+// returns a closure that runs the callback with the discovery installed when it fires; nil when
+// nothing changed or no callback is set. Call with m.mu held and run the closure after releasing it.
 func (m *MCPManager) discoveryChanged(clientState *schemas.MCPClientState, clientID string) func() {
-	discovery := installedDiscovery(clientState)
-	hash := computeDiscoveryHash(discovery)
+	hash := computeDiscoveryHash(m.installedDiscovery(clientState.ExecutionConfig))
 	if clientState.LastDiscoveryHash == hash {
 		return nil
 	}
@@ -129,22 +130,35 @@ func (m *MCPManager) discoveryChanged(clientState *schemas.MCPClientState, clien
 	// deliver the discovery installed now, not the one it was created with.
 	return func() {
 		m.mu.RLock()
-		current, name := installedDiscovery(clientState), clientState.Name
+		current, name := m.installedDiscovery(clientState.ExecutionConfig), clientState.Name
 		m.mu.RUnlock()
 		cb(clientID, name, current)
 	}
 }
 
-// installedDiscovery is clientState's current discovery. Callers hold m.mu.
-func installedDiscovery(clientState *schemas.MCPClientState) *schemas.MCPDiscovery {
-	return &schemas.MCPDiscovery{
-		Tools:        clientState.ToolMap,
-		Instructions: clientState.ServerInstructions,
-
-		Resources:         clientState.Resources,
-		ResourceTemplates: clientState.ResourceTemplates,
-		Prompts:           clientState.Prompts,
+// installedDiscovery is config's discovery in the store as the manager itself sees it (no caller,
+// so a client with per_user_discovery on has none), or an empty one when it has none. Safe under
+// m.mu: the store answers the manager's own ctx without I/O.
+func (m *MCPManager) installedDiscovery(config *schemas.MCPClientConfig) *schemas.MCPDiscovery {
+	if config == nil {
+		return &schemas.MCPDiscovery{}
 	}
+	if discovery := m.discoveryStore.GetDiscovery(m.ctx, config); discovery != nil {
+		return discovery
+	}
+	return &schemas.MCPDiscovery{}
+}
+
+// installedDiscoveryByID is installedDiscovery for the client with this ID. Takes m.mu, so the
+// caller must not hold it.
+func (m *MCPManager) installedDiscoveryByID(clientID string) *schemas.MCPDiscovery {
+	m.mu.RLock()
+	var config *schemas.MCPClientConfig
+	if state, ok := m.clientMap[clientID]; ok {
+		config = state.ExecutionConfig
+	}
+	m.mu.RUnlock()
+	return m.installedDiscovery(config)
 }
 
 // MCPToolFunction is a generic function type for handling tool calls with typed arguments.
@@ -190,10 +204,12 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, credStore sche
 		}
 	}
 	// Creating new instance
+	discoveryStore := NewDiscoveryStore(config.SharedDiscoveryStore, config.PerUserDiscoveryStore)
 	manager := &MCPManager{
 		ctx:                    ctx,
 		logger:                 logger,
 		clientMap:              make(map[string]*schemas.MCPClientState),
+		discoveryStore:         discoveryStore,
 		checkerManager:         NewConnectionCheckerManager(config.ToolSyncInterval),
 		credStore:              credStore,
 		inProcessServerFactory: config.InProcessServerFactory,
@@ -313,7 +329,6 @@ func (m *MCPManager) connectConfiguredClients(ctx context.Context, onClientDone 
 						Name:            clientConfig.Name,
 						ExecutionConfig: clientConfig,
 						State:           schemas.MCPConnectionStateUnstable,
-						ToolMap:         make(map[string]schemas.ChatTool),
 						ConnectionInfo: &schemas.MCPClientConnectionInfo{
 							Type: clientConfig.ConnectionType,
 						},

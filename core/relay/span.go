@@ -3,6 +3,7 @@ package relay
 import (
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -19,15 +20,15 @@ type relaySpan struct {
 	// the Agent span decides it; request is the caller's body kept for that export.
 	raw     bool
 	request []byte
+	// callStart is when the call entered the gateway (before the pre-hooks), so the call's
+	// duration covers a call the pre-hooks refused, which never reaches the operation itself.
+	callStart time.Time
 }
-
-// relayTraceContentLimit bounds a body attached to the span, as the Agent span bounds its capture.
-const relayTraceContentLimit = 1 << 20
 
 // startRelaySpan opens the operation span under the gate-entry parent, so it is not a child of
 // the last (already ended) pre-hook span, and threads its id onto ctx so the post-hook spans nest
 // under it.
-func startRelaySpan(ctx *schemas.BifrostContext, entrySpanID any, req *schemas.BifrostRelayRequest) *relaySpan {
+func startRelaySpan(ctx *schemas.BifrostContext, entrySpanID any, req *schemas.BifrostRelayRequest, callStart time.Time) *relaySpan {
 	tracer, _ := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer)
 	if tracer == nil || req == nil {
 		return nil
@@ -47,7 +48,7 @@ func startRelaySpan(ctx *schemas.BifrostContext, entrySpanID any, req *schemas.B
 	tracer.SetAttribute(handle, schemas.AttrBifrostRelayRoutePath, req.RoutePath)
 	tracer.SetAttribute(handle, schemas.AttrBifrostRelayBillable, req.Billable)
 	tracer.SetAttribute(handle, schemas.AttrBifrostRelayStreamed, req.Streams)
-	s := &relaySpan{tracer: tracer, handle: handle}
+	s := &relaySpan{tracer: tracer, handle: handle, callStart: callStart}
 	s.spanID, _ = ctx.Value(schemas.BifrostContextKeySpanID).(string)
 	// Raw bodies ride the span's raw-payload slot, never its attributes, so a connector exports
 	// them only through its own raw-payload opt-in and content controls, exactly as Agent bodies.
@@ -57,7 +58,8 @@ func startRelaySpan(ctx *schemas.BifrostContext, entrySpanID any, req *schemas.B
 	if disabled, _ := ctx.Value(schemas.BifrostContextKeyGovernanceDisableContentLogging).(bool); disabled {
 		s.raw = false
 	}
-	if s.raw && len(req.Body) > 0 && len(req.Body) <= relayTraceContentLimit {
+	// Bodies are attached whole: the relay keeps no size bound of its own on what it records.
+	if s.raw && len(req.Body) > 0 {
 		s.request = req.Body
 	}
 	return s
@@ -76,11 +78,21 @@ func (s *relaySpan) end(ctx *schemas.BifrostContext, resp *schemas.BifrostRelayR
 		if resp.Usage != nil {
 			s.tracer.SetAttribute(s.handle, schemas.AttrBifrostRelayCost, resp.Usage.Cost)
 		}
-		if resp.UpstreamLatency > 0 {
-			s.tracer.SetAttribute(s.handle, schemas.AttrBifrostRelayUpstreamDurationMs, resp.UpstreamLatency)
+	} else {
+		// No reply was streamed: the start marked the span with the route's stream mode, so a call
+		// that failed before any reply would otherwise read as a stream in the overhead breakdown.
+		s.tracer.SetAttribute(s.handle, schemas.AttrBifrostRelayStreamed, false)
+		if bifrostErr != nil && bifrostErr.StatusCode != nil {
+			s.tracer.SetAttribute(s.handle, schemas.AttrHTTPResponseStatusCode, *bifrostErr.StatusCode)
 		}
-	} else if bifrostErr != nil && bifrostErr.StatusCode != nil {
-		s.tracer.SetAttribute(s.handle, schemas.AttrHTTPResponseStatusCode, *bifrostErr.StatusCode)
+	}
+	// Fractional milliseconds from the context, as the root span takes them, and on a failed
+	// call too: time spent before a transport error is still time on the upstream.
+	if upstream, ok := schemas.GetUpstreamLatency(ctx); ok && upstream > 0 {
+		s.tracer.SetAttribute(s.handle, schemas.AttrBifrostRelayUpstreamDurationMs, float64(upstream)/float64(time.Millisecond))
+	}
+	if !s.callStart.IsZero() {
+		s.tracer.SetAttribute(s.handle, schemas.AttrBifrostRelayDurationMs, float64(time.Since(s.callStart))/float64(time.Millisecond))
 	}
 	setRelayGovernanceSpanAttrs(s.tracer, s.handle, ctx)
 	// Governance's decision for the key or project lands after the span started, so it is read
@@ -91,7 +103,7 @@ func (s *relaySpan) end(ctx *schemas.BifrostContext, resp *schemas.BifrostRelayR
 	if s.raw {
 		if span := s.tracer.SpanFromHandle(s.handle); span != nil {
 			var response string
-			if resp != nil && len(resp.Body) > 0 && len(resp.Body) <= relayTraceContentLimit {
+			if resp != nil && len(resp.Body) > 0 {
 				response = string(resp.Body)
 			}
 			span.SetA2ARawPayloads(s.spanID, &schemas.A2ASpanData{RawRequest: string(s.request), RawResponse: response})
@@ -106,21 +118,23 @@ func (s *relaySpan) end(ctx *schemas.BifrostContext, resp *schemas.BifrostRelayR
 		s.tracer.SetAttribute(s.handle, schemas.AttrErrorTypeSpec, relayErrorType(bifrostErr))
 		s.tracer.EndSpan(s.handle, schemas.SpanStatusError, msg)
 	case resp != nil && resp.StatusCode >= http.StatusBadRequest:
-		s.tracer.SetAttribute(s.handle, schemas.AttrErrorTypeSpec, fmt.Sprintf("%d", resp.StatusCode))
+		// The upstream's status is classified as an LLM provider status is (rate limited, auth,
+		// server error, ...), so error_type is a failure class and never a bare code.
+		code := resp.StatusCode
+		s.tracer.SetAttribute(s.handle, schemas.AttrErrorTypeSpec, relayErrorType(&schemas.BifrostError{StatusCode: &code}))
 		s.tracer.EndSpan(s.handle, schemas.SpanStatusError, fmt.Sprintf("HTTP %d", resp.StatusCode))
 	default:
 		s.tracer.EndSpan(s.handle, schemas.SpanStatusOk, "")
 	}
 }
 
-// relayErrorType classifies a failed call for the error.type attribute and metric label: the
-// Bifrost error type when one is set (request cancelled, timed out), else the HTTP status.
+// relayErrorType classifies a failed call for the error.type attribute and metric label the way
+// LLM calls are classified (ClassifyErrorType): a governance decision (budget exceeded, rate
+// limited, access denied), a timeout or cancellation, or the upstream's failure class, rather than
+// a bare status code.
 func relayErrorType(bifrostErr *schemas.BifrostError) string {
-	if bifrostErr.Error != nil && bifrostErr.Error.Type != nil && *bifrostErr.Error.Type != "" {
-		return *bifrostErr.Error.Type
-	}
-	if bifrostErr.StatusCode != nil {
-		return fmt.Sprintf("%d", *bifrostErr.StatusCode)
+	if t := schemas.ClassifyErrorType(bifrostErr, schemas.RelayRequest); t != "" {
+		return string(t)
 	}
 	return "_OTHER"
 }

@@ -18,17 +18,39 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// ClientManager interface for accessing MCP clients and tools
+// ClientManager interface for accessing MCP clients and tools.
+// Client state snapshots carry connection state only; tools and instructions
+// always come from the discovery store, which lookups consult with the
+// caller's ctx (a ctx-aware store may serve different callers different
+// discoveries).
 type ClientManager interface {
 	GetClientByName(clientName string) *schemas.MCPClientState
-	GetClientForTool(toolName string) *schemas.MCPClientState
+	// GetClientForTool resolves toolName for the caller on ctx and returns
+	// the owning client's state together with the discovery the tool was
+	// found in, as an atomic pair; (nil, nil) when no client serves it.
+	GetClientForTool(ctx context.Context, toolName string) (*schemas.MCPClientState, *schemas.MCPDiscovery)
+	// GetToolsForClient returns the tools the caller on ctx should see for
+	// one client, or nil when it has none recorded.
+	GetToolsForClient(ctx context.Context, clientID string) map[string]schemas.ChatTool
+	// GetInstructionsForClient returns the upstream instructions the caller on
+	// ctx should see for one client, from the same discovery its tools come
+	// from; "" when it has none.
+	GetInstructionsForClient(ctx context.Context, clientID string) string
+	// GetToolPerClient returns the tools the caller on ctx may call, per client:
+	// the tools part of GetCallerDiscovery, for a caller that wants nothing else.
 	GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool
+	// GetCallerDiscovery returns what the caller on ctx sees of the clients for a
+	// request, from one read of each client's discovery: the tools per client,
+	// the connect tools offered in place of the clients with per_user_discovery
+	// on it has not connected to, and, when withInstructions is set, the
+	// upstream `instructions` of the clients it can reach (see CallerDiscovery).
+	GetCallerDiscovery(ctx context.Context, withInstructions bool) CallerDiscovery
+	// ConnectToolClient returns the client whose connect tool toolName is for
+	// the caller on ctx, or nil.
+	ConnectToolClient(ctx context.Context, toolName string) *schemas.MCPClientState
 	// InstructionCaps returns the configured instruction byte caps, zero meaning unset.
 	InstructionCaps() InstructionCaps
 
-	// GetServerInstructions returns the upstream `instructions` of the clients visible to
-	// ctx, scoped by the same rules GetToolPerClient applies.
-	GetServerInstructions(ctx context.Context) []schemas.MCPServerInstructions
 	GetPluginPipeline() PluginPipeline
 	ReleasePluginPipeline(pipeline PluginPipeline)
 	// AcquireClientConn returns a live upstream MCP client connection for the
@@ -62,6 +84,18 @@ type ClientManager interface {
 	// an MCP tool/list/ping outside the gateway path — e.g. nested tool calls
 	// from the Starlark codemode sandbox — to stay in sync with the gateway.
 	RunWithPluginPipeline(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest, op MCPOpFunc) (*schemas.BifrostMCPResponse, *schemas.BifrostError)
+}
+
+// CallerDiscovery is the caller's discovery of every MCP client with the
+// visibility rules applied, for a request on its context: the tools of each
+// client it may call, the connect tools it is offered in place of clients with
+// per_user_discovery on it has not connected to, and, when asked for, the
+// instructions of the clients it can reach. Building it reads each client's
+// discovery for the caller once.
+type CallerDiscovery struct {
+	ToolsPerClient map[string][]schemas.ChatTool
+	ConnectTools   []schemas.ChatTool
+	Instructions   []schemas.MCPServerInstructions
 }
 
 // MCPToolExecutor is the per-call executor signature used by the agent loop.
@@ -250,7 +284,14 @@ func precomputeToolSerialization(tools map[string]schemas.ChatTool) {
 }
 
 func (m *ToolsManager) GetAvailableTools(ctx *schemas.BifrostContext) []schemas.ChatTool {
-	availableToolsPerClient := m.clientManager.GetToolPerClient(ctx)
+	tools, _ := m.availableTools(ctx, m.clientManager.GetCallerDiscovery(ctx, false))
+	return tools
+}
+
+// availableTools is GetAvailableTools over the caller's discovery, also naming which
+// of the tools are connect tools; nil when none is.
+func (m *ToolsManager) availableTools(ctx *schemas.BifrostContext, callerDiscovery CallerDiscovery) ([]schemas.ChatTool, map[string]struct{}) {
+	availableToolsPerClient := callerDiscovery.ToolsPerClient
 	// Flatten tools from all clients into a single slice, avoiding duplicates
 	var availableTools []schemas.ChatTool
 	var includeCodeModeTools bool
@@ -286,6 +327,25 @@ func (m *ToolsManager) GetAvailableTools(ctx *schemas.BifrostContext) []schemas.
 		}
 	}
 
+	// Connect tools are direct tools on every client, code mode included: they
+	// are answered by Bifrost, and a code-mode binding would send them upstream.
+	// They stay off BifrostContextKeyMCPAddedTools: that list is checked tool by
+	// tool against the caller's grant, and connect is not one of the client's
+	// tools. Its call is checked against the client when it runs.
+	var connectNames map[string]struct{}
+	for _, tool := range callerDiscovery.ConnectTools {
+		name := tool.Function.Name
+		if seenToolNames[name] {
+			continue
+		}
+		seenToolNames[name] = true
+		if connectNames == nil {
+			connectNames = make(map[string]struct{})
+		}
+		connectNames[name] = struct{}{}
+		availableTools = append(availableTools, tool)
+	}
+
 	// Add code mode tools if any client is configured for code mode and we have a CodeMode implementation
 	if includeCodeModeTools && m.codeMode != nil {
 		codeModeTools := m.codeMode.GetTools()
@@ -300,7 +360,7 @@ func (m *ToolsManager) GetAvailableTools(ctx *schemas.BifrostContext) []schemas.
 		}
 	}
 
-	return availableTools
+	return availableTools, connectNames
 }
 
 // buildIntegrationDuplicateCheckMap builds a map of tool names to check for duplicates
@@ -494,7 +554,18 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx *schemas.BifrostContext, re
 		}
 	}
 
-	availableTools := m.GetAvailableTools(ctx)
+	// One CallerDiscovery gives the request its tools, its connect tools and, on the turn
+	// that has not added them yet, its server instructions.
+	callerDiscovery := m.clientManager.GetCallerDiscovery(ctx, !serverInstructionsInjected(ctx))
+	availableTools, connectNames := m.availableTools(ctx, callerDiscovery)
+	dropStaleConnectTools(ctx, req, connectNames)
+	// A connect tool counts as added only once it is in the request, so a
+	// caller's own tool of the same name is never taken back.
+	recordAdded := func(toolName string) {
+		if _, ok := connectNames[toolName]; ok {
+			schemas.AppendToContextList(ctx, addedConnectToolsKey, toolName)
+		}
+	}
 
 	if len(availableTools) == 0 {
 		return req
@@ -534,6 +605,7 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx *schemas.BifrostContext, re
 				isDuplicate := integrationDuplicateCheck(duplicateCheckMap, toolName, integrationUserAgentStr)
 				if !isDuplicate {
 					tools = append(tools, mcpTool)
+					recordAdded(toolName)
 					// Update the duplicate check map to prevent duplicates within MCP tools as well
 					markToolSeenInDuplicateCheckMap(duplicateCheckMap, toolName, integrationUserAgentStr)
 				}
@@ -579,6 +651,7 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx *schemas.BifrostContext, re
 						continue
 					}
 					tools = append(tools, *responsesTool)
+					recordAdded(toolName)
 					markToolSeenInDuplicateCheckMap(duplicateCheckMap, toolName, integrationUserAgentStr)
 				}
 			}
@@ -586,8 +659,56 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx *schemas.BifrostContext, re
 		}
 	}
 
-	m.addServerInstructionsToRequest(ctx, req)
+	m.addServerInstructionsToRequest(ctx, req, callerDiscovery.Instructions)
 	return req
+}
+
+// dropStaleConnectTools takes out of req the connect tools Bifrost added on an
+// earlier agent turn that it no longer offers as connect tools (offered names the
+// ones it does): their caller has connected, and the client's own tools take their
+// place, including an upstream tool of the same name, whose definition then goes
+// in where Bifrost's was. The agent loop reuses the first turn's tools and
+// injection only adds, so without this a connect tool would stay for the rest of
+// the loop. Only tools Bifrost itself added are taken out, and a name taken out
+// stops counting as one, so a same-named upstream tool is left alone afterwards.
+func dropStaleConnectTools(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, offered map[string]struct{}) {
+	added, _ := ctx.Value(addedConnectToolsKey).([]string)
+	if len(added) == 0 {
+		return
+	}
+	var kept []string
+	for _, name := range added {
+		if _, ok := offered[name]; ok {
+			kept = append(kept, name)
+		}
+	}
+	if len(kept) == len(added) {
+		return
+	}
+	ctx.SetValue(addedConnectToolsKey, kept)
+	stale := func(name string) bool {
+		if _, ok := offered[name]; ok {
+			return false
+		}
+		return slices.Contains(added, name)
+	}
+	switch {
+	case req.ChatRequest != nil && req.ChatRequest.Params != nil:
+		req.ChatRequest.Params.Tools = slices.DeleteFunc(req.ChatRequest.Params.Tools, func(tool schemas.ChatTool) bool {
+			return tool.Function != nil && stale(tool.Function.Name)
+		})
+	case req.ResponsesRequest != nil && req.ResponsesRequest.Params != nil:
+		req.ResponsesRequest.Params.Tools = slices.DeleteFunc(req.ResponsesRequest.Params.Tools, func(tool schemas.ResponsesTool) bool {
+			return tool.Name != nil && stale(*tool.Name)
+		})
+	}
+}
+
+// serverInstructionsInjected reports whether an earlier turn of this request already
+// added the server instructions to its prompt.
+func serverInstructionsInjected(ctx *schemas.BifrostContext) bool {
+	injected, ok := ctx.Value(schemas.BifrostContextKeyMCPInstructionsInjected).(bool)
+	return ok && injected
 }
 
 // addServerInstructionsToRequest carries the upstream servers' own usage guidance into the
@@ -597,15 +718,17 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx *schemas.BifrostContext, re
 // Unconditional, and it costs tokens plus a changed prompt prefix on every MCP-bearing request.
 // Only mcp_disable_auto_tool_inject suppresses it, and that drops the tools too; the caps are not
 // an off switch, since InstructionCaps clamps a non-positive value back to the default.
-func (m *ToolsManager) addServerInstructionsToRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) {
+//
+// parts are the instructions of the request's CallerDiscovery, read with its tools.
+func (m *ToolsManager) addServerInstructionsToRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, parts []schemas.MCPServerInstructions) {
 	// The agent loop re-enters this path once per turn against the same context. Without
 	// this guard the block would be prepended again on every turn, growing the prompt
 	// without bound over a long tool-calling conversation.
-	if injected, ok := ctx.Value(schemas.BifrostContextKeyMCPInstructionsInjected).(bool); ok && injected {
+	if serverInstructionsInjected(ctx) {
 		return
 	}
 
-	instructions := AggregateServerInstructions(m.clientManager.GetServerInstructions(ctx), m.instructionCaps())
+	instructions := AggregateServerInstructions(parts, m.instructionCaps())
 	if instructions == "" {
 		return
 	}
@@ -769,7 +892,7 @@ func (m *ToolsManager) executeToolInternal(
 
 	// Strip the client name prefix from tool name before calling MCP server. Tools are listed and
 	// resolved by their exact upstream names, so what remains is the name the server expects.
-	originalMCPToolName := stripClientPrefix(toolName, executionConfig.Name)
+	originalMCPToolName := StripClientPrefix(toolName, executionConfig.Name)
 
 	// Create timeout context for tool execution.
 	// Per-server timeout (executionConfig.ToolExecutionTimeout) takes precedence over the global.
@@ -814,7 +937,7 @@ func (m *ToolsManager) executeToolInternal(
 		toolCtx,
 		func() error {
 			var err error
-			toolResponse, err = CallToolWithin(toolCtx, clientConn, callRequest)
+			toolResponse, err = CallUpstreamTool(toolCtx, clientConn, callRequest, true)
 			return err
 		},
 		ToolCallRetryConfig,
@@ -966,7 +1089,7 @@ func (m *ToolsManager) attemptCallFailureRecovery(
 	executionConfig *schemas.MCPClientConfig,
 	toolExecutionTimeout time.Duration,
 ) (*mcp.CallToolResult, bool, bool) {
-	state := m.clientManager.GetClientForTool(toolName)
+	state, stateDiscovery := m.clientManager.GetClientForTool(ctx, toolName)
 
 	// Safety opt-out: a spurious retry against a destructive, non-idempotent
 	// tool could cause a real-world side effect twice. This gates only the
@@ -981,7 +1104,7 @@ func (m *ToolsManager) attemptCallFailureRecovery(
 	// simply never set the hint.
 	retryOptedOut := false
 	if state != nil {
-		if tool, ok := state.ToolMap[toolName]; ok {
+		if tool, ok := stateDiscovery.GetTools()[toolName]; ok {
 			readOnly := false
 			destructive := true
 			idempotent := false
@@ -1006,12 +1129,12 @@ func (m *ToolsManager) attemptCallFailureRecovery(
 	var retryResponse *mcp.CallToolResult
 	recovered, budgetExhausted := m.recoverCall(ctx, toolName, state, executionConfig, toolExecutionTimeout, retryOptedOut,
 		func(state *schemas.MCPClientState) bool {
-			_, ok := state.ToolMap[toolName]
+			_, ok := m.clientManager.GetToolsForClient(ctx, state.ExecutionConfig.ID)[toolName]
 			return ok
 		},
 		func(ctx context.Context, conn *client.Client) error {
 			var err error
-			retryResponse, err = CallToolWithin(ctx, conn, callRequest)
+			retryResponse, err = CallUpstreamTool(ctx, conn, callRequest, true)
 			return err
 		})
 	if !recovered {
@@ -1039,6 +1162,13 @@ func (m *ToolsManager) recoverCall(
 
 	if state == nil {
 		// No client state means no connection to re-acquire: nothing to retry.
+		return false, false
+	}
+	if state.ExecutionConfig == nil || state.ExecutionConfig.ID != executionConfig.ID {
+		// The tool name now resolves to another client: this one was deleted
+		// and re-added under the same name while the call was in flight. The
+		// call was permitted for the old client, so it is not retried against
+		// the new one (the shared branch guards the same way).
 		return false, false
 	}
 
@@ -1188,7 +1318,8 @@ func (m *ToolsManager) recoverSharedConnection(
 	// letting the original auth failure surface is strictly safer than
 	// guessing. GetClientByName returns a snapshot copy of the client state,
 	// so it must be re-resolved after the reconnect to pick up the fresh
-	// connection.
+	// connection; the tool's continued presence is checked against the
+	// discovery store's current discovery for this client.
 	state := m.clientManager.GetClientByName(executionConfig.Name)
 	if state == nil || state.ExecutionConfig == nil || state.ExecutionConfig.ID != executionConfig.ID {
 		return false, false

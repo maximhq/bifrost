@@ -10,6 +10,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -4304,4 +4306,160 @@ func parseContainerFileCreateMultipartRequest(ctx *fasthttp.RequestCtx, req inte
 	}
 
 	return nil
+}
+
+// openAIRawRequestBodyRewriter returns the raw-body rewriter for an OpenAI request kind whose JSON body carries text a
+// plugin may change, or nil when the kind carries none or is sent as a multipart upload.
+func openAIRawRequestBodyRewriter(requestType schemas.RequestType) schemas.RawRequestBodyTextRewriter {
+	var collect rawRequestTextPathCollector
+	switch requestType {
+	case schemas.ChatCompletionRequest:
+		collect = collectOpenAIChatRawRequestTextPaths
+	case schemas.ResponsesRequest:
+		collect = collectOpenAIResponsesRawRequestTextPaths
+	case schemas.TextCompletionRequest:
+		collect = collectOpenAITextCompletionRawRequestTextPaths
+	case schemas.SpeechRequest:
+		collect = collectRawRequestStringFields("input", "instructions")
+	case schemas.ImageGenerationRequest:
+		collect = collectRawRequestStringFields("prompt")
+	default:
+		return nil
+	}
+	return func(rawBody []byte, replacements map[string]string) ([]byte, error) {
+		return rewriteRawRequestTextFields(rawBody, replacements, collect)
+	}
+}
+
+// collectOpenAIChatRawRequestTextPaths selects Chat Completions message text and tool-call arguments, the fields
+// mirrored as mutable normalized text. Names, tool definitions, and other request fields stay untouched.
+func collectOpenAIChatRawRequestTextPaths(root gjson.Result, _ map[string]string) ([]string, error) {
+	paths := make([]string, 0)
+	messages := root.Get("messages")
+	if !messages.Exists() || messages.Type == gjson.Null {
+		return paths, nil
+	}
+	if !messages.IsArray() {
+		return nil, fmt.Errorf("raw OpenAI chat messages must be an array")
+	}
+	var collectErr error
+	messages.ForEach(func(index, message gjson.Result) bool {
+		messagePath := rawRequestArrayPath("messages", int(index.Int()))
+		collectErr = collectOpenAIRawContentPaths(&paths, message.Get("content"), rawRequestObjectPath(messagePath, "content"), "text")
+		if collectErr != nil {
+			return false
+		}
+		toolCallsPath := rawRequestObjectPath(messagePath, "tool_calls")
+		message.Get("tool_calls").ForEach(func(callIndex, call gjson.Result) bool {
+			functionPath := rawRequestObjectPath(rawRequestArrayPath(toolCallsPath, int(callIndex.Int())), "function")
+			collectErr = appendRawRequestStringPath(&paths, call.Get("function.arguments"), rawRequestObjectPath(functionPath, "arguments"))
+			return collectErr == nil
+		})
+		return collectErr == nil
+	})
+	return paths, collectErr
+}
+
+// collectOpenAIResponsesRawRequestTextPaths selects Responses instructions, input text, function-call arguments,
+// custom-tool input, and tool outputs, the fields mirrored as mutable normalized text. Reasoning items, IDs, and tool
+// definitions stay untouched.
+func collectOpenAIResponsesRawRequestTextPaths(root gjson.Result, _ map[string]string) ([]string, error) {
+	paths := make([]string, 0)
+	if err := appendRawRequestStringPath(&paths, root.Get("instructions"), "instructions"); err != nil {
+		return nil, err
+	}
+	input := root.Get("input")
+	switch {
+	case !input.Exists() || input.Type == gjson.Null:
+		return paths, nil
+	case input.Type == gjson.String:
+		return append(paths, "input"), nil
+	case !input.IsArray():
+		return nil, fmt.Errorf("raw OpenAI Responses input must be a string or an array")
+	}
+	var collectErr error
+	input.ForEach(func(index, item gjson.Result) bool {
+		collectErr = collectOpenAIResponsesItemPaths(&paths, item, rawRequestArrayPath("input", int(index.Int())))
+		return collectErr == nil
+	})
+	return paths, collectErr
+}
+
+// collectOpenAIResponsesItemPaths selects the mutable text of one Responses input item by its type; items without
+// mutable text, such as reasoning, contribute nothing.
+func collectOpenAIResponsesItemPaths(paths *[]string, item gjson.Result, path string) error {
+	if !item.IsObject() {
+		return fmt.Errorf("raw OpenAI Responses input item %q must be an object", path)
+	}
+	switch schemas.ResponsesMessageType(item.Get("type").String()) {
+	case schemas.ResponsesMessageTypeFunctionCall:
+		return appendRawRequestStringPath(paths, item.Get("arguments"), rawRequestObjectPath(path, "arguments"))
+	case schemas.ResponsesMessageTypeCustomToolCall:
+		return appendRawRequestStringPath(paths, item.Get("input"), rawRequestObjectPath(path, "input"))
+	case schemas.ResponsesMessageTypeFunctionCallOutput, schemas.ResponsesMessageTypeCustomToolCallOutput:
+		return collectOpenAIRawContentPaths(paths, item.Get("output"), rawRequestObjectPath(path, "output"),
+			string(schemas.ResponsesInputMessageContentBlockTypeText), string(schemas.ResponsesOutputMessageContentTypeText))
+	case "", schemas.ResponsesMessageTypeMessage:
+		return collectOpenAIRawContentPaths(paths, item.Get("content"), rawRequestObjectPath(path, "content"),
+			string(schemas.ResponsesInputMessageContentBlockTypeText), string(schemas.ResponsesOutputMessageContentTypeText))
+	}
+	return nil
+}
+
+// collectOpenAIRawContentPaths selects string content, or the parts of a content list whose type is one of textTypes
+// (their text) or refusal (their refusal). Other parts, such as images and files, stay untouched.
+func collectOpenAIRawContentPaths(paths *[]string, content gjson.Result, path string, textTypes ...string) error {
+	switch {
+	case !content.Exists() || content.Type == gjson.Null:
+		return nil
+	case content.Type == gjson.String:
+		*paths = append(*paths, path)
+		return nil
+	case !content.IsArray():
+		return fmt.Errorf("raw OpenAI content %q must be a string or an array", path)
+	}
+	var collectErr error
+	content.ForEach(func(index, part gjson.Result) bool {
+		partPath := rawRequestArrayPath(path, int(index.Int()))
+		switch partType := part.Get("type").String(); {
+		case partType == "refusal":
+			collectErr = appendRawRequestStringPath(paths, part.Get("refusal"), rawRequestObjectPath(partPath, "refusal"))
+		case slices.Contains(textTypes, partType):
+			collectErr = appendRawRequestStringPath(paths, part.Get("text"), rawRequestObjectPath(partPath, "text"))
+		}
+		return collectErr == nil
+	})
+	return collectErr
+}
+
+// collectOpenAITextCompletionRawRequestTextPaths selects the legacy completions prompt: a string, or the strings of a
+// prompt array. Token-array prompts carry no text and are left alone.
+func collectOpenAITextCompletionRawRequestTextPaths(root gjson.Result, _ map[string]string) ([]string, error) {
+	paths := make([]string, 0)
+	prompt := root.Get("prompt")
+	if !prompt.IsArray() {
+		err := appendRawRequestStringPath(&paths, prompt, "prompt")
+		return paths, err
+	}
+	prompt.ForEach(func(index, part gjson.Result) bool {
+		if part.Type == gjson.String {
+			paths = append(paths, rawRequestArrayPath("prompt", int(index.Int())))
+		}
+		return true
+	})
+	return paths, nil
+}
+
+// collectRawRequestStringFields returns a collector for top-level string fields of a JSON body, for request kinds
+// whose only mutable text is a few flat fields.
+func collectRawRequestStringFields(fields ...string) rawRequestTextPathCollector {
+	return func(root gjson.Result, _ map[string]string) ([]string, error) {
+		paths := make([]string, 0, len(fields))
+		for _, field := range fields {
+			if err := appendRawRequestStringPath(&paths, root.Get(field), rawRequestObjectPath("", field)); err != nil {
+				return nil, err
+			}
+		}
+		return paths, nil
+	}
 }

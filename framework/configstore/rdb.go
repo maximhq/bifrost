@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"slices"
 	"sort"
@@ -1815,6 +1816,8 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 					IsPingAvailable:        dbClient.IsPingAvailable,
 					NeedsSessionStickiness: dbClient.NeedsSessionStickiness,
 					RequirePublicTarget:    dbClient.RequirePublicTarget,
+					PerUserDiscovery:       dbClient.PerUserDiscovery,
+					PendingVerification:    dbClient.AwaitsAdminVerification(),
 					ToolSyncInterval:       time.Duration(dbClient.ToolSyncInterval) * time.Second,
 					MaxProtocolVersion:     dbClient.MaxProtocolVersion,
 					ToolExecutionTimeout:   time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
@@ -1881,6 +1884,8 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			IsPingAvailable:        dbClient.IsPingAvailable,
 			NeedsSessionStickiness: dbClient.NeedsSessionStickiness,
 			RequirePublicTarget:    dbClient.RequirePublicTarget,
+			PerUserDiscovery:       dbClient.PerUserDiscovery,
+			PendingVerification:    dbClient.AwaitsAdminVerification(),
 			ToolSyncInterval:       time.Duration(dbClient.ToolSyncInterval) * time.Second,
 			MaxProtocolVersion:     dbClient.MaxProtocolVersion,
 			ToolExecutionTimeout:   time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
@@ -2339,6 +2344,8 @@ func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) 
 		IsPingAvailable:        dbClient.IsPingAvailable,
 		NeedsSessionStickiness: dbClient.NeedsSessionStickiness,
 		RequirePublicTarget:    dbClient.RequirePublicTarget,
+		PerUserDiscovery:       dbClient.PerUserDiscovery,
+		PendingVerification:    dbClient.AwaitsAdminVerification(),
 		ToolSyncInterval:       time.Duration(dbClient.ToolSyncInterval) * time.Second,
 		MaxProtocolVersion:     dbClient.MaxProtocolVersion,
 		ToolExecutionTimeout:   time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
@@ -2452,15 +2459,16 @@ func (s *RDBConfigStore) UpdateMCPClientDiscovery(ctx context.Context, clientID 
 	return nil
 }
 
-// ClearMCPClientPendingOAuthConfig sets pending_oauth_config_json to NULL for
-// the given client. Called once OAuth authorization succeeds so the runtime no
-// longer sees the bootstrap stash and the next reconnect runs the normal
-// connect path instead of parking the client in pending_verification.
-func (s *RDBConfigStore) ClearMCPClientPendingOAuthConfig(ctx context.Context, clientID string) error {
+// ClearMCPClientPendingVerification records that the given client passed its
+// one-time admin step: pending_verification is cleared, and with it the OAuth
+// bootstrap stash an OAuth client was parked with, so the next load runs the
+// normal connect path instead of parking the client in pending_verification.
+func (s *RDBConfigStore) ClearMCPClientPendingVerification(ctx context.Context, clientID string) error {
 	res := s.DB().WithContext(ctx).
 		Model(&tables.TableMCPClient{}).
 		Where("client_id = ?", clientID).
 		Updates(map[string]interface{}{
+			"pending_verification":      false,
 			"pending_oauth_config_json": nil,
 			"updated_at":                time.Now(),
 		})
@@ -2528,11 +2536,14 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			IsPingAvailable:        clientConfigCopy.IsPingAvailable,
 			NeedsSessionStickiness: clientConfigCopy.NeedsSessionStickiness,
 			RequirePublicTarget:    clientConfigCopy.RequirePublicTarget,
-			ToolSyncInterval:       toolSyncIntervalSec,
-			MaxProtocolVersion:     clientConfigCopy.MaxProtocolVersion,
-			ToolExecutionTimeout:   toolExecutionTimeoutSec,
-			MaxInstructionsLength:  clientConfigCopy.MaxInstructionsLength,
-			AllowByDefault:         clientConfigCopy.AllowByDefault,
+			PerUserDiscovery:       clientConfigCopy.PerUserDiscovery,
+			// PendingVerification has json:"-" so deepCopy loses it; use original clientConfig
+			PendingVerification:   clientConfig.PendingVerification,
+			ToolSyncInterval:      toolSyncIntervalSec,
+			MaxProtocolVersion:    clientConfigCopy.MaxProtocolVersion,
+			ToolExecutionTimeout:  toolExecutionTimeoutSec,
+			MaxInstructionsLength: clientConfigCopy.MaxInstructionsLength,
+			AllowByDefault:        clientConfigCopy.AllowByDefault,
 			// DiscoveredTools has json:"-" so deepCopy loses it; use original clientConfig
 			DiscoveredTools:        clientConfig.DiscoveredTools,
 			DiscoveredInstructions: clientConfig.DiscoveredInstructions,
@@ -2867,6 +2878,40 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		if clientConfigCopy.RequirePublicTarget {
 			updates["require_public_target"] = true
 		}
+		// Same rule as needs_session_stickiness: only an explicit value is
+		// written, so a row that leaves per_user_discovery unset keeps it.
+		if clientConfigCopy.PerUserDiscovery != nil {
+			updates["per_user_discovery"] = *clientConfigCopy.PerUserDiscovery
+		}
+		// Turning per_user_discovery on or off changes what the client keeps, in
+		// this transaction so the row never says one thing while it keeps
+		// another. On, it keeps no admin credential and no tools of its own: each
+		// caller discovers with their own credential, which stays. Off, its
+		// callers' discoveries go, and it discovers with an admin credential
+		// again once an admin provides one. Either way the stored discovery goes
+		// (tools, instructions, resources and prompts), and the record of its
+		// admin step is taken from what that step leaves behind (see
+		// TableMCPClient.AdminStepSignalsPending).
+		wasPerUserDiscovery := existingClient.PerUserDiscovery != nil && *existingClient.PerUserDiscovery
+		if clientConfigCopy.PerUserDiscovery != nil && *clientConfigCopy.PerUserDiscovery != wasPerUserDiscovery {
+			if *clientConfigCopy.PerUserDiscovery {
+				if err := tx.WithContext(ctx).Where("mcp_client_id = ? AND auth_mode = ?", existingClient.ClientID, string(schemas.MCPAuthModeAdmin)).Delete(&tables.TableMCPOauthToken{}).Error; err != nil {
+					return fmt.Errorf("failed to delete the admin oauth credential of mcp client %s: %w", id, err)
+				}
+				if err := tx.WithContext(ctx).Where("mcp_client_id = ? AND auth_mode = ?", existingClient.ClientID, string(schemas.MCPAuthModeAdmin)).Delete(&tables.TableMCPPerUserHeaderCredential{}).Error; err != nil {
+					return fmt.Errorf("failed to delete the admin header credential of mcp client %s: %w", id, err)
+				}
+			} else if err := tx.WithContext(ctx).Where("mcp_client_id = ?", existingClient.ClientID).Delete(&tables.TableMCPPerUserDiscovery{}).Error; err != nil {
+				return fmt.Errorf("failed to delete the per-user discoveries of mcp client %s: %w", id, err)
+			}
+			updates["discovered_tools_json"] = ""
+			updates["discovered_tool_details_json"] = ""
+			updates["discovered_instructions"] = ""
+			updates["discovered_resources_json"] = ""
+			updates["discovered_resource_templates_json"] = ""
+			updates["discovered_prompts_json"] = ""
+			updates["pending_verification"] = existingClient.AdminStepSignalsPending()
+		}
 
 		if err := tx.WithContext(ctx).Model(&existingClient).Updates(updates).Error; err != nil {
 			return s.parseGormError(err)
@@ -2918,6 +2963,9 @@ func (s *RDBConfigStore) DeleteMCPClientConfig(ctx context.Context, id string) e
 			return err
 		}
 		if err := tx.WithContext(ctx).Where("mcp_client_id = ?", existingClient.ClientID).Delete(&tables.TableMCPPerUserHeaderFlow{}).Error; err != nil {
+			return err
+		}
+		if err := tx.WithContext(ctx).Where("mcp_client_id = ?", existingClient.ClientID).Delete(&tables.TableMCPPerUserDiscovery{}).Error; err != nil {
 			return err
 		}
 
@@ -4644,6 +4692,10 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...
 		}
 		// Delete per-user MCP header submission flows tied to this VK
 		if err := txDB.WithContext(ctx).Where("virtual_key_id = ?", id).Delete(&tables.TableMCPPerUserHeaderFlow{}).Error; err != nil {
+			return err
+		}
+		// Delete per-user MCP discoveries made with this VK's credential
+		if err := txDB.WithContext(ctx).Where("virtual_key_id = ?", id).Delete(&tables.TableMCPPerUserDiscovery{}).Error; err != nil {
 			return err
 		}
 		// Delete budgets owned by this virtual key
@@ -8644,6 +8696,28 @@ func (s *RDBConfigStore) claimOauthFlowByStateAndModes(ctx context.Context, stat
 	return &flow, nil
 }
 
+// CompleteOauthUserSession deletes the claimed per-identity flow row sessionID
+// and stores token, in one transaction, or stores nothing and returns
+// ErrNotFound when the row is already gone. The claim alone does not protect
+// the write: the code exchange runs between the claim and here, and a revoke
+// landing in that window deletes the flow and then the token, so the delete
+// below is what decides whether this completion still counts. Whichever of
+// the two commits first wins, and a revoke after this commit deletes the token
+// it finds.
+func (s *RDBConfigStore) CompleteOauthUserSession(ctx context.Context, sessionID string, token *tables.TableMCPOauthToken) error {
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Where("id = ? AND status = ? AND flow_mode IN ?", sessionID, "claiming", perUserOauthFlowModes).
+			Delete(&tables.TableMCPOauthFlow{})
+		if result.Error != nil {
+			return fmt.Errorf("failed to consume oauth flow: %w", result.Error)
+		}
+		if result.RowsAffected == 0 {
+			return ErrNotFound
+		}
+		return s.CreateOauthToken(ctx, token, tx)
+	})
+}
+
 // GetOauthUserSessionByModeIdentityAndMCPClient returns the single flow row
 // bound to (mode, identity, mcp_client_id). This is the canonical lookup at
 // flow-init time: there's exactly one flow row per binding, and reauth always
@@ -8741,17 +8815,27 @@ func (s *RDBConfigStore) UpdateOauthUserToken(ctx context.Context, token *tables
 	return nil
 }
 
-// DeleteOauthUserToken deletes a per-user OAuth token by its ID. Scoped to
-// auth_mode IN ('user','vk','session') so a caller-supplied ID can never
-// delete a shared credential through this per-user-only path.
+// DeleteOauthUserToken deletes a per-user OAuth token by its ID, and the
+// per-user discovery made with it. Scoped to auth_mode IN ('user','vk','session')
+// so a caller-supplied ID can never delete a shared credential through this
+// per-user-only path.
 func (s *RDBConfigStore) DeleteOauthUserToken(ctx context.Context, id string) error {
-	result := s.DB().WithContext(ctx).
-		Where("id = ? AND auth_mode IN ?", id, perUserOauthAuthModes).
-		Delete(&tables.TableMCPOauthToken{})
-	if result.Error != nil {
-		return fmt.Errorf("failed to delete oauth user token: %w", result.Error)
-	}
-	return nil
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var token tables.TableMCPOauthToken
+		err := tx.Select("id", "auth_mode", "user_id", "virtual_key_id", "mcp_client_id").
+			Where("id = ? AND auth_mode IN ?", id, perUserOauthAuthModes).
+			First(&token).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("failed to load oauth user token: %w", err)
+		}
+		if err := tx.Where("id = ?", token.ID).Delete(&tables.TableMCPOauthToken{}).Error; err != nil {
+			return fmt.Errorf("failed to delete oauth user token: %w", err)
+		}
+		return deleteCredentialDiscovery(tx, token.AuthMode, token.UserID, token.VirtualKeyID, token.MCPClientID)
+	})
 }
 
 // DeleteOauthUserSession hard-deletes a single flow row by primary key.
@@ -8854,7 +8938,8 @@ func needsReauthColumns(reason string) map[string]any {
 }
 
 // MarkOauthTokenNeedsReauthIfUnrenewable flips an active row with no refresh token and an expired
-// access token to 'needs_reauth', under a row lock so a concurrent reauthorize wins.
+// access token to 'needs_reauth', under a row lock so a concurrent reauthorize wins. A per-user
+// row's discovery is deleted with the flip, as MarkOauthUserTokenNeedsReauthByID does.
 func (s *RDBConfigStore) MarkOauthTokenNeedsReauthIfUnrenewable(ctx context.Context, tokenID string, reason string) (bool, error) {
 	if tokenID == "" {
 		return false, nil
@@ -8876,7 +8961,7 @@ func (s *RDBConfigStore) MarkOauthTokenNeedsReauthIfUnrenewable(ctx context.Cont
 			return err
 		}
 		marked = true
-		return nil
+		return deleteCredentialDiscovery(tx, current.AuthMode, current.UserID, current.VirtualKeyID, current.MCPClientID)
 	})
 	if err != nil {
 		return false, fmt.Errorf("failed to mark oauth token %s needs_reauth: %w", tokenID, err)
@@ -8893,19 +8978,26 @@ func (s *RDBConfigStore) MarkOauthTokenNeedsReauthIfUnrenewable(ctx context.Cont
 // below): the ID handed in always comes from an internal lookup already
 // (a token row just loaded by its own refresh path), never an arbitrary
 // caller-supplied ID, so a 'shared' row is just as safe to flip here as a
-// per-identity one.
+// per-identity one. A per-user row's discovery is deleted with the flip: it was
+// made with a credential that no longer works.
 func (s *RDBConfigStore) MarkOauthUserTokenNeedsReauthByID(ctx context.Context, tokenID string, reason string) error {
 	if tokenID == "" {
 		return nil
 	}
-	result := s.DB().WithContext(ctx).
-		Model(&tables.TableMCPOauthToken{}).
-		Where("id = ?", tokenID).
-		Updates(needsReauthColumns(reason))
-	if result.Error != nil {
-		return fmt.Errorf("failed to mark oauth user token %s needs_reauth: %w", tokenID, result.Error)
-	}
-	return nil
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var token tables.TableMCPOauthToken
+		err := tx.Select("id", "auth_mode", "user_id", "virtual_key_id", "mcp_client_id").Where("id = ?", tokenID).First(&token).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("failed to load oauth user token %s: %w", tokenID, err)
+		}
+		if err := tx.Model(&tables.TableMCPOauthToken{}).Where("id = ?", tokenID).Updates(needsReauthColumns(reason)).Error; err != nil {
+			return fmt.Errorf("failed to mark oauth user token %s needs_reauth: %w", tokenID, err)
+		}
+		return deleteCredentialDiscovery(tx, token.AuthMode, token.UserID, token.VirtualKeyID, token.MCPClientID)
+	})
 }
 
 // MarkTokensNeedsReauthByConfigID flips status to 'needs_reauth' on every
@@ -8915,23 +9007,28 @@ func (s *RDBConfigStore) MarkOauthUserTokenNeedsReauthByID(ctx context.Context, 
 // every existing holder (shared, per-user, vk, session, admin) loses Bifrost's
 // cached credential equally, since rotation is typically security-driven and
 // must not leave any holder silently still trusted. Precedent for the
-// single-statement bulk UPDATE shape: reconcileVKDirectTokensDB.
+// single-statement bulk UPDATE shape: reconcileVKDirectTokensDB. Every caller's
+// discovery of the clients bound to the config is deleted with the flip.
 func (s *RDBConfigStore) MarkTokensNeedsReauthByConfigID(ctx context.Context, oauthConfigID string, reason string, tx ...*gorm.DB) error {
 	if oauthConfigID == "" {
 		return nil
 	}
-	var txDB *gorm.DB
-	if len(tx) > 0 {
-		txDB = tx[0]
-	} else {
-		txDB = s.DB()
+	if len(tx) == 0 {
+		return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			return s.MarkTokensNeedsReauthByConfigID(ctx, oauthConfigID, reason, tx)
+		})
 	}
+	txDB := tx[0]
 	result := txDB.WithContext(ctx).
 		Model(&tables.TableMCPOauthToken{}).
 		Where("oauth_config_id = ?", oauthConfigID).
 		Updates(needsReauthColumns(reason))
 	if result.Error != nil {
 		return fmt.Errorf("failed to mark tokens needs_reauth for oauth config %s: %w", oauthConfigID, result.Error)
+	}
+	clients := txDB.Session(&gorm.Session{NewDB: true}).Model(&tables.TableMCPClient{}).Select("client_id").Where("oauth_config_id = ?", oauthConfigID)
+	if err := txDB.WithContext(ctx).Where("mcp_client_id IN (?)", clients).Delete(&tables.TableMCPPerUserDiscovery{}).Error; err != nil {
+		return fmt.Errorf("failed to delete per-user discoveries for oauth config %s: %w", oauthConfigID, err)
 	}
 	return nil
 }
@@ -8943,19 +9040,22 @@ func (s *RDBConfigStore) MarkTokensNeedsReauthByConfigID(ctx context.Context, oa
 // the same row shape). The oauth_config_id=” filter excludes a
 // per_user_oauth client's admin row, which is keyed by mcp_client_id too but
 // carries a real oauth_config_id and is already covered by
-// MarkTokensNeedsReauthByConfigID.
+// MarkTokensNeedsReauthByConfigID. The settings change behind it invalidates
+// every caller's exchanged token too (those are never stored), so every
+// caller's discovery of the client, made with one, is deleted with the flip.
 func (s *RDBConfigStore) MarkAdminExchangeTokenNeedsReauthByMCPClientID(ctx context.Context, mcpClientID string, reason string) error {
 	if mcpClientID == "" {
 		return nil
 	}
-	result := s.DB().WithContext(ctx).
-		Model(&tables.TableMCPOauthToken{}).
-		Where("mcp_client_id = ? AND auth_mode = ? AND oauth_config_id = ?", mcpClientID, "admin", "").
-		Updates(needsReauthColumns(reason))
-	if result.Error != nil {
-		return fmt.Errorf("failed to mark admin exchange token needs_reauth for mcp client %s: %w", mcpClientID, result.Error)
-	}
-	return nil
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&tables.TableMCPOauthToken{}).
+			Where("mcp_client_id = ? AND auth_mode = ? AND oauth_config_id = ?", mcpClientID, "admin", "").
+			Updates(needsReauthColumns(reason))
+		if result.Error != nil {
+			return fmt.Errorf("failed to mark admin exchange token needs_reauth for mcp client %s: %w", mcpClientID, result.Error)
+		}
+		return deleteClientDiscoveries(tx, mcpClientID)
+	})
 }
 
 // MCPOAuthConfigFields is a fully-resolved set of oauth_configs row values —
@@ -9194,7 +9294,9 @@ func (s *RDBConfigStore) ListOauthUserTokens(ctx context.Context, params MCPSess
 	})
 	var tokens []tables.TableMCPOauthToken
 	if err := query.
-		Preload("MCPClient", func(db *gorm.DB) *gorm.DB { return db.Select("client_id, name") }).
+		Preload("MCPClient", func(db *gorm.DB) *gorm.DB {
+			return db.Select("client_id, name, per_user_discovery, pending_verification")
+		}).
 		Preload("VirtualKey", func(db *gorm.DB) *gorm.DB { return db.Select("id, name") }).
 		Order("mcp_oauth_tokens.created_at DESC").
 		Find(&tokens).Error; err != nil {
@@ -9219,7 +9321,7 @@ func (s *RDBConfigStore) ListPendingOauthUserSessions(ctx context.Context, param
 	})
 	var flows []tables.TableMCPOauthFlow
 	if err := query.
-		Preload("MCPClient", func(db *gorm.DB) *gorm.DB { return db.Select("client_id, name") }).
+		Preload("MCPClient", func(db *gorm.DB) *gorm.DB { return db.Select("client_id, name, per_user_discovery") }).
 		Preload("VirtualKey", func(db *gorm.DB) *gorm.DB { return db.Select("id, name") }).
 		Order("mcp_oauth_flows.created_at DESC").
 		Find(&flows).Error; err != nil {
@@ -9328,13 +9430,26 @@ func (s *RDBConfigStore) DeleteOrphanedOauthUserTokens(ctx context.Context, olde
 		return 0, nil
 	}
 	cutoff := time.Now().Add(-olderThan)
-	result := s.DB().WithContext(ctx).
-		Where("status = ? AND updated_at < ? AND auth_mode IN ?", "orphaned", cutoff, perUserOauthAuthModes).
-		Delete(&tables.TableMCPOauthToken{})
-	if result.Error != nil {
-		return 0, fmt.Errorf("failed to delete orphaned oauth user tokens: %w", result.Error)
+	var deleted int64
+	err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		swept := func(db *gorm.DB) *gorm.DB {
+			return db.Model(&tables.TableMCPOauthToken{}).
+				Where("mcp_oauth_tokens.status = ? AND mcp_oauth_tokens.updated_at < ? AND mcp_oauth_tokens.auth_mode IN ?", "orphaned", cutoff, perUserOauthAuthModes)
+		}
+		if err := deleteDiscoveriesOfCredentials(tx, swept(tx.Session(&gorm.Session{NewDB: true})), "mcp_oauth_tokens"); err != nil {
+			return err
+		}
+		result := swept(tx).Delete(&tables.TableMCPOauthToken{})
+		if result.Error != nil {
+			return fmt.Errorf("failed to delete orphaned oauth user tokens: %w", result.Error)
+		}
+		deleted = result.RowsAffected
+		return nil
+	})
+	if err != nil {
+		return 0, err
 	}
-	return result.RowsAffected, nil
+	return deleted, nil
 }
 
 // ---------- Per-User MCP Header Credentials ----------
@@ -9440,57 +9555,73 @@ func (s *RDBConfigStore) GetAdminMCPPerUserHeaderCredentialsByClientIDs(ctx cont
 // re-submit preserves CreatedAt.
 func (s *RDBConfigStore) UpsertMCPPerUserHeaderCredential(ctx context.Context, cred *tables.TableMCPPerUserHeaderCredential) error {
 	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var existing tables.TableMCPPerUserHeaderCredential
-		var lookupErr error
-		switch {
-		case cred.AuthMode == string(schemas.MCPAuthModeAdmin) && cred.MCPClientID != "":
-			lookupErr = dbForUpdate(tx).
-				Where("auth_mode = ? AND mcp_client_id = ?", "admin", cred.MCPClientID).
-				First(&existing).Error
-		case cred.UserID != nil && *cred.UserID != "":
-			lookupErr = dbForUpdate(tx).
-				Where("auth_mode = ? AND user_id = ? AND mcp_client_id = ?", string(schemas.MCPAuthModeUser), *cred.UserID, cred.MCPClientID).
-				First(&existing).Error
-		case cred.VirtualKeyID != nil && *cred.VirtualKeyID != "":
-			lookupErr = dbForUpdate(tx).
-				Where("auth_mode = ? AND virtual_key_id = ? AND mcp_client_id = ?", string(schemas.MCPAuthModeVK), *cred.VirtualKeyID, cred.MCPClientID).
-				First(&existing).Error
-		case cred.SessionID != "":
-			lookupErr = dbForUpdate(tx).
-				Where("auth_mode = ? AND session_id = ? AND mcp_client_id = ?", string(schemas.MCPAuthModeSession), cred.SessionID, cred.MCPClientID).
-				First(&existing).Error
-		default:
-			lookupErr = gorm.ErrRecordNotFound
-		}
-
-		if lookupErr == nil {
-			cred.ID = existing.ID
-			cred.CreatedAt = existing.CreatedAt
-			return tx.Save(cred).Error
-		}
-		if !errors.Is(lookupErr, gorm.ErrRecordNotFound) {
-			return fmt.Errorf("failed to query mcp per-user header credential: %w", lookupErr)
-		}
-		if cred.ID == "" {
-			cred.ID = uuid.New().String()
-		}
-		if err := tx.Create(cred).Error; err != nil {
-			return fmt.Errorf("failed to create mcp per-user header credential: %w", err)
-		}
-		return nil
+		return upsertMCPPerUserHeaderCredential(tx, cred)
 	})
 }
 
-// DeleteMCPPerUserHeaderCredential removes a credential row by its primary key.
+// upsertMCPPerUserHeaderCredential is UpsertMCPPerUserHeaderCredential's body,
+// run on tx so a caller can make it part of a larger write.
+func upsertMCPPerUserHeaderCredential(tx *gorm.DB, cred *tables.TableMCPPerUserHeaderCredential) error {
+	var existing tables.TableMCPPerUserHeaderCredential
+	var lookupErr error
+	switch {
+	case cred.AuthMode == string(schemas.MCPAuthModeAdmin) && cred.MCPClientID != "":
+		lookupErr = dbForUpdate(tx).
+			Where("auth_mode = ? AND mcp_client_id = ?", "admin", cred.MCPClientID).
+			First(&existing).Error
+	case cred.UserID != nil && *cred.UserID != "":
+		lookupErr = dbForUpdate(tx).
+			Where("auth_mode = ? AND user_id = ? AND mcp_client_id = ?", string(schemas.MCPAuthModeUser), *cred.UserID, cred.MCPClientID).
+			First(&existing).Error
+	case cred.VirtualKeyID != nil && *cred.VirtualKeyID != "":
+		lookupErr = dbForUpdate(tx).
+			Where("auth_mode = ? AND virtual_key_id = ? AND mcp_client_id = ?", string(schemas.MCPAuthModeVK), *cred.VirtualKeyID, cred.MCPClientID).
+			First(&existing).Error
+	case cred.SessionID != "":
+		lookupErr = dbForUpdate(tx).
+			Where("auth_mode = ? AND session_id = ? AND mcp_client_id = ?", string(schemas.MCPAuthModeSession), cred.SessionID, cred.MCPClientID).
+			First(&existing).Error
+	default:
+		lookupErr = gorm.ErrRecordNotFound
+	}
+
+	if lookupErr == nil {
+		cred.ID = existing.ID
+		cred.CreatedAt = existing.CreatedAt
+		return tx.Save(cred).Error
+	}
+	if !errors.Is(lookupErr, gorm.ErrRecordNotFound) {
+		return fmt.Errorf("failed to query mcp per-user header credential: %w", lookupErr)
+	}
+	if cred.ID == "" {
+		cred.ID = uuid.New().String()
+	}
+	if err := tx.Create(cred).Error; err != nil {
+		return fmt.Errorf("failed to create mcp per-user header credential: %w", err)
+	}
+	return nil
+}
+
+// DeleteMCPPerUserHeaderCredential removes a credential row by its primary key,
+// and the per-user discovery made with it.
 func (s *RDBConfigStore) DeleteMCPPerUserHeaderCredential(ctx context.Context, id string) error {
 	if id == "" {
 		return nil
 	}
-	result := s.DB().WithContext(ctx).Where("id = ?", id).Delete(&tables.TableMCPPerUserHeaderCredential{})
-	if result.Error != nil {
-		return fmt.Errorf("failed to delete mcp per-user header credential: %w", result.Error)
-	}
-	return nil
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var cred tables.TableMCPPerUserHeaderCredential
+		err := tx.Select("id", "auth_mode", "user_id", "virtual_key_id", "mcp_client_id").Where("id = ?", id).First(&cred).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("failed to load mcp per-user header credential: %w", err)
+		}
+		if err := tx.Where("id = ?", cred.ID).Delete(&tables.TableMCPPerUserHeaderCredential{}).Error; err != nil {
+			return fmt.Errorf("failed to delete mcp per-user header credential: %w", err)
+		}
+		return deleteCredentialDiscovery(tx, cred.AuthMode, cred.UserID, cred.VirtualKeyID, cred.MCPClientID)
+	})
 }
 
 // ListMCPPerUserHeaderCredentials returns credential rows matching params,
@@ -9511,7 +9642,9 @@ func (s *RDBConfigStore) ListMCPPerUserHeaderCredentials(ctx context.Context, pa
 	})
 	var creds []tables.TableMCPPerUserHeaderCredential
 	if err := query.
-		Preload("MCPClient", func(db *gorm.DB) *gorm.DB { return db.Select("client_id, name") }).
+		Preload("MCPClient", func(db *gorm.DB) *gorm.DB {
+			return db.Select("client_id, name, per_user_discovery, pending_verification")
+		}).
 		Preload("VirtualKey", func(db *gorm.DB) *gorm.DB { return db.Select("id, name") }).
 		Order("mcp_per_user_header_credentials.created_at DESC").
 		Find(&creds).Error; err != nil {
@@ -9521,20 +9654,22 @@ func (s *RDBConfigStore) ListMCPPerUserHeaderCredentials(ctx context.Context, pa
 }
 
 // MarkMCPPerUserHeaderCredentialsNeedsUpdate flips status to 'needs_update'
-// for every active row tied to mcpClientID. Called when the admin changes
-// PerUserHeaderKeys on the MCP client config.
+// for every active row tied to mcpClientID, and deletes every caller's
+// discovery of it. Called when the admin changes PerUserHeaderKeys on the MCP
+// client config.
 func (s *RDBConfigStore) MarkMCPPerUserHeaderCredentialsNeedsUpdate(ctx context.Context, mcpClientID string) error {
 	if mcpClientID == "" {
 		return nil
 	}
-	result := s.DB().WithContext(ctx).
-		Model(&tables.TableMCPPerUserHeaderCredential{}).
-		Where("mcp_client_id = ? AND status = ?", mcpClientID, "active").
-		Update("status", "needs_update")
-	if result.Error != nil {
-		return fmt.Errorf("failed to mark mcp per-user header credentials needs_update for client %s: %w", mcpClientID, result.Error)
-	}
-	return nil
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&tables.TableMCPPerUserHeaderCredential{}).
+			Where("mcp_client_id = ? AND status = ?", mcpClientID, "active").
+			Update("status", "needs_update")
+		if result.Error != nil {
+			return fmt.Errorf("failed to mark mcp per-user header credentials needs_update for client %s: %w", mcpClientID, result.Error)
+		}
+		return deleteClientDiscoveries(tx, mcpClientID)
+	})
 }
 
 // DeleteOrphanedMCPPerUserHeaderCredentials hard-deletes rows in 'orphaned'
@@ -9545,13 +9680,26 @@ func (s *RDBConfigStore) DeleteOrphanedMCPPerUserHeaderCredentials(ctx context.C
 		return 0, nil
 	}
 	cutoff := time.Now().Add(-olderThan)
-	result := s.DB().WithContext(ctx).
-		Where("status = ? AND updated_at < ?", "orphaned", cutoff).
-		Delete(&tables.TableMCPPerUserHeaderCredential{})
-	if result.Error != nil {
-		return 0, fmt.Errorf("failed to delete orphaned mcp per-user header credentials: %w", result.Error)
+	var deleted int64
+	err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		swept := func(db *gorm.DB) *gorm.DB {
+			return db.Model(&tables.TableMCPPerUserHeaderCredential{}).
+				Where("mcp_per_user_header_credentials.status = ? AND mcp_per_user_header_credentials.updated_at < ?", "orphaned", cutoff)
+		}
+		if err := deleteDiscoveriesOfCredentials(tx, swept(tx.Session(&gorm.Session{NewDB: true})), "mcp_per_user_header_credentials"); err != nil {
+			return err
+		}
+		result := swept(tx).Delete(&tables.TableMCPPerUserHeaderCredential{})
+		if result.Error != nil {
+			return fmt.Errorf("failed to delete orphaned mcp per-user header credentials: %w", result.Error)
+		}
+		deleted = result.RowsAffected
+		return nil
+	})
+	if err != nil {
+		return 0, err
 	}
-	return result.RowsAffected, nil
+	return deleted, nil
 }
 
 // CreateMCPPerUserHeaderFlow persists a pending per-user-headers submission
@@ -9592,7 +9740,8 @@ func (s *RDBConfigStore) GetMCPPerUserHeaderFlowByID(ctx context.Context, id str
 }
 
 // DeleteMCPPerUserHeaderFlow hard-deletes a single flow row by primary key.
-// Called on submit-success and on revoke; no-op when the row is absent so
+// Called on revoke (a successful submit consumes its row through
+// CompleteMCPPerUserHeaderFlow); no-op when the row is absent so
 // terminal-state transitions are idempotent.
 func (s *RDBConfigStore) DeleteMCPPerUserHeaderFlow(ctx context.Context, id string) error {
 	if id == "" {
@@ -9602,6 +9751,26 @@ func (s *RDBConfigStore) DeleteMCPPerUserHeaderFlow(ctx context.Context, id stri
 		return fmt.Errorf("failed to delete mcp per-user header flow %s: %w", id, err)
 	}
 	return nil
+}
+
+// CompleteMCPPerUserHeaderFlow deletes the submission flow row flowID and
+// upserts cred, in one transaction, or stores nothing and returns ErrNotFound
+// when the row is already gone. Submit verifies the values against the
+// upstream between loading the flow and here, and a revoke landing in that
+// window deletes the binding's flows and then its credential, so the delete
+// below is what decides whether this submit still counts. It also lets only
+// one of two concurrent submits of the same flow store its values.
+func (s *RDBConfigStore) CompleteMCPPerUserHeaderFlow(ctx context.Context, flowID string, cred *tables.TableMCPPerUserHeaderCredential) error {
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Where("id = ?", flowID).Delete(&tables.TableMCPPerUserHeaderFlow{})
+		if result.Error != nil {
+			return fmt.Errorf("failed to consume mcp per-user header flow: %w", result.Error)
+		}
+		if result.RowsAffected == 0 {
+			return ErrNotFound
+		}
+		return upsertMCPPerUserHeaderCredential(tx, cred)
+	})
 }
 
 // GetMCPPerUserHeaderFlowByModeIdentityAndMCPClient returns the canonical
@@ -9684,7 +9853,7 @@ func (s *RDBConfigStore) ListPendingMCPPerUserHeaderFlows(ctx context.Context, p
 	})
 	var flows []tables.TableMCPPerUserHeaderFlow
 	if err := query.
-		Preload("MCPClient", func(db *gorm.DB) *gorm.DB { return db.Select("client_id, name") }).
+		Preload("MCPClient", func(db *gorm.DB) *gorm.DB { return db.Select("client_id, name, per_user_discovery") }).
 		Preload("VirtualKey", func(db *gorm.DB) *gorm.DB { return db.Select("id, name") }).
 		Order("mcp_per_user_header_flows.created_at DESC").
 		Find(&flows).Error; err != nil {
@@ -11031,6 +11200,386 @@ func (s *RDBConfigStore) DeleteWebhookJob(ctx context.Context, id, runnerID stri
 	}
 	if res.RowsAffected == 0 {
 		return fmt.Errorf("webhook job not found or no longer owned by caller")
+	}
+	return nil
+}
+
+// perUserDiscoveryScope narrows q to the one row for a (mode, identity, client)
+// binding, constraining on auth_mode as well as the identity column so a row
+// whose identity column was populated by a different mode's write path can
+// never satisfy a lookup for a mode it does not belong to. Returns an error
+// for a mode that has no identity column: a per-user-discovery client stores
+// no admin credential and does no admin discovery, so there is no admin
+// discovery to look up, and none is not an identity at all.
+func perUserDiscoveryScope(q *gorm.DB, mode schemas.MCPAuthMode, identity, mcpClientID string) (*gorm.DB, error) {
+	q = q.Where("mcp_client_id = ? AND auth_mode = ?", mcpClientID, string(mode))
+	switch mode {
+	case schemas.MCPAuthModeUser:
+		return q.Where("user_id = ?", identity), nil
+	case schemas.MCPAuthModeVK:
+		return q.Where("virtual_key_id = ?", identity), nil
+	}
+	return nil, fmt.Errorf("auth mode %q carries no per-user discovery", mode)
+}
+
+// GetMCPPerUserDiscoveryBindings lists the user and virtual-key bindings that
+// hold a discovery on one MCP client. Only the identity columns and the
+// discovery hash are read, so the tool schemas are never loaded.
+func (s *RDBConfigStore) GetMCPPerUserDiscoveryBindings(ctx context.Context, mcpClientID string) ([]tables.TableMCPPerUserDiscovery, error) {
+	if strings.TrimSpace(mcpClientID) == "" {
+		return nil, nil
+	}
+	var rows []tables.TableMCPPerUserDiscovery
+	if err := s.DB().WithContext(ctx).
+		Select("auth_mode", "user_id", "virtual_key_id", "mcp_client_id", "discovery_hash").
+		Where("mcp_client_id = ? AND auth_mode IN ?", mcpClientID, []string{string(schemas.MCPAuthModeUser), string(schemas.MCPAuthModeVK)}).
+		Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("failed to list mcp per-user discovery bindings: %w", err)
+	}
+	return rows, nil
+}
+
+// GetMCPPerUserDiscoveryToolCallerCounts returns, for each of the clients,
+// every tool name in its user and virtual-key callers' discoveries with how many
+// of those discoveries include it. Callers who see the same tools share a
+// discovery hash, so one query reads one row per distinct discovery with its
+// number of holders, and decodes only the tool names of that row.
+func (s *RDBConfigStore) GetMCPPerUserDiscoveryToolCallerCounts(ctx context.Context, mcpClientIDs []string) (map[string]map[string]int, error) {
+	counts := make(map[string]map[string]int)
+	if len(mcpClientIDs) == 0 {
+		return counts, nil
+	}
+	distinct := s.DB().WithContext(ctx).Model(&tables.TableMCPPerUserDiscovery{}).
+		Select("MIN(id) AS id, COUNT(*) AS callers").
+		Where("mcp_client_id IN ? AND auth_mode IN ?", mcpClientIDs, []string{string(schemas.MCPAuthModeUser), string(schemas.MCPAuthModeVK)}).
+		Group("mcp_client_id, discovery_hash")
+	var rows []struct {
+		MCPClientID string
+		ToolsJSON   string
+		Callers     int
+	}
+	if err := s.DB().WithContext(ctx).Table("mcp_per_user_discoveries AS d").
+		Select("d.mcp_client_id, d.tools_json, g.callers").
+		Joins("JOIN (?) AS g ON g.id = d.id", distinct).
+		Scan(&rows).Error; err != nil {
+		return nil, fmt.Errorf("failed to count the tools of mcp per-user discoveries: %w", err)
+	}
+	for _, row := range rows {
+		var tools map[string]json.RawMessage
+		if err := sonic.UnmarshalString(row.ToolsJSON, &tools); err != nil {
+			return nil, fmt.Errorf("failed to read the tool names of a per-user discovery of mcp client %s: %w", row.MCPClientID, err)
+		}
+		clientCounts := counts[row.MCPClientID]
+		if clientCounts == nil {
+			clientCounts = make(map[string]int, len(tools))
+			counts[row.MCPClientID] = clientCounts
+		}
+		for name := range tools {
+			clientCounts[name] += row.Callers
+		}
+	}
+	return counts, nil
+}
+
+// MCPPerUserDiscoveryNames is what the callers' discoveries of one client hold,
+// by name only, each list sorted: tool and prompt names without the client
+// prefix, resource URIs and resource template URIs.
+type MCPPerUserDiscoveryNames struct {
+	Tools             []string
+	Prompts           []string
+	Resources         []string
+	ResourceTemplates []string
+}
+
+// GetMCPPerUserDiscoveryNames returns, for each of the clients, the union of
+// the names its user and virtual-key callers' discoveries hold. Callers who see
+// the same discovery share its hash, so one row per distinct discovery is read,
+// and only the names in it are decoded.
+func (s *RDBConfigStore) GetMCPPerUserDiscoveryNames(ctx context.Context, mcpClientIDs []string) (map[string]MCPPerUserDiscoveryNames, error) {
+	names := make(map[string]MCPPerUserDiscoveryNames)
+	if len(mcpClientIDs) == 0 {
+		return names, nil
+	}
+	distinct := s.DB().WithContext(ctx).Model(&tables.TableMCPPerUserDiscovery{}).
+		Select("MIN(id) AS id").
+		Where("mcp_client_id IN ? AND auth_mode IN ?", mcpClientIDs, []string{string(schemas.MCPAuthModeUser), string(schemas.MCPAuthModeVK)}).
+		Group("mcp_client_id, discovery_hash")
+	var rows []struct {
+		MCPClientID           string
+		ToolsJSON             string
+		PromptsJSON           string
+		ResourcesJSON         string
+		ResourceTemplatesJSON string
+	}
+	if err := s.DB().WithContext(ctx).Table("mcp_per_user_discoveries AS d").
+		Select("d.mcp_client_id, d.tools_json, d.prompts_json, d.resources_json, d.resource_templates_json").
+		Joins("JOIN (?) AS g ON g.id = d.id", distinct).
+		Scan(&rows).Error; err != nil {
+		return nil, fmt.Errorf("failed to read the names in mcp per-user discoveries: %w", err)
+	}
+	sets := make(map[string]*[4]map[string]struct{})
+	add := func(set map[string]struct{}, name string) {
+		if name != "" {
+			set[name] = struct{}{}
+		}
+	}
+	for _, row := range rows {
+		set := sets[row.MCPClientID]
+		if set == nil {
+			set = &[4]map[string]struct{}{{}, {}, {}, {}}
+			sets[row.MCPClientID] = set
+		}
+		var tools map[string]json.RawMessage
+		if err := sonic.UnmarshalString(row.ToolsJSON, &tools); err != nil {
+			return nil, fmt.Errorf("failed to read the tool names of a per-user discovery of mcp client %s: %w", row.MCPClientID, err)
+		}
+		for name := range tools {
+			add(set[0], name)
+		}
+		var prompts []struct {
+			Name string `json:"name"`
+		}
+		var resources []struct {
+			URI string `json:"uri"`
+		}
+		var templates []struct {
+			URITemplate string `json:"uriTemplate"`
+		}
+		for _, list := range []struct {
+			raw  string
+			into any
+		}{{row.PromptsJSON, &prompts}, {row.ResourcesJSON, &resources}, {row.ResourceTemplatesJSON, &templates}} {
+			if list.raw == "" {
+				continue
+			}
+			if err := sonic.UnmarshalString(list.raw, list.into); err != nil {
+				return nil, fmt.Errorf("failed to read the prompts and resources of a per-user discovery of mcp client %s: %w", row.MCPClientID, err)
+			}
+		}
+		for _, prompt := range prompts {
+			add(set[1], prompt.Name)
+		}
+		for _, resource := range resources {
+			add(set[2], resource.URI)
+		}
+		for _, template := range templates {
+			add(set[3], template.URITemplate)
+		}
+	}
+	sorted := func(set map[string]struct{}) []string {
+		if len(set) == 0 {
+			return nil
+		}
+		list := make([]string, 0, len(set))
+		for name := range set {
+			list = append(list, name)
+		}
+		sort.Strings(list)
+		return list
+	}
+	for clientID, set := range sets {
+		names[clientID] = MCPPerUserDiscoveryNames{
+			Tools:             sorted(set[0]),
+			Prompts:           sorted(set[1]),
+			Resources:         sorted(set[2]),
+			ResourceTemplates: sorted(set[3]),
+		}
+	}
+	return names, nil
+}
+
+// GetMCPPerUserDiscoverySummaries returns the discovery each user and
+// virtual-key binding holds, with only the identity columns, the counts and
+// discovered_at read. One query matches the clients and identities asked for;
+// since those lists can pair a user with a client they were not asked about,
+// only the exact bindings asked are kept.
+func (s *RDBConfigStore) GetMCPPerUserDiscoverySummaries(ctx context.Context, bindings []MCPPerUserDiscoveryBinding) (map[MCPPerUserDiscoveryBinding]tables.TableMCPPerUserDiscovery, error) {
+	summaries := make(map[MCPPerUserDiscoveryBinding]tables.TableMCPPerUserDiscovery)
+	asked := make(map[MCPPerUserDiscoveryBinding]struct{}, len(bindings))
+	clientIDs := make(map[string]struct{})
+	userIDs := make(map[string]struct{})
+	vkIDs := make(map[string]struct{})
+	for _, binding := range bindings {
+		if strings.TrimSpace(binding.Identity) == "" || strings.TrimSpace(binding.MCPClientID) == "" {
+			continue
+		}
+		switch binding.Mode {
+		case schemas.MCPAuthModeUser:
+			userIDs[binding.Identity] = struct{}{}
+		case schemas.MCPAuthModeVK:
+			vkIDs[binding.Identity] = struct{}{}
+		default:
+			continue
+		}
+		clientIDs[binding.MCPClientID] = struct{}{}
+		asked[binding] = struct{}{}
+	}
+	if len(asked) == 0 {
+		return summaries, nil
+	}
+	var rows []tables.TableMCPPerUserDiscovery
+	if err := s.DB().WithContext(ctx).
+		Select("auth_mode", "user_id", "virtual_key_id", "mcp_client_id", "tool_count", "prompt_count", "resource_count", "discovered_at").
+		Where("mcp_client_id IN ?", slices.Collect(maps.Keys(clientIDs))).
+		Where("((auth_mode = ? AND user_id IN ?) OR (auth_mode = ? AND virtual_key_id IN ?))",
+			string(schemas.MCPAuthModeUser), slices.Collect(maps.Keys(userIDs)),
+			string(schemas.MCPAuthModeVK), slices.Collect(maps.Keys(vkIDs))).
+		Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("failed to read mcp per-user discovery summaries: %w", err)
+	}
+	for _, row := range rows {
+		binding := MCPPerUserDiscoveryBinding{Mode: schemas.MCPAuthMode(row.AuthMode), Identity: row.Identity(), MCPClientID: row.MCPClientID}
+		if _, ok := asked[binding]; ok {
+			summaries[binding] = row
+		}
+	}
+	return summaries, nil
+}
+
+// GetMCPPerUserDiscoveryByMode looks up the discovery for one (mode, identity,
+// mcp client) binding. Returns nil, nil when the binding has none.
+func (s *RDBConfigStore) GetMCPPerUserDiscoveryByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPPerUserDiscovery, error) {
+	if strings.TrimSpace(identity) == "" || strings.TrimSpace(mcpClientID) == "" {
+		return nil, nil
+	}
+	q, err := perUserDiscoveryScope(s.DB().WithContext(ctx), mode, identity, mcpClientID)
+	if err != nil {
+		return nil, err
+	}
+	var row tables.TableMCPPerUserDiscovery
+	if err := q.First(&row).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get mcp per-user discovery (mode=%s): %w", mode, err)
+	}
+	return &row, nil
+}
+
+// UpsertMCPPerUserDiscovery atomically inserts or updates the discovery for its
+// (auth_mode, identity, mcp_client_id) binding. The row represents the
+// binding, so a re-discovery keeps the existing row's ID and CreatedAt and
+// replaces the discovery columns wholesale: every write carries a complete
+// discovery result, and merging would keep tools the upstream has since
+// withdrawn. Mirrors UpsertMCPPerUserHeaderCredential.
+func (s *RDBConfigStore) UpsertMCPPerUserDiscovery(ctx context.Context, discovery *tables.TableMCPPerUserDiscovery) error {
+	if discovery == nil {
+		return fmt.Errorf("per-user discovery is nil")
+	}
+	identity := discovery.Identity()
+	if strings.TrimSpace(identity) == "" || strings.TrimSpace(discovery.MCPClientID) == "" {
+		return fmt.Errorf("per-user discovery needs both an identity and an mcp client id")
+	}
+	mode := schemas.MCPAuthMode(discovery.AuthMode)
+	if discovery.DiscoveredAt.IsZero() {
+		discovery.DiscoveredAt = time.Now()
+	}
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		q, err := perUserDiscoveryScope(dbForUpdate(tx), mode, identity, discovery.MCPClientID)
+		if err != nil {
+			return err
+		}
+		var existing tables.TableMCPPerUserDiscovery
+		lookupErr := q.First(&existing).Error
+		if lookupErr == nil {
+			discovery.ID = existing.ID
+			discovery.CreatedAt = existing.CreatedAt
+			return tx.Save(discovery).Error
+		}
+		if !errors.Is(lookupErr, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("failed to query mcp per-user discovery: %w", lookupErr)
+		}
+		if discovery.ID == "" {
+			discovery.ID = uuid.New().String()
+		}
+		if err := tx.Create(discovery).Error; err != nil {
+			return fmt.Errorf("failed to create mcp per-user discovery: %w", err)
+		}
+		return nil
+	})
+}
+
+// DeleteMCPPerUserDiscovery removes the discovery for one binding. Removing
+// one that does not exist is not an error.
+func (s *RDBConfigStore) DeleteMCPPerUserDiscovery(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) error {
+	if strings.TrimSpace(identity) == "" || strings.TrimSpace(mcpClientID) == "" {
+		return nil
+	}
+	q, err := perUserDiscoveryScope(s.DB().WithContext(ctx), mode, identity, mcpClientID)
+	if err != nil {
+		return err
+	}
+	if err := q.Delete(&tables.TableMCPPerUserDiscovery{}).Error; err != nil {
+		return fmt.Errorf("failed to delete mcp per-user discovery (mode=%s): %w", mode, err)
+	}
+	return nil
+}
+
+// DeleteMCPPerUserDiscoveriesByClient removes every caller's discovery for one
+// client: the client was deleted, changed auth type, or had per-user discovery
+// turned off.
+func (s *RDBConfigStore) DeleteMCPPerUserDiscoveriesByClient(ctx context.Context, mcpClientID string) error {
+	if strings.TrimSpace(mcpClientID) == "" {
+		return nil
+	}
+	if err := s.DB().WithContext(ctx).Where("mcp_client_id = ?", mcpClientID).Delete(&tables.TableMCPPerUserDiscovery{}).Error; err != nil {
+		return fmt.Errorf("failed to delete mcp per-user discoveries for client %s: %w", mcpClientID, err)
+	}
+	return nil
+}
+
+// A caller's discovery lives only as long as the credential it was made with is
+// usable. The helpers below delete discoveries inside the transaction that
+// deletes or invalidates their credentials, so the two never disagree.
+
+// deleteCredentialDiscovery deletes the discovery made with one credential, given
+// its binding columns. Only user and virtual-key callers keep one, so a shared,
+// admin or session credential deletes nothing.
+func deleteCredentialDiscovery(tx *gorm.DB, mode string, userID, virtualKeyID *string, mcpClientID string) error {
+	var identity string
+	switch schemas.MCPAuthMode(mode) {
+	case schemas.MCPAuthModeUser:
+		if userID != nil {
+			identity = *userID
+		}
+	case schemas.MCPAuthModeVK:
+		if virtualKeyID != nil {
+			identity = *virtualKeyID
+		}
+	}
+	if strings.TrimSpace(identity) == "" || strings.TrimSpace(mcpClientID) == "" {
+		return nil
+	}
+	q, err := perUserDiscoveryScope(tx, schemas.MCPAuthMode(mode), identity, mcpClientID)
+	if err != nil {
+		return err
+	}
+	if err := q.Delete(&tables.TableMCPPerUserDiscovery{}).Error; err != nil {
+		return fmt.Errorf("failed to delete the per-user discovery made with a credential (mode=%s): %w", mode, err)
+	}
+	return nil
+}
+
+// deleteClientDiscoveries deletes every caller's discovery of one client.
+func deleteClientDiscoveries(tx *gorm.DB, mcpClientID string) error {
+	if strings.TrimSpace(mcpClientID) == "" {
+		return nil
+	}
+	if err := tx.Where("mcp_client_id = ?", mcpClientID).Delete(&tables.TableMCPPerUserDiscovery{}).Error; err != nil {
+		return fmt.Errorf("failed to delete the per-user discoveries of mcp client %s: %w", mcpClientID, err)
+	}
+	return nil
+}
+
+// deleteDiscoveriesOfCredentials deletes the discoveries made with the
+// credentials credentials selects, a query on table about to delete them.
+func deleteDiscoveriesOfCredentials(tx *gorm.DB, credentials *gorm.DB, table string) error {
+	sameBinding := credentials.Select("1").Where(
+		table+".mcp_client_id = mcp_per_user_discoveries.mcp_client_id AND "+table+".auth_mode = mcp_per_user_discoveries.auth_mode AND "+
+			"(("+table+".auth_mode = ? AND "+table+".user_id = mcp_per_user_discoveries.user_id) OR ("+table+".auth_mode = ? AND "+table+".virtual_key_id = mcp_per_user_discoveries.virtual_key_id))",
+		string(schemas.MCPAuthModeUser), string(schemas.MCPAuthModeVK))
+	if err := tx.Where("EXISTS (?)", sameBinding).Delete(&tables.TableMCPPerUserDiscovery{}).Error; err != nil {
+		return fmt.Errorf("failed to delete the per-user discoveries of swept %s: %w", table, err)
 	}
 	return nil
 }
