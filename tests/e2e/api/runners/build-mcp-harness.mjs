@@ -9642,7 +9642,7 @@ const hdoor = (id, p, { tools, flag = true, over = {} } = {}) => [
   createClient(id, hdoorBody(p, { ...(flag ? {} : { per_user_discovery: undefined }), ...over }), `setup: create ${p}, per_user_headers${flag ? " with per_user_discovery on" : ", per_user_discovery unset"}`),
 ];
 const L = (l) => `VK-${l.toUpperCase()}`;
-const pudVK = (id, p, l, configs) => vkCreate(id, `setup: create ${L(l)}${configs ? `, mcp_configs ${lit(configs)}` : `, granted every tool of ${p}`}`, { name: `${id} ${L(l)}`, provider_configs: OPENAI_GRANT, mcp_configs: configs || [{ mcp_client_name: p, tools_to_execute: ["*"] }] }, `${p}_${l}`);
+const pudVK = (id, p, l, configs, providers = OPENAI_GRANT) => vkCreate(id, `setup: create ${L(l)}${configs ? `, mcp_configs ${lit(configs)}` : `, granted every tool of ${p}`}${providers === OPENAI_GRANT ? "" : `, providers ${providers.map((g) => g.provider).join(" and ")}`}`, { name: `${id} ${L(l)}`, provider_configs: providers, mcp_configs: configs || [{ mcp_client_name: p, tools_to_execute: ["*"] }] }, `${p}_${l}`);
 const pudVKDelete = (id, p, l) => vkDelete(id, `teardown: delete ${L(l)}`, `${p}_${l}`);
 // pudVKGrant grants VK-<l> every tool of p again, as a new mcp_configs entry: deleting a client
 // removes the grants virtual keys held on it.
@@ -11564,6 +11564,240 @@ const PUD71 = folder("PUD-71 Turning it off and on again (OAuth), then reregiste
   restoreConfig("PUD-71"),
 ]);
 
+// ---------------------------------------------------------------- Callers never see or reach each other's tools
+// key-a and key-c share the name echo_tool with their own description and schema, and each holds a tool the other
+// does not; ISO_A and ISO_C are what each sees.
+const ISO_A = [{ name: "echo_tool", description: "key-a's echo", inputSchema: { type: "object", properties: { text: { type: "string" } } } }, { name: "add_tool", description: "key-a's add", inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } } } }];
+const ISO_C = [{ name: "echo_tool", description: "key-c's echo", inputSchema: { type: "object", properties: { msg: { type: "string" } } } }, { name: "notes_tool", description: "key-c's notes", inputSchema: { type: "object", properties: { q: { type: "string" } } } }];
+const ISO_TEXT = (p) => `${HDOOR_TEXT(p)}; key-a sees echo_tool ("key-a's echo", schema {text}) and add_tool, key-c sees echo_tool ("key-c's echo", schema {msg}) and notes_tool; VK-A signed in with key-a and VK-C with key-c`;
+// isoSetup builds ISO_TEXT(p); before lands ahead of the sign-ins (what callers' discoveries should hold), and tt
+// matches temp-token auth being on.
+const isoSetup = (id, p, over = {}, { before = [], tt = false, providers } = {}) => [
+  ...hdoor(id, p, { over }),
+  overlay(id, p, "key-a", ISO_A, `setup: key-a sees echo_tool and add_tool on ${p}, with its own descriptions and schemas`),
+  overlay(id, p, "key-c", ISO_C, `setup: key-c sees echo_tool and notes_tool on ${p}, with its own descriptions and schemas`),
+  ...before,
+  pudVK(id, p, "a", undefined, providers), pudVK(id, p, "c", undefined, providers),
+  ...signInH(id, p, "a", "key-a", tt), ...signInH(id, p, "c", "key-c", tt),
+];
+const isoTeardown = (id, p) => [deleteClient(id, `${p}-h`), pudVKDelete(id, p, "a"), pudVKDelete(id, p, "c")];
+// carriesOnly checks request i's body names the caller's own tool descriptions and none of the other caller's, in
+// whatever shape the route sends them.
+const carriesOnly = (i, own, other) => A.custom(`request ${i + 1} carries ${own.map(lit).join(", ")} and no ${other}`, [
+  REQS, `var body = JSON.stringify((reqs[${i}] || {}).json || {});`,
+  ...own.map((d) => `pm.expect(body, 'body: ' + body).to.include(${lit(d)});`),
+  `pm.expect(body, 'body: ' + body).to.not.include(${lit(other)});`,
+]);
+// reachedSurface checks which provider API request i reached on the mock LLM, so each route is proven to take its
+// own provider's path rather than being routed to another one.
+const reachedSurface = (i, format) => A.custom(`request ${i + 1} reached the ${format} surface`, [REQS, `pm.expect((reqs[${i}] || {}).format, 'path: ' + (reqs[${i}] || {}).path).to.equal(${lit(format)});`]);
+const ISO_SURFACE = { chat: "openai.chat", stream: "openai.chat", resp: "openai.responses", anth: "anthropic.messages" };
+const isoRoutes = (id, p, l, names, own, other) => {
+  const k = (leg) => `${id.toLowerCase()}-${l}-${leg}`;
+  const vk = [vkOf(p, l)];
+  return [
+    llmScript(id, k("chat"), TEXT_OK),
+    infChat(id, `${L(l)}'s chat`, k("chat"), [A.status(200)], { headers: vk }),
+    llmScript(id, k("stream"), TEXT_OK),
+    infChat(id, `${L(l)}'s streamed chat`, k("stream"), [A.status(200)], { headers: vk, body: { stream: true } }),
+    llmScript(id, k("resp"), TEXT_OK),
+    infResponses(id, `${L(l)}'s /v1/responses request`, k("resp"), [A.status(200)], { headers: vk }),
+    llmScript(id, k("anth"), TEXT_OK),
+    // The model names its provider, as the other routes' do: a key allowing two providers otherwise load-balances a
+    // bare model name between them.
+    request(id, `${L(l)}'s Anthropic messages request`, "POST", "/anthropic/v1/messages", { noAuth: true, noCookies: true, headers: vk, body: { model: "anthropic/mock-model", max_tokens: 64, messages: [userMsg(k("anth"))] }, asserts: [A.status(200)] }),
+    ...["chat", "stream", "resp", "anth"].map((leg) => llmCaptured(id, `the ${leg === "chat" ? "chat" : leg === "stream" ? "streamed chat" : leg === "resp" ? "/v1/responses" : "Anthropic"} request declared only ${L(l)}'s tools`, k(leg), [reqCount(1), reachedSurface(0, ISO_SURFACE[leg]), toolsAre(0, names), carriesOnly(0, own, other)])),
+  ];
+};
+
+// PUD-72's keys may reach Anthropic too, so the Anthropic route is served by the Anthropic provider as it would be on
+// a deployment, not routed to the only provider an OpenAI-only key allows.
+const OPENAI_ANTHROPIC_GRANT = [...OPENAI_GRANT, { provider: "anthropic", allowed_models: ["*"], key_ids: ["*"], weight: 1 }];
+const PUD72 = folder("PUD-72 Each caller's own tools on every inference route", `Setup: ${ISO_TEXT("pud72")}, both keys granted the openai and anthropic providers; ${LLM_TEXT}. Each caller sends a chat, a streamed chat, a /v1/responses request and an Anthropic messages request, and each reaches its own provider's API.`, [
+  ...isoSetup("PUD-72", "pud72", {}, { providers: OPENAI_ANTHROPIC_GRANT }),
+  ...isoRoutes("PUD-72", "pud72", "a", ["pud72-add_tool", "pud72-echo_tool"], ["key-a's echo", "key-a's add"], "key-c's"),
+  ...isoRoutes("PUD-72", "pud72", "c", ["pud72-echo_tool", "pud72-notes_tool"], ["key-c's echo", "key-c's notes"], "key-a's"),
+  ...isoTeardown("PUD-72", "pud72"),
+]);
+
+// noCallOf checks the server never ran tool under any identity.
+const noCallOf = (tool) => A.custom(`${tool} never ran, under any identity`, [`pm.expect((pm.response.json().counters.calls || {})[${lit(tool)}] || 0, 'counters: ' + JSON.stringify(pm.response.json().counters)).to.equal(0);`]);
+// noToolOutput checks no logged model request carries a tool result naming tool, which only running it would produce.
+const noToolOutput = (tool) => A.custom(`no tool result in any request carries ${tool}'s output`, [REQS, `var all = JSON.stringify(reqs.map(function (r) { return r.json; }));`, `pm.expect(all, 'requests: ' + all).to.not.include(${lit(tool + ":")});`]);
+
+const PUD73 = folder("PUD-73 Agent mode never runs another caller's tool", `Setup: ${ISO_TEXT("pud73")}; pud73 also has tools_to_auto_execute ["*"]; ${LLM_TEXT}. VK-C's chat asks for pud73-add_tool, which only key-a holds, then answers "done"; VK-C's next chat asks for pud73-echo_tool; VK-A's chat asks for pud73-add_tool.`, [
+  ...isoSetup("PUD-73", "pud73", { tools_to_auto_execute: ["*"] }),
+  resetCounters("PUD-73", "pud73"),
+  llmScript("PUD-73", "pud73-c-add", { turns: [{ tool_calls: [llmCall("t1", "pud73-add_tool", { a: 1, b: 2 })] }, { text: "done" }] }),
+  infPost("PUD-73", "VK-C's chat asks for key-a's pud73-add_tool", "/v1/chat/completions", chatBody("pud73-c-add"), [A.status(200)], { headers: [vkOf("pud73", "c")] }),
+  llmCaptured("PUD-73", "VK-C's turns declared only its own tools and carried no add_tool output", "pud73-c-add", [toolsAre(0, ["pud73-echo_tool", "pud73-notes_tool"]), noToolOutput("add_tool")]),
+  mockGet("PUD-73", "pud73", "add_tool never reached pud73", [noCallOf("add_tool"), identityMethod("key-c", "tools/call", 0)]),
+  llmScript("PUD-73", "pud73-c-echo", { turns: [{ tool_calls: [llmCall("t1", "pud73-echo_tool", { msg: "c" })] }, { text: "done" }] }),
+  infPost("PUD-73", "VK-C's chat asks for its own pud73-echo_tool", "/v1/chat/completions", chatBody("pud73-c-echo"), [A.status(200), chatContent("done")], { headers: [vkOf("pud73", "c")] }),
+  mockGet("PUD-73", "pud73", "the auto-executed echo ran under key-c", [identityCallsAre({ "key-c": 1 }), callsIs("echo_tool", 1)]),
+  resetCounters("PUD-73", "pud73"),
+  llmScript("PUD-73", "pud73-a-add", { turns: [{ tool_calls: [llmCall("t1", "pud73-add_tool", { a: 1, b: 2 })] }, { text: "done" }] }),
+  infPost("PUD-73", "VK-A's chat asks for its own pud73-add_tool", "/v1/chat/completions", chatBody("pud73-a-add"), [A.status(200), chatContent("done")], { headers: [vkOf("pud73", "a")] }),
+  mockGet("PUD-73", "pud73", "the auto-executed add ran under key-a", [identityCallsAre({ "key-a": 1 }), callsIs("add_tool", 1)]),
+  ...isoTeardown("PUD-73", "pud73"),
+]);
+
+const PUD74 = folder("PUD-74 Code mode never reaches another caller's tool", `Setup: ${ISO_TEXT("pud74")}; pud74 is also a code-mode client. VK-C reads key-a's add_tool docs and runs code calling it, then runs code calling its own echo_tool; VK-A reads its add_tool docs.`, [
+  ...isoSetup("PUD-74", "pud74", { is_code_mode_client: true }),
+  execBody("PUD-74", "VK-A's getToolDocs for add_tool has key-a's description", toolCall("getToolDocs", { server: "pud74", tool: "add_tool" }), [A.status(200), A.custom("it describes key-a's add", ["pm.expect(pm.response.json().content, 'body: ' + pm.response.text()).to.include(\"key-a's add\");"])], { headers: [vkOf("pud74", "a")] }),
+  execBody("PUD-74", "VK-C's getToolDocs for add_tool has nothing of key-a's", toolCall("getToolDocs", { server: "pud74", tool: "add_tool" }), [A.status(200), A.custom("it does not describe key-a's add", ["pm.expect(pm.response.text(), 'body: ' + pm.response.text()).to.not.include(\"key-a's add\");"])], { headers: [vkOf("pud74", "c")] }),
+  execBody("PUD-74", "VK-C's getToolDocs for echo_tool has key-c's description", toolCall("getToolDocs", { server: "pud74", tool: "echo_tool" }), [A.status(200), A.custom("it describes key-c's echo and not key-a's", ["var c = pm.response.json().content;", "pm.expect(c, 'body: ' + pm.response.text()).to.include(\"key-c's echo\");", "pm.expect(c).to.not.include(\"key-a's echo\");"])], { headers: [vkOf("pud74", "c")] }),
+  resetCounters("PUD-74", "pud74"),
+  execBody("PUD-74", "VK-C runs code calling key-a's pud74.add_tool", toolCall("executeToolCode", { code: "result = pud74.add_tool(a=1, b=2)" }), [A.status(200)], { headers: [vkOf("pud74", "c")] }),
+  mockGet("PUD-74", "pud74", "add_tool never reached pud74", [noCallOf("add_tool"), identityMethod("key-c", "tools/call", 0)]),
+  execBody("PUD-74", "VK-C runs code calling its own pud74.echo_tool", toolCall("executeToolCode", { code: "result = pud74.echo_tool(msg=\"c\")" }), [A.status(200), noIsError()], { headers: [vkOf("pud74", "c")] }),
+  mockGet("PUD-74", "pud74", "the nested echo ran under key-c", [identityCallsAre({ "key-c": 1 }), callsIs("echo_tool", 1)]),
+  ...isoTeardown("PUD-74", "pud74"),
+]);
+
+const PUD75 = folder("PUD-75 OAuth callers each see only their own account's tools", `Setup: ${ODOOR_TEXT("pud75")}; alice sees echo_tool, add_tool and search, bob sees echo_tool only; VK-A signed in as alice, VK-B as bob.`, [
+  ...puConfig("PUD-75", false),
+  ...odoor("PUD-75", "pud75"),
+  overlay("PUD-75", "pud75", "alice", ["echo_tool", "add_tool", "search"]),
+  overlay("PUD-75", "pud75", "bob", ["echo_tool"]),
+  pudVK("PUD-75", "pud75", "a"), pudVK("PUD-75", "pud75", "b"),
+  ...signInO("PUD-75", "pud75", "a", "alice"),
+  ...signInO("PUD-75", "pud75", "b", "bob"),
+  gwList("PUD-75", "VK-A's gw-list is alice's three tools", [vkOf("pud75", "a")], ["pud75-add_tool", "pud75-echo_tool", "pud75-search"]),
+  gwList("PUD-75", "VK-B's gw-list is bob's echo_tool", [vkOf("pud75", "b")], ["pud75-echo_tool"]),
+  resetCounters("PUD-75", "pud75"),
+  gwKeep("PUD-75", "control: VK-B calls pud75-zzz, a name nobody holds", "tools/call", { name: "pud75-zzz", arguments: { text: "hi" } }, [vkOf("pud75", "b")], "pud75_err", "pud75-zzz"),
+  gwCallAs("PUD-75", "VK-B calls pud75-search, which only alice holds", "pud75-search", [vkOf("pud75", "b")], [sameErrorAs("pud75_err", "pud75-search")]),
+  execAs("PUD-75", "VK-B's execute of pud75-search is refused", "pud75-search", [vkOf("pud75", "b")], [A.status(400)]),
+  mockGet("PUD-75", "pud75", "nothing reached pud75", [methodsEmpty()]),
+  gwCallAs("PUD-75", "VK-B calls pud75-echo_tool", "pud75-echo_tool", [vkOf("pud75", "b")], [gwTextIs("echo_tool:{\"text\":\"hi\"}")]),
+  gwCallAs("PUD-75", "VK-A calls pud75-search", "pud75-search", [vkOf("pud75", "a")], []),
+  mockGet("PUD-75", "pud75", "each call ran under its caller's account", [identityCallsAre({ alice: 1, bob: 1 })]),
+  deleteClient("PUD-75", "pud75-u"),
+  pudVKDelete("PUD-75", "pud75", "a"), pudVKDelete("PUD-75", "pud75", "b"),
+  restoreConfig("PUD-75"),
+]);
+
+const PUD76 = folder("PUD-76 Switching to an account with fewer tools", `Setup: ${ODOOR_TEXT("pud76")}; alice sees echo_tool, add_tool and search, bob sees echo_tool only; VK-A signed in as alice. Then VK-A reauthorizes from its session row as bob.`, [
+  ...puConfig("PUD-76", false),
+  ...odoor("PUD-76", "pud76"),
+  overlay("PUD-76", "pud76", "alice", ["echo_tool", "add_tool", "search"]),
+  overlay("PUD-76", "pud76", "bob", ["echo_tool"]),
+  pudVK("PUD-76", "pud76", "a"),
+  ...signInO("PUD-76", "pud76", "a", "alice"),
+  gwList("PUD-76", "VK-A's gw-list is alice's three tools", [vkOf("pud76", "a")], ["pud76-add_tool", "pud76-echo_tool", "pud76-search"]),
+  rowOf("PUD-76", "setup: find VK-A's session", "pud76-u", "pud76", "a", "VK-A's row has alice's discovery", DISCOVERY(3), keepRowId("pud76_a_row")),
+  request("PUD-76", "reauth VK-A's session", "POST", "/api/mcp/sessions/{{pud76_a_row}}/reauth", { asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('pud76_r', pm.response.json().session_id);"] }),
+  flowStart("PUD-76", "start the reauth flow", "pud76_r"),
+  consentAs("PUD-76", "consent as bob", "pud76_r", "bob"),
+  followCallback("PUD-76", "follow the callback", "pud76_r", [A.status(302)]),
+  gwList("PUD-76", "VK-A's gw-list is now bob's echo_tool only", [vkOf("pud76", "a")], ["pud76-echo_tool"]),
+  resetCounters("PUD-76", "pud76"),
+  gwKeep("PUD-76", "control: VK-A calls pud76-zzz", "tools/call", { name: "pud76-zzz", arguments: { text: "hi" } }, [vkOf("pud76", "a")], "pud76_err", "pud76-zzz"),
+  gwCallAs("PUD-76", "VK-A calls pud76-search, which only alice holds", "pud76-search", [vkOf("pud76", "a")], [sameErrorAs("pud76_err", "pud76-search")]),
+  mockGet("PUD-76", "pud76", "nothing reached pud76", [methodsEmpty()]),
+  gwCallAs("PUD-76", "VK-A calls pud76-echo_tool", "pud76-echo_tool", [vkOf("pud76", "a")], [gwTextIs("echo_tool:{\"text\":\"hi\"}")]),
+  mockGet("PUD-76", "pud76", "the call ran under bob, not alice", [identityCallsAre({ bob: 1 })]),
+  deleteClient("PUD-76", "pud76-u"),
+  pudVKDelete("PUD-76", "pud76", "a"),
+  restoreConfig("PUD-76"),
+]);
+
+const PUD77 = folder("PUD-77 An Mcp-Session-Id never carries another caller's tools", `Setup: ${ISO_TEXT("pud77")}. VK-A initializes an /mcp session and lists on it; VK-C then lists and calls with VK-A's session id.`, [
+  ...isoSetup("PUD-77", "pud77"),
+  mcpInit("PUD-77", "VK-A initializes an /mcp session", [vkOf("pud77", "a")], "pud77_sess"),
+  gwList("PUD-77", "VK-A lists on its session: key-a's tools", [vkOf("pud77", "a"), MCPSESS("pud77_sess")], ["pud77-add_tool", "pud77-echo_tool"]),
+  gwList("PUD-77", "VK-C lists with VK-A's session id: key-c's tools", [vkOf("pud77", "c"), MCPSESS("pud77_sess")], ["pud77-echo_tool", "pud77-notes_tool"], [toolShapes("pud77", ISO_C)]),
+  resetCounters("PUD-77", "pud77"),
+  gwKeep("PUD-77", "control: VK-C calls pud77-zzz on VK-A's session", "tools/call", { name: "pud77-zzz", arguments: { text: "hi" } }, [vkOf("pud77", "c"), MCPSESS("pud77_sess")], "pud77_err", "pud77-zzz"),
+  gwCallAs("PUD-77", "VK-C calls pud77-add_tool on VK-A's session", "pud77-add_tool", [vkOf("pud77", "c"), MCPSESS("pud77_sess")], [sameErrorAs("pud77_err", "pud77-add_tool")]),
+  mockGet("PUD-77", "pud77", "nothing reached pud77", [methodsEmpty()]),
+  gwList("PUD-77", "VK-A's session still lists key-a's tools", [vkOf("pud77", "a"), MCPSESS("pud77_sess")], ["pud77-add_tool", "pud77-echo_tool"], [toolShapes("pud77", ISO_A)]),
+  ...isoTeardown("PUD-77", "pud77"),
+]);
+
+const PUD78 = folder("PUD-78 Renaming the client keeps each caller's own tools", `Setup: ${ISO_TEXT("pud78")}. Then pud78 is renamed pud78r.`, [
+  ...isoSetup("PUD-78", "pud78"),
+  clientPut("PUD-78", "rename pud78 to pud78r", "pud78-h", { name: "pud78r" }, [A.status(200)]),
+  gwList("PUD-78", "VK-A's gw-list is key-a's tools under the new name", [vkOf("pud78", "a")], ["pud78r-add_tool", "pud78r-echo_tool"], [toolShapes("pud78r", ISO_A)]),
+  gwList("PUD-78", "VK-C's gw-list is key-c's tools under the new name", [vkOf("pud78", "c")], ["pud78r-echo_tool", "pud78r-notes_tool"], [toolShapes("pud78r", ISO_C)]),
+  resetCounters("PUD-78", "pud78"),
+  gwKeep("PUD-78", "control: VK-C calls pud78r-zzz", "tools/call", { name: "pud78r-zzz", arguments: { text: "hi" } }, [vkOf("pud78", "c")], "pud78_err", "pud78r-zzz"),
+  gwCallAs("PUD-78", "VK-C calls pud78r-add_tool, which only key-a holds", "pud78r-add_tool", [vkOf("pud78", "c")], [sameErrorAs("pud78_err", "pud78r-add_tool")]),
+  rpc("PUD-78", "VK-A's call of the old name pud78-add_tool is an unknown tool", call("pud78-add_tool", { text: "hi" }), { headers: [MCP_ACCEPT, vkOf("pud78", "a")], asserts: [A.status(200), rpcError(-32602)] }),
+  mockGet("PUD-78", "pud78", "nothing reached pud78", [methodsEmpty()]),
+  gwCallAs("PUD-78", "VK-A calls pud78r-add_tool", "pud78r-add_tool", [vkOf("pud78", "a")], []),
+  mockGet("PUD-78", "pud78", "the call ran under key-a", [identityCallsAre({ "key-a": 1 }), callsIs("add_tool", 1)]),
+  ...isoTeardown("PUD-78", "pud78"),
+]);
+
+const PUD79 = folder("PUD-79 Completion on another caller's prompt", `Setup: ${HDOOR_TEXT("pud79")}; key-a sees prompt pa, whose argument x completes with xa and xb; key-c sees no prompt; VK-A signed in with key-a and VK-C with key-c.`, [
+  ...hdoor("PUD-79", "pud79"),
+  kindOverlay("PUD-79", "pud79", "prompts", "key-a", [{ name: "pa", description: "key-a's prompt", arguments: [{ name: "x" }], text: "key-a's pa {x}", completions: { x: ["xa", "xb"] } }]),
+  kindOverlay("PUD-79", "pud79", "prompts", "key-c", []),
+  pudVK("PUD-79", "pud79", "a"), pudVK("PUD-79", "pud79", "c"),
+  ...signInH("PUD-79", "pud79", "a"), ...signInH("PUD-79", "pud79", "c"),
+  resetCounters("PUD-79", "pud79"),
+  gwRpc("PUD-79", "VK-C completes pud79-pa, which only key-a holds", "completion/complete", { ref: { type: "ref/prompt", name: "pud79-pa" }, argument: { name: "x", value: "x" } }, [vkOf("pud79", "c")], [rpcResultEquals({ completion: { values: [] } })]),
+  mockGet("PUD-79", "pud79", "nothing reached pud79", [methodsEmpty()]),
+  gwRpc("PUD-79", "VK-A completes pud79-pa", "completion/complete", { ref: { type: "ref/prompt", name: "pud79-pa" }, argument: { name: "x", value: "x" } }, [vkOf("pud79", "a")], [A.custom("values are xa and xb", ["pm.expect(pm.response.json().result.completion.values, 'body: ' + pm.response.text()).to.eql(['xa', 'xb']);"])]),
+  mockGet("PUD-79", "pud79", "the completion reached pud79 as key-a", [identityMethod("key-a", "completion/complete", 1), identityMethod("key-c", "completion/complete", 0)]),
+  deleteClient("PUD-79", "pud79-h"),
+  pudVKDelete("PUD-79", "pud79", "a"), pudVKDelete("PUD-79", "pud79", "c"),
+]);
+
+const PUD80 = folder("PUD-80 Slug endpoint, Virtual MCP and Bifrost tokens never mix callers", `Setup: ${ISO_TEXT("pud80")}; key-a also sees prompt pa and key-c prompt pc; ${BOTH}, temp-token auth on, and a Bifrost OAuth grant (bf_mode vk) for VK-C; a virtual MCP "Pud80 Tools" over pud80's echo_tool and add_tool, with VK-V (no mcp_configs) attached and signed in with key-c.`, [
+  readConfig("PUD-80"), oauthConfig("PUD-80", "both"),
+  ...isoSetup("PUD-80", "pud80", {}, {
+    tt: true,
+    before: [
+      kindOverlay("PUD-80", "pud80", "prompts", "key-a", [{ name: "pa", description: "key-a's prompt", text: "key-a's pa" }]),
+      kindOverlay("PUD-80", "pud80", "prompts", "key-c", [{ name: "pc", description: "key-c's prompt", text: "key-c's pc" }]),
+    ],
+  }),
+  rpc("PUD-80", "VK-C on /mcp/pud80 gets key-c's tools", listMsg, { path: "/mcp/pud80", headers: [MCP_ACCEPT, vkOf("pud80", "c")], asserts: [A.status(200), gwNames(["pud80-echo_tool", "pud80-notes_tool"]), toolShapes("pud80", ISO_C)] }),
+  rpc("PUD-80", "VK-A on /mcp/pud80 gets key-a's tools", listMsg, { path: "/mcp/pud80", headers: [MCP_ACCEPT, vkOf("pud80", "a")], asserts: [A.status(200), gwNames(["pud80-add_tool", "pud80-echo_tool"]), toolShapes("pud80", ISO_A)] }),
+  gwRpc("PUD-80", "VK-C's prompts/list on /mcp/pud80 is key-c's", "prompts/list", null, [vkOf("pud80", "c")], [listedAre("prompts", "name", ["pud80-pc"])], "/mcp/pud80"),
+  ...pudGrant("PUD-80", "pud80", "c", "pud80_grant"),
+  tokenList("PUD-80", "VK-C's bf_mode vk token lists key-c's tools", "pud80_grant", ["pud80-echo_tool", "pud80-notes_tool"]),
+  request("PUD-80", "setup: create the virtual MCP Pud80 Tools over pud80's echo_tool and add_tool", "POST", "/api/mcp/virtual-mcps", { body: { name: "Pud80 Tools", tools: [{ mcp_client_id: "pud80-h", tool_names: ["echo_tool", "add_tool"] }] }, asserts: [A.status(201)], extraTests: ["pm.collectionVariables.set('pud80_vmcp', pm.response.json().virtual_mcp.id);"] }),
+  vkCreate("PUD-80", "setup: create VK-V, with no mcp_configs", { name: "PUD-80 VK-V", provider_configs: OPENAI_GRANT }, "pud80_v"),
+  request("PUD-80", "setup: attach VK-V to the virtual MCP", "POST", "/api/mcp/virtual-mcps/{{pud80_vmcp}}/virtual-keys/{{pud80_v_id}}", { asserts: [A.status(200)] }),
+  ...signInH("PUD-80", "pud80", "v", "key-c", true),
+  rpc("PUD-80", "VK-V on /mcp/pud80-tools gets only echo_tool: key-c holds no add_tool", listMsg, { path: "/mcp/pud80-tools", headers: [MCP_ACCEPT, vkOf("pud80", "v")], asserts: [A.status(200), gwNames(["pud80-echo_tool"]), toolShapes("pud80", [ISO_C[0]])] }),
+  resetCounters("PUD-80", "pud80"),
+  rpc("PUD-80", "VK-V's call of pud80-add_tool on /mcp/pud80-tools is an unknown tool", call("pud80-add_tool", { a: 1, b: 2 }), { path: "/mcp/pud80-tools", headers: [MCP_ACCEPT, vkOf("pud80", "v")], asserts: [A.status(200), rpcError(-32602)] }),
+  mockGet("PUD-80", "pud80", "nothing reached pud80", [methodsEmpty()]),
+  request("PUD-80", "teardown: delete the virtual MCP", "DELETE", "/api/mcp/virtual-mcps/{{pud80_vmcp}}", { asserts: [A.status(200)] }),
+  ...isoTeardown("PUD-80", "pud80"),
+  pudVKDelete("PUD-80", "pud80", "v"),
+  restoreConfig("PUD-80"),
+]);
+
+const PUD81 = folder("PUD-81 Two callers signing in at the same time", `Setup: ${HDOOR_TEXT("pud81")}; key-a sees echo_tool ("key-a's echo") and add_tool, key-c sees echo_tool ("key-c's echo") and notes_tool; VK-A and VK-C have opened their header flows; a gate holds key-a's tools/list. VK-A submits; while its sign-in discovery waits at the gate, VK-C submits and lists; then the gate opens.`, [
+  ...hdoor("PUD-81", "pud81"),
+  overlay("PUD-81", "pud81", "key-a", ISO_A, "setup: key-a sees echo_tool and add_tool on pud81, with its own descriptions and schemas"),
+  overlay("PUD-81", "pud81", "key-c", ISO_C, "setup: key-c sees echo_tool and notes_tool on pud81, with its own descriptions and schemas"),
+  pudVK("PUD-81", "pud81", "a"), pudVK("PUD-81", "pud81", "c"),
+  connectH("PUD-81", "setup: VK-A calls pud81-connect and gets the sign-in link", "pud81", "a"),
+  connectH("PUD-81", "setup: VK-C calls pud81-connect and gets the sign-in link", "pud81", "c"),
+  gatesSet("PUD-81", "pud81", { name: "g81", method: "tools/list", identity: "key-a" }),
+  race("PUD-81", "VK-A's submit waits at the gate while VK-C submits and lists", "pud81", "g81",
+    { method: "PUT", url: `{{base_url}}${HDR_FLOWS}{{pud81_a_flow}}`, header: { Authorization: "{{admin_auth_header}}", "Content-Type": "application/json" }, body: { headers: { "x-api-key": "key-a" } } },
+    [
+      sendStep({ method: "PUT", url: `{{base_url}}${HDR_FLOWS}{{pud81_c_flow}}`, header: { Authorization: "{{admin_auth_header}}", "Content-Type": "application/json" }, body: { headers: { "x-api-key": "key-c" } } }),
+      sendStep({ method: "POST", url: "{{base_url}}/mcp", header: { "x-bf-vk": "{{pud81_c}}", "Content-Type": "application/json", Accept: "application/json, text/event-stream" }, body: listMsg }),
+    ], "pud81_race",
+    [raceHeld("pud81_race"), raceStep("pud81_race", 0, 200), raceStep("pud81_race", 1, 200),
+      A.custom("while VK-A's sign-in was held, VK-C listed only key-c's tools", [RACE("pud81_race"), "var b = {}; try { b = JSON.parse((race.steps[1] || {}).body || '{}'); } catch (e) {}", "var names = ((b.result || {}).tools || []).map(function (t) { return t.name; }).sort();", "pm.expect(names, 'race: ' + JSON.stringify(race)).to.eql(['pud81-echo_tool', 'pud81-notes_tool']);", "pm.expect(JSON.stringify(b)).to.not.include(\"key-a's\");"]),
+      raceFirst("pud81_race", "VK-A's submit completed", ["pm.expect(first.code, 'race: ' + JSON.stringify(race)).to.equal(200);"])]),
+  gatesClear("PUD-81", "pud81"),
+  gwList("PUD-81", "VK-A's gw-list is key-a's tools", [vkOf("pud81", "a")], ["pud81-add_tool", "pud81-echo_tool"], [toolShapes("pud81", ISO_A)]),
+  gwList("PUD-81", "VK-C's gw-list is key-c's tools", [vkOf("pud81", "c")], ["pud81-echo_tool", "pud81-notes_tool"], [toolShapes("pud81", ISO_C)]),
+  deleteClient("PUD-81", "pud81-h"),
+  pudVKDelete("PUD-81", "pud81", "a"), pudVKDelete("PUD-81", "pud81", "c"),
+]);
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -11588,7 +11822,7 @@ const collection = {
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB12, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB27, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43, LOG49]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL01, FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL09, FAIL10, FAIL12, FAIL14, FAIL16, FAIL18, FAIL19, FAIL23, FAIL24, FAIL25, FAIL27, FAIL28]),
-    section("PUD Per-user discovery", "Per-user discovery tests.", [PUD01, PUD02, PUD03, PUD04, PUD05, PUD06, PUD07, PUD08, PUD09, PUD10, PUD11, PUD12, PUD13, PUD14, PUD15, PUD16, PUD17, PUD18, PUD19, PUD20, PUD21, PUD22, PUD23, PUD24, PUD25, PUD26, PUD27, PUD28, PUD29, PUD30, PUD31, PUD32, PUD33, PUD34, PUD35, PUD36, PUD37, PUD38, PUD39, PUD40, PUD41, PUD42, PUD43, PUD44, PUD45, PUD46, PUD47, PUD48, PUD49, PUD50, PUD51, PUD52, PUD53, PUD54, PUD55, PUD56, PUD57, PUD58, PUD59, PUD60, PUD61, PUD62, PUD63, PUD64, PUD65, PUD66, PUD67, PUD68, PUD69, PUD70, PUD71]),
+    section("PUD Per-user discovery", "Per-user discovery tests.", [PUD01, PUD02, PUD03, PUD04, PUD05, PUD06, PUD07, PUD08, PUD09, PUD10, PUD11, PUD12, PUD13, PUD14, PUD15, PUD16, PUD17, PUD18, PUD19, PUD20, PUD21, PUD22, PUD23, PUD24, PUD25, PUD26, PUD27, PUD28, PUD29, PUD30, PUD31, PUD32, PUD33, PUD34, PUD35, PUD36, PUD37, PUD38, PUD39, PUD40, PUD41, PUD42, PUD43, PUD44, PUD45, PUD46, PUD47, PUD48, PUD49, PUD50, PUD51, PUD52, PUD53, PUD54, PUD55, PUD56, PUD57, PUD58, PUD59, PUD60, PUD61, PUD62, PUD63, PUD64, PUD65, PUD66, PUD67, PUD68, PUD69, PUD70, PUD71, PUD72, PUD73, PUD74, PUD75, PUD76, PUD77, PUD78, PUD79, PUD80, PUD81]),
   ],
 };
 
