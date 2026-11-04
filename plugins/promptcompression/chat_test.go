@@ -391,3 +391,15 @@ func toolCallIDs(m schemas.ChatMessage) []string {
 	}
 	return ids
 }
+
+// Pass 2 runs (an eligible value is big enough to be a trim candidate) but
+// changes nothing: the input slice itself must come back.
+func TestChatPass2WithoutChangeReturnsSameSlice(t *testing.T) {
+	msgs := rounds("abcd", "x", "y")
+	s := defaults(t)
+	s.MinTokens = 1
+	out, st := compressChat(msgs, s)
+	require.Equal(t, &msgs[0], &out[0])
+	require.False(t, st.Changed)
+	require.Equal(t, st.EligibleBefore, st.EligibleAfter)
+}

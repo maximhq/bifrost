@@ -532,3 +532,116 @@ func TestResponsesOtherOutputTypesNeverEdited(t *testing.T) {
 	require.False(t, st.Changed)
 	require.Zero(t, st.EligibleBefore)
 }
+
+// Client input that is not a message must split model responses: here two
+// calls separated by the input are two turns, so the output is age 2.
+func TestResponsesInputItemsSplitTurns(t *testing.T) {
+	for _, typ := range []schemas.ResponsesMessageType{
+		schemas.ResponsesMessageTypeMCPApprovalResponses,
+		schemas.ResponsesMessageTypeConfigurationUpdate,
+		schemas.ResponsesMessageTypeAdditionalTools,
+	} {
+		msgs := []schemas.ResponsesMessage{
+			rmText(schemas.ResponsesInputMessageRoleSystem, "sys"),
+			rmCall("1"), rmOut("1", bigOutput(200)),
+			rmCall("b"), rmItem(typ), rmCall("c"),
+		}
+		out := runResp(t, msgs, defaults(t))
+		require.Contains(t, rmOutStr(out[2]), "tokens trimmed", string(typ))
+	}
+}
+
+func TestResponsesMCPApprovalResponseIsInput(t *testing.T) {
+	file := bigOutput(50)
+	s := defaults(t) // K = 2
+	reqN := []schemas.ResponsesMessage{
+		rmText(schemas.ResponsesInputMessageRoleSystem, "sys"),
+		rmText(schemas.ResponsesInputMessageRoleUser, "go"),
+		rmCall("a"), rmOut("a", file), // X
+		rmCall("b"), rmOut("b", "o"),
+		rmItem(schemas.ResponsesMessageTypeMCPApprovalRequest),
+		rmItem(schemas.ResponsesMessageTypeMCPApprovalResponses),
+	}
+	outN := runResp(t, reqN, s)
+	reqN1 := append(append([]schemas.ResponsesMessage{}, reqN...),
+		rmItem(schemas.ResponsesMessageTypeMCPCall), rmCall("c"), rmOut("c", file))
+	outN1 := runResp(t, reqN1, s)
+	require.Equal(t, rmOutStr(outN[3]), rmOutStr(outN1[3]), "X must not flip to a stub")
+	require.NotContains(t, rmOutStr(outN1[3]), "identical to the output")
+}
+
+func TestResponsesConfigurationUpdateIsInput(t *testing.T) {
+	msgs := []schemas.ResponsesMessage{
+		rmText(schemas.ResponsesInputMessageRoleSystem, "sys"),
+		rmCall("1"), rmOut("1", bigOutput(200)),
+		rmItem(schemas.ResponsesMessageTypeConfigurationUpdate), // not a turn: age stays 0
+	}
+	big := rmOutStr(msgs[2])
+	require.Equal(t, big, rmOutStr(runResp(t, msgs, defaults(t))[2]))
+}
+
+func TestResponsesAdditionalToolsIsInput(t *testing.T) {
+	msgs := []schemas.ResponsesMessage{
+		rmText(schemas.ResponsesInputMessageRoleSystem, "sys"),
+		rmCall("1"), rmOut("1", bigOutput(200)),
+		rmCall("2"),
+		rmItem(schemas.ResponsesMessageTypeAdditionalTools), // not a turn: age 1
+	}
+	big := rmOutStr(msgs[2])
+	require.Equal(t, big, rmOutStr(runResp(t, msgs, defaults(t))[2]))
+}
+
+// A hosted tool search lives inside one model response, so its output must not
+// split the response into two turns.
+func TestResponsesHostedToolSearchOutputStaysInTurn(t *testing.T) {
+	big := bigOutput(200)
+	msgs := []schemas.ResponsesMessage{
+		rmText(schemas.ResponsesInputMessageRoleSystem, "sys"),
+		rmCall("1"), rmOut("1", big),
+		rmItem(schemas.ResponsesMessageTypeToolSearchCall),
+		rmItem(schemas.ResponsesMessageTypeToolSearchOutput),
+		rmCall("2"),
+	}
+	out := runResp(t, msgs, defaults(t)) // one turn: age 1 < 2
+	require.Equal(t, big, rmOutStr(out[2]))
+}
+
+// A client-executed tool search output is caller input: it ends the run.
+func TestResponsesClientToolSearchOutputSplitsTurns(t *testing.T) {
+	big := bigOutput(200)
+	client := rmItem(schemas.ResponsesMessageTypeToolSearchOutput)
+	client.ResponsesToolMessage = &schemas.ResponsesToolMessage{Execution: strp(schemas.ToolSearchExecutionClient)}
+	msgs := []schemas.ResponsesMessage{
+		rmText(schemas.ResponsesInputMessageRoleSystem, "sys"),
+		rmCall("1"), rmOut("1", big),
+		rmItem(schemas.ResponsesMessageTypeToolSearchCall), client, rmCall("2"),
+	}
+	out := runResp(t, msgs, defaults(t)) // two turns: age 2
+	require.Contains(t, rmOutStr(out[2]), "tokens trimmed")
+}
+
+// A developer or system item in the middle of the history is input, not a turn.
+func TestResponsesMidHistoryDeveloperSystemNotATurn(t *testing.T) {
+	big := bigOutput(200)
+	for _, role := range []schemas.ResponsesMessageRoleType{schemas.ResponsesInputMessageRoleDeveloper, schemas.ResponsesInputMessageRoleSystem} {
+		msgs := []schemas.ResponsesMessage{
+			rmText(schemas.ResponsesInputMessageRoleSystem, "sys"),
+			rmCall("1"), rmOut("1", big),
+			rmCall("2"), rmText(role, "note"), rmOut("2", "ok"),
+		}
+		out := runResp(t, msgs, defaults(t)) // one turn after the output: age 1
+		require.Equal(t, big, rmOutStr(out[2]), string(role))
+	}
+}
+
+// Pass 2 runs (an eligible value is big enough to be a trim candidate) but
+// changes nothing: the input slice itself must come back.
+func TestResponsesPass2WithoutChangeReturnsSameSlice(t *testing.T) {
+	msgs := respRounds("abcd", "x", "y")
+	s := defaults(t)
+	s.MinTokens = 1
+	out, st := compressResponses(msgs, s)
+	require.Equal(t, &msgs[0], &out[0])
+	require.False(t, st.Changed)
+	require.Equal(t, st.EligibleBefore, st.EligibleAfter)
+}

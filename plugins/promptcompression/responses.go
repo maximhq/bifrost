@@ -33,22 +33,16 @@ func compressResponses(msgs []schemas.ResponsesMessage, s settings) ([]schemas.R
 	var st stats
 	editable := false
 	candidates, eligibleCandidates := 0, 0
-	turns := 0 // assistant turns after i, so turns is the age of i
-	afterAssistant := false
+	var tc turnCounter // tc.turns is the age of the item being visited
 	for i := len(msgs) - 1; i >= n; i-- {
 		m := &msgs[i]
-		if respIsAssistantItem(m) {
-			if !afterAssistant {
-				turns++
-			}
-			afterAssistant = true
+		if tc.step(m) {
 			continue
 		}
-		afterAssistant = false
 		if !respIsToolOutput(m) {
 			continue
 		}
-		eligible := turns >= s.MinAgeTurns
+		eligible := tc.turns >= s.MinAgeTurns
 		allTxt := respIsAllText(m)
 		if allTxt {
 			candidates++
@@ -84,19 +78,13 @@ func compressResponses(msgs []schemas.ResponsesMessage, s settings) ([]schemas.R
 	var out []schemas.ResponsesMessage
 	st.EligibleAfter = 0
 	f := textTransform(s, true)
-	turns = 0
-	afterAssistant = false
+	tc = turnCounter{}
 	for i := len(msgs) - 1; i >= n; i-- {
 		m := msgs[i]
-		if respIsAssistantItem(&m) {
-			if !afterAssistant {
-				turns++
-			}
-			afterAssistant = true
+		if tc.step(&m) {
 			continue
 		}
-		afterAssistant = false
-		if !respIsToolOutput(&m) || turns < s.MinAgeTurns {
+		if !respIsToolOutput(&m) || tc.turns < s.MinAgeTurns {
 			continue
 		}
 		if stubs != nil && stubs[i] != "" {
@@ -129,15 +117,46 @@ func respIsToolOutput(m *schemas.ResponsesMessage) bool {
 	return m.Type != nil && *m.Type == schemas.ResponsesMessageTypeFunctionCallOutput
 }
 
+// turnCounter counts assistant turns while walking items back to front. After
+// step has visited items i+1.., turns is the age of item i: the number of
+// maximal runs of assistant items that follow it.
+type turnCounter struct {
+	turns          int
+	afterAssistant bool // the previously visited (next newer) item was an assistant item
+}
+
+// step visits m and reports whether it is an assistant item. A run is counted
+// once, when its newest item is visited.
+func (c *turnCounter) step(m *schemas.ResponsesMessage) bool {
+	if respIsAssistantItem(m) {
+		if !c.afterAssistant {
+			c.turns++
+		}
+		c.afterAssistant = true
+		return true
+	}
+	c.afterAssistant = false
+	return false
+}
+
 // respIsAssistantItem reports whether m belongs to the model's side of the
-// conversation: everything that is neither user-supplied input nor a tool
+// conversation: everything that is neither client-supplied input nor a tool
 // result. That covers assistant messages (also with no Type), reasoning, and
 // every call item, including server-side tools (web_search_call, mcp_call, ...)
 // and shell/computer/custom calls, because a turn made only of those still
 // advances the conversation and the model has seen the outputs before it.
+//
+// Client input that is not a user/system/developer message is listed
+// explicitly: mcp_approval_response, configuration_update and additional_tools
+// are sent by the caller, so counting them as the model's would merge two
+// model responses into one run (or count a turn that has not happened).
 // Results are recognised by the "_output" type suffix rather than a list, so a
-// result type added later is covered too. A maximal run of consecutive
-// assistant items is one turn.
+// result type added later is covered too; the exception is a hosted
+// tool_search_output, which is produced inside the model's own response
+// (tool_search_call, tool_search_output, function_call) and must not split it.
+// Only an output marked execution "client" is a caller-supplied result. An
+// item with no Execution set is treated as hosted, which keeps it in the turn.
+// A maximal run of consecutive assistant items is one turn.
 func respIsAssistantItem(m *schemas.ResponsesMessage) bool {
 	if m.Role != nil {
 		switch *m.Role {
@@ -147,7 +166,18 @@ func respIsAssistantItem(m *schemas.ResponsesMessage) bool {
 			return false
 		}
 	}
-	return m.Type == nil || !strings.HasSuffix(string(*m.Type), "_output")
+	if m.Type == nil {
+		return true
+	}
+	switch *m.Type {
+	case schemas.ResponsesMessageTypeMCPApprovalResponses,
+		schemas.ResponsesMessageTypeConfigurationUpdate,
+		schemas.ResponsesMessageTypeAdditionalTools:
+		return false
+	case schemas.ResponsesMessageTypeToolSearchOutput:
+		return !m.IsClientToolSearchItem()
+	}
+	return !strings.HasSuffix(string(*m.Type), "_output")
 }
 
 func respIsTextBlock(b *schemas.ResponsesMessageContentBlock) bool {
@@ -168,6 +198,12 @@ func respIsTextBlock(b *schemas.ResponsesMessageContentBlock) bool {
 // (age b) already existed when i first reached age K, which is a-b <= K. A
 // duplicate that arrives later must not turn an already-sent trimmed output
 // into a stub; such a copy is only ever trimmed.
+//
+// Known limitation: the guarantee assumes each request ends on a whole model
+// response followed by new client input. An input that ends with an assistant
+// message or a prefill can merge two model responses into one run of assistant
+// items, so the turn count (and a stub decision) can differ from the one the
+// previous request saw.
 func planResponsesDedupe(msgs []schemas.ResponsesMessage, start, minAge int) []string {
 	var stubs []string
 	type seenCopy struct {
@@ -175,18 +211,12 @@ func planResponsesDedupe(msgs []schemas.ResponsesMessage, start, minAge int) []s
 		age    int
 	}
 	next := map[string]seenCopy{} // text -> next newer copy
-	turns := 0
-	afterAssistant := false
+	var tc turnCounter
 	for i := len(msgs) - 1; i >= start; i-- {
 		m := &msgs[i]
-		if respIsAssistantItem(m) {
-			if !afterAssistant {
-				turns++
-			}
-			afterAssistant = true
+		if tc.step(m) {
 			continue
 		}
-		afterAssistant = false
 		if !respIsToolOutput(m) {
 			continue
 		}
@@ -195,8 +225,8 @@ func planResponsesDedupe(msgs []schemas.ResponsesMessage, start, minAge int) []s
 			continue
 		}
 		j, seen := next[text]
-		next[text] = seenCopy{m.ResponsesToolMessage.CallID, turns}
-		if !seen || turns < minAge || turns-j.age > minAge {
+		next[text] = seenCopy{m.ResponsesToolMessage.CallID, tc.turns}
+		if !seen || tc.turns < minAge || tc.turns-j.age > minAge {
 			continue
 		}
 		stub, ok := dedupeStub(j.callID, text)
