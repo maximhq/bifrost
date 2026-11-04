@@ -35,6 +35,7 @@
 - **ClickHouse User Agent Mappings** - The ClickHouse log store gets the user agent mappings table the SQL stores already have
 - **Bedrock Tool Strict Mode** - `strict` on a tool reaches Converse `toolSpec.strict` for Claude on Bedrock
 - **Tracing Hooks** - `HoldTraceFlush` delays trace export until background writers such as post-delivery guardrails finish, and `SetSpanStartTime` lets a span opened after its work shows the work's real duration
+- **Prompt Compression Plugin** - The gateway registers the built-in `prompt_compression` plugin, enabled from a `prompt_compression` entry in `plugins` (the `config` block is optional) and described in `config.schema.json` (thanks [@Thiago-spart](https://github.com/Thiago-spart)!)
 
 ## 🐞 Fixed
 

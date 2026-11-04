@@ -1,0 +1,1 @@
+- feat: add cache-aware prompt compression plugin that shortens old tool outputs in Chat and Responses agent-loop requests

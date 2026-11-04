@@ -324,6 +324,7 @@
                 "icon": "puzzle-piece",
                 "pages": [
                   "features/plugins/mocker",
+                  "features/plugins/prompt-compression",
                   "features/plugins/jsonparser"
                 ]
               }

@@ -4659,6 +4659,73 @@
             "if": {
               "properties": {
                 "name": {
+                  "const": "prompt_compression"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "config": {
+                  "type": "object",
+                  "description": "Configuration for the prompt compression plugin. Every field is optional.",
+                  "properties": {
+                    "tool_output_min_age_turns": {
+                      "type": "integer",
+                      "description": "Number of assistant turns that must come after a tool output before it can be trimmed (Chat counts assistant messages; Responses counts runs of consecutive assistant items once). Any value of 1 or more keeps the newest tool outputs untouched; 0 makes every tool output eligible",
+                      "minimum": 0,
+                      "default": 2
+                    },
+                    "tool_output_min_tokens": {
+                      "type": "integer",
+                      "description": "Estimated token size (ceil(bytes/4)) a tool output must reach (at least this many) before it is trimmed",
+                      "minimum": 0,
+                      "default": 500
+                    },
+                    "keep_head_lines": {
+                      "type": "integer",
+                      "description": "Lines kept from the start of a trimmed tool output",
+                      "minimum": 0,
+                      "default": 20
+                    },
+                    "keep_tail_lines": {
+                      "type": "integer",
+                      "description": "Lines kept from the end of a trimmed tool output",
+                      "minimum": 0,
+                      "default": 20
+                    },
+                    "dedupe_tool_outputs": {
+                      "type": "boolean",
+                      "description": "Replace each older tool output that is byte-identical to a newer one with a short stub naming the call of the next newer identical copy, so existing stubs do not change when another duplicate arrives. Applies regardless of age",
+                      "default": true
+                    },
+                    "normalize_whitespace": {
+                      "type": "boolean",
+                      "description": "Strip trailing spaces and tabs and squeeze runs of 3 or more blank lines, in old tool outputs only (those at least tool_output_min_age_turns old). User, assistant and system text and newer tool outputs are never changed. Leading indentation is never changed.",
+                      "default": true
+                    },
+                    "protected_leading_messages": {
+                      "type": "integer",
+                      "description": "Number of leading messages (for example the system prompt) that are never modified",
+                      "minimum": 0,
+                      "default": 1
+                    },
+                    "min_savings_percent": {
+                      "type": "integer",
+                      "description": "Minimum estimated savings, in percent, required before the compressed request replaces the original",
+                      "minimum": 0,
+                      "maximum": 100,
+                      "default": 5
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "name": {
                   "const": "otel"
                 }
               }
