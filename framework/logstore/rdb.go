@@ -5366,6 +5366,14 @@ func (s *RDBLogStore) deleteExpiredBatchPostgres(ctx context.Context, table, key
 	return deleted, nil
 }
 
+// RetentionInterval is hourly on Postgres, where the advisory lock makes idle replicas' ticks one cheap probe.
+func (s *RDBLogStore) RetentionInterval() time.Duration {
+	if s.db.Dialector.Name() == "postgres" {
+		return postgresCleanupInterval
+	}
+	return cleanupInterval
+}
+
 // matViewShutdownWait bounds how long Close waits for cancelled matview
 // maintenance to wind down (cancel request, advisory unlock, session restore)
 // before it closes the pool anyway.
