@@ -7120,6 +7120,72 @@
               "llm"
             ]
           }
+        },
+        {
+          "description": "Enabled suggestions capture the semantic classifier's vectors and cluster in its embedding space, so they need it as the primary classifier; the loader rejects them otherwise.",
+          "if": {
+            "properties": {
+              "suggestions": {
+                "properties": {
+                  "enabled": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "enabled"
+                ]
+              }
+            },
+            "required": [
+              "suggestions"
+            ]
+          },
+          "then": {
+            "required": [
+              "semantic"
+            ],
+            "not": {
+              "required": [
+                "classifier"
+              ],
+              "properties": {
+                "classifier": {
+                  "const": "decision"
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "Enabled suggestions need a model: their own provider and model (set together), or else the llm block's.",
+          "if": {
+            "properties": {
+              "suggestions": {
+                "properties": {
+                  "enabled": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "enabled"
+                ],
+                "not": {
+                  "required": [
+                    "provider",
+                    "model"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "suggestions"
+            ]
+          },
+          "then": {
+            "required": [
+              "llm"
+            ]
+          }
         }
       ],
       "additionalProperties": false

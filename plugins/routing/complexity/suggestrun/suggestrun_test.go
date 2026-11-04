@@ -212,6 +212,53 @@ func TestRunCreatesRefreshesAndSupersedes(t *testing.T) {
 	assert.Len(t, runs, 3)
 }
 
+// decidingLLM answers like kindLLM, and the first time it is asked about
+// kind, the user decides that suggestion: the decision lands while the run is
+// still asking the model, after it read the stored suggestions.
+type decidingLLM struct {
+	kindLLM
+	store    logstore.LogStore
+	kind, id string
+	once     sync.Once
+}
+
+func (l *decidingLLM) CompleteJSON(ctx context.Context, messages []suggest.Message) (string, error) {
+	if strings.Contains(messages[1].Content, l.kind) {
+		l.once.Do(func() {
+			now := time.Now().UTC()
+			_, _ = l.store.UpdateComplexitySuggestionStatus(ctx, l.id, logstore.ComplexitySuggestionStatusOpen, logstore.ComplexitySuggestionStatusAccepted, &now)
+		})
+	}
+	return l.kindLLM.CompleteJSON(ctx, messages)
+}
+
+// A suggestion the user accepts while a run is asking the model about it
+// stays accepted: the run's refresh, computed from the open row it read
+// earlier, is not written over it, nor counted.
+func TestRunKeepsADecisionMadeWhileItRuns(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
+	now := time.Date(2026, 11, 4, 3, 0, 0, 0, time.UTC)
+	space := &fakeSpace{live: []complexity.SuggestionPhrase{{Tier: "COMPLEX", Text: "write a poem", Vector: axis(5)}}}
+	space.add("refund", 0, 12, now.Add(-time.Hour))
+	_, err := Run(ctx, space, store, texts, &kindLLM{}, settings("run-1", now))
+	require.NoError(t, err)
+	rows, err := store.ListComplexitySuggestions(ctx, logstore.ComplexitySuggestionFilter{})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	refund := rows[0]
+
+	llm := &decidingLLM{store: store, kind: "refund", id: refund.ID}
+	result, err := Run(ctx, space, store, texts, llm, settings("run-2", now.Add(time.Hour)))
+	require.NoError(t, err)
+	assert.Zero(t, result.Run.Refreshed, "the refresh that was not written is not counted")
+	rows, err = store.ListComplexitySuggestions(ctx, logstore.ComplexitySuggestionFilter{IDs: []string{refund.ID}})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, logstore.ComplexitySuggestionStatusAccepted, rows[0].Status, "the decision made during the run stands")
+	assert.Equal(t, "run-1", rows[0].RunID, "the run's refresh was not written over it")
+}
+
 // A cluster whose example logs were all deleted or hide their content is
 // unreadable: the run learned nothing about it, so the open suggestion it
 // matches is left exactly as it was rather than superseded.

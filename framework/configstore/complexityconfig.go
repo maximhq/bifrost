@@ -1223,6 +1223,16 @@ func (c *ComplexityAnalyzerConfig) Validate() error {
 	if c.SessionRoutingEnabled() && c.Semantic == nil && c.Classifier != ComplexityClassifierDecision {
 		return fmt.Errorf("complexity session routing requires a semantic config block")
 	}
+	if c.SuggestionsEnabled() {
+		// Suggestions capture the semantic classifier's vectors and cluster in
+		// its embedding space, so they need it to be the primary classifier.
+		if c.Semantic == nil || c.Classifier == ComplexityClassifierDecision {
+			return fmt.Errorf("complexity suggestions require the semantic classifier: a semantic config block, with classifier %q", ComplexityClassifierSemantic)
+		}
+		if c.Suggestions.Provider == "" && c.LLM == nil {
+			return fmt.Errorf("complexity suggestions need a model: set suggestions provider and model, or an llm config block")
+		}
+	}
 	return nil
 }
 

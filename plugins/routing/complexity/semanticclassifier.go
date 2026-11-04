@@ -473,6 +473,15 @@ func (c *SemanticClassifier) Status() SemanticStatusInfo {
 	return status
 }
 
+// Serving reports whether a warmed phrase bank is answering requests, which
+// is what a suggestion run needs. A previous generation still serving while a
+// newer one warms, or after the newer one failed, counts.
+func (c *SemanticClassifier) Serving() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return !c.closed && c.active != nil && c.active.embed != nil && c.active.captureNamespace != ""
+}
+
 // Timeout returns the per-request embedding budget currently in force,
 // resolving an unset value the same way the embedding path does. Callers need
 // it to say what a classification ran out of: "timed out" without the budget

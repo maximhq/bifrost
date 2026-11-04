@@ -1305,7 +1305,7 @@ func TestRDBConfigStore_ComplexityDecisionMinConfidencePersistence(t *testing.T)
 
 func testSuggestionsAnalyzerConfig() *ComplexityAnalyzerConfig {
 	cfg := testSemanticAnalyzerConfig()
-	cfg.Suggestions = &ComplexitySuggestionsConfig{Enabled: true, SampleRate: 0.25, LookbackDays: 14}
+	cfg.Suggestions = &ComplexitySuggestionsConfig{Enabled: true, SampleRate: 0.25, LookbackDays: 14, Provider: "openai", Model: "gpt-5"}
 	return cfg
 }
 
@@ -1341,6 +1341,7 @@ func TestComplexitySuggestionsConfigDecoding(t *testing.T) {
 
 func TestComplexitySuggestionsConfigDefaultsAndValidation(t *testing.T) {
 	cfg := testSemanticAnalyzerConfig()
+	cfg.LLM = testLLMConfig() // the suggestion model when the block names none
 	cfg.Suggestions = &ComplexitySuggestionsConfig{Enabled: true}
 	normalized := cfg.Normalized()
 	require.NoError(t, normalized.Validate())
@@ -1380,6 +1381,7 @@ func TestComplexitySuggestionsRunSettings(t *testing.T) {
 	require.ErrorContains(t, json.Unmarshal([]byte(`{"enabled":true,"schedule":{"cron":"0 3 * * *"}}`), &cfg), `unknown complexity suggestions schedule field "cron"`)
 
 	analyzer := testSemanticAnalyzerConfig()
+	analyzer.LLM = testLLMConfig() // the suggestion model when the block names none
 	analyzer.Suggestions = &ComplexitySuggestionsConfig{Enabled: true, Instructions: "   "}
 	n := analyzer.Normalized()
 	require.NoError(t, n.Validate())
@@ -1409,6 +1411,51 @@ func TestComplexitySuggestionsRunSettings(t *testing.T) {
 		n := analyzer.Normalized()
 		assert.Error(t, n.Validate(), name)
 	}
+}
+
+// Enabled suggestions capture the semantic classifier's vectors and ask a
+// model, so they need the semantic classifier as primary and a model: their
+// own provider and model, or the llm block's. Disabled, they need neither.
+func TestComplexitySuggestionsRequireSemanticClassifierAndModel(t *testing.T) {
+	validate := func(mutate func(*ComplexityAnalyzerConfig)) error {
+		cfg := testSemanticAnalyzerConfig()
+		mutate(cfg)
+		n := cfg.Normalized()
+		return n.Validate()
+	}
+	own := func() *ComplexitySuggestionsConfig {
+		return &ComplexitySuggestionsConfig{Enabled: true, Provider: "openai", Model: "gpt-5"}
+	}
+
+	require.NoError(t, validate(func(c *ComplexityAnalyzerConfig) { c.Suggestions = own() }), "their own model")
+	require.NoError(t, validate(func(c *ComplexityAnalyzerConfig) {
+		c.Suggestions, c.LLM = &ComplexitySuggestionsConfig{Enabled: true}, testLLMConfig()
+	}), "the llm block's model")
+
+	assert.ErrorContains(t, validate(func(c *ComplexityAnalyzerConfig) {
+		c.Suggestions = &ComplexitySuggestionsConfig{Enabled: true}
+	}), "need a model")
+	for name, partial := range map[string]*ComplexitySuggestionsConfig{
+		"provider only": {Enabled: true, Provider: "openai"},
+		"model only":    {Enabled: true, Model: "gpt-5"},
+	} {
+		assert.ErrorContains(t, validate(func(c *ComplexityAnalyzerConfig) { c.Suggestions = partial }), "set together", name)
+	}
+
+	assert.ErrorContains(t, validate(func(c *ComplexityAnalyzerConfig) {
+		c.Semantic, c.Suggestions = nil, own()
+	}), "require the semantic classifier", "no semantic block")
+	assert.ErrorContains(t, validate(func(c *ComplexityAnalyzerConfig) {
+		c.Classifier, c.Decision, c.Suggestions = ComplexityClassifierDecision, &ComplexityDecisionConfig{}, own()
+	}), "require the semantic classifier", "decision primary")
+
+	// Disabled suggestions keep their settings without either.
+	require.NoError(t, validate(func(c *ComplexityAnalyzerConfig) {
+		c.Semantic, c.Suggestions = nil, &ComplexitySuggestionsConfig{Enabled: false}
+	}))
+	require.NoError(t, validate(func(c *ComplexityAnalyzerConfig) {
+		c.Suggestions = &ComplexitySuggestionsConfig{Enabled: false}
+	}))
 }
 
 // The suggestions block rides the semantic row as a top-level key, which the

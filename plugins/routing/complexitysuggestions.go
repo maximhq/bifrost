@@ -93,10 +93,11 @@ type ComplexitySuggestionJobQueue interface {
 	EnqueuePartitioned(ctx context.Context, id, kind, partitioningKey, metadata, createdBy string) error
 }
 
-// ComplexitySuggestionJobStore reports queued and running jobs. The config
-// store is one.
+// ComplexitySuggestionJobStore reports queued and running jobs, and the
+// latest job of a kind. The config store is one.
 type ComplexitySuggestionJobStore interface {
 	GetInFlightSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
+	GetLatestSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
 }
 
 // ComplexitySuggestionScheduleStore keeps schedule state and lets nodes
@@ -321,7 +322,16 @@ func (p *RoutingPlugin) scheduleComplexitySuggestions(ctx context.Context, now t
 	if p.semanticClassifier == nil || p.semanticClassifier.Status().State != complexity.SemanticStatusReady {
 		return recordSkippedSuggestionRun(ctx, deps.store, runID, logstore.ComplexitySuggestionTriggerSchedule, "the complexity router was still warming up")
 	}
-	return p.startComplexitySuggestionRun(ctx, runID, logstore.ComplexitySuggestionTriggerSchedule)
+	started, err := p.startComplexitySuggestionRun(ctx, runID, logstore.ComplexitySuggestionTriggerSchedule)
+	switch {
+	case errors.Is(err, errSuggestionsClosing):
+		return recordSkippedSuggestionRun(ctx, deps.store, runID, logstore.ComplexitySuggestionTriggerSchedule, "the gateway was shutting down")
+	case err != nil:
+		return err
+	case !started:
+		return recordSkippedSuggestionRun(ctx, deps.store, runID, logstore.ComplexitySuggestionTriggerSchedule, "a suggestion run was still in progress")
+	}
+	return nil
 }
 
 // dueRun reports the run due now, with the schedule row version to claim it
@@ -376,6 +386,22 @@ func (cs *complexitySuggestions) dueRun(ctx context.Context, schedule configstor
 	return row.NextRunAt, row.Version, true, nil
 }
 
+// NextComplexitySuggestionRun is when the schedule runs next: the next run its
+// state has once a node has set it for these settings, else the next one the
+// settings give; a run already due is due now.
+func NextComplexitySuggestionRun(ctx context.Context, store ComplexitySuggestionScheduleStore, schedule configstore.ComplexitySuggestionsSchedule, now time.Time) time.Time {
+	next := schedule.NextSlot(now)
+	if store != nil {
+		if row, err := store.GetComplexitySuggestionSchedule(ctx, complexitySuggestionScheduleKey); err == nil && row != nil && row.ScheduleHash == complexitySuggestionScheduleHash(schedule) {
+			next = row.NextRunAt
+		}
+	}
+	if next.Before(now) {
+		next = now
+	}
+	return next.UTC()
+}
+
 // recordSkippedSuggestionRun records a run that was due but could not start.
 func recordSkippedSuggestionRun(ctx context.Context, store suggestrun.Store, runID, triggeredBy, reason string) error {
 	now := time.Now().UTC()
@@ -410,50 +436,153 @@ func suggestionRecordContext(ctx context.Context) (context.Context, context.Canc
 	return context.WithTimeout(context.WithoutCancel(ctx), suggestionRecordTimeout)
 }
 
+// ErrComplexitySuggestionsOff is a run asked for while suggestions are off or
+// have nowhere to be kept.
+var ErrComplexitySuggestionsOff = errors.New("phrase suggestions are off: enable them in the complexity router settings")
+
+// ErrComplexitySuggestionRunInFlight is a run asked for while one is already
+// queued or running.
+var ErrComplexitySuggestionRunInFlight = errors.New("a phrase suggestion run is already queued or running")
+
+// StartComplexitySuggestionRunNow starts a run outside the schedule and
+// returns its ID; the run itself happens in the background.
+func (p *RoutingPlugin) StartComplexitySuggestionRunNow(ctx context.Context) (string, error) {
+	if p.suggestions == nil || p.suggestions.deps.Load() == nil || !p.complexityConfig.Load().SuggestionsEnabled() {
+		return "", ErrComplexitySuggestionsOff
+	}
+	// Refused up front rather than accepted and recorded as a failed run. A
+	// previous phrase bank still serving while a new one warms is enough.
+	if p.semanticClassifier == nil || !p.semanticClassifier.Serving() {
+		return "", complexity.ErrNoServingGeneration
+	}
+	runID, err := p.manualSuggestionRunID(ctx)
+	if err != nil {
+		return "", err
+	}
+	started, err := p.startComplexitySuggestionRun(ctx, runID, logstore.ComplexitySuggestionTriggerManual)
+	if err != nil {
+		return "", err
+	}
+	if !started {
+		return "", ErrComplexitySuggestionRunInFlight
+	}
+	return runID, nil
+}
+
+// manualSuggestionRunID names a manual run. With a job runner it is derived
+// from the latest suggestion job, so starts that race past the in-flight
+// check (on this node or another) name the same job: the job table's key
+// takes the first, the others get the duplicate, and every caller is handed
+// the one run. Once that job exists it is the latest, so the next start names
+// a new one. Without a job runner the node's own guard serializes runs, and a
+// fresh UUID will do.
+func (p *RoutingPlugin) manualSuggestionRunID(ctx context.Context) (string, error) {
+	jobs := p.suggestions.jobs.Load()
+	if jobs == nil {
+		return uuid.NewString(), nil
+	}
+	latest, err := jobs.store.GetLatestSidekiqJobByKind(ctx, ComplexitySuggestionsJobKind)
+	if err != nil {
+		return "", fmt.Errorf("read the latest suggestion run: %w", err)
+	}
+	previous := ""
+	if latest != nil {
+		previous = latest.ID
+	}
+	return uuid.NewSHA1(complexitySuggestionRunNamespace, []byte(ComplexitySuggestionsJobKind+"\x00manual\x00"+previous)).String(), nil
+}
+
+// TestComplexitySuggestionPhrases routes examples with and without phrases
+// against the serving phrase bank, without saving anything.
+func (p *RoutingPlugin) TestComplexitySuggestionPhrases(ctx context.Context, phrases []complexity.SuggestionPhrase, examples []suggestrun.TestExample) (suggestrun.PhraseTest, error) {
+	if p.semanticClassifier == nil {
+		return suggestrun.PhraseTest{}, complexity.ErrNoServingGeneration
+	}
+	// Only the serving bank is read, so no capture store is needed.
+	space, err := p.semanticClassifier.ServingSpace(ctx)
+	if err != nil {
+		return suggestrun.PhraseTest{}, err
+	}
+	defer space.Close()
+	return suggestrun.TestPhrases(ctx, space, space.MinSimilarity, phrases, examples)
+}
+
+// ComplexitySuggestionMessageHistoryCount is how many user turns the router
+// embeds, so request text read back from logs matches what was captured.
+func (p *RoutingPlugin) ComplexitySuggestionMessageHistoryCount() int {
+	if config := p.complexityConfig.Load(); config != nil && config.Semantic != nil {
+		return config.Semantic.MessageHistoryCount
+	}
+	return 1
+}
+
 // startComplexitySuggestionRun records a run as queued and hands it to the
-// job runner, whose partition runs one suggestion run at a time, or starts it
-// here when there is no job runner. A node already running one itself records
-// this one as skipped.
-func (p *RoutingPlugin) startComplexitySuggestionRun(ctx context.Context, runID, triggeredBy string) error {
+// job runner, or starts it here when there is no job runner, and reports
+// whether it did. A run already queued or running (in the job store, or on
+// this node without one) is not doubled: it reports false, which a scheduled
+// caller records as a skipped run and a manual one refuses.
+func (p *RoutingPlugin) startComplexitySuggestionRun(ctx context.Context, runID, triggeredBy string) (bool, error) {
 	cs := p.suggestions
 	deps := cs.deps.Load()
 	if deps == nil {
-		return nil
+		return false, errSuggestionsUnavailable
 	}
 	if jobs := cs.jobs.Load(); jobs != nil {
+		inFlight, err := jobs.store.GetInFlightSidekiqJobByKind(ctx, ComplexitySuggestionsJobKind)
+		if err != nil {
+			return false, fmt.Errorf("check for a running suggestion run: %w", err)
+		}
+		if inFlight != nil {
+			return false, nil
+		}
 		meta, err := sonic.MarshalString(complexitySuggestionJobMeta{RunID: runID, TriggeredBy: triggeredBy})
 		if err != nil {
-			return err
+			return false, err
 		}
 		if err := recordQueuedSuggestionRun(ctx, deps.store, runID, triggeredBy); err != nil {
-			return err
+			return false, err
 		}
 		err = jobs.queue.EnqueuePartitioned(ctx, runID, ComplexitySuggestionsJobKind, ComplexitySuggestionsJobKind, meta, "")
-		if err != nil && !sidekiq.IsDuplicateJobError(err) {
-			// Recorded as queued above, the run would otherwise read as
-			// waiting for a job that does not exist.
+		if sidekiq.IsDuplicateJobError(err) {
+			return true, nil // this run is already queued
+		}
+		if err != nil {
 			err = fmt.Errorf("queue suggestion run: %w", err)
 			recordCtx, cancel := suggestionRecordContext(ctx)
 			defer cancel()
+			// An enqueue error does not prove no job was written (a commit
+			// can land after its acknowledgement is lost), so the job store
+			// is asked before the run recorded as queued is closed. Only "no
+			// job of this kind in flight" proves this one was not created.
+			inFlight, lookupErr := jobs.store.GetInFlightSidekiqJobByKind(recordCtx, ComplexitySuggestionsJobKind)
+			switch {
+			case lookupErr != nil:
+				return false, errors.Join(err, fmt.Errorf("could not confirm whether the run was queued: %w", lookupErr))
+			case inFlight != nil && inFlight.ID == runID:
+				return true, nil // written after all; the dispatcher runs it
+			case inFlight != nil:
+				return false, err // another run's job; whether this one exists is unknown
+			}
 			if recordErr := recordSkippedSuggestionRun(recordCtx, deps.store, runID, triggeredBy, "the run could not be queued: "+err.Error()); recordErr != nil {
 				err = errors.Join(err, recordErr)
 			}
-			return err
+			return false, err
 		}
-		return nil
+		return true, nil
 	}
 	if !cs.inline.CompareAndSwap(false, true) {
-		return recordSkippedSuggestionRun(ctx, deps.store, runID, triggeredBy, "a suggestion run was still in progress")
+		return false, nil
 	}
 	runCtx, done, err := cs.beginRun(cs.ctx)
 	if err != nil {
 		cs.inline.Store(false)
-		return nil // closing
+		// Closing: not "already running", so a manual run is told why.
+		return false, err
 	}
 	if err := recordQueuedSuggestionRun(ctx, deps.store, runID, triggeredBy); err != nil {
 		done()
 		cs.inline.Store(false)
-		return err
+		return false, err
 	}
 	go func() {
 		defer done()
@@ -470,7 +599,7 @@ func (p *RoutingPlugin) startComplexitySuggestionRun(ctx context.Context, runID,
 			p.logger.Warn("[Routing] phrase suggestion run %s failed: %v", runID, err)
 		}
 	}()
-	return nil
+	return true, nil
 }
 
 // RunComplexitySuggestionsJob is the sidekiq handler for a queued run.
