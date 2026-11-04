@@ -2447,6 +2447,7 @@ func TestToOpenAIResponsesRequest_PerplexityWebSearchMapsAllowedDomainsToSearchD
 		webSearch.SearchContentTypes = []string{"text"}
 		webSearch.SearchContextSize = schemas.Ptr("high")
 		webSearch.MaxResults = schemas.Ptr(5)
+		webSearch.SearchType = schemas.Ptr("fast")
 		webSearch.UserLocation = &schemas.ResponsesToolWebSearchUserLocation{Country: schemas.Ptr("US")}
 
 		result := ToOpenAIResponsesRequest(nil, bifrostReq)
@@ -2460,13 +2461,34 @@ func TestToOpenAIResponsesRequest_PerplexityWebSearchMapsAllowedDomainsToSearchD
 				t.Fatalf("expected %s to be absent from the wire payload, got %s", dropped, body)
 			}
 		}
-		for _, kept := range []string{`"search_recency_filter":"week"`, `"search_context_size":"high"`, `"max_results":5`, `"user_location":{`} {
+		for _, kept := range []string{`"search_recency_filter":"week"`, `"search_context_size":"high"`, `"max_results":5`, `"search_type":"fast"`, `"user_location":{`} {
 			if !strings.Contains(body, kept) {
 				t.Fatalf("expected %s on the wire payload, got %s", kept, body)
 			}
 		}
 		if webSearch.MaxUses == nil || webSearch.Filters.TimeRangeFilter == nil {
 			t.Fatal("caller's web_search tool was mutated")
+		}
+	})
+
+	t.Run("keeps Perplexity-only web_search fields off the OpenAI wire", func(t *testing.T) {
+		bifrostReq := buildRequest(nil)
+		bifrostReq.Provider = schemas.OpenAI
+		bifrostReq.Model = "gpt-5"
+		webSearch := bifrostReq.Params.Tools[0].ResponsesToolWebSearch
+		webSearch.SearchType = schemas.Ptr("fast")
+		webSearch.MaxResults = schemas.Ptr(5)
+
+		result := ToOpenAIResponsesRequest(nil, bifrostReq)
+		data, err := json.Marshal(result.Tools[0])
+		if err != nil {
+			t.Fatalf("marshal failed: %v", err)
+		}
+		body := string(data)
+		for _, dropped := range []string{"search_type", "max_results"} {
+			if strings.Contains(body, dropped) {
+				t.Fatalf("expected %s to be absent from the OpenAI wire payload, got %s", dropped, body)
+			}
 		}
 	})
 

@@ -2577,7 +2577,7 @@ func TestResponsesComputerCallSingularActionStillWorks(t *testing.T) {
 // shape for the Agent API's server-side tools that don't fit any pre-existing
 // ResponsesTool variant (sandbox, fetch_url, finance_search, people_search), plus
 // the Agent API's Perplexity-specific extensions to the shared web_search tool
-// (top-level max_results/max_tokens/max_tokens_per_page and the nested filters
+// (top-level search_type/max_results/max_tokens/max_tokens_per_page and the nested filters
 // object's search_domain_filter/search_recency_filter/date filters).
 func TestResponsesToolPerplexityAgentAPIMarshalUnmarshalRoundTrip(t *testing.T) {
 	tests := []struct {
@@ -2591,7 +2591,7 @@ func TestResponsesToolPerplexityAgentAPIMarshalUnmarshalRoundTrip(t *testing.T) 
 		{name: "people_search", in: `{"type":"people_search","max_tokens":10000,"max_tokens_per_page":1000}`},
 		{
 			name: "web_search with Perplexity filters and result-size overrides",
-			in: `{"type":"web_search","search_context_size":"medium","max_results":10,"max_tokens":1000,"max_tokens_per_page":1000,` +
+			in: `{"type":"web_search","search_type":"fast","search_context_size":"medium","max_results":10,"max_tokens":1000,"max_tokens_per_page":1000,` +
 				`"filters":{"search_domain_filter":["example.com","-exclude.com"],"search_recency_filter":"month",` +
 				`"search_after_date_filter":"01/15/2026","search_before_date_filter":"05/15/2026",` +
 				`"last_updated_after_filter":"01/01/2026","last_updated_before_filter":"12/31/2026"},` +

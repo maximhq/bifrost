@@ -1460,7 +1460,7 @@ func isOpenAISupportedToolType(t schemas.ResponsesToolType, provider schemas.Mod
 // toPerplexityWebSearch returns a copy of webSearch shaped for Perplexity's Agent API
 // web_search tool (docs.perplexity.ai/docs/agent-api/tools/web-search). Perplexity
 // accepts its own superset of fields (search_domain_filter and the date/recency
-// filters, max_results, max_tokens, max_tokens_per_page), so those pass through. The
+// filters, search_type, max_results, max_tokens, max_tokens_per_page), so those pass through. The
 // cross-provider domain lists are mapped onto search_domain_filter, which is either an
 // allowlist or a "-"-prefixed denylist but never both: an explicit native filter wins,
 // then AllowedDomains, then BlockedDomains, so a request carrying both generic lists

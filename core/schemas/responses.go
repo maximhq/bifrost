@@ -4125,10 +4125,11 @@ type ResponsesToolWebSearch struct {
 	// Anthropic only
 	MaxUses *int `json:"max_uses,omitempty"` // Maximum number of uses for the search
 
-	// Perplexity Agent API only: override the token budget search_context_size implies.
-	MaxResults       *int `json:"max_results,omitempty"`         // Max search results to consider (1-50)
-	MaxTokens        *int `json:"max_tokens,omitempty"`          // Overrides search_context_size
-	MaxTokensPerPage *int `json:"max_tokens_per_page,omitempty"` // Overrides search_context_size
+	// Perplexity Agent API only: search mode, and overrides for the token budget search_context_size implies.
+	SearchType       *string `json:"search_type,omitempty"`         // "web" | "fast"
+	MaxResults       *int    `json:"max_results,omitempty"`         // Max search results to consider (1-50)
+	MaxTokens        *int    `json:"max_tokens,omitempty"`          // Overrides search_context_size
+	MaxTokensPerPage *int    `json:"max_tokens_per_page,omitempty"` // Overrides search_context_size
 }
 
 // ResponsesToolWebSearchFilters represents filters for web search
