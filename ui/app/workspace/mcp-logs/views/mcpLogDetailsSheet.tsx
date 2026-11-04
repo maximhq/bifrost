@@ -2,6 +2,7 @@ import { formatLatency } from "@/app/workspace/dashboard/utils/chartUtils";
 import BlockHeader from "@/app/workspace/logs/views/blockHeader";
 import LogEntryDetailsView from "@/app/workspace/logs/views/logEntryDetailsView";
 import PluginLogsView from "@/app/workspace/logs/views/pluginLogsView";
+import { CorrelatedLogsContent } from "@/app/workspace/agent-logs/views/correlatedLogs";
 import { SheetNavigationButtons } from "@/components/sheetNavigationButtons";
 import {
 	AlertDialog,
@@ -31,7 +32,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { useSheetNavigation } from "@/hooks/useSheetNavigation";
 import { mapAppToClientApp, mapUserAgentToApp } from "@/lib/constants/logs";
-import { useGetMCPLogByIdQuery, useGetUserAgentMappingsQuery } from "@/lib/store";
+import { useGetMCPLogByIdQuery, useGetMCPLogsStatsQuery, useGetUserAgentMappingsQuery } from "@/lib/store";
 import type { MCPToolLogEntry } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { downloadAsJson } from "@/lib/utils/browser-download";
@@ -49,8 +50,9 @@ import { useGetDeviceQuery } from "@enterprise/lib/store/apis/edgeControlApi";
 import { Link } from "@tanstack/react-router";
 import { format, isValid } from "date-fns";
 import { ChevronDown, Clipboard, Download, Loader2, MoreVertical, Trash2 } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { toast } from "sonner";
 import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 import { getLocale } from "@/lib/i18n";
@@ -71,6 +73,7 @@ const pillStyles: Record<MCPLogPillTone, string> = {
 	error: "border-chart-error/30 bg-chart-error/10 text-chart-error-ink",
 	processing: "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/40 dark:text-blue-400 dark:border-blue-900",
 	approved: "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/40 dark:text-blue-400 dark:border-blue-900",
+	input: "bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-900",
 	neutral: "bg-gray-50 text-gray-700 border-gray-200 dark:bg-gray-900/40 dark:text-gray-400 dark:border-gray-800",
 };
 
@@ -79,6 +82,7 @@ const pillDotStyles: Record<MCPLogPillTone, string> = {
 	error: "bg-chart-error",
 	processing: "bg-blue-500",
 	approved: "bg-blue-500",
+	input: "bg-amber-500",
 	neutral: "bg-gray-400",
 };
 
@@ -91,6 +95,20 @@ function StatusPill({ label, tone }: { label: string; tone: MCPLogPillTone }) {
 			{label}
 		</span>
 	);
+}
+
+// Metadata keys Bifrost writes for MCP round trips and MCP Apps; shown in their own blocks, not the grid.
+const MCP_OWN_METADATA_KEYS = new Set(["input_responses", "retry_later", "mcp_apps", "app_only", "ui_resource_uri", "requested_name"]);
+
+// mcpAppsMarkers are the MCP Apps facts Bifrost recorded on an entry, as badge labels.
+function mcpAppsMarkers(log: MCPToolLogEntry, t: TFunction<"observability">): string[] {
+	const markers: string[] = [];
+	const metadata = log.metadata ?? {};
+	if (metadata.mcp_apps === true) markers.push(t("mcpLogs.detail.appsHost"));
+	if (metadata.app_only === true) markers.push(t("mcpLogs.detail.appOnly"));
+	if (typeof metadata.ui_resource_uri === "string") markers.push(t("mcpLogs.detail.opensUi", { uri: metadata.ui_resource_uri }));
+	if (typeof metadata.requested_name === "string") markers.push(t("mcpLogs.detail.calledAs", { name: metadata.requested_name }));
+	return markers;
 }
 
 function CopyInlineButton({ text, testId }: { text: string; testId?: string }) {
@@ -200,6 +218,21 @@ export function MCPLogDetailSheet({
 		setShowRevealedValues(false);
 	}, [displayLog?.id, revealAvailable]);
 
+	// Rounds of a call that asked its caller for input, grouped like agent logs' correlated tabs.
+	const roundTripID = displayLog?.round_trip_id ?? "";
+	const roundsCorrelation = useMemo(() => (roundTripID ? { round_trip_id: roundTripID } : null), [roundTripID]);
+	// While a paused round is open its call may still be answered, so its rounds refresh at the page's polling cadence.
+	const roundsPolling = open && displayLog?.status === "input_required" ? 10000 : 0;
+	const { data: roundsStats } = useGetMCPLogsStatsQuery(
+		{ filters: roundsCorrelation ?? {} },
+		{ skip: !open || !roundsCorrelation, pollingInterval: roundsPolling, refetchOnMountOrArgChange: true },
+	);
+	const roundsCount = roundsStats?.total_executions ?? 0;
+	const [activeTab, setActiveTab] = useState("execution");
+	useEffect(() => {
+		setActiveTab("execution");
+	}, [displayLog?.id]);
+
 	if (!log || !displayLog) return null;
 
 	if (!isFullDataReady) {
@@ -296,7 +329,9 @@ export function MCPLogDetailSheet({
 			return { label, pluralLabel, idKey, items };
 		})
 		.filter(({ items }) => items.length > 0);
-	const metadataEntries = Object.entries(displayLog.metadata ?? {});
+	const metadataEntries = Object.entries(displayLog.metadata ?? {}).filter(([key]) => !MCP_OWN_METADATA_KEYS.has(key));
+	const appsMarkers = mcpAppsMarkers(displayLog, t);
+	const inputResponses = displayLog.metadata?.input_responses;
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
@@ -680,6 +715,21 @@ export function MCPLogDetailSheet({
 									{displayLog.decision && (
 										<LogEntryDetailsView className="w-full" label={t("mcpLogs.detail.decision")} value={displayLog.decision} />
 									)}
+									{appsMarkers.length > 0 && (
+										<LogEntryDetailsView
+											className="col-span-3 w-full"
+											label={t("mcpLogs.detail.mcpApps")}
+											value={
+												<span className="inline-flex flex-wrap gap-1" data-testid="mcplogdetails-mcp-apps">
+													{appsMarkers.map((marker) => (
+														<Badge key={marker} variant="secondary" className="font-normal">
+															{marker}
+														</Badge>
+													))}
+												</span>
+											}
+										/>
+									)}
 									{displayLog.llm_request_id && (
 										<LogEntryDetailsView
 											className="col-span-3 w-full"
@@ -696,7 +746,12 @@ export function MCPLogDetailSheet({
 										<BlockHeader title={t("mcpLogs.detail.metadata")} />
 										<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
 											{metadataEntries.map(([key, value]) => (
-												<LogEntryDetailsView key={key} className="w-full" label={key} value={String(value)} />
+												<LogEntryDetailsView
+													key={key}
+													className="w-full"
+													label={key}
+													value={typeof value === "string" ? value : JSON.stringify(value)}
+												/>
 											))}
 										</div>
 									</div>
@@ -705,7 +760,7 @@ export function MCPLogDetailSheet({
 						</div>
 					</details>
 
-					<Tabs key={displayLog.id} defaultValue="execution" className="gap-2">
+					<Tabs key={displayLog.id} value={activeTab} onValueChange={setActiveTab} className="gap-2">
 						<TabsList className="bg-muted/60 h-10 w-fit">
 							<TabsTrigger value="execution" className="px-3">
 								{t("mcpLogs.execution")}
@@ -718,6 +773,14 @@ export function MCPLogDetailSheet({
 									</span>
 								) : null}
 							</TabsTrigger>
+							{roundsCorrelation && roundsCount > 1 ? (
+								<TabsTrigger value="mcp-logs" className="px-3" data-testid="mcplogdetails-rounds-tab">
+									{t("mcpLogs.rounds")}{" "}
+									<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
+										{roundsCount}
+									</span>
+								</TabsTrigger>
+							) : null}
 						</TabsList>
 
 						<TabsContent value="execution" className="space-y-4">
@@ -738,10 +801,39 @@ export function MCPLogDetailSheet({
 								</div>
 							)}
 
-							{/* Result */}
+							{/* What the caller answered, on the retry of an input_required round */}
+							{inputResponses != null && (
+								<div className="w-full rounded-sm border" data-testid="mcplogdetails-input-answered">
+									<div className="border-b px-4 py-2 text-sm font-medium md:px-6">{t("mcpLogs.inputAnswered")}</div>
+									<CodeEditor
+										className="z-0 w-full"
+										shouldAdjustInitialHeight={true}
+										maxHeight={250}
+										wrap={true}
+										code={JSON.stringify(inputResponses, null, 2)}
+										lang="json"
+										readonly={true}
+										options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
+									/>
+								</div>
+							)}
+
+							{displayLog.metadata?.retry_later === true && (
+								<div className="w-full rounded-sm border" data-testid="mcplogdetails-retry-later">
+									<div className="border-b px-4 py-2 text-sm font-medium md:px-6">{t("mcpLogs.presentation.retryLater")}</div>
+									<div className="text-muted-foreground px-4 py-3 text-sm md:px-6">{t("mcpLogs.retryLater")}</div>
+								</div>
+							)}
+
+							{/* Result, or what an input_required round asked the caller */}
 							{displayedResult && displayLog.status !== "processing" && (
-								<div className="w-full rounded-sm border">
-									<div className="border-b px-4 py-2 text-sm font-medium md:px-6">{t("mcpLogs.result")}</div>
+								<div
+									className="w-full rounded-sm border"
+									data-testid={displayLog.status === "input_required" ? "mcplogdetails-input-requested" : undefined}
+								>
+									<div className="border-b px-4 py-2 text-sm font-medium md:px-6">
+										{displayLog.status === "input_required" ? t("mcpLogs.inputRequested") : t("mcpLogs.result")}
+									</div>
 									<CodeEditor
 										className="z-0 w-full"
 										shouldAdjustInitialHeight={true}
@@ -784,6 +876,16 @@ export function MCPLogDetailSheet({
 								</div>
 							)}
 						</TabsContent>
+
+						{roundsCorrelation && roundsCount > 1 ? (
+							<CorrelatedLogsContent
+								key={`mcp:${roundTripID}`}
+								kind="mcp"
+								correlation={roundsCorrelation}
+								active={activeTab === "mcp-logs"}
+								pollingInterval={roundsPolling}
+							/>
+						) : null}
 					</Tabs>
 				</div>
 			</SheetContent>
