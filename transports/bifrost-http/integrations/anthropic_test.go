@@ -193,6 +193,32 @@ func TestRewriteAnthropicRawRequestBodyRejectsUnmappedLiteral(t *testing.T) {
 	}
 }
 
+// TestRewriteAnthropicRawRequestBodyMatchesEscapedArgumentLiterals verifies a literal cut from escaped argument JSON
+// text, as tool-call arguments are scanned, redacts the decoded tool_use input value it stands for.
+func TestRewriteAnthropicRawRequestBodyMatchesEscapedArgumentLiterals(t *testing.T) {
+	got, err := rewriteAnthropicRawRequestBody(
+		[]byte(`{"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"write","input":{"content":"head\nkey line one\nkey line two\ntail","quote":"say \"alex@example.com\""}}]}]}`),
+		map[string]string{`key line one\nkey line two`: "[SECRET]", `\"alex@example.com\"`: "[EMAIL]"},
+	)
+	require.NoError(t, err)
+	input := gjson.GetBytes(got, "messages.0.content.0.input")
+	require.Equal(t, "head\n[SECRET]\ntail", input.Get("content").String())
+	require.Equal(t, "say [EMAIL]", input.Get("quote").String())
+}
+
+// TestRewriteAnthropicRawRequestBodyReportsLiteralsNotFound verifies the rewriter names, through a typed error whose
+// message stays generic, exactly the literals no owned field holds.
+func TestRewriteAnthropicRawRequestBodyReportsLiteralsNotFound(t *testing.T) {
+	_, err := rewriteAnthropicRawRequestBody(
+		[]byte(`{"messages":[{"role":"user","content":"mail alice@example.com"}]}`),
+		map[string]string{"alice@example.com": "[EMAIL]", "bob@example.com": "[EMAIL]"},
+	)
+	var notFound *schemas.RawRequestLiteralsNotFoundError
+	require.ErrorAs(t, err, &notFound)
+	require.Equal(t, []string{"bob@example.com"}, notFound.Literals)
+	require.NotContains(t, err.Error(), "bob@example.com")
+}
+
 // TestRewriteAnthropicRawRequestBodyRejectsMalformedJSON verifies native rewrites never repair or forward a malformed body.
 func TestRewriteAnthropicRawRequestBodyRejectsMalformedJSON(t *testing.T) {
 	_, err := rewriteAnthropicRawRequestBody([]byte(`{"messages":`), map[string]string{"alice@example.com": "[EMAIL]"})

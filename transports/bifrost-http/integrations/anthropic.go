@@ -840,7 +840,7 @@ func collectAnthropicRawContentBlockPaths(paths *[]string, block gjson.Result, p
 		case anthropic.AnthropicContentBlockTypeText:
 			return appendRawRequestStringPath(paths, block.Get("text"), rawRequestObjectPath(path, "text"))
 		case anthropic.AnthropicContentBlockTypeToolUse:
-			return collectAnthropicArgumentStringPaths(paths, block.Get("input"), rawRequestObjectPath(path, "input"))
+			return collectRawRequestArgumentStringPaths(paths, block.Get("input"), rawRequestObjectPath(path, "input"))
 		case anthropic.AnthropicContentBlockTypeToolResult, anthropic.AnthropicContentBlockTypeMCPToolResult:
 			return collectAnthropicRawContentPaths(
 				paths,
@@ -1696,23 +1696,4 @@ func NewAnthropicRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, 
 	return &AnthropicRouter{
 		GenericRouter: NewGenericRouter(client, handlerStore, accessResolver, routes, nil, logger),
 	}
-}
-
-// collectAnthropicArgumentStringPaths mirrors JSON argument values without changing tool metadata or object keys.
-func collectAnthropicArgumentStringPaths(paths *[]string, value gjson.Result, path string) error {
-	if value.Type == gjson.String {
-		return appendRawRequestStringPath(paths, value, path)
-	}
-	var err error
-	if value.IsObject() || value.IsArray() {
-		value.ForEach(func(key, child gjson.Result) bool {
-			childPath := rawRequestObjectPath(path, key.String())
-			if value.IsArray() {
-				childPath = rawRequestArrayPath(path, int(key.Int()))
-			}
-			err = collectAnthropicArgumentStringPaths(paths, child, childPath)
-			return err == nil
-		})
-	}
-	return err
 }
