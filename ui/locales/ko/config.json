@@ -1258,7 +1258,15 @@
 			"editConfigAria": "릴레이 구성 편집",
 			"viewConfigAria": "릴레이 구성 보기",
 			"testSheetTitle": "가격 테스트",
-			"testSheetDescription": "{{name}}에 저장된 라우트와 가격으로 샘플 호출을 실행해요. 업스트림으로는 아무것도 전송되지 않아요."
+			"testSheetDescription": "{{name}}에 저장된 라우트와 가격으로 샘플 호출을 실행해요. 업스트림으로는 아무것도 전송되지 않아요.",
+			"gatewayPath": "게이트웨이 경로",
+			"upstream": "업스트림",
+			"auth": "인증",
+			"pricing": "기본 요금",
+			"anyPath": "모든 경로",
+			"moreActionsAria": "릴레이 추가 작업",
+			"deleteRelay": "릴레이 삭제",
+			"copyPathAria": "게이트웨이 경로 복사"
 		},
 		"deleteDialog": {
 			"title": "릴레이 삭제",
@@ -1286,6 +1294,7 @@
 			"title": "라우트",
 			"importOpenapi": "OpenAPI 가져오기",
 			"addRoute": "라우트 추가",
+			"description": "요청에는 처음 일치하는 라우트가 사용되며, 더 구체적인 라우트가 먼저 표시됩니다.",
 			"columns": {
 				"method": "메서드",
 				"route": "라우트",
