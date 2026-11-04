@@ -146,7 +146,7 @@ describe("relay form", () => {
 		}
 	});
 
-	it("keeps settings the form does not edit, and tells an explicit direct proxy from inheriting", () => {
+	it("keeps settings the form does not edit, and saves a none proxy as unset, as for providers", () => {
 		const aws: Relay = {
 			...stored,
 			auth: { type: "aws_sigv4", aws: { service: "textract" } },
@@ -159,8 +159,9 @@ describe("relay form", () => {
 		expect(back.credential?.aws?.session_name?.value).toBe("bifrost");
 		expect(back.proxy_config?.ca_cert_pem?.value).toBe("<REDACTED>");
 
-		const direct = toRelayConfig(toRelayForm({ ...stored, proxy_config: { type: "none" } }));
-		expect(direct.proxy_config).toEqual({ type: "none" });
+		// "none" is an unconfigured proxy: it inherits the global proxy exactly as an unset one does.
+		const none = toRelayConfig(toRelayForm({ ...stored, proxy_config: { type: "none" } }));
+		expect(none.proxy_config).toBeUndefined();
 		const inherits = toRelayConfig(toRelayForm({ ...stored, proxy_config: undefined }));
 		expect(inherits.proxy_config).toBeUndefined();
 	});

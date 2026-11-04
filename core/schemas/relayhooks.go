@@ -35,6 +35,7 @@ type BifrostRelayResponse struct {
 	Headers         map[string]string
 	Body            []byte
 	Streamed        bool
+	LargeResponse   bool  // past the large-payload response threshold: forwarded as a stream, Body is a preview
 	BytesOut        int64 // body bytes forwarded to the caller
 	Latency         int64 // milliseconds the call spent in Bifrost, pre-hooks to the end of the reply (or the stream)
 	UpstreamLatency int64 // milliseconds blocked on the upstream socket, 0 when the upstream was never called

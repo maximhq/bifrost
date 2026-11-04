@@ -23,12 +23,11 @@ import { useTranslation } from "react-i18next";
 import { RelayLogsExportDialog } from "./relayLogsExportDialog";
 
 /**
- * The relay search box has two modes: `auto` (a UUID looks up request_id, anything else
- * runs the metadata search) and `request_id` (the input verbatim as an id). The LLM page's
- * third mode, content, has no relay equivalent: the relay `search` filter is the only text
- * search there is, so it is what `auto` falls through to.
+ * The relay search box has the LLM page's three modes: `auto` (a UUID looks up request_id,
+ * anything else runs the metadata search over path, route, model and request id),
+ * `request_id` (the input verbatim as an id) and `content` (the request and response bodies).
  */
-export type RelayLogSearchMode = Extract<LogSearchMode, "auto" | "request_id">;
+export type RelayLogSearchMode = LogSearchMode;
 
 interface RelayHeaderViewProps {
 	filters: RelayLogFilters;
@@ -71,22 +70,27 @@ export function RelayHeaderView({
 }: RelayHeaderViewProps) {
 	const { t } = useTranslation("observability");
 	const searchPlaceholders: Record<RelayLogSearchMode, string> = {
-	auto: t("relayLogs.header.searchAuto"),
-	request_id: t("logs.searchPlaceholders.request_id"),
+		auto: t("relayLogs.header.searchAuto"),
+		request_id: t("logs.searchPlaceholders.request_id"),
+		content: t("logs.searchPlaceholders.content"),
 	};
 	const searchModeLabels: Record<RelayLogSearchMode, string> = {
-	auto: t("logs.searchModes.auto"),
-	request_id: t("logs.searchModes.request_id"),
+		auto: t("logs.searchModes.auto"),
+		request_id: t("logs.searchModes.request_id"),
+		content: t("logs.searchModes.content"),
 	};
 	const [openMoreActionsPopover, setOpenMoreActionsPopover] = useState(false);
 	const [exportDialogOpen, setExportDialogOpen] = useState(false);
-	const [searchMode, setSearchMode] = useState<RelayLogSearchMode>("auto");
+	// A shared link carrying a content search opens in content mode, so the box shows that search.
+	const [searchMode, setSearchMode] = useState<RelayLogSearchMode>(filters.content_search ? "content" : "auto");
 	const searchModeRef = useRef<RelayLogSearchMode>(searchMode);
 	useEffect(() => {
 		searchModeRef.current = searchMode;
 	}, [searchMode]);
 	const [localSearch, setLocalSearch] = useState(() =>
-		formatLogSearchInput({ request_id: filters.request_id, content_search: filters.search }),
+		filters.content_search
+			? formatLogSearchInput({ content_search: filters.content_search }, "content")
+			: formatLogSearchInput({ request_id: filters.request_id, content_search: filters.search }),
 	);
 	const [timezone, setTimezone] = useTimezonePreference();
 	const [startTime, setStartTime] = useState<Date | undefined>(filters.start_time ? new Date(filters.start_time) : undefined);
@@ -97,12 +101,14 @@ export function RelayHeaderView({
 	useEffect(() => {
 		filtersRef.current = filters;
 	}, [filters]);
-	const { search: searchFilter, request_id: requestIDFilter } = filters;
+	const { search: searchFilter, request_id: requestIDFilter, content_search: contentSearchFilter } = filters;
 	useEffect(() => {
 		// Not keyed on the mode: switching it re-runs the search with what is already typed,
 		// and re-syncing here would blank the box against the pre-switch filters first.
-		setLocalSearch(formatLogSearchInput({ request_id: requestIDFilter, content_search: searchFilter }, searchModeRef.current));
-	}, [searchFilter, requestIDFilter]);
+		const mode = searchModeRef.current;
+		const text = mode === "content" ? contentSearchFilter : searchFilter;
+		setLocalSearch(formatLogSearchInput({ request_id: requestIDFilter, content_search: text }, mode));
+	}, [searchFilter, requestIDFilter, contentSearchFilter]);
 	useEffect(() => {
 		setStartTime(filters.start_time ? new Date(filters.start_time) : undefined);
 		setEndTime(filters.end_time ? new Date(filters.end_time) : undefined);
@@ -118,10 +124,18 @@ export function RelayHeaderView({
 			setLocalSearch(value);
 			if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
 			// A request id is an exact lookup with nothing to debounce; free text waits for the typist.
+			// Text goes to the body search in content mode and to the metadata search otherwise; only
+			// one of the two is ever set, as the LLM page sets one search term at a time.
 			const { request_id = "", content_search = "" } = parseLogSearchInput(value, mode);
+			const text = content_search || undefined;
 			searchTimeoutRef.current = setTimeout(
 				() => {
-					onFiltersChange({ ...filtersRef.current, request_id: request_id || undefined, search: content_search || undefined });
+					onFiltersChange({
+						...filtersRef.current,
+						request_id: request_id || undefined,
+						search: mode === "content" ? undefined : text,
+						content_search: mode === "content" ? text : undefined,
+					});
 				},
 				request_id ? 0 : 500,
 			);
@@ -211,6 +225,9 @@ export function RelayHeaderView({
 							</DropdownMenuRadioItem>
 							<DropdownMenuRadioItem value="request_id" className="text-xs" data-testid="relay-logs-search-mode-request-id">
 								{t("logs.searchModeOptions.request_id")}
+							</DropdownMenuRadioItem>
+							<DropdownMenuRadioItem value="content" className="text-xs" data-testid="relay-logs-search-mode-content">
+								{t("logs.searchModeOptions.content")}
 							</DropdownMenuRadioItem>
 						</DropdownMenuRadioGroup>
 					</DropdownMenuContent>

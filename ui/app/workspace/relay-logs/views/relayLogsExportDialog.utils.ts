@@ -40,6 +40,7 @@ export const RELAY_LOGS_CSV_HEADERS = [
 	"Input Tokens",
 	"Output Tokens",
 	"Total Tokens",
+	"Session ID",
 	"Virtual Key",
 	"Team",
 	"Customer",
@@ -92,6 +93,7 @@ export function relayLogToCSVRow(log: RelayLog): unknown[] {
 		cell(log.input_tokens),
 		cell(log.output_tokens),
 		cell(log.total_tokens),
+		log.session_id || "",
 		log.virtual_key_name || log.virtual_key_id || "",
 		log.team_name || log.team_id || "",
 		log.customer_name || log.customer_id || "",
@@ -130,8 +132,7 @@ export function formatRelayActiveFiltersSummary(filters: RelayLogFilters): strin
 	for (const [key, values] of counted) {
 		if (values && values.length > 0) summary.push(t(key, { total: values.length }));
 	}
-	if (filters.statuses && filters.statuses.length > 0)
-		summary.push(t("logs.export.summary.status", { value: filters.statuses.join(", ") }));
+	if (filters.status && filters.status.length > 0) summary.push(t("logs.export.summary.status", { value: filters.status.join(", ") }));
 	if (filters.billable !== undefined)
 		summary.push(t(filters.billable ? "logs.export.summary.billableOnly" : "logs.export.summary.nonBillableOnly"));
 	if (filters.min_cost !== undefined) summary.push(t("logs.export.summary.minCost", { value: filters.min_cost }));

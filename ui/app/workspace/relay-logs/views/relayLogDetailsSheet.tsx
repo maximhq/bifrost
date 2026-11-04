@@ -40,7 +40,7 @@ import type { TFunction } from "i18next";
 import { Link } from "@tanstack/react-router";
 import { addMilliseconds, format, isValid } from "date-fns";
 import { AlertCircle, ChevronDown, Download, Loader2, MoreVertical, Trash2, Waypoints, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { getLocale } from "@/lib/i18n";
 import { dateFnsLocale } from "@/lib/i18n/dateLocale";
@@ -90,13 +90,58 @@ function AttributionLink({ label, id, name, filterKey }: { label: string; id?: s
 								"block max-w-full min-w-0 cursor-pointer truncate text-sm font-normal text-blue-600 underline-offset-2 hover:underline dark:text-blue-400",
 								!name && "font-mono",
 							)}
-							data-testid={`relay-log-${filterKey}-link`}
+							data-testid={`relay-log-${filterKey.replaceAll("_", "-")}-link`}
 						>
 							{name || id}
 						</Link>
 					</TooltipTrigger>
-					<TooltipContent sideOffset={6}>{name ? id : t("mcpLogs.detail.filterBy", { label: label.toLowerCase() })}</TooltipContent>
+					<TooltipContent sideOffset={6}>{name ? id : t("relayLogs.detail.filterByValue")}</TooltipContent>
 				</Tooltip>
+			}
+		/>
+	);
+}
+
+type RelayLogCorrelationKey = "session_id" | "job_id" | "parent_request_id" | "agent_correlation_id";
+
+/** A correlation id row that lists the calls sharing it, as the LLM sheet's session and parent rows do. */
+function CorrelationLink({
+	label,
+	id,
+	filterKey,
+	suffix,
+}: {
+	label: string;
+	id?: string;
+	filterKey: RelayLogCorrelationKey;
+	/** Shown after the link, outside it (a job's status). */
+	suffix?: string;
+}) {
+	const { t } = useTranslation("observability");
+	if (!id) return null;
+	return (
+		<LogEntryDetailsView
+			className="w-full"
+			label={label}
+			value={
+				<div className="flex max-w-full min-w-0 items-center gap-1.5">
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<Link
+								to="/workspace/relay-logs"
+								search={(prev) => ({ ...prev, offset: 0, selected_log: "", [filterKey]: id })}
+								className="block max-w-full min-w-0 cursor-pointer truncate font-mono text-sm font-normal text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+								data-testid={`relay-log-${filterKey.replaceAll("_", "-")}-link`}
+							>
+								{id}
+							</Link>
+						</TooltipTrigger>
+						<TooltipContent sideOffset={6} className="max-w-md break-all">
+							{t("relayLogs.detail.filterByValue")}
+						</TooltipContent>
+					</Tooltip>
+					{suffix && <span className="text-muted-foreground shrink-0 text-sm">({suffix})</span>}
+				</div>
 			}
 		/>
 	);
@@ -131,8 +176,15 @@ export function RelayLogDetailSheet({
 	// currentData, not data: data keeps the previous log while the next one loads, and Delete and
 	// Export must never act on it.
 	const id = logId ?? log?.id ?? "";
-	const { currentData: fetched, isFetching, isError } = useGetRelayLogQuery(id, { skip: !open || !id });
+	// A row still processing (a call that outlived the plugin's sweep) or a failed read is re-read
+	// every 2s while the sheet is open, as the LLM log sheet does, so it flips in place.
+	const [pollingInterval, setPollingInterval] = useState(0);
+	const { currentData: fetched, isFetching, isError } = useGetRelayLogQuery(id, { skip: !open || !id, pollingInterval });
 	const display = fetched ?? (log?.id === id ? log : null);
+	const shouldPoll = open && (isError || fetched?.status === "processing");
+	useEffect(() => {
+		setPollingInterval(shouldPoll ? 2000 : 0);
+	}, [shouldPoll]);
 	const [moreDetailsOpen, setMoreDetailsOpen] = useState(false);
 	const { prev: prevKeys, next: nextKeys } = useSheetNavigation({ enabled: open, hasPrev, hasNext, onNavigate: (d) => onNavigate?.(d) });
 
@@ -408,19 +460,27 @@ export function RelayLogDetailSheet({
 												className="w-full"
 												label={t("labels.latency")}
 												tooltip={t("relayLogs.detail.latencyTooltip")}
-												value={hasLatency ? `${(display.latency as number).toFixed(2)}ms` : t("mcpLogs.notRecorded")}
+												value={hasLatency ? `${(display.latency as number).toFixed(2)}ms` : t("labels.nA")}
 											/>
 											<LogEntryDetailsView
 												className="w-full"
 												label={t("logs.detail.upstreamLatency")}
 												tooltip={t("relayLogs.detail.upstreamLatencyTooltip")}
-												value={display.upstream_latency != null ? `${display.upstream_latency.toFixed(2)}ms` : t("labels.nA")}
+												value={
+													display.upstream_latency == null || isNaN(display.upstream_latency)
+														? t("labels.nA")
+														: `${display.upstream_latency.toFixed(2)}ms`
+												}
 											/>
 											<LogEntryDetailsView
 												className="w-full"
 												label={t("logs.detail.bifrostOverhead")}
 												tooltip={t("relayLogs.detail.overheadTooltip")}
-												value={display.overhead_latency != null ? `${display.overhead_latency.toFixed(2)}ms` : t("labels.nA")}
+												value={
+													display.overhead_latency == null || isNaN(display.overhead_latency)
+														? t("labels.nA")
+														: `${display.overhead_latency.toFixed(2)}ms`
+												}
 											/>
 										</div>
 										{display.overhead_breakdown && display.overhead_breakdown.length > 0 ? (
@@ -537,13 +597,23 @@ export function RelayLogDetailSheet({
 												value={display.streamed ? t("relayLogs.fields.yes") : t("relayLogs.fields.no")}
 											/>
 											{display.model && <LogEntryDetailsView className="w-full" label={t("labels.model")} value={display.model} />}
-											{display.job_id && (
-												<LogEntryDetailsView
-													className="w-full"
-													label={t("relayLogs.fields.job")}
-													value={`${display.job_id} (${display.job_status ?? "-"})`}
-												/>
-											)}
+											<CorrelationLink
+												label={t("relayLogs.fields.job")}
+												id={display.job_id}
+												filterKey="job_id"
+												suffix={display.job_id ? (display.job_status ?? "-") : undefined}
+											/>
+											<CorrelationLink label={t("filters.sessionID")} id={display.session_id} filterKey="session_id" />
+											<CorrelationLink
+												label={t("logs.detail.parentRequestID")}
+												id={display.parent_request_id}
+												filterKey="parent_request_id"
+											/>
+											<CorrelationLink
+												label={t("filters.agentCorrelationID")}
+												id={display.agent_correlation_id}
+												filterKey="agent_correlation_id"
+											/>
 											{display.parent_log_id && (
 												<LogEntryDetailsView
 													className="w-full"
@@ -680,7 +750,7 @@ export function RelayLogDetailSheet({
 									)}
 									{display.response_body && display.status !== "processing" && (
 										<PassthroughBodyBox
-											title={t("logs.detail.responseBody")}
+											title={display.is_large_payload_response ? t("relayLogs.detail.responseBodyPreview") : t("logs.detail.responseBody")}
 											body={display.response_body}
 											testId="relay-log-response-body"
 										/>
