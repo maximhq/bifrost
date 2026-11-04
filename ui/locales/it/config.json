@@ -1230,7 +1230,15 @@
 			"editConfigAria": "Modifica la configurazione del relay",
 			"viewConfigAria": "Visualizza la configurazione del relay",
 			"testSheetTitle": "Testa i prezzi",
-			"testSheetDescription": "Esegue una chiamata di prova sulle route e sui prezzi salvati di {{name}}. Non viene inviato nulla all'upstream."
+			"testSheetDescription": "Esegue una chiamata di prova sulle route e sui prezzi salvati di {{name}}. Non viene inviato nulla all'upstream.",
+			"gatewayPath": "Percorso del gateway",
+			"upstream": "Upstream",
+			"auth": "Autenticazione",
+			"pricing": "Prezzo predefinito",
+			"anyPath": "Qualsiasi percorso",
+			"moreActionsAria": "Altre azioni del relay",
+			"deleteRelay": "Elimina relay",
+			"copyPathAria": "Copia percorso del gateway"
 		},
 		"deleteDialog": {
 			"title": "Elimina relay",
@@ -1258,6 +1266,7 @@
 			"title": "Route",
 			"importOpenapi": "Importa OpenAPI",
 			"addRoute": "Aggiungi route",
+			"description": "Una richiesta usa la prima route corrispondente; le route più specifiche sono elencate per prime.",
 			"columns": {
 				"method": "Metodo",
 				"route": "Route",

@@ -1176,11 +1176,9 @@
 		},
 		"access": {
 			"createFirst": "请先创建此虚拟 MCP，然后再在此分配虚拟密钥。",
-			"loadFailed": "无法加载虚拟密钥。",
 			"virtualKeys": "虚拟密钥",
 			"virtualKeysHelp": "在此分配的密钥可通过其端点到达此虚拟 MCP。",
 			"assign": "分配虚拟密钥",
-			"loading": "正在加载虚拟密钥…",
 			"empty": "尚未分配虚拟密钥。分配一个，调用方才能到达此虚拟 MCP。",
 			"unassignAria": "取消分配虚拟密钥",
 			"ownerLookupFailed": "无法检查“{{name}}”的所有者，因此未分配。请重试。",

@@ -1266,7 +1266,15 @@
 			"editConfigAria": "編輯轉送設定",
 			"viewConfigAria": "檢視轉送設定",
 			"testSheetTitle": "測試計價",
-			"testSheetDescription": "使用 {{name}} 已儲存的路由與計價執行一次範例呼叫。不會向上游傳送任何內容。"
+			"testSheetDescription": "使用 {{name}} 已儲存的路由與計價執行一次範例呼叫。不會向上游傳送任何內容。",
+			"gatewayPath": "閘道路徑",
+			"upstream": "上游",
+			"auth": "驗證",
+			"pricing": "預設定價",
+			"anyPath": "任意路徑",
+			"moreActionsAria": "更多中繼操作",
+			"deleteRelay": "刪除中繼",
+			"copyPathAria": "複製閘道路徑"
 		},
 		"deleteDialog": {
 			"title": "刪除轉送",
@@ -1294,6 +1302,7 @@
 			"title": "路由",
 			"importOpenapi": "匯入 OpenAPI",
 			"addRoute": "新增路由",
+			"description": "請求會使用第一個符合的路由；較具體的路由排在前面。",
 			"columns": {
 				"method": "方法",
 				"route": "路由",
