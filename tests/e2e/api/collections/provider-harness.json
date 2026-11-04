@@ -307799,6 +307799,545 @@
           ]
         }
       ]
+    },
+    {
+      "name": "315. Codex client tool search on Claude (codex client tool search)",
+      "description": "Codex sends {\"type\":\"tool_search\",\"execution\":\"client\"}: it keeps its deferred MCP tools on its side, runs the search itself and returns the matches in a tool_search_output item. Bifrost turned that tool into Anthropic's server-side tool_search_tool_bm25, which only searches tools already in the request, so Codex's tools could never be found, and it dropped tool_search_call / tool_search_output items from history.\n\nNow the client search goes upstream as a plain tool_search function. Claude's call to it comes back as a tool_search_call with execution client (streaming without function_call argument events). On the next turn the search history becomes tool_use + tool_result with tool_reference blocks, and the tools Codex loaded are declared with defer_loading under their flattened names, so a call to one comes back with its namespace.\n\nTurn 1 forces a tool call so Claude has to search. Turn 2 is self-contained (fixed call_id) so it does not depend on turn 1's output. Both run on Bedrock (InvokeModel) and the Anthropic API. A client search can also be added mid-conversation by a tool_addition block: on a model that takes mid-conversation system messages the block carries the tool_search function, and on one that drops them the function is declared in tools so the history and the restore name a declared tool.",
+      "item": [
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 /v1/responses codex client tool search turn 1: Claude's search call comes back as a client tool_search_call",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-6\",\"max_output_tokens\":256,\"tool_choice\":\"required\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"Find a tool that can create a Linear issue.\"}],\"tools\":[{\"type\":\"tool_search\",\"execution\":\"client\",\"description\":\"Search the deferred MCP tools. Returns the tools that match the query.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"What the tool should do\"}},\"required\":[\"query\"]}}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('codex client tool search Bedrock turn 1: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var output = body.output || [];",
+                  "var kinds = JSON.stringify(output.map(function (o) { return o.type + (o.name ? ':' + o.name : ''); }));",
+                  "var search = output.filter(function (o) { return o.type === 'tool_search_call'; })[0];",
+                  "pm.test('codex client tool search Bedrock turn 1: Claude\\'s search comes back as a client tool_search_call', function () {",
+                  "  pm.expect(search, 'no tool_search_call in output: ' + kinds).to.be.an('object');",
+                  "  pm.expect(search.execution, 'Codex only dispatches execution client: ' + JSON.stringify(search)).to.eql('client');",
+                  "  pm.expect(search.call_id, JSON.stringify(search)).to.be.a('string').and.not.be.empty;",
+                  "  pm.expect(search.arguments, 'arguments must be an object: ' + JSON.stringify(search)).to.be.an('object');",
+                  "  pm.expect((search.arguments || {}).query, 'arguments.query must be a non-empty string: ' + JSON.stringify(search)).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(search.name, 'not Anthropic\\'s server search: ' + JSON.stringify(search)).to.be.undefined;",
+                  "});",
+                  "pm.test('codex client tool search Bedrock turn 1: no function_call named tool_search reaches Codex', function () {",
+                  "  var fc = output.filter(function (o) { return o.type === 'function_call' && o.name === 'tool_search'; });",
+                  "  pm.expect(fc, kinds).to.be.empty;",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var tools = (rr && rr.tools) || [];",
+                  "pm.test('codex client tool search Bedrock turn 1: upstream gets a tool_search function, not tool_search_tool_bm25', function () {",
+                  "  pm.expect(rr, 'extra_fields.raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var server = tools.filter(function (t) { return /^tool_search_tool_/.test(String(t.type || '')); });",
+                  "  pm.expect(server, 'client search sent as Anthropic server search: ' + JSON.stringify(tools)).to.be.empty;",
+                  "  var fn = tools.filter(function (t) { return t.name === 'tool_search' && t.input_schema; })[0];",
+                  "  pm.expect(fn, 'tool_search function missing upstream: ' + JSON.stringify(tools)).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 /v1/responses stream codex client tool search turn 1: tool_search_call streams without function_call argument events",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-6\",\"max_output_tokens\":256,\"tool_choice\":\"required\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"Find a tool that can create a Linear issue.\"}],\"tools\":[{\"type\":\"tool_search\",\"execution\":\"client\",\"description\":\"Search the deferred MCP tools. Returns the tools that match the query.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"What the tool should do\"}},\"required\":[\"query\"]}}],\"stream\":true}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('codex client tool search Bedrock turn 1: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var events = [];",
+                  "txt.split('\\n').forEach(function (line) { if (line.indexOf('data: ') === 0) { try { events.push(JSON.parse(line.slice(6))); } catch (e) {} } });",
+                  "var done = events.filter(function (e) { return e.type === 'response.output_item.done' && e.item && e.item.type === 'tool_search_call'; })[0];",
+                  "pm.test('codex client tool search Bedrock stream turn 1: output_item.done carries a client tool_search_call', function () {",
+                  "  pm.expect(done, 'no tool_search_call done event: ' + txt.slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(done.item.execution, JSON.stringify(done.item)).to.eql('client');",
+                  "  pm.expect(done.item.arguments, 'arguments must be an object: ' + JSON.stringify(done.item)).to.be.an('object');",
+                  "  pm.expect((done.item.arguments || {}).query, 'arguments.query must be a non-empty string: ' + JSON.stringify(done.item)).to.be.a('string').that.is.not.empty;",
+                  "});",
+                  "pm.test('codex client tool search Bedrock stream turn 1: no function_call argument events for the search', function () {",
+                  "  var args = events.filter(function (e) { return /^response\\.function_call_arguments\\./.test(e.type); });",
+                  "  pm.expect(args, JSON.stringify(args).slice(0, 400)).to.be.empty;",
+                  "  pm.expect(txt, 'stream did not complete: ' + txt.slice(-400)).to.include('response.completed');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 /v1/responses codex client tool search turn 2: loaded MCP tool is declared deferred and called by its namespace",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-6\",\"max_output_tokens\":256,\"tool_choice\":{\"type\":\"function\",\"name\":\"get_weather\"},\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"What is the weather in Paris? Use the weather tool you loaded.\"},{\"type\":\"tool_search_call\",\"execution\":\"client\",\"call_id\":\"call_codex_ts_1\",\"status\":\"completed\",\"arguments\":{\"query\":\"weather\"}},{\"type\":\"tool_search_output\",\"execution\":\"client\",\"call_id\":\"call_codex_ts_1\",\"status\":\"completed\",\"tools\":[{\"type\":\"namespace\",\"name\":\"mcp__weather\",\"description\":\"Weather MCP server\",\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]},\"defer_loading\":true}]}]}],\"tools\":[{\"type\":\"tool_search\",\"execution\":\"client\",\"description\":\"Search the deferred MCP tools. Returns the tools that match the query.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"What the tool should do\"}},\"required\":[\"query\"]}}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('codex client tool search Bedrock turn 2: 200 (search history and loaded tool accepted)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "var tools = (rr && rr.tools) || [];",
+                  "var blocks = [];",
+                  "((rr && rr.messages) || []).forEach(function (m) { if (Array.isArray(m.content)) { blocks = blocks.concat(m.content); } });",
+                  "pm.test('codex client tool search Bedrock turn 2: the loaded MCP tool is declared deferred under its flat name', function () {",
+                  "  var loaded = tools.filter(function (t) { return t.name === 'mcp__weather__get_weather'; })[0];",
+                  "  pm.expect(loaded, 'loaded tool not declared: ' + JSON.stringify(tools)).to.be.an('object');",
+                  "  pm.expect(loaded.defer_loading, JSON.stringify(loaded)).to.eql(true);",
+                  "});",
+                  "pm.test('codex client tool search Bedrock turn 2: search history reaches Claude as tool_use + tool_result(tool_reference)', function () {",
+                  "  var use = blocks.filter(function (b) { return b.type === 'tool_use' && b.id === 'call_codex_ts_1'; })[0];",
+                  "  pm.expect(use, 'tool_search_call dropped: ' + wire.slice(0, 1500)).to.be.an('object');",
+                  "  pm.expect(use.name, JSON.stringify(use)).to.eql('tool_search');",
+                  "  var result = blocks.filter(function (b) { return b.type === 'tool_result' && b.tool_use_id === 'call_codex_ts_1'; })[0];",
+                  "  pm.expect(result, 'tool_search_output dropped: ' + wire.slice(0, 1500)).to.be.an('object');",
+                  "  var refs = (result.content || []).filter(function (c) { return c.type === 'tool_reference'; }).map(function (c) { return c.tool_name; });",
+                  "  pm.expect(refs, JSON.stringify(result)).to.include('mcp__weather__get_weather');",
+                  "});",
+                  "var output = body.output || [];",
+                  "var call = output.filter(function (o) { return o.type === 'function_call' && o.name === 'get_weather'; })[0];",
+                  "pm.test('codex client tool search Bedrock turn 2: Claude calls the loaded tool and Codex gets it back with its namespace', function () {",
+                  "  pm.expect(call, 'no get_weather call: ' + JSON.stringify(output.map(function (o) { return o.type + ':' + (o.name || ''); }))).to.be.an('object');",
+                  "  pm.expect(call.namespace, JSON.stringify(call)).to.eql('mcp__weather');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "anthropic/claude-sonnet-4-6 /v1/responses codex client tool search turn 1: Claude's search call comes back as a client tool_search_call",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-sonnet-4-6\",\"max_output_tokens\":256,\"tool_choice\":\"required\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"Find a tool that can create a Linear issue.\"}],\"tools\":[{\"type\":\"tool_search\",\"execution\":\"client\",\"description\":\"Search the deferred MCP tools. Returns the tools that match the query.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"What the tool should do\"}},\"required\":[\"query\"]}}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('codex client tool search Anthropic turn 1: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var output = body.output || [];",
+                  "var kinds = JSON.stringify(output.map(function (o) { return o.type + (o.name ? ':' + o.name : ''); }));",
+                  "var search = output.filter(function (o) { return o.type === 'tool_search_call'; })[0];",
+                  "pm.test('codex client tool search Anthropic turn 1: Claude\\'s search comes back as a client tool_search_call', function () {",
+                  "  pm.expect(search, 'no tool_search_call in output: ' + kinds).to.be.an('object');",
+                  "  pm.expect(search.execution, 'Codex only dispatches execution client: ' + JSON.stringify(search)).to.eql('client');",
+                  "  pm.expect(search.call_id, JSON.stringify(search)).to.be.a('string').and.not.be.empty;",
+                  "  pm.expect(search.arguments, 'arguments must be an object: ' + JSON.stringify(search)).to.be.an('object');",
+                  "  pm.expect((search.arguments || {}).query, 'arguments.query must be a non-empty string: ' + JSON.stringify(search)).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(search.name, 'not Anthropic\\'s server search: ' + JSON.stringify(search)).to.be.undefined;",
+                  "});",
+                  "pm.test('codex client tool search Anthropic turn 1: no function_call named tool_search reaches Codex', function () {",
+                  "  var fc = output.filter(function (o) { return o.type === 'function_call' && o.name === 'tool_search'; });",
+                  "  pm.expect(fc, kinds).to.be.empty;",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var tools = (rr && rr.tools) || [];",
+                  "pm.test('codex client tool search Anthropic turn 1: upstream gets a tool_search function, not tool_search_tool_bm25', function () {",
+                  "  pm.expect(rr, 'extra_fields.raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var server = tools.filter(function (t) { return /^tool_search_tool_/.test(String(t.type || '')); });",
+                  "  pm.expect(server, 'client search sent as Anthropic server search: ' + JSON.stringify(tools)).to.be.empty;",
+                  "  var fn = tools.filter(function (t) { return t.name === 'tool_search' && t.input_schema; })[0];",
+                  "  pm.expect(fn, 'tool_search function missing upstream: ' + JSON.stringify(tools)).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "anthropic/claude-sonnet-4-6 /v1/responses stream codex client tool search turn 1: tool_search_call streams without function_call argument events",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-sonnet-4-6\",\"max_output_tokens\":256,\"tool_choice\":\"required\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"Find a tool that can create a Linear issue.\"}],\"tools\":[{\"type\":\"tool_search\",\"execution\":\"client\",\"description\":\"Search the deferred MCP tools. Returns the tools that match the query.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"What the tool should do\"}},\"required\":[\"query\"]}}],\"stream\":true}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('codex client tool search Anthropic turn 1: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var events = [];",
+                  "txt.split('\\n').forEach(function (line) { if (line.indexOf('data: ') === 0) { try { events.push(JSON.parse(line.slice(6))); } catch (e) {} } });",
+                  "var done = events.filter(function (e) { return e.type === 'response.output_item.done' && e.item && e.item.type === 'tool_search_call'; })[0];",
+                  "pm.test('codex client tool search Anthropic stream turn 1: output_item.done carries a client tool_search_call', function () {",
+                  "  pm.expect(done, 'no tool_search_call done event: ' + txt.slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(done.item.execution, JSON.stringify(done.item)).to.eql('client');",
+                  "  pm.expect(done.item.arguments, 'arguments must be an object: ' + JSON.stringify(done.item)).to.be.an('object');",
+                  "  pm.expect((done.item.arguments || {}).query, 'arguments.query must be a non-empty string: ' + JSON.stringify(done.item)).to.be.a('string').that.is.not.empty;",
+                  "});",
+                  "pm.test('codex client tool search Anthropic stream turn 1: no function_call argument events for the search', function () {",
+                  "  var args = events.filter(function (e) { return /^response\\.function_call_arguments\\./.test(e.type); });",
+                  "  pm.expect(args, JSON.stringify(args).slice(0, 400)).to.be.empty;",
+                  "  pm.expect(txt, 'stream did not complete: ' + txt.slice(-400)).to.include('response.completed');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "anthropic/claude-sonnet-4-6 /v1/responses codex client tool search turn 2: loaded MCP tool is declared deferred and called by its namespace",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-sonnet-4-6\",\"max_output_tokens\":256,\"tool_choice\":{\"type\":\"function\",\"name\":\"get_weather\"},\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"What is the weather in Paris? Use the weather tool you loaded.\"},{\"type\":\"tool_search_call\",\"execution\":\"client\",\"call_id\":\"call_codex_ts_1\",\"status\":\"completed\",\"arguments\":{\"query\":\"weather\"}},{\"type\":\"tool_search_output\",\"execution\":\"client\",\"call_id\":\"call_codex_ts_1\",\"status\":\"completed\",\"tools\":[{\"type\":\"namespace\",\"name\":\"mcp__weather\",\"description\":\"Weather MCP server\",\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]},\"defer_loading\":true}]}]}],\"tools\":[{\"type\":\"tool_search\",\"execution\":\"client\",\"description\":\"Search the deferred MCP tools. Returns the tools that match the query.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"What the tool should do\"}},\"required\":[\"query\"]}}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('codex client tool search Anthropic turn 2: 200 (search history and loaded tool accepted)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "var tools = (rr && rr.tools) || [];",
+                  "var blocks = [];",
+                  "((rr && rr.messages) || []).forEach(function (m) { if (Array.isArray(m.content)) { blocks = blocks.concat(m.content); } });",
+                  "pm.test('codex client tool search Anthropic turn 2: the loaded MCP tool is declared deferred under its flat name', function () {",
+                  "  var loaded = tools.filter(function (t) { return t.name === 'mcp__weather__get_weather'; })[0];",
+                  "  pm.expect(loaded, 'loaded tool not declared: ' + JSON.stringify(tools)).to.be.an('object');",
+                  "  pm.expect(loaded.defer_loading, JSON.stringify(loaded)).to.eql(true);",
+                  "});",
+                  "pm.test('codex client tool search Anthropic turn 2: search history reaches Claude as tool_use + tool_result(tool_reference)', function () {",
+                  "  var use = blocks.filter(function (b) { return b.type === 'tool_use' && b.id === 'call_codex_ts_1'; })[0];",
+                  "  pm.expect(use, 'tool_search_call dropped: ' + wire.slice(0, 1500)).to.be.an('object');",
+                  "  pm.expect(use.name, JSON.stringify(use)).to.eql('tool_search');",
+                  "  var result = blocks.filter(function (b) { return b.type === 'tool_result' && b.tool_use_id === 'call_codex_ts_1'; })[0];",
+                  "  pm.expect(result, 'tool_search_output dropped: ' + wire.slice(0, 1500)).to.be.an('object');",
+                  "  var refs = (result.content || []).filter(function (c) { return c.type === 'tool_reference'; }).map(function (c) { return c.tool_name; });",
+                  "  pm.expect(refs, JSON.stringify(result)).to.include('mcp__weather__get_weather');",
+                  "});",
+                  "var output = body.output || [];",
+                  "var call = output.filter(function (o) { return o.type === 'function_call' && o.name === 'get_weather'; })[0];",
+                  "pm.test('codex client tool search Anthropic turn 2: Claude calls the loaded tool and Codex gets it back with its namespace', function () {",
+                  "  pm.expect(call, 'no get_weather call: ' + JSON.stringify(output.map(function (o) { return o.type + ':' + (o.name || ''); }))).to.be.an('object');",
+                  "  pm.expect(call.namespace, JSON.stringify(call)).to.eql('mcp__weather');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "anthropic/claude-sonnet-5-5 /v1/responses codex client tool search added by tool_addition: the tool_addition carries the tool_search function",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-sonnet-5-5\",\"max_output_tokens\":256,\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"I need to file a Linear issue. Search for a tool that can do it.\"},{\"type\":\"message\",\"role\":\"system\",\"content\":[{\"type\":\"tool_addition\",\"tool\":{\"type\":\"tool_definition\",\"definition\":{\"type\":\"tool_search\",\"execution\":\"client\",\"description\":\"Search the deferred tools\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}}}]}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('codex client tool search inline claude-sonnet-5-5: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || {});",
+                  "var tools = (rr && rr.tools) || [];",
+                  "var additions = [];",
+                  "((rr && rr.messages) || []).forEach(function (m) { (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b.type === 'tool_addition' && b.tool && b.tool.definition) { additions.push(b.tool.definition); } }); });",
+                  "pm.test('codex client tool search inline claude-sonnet-5-5: raw_request captured, no Anthropic server search', function () {",
+                  "  pm.expect(rr, 'extra_fields.raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(wire, 'client search sent as Anthropic server search').to.not.include('tool_search_tool_');",
+                  "});",
+                  "pm.test('codex client tool search inline claude-sonnet-5-5: the tool_addition carries the tool_search function', function () {",
+                  "  var fn = additions.filter(function (d) { return d.name === 'tool_search' && d.input_schema; })[0];",
+                  "  pm.expect(fn, 'tool_addition without the search function: ' + JSON.stringify(additions)).to.be.an('object');",
+                  "  pm.expect(fn.description, JSON.stringify(fn)).to.eql('Search the deferred tools');",
+                  "  pm.expect(tools.filter(function (t) { return t.name === 'tool_search'; }), 'declared twice: ' + JSON.stringify(tools)).to.be.empty;",
+                  "});",
+                  "var output = body.output || [];",
+                  "pm.test('codex client tool search inline claude-sonnet-5-5: a search call comes back as a client tool_search_call', function () {",
+                  "  pm.expect(output.filter(function (o) { return o.type === 'function_call' && o.name === 'tool_search'; }), JSON.stringify(output)).to.be.empty;",
+                  "  output.filter(function (o) { return o.type === 'tool_search_call'; }).forEach(function (s) {",
+                  "    pm.expect(s.execution, JSON.stringify(s)).to.eql('client');",
+                  "    pm.expect(s.arguments, JSON.stringify(s)).to.be.an('object');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "anthropic/claude-sonnet-4-6 /v1/responses codex client tool search added by tool_addition: a dropped tool_addition declares tool_search in tools",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-sonnet-4-6\",\"max_output_tokens\":256,\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"I need to file a Linear issue. Search for a tool that can do it.\"},{\"type\":\"message\",\"role\":\"system\",\"content\":[{\"type\":\"tool_addition\",\"tool\":{\"type\":\"tool_definition\",\"definition\":{\"type\":\"tool_search\",\"execution\":\"client\",\"description\":\"Search the deferred tools\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}}}]}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('codex client tool search inline claude-sonnet-4-6: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || {});",
+                  "var tools = (rr && rr.tools) || [];",
+                  "var additions = [];",
+                  "((rr && rr.messages) || []).forEach(function (m) { (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b.type === 'tool_addition' && b.tool && b.tool.definition) { additions.push(b.tool.definition); } }); });",
+                  "pm.test('codex client tool search inline claude-sonnet-4-6: raw_request captured, no Anthropic server search', function () {",
+                  "  pm.expect(rr, 'extra_fields.raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(wire, 'client search sent as Anthropic server search').to.not.include('tool_search_tool_');",
+                  "});",
+                  "pm.test('codex client tool search inline claude-sonnet-4-6: the model drops the system message, so tool_search is declared in tools', function () {",
+                  "  pm.expect(additions, 'this model takes no mid-conversation tool_addition: ' + wire.slice(0, 600)).to.be.empty;",
+                  "  var fn = tools.filter(function (t) { return t.name === 'tool_search' && t.input_schema; })[0];",
+                  "  pm.expect(fn, 'tool_search function missing from tools: ' + JSON.stringify(tools)).to.be.an('object');",
+                  "});",
+                  "var output = body.output || [];",
+                  "pm.test('codex client tool search inline claude-sonnet-4-6: a search call comes back as a client tool_search_call', function () {",
+                  "  pm.expect(output.filter(function (o) { return o.type === 'function_call' && o.name === 'tool_search'; }), JSON.stringify(output)).to.be.empty;",
+                  "  output.filter(function (o) { return o.type === 'tool_search_call'; }).forEach(function (s) {",
+                  "    pm.expect(s.execution, JSON.stringify(s)).to.eql('client');",
+                  "    pm.expect(s.arguments, JSON.stringify(s)).to.be.an('object');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

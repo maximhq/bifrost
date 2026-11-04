@@ -98,6 +98,232 @@ func TestPrepareResponsesAdditionalTools(test *testing.T) {
 	assert.Nil(test, native.NamespaceToolAliases)
 }
 
+// codexClientToolSearchRequest is a Codex turn after one client-run tool search: the
+// search call, the tools Codex returned for it (an MCP namespace), and a call to one of
+// them. Codex keeps the deferred tools on its side, so they appear only in the output.
+const codexClientToolSearchRequest = `{
+	"model":"%s",
+	"input":[
+		{"type":"message","role":"user","content":"File a Linear issue for the flaky test"},
+		{"type":"tool_search_call","execution":"client","call_id":"call_ts_1","status":"completed","arguments":{"query":"linear issue"}},
+		{"type":"tool_search_output","execution":"client","call_id":"call_ts_1","status":"completed","tools":[
+			{"type":"namespace","name":"mcp__linear","description":"Linear MCP server","tools":[
+				{"type":"function","name":"create_issue","description":"Create an issue","parameters":{"type":"object","properties":{"title":{"type":"string"}},"required":["title"]},"defer_loading":true}
+			]}
+		]},
+		{"type":"function_call","namespace":"mcp__linear","name":"create_issue","call_id":"call_2","arguments":"{\"title\":\"flaky test\"}"},
+		{"type":"function_call_output","call_id":"call_2","output":"created LIN-1"}
+	],
+	"tools":[
+		{"type":"tool_search","execution":"client","description":"Search the deferred tools","parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}},
+		{"type":"function","name":"shell","parameters":{"type":"object","properties":{}}}
+	]
+}`
+
+// TestPrepareResponsesCodexClientToolSearchForClaude pins Codex's client-run tool search
+// on Claude (Anthropic and Bedrock InvokeModel). The search must stay the caller's: a
+// plain tool_search function, never Anthropic's server bm25 search, which can only see
+// tools already in the request. The search history becomes tool_use / tool_result with
+// tool_reference blocks, and the tools Codex returned are declared deferred under their
+// flattened names so the references and the later call resolve.
+func TestPrepareResponsesCodexClientToolSearchForClaude(test *testing.T) {
+	for _, testCase := range []struct {
+		provider schemas.ModelProvider
+		model    string
+	}{
+		{provider: schemas.Anthropic, model: "claude-sonnet-4-6"},
+		{provider: schemas.Bedrock, model: "global.anthropic.claude-sonnet-4-6"},
+	} {
+		test.Run(string(testCase.provider), func(test *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			var incoming openai.OpenAIResponsesRequest
+			require.NoError(test, schemas.Unmarshal([]byte(fmt.Sprintf(codexClientToolSearchRequest, testCase.model)), &incoming))
+			request := incoming.ToBifrostResponsesRequest(ctx)
+			request.Provider = testCase.provider
+			request.Model = testCase.model
+			before, err := schemas.Marshal(request)
+			require.NoError(test, err)
+
+			prepared, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: testCase.provider}, schemas.Key{}, request)
+			require.Nil(test, bifrostErr)
+			body, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, prepared, anthropic.AnthropicRequestBuildConfig{
+				Provider: testCase.provider, Model: testCase.model, ValidateTools: true,
+			})
+			require.Nil(test, bifrostErr)
+			wire := string(body)
+
+			var search, loaded map[string]any
+			for _, tool := range providerUtils.GetJSONField(body, "tools").Array() {
+				assert.False(test, strings.HasPrefix(tool.Get("type").String(), "tool_search_tool_"),
+					"a client-run tool_search must not become Anthropic's server search: %s", wire)
+				switch tool.Get("name").String() {
+				case "tool_search":
+					search, _ = tool.Value().(map[string]any)
+				case "mcp__linear__create_issue":
+					loaded, _ = tool.Value().(map[string]any)
+				}
+			}
+			require.NotNil(test, search, "tool_search function missing: %s", wire)
+			assert.Equal(test, "Search the deferred tools", search["description"])
+			assert.Contains(test, providerUtils.GetJSONField(body, "tools.#(name==\"tool_search\").input_schema.properties").Raw, "query")
+			require.NotNil(test, loaded, "the tool Codex loaded must be declared: %s", wire)
+			assert.Equal(test, true, loaded["defer_loading"], wire)
+
+			messages := providerUtils.GetJSONField(body, "messages").Array()
+			use := providerUtils.GetJSONField(body, `messages.#.content.#(type=="tool_use")#`).Raw
+			assert.Contains(test, use, `"id":"call_ts_1"`, wire)
+			assert.Contains(test, use, `"name":"tool_search"`, wire)
+			assert.Contains(test, use, `"query":"linear issue"`, wire)
+			assert.Contains(test, use, `"name":"mcp__linear__create_issue"`, "the later call must use the flattened name: %s", wire)
+			var result string
+			for _, message := range messages {
+				for _, block := range message.Get("content").Array() {
+					if block.Get("type").String() == "tool_result" && block.Get("tool_use_id").String() == "call_ts_1" {
+						result = block.Raw
+					}
+				}
+			}
+			require.NotEmpty(test, result, "tool_search_output was dropped: %s", wire)
+			assert.Contains(test, result, `{"type":"tool_reference","tool_name":"mcp__linear__create_issue"}`, wire)
+			if testCase.provider == schemas.Bedrock {
+				// InvokeModel takes betas in the body; defer_loading and tool_reference need this one.
+				assert.Contains(test, providerUtils.GetJSONField(body, "anthropic_beta").Raw, anthropic.AnthropicToolSearchBetaHeader, wire)
+			}
+
+			after, err := schemas.Marshal(request)
+			require.NoError(test, err)
+			assert.JSONEq(test, string(before), string(after), "the shared request was mutated")
+		})
+	}
+}
+
+// A tool_choice that names a tool only a client tool search loaded resolves: the hoist
+// declares the tool before namespace flattening, so the bare name is re-aliased to the
+// flat name it goes upstream under. The provider harness forces turn 2 this way.
+func TestPrepareResponsesCodexClientToolSearchForcedLoadedTool(test *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	raw, err := providerUtils.SetRawJSONField([]byte(fmt.Sprintf(codexClientToolSearchRequest, "claude-sonnet-4-6")),
+		"tool_choice", []byte(`{"type":"function","name":"create_issue"}`))
+	require.NoError(test, err)
+	var incoming openai.OpenAIResponsesRequest
+	require.NoError(test, schemas.Unmarshal(raw, &incoming))
+	request := incoming.ToBifrostResponsesRequest(ctx)
+	request.Provider = schemas.Anthropic
+	request.Model = "claude-sonnet-4-6"
+
+	prepared, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.Anthropic}, schemas.Key{}, request)
+	require.Nil(test, bifrostErr)
+	body, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, prepared, anthropic.AnthropicRequestBuildConfig{
+		Provider: schemas.Anthropic, Model: "claude-sonnet-4-6", ValidateTools: true,
+	})
+	require.Nil(test, bifrostErr)
+	assert.JSONEq(test, `{"type":"tool","name":"mcp__linear__create_issue"}`, providerUtils.GetJSONField(body, "tool_choice").Raw, string(body))
+}
+
+// TestHoistClientToolSearchOutputTools covers the declaration of tools a client-run
+// tool search loaded: deferred, declared once however many searches found them, merged
+// into a namespace the request already declares, and left alone off Claude or without
+// a client tool_search.
+func TestHoistClientToolSearchOutputTools(test *testing.T) {
+	const search = `{"type":"tool_search","execution":"client"}`
+	output := func(callID, tools string) string {
+		return `{"type":"tool_search_output","execution":"client","call_id":"` + callID + `","status":"completed","tools":` + tools + `}`
+	}
+	linear := `{"type":"namespace","name":"mcp__linear","tools":[{"type":"function","name":"create_issue","parameters":{"type":"object","properties":{}}}]}`
+	build := func(test *testing.T, model, tools string, items ...string) *schemas.BifrostResponsesRequest {
+		var request schemas.BifrostResponsesRequest
+		raw := `{"provider":"anthropic","model":"` + model + `","input":[` + strings.Join(items, ",") + `],"params":{"tools":[` + tools + `]}}`
+		require.NoError(test, schemas.Unmarshal([]byte(raw), &request))
+		return &request
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	test.Run("repeated searches declare each tool once, deferred", func(test *testing.T) {
+		request := build(test, "claude-sonnet-4-6", search,
+			output("call_1", `[`+linear+`,{"type":"function","name":"lookup","parameters":{"type":"object","properties":{}}}]`),
+			output("call_2", `[`+linear+`,{"type":"function","name":"lookup","parameters":{"type":"object","properties":{}}}]`))
+		prepared, bifrostErr := hoistClientToolSearchOutputTools(ctx, request)
+		require.Nil(test, bifrostErr)
+		require.Len(test, prepared.Params.Tools, 3)
+		assert.Equal(test, "mcp__linear", *prepared.Params.Tools[1].Name)
+		require.Len(test, prepared.Params.Tools[1].ResponsesToolNamespace.Tools, 1)
+		assert.True(test, *prepared.Params.Tools[1].ResponsesToolNamespace.Tools[0].DeferLoading)
+		assert.Equal(test, "lookup", *prepared.Params.Tools[2].Name)
+		assert.True(test, *prepared.Params.Tools[2].DeferLoading)
+		assert.Len(test, prepared.Input, 2, "the outputs stay for the converter")
+		assert.Len(test, request.Params.Tools, 1, "the shared request was mutated")
+	})
+
+	test.Run("members merge into a declared namespace", func(test *testing.T) {
+		declared := `{"type":"namespace","name":"mcp__linear","tools":[{"type":"function","name":"list_issues","parameters":{"type":"object","properties":{}}}]}`
+		request := build(test, "claude-sonnet-4-6", search+","+declared, output("call_1", `[`+linear+`]`))
+		prepared, bifrostErr := hoistClientToolSearchOutputTools(ctx, request)
+		require.Nil(test, bifrostErr)
+		require.Len(test, prepared.Params.Tools, 2)
+		members := prepared.Params.Tools[1].ResponsesToolNamespace.Tools
+		require.Len(test, members, 2)
+		assert.Equal(test, "list_issues", *members[0].Name)
+		assert.Nil(test, members[0].DeferLoading, "a tool the caller declared keeps its own loading")
+		assert.Equal(test, "create_issue", *members[1].Name)
+		assert.True(test, *members[1].DeferLoading)
+		assert.Len(test, request.Params.Tools[1].ResponsesToolNamespace.Tools, 1, "the shared namespace was mutated")
+	})
+
+	for _, testCase := range []struct {
+		name, model, tools string
+	}{
+		{name: "non-Claude model", model: "gemini-2.5-flash", tools: search},
+		{name: "server-run tool_search", model: "claude-sonnet-4-6", tools: `{"type":"tool_search"}`},
+	} {
+		test.Run(testCase.name+" is left alone", func(test *testing.T) {
+			request := build(test, testCase.model, testCase.tools, output("call_1", `[`+linear+`]`))
+			prepared, bifrostErr := hoistClientToolSearchOutputTools(ctx, request)
+			require.Nil(test, bifrostErr)
+			assert.Same(test, request, prepared)
+		})
+	}
+
+	test.Run("a client search added by tool_addition declares the loaded tools", func(test *testing.T) {
+		var request schemas.BifrostResponsesRequest
+		raw := `{"provider":"anthropic","model":"claude-sonnet-4-6","input":[` +
+			`{"type":"message","role":"system","content":[{"type":"tool_addition","tool":{"type":"tool_definition","definition":` + search + `}}]},` +
+			output("call_1", `[`+linear+`]`) + `]}`
+		require.NoError(test, schemas.Unmarshal([]byte(raw), &request))
+		prepared, bifrostErr := hoistClientToolSearchOutputTools(ctx, &request)
+		require.Nil(test, bifrostErr)
+		require.NotNil(test, prepared.Params)
+		require.Len(test, prepared.Params.Tools, 1)
+		assert.Equal(test, "mcp__linear", *prepared.Params.Tools[0].Name)
+		assert.True(test, *prepared.Params.Tools[0].ResponsesToolNamespace.Tools[0].DeferLoading)
+		assert.Nil(test, request.Params, "the shared request was mutated")
+	})
+
+	test.Run("malformed tools are a 400", func(test *testing.T) {
+		request := build(test, "claude-sonnet-4-6", search, output("call_1", `[{"type":"namespace","name":"mcp__linear","tools":"oops"}]`))
+		_, bifrostErr := hoistClientToolSearchOutputTools(ctx, request)
+		require.NotNil(test, bifrostErr)
+		assert.Contains(test, bifrostErr.Error.Message, "tool_search_output")
+	})
+}
+
+// BenchmarkPrepareResponsesRequestClaudeWithoutToolSearch measures the dispatch prep for
+// an ordinary Claude request, which the client tool search hoist must leave untouched.
+func BenchmarkPrepareResponsesRequestClaudeWithoutToolSearch(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	request := responsesReqWithText("hello")
+	request.Provider = schemas.Anthropic
+	request.Model = "claude-sonnet-4-6"
+	request.Params = &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{
+		{Type: schemas.ResponsesToolTypeFunction, Name: new("shell"), ResponsesToolFunction: &schemas.ResponsesToolFunction{}},
+		{Type: schemas.ResponsesToolTypeWebSearch},
+	}}
+	provider := stubProvider{key: schemas.Anthropic}
+	b.ReportAllocs()
+	for b.Loop() {
+		_, _ = prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, provider, schemas.Key{}, request)
+	}
+}
+
 // TestPrepareResponsesClaudeLocalMCP verifies that Claude's local function declarations survive conversion to OpenAI.
 func TestPrepareResponsesClaudeLocalMCP(test *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
