@@ -56,23 +56,25 @@ type RelayLog struct {
 	JobStatus   *string `gorm:"type:varchar(64)" json:"job_status,omitempty"`
 	ParentLogID *string `gorm:"type:varchar(255);index:idx_relay_logs_parent_log_id" json:"parent_log_id,omitempty"` // a job row's start call
 
-	UserID           *string `gorm:"type:varchar(255);index:idx_relay_logs_user_id" json:"user_id,omitempty"`
-	UserName         *string `gorm:"type:varchar(255)" json:"user_name,omitempty"`
-	UserEmail        *string `gorm:"type:varchar(255)" json:"user_email,omitempty"`
-	VirtualKeyID     *string `gorm:"type:varchar(255);index:idx_relay_logs_virtual_key_id" json:"virtual_key_id,omitempty"`
-	VirtualKeyName   *string `gorm:"type:varchar(255)" json:"virtual_key_name,omitempty"`
-	TeamID           *string `gorm:"type:varchar(255);index:idx_relay_logs_team_id" json:"team_id,omitempty"`
-	TeamName         *string `gorm:"type:varchar(255)" json:"team_name,omitempty"`
-	CustomerID       *string `gorm:"type:varchar(255);index:idx_relay_logs_customer_id" json:"customer_id,omitempty"`
-	CustomerName     *string `gorm:"type:varchar(255)" json:"customer_name,omitempty"`
-	BusinessUnitID   *string `gorm:"type:varchar(255);index:idx_relay_logs_business_unit_id" json:"business_unit_id,omitempty"`
-	BusinessUnitName *string `gorm:"type:varchar(255)" json:"business_unit_name,omitempty"`
-	ProjectID        *string `gorm:"type:varchar(255);index:idx_relay_logs_project_id" json:"project_id,omitempty"`
-	ProjectName      *string `gorm:"type:varchar(255)" json:"project_name,omitempty"`
-	SessionID        *string `gorm:"type:varchar(255);index:idx_relay_logs_session_id,where:session_id IS NOT NULL" json:"session_id,omitempty"` // Opaque session identity resolved at ingress, as on logs and mcp_tool_logs
-	UserAgent        *string `gorm:"type:varchar(512);index:idx_relay_logs_user_agent" json:"user_agent,omitempty"`                              // Raw HTTP User-Agent of the calling client
-	App              *string `gorm:"type:varchar(128);index:idx_relay_logs_app" json:"app,omitempty"`                                            // Backend-detected client app derived from user_agent
-	ClientIP         *string `gorm:"type:varchar(45)" json:"client_ip,omitempty"`                                                                // Caller IP: leftmost X-Forwarded-For, else X-Real-IP, else the TCP peer
+	UserID             *string `gorm:"type:varchar(255);index:idx_relay_logs_user_id" json:"user_id,omitempty"`
+	UserName           *string `gorm:"type:varchar(255)" json:"user_name,omitempty"`
+	UserEmail          *string `gorm:"type:varchar(255)" json:"user_email,omitempty"`
+	VirtualKeyID       *string `gorm:"type:varchar(255);index:idx_relay_logs_virtual_key_id" json:"virtual_key_id,omitempty"`
+	VirtualKeyName     *string `gorm:"type:varchar(255)" json:"virtual_key_name,omitempty"`
+	TeamID             *string `gorm:"type:varchar(255);index:idx_relay_logs_team_id" json:"team_id,omitempty"`
+	TeamName           *string `gorm:"type:varchar(255)" json:"team_name,omitempty"`
+	CustomerID         *string `gorm:"type:varchar(255);index:idx_relay_logs_customer_id" json:"customer_id,omitempty"`
+	CustomerName       *string `gorm:"type:varchar(255)" json:"customer_name,omitempty"`
+	BusinessUnitID     *string `gorm:"type:varchar(255);index:idx_relay_logs_business_unit_id" json:"business_unit_id,omitempty"`
+	BusinessUnitName   *string `gorm:"type:varchar(255)" json:"business_unit_name,omitempty"`
+	ProjectID          *string `gorm:"type:varchar(255);index:idx_relay_logs_project_id" json:"project_id,omitempty"`
+	ProjectName        *string `gorm:"type:varchar(255)" json:"project_name,omitempty"`
+	SessionID          *string `gorm:"type:varchar(255);index:idx_relay_logs_session_id,where:session_id IS NOT NULL" json:"session_id,omitempty"`                               // Opaque session identity resolved at ingress, as on logs and mcp_tool_logs
+	ParentRequestID    *string `gorm:"type:varchar(255);index:idx_relay_logs_parent_request_id,where:parent_request_id IS NOT NULL" json:"parent_request_id,omitempty"`          // Caller-named parent (baggage session-id), as on logs
+	AgentCorrelationID *string `gorm:"type:varchar(255);index:idx_relay_logs_agent_correlation_id,where:agent_correlation_id IS NOT NULL" json:"agent_correlation_id,omitempty"` // Caller-supplied correlation identity from x-bf-agent-correlation-id
+	UserAgent          *string `gorm:"type:varchar(512);index:idx_relay_logs_user_agent" json:"user_agent,omitempty"`                                                            // Raw HTTP User-Agent of the calling client
+	App                *string `gorm:"type:varchar(128);index:idx_relay_logs_app" json:"app,omitempty"`                                                                          // Backend-detected client app derived from user_agent
+	ClientIP           *string `gorm:"type:varchar(45)" json:"client_ip,omitempty"`                                                                                              // Caller IP: leftmost X-Forwarded-For, else X-Real-IP, else the TCP peer
 	// Every team, customer and business unit the call settled, as on logs and mcp_tool_logs: the
 	// scalar columns keep the first, these keep them all, and the dimension filters read both.
 	TeamIDs                 *string               `gorm:"type:text" json:"-"` // JSON serialized []string
@@ -86,7 +88,6 @@ type RelayLog struct {
 	RequestID               string                `gorm:"type:varchar(255);index:idx_relay_logs_request_id;not null" json:"request_id"`
 	Metadata                *string               `gorm:"type:text" json:"-"` // JSON map: logging headers, x-bf-lh-* labels, x-bf-dim-* dimensions and the key's metadata, as on LLM and MCP rows
 	RequestHeaders          *string               `gorm:"type:text" json:"-"`
-	ResponseHeaders         *string               `gorm:"type:text" json:"-"`
 	RequestBody             *string               `gorm:"type:text" json:"request_body,omitempty"`
 	ResponseBody            *string               `gorm:"type:text" json:"response_body,omitempty"`
 	ErrorDetails            string                `gorm:"type:text" json:"-"`
@@ -98,7 +99,6 @@ type RelayLog struct {
 	RateLimitIDsParsed      []string              `gorm:"-" json:"rate_limit_ids,omitempty"`
 	MetadataParsed          map[string]any        `gorm:"-" json:"metadata,omitempty"`
 	RequestHeadersParsed    map[string]string     `gorm:"-" json:"request_headers,omitempty"`
-	ResponseHeadersParsed   map[string]string     `gorm:"-" json:"response_headers,omitempty"`
 	ErrorDetailsParsed      *schemas.BifrostError `gorm:"-" json:"error_details,omitempty"`
 	OverheadBreakdownParsed []OverheadBucket      `gorm:"-" json:"overhead_breakdown,omitempty"`
 	TeamIDsParsed           []string              `gorm:"-" json:"team_ids,omitempty"`
@@ -107,6 +107,12 @@ type RelayLog struct {
 	CustomerNamesParsed     []string              `gorm:"-" json:"customer_names,omitempty"`
 	BusinessUnitIDsParsed   []string              `gorm:"-" json:"business_unit_ids,omitempty"`
 	BusinessUnitNamesParsed []string              `gorm:"-" json:"business_unit_names,omitempty"`
+	// Content retained as hidden (retain_content_in_object_storage with content logging off) that
+	// has no body column: the full path with its query string, and the error with its raw request
+	// and response. The hybrid store writes them to the row's object only; the database row keeps
+	// the stripped path and the error without raw payloads, as an LLM row offloads error_details.
+	RetainedPath         *string               `gorm:"-" json:"-"`
+	RetainedErrorDetails *schemas.BifrostError `gorm:"-" json:"-"`
 }
 
 // Relay log kinds and statuses.
@@ -190,11 +196,6 @@ func (l *RelayLog) SerializeFields() error {
 			return fmt.Errorf("failed to serialize relay request headers: %w", err)
 		}
 	}
-	if len(l.ResponseHeadersParsed) > 0 {
-		if err := marshal(l.ResponseHeadersParsed, &l.ResponseHeaders); err != nil {
-			return fmt.Errorf("failed to serialize relay response headers: %w", err)
-		}
-	}
 	if l.ErrorDetailsParsed != nil {
 		data, err := sonic.Marshal(l.ErrorDetailsParsed)
 		if err != nil {
@@ -230,7 +231,6 @@ func (l *RelayLog) DeserializeFields() error {
 	unmarshal(l.BusinessUnitNames, &l.BusinessUnitNamesParsed)
 	unmarshal(l.Metadata, &l.MetadataParsed)
 	unmarshal(l.RequestHeaders, &l.RequestHeadersParsed)
-	unmarshal(l.ResponseHeaders, &l.ResponseHeadersParsed)
 	l.ErrorDetailsParsed = nil
 	if l.ErrorDetails != "" {
 		var details schemas.BifrostError
@@ -247,29 +247,35 @@ func (l *RelayLog) DeserializeFields() error {
 // RelayLogFilters narrows a Relay Logs search. Slice fields match any of their
 // values; every populated field must match.
 type RelayLogFilters struct {
-	EndpointNames   []string   `json:"relay_names,omitempty"`
-	Methods         []string   `json:"methods,omitempty"`
-	Statuses        []string   `json:"status,omitempty"`
-	Kinds           []string   `json:"kinds,omitempty"`
-	VirtualKeyIDs   []string   `json:"virtual_key_ids,omitempty"`
-	UserIDs         []string   `json:"user_ids,omitempty"`
-	TeamIDs         []string   `json:"team_ids,omitempty"`
-	CustomerIDs     []string   `json:"customer_ids,omitempty"`
-	BusinessUnitIDs []string   `json:"business_unit_ids,omitempty"`
-	ProjectIDs      []string   `json:"project_ids,omitempty"`
-	Apps            []string   `json:"apps,omitempty"`
-	Billable        *bool      `json:"billable,omitempty"`
-	StartTime       *time.Time `json:"start_time,omitempty"`
-	EndTime         *time.Time `json:"end_time,omitempty"`
-	MinCost         *float64   `json:"min_cost,omitempty"`
-	MaxCost         *float64   `json:"max_cost,omitempty"`
-	MinLatency      *float64   `json:"min_latency,omitempty"` // milliseconds, as on the LLM logs filters
-	MaxLatency      *float64   `json:"max_latency,omitempty"`
-	RequestID       string     `json:"request_id,omitempty"`
-	JobID           string     `json:"job_id,omitempty"`
-	SessionID       string     `json:"session_id,omitempty"`
+	EndpointNames      []string   `json:"relay_names,omitempty"`
+	Methods            []string   `json:"methods,omitempty"`
+	Statuses           []string   `json:"status,omitempty"`
+	Kinds              []string   `json:"kinds,omitempty"`
+	VirtualKeyIDs      []string   `json:"virtual_key_ids,omitempty"`
+	UserIDs            []string   `json:"user_ids,omitempty"`
+	TeamIDs            []string   `json:"team_ids,omitempty"`
+	CustomerIDs        []string   `json:"customer_ids,omitempty"`
+	BusinessUnitIDs    []string   `json:"business_unit_ids,omitempty"`
+	ProjectIDs         []string   `json:"project_ids,omitempty"`
+	Apps               []string   `json:"apps,omitempty"`
+	Billable           *bool      `json:"billable,omitempty"`
+	StartTime          *time.Time `json:"start_time,omitempty"`
+	EndTime            *time.Time `json:"end_time,omitempty"`
+	MinCost            *float64   `json:"min_cost,omitempty"`
+	MaxCost            *float64   `json:"max_cost,omitempty"`
+	MinLatency         *float64   `json:"min_latency,omitempty"` // milliseconds, as on the LLM logs filters
+	MaxLatency         *float64   `json:"max_latency,omitempty"`
+	RequestID          string     `json:"request_id,omitempty"`
+	JobID              string     `json:"job_id,omitempty"`
+	SessionID          string     `json:"session_id,omitempty"`
+	ParentRequestID    string     `json:"parent_request_id,omitempty"`
+	AgentCorrelationID string     `json:"agent_correlation_id,omitempty"`
 	// Search matches the path, route, model and request id: metadata columns only, never bodies.
 	Search string `json:"search,omitempty"`
+	// ContentSearch matches the request and response bodies, as content_search matches an LLM
+	// row's content and an MCP row's arguments and result. A hybrid store searches the previews
+	// its rows keep, and a row whose content is hidden has none to match.
+	ContentSearch string `json:"content_search,omitempty"`
 }
 
 // RelayLogSearchResult is one page of a Relay Logs search.
@@ -412,6 +418,12 @@ func (s *RDBLogStore) applyRelayLogFilters(query *gorm.DB, f RelayLogFilters) *g
 	if f.SessionID != "" {
 		query = query.Where("session_id = ?", f.SessionID)
 	}
+	if f.ParentRequestID != "" {
+		query = query.Where("parent_request_id = ?", f.ParentRequestID)
+	}
+	if f.AgentCorrelationID != "" {
+		query = query.Where("agent_correlation_id = ?", f.AgentCorrelationID)
+	}
 	if search := strings.TrimSpace(f.Search); search != "" {
 		like := "%" + escapeLike(search) + "%"
 		// Backslash is the default LIKE escape on Postgres, MySQL and ClickHouse, and ClickHouse
@@ -421,6 +433,23 @@ func (s *RDBLogStore) applyRelayLogFilters(query *gorm.DB, f RelayLogFilters) *g
 			escape = ` ESCAPE '\'`
 		}
 		query = query.Where("(path LIKE ?"+escape+" OR route_path LIKE ?"+escape+" OR model LIKE ?"+escape+" OR request_id LIKE ?"+escape+")", like, like, like, like)
+	}
+	if search := strings.TrimSpace(f.ContentSearch); search != "" {
+		if query.Dialector != nil && query.Dialector.Name() == "postgres" {
+			// Must match idx_relay_logs_request_body_fts / idx_relay_logs_response_body_fts exactly
+			// (incl. the left() cap) so the planner uses the GIN expression indexes.
+			query = query.Where(
+				fmt.Sprintf("(to_tsvector('simple', left(request_body, %d)) @@ plainto_tsquery('simple', ?) OR to_tsvector('simple', left(response_body, %d)) @@ plainto_tsquery('simple', ?))", ftsInputCharLimit, ftsInputCharLimit),
+				search, search,
+			)
+		} else {
+			like := "%" + escapeLike(search) + "%"
+			escape := ""
+			if query.Dialector != nil && query.Dialector.Name() == "sqlite" {
+				escape = ` ESCAPE '\'`
+			}
+			query = query.Where("(request_body LIKE ?"+escape+" OR response_body LIKE ?"+escape+")", like, like)
+		}
 	}
 	return query
 }
@@ -599,6 +628,30 @@ func (s *RDBLogStore) GetRelayHistogram(ctx context.Context, filters RelayLogFil
 	return &RelayHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds}, nil
 }
 
+// GetRelayLatencyHistogram returns time-bucketed latency and overhead percentiles (avg, p90, p95,
+// p99) for the filters, as GetLatencyHistogram does for LLM rows and through the same dialect
+// queries: finished calls with a latency only.
+func (s *RDBLogStore) GetRelayLatencyHistogram(ctx context.Context, filters RelayLogFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error) {
+	if bucketSizeSeconds <= 0 {
+		bucketSizeSeconds = 3600
+	}
+	query := s.applyRelayLogFilters(s.ScopedDB(ctx).Model(&RelayLog{}), filters).
+		Where("status IN ?", terminalLogStatuses).
+		Where("latency IS NOT NULL")
+	// The dialect queries read only the window from the LLM filters, to lay out empty buckets.
+	window := SearchFilters{StartTime: filters.StartTime, EndTime: filters.EndTime}
+	switch s.db.Dialector.Name() {
+	case "sqlite":
+		return s.getLatencyHistogramSQLite(ctx, query, window, bucketSizeSeconds)
+	case "mysql":
+		return s.getLatencyHistogramMySQL(ctx, query, window, bucketSizeSeconds)
+	case "clickhouse":
+		return s.getLatencyHistogramClickHouse(ctx, query, window, bucketSizeSeconds)
+	default:
+		return s.getLatencyHistogramPercentileCont(ctx, query, window, bucketSizeSeconds)
+	}
+}
+
 // GetRelayTopEndpoints ranks endpoints by request count for the filters.
 func (s *RDBLogStore) GetRelayTopEndpoints(ctx context.Context, filters RelayLogFilters, limit int) (*RelayTopResults, error) {
 	if limit <= 0 {
@@ -744,6 +797,7 @@ func (s *RDBLogStore) FindRelayLogsForDeletion(ctx context.Context, ids []string
 
 // UpdateRelayLog applies column updates to one row, ErrNotFound when it does not exist.
 func (s *RDBLogStore) UpdateRelayLog(ctx context.Context, id string, updates map[string]any) error {
+	_, _, updates = takeRelayRetainedUpdates(updates)
 	result := s.db.WithContext(ctx).Model(&RelayLog{}).Where("id = ?", id).Updates(updates)
 	if result.Error != nil {
 		return result.Error

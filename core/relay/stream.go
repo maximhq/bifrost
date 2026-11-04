@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"sync"
@@ -37,6 +38,7 @@ type Stream struct {
 	defaultUsage *schemas.RelayUsage
 	usage        *schemas.RelayUsage
 	bytesOut     int64
+	eofPending   bool // the last bytes arrived with EOF; the next Read reports it
 
 	capture  []byte        // the whole body for the log row; nil when content logging is off
 	activity *atomic.Int64 // the logging plugin's last-activity slot; nil without the plugin
@@ -56,15 +58,11 @@ type Stream struct {
 // stream accumulator keeps an LLM stream, but only when the logging plugin asked for it, so a
 // stream nobody logs the body of never allocates the buffer.
 func newStream(ctx *schemas.BifrostContext, e *endpoint, resp *http.Response, start time.Time, mapping resolvedUsage, billable bool, requestUnits usageFields, finish func(*schemas.BifrostRelayResponse, *schemas.BifrostError)) *Stream {
-	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, e.streamIdle)
-	reader, stop := providerUtils.NewIdleTimeoutReader(resp.Body, resp.Body, providerUtils.GetStreamIdleTimeout(ctx), ctx)
 	s := &Stream{
 		StatusCode: resp.StatusCode,
 		Headers:    e.responseHeaders(resp),
 		ctx:        ctx,
 		body:       resp.Body,
-		reader:     reader,
-		stop:       stop,
 		start:      start,
 		counted:    billable && resp.StatusCode >= 200 && resp.StatusCode < 300,
 		finish:     finish,
@@ -74,6 +72,7 @@ func newStream(ctx *schemas.BifrostContext, e *endpoint, resp *http.Response, st
 	}
 	s.activity, _ = ctx.Value(schemas.BifrostContextKeyRelayActivity).(*atomic.Int64)
 	if !s.counted {
+		s.armIdleTimeout(ctx, e, resp)
 		return s
 	}
 	s.defaultUsage = mapping.defaultUsage(requestUnits)
@@ -89,7 +88,15 @@ func newStream(ctx *schemas.BifrostContext, e *endpoint, resp *http.Response, st
 	if final != nil && mapping.unitsMeasure == schemas.RelayUnitsBodyChars {
 		s.runes = &providerUtils.RuneCounter{}
 	}
+	s.armIdleTimeout(ctx, e, resp)
 	return s
+}
+
+// armIdleTimeout starts the idle guard, a timer, on the stream's way out of newStream: only once the
+// stream is built, so a panic while building it leaves no timer running.
+func (s *Stream) armIdleTimeout(ctx *schemas.BifrostContext, e *endpoint, resp *http.Response) {
+	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, e.streamIdle)
+	s.reader, s.stop = providerUtils.NewIdleTimeoutReader(resp.Body, resp.Body, providerUtils.GetStreamIdleTimeout(ctx), ctx)
 }
 
 // relayContentCaptureEnabled reports whether the logging plugin asked for the streamed reply's
@@ -119,6 +126,12 @@ func (s *Stream) handOffLarge(ahead []byte) {
 
 // Read forwards the next bytes of the reply.
 func (s *Stream) Read(p []byte) (int, error) {
+	if s.eofPending {
+		if err := s.finishEOF(); err != nil {
+			return 0, err
+		}
+		return 0, io.EOF
+	}
 	var n int
 	var err error
 	if len(s.ahead) > 0 {
@@ -139,8 +152,15 @@ func (s *Stream) Read(p []byte) (int, error) {
 			s.runes.Write(p[:n])
 		}
 		if s.framer != nil {
-			for _, event := range s.framer.Write(p[:n]) {
-				s.observeEvent(event)
+			// Reading usage from the events is Bifrost's own work on the stream, as decoding an
+			// LLM stream's events is (the breakdown's response-parse bucket).
+			parseStart := time.Now()
+			parseErr := s.observeChunk(p[:n])
+			schemas.AddStreamParse(s.ctx, time.Since(parseStart))
+			if parseErr != nil {
+				// The bytes read are still handed over; the stream ends with an internal error.
+				s.complete(parseErr)
+				return n, parseErr
 			}
 		}
 		// The capture keeps the whole reply for the post-hooks, as a buffered reply's body does and
@@ -154,17 +174,68 @@ func (s *Stream) Read(p []byte) (int, error) {
 		}
 	}
 	switch {
+	case err == io.EOF && n > 0:
+		// The last bytes arrived with EOF. They are returned on their own and EOF is reported on the
+		// next Read, so a reader that stops at the first error still gets them, and the post-hooks
+		// run only once the reader has taken the last bytes. The gateway reads ahead of its caller
+		// (as a passthrough stream does), so there the post-hooks can run before the caller has
+		// received them, as on an LLM stream.
+		s.eofPending = true
+		return n, nil
 	case err == io.EOF:
-		if s.framer != nil {
-			if event := s.framer.Flush(); event != nil {
-				s.observeEvent(event)
-			}
+		if flushErr := s.finishEOF(); flushErr != nil {
+			return n, flushErr
 		}
-		s.complete(nil)
 	case err != nil:
 		s.complete(err)
 	}
 	return n, err
+}
+
+// finishEOF ends a stream the upstream completed. The last event, read only now when nothing
+// followed it, is observed under the same recovery as observeChunk, so a panic there ends the
+// stream as an internal error (returned) rather than escaping Read.
+func (s *Stream) finishEOF() error {
+	err := s.flushFramer()
+	s.complete(err)
+	return err
+}
+
+// flushFramer observes the event the framer still holds at EOF; see observeChunk.
+func (s *Stream) flushFramer() (err error) {
+	if s.framer == nil {
+		return nil
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			err = streamPanic{value: rec}
+		}
+	}()
+	if event := s.framer.Flush(); event != nil {
+		s.observeEvent(event)
+	}
+	return nil
+}
+
+// observeChunk feeds a chunk's complete events to the usage mapping. A panic in it is Bifrost's own
+// fault, not the caller's or the upstream's, so it comes back as a streamPanic.
+func (s *Stream) observeChunk(chunk []byte) (err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			err = streamPanic{value: rec}
+		}
+	}()
+	for _, event := range s.framer.Write(chunk) {
+		s.observeEvent(event)
+	}
+	return nil
+}
+
+// streamPanic is a panic recovered while reading a stream's usage.
+type streamPanic struct{ value any }
+
+func (p streamPanic) Error() string {
+	return fmt.Sprintf("panic reading relay stream usage: %v", p.value)
 }
 
 func (s *Stream) observeEvent(event []byte) {
@@ -174,6 +245,30 @@ func (s *Stream) observeEvent(event []byte) {
 	if u := s.observe(event); u != nil {
 		s.usage = u
 	}
+}
+
+// finalUsage is the usage the stream is charged: what its events reported, a size-priced figure, or
+// the route's default. A panic computing it is returned as a streamPanic and charges the default.
+func (s *Stream) finalUsage() (usage *schemas.RelayUsage, err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			usage, err = s.defaultUsage, streamPanic{value: rec}
+		}
+	}()
+	usage = s.usage
+	if s.final != nil {
+		var runes int64
+		if s.runes != nil {
+			runes = s.runes.Total()
+		}
+		if u := s.final(s.bytesOut, runes); u != nil {
+			usage = u
+		}
+	}
+	if usage == nil {
+		usage = s.defaultUsage
+	}
+	return usage, nil
 }
 
 // Close releases the upstream connection. Closing before EOF ends the stream as cancelled; the
@@ -199,24 +294,19 @@ func (s *Stream) complete(readErr error) {
 			resp.Body = s.capture
 		}
 		if s.counted {
-			usage := s.usage
-			if s.final != nil {
-				var runes int64
-				if s.runes != nil {
-					runes = s.runes.Total()
-				}
-				if u := s.final(s.bytesOut, runes); u != nil {
-					usage = u
-				}
-			}
-			if usage == nil {
-				usage = s.defaultUsage
+			usage, usageErr := s.finalUsage()
+			if usageErr != nil && readErr == nil {
+				readErr = usageErr
 			}
 			resp.Usage = usage
 		}
 		var bifrostErr *schemas.BifrostError
+		var panicked streamPanic
 		switch {
 		case readErr == nil:
+		case errors.As(readErr, &panicked):
+			// Bifrost's own fault: classified bifrost_internal, never a caller cancellation.
+			bifrostErr = &schemas.BifrostError{IsBifrostError: true, Error: &schemas.ErrorField{Message: "failed to read the relay stream's usage", Error: readErr}}
 		case errors.Is(readErr, context.Canceled):
 			bifrostErr = &schemas.BifrostError{
 				IsBifrostError: false,

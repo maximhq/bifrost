@@ -921,6 +921,7 @@ func (s *ClickHouseLogStore) UpdateAgentLog(ctx context.Context, id string, entr
 
 // UpdateRelayLog applies an update to a Relay Logs row via read-modify-write.
 func (s *ClickHouseLogStore) UpdateRelayLog(ctx context.Context, id string, updates map[string]any) error {
+	_, _, updates = takeRelayRetainedUpdates(updates)
 	st, err := chParseSchema(s.db, &RelayLog{})
 	if err != nil {
 		return err

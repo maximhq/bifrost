@@ -534,6 +534,9 @@ type relayPayloadV1 struct {
 	SchemaVersion int     `json:"schema_version"`
 	RequestBody   *string `json:"request_body,omitempty"`
 	ResponseBody  *string `json:"response_body,omitempty"`
+	// Set only for a hidden row: content with no body column, kept in the object alone.
+	Path         *string               `json:"path,omitempty"`
+	ErrorDetails *schemas.BifrostError `json:"error_details,omitempty"`
 }
 
 // relayMergePayloadV1 is what a relay reconcile queues: the bodies it carries, each with a flag
@@ -544,6 +547,36 @@ type relayMergePayloadV1 struct {
 	SetRequestBody  bool    `json:"set_request_body,omitempty"`
 	ResponseBody    *string `json:"response_body,omitempty"`
 	SetResponseBody bool    `json:"set_response_body,omitempty"`
+	// Hidden content with no body column (see relayPayloadV1), replacing the stored copy when set.
+	Path         *string               `json:"path,omitempty"`
+	ErrorDetails *schemas.BifrostError `json:"error_details,omitempty"`
+}
+
+// Reserved keys of a relay row update (UpdateRelayLog) carrying hidden content that has no body
+// column: the full path with its query, and the error with its raw payloads. The hybrid store moves
+// them into the row's object; every store strips them before writing the row.
+const (
+	RelayRetainedPathUpdate         = "__retained_path"
+	RelayRetainedErrorDetailsUpdate = "__retained_error_details"
+)
+
+// takeRelayRetainedUpdates splits the reserved hidden-content keys off a relay row update. The
+// update map is returned as is when it holds neither, so the common reconcile copies nothing.
+func takeRelayRetainedUpdates(updates map[string]any) (*string, *schemas.BifrostError, map[string]any) {
+	pathValue, hasPath := updates[RelayRetainedPathUpdate]
+	errValue, hasErr := updates[RelayRetainedErrorDetailsUpdate]
+	if !hasPath && !hasErr {
+		return nil, nil, updates
+	}
+	rest := make(map[string]any, len(updates))
+	for k, v := range updates {
+		if k != RelayRetainedPathUpdate && k != RelayRetainedErrorDetailsUpdate {
+			rest[k] = v
+		}
+	}
+	path, _ := pathValue.(*string)
+	errDetails, _ := errValue.(*schemas.BifrostError)
+	return path, errDetails, rest
 }
 
 // MarshalRelayLogPayload serializes a Relay Logs row's full bodies for object storage.
@@ -552,7 +585,22 @@ func MarshalRelayLogPayload(l *RelayLog) ([]byte, error) {
 		SchemaVersion: relayObjectSchemaVersion,
 		RequestBody:   l.RequestBody,
 		ResponseBody:  l.ResponseBody,
+		Path:          l.RetainedPath,
+		ErrorDetails:  relayObjectErrorDetails(l),
 	})
+}
+
+// relayObjectErrorDetails is the error a hidden row keeps in its object, since its database row
+// keeps none (PrepareRelayLogDBEntry), as an LLM row offloads error_details: the full error retained
+// with its raw payloads, else the sanitized one.
+func relayObjectErrorDetails(l *RelayLog) *schemas.BifrostError {
+	if l.RetainedErrorDetails != nil {
+		return l.RetainedErrorDetails
+	}
+	if l.ContentHidden {
+		return l.ErrorDetailsParsed
+	}
+	return nil
 }
 
 // MergeRelayLogPayloadFromJSON restores the full bodies read back from object storage.
@@ -566,6 +614,9 @@ func MergeRelayLogPayloadFromJSON(l *RelayLog, data []byte) error {
 	}
 	l.RequestBody = payload.RequestBody
 	l.ResponseBody = payload.ResponseBody
+	// Kept so a reconcile merged over the object does not drop them; reads never surface them.
+	l.RetainedPath = payload.Path
+	l.RetainedErrorDetails = payload.ErrorDetails
 	return nil
 }
 
@@ -574,8 +625,12 @@ func MergeRelayLogPayloadFromJSON(l *RelayLog, data []byte) error {
 // object holding them in full.
 func PrepareRelayLogDBEntry(l *RelayLog, objectKey string) {
 	if l.ContentHidden {
+		// A hidden row carries no content in the database, as an LLM row's ClearPayload leaves none:
+		// the error goes to the object with the bodies (relayObjectErrorDetails).
 		l.RequestBody = nil
 		l.ResponseBody = nil
+		l.ErrorDetails = ""
+		l.ErrorDetailsParsed = nil
 	} else {
 		l.RequestBody = truncateStringPointer(l.RequestBody, maxRelayBodyPreviewRunes)
 		l.ResponseBody = truncateStringPointer(l.ResponseBody, maxRelayBodyPreviewRunes)
@@ -583,9 +638,10 @@ func PrepareRelayLogDBEntry(l *RelayLog, objectKey string) {
 	l.PayloadReference = &objectKey
 }
 
-// RelayLogHasPayload reports whether a Relay Logs row carries a body to offload.
+// RelayLogHasPayload reports whether a Relay Logs row carries content to offload: a body, or
+// hidden content retained without a body column (the query string, a raw error).
 func RelayLogHasPayload(l *RelayLog) bool {
-	return l != nil && (l.RequestBody != nil || l.ResponseBody != nil)
+	return l != nil && (l.RequestBody != nil || l.ResponseBody != nil || l.RetainedPath != nil || l.RetainedErrorDetails != nil || (l.ContentHidden && l.ErrorDetailsParsed != nil))
 }
 
 // MarshalMCPToolLogPayload serializes a full MCP tool log for object storage.

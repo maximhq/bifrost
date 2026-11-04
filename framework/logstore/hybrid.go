@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"maps"
 	"reflect"
 	"strings"
 	"sync"
@@ -418,6 +419,12 @@ func (h *HybridLogStore) mergeIntoStoredRelayObject(ctx context.Context, work *u
 	}
 	if overlay.SetResponseBody {
 		base.ResponseBody = overlay.ResponseBody
+	}
+	if overlay.Path != nil {
+		base.RetainedPath = overlay.Path
+	}
+	if overlay.ErrorDetails != nil {
+		base.RetainedErrorDetails = overlay.ErrorDetails
 	}
 	merged, err := MarshalRelayLogPayload(base)
 	if err != nil {
@@ -2797,9 +2804,16 @@ func (h *HybridLogStore) FindRelayLogsForDeletion(ctx context.Context, ids []str
 // as BatchUpdate does for an LLM row. The object is never read here: the insert's own upload may
 // still be queued, and reading the row's preview back as the body would lose the full request.
 func (h *HybridLogStore) UpdateRelayLog(ctx context.Context, id string, updates map[string]any) error {
+	retainedPath, retainedErr, updates := takeRelayRetainedUpdates(updates)
+	retained := retainedPath != nil || retainedErr != nil
+	// A hidden row's error is content too: it goes to the object, as on insert.
+	hiddenError, _ := updates["error_details"].(string)
+	if hiddenUpdate, _ := updates["content_hidden"].(bool); hiddenUpdate && hiddenError != "" {
+		retained = true
+	}
 	requestBody, hasRequest := relayBodyUpdate(updates, "request_body")
 	responseBody, hasResponse := relayBodyUpdate(updates, "response_body")
-	if !hasRequest && !hasResponse {
+	if !hasRequest && !hasResponse && !retained {
 		return h.inner.UpdateRelayLog(ctx, id, updates)
 	}
 	row, err := h.inner.FindRelayLog(ctx, id)
@@ -2814,7 +2828,28 @@ func (h *HybridLogStore) UpdateRelayLog(ctx context.Context, id string, updates 
 		return h.inner.UpdateRelayLog(ctx, id, updates)
 	}
 	merge := relayMergePayloadV1{SchemaVersion: relayObjectSchemaVersion, RequestBody: requestBody, SetRequestBody: hasRequest, ResponseBody: responseBody, SetResponseBody: hasResponse}
-	if !hasRequest && responseBody == nil && (row.RequestBody == nil && !row.HasObject && row.PayloadReference == nil) {
+	if hidden {
+		// Hidden content is kept in the object alone, as an insert keeps it (MarshalRelayLogPayload):
+		// the full error retained with its raw payloads, else the sanitized one, and the database
+		// row keeps no error.
+		if retainedErr == nil && hiddenError != "" {
+			var sanitized schemas.BifrostError
+			if err := sonic.UnmarshalString(hiddenError, &sanitized); err == nil {
+				retainedErr = &sanitized
+			}
+		}
+		merge.Path, merge.ErrorDetails = retainedPath, retainedErr
+		retained = retainedPath != nil || retainedErr != nil
+		if _, has := updates["error_details"]; has {
+			cleared := make(map[string]any, len(updates))
+			maps.Copy(cleared, updates)
+			cleared["error_details"] = ""
+			updates = cleared
+		}
+	} else {
+		retained = false
+	}
+	if !hasRequest && responseBody == nil && !retained && (row.RequestBody == nil && !row.HasObject && row.PayloadReference == nil) {
 		// Nothing to hold in an object: the row had no body and the update clears the reply.
 		return h.inner.UpdateRelayLog(ctx, id, updates)
 	}
@@ -2883,6 +2918,10 @@ func (h *HybridLogStore) GetRelayLogStats(ctx context.Context, filters RelayLogF
 
 func (h *HybridLogStore) GetRelayHistogram(ctx context.Context, filters RelayLogFilters, bucketSizeSeconds int64) (*RelayHistogramResult, error) {
 	return h.inner.GetRelayHistogram(ctx, filters, bucketSizeSeconds)
+}
+
+func (h *HybridLogStore) GetRelayLatencyHistogram(ctx context.Context, filters RelayLogFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error) {
+	return h.inner.GetRelayLatencyHistogram(ctx, filters, bucketSizeSeconds)
 }
 
 func (h *HybridLogStore) GetRelayTopEndpoints(ctx context.Context, filters RelayLogFilters, limit int) (*RelayTopResults, error) {

@@ -799,3 +799,41 @@ func TestRelayLogSessionIDIndexBuiltConcurrentlyOnPostgres(t *testing.T) {
 	require.NoError(t, db.Model(&RelayLog{}).Count(&count).Error)
 	assert.EqualValues(t, 200, count, "existing rows are untouched")
 }
+
+// TestRelayLogContentSearchUsesFTSOnPostgres pins that content_search on Postgres matches either
+// body through the same expression the GIN indexes are built on, as MCP content search does.
+func TestRelayLogContentSearchUsesFTSOnPostgres(t *testing.T) {
+	db := trySetupPostgresDB(t)
+	if db == nil {
+		t.Skip("Postgres not available, skipping test")
+	}
+	ctx := context.Background()
+	db.Exec("DROP TABLE IF EXISTS relay_logs CASCADE")
+	db.Exec("CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)")
+	db.Exec("DELETE FROM migrations")
+	require.NoError(t, triggerMigrations(ctx, db, testLogger{}))
+	t.Cleanup(func() {
+		db.Exec("DROP TABLE IF EXISTS relay_logs CASCADE")
+		db.Exec("DELETE FROM migrations")
+	})
+	store := &RDBLogStore{db: db, logger: testLogger{}}
+	now := time.Now().UTC()
+	_, err := store.BatchCreateRelayLogsIfNotExists(ctx, []*RelayLog{
+		{ID: "req", RequestID: "req", Timestamp: now, RelayName: "docs", Status: RelayLogStatusSuccess, RequestBody: strPtr(`{"query":"wombat facts"}`)},
+		{ID: "resp", RequestID: "resp", Timestamp: now, RelayName: "docs", Status: RelayLogStatusSuccess, ResponseBody: strPtr(`{"answer":"platypus"}`)},
+	})
+	require.NoError(t, err)
+	for term, want := range map[string]string{"wombat": "req", "platypus": "resp"} {
+		page, err := store.SearchRelayLogs(ctx, RelayLogFilters{ContentSearch: term}, PaginationOptions{Limit: 10})
+		require.NoError(t, err)
+		require.Len(t, page.Logs, 1, "content_search %q", term)
+		assert.Equal(t, want, page.Logs[0].ID)
+	}
+	conn := acquirePerfTestSQLConn(t, ctx, db)
+	require.NoError(t, ensurePerformanceIndexes(ctx, conn, testLogger{}))
+	for _, index := range []string{"idx_relay_logs_request_body_fts", "idx_relay_logs_response_body_fts"} {
+		valid, err := pgIndexValid(ctx, conn, "relay_logs", index)
+		require.NoError(t, err)
+		assert.True(t, valid, "%s is built", index)
+	}
+}

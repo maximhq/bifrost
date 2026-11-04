@@ -89,5 +89,7 @@ func transportError(err error, latency time.Duration) *schemas.BifrostError {
 	case errors.Is(err, providerUtils.ErrStreamIdleTimeout), errors.As(err, &netErr) && netErr.Timeout(), errors.Is(err, context.DeadlineExceeded):
 		return providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
 	}
-	return providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err), latency)
+	// Any other failure to reach the upstream is a connection failure, as on the LLM path: 502
+	// with provider_connection_failed, not an internal error.
+	return providerUtils.SetErrorLatency(providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), latency)
 }

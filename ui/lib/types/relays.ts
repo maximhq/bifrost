@@ -270,13 +270,14 @@ export interface RelayLog {
 	project_id?: string;
 	project_name?: string;
 	session_id?: string; // session identity resolved at ingress (x-bf-session-id), as on LLM and MCP rows
+	parent_request_id?: string; // parent named by the caller through baggage session-id, as on LLM rows
+	agent_correlation_id?: string; // caller-supplied x-bf-agent-correlation-id, as on LLM rows
 	user_agent?: string; // Raw HTTP User-Agent of the calling client
 	client_ip?: string; // Caller IP: leftmost X-Forwarded-For, else X-Real-IP, else the TCP peer
 	app?: string; // Backend-detected client app derived from user_agent
 	request_id: string;
 	metadata?: Record<string, unknown>; // logging headers, x-bf-lh-* labels, x-bf-dim-* dimensions and the key's metadata, as on LLM and MCP rows
 	request_headers?: Record<string, string>; // the headers the matched route matches on
-	response_headers?: Record<string, string>;
 	request_body?: string;
 	response_body?: string;
 	content_hidden: boolean;
@@ -306,7 +307,13 @@ export interface RelayLogFilters {
 	/** Exact request-id lookup; set by the header's "Request ID" search mode. */
 	request_id?: string;
 	session_id?: string;
+	/** Exact job id: a job route's start call and the settlement rows it produced. */
+	job_id?: string;
+	parent_request_id?: string;
+	agent_correlation_id?: string;
 	search?: string;
+	/** Matches the request and response bodies, as content_search does on the LLM and MCP pages. */
+	content_search?: string;
 	period?: string;
 	start_time?: string;
 	end_time?: string;

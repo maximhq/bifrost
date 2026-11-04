@@ -2480,6 +2480,102 @@ func TestHybrid_HiddenRelayLogRetainsObjectWithoutHydration(t *testing.T) {
 	assert.Nil(t, found.ResponseBody)
 }
 
+// TestHybrid_HiddenRelayLogRetainsQueryAndRawErrorInObject pins that hidden content with no body
+// column (the query string, a raw error) reaches the object, while the database row keeps the
+// stripped path and the error without raw payloads; a hidden row with no body still offloads.
+func TestHybrid_HiddenRelayLogRetainsQueryAndRawErrorInObject(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	ts := time.Date(2026, 10, 29, 11, 0, 0, 0, time.UTC)
+	status := 502
+	entry := &RelayLog{
+		ID: "relay-hidden-retained", RequestID: "relay-hidden-retained", Timestamp: ts, RelayName: "r", Kind: RelayLogKindCall,
+		Status: RelayLogStatusError, Path: "/search", ContentHidden: true,
+		ErrorDetailsParsed:   &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Message: "upstream failed"}},
+		RetainedPath:         schemas.Ptr("/search?q=private"),
+		RetainedErrorDetails: &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Message: "upstream failed"}, ExtraFields: schemas.BifrostErrorExtraFields{RawRequest: "raw-req"}},
+	}
+	_, err := hybrid.BatchCreateRelayLogsIfNotExists(ctx, []*RelayLog{entry})
+	require.NoError(t, err)
+	waitForRelayOffload(t, inner, entry.ID)
+
+	data, err := objStore.Get(ctx, RelayLogObjectKey("test", ts, entry.ID))
+	require.NoError(t, err, "a hidden row with no body still offloads its retained content")
+	assert.Contains(t, string(data), "/search?q=private")
+	assert.Contains(t, string(data), "raw-req")
+	dbOnly, err := inner.FindRelayLog(ctx, entry.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "/search", dbOnly.Path)
+	assert.Nil(t, dbOnly.ErrorDetailsParsed, "a hidden row keeps no error in the database, as an LLM row's ClearPayload leaves none")
+
+	// A hidden row with only the sanitized error (nothing retained raw) keeps it in the object too.
+	sanitizedOnly := &RelayLog{
+		ID: "relay-hidden-sanitized", RequestID: "relay-hidden-sanitized", Timestamp: ts, RelayName: "r", Kind: RelayLogKindCall,
+		Status: RelayLogStatusError, Path: "/search", ContentHidden: true,
+		ErrorDetailsParsed: &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Message: "sanitized failure"}},
+	}
+	_, err = hybrid.BatchCreateRelayLogsIfNotExists(ctx, []*RelayLog{sanitizedOnly})
+	require.NoError(t, err)
+	waitForRelayOffload(t, inner, sanitizedOnly.ID)
+	data, err = objStore.Get(ctx, RelayLogObjectKey("test", ts, sanitizedOnly.ID))
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "sanitized failure")
+	dbOnly, err = inner.FindRelayLog(ctx, sanitizedOnly.ID)
+	require.NoError(t, err)
+	assert.Nil(t, dbOnly.ErrorDetailsParsed)
+}
+
+// TestHybrid_HiddenRelayReconcileKeepsRetainedContent pins the eviction path of hidden content: the
+// partial row's object keeps the query, the reconcile adds the raw error, the merge keeps both, and
+// the reserved keys never reach the row.
+func TestHybrid_HiddenRelayReconcileKeepsRetainedContent(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	ts := time.Date(2026, 10, 29, 11, 30, 0, 0, time.UTC)
+	partial := &RelayLog{
+		ID: "relay-hidden-partial", RequestID: "relay-hidden-partial", Timestamp: ts, RelayName: "r", Kind: RelayLogKindCall,
+		Status: RelayLogStatusProcessing, Path: "/search", ContentHidden: true, RetainedPath: schemas.Ptr("/search?q=private"),
+	}
+	_, err := hybrid.BatchCreateRelayLogsIfNotExists(ctx, []*RelayLog{partial})
+	require.NoError(t, err)
+	waitForRelayOffload(t, inner, partial.ID)
+
+	status := 502
+	require.NoError(t, hybrid.UpdateRelayLog(ctx, partial.ID, map[string]any{
+		"status": RelayLogStatusError, "content_hidden": true,
+		RelayRetainedErrorDetailsUpdate: &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Message: "upstream failed"}, ExtraFields: schemas.BifrostErrorExtraFields{RawRequest: "raw-req"}},
+	}))
+	key := RelayLogObjectKey("test", ts, partial.ID)
+	waitForUploads(t, func() bool {
+		data, err := objStore.Get(ctx, key)
+		return err == nil && strings.Contains(string(data), "raw-req")
+	})
+	data, err := objStore.Get(ctx, key)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "/search?q=private", "the merge keeps the query the partial retained")
+	row, err := inner.FindRelayLog(ctx, partial.ID)
+	require.NoError(t, err)
+	assert.Equal(t, RelayLogStatusError, row.Status)
+	assert.Equal(t, "/search", row.Path)
+
+	// A hidden reconcile carrying a sanitized error moves it to the object and blanks the column.
+	require.NoError(t, hybrid.UpdateRelayLog(ctx, partial.ID, map[string]any{
+		"status": RelayLogStatusError, "content_hidden": true, "error_details": `{"error":{"message":"sanitized reconcile"}}`,
+	}))
+	waitForUploads(t, func() bool {
+		data, err := objStore.Get(ctx, key)
+		return err == nil && strings.Contains(string(data), "sanitized reconcile")
+	})
+	row, err = inner.FindRelayLog(ctx, partial.ID)
+	require.NoError(t, err)
+	assert.Empty(t, row.ErrorDetails, "the database row keeps no error for a hidden row")
+
+	// A store without objects strips the reserved keys instead of writing them as columns.
+	require.NoError(t, inner.UpdateRelayLog(ctx, partial.ID, map[string]any{"status": RelayLogStatusSuccess, RelayRetainedPathUpdate: schemas.Ptr("/x?y=1")}))
+}
+
 // TestHybrid_RelayLogUploadFailureKeepsDatabasePreview pins the fallback when the upload fails: the
 // row stays without an object and reads serve the preview.
 func TestHybrid_RelayLogUploadFailureKeepsDatabasePreview(t *testing.T) {

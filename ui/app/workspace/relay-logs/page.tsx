@@ -4,11 +4,12 @@ import { RelayFilterSidebar } from "@/components/filters/relayFilterSidebar";
 import FullPageLoader from "@/components/fullPageLoader";
 import { useColumnConfig } from "@/components/table";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { parseAsSafeString } from "@/lib/queryParamsParser";
+import { parseAsSafeArrayOf, parseAsSafeString } from "@/lib/queryParamsParser";
 import {
 	getErrorMessage,
 	useDeleteRelayLogsMutation,
 	useGetRelayLogHistogramQuery,
+	useGetRelayLogLatencyHistogramQuery,
 	useGetRelayLogsQuery,
 	useGetRelayLogStatsQuery,
 	useGetUserAgentMappingsQuery,
@@ -20,8 +21,8 @@ import { getLiveToggleState } from "@/lib/utils/timeRange";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useLocation } from "@tanstack/react-router";
 import { AlertCircle } from "lucide-react";
-import { parseAsArrayOf, parseAsBoolean, parseAsFloat, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
-import { useCallback, useMemo, useState, useRef } from "react";
+import { parseAsBoolean, parseAsFloat, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
+import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { RelayEmptyState } from "./views/emptyState";
 import { createRelayColumns, getRelayColumnLabels } from "./views/columns";
 import { RelayHeaderView } from "./views/relayHeaderView";
@@ -29,7 +30,7 @@ import { RelayLogDetailSheet } from "./views/relayLogDetailsSheet";
 import { RelayLogsDataTable } from "./views/relayLogsTable";
 import { RelayMetricStrip } from "./views/relayMetricStrip";
 
-const arr = parseAsArrayOf(parseAsString).withDefault([]);
+const arr = parseAsSafeArrayOf.withDefault([]);
 
 /** Relay Logs: the same layout, header, filters, chart and table as the LLM and MCP log pages. */
 export default function RelayLogsPage() {
@@ -62,8 +63,15 @@ export default function RelayLogsPage() {
 			// default would make indistinguishable from no filter at all.
 			min_cost: parseAsFloat,
 			max_cost: parseAsFloat,
+			min_latency: parseAsFloat,
+			max_latency: parseAsFloat,
 			request_id: parseAsSafeString.withDefault(""),
+			session_id: parseAsSafeString.withDefault(""),
+			job_id: parseAsSafeString.withDefault(""),
+			parent_request_id: parseAsSafeString.withDefault(""),
+			agent_correlation_id: parseAsSafeString.withDefault(""),
 			search: parseAsSafeString.withDefault(""),
+			content_search: parseAsSafeString.withDefault(""),
 			start_time: parseAsInteger.withDefault(defaultTimeRange.startTime),
 			end_time: parseAsInteger.withDefault(defaultTimeRange.endTime),
 			limit: parseAsInteger.withDefault(25), // The table syncs its rows-per-page preference into this
@@ -95,8 +103,15 @@ export default function RelayLogsPage() {
 			billable: urlState.billable === "" ? undefined : urlState.billable === "true",
 			min_cost: urlState.min_cost ?? undefined,
 			max_cost: urlState.max_cost ?? undefined,
+			min_latency: urlState.min_latency ?? undefined,
+			max_latency: urlState.max_latency ?? undefined,
 			request_id: urlState.request_id || undefined,
+			session_id: urlState.session_id || undefined,
+			job_id: urlState.job_id || undefined,
+			parent_request_id: urlState.parent_request_id || undefined,
+			agent_correlation_id: urlState.agent_correlation_id || undefined,
 			search: urlState.search || undefined,
+			content_search: urlState.content_search || undefined,
 			...(urlState.period
 				? { period: urlState.period }
 				: { start_time: dateUtils.toISOString(urlState.start_time), end_time: dateUtils.toISOString(urlState.end_time) }),
@@ -114,13 +129,28 @@ export default function RelayLogsPage() {
 	);
 
 	const pollingOptions = { pollingInterval: polling ? 10000 : 0, skipPollingIfUnfocused: true };
+	// The empty state keeps polling with live updates off, as the LLM page's does, so the first
+	// relay call replaces it without a reload.
+	const [showEmptyState, setShowEmptyState] = useState(false);
 	const {
 		data: logsData,
 		isLoading: logsIsLoading,
 		isFetching: logsIsFetching,
 		error: logsError,
 		refetch: refetchLogs,
-	} = useGetRelayLogsQuery({ filters, pagination }, pollingOptions);
+	} = useGetRelayLogsQuery({ filters, pagination }, { ...pollingOptions, pollingInterval: showEmptyState || polling ? 10000 : 0 });
+	// Set on the first response and only cleared after, as on the LLM page, so deleting the last
+	// rows mid-session leaves the table rather than swapping in the onboarding screen.
+	const hasCheckedEmptyState = useRef(false);
+	useEffect(() => {
+		if (!logsData) return;
+		if (!hasCheckedEmptyState.current) {
+			setShowEmptyState(!logsData.has_logs);
+			hasCheckedEmptyState.current = true;
+		} else if (showEmptyState && logsData.has_logs) {
+			setShowEmptyState(false);
+		}
+	}, [logsData, showEmptyState]);
 	const {
 		data: statsData,
 		isFetching: statsIsFetching,
@@ -134,12 +164,18 @@ export default function RelayLogsPage() {
 		isFetching: histogramIsFetching,
 		refetch: refetchHistogram,
 	} = useGetRelayLogHistogramQuery({ filters }, pollingOptions);
+	const {
+		data: latencyHistogram,
+		isFetching: latencyHistogramIsFetching,
+		refetch: refetchLatencyHistogram,
+	} = useGetRelayLogLatencyHistogramQuery({ filters }, pollingOptions);
 
 	const refreshAllData = useCallback(() => {
 		refetchLogs();
 		refetchStats();
 		refetchHistogram();
-	}, [refetchLogs, refetchStats, refetchHistogram]);
+		refetchLatencyHistogram();
+	}, [refetchLogs, refetchStats, refetchHistogram, refetchLatencyHistogram]);
 
 	const handleTimeRangeChange = useCallback(
 		(startTime: number, endTime: number) =>
@@ -180,10 +216,25 @@ export default function RelayLogsPage() {
 				billable: next.billable === undefined ? "" : String(next.billable),
 				min_cost: next.min_cost ?? null,
 				max_cost: next.max_cost ?? null,
+				min_latency: next.min_latency ?? null,
+				max_latency: next.max_latency ?? null,
 				request_id: next.request_id ?? "",
+				session_id: next.session_id ?? "",
+				job_id: next.job_id ?? "",
+				parent_request_id: next.parent_request_id ?? "",
+				agent_correlation_id: next.agent_correlation_id ?? "",
 				search: next.search ?? "",
+				content_search: next.content_search ?? "",
 				offset: 0,
 			});
+		},
+		[setUrlState],
+	);
+	// A session cell or the detail sheet's session row lists that session's calls, as on the LLM page.
+	const handleFilterBySessionId = useCallback(
+		(sessionId: string) => {
+			navigationSeq.current++;
+			setUrlState({ session_id: sessionId, selected_log: "", offset: 0 });
 		},
 		[setUrlState],
 	);
@@ -278,8 +329,8 @@ export default function RelayLogsPage() {
 		return icons;
 	}, [userAgentMappingsData?.mappings]);
 	const columns = useMemo(
-		() => createRelayColumns(handleDelete, hasDeleteAccess, customAppIcons, t),
-		[customAppIcons, handleDelete, hasDeleteAccess, t],
+		() => createRelayColumns(handleDelete, hasDeleteAccess, customAppIcons, t, handleFilterBySessionId),
+		[customAppIcons, handleDelete, hasDeleteAccess, t, handleFilterBySessionId],
 	);
 	const columnIds = useMemo(
 		() => columns.map((c) => ("id" in c && c.id ? c.id : "accessorKey" in c ? String(c.accessorKey) : "")).filter(Boolean),
@@ -306,7 +357,7 @@ export default function RelayLogsPage() {
 	const displayError = error ?? (logsError ? getErrorMessage(logsError as Parameters<typeof getErrorMessage>[0]) : null);
 
 	if (logsIsLoading) return <FullPageLoader />;
-	if (logsData && !logsData.has_logs) return <RelayEmptyState error={displayError} />;
+	if (showEmptyState) return <RelayEmptyState error={displayError} />;
 
 	return (
 		<div className="dark:bg-card bg-white" data-testid="relay-logs-page">
@@ -336,7 +387,13 @@ export default function RelayLogsPage() {
 					<div className="shrink-0 px-4">
 						{/* The stats and histogram resolve independently, so the strip is dimmed until
 						    both agree on the current filters, as the LLM page does. */}
-						<RelayMetricStrip stats={statsData} histogram={histogram} loading={statsIsFetching || histogramIsFetching} error={statsError} />
+						<RelayMetricStrip
+							stats={statsData}
+							histogram={histogram}
+							latencyHistogram={latencyHistogram}
+							loading={statsIsFetching || histogramIsFetching || latencyHistogramIsFetching}
+							error={statsError}
+						/>
 					</div>
 					{/* The LLM page's Request Volume chart, fed the relay histogram (a superset of its buckets). */}
 					<div className="shrink-0 px-4">

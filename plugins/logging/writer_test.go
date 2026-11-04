@@ -2483,6 +2483,9 @@ func relayPendingForEviction(t *testing.T, plugin *LoggerPlugin, requestID strin
 	t.Helper()
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
+	ctx.SetValue(schemas.BifrostContextKeySessionID, "sess-1")
+	ctx.SetValue(schemas.BifrostContextKeyParentRequestID, "parent-1")
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{"x-bf-agent-correlation-id": "agent-1"})
 	_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{
 		RelayName: "tavily", Method: "POST", Path: "/search", RawQuery: "q=private", RoutePath: "/search", Billable: true, Streams: true, Body: []byte(`{"query":"x"}`),
 	})
@@ -2533,6 +2536,10 @@ func TestCleanupStalePendingPersistsRelayPartialRow(t *testing.T) {
 	}
 	if row.RequestBody == nil || *row.RequestBody != `{"query":"x"}` {
 		t.Fatal("expected the captured request body preserved")
+	}
+	// The correlation is captured at the pre-hook, as an LLM partial row carries it.
+	if row.SessionID == nil || *row.SessionID != "sess-1" || row.ParentRequestID == nil || *row.ParentRequestID != "parent-1" || row.AgentCorrelationID == nil || *row.AgentCorrelationID != "agent-1" {
+		t.Fatalf("expected the correlation on the partial row, got session=%v parent=%v agent=%v", row.SessionID, row.ParentRequestID, row.AgentCorrelationID)
 	}
 	if row.CreatedAt.Before(time.Now().Add(-5 * time.Minute)) {
 		t.Fatalf("expected CreatedAt reset to ~now so the flush window restarts, got %v", row.CreatedAt)

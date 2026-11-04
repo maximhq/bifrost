@@ -35,6 +35,7 @@ export const getRelayColumnLabels = (t: ObservabilityT): Record<string, string> 
 	customer: t("labels.customer"),
 	business_unit: t("labels.businessUnit"),
 	project: t("labels.project"),
+	session: t("labels.session"),
 });
 
 /** Resolved once at import time with the active locale; prefer getRelayColumnLabels(t) inside a component. */
@@ -59,6 +60,7 @@ export const createRelayColumns = (
 	hasDeleteAccess: boolean,
 	customAppIcons: Record<string, string> = {},
 	t: ObservabilityT = i18n.getFixedT(null, "observability"),
+	onFilterBySessionId?: (sessionId: string) => void,
 ): ColumnDef<RelayLog>[] => [
 	{
 		accessorKey: "status",
@@ -223,7 +225,24 @@ export const createRelayColumns = (
 		accessorKey: "session_id",
 		header: t("labels.session"),
 		size: 170,
-		cell: ({ row }) => (row.original.session_id ? <code className="font-mono text-xs">{row.original.session_id}</code> : null),
+		cell: ({ row }) => {
+			const sessionId = row.original.session_id;
+			if (!sessionId) return null;
+			if (!onFilterBySessionId) return <TruncatedLabel className="font-mono text-xs">{sessionId}</TruncatedLabel>;
+			return (
+				<button
+					type="button"
+					data-testid="relay-log-session-filter-btn"
+					className="hover:text-foreground cursor-pointer text-left"
+					onClick={(event) => {
+						event.stopPropagation();
+						onFilterBySessionId(sessionId);
+					}}
+				>
+					<TruncatedLabel className="font-mono text-xs">{sessionId}</TruncatedLabel>
+				</button>
+			);
+		},
 	},
 	...(hasDeleteAccess
 		? [

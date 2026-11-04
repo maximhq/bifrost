@@ -6094,7 +6094,6 @@ func TestRelayLogMetadataAndMatchedHeaders(t *testing.T) {
 	require.Equal(t, wantMetadata, entry.MetadataParsed, "the configured pattern, the dimension, and the key's metadata merged after governance (its team wins over the caller's label)")
 	require.Equal(t, wantMatched, entry.RequestHeadersParsed, "only the headers the route matched on, with the value that selected the route, the credential redacted")
 	require.NotEqual(t, "tvly-secret", entry.RequestHeadersParsed["x-api-key"])
-	require.Nil(t, entry.ResponseHeadersParsed, "reply headers are never kept, as on LLM rows")
 
 	plugin = policyTestPlugin(nil, nil, true)
 	plugin.loggingHeaders = &[]string{"x-tenant-*"}
@@ -6191,6 +6190,77 @@ func TestInject_BackfillsRelayRow(t *testing.T) {
 	require.Equal(t, float64(6), *queued.endpointLog.UpstreamLatency)
 }
 
+// A relay row takes its plugin logs from the completed trace, as an LLM row does, so lines that
+// later post-hooks and the transport plugins log reach the row; the post-hook copy stands only for
+// a row written without a trace.
+func TestInject_RelayRowTakesTracePluginLogs(t *testing.T) {
+	plugin := &LoggerPlugin{logger: testLogger{}, writeQueue: make(chan *writeQueueEntry, 1)}
+	traceID := "trace-relay-plugin-logs"
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+	entry := &logstore.RelayLog{ID: "relay-logs-row", Timestamp: time.Now().UTC(), RequestID: "req-plugin-logs", PluginLogs: `{"governance":[{"message":"early"}]}`}
+	plugin.storeOrEnqueueRelayEntry(ctx, relayInjectEntry{entry: entry})
+	trace := &schemas.Trace{TraceID: traceID, RootSpan: &schemas.Span{}, PluginLogs: []schemas.PluginLogEntry{
+		{PluginName: "governance", Level: schemas.LogLevelInfo, Message: "early"},
+		{PluginName: "telemetry", Level: schemas.LogLevelInfo, Message: "a later post-hook"},
+	}}
+	require.NoError(t, plugin.Inject(context.Background(), trace))
+	queued := <-plugin.writeQueue
+	require.Contains(t, queued.endpointLog.PluginLogs, "a later post-hook")
+	require.Contains(t, queued.endpointLog.PluginLogs, "early")
+}
+
+// Relay rows keep plugin logs and matched header values whole, as LLM rows do: no relay-only cap.
+func TestRelayLogKeepsPluginLogsAndHeaderValuesWhole(t *testing.T) {
+	plugin := policyTestPlugin(nil, nil, false)
+	plugin.writeQueue = make(chan *writeQueueEntry, 1)
+	ctx := policyCtx(false, nil)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-uncapped")
+	name := "guardrails"
+	scoped := ctx.WithPluginScope(&name)
+	line := strings.Repeat("x", 1024)
+	for range 40 {
+		scoped.Log(schemas.LogLevelInfo, line)
+	}
+	scoped.ReleasePluginScope()
+	long := strings.Repeat("v", 5000)
+	_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{
+		RelayName: "r", Method: "POST", Path: "/x", RouteHeaders: map[string]string{"X-Tier": long}, Body: []byte(`{}`),
+	})
+	require.NoError(t, err)
+	_, _, err = plugin.PostRelayHook(ctx, &schemas.BifrostRelayResponse{StatusCode: 200}, nil)
+	require.NoError(t, err)
+	entry := (<-plugin.writeQueue).endpointLog
+	require.Equal(t, 40, strings.Count(entry.PluginLogs, line), "every plugin log line is kept, past the old 16 KB cap")
+	require.Equal(t, long, entry.RequestHeadersParsed["x-tier"], "a matched header value is kept whole, past the old 2 KB cap")
+}
+
+// With content logging off and retained in object storage, a relay row keeps its query string and
+// its raw error for the object alone, as an LLM row offloads its payload and error_details: the
+// database row is stripped of both.
+func TestRelayLogHiddenContentRetainsQueryAndRawError(t *testing.T) {
+	plugin := policyTestPlugin(boolPtr(true), boolPtr(true), true)
+	plugin.writeQueue = make(chan *writeQueueEntry, 1)
+	ctx := policyCtx(false, nil)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-hidden-retained")
+	ctx.SetValue(schemas.BifrostContextKeyShouldStoreRawInLogs, true)
+	_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "r", Method: "POST", Path: "/search", RawQuery: "q=private", Body: []byte(`{"q":"private"}`)})
+	require.NoError(t, err)
+	status := 502
+	bErr := &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Message: "upstream failed"}, ExtraFields: schemas.BifrostErrorExtraFields{RawRequest: "raw-req", RawResponse: "raw-resp"}}
+	_, _, err = plugin.PostRelayHook(ctx, nil, bErr)
+	require.NoError(t, err)
+	entry := (<-plugin.writeQueue).endpointLog
+	require.True(t, entry.ContentHidden)
+	require.Equal(t, "/search", entry.Path, "the database row has no query string")
+	require.NotNil(t, entry.RetainedPath)
+	require.Equal(t, "/search?q=private", *entry.RetainedPath, "the object keeps it")
+	require.Nil(t, entry.ErrorDetailsParsed.ExtraFields.RawRequest, "the database row has no raw request")
+	require.NotNil(t, entry.RetainedErrorDetails)
+	require.Equal(t, "raw-req", entry.RetainedErrorDetails.ExtraFields.RawRequest, "the object keeps the raw error")
+	require.True(t, logstore.RelayLogHasPayload(entry), "retained content alone is offloaded")
+}
+
 // Content logging on a relay row follows the same decision chain as an LLM row: the plugin's
 // setting, overridden by the virtual key's or project's decision, which governance stamps after
 // this plugin's pre-hook has already captured the request. The post-hook resolves it last.
@@ -6262,14 +6332,16 @@ func TestTextBodyKeepsTextCutMidRune(t *testing.T) {
 	got := textBody(cut)
 	require.NotNil(t, got, "a text capture cut mid-character is kept")
 	require.Equal(t, "data: héllo wörld ", *got)
-	require.Nil(t, textBody([]byte{0xff, 0xfb, 0x90, 0x00, 0xc3}), "a binary body is not kept")
+	binary := textBody([]byte{0xff, 0xfb, 0x90, 0x00, 0xc3})
+	require.NotNil(t, binary)
+	require.Equal(t, "<binary content omitted: 5 bytes>", *binary, "a binary body is a placeholder, as on LLM rows")
 	whole := textBody([]byte(`{"ok":true}`))
 	require.NotNil(t, whole)
 	require.Equal(t, `{"ok":true}`, *whole)
 }
 
 // TestRelayLogKeepsWholeBody pins that a relay row keeps each text body in full, as LLM, MCP and
-// A2A rows do, and drops only a binary body.
+// A2A rows do, and records a binary body as the LLM placeholder.
 func TestRelayLogKeepsWholeBody(t *testing.T) {
 	plugin := policyTestPlugin(nil, nil, false)
 	plugin.writeQueue = make(chan *writeQueueEntry, 1)
@@ -6285,7 +6357,8 @@ func TestRelayLogKeepsWholeBody(t *testing.T) {
 	entry := (<-plugin.writeQueue).endpointLog
 	require.NotNil(t, entry.RequestBody)
 	require.Equal(t, len(request), len(*entry.RequestBody), "a text body over 64 KB is kept whole")
-	require.Nil(t, entry.ResponseBody, "a binary body is not kept")
+	require.NotNil(t, entry.ResponseBody)
+	require.Equal(t, "<binary content omitted: 5 bytes>", *entry.ResponseBody, "a binary body is a placeholder, as on LLM rows")
 }
 
 // A streamed relay reply has no body to log until core/relay keeps it as it forwards bytes, so
@@ -6341,33 +6414,39 @@ func TestRelayLogStampsContentCaptureSignal(t *testing.T) {
 // BenchmarkRelayLogHooks measures the logging cost of one relay call on the request path: the
 // pre-hook capture and the post-hook that completes and queues the row.
 func BenchmarkRelayLogHooks(b *testing.B) {
-	plugin := policyTestPlugin(nil, nil, true)
-	plugin.writeQueue = make(chan *writeQueueEntry, 1024)
-	done := make(chan struct{})
-	go func() {
-		for range plugin.writeQueue {
+	run := func(b *testing.B, disableContent *bool, reply []byte) {
+		plugin := policyTestPlugin(disableContent, nil, true)
+		plugin.writeQueue = make(chan *writeQueueEntry, 1024)
+		done := make(chan struct{})
+		go func() {
+			for range plugin.writeQueue {
+			}
+			close(done)
+		}()
+		req := &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search", RoutePath: "/search", Billable: true,
+			Headers: map[string]string{"content-type": "application/json"}, Body: []byte(`{"query":"x"}`)}
+		resp := &schemas.BifrostRelayResponse{RelayName: "tavily", StatusCode: 200, Latency: 120, UpstreamLatency: 100, BytesOut: int64(len(reply)), Body: reply,
+			Usage: &schemas.RelayUsage{Cost: 0.033, CostPerRequest: 0.001, CostPerUnit: 0.008, Units: schemas.Ptr(4.0), BilledUnits: schemas.Ptr(4.0)}}
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			ctx := policyCtx(false, nil)
+			ctx.SetValue(schemas.BifrostContextKeyRequestID, "bench")
+			if _, _, err := plugin.PreRelayHook(ctx, req); err != nil {
+				b.Fatal(err)
+			}
+			if _, _, err := plugin.PostRelayHook(ctx, resp, nil); err != nil {
+				b.Fatal(err)
+			}
 		}
-		close(done)
-	}()
-	req := &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search", RoutePath: "/search", Billable: true,
-		Headers: map[string]string{"content-type": "application/json"}, Body: []byte(`{"query":"x"}`)}
-	resp := &schemas.BifrostRelayResponse{RelayName: "tavily", StatusCode: 200, Latency: 120, UpstreamLatency: 100, BytesOut: 42, Body: []byte(`{"usage":{"credits":4}}`),
-		Usage: &schemas.RelayUsage{Cost: 0.033, CostPerRequest: 0.001, CostPerUnit: 0.008, Units: schemas.Ptr(4.0), BilledUnits: schemas.Ptr(4.0)}}
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		ctx := policyCtx(false, nil)
-		ctx.SetValue(schemas.BifrostContextKeyRequestID, "bench")
-		if _, _, err := plugin.PreRelayHook(ctx, req); err != nil {
-			b.Fatal(err)
-		}
-		if _, _, err := plugin.PostRelayHook(ctx, resp, nil); err != nil {
-			b.Fatal(err)
-		}
+		b.StopTimer()
+		close(plugin.writeQueue)
+		<-done
 	}
-	b.StopTimer()
-	close(plugin.writeQueue)
-	<-done
+	reply := []byte(`{"usage":{"credits":4},"data":"` + strings.Repeat("a", 64*1024) + `"}`)
+	b.Run("ContentOn", func(b *testing.B) { run(b, nil, reply) })
+	// With content logging off, the reply is never copied for the row.
+	b.Run("ContentOff", func(b *testing.B) { run(b, boolPtr(true), reply) })
 }
 
 func TestRelayLogQueryRedaction(t *testing.T) {
@@ -6614,7 +6693,8 @@ func TestRelayLogStatusFollowsLLMRule(t *testing.T) {
 
 // TestRelayLogStampsAppAndSession pins the two context values PreLLMHook stamps or records that the
 // relay hooks did not: the canonical app key for the plugins that run after this one, and the
-// session identity resolved at ingress.
+// session identity resolved at ingress, and the caller's correlation (baggage parent and
+// x-bf-agent-correlation-id) as an LLM row records it.
 func TestRelayLogStampsAppAndSession(t *testing.T) {
 	plugin := policyTestPlugin(nil, nil, false)
 	plugin.writeQueue = make(chan *writeQueueEntry, 1)
@@ -6622,6 +6702,8 @@ func TestRelayLogStampsAppAndSession(t *testing.T) {
 	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-app")
 	ctx.SetValue(schemas.BifrostContextKeyUserAgent, "claude-code/1.0.0")
 	ctx.SetValue(schemas.BifrostContextKeySessionID, "sess-42")
+	ctx.SetValue(schemas.BifrostContextKeyParentRequestID, "parent-7")
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{"x-bf-agent-correlation-id": "agent-run-9"})
 	_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search"})
 	require.NoError(t, err)
 	appKey, _ := ctx.Value(schemas.BifrostContextKeyApp).(string)
@@ -6631,6 +6713,10 @@ func TestRelayLogStampsAppAndSession(t *testing.T) {
 	entry := (<-plugin.writeQueue).endpointLog
 	require.NotNil(t, entry.SessionID)
 	require.Equal(t, "sess-42", *entry.SessionID)
+	require.NotNil(t, entry.ParentRequestID, "the baggage-named parent is kept, as on LLM rows")
+	require.Equal(t, "parent-7", *entry.ParentRequestID)
+	require.NotNil(t, entry.AgentCorrelationID, "x-bf-agent-correlation-id is kept, as on LLM rows")
+	require.Equal(t, "agent-run-9", *entry.AgentCorrelationID)
 }
 
 // TestRelayLogPreHookGatesBodyOnPolicy pins that the request body is captured only under a policy
@@ -6681,4 +6767,21 @@ func TestRelayLogPreHookGatesBodyOnPolicy(t *testing.T) {
 	pending, ok := plugin.pendingEndpointLogs.Load("req-gate")
 	require.True(t, ok)
 	require.Nil(t, pending.(*pendingRelayLog).entry.RequestBody, "content off with no key presented: nothing is held")
+}
+
+// TestRelayReconcileCarriesRetainedContent pins that the update reconciling an evicted row carries
+// hidden content with no body column under the reserved keys the hybrid store moves into the
+// object, so a call that outlived the sweep keeps its query and raw error as a direct insert does.
+func TestRelayReconcileCarriesRetainedContent(t *testing.T) {
+	entry := &logstore.RelayLog{
+		ID: "row", Path: "/search", ContentHidden: true,
+		RetainedPath:         schemas.Ptr("/search?q=private"),
+		RetainedErrorDetails: &schemas.BifrostError{Error: &schemas.ErrorField{Message: "boom"}},
+	}
+	updates := relayLogUpdateColumns(entry, false)
+	require.Equal(t, entry.RetainedPath, updates[logstore.RelayRetainedPathUpdate])
+	require.Equal(t, entry.RetainedErrorDetails, updates[logstore.RelayRetainedErrorDetailsUpdate])
+
+	visible := relayLogUpdateColumns(&logstore.RelayLog{ID: "row", Path: "/search?q=1"}, false)
+	require.NotContains(t, visible, logstore.RelayRetainedPathUpdate, "a visible row carries nothing extra")
 }

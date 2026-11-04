@@ -36,6 +36,7 @@ const sampleLog: RelayLog = {
 	virtual_key_id: "vk-1",
 	virtual_key_name: "prod",
 	team_id: "team-1",
+	session_id: "sess-1",
 	request_id: "0b1f7a6e-2b1c-4f8e-9d6a-1f2e3d4c5b6a",
 	request_headers: { authorization: "Bearer sk-secret" },
 	request_body: '{"text":"super secret prompt"}',
@@ -61,6 +62,7 @@ describe("relayLogsToCSV", () => {
 		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("Billable")]).toBe("true");
 		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("Streamed")]).toBe("false");
 		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("Virtual Key")]).toBe("prod");
+		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("Session ID")]).toBe("sess-1");
 		// Falls back to the id when no name is on the row.
 		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("Team")]).toBe("team-1");
 		// Absent optional numbers are empty cells, not "undefined".

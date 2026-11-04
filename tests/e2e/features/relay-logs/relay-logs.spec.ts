@@ -716,7 +716,7 @@ test.describe("Relay Logs", () => {
     await page.openRow(relayName, { logId: searchRow().id });
     await page.openMoreDetails();
 
-    const teamLink = page.page.getByTestId("relay-log-team_ids-link");
+    const teamLink = page.page.getByTestId("relay-log-team-ids-link");
     await expect(teamLink).toContainText(`${relayName}-team`);
     await teamLink.click();
     await expect.poll(() => page.urlParams("team_ids")).toEqual([teamId]);

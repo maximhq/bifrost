@@ -3180,6 +3180,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	}
 	if loggingHandler != nil {
 		loggingHandler.RegisterRoutes(s.Router, middlewares...)
+		if s.RelaysHandler != nil {
+			s.RelaysHandler.RegisterLogRoutes(s.Router, middlewares...)
+		}
 	}
 	if s.WebSocketHandler != nil {
 		s.WebSocketHandler.RegisterRoutes(s.Router, middlewares...)
