@@ -65,11 +65,19 @@ export function stateDescription(mcpClient: MCPClient, isPerUserAuth: boolean): 
 	}
 	switch (mcpClient.state) {
 		case "pending_verification":
-			return mcpClient.config.auth_type === "token_exchange"
-				? i18n.t("registry.sheet.statePendingTokenExchange", { ns: "mcp" })
-				: mcpClient.config.auth_type === "per_user_oauth"
-					? i18n.t("registry.sheet.statePendingPerUserOauth", { ns: "mcp" })
-					: i18n.t("registry.sheet.statePendingOauth", { ns: "mcp" });
+			// Only a shared OAuth server is pending solely because config.json
+			// declared it; a per-user one is also pending after per_user_discovery
+			// is turned off, so its wording names only how it is verified.
+			switch (mcpClient.config.auth_type) {
+				case "token_exchange":
+					return i18n.t("registry.sheet.statePendingTokenExchange", { ns: "mcp" });
+				case "per_user_oauth":
+					return i18n.t("registry.sheet.statePendingPerUserOauth", { ns: "mcp" });
+				case "per_user_headers":
+					return i18n.t("registry.sheet.statePendingPerUserHeaders", { ns: "mcp" });
+				default:
+					return i18n.t("registry.sheet.statePendingOauth", { ns: "mcp" });
+			}
 		case "needs_reauth": {
 			// Each auth type names the repair action the actions menu actually
 			// offers for it, matching the credential block below.
@@ -287,7 +295,8 @@ export function settingsRows(config: MCPClientConfig, globals: MCPClientGlobalSe
 /**
  * authRows are the Authentication rows of the view sheet. Header values and
  * credentials are never shown: headers by name, a CA certificate as set or
- * not, and anything the API redacts stays out entirely.
+ * not, and anything the API redacts stays out entirely. The TLS settings come
+ * last (see tlsRows).
  */
 export function authRows(config: MCPClientConfig, scopeLabel: string): MCPClientDetailRow[] {
 	const extraHeadersLabel = i18n.t("registry.view.allowedExtraHeaders", { ns: "mcp" });
@@ -362,23 +371,43 @@ export function authRows(config: MCPClientConfig, scopeLabel: string): MCPClient
 			rows.push({ key: "openapi_credentials", label: i18n.t("registry.view.apiCredentials", { ns: "mcp" }), chips: schemes });
 		}
 	}
-	if (config.connection_type === "http" || config.connection_type === "sse") {
-		const ca = config.tls_config?.ca_cert_pem;
-		rows.push(
+	rows.push(...tlsRows(config));
+	return rows;
+}
+
+/**
+ * tlsRows are an http or sse server's TLS settings, a CA certificate as set
+ * or not. A plain http:// URL involves no TLS, so it reads as not used; a URL
+ * behind an env or vault reference could be either and reads as configured.
+ */
+function tlsRows(config: MCPClientConfig): MCPClientDetailRow[] {
+	if (config.connection_type !== "http" && config.connection_type !== "sse") return [];
+	const url = config.connection_string?.type === "env" || config.connection_string?.type === "vault" ? "" : config.connection_string?.value;
+	const label = i18n.t("registry.view.tlsVerification", { ns: "mcp" });
+	if (url?.trim().toLowerCase().startsWith("http://")) {
+		return [
 			{
 				key: "tls_verification",
-				label: i18n.t("registry.view.tlsVerification", { ns: "mcp" }),
-				value: config.tls_config?.insecure_skip_verify ? i18n.t("registry.view.skipped", { ns: "mcp" }) : onOff(true),
+				label,
+				value: i18n.t("registry.view.notUsed", { ns: "mcp" }),
+				hint: i18n.t("registry.view.tlsPlainHttpHint", { ns: "mcp" }),
 			},
-			{
-				key: "tls_ca",
-				label: i18n.t("registry.view.customCaCertificate", { ns: "mcp" }),
-				value:
-					ca?.value?.trim() || ca?.ref?.trim() ? i18n.t("registry.view.set", { ns: "mcp" }) : i18n.t("registry.view.none", { ns: "mcp" }),
-			},
-		);
+		];
 	}
-	return rows;
+	const ca = config.tls_config?.ca_cert_pem;
+	return [
+		{
+			key: "tls_verification",
+			label,
+			value: config.tls_config?.insecure_skip_verify ? i18n.t("registry.view.skipped", { ns: "mcp" }) : onOff(true),
+		},
+		{
+			key: "tls_ca",
+			label: i18n.t("registry.view.customCaCertificate", { ns: "mcp" }),
+			value:
+				ca?.value?.trim() || ca?.ref?.trim() ? i18n.t("registry.view.set", { ns: "mcp" }) : i18n.t("registry.view.none", { ns: "mcp" }),
+		},
+	];
 }
 
 export type MCPClientBadgeVariant = "default" | "secondary" | "outline" | "success" | "destructive";
@@ -606,6 +635,8 @@ export interface MCPClientAlert {
 	variant: "default" | "destructive" | "warning" | "info";
 	title: string;
 	lines: string[];
+	detail?: string; // The raw failure, shown on request
+	timing?: string; // When it last failed, and for how long
 	action?: { kind: MCPClientAlertActionKind; label: string };
 }
 
@@ -642,7 +673,10 @@ export function alertFor(client: MCPClient, canReconnect: boolean): MCPClientAle
 	const failure = client.last_failure;
 	const reconnect: MCPClientAlert["action"] =
 		canReconnect && !client.config.disabled ? { kind: "reconnect", label: i18n.t("registry.actions.reconnect", { ns: "mcp" }) } : undefined;
-	const failureLines = failure ? [failureLine(failure), formatFailureTiming(failure, client.state)] : [];
+	// What failed is there to open, not in the way: the title already says what is wrong.
+	const failureFields: Pick<MCPClientAlert, "detail" | "timing"> = failure
+		? { detail: failureLine(failure), timing: formatFailureTiming(failure, client.state) }
+		: {};
 	switch (client.state) {
 		case "pending_verification":
 			return {
@@ -659,15 +693,16 @@ export function alertFor(client: MCPClient, canReconnect: boolean): MCPClientAle
 					PER_USER_AUTH_TYPES.has(client.config.auth_type ?? "")
 						? i18n.t("registry.view.adminCredentialNeedsRepair", { ns: "mcp" })
 						: i18n.t("registry.view.credentialsNeedReauth", { ns: "mcp" }),
-					...failureLines,
 				],
+				...failureFields,
 				action: repairAction(client.config),
 			};
 		case "unstable":
 			return {
 				variant: "warning",
 				title: stateReasonTitle("unstable", !!client.node_states),
-				lines: [...failureLines, i18n.t("registry.view.unstableNote", { ns: "mcp" })],
+				lines: [],
+				...failureFields,
 				action: reconnect,
 			};
 		case "degraded": {
@@ -694,7 +729,7 @@ export function alertFor(client: MCPClient, canReconnect: boolean): MCPClientAle
 			};
 		}
 		case "error":
-			return { variant: "destructive", title: stateReasonTitle("error", false), lines: failureLines, action: reconnect };
+			return { variant: "destructive", title: stateReasonTitle("error", false), lines: [], ...failureFields, action: reconnect };
 		case "disabled":
 			return {
 				variant: "default",

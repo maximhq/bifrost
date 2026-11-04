@@ -95,7 +95,6 @@
 		},
 		"actions": {
 			"edit": "Modifica",
-			"viewDetails": "Visualizza dettagli",
 			"authorize": "Autorizza",
 			"reconnect": "Riconnetti",
 			"reauthorize": "Riautorizza",
@@ -305,7 +304,8 @@
 		},
 		"sheet": {
 			"statePendingTokenExchange": "Questo server richiede una verifica una tantum: Bifrost scambia il tuo token di identità con cui hai effettuato l'accesso, testa la connessione e rileva gli strumenti. I token di identità dei chiamanti verranno quindi scambiati automaticamente a ogni chiamata agli strumenti.",
-			"statePendingPerUserOauth": "Questo client è stato dichiarato in config.json. È necessario l'accesso di un amministratore per verificare la configurazione OAuth e rilevare gli strumenti; Bifrost lo conserva per aggiornare periodicamente l'elenco degli strumenti. Ciascun utente si autenticherà comunque individualmente quando utilizzerà questo server.",
+			"statePendingPerUserOauth": "È necessario l'accesso di un amministratore per verificare questo server e rilevarne gli strumenti. Ciascun utente si autentica comunque individualmente.",
+			"statePendingPerUserHeaders": "Verifica questo server con valori di header di esempio per rilevarne gli strumenti. Ciascun utente fornisce comunque i propri header.",
 			"statePendingOauth": "Questo client è stato dichiarato in config.json e richiede un'autorizzazione OAuth una tantum prima di poter essere utilizzato.",
 			"stateNeedsReauthTokenExchange": "La credenziale di amministratore che Bifrost conserva per aggiornare l'elenco degli strumenti di questo server deve essere riparata. Le chiamate agli strumenti dei chiamanti non sono interessate. Usa {{action}} dal menu delle azioni del server per risolverla.",
 			"stateNeedsReauthPerUser": "La credenziale di amministratore che Bifrost conserva per aggiornare l'elenco degli strumenti di questo server deve essere riparata. Le credenziali degli utenti finali e le chiamate agli strumenti non sono interessate. Usa {{action}} dal menu delle azioni del server per risolverla.",
@@ -332,7 +332,6 @@
 			"usingGlobal": "Impostazione globale in uso",
 			"syncIntervalNotUsed": "Non usato: questo server non conserva un proprio rilevamento da sincronizzare. Gli strumenti, i prompt e le risorse di ogni chiamante vengono rilevati quando si connette.",
 			"perUserDiscoveryOnWarning": "Salvando si eliminano la credenziale di amministratore e il rilevamento che Bifrost conserva per questo server. Gli strumenti, i prompt e le risorse di ogni chiamante vengono rilevati con la sua credenziale alla prossima connessione.",
-			"perUserDiscoveryOffWarningSignIn": "Salvando si eliminano gli strumenti, i prompt e le risorse rilevati di tutti i chiamanti. Usa poi {{action}} affinché Bifrost possa rilevarli di nuovo con un accesso di amministratore.",
 			"perUserDiscoveryOffWarningPending": "Salvando si eliminano gli strumenti, i prompt e le risorse rilevati di tutti i chiamanti, e il server torna in attesa di verifica finché un amministratore non lo verifica di nuovo.",
 			"toolExecutionTimeout": "Timeout di esecuzione dello strumento (secondi)",
 			"disableClient": "Disabilita client",
@@ -486,6 +485,9 @@
 			"apiCredentials": "Credenziali API",
 			"tlsVerification": "Verifica TLS",
 			"customCaCertificate": "Certificato CA personalizzato",
+			"tlsPlainHttpHint": "L'URL di questo server usa HTTP in chiaro, quindi TLS non è coinvolto.",
+			"showErrorDetails": "Mostra dettagli",
+			"hideErrorDetails": "Nascondi dettagli",
 			"codeMode": "Modalità codice",
 			"spec": "Specifica",
 			"calls": "Chiama",
@@ -525,9 +527,8 @@
 			"openWorld": "Mondo aperto",
 			"failureLine": "{{stage}}: {{message}}",
 			"verificationRequired": "Verifica richiesta",
-			"adminCredentialNeedsRepair": "La credenziale di amministratore che Bifrost conserva per aggiornare l'elenco degli strumenti di questo server deve essere riparata. Le credenziali dei chiamanti e le chiamate agli strumenti non sono interessate.",
+			"adminCredentialNeedsRepair": "La credenziale di amministratore di Bifrost per questo server va rinnovata. I chiamanti non sono interessati.",
 			"credentialsNeedReauth": "Le credenziali di questa connessione devono essere autorizzate di nuovo.",
-			"unstableNote": "Le chiamate agli strumenti vengono comunque tentate normalmente; il prossimo controllo avviene entro circa 10 secondi.",
 			"instanceState_one": "{{count}} istanza: {{state}}.",
 			"instanceState_other": "{{count}} istanze: {{state}}.",
 			"instanceStateFailure_one": "{{count}} istanza: {{state}}, {{failure}}, {{timing}}.",
@@ -565,8 +566,8 @@
 			"hideSchemaAria": "Nascondi lo schema di {{name}}",
 			"parameters": "Parametri",
 			"returns": "Restituisce",
-			"viewJsonSchema": "Visualizza schema JSON",
-			"hideJsonSchema": "Nascondi schema JSON"
+			"viewAsJson": "Visualizza come JSON",
+			"viewAsTable": "Visualizza come tabella"
 		},
 		"tls": {
 			"skipVerify": "Salta verifica TLS",

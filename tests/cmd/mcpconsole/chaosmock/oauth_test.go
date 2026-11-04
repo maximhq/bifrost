@@ -392,6 +392,78 @@ func TestRefreshRotationExpiryAndRevocation(t *testing.T) {
 	}
 }
 
+// TestForgetDropsDynamicClientsAndTheirGrants: oauth/forget stands in for an
+// authorization server that stops recognising the clients it registered. The
+// forgotten client is unknown at authorize and its grants end; a client
+// registered up front, and its grant, are untouched.
+func TestForgetDropsDynamicClientsAndTheirGrants(t *testing.T) {
+	// c2 is declared up front with the dynamic flag a registration would show; declared, it is kept all the same.
+	fleet, srv := oauthFleet(t, map[string]any{
+		"clients": []any{
+			map[string]any{"client_id": "c1", "client_secret": "s1", "redirect_uris": []string{testRedirect}},
+			map[string]any{"client_id": "c2", "dynamic": true},
+		},
+	})
+	keptCode, keptVerifier := codeFor(t, fleet, "bob")
+	kept := exchange(t, fleet, keptCode, keptVerifier)
+
+	resp, err := http.Post(fleet.URL()+"/s/alpha/as/register", "application/json",
+		strings.NewReader(`{"redirect_uris":["`+testRedirect+`"],"token_endpoint_auth_method":"none"}`))
+	if err != nil {
+		t.Fatalf("register failed: %v", err)
+	}
+	var registered map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&registered)
+	resp.Body.Close()
+	dynamicID, _ := registered["client_id"].(string)
+	if dynamicID == "" {
+		t.Fatalf("expected a registered client_id, got %v", registered)
+	}
+	verifier, _ := client.GenerateCodeVerifier()
+	authorizeAs := func(clientID string) *http.Response {
+		q := url.Values{
+			"response_type": {"code"}, "client_id": {clientID}, "redirect_uri": {testRedirect}, "state": {"st"},
+			"code_challenge": {client.GenerateCodeChallenge(verifier)}, "code_challenge_method": {"S256"}, "login_hint": {"carol"},
+		}
+		resp, err := noRedirect.Get(fleet.URL() + "/s/alpha/as/authorize?" + q.Encode())
+		if err != nil {
+			t.Fatalf("authorize failed: %v", err)
+		}
+		resp.Body.Close()
+		return resp
+	}
+	loc, _ := url.Parse(authorizeAs(dynamicID).Header.Get("Location"))
+	status, issued := token(t, fleet, url.Values{
+		"grant_type": {"authorization_code"}, "code": {loc.Query().Get("code")}, "code_verifier": {verifier},
+		"client_id": {dynamicID}, "redirect_uri": {testRedirect},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("the dynamic client's code exchange failed: %d %v", status, issued)
+	}
+
+	if resp, _ := post(t, fleet.URL()+"/control/alpha/oauth/forget", map[string]any{}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("forget returned %d", resp.StatusCode)
+	}
+	if resp := authorizeAs(dynamicID); resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected the forgotten client to be unknown at authorize, got %d", resp.StatusCode)
+	}
+	if status, _ := mcpStatus(t, fleet, issued["access_token"].(string)); status != http.StatusUnauthorized {
+		t.Errorf("expected the forgotten client's token to be refused, got %d", status)
+	}
+	if status, _ := mcpStatus(t, fleet, kept["access_token"].(string)); status != http.StatusOK {
+		t.Errorf("expected the up-front client's token to keep working, got %d", status)
+	}
+	clients := srv.State().OAuth.Clients
+	if len(clients) != 2 || clients[0].ClientID != "c1" || clients[1].ClientID != "c2" {
+		t.Errorf("expected the declared c1 and c2 to stay registered, got %+v", clients)
+	}
+
+	// Nothing left to forget is refused rather than silently ignored.
+	if resp, _ := post(t, fleet.URL()+"/control/alpha/oauth/forget", map[string]any{}); resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 with no dynamic client left, got %d", resp.StatusCode)
+	}
+}
+
 func TestQueuedOAuthFailuresFireThenClear(t *testing.T) {
 	fleet, srv := oauthFleet(t, map[string]any{
 		"clients": []any{map[string]any{"client_id": "c1", "client_secret": "s1"}},
