@@ -306060,6 +306060,145 @@
           }
         }
       ]
+    },
+    {
+      "name": "311. Anthropic code execution container sessions on usage (container sessions)",
+      "description": "Bifrost derives usage.tool_usage.container_sessions because Anthropic reports no session count: code execution in a new container counts one session, and a request with web_search_20260209 or web_fetch_20260209 counts none because code execution is free with those tools. /v1/chat/completions is the route where the derived field reaches the client: /anthropic/v1/messages returns the provider usage and /v1/responses strips derived fields.",
+      "item": [
+        {
+          "name": "/v1/chat/completions anthropic claude-haiku-5-5 code execution counts one container session",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-haiku-5-5\",\"max_tokens\":300,\"messages\":[{\"role\":\"user\",\"content\":\"Use the code execution tool to compute 17*19. Reply with just the number.\"}],\"tools\":[{\"type\":\"code_execution_20250825\",\"name\":\"code_execution\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('new container counts one session', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var usage = pm.response.json().usage;",
+                  "  pm.expect(usage.tool_usage, 'no tool_usage: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(usage.tool_usage.container_sessions).to.deep.equal({ default: 1 });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "/v1/chat/completions anthropic claude-haiku-5-5 code execution stream counts one container session",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-haiku-5-5\",\"max_tokens\":300,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"Use the code execution tool to compute 19*23. Reply with just the number.\"}],\"tools\":[{\"type\":\"code_execution_20250825\",\"name\":\"code_execution\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stream usage counts one session', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var sessions = null;",
+                  "  pm.response.text().split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data: {') !== 0) { return; }",
+                  "    var usage = JSON.parse(line.slice(6)).usage;",
+                  "    if (usage && usage.tool_usage && usage.tool_usage.container_sessions) { sessions = usage.tool_usage.container_sessions; }",
+                  "  });",
+                  "  pm.expect(sessions, 'no container_sessions: ' + pm.response.text()).to.deep.equal({ default: 1 });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "/v1/chat/completions anthropic claude-haiku-5-5 web_search_20260209 with its free code execution counts no container session",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-haiku-5-5\",\"max_tokens\":300,\"messages\":[{\"role\":\"user\",\"content\":\"Use the code execution tool to compute 23*29. Reply with just the number.\"}],\"tools\":[{\"type\":\"web_search_20260209\",\"name\":\"web_search\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('free web tool counts no session', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var usage = pm.response.json().usage;",
+                  "  var toolUsage = usage.tool_usage || {};",
+                  "  pm.expect(toolUsage.container_sessions, 'unexpected session: ' + pm.response.text()).to.equal(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
