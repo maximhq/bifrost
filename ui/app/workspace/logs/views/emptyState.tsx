@@ -104,7 +104,7 @@ client = openai.OpenAI(
 )
 
 response = client.chat.completions.create(
-    model="gpt-4o-mini", # or "provider/model" for other providers (anthropic/claude-3-sonnet)
+    model="gpt-4o-mini", # or "provider/model" for other providers (anthropic/claude-sonnet-5-5)
     messages=[{"role": "user", "content": "Hello!"}]
 )`,
 					typescript: `import OpenAI from "openai";
@@ -115,7 +115,7 @@ const openai = new OpenAI({
 });
 
 const response = await openai.chat.completions.create({
-  model: "gpt-4o-mini", // or "provider/model" for other providers (anthropic/claude-3-sonnet)
+  model: "gpt-4o-mini", // or "provider/model" for other providers (anthropic/claude-sonnet-5-5)
   messages: [{ role: "user", content: "Hello!" }],
 });`,
 				},
@@ -128,7 +128,7 @@ client = anthropic.Anthropic(
 )
 
 response = client.messages.create(
-    model="claude-3-sonnet-20240229", # or "provider/model" for other providers (openai/gpt-4o-mini)
+    model="claude-sonnet-5-5", # or "provider/model" for other providers (openai/gpt-4o-mini)
     max_tokens=1000,
     messages=[{"role": "user", "content": "Hello!"}]
 )`,
@@ -140,7 +140,7 @@ const anthropic = new Anthropic({
 });
 
 const response = await anthropic.messages.create({
-  model: "claude-3-sonnet-20240229", // or "provider/model" for other providers (openai/gpt-4o-mini)
+  model: "claude-sonnet-5-5", // or "provider/model" for other providers (openai/gpt-4o-mini)
   max_tokens: 1000,
   messages: [{ role: "user", content: "Hello!" }],
 });`,
