@@ -13,6 +13,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/plugins/modelcatalogresolver"
 	"github.com/maximhq/bifrost/plugins/otel"
+	"github.com/maximhq/bifrost/plugins/promptcompression"
 	"github.com/maximhq/bifrost/plugins/prompts"
 	"github.com/maximhq/bifrost/plugins/routing"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
@@ -178,6 +179,17 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 			return nil, fmt.Errorf("failed to marshal maxim plugin config: %w", err)
 		}
 		return maxim.Init(maximConfig, logger)
+
+	case promptcompression.PluginName:
+		// Every field has a default, so an entry without a "config" block is valid.
+		if pluginConfig == nil {
+			pluginConfig = &promptcompression.Config{}
+		}
+		compressionConfig, err := MarshalPluginConfig[promptcompression.Config](pluginConfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal prompt compression plugin config: %w", err)
+		}
+		return promptcompression.Init(compressionConfig, logger)
 
 	case semanticcache.PluginName:
 		semanticConfig, err := MarshalPluginConfig[semanticcache.Config](pluginConfig)
@@ -356,6 +368,15 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 		s.markPluginDisabled(maxim.PluginName)
 	}
 	s.Config.SetPluginOrderInfo(maxim.PluginName, builtinPlacement, schemas.Ptr(9))
+
+	// 10. Prompt Compression (if configured in PluginConfigs)
+	promptCompressionConfig := s.getPluginConfig(promptcompression.PluginName)
+	if promptCompressionConfig != nil && promptCompressionConfig.Enabled {
+		s.registerPluginWithStatus(ctx, promptcompression.PluginName, nil, promptCompressionConfig.Config, false)
+	} else {
+		s.markPluginDisabled(promptcompression.PluginName)
+	}
+	s.Config.SetPluginOrderInfo(promptcompression.PluginName, builtinPlacement, schemas.Ptr(10))
 
 	// 10. ModelCatalogResolver (last routing layer — fills req.Provider from catalog only when
 	// no earlier routing plugin (governance routing rules, governance VK LB, enterprise LB)
