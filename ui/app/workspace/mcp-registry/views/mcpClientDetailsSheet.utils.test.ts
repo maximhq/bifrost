@@ -518,6 +518,21 @@ describe("alertFor", () => {
 		});
 	});
 
+	// A per-user server is pending after per_user_discovery is turned off as
+	// well as when config.json declares it, so neither says config.json, and a
+	// per_user_headers one is not told it needs an OAuth authorization.
+	it("words a pending per-user server by how it is verified", () => {
+		const line = (authType: MCPClientConfig["auth_type"]) =>
+			alertFor(client({ state: "pending_verification" }, { auth_type: authType }), false)?.lines[0];
+		expect(line("per_user_oauth")).toBe(
+			"An admin sign-in is needed to verify this server and discover its tools. Each user still signs in individually.",
+		);
+		expect(line("per_user_headers")).toBe(
+			"Verify this server with sample header values to discover its tools. Each user still supplies their own headers.",
+		);
+		expect(line("oauth")).toBe("This client was declared in config.json and needs a one-time OAuth authorization before it can be used.");
+	});
+
 	it("says how to turn a disabled server back on, with no button", () => {
 		const disabled = alertFor(client({ state: "disabled" }, { disabled: true }), true);
 		expect(disabled).toMatchObject({ variant: "default", title: "Disabled" });

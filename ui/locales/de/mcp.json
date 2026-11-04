@@ -305,7 +305,8 @@
 		},
 		"sheet": {
 			"statePendingTokenExchange": "Dieser Server erfordert eine einmalige Verifizierung: Bifrost tauscht dein angemeldetes Identity-Token aus, testet die Verbindung und erkennt Tools. Bei Aufrufern werden die eigenen Identity-Tokens dann bei jedem Tool-Aufruf automatisch ausgetauscht.",
-			"statePendingPerUserOauth": "Dieser Client wurde in config.json deklariert. Eine Admin-Anmeldung ist erforderlich, um das OAuth-Setup zu überprüfen und Tools zu erkennen; Bifrost speichert diese, um die Tool-Liste regelmäßig zu aktualisieren. Jeder Benutzer authentifiziert sich weiterhin individuell, wenn er diesen Server verwendet.",
+			"statePendingPerUserOauth": "Eine Admin-Anmeldung ist erforderlich, um diesen Server zu verifizieren und seine Tools zu erkennen. Jeder Benutzer meldet sich weiterhin einzeln an.",
+			"statePendingPerUserHeaders": "Verifiziere diesen Server mit Beispiel-Header-Werten, um seine Tools zu erkennen. Jeder Benutzer gibt weiterhin seine eigenen Header an.",
 			"statePendingOauth": "Dieser Client wurde in config.json deklariert und erfordert eine einmalige OAuth-Autorisierung, bevor er verwendet werden kann.",
 			"stateNeedsReauthTokenExchange": "Die Admin-Anmeldedaten, die Bifrost zum Aktualisieren der Tool-Liste dieses Servers speichert, müssen repariert werden. Tool-Aufrufe von Aufrufern sind nicht betroffen. Verwende {{action}} aus dem Aktionsmenü des Servers, um das Problem zu beheben.",
 			"stateNeedsReauthPerUser": "Die Admin-Anmeldedaten, die Bifrost zum Aktualisieren der Tool-Liste dieses Servers speichert, müssen repariert werden. Anmeldedaten von Endbenutzern und Tool-Aufrufe sind nicht betroffen. Verwende {{action}} aus dem Aktionsmenü des Servers, um das Problem zu beheben.",

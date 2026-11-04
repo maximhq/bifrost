@@ -305,7 +305,8 @@
 		},
 		"sheet": {
 			"statePendingTokenExchange": "This server needs a one-time verification: Bifrost exchanges your signed-in identity token, tests the connection, and discovers tools. Callers then have their own identity tokens exchanged automatically on every tool call.",
-			"statePendingPerUserOauth": "This client was declared in config.json. An admin sign-in is needed to verify the OAuth setup and discover tools; Bifrost keeps it on file to refresh the tool list periodically. Each user will still authenticate individually when they use this server.",
+			"statePendingPerUserOauth": "An admin sign-in is needed to verify this server and discover its tools. Each user still signs in individually.",
+			"statePendingPerUserHeaders": "Verify this server with sample header values to discover its tools. Each user still supplies their own headers.",
 			"statePendingOauth": "This client was declared in config.json and needs a one-time OAuth authorization before it can be used.",
 			"stateNeedsReauthTokenExchange": "The admin credential Bifrost keeps on file to refresh this server's tool list needs repair. Callers' tool calls are unaffected. Use {{action}} from the server's actions menu to fix it.",
 			"stateNeedsReauthPerUser": "The admin credential Bifrost keeps on file to refresh this server's tool list needs repair. End-user credentials and tool calls are unaffected. Use {{action}} from the server's actions menu to fix it.",
