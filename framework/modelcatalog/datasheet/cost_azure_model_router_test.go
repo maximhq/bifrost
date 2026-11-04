@@ -216,3 +216,35 @@ func TestCalculateCost_AzureModelRouter_NonAzureProviderUnaffected(t *testing.T)
 	// Plain pricing: 10000*0.000005 + 2000*0.000015 = 0.05 + 0.03 = 0.08
 	assert.InDelta(t, 0.08, cost, 1e-12)
 }
+
+func TestCalculateCost_AzureModelRouter_BehindKeyAlias(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("model-router", "azure", "chat"): azureModelRouterPricing(),
+		makeKey("gpt-4.1-mini", "azure", "chat"): {
+			Model: "gpt-4.1-mini", Provider: "azure", Mode: "chat",
+			InputCostPerToken:  new(0.0000004),
+			OutputCostPerToken: new(0.0000016),
+		},
+	})
+	surcharge := 10000 * 0.00000014
+	underlying := 10000*0.0000004 + 2000*0.0000016
+
+	for name, tt := range map[string]struct {
+		servedModel string
+		want        float64
+	}{
+		"bills the surcharge and the served model": {"gpt-4.1-mini", surcharge + underlying},
+		"router named as served model bills once":  {"model-router", surcharge},
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp := makeChatResponse(schemas.Azure, "router-prod", &schemas.BifrostLLMUsage{
+				PromptTokens:     10000,
+				CompletionTokens: 2000,
+				TotalTokens:      12000,
+			})
+			resp.ChatResponse.Model = tt.servedModel
+			resp.ChatResponse.ExtraFields.RoutingInfo.ResolvedKeyAlias = &schemas.ResolvedKeyAlias{ModelID: "model-router"}
+			assert.InDelta(t, tt.want, s.CalculateCost(resp, nil), 1e-12)
+		})
+	}
+}

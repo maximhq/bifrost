@@ -586,11 +586,12 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 	// real cost of whatever underlying model Azure actually routed to. The
 	// response's own model field carries that real model, distinct from the
 	// "model-router" deployment name on RoutingInfo.Model.
-	if result.PassthroughResponse == nil && routingInfo.Provider == schemas.Azure && schemas.IsAzureModelRouter(routingInfo.Model) &&
+	if result.PassthroughResponse == nil && routingInfo.Provider == schemas.Azure && routesToAzureModelRouter(routingInfo) &&
 		(requestType == schemas.TextCompletionRequest || requestType == schemas.ChatCompletionRequest || requestType == schemas.ResponsesRequest) {
 		sessionRouting := routingInfo
 		if servedModel := result.ServedModel(); servedModel != "" {
 			sessionRouting.Model = servedModel
+			sessionRouting.ResolvedKeyAlias = nil
 		}
 		return s.calculateAzureModelRouterCost(result, input, routingInfo, requestType, scopes).Add(s.calculateContainerSessionCost(input.usage, sessionRouting, scopes))
 	}
@@ -624,6 +625,13 @@ func (s *Store) calculateContainerSessionCost(usage *schemas.BifrostLLMUsage, ro
 		total = total.Add(totalOnlyCost(float64(sessions) * *pricing.CodeInterpreterCostPerSession))
 	}
 	return total
+}
+
+func routesToAzureModelRouter(routingInfo schemas.RoutingInfo) bool {
+	if schemas.IsAzureModelRouter(routingInfo.Model) {
+		return true
+	}
+	return routingInfo.ResolvedKeyAlias != nil && schemas.IsAzureModelRouter(routingInfo.ResolvedKeyAlias.ModelID)
 }
 
 func routesToClaude(routingInfo schemas.RoutingInfo) bool {
@@ -706,7 +714,7 @@ func (s *Store) calculateAzureModelRouterCost(result *schemas.BifrostResponse, i
 
 	cost := s.computeCostFromInput(input, routingInfo, pricingRequestType, scopes)
 
-	if servedModel := result.ServedModel(); servedModel != "" && servedModel != routingInfo.Model {
+	if servedModel := result.ServedModel(); servedModel != "" && servedModel != routingInfo.Model && !schemas.IsAzureModelRouter(servedModel) {
 		underlyingRoutingInfo := schemas.RoutingInfo{
 			Provider: routingInfo.Provider,
 			Model:    servedModel,

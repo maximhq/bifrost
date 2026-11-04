@@ -1,2 +1,3 @@
 - fix: ClickHouse log store looks single logs up by id without scanning the whole logs table: `FindByID` takes an optional timestamp hint (sent by `GET /api/logs/{id}?timestamp=`) to prune to the row's partition and granule, `id` and `parent_request_id` get bloom-filter skip indexes (backfilled once onto existing tables with a background `MATERIALIZE INDEX`), and id reads in the update path use them under `FINAL` (#9316)
+- fix: azure - bill the served model's tokens for a Model Router deployment behind a key alias, not only the router surcharge
 - fix: bill containers started through a server tool at the `container` datasheet rate, not only explicit container creates, and keep the count on stored logs for repricing

@@ -7828,18 +7828,23 @@ func TestCalculateContainerSessionCost(t *testing.T) {
 func TestCalculateCost_ContainerSessions_AzureModelRouterUsesServedModel(t *testing.T) {
 	s := containerSessionTestStore()
 	tests := []struct {
-		name, servedModel string
-		want              float64
+		name, routedModel, aliasModelID, servedModel string
+		want                                         float64
 	}{
-		{"claude bills at anthropic's rate", "claude-sonnet-5-5", 0.05 * 5 / 60},
-		{"openai model bills at azure's rate", "gpt-6.1-sol", 0.033},
-		{"unknown served model bills at azure's rate", "", 0.033},
+		{"claude bills at anthropic's rate", "model-router", "", "claude-sonnet-5-5", 0.05 * 5 / 60},
+		{"openai model bills at azure's rate", "model-router", "", "gpt-6.1-sol", 0.033},
+		{"unknown served model bills at azure's rate", "model-router", "", "", 0.033},
+		{"aliased router serving claude bills at anthropic's rate", "router-prod", "model-router", "claude-sonnet-5-5", 0.05 * 5 / 60},
+		{"served model outranks a claude alias", "model-router", "claude-sonnet-5-5", "gpt-6.1-sol", 0.033},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			usage := &schemas.ResponsesResponseUsage{ToolUsage: &schemas.ToolUsage{ContainerSessions: map[string]int{schemas.ContainerTierDefault: 1}}}
-			result := responsesResultWithSessions(schemas.Azure, "model-router", usage)
+			result := responsesResultWithSessions(schemas.Azure, tt.routedModel, usage)
 			result.ResponsesResponse.Model = tt.servedModel
+			if tt.aliasModelID != "" {
+				result.ResponsesResponse.ExtraFields.RoutingInfo.ResolvedKeyAlias = &schemas.ResolvedKeyAlias{ModelID: tt.aliasModelID}
+			}
 			cost := s.CalculateCostBreakdown(result, nil)
 			require.NotNil(t, cost)
 			assert.InDelta(t, tt.want, cost.TotalCost, 1e-12)
