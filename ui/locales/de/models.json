@@ -2006,19 +2006,22 @@
 					"uncovered": "Keine Übereinstimmung ({{n}})",
 					"weak": "Schwache Übereinstimmung ({{n}})",
 					"misrouted": "Andere Stufe ({{n}})",
-					"mixed": "Gemischte Stufen ({{n}})"
+					"mixed": "Gemischte Stufen ({{n}})",
+					"template": "Prompt-Vorlage ({{n}})"
 				},
 				"category": {
 					"uncovered": "Keine Übereinstimmung",
 					"weak": "Schwache Übereinstimmung",
 					"misrouted": "Andere Stufe",
-					"mixed": "Gemischte Stufen"
+					"mixed": "Gemischte Stufen",
+					"template": "Prompt-Vorlage"
 				},
 				"categoryDescription": {
 					"uncovered": "Die meisten dieser Anfragen passen zu keiner Phrase gut genug und erhalten daher die Standardstufe.",
 					"weak": "Diese Anfragen erreichen die vorgeschlagene Stufe, aber nur über schwache Übereinstimmungen.",
 					"misrouted": "Diese Anfragen passen eindeutig zu Phrasen einer anderen Stufe als der vorgeschlagenen.",
-					"mixed": "Ähnliche Anfragen verteilen sich derzeit auf mehrere Stufen."
+					"mixed": "Ähnliche Anfragen verteilen sich derzeit auf mehrere Stufen.",
+					"template": "Diese Anfragen sind eine Prompt-Vorlage mit wechselndem Inhalt, daher sind die Phrasen aus dem festen Wortlaut der Vorlage formuliert."
 				},
 				"lastDays_one": "Letzter {{count}} Tag",
 				"lastDays_other": "Letzte {{count}} Tage",
