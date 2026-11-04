@@ -751,7 +751,7 @@ Any field marked **env.\* supported** accepts a bare `"env.VAR_NAME"` string in 
 |-------|----------|-----------------|-------|
 | `client_id` | Yes | Yes | Noma client credential ID |
 | `client_secret` | Yes | Yes | Noma client credential secret |
-| `application_id` | Yes | **Plain only** | Noma application whose Runtime Protection profile decides each action |
+| `application_id` | No | **Plain only** | Noma application whose Runtime Protection profile decides each action. When empty, each request reports to an application named after its virtual key |
 | `base_url` | No | Yes | Noma API root or broker URL. Defaults to `https://api.noma.security` |
 | `redaction_strategy` | No | **Plain only** | `replace` (default), `mask`, or `hash` for masked values |
 | `redaction_mode` | No | **Plain only** | `runtime` (default), `logs_only`, or `runtime_reversible` |
