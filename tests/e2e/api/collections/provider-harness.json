@@ -307622,6 +307622,183 @@
           }
         }
       ]
+    },
+    {
+      "name": "314. Bedrock Claude drops web_search on the tool search route (codex web search)",
+      "description": "Codex sends {\"type\":\"web_search\",\"external_web_access\":false} on every request. On Bedrock Claude a tool_search or defer_loading tool moves the request from Converse to InvokeModel. Converse already dropped web_search for Claude (nova_grounding is Nova 2 only), but the shared tool filter kept it through the WebSearchNova carve-out, so InvokeModel received web_search_20250305 and Bedrock answered 400 \"tool type 'web_search_20250305' is not supported for this model\". The carve-out now only applies to Nova 2 models.\n\nThe non-streaming case asserts a 200, that the request reached InvokeModel (the deferred get_weather goes out with defer_loading) and that no web_search_* tool is in raw_request. The streaming case pins the same request on the stream path. Code execution had the same carve-out (CodeExecNova), so the third case sends code_interpreter and asserts no code_execution_* tool reaches InvokeModel.",
+      "item": [
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 /v1/responses codex web search with tool search: web_search is dropped, not rejected",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-6\",\"max_output_tokens\":128,\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"Say hello in one word.\"}],\"tools\":[{\"type\":\"tool_search\"},{\"type\":\"web_search\",\"external_web_access\":false},{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]},\"defer_loading\":true}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('codex web search Bedrock: 200 (web_search did not reach InvokeModel)', function () {",
+                  "  pm.expect(txt, 'Bedrock rejected the web_search tool: ' + txt.slice(0, 600)).to.not.include('is not supported for this model');",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var tools = (rr && rr.tools) || [];",
+                  "var types = JSON.stringify(tools.map(function (t) { return t.type || ('fn:' + t.name); }));",
+                  "pm.test('codex web search Bedrock: raw_request captured', function () {",
+                  "  pm.expect(rr, 'extra_fields.raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "pm.test('codex web search Bedrock: request went to InvokeModel (deferred get_weather kept)', function () {",
+                  "  var weather = tools.filter(function (t) { return t.name === 'get_weather'; })[0];",
+                  "  pm.expect(weather, 'get_weather missing upstream: ' + types).to.be.an('object');",
+                  "  pm.expect(weather.defer_loading, JSON.stringify(weather)).to.eql(true);",
+                  "});",
+                  "pm.test('codex web search Bedrock: no web_search_* tool sent to Claude on Bedrock', function () {",
+                  "  var web = tools.filter(function (t) { return /^web_search/.test(String(t.type || '')); });",
+                  "  pm.expect(web, 'Bedrock Claude has no web_search; it must be dropped: ' + types).to.be.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 /v1/responses stream codex web search with tool search: web_search is dropped, not rejected",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-6\",\"max_output_tokens\":128,\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"Say hello in one word.\"}],\"tools\":[{\"type\":\"tool_search\"},{\"type\":\"web_search\",\"external_web_access\":false},{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]},\"defer_loading\":true}],\"stream\":true}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('codex web search Bedrock stream: 200 (web_search did not reach InvokeModel)', function () {",
+                  "  pm.expect(txt, 'Bedrock rejected the web_search tool: ' + txt.slice(0, 600)).to.not.include('is not supported for this model');",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "pm.test('codex web search Bedrock stream: stream completes without an error event', function () {",
+                  "  pm.expect(txt, 'no response.completed: ' + txt.slice(-600)).to.include('response.completed');",
+                  "  pm.expect(txt, 'error event in stream: ' + txt.slice(0, 600)).to.not.match(/event: (error|response\\.failed)/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 /v1/responses codex web search with tool search: code_interpreter is dropped, not rejected",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-6\",\"max_output_tokens\":128,\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"Say hello in one word.\"}],\"tools\":[{\"type\":\"tool_search\"},{\"type\":\"code_interpreter\",\"container\":{\"type\":\"auto\"}},{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]},\"defer_loading\":true}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('codex web search Bedrock code_interpreter: 200 (code_execution did not reach InvokeModel)', function () {",
+                  "  pm.expect(txt, 'Bedrock rejected the code_execution tool: ' + txt.slice(0, 600)).to.not.include('is not supported for this model');",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var tools = (rr && rr.tools) || [];",
+                  "var types = JSON.stringify(tools.map(function (t) { return t.type || ('fn:' + t.name); }));",
+                  "pm.test('codex web search Bedrock code_interpreter: raw_request captured', function () {",
+                  "  pm.expect(rr, 'extra_fields.raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "pm.test('codex web search Bedrock code_interpreter: request went to InvokeModel (deferred get_weather kept)', function () {",
+                  "  var weather = tools.filter(function (t) { return t.name === 'get_weather'; })[0];",
+                  "  pm.expect(weather, 'get_weather missing upstream: ' + types).to.be.an('object');",
+                  "  pm.expect(weather.defer_loading, JSON.stringify(weather)).to.eql(true);",
+                  "});",
+                  "pm.test('codex web search Bedrock code_interpreter: no code_execution_* tool sent to Claude on Bedrock', function () {",
+                  "  var code = tools.filter(function (t) { return /^code_execution/.test(String(t.type || '')); });",
+                  "  pm.expect(code, 'Bedrock Claude has no code execution; it must be dropped: ' + types).to.be.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
