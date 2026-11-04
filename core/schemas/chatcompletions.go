@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -2316,6 +2317,43 @@ func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
 
 type ToolUsage struct {
 	WebSearch *WebSearchToolUsage `json:"web_search,omitempty"`
+	// ContainerSessions counts containers a request started, by memory tier. Bifrost derives it; no provider reports it.
+	ContainerSessions map[string]int `json:"container_sessions,omitempty"`
+}
+
+// ContainerTierDefault is the ContainerSessions key for a container with no explicit memory tier.
+const ContainerTierDefault = "default"
+
+// ContainerPricingModel returns the datasheet model that prices a session of the given tier.
+func ContainerPricingModel(tier string) string {
+	if tier == "" || tier == ContainerTierDefault {
+		return "container"
+	}
+	return "container-" + tier
+}
+
+// SetContainerSessions records sessions on *t, allocating it when needed; a no-op when sessions is empty.
+func SetContainerSessions(t **ToolUsage, sessions map[string]int) {
+	if len(sessions) == 0 {
+		return
+	}
+	if *t == nil {
+		*t = &ToolUsage{}
+	}
+	(*t).ContainerSessions = sessions
+}
+
+// withoutDerivedFields returns t without the counts Bifrost derives, for the provider-shaped tool_usage clients see.
+func (t *ToolUsage) withoutDerivedFields() *ToolUsage {
+	if t == nil || t.ContainerSessions == nil {
+		return t
+	}
+	if t.WebSearch == nil {
+		return nil
+	}
+	c := *t
+	c.ContainerSessions = nil
+	return &c
 }
 
 // WebSearchToolUsage counts billable web search calls.
@@ -2338,6 +2376,17 @@ func (t *ToolUsage) Add(o *ToolUsage) *ToolUsage {
 		}
 		sum.WebSearch.NumRequests += o.WebSearch.NumRequests
 	}
+	for _, u := range []*ToolUsage{t, o} {
+		if u == nil {
+			continue
+		}
+		for tier, n := range u.ContainerSessions {
+			if sum.ContainerSessions == nil {
+				sum.ContainerSessions = make(map[string]int, len(u.ContainerSessions))
+			}
+			sum.ContainerSessions[tier] += n
+		}
+	}
 	return sum
 }
 
@@ -2351,6 +2400,7 @@ func (t *ToolUsage) DeepCopy() *ToolUsage {
 		ws := *t.WebSearch
 		c.WebSearch = &ws
 	}
+	c.ContainerSessions = maps.Clone(t.ContainerSessions)
 	return &c
 }
 

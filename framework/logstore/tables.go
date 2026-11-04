@@ -1224,7 +1224,10 @@ func (l *Log) DeserializeFields() error {
 			l.usageRebuiltFromColumns = false
 			// Logs stores web search count in num_search_queries (legacy behaviour), we map it to tool_usage so that repricing bills it.
 			if u := l.TokenUsageParsed; u != nil && u.CompletionTokensDetails != nil && u.CompletionTokensDetails.NumSearchQueries != nil && *u.CompletionTokensDetails.NumSearchQueries > 0 {
-				u.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: *u.CompletionTokensDetails.NumSearchQueries}}
+				if u.ToolUsage == nil {
+					u.ToolUsage = &schemas.ToolUsage{}
+				}
+				u.ToolUsage.WebSearch = &schemas.WebSearchToolUsage{NumRequests: *u.CompletionTokensDetails.NumSearchQueries}
 			}
 		}
 	}
@@ -3278,6 +3281,10 @@ func serializeTokenUsage(u *schemas.BifrostLLMUsage) *schemas.BifrostLLMUsage {
 	}
 	stored := *u
 	stored.ToolUsage = nil
+	// Container sessions have no legacy column, so they stay on tool_usage for repricing.
+	if len(u.ToolUsage.ContainerSessions) > 0 {
+		stored.ToolUsage = &schemas.ToolUsage{ContainerSessions: u.ToolUsage.ContainerSessions}
+	}
 	if ws := u.ToolUsage.WebSearch; ws != nil && ws.NumRequests > 0 {
 		details := schemas.ChatCompletionTokensDetails{}
 		if u.CompletionTokensDetails != nil {

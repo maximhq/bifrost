@@ -339,6 +339,7 @@ func (r BifrostResponsesResponse) MarshalJSON() ([]byte, error) {
 		usage.ToolUsage = nil
 		r.Usage = &usage
 	}
+	r.ToolUsage = r.ToolUsage.withoutDerivedFields()
 	return Marshal(alias(r))
 }
 
